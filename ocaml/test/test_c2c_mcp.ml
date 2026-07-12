@@ -3022,6 +3022,55 @@ let test_tools_call_register_allows_own_alias_refresh () =
                in
                check bool "own alias re-register not rejected" false is_error)))
 
+let test_register_same_process_reclaim_requires_verified_start_time () =
+  (* B140 follow-up: a matching PID alone is not process identity.  Legacy
+     rows without pid_start_time can point at a recycled PID, so they must not
+     be evicted by a new session merely because the numeric PID matches. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let pid = Unix.getpid () in
+      let start_time = C2c_mcp.Broker.read_pid_start_time pid in
+      (match start_time with
+       | None -> fail "test requires readable /proc pid start time"
+       | Some start_time ->
+           (* The documented managed-relaunch case remains permitted once
+              the process identity is fully verified. *)
+           C2c_mcp.Broker.register broker ~session_id:"reclaim-old"
+             ~alias:"reclaim-verified" ~pid:(Some pid)
+             ~pid_start_time:(Some start_time) ();
+           C2c_mcp.Broker.register broker ~session_id:"reclaim-new"
+             ~alias:"Reclaim-Verified" ~pid:(Some pid)
+             ~pid_start_time:(Some start_time) ();
+           let verified_regs = C2c_mcp.Broker.list_registrations broker in
+           check bool "verified same-process casefold reclaim succeeds" true
+             (List.exists
+                (fun r -> r.C2c_mcp.session_id = "reclaim-new"
+                       && r.alias = "Reclaim-Verified")
+                verified_regs);
+           C2c_mcp.Broker.register broker ~session_id:"legacy-holder"
+             ~alias:"reclaim-legacy" ~pid:(Some pid) ~pid_start_time:None ();
+           let rejected =
+             try
+               C2c_mcp.Broker.register broker ~session_id:"reclaim-claimant"
+                 ~alias:"RECLAIM-LEGACY" ~pid:(Some pid)
+                 ~pid_start_time:(Some start_time) ();
+               false
+             with Invalid_argument e ->
+               check bool "legacy holder error names alive alias" true
+                 (string_contains e "currently held by an alive session");
+               true
+           in
+           check bool "unverifiable same-PID reclaim is rejected" true rejected;
+           let regs = C2c_mcp.Broker.list_registrations broker in
+           check bool "legacy holder remains authoritative" true
+             (List.exists
+                (fun r -> r.C2c_mcp.session_id = "legacy-holder"
+                       && r.alias = "reclaim-legacy")
+                regs);
+           check bool "claimant row was never written" false
+             (List.exists
+                (fun r -> r.C2c_mcp.session_id = "reclaim-claimant") regs)))
+
 let test_tools_call_register_explicit_rename_refused_sticky_alias () =
   (* B135: explicit alias rename for an existing session_id is refused.
      Old alias remains authoritative; no peer_renamed fan-out. *)
@@ -3623,6 +3672,55 @@ let test_rename_alias_rollback_on_room_failure () =
                     (C2c_mcp.Broker.get_pinned_ed25519 "rn-rb-old");
                   check (option string) "no pin left on target" None
                     (C2c_mcp.Broker.get_pinned_ed25519 "rn-rb-new"))))
+
+let test_rename_alias_reports_incomplete_rollback () =
+  (* B140/a7abf525: an undo failure is operationally significant.  Never
+     compress it into the ordinary "rolled back" result, because operators
+     need to know that the target may need manual repair. *)
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-incomplete-sess"
+            ~alias:"rn-incomplete-old" ~pid:None ~pid_start_time:None ();
+          ignore
+            (C2c_mcp.Broker.join_room broker ~room_id:"rn-incomplete-room"
+               ~alias:"rn-incomplete-old" ~session_id:"rn-incomplete-sess");
+          let keys_dir = Filename.concat dir "keys" in
+          (try Unix.mkdir keys_dir 0o700 with _ -> ());
+          write_file
+            (Filename.concat keys_dir "rn-incomplete-old.ed25519") "ed-incomplete";
+          write_file
+            (Filename.concat key_dir "rn-incomplete-old.x25519") "x-incomplete";
+          ignore
+            (C2c_mcp.Broker.pin_ed25519_sync ~alias:"rn-incomplete-old"
+               ~pk:"pk-incomplete");
+          let saves = ref 0 in
+          (* First save commits the pin move; the second is its rollback save.
+             The room permission failure below forces that undo path. *)
+          C2c_mcp.Broker.set_relay_pins_save_hook_for_test
+            (Some (fun () ->
+                 incr saves;
+                 if !saves = 2 then failwith "injected pin rollback failure"));
+          let room_dir =
+            Filename.concat (Filename.concat dir "rooms") "rn-incomplete-room"
+          in
+          Unix.chmod room_dir 0o500;
+          Fun.protect
+            ~finally:(fun () ->
+              C2c_mcp.Broker.set_relay_pins_save_hook_for_test None;
+              try Unix.chmod room_dir 0o755 with _ -> ())
+            (fun () ->
+              match
+                C2c_mcp.Broker.rename_alias broker
+                  ~session_id:"rn-incomplete-sess"
+                  ~new_alias:"rn-incomplete-new"
+              with
+              | Ok _ -> fail "injected rollback failure must fail rename"
+              | Error e ->
+                  check bool "original rooms failure is retained" true
+                    (string_contains e "rooms");
+                  check bool "undo failure is surfaced explicitly" true
+                    (string_contains e "rollback incomplete"))))
 
 let test_tools_call_rename () =
   (* CLI+MCP parity: the MCP `rename` tool drives the same rename_alias. *)
@@ -5679,12 +5777,13 @@ let test_register_case_insensitive_collision_evicts_lower () =
      purposes. Registering the upper-case form evicts the lower-case holder. *)
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
+      let pid_start_time = C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()) in
       C2c_mcp.Broker.register broker
         ~session_id:"lower-session" ~alias:"lyra-quill"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time ();
       C2c_mcp.Broker.register broker
         ~session_id:"upper-session" ~alias:"Lyra-Quill"
-        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time ();
       let regs = C2c_mcp.Broker.list_registrations broker in
       check int "only one reg after case-insensitive collision" 1 (List.length regs);
       check bool "upper-session survived"
@@ -5842,9 +5941,10 @@ let test_register_serializes_with_concurrent_enqueue () =
   with_temp_dir (fun dir ->
       let _ = C2c_mcp.Broker.create ~root:dir in
       let parent_pid = Unix.getpid () in
+      let parent_start_time = C2c_mcp.Broker.read_pid_start_time parent_pid in
       C2c_mcp.Broker.register (C2c_mcp.Broker.create ~root:dir)
         ~session_id:"target-s0" ~alias:"target"
-        ~pid:(Some parent_pid) ~pid_start_time:None ();
+        ~pid:(Some parent_pid) ~pid_start_time:parent_start_time ();
       let n_msgs = 60 in
       let sender =
         match Unix.fork () with
@@ -5867,7 +5967,7 @@ let test_register_serializes_with_concurrent_enqueue () =
           ~session_id:(Printf.sprintf "target-s%d" k)
           ~alias:"target"
           ~pid:(Some parent_pid)
-          ~pid_start_time:None ()
+          ~pid_start_time:parent_start_time ()
       done;
       let rec waitpid_eintr child =
         try ignore (Unix.waitpid [] child)
@@ -16156,6 +16256,8 @@ let () =
              test_tools_call_register_explicit_rename_refused_sticky_alias
          ; test_case "tools/call register same-alias refresh allowed (B135)" `Quick
              test_tools_call_register_same_alias_refresh_allowed
+         ; test_case "register same-process reclaim requires verified start time (B140)" `Quick
+             test_register_same_process_reclaim_requires_verified_start_time
          ; test_case "rename_alias happy path renames everywhere (B140)" `Quick
              test_rename_alias_happy_path
          ; test_case "rename_alias noop + case-only self-rename (B140)" `Quick
@@ -16170,6 +16272,8 @@ let () =
              test_rename_alias_refusals_mutate_nothing
          ; test_case "rename_alias rolls back on mid-flight failure (B140)" `Quick
              test_rename_alias_rollback_on_room_failure
+         ; test_case "rename_alias reports incomplete rollback (B140)" `Quick
+             test_rename_alias_reports_incomplete_rollback
          ; test_case "tools/call rename applies rename (B140)" `Quick
              test_tools_call_rename
          ; test_case "tools/call rename rejects spoofed session_id (B140)" `Quick

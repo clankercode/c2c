@@ -2309,15 +2309,17 @@ open C2c_mcp_helpers
            [old_alias_opt] in the MCP register handler and the
            register-serializes-with-concurrent-enqueue regression test).
            Eviction remains correct there; only a DIFFERENT live process
-           holding the alias is a hijack. When both rows carry a
-           pid_start_time they must agree, so a recycled PID cannot claim
-           the exemption. *)
+           holding the alias is a hijack. A numeric PID is reusable, so this
+           exemption is safe only when BOTH rows carry the same
+           pid_start_time.  A legacy/malformed row without that value is
+           conservatively treated as a live holder: it may be a different
+           process which recycled the numeric PID. *)
         let same_process (conflict : registration) =
           match conflict.pid, pid with
           | Some cpid, Some npid when cpid = npid -> (
               match conflict.pid_start_time, pid_start_time with
               | Some cst, Some nst -> cst = nst
-              | _ -> true)
+              | _ -> false)
           | _ -> false
         in
         (match

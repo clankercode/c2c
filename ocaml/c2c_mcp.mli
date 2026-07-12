@@ -410,11 +410,12 @@ module Broker : sig
       room memberships, relay identity key files, TOFU pins, plus
       best-effort follow-ups (allowed_signers, archive marker, peer_renamed
       room notices, broker.log event, instance-config sync, schedules and
-      memory dir moves). Any failure before commit unwinds completed steps
-      (no half-rename ever sticks). [Ok json] carries
+      memory dir moves). Any failure before commit unwinds completed steps;
+      a failed undo is reported as an incomplete rollback. [Ok json] carries
       {ok, old_alias, new_alias, rooms_renamed, keys_moved, pins_moved,
-      warnings}; [Error msg] explains the refusal or the rolled-back
-      failure. Shared by the CLI [c2c rename] and the MCP [rename] tool. *)
+      warnings}; [Error msg] explains the refusal, a rolled-back failure, or
+      an incomplete rollback. Shared by the CLI [c2c rename] and the MCP
+      [rename] tool. *)
 
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a

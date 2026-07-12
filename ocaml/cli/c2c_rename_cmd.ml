@@ -124,7 +124,8 @@ let rename : unit Cmdliner.Cmd.t =
               gets a peer_renamed notice, and an alias_renamed marker is \
               appended to your message archive for durable attribution."
          ; `P
-             "Partial failure rolls back — no half-rename ever sticks. The \
+             "Partial failure runs rollback. If an undo cannot complete, the \
+              command reports rollback incomplete rather than claiming success. The \
               rename is refused when the target alias is held by an alive \
               session, has pending permission state, or carries pinned key \
               material from a previous holder."
