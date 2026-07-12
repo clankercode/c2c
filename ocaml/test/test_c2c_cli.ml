@@ -1445,12 +1445,23 @@ let test_install_dry_run_kimi () =
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
-      debug_install_failure "kimi" cmd rc content;
-      check int "install kimi --dry-run exits 0" 0 rc;
-      check bool "dry-run output contains [DRY-RUN]" true
-        (string_contains content "[DRY-RUN]");
-      check bool "dry-run output mentions kimi config" true
-        (string_contains content "kimi" || string_contains content "Kimi")))
+      (* B146: kimi is temporarily disabled — `c2c install kimi` (even
+         --dry-run) refuses with exit 1 before any dry-run output. Assert the
+         refusal while disabled; restore the dry-run mechanics assertions when
+         the flag is flipped back on. *)
+      if C2c_start.kimi_disabled_for_release then begin
+        check bool "install kimi --dry-run refuses (disabled)" true (rc <> 0);
+        check bool "refusal mentions disabled" true
+          (string_contains content "disabled" || string_contains content "DISABLED"
+           || string_contains content "temporarily")
+      end else begin
+        debug_install_failure "kimi" cmd rc content;
+        check int "install kimi --dry-run exits 0" 0 rc;
+        check bool "dry-run output contains [DRY-RUN]" true
+          (string_contains content "[DRY-RUN]");
+        check bool "dry-run output mentions kimi config" true
+          (string_contains content "kimi" || string_contains content "Kimi")
+      end))
 
 let test_install_dry_run_opencode () =
   with_temp_dir (fun home ->
@@ -1941,9 +1952,16 @@ let test_install_all_dry_run_skips_all_clients_by_default () =
       check bool "opencode is not newly configured" true
         (string_contains content "opencode: [skipped; MCP opt-in"
          || string_contains content "opencode: [configured");
-      check bool "kimi is not newly configured" true
-        (string_contains content "kimi: [skipped; MCP opt-in"
-         || string_contains content "kimi: [configured");
+      (* B146: kimi is dropped from known_clients while disabled, so `install
+         all` neither lists nor configures it. Assert the status line only when
+         re-enabled; while disabled assert kimi is simply absent from the plan. *)
+      if C2c_start.kimi_disabled_for_release then
+        check bool "kimi not configured while disabled" false
+          (string_contains content "Configuring kimi")
+      else
+        check bool "kimi is not newly configured" true
+          (string_contains content "kimi: [skipped; MCP opt-in"
+           || string_contains content "kimi: [configured");
       check bool "no client setup previewed" false
         (string_contains content "Configuring ");
       check bool "opt-in policy banner present" true
@@ -2017,8 +2035,15 @@ let test_interactive_install_default_skips_all_clients () =
         (string_contains content "[ ] configure codex");
       check bool "OpenCode is unchecked in the default plan" true
         (string_contains content "[ ] configure opencode");
-      check bool "Kimi is unchecked in the default plan" true
-        (string_contains content "[ ] configure kimi");
+      (* B146: kimi is dropped from known_clients while disabled, so the
+         interactive plan does not offer it at all. Assert it is unchecked only
+         when re-enabled; while disabled assert it is not offered. *)
+      if C2c_start.kimi_disabled_for_release then
+        check bool "Kimi not offered in the plan while disabled" false
+          (string_contains content "configure kimi")
+      else
+        check bool "Kimi is unchecked in the default plan" true
+          (string_contains content "[ ] configure kimi");
       check bool "no client Configuring preview" false
         (string_contains content "Configuring ")))
 

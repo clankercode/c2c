@@ -1847,7 +1847,7 @@ let setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_wat
        let yellow = if use_color then "\027[1;33m" else "" in
        let reset = if use_color then "\027[0m" else "" in
        Printf.eprintf "%s[DEPRECATED]%s Crush is no longer a first-class c2c client.\n%!" yellow reset;
-       Printf.eprintf "  `c2c start crush` refuses (exit 1). For new agents use: claude | codex | opencode | kimi | pi\n%!"
+       Printf.eprintf "  `c2c start crush` refuses (exit 1). For new agents use: claude | codex | opencode | pi\n%!"
    | Json -> ());
   let home = Sys.getenv "HOME" in
   let client_dir = home // ".c2c" // "clients" // "crush" in
@@ -1906,7 +1906,16 @@ let canonical_install_client client =
 
 (* pi is NOT here: pi agents use the npm:pi-c2c extension, not `c2c install`.
    pi is shown in the landing page via a synthetic entry (print_enriched_landing). *)
-let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok" ]
+(* B146: drop kimi from [known_clients] while it is temporarily disabled so the
+   convenience paths (`c2c install`, `c2c install all --with-clients`) skip it —
+   they iterate [known_clients], and the do_install_client kimi guard exits 1, so
+   leaving kimi here would abort a whole `install all`. kimi stays in
+   [install_subcommand_clients] + [start_clients] so an EXPLICIT `c2c install
+   kimi` / `c2c start kimi` still routes to the friendly disabled banner. Single
+   toggle: C2c_start.kimi_disabled_for_release. *)
+let known_clients =
+  List.filter (fun c -> not (c = "kimi" && C2c_start.kimi_disabled_for_release))
+    [ "claude"; "codex"; "opencode"; "kimi"; "grok" ]
 (* B122: client MCP / host integrations are never installed by default.
    Convenience paths (`c2c install`, `c2c install all`) stay binary-only
    unless the operator names a client or passes --with-clients. Keep every
@@ -1917,7 +1926,11 @@ let known_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok" ]
 let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "crush"; "gemini" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
-let init_configurable_clients = [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "grok" ]
+(* B146: kimi filtered out while temporarily disabled so `c2c init` does not
+   offer a client that immediately refuses. Same single toggle. *)
+let init_configurable_clients =
+  List.filter (fun c -> not (c = "kimi" && C2c_start.kimi_disabled_for_release))
+    [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "grok" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
 let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "cursor"; "crush" ]
 let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "gemini"; "crush"; "tmux"; "pty"; "relay-connect" ]
@@ -2044,14 +2057,37 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
            [ ("ok", `Bool false)
            ; ("error", `String "gemini is no longer a supported c2c client")
            ; ("deprecated", `Bool true)
-           ; ("hint", `String "Use: claude | codex | opencode | kimi")
+           ; ("hint", `String "Use: claude | codex | opencode | pi")
            ])
      | Human ->
          let use_color = Unix.isatty Unix.stderr in
          let yellow = if use_color then "\027[1;33m" else "" in
          let reset = if use_color then "\027[0m" else "" in
          Printf.eprintf "%s[DEPRECATED]%s Gemini is no longer a supported c2c client.\n%!" yellow reset;
-         Printf.eprintf "  `c2c install gemini` refuses (exit 1). For new agents use: claude | codex | opencode | kimi | pi\n%!");
+         Printf.eprintf "  `c2c install gemini` refuses (exit 1). For new agents use: claude | codex | opencode | pi\n%!");
+    exit 1
+  end;
+  (* B146: kimi is TEMPORARILY disabled for this release — refuse `c2c install
+     kimi` before any setup work. Explicit installs still route here (kimi stays
+     in install_subcommand_clients); `install all` no longer touches kimi
+     because it was filtered out of known_clients above. Single toggle:
+     C2c_start.kimi_disabled_for_release. NOT a permanent deprecation. *)
+  if client = "kimi" && C2c_start.kimi_disabled_for_release then begin
+    (match output_mode with
+     | Json ->
+         print_json (`Assoc
+           [ ("ok", `Bool false)
+           ; ("error", `String C2c_start.kimi_disabled_notice)
+           ; ("disabled", `Bool true)
+           ; ("temporary", `Bool true)
+           ; ("hint", `String "Use: claude | codex | opencode | pi")
+           ])
+     | Human ->
+         let use_color = Unix.isatty Unix.stderr in
+         let yellow = if use_color then "\027[1;33m" else "" in
+         let reset = if use_color then "\027[0m" else "" in
+         Printf.eprintf "%s[DISABLED]%s %s\n%!" yellow reset C2c_start.kimi_disabled_notice;
+         Printf.eprintf "  `c2c install kimi` refuses (exit 1) for this release.\n%!");
     exit 1
   end;
   let root =

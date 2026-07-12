@@ -56,7 +56,11 @@ let test_init_hint_has_four_clients () =
   Alcotest.(check bool) "has claude" true (contains_substring ~haystack:list ~needle:"claude");
   Alcotest.(check bool) "has codex" true (contains_substring ~haystack:list ~needle:"codex");
   Alcotest.(check bool) "has opencode" true (contains_substring ~haystack:list ~needle:"opencode");
-  Alcotest.(check bool) "has kimi" true (contains_substring ~haystack:list ~needle:"kimi");
+  (* B146: kimi is temporarily filtered out of the init hint while disabled;
+     assert its presence only when it is re-enabled. Full kimi-disabled coverage
+     lives in test_c2c_kimi_disabled.ml. *)
+  (if not C2c_start.kimi_disabled_for_release then
+     Alcotest.(check bool) "has kimi" true (contains_substring ~haystack:list ~needle:"kimi"));
   Alcotest.(check bool) "no gemini" false (contains_substring ~haystack:list ~needle:"gemini");
   Alcotest.(check bool) "no crush" false (contains_substring ~haystack:list ~needle:"crush")
 

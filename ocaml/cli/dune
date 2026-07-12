@@ -298,6 +298,14 @@
  (modules test_c2c_self_update_provenance c2c_self_update_provenance)
  (libraries alcotest yojson str))
 
+; B146: kimi support temporarily disabled for this release — install/start
+; refuse + advertised lists cleaned (soft, single-toggle revert).
+(test
+ (name test_c2c_kimi_disabled)
+ (modules test_c2c_kimi_disabled c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
+ (libraries c2c_mcp alcotest cmdliner yojson unix digestif.ocaml)
+ (deps c2c.exe))
+
 ; Slice S2: gemini CLI deprecation — install refuses + lists cleaned.
 (test
  (name test_c2c_gemini_deprecation)

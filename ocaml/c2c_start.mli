@@ -74,6 +74,15 @@ val clients : (string, client_config) Stdlib.Hashtbl.t
 (** Map from client name (claude, codex, opencode, kimi, crush) to config. *)
 
 val supported_clients : string list
+
+(** B146: single source of truth — kimi support is temporarily disabled for this
+    release when [true]. Flip to [false] to re-enable kimi everywhere (client
+    lists filter on it; the `c2c start`/`c2c new` + `c2c install` guards refuse
+    while [true]). Not a permanent deprecation. *)
+val kimi_disabled_for_release : bool
+
+(** Human-facing notice shown by the B146 kimi-disabled guards. *)
+val kimi_disabled_notice : string
 (** List of supported client names. *)
 
 val deliver_kickoff_for_client :

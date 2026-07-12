@@ -773,3 +773,24 @@ let ensure_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval = 2.0) (
          pid (short running_sha) (short installed_sha);
        stop_daemon ~alias;
        start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ())
+
+(* B146: reap EVERY kimi notifier on this host, regardless of alias. Used by the
+   temporary-disable path (`c2c start/new kimi`): a notifier left over from a
+   pre-disable session would otherwise keep running against a now-unsupported
+   client. Scans the notifier state dir for [<alias>.pid] files and calls the
+   identity-gated [stop_daemon] on each (so a stale/reused pid is never
+   signalled — only a confirmed [c2c-kimi-notif] process). Returns the number of
+   aliases whose pidfile we processed. Best-effort: unreadable dir → 0. *)
+let stop_all_daemons () =
+  let dir = home () // ".local" // "share" // "c2c" // "kimi-notifiers" in
+  match (try Sys.readdir dir with _ -> [||]) with
+  | [||] -> 0
+  | entries ->
+    Array.fold_left
+      (fun n entry ->
+         if Filename.check_suffix entry ".pid" then begin
+           let alias = Filename.chop_suffix entry ".pid" in
+           (try stop_daemon ~alias with _ -> ());
+           n + 1
+         end else n)
+      0 entries
