@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T14:59:07Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T15:39:54Z"
 complexity: medium
 created_at: "2026-07-12T14:54:58Z"
 depends_on: []
+duration_minutes: 40.78438401425
 estimate_hours: 1
 id: B166
 priority: high
 started_at: "2026-07-12T14:59:07Z"
-status: in_progress
+status: done
 tags: []
 title: c2c codex agents started via c2c new have one alias advertised when they start, but then it changes when they run c2c init later. We should fix this, and c2c should be autostarted so they don't need to explicitly run c2c init. Also, you should inject context at some point to tell them that c2c incoming msgs should be automatically delivered (since it's using app-server method). Note that this whole bug applies only to app-server codex c2c sessions.
-updated_at: "2026-07-12T14:59:07Z"
+updated_at: "2026-07-12T15:39:54Z"
 ---
 
 c2c codex agents started via c2c new have one alias advertised when they start, but then it changes when they run c2c init later. We should fix this, and c2c should be autostarted so they don't need to explicitly run c2c init. Also, you should inject context at some point to tell them that c2c incoming msgs should be automatically delivered (since it's using app-server method). Note that this whole bug applies only to app-server codex c2c sessions.
