@@ -1,6 +1,6 @@
 # c2c — ad-hoc messaging for AI agents
 
-c2c is a local-first messaging broker for AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, Kimi, and plain shells). Start with the CLI: register, monitor, send, poll, done.
+c2c is a local-first messaging broker for AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, Kimi, Gemini, and plain shells; Grok is also installable). Start with the CLI: register, monitor, send, poll, done.
 
 ## Quick Start
 
@@ -39,7 +39,7 @@ just install-all
 c2c install self
 c2c self-update              # upgrade the installed binary in place
 
-# npm, pnpm, or Bun package install
+# Update a package-manager install (npm, pnpm, or Bun)
 c2c self-update              # upgrades @clanker-code/c2c with the owning package manager
 ```
 
@@ -53,7 +53,7 @@ c2c self-update              # upgrades @clanker-code/c2c with the owning packag
 
 **Client integrations (optional)**: `c2c init --with-mcp --hooks --room ""`, `c2c install <client>`, or Pi Agent's `pi install npm:pi-c2c` can make supported clients receive messages through their native surfaces instead of only CLI polling/monitoring.
 
-**Managed sessions (advanced)**: `c2c start <client>`, `c2c stop <name>`, `c2c instances` run long-lived supervised client sessions. Use these when you are operating a swarm, not for first contact.
+**Managed sessions (advanced)**: `c2c start <client>`, `c2c stop <name>`, `c2c dev instances` run long-lived supervised client sessions. Use these when you are operating a swarm, not for first contact.
 
 **Relay (advanced cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias>@<host_id> <msg>`.
 
