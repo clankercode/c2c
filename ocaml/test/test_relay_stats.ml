@@ -33,6 +33,19 @@ let check_window stats ~window ~messages ~aliases ~machines =
   Alcotest.(check int) (window ^ ".unique_machines") machines
     (count stats ~window ~field:"unique_machines")
 
+(* B148: connected-section accessors. *)
+let conn stats = assoc "connected" stats
+
+let conn_int stats ~field =
+  match assoc field (conn stats) with
+  | `Int n -> n
+  | _ -> Alcotest.failf "connected.%s is not an int" field
+
+let conn_ct stats ct =
+  match assoc ct (assoc "by_client_type" (conn stats)) with
+  | `Int n -> n
+  | _ -> Alcotest.failf "connected.by_client_type.%s is not an int" ct
+
 module Tests (B : sig
   module R : Relay.RELAY
   val fresh : unit -> R.t
@@ -109,6 +122,45 @@ end) = struct
     Alcotest.(check int) "ever.unique_aliases survives gc" 2
       (count stats ~window:"ever" ~field:"unique_aliases")
 
+  (* B148: connected section — live leases only, machine dedup, client-type
+     counts. register uses the real clock for last_seen, so query at real now. *)
+  let test_connected_counts () =
+    let t = fresh () in
+    let real_now = Unix.gettimeofday () in
+    (* Two claude leases on one machine (node dedup) + one codex on another. *)
+    ignore
+      (R.register t ~node_id:"zq-mach-A" ~session_id:"zq-cs1"
+         ~alias:"zq-conn-a1" ~client_type:"claude" ());
+    ignore
+      (R.register t ~node_id:"zq-mach-A" ~session_id:"zq-cs2"
+         ~alias:"zq-conn-a2" ~client_type:"claude" ());
+    ignore
+      (R.register t ~node_id:"zq-mach-B" ~session_id:"zq-cs3"
+         ~alias:"zq-conn-b1" ~client_type:"codex" ());
+    let stats = R.stats t ~now:real_now in
+    Alcotest.(check int) "connected.clients" 3 (conn_int stats ~field:"clients");
+    Alcotest.(check int) "connected.machines" 2 (conn_int stats ~field:"machines");
+    Alcotest.(check int) "by_client_type.claude" 2 (conn_ct stats "claude");
+    Alcotest.(check int) "by_client_type.codex" 1 (conn_ct stats "codex")
+
+  (* B148: a lease drops out of connected once now advances past the alias
+     release window (NOT alias_released is the liveness predicate). *)
+  let test_connected_expiry () =
+    let t = fresh () in
+    let real_now = Unix.gettimeofday () in
+    ignore
+      (R.register t ~node_id:"zq-mach-exp" ~session_id:"zq-es1"
+         ~alias:"zq-conn-exp" ~client_type:"kimi" ());
+    let s1 = R.stats t ~now:real_now in
+    Alcotest.(check int) "connected before release" 1
+      (conn_int s1 ~field:"clients");
+    let future = real_now +. Relay.alias_release_after_s +. 1000. in
+    let s2 = R.stats t ~now:future in
+    Alcotest.(check int) "connected clients after release" 0
+      (conn_int s2 ~field:"clients");
+    Alcotest.(check int) "connected machines after release" 0
+      (conn_int s2 ~field:"machines")
+
   let cases =
     [
       Alcotest.test_case "empty stats are all zero" `Quick test_empty;
@@ -120,6 +172,10 @@ end) = struct
         test_message_upserts_sender_alias;
       Alcotest.test_case "gc prunes events, keeps ever" `Quick
         test_gc_prunes_events_keeps_ever;
+      Alcotest.test_case "connected counts live leases" `Quick
+        test_connected_counts;
+      Alcotest.test_case "connected drops released leases" `Quick
+        test_connected_expiry;
     ]
 end
 
@@ -138,6 +194,70 @@ module Sql_tests = Tests (struct
   module R = Relay.SqliteRelay
   let fresh () = R.create ~persist_dir:(fresh_tmp_dir ()) ()
 end)
+
+(* B148 (memory backend): stats survive a restart when persist_dir is set —
+   mirror the sqlite reopen test. Real clock so the reload retention filter
+   (relative to wall time) keeps the recent events. *)
+let test_mem_persistence () =
+  let dir = fresh_tmp_dir () in
+  let real_now = Unix.gettimeofday () in
+  let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  Relay.InMemoryRelay.stats_note_message t ~from_alias:"zq-mp-sender"
+    ~ts:(real_now -. 10.);
+  Relay.InMemoryRelay.stats_note_activity t ~node_id:"zq-mp-node"
+    ~alias:"zq-mp-agent" ~ts:(real_now -. 10.);
+  (* Reopen on the same dir: a fresh handle replays the persisted events. *)
+  let t2 = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  let stats = Relay.InMemoryRelay.stats t2 ~now:real_now in
+  (* 1 message, 2 distinct aliases (sender + activity agent), 1 machine. *)
+  check_window stats ~window:"1d" ~messages:1 ~aliases:2 ~machines:1;
+  check_window stats ~window:"ever" ~messages:1 ~aliases:2 ~machines:1
+
+(* B148 (memory backend): messages_ever survives BOTH gc pruning AND a reopen —
+   the pruned ancient event is gone from the windows, but the all-time counter
+   (persisted in stats-totals.json) and the distinct-alias set survive. *)
+let test_mem_ever_survives_gc_reopen () =
+  let dir = fresh_tmp_dir () in
+  let real_now = Unix.gettimeofday () in
+  let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  Relay.InMemoryRelay.stats_note_message t ~from_alias:"zq-mg-ancient"
+    ~ts:(real_now -. (40. *. day));
+  Relay.InMemoryRelay.stats_note_message t ~from_alias:"zq-mg-fresh"
+    ~ts:(real_now -. 10.);
+  (match Relay.InMemoryRelay.gc t with
+   | `Ok _ -> ()
+   | _ -> Alcotest.fail "gc failed");
+  let t2 = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  let stats = Relay.InMemoryRelay.stats t2 ~now:real_now in
+  Alcotest.(check int) "ever.messages survives gc+reopen" 2
+    (count stats ~window:"ever" ~field:"messages");
+  Alcotest.(check int) "ever.unique_aliases survives gc+reopen" 2
+    (count stats ~window:"ever" ~field:"unique_aliases");
+  (* 40d-old message pruned + its alias last_seen out of the 28d window. *)
+  check_window stats ~window:"28d" ~messages:1 ~aliases:1 ~machines:0
+
+(* B148: humanize_ago boundary table (pure, clock-free). *)
+let test_humanize_ago () =
+  let check expected input =
+    Alcotest.(check string)
+      (Printf.sprintf "humanize_ago %g" input)
+      expected
+      (Relay.humanize_ago input)
+  in
+  check "just now" 0.;
+  check "just now" 1.9;
+  check "just now" (-5.);
+  check "2s ago" 2.;
+  check "42s ago" 42.;
+  check "59s ago" 59.;
+  check "1m ago" 60.;
+  check "3m ago" 200.;
+  check "59m ago" 3599.;
+  check "1h ago" 3600.;
+  check "2h ago" 7200.;
+  check "23h ago" 86399.;
+  check "1d ago" 86400.;
+  check "5d ago" (5. *. day)
 
 (* Sqlite-only: stats survive a relay restart (fresh handle, same DB). *)
 let test_sqlite_persistence () =
@@ -167,13 +287,23 @@ let test_stats_route_is_anonymous () =
 let () =
   Alcotest.run "relay_stats"
     [
-      ("in-memory", Mem_tests.cases);
+      ( "in-memory",
+        Mem_tests.cases
+        @ [
+            Alcotest.test_case "stats persist across reopen" `Quick
+              test_mem_persistence;
+            Alcotest.test_case "messages_ever survives gc + reopen" `Quick
+              test_mem_ever_survives_gc_reopen;
+          ] );
       ( "sqlite",
         Sql_tests.cases
         @ [
             Alcotest.test_case "stats persist across reopen" `Quick
               test_sqlite_persistence;
           ] );
+      ( "humanize-ago",
+        [ Alcotest.test_case "humanize_ago boundaries" `Quick test_humanize_ago ]
+      );
       ( "route-auth",
         [
           Alcotest.test_case "/stats is anonymous" `Quick
