@@ -42,3 +42,10 @@ Before I010 can claim Codex app-server support:
    unknown must skip unless explicitly forced);
 5. prove ledger/inbox once-only delivery and recovery with a real tmux-managed
    Codex session.
+# Fix status
+
+Resolved by B153: app-server launchers now persist normal managed-instance
+identity/PID state and late-discovered thread identity. Restart uses a persisted
+control request consumed by the owning launcher, is authoritatively idle-gated
+unless forced, and re-execs in place on the exact thread so the pane/TTY and
+broker-ledger idempotency boundary are retained.

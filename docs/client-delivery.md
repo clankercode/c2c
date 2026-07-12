@@ -373,3 +373,7 @@ Severity levels: `INFO` (difficulty decrease / recovery), `WARN` (difficulty
 increase, rate-limit rejection), `ERR` (PoW retry failure, dead-letter /
 undeliverable). Events are edge-triggered — a sustained high-difficulty
 plateau does not re-alert every sync.
+The launcher is also the managed lifecycle owner recorded by `c2c instances`.
+`c2c restart <alias>` sends it an idle-gated control request; the launcher
+stops its authenticated unit and re-execs itself on the persisted exact thread,
+preserving the current pane/TTY. `--force` explicitly bypasses the idle gate.

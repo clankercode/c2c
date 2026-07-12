@@ -1467,3 +1467,12 @@ the sender and gives the reply tool call. Room and relay routing suffixes in
 the envelope's `to` value are not part of the displayed local identity.
 
 Room messages use `event="room_message"` and include `room_id`. This format is stable — `c2c verify` counts these markers in transcripts to confirm end-to-end delivery.
+App-server Codex launchers are normal managed instances: they appear in
+`c2c instances`, persist their launcher PID and the exact thread discovered by
+the attached frontend, and support `c2c restart <alias>`. Restart is performed
+in place by the launcher so the replacement frontend retains the same terminal
+and resumes the exact thread. By default the request is accepted only when the
+app-server reports the thread as `idle`; active or unknown status is skipped.
+Use `c2c restart <alias> --force` only when intentionally interrupting a turn.
+Ingress and auto-turn ledgers remain in the broker across the exec boundary, so
+already-injected messages are not replayed.
