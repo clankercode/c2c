@@ -196,6 +196,13 @@
  (modules test_relay)
  (libraries c2c_mcp alcotest yojson unix))
 
+; B147: relay usage stats (GET /stats) — windowed aggregation on both
+; backends + anonymous route classification.
+(test
+ (name test_relay_stats)
+ (modules test_relay_stats)
+ (libraries c2c_mcp alcotest yojson unix))
+
 (test
  (name test_relay_e2e_integration)
  (modules test_relay_e2e_integration)

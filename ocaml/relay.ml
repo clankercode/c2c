@@ -67,6 +67,13 @@ module InMemoryRelay : RELAY = struct
     identity : Relay_identity.t;
     (* #330 S1: peer relays for cross-relay forwarding *)
     peer_relays : (string, peer_relay_t) Hashtbl.t;
+    (* B147: usage stats. Message-accept timestamps (gc-pruned past the
+       largest window), an all-time counter that survives pruning, and
+       alias/machine -> last_seen for windowed distinct counts. *)
+    mutable stats_message_events : float list;
+    mutable stats_messages_ever : int;
+    stats_seen_aliases : (string, float) Hashtbl.t;
+    stats_seen_machines : (string, float) Hashtbl.t;
   }
 
   let room_history_jsonl_path persist_dir room_id =
@@ -209,6 +216,10 @@ module InMemoryRelay : RELAY = struct
       self_host;
       identity;
       peer_relays;
+      stats_message_events = [];
+      stats_messages_ever = 0;
+      stats_seen_aliases = Hashtbl.create 64;
+      stats_seen_machines = Hashtbl.create 64;
     }
 
   let with_lock t f =
@@ -223,6 +234,33 @@ module InMemoryRelay : RELAY = struct
   let add_peer_relay t pr = Hashtbl.replace t.peer_relays pr.name pr
   let peer_relay_of t ~name = Hashtbl.find_opt t.peer_relays name
   let peer_relays_list t = Hashtbl.fold (fun _ v acc -> v :: acc) t.peer_relays []
+
+  (* --- B147: usage stats --- *)
+
+  let stats_note_message t ~from_alias ~ts =
+    with_lock t (fun () ->
+      t.stats_message_events <- ts :: t.stats_message_events;
+      t.stats_messages_ever <- t.stats_messages_ever + 1;
+      Hashtbl.replace t.stats_seen_aliases from_alias ts)
+
+  let stats_note_activity t ~node_id ~alias ~ts =
+    with_lock t (fun () ->
+      Hashtbl.replace t.stats_seen_machines node_id ts;
+      Hashtbl.replace t.stats_seen_aliases alias ts)
+
+  let stats t ~now =
+    with_lock t (fun () ->
+      let count_since tbl ~cutoff =
+        Hashtbl.fold (fun _ last acc -> if last >= cutoff then acc + 1 else acc) tbl 0
+      in
+      stats_windows_json ~now
+        ~messages_in_window:(fun ~cutoff ->
+          List.length (List.filter (fun ts -> ts >= cutoff) t.stats_message_events))
+        ~aliases_in_window:(fun ~cutoff -> count_since t.stats_seen_aliases ~cutoff)
+        ~machines_in_window:(fun ~cutoff -> count_since t.stats_seen_machines ~cutoff)
+        ~messages_ever:t.stats_messages_ever
+        ~aliases_ever:(Hashtbl.length t.stats_seen_aliases)
+        ~machines_ever:(Hashtbl.length t.stats_seen_machines))
 
   let generate_uuid () =
     let random_hex n =
@@ -1104,6 +1142,11 @@ module InMemoryRelay : RELAY = struct
       ) t.inboxes;
       let pruned = List.length !stale_keys in
       List.iter (fun k -> Hashtbl.remove t.inboxes k) !stale_keys;
+      (* B147: drop message-event timestamps past the largest stats window;
+         stats_messages_ever keeps the all-time count. *)
+      t.stats_message_events <-
+        List.filter (fun ts -> ts >= now -. stats_event_retention_s)
+          t.stats_message_events;
       `Ok (List.rev !expired, pruned)
     )
 end
@@ -1189,6 +1232,77 @@ module SqliteRelay : RELAY = struct
   let add_peer_relay t pr = Hashtbl.replace t.peer_relays pr.name pr
   let peer_relay_of t ~name = Hashtbl.find_opt t.peer_relays name
   let peer_relays_list t = Hashtbl.fold (fun _ v acc -> v :: acc) t.peer_relays []
+
+  (* --- B147: usage stats --- *)
+
+  (* Single-row COUNT/COALESCE queries; 0 on any miss. *)
+  let count_query conn sql params =
+    let stmt = Sqlite3.prepare conn sql in
+    List.iteri (fun idx param ->
+      let idx' = idx + 1 in
+      (match param with
+       | `Text s -> Sqlite3.bind_text stmt idx' s |> ignore
+       | `Float f -> Sqlite3.bind_double stmt idx' f |> ignore)
+    ) params;
+    let n =
+      if Sqlite3.step stmt = Rc.ROW then
+        match Sqlite3.Data.to_int (Sqlite3.column stmt 0) with
+        | Some i -> i
+        | None -> 0
+      else 0
+    in
+    (try Sqlite3.finalize stmt |> ignore with _ -> ());
+    n
+
+  let stats_note_message t ~from_alias ~ts =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      exec_prepared conn "INSERT INTO stats_message_events (ts) VALUES (?)"
+        [`Float ts] |> ignore;
+      exec_prepared conn
+        "INSERT INTO stats_totals (key, value) VALUES ('messages_ever', 1) \
+         ON CONFLICT(key) DO UPDATE SET value = value + 1" [] |> ignore;
+      exec_prepared conn
+        "INSERT INTO stats_seen_aliases (alias, last_seen) VALUES (?, ?) \
+         ON CONFLICT(alias) DO UPDATE SET last_seen = excluded.last_seen"
+        [`Text from_alias; `Float ts] |> ignore)
+
+  let stats_note_activity t ~node_id ~alias ~ts =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      exec_prepared conn
+        "INSERT INTO stats_seen_machines (machine_id, last_seen) VALUES (?, ?) \
+         ON CONFLICT(machine_id) DO UPDATE SET last_seen = excluded.last_seen"
+        [`Text node_id; `Float ts] |> ignore;
+      exec_prepared conn
+        "INSERT INTO stats_seen_aliases (alias, last_seen) VALUES (?, ?) \
+         ON CONFLICT(alias) DO UPDATE SET last_seen = excluded.last_seen"
+        [`Text alias; `Float ts] |> ignore)
+
+  let stats t ~now =
+    with_lock t (fun () ->
+      let conn = Sqlite3.db_open t.db_path in
+      stats_windows_json ~now
+        ~messages_in_window:(fun ~cutoff ->
+          count_query conn
+            "SELECT COUNT(*) FROM stats_message_events WHERE ts >= ?"
+            [`Float cutoff])
+        ~aliases_in_window:(fun ~cutoff ->
+          count_query conn
+            "SELECT COUNT(*) FROM stats_seen_aliases WHERE last_seen >= ?"
+            [`Float cutoff])
+        ~machines_in_window:(fun ~cutoff ->
+          count_query conn
+            "SELECT COUNT(*) FROM stats_seen_machines WHERE last_seen >= ?"
+            [`Float cutoff])
+        ~messages_ever:
+          (count_query conn
+             "SELECT COALESCE((SELECT value FROM stats_totals \
+              WHERE key = 'messages_ever'), 0)" [])
+        ~aliases_ever:
+          (count_query conn "SELECT COUNT(*) FROM stats_seen_aliases" [])
+        ~machines_ever:
+          (count_query conn "SELECT COUNT(*) FROM stats_seen_machines" []))
 
   let get_lease_row_fields row =
     match row with
@@ -1862,6 +1976,11 @@ module SqliteRelay : RELAY = struct
       let del_revoke = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
       Sqlite3.bind_double del_revoke 1 (now -. request_nonce_ttl) |> ignore;
       Sqlite3.step del_revoke |> ignore;
+      (* B147: drop message-event rows past the largest stats window; the
+         stats_totals 'messages_ever' counter keeps the all-time count. *)
+      let del_stats = Sqlite3.prepare conn "DELETE FROM stats_message_events WHERE ts < ?" in
+      Sqlite3.bind_double del_stats 1 (now -. stats_event_retention_s) |> ignore;
+      Sqlite3.step del_stats |> ignore;
       `Ok (List.rev !expired_aliases, pruned)
     )
 
@@ -2886,6 +3005,24 @@ end = struct
   let decode_b64url s =
     Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
+  (* B147: normalize an alias for stats uniqueness — strip a valid opaque
+     host suffix (`name@<12-16 hex>`) down to the bare name; anything else
+     (including cross-relay `name@host` forms) stays as-is, a distinct
+     identity from this relay's viewpoint. *)
+  let stats_alias_key alias =
+    if C2c_name.is_valid_with_opaque_host_id alias
+    then fst (C2c_name.split_opaque_host_id alias)
+    else alias
+
+  (* B147: public usage stats — aggregate counts only; no aliases, machine
+     ids, or message content are exposed. *)
+  let handle_stats relay =
+    let now = Unix.gettimeofday () in
+    respond_ok (json_ok [
+      ("generated_at", `Float now);
+      ("stats", R.stats relay ~now);
+    ])
+
   let handle_register relay ~relay_url body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
@@ -3089,6 +3226,9 @@ end = struct
                         ~ts
                     in
                     let difficulty = finish_register_result result in
+                    (if fst result = "ok" then
+                       R.stats_note_activity relay ~node_id
+                         ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()));
                     respond_register_ok ~difficulty (json_of_register_result ~receipt result)
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
@@ -3097,6 +3237,9 @@ end = struct
             ~opaque_host_id:opaque_host_id ()
         in
         let difficulty = finish_register_result result in
+        (if fst result = "ok" then
+           R.stats_note_activity relay ~node_id
+             ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()));
         respond_register_ok ~difficulty (json_of_register_result result)
 
   (* S-A1: bind verified Ed25519 signer to body claims. When ~verified_alias
@@ -3134,16 +3277,20 @@ end = struct
     if node_id = "" || session_id = "" then
       respond_bad_request (json_error_str err_bad_request "node_id and session_id are required")
     else
+      let run_heartbeat () =
+        let result = R.heartbeat relay ~node_id ~session_id in
+        (if fst result = "ok" then
+           R.stats_note_activity relay ~node_id
+             ~alias:(stats_alias_key (RegistrationLease.alias (snd result)))
+             ~ts:(Unix.gettimeofday ()));
+        respond_ok (json_of_heartbeat_result result)
+      in
       match verified_alias with
       | Some v ->
         (match R.alias_of_session relay ~node_id ~session_id with
-         | Some owner when owner = v ->
-           let result = R.heartbeat relay ~node_id ~session_id in
-           respond_ok (json_of_heartbeat_result result)
+         | Some owner when owner = v -> run_heartbeat ()
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
-      | None ->
-        let result = R.heartbeat relay ~node_id ~session_id in
-        respond_ok (json_of_heartbeat_result result)
+      | None -> run_heartbeat ()
 
   let handle_send relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
@@ -3325,6 +3472,11 @@ end = struct
           else Relay_pow_challenge.pow_difficulty_unrecorded
         in
         let result = R.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~pow_difficulty ~message_id in
+        (* B147: count relay-accepted DMs (duplicate replays excluded). *)
+        (match result with
+         | `Ok ts ->
+           R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts
+         | _ -> ());
         (match result with
          | `Ok ts | `Duplicate ts ->
            (* Push to WS subscribers (slice 2) *)
@@ -3359,6 +3511,8 @@ end = struct
         let message_id = get_opt_string body "message_id" in
         match R.send_all relay ~from_alias ~content ~message_id with
         | `Ok (ts, delivered, skipped) ->
+          (* B147: a broadcast counts as one message, not one per recipient. *)
+          R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts;
           List.iter (fun to_alias ->
             match R.identity_pk_of relay ~alias:to_alias with
             | Some identity_pk ->
@@ -3458,6 +3612,10 @@ end = struct
                                record -1 (unrecorded). *)
                             match R.send relay ~from_alias ~to_alias ~content ~message_id ~pow_difficulty:(-1) with
                             | `Ok ts ->
+                              (* B147: forwarded-in messages delivered locally
+                                 count as messages on this relay. *)
+                              R.stats_note_message relay
+                                ~from_alias:(stats_alias_key from_alias) ~ts;
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts])
                             | `Duplicate ts ->
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
@@ -4062,6 +4220,8 @@ end = struct
           else
             respond_unauthorized (json_error_str code msg)
         | `Ok (ts, delivered, skipped) ->
+          (* B147: a room message counts as one message, not one per member. *)
+          R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts;
           List.iter (fun to_alias ->
             match R.identity_pk_of relay ~alias:to_alias with
             | Some identity_pk ->
@@ -4960,6 +5120,9 @@ end = struct
       | `GET, "/health" ->
         let auth_mode = if token = None then "dev" else "prod" in
         handle_health ~auth_mode ()
+
+      | `GET, "/stats" ->
+        handle_stats relay
 
       | `GET, "/list" ->
         handle_list relay ~include_dead:(query_bool "include_dead")

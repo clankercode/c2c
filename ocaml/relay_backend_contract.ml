@@ -109,4 +109,46 @@ module type RELAY = sig
   val get_device_pair_pending : t -> user_code:string -> device_pair_pending option
   val set_device_pair_pending : t -> user_code:string -> device_pair_pending -> unit
   val remove_device_pair_pending : t -> user_code:string -> unit
+  (* B147: aggregate usage stats behind GET /stats. The HTTP handlers record
+     at accept time — [stats_note_message] on each accepted send operation
+     (DM /send, /send_all broadcast, /send_room, inbound /forward; duplicates
+     and rejects are not counted, and a fan-out counts once), and
+     [stats_note_activity] on successful /register and /heartbeat.
+     [stats] aggregates message counts and distinct alias / machine (node_id)
+     counts over the 1d/7d/28d/ever windows. [ts]/[now] are caller-supplied
+     so window arithmetic is testable without a live clock. *)
+  val stats_note_message : t -> from_alias:string -> ts:float -> unit
+  val stats_note_activity : t -> node_id:string -> alias:string -> ts:float -> unit
+  val stats : t -> now:float -> Yojson.Safe.t
 end
+
+(* --- B147: usage-stats window definitions shared by both backends --- *)
+
+let stats_windows = [ ("1d", 86_400.); ("7d", 7. *. 86_400.); ("28d", 28. *. 86_400.) ]
+
+(* Message-event rows older than the largest window are gc-prunable; keep a
+   day of slack so a windowed count near the boundary never under-reports
+   because gc ran just before the query. *)
+let stats_event_retention_s = 28. *. 86_400. +. 86_400.
+
+(* Render the /stats windows object from per-window counting closures. Both
+   backends funnel through this so the JSON shape cannot diverge. *)
+let stats_windows_json ~now ~messages_in_window ~aliases_in_window
+    ~machines_in_window ~messages_ever ~aliases_ever ~machines_ever :
+    Yojson.Safe.t =
+  let window_obj messages aliases machines =
+    `Assoc [
+      ("messages", `Int messages);
+      ("unique_aliases", `Int aliases);
+      ("unique_machines", `Int machines);
+    ]
+  in
+  `Assoc
+    (List.map
+       (fun (name, span) ->
+         let cutoff = now -. span in
+         ( name,
+           window_obj (messages_in_window ~cutoff) (aliases_in_window ~cutoff)
+             (machines_in_window ~cutoff) ))
+       stats_windows
+     @ [ ("ever", window_obj messages_ever aliases_ever machines_ever) ])
