@@ -3136,6 +3136,318 @@ let test_tools_call_register_same_alias_refresh_allowed () =
           check int "still one registration" 1 (List.length regs);
           check string "alias unchanged" "stable-alias" (List.hd regs).alias))
 
+(* ---------- B140: deliberate atomic alias rename-everywhere ---------- *)
+
+let write_file path content =
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      output_string oc content)
+
+let read_file_str path =
+  let ic = open_in path in
+  Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+      really_input_string ic (in_channel_length ic))
+
+(* Sets C2C_KEY_DIR (x25519 key location) to a subdir of the temp broker
+   root for the duration of [f], so rename's key-file moves never touch the
+   real ~/.config/c2c/keys. *)
+let with_rename_env dir f =
+  let key_dir = Filename.concat dir "xkeys" in
+  Unix.mkdir key_dir 0o700;
+  let prev = Sys.getenv_opt "C2C_KEY_DIR" in
+  Unix.putenv "C2C_KEY_DIR" key_dir;
+  Fun.protect
+    ~finally:(fun () ->
+      Unix.putenv "C2C_KEY_DIR" (Option.value prev ~default:""))
+    (fun () -> f key_dir)
+
+let test_rename_alias_happy_path () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-sess-1"
+            ~alias:"rn-old" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"rn-sess-2"
+            ~alias:"rn-peer" ~pid:None ~pid_start_time:None ();
+          ignore
+            (C2c_mcp.Broker.join_room broker ~room_id:"rn-room"
+               ~alias:"rn-old" ~session_id:"rn-sess-1");
+          ignore
+            (C2c_mcp.Broker.join_room broker ~room_id:"rn-room"
+               ~alias:"rn-peer" ~session_id:"rn-sess-2");
+          ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"rn-sess-1");
+          ignore (C2c_mcp.Broker.drain_inbox broker ~session_id:"rn-sess-2");
+          (* Alias-keyed key material + a TOFU pin that must follow the name.
+             The ed25519 identity must be a REAL key: the post-commit
+             allowed_signers step loads the moved file, and a garbage file
+             would be recreated (pre-existing load_or_create_at semantics),
+             which is not the scenario under test. *)
+          let keys_dir = Filename.concat dir "keys" in
+          (try Unix.mkdir keys_dir 0o700 with _ -> ());
+          let old_ed_path = Filename.concat keys_dir "rn-old.ed25519" in
+          ignore
+            (Relay_identity.load_or_create_at ~path:old_ed_path
+               ~alias_hint:"rn-old");
+          let ed_content = read_file_str old_ed_path in
+          write_file (Filename.concat key_dir "rn-old.x25519") "x-priv";
+          ignore
+            (C2c_mcp.Broker.pin_ed25519_sync ~alias:"rn-old" ~pk:"pk-ed-old");
+          match
+            C2c_mcp.Broker.rename_alias broker ~session_id:"rn-sess-1"
+              ~new_alias:"rn-new"
+          with
+          | Error e -> fail ("rename should succeed: " ^ e)
+          | Ok json ->
+              let open Yojson.Safe.Util in
+              check bool "result ok" true (json |> member "ok" |> to_bool);
+              (* Registry: peers resolve the new alias immediately. *)
+              let regs = C2c_mcp.Broker.list_registrations broker in
+              let renamed =
+                List.find (fun r -> r.C2c_mcp.session_id = "rn-sess-1") regs
+              in
+              check string "registry row renamed" "rn-new" renamed.alias;
+              (* Rooms: membership renamed, peer got the peer_renamed notice. *)
+              let rooms = C2c_mcp.Broker.my_rooms broker ~session_id:"rn-sess-1" in
+              check
+                (list string)
+                "room membership follows rename" [ "rn-room" ]
+                (List.map (fun ri -> ri.C2c_mcp.Broker.ri_room_id) rooms);
+              let members =
+                (List.hd rooms).C2c_mcp.Broker.ri_members
+              in
+              check bool "member list shows new alias" true
+                (List.mem "rn-new" members);
+              check bool "member list drops old alias" false
+                (List.mem "rn-old" members);
+              let peer_inbox =
+                C2c_mcp.Broker.read_inbox broker ~session_id:"rn-sess-2"
+              in
+              check bool "peer received peer_renamed room notice" true
+                (List.exists
+                   (fun (m : C2c_mcp.message) ->
+                     string_contains m.content "peer_renamed"
+                     && string_contains m.content "rn-new")
+                   peer_inbox);
+              (* Key files moved. *)
+              check bool "ed25519 key moved" true
+                (Sys.file_exists (Filename.concat keys_dir "rn-new.ed25519")
+                && not
+                     (Sys.file_exists
+                        (Filename.concat keys_dir "rn-old.ed25519")));
+              check string "ed25519 content preserved" ed_content
+                (read_file_str (Filename.concat keys_dir "rn-new.ed25519"));
+              check bool "x25519 key moved" true
+                (Sys.file_exists (Filename.concat key_dir "rn-new.x25519")
+                && not
+                     (Sys.file_exists
+                        (Filename.concat key_dir "rn-old.x25519")));
+              (* Pins moved. *)
+              check (option string) "pin follows rename" (Some "pk-ed-old")
+                (C2c_mcp.Broker.get_pinned_ed25519 "rn-new");
+              check (option string) "old pin removed" None
+                (C2c_mcp.Broker.get_pinned_ed25519 "rn-old");
+              (* Archive marker for durable attribution mapping. *)
+              let archive =
+                read_file_str
+                  (Filename.concat (Filename.concat dir "archive")
+                     "rn-sess-1.jsonl")
+              in
+              check bool "archive has alias_renamed marker" true
+                (string_contains archive "alias_renamed"
+                && string_contains archive "rn-new")))
+
+let test_rename_alias_noop_and_case_only () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun _key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-sess-c"
+            ~alias:"rn-case" ~pid:None ~pid_start_time:None ();
+          (match
+             C2c_mcp.Broker.rename_alias broker ~session_id:"rn-sess-c"
+               ~new_alias:"rn-case"
+           with
+          | Error e -> fail ("same-alias rename should be a noop: " ^ e)
+          | Ok json ->
+              let open Yojson.Safe.Util in
+              check bool "noop flagged" true
+                (json |> member "noop" |> to_bool_option
+                |> Option.value ~default:false));
+          (* Case-only self-rename is allowed (casefold identity unchanged). *)
+          (match
+             C2c_mcp.Broker.rename_alias broker ~session_id:"rn-sess-c"
+               ~new_alias:"Rn-Case"
+           with
+          | Error e -> fail ("case-only rename should succeed: " ^ e)
+          | Ok _ ->
+              let regs = C2c_mcp.Broker.list_registrations broker in
+              let r =
+                List.find (fun r -> r.C2c_mcp.session_id = "rn-sess-c") regs
+              in
+              check string "case-only rename applied" "Rn-Case" r.alias)))
+
+let test_rename_alias_refusals_mutate_nothing () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun _key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let me = Unix.getpid () in
+          let my_start = C2c_mcp.Broker.read_pid_start_time me in
+          C2c_mcp.Broker.register broker ~session_id:"rn-sess-r"
+            ~alias:"rn-me" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"rn-sess-alive"
+            ~alias:"rn-taken" ~pid:(Some me) ~pid_start_time:my_start ();
+          let assert_unchanged label =
+            let regs = C2c_mcp.Broker.list_registrations broker in
+            let r =
+              List.find (fun r -> r.C2c_mcp.session_id = "rn-sess-r") regs
+            in
+            check string (label ^ ": alias unchanged") "rn-me" r.alias
+          in
+          let expect_error label new_alias needle =
+            match
+              C2c_mcp.Broker.rename_alias broker ~session_id:"rn-sess-r"
+                ~new_alias
+            with
+            | Ok _ -> fail (label ^ ": rename should have been refused")
+            | Error e ->
+                check bool (label ^ ": error mentions " ^ needle) true
+                  (string_contains e needle);
+                assert_unchanged label
+          in
+          (* Unregistered session. *)
+          (match
+             C2c_mcp.Broker.rename_alias broker ~session_id:"rn-ghost"
+               ~new_alias:"rn-anything"
+           with
+          | Ok _ -> fail "unregistered session rename should be refused"
+          | Error e ->
+              check bool "unregistered error mentions register" true
+                (string_contains e "register"));
+          expect_error "invalid name" "rn bad name!" "rename rejected";
+          expect_error "reserved" "c2c-system" "reserved";
+          expect_error "alive holder" "rn-taken" "held by an alive session";
+          (* Case-variant of an alive holder is the same identity — refused. *)
+          expect_error "alive holder casefold" "Rn-Taken"
+            "held by an alive session";
+          (* Pin conflict: target alias carries a previous holder's pinned
+             key. Also proves rollback of the key-file step that precedes
+             the pin step. *)
+          let keys_dir = Filename.concat dir "keys" in
+          (try Unix.mkdir keys_dir 0o700 with _ -> ());
+          write_file (Filename.concat keys_dir "rn-me.ed25519") "ed-mine";
+          ignore
+            (C2c_mcp.Broker.pin_ed25519_sync ~alias:"rn-me" ~pk:"pk-mine");
+          ignore
+            (C2c_mcp.Broker.pin_ed25519_sync ~alias:"rn-stale"
+               ~pk:"pk-previous-holder");
+          expect_error "pin conflict" "rn-stale" "pinned";
+          check bool "key file rolled back to old alias" true
+            (Sys.file_exists (Filename.concat keys_dir "rn-me.ed25519")
+            && not (Sys.file_exists (Filename.concat keys_dir "rn-stale.ed25519")));
+          check (option string) "own pin untouched after rollback"
+            (Some "pk-mine")
+            (C2c_mcp.Broker.get_pinned_ed25519 "rn-me")))
+
+let test_rename_alias_rollback_on_room_failure () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-sess-rb"
+            ~alias:"rn-rb-old" ~pid:None ~pid_start_time:None ();
+          ignore
+            (C2c_mcp.Broker.join_room broker ~room_id:"rn-rb-room"
+               ~alias:"rn-rb-old" ~session_id:"rn-sess-rb");
+          let keys_dir = Filename.concat dir "keys" in
+          (try Unix.mkdir keys_dir 0o700 with _ -> ());
+          write_file (Filename.concat keys_dir "rn-rb-old.ed25519") "ed-rb";
+          write_file (Filename.concat key_dir "rn-rb-old.x25519") "x-rb";
+          ignore
+            (C2c_mcp.Broker.pin_ed25519_sync ~alias:"rn-rb-old" ~pk:"pk-rb");
+          (* Make the room membership write fail mid-rename: the rooms step
+             runs after keys+pins+registry, so a failure here must unwind
+             all three. *)
+          let room_dir =
+            Filename.concat (Filename.concat dir "rooms") "rn-rb-room"
+          in
+          Unix.chmod room_dir 0o500;
+          Fun.protect
+            ~finally:(fun () -> try Unix.chmod room_dir 0o755 with _ -> ())
+            (fun () ->
+              match
+                C2c_mcp.Broker.rename_alias broker ~session_id:"rn-sess-rb"
+                  ~new_alias:"rn-rb-new"
+              with
+              | Ok _ -> fail "rename should have failed at the rooms step"
+              | Error e ->
+                  check bool "error names the failing stage" true
+                    (string_contains e "rooms");
+                  check bool "error says rolled back" true
+                    (string_contains e "rolled back");
+                  let regs = C2c_mcp.Broker.list_registrations broker in
+                  let r =
+                    List.find
+                      (fun r -> r.C2c_mcp.session_id = "rn-sess-rb")
+                      regs
+                  in
+                  check string "registry rolled back" "rn-rb-old" r.alias;
+                  check bool "ed25519 key rolled back" true
+                    (Sys.file_exists
+                       (Filename.concat keys_dir "rn-rb-old.ed25519")
+                    && not
+                         (Sys.file_exists
+                            (Filename.concat keys_dir "rn-rb-new.ed25519")));
+                  check bool "x25519 key rolled back" true
+                    (Sys.file_exists
+                       (Filename.concat key_dir "rn-rb-old.x25519"));
+                  check (option string) "pin rolled back" (Some "pk-rb")
+                    (C2c_mcp.Broker.get_pinned_ed25519 "rn-rb-old");
+                  check (option string) "no pin left on target" None
+                    (C2c_mcp.Broker.get_pinned_ed25519 "rn-rb-new"))))
+
+let test_tools_call_rename () =
+  (* CLI+MCP parity: the MCP `rename` tool drives the same rename_alias. *)
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun _key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-sess-mcp"
+            ~alias:"rn-mcp-old" ~pid:None ~pid_start_time:None ();
+          Unix.putenv "C2C_MCP_SESSION_ID" "rn-sess-mcp";
+          Fun.protect
+            ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+            (fun () ->
+              let request =
+                `Assoc
+                  [ ("jsonrpc", `String "2.0")
+                  ; ("id", `Int 201)
+                  ; ("method", `String "tools/call")
+                  ; ( "params",
+                      `Assoc
+                        [ ("name", `String "rename")
+                        ; ( "arguments",
+                            `Assoc [ ("new_alias", `String "rn-mcp-new") ] )
+                        ] )
+                  ]
+              in
+              let response =
+                Lwt_main.run (C2c_mcp.handle_request ~broker_root:dir request)
+              in
+              match response with
+              | None -> fail "expected rename response"
+              | Some resp ->
+                  let open Yojson.Safe.Util in
+                  let is_error =
+                    resp |> member "result" |> member "isError"
+                    |> to_bool_option
+                    |> Option.value ~default:false
+                  in
+                  check bool "rename tool not an error" false is_error;
+                  let regs = C2c_mcp.Broker.list_registrations broker in
+                  let r =
+                    List.find
+                      (fun r -> r.C2c_mcp.session_id = "rn-sess-mcp")
+                      regs
+                  in
+                  check string "MCP rename applied" "rn-mcp-new" r.alias)))
+
 let test_server_startup_auto_registers_alias_from_env () =
   with_temp_dir (fun dir ->
       Unix.putenv "C2C_MCP_SESSION_ID" "session-auto";
@@ -15623,6 +15935,16 @@ let () =
              test_tools_call_register_explicit_rename_refused_sticky_alias
          ; test_case "tools/call register same-alias refresh allowed (B135)" `Quick
              test_tools_call_register_same_alias_refresh_allowed
+         ; test_case "rename_alias happy path renames everywhere (B140)" `Quick
+             test_rename_alias_happy_path
+         ; test_case "rename_alias noop + case-only self-rename (B140)" `Quick
+             test_rename_alias_noop_and_case_only
+         ; test_case "rename_alias refusals mutate nothing (B140)" `Quick
+             test_rename_alias_refusals_mutate_nothing
+         ; test_case "rename_alias rolls back on mid-flight failure (B140)" `Quick
+             test_rename_alias_rollback_on_room_failure
+         ; test_case "tools/call rename applies rename (B140)" `Quick
+             test_tools_call_rename
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
          ; test_case "server startup ignores dead client pid env" `Quick
