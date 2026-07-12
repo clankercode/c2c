@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T08:37:20Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T09:05:26Z"
 complexity: medium
 created_at: "2026-07-12T08:36:31Z"
 depends_on: []
+duration_minutes: 28.11083387545
 estimate_hours: 1
 id: B152
 priority: high
 started_at: "2026-07-12T08:37:20Z"
-status: in_progress
+status: done
 tags: []
 title: c2c whoami and any other highly general one-off type commands should show a little notice if there is a c2c update available
-updated_at: "2026-07-12T08:37:20Z"
+updated_at: "2026-07-12T09:05:26Z"
 ---
 
 c2c whoami and any other highly general one-off type commands should show a little notice if there is a c2c update available
