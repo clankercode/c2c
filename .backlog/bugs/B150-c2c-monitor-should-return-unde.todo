@@ -1,0 +1,16 @@
+---
+complexity: medium
+created_at: "2026-07-12T08:04:18Z"
+depends_on: []
+estimate_hours: 1
+id: B150
+priority: high
+status: pending
+tags:
+    - cli
+    - broker
+    - inbox
+title: c2c monitor should return undelivered inbox mail on start
+updated_at: "2026-07-12T08:04:18Z"
+---
+`c2c monitor` should return any undelivered mail already sitting in the inbox when it is started, rather than only surfacing messages that arrive after the monitor begins watching. Currently a monitor started while mail is already queued misses that backlog until the next inbox change. On startup it should drain/report the existing undelivered inbox contents first, then continue watching.
