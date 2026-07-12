@@ -165,3 +165,4 @@ bugs:
     - file: B166-c2c-codex-agents-started-via-c.todo
     - file: B167-c2c-codex-app-server-agents-do.todo
     - file: B168-consider-keeping-posttoolhook.todo
+    - file: B169-c2c-statusline-should-not-say.todo

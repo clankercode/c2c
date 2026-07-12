@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-12T15:27:28Z"
+depends_on: []
+estimate_hours: 1
+id: B169
+priority: high
+status: pending
+tags: []
+title: c2c statusline should not say 'repo' and 'machine' but instead use unicode or emoji icons to keep it more concise. use the 2-way arrows to replace 'relay' in 'relay:<status>'
+updated_at: "2026-07-12T15:27:28Z"
+---
+
+c2c statusline should not say 'repo' and 'machine' but instead use unicode or emoji icons to keep it more concise. use the 2-way arrows to replace 'relay' in 'relay:<status>'
