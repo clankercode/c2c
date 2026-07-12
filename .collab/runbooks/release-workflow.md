@@ -9,6 +9,25 @@ Do not let the artifact release workflow bypass coordinator push policy. A
 normal merge to `master` is not a release. A release is a version tag or an
 explicit `workflow_dispatch` run.
 
+## Sequence At A Glance
+
+Once coordinator1 has approved the release, the order is:
+
+1. **Bump the version** — `ocaml/version.ml` + `docs/changelog.md`
+   (`## X.Y.Z`) + regenerated files (see Prepare).
+2. **Commit** the version/changelog/generated-file changes.
+3. **Build locally and confirm it all works** — `just check` **and**
+   `just test-ocaml` (the ci-gate *runs* the OCaml suite; `just check` only
+   *builds* it). Do not proceed on a red local build — it will just fail CI
+   ~15 min later. See Prepare for the full validation block.
+4. **Push** — push the branch/commit, then push the version tag
+   (`git push origin vX.Y.Z`). The tag push is what triggers the release CI.
+5. **Babysit the release with the `watch-gh-populate-release` skill** — it
+   watches the release CI to green, fixes/re-runs on failure, waits for the
+   GitHub Release to appear, populates the release page from the changelog,
+   and confirms the npm packages publish successfully. See "Watch + Populate
+   The Release" below.
+
 ## Source Of Truth
 
 - CLI version: `ocaml/version.ml`
@@ -82,6 +101,31 @@ Manual `workflow_dispatch` runs do not publish npm packages unless
 `publish_npm=true` is set. Use that flag only when intentionally publishing
 npm from a manual release run; the workflow still runs the same dry-run pack
 checks first.
+
+## Watch + Populate The Release
+
+After the tag push, do not walk away — babysit the release with the
+`watch-gh-populate-release` skill. It drives the whole post-push loop:
+
+1. **Watch the release CI to green** — `gh run list --workflow=release.yml`,
+   `gh run watch <run-id>`. On failure, inspect (`gh run view <run-id>
+   --log-failed`), fix, re-run (`gh workflow run release.yml -f tag=vX.Y.Z`
+   — but heed the tag-move rules in Prepare once a Release/npm artifact
+   exists), and watch again. Do not declare the release done while the run
+   is `in_progress` or its conclusion is not `success`.
+2. **Wait for the GitHub Release to exist** and verify its assets
+   (see "Verify Release Assets" below).
+3. **Populate / refresh the release notes** from the `## X.Y.Z` section of
+   the changelog so the GitHub Release page carries the full changelog.
+4. **Confirm npm published** — check the release CI's npm-publish jobs
+   succeeded and that `npm view @clanker-code/c2c version` (and the platform
+   packages) shows `X.Y.Z`. A failed/silent npm publish is a release defect,
+   not "done".
+
+The skill's steps are tuned for a generic repo; the c2c-specifics
+(`release.yml`, `docs/changelog.md` as the notes source, the
+`@clanker-code/c2c` meta package + platform packages, Trusted Publishing) are
+documented in the sections below — cross-check against them as you go.
 
 ## What CI Builds
 
