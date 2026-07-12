@@ -143,6 +143,9 @@ type config = {
   min_codex_version : int * int * int;
   extra_server_args : string list;
   extra_frontend_args : string list;
+  (** Non-secret environment overrides for the remote frontend only.  They are
+      not passed to the app-server process. *)
+  frontend_env : string list;
   resume_thread : string option;
 }
 
@@ -173,7 +176,8 @@ val real_backend : unit -> backend
    server argv or frontend argv, only in the frontend env). *)
 val build_server_argv : config -> endpoint -> sha256:string -> string array
 val build_frontend_argv : config -> endpoint -> token_env_var:string -> string array
-val build_frontend_env : token_env_var:string -> raw_token:string -> string array
+val build_frontend_env :
+  extra_env:string list -> token_env_var:string -> raw_token:string -> string array
 
 (* ------------------------------ persistence ------------------------------- *)
 

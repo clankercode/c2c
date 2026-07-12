@@ -70,6 +70,14 @@ let app_server_log_label = "[c2c codex app-server]"
 let online_attached_log_body ~(alias : string) ~(endpoint : string) : string =
   Printf.sprintf "online-attached: c2c-alias=%s endpoint=%s" alias endpoint
 
+(* Keep managed identity scoped to the remote frontend.  This is intentionally
+   the normal c2c session marker: bare `c2c init` and CLI commands then reuse
+   the launcher registration instead of synthesizing a second alias. *)
+let app_server_frontend_env ~session_id =
+  [ "C2C_MCP_SESSION_ID=" ^ session_id
+  ; "C2C_CODEX_APPSERVER_SESSION=" ^ session_id
+  ; "C2C_CODEX_MANAGED=1" ]
+
 (* ------------------------- positional splitting --------------------------- *)
 
 (* cmdliner captures everything after a literal `--` as positionals; on some
@@ -749,18 +757,14 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       min_codex_version = codex_min_version;
       extra_frontend_args =
         frontend_extra_args ~yolo ~extra:(model_args @ extra_args);
+      frontend_env = app_server_frontend_env ~session_id;
       resume_thread = thread }
   in
-  (* B137: hand this managed app-server session's broker session id to the hooks
-     the stock frontend will fire. [build_frontend_env] snapshots
-     [Unix.environment ()], so exporting here — BEFORE [start] spawns the
-     frontend — makes every hook that frontend fires inherit the marker. The
-     hook adopts it as its identity (the app-server deliver loop owns this
-     session's registration + delivery) instead of self-registering a SECOND
-     per-thread identity. [name] is exactly the session id [run_delivery_loop]
-     registers under. Reset on the fallback path below so a hook-fallback launch
-     never inherits it (there the hook owns registration/delivery itself). *)
-  (try Unix.putenv "C2C_CODEX_APPSERVER_SESSION" name with _ -> ());
+  (* B166/B137: the remote frontend receives the launcher session id BEFORE it
+     starts. Hooks adopt that identity and bare `c2c init` reuses its alias;
+     the launcher owns registration/delivery, so neither path mints a second
+     per-thread identity. [frontend_env] is child-scoped, so hook fallback and
+     unrelated children never inherit this marker. *)
   (* IMPORTANT: no routable alias is published before start succeeds — a version
      or capability failure returns a diagnostic here, before any registration. *)
   let start cfg = match backend with
@@ -772,11 +776,6 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       (* No routable identity was persisted (start failed before Running), so
          nothing to clean up here. Best-effort remove the empty instance dir we
          created above so a fallback launch doesn't inherit a stray dir. *)
-      (* B137: clear the app-server identity marker before falling back to the
-         hook path — the fallback child re-snapshots the env, and a stale marker
-         would make its hook abstain from the registration/delivery it now owns.
-         Unix has no unsetenv; an empty value reads as unset (hooks trim-guard). *)
-      (try Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "" with _ -> ());
       (try if Sys.readdir instance_dir = [||] then Unix.rmdir instance_dir with _ -> ());
       report_diagnostic diag;
       (* Graceful fallback to the hook-backed launch (AC7). Do NOT forward
@@ -881,15 +880,9 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     ~(extra_args : string list) ?(model_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
-  (* B136: publish an inherited, non-secret marker so hooks fired BY a managed
-     codex session (the app-server frontend/core OR the hook-fallback child) can
-     detect they are managed and suppress the vanilla "use `c2c new codex`"
-     app-server nudge. Set here — before any codex child is spawned (both the
-     app-server path's frontend/server env and the hook-fallback child's env are
-     snapshots of [Unix.environment ()] taken later) — because
-     [C2C_CODEX_INGRESS_LIVE] is exported only AFTER the frontend spawns (in
-     [run_delivery_loop]) and so never reaches those hooks. The nudge's
-     [codex_session_is_managed] gate reads this. *)
+  (* B136: hook fallback still needs this inherited non-secret marker so its
+     hooks suppress the vanilla app-server tip.  The app-server path uses the
+     frontend-only environment assembled above, avoiding a launcher-env leak. *)
   (try Unix.putenv "C2C_CODEX_MANAGED" "1" with _ -> ());
   (* B131 / coordinator directive: the app-server transport is the DEFAULT and
      ONLY managed codex path for a supported codex. Unsupported codex (<0.144) or

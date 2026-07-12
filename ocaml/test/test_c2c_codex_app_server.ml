@@ -437,7 +437,13 @@ let test_secret_hygiene () =
             fe_argv := argv; fe_env := env; Ok (mk_fake ff))
           ~probe_ready:(fun _ ~token:_ -> Ok ()) ()
       in
-      match start ~backend:bk (cfg_for dir) with
+      let cfg =
+        { (cfg_for dir) with
+          frontend_env =
+            [ "C2C_MCP_SESSION_ID=managed-codex-test"
+            ; "C2C_CODEX_APPSERVER_SESSION=managed-codex-test" ] }
+      in
+      match start ~backend:bk cfg with
       | Error d -> Alcotest.failf "expected running: %s" (diag_code_to_string d.code)
       | Ok h ->
           let joined a = String.concat " " (Array.to_list a) in
@@ -454,6 +460,8 @@ let test_secret_hygiene () =
           (* server env must not carry the raw token *)
           Alcotest.(check bool) "server env lacks raw token" false
             (contains ~needle:raw (joined !srv_env));
+          Alcotest.(check bool) "server does not receive managed frontend identity" false
+            (contains ~needle:"C2C_MCP_SESSION_ID=managed-codex-test" (joined !srv_env));
           (* frontend argv must carry only the env var NAME, not the raw token *)
           Alcotest.(check bool) "frontend argv has --remote-auth-token-env" true
             (contains ~needle:"--remote-auth-token-env" (joined !fe_argv));
@@ -467,6 +475,10 @@ let test_secret_hygiene () =
             |> List.filter (fun kv -> kv = token_env_var_of h ^ "=" ^ raw)
           in
           Alcotest.(check int) "raw token present once in frontend env" 1 (List.length hits);
+          Alcotest.(check bool) "frontend receives managed session id" true
+            (Array.exists (( = ) "C2C_MCP_SESSION_ID=managed-codex-test") !fe_env);
+          Alcotest.(check bool) "frontend receives app-server marker" true
+            (Array.exists (( = ) "C2C_CODEX_APPSERVER_SESSION=managed-codex-test") !fe_env);
           (* persisted state + diagnostic JSON must never contain the raw token *)
           let pj = Yojson.Safe.to_string (persisted_to_json (persisted_of h)) in
           Alcotest.(check bool) "persisted json lacks raw token" false (contains ~needle:raw pj);

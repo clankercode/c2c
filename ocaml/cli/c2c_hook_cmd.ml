@@ -254,6 +254,15 @@ let codex_wake_text ~alias =
      with `c2c wait-inbox`."
     alias
 
+let codex_app_server_wake_text ~alias =
+  Printf.sprintf
+    "c2c: connected as `%s` through the managed Codex app-server. Inbound local \
+     c2c messages are automatically injected into this thread at arrival time; \
+     when this thread is idle, eligible local mail starts one safe steering turn. \
+     Send with `c2c send <alias> \"msg\"`. Do not run `c2c init`: this session \
+     is already registered."
+    alias
+
 (* --- B136: occasional app-server nudge for vanilla / hook-fallback codex -----
 
    Vanilla and hook-fallback codex sessions receive c2c mail at hook (turn)
@@ -273,9 +282,10 @@ let codex_wake_text ~alias =
    `codex-session.json`, not the legacy instance `config.json` that
    [managed_session_id_from_codex_thread] reads, so [managed_sid_for_payload]
    is None; its broker registration is under the managed instance name, not the
-   hook's payload thread id; and it sets no [C2C_MCP_SESSION_ID]. INGRESS_LIVE
-   or those signals alone would therefore FAIL the "never nudge an app-server
-   session" requirement.
+   hook's payload thread id. B166 now gives the remote frontend the launcher's
+   [C2C_MCP_SESSION_ID], while the app-server marker remains race-free before
+   registration lands. INGRESS_LIVE or the thread mapping alone would therefore
+   FAIL the "never nudge an app-server session" requirement.
 
    Fix: [C2c_codex_session.run] exports [C2C_CODEX_MANAGED=1] BEFORE any codex
    child (frontend/server/hook) is spawned, so every hook fired by a managed
@@ -286,7 +296,7 @@ let codex_wake_text ~alias =
         (app-server AND hook-fallback). Primary, race-free.
      2. [C2C_CODEX_INGRESS_LIVE] set — belt-and-suspenders (a hook fired from
         the launcher process would see it).
-     3. [C2C_MCP_SESSION_ID] set — hook-fallback managed codex child env.
+     3. [C2C_MCP_SESSION_ID] set — any managed Codex frontend child env.
      4. [managed_sid_for_payload] <> None — legacy config.json thread mapping.
      5. the resolved session's registration has client_type "codex-app-server".
    See the B136 receipt for the full investigation. *)
@@ -482,13 +492,14 @@ let hook_codex_cmd =
             BEFORE the frontend is spawned; reset on hook-fallback so only a live
             app-server frontend carries it). That session is the identity the
             app-server deliver loop (C2c_codex_ingress) already owns. Adopt it
-            directly and unconditionally — a real app-server session sets NO
-            C2C_MCP_SESSION_ID and its thread->instance mapping (step2) is not the
-            legacy config.json the hook reads, so it otherwise resolves as VANILLA
-            and mints a SECOND per-thread identity (the B137 dual-identity). The
+            directly and unconditionally — its thread->instance mapping (step2)
+            is not the legacy config.json the hook reads, so it otherwise resolves
+            as VANILLA and mints a SECOND per-thread identity (the B137
+            dual-identity). The
             marker is race-free (does not depend on the launcher's broker
             registration having landed yet) and unambiguous (set only by the
-            app-server launcher), so it is the most authoritative signal. *)
+            app-server launcher), so it is the most authoritative signal even
+            though B166 also exports C2C_MCP_SESSION_ID to the frontend. *)
          let step_appserver_marker () =
            match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
            | Some s when String.trim s <> "" -> Some (String.trim s)
@@ -513,8 +524,8 @@ let hook_codex_cmd =
             fallback), and is gated on a codex-family client_type so a codex
             subprocess that merely inherited another client's C2C_MCP_SESSION_ID
             (e.g. codex spawned inside managed claude) cannot hijack that
-            identity. App-server sessions set no C2C_MCP_SESSION_ID, so this step
-            is for the hook-fallback path only. *)
+          identity. App-server sessions resolve through the marker first, so
+          this step remains the hook-fallback path. *)
          let step_managed_env () =
            match C2c_mcp.session_id_from_env () with
            | Some sid when managed_codex_family_reg sid -> Some sid
@@ -730,6 +741,7 @@ let hook_codex_cmd =
                    (regs ())
                in
                (match alias with
+                | Some a when ingress_owned -> codex_app_server_wake_text ~alias:a
                 | Some a -> codex_wake_text ~alias:a
                 | None -> "")
              else ""

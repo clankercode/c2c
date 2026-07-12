@@ -524,8 +524,9 @@ let test_managed_session_auto_register_honors_installer_alias_hint () =
 (* --- B137: managed app-server frontend adopts launcher identity (no dual-id) --
 
    A real managed `c2c new codex` app-server session, as it appears to the hook
-   (per the B136 live finding): it sets NO C2C_MCP_SESSION_ID, its thread does
-   NOT map through the legacy config.json (managed_sid_for_payload = None), and
+   after B166: its frontend receives C2C_MCP_SESSION_ID for the launcher's
+   stable identity, while its thread does NOT map through the legacy config.json
+   (managed_sid_for_payload = None), and
    its broker registration is under the managed instance name (client_type
    "codex-app-server") — NOT the payload thread id. The launcher instead hands
    the hook its identity via the inherited marker C2C_CODEX_APPSERVER_SESSION.
@@ -547,10 +548,12 @@ let test_b137_managed_app_server_adopts_launcher_alias () =
     let regs_before = C2c_mcp.Broker.list_registrations (broker ctx) in
     let rc, stdout, stderr =
       run_hook
-        (* Real app-server env: managed marker + launcher session marker, and
-           deliberately NO C2C_MCP_SESSION_ID (app-server does not set it). *)
+        (* Real B166 app-server frontend env: the normal c2c managed-session
+           id prevents a later bare `c2c init` from generating a second alias;
+           the app-server marker keeps the hook identity-only. *)
         ~extra_env:
           [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_MCP_SESSION_ID", managed_sid)
           ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
         ctx
         ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
@@ -584,7 +587,12 @@ let test_b137_managed_app_server_adopts_launcher_alias () =
     check int "launcher inbox NOT drained by hook" 1
       (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
     check bool "message body not surfaced by hook" false
-      (contains ~haystack:stdout ~needle:"ingress owns this"))
+      (contains ~haystack:stdout ~needle:"ingress owns this");
+    (match parse_context stdout with
+     | Some (_, context) ->
+         check bool "app-server delivery contract is injected" true
+           (contains ~haystack:context ~needle:"automatically injected")
+     | None -> failf "expected app-server startup context, got: %S" stdout))
 
 (* Race window: the earliest SessionStart hook can fire BEFORE the app-server
    deliver loop has landed its broker registration. The marker is inherited from
