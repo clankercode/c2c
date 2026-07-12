@@ -179,9 +179,10 @@ let extract_top_level_commands () =
   ignore (Unix.close_process_in ic);
   !names
 
-(* Hard-coded fallback for environments where `c2c commands` doesn't run
-   (e.g. tests, CI without binary on PATH). Keep in rough sync with the
-   `all_cmds` list in c2c.ml. *)
+(* Last-resort fallback for environments where neither the registered-command
+   source-of-truth (populated by C2c_main_cmd.run from the real Cmdliner tree)
+   nor the tier map nor `c2c commands` is available. This is belt-and-braces
+   only — the authoritative sources below make it rarely load-bearing. *)
 let fallback_commands = SS.of_list [
   "list"; "whoami"; "poll-inbox"; "peek-inbox"; "send"; "send-all";
   "rooms"; "my-rooms"; "history"; "dead-letter"; "tail-log"; "health";
@@ -196,6 +197,36 @@ let fallback_commands = SS.of_list [
   "debug"; "cc-plugin"; "oc-plugin"; "supervisor"; "statefile";
   "get-tmux-location"; "help";
 ]
+
+(* The authoritative set of top-level command names a doc may legitimately
+   reference. Built from the SAME source of truth as the tier registry /
+   cmdliner command tree — NOT a hand-maintained literal list — so it can
+   never drift below the real command surface:
+     1. C2c_commands.all_registered_command_names () — the real Cmdliner tree
+        (all_cmds), published by C2c_main_cmd.run BEFORE tier filtering, so it
+        spans EVERY tier (Tier3 operator commands like `watch` and Tier4
+        internals included). A command being agent-hidden by tier does NOT
+        make a doc reference to it unregistered.
+     2. C2c_commands.tier_map_command_names () — compile-time tier-map baseline
+        (available even when (1) is empty, e.g. tests exercising `audit`
+        directly without going through `run`).
+     3. `c2c commands` live subprocess parse (best-effort; tier-filtered).
+     4. fallback_commands — last-resort literal floor.
+   Command *groups* (e.g. `dev`, `deliver`, `relay`, `rooms`, `schedule`,
+   `doctor`, `memory`) are top-level entries in (1)/(2), so `c2c <group> <sub>`
+   doc forms validate on the group name (the head token) and pass. *)
+let known_commands () =
+  (* NOTE: we deliberately do NOT union the tier map here. Its entries are
+     composite DISPLAY labels for group subcommands (e.g. "roles-validate",
+     "config-show", "room-invite", "state-read") that are NOT real top-level
+     commands — Cmdliner would reject `c2c roles-validate`. Unioning them would
+     let a doc reference a non-existent hyphenated command slip through (B157
+     review). The registry (real Cmd.name values, all tiers) is authoritative;
+     group forms `c2c <group> <sub>` still validate on the group head token,
+     which IS a real top-level name in the registry. *)
+  let from_registry = SS.of_list (C2c_commands.all_registered_command_names ()) in
+  let from_live = extract_top_level_commands () in
+  SS.union from_registry (SS.union from_live fallback_commands)
 
 (* ------------------------------------------------------------------------ *)
 (* Specific drift checks                                                    *)
@@ -259,13 +290,13 @@ let deprecated_py_scripts = SS.of_list [
 (* ------------------------------------------------------------------------ *)
 
 let audit ~repo ~docs =
-  (* Union live (`c2c commands`) with the hard-coded fallback. `c2c commands`
-     filters out Tier 3 (install/init/monitor are hidden), so neither set
-     alone is complete; the union keeps both lists honest. *)
-  let commands =
-    let live = extract_top_level_commands () in
-    SS.union live fallback_commands
-  in
+  (* Authoritative known-command set built from the SAME source of truth as
+     the tier registry / cmdliner command tree (see [known_commands]) rather
+     than a hand-maintained list. This spans every tier (Tier3 operator
+     commands like `watch` included) and every command group (`dev`,
+     `deliver`, ...), so real commands can never be flagged "not registered".
+     (B157.) *)
+  let commands = known_commands () in
   let findings = ref [] in
   let seen : (string * string * int, unit) Hashtbl.t = Hashtbl.create 64 in
   let push f =

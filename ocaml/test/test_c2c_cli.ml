@@ -3906,6 +3906,110 @@ let test_migrate_broker_xdg_live_silences_warning () =
       check bool "post-migrate stderr has no split-brain warning" false
         (string_contains err "migrate-broker"))
 
+(* B157: docs-drift must accept every genuinely-registered c2c command —
+   including command groups (`c2c dev`, `c2c deliver`) and Tier3 operator
+   commands (`c2c watch`) that agent-tier `--help` hides — and must still flag
+   a genuinely-unregistered command. Regression for the false-positive storm
+   where real commands were reported "top-level c2c command is not registered",
+   which drowned real drift and once misled a docs-audit into "fixing" a valid
+   `c2c watch` reference. The known-command set is now built from the same
+   source of truth as the cmdliner command tree (all tiers), so it can never
+   drift below the real surface. *)
+let docs_drift_unregistered_claims out =
+  (* Extract the `claim` of every kind="command" / "not registered" finding
+     from a --json findings array. Empty list on any parse failure. *)
+  try
+    match Yojson.Safe.from_string out with
+    | `List items ->
+        List.filter_map
+          (function
+            | `Assoc kvs ->
+                let get k =
+                  match List.assoc_opt k kvs with Some (`String s) -> s | _ -> ""
+                in
+                if get "kind" = "command"
+                   && string_contains (get "message") "not registered"
+                then Some (get "claim")
+                else None
+            | _ -> None)
+          items
+    | _ -> []
+  with _ -> []
+
+let test_docs_drift_accepts_registered_commands () =
+  with_temp_dir (fun dir ->
+      (* The exact commands the bug report flagged as false positives, plus
+         `c2c <group> <sub>` forms that must validate on the group head token. *)
+      let must_pass =
+        [ "dev"; "deliver"; "relay"; "rooms"; "schedule"; "doctor"; "memory";
+          "uninstall"; "self-update"; "new"; "codex"; "resume"; "host-id";
+          "await-reply"; "approval-reply"; "migrate-broker"; "watch";
+          "dev instances"; "rooms send"; "deliver wake-watch"; "schedule set" ]
+      in
+      (* Dynamically enumerate the live command surface too, so newly-added
+         top-level commands are covered automatically. `c2c commands` hides
+         Tier3 (hence the explicit `watch` above), but this pins Tier1/2/4 and
+         every group head as they evolve. *)
+      let _, listing =
+        run_capture (c2c_cmd "C2C_COORDINATOR=1 c2c commands --all --dev")
+      in
+      let enumerated =
+        String.split_on_char '\n' listing
+        |> List.filter_map (fun line ->
+               if String.length line > 2 && line.[0] = ' ' && line.[1] = ' '
+                  && line.[2] <> ' '
+               then
+                 let rest = String.sub line 2 (String.length line - 2) in
+                 let tok =
+                   match String.index_opt rest ' ' with
+                   | Some i -> String.sub rest 0 i
+                   | None -> rest
+                 in
+                 if String.length tok > 0 && tok.[0] >= 'a' && tok.[0] <= 'z'
+                 then Some tok
+                 else None
+               else None)
+      in
+      let doc = Filename.concat dir "b157-registered.md" in
+      let oc = open_out doc in
+      List.iter
+        (fun f -> Printf.fprintf oc "Use `c2c %s` here.\n" f)
+        (must_pass @ enumerated);
+      close_out oc;
+      let _, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf "c2c doctor docs-drift --doc %s --json"
+                (Filename.quote doc)))
+      in
+      check (list string)
+        "no registered command is flagged as unregistered"
+        [] (docs_drift_unregistered_claims out);
+      (* Negative controls: a genuinely-bogus command AND composite tier-map
+         DISPLAY labels (e.g. `roles-validate`, `config-show` — hyphenated
+         forms of real `c2c roles validate` / `c2c config show` group commands,
+         which Cmdliner rejects) MUST still be flagged. This proves the check is
+         live (not vacuous) and that the tier map's non-top-level labels do NOT
+         leak into the accepted set. *)
+      let bogus_doc = Filename.concat dir "b157-bogus.md" in
+      let oc = open_out bogus_doc in
+      Printf.fprintf oc "Try `c2c totallynotarealcommand` now.\n";
+      Printf.fprintf oc "Also `c2c roles-validate` and `c2c config-show`.\n";
+      close_out oc;
+      let _, bout =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf "c2c doctor docs-drift --doc %s --json"
+                (Filename.quote bogus_doc)))
+      in
+      let flagged = docs_drift_unregistered_claims bout in
+      check bool "bogus command is still flagged as unregistered" true
+        (List.exists (fun c -> string_contains c "totallynotarealcommand") flagged);
+      check bool "composite tier-map label roles-validate is flagged" true
+        (List.exists (fun c -> string_contains c "roles-validate") flagged);
+      check bool "composite tier-map label config-show is flagged" true
+        (List.exists (fun c -> string_contains c "config-show") flagged))
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "broker_root_split_brain",
@@ -3923,6 +4027,7 @@ let () =
         ; ( "doctor output contains push status", `Quick, test_doctor_output_contains_push_status )
         ; ( "doctor output contains push verdict", `Quick, test_doctor_output_contains_push_verdict )
         ; ( "doctor output contains relay classification", `Quick, test_doctor_output_contains_relay_classification )
+        ; ( "docs-drift accepts registered commands, flags bogus (B157)", `Quick, test_docs_drift_accepts_registered_commands )
         ] )
     ; ( "config_show",
         [ ( "config show exits 0", `Quick, test_config_show_exits_zero )

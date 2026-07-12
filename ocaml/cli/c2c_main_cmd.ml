@@ -111,6 +111,11 @@ let run () =
     if Sys.argv.(i) = "-h" then Sys.argv.(i) <- "--help"
   done;
   let is_agent = is_agent_session () in
+  (* Publish the real command surface (all tiers, pre-filter) as the single
+     source of truth for known-command checks like `c2c doctor docs-drift`.
+     Must happen before eval so any subcommand term sees the populated set. *)
+  C2c_commands.set_registered_command_names
+    (List.map Cmdliner.Cmd.name all_cmds);
   let tier_grouped_man = C2c_commands_cmd.commands_man is_agent in
   let visible_cmds = filter_commands ~cmds:all_cmds in
   exit

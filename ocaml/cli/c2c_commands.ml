@@ -123,6 +123,28 @@ let command_tier_map () : (string * safety) list =
   ; "room-invite", Tier4
   ]
 
+(* Names of the actual registered top-level commands, populated once at
+   startup by [C2c_main_cmd.run] from the real Cmdliner command tree
+   ([all_cmds], BEFORE tier filtering — so it spans every tier). This is the
+   single source of truth for "does this c2c command exist?" checks (e.g.
+   `c2c doctor docs-drift`), so such checks can never drift below the real
+   command surface. Empty until [run] populates it (e.g. in unit tests that
+   invoke helpers without going through [run]); callers should union it with
+   [tier_map_command_names] for a static baseline. *)
+let registered_command_names : string list ref = ref []
+
+let set_registered_command_names (names : string list) : unit =
+  registered_command_names := names
+
+let all_registered_command_names () : string list = !registered_command_names
+
+(* Compile-time baseline of every command carrying a tier classification.
+   Available without [run] having executed (e.g. in tests). Note it is NOT
+   guaranteed complete — commands absent from the tier map default to Tier2
+   and still register — so it is a floor, not the authoritative set. *)
+let tier_map_command_names () : string list =
+  List.map fst (command_tier_map ())
+
 (* Returns true when running inside a c2c agent session *)
 let is_agent_session () =
   match C2c_mcp.session_id_from_env () with Some _ -> true | None -> false
