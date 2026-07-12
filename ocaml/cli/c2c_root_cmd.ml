@@ -385,7 +385,6 @@ let try_fast_path () =
            hit would print the same notice twice. *)
         fast_path_help ()
     | "commands" ->
-        maybe_emit_update_notice ();
         C2c_commands_cmd.fast_path_commands ()
     | "server-info" ->
         let json = ref false in

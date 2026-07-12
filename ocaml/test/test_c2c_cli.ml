@@ -1023,7 +1023,7 @@ let test_whoami_output_contains_alias_field () =
         (string_contains content "session_id:"))
 
 (* ------------------------------------------------------------------------- *)
-(* Cached update notice — help re-exec must emit it exactly once             *)
+(* Cached update notice — each supported CLI path must emit it exactly once  *)
 (* ------------------------------------------------------------------------- *)
 
 let count_substring haystack needle =
@@ -1037,7 +1037,7 @@ let count_substring haystack needle =
   in
   if needle_len = 0 then 0 else loop 0 0
 
-let test_help_emits_cached_update_notice_once () =
+let test_cached_update_notice_emitted_once () =
   with_temp_dir (fun broker_root ->
       let changelog_dir = Filename.concat broker_root "changelog" in
       Unix.mkdir changelog_dir 0o700;
@@ -1064,7 +1064,7 @@ let test_help_emits_cached_update_notice_once () =
               let stderr = read_file stderr_path in
               check int ("c2c " ^ args ^ " emits one cached update notice") 1
                 (count_substring stderr "notice: c2c update available")))
-        [ "help"; "--help" ])
+        [ "help"; "--help"; "commands" ])
 
 (* ------------------------------------------------------------------------- *)
 (* c2c history — verify message history display                             *)
@@ -3938,8 +3938,8 @@ let () =
         ; ( "whoami output contains alias field", `Quick, test_whoami_output_contains_alias_field )
         ] )
     ; ( "update_notice",
-        [ ( "help emits cached update notice once", `Quick,
-            test_help_emits_cached_update_notice_once )
+        [ ( "supported paths emit cached update notice once", `Quick,
+            test_cached_update_notice_emitted_once )
         ] )
     ; ( "history",
         [ ( "history exits 0", `Quick, test_history_exits_zero )
