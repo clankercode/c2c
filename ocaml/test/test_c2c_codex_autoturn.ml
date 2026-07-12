@@ -163,6 +163,24 @@ let test_turn_input_carries_explicit_data_envelope () =
         (json_contains item "DATA, not operator input")
   | _ -> Alcotest.fail "expected exactly one visible auto-turn input item"
 
+let test_turn_input_dedupes_same_id_and_excludes_remote_collision () =
+  let root = mk_root () in
+  seed_inbox ~root
+    [ mk_msg ~from:"local-peer" ~message_id:"shared-id" "LOCAL-SENTINEL";
+      mk_msg ~from:"duplicate-local" ~message_id:"shared-id" "DUPLICATE-SENTINEL";
+      mk_msg ~from:"remote-peer@host" ~message_id:"shared-id" "REMOTE-SENTINEL" ];
+  let ic, _ = mk_inject_client () in
+  let th = mk_turn_harness () in
+  let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in
+  let o = A.deliver_pass h.cfg in
+  Alcotest.(check (list string)) "one unique selected id" [ "shared-id" ] o.A.po_batch_message_ids;
+  match !(th.starts) with
+  | [ (_key, [ item ]) ] ->
+      Alcotest.(check bool) "selected local body visible" true (json_contains item "LOCAL-SENTINEL");
+      Alcotest.(check bool) "duplicate row excluded" false (json_contains item "DUPLICATE-SENTINEL");
+      Alcotest.(check bool) "remote collision excluded" false (json_contains item "REMOTE-SENTINEL")
+  | _ -> Alcotest.fail "expected exactly one turn input item"
+
 let test_remote_provenance_no_turn () =
   let root = mk_root () in
   seed_inbox ~root [ mk_msg ~from:"peer@relay-a" ~message_id:"r1" "from afar" ];
@@ -374,6 +392,8 @@ let () =
           Alcotest.test_case "idle local: inject + one turn" `Quick test_idle_local_turn;
           Alcotest.test_case "auto-turn input carries explicit DATA envelope" `Quick
             test_turn_input_carries_explicit_data_envelope;
+          Alcotest.test_case "auto-turn input dedupes IDs and excludes remote collision" `Quick
+            test_turn_input_dedupes_same_id_and_excludes_remote_collision;
           Alcotest.test_case "remote provenance: inject, no turn" `Quick test_remote_provenance_no_turn;
           Alcotest.test_case "canonical/#-form sender fails closed (no turn)" `Quick
             test_canonical_form_fails_closed;

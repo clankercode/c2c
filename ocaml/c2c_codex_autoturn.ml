@@ -25,10 +25,10 @@
    - DND HONORED. DND active -> no inject, no turn, message left durably queued.
      DND clear/expiry -> reevaluated on the next pass through the same serialized
      dispatcher.
-   - APPROVAL ISOLATION (B098). The turn only makes injected DATA model-visible;
-     it never writes an approval verdict. A message literally containing
-     `allow`/`deny` cannot satisfy `await-reply` or invoke `authorize`. The
-     turn nudge is a neutral, content-free DATA item.
+   - APPROVAL ISOLATION (B098). The turn carries explicitly-delimited peer DATA
+     (also injected persist-first) and never writes an approval verdict. A
+     message literally containing `allow`/`deny` cannot satisfy `await-reply`
+     or invoke `authorize`.
    - IDEMPOTENT / AMBIGUITY-SAFE. A durable turn-ledger keyed by
      (thread_id, ordered message_ids) makes the acknowledged path fire once. The
      ambiguous-ack window (request written, response lost) is HELD (observable
@@ -423,9 +423,9 @@ let mk_outcome ?queued_reason ?turn_started ?batch_key ?(batch_message_ids = [])
    the T003 ledger), and not already claimed by a batch. Ordered by broker
    seq/time (inbox order). *)
 let eligible_pending (cfg : config) (lg : ledger) (msgs : C2c_mcp.message list) :
-    (string list * int) =
+    ((C2c_mcp.message * string) list * int) =
   let claimed = claimed_message_ids lg in
-  let pending = ref [] and remote = ref 0 in
+  let pending = ref [] and remote = ref 0 and selected = Hashtbl.create 8 in
   List.iter
     (fun (m : C2c_mcp.message) ->
       match m.message_id with
@@ -438,10 +438,12 @@ let eligible_pending (cfg : config) (lg : ledger) (msgs : C2c_mcp.message list) 
                | Some Ingress.Injected when not (Hashtbl.mem claimed mid) -> incr remote
                | _ -> ())
           | `Local -> (
-              if Hashtbl.mem claimed mid then ()
+              if Hashtbl.mem claimed mid || Hashtbl.mem selected mid then ()
               else
                 match Ingress.ledger_state cfg.ingress_cfg ~message_id:mid with
-                | Some Ingress.Injected -> pending := mid :: !pending
+                | Some Ingress.Injected ->
+                    Hashtbl.add selected mid ();
+                    pending := (m, mid) :: !pending
                 | _ -> ())))
     msgs;
   (List.rev !pending, !remote)
@@ -582,18 +584,11 @@ let deliver_pass (cfg : config) : pass_outcome =
             base_fields ~queued_reason:qr ()
           end
           else begin
-            let batch_ids =
+            let batch_messages =
               let rec take n = function [] -> [] | x :: r -> if n <= 0 then [] else x :: take (n - 1) r in
               take cfg.max_turn_batch pending
             in
-            let batch_messages =
-              List.filter_map
-                (fun (m : C2c_mcp.message) ->
-                  match m.message_id with
-                  | Some mid when List.mem mid batch_ids -> Some (m, mid)
-                  | _ -> None)
-                msgs
-            in
+            let batch_ids = List.map snd batch_messages in
             let key = batch_key_of cfg ~message_ids:batch_ids in
             let now = cfg.now () in
             let existing = Hashtbl.find_opt lg.tl_batches key in
