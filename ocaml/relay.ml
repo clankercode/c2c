@@ -175,6 +175,156 @@ module InMemoryRelay : RELAY = struct
       ) entries
     end
 
+  (* B148: persist usage stats to [persist_dir] so they survive a restart,
+     mirroring the SqliteRelay stats tables. An append-only [stats-events.jsonl]
+     holds one JSON line per event:
+       message:  {"t":"m","ts":<float>,"alias":"<from_alias>"}
+       activity: {"t":"a","ts":<float>,"node":"<node_id>","alias":"<alias>"}
+     A companion [stats-totals.json] ({"messages_ever":N}) is rewritten
+     atomically on each increment so the all-time count survives BOTH a restart
+     AND event pruning (gc drops message rows past the retention window). gc
+     compacts the jsonl to a state snapshot (retained message ts + one line per
+     distinct alias/machine) so the file stays bounded without losing the
+     distinct 'ever' counts. All writes best-effort — never raise. *)
+  let stats_events_jsonl_path persist_dir =
+    Filename.concat persist_dir "stats-events.jsonl"
+
+  let stats_totals_json_path persist_dir =
+    Filename.concat persist_dir "stats-totals.json"
+
+  let append_stats_event_to_disk persist_dir json =
+    let path = stats_events_jsonl_path persist_dir in
+    (try
+       C2c_io.mkdir_p (Filename.dirname path);
+       let oc = open_out_gen [Open_creat; Open_append; Open_wronly] 0o644 path in
+       output_string oc (Yojson.Safe.to_string json ^ "\n");
+       close_out oc
+     with _ -> ())
+
+  let write_stats_totals persist_dir messages_ever =
+    let path = stats_totals_json_path persist_dir in
+    (try
+       C2c_io.mkdir_p (Filename.dirname path);
+       let j = `Assoc [ ("messages_ever", `Int messages_ever) ] in
+       let tmp = path ^ ".tmp" in
+       let oc = open_out tmp in
+       output_string oc (Yojson.Safe.to_string j);
+       close_out oc;
+       Sys.rename tmp path
+     with _ -> ())
+
+  (* Replay [stats-events.jsonl] into the seen tables (last write wins on
+     last_seen) and return the retained message-event timestamps (those within
+     [stats_event_retention_s] of [now], matching the gc prune boundary).
+     Malformed lines are skipped, never raised. *)
+  let load_stats_events_from_disk persist_dir ~now stats_seen_aliases
+      stats_seen_machines =
+    let path = stats_events_jsonl_path persist_dir in
+    let message_events = ref [] in
+    (if Sys.file_exists path then begin
+       let ic = open_in path in
+       (try
+          while true do
+            let line = String.trim (input_line ic) in
+            if line <> "" then
+              (try
+                 let j = Yojson.Safe.from_string line in
+                 let open Yojson.Safe.Util in
+                 let ts =
+                   match member "ts" j with
+                   | `Float f -> Some f
+                   | `Int i -> Some (float_of_int i)
+                   | _ -> None
+                 in
+                 let alias_opt =
+                   match member "alias" j with
+                   | `String a when a <> "" -> Some a
+                   | _ -> None
+                 in
+                 let node_opt =
+                   match member "node" j with
+                   | `String n when n <> "" -> Some n
+                   | _ -> None
+                 in
+                 (match ts with
+                  | None -> ()
+                  | Some ts ->
+                    (match member "t" j with
+                     | `String "m" ->
+                       if ts >= now -. stats_event_retention_s then
+                         message_events := ts :: !message_events;
+                       Option.iter
+                         (fun a -> Hashtbl.replace stats_seen_aliases a ts)
+                         alias_opt
+                     | `String "a" ->
+                       Option.iter
+                         (fun a -> Hashtbl.replace stats_seen_aliases a ts)
+                         alias_opt;
+                       Option.iter
+                         (fun n -> Hashtbl.replace stats_seen_machines n ts)
+                         node_opt
+                     | _ -> ()))
+               with _ -> ())
+          done
+        with End_of_file -> ());
+       close_in_noerr ic
+     end);
+    !message_events
+
+  let load_stats_totals persist_dir =
+    match
+      (try Some (Yojson.Safe.from_file (stats_totals_json_path persist_dir))
+       with _ -> None)
+    with
+    | Some j ->
+      (match Yojson.Safe.Util.member "messages_ever" j with
+       | `Int i -> i
+       | `Float f -> int_of_float f
+       | _ -> 0)
+    | None -> 0
+
+  (* gc-time compaction: rewrite the jsonl as a minimal state snapshot (atomic
+     tmp+rename). Emits one "m" line per retained message ts (no alias — the
+     seen-alias state is captured by the "a" snapshot lines below), plus one
+     "a" line per distinct alias and per distinct machine carrying its current
+     last_seen. This preserves the exact reload state (message-event count +
+     windowed/ever distinct counts) while dropping the unbounded append log. *)
+  let rewrite_stats_events_to_disk persist_dir ~message_events ~seen_aliases
+      ~seen_machines =
+    let path = stats_events_jsonl_path persist_dir in
+    (try
+       C2c_io.mkdir_p (Filename.dirname path);
+       let tmp = path ^ ".tmp" in
+       let oc = open_out tmp in
+       List.iter
+         (fun ts ->
+           output_string oc
+             (Yojson.Safe.to_string
+                (`Assoc [ ("t", `String "m"); ("ts", `Float ts) ])
+             ^ "\n"))
+         message_events;
+       Hashtbl.iter
+         (fun alias last ->
+           output_string oc
+             (Yojson.Safe.to_string
+                (`Assoc
+                   [ ("t", `String "a"); ("ts", `Float last);
+                     ("alias", `String alias) ])
+             ^ "\n"))
+         seen_aliases;
+       Hashtbl.iter
+         (fun node last ->
+           output_string oc
+             (Yojson.Safe.to_string
+                (`Assoc
+                   [ ("t", `String "a"); ("ts", `Float last);
+                     ("node", `String node) ])
+             ^ "\n"))
+         seen_machines;
+       close_out oc;
+       Sys.rename tmp path
+     with _ -> ())
+
   let create ?(dedup_window = 10000) ?persist_dir ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let room_history = Hashtbl.create 16 in
     (* Load persisted room history on startup *)
@@ -190,6 +340,20 @@ module InMemoryRelay : RELAY = struct
       match identity_path with
       | Some p -> Relay_identity.load_or_create_at ~path:p ~alias_hint:(Option.value self_host ~default:"relay")
       | None -> Relay_identity.generate ~alias_hint:(Option.value self_host ~default:"relay") ()
+    in
+    (* B148: reload persisted usage stats (message events within retention +
+       distinct alias/machine last_seen) and the all-time counter. *)
+    let stats_seen_aliases = Hashtbl.create 64 in
+    let stats_seen_machines = Hashtbl.create 64 in
+    let stats_message_events =
+      match persist_dir with
+      | Some d ->
+        load_stats_events_from_disk d ~now:(Unix.gettimeofday ())
+          stats_seen_aliases stats_seen_machines
+      | None -> []
+    in
+    let stats_messages_ever =
+      match persist_dir with Some d -> load_stats_totals d | None -> 0
     in
     { mutex = Mutex.create ();
       leases = Hashtbl.create 16;
@@ -216,10 +380,10 @@ module InMemoryRelay : RELAY = struct
       self_host;
       identity;
       peer_relays;
-      stats_message_events = [];
-      stats_messages_ever = 0;
-      stats_seen_aliases = Hashtbl.create 64;
-      stats_seen_machines = Hashtbl.create 64;
+      stats_message_events;
+      stats_messages_ever;
+      stats_seen_aliases;
+      stats_seen_machines;
     }
 
   let with_lock t f =
@@ -241,26 +405,64 @@ module InMemoryRelay : RELAY = struct
     with_lock t (fun () ->
       t.stats_message_events <- ts :: t.stats_message_events;
       t.stats_messages_ever <- t.stats_messages_ever + 1;
-      Hashtbl.replace t.stats_seen_aliases from_alias ts)
+      Hashtbl.replace t.stats_seen_aliases from_alias ts;
+      (* B148: append the event + rewrite the all-time counter (both under the
+         lock, mirroring append_room_history_to_disk's lock-held write). *)
+      Option.iter (fun d ->
+        append_stats_event_to_disk d
+          (`Assoc [ ("t", `String "m"); ("ts", `Float ts);
+                    ("alias", `String from_alias) ]);
+        write_stats_totals d t.stats_messages_ever)
+        t.persist_dir)
 
   let stats_note_activity t ~node_id ~alias ~ts =
     with_lock t (fun () ->
       Hashtbl.replace t.stats_seen_machines node_id ts;
-      Hashtbl.replace t.stats_seen_aliases alias ts)
+      Hashtbl.replace t.stats_seen_aliases alias ts;
+      Option.iter (fun d ->
+        append_stats_event_to_disk d
+          (`Assoc [ ("t", `String "a"); ("ts", `Float ts);
+                    ("node", `String node_id); ("alias", `String alias) ]))
+        t.persist_dir)
+
+  (* B148: aggregate connected-lease counts. A lease is "currently connected"
+     iff NOT [alias_released ~now ~last_seen] (Relay_common predicate). Emits
+     aggregate counts only — never aliases, node_ids, or session ids. *)
+  let stats_connected t ~now =
+    let clients = ref 0 in
+    let machines = Hashtbl.create 16 in
+    let by_ct = Hashtbl.create 8 in
+    Hashtbl.iter
+      (fun _alias lease ->
+        let last_seen = RegistrationLease.last_seen lease in
+        if not (alias_released ~now ~last_seen) then begin
+          incr clients;
+          Hashtbl.replace machines (RegistrationLease.node_id lease) ();
+          let ct =
+            match RegistrationLease.client_type lease with "" -> "unknown" | c -> c
+          in
+          Hashtbl.replace by_ct ct
+            (1 + (match Hashtbl.find_opt by_ct ct with Some n -> n | None -> 0))
+        end)
+      t.leases;
+    let by_client_type = Hashtbl.fold (fun k v acc -> (k, v) :: acc) by_ct [] in
+    stats_connected_json ~clients:!clients
+      ~machines:(Hashtbl.length machines) ~by_client_type
 
   let stats t ~now =
     with_lock t (fun () ->
       let count_since tbl ~cutoff =
         Hashtbl.fold (fun _ last acc -> if last >= cutoff then acc + 1 else acc) tbl 0
       in
-      stats_windows_json ~now
+      stats_json ~now
         ~messages_in_window:(fun ~cutoff ->
           List.length (List.filter (fun ts -> ts >= cutoff) t.stats_message_events))
         ~aliases_in_window:(fun ~cutoff -> count_since t.stats_seen_aliases ~cutoff)
         ~machines_in_window:(fun ~cutoff -> count_since t.stats_seen_machines ~cutoff)
         ~messages_ever:t.stats_messages_ever
         ~aliases_ever:(Hashtbl.length t.stats_seen_aliases)
-        ~machines_ever:(Hashtbl.length t.stats_seen_machines))
+        ~machines_ever:(Hashtbl.length t.stats_seen_machines)
+        ~connected:(stats_connected t ~now))
 
   let generate_uuid () =
     let random_hex n =
@@ -1147,6 +1349,14 @@ module InMemoryRelay : RELAY = struct
       t.stats_message_events <-
         List.filter (fun ts -> ts >= now -. stats_event_retention_s)
           t.stats_message_events;
+      (* B148: compact the persisted jsonl to a bounded state snapshot so it
+         doesn't grow unboundedly (gc already holds the lock). *)
+      Option.iter (fun d ->
+        rewrite_stats_events_to_disk d
+          ~message_events:t.stats_message_events
+          ~seen_aliases:t.stats_seen_aliases
+          ~seen_machines:t.stats_seen_machines)
+        t.persist_dir;
       `Ok (List.rev !expired, pruned)
     )
 end
@@ -1279,10 +1489,53 @@ module SqliteRelay : RELAY = struct
          ON CONFLICT(alias) DO UPDATE SET last_seen = excluded.last_seen"
         [`Text alias; `Float ts] |> ignore)
 
+  (* B148: aggregate connected-lease counts from the leases table. Filters
+     with the SAME [alias_released] predicate as the memory backend (applied in
+     OCaml, not SQL) so the two backends can't disagree on liveness. Emits
+     aggregate counts only — never aliases, node_ids, or session ids. *)
+  let stats_connected conn ~now =
+    let clients = ref 0 in
+    let machines = Hashtbl.create 16 in
+    let by_ct = Hashtbl.create 8 in
+    let stmt =
+      Sqlite3.prepare conn
+        "SELECT node_id, client_type, last_seen FROM leases"
+    in
+    let col_string col = match Sqlite3.Data.to_string col with Some s -> s | None -> "" in
+    let col_float col =
+      match Sqlite3.Data.to_float col with
+      | Some f -> f
+      | None -> (try float_of_string (Sqlite3.Data.to_string_exn col) with _ -> 0.0)
+    in
+    let rec loop () =
+      let rc = Sqlite3.step stmt in
+      if rc = Rc.ROW then begin
+        let node_id = col_string (Sqlite3.column stmt 0) in
+        let client_type =
+          match col_string (Sqlite3.column stmt 1) with
+          | "" -> "unknown"
+          | c -> c
+        in
+        let last_seen = col_float (Sqlite3.column stmt 2) in
+        if not (alias_released ~now ~last_seen) then begin
+          incr clients;
+          Hashtbl.replace machines node_id ();
+          Hashtbl.replace by_ct client_type
+            (1 + (match Hashtbl.find_opt by_ct client_type with Some n -> n | None -> 0))
+        end;
+        loop ()
+      end
+    in
+    (try loop () with _ -> ());
+    (try Sqlite3.finalize stmt |> ignore with _ -> ());
+    let by_client_type = Hashtbl.fold (fun k v acc -> (k, v) :: acc) by_ct [] in
+    stats_connected_json ~clients:!clients
+      ~machines:(Hashtbl.length machines) ~by_client_type
+
   let stats t ~now =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
-      stats_windows_json ~now
+      stats_json ~now
         ~messages_in_window:(fun ~cutoff ->
           count_query conn
             "SELECT COUNT(*) FROM stats_message_events WHERE ts >= ?"
@@ -1302,7 +1555,8 @@ module SqliteRelay : RELAY = struct
         ~aliases_ever:
           (count_query conn "SELECT COUNT(*) FROM stats_seen_aliases" [])
         ~machines_ever:
-          (count_query conn "SELECT COUNT(*) FROM stats_seen_machines" []))
+          (count_query conn "SELECT COUNT(*) FROM stats_seen_machines" [])
+        ~connected:(stats_connected conn ~now))
 
   let get_lease_row_fields row =
     match row with
@@ -3018,8 +3272,14 @@ end = struct
      ids, or message content are exposed. *)
   let handle_stats relay =
     let now = Unix.gettimeofday () in
+    let generated_at = now in
+    (* B148: [generated_ago] is computed dynamically from [now -. generated_at]
+       at serve time. It reads "just now" for live serving (generated_at = now),
+       and future-proofs cached/snapshot serving + helps humans reading saved
+       JSON dumps. *)
     respond_ok (json_ok [
-      ("generated_at", `Float now);
+      ("generated_at", `Float generated_at);
+      ("generated_ago", `String (Relay_common.humanize_ago (now -. generated_at)));
       ("stats", R.stats relay ~now);
     ])
 

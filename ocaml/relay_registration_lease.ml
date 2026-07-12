@@ -10,6 +10,7 @@ module RegistrationLease : sig
   val node_id : t -> string
   val session_id : t -> string
   val alias : t -> string
+  val client_type : t -> string
   val identity_pk : t -> string
   val enc_pubkey : t -> string
   val signed_at : t -> float
@@ -97,6 +98,7 @@ end = struct
   let node_id t = t.node_id
   let session_id t = t.session_id
   let alias t = t.alias
+  let client_type t = t.client_type
   let identity_pk t = t.identity_pk
   let enc_pubkey t = t.enc_pubkey
   let signed_at t = t.signed_at

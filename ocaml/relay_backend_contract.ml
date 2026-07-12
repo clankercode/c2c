@@ -152,3 +152,35 @@ let stats_windows_json ~now ~messages_in_window ~aliases_in_window
              (machines_in_window ~cutoff) ))
        stats_windows
      @ [ ("ever", window_obj messages_ever aliases_ever machines_ever) ])
+
+(* B148: render the /stats "connected" object — aggregate liveness counts only
+   (NEVER aliases, node_ids, or session ids; same privacy rule as the windows).
+   [by_client_type] keys are sorted for deterministic JSON so the landing page
+   and tests can pin it, and so the two backends can't emit a different key
+   order. Both backends funnel through this so the shape cannot diverge. *)
+let stats_connected_json ~clients ~machines
+    ~(by_client_type : (string * int) list) : Yojson.Safe.t =
+  `Assoc
+    [
+      ("clients", `Int clients);
+      ("machines", `Int machines);
+      ( "by_client_type",
+        `Assoc
+          (List.map
+             (fun (k, v) -> (k, `Int v))
+             (List.sort (fun (a, _) (b, _) -> String.compare a b) by_client_type))
+      );
+    ]
+
+(* B148: full /stats stats object — the 1d/7d/28d/ever windows (byte-compatible
+   with [stats_windows_json], which the landing page + B147 tests pin) plus a
+   top-level [connected] key. Both backends call this so the combined shape is
+   defined in exactly one place. *)
+let stats_json ~now ~messages_in_window ~aliases_in_window ~machines_in_window
+    ~messages_ever ~aliases_ever ~machines_ever ~connected : Yojson.Safe.t =
+  match
+    stats_windows_json ~now ~messages_in_window ~aliases_in_window
+      ~machines_in_window ~messages_ever ~aliases_ever ~machines_ever
+  with
+  | `Assoc kvs -> `Assoc (kvs @ [ ("connected", connected) ])
+  | other -> other
