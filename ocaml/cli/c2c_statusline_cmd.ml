@@ -113,26 +113,43 @@ let render_json (i : info) : Yojson.Safe.t =
 
 (* --- stdin JSON (Claude Code statusLine contract) -------------------------- *)
 
-(* Read a JSON blob from stdin under a bounded select() so we never hang.
-   Returns None when stdin is a TTY (interactive shell), empty, or unparseable.
-   Fail-open: any error yields None. *)
-let read_stdin_json ?(timeout = 0.25) () : Yojson.Safe.t option =
+(* Read a JSON blob from stdin under HARD bounds so we never hang and never
+   grow without limit — the Claude Code statusLine JSON is small (<4KB) and
+   delivered up front. Returns None when stdin is a TTY (interactive shell),
+   empty, or unparseable. Fail-open: any error yields None.
+
+   Two independent caps (B155 review): an absolute wall-clock [deadline_s] over
+   the whole read, and a [max_bytes] buffer cap — so a continuous producer
+   (`yes | c2c statusline`) can neither hang nor exhaust memory; it just returns
+   a truncated (hence unparseable → None) blob promptly. [timeout] bounds the
+   initial "is there any data?" wait for the common non-TTY-but-no-data case. *)
+let read_stdin_json ?(timeout = 0.1) ?(deadline_s = 0.25) ?(max_bytes = 65536)
+    () : Yojson.Safe.t option =
   if (try Unix.isatty Unix.stdin with _ -> true) then None
   else
+    let deadline = Unix.gettimeofday () +. deadline_s in
     match (try Unix.select [ Unix.stdin ] [] [] timeout with _ -> ([], [], [])) with
     | [], _, _ -> None
     | _ ->
         let buf = Buffer.create 512 in
         let chunk = Bytes.create 4096 in
         let rec loop () =
-          match Unix.read Unix.stdin chunk 0 4096 with
-          | 0 -> ()
-          | n ->
-              Buffer.add_subbytes buf chunk 0 n;
-              (match (try Unix.select [ Unix.stdin ] [] [] 0.05 with _ -> ([], [], [])) with
-               | [], _, _ -> ()
-               | _ -> loop ())
-          | exception _ -> ()
+          if Buffer.length buf >= max_bytes then ()
+          else
+            let remaining = deadline -. Unix.gettimeofday () in
+            if remaining <= 0. then ()
+            else
+              match Unix.read Unix.stdin chunk 0 4096 with
+              | 0 -> ()
+              | n ->
+                  Buffer.add_subbytes buf chunk 0 n;
+                  (match
+                     (try Unix.select [ Unix.stdin ] [] [] (min 0.05 remaining)
+                      with _ -> ([], [], []))
+                   with
+                   | [], _, _ -> ()
+                   | _ -> loop ())
+              | exception _ -> ()
         in
         loop ();
         let s = String.trim (Buffer.contents buf) in

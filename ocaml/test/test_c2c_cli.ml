@@ -3934,6 +3934,19 @@ let test_statusline_reads_stdin_session_json () =
       check bool "model display_name surfaced from stdin json" true
         (string_contains out "TestModel"))
 
+let test_statusline_streaming_stdin_is_bounded () =
+  (* B155 review: a continuous stdin producer must NOT hang statusline — the
+     read is capped by an absolute deadline + size cap, so it returns promptly
+     (truncated blob → unparseable → fail-open) rather than hanging or growing
+     the buffer without bound. The outer `timeout` is a safety net: if the read
+     ever regressed to hanging, rc would be 124 (not 0) and this fails fast
+     instead of wedging the suite. *)
+  let rc, _out =
+    run_capture
+      (c2c_cmd "timeout 10 sh -c 'yes \"{\\\"a\\\":1}\" | c2c statusline --json'")
+  in
+  check int "streaming stdin statusline returns fail-open (no hang)" 0 rc
+
 let test_statusline_print_config () =
   let rc, out = run_capture (c2c_cmd "c2c statusline --print-config") in
   check int "statusline --print-config exits 0" 0 rc;
@@ -3963,6 +3976,7 @@ let () =
     ; ( "statusline",
         [ ( "statusline --json reports registration/alias/peers (B155)", `Quick, test_statusline_json_reports_state )
         ; ( "statusline reads Claude stdin session JSON (B155)", `Quick, test_statusline_reads_stdin_session_json )
+        ; ( "statusline streaming stdin is bounded (B155)", `Quick, test_statusline_streaming_stdin_is_bounded )
         ; ( "statusline --print-config emits Claude snippet (B155)", `Quick, test_statusline_print_config )
         ] )
     ; ( "config_show",
