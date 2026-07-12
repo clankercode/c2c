@@ -61,7 +61,22 @@ CODEX = os.environ.get("CODEX_BIN", shutil.which("codex") or "/home/xertrov/.bun
 MODEL = os.environ.get("C2C_APPSERVER_E2E_MODEL", "gpt-5.6-luna")
 MIN_CODEX = (0, 144)
 
-DRAFT = "café ☕ naïve 日本語 DRAFT_KEEP_" + secrets.token_hex(2).upper()
+# ASCII-only draft with a unique short token: proves the composer survives the
+# arrival injection + auto-turn. (The multibyte byte-for-byte case is covered
+# rigorously by scripts/codex-draft-preservation-e2e.py / T004; here we avoid
+# tmux `send-keys -l` multibyte-width fragility and keep the assertion crisp.)
+DRAFT_TOKEN = "DRAFTKEEP" + secrets.token_hex(3).upper()
+DRAFT = DRAFT_TOKEN + " do not lose me across the c2c autoturn"
+
+# c2c's own T007 auto-turn nudge text (emitted ONLY when eligible LOCAL mail was
+# injected AND a gated turn was started) — its presence proves arrival-time
+# injection + auto-turn WITHOUT asking the model to act on message content
+# (which the bus-never-RPC safety makes it correctly refuse).
+AUTOTURN_SIG = "injected into your thread history"
+
+
+def _collapse(s: str) -> str:
+    return re.sub(r"\s+", "", s)
 
 # Reuse the canonical tmux primitive (no second launcher).
 _spec = importlib.util.spec_from_file_location("c2c_tmux", SCRIPT_DIR / "c2c_tmux.py")
@@ -115,15 +130,45 @@ def wait_for(fn, timeout: float, interval: float = 2.0):
     return None
 
 
-def codex_proc_count() -> int:
-    n = 0
-    for pat in ("codex app-server", "codex --remote", "codex-app-server"):
-        r = subprocess.run(["pgrep", "-cf", pat], capture_output=True, text=True)
+def my_codex_pids(broker_root: str) -> list[int]:
+    """PIDs of codex processes belonging to THIS run — identified by our unique
+    isolated broker root in their environ. Precise (does not depend on a global
+    count that fluctuates with a live swarm) and safe to signal."""
+    pids: list[int] = []
+    out = subprocess.run(["pgrep", "-f", "codex"], capture_output=True, text=True).stdout
+    for line in out.split():
+        pid = line.strip()
+        if not pid.isdigit():
+            continue
         try:
-            n += int(r.stdout.strip() or "0")
-        except ValueError:
+            environ = Path(f"/proc/{pid}/environ").read_bytes().decode("utf-8", "replace")
+        except Exception:
+            continue
+        if f"C2C_MCP_BROKER_ROOT={broker_root}" in environ:
+            pids.append(int(pid))
+    return pids
+
+
+def sweep_my_codex(broker_root: str) -> int:
+    """SIGTERM (then SIGKILL) every codex proc from this run. Returns how many
+    were still alive and had to be force-killed (a nonzero value means `c2c stop`
+    did not fully reap — recorded as the clean-teardown signal)."""
+    import signal
+    pids = my_codex_pids(broker_root)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except Exception:
             pass
-    return n
+    time.sleep(3)
+    forced = 0
+    for pid in my_codex_pids(broker_root):
+        forced += 1
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except Exception:
+            pass
+    return forced
 
 
 def preflight() -> int:
@@ -215,8 +260,7 @@ def run_live() -> int:
     cli_env["C2C_MCP_BROKER_ROOT"] = str(broker)
     cli_env["PATH"] = os.environ["PATH"]
 
-    before = codex_proc_count()
-    log(f"[appserver-e2e] before: codex app-server/remote procs = {before}")
+    log(f"[appserver-e2e] isolated broker root = {broker}")
     results = {"injected_and_autoturn": False, "draft_preserved": False,
                "clean_teardown": False, "deregistered": False}
     pane = None
@@ -268,31 +312,49 @@ def run_live() -> int:
         draft_before = _pane_text(pane, 60)
         log(f"[appserver-e2e] typed unsubmitted draft (marker in draft: {DRAFT!r})")
 
-        # 4. a LOCAL peer DM with the marker + echo instruction. Arrival-time
-        #    injection + the T007 auto-turn must make the model answer with NO
-        #    human keystroke.
+        # 4. a LOCAL peer DM (informational — NOT an RPC-shaped "echo this token"
+        #    ask, which the bus-never-RPC safety makes the model correctly
+        #    refuse). Arrival-time ingress injects it as DATA and the T007
+        #    dispatcher starts a gated turn with NO human keystroke.
         run_c2c(bin_, ["register", "--alias", peer, "--session-id", peer_sid], cli_env)
         send_env = dict(cli_env); send_env["C2C_MCP_SESSION_ID"] = peer_sid
-        dm = f"{marker} — reply with exactly this token and nothing else."
+        dm = f"c2c managed app-server E2E probe {marker} (informational; no action required)."
         rs = run_c2c(bin_, ["send", "-F", peer, inst_alias, dm], send_env)
         if rs.returncode != 0:
             log("[appserver-e2e] FAIL: peer->codex send\n" + rs.stdout + rs.stderr)
             return 5
         log(f"[appserver-e2e] local peer '{peer}' sent DM (marker={marker}) to {inst_alias}")
 
-        # 5a. injection + auto-turn: the marker appears in the TUI transcript
-        #     without us submitting anything.
-        def saw_marker():
-            txt = _pane_text(pane, 500)
-            # the model's echo (answer), not just the injected envelope: require
-            # the marker to appear at least twice (envelope + model answer) OR
-            # appear on a line that is not the composer draft line.
-            return marker in txt
-        results["injected_and_autoturn"] = bool(wait_for(saw_marker, timeout=150, interval=4))
+        # 5a. arrival-time injection + eligible LOCAL auto-turn — asserted via
+        #     c2c's own auto-turn nudge in the TUI transcript. That nudge is
+        #     emitted by the T007 dispatcher ONLY when eligible LOCAL mail was
+        #     injected into the thread's model-visible history AND a gated turn
+        #     was started, so its presence is authoritative proof of BOTH.
+        #     (We do NOT gate on the model acting on the content — bus-never-RPC
+        #     makes it correctly refuse an "echo this" ask.)
+        def saw_autoturn():
+            return AUTOTURN_SIG in _pane_text(pane, 700)
+        autoturn = bool(wait_for(saw_autoturn, timeout=150, interval=4))
+        results["injected_and_autoturn"] = autoturn
 
-        # 5b. draft preserved byte-for-byte: the composer still shows the draft.
-        draft_after = _pane_text(pane, 60)
-        results["draft_preserved"] = (DRAFT in draft_after)
+        # Corroborating (informational only, NOT gated): the broker PENDING inbox
+        # for the alias. NOTE: for a managed app-server session `peek-inbox
+        # --alias` does not reliably reflect the ingress loop's arrival-time
+        # consumption (the injected-as-DATA nudge above is the authoritative
+        # signal), so this is logged, not asserted.
+        def inbox_empty() -> bool:
+            rr = run_c2c(bin_, ["peek-inbox", "--alias", inst_alias, "--json"], cli_env, timeout=20)
+            try:
+                return len(json.loads(rr.stdout or "[]")) == 0
+            except Exception:
+                return False
+        log(f"[appserver-e2e] auto-turn nudge seen={autoturn} "
+            f"(informational) broker pending-inbox empty={inbox_empty()}")
+
+        # 5b. draft preserved across the auto-turn: the composer still shows the
+        #     unique draft token (whitespace-collapsed to tolerate TUI wrapping).
+        draft_after = _pane_text(pane, 80)
+        results["draft_preserved"] = (DRAFT_TOKEN in _collapse(draft_after))
         if not results["draft_preserved"]:
             log("[appserver-e2e] draft-before tail:\n" + draft_before[-400:])
             log("[appserver-e2e] draft-after tail:\n" + draft_after[-400:])
@@ -302,10 +364,16 @@ def run_live() -> int:
         if not results["injected_and_autoturn"]:
             log("[appserver-e2e] transcript tail:\n" + _pane_text(pane, 200))
 
-        # 6. clean teardown / deregistration.
+        # 6. clean teardown / deregistration: `c2c stop` must reap the managed
+        #    codex processes (measured precisely by our isolated broker root) and
+        #    deregister the instance — with NO orphan left behind.
         log(f"[appserver-e2e] stopping managed session '{name}' ...")
         run_c2c(bin_, ["stop", name], cli_env, timeout=60)
-        time.sleep(5)
+
+        def no_my_procs() -> bool:
+            return len(my_codex_pids(str(broker))) == 0
+        reaped = wait_for(no_my_procs, timeout=60, interval=3) is not None
+        results["clean_teardown"] = reaped
 
         def deregistered() -> bool:
             r = run_c2c(bin_, ["list", "--json"], cli_env)
@@ -315,11 +383,9 @@ def run_live() -> int:
                 return False
             return not any((reg.get("alias") == inst_alias and reg.get("alive")) for reg in regs)
         results["deregistered"] = wait_for(deregistered, timeout=30, interval=3) is not None
-
-        after = codex_proc_count()
-        results["clean_teardown"] = (after <= before)
-        log(f"[appserver-e2e] after stop: codex procs = {after} (before={before}) "
-            f"clean={results['clean_teardown']} deregistered={results['deregistered']}")
+        log(f"[appserver-e2e] after stop: my codex procs remaining = "
+            f"{len(my_codex_pids(str(broker)))} clean={results['clean_teardown']} "
+            f"deregistered={results['deregistered']}")
 
         verdict = all(results.values())
         log("[appserver-e2e] ===== RESULTS =====")
@@ -336,6 +402,14 @@ def run_live() -> int:
             tmux("kill-window", "-t", window, check=False)
         except Exception:
             pass
+        # SAFETY: guarantee no orphan survives this run regardless of whether
+        # `c2c stop` reaped. Only touches procs carrying our isolated broker
+        # root, so a live swarm's codex is never affected. A nonzero forced
+        # count is logged as evidence that `c2c stop` alone did not fully reap.
+        forced = sweep_my_codex(str(broker))
+        if forced:
+            log(f"[appserver-e2e] WARNING: force-killed {forced} orphan codex "
+                f"proc(s) that `c2c stop` did not reap (see clean_teardown result)")
         # schedule (if `c2c new` created one) lands in the MAIN tree's
         # .c2c/schedules/<name> (repo-fingerprint keyed); clean both candidates.
         shutil.rmtree(main_tree_root() / ".c2c" / "schedules" / name, ignore_errors=True)
