@@ -20,10 +20,11 @@
    deliberately do NOT run the archive scan `c2c status` does (that adds
    ~150ms+); statusline only touches registrations, the relay snapshot, the
    connector-state file, the shared sessions broker, and the caller's own
-   inbox file.  "repo" is the current repository broker.  "machine" is the
-   deduplicated union of that broker and the shared sessions broker (the local
-   registration wins if a session is present in both); it is not a relay-live
-   claim.
+   inbox file.  The peer icons are: `📦` = alive registrations in the current
+   repository broker; `🖥` = the deduplicated union of that broker and the
+   shared sessions broker (the local registration wins if a session is present
+   in both — not a relay-live claim).  The `⇄` token is relay connectivity.
+   (Set PI_C2C_ASCII=1 for plain-text fallbacks: `[relay]`, repo, machine.)
 
    CLIENT DETECTION: the host client is inferred from the environment
    (C2c_mcp.inferred_client_type_from_env). For Claude Code specifically, the
@@ -38,15 +39,25 @@ open Cmdliner.Term.Syntax
 
 (* --- pure rendering helpers (kept free of I/O for clarity + testability) --- *)
 
-(* Short, fixed token for each composite relay state. *)
+(* ASCII fallback (B169): when PI_C2C_ASCII=1 — the convention documented in
+   [glyphs.ml] — substitute plain-ascii tokens for the unicode glyphs so the
+   line stays readable in minimal terminals. Applied to the relay `⇄` token
+   and the repo/machine peer icons. *)
+let ascii_mode () = Sys.getenv_opt "PI_C2C_ASCII" = Some "1"
+
+(* Short, fixed token for each composite relay state. The leading `⇄` is the
+   canonical c2c relay-route glyph (see [glyphs.ml] routes.relay); in ASCII
+   mode it falls back to `[relay]`. The status suffix is kept verbatim so the
+   meaning (off/unreg/live/down/...) is unchanged. *)
 let relay_token (s : Relay_state.state) =
+  let g = if ascii_mode () then "[relay]" else "⇄" in
   match s with
-  | Relay_state.Unconfigured -> "relay:off"
-  | Relay_state.Configured_not_registered -> "relay:unreg"
-  | Relay_state.Configured_unverified -> "relay:?"
-  | Relay_state.Registered_live -> "relay:live"
-  | Relay_state.Registered_expired -> "relay:expired"
-  | Relay_state.Registered_unreachable -> "relay:down"
+  | Relay_state.Unconfigured -> g ^ "off"
+  | Relay_state.Configured_not_registered -> g ^ "unreg"
+  | Relay_state.Configured_unverified -> g ^ "?"
+  | Relay_state.Registered_live -> g ^ "live"
+  | Relay_state.Registered_expired -> g ^ "expired"
+  | Relay_state.Registered_unreachable -> g ^ "down"
 
 (* Severity → colour class for the relay token.
    [`Ok] green, [`Warn] yellow, [`Bad] red, [`Dim] neutral (relay is optional;
@@ -97,8 +108,10 @@ let render_human ~color (i : info) =
     paint ~color (relay_severity i.relay_state) (relay_token i.relay_state)
   in
   let segs = ref [ head; relay ] in
-  segs := !segs @ [ Printf.sprintf "%d repo" i.peers_repo_alive
-                    ; Printf.sprintf "%d machine" i.peers_machine_alive ];
+  let repo_glyph = if ascii_mode () then "repo" else "📦" in
+  let machine_glyph = if ascii_mode () then "machine" else "🖥" in
+  segs := !segs @ [ Printf.sprintf "%s %d" repo_glyph i.peers_repo_alive
+                    ; Printf.sprintf "%s %d" machine_glyph i.peers_machine_alive ];
   if i.unread > 0 then
     segs := !segs @ [ paint ~color `Warn (Printf.sprintf "%d unread" i.unread) ];
   (match i.model with Some m when m <> "" -> segs := !segs @ [ paint ~color `Dim m ] | _ -> ());
@@ -276,11 +289,13 @@ Claude Code feeds session JSON (session_id, model, cwd) to the command on
 stdin; `c2c statusline` reads it automatically so your alias resolves even
 without CLAUDE_SESSION_ID in the statusLine environment.
 
-The peer segments remain local-only: `repo` counts alive registrations in this
-repository's broker; `machine` is the deduplicated union of that broker and
-the shared sessions broker.  A repo registration wins when the same
-session_id/alias appears in both. Neither count includes relay-discovered
-remote peers or performs a network probe.|}
+The peer segments remain local-only: `📦` counts alive registrations in this
+repository's broker; `🖥` is the deduplicated machine-wide union of that broker
+and the shared sessions broker.  A repo registration wins when the same
+session_id/alias appears in both. The `⇄` segment shows relay connectivity
+(from local connector state — no probe). Neither peer count includes
+relay-discovered remote peers or performs a network probe. (Set PI_C2C_ASCII=1
+for plain-text fallbacks.)|}
 
 (* --- command --------------------------------------------------------------- *)
 
@@ -353,20 +368,22 @@ let statusline : unit Cmdliner.Cmd.t =
        ~man:
          [ `S "DESCRIPTION"
          ; `P "Prints a single concise line summarising this context's c2c \
-               state: registration/alias, relay connectivity (from local \
-               connector state — no network probe), repo and machine peer \
-               counts, and \
-               unread inbox count. Designed to run on every status-line \
-               refresh, so it is pure-local and fast (~30-40ms)."
-         ; `P "$(b,repo) counts alive registrations in the current repository \
-               broker. $(b,machine) counts the deduplicated union of that \
-               broker and the shared sessions broker; when a registration is \
-               visible in both, the current-repository registration takes \
-               precedence. Neither count includes relay-discovered remote \
-               peers or makes a network request. In JSON these are \
+               state: registration/alias, relay connectivity (the `⇄` segment, \
+               from local connector state — no network probe), repository and \
+               machine-wide peer counts (`📦` / `🖥`), and unread inbox count. \
+               Designed to run on every status-line refresh, so it is \
+               pure-local and fast (~30-40ms)."
+         ; `P "The $(b,📦) segment counts alive registrations in the current \
+               repository broker. The $(b,🖥) segment counts the deduplicated \
+               union of that broker and the shared sessions broker; when a \
+               registration is visible in both, the current-repository \
+               registration takes precedence. The $(b,⇄) segment shows relay \
+               connectivity. Neither peer count includes relay-discovered \
+               remote peers or makes a network request. In JSON these are \
                $(b,peers_repo_alive) and $(b,peers_machine_alive); \
                $(b,peers_alive) remains the compatibility alias for the \
-               repo-local count."
+               repo-local count. Set $(b,PI_C2C_ASCII=1) for plain-text \
+               fallbacks (`[relay]`, repo, machine)."
          ; `P "Colour is emitted only on a TTY and honours $(b,NO_COLOR). Use \
                $(b,--json) for a machine-readable object, or $(b,--no-color) \
                to force plain text."

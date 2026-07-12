@@ -4036,10 +4036,46 @@ let test_statusline_json_reports_state () =
                 (Filename.quote dir) (Filename.quote sessions_dir)))
       in
       check int "human statusline exits 0" 0 human_rc;
-      check bool "human output labels repo-local count" true
-        (string_contains human "2 repo");
-      check bool "human output labels deduplicated machine count" true
-        (string_contains human "3 machine"))
+      check bool "human output uses relay glyph" true
+        (string_contains human "⇄");
+      check bool "human output drops old 'relay:' token" true
+        (not (string_contains human "relay:"));
+      check bool "human output shows repo icon + count" true
+        (string_contains human "📦 2");
+      check bool "human output shows machine icon + count" true
+        (string_contains human "🖥 3");
+      check bool "human output drops literal '2 repo' wording" true
+        (not (string_contains human "2 repo"));
+      check bool "human output drops literal '3 machine' wording" true
+        (not (string_contains human "3 machine")))
+
+(* B169: PI_C2C_ASCII=1 swaps the unicode glyphs for plain-text fallbacks in
+   the human line (the `⇄` relay token becomes `[relay]`, and the 📦/🖥 peer
+   icons revert to the words `repo`/`machine`). The assertions are robust to
+   the relay classification: any relay state still yields a `[relay]<suffix>`
+   token, so `[relay]` is present and `⇄` is not. *)
+let test_statusline_ascii_fallback () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sl-ascii-sid"
+        ~alias:"sl-asciitest" ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let rc, human =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "C2C_CLI_FORCE=1 PI_C2C_ASCII=1 C2C_MCP_BROKER_ROOT=%s \
+                 C2C_MCP_SESSION_ID=sl-ascii-sid c2c statusline --no-color < /dev/null"
+                (Filename.quote dir)))
+      in
+      check int "ascii statusline exits 0" 0 rc;
+      check bool "ascii output uses [relay] token" true
+        (string_contains human "[relay]");
+      check bool "ascii output uses 'repo' word" true
+        (string_contains human "repo");
+      check bool "ascii output uses 'machine' word" true
+        (string_contains human "machine");
+      check bool "ascii output drops unicode relay glyph" true
+        (not (string_contains human "⇄")))
 
 let test_statusline_reads_stdin_session_json () =
   with_temp_dir (fun dir ->
@@ -4110,6 +4146,7 @@ let () =
         ] )
     ; ( "statusline",
         [ ( "statusline --json reports registration/alias/peers (B155)", `Quick, test_statusline_json_reports_state )
+        ; ( "statusline PI_C2C_ASCII plain-text fallback (B169)", `Quick, test_statusline_ascii_fallback )
         ; ( "statusline reads Claude stdin session JSON (B155)", `Quick, test_statusline_reads_stdin_session_json )
         ; ( "statusline streaming stdin is bounded (B155)", `Quick, test_statusline_streaming_stdin_is_bounded )
         ; ( "statusline --print-config emits Claude snippet (B155)", `Quick, test_statusline_print_config )
