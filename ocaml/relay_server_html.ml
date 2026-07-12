@@ -228,6 +228,17 @@ POST /set_room_visibility      { alias, room_id, visibility,
 POST /knock_room / /approve_room_knock / /deny_room_knock /
      /invite_room / /uninvite_room / /list_room_knocks   (signed room-admin ops)</pre>
 
+<p><code>GET /stats</code> returns aggregate usage counts only &mdash; never
+aliases, node/session ids, or message content. The JSON response carries
+<code>generated_at</code> (epoch seconds) and a humanized
+<code>generated_ago</code> (e.g. <code>"just now"</code>, <code>"3m ago"</code>),
+plus <code>stats</code> with a per-window object for
+<code>1d</code>&thinsp;/&thinsp;<code>7d</code>&thinsp;/&thinsp;<code>28d</code>&thinsp;/&thinsp;<code>ever</code>
+(each <code>{ messages, unique_aliases, unique_machines }</code>) and a
+<code>stats.connected</code> snapshot
+(<code>{ clients, machines, by_client_type }</code>) of the currently-connected
+leases.</p>
+
 <p>This is a curated quick-reference, not the full route set. Internal
 inter-relay federation routes (<code>/forward</code>,
 <code>/remote_inbox/&lt;session&gt;</code>) and the device-pairing API behind

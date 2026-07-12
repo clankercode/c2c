@@ -284,3 +284,20 @@ let room_leave_content alias room_id = alias ^ " left room " ^ room_id
 
 let b64url_nopad_encode s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
+(* B148: humanize a "seconds ago" delta for the /stats generated_ago field.
+   Pure and clock-free so it can be unit-tested directly. Contract:
+     < 2s (incl. 0 and any negative)  -> "just now"
+     otherwise the largest whole unit -> "<n>s ago" / "<n>m ago" /
+                                          "<n>h ago" / "<n>d ago"
+   Boundaries (truncating toward the smaller unit): 59s -> "59s ago",
+   60s -> "1m ago", 3599s -> "59m ago", 3600s -> "1h ago",
+   86399s -> "23h ago", 86400s -> "1d ago". *)
+let humanize_ago (secs : float) : string =
+  if secs < 2.0 then "just now"
+  else
+    let s = int_of_float secs in
+    if s < 60 then Printf.sprintf "%ds ago" s
+    else if s < 3600 then Printf.sprintf "%dm ago" (s / 60)
+    else if s < 86400 then Printf.sprintf "%dh ago" (s / 3600)
+    else Printf.sprintf "%dd ago" (s / 86400)
