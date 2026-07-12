@@ -132,3 +132,48 @@ queue one ordinary message to a vanilla Claude session, complete its turn, and
 confirm the transcript labels it `Stop hook feedback` for the new envelope. If
 it renders an error despite this exit-0 JSON shape, capture the exact hook debug
 log and installed binary checksum before changing the encoding.
+
+## 2026-07-13 follow-up (post-B171; quota re-check)
+
+### B171 unblocked named agents
+
+Root cause of the earlier named Haiku launch failure (`--agent … not found`) was
+empty `description:` in compiled `.claude/agents/*.md` (Claude Code refuses
+those agents). Fixed in `6b67cbb2` (B171). Named `--agent` resolution was
+re-proved with a non-empty description (`B171_OK`).
+
+### Installed Stop envelope re-check (offline, no model turn)
+
+Against the newly installed `c2c-stop-hook-ocaml` binary after `just install-all`:
+
+- stdin Stop payload with a temp `C2C_SESSIONS_BROKER_ROOT` inbox containing one
+  ordinary peer message
+- exit 0, empty stderr
+- stdout exactly
+  `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"…"}}`
+- no top-level `decision` / `reason` keys
+- body retains untrusted-peer system-reminder and c2c envelope
+
+### Live vanilla UI attempt (still blocked)
+
+Launched vanilla Claude (no `--dangerously-load-development-channels`) with
+`CLAUDE_CONFIG_DIR=~/.claude-p` so the installed Stop hook is wired, cwd
+`/tmp/b162-stop-proof`, model Haiku then Opus:
+
+- Statusline reported `7d 100%` for the session
+- First model turn did not complete; Claude rendered the paid-plan limit dialog:
+
+  ```
+  What do you want to do?
+  1. Add funds to continue with usage credits
+  2. Switch to Team plan
+  3. Stop and wait for limit to reset
+  ```
+
+- `scripts/cc-quota` concurrently reported `7d: 6%` — **that meter does not match
+  the Max org limit the client enforces**. Do not treat `cc-quota` alone as
+  proof that a live Claude turn can complete.
+
+No rendered `Stop hook feedback` / `Stop hook error` transcript was obtained.
+Source + offline envelope + unit tests remain green; live UI proof still needs
+a Max account that can finish a turn.
