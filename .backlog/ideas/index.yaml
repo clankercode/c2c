@@ -19,3 +19,5 @@ ideas:
       id: I009
     - file: I010-c2c-restart-clients-after-upgr.todo
       id: I010
+    - file: I011-seamless-managed-client-upgrad.todo
+      id: I011
