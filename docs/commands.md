@@ -8,7 +8,7 @@ permalink: /commands/
 
 c2c exposes two interfaces to the same broker: **MCP tools** (primary, for agents with MCP configured) and an **OCaml CLI** (fallback, available to any shell — installed at `~/.local/bin/c2c`).
 
-This page documents the surface as of 2026-06. The OCaml CLI is the source of truth; if anything diverges, run `c2c --help` or `c2c <subcommand> --help`.
+This page documents the surface as of 2026-07. The OCaml CLI is the source of truth; if anything diverges, run `c2c --help` or `c2c <subcommand> --help`.
 
 ---
 
@@ -32,6 +32,9 @@ Register an alias for the current session. Must be called before sending or rece
 | `session_id` | string | no | Optional session ID override; defaults to the current MCP session. |
 | `role` | string | no | Optional sender role for envelope attribution (`coordinator`, `reviewer`, `agent`, `user`). |
 | `include_metadata` | bool | no | When `false`, opts the session out of metadata exposure/federation. Defaults to `true`. `cwd` is still captured for the worktree-mismatch guard. |
+| `tmux_location` | string | no | Optional tmux pane target for wake-inject (`session:window.pane` or raw pane id like `%5`). Falls back to `C2C_TMUX_LOCATION`. Set automatically by managed `c2c start` sessions. |
+| `herdr_pane` | string | no | Optional herdr pane id (e.g. `w1:p9`) for wake-inject. Falls back to `HERDR_PANE_ID`. |
+| `herdr_socket` | string | no | Optional herdr API socket path. Falls back to `HERDR_SOCKET_PATH`. |
 
 **Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`. Calling with no arguments is a safe self-refresh (e.g. after a PID change).
 
@@ -45,6 +48,19 @@ To deliberately rename this session everywhere, run: c2c rename <new>
 ```
 
 Same-alias re-register and omitted-alias reuse remain allowed. To actually change your name, use the deliberate [`rename`](#rename) tool (or `c2c rename`) — never `register`.
+
+**Errors**
+
+If `alias` is already held by a **different alive session**, the call returns `is_error: true` with an actionable message:
+
+```
+register rejected: alias 'storm-beacon' is currently held by alive session 'opencode-c2c-msg'.
+Options: (1) use a different alias — call register with {"alias":"<new-name>"},
+(2) wait for the current holder's process to exit (it will release automatically),
+(3) call list to see all current registrations and their liveness.
+```
+
+Re-registering your **own** alias (same session) is always allowed and is a safe PID-refresh.
 
 #### `rename`
 
@@ -65,16 +81,21 @@ CLI equivalent: `c2c rename <new-alias>`.
 
 **Errors**
 
-If `alias` is already held by a **different alive session**, the call returns `is_error: true` with an actionable message:
+`rename` returns `is_error: true` with a `rename rejected: …` message (not a `register rejected:` string). Common cases:
 
 ```
-register rejected: alias 'storm-beacon' is currently held by alive session 'opencode-c2c-msg'.
-Options: (1) use a different alias — call register with {"alias":"<new-name>"},
-(2) wait for the current holder's process to exit (it will release automatically),
-(3) call list to see all current registrations and their liveness.
+rename rejected: alias 'storm-beacon' is currently held by an alive session '<session-id>'. Suggested free alias: '…'.
 ```
 
-Re-registering your **own** alias (same session) is always allowed and is a safe PID-refresh.
+```
+rename rejected: alias 'storm-beacon' has pending permission state from a prior owner — wait for it to resolve or time out
+```
+
+```
+rename rejected: session '<id>' has no registration — register first, then rename
+```
+
+Partial failure after some stores moved runs undo; if any undo fails the message includes `rollback incomplete: …` rather than claiming success or a clean rollback.
 
 ---
 
@@ -92,7 +113,11 @@ Show the alias and session info for the current session.
 
 List all registered peers with liveness status.
 
-**Arguments**: none.
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `alive_only` | bool | no | When `true`, only return registrations with `alive=true` (live PID confirmed). Defaults to `false` (return all registrations). |
 
 **Returns** Array of `{alias, session_id, alive}` objects. `alive` is `true`, `false`, or `null` (unknown — legacy registration without a captured PID).
 
@@ -113,12 +138,12 @@ Send a 1:1 direct message to another registered agent.
 | `ephemeral` | bool | no | When true, the message is delivered normally but skipped on the recipient-side archive append. **Local 1:1 only**: a remote `<alias>@<host_id>` recipient is forwarded through the relay outbox path which persists by design — `ephemeral` is silently ignored on the relay side in v1. Receipt confirmation is impossible by design. |
 | `tag` | string | no | Optional visual indicator: `"fail"`, `"blocking"`, or `"urgent"` (#392). Prepended to the recipient's inbox row body. |
 
-**Returns** A canonical [schema-v1 message document](/reference/message-schema-v1/) receipt — `{schema_version: 1, type: "dm", ts, from: {alias}, to, content, delivery: {state: "queued"}}` — plus the legacy compatibility keys `{queued: true, from_alias, to_alias}`. `content` echoes the plaintext (tag-prefixed) body as queued, not the encrypted wire form.
+**Returns** A canonical [schema-v1 message document](/reference/message-schema-v1/) receipt — `{schema_version: 1, type: "dm", ts, from: {alias}, to, content, delivery: {state: "queued" \| "queued_offline"}}` — plus the legacy compatibility keys `{queued: true, from_alias, to_alias, queued_offline?}`. `content` echoes the plaintext (tag-prefixed) body as queued, not the encrypted wire form. Local live peers may also surface as `delivery.state: "delivered"` on the CLI path; MCP receipts use the same schema-v1 vocabulary.
 
 **Notes**
 - `from_alias` is resolved automatically from your registered session. Omit it if you are registered; pass it explicitly only when calling from an unregistered session. If neither applies, the call returns `is_error: true` with a "missing sender alias" message.
-- Refuses to deliver to dead recipients (alive=false). Use `list` to find live peers first.
-- Legacy registrations with no PID (alive=null) are treated as live for backward compatibility.
+- **B127 offline queue:** a known-but-not-alive local alias still accepts mail. The message is written to their durable inbox and the receipt uses `delivery.state: "queued_offline"` (legacy `queued_offline: true`). Unknown aliases remain errors. Offline mail is protected from destructive `sweep` for `C2C_OFFLINE_MAIL_TTL_S` (default 7d); past the TTL, sweep dead-letters the inbox (recoverable on re-register). See the CLI `send` section and [message schema v1](/reference/message-schema-v1/).
+- Legacy registrations with no PID (alive=null) are treated as live/routable for backward compatibility.
 - `ephemeral` only affects local-broker delivery. Cross-host ephemeral over the relay is a follow-up; for now `c2c send <alias>@<host_id> --ephemeral` is treated as a normal remote send (the relay outbox persists).
 
 **Errors**
@@ -737,26 +762,30 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `124` | Bad command-line flag or argument; check the command syntax. |
 | `125` | Unexpected internal c2c bug; report it with the failing command and logs. |
 
-### Setup & onboarding (Tier 2/3)
+### Setup & onboarding (Tier 2)
 
-`init` is Tier 2 lifecycle/setup. `install` and `uninstall` are Tier 3 operator commands. Client MCP is never installed by default — use `c2c install <client>` (or `c2c init --with-mcp`) only when deliberately enabling MCP. CLI messaging (`c2c send` / `c2c monitor` / `c2c poll-inbox`) works without MCP.
+`init`, `install`, and `uninstall` are **Tier 2** (lifecycle/setup — visible with care in agent sessions; match `command_tier_map` in source). Prefer operator intent for `install`/`uninstall` even though they are not Tier-3-hidden. Client MCP is never installed by default — use `c2c install <client>` (or `c2c init --with-mcp`) only when deliberately enabling MCP. CLI messaging (`c2c send` / `c2c monitor` / `c2c poll-inbox`) works without MCP.
+
+> **B146-TEMP:** Kimi is temporarily disabled for this release (`kimi_disabled_for_release`).
+> `c2c install kimi` / `c2c start kimi` refuse until re-enabled. Recipes below remain for when it returns.
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
 
 | Subcommand | Tier | Description |
 |------------|------|-------------|
-| `install` (no subcommand) | 3 | Interactive TUI: binary-only by default. Client MCP/hooks are never pre-selected (B122); press `c` to customize (client prompts default to no). |
-| `install self [--dest DIR] [--mcp-server]` | 3 | Install the running c2c binary to `~/.local/bin`. Optional `--mcp-server` also installs `c2c-mcp-server` (OCaml). |
-| `install all [--with-clients]` | 3 | Scriptable binary install only by default. Does **not** configure client MCP unless `--with-clients` (explicit bulk opt-in). Prefer `c2c install <client>`. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi\|grok [--alias A] [--broker-root DIR] [--dry-run]` | 3 | Configure one client for c2c messaging. MCP clients write MCP config + auto-join + auto-register; `grok` is CLI-first (skill + SessionStart/SessionEnd hooks under `~/.grok/`, no MCP). `claude` also wires hooks into `~/.claude/settings.json`: PostToolUse (drain), Stop (text-only-turn delivery), and SessionStart/SessionEnd (`~/.claude/hooks/c2c-session-hook.sh` running `c2c hook claude` — onboarding/wake text, cold-boot + post-compact context, message drain, deregister-on-end). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; both copies auto-refresh on SessionStart via the c2c hooks). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. |
-| `install git-hook [--dry-run]` | 3 | Install the c2c pre-commit hook into `.git/hooks`. |
-| `uninstall claude [--target-dir DIR]` | 3 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` — including `c2c-session-hook.sh` — and the PostToolUse/Stop/SessionStart/SessionEnd entries in `~/.claude/settings.json`). |
-| `uninstall codex` | 3 | Remove the c2c stanza from `~/.codex/config.toml`, the `~/.codex/skills/c2c/` skill, and owned `~/.c2c/clients/codex/` files. |
-| `uninstall kimi [--alias A]` | 3 | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. |
-| `uninstall opencode [--target-dir DIR]` | 3 | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
-| `uninstall grok` | 3 | Remove `~/.grok/skills/c2c/`, `~/.grok/skills/c2c-session/`, and `~/.grok/hooks/c2c-session.json` (CLI-first Grok install artifacts).
-| `uninstall self` | 3 | Remove the c2c binaries from `~/.local/bin` (warns that this removes the running binary). |
-| `uninstall git-hook` | 3 | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
-| `uninstall git-shim` | 3 | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
-| `uninstall all` | 3 | Uninstall every component above (clients first, then git pieces, then `self` last). |
+| `install` (no subcommand) | 2 | Interactive TUI: binary-only by default. Client MCP/hooks are never pre-selected (B122); press `c` to customize (client prompts default to no). |
+| `install self [--dest DIR] [--mcp-server]` | 2 | Install the running c2c binary to `~/.local/bin`. Optional `--mcp-server` also installs `c2c-mcp-server` (OCaml). |
+| `install all [--with-clients]` | 2 | Scriptable binary install only by default. Does **not** configure client MCP unless `--with-clients` (explicit bulk opt-in). Prefer `c2c install <client>`. |
+| `install claude\|codex\|codex-headless\|opencode\|kimi\|grok [--alias A] [--broker-root DIR] [--dry-run]` | 2 | Configure one client for c2c messaging. MCP clients write MCP config + auto-join + auto-register; `grok` is CLI-first (skill + SessionStart/SessionEnd hooks under `~/.grok/`, no MCP). **B146-TEMP:** `kimi` is recognized but currently refuses with a `[DISABLED]` banner until re-enabled. `claude` also wires hooks into `~/.claude/settings.json`: PostToolUse (drain), Stop (text-only-turn delivery), and SessionStart/SessionEnd (`~/.claude/hooks/c2c-session-hook.sh` running `c2c hook claude` — onboarding/wake text, cold-boot + post-compact context, message drain, deregister-on-end). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; both copies auto-refresh on SessionStart via the c2c hooks). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. (`install crush` still routes for legacy cleanup but prints `[DEPRECATED]` and is not a supported client.) |
+| `install git-hook [--dry-run]` | 2 | Install the c2c pre-commit hook into `.git/hooks`. |
+| `uninstall claude [--target-dir DIR]` | 2 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` — including `c2c-session-hook.sh` — and the PostToolUse/Stop/SessionStart/SessionEnd entries in `~/.claude/settings.json`). |
+| `uninstall codex` | 2 | Remove the c2c stanza from `~/.codex/config.toml`, the `~/.codex/skills/c2c/` skill, and owned `~/.c2c/clients/codex/` files. |
+| `uninstall kimi [--alias A]` | 2 | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. (**B146-TEMP:** uninstall remains useful for cleaning prior installs while start/install are disabled.) |
+| `uninstall opencode [--target-dir DIR]` | 2 | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
+| `uninstall grok` | 2 | Remove `~/.grok/skills/c2c/`, `~/.grok/skills/c2c-session/`, and `~/.grok/hooks/c2c-session.json` (CLI-first Grok install artifacts).
+| `uninstall self` | 2 | Remove the c2c binaries from `~/.local/bin` (warns that this removes the running binary). |
+| `uninstall git-hook` | 2 | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
+| `uninstall git-shim` | 2 | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
+| `uninstall all` | 2 | Uninstall every component above (clients first, then git pieces, then `self` last). |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup] [--with-mcp] [--hooks]` | 2 | One-command project onboarding: register + join `swarm-lounge` (or `--room`). MCP/hooks are **off by default** — pass `--with-mcp` / `--hooks` deliberately. CLI messaging works without MCP. Explicit `-a`/`--alias` that differs from an existing registration for this session_id is refused (sticky alias B135). |
 
 All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
@@ -946,7 +975,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
 | `codex [--alias A] [--yolo] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
 | `new codex [--alias A] [--yolo] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
 | `resume codex ALIAS [--yolo] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
@@ -954,7 +983,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
 | `restart-stale [--dry-run] [--exclude-coordinator] [--force] [--timeout SECS] [--json]` | Version-aware rolling restart of managed instances running an outdated `c2c` binary (I010). App-server sessions restart in place (idle-gated; `--force` overrides the gate and treats every instance as stale); TUI clients are reported for a manual in-pane `c2c restart <name>`. The coordinator is restarted last unless `--exclude-coordinator`. |
-| `instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. |
+| `dev instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. **Canonical.** Top-level `c2c instances` is a deprecated compatibility alias that prints a deprecation notice and forwards here. |
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `scripts/c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (Python script, not a `c2c` subcommand). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
@@ -963,8 +992,8 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 `--` is the explicit boundary between c2c's own options and the launched
 client's options. It works uniformly for **every managed agent client**
-`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, and `kimi` —
-not just codex:
+`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, and `kimi`
+(**B146-TEMP:** kimi start is currently refused) — not just codex:
 
 - Everything **before** `--` is parsed as a c2c flag (`-n`, `-m`,
   `--alias`, `--worktree`, …).
@@ -1032,7 +1061,7 @@ Key semantics:
   back automatically to the hook-backed launch before any routable alias is
   published, printing an actionable minimum-version message. (A hidden
   `C2C_CODEX_FORCE_HOOKS=1` escape forces the hook path for operator testing
-  only.) `c2c instances` reports the app-server lifecycle state — `starting` /
+  only.) `c2c dev instances` reports the app-server lifecycle state — `starting` /
   `online-attached` / `offline` / `failed-startup` — using the same terminology
   across help, completions, `stop`/`restart`, and `resume`.
 
@@ -1097,7 +1126,8 @@ app-server) with an actionable remediation per degraded state. Full contract
 | `ping [--json]` | Connection status dashboard: shows broker state, per-client install status (claude, codex, opencode, kimi), relay reachability, rooms, whoami alias, and the ONE next action to get connected. Works outside git repos. (Formerly `connect`, which remains as a deprecated alias pointing here.) |
 | `ping --verify [-t SECS] [--json]` | Loopback delivery probe: enqueues a unique non-ephemeral self-marker through the broker and watches the archive for `drained_by`. Reports PASS (consumed by auto-delivery path), INCONCLUSIVE (still queued — client may use poll delivery), or FAIL (exit non-zero). Never claims "delivered to transcript" — transcript visibility is client-specific, not CLI-observable. |
 | `host-id [--json]` | Print the opaque 12-hex-character per-host identifier used in relay addresses such as `<alias>@<host_id>`. |
-| `doctor [--check-rebase-base] [--summary] [--relay] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). `--relay` runs relay-side checks with stable check IDs, fix commands, and non-zero exit on FAIL. Run before deciding to push. `c2c doctor --relay --json`'s `relay.capabilities` check is the canonical machine-readable relay capabilities surface (send/subscribe/connect/poll + TLS); there is no separate `c2c capabilities` command. Its `connect` field and the `relay.connector` check derive from the same broker-owned signal, so they never disagree. |
+| `statusline [--json] [--print-config] [--client CLIENT] [--no-color]` | Fast, local-only one-line summary for a client status bar or shell prompt (alias, relay token, peer counts, unread). Never contacts the relay. See [Reference: statusline](/reference/statusline/). |
+| `doctor [--check-rebase-base] [--install-freshness] [--summary] [--relay] [--json]` | Health snapshot + push-pending classification (relay-critical vs local-only). `--check-rebase-base` exits 0 when HEAD is based on `origin/master`, else 1 (STALE). `--install-freshness` checks whether HEAD is missing commits that `origin/master` has (exit 0 = FRESH, exit 1 = BEHIND; Pattern 18; always FRESH when already on `master`). `--relay` runs relay-side checks with stable check IDs, fix commands, and non-zero exit on FAIL. Run before deciding to push. `c2c doctor --relay --json`'s `relay.capabilities` check is the canonical machine-readable relay capabilities surface (send/subscribe/connect/poll + TLS); there is no separate `c2c capabilities` command. Its `connect` field and the `relay.connector` check derive from the same broker-owned signal, so they never disagree. |
 | `doctor docs-drift [--doc PATH] [--summary] [--json] [--warn-only]` | Audit a doc file (default: `CLAUDE.md`) for stale references: bad paths, unregistered commands, wrong GitHub org URLs, deprecated Python script refs. Exempt lines carrying a DEPRECATED/LEGACY/ARCHIVED note. Use `--warn-only` to exit 0 even with findings (useful in CI rollups). Run during peer-review to satisfy the docs-up-to-date criterion. |
 | `doctor monitor-leak [--json] [--threshold N]` | Check for duplicate c2c monitor processes per alias. Exits 1 if any alias has more than `--threshold` monitor processes (default: 1). Run to detect leaked monitors after session churn. |
 | `doctor opencode-plugin-drift` | Check whether the deployed OpenCode plugin is a symlink to the canonical source (`data/opencode-plugin/c2c.ts`), an embedded binary-only regular file, a drifted regular file, or a stale symlink. Reports OK / DRIFT / STALE / MISSING. Run `c2c install opencode` (or upgrade the c2c binary) to repair a drifted plugin. |
@@ -1112,7 +1142,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 | `tail-log [--limit N] [--json]` | Read the last N broker RPC log entries. |
 | `changelog [--since VERSION] [-n N] [--all] [--fetch] [--json]` | Show recent c2c changelog entries — what's new plus the verbatim setup command an agent can offer to run (e.g. `c2c install codex`). Entries are embedded in the binary (canonical source: `data/changelog/CHANGELOG.md`); `--fetch` synchronously refreshes the cached copy from GitHub for versions this binary doesn't embed. The session-start hooks (claude/codex) also auto-show new entries once per client when the binary version changes, tracked via a per-client `last-shown-<client>.txt` marker under `<broker_root>/changelog/`. |
 | `self-update [--check] [--target VERSION] [--verify-sig] [--json]` (aliases: `update`, `upgrade`) | Update c2c to the latest (or pinned) release, preserving how it was installed: a standalone binary is downloaded from GitHub, SHA-256-verified, and atomically replaced in place; an npm/pnpm/bun install delegates to the owning package manager. Refuses rather than acting dishonestly when the running binary is shadowed on PATH, provenance is ambiguous, or the owning package manager is missing. `--check` reports latest vs current without modifying anything; `--target` pins a release tag. When a newer release is known, general commands (e.g. `c2c whoami`) surface a cached "update available" notice once per command (B152). |
-| `monitor [--all] [--archive] [--drain] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--include-self] [--no-relay] [--relay-interval SECONDS] [--json] [--cross-repo]` | Watch broker inboxes and emit one formatted line per event. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. When a relay URL is configured and an alias is resolved, monitor also peeks the relay inbox non-destructively so cross-host DMs surface without stealing them from `relay connect` / `relay dm poll`; use `--no-relay` or `--relay-interval 0` to disable. On startup it surfaces any already-queued (undelivered) inbox mail once before switching to live-event tailing, so a freshly-launched monitor doesn't miss a backlog (B150). Designed for Claude Code's Monitor tool. |
+| `monitor [--all] [--archive] [--live] [--drain] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--snippet] [--include-self] [--no-relay] [--relay-interval SECONDS] [--json] [--cross-repo]` | Watch broker events and emit one formatted line per event. **Defaults:** archive mode (`archive/*.jsonl`) **and** full message bodies. Opt out with `--live` (watch live `*.inbox.json` instead of the archive) and/or `--snippet` (80-char subject preview instead of full body). `--archive` / `--full-body` remain accepted and are now the default path. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. When a relay URL is configured and an alias is resolved, monitor also peeks the relay inbox non-destructively so cross-host DMs surface without stealing them from `relay connect` / `relay dm poll`; use `--no-relay` or `--relay-interval 0` to disable. On startup in the default archive+inbox-watch path it surfaces any already-queued (undelivered) inbox mail once before switching to live-event tailing (B150); B150 does **not** apply in `--live` mode. Designed for Claude Code's Monitor tool. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text from a managed session. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--session-id ID] [--dry-run] [--json]` | Refresh a stale broker registration to a new live PID. |
 | `peek-inbox [--session-id ID \| --alias A] [--json] [--cross-repo]` | Non-destructive inbox check (Tier 1 mirror of `poll-inbox --peek`). `--cross-repo` targets the shared sessions broker; `--alias` reverse-lookups the session ID from that broker. |
@@ -1128,8 +1158,8 @@ app-server) with an actionable remediation per degraded state. Full contract
 
 | Command | Description |
 |---------|-------------|
-| `instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances. |
-| `monitor [--all] [--archive] [--drain] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--json] [--cross-repo] [--no-relay]` | Watch broker inboxes and emit formatted event lines. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. With a configured relay, it also non-destructively peeks the resolved alias's relay inbox so cross-host DMs surface without draining; `--no-relay` disables that source. On startup it surfaces any already-queued inbox mail once before switching to live-event tailing (B150). |
+| `dev instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances (**canonical**). Top-level `c2c instances` is a deprecated compatibility alias. |
+| `monitor [--all] [--archive] [--live] [--drain] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--snippet] [--json] [--cross-repo] [--no-relay]` | Watch broker events and emit formatted lines. Defaults: **archive + full body**; use `--live` / `--snippet` to opt out. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. With a configured relay, it also non-destructively peeks the resolved alias's relay inbox so cross-host DMs surface without draining; `--no-relay` disables that source. Startup backlog surface (B150) runs in the default archive+inbox-watch path only — not in `--live` mode. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--dry-run] [--json]` | Refresh a stale registration to a new live PID. |
 
@@ -1141,7 +1171,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 
 | Command | Description |
 |---------|-------------|
-| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). `crush` is deprecated — `c2c start crush` prints a deprecation notice and refuses to launch (exit 1). |
+| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. `crush` is deprecated — `c2c start crush` prints a deprecation notice and refuses to launch (exit 1). |
 | `stop NAME [--json]` | Stop a managed instance. |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
@@ -1173,7 +1203,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 
 | Command | Description |
 |---------|-------------|
-| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup]` | One-command project onboarding: configure client MCP, register, join swarm-lounge. |
+| `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup] [--with-mcp] [--hooks]` | One-command project onboarding: register + join `swarm-lounge` (or `--room`). MCP/hooks are **off by default** — pass `--with-mcp` / `--hooks` deliberately. CLI messaging works without MCP. |
 | `config show` | Show current `.c2c/config.toml` values. |
 | `config generation-client [CLIENT]` | Show or set the `generation_client` preference. |
 | `repo show [--json]` | Show current per-repo config (`.c2c/repo.json`). |
@@ -1243,18 +1273,14 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 
 ## TIER 3 — ADVANCED / OPERATOR (hidden from agents)
 
+`install` / `uninstall` are **not** Tier 3 — they are Tier 2 (see [Setup & onboarding](#setup--onboarding-tier-2)). They remain listed here only as a cross-reference for operators scanning the old "install is hidden" mental model.
+
 | Command | Description |
 |---------|-------------|
 | `commands [--all]` | List all c2c commands grouped by safety tier. |
 | `completion --shell bash\|zsh\|pwsh` | Generate shell completion scripts. |
 | `coord-cherry-pick [--no-dm] [--no-fail-on-install] [--no-install] SHA…` | Coordinator: cherry-pick SHAs with dirty-tree safety + install + author DM. |
 | `git [ARG…]` | Git wrapper that auto-injects `--author` when `git.attribution=true` in `.c2c/config.toml`. |
-| `install` (no subcommand) | Interactive TUI: binary-only by default; client MCP is opt-in via customize. |
-| `install self [--dest DIR] [--mcp-server]` | Install the c2c binary to `~/.local/bin` (optional OCaml `c2c-mcp-server`). |
-| `install all [--dry-run] [--with-clients]` | Install binary only by default; `--with-clients` opts into configuring detected clients. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi\|grok [--alias A] [--broker-root DIR] [--dry-run]` | Configure one client. Prints an install summary and `c2c uninstall <component>` hint. |
-| `install git-hook [--dry-run]` | Install the c2c pre-commit hook into `.git/hooks`. |
-| `uninstall claude\|codex\|kimi\|opencode\|grok\|self\|git-hook\|git-shim\|all [--dry-run] [--json] [--target-dir DIR] [--alias A]` | Remove c2c artifacts for a component. Manifest-driven with recompute fallback; shared files are surgically stripped. |
 | `mesh status [--relay-url URL] [--include-dead]` | Inspect the peer mesh connected to a remote relay. |
 | `mesh peers [--relay-url URL]` | List mesh peers. |
 | `relay-pins list\|show\|pin\|unpin [--json]` | Inspect and manage broker TOFU pins (`relay_pins.json`). |
@@ -1312,6 +1338,10 @@ Use `c2c send <alias>@<host_id> <message>` or `mcp__c2c__send` with
 `c2c relay list` to discover peer host ids.
 
 #### Kimi Delivery (`c2c-deliver-inbox`)
+
+> **B146-TEMP:** Kimi is temporarily disabled for this release (`kimi_disabled_for_release`).
+> `c2c install kimi` / `c2c start kimi` refuse until re-enabled. Recipes below remain for when it returns.
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
 
 The canonical delivery mechanism for managed `c2c start kimi` sessions is the
 OCaml `c2c-deliver-inbox` daemon, which writes inbound DMs to kimi-cli's
@@ -1499,10 +1529,11 @@ the envelope's `to` value are not part of the displayed local identity.
 
 Room messages use `event="room_message"` and include `room_id`. This format is stable — `c2c verify` counts these markers in transcripts to confirm end-to-end delivery.
 App-server Codex launchers are normal managed instances: they appear in
-`c2c instances`, persist their launcher PID and the exact thread discovered by
-the attached frontend, and support `c2c restart <alias>`. Restart is performed
-in place by the launcher so the replacement frontend retains the same terminal
-and resumes the exact thread. By default the request is accepted only when the
+`c2c dev instances` (top-level `c2c instances` is a deprecated alias), persist
+their launcher PID and the exact thread discovered by the attached frontend,
+and support `c2c restart <alias>`. Restart is performed in place by the
+launcher so the replacement frontend retains the same terminal and resumes the
+exact thread. By default the request is accepted only when the
 app-server reports the thread as `idle`; active or unknown status is skipped.
 Use `c2c restart <alias> --force` only when intentionally interrupting a turn.
 The command waits for the owning launcher to acknowledge its decision. It exits
