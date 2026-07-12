@@ -314,9 +314,13 @@ watch-e2e:
 # B013 codex delivery regression guard (background-safe, no codex process):
 # drives the REAL c2c-deliver-inbox in managed-codex mode
 # (--client codex --xml-output-fd N --inotify --loop) against a seeded broker
-# and asserts the XML sideband frame lands on the output fd. The live
-# tmux/codex round-trip lives in scripts/test-codex-delivery-tmux-e2e.sh
-# (run its 'run' mode from inside tmux; 'preflight' is the safe default).
+# and asserts the XML sideband frame lands on the output fd. NOTE: the codex
+# --xml-input-fd delivery sideband was removed upstream (2026-07-06); the live
+# codex round-trip is now the two B144 transport harnesses —
+# scripts/codex-hooks-live-e2e.py (hook+CLI) and
+# scripts/codex-managed-appserver-live-e2e.py (managed app-server) — each
+# gated + preflight/run (see their headers). The obsolete XML-sideband tmux
+# script scripts/test-codex-delivery-tmux-e2e.sh is retained only as a stub.
 codex-deliver-e2e:
     scripts/dune-build-locked.sh build ./ocaml/cli/c2c.exe ./ocaml/cli/c2c_deliver_inbox.exe
     scripts/test-codex-deliver-inbox-e2e.sh

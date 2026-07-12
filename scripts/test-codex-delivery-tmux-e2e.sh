@@ -2,11 +2,20 @@
 # OBSOLETE (2026-07-10, codex-xmlfd-removal): this test exercised the managed
 # XML sideband path (codex --xml-input-fd + c2c-deliver-inbox --xml-output-fd).
 # Upstream codex removed the flag and the xml_fd plumbing was removed from
-# c2c; codex delivery is via config.toml hooks now (`c2c hook codex`,
-# delivery_mode=hooks). Kept for reference until a hooks-based tmux e2e
-# replaces it. Preflight/run below cannot succeed against current binaries.
-echo "OBSOLETE: the codex --xml-input-fd delivery path was removed;" >&2
-echo "codex delivery is via config.toml hooks now (see docs/client-delivery.md)." >&2
+# c2c; codex delivery is via config.toml hooks (`c2c hook codex`) with the
+# managed app-server transport as the default.
+#
+# REPLACED BY (B144, 2026-07-12) — two gated live transport harnesses that
+# drive a REAL codex round-trip (each is preflight/run, run from inside tmux):
+#   * hook+CLI transport:      scripts/codex-hooks-live-e2e.py
+#       C2C_CODEX_HOOKS_LIVE=1 scripts/codex-hooks-live-e2e.py run
+#   * managed app-server:      scripts/codex-managed-appserver-live-e2e.py
+#       C2C_CODEX_APPSERVER_LIVE=1 scripts/codex-managed-appserver-live-e2e.py run
+# In-suite skip proof + gate wiring: ocaml/test/test_c2c_codex_live_e2e.ml.
+echo "OBSOLETE: the codex --xml-input-fd delivery path was removed." >&2
+echo "Use the B144 live harnesses instead:" >&2
+echo "  scripts/codex-hooks-live-e2e.py            (hook+CLI transport)" >&2
+echo "  scripts/codex-managed-appserver-live-e2e.py (managed app-server)" >&2
 exit 2
 
 # B013 e2e: codex inbound c2c delivery in a LIVE tmux session, driven via
