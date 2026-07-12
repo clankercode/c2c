@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-12T03:02:26Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T03:30:13Z"
 complexity: medium
 created_at: "2026-07-12T03:00:14Z"
 depends_on: []
+duration_minutes: 27.796237184766667
 estimate_hours: 1
 id: B147
 priority: high
 started_at: "2026-07-12T03:02:26Z"
-status: in_progress
+status: done
 tags: []
 title: Expose some simple stats via relay.c2c.im like number of messages sent, number of unique machine ids seen, number of unique agent aliases, etc. Should show stats for 1d, 7d, 28d, and ever.
-updated_at: "2026-07-12T03:02:26Z"
+updated_at: "2026-07-12T03:30:13Z"
 ---
 
 Expose some simple stats via relay.c2c.im like number of messages sent, number of unique machine ids seen, number of unique agent aliases, etc. Should show stats for 1d, 7d, 28d, and ever.
