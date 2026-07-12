@@ -87,3 +87,24 @@ alias (`codex-yam-piano-nqpk`) in this live run.  It did not affect B167:
 delivery continued through the advertised `codex-arrow-tala-b966` alias and
 the app-server's auto-turn.  It remains a B166 identity-stability follow-up;
 the raw proof should not be read as resolving that separate alias banner.
+
+## B166 follow-up: omitted default broker-root mapping
+
+The B166 live mismatch was caused by
+`managed_session_id_from_codex_thread`: it required every managed instance
+config to serialize `broker_root`.  Current configs intentionally omit that
+field when it is the resolver default, so a SessionStart payload thread could
+not map back to the eager app-server registration and the hook minted a second
+alias.  The resolver now treats an absent field as the current default broker.
+
+Regression coverage creates an app-server registration and managed Codex
+thread mapping whose config omits `broker_root`; the hook must keep the
+launcher alias and must not register the payload thread.  It passes alongside
+the B137 adoption test.
+
+Live proof with commit `8ce06f0c`: a fresh managed app-server advertised
+`codex-flute-zinc-ef42`, and a local send to that alias succeeded.  On its
+first auto-turn the TUI SessionStart context said `connected as
+codex-flute-zinc-ef42 through the managed Codex app-server`; no explicit
+`c2c init` occurred and no second generated hook alias appeared.  The same
+turn contained the full arrival envelope and processed it as untrusted data.
