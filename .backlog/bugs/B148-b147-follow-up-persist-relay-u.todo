@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-12T05:35:45Z"
+depends_on: []
+estimate_hours: 1
+id: B148
+priority: high
+status: pending
+tags: []
+title: 'B147 follow-up: persist relay usage stats on the in-memory backend (survive restart via persist_dir), add current-client stats (currently-connected leases: count, distinct machines, by client_type) to GET /stats, and add a humanized generated_ago field next to generated_at computed at serve time'
+updated_at: "2026-07-12T05:35:45Z"
+---
+
+B147 follow-up: persist relay usage stats on the in-memory backend (survive restart via persist_dir), add current-client stats (currently-connected leases: count, distinct machines, by client_type) to GET /stats, and add a humanized generated_ago field next to generated_at computed at serve time

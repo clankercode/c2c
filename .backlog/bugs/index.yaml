@@ -144,3 +144,4 @@ bugs:
     - file: B145-kimi-notifier-survives-c2c-res.todo
     - file: B146-disable-kimi-support-temporari.todo
     - file: B147-expose-some-simple-stats-via-r.todo
+    - file: B148-b147-follow-up-persist-relay-u.todo
