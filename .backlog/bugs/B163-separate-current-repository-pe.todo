@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-12T14:35:05Z"
+depends_on: []
+estimate_hours: 2
+id: B163
+priority: medium
+status: pending
+tags:
+    - statusline
+    - peers
+    - broker
+    - cross-repo
+    - ux
+title: Separate current-repository peers from machine-wide peers in c2c statusline
+updated_at: "2026-07-12T14:35:05Z"
+---
+Problem
+
+`c2c statusline` currently summarizes peer state without clearly separating peers registered in the current repository broker from peers reachable elsewhere on the machine. A user can therefore mistake a machine-wide/cross-repo peer count for the local swarm, especially now that the sessions broker provides cross-repo discovery.
+
+Acceptance criteria
+
+1. Define and document the distinction between current-repository peers and machine-wide peers: current repo broker, shared sessions broker, and relay peers where applicable.
+2. Render separate concise statusline segments/counts for repo-local peers and machine-wide peers, with zero values handled compactly and unambiguously.
+3. Keep the statusline fast and local: no network calls, bounded stdin handling, fail-open behavior, and no unbounded scans.
+4. Ensure aliases/peer lists do not double-count a peer visible through multiple routes; define precedence and test it.
+5. Add JSON fields with stable names for both scopes, update human-rendering tests and statusline documentation/config examples, and verify behavior from sessions in two repositories.
+
+Blockers
+
+Coordinate terminology with the c2c CLI `list`/`instances` surfaces and the shared sessions-broker contract so statusline labels do not imply relay reachability when only local state is known.

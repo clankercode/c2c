@@ -159,3 +159,4 @@ bugs:
     - file: B160-profile-and-simplify-the-data.todo
     - file: B161-make-pi-c2c-resolve-and-use-re.todo
     - file: B162-claude-stop-hook-c2c-delivery.todo
+    - file: B163-separate-current-repository-pe.todo
