@@ -66,3 +66,24 @@ Focused verification:
   the fix).
 - `test_c2c_hook_codex.exe -- test hook-codex 13` passes; it preserves the
   managed app-server hook adoption/no-drain contract.
+
+## B167 post-fix live tmux proof
+
+With local binary commit `1714a710` installed, the same tmux workflow launched
+`codex-arrow-tala-b966` at `ws://127.0.0.1:38785`.  Before any frontend user
+turn, `c2c list --json` showed it alive and routable under its advertised alias
+with session id `a6811acf-eaf6-4640-bd85-d6db240be9ba`.  A local
+`c2c send codex-arrow-tala-b966 ...` succeeded.
+
+The remote TUI then displayed the full envelope on arrival and executed exactly
+one gated steering turn.  Its `codex-deliver.log` records one pass with
+`injected_count:1`, `turn_started:"019f56f7-8311-7a80-9972-0cfd61ca0b84"`, and
+one batch/message id; the following pass records `queued_reason:"active_turn"`;
+the subsequent pass completes that same batch.  This proves arrival injection,
+one eligible-local idle auto-turn, and no repeated turn for the same mail.
+
+The remote Codex SessionStart hook still printed a different generated hook
+alias (`codex-yam-piano-nqpk`) in this live run.  It did not affect B167:
+delivery continued through the advertised `codex-arrow-tala-b966` alias and
+the app-server's auto-turn.  It remains a B166 identity-stability follow-up;
+the raw proof should not be read as resolving that separate alias banner.
