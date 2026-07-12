@@ -34,6 +34,7 @@ let all_cmds =
   ; C2c_health_cmd.connect (* deprecated alias for ping — B095 *)
   ; C2c_host_cmd.setcap
   ; C2c_health_cmd.status
+  ; C2c_statusline_cmd.statusline
   ; C2c_health_cmd.verify
   ; C2c_health_cmd.host_id
   ; C2c_git_cmd.git

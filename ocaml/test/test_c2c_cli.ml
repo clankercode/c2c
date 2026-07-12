@@ -3878,6 +3878,70 @@ let test_migrate_broker_xdg_live_silences_warning () =
       check bool "post-migrate stderr has no split-brain warning" false
         (string_contains err "migrate-broker"))
 
+(* B155: `c2c statusline` — fast, pure-local one-line state summary for a
+   client status line. These exercise the real CLI path end-to-end against a
+   temp broker. *)
+let test_statusline_json_reports_state () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let live_pid = Unix.getpid () in
+      C2c_mcp.Broker.register broker ~session_id:"sl-self-sid"
+        ~alias:"sl-selftest" ~pid:(Some live_pid) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker ~session_id:"sl-peer-sid"
+        ~alias:"sl-peertest" ~pid:(Some live_pid) ~pid_start_time:None ();
+      (* stdin is EOF (/dev/null), so the alias resolves from the env
+         session id rather than a Claude stdin JSON blob. *)
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=sl-self-sid \
+                 c2c statusline --json < /dev/null"
+                (Filename.quote dir)))
+      in
+      check int "statusline --json exits 0" 0 rc;
+      match Yojson.Safe.from_string out with
+      | `Assoc kvs ->
+          let get k = List.assoc_opt k kvs in
+          check bool "registered is true" true (get "registered" = Some (`Bool true));
+          check bool "alias resolves from session id" true
+            (get "alias" = Some (`String "sl-selftest"));
+          check bool "counts both live registrations" true
+            (get "peers_alive" = Some (`Int 2))
+      | _ | (exception _) ->
+          Alcotest.failf "statusline --json did not emit an object: %s" out)
+
+let test_statusline_reads_stdin_session_json () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"sl-stdin-sid"
+        ~alias:"sl-stdintest" ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let jsonfile = Filename.concat dir "sess.json" in
+      let oc = open_out jsonfile in
+      output_string oc
+        {|{"session_id":"sl-stdin-sid","model":{"display_name":"TestModel"}}|};
+      close_out oc;
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s c2c statusline --json < %s"
+                (Filename.quote dir) (Filename.quote jsonfile)))
+      in
+      check int "statusline stdin --json exits 0" 0 rc;
+      check bool "alias resolves from stdin session_id" true
+        (string_contains out "sl-stdintest");
+      check bool "model display_name surfaced from stdin json" true
+        (string_contains out "TestModel"))
+
+let test_statusline_print_config () =
+  let rc, out = run_capture (c2c_cmd "c2c statusline --print-config") in
+  check int "statusline --print-config exits 0" 0 rc;
+  check bool "print-config mentions Claude statusLine hook" true
+    (string_contains out "statusLine");
+  check bool "print-config references c2c statusline" true
+    (string_contains out "c2c statusline")
+
 let () =
   Alcotest.run "c2c_cli"
     [ ( "broker_root_split_brain",
@@ -3895,6 +3959,11 @@ let () =
         ; ( "doctor output contains push status", `Quick, test_doctor_output_contains_push_status )
         ; ( "doctor output contains push verdict", `Quick, test_doctor_output_contains_push_verdict )
         ; ( "doctor output contains relay classification", `Quick, test_doctor_output_contains_relay_classification )
+        ] )
+    ; ( "statusline",
+        [ ( "statusline --json reports registration/alias/peers (B155)", `Quick, test_statusline_json_reports_state )
+        ; ( "statusline reads Claude stdin session JSON (B155)", `Quick, test_statusline_reads_stdin_session_json )
+        ; ( "statusline --print-config emits Claude snippet (B155)", `Quick, test_statusline_print_config )
         ] )
     ; ( "config_show",
         [ ( "config show exits 0", `Quick, test_config_show_exits_zero )
