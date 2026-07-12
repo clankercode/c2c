@@ -558,10 +558,37 @@ let pid_is_alive pid =
   try Unix.kill pid 0; true
   with Unix.Unix_error _ -> false
 
+(* The daemon's "comm" as set by [start_daemon] via [set_proc_name]. This
+   14-char string is under the kernel's TASK_COMM_LEN-1 (15-char) limit, so it
+   is stored VERBATIM in [/proc/<pid>/comm] (the kernel appends a trailing
+   newline that we trim). MUST stay byte-identical to the [set_proc_name]
+   argument below — this is the identity token we match on to avoid signalling
+   an unrelated same-UID process after PID reuse. *)
+let notifier_comm = "c2c-kimi-notif"
+
+(* Trimmed contents of [/proc/<pid>/comm], or [None] if unreadable. *)
+let proc_comm pid =
+  let path = Printf.sprintf "/proc/%d/comm" pid in
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () -> Some (String.trim (input_line ic)))
+  with _ -> None
+
+(* Identity check (B145 PID-reuse guard): [pid] is *our* notifier only if it is
+   alive AND its comm matches [notifier_comm]. Fail-CLOSED: an unreadable /proc
+   or any mismatch → [false]. A stale pidfile whose pid was reused by an
+   unrelated process must NEVER be treated as ours (else we'd SIGTERM/SIGKILL
+   that process). Liveness alone is not identity. *)
+let pid_is_our_notifier pid =
+  pid_is_alive pid &&
+  (match proc_comm pid with Some c -> c = notifier_comm | None -> false)
+
+(* "our notifier is running" — liveness AND identity, not liveness alone. *)
 let already_running alias =
   match read_pid (pidfile_path alias) with
-  | Some p when pid_is_alive p -> true
-  | _ -> false
+  | Some p -> pid_is_our_notifier p
+  | None -> false
 
 let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
   if already_running alias then None
@@ -615,19 +642,134 @@ let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
   end
 
 let stop_daemon ~alias =
-  match read_pid (pidfile_path alias) with
-  | None -> ()
+  (* Signal ONLY if the pidfile pid is confirmed to be our notifier (identity,
+     not just liveness) — defense-in-depth so a stale-pidfile PID-reuse case
+     never has us SIGTERM/SIGKILL an unrelated same-UID process. Either way the
+     (now-stale) pidfile is removed. *)
+  (match read_pid (pidfile_path alias) with
+   | None -> ()
+   | Some pid ->
+     if pid_is_our_notifier pid then begin
+       (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+       let deadline = Unix.gettimeofday () +. 3.0 in
+       let rec wait () =
+         if not (pid_is_alive pid) then ()
+         else if Unix.gettimeofday () < deadline then begin
+           Unix.sleepf 0.1; wait ()
+         end else
+           (try Unix.kill pid Sys.sigkill with _ -> ())
+       in
+       wait ()
+     end);
+  (try Sys.remove (pidfile_path alias) with _ -> ())
+
+(* ─── B145: upgrade-correctness (stale-binary detect + ensure_daemon) ──────
+
+   The notifier is spawned fork+setsid DETACHED with its own pidfile and is
+   deduped on startup via [already_running]. Before B145 this meant a notifier
+   that outlived a [c2c restart] (its pid was untracked by the supervisor) kept
+   running the OLD binary image indefinitely after [just install-all] — a
+   fresh [c2c start] saw [already_running]=true and left the stale daemon be.
+
+   Two-layer fix:
+   1. The supervisor now tracks the notifier pid and tears it down on
+      stop/restart (see c2c_start.ml) — so a clean restart cycles it onto the
+      new binary.
+   2. Belt-and-braces here: [ensure_daemon] compares the RUNNING notifier's
+      binary SHA against the installed binary SHA and kills+respawns a stale
+      one even on a bare [c2c start] with no clean stop. *)
+
+type notifier_start_decision =
+  | Start_fresh    (* nothing running → start a new daemon *)
+  | Skip_current   (* running on the installed binary (or SHA undeterminable) → leave it *)
+  | Respawn_stale  (* running on a DIFFERENT binary SHA → kill + respawn on the new binary *)
+
+(* Pure decision function (unit-tested). Fail-SAFE: when either SHA cannot be
+   determined we do NOT kill a working notifier — we [Skip_current], preserving
+   pre-B145 behavior rather than risking a needless delivery gap. Only a
+   confidently-observed SHA mismatch triggers a respawn. *)
+let decide_notifier_start ~running ~running_sha ~installed_sha =
+  if not running then Start_fresh
+  else
+    match running_sha, installed_sha with
+    | Some r, Some i when r <> i -> Respawn_stale
+    | _ -> Skip_current
+
+(* Read the running notifier's binary SHA via [/proc/<pid>/exe]. Opening that
+   magic symlink reads the ORIGINAL executable inode even after the on-disk
+   file has been replaced by an upgrade (the inode outlives the path), which is
+   exactly what we need to detect a stale-code daemon. Returns [None] when the
+   process is gone or /proc is unreadable / SHA cannot be computed. *)
+let running_binary_sha pid =
+  let path = Printf.sprintf "/proc/%d/exe" pid in
+  match C2c_mcp_helpers.best_effort_file_sha256 path with
+  | "unknown" -> None
+  | sha -> Some sha
+
+(* SHA of the binary THIS process is running — i.e. the just-installed image a
+   fresh notifier fork would execute. Read [/proc/self/exe] DIRECTLY (the magic
+   symlink resolves to the running inode; robust even if the readlink path would
+   carry a " (deleted)" suffix after an in-place replace). Falls back to the
+   readlink'd path, then [None]. *)
+let installed_binary_sha () =
+  match C2c_mcp_helpers.best_effort_file_sha256 "/proc/self/exe" with
+  | "unknown" ->
+    (match
+       C2c_mcp_helpers.best_effort_file_sha256
+         (C2c_mcp_helpers.best_effort_server_executable ())
+     with
+     | "unknown" -> None
+     | sha -> Some sha)
+  | sha -> Some sha
+
+(* Fixture hook (repo convention: external effects gated by env vars). When set,
+   these override the SHA sources so tests can drive [ensure_daemon] through the
+   Respawn_stale / Skip_current branches deterministically without a real
+   upgrade. Unset in production. *)
+let fixture_sha which =
+  match Sys.getenv_opt ("C2C_KIMI_NOTIFIER_FIXTURE_" ^ which ^ "_SHA") with
+  | Some s when String.trim s <> "" -> Some (String.trim s)
+  | _ -> None
+
+let ensure_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval = 2.0) () =
+  let pidfile = pidfile_path alias in
+  (* Identity gate FIRST (B145 PID-reuse guard). Treat the pidfile pid as the
+     running notifier ONLY if it is alive AND comm-matches. A dead pid OR a
+     live-but-reused (not-ours) pid means the pidfile is STALE: drop it (so
+     start_daemon won't dedup against it) and take Start_fresh. We only ever
+     read /proc/<pid>/exe or run Respawn_stale/stop_daemon on a CONFIRMED-ours
+     pid — so we can never signal an unrelated process, and Skip_current can
+     never hand a bogus/reused pid back up to the supervisor. *)
+  let ours =
+    match read_pid pidfile with
+    | Some p when pid_is_our_notifier p -> Some p
+    | Some _ -> (try Sys.remove pidfile with _ -> ()); None
+    | None -> None
+  in
+  match ours with
+  | None ->
+    (* nothing of ours running (incl. a just-cleaned stale pidfile) → fresh *)
+    start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ()
   | Some pid ->
-    if pid_is_alive pid then begin
-      (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
-      let deadline = Unix.gettimeofday () +. 3.0 in
-      let rec wait () =
-        if not (pid_is_alive pid) then ()
-        else if Unix.gettimeofday () < deadline then begin
-          Unix.sleepf 0.1; wait ()
-        end else
-          (try Unix.kill pid Sys.sigkill with _ -> ())
-      in
-      wait ()
-    end;
-    (try Sys.remove (pidfile_path alias) with _ -> ())
+    let running_sha =
+      match fixture_sha "RUNNING" with
+      | Some _ as s -> s
+      | None -> running_binary_sha pid
+    in
+    let installed_sha =
+      match fixture_sha "INSTALLED" with
+      | Some _ as s -> s
+      | None -> installed_binary_sha ()
+    in
+    (match decide_notifier_start ~running:true ~running_sha ~installed_sha with
+     | Skip_current | Start_fresh -> Some pid  (* running:true never yields Start_fresh *)
+     | Respawn_stale ->
+       let short s = match s with
+         | Some x -> String.sub x 0 (min 12 (String.length x))
+         | None -> "?" in
+       Printf.eprintf
+         "[kimi-notifier] running daemon (pid %d) is on a stale binary \
+          (running=%s installed=%s); cycling onto the new binary\n%!"
+         pid (short running_sha) (short installed_sha);
+       stop_daemon ~alias;
+       start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ())

@@ -42,8 +42,67 @@ val start_daemon :
 
 (** [stop_daemon ~alias] sends SIGTERM to the running notifier (tracked via
     pidfile), then SIGKILL after a 3s grace period. Safe to call when no
-    daemon is running. *)
+    daemon is running. Removes the pidfile. *)
 val stop_daemon : alias:string -> unit
+
+(** [pidfile_path alias] is the on-disk pidfile for the [alias] notifier
+    ([~/.local/share/c2c/kimi-notifiers/<alias>.pid]). Exposed for the
+    supervisor teardown wiring + tests. *)
+val pidfile_path : string -> string
+
+(** [already_running alias] returns [true] iff the notifier pidfile for
+    [alias] names a process that is alive AND whose comm matches the daemon's
+    ([notifier_comm]) — i.e. *our* notifier, not merely some live pid (guards
+    the PID-reuse footgun). Exposed for tests + the supervisor. *)
+val already_running : string -> bool
+
+(** The daemon's [/proc/<pid>/comm] value (as set via prctl PR_SET_NAME). This
+    14-char string is stored verbatim by the kernel (under the 15-char limit).
+    Identity token for [pid_is_our_notifier]. *)
+val notifier_comm : string
+
+(** [pid_is_our_notifier pid] is [true] iff [pid] is alive AND its
+    [/proc/<pid>/comm] equals [notifier_comm]. Fail-closed on any read failure
+    or mismatch. Used to avoid signalling an unrelated same-UID process after a
+    stale-pidfile PID reuse. *)
+val pid_is_our_notifier : int -> bool
+
+(** B145 upgrade-correctness. The detached notifier is deduped on startup, so
+    without this a daemon that outlives [c2c restart] keeps running stale code
+    after [just install-all]. *)
+type notifier_start_decision =
+  | Start_fresh   (** nothing running → start a new daemon *)
+  | Skip_current  (** running on the installed binary (or SHA undeterminable) → leave it *)
+  | Respawn_stale (** running on a DIFFERENT binary SHA → kill + respawn on the new binary *)
+
+(** [decide_notifier_start ~running ~running_sha ~installed_sha] is the pure
+    upgrade decision. Fail-safe: an undeterminable SHA on either side yields
+    [Skip_current] (never kills a working notifier); only a confidently-observed
+    mismatch yields [Respawn_stale]. *)
+val decide_notifier_start :
+  running:bool ->
+  running_sha:string option ->
+  installed_sha:string option ->
+  notifier_start_decision
+
+(** [ensure_daemon] behaves like [start_daemon] but is upgrade-aware: if a
+    notifier is already running for [alias] on a binary whose SHA differs from
+    the installed c2c binary, the stale daemon is killed and a fresh one spawned
+    on the new binary; if it is current, its pid is returned unchanged. Returns
+    the pid of the running (fresh or existing) daemon, or [None] on start
+    failure.
+
+    SHA sources can be overridden for tests via
+    [C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA] /
+    [C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA]. *)
+val ensure_daemon :
+  alias:string ->
+  broker_root:string ->
+  session_id:string ->
+  tmux_pane:string option ->
+  ?interval:float ->
+  unit ->
+  int option
 
 (** [run_once ~broker_root ~alias ~session_id ~tmux_pane] performs one drain
     cycle: read pending broker messages for [alias], emit each as a

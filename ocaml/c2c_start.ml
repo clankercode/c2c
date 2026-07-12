@@ -2081,6 +2081,10 @@ let outer_pid_path name = instance_dir name // "outer.pid"
 let inner_pid_path name = instance_dir name // "inner.pid"
 let deliver_pid_path name = instance_dir name // "deliver.pid"
 let poker_pid_path name = instance_dir name // "poker.pid"
+(* B145: the kimi notifier is spawned fork+setsid detached; track its pid as a
+   supervisor sidecar so `c2c stop`/`c2c restart` kill+respawn it (otherwise it
+   survives restart and runs stale code after an upgrade). *)
+let notifier_pid_path name = instance_dir name // "notifier.pid"
 let stderr_log_path name = instance_dir name // "stderr.log"
 let client_log_path name = instance_dir name // "client.log"
 let headless_thread_id_handoff_path name = instance_dir name // "thread-id-handoff.jsonl"
@@ -4436,6 +4440,8 @@ let run_outer_loop ~(name : string) ~(client : string)
 
       let deliver_pid = ref None in
       let poker_pid = ref None in
+      (* B145: detached kimi-notifier pid, tracked so cleanup cycles it. *)
+      let notifier_pid = ref None in
       (* Inner child PID — set after fork so the SIGTERM handler can kill it. *)
       let inner_child_pid = ref None in
 
@@ -4466,6 +4472,35 @@ let run_outer_loop ~(name : string) ~(client : string)
         with Unix.Unix_error _ -> ()
       in
 
+      (* B145: tear down the detached kimi notifier. The tracked pid may be our
+         own child (started this lifetime) OR a leftover orphan reparented to
+         init (Skip_current returned a pre-existing pid). So the waitpid reap is
+         GUARDED — an ECHILD from a non-child must not abort cleanup, and the
+         WNOHANG reap loop reaps our own child promptly (no zombie → no 3s
+         kill(0) stall). stop_daemon then removes the notifier's own pidfile so a
+         subsequent start does not dedup against a dead/reused pid. No-op for
+         non-kimi clients / when never started. *)
+      let stop_notifier () =
+        (match !notifier_pid with
+         | None -> ()
+         | Some p ->
+             (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
+             let rec reap n =
+               if n <= 0 then ()
+               else
+                 match (try Unix.waitpid [ Unix.WNOHANG ] p
+                        with _ -> (p, Unix.WEXITED 0)) with
+                 | 0, _ -> Unix.sleepf 0.05; reap (n - 1)
+                 | _, _ -> ()
+             in
+             reap 40;
+             (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ()));
+        (if client = "kimi" then
+           try C2c_kimi_notifier.stop_daemon
+                 ~alias:(Option.value alias_override ~default:name)
+           with _ -> ())
+      in
+
       let cleanup_and_exit code =
         (* Kill inner client's entire process group (opencode, node, c2c monitor, …)
            before cleaning up sidecars. The inner ran with setpgid 0 0 so its
@@ -4478,10 +4513,12 @@ let run_outer_loop ~(name : string) ~(client : string)
              kill_inner_target Sys.sigkill p);
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
+        stop_notifier ();
         remove_pidfile (outer_pid_path name);
         remove_pidfile (inner_pid_path name);
         remove_pidfile (deliver_pid_path name);
         remove_pidfile (poker_pid_path name);
+        remove_pidfile (notifier_pid_path name);
         (* Clear pid from registration so the entry shows Unknown instead of
            ghost-alive if the PID is later reused by an unrelated process.
            Done inline (not via C2c_mcp.Broker) to avoid a compile-time
@@ -5053,11 +5090,18 @@ let run_outer_loop ~(name : string) ~(client : string)
           (if client = "kimi" then begin
              let alias = Option.value alias_override ~default:name in
              let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
+             (* B145: ensure_daemon (not start_daemon) so a stale notifier left
+                over from a previous binary is cycled onto the new one even on a
+                bare start with no clean stop. Capture the pid + pidfile so the
+                supervisor tracks it as a sidecar and tears it down on
+                stop/restart. *)
              match
-               C2c_kimi_notifier.start_daemon
+               C2c_kimi_notifier.ensure_daemon
                  ~alias ~broker_root ~session_id:name ~tmux_pane ()
              with
-             | Some _ -> ()
+             | Some p ->
+                 notifier_pid := Some p;
+                 write_pid (notifier_pid_path name) p
              | None -> ()
            end);
            (* Start poker *)
@@ -5226,6 +5270,11 @@ let run_outer_loop ~(name : string) ~(client : string)
         (* Stop sidecars (deliver, poker). *)
         stop_sidecar !deliver_pid;
         stop_sidecar !poker_pid;
+        (* B145: also cycle the kimi notifier — the re-exec below picks up a
+           fresh broker_root, and a surviving notifier would keep draining the
+           STALE root. Killing it here means the re-exec'd start respawns it
+           against the correct broker_root. *)
+        stop_notifier ();
         (* Capture orphan inbox — messages that arrived during the restart gap.
            Saved to pending-replay so the MCP server injects them after
            auto_register_startup completes in the fresh session. *)
@@ -5499,7 +5548,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
          name inst_dir;
        List.iter remove_pidfile
          [ outer_pid_path name; inner_pid_path name
-         ; deliver_pid_path name; poker_pid_path name ]
+         ; deliver_pid_path name; poker_pid_path name
+         ; notifier_pid_path name ]
    | None ->
        (* No pid file at all — fresh start or already cleaned up. *)
        ());
@@ -5718,6 +5768,16 @@ let cmd_restart_self ?(name : string option) () : int =
               1))
 
 let cmd_stop (name : string) : int =
+  (* B145: the outer's SIGTERM handler (cleanup_and_exit) already tears down
+     the detached kimi notifier, but if the outer is SIGKILLed (never runs its
+     handler) the notifier would orphan. Belt-and-braces: kill it by its own
+     pidfile after the outer is down, using the alias from instance config. *)
+  let stop_kimi_notifier () =
+    match load_config_opt name with
+    | Some cfg when cfg.client = "kimi" ->
+        (try C2c_kimi_notifier.stop_daemon ~alias:cfg.alias with _ -> ())
+    | _ -> ()
+  in
   match read_pid (outer_pid_path name) with
   | Some pid when pid_alive pid ->
       (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
@@ -5727,8 +5787,11 @@ let cmd_stop (name : string) : int =
         done;
       if pid_alive pid then
         (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+      stop_kimi_notifier ();
       0
   | _ ->
+      (* Even with no live outer, sweep any orphaned notifier for this alias. *)
+      stop_kimi_notifier ();
       Printf.eprintf "error: instance '%s' is not running.\n%!" name;
       1
 

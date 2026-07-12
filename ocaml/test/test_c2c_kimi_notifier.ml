@@ -719,6 +719,255 @@ let test_kimi_session_is_idle_threshold_boundary () =
     Alcotest.(check bool) "3s ago > 2s threshold → idle" true
       (C2c_kimi_notifier.kimi_session_is_idle ~session_dir:dir ~now ~threshold_s:2.0))
 
+(* ─── B145: upgrade-correctness (stale-binary detect + teardown) ──────────── *)
+
+(* Pure decision logic — the SHA-mismatch kill/respawn brain. *)
+let test_decide_not_running () =
+  Alcotest.(check bool) "not running → Start_fresh" true
+    (C2c_kimi_notifier.decide_notifier_start
+       ~running:false ~running_sha:None ~installed_sha:None
+     = C2c_kimi_notifier.Start_fresh)
+
+let test_decide_same_sha_skip () =
+  Alcotest.(check bool) "running + same SHA → Skip_current" true
+    (C2c_kimi_notifier.decide_notifier_start
+       ~running:true ~running_sha:(Some "aaaa") ~installed_sha:(Some "aaaa")
+     = C2c_kimi_notifier.Skip_current)
+
+let test_decide_diff_sha_respawn () =
+  Alcotest.(check bool) "running + different SHA → Respawn_stale" true
+    (C2c_kimi_notifier.decide_notifier_start
+       ~running:true ~running_sha:(Some "aaaa") ~installed_sha:(Some "bbbb")
+     = C2c_kimi_notifier.Respawn_stale)
+
+let test_decide_unknown_sha_fail_safe () =
+  (* Fail-safe: an undeterminable SHA on EITHER side must never kill a working
+     notifier — it degrades to Skip_current (pre-B145 behaviour). *)
+  Alcotest.(check bool) "unknown running SHA → Skip_current" true
+    (C2c_kimi_notifier.decide_notifier_start
+       ~running:true ~running_sha:None ~installed_sha:(Some "bbbb")
+     = C2c_kimi_notifier.Skip_current);
+  Alcotest.(check bool) "unknown installed SHA → Skip_current" true
+    (C2c_kimi_notifier.decide_notifier_start
+       ~running:true ~running_sha:(Some "aaaa") ~installed_sha:None
+     = C2c_kimi_notifier.Skip_current)
+
+(* Local test helpers for the live-daemon tests below. *)
+let pid_alive_local pid = try Unix.kill pid 0; true with _ -> false
+
+let read_pidfile_int path =
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () -> Some (int_of_string (String.trim (input_line ic))))
+  with _ -> None
+
+(* Spin up a REAL detached notifier daemon (fork+setsid) against a temp HOME +
+   empty broker. SIGCHLD is ignored so exited children are auto-reaped (no
+   zombies; keeps pid-liveness checks fast). Caller stops the daemon(s). *)
+let with_notifier_home f =
+  let tmp = Filename.temp_file "kimi-notif-b145-" "" in
+  Sys.remove tmp; Unix.mkdir tmp 0o700;
+  let broker_root = Filename.concat tmp "broker" in
+  Unix.mkdir broker_root 0o700;
+  (let reg = open_out (Filename.concat broker_root "registrations.yaml") in
+   output_string reg "registrations: []\n"; close_out reg);
+  let old_home = Sys.getenv_opt "HOME" in
+  let old_chld = Sys.signal Sys.sigchld Sys.Signal_ignore in
+  (* Save/clear the SHA fixtures too so a test that throws mid-way can't leak
+     them into the next test. *)
+  let old_run = Sys.getenv_opt "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" in
+  let old_inst = Sys.getenv_opt "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" in
+  Unix.putenv "HOME" tmp;
+  Fun.protect
+    ~finally:(fun () ->
+      (* CRITICAL (review finding #4): stop every notifier daemon spawned under
+         this temp HOME *before* HOME is restored / the dir is removed — a
+         detached setsid daemon leaked by a failed assertion would otherwise
+         run forever with its pidfile unreachable. HOME is still [tmp] here, so
+         stop_daemon resolves the right pidfiles. *)
+      (let ndir = Filename.concat tmp ".local/share/c2c/kimi-notifiers" in
+       (try
+          Array.iter (fun e ->
+            if Filename.check_suffix e ".pid" then
+              C2c_kimi_notifier.stop_daemon ~alias:(Filename.chop_suffix e ".pid"))
+            (Sys.readdir ndir)
+        with _ -> ()));
+      Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" (Option.value ~default:"" old_run);
+      Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" (Option.value ~default:"" old_inst);
+      Sys.set_signal Sys.sigchld old_chld;
+      (match old_home with Some v -> Unix.putenv "HOME" v | None -> Unix.putenv "HOME" "");
+      let rec rmrf p =
+        match (Unix.lstat p).Unix.st_kind with
+        | Unix.S_DIR ->
+          Array.iter (fun e -> rmrf (Filename.concat p e)) (Sys.readdir p);
+          (try Unix.rmdir p with _ -> ())
+        | _ -> (try Unix.unlink p with _ -> ())
+        | exception _ -> ()
+      in rmrf tmp)
+    (fun () -> f ~broker_root)
+
+(* Direction-1 teardown: stop_daemon must kill the detached daemon AND remove
+   its pidfile (so a subsequent start does not dedup against a dead/reused
+   pid). This is the primitive the supervisor cleanup relies on. *)
+let test_stop_daemon_kills_and_removes_pidfile () =
+  with_notifier_home (fun ~broker_root ->
+    let alias = "b145lifecycle-zzq" in
+    match
+      C2c_kimi_notifier.start_daemon
+        ~alias ~broker_root ~session_id:"b145sid-teardown" ~tmux_pane:None ()
+    with
+    | None -> Alcotest.fail "start_daemon returned None"
+    | Some pid ->
+      Alcotest.(check bool) "daemon reported running" true
+        (C2c_kimi_notifier.already_running alias);
+      Alcotest.(check bool) "daemon process alive" true (pid_alive_local pid);
+      Alcotest.(check bool) "pidfile exists" true
+        (Sys.file_exists (C2c_kimi_notifier.pidfile_path alias));
+      C2c_kimi_notifier.stop_daemon ~alias;
+      Alcotest.(check bool) "daemon no longer running" false
+        (C2c_kimi_notifier.already_running alias);
+      Alcotest.(check bool) "pidfile removed" false
+        (Sys.file_exists (C2c_kimi_notifier.pidfile_path alias)))
+
+(* Direction-3: ensure_daemon on a stale (different-SHA) running notifier kills
+   it and respawns on the new binary — the exact bug this slice closes. SHA
+   sources are forced via the fixture env so the decision is deterministic. *)
+let test_ensure_daemon_respawns_on_sha_mismatch () =
+  with_notifier_home (fun ~broker_root ->
+    let alias = "b145respawn-zzq" in
+    let old_pid =
+      match
+        C2c_kimi_notifier.start_daemon
+          ~alias ~broker_root ~session_id:"b145sid-respawn" ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "initial start_daemon returned None"
+    in
+    Alcotest.(check bool) "old daemon running" true
+      (C2c_kimi_notifier.already_running alias);
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" "old-sha-1111";
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" "new-sha-2222";
+    let new_pid_opt =
+      C2c_kimi_notifier.ensure_daemon
+        ~alias ~broker_root ~session_id:"b145sid-respawn" ~tmux_pane:None ()
+    in
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" "";
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" "";
+    let new_pid =
+      match new_pid_opt with Some p -> p | None -> Alcotest.fail "ensure_daemon returned None"
+    in
+    Alcotest.(check bool) "respawned with a NEW pid" true (new_pid <> old_pid);
+    Alcotest.(check bool) "old (stale) daemon was killed" false (pid_alive_local old_pid);
+    Alcotest.(check bool) "new daemon running" true
+      (C2c_kimi_notifier.already_running alias);
+    Alcotest.(check (option int)) "pidfile now names the new pid"
+      (Some new_pid) (read_pidfile_int (C2c_kimi_notifier.pidfile_path alias));
+    C2c_kimi_notifier.stop_daemon ~alias)
+
+(* ensure_daemon leaves a current (same-SHA) notifier untouched — no needless
+   delivery gap on a same-binary restart. *)
+let test_ensure_daemon_skips_when_sha_matches () =
+  with_notifier_home (fun ~broker_root ->
+    let alias = "b145skip-zzq" in
+    let old_pid =
+      match
+        C2c_kimi_notifier.start_daemon
+          ~alias ~broker_root ~session_id:"b145sid-skip" ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "initial start_daemon returned None"
+    in
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" "same-sha-9999";
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" "same-sha-9999";
+    let pid_opt =
+      C2c_kimi_notifier.ensure_daemon
+        ~alias ~broker_root ~session_id:"b145sid-skip" ~tmux_pane:None ()
+    in
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" "";
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" "";
+    Alcotest.(check (option int)) "same pid returned (not respawned)"
+      (Some old_pid) pid_opt;
+    Alcotest.(check bool) "daemon still alive" true (pid_alive_local old_pid);
+    C2c_kimi_notifier.stop_daemon ~alias)
+
+(* Confirms the comm string the kernel ACTUALLY stores for the forked daemon
+   equals the identity token pid_is_our_notifier matches on. If start_daemon's
+   set_proc_name argument ever drifts (or exceeds the 15-char limit and gets
+   truncated), this fails loudly. *)
+let read_proc_comm pid =
+  let path = Printf.sprintf "/proc/%d/comm" pid in
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () -> Some (String.trim (input_line ic)))
+  with _ -> None
+
+let test_notifier_comm_matches_kernel () =
+  with_notifier_home (fun ~broker_root ->
+    let alias = "b145comm-zzq" in
+    match
+      C2c_kimi_notifier.start_daemon
+        ~alias ~broker_root ~session_id:"b145sid-comm" ~tmux_pane:None ()
+    with
+    | None -> Alcotest.fail "start_daemon returned None"
+    | Some pid ->
+      Alcotest.(check (option string)) "kernel stores exactly the daemon comm"
+        (Some C2c_kimi_notifier.notifier_comm) (read_proc_comm pid);
+      Alcotest.(check bool) "pid_is_our_notifier true for the real daemon" true
+        (C2c_kimi_notifier.pid_is_our_notifier pid);
+      C2c_kimi_notifier.stop_daemon ~alias)
+
+(* Pure-OCaml recursive mkdir. Sys.command is unusable here — with_notifier_home
+   sets SIGCHLD=SIG_IGN, which makes the shell child auto-reap and Sys.command's
+   internal waitpid fail with ECHILD. *)
+let rec mkdir_p dir =
+  if dir <> "" && dir <> "/" && not (Sys.file_exists dir) then begin
+    mkdir_p (Filename.dirname dir);
+    (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+  end
+
+(* PID-reuse guard: a stale pidfile whose PID belongs to an UNRELATED live
+   same-UID process (comm != notifier_comm) must NOT be signalled. Even with a
+   forced SHA mismatch (which would drive Respawn_stale → stop_daemon → kill
+   without the identity gate), ensure_daemon must leave the victim alive and
+   take Start_fresh (spawn a real notifier on a new pid). *)
+let test_ensure_daemon_ignores_reused_non_notifier_pid () =
+  with_notifier_home (fun ~broker_root ->
+    let alias = "b145reuse-zzq" in
+    (* Fork a NON-notifier live victim (its comm is the test exe, not the
+       daemon comm). *)
+    let victim =
+      match Unix.fork () with
+      | 0 -> (try Unix.sleep 30 with _ -> ()); Stdlib.exit 0
+      | pid -> pid
+    in
+    (* Sanity: the victim is NOT our notifier. *)
+    Alcotest.(check bool) "victim is not identified as our notifier" false
+      (C2c_kimi_notifier.pid_is_our_notifier victim);
+    (* Plant a stale pidfile pointing at the victim. *)
+    let pidfile = C2c_kimi_notifier.pidfile_path alias in
+    mkdir_p (Filename.dirname pidfile);
+    (let oc = open_out pidfile in Printf.fprintf oc "%d\n" victim; close_out oc);
+    (* Force a SHA mismatch: WITHOUT the identity gate this would Respawn_stale
+       and kill the victim. WITH the gate, ours=None short-circuits first. *)
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" "old-sha-1111";
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" "new-sha-2222";
+    let started =
+      C2c_kimi_notifier.ensure_daemon
+        ~alias ~broker_root ~session_id:"b145sid-reuse" ~tmux_pane:None ()
+    in
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA" "";
+    Unix.putenv "C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA" "";
+    Alcotest.(check bool) "unrelated reused-pid process was NOT killed" true
+      (pid_alive_local victim);
+    (match started with
+     | None -> Alcotest.fail "expected a fresh notifier to be started"
+     | Some np ->
+       Alcotest.(check bool) "fresh notifier has a different pid" true (np <> victim);
+       Alcotest.(check bool) "fresh notifier is a real notifier (comm-matches)" true
+         (C2c_kimi_notifier.pid_is_our_notifier np);
+       C2c_kimi_notifier.stop_daemon ~alias);
+    (* Cleanup the victim. *)
+    (try Unix.kill victim Sys.sigkill with _ -> ());
+    (try ignore (Unix.waitpid [] victim) with _ -> ()))
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -761,5 +1010,16 @@ let () =
       [ Alcotest.test_case "poll_once_global drains global broker" `Quick test_poll_once_global_drains_global_broker
       ; Alcotest.test_case "poll_once_global no cross-session leak" `Quick test_poll_once_global_no_cross_session_leak
       ; Alcotest.test_case "poll_once_global rejects traversal session_id" `Quick test_poll_once_global_rejects_traversal_session_id
+      ]
+    ; "upgrade_correctness_b145",
+      [ Alcotest.test_case "decide: not running → Start_fresh" `Quick test_decide_not_running
+      ; Alcotest.test_case "decide: same SHA → Skip_current" `Quick test_decide_same_sha_skip
+      ; Alcotest.test_case "decide: different SHA → Respawn_stale" `Quick test_decide_diff_sha_respawn
+      ; Alcotest.test_case "decide: unknown SHA → Skip_current (fail-safe)" `Quick test_decide_unknown_sha_fail_safe
+      ; Alcotest.test_case "stop_daemon kills daemon + removes pidfile" `Quick test_stop_daemon_kills_and_removes_pidfile
+      ; Alcotest.test_case "ensure_daemon respawns stale daemon on SHA mismatch" `Quick test_ensure_daemon_respawns_on_sha_mismatch
+      ; Alcotest.test_case "ensure_daemon skips current daemon (same SHA)" `Quick test_ensure_daemon_skips_when_sha_matches
+      ; Alcotest.test_case "daemon comm matches kernel-stored value" `Quick test_notifier_comm_matches_kernel
+      ; Alcotest.test_case "ensure_daemon ignores reused non-notifier pid (no kill)" `Quick test_ensure_daemon_ignores_reused_non_notifier_pid
       ]
     ]
