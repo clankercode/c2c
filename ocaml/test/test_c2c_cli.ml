@@ -3985,37 +3985,61 @@ let test_docs_drift_accepts_registered_commands () =
    temp broker. *)
 let test_statusline_json_reports_state () =
   with_temp_dir (fun dir ->
+      let sessions_dir = Filename.concat dir "sessions-broker" in
       let broker = C2c_mcp.Broker.create ~root:dir in
+      let sessions_broker = C2c_mcp.Broker.create ~root:sessions_dir in
       let live_pid = Unix.getpid () in
       C2c_mcp.Broker.register broker ~session_id:"sl-self-sid"
         ~alias:"sl-selftest" ~pid:(Some live_pid) ~pid_start_time:None ();
       C2c_mcp.Broker.register broker ~session_id:"sl-peer-sid"
         ~alias:"sl-peertest" ~pid:(Some live_pid) ~pid_start_time:None ();
+      (* The peer registration is visible through both local routes.  The
+         current-repository broker wins that duplicate; the sessions-only
+         registration contributes one additional machine-wide peer. *)
+      C2c_mcp.Broker.register sessions_broker ~session_id:"sl-peer-sid"
+        ~alias:"sl-peertest" ~pid:(Some live_pid) ~pid_start_time:None ();
+      C2c_mcp.Broker.register sessions_broker ~session_id:"sl-global-sid"
+        ~alias:"sl-globaltest" ~pid:(Some live_pid) ~pid_start_time:None ();
       (* stdin is EOF (/dev/null), so the alias resolves from the env
          session id rather than a Claude stdin JSON blob. *)
       let rc, out =
         run_capture
           (c2c_cmd
              (Printf.sprintf
-                "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=sl-self-sid \
+                "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s C2C_MCP_SESSION_ID=sl-self-sid \
                  c2c statusline --json < /dev/null"
-                (Filename.quote dir)))
+                (Filename.quote dir) (Filename.quote sessions_dir)))
       in
       check int "statusline --json exits 0" 0 rc;
-      match Yojson.Safe.from_string out with
-      | `Assoc kvs ->
-          let get k = List.assoc_opt k kvs in
-          check bool "registered is true" true (get "registered" = Some (`Bool true));
-          check bool "alias resolves from session id" true
-            (get "alias" = Some (`String "sl-selftest"));
-          check bool "counts both live registrations" true
-            (get "peers_alive" = Some (`Int 2));
-          check bool "repo count is explicit" true
-            (get "peers_repo_alive" = Some (`Int 2));
-          check bool "machine count is explicit" true
-            (get "peers_machine_alive" = Some (`Int 2))
-      | _ | (exception _) ->
-          Alcotest.failf "statusline --json did not emit an object: %s" out)
+      (match Yojson.Safe.from_string out with
+       | `Assoc kvs ->
+           let get k = List.assoc_opt k kvs in
+           check bool "registered is true" true (get "registered" = Some (`Bool true));
+           check bool "alias resolves from session id" true
+             (get "alias" = Some (`String "sl-selftest"));
+           check bool "counts both live registrations" true
+             (get "peers_alive" = Some (`Int 2));
+           check bool "repo count is explicit" true
+             (get "peers_repo_alive" = Some (`Int 2));
+           check bool "machine count is explicit and deduplicated" true
+             (get "peers_machine_alive" = Some (`Int 3));
+           check bool "stable compatibility peer field remains repo-scoped" true
+             (get "peers_alive" = Some (`Int 2))
+       | _ | (exception _) ->
+           Alcotest.failf "statusline --json did not emit an object: %s" out);
+      let human_rc, human =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s C2C_MCP_SESSION_ID=sl-self-sid \
+                 c2c statusline --no-color < /dev/null"
+                (Filename.quote dir) (Filename.quote sessions_dir)))
+      in
+      check int "human statusline exits 0" 0 human_rc;
+      check bool "human output labels repo-local count" true
+        (string_contains human "2 repo");
+      check bool "human output labels deduplicated machine count" true
+        (string_contains human "3 machine"))
 
 let test_statusline_reads_stdin_session_json () =
   with_temp_dir (fun dir ->
@@ -4059,7 +4083,11 @@ let test_statusline_print_config () =
   check bool "print-config mentions Claude statusLine hook" true
     (string_contains out "statusLine");
   check bool "print-config references c2c statusline" true
-    (string_contains out "c2c statusline")
+    (string_contains out "c2c statusline");
+  check bool "print-config explains repo scope" true
+    (string_contains out "repo");
+  check bool "print-config explains machine scope" true
+    (string_contains out "machine")
 
 let () =
   Alcotest.run "c2c_cli"

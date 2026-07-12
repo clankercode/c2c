@@ -1,0 +1,65 @@
+---
+layout: page
+title: "Reference: statusline"
+permalink: /reference/statusline/
+nav_label: "Reference: statusline"
+---
+
+# Reference: statusline
+
+`c2c statusline` is a short, local-only summary intended for a client status
+bar or shell prompt. It never contacts the relay and does not scan every
+repository on the machine, so it remains safe to run on frequent refreshes.
+
+## Peer scopes
+
+The human output has two peer segments and `--json` exposes matching stable
+fields:
+
+| Segment | JSON field | Meaning |
+|---------|------------|---------|
+| `repo` | `peers_repo_alive` | Alive registrations in the current repository's broker. |
+| `machine` | `peers_machine_alive` | Alive registrations in the deduplicated union of the current repository broker and the shared sessions broker. |
+
+`peers_alive` is retained for compatibility and equals `peers_repo_alive`.
+The `machine` count is not a relay or internet-wide peer count: relay state is
+reported separately by `relay_state`, from local connector state only.
+
+When the same `(session_id, alias)` is present in both brokers, it is counted
+once. The current-repository registration has precedence, so local state wins
+if its liveness metadata conflicts with the sessions-broker copy.
+
+For example, with two alive registrations in the current repository, one of
+which is also in the sessions broker, plus one sessions-only registration:
+
+```
+c2c my-alias · relay:off · 2 repo · 3 machine
+```
+
+```json
+{
+  "peers_alive": 2,
+  "peers_repo_alive": 2,
+  "peers_machine_alive": 3
+}
+```
+
+## Configuration examples
+
+For Claude Code, add the output of `c2c statusline --print-config` to the
+relevant `settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "c2c statusline",
+    "padding": 0
+  }
+}
+```
+
+Claude Code supplies session JSON on stdin; c2c uses it to resolve the alias
+and model. For a shell prompt or another client, invoke the same command
+directly. `c2c statusline --json` is suitable for a custom renderer; use the
+scope fields above rather than inferring scope from the relay indicator.

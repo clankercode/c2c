@@ -274,7 +274,13 @@ let claude_config_snippet =
 
 Claude Code feeds session JSON (session_id, model, cwd) to the command on
 stdin; `c2c statusline` reads it automatically so your alias resolves even
-without CLAUDE_SESSION_ID in the statusLine environment.|}
+without CLAUDE_SESSION_ID in the statusLine environment.
+
+The peer segments remain local-only: `repo` counts alive registrations in this
+repository's broker; `machine` is the deduplicated union of that broker and
+the shared sessions broker.  A repo registration wins when the same
+session_id/alias appears in both. Neither count includes relay-discovered
+remote peers or performs a network probe.|}
 
 (* --- command --------------------------------------------------------------- *)
 
@@ -352,6 +358,15 @@ let statusline : unit Cmdliner.Cmd.t =
                counts, and \
                unread inbox count. Designed to run on every status-line \
                refresh, so it is pure-local and fast (~30-40ms)."
+         ; `P "$(b,repo) counts alive registrations in the current repository \
+               broker. $(b,machine) counts the deduplicated union of that \
+               broker and the shared sessions broker; when a registration is \
+               visible in both, the current-repository registration takes \
+               precedence. Neither count includes relay-discovered remote \
+               peers or makes a network request. In JSON these are \
+               $(b,peers_repo_alive) and $(b,peers_machine_alive); \
+               $(b,peers_alive) remains the compatibility alias for the \
+               repo-local count."
          ; `P "Colour is emitted only on a TTY and honours $(b,NO_COLOR). Use \
                $(b,--json) for a machine-readable object, or $(b,--no-color) \
                to force plain text."
