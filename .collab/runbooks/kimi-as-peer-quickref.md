@@ -1,18 +1,28 @@
 # Kimi-as-Peer Quick Reference
 
-> **Audience**: c2c operators running a managed `kimi` session as a swarm peer.
-> For the technical delivery mechanism, see
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+> **B146-TEMP:** Kimi install/start is **temporarily disabled** for this
+> release window (`kimi_disabled_for_release = true` in `ocaml/c2c_start.ml`).
+> `c2c start kimi` / `c2c install kimi` / `c2c new kimi` refuse with a friendly
+> banner. The managed-mode recipes below are retained intact so re-enable is a
+> one-flag flip; **do not treat this page as a live operator path** until that
+> flag is false. Prefer `claude` / `codex` / `opencode` / `grok` peers for now.
+> Search `B146-TEMP` when undoing.
+
+> **Audience**: c2c operators running a managed `kimi` session as a swarm peer
+> (when re-enabled). For the technical delivery mechanism, see
 > [kimi-notification-store-delivery](./kimi-notification-store-delivery.md).
 
 ---
 
 ## Deployment Modes
 
-Kimi can join the c2c swarm in two distinct ways:
+Kimi can join the c2c swarm in two distinct ways (when B146-TEMP is lifted):
 
 ### Managed (`c2c start kimi`) — notifier-daemon path
 
 ```
+# B146-TEMP: currently refuses until kimi_disabled_for_release=false
 c2c start kimi -n kuura-viima
 ```
 
@@ -40,8 +50,11 @@ directly in kimi's transcript.
 
 ## TL;DR — Managed Mode Quick Start
 
+> **B146-TEMP:** the command below currently exits with a `[DISABLED]` banner.
+> Re-enable by flipping `kimi_disabled_for_release` in `ocaml/c2c_start.ml`.
+
 ```bash
-# One command, done:
+# One command, done (when re-enabled):
 c2c start kimi -n kuura-viima
 
 # What you'll see:
@@ -112,12 +125,13 @@ if kimi encounters a new tool from the c2c MCP server that hasn't been approved 
 > Kimi can prompt per-tool within a server. If you see repeated allowlist prompts
 > for different c2c tools, that's expected — approve each one as it appears.
 
-**Phase 2 (#478 — shipped)**: `c2c install kimi` now pre-approves all c2c MCP
-tools via `allowedTools` in `~/.kimi/mcp.json`. The per-tool allowlist prompt
-never appears for standard c2c tools. The TOML `[[hooks]]` block for
-`await-reply` still needs manual opt-in (uncomment the block in
-`~/.kimi/config.toml` after install). **Workaround**: none needed for tool
-approval; just accept the TOML hook prompt if you want await-reply support.
+**Phase 2 (#478 — shipped)**: `c2c install kimi` pre-approves all c2c MCP
+tools via `allowedTools` in `~/.kimi/mcp.json` (**B146-TEMP:** install currently
+refuses; this applies once re-enabled). The per-tool allowlist prompt never
+appears for standard c2c tools. The TOML `[[hooks]]` block for `await-reply`
+still needs manual opt-in (uncomment the block in `~/.kimi/config.toml` after
+install). **Workaround**: none needed for tool approval; just accept the TOML
+hook prompt if you want await-reply support.
 
 ### PreToolUse permission requests (managed + direct MCP)
 
@@ -291,9 +305,11 @@ be compacting (context summarization in progress). Wait and retry.
 
 ## Common Operations
 
+> **B146-TEMP:** `c2c start kimi` / `c2c install kimi` refuse until re-enabled.
+
 | Operation | Command | Mode |
 |---|---|---|
-| Start managed | `c2c start kimi -n <alias>` | managed |
+| Start managed | `c2c start kimi -n <alias>` (disabled B146-TEMP) | managed |
 | Start direct MCP | `kimi --mcp-config-file <path>` | direct |
 | Stop | `c2c stop <alias>` | managed |
 | Restart | `c2c restart <alias>` | managed |
@@ -310,5 +326,5 @@ be compacting (context summarization in progress). Wait and retry.
 - [permission-DM-discipline.runbook](./permission-dm-discipline.md) —
   PreToolUse approval flow: token format, supervisor reply syntax, footguns,
   recovery (relevant when kimi is supervised by a swarm peer)
-- `c2c instances` — list all managed sessions
+- `c2c dev instances` — list all managed sessions (top-level `c2c instances` is a deprecated alias)
 - `c2c doctor` — broker health + registration diagnostics

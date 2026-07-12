@@ -61,13 +61,20 @@ misses repeatedly with nothing to show for it.
 ## Option 0: Native scheduling (managed sessions) — preferred
 
 **What it is:** `c2c schedule set` creates persistent schedule files in
-`.c2c/schedules/<alias>/` that are hot-reloaded every 10s by `c2c start`.
-When a schedule fires, the message is injected into the agent's transcript
-as if it were a DM — no Monitor, no heartbeat binary, no /loop needed.
+`.c2c/schedules/<alias>/`. For managed sessions the **primary** fire path is
+the **inner MCP server's Lwt schedule timer** (S6c; ~5s poll when
+`C2C_MCP_SCHEDULE_TIMER=1`, the managed default). The `c2c start` 10s
+stat-poll watcher is the **fallback** only when that MCP timer is inactive
+(so there is no double-fire). When a schedule fires, the message is injected
+into the agent's transcript as if it were a DM — no Monitor, no heartbeat
+binary, no /loop needed.
 
 **When to use:**
 - Your session was launched via `c2c start <client>` (Claude, Codex,
-  OpenCode, Kimi). This is the default for all swarm agents.
+  OpenCode). <!-- B146-TEMP --> **B146-TEMP:** Kimi managed start is
+  temporarily disabled (`kimi_disabled_for_release`); do not count on
+  `c2c start kimi` for Option 0 until re-enabled. This is the default for
+  managed swarm agents.
 - You want zero-config wake scheduling that persists across restarts.
 
 **How to set up:**
@@ -104,7 +111,7 @@ c2c schedule rm wake
 **Tradeoffs:**
 - ✓ Zero ongoing cost — no Monitor process, no heartbeat binary.
 - ✓ Survives compaction — schedule files persist on disk.
-- ✓ Hot-reloaded — changes take effect within 10s, no restart needed.
+- ✓ Hot-reloaded — MCP timer ~5s (managed default); start watcher 10s fallback.
 - ✓ Dedup is automatic — setting a schedule with the same name overwrites.
 - ✗ Only works for managed sessions (`c2c start`). Non-managed sessions
   must fall back to Option 0b, Option 1, or Option 2.
@@ -427,9 +434,9 @@ c2c deliver wake-watch --alias <codex-alias>
 ```
 
 (`--once` for a single attempt; `--session-id` instead of `--alias` works
-too.) `c2c instances` shows `delivery_mode=hooks+wake` when the wake path is
-armed. Env-var reference: `.collab/runbooks/c2c-env-vars.md` § Codex
-wake-inject.
+too.) `c2c dev instances` shows `delivery_mode=hooks+wake` when the wake path
+is armed (top-level `c2c instances` is a deprecated alias that still works).
+Env-var reference: `.collab/runbooks/c2c-env-vars.md` § Codex wake-inject.
 
 ## See also
 
