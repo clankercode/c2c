@@ -715,6 +715,22 @@ module Relay_client = struct
     let post_body body = post t path ?alias body in
     Pow_client.post_with_retry ~post:post_body ~route ~actor_id body
 
+  (* B149: OS tag for register connection metadata ("linux" / "darwin" /
+     lowercased uname, "unknown" on failure). Computed once per process. *)
+  let client_os =
+    let cached = lazy (
+      match Sys.os_type with
+      | "Unix" ->
+        (try
+           let ic = Unix.open_process_in "uname -s" in
+           let s = try String.trim (input_line ic) with End_of_file -> "" in
+           ignore (Unix.close_process_in ic);
+           if s = "" then "unknown" else String.lowercase_ascii s
+         with _ -> "unknown")
+      | other -> String.lowercase_ascii other
+    ) in
+    fun () -> Lazy.force cached
+
   let health t = get t "/health"
 
   let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = Relay.default_lease_ttl) ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") () =
@@ -723,6 +739,11 @@ module Relay_client = struct
       ("session_id", `String session_id);
       ("alias", `String alias);
       ("client_type", `String client_type);
+      (* B149: connection metadata — the relay aggregates these into the
+         public /stats connected.by_version / by_os counts (counts only,
+         never tied back to an alias in that surface). *)
+      ("client_version", `String Version.version);
+      ("client_os", `String (client_os ()));
       ("ttl", `Int (int_of_float ttl));
     ] in
     let body, actor_id =

@@ -210,7 +210,7 @@
 (test
  (name test_relay_stats)
  (modules test_relay_stats)
- (libraries c2c_mcp alcotest yojson unix))
+ (libraries c2c_mcp alcotest yojson unix sqlite3))
 
 (test
  (name test_relay_e2e_integration)

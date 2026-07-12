@@ -432,22 +432,28 @@ module InMemoryRelay : RELAY = struct
     let clients = ref 0 in
     let machines = Hashtbl.create 16 in
     let by_ct = Hashtbl.create 8 in
+    let by_version = Hashtbl.create 8 in
+    let by_os = Hashtbl.create 8 in
+    let bump tbl key =
+      let key = if key = "" then "unknown" else key in
+      Hashtbl.replace tbl key
+        (1 + (match Hashtbl.find_opt tbl key with Some n -> n | None -> 0))
+    in
     Hashtbl.iter
       (fun _alias lease ->
         let last_seen = RegistrationLease.last_seen lease in
         if not (alias_released ~now ~last_seen) then begin
           incr clients;
           Hashtbl.replace machines (RegistrationLease.node_id lease) ();
-          let ct =
-            match RegistrationLease.client_type lease with "" -> "unknown" | c -> c
-          in
-          Hashtbl.replace by_ct ct
-            (1 + (match Hashtbl.find_opt by_ct ct with Some n -> n | None -> 0))
+          bump by_ct (RegistrationLease.client_type lease);
+          bump by_version (RegistrationLease.client_version lease);
+          bump by_os (RegistrationLease.client_os lease)
         end)
       t.leases;
-    let by_client_type = Hashtbl.fold (fun k v acc -> (k, v) :: acc) by_ct [] in
+    let entries tbl = Hashtbl.fold (fun k v acc -> (k, v) :: acc) tbl [] in
     stats_connected_json ~clients:!clients
-      ~machines:(Hashtbl.length machines) ~by_client_type
+      ~machines:(Hashtbl.length machines) ~by_client_type:(entries by_ct)
+      ~by_version:(entries by_version) ~by_os:(entries by_os)
 
   let stats t ~now =
     with_lock t (fun () ->
@@ -463,6 +469,25 @@ module InMemoryRelay : RELAY = struct
         ~aliases_ever:(Hashtbl.length t.stats_seen_aliases)
         ~machines_ever:(Hashtbl.length t.stats_seen_machines)
         ~connected:(stats_connected t ~now))
+
+  (* B149: historical snapshot — one jsonl line per call under persist_dir
+     ({"ts":..,"stats":..}); no-op without persist_dir. [stats] takes the
+     lock itself, so the append happens outside it. Best-effort, never
+     raises. *)
+  let record_stats_snapshot t ~now =
+    match t.persist_dir with
+    | None -> ()
+    | Some d ->
+      let snapshot = stats t ~now in
+      (try
+         C2c_io.mkdir_p d;
+         let path = Filename.concat d "stats-history.jsonl" in
+         let oc = open_out_gen [Open_creat; Open_append; Open_wronly] 0o644 path in
+         output_string oc
+           (Yojson.Safe.to_string
+              (`Assoc [ ("ts", `Float now); ("stats", snapshot) ]) ^ "\n");
+         close_out oc
+       with _ -> ())
 
   let generate_uuid () =
     let random_hex n =
@@ -507,7 +532,7 @@ module InMemoryRelay : RELAY = struct
       Hashtbl.replace t.rooms room_id (List.filter ((<>) alias) members)
     ) t.rooms
 
-  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
+  let register t ~node_id ~session_id ~alias ?(client_type = "unknown") ?(client_version = "") ?(client_os = "") ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
       if not (C2c_name.is_valid_with_opaque_host_id alias) then
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
@@ -574,7 +599,7 @@ module InMemoryRelay : RELAY = struct
                if identity_pk <> "" then identity_pk
                else Option.value ~default:"" (Hashtbl.find_opt t.bindings alias)
              in
-             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
+             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
              Hashtbl.replace t.leases alias lease;
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
@@ -1404,6 +1429,14 @@ module SqliteRelay : RELAY = struct
        (the column is already declared in sqlite_ddl). *)
     if not (sqlite_table_has_column conn ~table:"leases" ~column:"opaque_host_id") then
       Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
+    (* B149: migrate older databases to the client_version / client_os lease
+       columns (client-reported connection metadata feeding /stats
+       connected.by_version / by_os). Same pragma-probe + ALTER pattern;
+       idempotent on fresh installs (declared in sqlite_ddl). *)
+    if not (sqlite_table_has_column conn ~table:"leases" ~column:"client_version") then
+      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_version TEXT NOT NULL DEFAULT ''" |> ignore;
+    if not (sqlite_table_has_column conn ~table:"leases" ~column:"client_os") then
+      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_os TEXT NOT NULL DEFAULT ''" |> ignore;
     if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
       Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
     (* B117: migrate older databases to the history_public column. Add it with
@@ -1497,9 +1530,16 @@ module SqliteRelay : RELAY = struct
     let clients = ref 0 in
     let machines = Hashtbl.create 16 in
     let by_ct = Hashtbl.create 8 in
+    let by_version = Hashtbl.create 8 in
+    let by_os = Hashtbl.create 8 in
+    let bump tbl key =
+      let key = if key = "" then "unknown" else key in
+      Hashtbl.replace tbl key
+        (1 + (match Hashtbl.find_opt tbl key with Some n -> n | None -> 0))
+    in
     let stmt =
       Sqlite3.prepare conn
-        "SELECT node_id, client_type, last_seen FROM leases"
+        "SELECT node_id, client_type, last_seen, client_version, client_os FROM leases"
     in
     let col_string col = match Sqlite3.Data.to_string col with Some s -> s | None -> "" in
     let col_float col =
@@ -1511,26 +1551,26 @@ module SqliteRelay : RELAY = struct
       let rc = Sqlite3.step stmt in
       if rc = Rc.ROW then begin
         let node_id = col_string (Sqlite3.column stmt 0) in
-        let client_type =
-          match col_string (Sqlite3.column stmt 1) with
-          | "" -> "unknown"
-          | c -> c
-        in
+        let client_type = col_string (Sqlite3.column stmt 1) in
         let last_seen = col_float (Sqlite3.column stmt 2) in
+        let client_version = col_string (Sqlite3.column stmt 3) in
+        let client_os = col_string (Sqlite3.column stmt 4) in
         if not (alias_released ~now ~last_seen) then begin
           incr clients;
           Hashtbl.replace machines node_id ();
-          Hashtbl.replace by_ct client_type
-            (1 + (match Hashtbl.find_opt by_ct client_type with Some n -> n | None -> 0))
+          bump by_ct client_type;
+          bump by_version client_version;
+          bump by_os client_os
         end;
         loop ()
       end
     in
     (try loop () with _ -> ());
     (try Sqlite3.finalize stmt |> ignore with _ -> ());
-    let by_client_type = Hashtbl.fold (fun k v acc -> (k, v) :: acc) by_ct [] in
+    let entries tbl = Hashtbl.fold (fun k v acc -> (k, v) :: acc) tbl [] in
     stats_connected_json ~clients:!clients
-      ~machines:(Hashtbl.length machines) ~by_client_type
+      ~machines:(Hashtbl.length machines) ~by_client_type:(entries by_ct)
+      ~by_version:(entries by_version) ~by_os:(entries by_os)
 
   let stats t ~now =
     with_lock t (fun () ->
@@ -1557,6 +1597,19 @@ module SqliteRelay : RELAY = struct
         ~machines_ever:
           (count_query conn "SELECT COUNT(*) FROM stats_seen_machines" [])
         ~connected:(stats_connected conn ~now))
+
+  (* B149: historical snapshot — one stats_snapshots row per call. [stats]
+     takes the lock itself, so the INSERT happens on a fresh connection
+     outside it. Best-effort, never raises. *)
+  let record_stats_snapshot t ~now =
+    let snapshot = stats t ~now in
+    with_lock t (fun () ->
+      try
+        let conn = Sqlite3.db_open t.db_path in
+        exec_prepared conn "INSERT INTO stats_snapshots (ts, json) VALUES (?, ?)"
+          [`Float now; `Text (Yojson.Safe.to_string snapshot)]
+        |> ignore
+      with _ -> ())
 
   let get_lease_row_fields row =
     match row with
@@ -1624,7 +1677,7 @@ module SqliteRelay : RELAY = struct
     Sqlite3.bind_text del_member 1 alias |> ignore;
     Sqlite3.step del_member |> ignore
 
-  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") ?(opaque_host_id : string option = None) () =
+  let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(client_version="") ?(client_os="") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
       let open Sqlite3 in
       let conn = db_open t.db_path in
@@ -1734,7 +1787,7 @@ module SqliteRelay : RELAY = struct
               | `NoPkNoBinding -> ""
               | `Mismatch -> assert false
             in
-            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=excluded.opaque_host_id" in
+            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=excluded.opaque_host_id, client_version=excluded.client_version, client_os=excluded.client_os" in
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -1748,10 +1801,12 @@ module SqliteRelay : RELAY = struct
             bind_text stmt 11 sig_b64 |> ignore;
             let opaque_host_id_str = match opaque_host_id with Some s -> s | None -> "" in
             bind_text stmt 12 opaque_host_id_str |> ignore;
+            bind_text stmt 13 client_version |> ignore;
+            bind_text stmt 14 client_os |> ignore;
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc);
-            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
+            let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
             ("ok", lease)
     )
 
@@ -2104,7 +2159,7 @@ module SqliteRelay : RELAY = struct
       let conn = Sqlite3.db_open t.db_path in
       let now = Unix.gettimeofday () in
       let leases = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM leases" in
+      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id, client_version, client_os FROM leases" in
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
@@ -2133,12 +2188,18 @@ module SqliteRelay : RELAY = struct
           let identity_pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 7) in
           let opaque_host_id_raw = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 8) in
           let opaque_host_id = if opaque_host_id_raw = "" then None else Some opaque_host_id_raw in
+          let client_version =
+            match Sqlite3.Data.to_string (Sqlite3.column stmt 9) with Some s -> s | None -> "" in
+          let client_os =
+            match Sqlite3.Data.to_string (Sqlite3.column stmt 10) with Some s -> s | None -> "" in
           let lease =
             RegistrationLease.make
               ~node_id
               ~session_id
               ~alias
               ~client_type
+              ~client_version
+              ~client_os
               ~registered_at
               ~last_seen
               ~ttl
@@ -3401,6 +3462,21 @@ end = struct
         (json_error_str err_bad_request "node_id, session_id, and alias are required")
     else
       let client_type = get_opt_string body "client_type" |> Option.value ~default:"unknown" in
+      (* B149: client-reported connection metadata. These land as keys in the
+         public /stats connected.by_version / by_os count maps, so clamp them:
+         trim, drop non-printable chars, cap length. Absent/empty → "" (older
+         clients), which /stats buckets as "unknown". *)
+      let clamp_meta s =
+        let s = String.trim s in
+        let b = Buffer.create (String.length s) in
+        String.iter (fun c -> if c >= ' ' && c <> '\x7f' then Buffer.add_char b c) s;
+        let s = Buffer.contents b in
+        if String.length s > 48 then String.sub s 0 48 else s
+      in
+      let client_version =
+        get_opt_string body "client_version" |> Option.value ~default:"" |> clamp_meta in
+      let client_os =
+        get_opt_string body "client_os" |> Option.value ~default:"" |> clamp_meta in
       let ttl = effective_lease_ttl ~client_ttl:(float_of_int (get_int body "ttl" 0)) in
       let enc_pubkey_b64 = get_opt_string body "enc_pubkey" |> Option.value ~default:"" in
       let signed_at = get_float body "signed_at" 0.0 in
@@ -3471,7 +3547,7 @@ end = struct
                   else
                     let result =
                       R.register relay ~node_id ~session_id ~alias
-                        ~client_type ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
+                        ~client_type ~client_version ~client_os ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
                         ~opaque_host_id:opaque_host_id ()
                     in
                     let receipt =
@@ -3493,7 +3569,7 @@ end = struct
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =
-          R.register relay ~node_id ~session_id ~alias ~client_type ~ttl ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
+          R.register relay ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
             ~opaque_host_id:opaque_host_id ()
         in
         let difficulty = finish_register_result result in
@@ -5602,6 +5678,16 @@ end = struct
      | _ -> ());
     gc_loop relay gc_interval
 
+  (* B149: hourly historical /stats snapshots (plus one at startup so every
+     deploy leaves an anchor row). record_stats_snapshot is best-effort and
+     never raises, but guard anyway so the loop cannot die. *)
+  let stats_snapshot_interval_s = 3600.
+
+  let rec stats_snapshot_loop relay =
+    Lwt_unix.sleep stats_snapshot_interval_s >>= fun () ->
+    (try R.record_stats_snapshot relay ~now:(Unix.gettimeofday ()) with _ -> ());
+    stats_snapshot_loop relay
+
   (* --- Server startup --- *)
 
   let start_server ~host ~port ~relay ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) ?broker_root () =
@@ -5623,6 +5709,8 @@ end = struct
         ()
     in
     let _ = gc_thread in
+    (try R.record_stats_snapshot relay ~now:(Unix.gettimeofday ()) with _ -> ());
+    Lwt.async (fun () -> stats_snapshot_loop relay);
     let scheme = match tls with Some _ -> "https" | None -> "http" in
     let verbose_str = if verbose then " (verbose)" else "" in
     Printf.printf "c2c relay serving on %s://%s:%d%s\n%!" scheme host port verbose_str;

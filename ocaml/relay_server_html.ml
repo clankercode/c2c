@@ -207,6 +207,7 @@ POST /gc            run gc now                           (Bearer admin)
 POST /admin/unbind  force-unbind an alias                (Bearer admin)
 GET  /device-login  phone pairing UI                     (anonymous)
 POST /register      { node_id, session_id, alias, client_type?, ttl?,
+                      client_version?, client_os?,
                       identity_pk?, signature?, nonce?, timestamp?,
                       pow_nonce?, pow_epoch?, pow_server_nonce?,
                       enc_pubkey?, sig_b64?, opaque_host_id? }
@@ -236,8 +237,11 @@ plus <code>stats</code> with a per-window object for
 <code>1d</code>&thinsp;/&thinsp;<code>7d</code>&thinsp;/&thinsp;<code>28d</code>&thinsp;/&thinsp;<code>ever</code>
 (each <code>{ messages, unique_aliases, unique_machines }</code>) and a
 <code>stats.connected</code> snapshot
-(<code>{ clients, machines, by_client_type }</code>) of the currently-connected
-leases.</p>
+(<code>{ clients, machines, by_client_type, by_version, by_os }</code>) of the
+currently-connected leases (version/OS from client-reported
+<code>/register</code> metadata; older clients land under
+<code>"unknown"</code>). The server also appends an hourly historical snapshot
+of the full stats JSON to its store.</p>
 
 <p>This is a curated quick-reference, not the full route set. Internal
 inter-relay federation routes (<code>/forward</code>,

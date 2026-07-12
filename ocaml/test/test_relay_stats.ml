@@ -46,6 +46,12 @@ let conn_ct stats ct =
   | `Int n -> n
   | _ -> Alcotest.failf "connected.by_client_type.%s is not an int" ct
 
+(* B149: generic accessor for the connected count maps (by_version / by_os). *)
+let conn_map stats ~map ~key =
+  match assoc key (assoc map (conn stats)) with
+  | `Int n -> n
+  | _ -> Alcotest.failf "connected.%s.%s is not an int" map key
+
 module Tests (B : sig
   module R : Relay.RELAY
   val fresh : unit -> R.t
@@ -161,6 +167,33 @@ end) = struct
     Alcotest.(check int) "connected machines after release" 0
       (conn_int s2 ~field:"machines")
 
+  (* B149: by_version / by_os bucket client-reported register metadata; a
+     lease registered without the fields (older client) lands in "unknown". *)
+  let test_connected_versions () =
+    let t = fresh () in
+    let real_now = Unix.gettimeofday () in
+    ignore
+      (R.register t ~node_id:"zq-vmach-A" ~session_id:"zq-vs1"
+         ~alias:"zq-ver-a1" ~client_type:"claude" ~client_version:"0.11.0"
+         ~client_os:"linux" ());
+    ignore
+      (R.register t ~node_id:"zq-vmach-B" ~session_id:"zq-vs2"
+         ~alias:"zq-ver-b1" ~client_type:"codex" ~client_version:"0.11.0"
+         ~client_os:"darwin" ());
+    ignore
+      (R.register t ~node_id:"zq-vmach-C" ~session_id:"zq-vs3"
+         ~alias:"zq-ver-c1" ~client_type:"kimi" ());
+    let stats = R.stats t ~now:real_now in
+    Alcotest.(check int) "by_version 0.11.0" 2
+      (conn_map stats ~map:"by_version" ~key:"0.11.0");
+    Alcotest.(check int) "by_version unknown" 1
+      (conn_map stats ~map:"by_version" ~key:"unknown");
+    Alcotest.(check int) "by_os linux" 1 (conn_map stats ~map:"by_os" ~key:"linux");
+    Alcotest.(check int) "by_os darwin" 1
+      (conn_map stats ~map:"by_os" ~key:"darwin");
+    Alcotest.(check int) "by_os unknown" 1
+      (conn_map stats ~map:"by_os" ~key:"unknown")
+
   let cases =
     [
       Alcotest.test_case "empty stats are all zero" `Quick test_empty;
@@ -176,6 +209,8 @@ end) = struct
         test_connected_counts;
       Alcotest.test_case "connected drops released leases" `Quick
         test_connected_expiry;
+      Alcotest.test_case "connected buckets version and os" `Quick
+        test_connected_versions;
     ]
 end
 
@@ -236,6 +271,89 @@ let test_mem_ever_survives_gc_reopen () =
   (* 40d-old message pruned + its alias last_seen out of the 28d window. *)
   check_window stats ~window:"28d" ~messages:1 ~aliases:1 ~machines:0
 
+(* B149 (memory backend): record_stats_snapshot appends one jsonl line per
+   call to <persist_dir>/stats-history.jsonl, each carrying ts + the full
+   stats object. *)
+let test_mem_snapshot_history () =
+  let dir = fresh_tmp_dir () in
+  let real_now = Unix.gettimeofday () in
+  let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  Relay.InMemoryRelay.stats_note_message t ~from_alias:"zq-snap-sender"
+    ~ts:(real_now -. 5.);
+  Relay.InMemoryRelay.record_stats_snapshot t ~now:real_now;
+  Relay.InMemoryRelay.record_stats_snapshot t ~now:(real_now +. 3600.);
+  let path = Filename.concat dir "stats-history.jsonl" in
+  let ic = open_in path in
+  let lines = ref [] in
+  (try
+     while true do
+       lines := input_line ic :: !lines
+     done
+   with End_of_file -> ());
+  close_in ic;
+  let lines = List.rev !lines in
+  Alcotest.(check int) "two snapshot lines" 2 (List.length lines);
+  let first = Yojson.Safe.from_string (List.hd lines) in
+  (match assoc "ts" first with
+   | `Float ts -> Alcotest.(check bool) "ts stamped" true (ts = real_now)
+   | _ -> Alcotest.fail "snapshot ts missing");
+  Alcotest.(check int) "snapshot embeds stats windows" 1
+    (count (assoc "stats" first) ~window:"ever" ~field:"messages")
+
+(* B149 (memory backend, no persist_dir): snapshot is a no-op, never raises. *)
+let test_mem_snapshot_no_persist_dir () =
+  let t = Relay.InMemoryRelay.create () in
+  Relay.InMemoryRelay.record_stats_snapshot t ~now:(Unix.gettimeofday ())
+
+(* B149 (sqlite): record_stats_snapshot appends rows to stats_snapshots. *)
+let test_sqlite_snapshot_history () =
+  let dir = fresh_tmp_dir () in
+  let real_now = Unix.gettimeofday () in
+  let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+  Relay.SqliteRelay.record_stats_snapshot t ~now:real_now;
+  Relay.SqliteRelay.record_stats_snapshot t ~now:(real_now +. 3600.) ;
+  let conn = Sqlite3.db_open (Filename.concat dir "c2c_relay.db") in
+  let count = ref (-1) in
+  let stmt = Sqlite3.prepare conn "SELECT COUNT(*), MIN(ts) FROM stats_snapshots" in
+  (if Sqlite3.step stmt = Sqlite3.Rc.ROW then
+     count := Sqlite3.Data.to_int_exn (Sqlite3.column stmt 0));
+  Sqlite3.finalize stmt |> ignore;
+  Sqlite3.db_close conn |> ignore;
+  Alcotest.(check int) "two snapshot rows" 2 !count
+
+(* B149 (sqlite): a pre-B149 database (leases table without client_version /
+   client_os) is migrated in place by create — registration with version
+   metadata then works and feeds connected.by_version. *)
+let test_sqlite_migration_adds_version_columns () =
+  let dir = fresh_tmp_dir () in
+  let db_path = Filename.concat dir "c2c_relay.db" in
+  (* Hand-build an old-shape leases table (pre-B149: 12 columns). *)
+  let conn = Sqlite3.db_open db_path in
+  Sqlite3.exec conn
+    "CREATE TABLE leases (alias TEXT PRIMARY KEY, node_id TEXT NOT NULL, \
+     session_id TEXT NOT NULL, client_type TEXT NOT NULL DEFAULT 'unknown', \
+     registered_at REAL NOT NULL, last_seen REAL NOT NULL, ttl REAL NOT NULL, \
+     identity_pk TEXT NOT NULL DEFAULT '', enc_pubkey TEXT NOT NULL DEFAULT '', \
+     signed_at REAL NOT NULL DEFAULT 0, sig_b64 TEXT NOT NULL DEFAULT '', \
+     opaque_host_id TEXT NOT NULL DEFAULT '')"
+  |> ignore;
+  Sqlite3.db_close conn |> ignore;
+  let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+  ignore
+    (Relay.SqliteRelay.register t ~node_id:"zq-migr-node"
+       ~session_id:"zq-migr-s1" ~alias:"zq-migr-a1" ~client_type:"claude"
+       ~client_version:"0.11.0" ~client_os:"linux" ());
+  let stats = Relay.SqliteRelay.stats t ~now:(Unix.gettimeofday ()) in
+  Alcotest.(check int) "migrated db buckets by_version" 1
+    (conn_map stats ~map:"by_version" ~key:"0.11.0");
+  (* Reopen: the metadata persists in the migrated columns. *)
+  let t2 = Relay.SqliteRelay.create ~persist_dir:dir () in
+  let stats2 = Relay.SqliteRelay.stats t2 ~now:(Unix.gettimeofday ()) in
+  Alcotest.(check int) "by_version survives reopen" 1
+    (conn_map stats2 ~map:"by_version" ~key:"0.11.0");
+  Alcotest.(check int) "by_os survives reopen" 1
+    (conn_map stats2 ~map:"by_os" ~key:"linux")
+
 (* B148: humanize_ago boundary table (pure, clock-free). *)
 let test_humanize_ago () =
   let check expected input =
@@ -294,12 +412,20 @@ let () =
               test_mem_persistence;
             Alcotest.test_case "messages_ever survives gc + reopen" `Quick
               test_mem_ever_survives_gc_reopen;
+            Alcotest.test_case "snapshot history appends jsonl" `Quick
+              test_mem_snapshot_history;
+            Alcotest.test_case "snapshot without persist_dir is a no-op" `Quick
+              test_mem_snapshot_no_persist_dir;
           ] );
       ( "sqlite",
         Sql_tests.cases
         @ [
             Alcotest.test_case "stats persist across reopen" `Quick
               test_sqlite_persistence;
+            Alcotest.test_case "snapshot history appends rows" `Quick
+              test_sqlite_snapshot_history;
+            Alcotest.test_case "pre-B149 db migrates version columns" `Quick
+              test_sqlite_migration_adds_version_columns;
           ] );
       ( "humanize-ago",
         [ Alcotest.test_case "humanize_ago boundaries" `Quick test_humanize_ago ]
