@@ -142,3 +142,4 @@ bugs:
     - file: B143-delivery-reply-hint-should-def.todo
     - file: B144-add-live-codex-e2e-coverage-fo.todo
     - file: B145-kimi-notifier-survives-c2c-res.todo
+    - file: B146-disable-kimi-support-temporari.todo
