@@ -1,0 +1,35 @@
+---
+complexity: low
+created_at: "2026-07-12T14:04:10Z"
+depends_on: []
+estimate_hours: 1
+id: B159
+priority: medium
+status: pending
+tags:
+    - codex
+    - app-server
+    - ux
+    - statusline
+title: Refine the  app-server startup banner into a concise statusline-quality signal
+updated_at: "2026-07-12T14:04:10Z"
+---
+Problem
+
+After B151, a successful `c2c new codex` app-server launch still prints a standalone `[c2c codex app-server] online-attached: c2c-alias=... endpoint=...` diagnostic from `ocaml/c2c_codex_session.ml`. It is correct but reads as a verbose implementation log rather than a polished launch acknowledgment.
+
+Context
+
+The launcher already centralizes this through `app_server_log_label` and `online_attached_log_body`; `c2c statusline` provides the visual benchmark: concise segments, restrained ANSI color only on TTY, and plain output under `NO_COLOR`/non-TTY. Preserve the endpoint because it is useful for diagnosis, but make normal startup immediately scannable.
+
+Acceptance criteria
+
+1. Replace the success banner with a compact, tasteful, c2c-branded layout inspired by `c2c statusline`: clear ready/attached state, alias, and a de-emphasized diagnostic endpoint.
+2. Use ANSI color only when suitable; honor `NO_COLOR` and non-TTY output.
+3. Keep the output single-line, stable enough for humans and logs, and avoid changing app-server lifecycle/identity behavior.
+4. Update focused exact-output tests for colored and non-colored modes, including the endpoint and alias.
+5. Manually exercise a managed Codex launch in tmux via the repository scripts before closing.
+
+Blockers
+
+No functional blocker. Coordinate with B158 only if shared client-list/banner code is touched.
