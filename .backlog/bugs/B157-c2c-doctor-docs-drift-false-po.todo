@@ -1,0 +1,27 @@
+---
+complexity: low
+created_at: "2026-07-12T11:47:43Z"
+depends_on: []
+estimate_hours: 1
+id: B157
+priority: low
+status: pending
+tags: []
+title: c2c doctor docs-drift false-positives — real commands flagged "not registered" (command groups + Tier3 commands)
+updated_at: "2026-07-12T11:47:43Z"
+---
+c2c doctor docs-drift false-positives — real commands flagged "not registered" (command groups + Tier3 commands)
+
+SYMPTOM: `c2c doctor docs-drift --doc <path>` reports many "top-level c2c command is not registered" findings for commands that DO exist and work, e.g. `c2c dev`, `c2c uninstall`, `c2c self-update`, `c2c new`, `c2c codex`, `c2c resume`, `c2c deliver`, `c2c host-id`, `c2c await-reply`, `c2c approval-reply`, `c2c migrate-broker`, `c2c wire-daemon`, and the Tier3 operator command `c2c watch`. This drowns real drift in noise and makes the validator untrustworthy (a docs-audit run wrongly "fixed" a real `c2c watch` reference to `c2c gui` on the strength of one such false positive before catching it via source).
+
+DISCOVERY: surfaced 2026-07-12 during the recent-changes docs audit. Cross-checked against the tier registry `ocaml/cli/c2c_commands.ml` and command definitions; the flagged commands are genuinely registered.
+
+ROOT CAUSE: the docs-drift command whitelist in `ocaml/cli/c2c_docs_drift.ml` (see the list around line 194: "relay"; "skills"; "gui"; "mcp"; ...) under-covers the real command surface. It appears to (a) omit command groups whose subcommands are documented as `c2c <group> <sub>` (e.g. `dev`, `deliver`), and (b) omit Tier3 operator commands like `watch` that are hidden from agent-tier `--help` but are still valid documented commands.
+
+FIX DIRECTIONS:
+1. Build the docs-drift command whitelist from the SAME source of truth as the tier registry / cmdliner command tree (`ocaml/cli/c2c_commands.ml`) instead of a hand-maintained literal list, so it can never drift below the real surface.
+2. Recognise `c2c <group> <sub>` forms (dev, deliver, relay, rooms, schedule, doctor, memory, ...) rather than only bare top-level tokens.
+3. Include Tier3/Tier4 command names in the whitelist (a command being agent-hidden by tier does not make a doc reference to it "unregistered").
+4. Add a regression test: assert every top-level command in the tier registry is accepted by docs-drift's known-command check.
+
+SEVERITY: low (validator noise, not a runtime defect) but it actively misleads doc-audit work — see the Tier3 false-positive writeup: .collab/findings/2026-07-12T11-00-00Z-claude-studio-docs-audit-tier3-false-positive.md

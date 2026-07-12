@@ -153,3 +153,4 @@ bugs:
     - file: B154-codex-app-server-auto-turn-can.todo
     - file: B155-c2c-statusline-add-a-statuslin.todo
     - file: B156-test-c2c-cli-hangs-indefinitel.todo
+    - file: B157-c2c-doctor-docs-drift-false-po.todo
