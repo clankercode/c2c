@@ -38,8 +38,28 @@ let sha256_file path =
   | hex -> Some hex
   | exception _ -> None
 
-let compare_images ~target ~installed : verdict =
-  match (dev_ino target, dev_ino installed) with
+let dev_ino_of_pid pid = dev_ino (proc_exe pid)
+
+(* Precomputed identity of the installed binary, so a restart-stale run hashes
+   it at most once (via the lazy) across all instances. *)
+type installed_image =
+  { ii_dev_ino : (int * int) option
+  ; ii_size : int option
+  ; ii_sha : string option Lazy.t
+  }
+
+let installed_image path =
+  { ii_dev_ino = dev_ino path
+  ; ii_size = file_size path
+  ; ii_sha = lazy (sha256_file path)
+  }
+
+(* Shared classification core: compare [target] (a file path) against a
+   precomputed installed image. *)
+let compare_core ~target
+    ~(inst_dev_ino : (int * int) option) ~(inst_size : int option)
+    ~(inst_sha : string option Lazy.t) : verdict =
+  match (dev_ino target, inst_dev_ino) with
   | None, _ ->
       Unknown
         (Printf.sprintf "cannot read %s (process gone or not permitted)" target)
@@ -51,14 +71,23 @@ let compare_images ~target ~installed : verdict =
       (* Different inode. install-all's rm+cp mints a fresh inode on every
          install, so this fires even when the compiled code is unchanged.
          Distinguish "same code, new inode" from a real upgrade by content:
-         size is a cheap discriminator before hashing ~23 MB twice. *)
-      match (file_size target, file_size installed) with
+         size is a cheap discriminator before hashing ~23 MB. *)
+      match (file_size target, inst_size) with
       | Some s1, Some s2 when s1 <> s2 -> Stale
       | _ -> (
-          match (sha256_file target, sha256_file installed) with
+          match (sha256_file target, Lazy.force inst_sha) with
           | Some h1, Some h2 -> if h1 = h2 then Current else Stale
           | _ ->
               Unknown "different inode; could not hash images to confirm"))
+
+let compare_images ~target ~installed : verdict =
+  let ii = installed_image installed in
+  compare_core ~target ~inst_dev_ino:ii.ii_dev_ino ~inst_size:ii.ii_size
+    ~inst_sha:ii.ii_sha
+
+let classify_installed (ii : installed_image) pid : verdict =
+  compare_core ~target:(proc_exe pid) ~inst_dev_ino:ii.ii_dev_ino
+    ~inst_size:ii.ii_size ~inst_sha:ii.ii_sha
 
 let classify ~installed_exe pid : verdict =
   compare_images ~target:(proc_exe pid) ~installed:installed_exe

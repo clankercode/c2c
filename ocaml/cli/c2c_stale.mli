@@ -29,6 +29,24 @@ val compare_images : target:string -> installed:string -> verdict
     inode mismatch, by file size and SHA-256 content. Equal content ⇒ [Current];
     differing content ⇒ [Stale]; unreadable/un-hashable ⇒ [Unknown]. *)
 
+val dev_ino_of_pid : int -> (int * int) option
+(** [dev_ino_of_pid pid] is the device+inode of [pid]'s executable image, or
+    [None] if [/proc/<pid>/exe] is unreadable. Callers can dedupe classification
+    across processes that share one inode. *)
+
+type installed_image
+(** Precomputed identity of the installed binary. Built once per run so the
+    ~23 MB SHA-256 is computed at most once (lazily, only if an inode mismatch
+    forces a content comparison). *)
+
+val installed_image : string -> installed_image
+(** [installed_image path] captures [path]'s device+inode, size, and a lazy
+    SHA-256. *)
+
+val classify_installed : installed_image -> int -> verdict
+(** [classify_installed ii pid] classifies [pid] against a precomputed
+    installed image — the per-instance entry point used by [restart-stale]. *)
+
 val classify : installed_exe:string -> int -> verdict
 (** [classify ~installed_exe pid] compares the executable image of [pid]
     against [installed_exe] (typically ["/proc/self/exe"] — the freshly

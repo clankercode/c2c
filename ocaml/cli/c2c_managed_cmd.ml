@@ -827,35 +827,25 @@ type stale_action =
   | Skipped of string      (* current / unknown / coordinator-excluded / self *)
   | Failed of string       (* auto-restart was attempted and failed *)
 
-(* Environment for a spawned `c2c restart` child, minus C2C_INSTANCE_NAME so
-   the child is never mistaken for a nested managed session. *)
-let env_without_instance_name () =
-  let env_key e = try String.sub e 0 (String.index e '=') with Not_found -> e in
-  Unix.environment () |> Array.to_list
-  |> List.filter (fun e -> env_key e <> "C2C_INSTANCE_NAME")
-  |> Array.of_list
-
-(* Spawn `c2c restart <name>` as a child and wait for its exit code. Only used
-   for app-server Codex instances, where `c2c restart` takes the owner-control
-   seam (writes a restart request, awaits the owner's result, then exits
-   0/2/3) — it does NOT execve into a new supervisor, so it is safe to drive
-   from this batch process without capturing our terminal. Returns the child's
-   exit code (or 128+signal / 1 on abnormal termination). *)
-let spawn_codex_restart_child name ~force ~timeout_s =
-  let self = "/proc/self/exe" in
-  let args =
-    [ self; "restart"; name; "--timeout"; Printf.sprintf "%g" timeout_s ]
-    @ (if force then [ "--force" ] else [])
-  in
-  let argv = Array.of_list args in
-  let pid =
-    Unix.create_process_env argv.(0) argv (env_without_instance_name ())
-      Unix.stdin Unix.stdout Unix.stderr
-  in
-  match Unix.waitpid [] pid with
-  | _, Unix.WEXITED n -> n
-  | _, Unix.WSIGNALED s -> 128 + s
-  | _, Unix.WSTOPPED _ -> 1
+(* Request an in-place restart of one app-server Codex instance via the B153
+   owner-control seam, called DIRECTLY (not by shelling out to `c2c restart`).
+   The live owner self-reexecs in its own pane; we only write the request and
+   await its result. Calling the seam inline — rather than spawning a child —
+   means restart-stale can never execve into a supervisor / capture its own
+   terminal (closing the child-fallback TOCTOU), and a failure degrades to a
+   [Failed] row instead of aborting the rolling batch. *)
+let request_app_server_restart ~name ~force ~timeout_s : stale_action =
+  let instance_dir = C2c_start.instance_dir name in
+  try
+    let request_id = C2c_codex_session.request_restart ~instance_dir ~force in
+    match
+      C2c_codex_session.await_restart_result ~instance_dir ~request_id ~timeout_s
+    with
+    | Some "restarting" -> Restarted
+    | Some result -> Skipped (Printf.sprintf "app-server owner declined: %s" result)
+    | None -> Failed "timed out waiting for app-server owner"
+  with exn ->
+    Failed (Printf.sprintf "app-server restart error: %s" (Printexc.to_string exn))
 
 let restart_stale_cmd =
   let dry_run =
@@ -888,7 +878,28 @@ let restart_stale_cmd =
     String.lowercase_ascii (C2c_swarm_config.swarm_config_coordinator_alias ())
   in
   let self_name = Sys.getenv_opt "C2C_INSTANCE_NAME" in
+  (* NB: the coordinator is matched by managed-instance NAME against the
+     configured coordinator alias. The convention is name == alias (e.g.
+     `c2c start claude -n coordinator1`); if an operator gives the coordinator
+     a name that differs from its alias, coordinator-last ordering won't apply
+     to it. *)
   let is_coord mi = String.lowercase_ascii mi.mi_name = coord_alias in
+  (* Hash the installed binary at most once for the whole run (lazily, only if
+     an inode mismatch forces a content compare). *)
+  let installed_img = C2c_stale.installed_image installed in
+  (* Dedup classification across processes sharing one executable inode. *)
+  let verdict_memo : (int * int, C2c_stale.verdict) Hashtbl.t = Hashtbl.create 8 in
+  let classify_pid pid =
+    match C2c_stale.dev_ino_of_pid pid with
+    | None -> C2c_stale.classify_installed installed_img pid (* -> Unknown *)
+    | Some key -> (
+        match Hashtbl.find_opt verdict_memo key with
+        | Some v -> v
+        | None ->
+            let v = C2c_stale.classify_installed installed_img pid in
+            Hashtbl.replace verdict_memo key v;
+            v)
+  in
   let is_app_server mi =
     C2c_codex_session.load_mapping
       ~instance_dir:(C2c_start.instance_dir mi.mi_name) <> None
@@ -913,7 +924,7 @@ let restart_stale_cmd =
   let results =
     List.map
       (fun (mi, pid) ->
-        let verdict = C2c_stale.classify ~installed_exe:installed pid in
+        let verdict = classify_pid pid in
         let eligible = force || verdict = C2c_stale.Stale in
         let action =
           if self_name = Some mi.mi_name then
@@ -933,15 +944,15 @@ let restart_stale_cmd =
                      the follow-up idea I011; for now emit the manual command. *)
                   Guided (Printf.sprintf "c2c restart %s" mi.mi_name)
                 else if dry_run then Would_restart
-                else (
-                  match spawn_codex_restart_child mi.mi_name ~force ~timeout_s with
-                  | 0 -> Restarted
-                  | 2 ->
-                      Skipped
-                        "app-server owner declined (thread active/unknown; \
-                         retry with --force)"
-                  | 3 -> Failed "timed out waiting for app-server owner"
-                  | n -> Failed (Printf.sprintf "c2c restart exited %d" n))
+                else begin
+                  (* Progress: the app-server request+await can take up to
+                     ~timeout_s, so tell the operator which instance we're on. *)
+                  if output_mode = Human then
+                    Printf.eprintf
+                      "[restart-stale] requesting app-server restart for '%s'...\n%!"
+                      mi.mi_name;
+                  request_app_server_restart ~name:mi.mi_name ~force ~timeout_s
+                end
         in
         (mi, verdict, action))
       ordered
