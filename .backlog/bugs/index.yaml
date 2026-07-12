@@ -150,3 +150,4 @@ bugs:
     - file: B151-codex-app-server-launch-emits.todo
     - file: B152-c2c-whoami-and-any-other-highl.todo
     - file: B153-codex-app-server-sessions-lack.todo
+    - file: B154-codex-app-server-auto-turn-can.todo
