@@ -164,3 +164,4 @@ bugs:
     - file: B165-c2c-list-global-should-output.todo
     - file: B166-c2c-codex-agents-started-via-c.todo
     - file: B167-c2c-codex-app-server-agents-do.todo
+    - file: B168-consider-keeping-posttoolhook.todo
