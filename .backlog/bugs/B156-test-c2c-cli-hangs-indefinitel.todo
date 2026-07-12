@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T11:15:30Z"
 depends_on: []
 estimate_hours: 1
 id: B156
 priority: high
+started_at: null
 status: pending
 tags: []
 title: test_c2c_cli hangs indefinitely in deliver_inbox subtests (no self-timeout; --loop daemon teardown can block on wait)
@@ -12,3 +14,15 @@ updated_at: "2026-07-12T11:15:30Z"
 ---
 
 test_c2c_cli hangs indefinitely in deliver_inbox subtests (no self-timeout; --loop daemon teardown can block on wait)
+
+SYMPTOM: test_c2c_cli.exe completed once (~61s) but a later rerun HUNG in the deliver_inbox group and had to be killed by the operator. No overall/per-test wall-clock guard, so one stuck subprocess wedges the whole executable.
+
+REPRO: build ./ocaml/test/test_c2c_cli.exe + ./ocaml/cli/c2c_deliver_inbox.exe, then run test_c2c_cli.exe. (When c2c_deliver_inbox.exe is NOT built, the same tests instead FAIL fast with 'No such file'; the hang appears once the daemon binary is present.)
+
+HYPOTHESIS: the deliver_inbox subtests spawn a 'c2c_deliver_inbox --loop [--inotify]' daemon from a shell one-liner and tear it down with 'sleep N; kill $pid; wait $pid' (test_c2c_cli.ml:3400, :3421). If the --loop daemon does not exit promptly on SIGTERM (blocked in inotify/read), 'wait $pid' blocks forever. :3400 uses plain kill (SIGTERM); :3421 uses kill -9.
+
+FIX DIRECTIONS: (1) hard kill -9 fallback + bounded wait in the teardown one-liners; (2) make c2c_deliver_inbox --loop exit promptly on SIGTERM; (3) add a suite/per-test wall-clock guard.
+
+Full local writeup (gitignored finding): .collab/findings/2026-07-12T11-11-48Z-claude-palo-saima-8fh1-test-c2c-cli-deliver-inbox-hang.md
+
+NOTE: independent of I010 (restart-stale does not touch deliver_inbox); surfaced during I010 verification. (Originally mis-filed as B155 in an I010 worktree that branched before the main-tree B155/statusline; reverted there and refiled here as B156 to avoid an ID collision.)
