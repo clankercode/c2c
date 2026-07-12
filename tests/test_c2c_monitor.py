@@ -80,11 +80,18 @@ class MonitorJsonTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def _start_monitor(self, extra_args=None):
+        # --live: these tests exercise live-mode surfaces (registry.json peer
+        # events, rooms/<id>/members.json, and arbitrary *.inbox.json writes).
+        # The monitor default flipped to archive mode, which watches only the
+        # append-only archive dir plus this session's own inbox — so the helper
+        # must opt into --live for those surfaces to fire.
+        # --no-relay: keep the test hermetic on hosts with a relay configured.
         args = [
             C2C_BIN, "monitor",
             "--broker-root", str(self.broker_root),
             "--json", "--all",
             "--drains", "--sweeps",
+            "--live", "--no-relay",
         ]
         if extra_args:
             args += extra_args
@@ -270,6 +277,111 @@ class MonitorJsonTests(unittest.TestCase):
         self.assertTrue(drains, f"expected drain event, got: {events}")
         self.assertEqual(drains[0]["alias"], "agent1")
         self.assertIn("monitor_ts", drains[0])
+
+
+@unittest.skipUnless(INOTIFYWAIT, "inotifywait not installed")
+@unittest.skipUnless(os.path.exists(C2C_BIN), "c2c binary not found")
+class MonitorStartupInboxTests(unittest.TestCase):
+    """B150: the default (archive) monitor must surface mail ALREADY queued in
+    the session inbox when it starts, not only messages that arrive after the
+    inotify watch is armed."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.broker_root = Path(self.tmpdir.name) / "mcp"
+        (self.broker_root / "archive").mkdir(parents=True)
+
+    def tearDown(self):
+        self.tmpdir.cleanup()
+
+    def _start_archive_monitor(self, session_id, extra_args=None):
+        # Archive mode (the default — NO --live). A resolved session id makes
+        # do_inbox_watch true so the monitor watches this session's own inbox
+        # and runs the B150 startup-surface pass.
+        args = [
+            C2C_BIN, "monitor",
+            "--broker-root", str(self.broker_root),
+            "--json", "--no-relay",
+        ]
+        if extra_args:
+            args += extra_args
+        env = os.environ.copy()
+        env["C2C_MCP_BROKER_ROOT"] = str(self.broker_root)
+        env["C2C_MCP_SESSION_ID"] = session_id
+        # C2C_MCP_SESSION_ID ranks first in env_session_id(), but drop the
+        # host-native key so a real Claude session running the suite can't
+        # shadow it.
+        env.pop("CLAUDE_CODE_SESSION_ID", None)
+        proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            env=env,
+        )
+        if not MonitorJsonTests._wait_for_ready(self, proc):
+            time.sleep(MONITOR_STARTUP_SECONDS)
+        return proc
+
+    def _collect(self, proc, n=1, timeout=EVENT_TIMEOUT_SECONDS):
+        return MonitorJsonTests._collect_events(self, proc, n=n, timeout=timeout)
+
+    def test_queued_mail_surfaced_at_startup_peek(self):
+        """Mail queued before start is emitted at startup; peek keeps the inbox."""
+        _write_registry(self.broker_root, [
+            {"alias": "receiver1", "session_id": "sid-recv", "pid": os.getpid()}
+        ])
+        inbox_path = self.broker_root / "sid-recv.inbox.json"
+        inbox_path.write_text(json.dumps([
+            {"from_alias": "sender1", "to_alias": "receiver1",
+             "content": "queued before monitor start",
+             "message_id": "m-b150", "ts": 1.0, "deferrable": False}
+        ]), encoding="utf-8")
+        # No file change after start — the message must arrive purely from the
+        # startup-surface pass.
+        proc = self._start_archive_monitor("sid-recv")
+        events = self._collect(proc, n=1)
+        msgs = [e for e in events if e.get("event_type") == "message"]
+        self.assertTrue(msgs, f"expected startup-surfaced message, got: {events}")
+        self.assertEqual(msgs[0]["content"], "queued before monitor start")
+        self.assertEqual(msgs[0]["from_alias"], "sender1")
+        # Peek is non-draining: the message is still in the inbox.
+        remaining = json.loads(inbox_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(remaining), 1, "peek must not drain the inbox")
+
+    def test_queued_mail_surfaced_at_startup_drain(self):
+        """--drain surfaces queued mail at startup and clears the inbox."""
+        _write_registry(self.broker_root, [
+            {"alias": "receiver1", "session_id": "sid-recv", "pid": os.getpid()}
+        ])
+        inbox_path = self.broker_root / "sid-recv.inbox.json"
+        inbox_path.write_text(json.dumps([
+            {"from_alias": "sender1", "to_alias": "receiver1",
+             "content": "drain me at startup",
+             "message_id": "m-b150d", "ts": 1.0, "deferrable": False}
+        ]), encoding="utf-8")
+        proc = self._start_archive_monitor("sid-recv", extra_args=["--drain"])
+        events = self._collect(proc, n=1)
+        msgs = [e for e in events if e.get("event_type") == "message"]
+        self.assertTrue(msgs, f"expected startup-surfaced message, got: {events}")
+        # A real message_id makes the archive echo dedupe against the startup
+        # surface, so it is emitted exactly once.
+        self.assertEqual(len(msgs), 1, f"message must not double-emit: {msgs}")
+        self.assertEqual(msgs[0]["content"], "drain me at startup")
+        remaining = json.loads(inbox_path.read_text(encoding="utf-8"))
+        self.assertEqual(remaining, [], "drain must clear the inbox")
+
+    def test_empty_inbox_no_spurious_startup_event(self):
+        """An empty inbox at startup must not emit a message/drain event."""
+        _write_registry(self.broker_root, [
+            {"alias": "receiver1", "session_id": "sid-recv", "pid": os.getpid()}
+        ])
+        (self.broker_root / "sid-recv.inbox.json").write_text("[]", encoding="utf-8")
+        proc = self._start_archive_monitor("sid-recv", extra_args=["--drains"])
+        events = self._collect(proc, n=1, timeout=3.0)
+        noise = [e for e in events
+                 if e.get("event_type") in ("message", "drain")]
+        self.assertEqual(noise, [], f"empty inbox must be quiet, got: {events}")
 
 
 if __name__ == "__main__":
