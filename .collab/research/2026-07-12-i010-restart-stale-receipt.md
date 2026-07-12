@@ -31,11 +31,14 @@ over one terminal. The design doc's increment-3 "child-spawn `c2c restart` for
 each" is therefore unsafe *as literally stated* for TUI clients.
 
 **Resolution (v1):**
-- **App-server Codex** — safe to auto-drive. `c2c restart` diverts to the B153
-  owner-control seam: the child only *writes a restart request* and awaits the
-  result; the **live owner self-reexecs in its own pane** (`c2c_codex_session.ml`
-  `restart_requested` → `execve`). The child exits 0/2/3, capturing nobody's
-  terminal. restart-stale spawns it and maps the exit code.
+- **App-server Codex** — safe to auto-drive. restart-stale calls the B153
+  owner-control seam **directly** (`request_restart` / `await_restart_result`,
+  wrapped in `try/with`): it writes a restart request and awaits the result; the
+  **live owner self-reexecs in its own pane** (`c2c_codex_session.ml`
+  `restart_requested` → `execve`), capturing nobody's terminal. (The initial
+  cut shelled out to `c2c restart`; review findings M2/m4 moved it to a direct
+  inline call so no child exception can abort the rolling batch and the
+  `cmd_restart` execve-fallback can never be reached via a mapping-file TOCTOU.)
 - **TUI/hook clients** — reported as `guided` with the exact
   `c2c restart <name>` to run in-pane. Safe *automated* in-place TUI restart
   needs a generalized outer-loop restart seam (mirror B153 for `run_outer_loop`)
@@ -53,11 +56,11 @@ with the freshly-built binary. No codex quota spent.
    Result: `current-new -> current / skipped (already current)`. ✓
 3. **App-server auto-restart routing** — instance with `codex-session.json`
    mapping + live sleeper as owner. `restart-stale --force --timeout 2` →
-   spawned `c2c restart codex-appsrv` → child took the owner seam, wrote
-   `restart.request.json`, timed out with no live owner (exit 3) →
+   restart-stale called the owner seam directly, wrote `restart.request.json`,
+   timed out with no live owner →
    `codex-appsrv -> stale / failed / timed out waiting for app-server owner`,
-   `ok:false`. ✓ Proves the full routing + child spawn + owner-seam invocation +
-   exit-code handling.
+   `ok:false`. ✓ Proves the app-server routing + owner-seam invocation +
+   result handling (re-confirmed after the M2/m4 direct-seam refactor).
 
 ## Automated tests
 
