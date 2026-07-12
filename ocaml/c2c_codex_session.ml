@@ -67,8 +67,18 @@ let frontend_extra_args ~(yolo : bool) ~(extra : string list) : string list =
 
 let app_server_log_label = "[c2c codex app-server]"
 
+let startup_banner ~color ~(alias : string) ~(endpoint : string) : string =
+  let paint code s = if color then code ^ s ^ "\027[0m" else s in
+  let sep = paint "\027[2m" " · " in
+  String.concat sep
+    [ paint "\027[1m" "c2c codex"
+    ; paint "\027[32m" "ready"
+    ; paint "\027[1m" alias
+    ; paint "\027[2m" endpoint
+    ]
+
 let online_attached_log_body ~(alias : string) ~(endpoint : string) : string =
-  Printf.sprintf "online-attached: c2c-alias=%s endpoint=%s" alias endpoint
+  startup_banner ~color:false ~alias ~endpoint
 
 (* ------------------------- positional splitting --------------------------- *)
 
@@ -391,7 +401,7 @@ type launch_mode =
   | New
   | Resume of string
 
-let use_color () = Unix.isatty Unix.stderr
+let use_color () = Sys.getenv_opt "NO_COLOR" = None && Unix.isatty Unix.stderr
 let red () = if use_color () then "\027[1;31m" else ""
 let yellow () = if use_color () then "\027[1;33m" else ""
 let reset () = if use_color () then "\027[0m" else ""
@@ -833,9 +843,8 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
         C2c_codex_app_server.endpoint_uri
           (C2c_codex_app_server.endpoint_of handle)
       in
-      Printf.eprintf "%s%s%s %s\n%!"
-        (yellow ()) app_server_log_label (reset ())
-        (online_attached_log_body ~alias ~endpoint);
+      Printf.eprintf "%s\n%!"
+        (startup_banner ~color:(use_color ()) ~alias ~endpoint);
       (* B131: drive the proven T003 ingress + T007 auto-turn pipeline against
          THIS live session while the frontend is attached. The loop registers a
          routable broker alias, discovers the frontend's loaded thread, injects

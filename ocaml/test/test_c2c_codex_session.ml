@@ -80,16 +80,14 @@ let test_alias_collision_chain_deterministic () =
   Alcotest.(check string) "second extension deterministic" c1 c2
 
 let test_app_server_log_vocabulary () =
-  Alcotest.(check string) "colored label content"
-    "[c2c codex app-server]" S.app_server_log_label;
-  Alcotest.(check string) "online-attached fields"
-    "online-attached: c2c-alias=codex-oak-fern-a1b2 endpoint=ws://127.0.0.1:37305"
+  Alcotest.(check string) "plain startup banner"
+    "c2c codex · ready · codex-oak-fern-a1b2 · ws://127.0.0.1:37305"
     (S.online_attached_log_body ~alias:"codex-oak-fern-a1b2"
        ~endpoint:"ws://127.0.0.1:37305");
-  Alcotest.(check bool) "legacy generic alias field absent" false
-    (string_mem " alias="
-       (S.online_attached_log_body ~alias:"codex-oak-fern-a1b2"
-          ~endpoint:"ws://127.0.0.1:37305"))
+  Alcotest.(check string) "coloured startup banner"
+    "\027[1mc2c codex\027[0m\027[2m · \027[0m\027[32mready\027[0m\027[2m · \027[0m\027[1mcodex-oak-fern-a1b2\027[0m\027[2m · \027[0m\027[2mws://127.0.0.1:37305\027[0m"
+    (S.startup_banner ~color:true ~alias:"codex-oak-fern-a1b2"
+       ~endpoint:"ws://127.0.0.1:37305")
 
 (* ------------------------------------------------------------------ *)
 (* --yolo forwarding + non-persistence                                 *)
