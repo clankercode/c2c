@@ -1,6 +1,6 @@
 # B140 — `c2c rename <new-alias>`: deliberate atomic rename-everywhere
 
-Status: in progress (b140-alias-rename worktree)
+Status: shipped (merged to master 2026-07-13; cx re-review VERDICT: PASS)
 Ref: B135 (sticky-alias forbid — stays for implicit/unsafe paths)
 
 ## Problem
