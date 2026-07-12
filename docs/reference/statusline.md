@@ -46,6 +46,14 @@ c2c my-alias · ⇄off · 📦 2 · 🖥 3
 }
 ```
 
+## Plain-text fallback (`PI_C2C_ASCII`)
+
+Set `PI_C2C_ASCII=1` to render the line with plain-text tokens instead of
+unicode glyphs — useful in minimal terminals or fonts that lack emoji/arrow
+support. The fallbacks are: `⇄` → `[relay]`, `📦` → `repo`, `🖥` → `machine`
+(e.g. `c2c my-alias · [relay]off · repo 2 · machine 3`). The `--json` output
+and its field names are unaffected.
+
 ## Configuration examples
 
 For Claude Code, add the output of `c2c statusline --print-config` to the

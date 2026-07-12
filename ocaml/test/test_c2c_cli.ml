@@ -4031,7 +4031,7 @@ let test_statusline_json_reports_state () =
         run_capture
           (c2c_cmd
              (Printf.sprintf
-                "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s C2C_MCP_SESSION_ID=sl-self-sid \
+                "C2C_CLI_FORCE=1 PI_C2C_ASCII=0 C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s C2C_MCP_SESSION_ID=sl-self-sid \
                  c2c statusline --no-color < /dev/null"
                 (Filename.quote dir) (Filename.quote sessions_dir)))
       in
@@ -4075,7 +4075,11 @@ let test_statusline_ascii_fallback () =
       check bool "ascii output uses 'machine' word" true
         (string_contains human "machine");
       check bool "ascii output drops unicode relay glyph" true
-        (not (string_contains human "⇄")))
+        (not (string_contains human "⇄"));
+      check bool "ascii output drops unicode repo icon" true
+        (not (string_contains human "📦"));
+      check bool "ascii output drops unicode machine icon" true
+        (not (string_contains human "🖥")))
 
 let test_statusline_reads_stdin_session_json () =
   with_temp_dir (fun dir ->
