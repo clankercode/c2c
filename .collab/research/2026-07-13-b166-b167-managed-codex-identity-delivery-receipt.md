@@ -1,0 +1,110 @@
+# B166/B167 — managed Codex frontend identity and delivery-context receipt
+
+## Finding
+
+The app-server delivery loop already owns repo-local ingress and the safe
+idle-only auto-turn policy, but the remote Codex frontend did not inherit the
+launcher's normal `C2C_MCP_SESSION_ID`. A bare `c2c init` inside that frontend
+therefore synthesized a separate session/alias. Besides making the advertised
+identity drift, that can make peers address an inbox other than the delivery
+loop's stable managed session.
+
+## Change
+
+- Added frontend-only environment overrides to the authenticated app-server
+  launcher; the server process never receives them.
+- Managed `c2c new codex` now gives its remote frontend the stable launcher
+  `C2C_MCP_SESSION_ID`, the existing app-server ownership marker, and the
+  managed marker. Inherited ambient keys are replaced, not duplicated.
+- The app-server SessionStart context now accurately says that local c2c mail
+  is injected at arrival time and that eligible idle mail starts one safe
+  steering turn. It also tells the agent registration is already complete.
+- The hook remains identity-only for app-server sessions: it does not drain the
+  inbox or create a second identity, leaving arrival-time delivery exclusively
+  to `C2c_codex_deliver_loop` / `C2c_codex_autoturn`.
+
+## Verification
+
+- `test_c2c_codex_session.exe`: 34 tests passed.
+- `test_c2c_codex_app_server.exe`: 29 tests passed; asserts frontend-only
+  identity env and that the app-server process does not receive it.
+- `test_c2c_hook_codex.exe`: 36 tests passed; asserts app-server hook identity
+  adoption, no inbox drain, and the injected delivery contract.
+- Isolated CLI check: after registering `managed-b166` as `stable-b166`, a bare
+  `c2c init --client codex --no-setup --room '' --json` with that managed
+  `C2C_MCP_SESSION_ID` retained `stable-b166`.
+
+## B167 live tmux reproduction and follow-up
+
+Using the mandated `scripts/c2c_tmux.py` harness against commit `bd003f94`, a
+fresh managed Codex app-server session reached `online-attached` and advertised
+`codex-plasma-rubble-84db`.  That alias was not routable.  On its first actual
+SessionStart hook, Codex instead registered `codex-range-thick-hh1n`; a local
+message sent to that user-visible alias remained queued and was not injected or
+auto-turned by the app-server loop.
+
+The cause was twofold:
+
+1. `run_delivery_loop` registered and polled under the managed instance name,
+   while the remote frontend received the distinct launcher `session_id` in
+   `C2C_MCP_SESSION_ID`.  The SessionStart hook therefore could not adopt the
+   loop's broker row and generated a second identity.
+2. The loop registration did not set `from_auto_gen=true`, so the broker
+   rejected the generated `codex-*` alias.  The exception was swallowed,
+   leaving the advertised alias unreachable.
+
+The B167 fix registers the generated app-server alias synchronously as soon as
+the authenticated unit starts, under the exact frontend session id and with
+`from_auto_gen=true`.  The delivery loop now uses that same session id for
+registration, inbox polling, DND, rooms, and cleanup.  This leaves one
+user-visible alias and one inbox from startup through arrival injection.
+
+Focused verification:
+
+- `test_c2c_codex_session.exe -- test lifecycle-glue 0` passes; it asserts the
+  broker row exists under the remote frontend session id (this failed before
+  the fix).
+- `test_c2c_hook_codex.exe -- test hook-codex 13` passes; it preserves the
+  managed app-server hook adoption/no-drain contract.
+
+## B167 post-fix live tmux proof
+
+With local binary commit `1714a710` installed, the same tmux workflow launched
+`codex-arrow-tala-b966` at `ws://127.0.0.1:38785`.  Before any frontend user
+turn, `c2c list --json` showed it alive and routable under its advertised alias
+with session id `a6811acf-eaf6-4640-bd85-d6db240be9ba`.  A local
+`c2c send codex-arrow-tala-b966 ...` succeeded.
+
+The remote TUI then displayed the full envelope on arrival and executed exactly
+one gated steering turn.  Its `codex-deliver.log` records one pass with
+`injected_count:1`, `turn_started:"019f56f7-8311-7a80-9972-0cfd61ca0b84"`, and
+one batch/message id; the following pass records `queued_reason:"active_turn"`;
+the subsequent pass completes that same batch.  This proves arrival injection,
+one eligible-local idle auto-turn, and no repeated turn for the same mail.
+
+The remote Codex SessionStart hook still printed a different generated hook
+alias (`codex-yam-piano-nqpk`) in this live run.  It did not affect B167:
+delivery continued through the advertised `codex-arrow-tala-b966` alias and
+the app-server's auto-turn.  It remains a B166 identity-stability follow-up;
+the raw proof should not be read as resolving that separate alias banner.
+
+## B166 follow-up: omitted default broker-root mapping
+
+The B166 live mismatch was caused by
+`managed_session_id_from_codex_thread`: it required every managed instance
+config to serialize `broker_root`.  Current configs intentionally omit that
+field when it is the resolver default, so a SessionStart payload thread could
+not map back to the eager app-server registration and the hook minted a second
+alias.  The resolver now treats an absent field as the current default broker.
+
+Regression coverage creates an app-server registration and managed Codex
+thread mapping whose config omits `broker_root`; the hook must keep the
+launcher alias and must not register the payload thread.  It passes alongside
+the B137 adoption test.
+
+Live proof with commit `8ce06f0c`: a fresh managed app-server advertised
+`codex-flute-zinc-ef42`, and a local send to that alias succeeded.  On its
+first auto-turn the TUI SessionStart context said `connected as
+codex-flute-zinc-ef42 through the managed Codex app-server`; no explicit
+`c2c init` occurred and no second generated hook alias appeared.  The same
+turn contained the full arrival envelope and processed it as untrusted data.

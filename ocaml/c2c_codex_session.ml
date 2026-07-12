@@ -80,6 +80,14 @@ let startup_banner ~color ~(alias : string) ~(endpoint : string) : string =
 let online_attached_log_body ~(alias : string) ~(endpoint : string) : string =
   startup_banner ~color:false ~alias ~endpoint
 
+(* Keep managed identity scoped to the remote frontend.  This is intentionally
+   the normal c2c session marker: bare `c2c init` and CLI commands then reuse
+   the launcher registration instead of synthesizing a second alias. *)
+let app_server_frontend_env ~session_id =
+  [ "C2C_MCP_SESSION_ID=" ^ session_id
+  ; "C2C_CODEX_APPSERVER_SESSION=" ^ session_id
+  ; "C2C_CODEX_MANAGED=1" ]
+
 (* ------------------------- positional splitting --------------------------- *)
 
 (* cmdliner captures everything after a literal `--` as positionals; on some
@@ -536,8 +544,21 @@ let log_deliver_pass ~(instance_dir : string) (po : C2c_codex_autoturn.pass_outc
    installs SIGTERM/SIGINT teardown, and returns the terminal supervision
    result. Registration lifetime is bound to the loop (register on entry,
    deregister in the loop's finally + the signal path). *)
+let register_managed_app_server_identity ~(broker_root : string)
+    ~(session_id : string) ~(alias : string) ~(pid : int) : unit =
+  (* Publish as soon as the authenticated app-server unit is running.  The
+     remote frontend's first hook must find this exact row before it processes
+     a user turn; otherwise it creates a second identity and its inbox is not
+     the one watched by the delivery loop (B167). *)
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id ~alias
+    ~pid:(Some pid)
+    ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time pid)
+    ~client_type:(Some "codex-app-server") ~from_auto_gen:true ()
+
 let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
-    ~(alias : string) ~(instance_dir : string) : C2c_codex_deliver_loop.outcome =
+    ~(session_id : string) ~(alias : string) ~(instance_dir : string)
+    : C2c_codex_deliver_loop.outcome =
   (* Unlock the real WS clients in THIS launcher process only (the frontend was
      already spawned with its env captured, so this does not leak into it). *)
   Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
@@ -555,10 +576,13 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   let my_pid = Unix.getpid () in
   let register () =
     (try
-       C2c_mcp.Broker.register broker ~session_id:name ~alias
-         ~pid:(Some my_pid)
-         ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time my_pid)
-         ~client_type:(Some "codex-app-server") ()
+       (* The remote frontend receives [session_id] in C2C_MCP_SESSION_ID.
+          The broker row and delivery loop must use that same id: using the
+          managed instance [name] here made the advertised alias unreachable
+          to the frontend hook, which then minted a second identity on its
+          first user turn (B167). *)
+       register_managed_app_server_identity ~broker_root ~session_id ~alias
+         ~pid:my_pid
      with _ -> ());
     (* Swarm onboarding parity: join the social room like other managed sessions. *)
     (let rooms =
@@ -567,7 +591,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
      in
      List.iter
        (fun room_id ->
-         try ignore (C2c_mcp.Broker.join_room broker ~room_id ~alias ~session_id:name)
+         try ignore (C2c_mcp.Broker.join_room broker ~room_id ~alias ~session_id)
          with _ -> ())
        rooms)
   in
@@ -575,12 +599,12 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   let deregister () =
     if not !deregistered then begin
       deregistered := true;
-      (try C2c_start.clear_registration_pid ~broker_root ~session_id:name with _ -> ())
+      (try C2c_start.clear_registration_pid ~broker_root ~session_id with _ -> ())
     end
   in
   let deps : C2c_codex_deliver_loop.deps =
     { broker_root;
-      session_id = name;
+      session_id;
       managed_identity = alias;
       endpoint;
       token_provider;
@@ -594,7 +618,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
       supervise_step = (fun () -> C2c_codex_app_server.supervise_step handle);
       session_active =
         (fun () -> C2c_codex_app_server.current_state handle = C2c_codex_app_server.Running);
-      is_dnd = (fun () -> try C2c_mcp.Broker.is_dnd broker ~session_id:name with _ -> false);
+      is_dnd = (fun () -> try C2c_mcp.Broker.is_dnd broker ~session_id with _ -> false);
       register;
       deregister;
       on_pass =
@@ -759,18 +783,14 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       min_codex_version = codex_min_version;
       extra_frontend_args =
         frontend_extra_args ~yolo ~extra:(model_args @ extra_args);
+      frontend_env = app_server_frontend_env ~session_id;
       resume_thread = thread }
   in
-  (* B137: hand this managed app-server session's broker session id to the hooks
-     the stock frontend will fire. [build_frontend_env] snapshots
-     [Unix.environment ()], so exporting here — BEFORE [start] spawns the
-     frontend — makes every hook that frontend fires inherit the marker. The
-     hook adopts it as its identity (the app-server deliver loop owns this
-     session's registration + delivery) instead of self-registering a SECOND
-     per-thread identity. [name] is exactly the session id [run_delivery_loop]
-     registers under. Reset on the fallback path below so a hook-fallback launch
-     never inherits it (there the hook owns registration/delivery itself). *)
-  (try Unix.putenv "C2C_CODEX_APPSERVER_SESSION" name with _ -> ());
+  (* B166/B137: the remote frontend receives the launcher session id BEFORE it
+     starts. Hooks adopt that identity and bare `c2c init` reuses its alias;
+     the launcher owns registration/delivery, so neither path mints a second
+     per-thread identity. [frontend_env] is child-scoped, so hook fallback and
+     unrelated children never inherit this marker. *)
   (* IMPORTANT: no routable alias is published before start succeeds — a version
      or capability failure returns a diagnostic here, before any registration. *)
   let start cfg = match backend with
@@ -782,11 +802,6 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       (* No routable identity was persisted (start failed before Running), so
          nothing to clean up here. Best-effort remove the empty instance dir we
          created above so a fallback launch doesn't inherit a stray dir. *)
-      (* B137: clear the app-server identity marker before falling back to the
-         hook path — the fallback child re-snapshots the env, and a stale marker
-         would make its hook abstain from the registration/delivery it now owns.
-         Unix has no unsetenv; an empty value reads as unset (hooks trim-guard). *)
-      (try Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "" with _ -> ());
       (try if Sys.readdir instance_dir = [||] then Unix.rmdir instance_dir with _ -> ());
       report_diagnostic diag;
       (* Graceful fallback to the hook-backed launch (AC7). Do NOT forward
@@ -839,6 +854,12 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
         { session_id; alias;
           thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
           created_at = created; updated_at = now };
+      (* Register before the remote TUI can fire SessionStart.  The delivery
+         loop refreshes the same row while it is attached, but cannot be the
+         first registration because it waits for a loaded frontend thread. *)
+      register_managed_app_server_identity
+        ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
+        ~pid:(Unix.getpid ());
       let endpoint =
         C2c_codex_app_server.endpoint_uri
           (C2c_codex_app_server.endpoint_of handle)
@@ -852,7 +873,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          registration + loop down on TUI exit. Falls back to plain supervision
          (degraded) if no thread is ever loaded — never crashes the session. *)
       let final =
-        run_delivery_loop ~handle ~name ~alias ~instance_dir
+        run_delivery_loop ~handle ~name ~session_id ~alias ~instance_dir
       in
       C2c_codex_app_server.stop handle;
       (* Refresh the mapping's updated_at + thread on clean shutdown. *)
@@ -890,15 +911,9 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     ~(extra_args : string list) ?(model_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
-  (* B136: publish an inherited, non-secret marker so hooks fired BY a managed
-     codex session (the app-server frontend/core OR the hook-fallback child) can
-     detect they are managed and suppress the vanilla "use `c2c new codex`"
-     app-server nudge. Set here — before any codex child is spawned (both the
-     app-server path's frontend/server env and the hook-fallback child's env are
-     snapshots of [Unix.environment ()] taken later) — because
-     [C2C_CODEX_INGRESS_LIVE] is exported only AFTER the frontend spawns (in
-     [run_delivery_loop]) and so never reaches those hooks. The nudge's
-     [codex_session_is_managed] gate reads this. *)
+  (* B136: hook fallback still needs this inherited non-secret marker so its
+     hooks suppress the vanilla app-server tip.  The app-server path uses the
+     frontend-only environment assembled above, avoiding a launcher-env leak. *)
   (try Unix.putenv "C2C_CODEX_MANAGED" "1" with _ -> ());
   (* B131 / coordinator directive: the app-server transport is the DEFAULT and
      ONLY managed codex path for a supported codex. Unsupported codex (<0.144) or

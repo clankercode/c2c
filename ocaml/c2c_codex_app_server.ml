@@ -650,6 +650,10 @@ type config = {
   min_codex_version : int * int * int;
   extra_server_args : string list;
   extra_frontend_args : string list;
+  (* Non-secret, launcher-owned identity/context variables intended only for
+     the remote Codex frontend.  Keep these out of the app-server process: the
+     server needs only its capability-token hash. *)
+  frontend_env : string list;
   resume_thread : string option;
 }
 
@@ -657,7 +661,8 @@ let default_config ~instance_name ~instance_dir ~cwd =
   {
     cwd; codex_bin = "codex"; instance_name; alias = None; instance_dir;
     readiness_timeout_s = 30.0; reap_timeout_s = 5.0; min_codex_version = (0, 144, 0);
-    extra_server_args = []; extra_frontend_args = []; resume_thread = None;
+    extra_server_args = []; extra_frontend_args = []; frontend_env = [];
+    resume_thread = None;
   }
 
 (* --------------------------------------------------------------------------- *)
@@ -840,10 +845,22 @@ let build_frontend_argv (cfg : config) (ep : endpoint) ~(token_env_var : string)
     (command @ [ "--remote"; endpoint_uri ep; "--remote-auth-token-env"; token_env_var ]
      @ cfg.extra_frontend_args)
 
-(* Frontend env = current process env + the raw token under [token_env_var]. This
-   is the ONLY place the raw token is written outside launcher memory. *)
-let build_frontend_env ~(token_env_var : string) ~(raw_token : string) : string array =
-  Array.append (Unix.environment ()) [| Printf.sprintf "%s=%s" token_env_var raw_token |]
+(* Frontend env = current process env plus launcher-provided frontend-only
+   overrides and the raw token.  Later values replace inherited values by key;
+   this prevents an ambient parent C2C_MCP_SESSION_ID from stealing the managed
+   frontend's identity.  The raw token remains frontend-only. *)
+let build_frontend_env ~(extra_env : string list) ~(token_env_var : string) ~(raw_token : string)
+    : string array =
+  let key kv =
+    match String.index_opt kv '=' with Some i -> String.sub kv 0 i | None -> kv
+  in
+  let overrides = extra_env @ [ Printf.sprintf "%s=%s" token_env_var raw_token ] in
+  let overridden = List.map key overrides in
+  let inherited =
+    Unix.environment () |> Array.to_list
+    |> List.filter (fun kv -> not (List.mem (key kv) overridden))
+  in
+  Array.of_list (inherited @ overrides)
 
 let build_server_env () : string array = Unix.environment ()
 
@@ -977,7 +994,10 @@ let start ?(backend = real_backend ()) (cfg : config) : (handle, diagnostic) res
                            else begin
                              h.h_state <- Starting_frontend; persist_best_effort h;
                              let fe_argv = build_frontend_argv cfg ep ~token_env_var in
-                             let fe_env = build_frontend_env ~token_env_var ~raw_token in
+                             let fe_env =
+                               build_frontend_env ~extra_env:cfg.frontend_env
+                                 ~token_env_var ~raw_token
+                             in
                              match bk.spawn_frontend ~argv:fe_argv ~env:fe_env with
                              | Error e -> fail Frontend_spawn_failed (Printf.sprintf "frontend spawn failed: %s" e)
                              | Ok frontend ->

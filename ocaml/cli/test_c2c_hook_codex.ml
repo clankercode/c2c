@@ -181,17 +181,16 @@ let write_codex_config_alias ctx alias =
        "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\n\n[mcp_servers.c2c.env]\nC2C_MCP_AUTO_REGISTER_ALIAS = \"%s\"\n"
        alias)
 
-let write_managed_codex_instance ctx ~name ~session_id ~thread_id =
+let write_managed_codex_instance ?(include_broker_root = true) ctx ~name ~session_id ~thread_id =
   let dir = ctx.home // ".local" // "share" // "c2c" // "instances" // name in
   mkdir_p dir;
   write_file (dir // "config.json")
     (Yojson.Safe.pretty_to_string
        (`Assoc
-         [ ("client", `String "codex")
-         ; ("broker_root", `String ctx.broker_root)
-         ; ("session_id", `String session_id)
-         ; ("codex_resume_target", `String thread_id)
-         ]))
+         ([ ("client", `String "codex")
+          ; ("session_id", `String session_id)
+          ; ("codex_resume_target", `String thread_id)
+          ] @ if include_broker_root then [ ("broker_root", `String ctx.broker_root) ] else [])))
 
 (* --- tests -------------------------------------------------------------------- *)
 
@@ -521,11 +520,35 @@ let test_managed_session_auto_register_honors_installer_alias_hint () =
                 (contains ~haystack:context ~needle:hint_alias)
           | None -> failf "expected managed onboarding output, got: %S" stdout)))
 
+let test_app_server_thread_mapping_uses_omitted_default_broker_root () =
+  (* App-server configs omit broker_root when it equals the resolver default
+     (#504).  The hook must still recover this managed identity from its
+     Codex thread id instead of auto-registering a second alias (B166). *)
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-b166-default-root" in
+    let thread_id = "codex-thread-b166-default-root" in
+    let launcher_alias = "zz-b166-launcher" in
+    ignore (register_app_server ctx ~session_id:managed_sid ~alias:launcher_alias);
+    write_managed_codex_instance ~include_broker_root:false ctx
+      ~name:"managed-b166-default-root" ~session_id:managed_sid ~thread_id;
+    let rc, stdout, stderr =
+      run_hook ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    let regs = C2c_mcp.Broker.list_registrations (broker ctx) in
+    check bool "no payload-thread identity" false
+      (List.exists (fun (r : C2c_mcp.registration) -> r.session_id = thread_id) regs);
+    (match List.find_opt
+             (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid) regs with
+     | Some r -> check string "launcher alias retained" launcher_alias r.alias
+     | None -> failf "managed registration missing (stdout %S stderr %S)" stdout stderr))
+
 (* --- B137: managed app-server frontend adopts launcher identity (no dual-id) --
 
    A real managed `c2c new codex` app-server session, as it appears to the hook
-   (per the B136 live finding): it sets NO C2C_MCP_SESSION_ID, its thread does
-   NOT map through the legacy config.json (managed_sid_for_payload = None), and
+   after B166: its frontend receives C2C_MCP_SESSION_ID for the launcher's
+   stable identity, while its thread does NOT map through the legacy config.json
+   (managed_sid_for_payload = None), and
    its broker registration is under the managed instance name (client_type
    "codex-app-server") — NOT the payload thread id. The launcher instead hands
    the hook its identity via the inherited marker C2C_CODEX_APPSERVER_SESSION.
@@ -547,10 +570,12 @@ let test_b137_managed_app_server_adopts_launcher_alias () =
     let regs_before = C2c_mcp.Broker.list_registrations (broker ctx) in
     let rc, stdout, stderr =
       run_hook
-        (* Real app-server env: managed marker + launcher session marker, and
-           deliberately NO C2C_MCP_SESSION_ID (app-server does not set it). *)
+        (* Real B166 app-server frontend env: the normal c2c managed-session
+           id prevents a later bare `c2c init` from generating a second alias;
+           the app-server marker keeps the hook identity-only. *)
         ~extra_env:
           [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_MCP_SESSION_ID", managed_sid)
           ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
         ctx
         ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
@@ -584,7 +609,12 @@ let test_b137_managed_app_server_adopts_launcher_alias () =
     check int "launcher inbox NOT drained by hook" 1
       (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
     check bool "message body not surfaced by hook" false
-      (contains ~haystack:stdout ~needle:"ingress owns this"))
+      (contains ~haystack:stdout ~needle:"ingress owns this");
+    (match parse_context stdout with
+     | Some (_, context) ->
+         check bool "app-server delivery contract is injected" true
+           (contains ~haystack:context ~needle:"automatically injected")
+     | None -> failf "expected app-server startup context, got: %S" stdout))
 
 (* Race window: the earliest SessionStart hook can fire BEFORE the app-server
    deliver loop has landed its broker registration. The marker is inherited from
@@ -1193,6 +1223,8 @@ let () =
             test_vanilla_auto_register_second_thread_ignores_statefile
         ; test_case "managed auto-register honors installer alias hint" `Quick
             test_managed_session_auto_register_honors_installer_alias_hint
+        ; test_case "B166 app-server thread mapping accepts omitted default broker root" `Quick
+            test_app_server_thread_mapping_uses_omitted_default_broker_root
         ; test_case "B137 managed app-server adopts launcher alias" `Quick
             test_b137_managed_app_server_adopts_launcher_alias
         ; test_case "B137 app-server marker adopts before registration" `Quick

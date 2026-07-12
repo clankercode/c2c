@@ -89,6 +89,13 @@ let test_app_server_log_vocabulary () =
     (S.startup_banner ~color:true ~alias:"codex-oak-fern-a1b2"
        ~endpoint:"ws://127.0.0.1:37305")
 
+let test_app_server_frontend_identity_env () =
+  let env = S.app_server_frontend_env ~session_id:"managed-codex-session" in
+  Alcotest.(check (list string)) "frontend gets stable managed identity"
+    [ "C2C_MCP_SESSION_ID=managed-codex-session"
+    ; "C2C_CODEX_APPSERVER_SESSION=managed-codex-session"
+    ; "C2C_CODEX_MANAGED=1" ] env
+
 (* ------------------------------------------------------------------ *)
 (* --yolo forwarding + non-persistence                                 *)
 (* ------------------------------------------------------------------ *)
@@ -408,6 +415,20 @@ let test_glue_happy_publishes_after_start () =
         (Sys.file_exists (C2c_start.config_path alias));
       Alcotest.(check bool) "launcher pid persisted" true
         (Sys.file_exists (C2c_start.outer_pid_path alias));
+      (* B167: the app-server loop must register under the exact managed
+         session id supplied to the remote frontend in C2C_MCP_SESSION_ID,
+         rather than under the display/instance name.  Otherwise the first
+         SessionStart hook cannot adopt this alias and mints a second identity;
+         mail to that user-visible alias then bypasses the arrival loop. *)
+      let broker = C2c_mcp.Broker.create
+          ~root:(Sys.getenv "C2C_MCP_BROKER_ROOT") in
+      (match List.find_opt
+               (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+               (C2c_mcp.Broker.list_registrations broker)
+       with
+       | Some r -> Alcotest.(check string) "broker row uses frontend session id"
+                     alias r.alias
+       | None -> Alcotest.fail "managed frontend session id was never registered");
       (match C2c_start.load_config_opt alias with
        | Some cfg ->
            Alcotest.(check string) "managed client is codex" "codex" cfg.client;
@@ -613,7 +634,9 @@ let () =
         ; test_case "resume stable" `Quick test_alias_resume_stable
         ; test_case "collision extension" `Quick test_alias_collision_extension_deterministic
         ; test_case "collision chain" `Quick test_alias_collision_chain_deterministic
-        ; test_case "app-server log vocabulary" `Quick test_app_server_log_vocabulary ] )
+        ; test_case "app-server log vocabulary" `Quick test_app_server_log_vocabulary
+        ; test_case "app-server frontend inherits managed identity" `Quick
+            test_app_server_frontend_identity_env ] )
     ; ( "yolo",
         [ test_case "forwards bypass" `Quick test_yolo_forwards_bypass
         ; test_case "absent by default" `Quick test_yolo_absent_by_default ] )

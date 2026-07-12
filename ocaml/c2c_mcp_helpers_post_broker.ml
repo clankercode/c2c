@@ -802,7 +802,13 @@ let managed_session_id_from_codex_thread ~broker_root ~thread_id =
               let broker_matches =
                 match string_field "broker_root" with
                 | Some root -> String.equal root broker_root
-                | None -> false
+                (* #504 intentionally omits a default broker root from managed
+                   instance configs so they do not pin a stale fingerprint.
+                   An omitted value therefore means "this invocation's
+                   resolver-default broker", not "unmanaged".  Requiring a
+                   serialized root here made an app-server SessionStart miss
+                   its own thread mapping and mint a second Codex alias. *)
+                | None -> true
               in
               let thread_matches =
                 (match string_field "resume_session_id" with
