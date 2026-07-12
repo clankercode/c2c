@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-12T08:36:31Z"
+depends_on: []
+estimate_hours: 1
+id: B152
+priority: high
+status: pending
+tags: []
+title: c2c whoami and any other highly general one-off type commands should show a little notice if there is a c2c update available
+updated_at: "2026-07-12T08:36:31Z"
+---
+
+c2c whoami and any other highly general one-off type commands should show a little notice if there is a c2c update available

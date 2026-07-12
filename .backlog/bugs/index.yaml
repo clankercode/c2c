@@ -148,3 +148,4 @@ bugs:
     - file: B149-live-client-stats-by-version-c.todo
     - file: B150-c2c-monitor-should-return-unde.todo
     - file: B151-codex-app-server-launch-emits.todo
+    - file: B152-c2c-whoami-and-any-other-highl.todo
