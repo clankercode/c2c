@@ -13,17 +13,19 @@ repository on the machine, so it remains safe to run on frequent refreshes.
 
 ## Peer scopes
 
-The human output has two peer segments and `--json` exposes matching stable
-fields:
+The human output uses glyphs for its two peer segments and relay state;
+`--json` exposes matching stable fields:
 
 | Segment | JSON field | Meaning |
 |---------|------------|---------|
-| `repo` | `peers_repo_alive` | Alive registrations in the current repository's broker. |
-| `machine` | `peers_machine_alive` | Alive registrations in the deduplicated union of the current repository broker and the shared sessions broker. |
+| `📦` | `peers_repo_alive` | Alive registrations in the current repository's broker. |
+| `🖥` | `peers_machine_alive` | Alive registrations in the deduplicated union of the current repository broker and the shared sessions broker. |
+| `⇄` | `relay_state` | Relay connectivity, derived from local connector state only. |
 
 `peers_alive` is retained for compatibility and equals `peers_repo_alive`.
-The `machine` count is not a relay or internet-wide peer count: relay state is
-reported separately by `relay_state`, from local connector state only.
+The machine-wide (`🖥`) count is not a relay or internet-wide peer count:
+relay state is reported separately by the `⇄` segment / `relay_state` field,
+from local connector state only.
 
 When the same `(session_id, alias)` is present in both brokers, it is counted
 once. The current-repository registration has precedence, so local state wins
@@ -33,7 +35,7 @@ For example, with two alive registrations in the current repository, one of
 which is also in the sessions broker, plus one sessions-only registration:
 
 ```
-c2c my-alias · relay:off · 2 repo · 3 machine
+c2c my-alias · ⇄off · 📦 2 · 🖥 3
 ```
 
 ```json
@@ -43,6 +45,14 @@ c2c my-alias · relay:off · 2 repo · 3 machine
   "peers_machine_alive": 3
 }
 ```
+
+## Plain-text fallback (`PI_C2C_ASCII`)
+
+Set `PI_C2C_ASCII=1` to render the line with plain-text tokens instead of
+unicode glyphs — useful in minimal terminals or fonts that lack emoji/arrow
+support. The fallbacks are: `⇄` → `[relay]`, `📦` → `repo`, `🖥` → `machine`
+(e.g. `c2c my-alias · [relay]off · repo 2 · machine 3`). The `--json` output
+and its field names are unaffected.
 
 ## Configuration examples
 
