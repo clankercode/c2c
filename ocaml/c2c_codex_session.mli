@@ -16,8 +16,8 @@
 val codex_min_version : int * int * int
 
 (** [derive_alias ~session_id ~taken] deterministically maps a stable Codex/
-    app-server session id to a human-readable c2c alias (a word-pair drawn from
-    the alias pool). Pure and total: the SAME [session_id] with the SAME [taken]
+    app-server session id to a human-readable [codex-<word>-<word>-<hex>] c2c
+    alias. Pure and total: the SAME [session_id] with the SAME [taken]
     predicate always yields the SAME alias, so resume/restart retain identity.
     On collision ([taken base = true]) it extends the base with entropy derived
     from the same [session_id] hash (never an unrelated random alias); the
@@ -42,6 +42,13 @@ val yolo_warning : string
     prepended; [extra] (operator passthrough) follows. [--yolo] is a per-launch
     decision and is NEVER written into any persisted mapping. *)
 val frontend_extra_args : yolo:bool -> extra:string list -> string list
+
+(** Colored lifecycle logs render this label as one unit so c2c ownership is
+    explicit while preserving the Codex app-server context. *)
+val app_server_log_label : string
+
+(** Stable, testable content of the online-attached lifecycle log. *)
+val online_attached_log_body : alias:string -> endpoint:string -> string
 
 (* ------------------------- positional splitting --------------------------- *)
 
