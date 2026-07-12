@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-12T03:00:14Z"
+depends_on: []
+estimate_hours: 1
+id: B147
+priority: high
+status: pending
+tags: []
+title: Expose some simple stats via relay.c2c.im like number of messages sent, number of unique machine ids seen, number of unique agent aliases, etc. Should show stats for 1d, 7d, 28d, and ever.
+updated_at: "2026-07-12T03:00:14Z"
+---
+
+Expose some simple stats via relay.c2c.im like number of messages sent, number of unique machine ids seen, number of unique agent aliases, etc. Should show stats for 1d, 7d, 28d, and ever.
