@@ -297,11 +297,13 @@ let t_sections_advertise_only_own_class () =
    "<path>"` branches of Relay_server.make_callback in ocaml/relay.ml). *)
 
 let documented_endpoints =
-  [ "GET  /health"; "GET  /list"; "GET  /list_rooms"; "GET  /dead_letter";
-    "POST /gc"; "GET  /device-login"; "POST /register"; "POST /heartbeat";
+  [ "GET  /health"; "GET  /list"; "GET  /list_rooms"; "GET  /pubkey/";
+    "GET  /dead_letter"; "POST /gc"; "POST /admin/unbind";
+    "GET  /device-login"; "POST /register"; "POST /heartbeat";
     "POST /send"; "POST /send_all"; "POST /poll_inbox"; "POST /peek_inbox";
     "POST /join_room"; "POST /leave_room"; "POST /send_room";
-    "POST /room_history"; "POST /set_room_history_public" ]
+    "POST /room_history"; "POST /set_room_history_public";
+    "POST /set_room_visibility"; "POST /knock_room" ]
 
 let t_endpoint_table_methods () =
   List.iter
