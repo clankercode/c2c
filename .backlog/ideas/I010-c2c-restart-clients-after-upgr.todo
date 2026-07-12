@@ -1,8 +1,9 @@
 ---
 complexity: medium
 created_at: "2026-07-12T02:17:41Z"
-depends_on: []
-estimate_hours: 10
+depends_on:
+    - B153
+estimate_hours: 18
 id: I010
 priority: medium
 status: pending
@@ -11,34 +12,46 @@ tags:
     - upgrade
     - dx
     - restart
-title: 'c2c restart-clients-after-upgrade: auto-upgrade running instances after a build'
+title: 'c2c restart-stale: rolling restart of managed instances on old binaries'
 updated_at: "2026-07-12T02:17:41Z"
 ---
-After building/installing a new c2c version, running managed instances keep executing the OLD binary until manually restarted (see the just install-all warning: "live process(es) hold binaries about to be replaced ... will not auto-pick-up the new binary"). We should have a single command — e.g. `c2c restart-clients-after-upgrade` (name TBD; could also be `c2c upgrade-restart` or a flag on install) — that upgrades all running c2c instances to the freshly-installed binary in one step.
+After building/installing a new c2c version, running managed instances keep executing the OLD binary until manually restarted (see the just install-all warning: "live process(es) hold binaries about to be replaced ... will not auto-pick-up the new binary"). Add a single explicit command, `c2c restart-stale`, that identifies managed instances running an older installed binary and restarts them sequentially.
 
 MOTIVATION
 - Today the operator must eyeball the install warning, run `c2c instances`, and `c2c restart <name>` for each session by hand. Easy to forget; leaves the swarm split across binary versions (a known source of routing/feature-visibility bugs — new broker tools/flags are invisible until restart per CLAUDE.md).
 - The upgrade path should be one command, ideally wired so `just install-all` / `just bi` can optionally trigger it.
 
-"SEAMLESS" IS THE HARD PART — options to weigh (this is an intake; design before building):
+SCOPE DECISION (2026-07-12)
+- This is a rolling, best-effort restart command, not a claim of seamless hot upgrade.
+- Include the coordinator by default. `--exclude-coordinator` is the opt-out; coordinator-specific behavior is no longer central to normal operation.
+- Codex app-server is a first-class required path: preserve/resume the existing Codex thread, preserve inbox/ingress ledger correctness, and verify with a real managed Codex app-server session in tmux.
+- `just install` is the primary install spelling and aliases `install-all`; after a successful interactive install, prompt whether to run `c2c restart-stale`. Non-interactive installs must never block on a prompt and must print the explicit follow-up command instead.
+- Deeper seamless/idle-state work is tracked separately as a follow-up idea rather than expanding this slice.
+- B153 is the prerequisite Codex lifecycle seam: app-server sessions currently lack normal config/PID enumeration, cannot use `c2c restart`, and do not reliably persist the late-discovered thread ID.
+
+DESIGN CONSTRAINTS:
 1. Naive sweep-restart: enumerate managed instances (`c2c instances`), `c2c restart <name>` each. Simple, but each restart drops the session transcript/context and interrupts any in-flight turn. NOT seamless — disruptive to active agents.
 2. Signal-based hot reconnect: SIGUSR1 to the inner MCP/opencode pid reconnects the MCP session to the broker WITHOUT a full restart (CLAUDE.md documents SIGUSR1-to-inner-pid recovery). This refreshes the broker connection but does NOT swap the on-disk binary the process already exec`d — so it does not actually upgrade code, only re-establishes signals. Need to confirm what a SIGUSR1 reconnect can vs cannot pick up.
-3. Drain + graceful restart: mark instance idle/DND, wait for the current turn to finish (idle-gate, like native scheduling), then restart so no turn is interrupted. Closer to seamless but needs an idle-wait loop and a timeout/force fallback.
+3. Generic idle gating is NOT part of this slice. The current cross-client activity timestamp is a heuristic, not authoritative proof that a turn has finished.
 4. Staged/rolling restart: restart one instance at a time so the swarm never fully goes dark; coordinator restarts last. Preserves swarm liveness during the upgrade.
 5. Version-aware skip: only restart instances whose running binary SHA != installed SHA (compare `/proc/<pid>/exe` target or the build-SHA the process reports) — avoid needless restarts. `c2c-install-live-holders.sh` already detects live holders; extend it to report per-instance running version.
 
 OPEN QUESTIONS
 - Can a running managed session actually adopt a new binary without re-exec? (If not, "restart" is unavoidable and "seamless" reduces to "graceful + rolling + idle-gated".)
-- Where should this live: a new `c2c` subcommand, a flag on `c2c install`, or a `just` recipe wrapping it? Coordinator excluded by default (self-restart is riskier)?
+- Command name and location are decided: `c2c restart-stale`. Coordinator is included by default; `--exclude-coordinator` opts out.
 - Interaction with `c2c-install-live-holders.sh` (already enumerates holders) — reuse its detection.
-- Should it be opt-in per session (some agents mid-task should not be force-restarted)?
+- The command itself is explicit. The post-install integration prompts only on an interactive terminal and otherwise does not restart automatically.
 
 ACCEPTANCE (first cut, subject to design)
-- One command upgrades all (or version-mismatched) managed instances to the installed binary.
-- Idle-gated / graceful by default: never interrupts an in-flight turn without an explicit --force.
-- Rolling by default so the swarm is never fully down; coordinator last (or skipped).
+- One command restarts all version-mismatched managed instances onto the installed binary.
+- Rolling/sequential by default, continuing after individual failures and reporting restarted / skipped / failed instances.
+- Coordinator included normally; `--exclude-coordinator` skips it.
+- Codex app-server resumes the same thread/session and preserves ingress-ledger/inbox correctness, verified in a real tmux-managed session.
+- `--dry-run` reports exactly what would restart without changing process state.
+- Stale detection uses persisted launcher PID/start-time plus executable device/inode as a cheap same-inode fast path. When the inode differs, hash the installed binary once and `/proc/<pid>/exe` once per distinct running inode. Unknown/unreadable process identity skips safely unless explicitly forced.
+- `just install` / `just install-all`, after a successful install on an interactive TTY, prompt whether to run `c2c restart-stale`; non-interactive runs never prompt or restart implicitly.
 - Reports what it restarted, what it skipped, and any that failed.
 
 Discovered from: 2026-07-12 `just install-all` run leaving 2 live c2c-mcp-server procs on the old binary; related CLAUDE.md notes on restart-after-broker-update and SIGUSR1-to-inner-pid.
 
-DESIGN SYNTHESIS (2026-07-12): full write-up in `.collab/design/2026-07-12-c2c-client-upgrade-restart.md` — three-tier upgrade model (one-shots auto-upgrade free / agent-launched monitors use graceful-exit-reinvoke / supervisor-owned machinery needs this command), the CLI-side process map (run_outer_loop vs codex app-server; sidecars vs in-outer threads), the version-aware-skip primitive (SHA/git_hash already in server_info/runtime_identity), the hard codex-app-server case + sidecar-refactor recommendation, and a de-risked increment order. Surfaced a separate bug: the kimi notifier is detached+untracked and SURVIVES restarts running stale code (filed as bug B145).
+DESIGN SYNTHESIS (2026-07-12): full write-up in `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`. B145 (the detached Kimi notifier surviving restart) was discovered during intake and is already fixed; it is not a dependency of I010.

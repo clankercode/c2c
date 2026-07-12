@@ -3,6 +3,39 @@
 Status: design intake (for idea **I010** `c2c restart-clients-after-upgrade`).
 Date: 2026-07-12. Author: Max-driven session (opus).
 
+## Decision update (2026-07-12)
+
+The implementation target is the deliberately narrower **`c2c
+restart-stale`**:
+
+- rolling, best-effort restarts of managed instances whose running outer
+  binary differs from the installed `c2c`;
+- coordinator included by default, with `--exclude-coordinator` as an opt-out;
+- `--dry-run` plus a complete restarted / skipped / failed report;
+- Codex app-server is a required first-class path: resume the same Codex
+  thread and prove inbox/ingress-ledger correctness with a real tmux-managed
+  session;
+- `just install` (an alias of `install-all`) prompts on an interactive TTY
+  after a successful install; non-interactive installs never block or restart
+  implicitly and instead print the explicit follow-up command.
+
+This slice does **not** promise a seamless hot swap or generic cross-client
+idle safety. Those require authoritative client turn state and, for truly
+undisruptive Codex upgrades, a separable app-server delivery process. They are
+preserved as a follow-up idea rather than hidden inside I010.
+
+### Codex app-server prerequisite correction
+
+The existing config-backed `c2c restart <name>` path does not cover app-server
+sessions. `C2c_codex_session.run_app_server` writes `codex-session.json` and
+`codex-app-server.json`, not the `config.json` / `outer.pid` consumed by
+`cmd_instances` and `cmd_restart`; a batch process also cannot safely respawn
+the TUI because it would inherit the batch process's terminal. Finally, the
+thread discovered after startup is not reliably written back to the mapping,
+so exact transcript resumption cannot yet be claimed. **B153** tracks the
+required in-place launcher lifecycle seam and durable thread-ID persistence and
+is a prerequisite of I010.
+
 ## Problem
 
 After `just install-all` replaces the on-disk binaries, already-running c2c
@@ -32,7 +65,7 @@ into the codex fork — was removed upstream; `c2c_start.ml:4041`,
 |---|---|---|
 | **1. One-shots — free** | `c2c send/list/poll_inbox/deliver` | Fresh binary exec per invocation → auto-upgrade, nothing to do. |
 | **2. Agent-launched monitors** | `c2c monitor`, `heartbeat` (run via the agent's Monitor tool) | **Graceful-exit-reinvoke** (below). Agent is the supervisor; it recreates. |
-| **3. Supervisor-owned machinery** | outer-loop threads (schedule watcher, heartbeats, title ticker), `c2c-deliver-inbox`/poker sidecars, **codex app-server delivery loop**, **kimi notifier** | `restart-clients-after-upgrade`: version-aware, idle-gated, rolling. |
+| **3. Supervisor-owned machinery** | outer-loop threads (schedule watcher, heartbeats, title ticker), `c2c-deliver-inbox`/poker sidecars, **codex app-server delivery loop**, **kimi notifier** | `restart-stale`: version-aware, rolling. |
 
 ## CLI-side process model (evidence from source, 2026-07-12)
 
@@ -103,15 +136,28 @@ no hot-swap.
   the printed instructions cover the non-persistent case.
 - Print to stdout so the Monitor tool surfaces it into the transcript.
 
-## Tier 3: `restart-clients-after-upgrade`
+## Tier 3: `restart-stale`
 
-Version-aware, idle-gated, rolling session restart for supervisor-owned
-machinery. Shared primitive with Tier 2: **version-aware skip** via the
-`git_hash` / `executable_sha256` compare that already lives in
-`server_info` / `runtime_identity` — skip instances already on the installed
-SHA. Rolling (one at a time; coordinator last or skipped). Idle-gated
-(don't interrupt an in-flight turn without `--force`). Reports
-restarted / skipped / failed.
+Version-aware, rolling session restart for supervisor-owned machinery. Compare
+the running outer executable against the installed CLI once per invocation,
+skip instances already current, and restart stale instances sequentially.
+Include the coordinator normally; `--exclude-coordinator` opts out. Generic
+idle gating is explicitly excluded because c2c does not currently have an
+authoritative, cross-client in-flight-turn signal. Report restarted / skipped /
+failed without aborting the whole batch on one failure.
+
+Do not assume `c2c --version` is sufficient: two different builds can report
+the same release version, especially during local development. On Linux,
+`/proc/<outer-pid>/exe` remains an open reference to the exact executable inode
+the process started from even after the installed pathname is atomically
+replaced (it commonly appears with a ` (deleted)` suffix). It can therefore be
+read and hashed directly. Persist launcher PID/start-time and executable
+device/inode at launch. If the live executable and installed path still have
+the same device/inode, they are already the same image. If the inode differs,
+hash the installed binary once and `/proc/<pid>/exe` once per distinct running
+inode. This handles identical reinstalls and dirty-tree builds without putting
+the existing ~690ms whole-binary hash on a periodic hot path. An unreadable or
+unverifiable process identity is UNKNOWN and skips safely unless forced.
 
 The genuinely hard case is default codex: delivery is the supervisor's
 foreground thread, so upgrading it *requires* cycling the whole codex session
@@ -122,7 +168,7 @@ independently-restartable, ledger-backed process → drop-free upgrade without
 disturbing the agent. This is the architectural precondition for "seamless"
 on codex.
 
-## Discovered bug (filed as B145)
+## Discovered bug (B145, fixed)
 
 **The kimi notifier survives restarts and runs stale code.** It is
 `fork+setsid` detached, not tracked as a sidecar pid, and guards startup with
@@ -130,32 +176,41 @@ on codex.
 So even a full `c2c restart` leaves the old notifier running; after
 `just install-all` + restart, kimi delivery silently keeps executing the old
 binary until the notifier is explicitly killed. This is an upgrade-correctness
-gap independent of the broader feature. Fix direction: track the notifier pid
-and kill+respawn it on restart, and/or give it the same self-detect-SHA-drift
-graceful exit as Tier 2. (Needs a live repro to confirm before fixing.)
+gap independent of the broader feature. B145 has since been fixed on master and
+is not an I010 dependency.
 
 ## Recommended increment order (de-risking)
 
 1. **Version-aware skip primitive** — extract the SHA/`git_hash` compare into a
    reusable "is this running process stale vs installed binary?" helper.
    Building block for everything below.
-2. **`restart-clients-after-upgrade` on today's full-restart** — enumerate
-   managed instances (`c2c instances`), skip already-current, idle-gate,
-   rolling, coordinator-last. Useful immediately even before any seamlessness.
-   Optionally wire as an opt-in tail of `just install-all` / `just bi`.
-3. **Fix the kimi-notifier stale-code bug** (its own bl bug) — track + cycle it.
-4. **Tier-2 graceful-exit-reinvoke** for `c2c monitor` / `heartbeat`
-   (self-detect + printed reinvoke). Cheap, standalone, high operator value.
-5. **(Larger) refactor the codex app-server delivery loop into a sidecar** —
-   the precondition for seamless codex upgrades. Do only if the disruption of
-   full codex restarts proves painful in practice.
+2. **B153 Codex app-server lifecycle seam** — persist launcher identity and the
+   late-discovered thread ID; enumerate app-server units; add in-place
+   self-reexec/control that retains the TTY and resumes the exact thread.
+3. **`restart-stale` on today's full-restart** — enumerate managed instances,
+   skip already-current, restart sequentially, and include coordinator unless
+   explicitly excluded. Invoke each existing `c2c restart NAME` through a
+   child process because `cmd_restart` ends by `execve`-ing into the relaunched
+   supervisor and therefore cannot itself be called repeatedly in one process.
+4. **Codex app-server live proof** — verify same-thread resume, model-visible
+   pre/post-restart mail, ledger continuity, and no duplicate injection using
+   `scripts/c2c_tmux.py` and a real managed Codex session.
+5. **Interactive install prompt** — after successful `just install` /
+   `install-all`, offer `c2c restart-stale` only when stdin and stderr are TTYs;
+   otherwise print a non-blocking follow-up hint. Provide a documented opt-out
+   for scripts that allocate a pseudo-TTY.
 
-## Open questions
+B145, the Kimi notifier stale-code bug discovered during this intake, is fixed
+on current master and is not an I010 prerequisite. Tier-2 monitor self-exit,
+authoritative idle gating, and a Codex delivery sidecar are deferred to the
+follow-up idea.
 
-- Naming: `c2c restart-clients-after-upgrade` vs `c2c upgrade-restart` vs a
-  flag on `c2c install`. Where does it live (subcommand vs just recipe)?
-- Coordinator handling: skip by default (self-restart risk) or restart last?
-- Should Tier 2 self-detect be always-on, or opt-in per monitor (some agents
-  mid-task may not want their monitor to exit even for an upgrade)?
-- `c2c-deliver-inbox` / poker auto-upgrade only on re-spawn — is a full
-  session cycle acceptable for them, or do we want granular sidecar restart?
+## Remaining implementation questions
+
+- Should version identity be a full executable digest only, or should builds
+  also embed a cheap immutable build identifier for display and fast-path
+  comparison? A release version string alone is insufficient for local builds.
+- What environment variable should suppress the interactive install prompt for
+  automation running under a pseudo-TTY?
+- Should `restart-stale` skip the invoking instance by default, or schedule it
+  last? This is distinct from the now-decided coordinator behavior.
