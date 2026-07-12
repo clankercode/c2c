@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-12T03:19:11Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T02:28:32Z"
 depends_on: []
 estimate_hours: 1
 id: B144
 priority: medium
-status: pending
+started_at: "2026-07-12T03:19:11Z"
+status: in_progress
 tags: []
 title: Add live Codex E2E coverage for hooks+CLI and managed app-server transports
-updated_at: "2026-07-12T02:28:32Z"
+updated_at: "2026-07-12T03:19:11Z"
 ---
 Current Codex coverage is split but incomplete: ocaml/cli/test_c2c_hook_codex.ml and the hook-fallback row in scripts/codex-draft-preservation-e2e.py invoke c2c hook codex directly with synthetic payloads, while scripts/codex-ingress-dogfood.py and scripts/codex-autoturn-e2e.py exercise app-server seams without launching the managed c2c start/new codex supervisor. Add two opt-in live E2E paths: (1) vanilla or C2C_CODEX_FORCE_HOOKS=1 Codex with isolated CODEX_HOME/config.toml installed hooks, a real peer DM, natural hook invocation, transcript additionalContext assertion, and inbox-drain assertion; (2) supported Codex launched through c2c start/new codex app-server supervision, peer DM, arrival-time model-visible injection, eligible local auto-turn, draft-preservation and teardown assertions. Gate on explicit credentials/version/live-test environment, keep default CI hermetic, and document/retire obsolete XML-sideband E2E references.
 
