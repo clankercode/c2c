@@ -50,6 +50,8 @@ val app_server_log_label : string
 (** Stable, testable content of the online-attached lifecycle log. *)
 val online_attached_log_body : alias:string -> endpoint:string -> string
 
+val startup_banner : color:bool -> alias:string -> endpoint:string -> string
+
 (** Non-secret c2c identity/context variables injected only into an app-server
     remote frontend.  In particular, [C2C_MCP_SESSION_ID] keeps `c2c init`
     bound to the launcher identity instead of generating an alias drift. *)
