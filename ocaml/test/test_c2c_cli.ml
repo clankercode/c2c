@@ -3388,6 +3388,20 @@ let test_deliver_inbox_cross_repo_alias_drains_full_body () =
       check int ("peek after delivery exits 0: " ^ peek) 0 rc;
       check bool "delivery drains inbox" true (string_contains peek "(no messages)"))
 
+(* B156: run a shell one-liner that backgrounds a daemon under a HARD
+   wall-clock cap, so a wedged subprocess can never hang the whole test
+   executable. `term_wait <pid>` tears the daemon down with a bounded
+   SIGTERM->SIGKILL escalation (never an unbounded `wait`). *)
+let term_wait_fn =
+  "term_wait() { p=$1; kill \"$p\" 2>/dev/null || true; \
+   i=0; while kill -0 \"$p\" 2>/dev/null && [ $i -lt 15 ]; do sleep 0.2; i=$((i+1)); done; \
+   kill -9 \"$p\" 2>/dev/null || true; wait \"$p\" 2>/dev/null || true; }; "
+
+let run_daemon_oneliner oneliner =
+  Sys.command
+    (Printf.sprintf "timeout -k 5 45 sh -c %s"
+       (Filename.quote (term_wait_fn ^ oneliner)))
+
 let test_deliver_inbox_inotify_ignores_unrelated_events () =
   with_temp_dir (fun broker_root ->
       let live_pid = string_of_int (Unix.getpid ()) in
@@ -3397,17 +3411,31 @@ let test_deliver_inbox_inotify_ignores_unrelated_events () =
       let outfile = Filename.temp_file "c2c-deliver-inotify" ".out" in
       Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore) (fun () ->
           let cmd = Printf.sprintf
-            "%s %s --inotify --loop --cross-repo --alias recv --full-body > %s 2>&1 & pid=$!; sleep 1; : > %s; sleep 1; kill $pid 2>/dev/null || true; wait $pid 2>/dev/null || true"
+            "%s %s --inotify --loop --cross-repo --alias recv --full-body > %s 2>&1 & pid=$!; sleep 1; : > %s; sleep 1; term_wait $pid"
             env
             (Filename.quote c2c_deliver_inbox_binary)
             (Filename.quote outfile)
             (Filename.quote (Filename.concat broker_root "unrelated.inbox.json"))
           in
-          let rc = Sys.command cmd in
+          let rc = run_daemon_oneliner cmd in
           check int "inotify unrelated-event harness exits 0" 0 rc;
           let out = read_file outfile in
           check bool "unrelated event does not emit delivery" false (string_contains out "delivered from=");
-          check bool "unrelated event does not emit zero summary" false (string_contains out "delivered=0")))
+          check bool "unrelated event does not emit zero summary" false (string_contains out "delivered=0");
+          (* B156 review: the daemon must leave NO orphaned inotifywait watcher
+             for this temp broker after teardown. Retry briefly to absorb the
+             post-SIGKILL reaping window; "CLEAN" only prints once no matching
+             watcher remains. *)
+          (* pgrep -x matches on the exact process NAME (inotifywait), so this
+             checker's own `sh` (whose command line contains the string
+             "inotifywait" and the broker path) does not self-match. *)
+          let _, leftover = run_capture
+            (Printf.sprintf
+               "for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -a -x inotifywait 2>/dev/null | grep -F %s >/dev/null && sleep 0.2 || { echo CLEAN; break; }; done"
+               (Filename.quote broker_root))
+          in
+          check bool "no orphaned inotifywait watcher for temp broker" true
+            (string_contains leftover "CLEAN")))
 
 let test_deliver_inbox_register_self_enables_alias_send () =
   with_temp_dir (fun broker_root ->
@@ -3418,13 +3446,13 @@ let test_deliver_inbox_register_self_enables_alias_send () =
       let outfile = Filename.temp_file "c2c-deliver-register" ".out" in
       Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore) (fun () ->
           let cmd = Printf.sprintf
-            "%s %s --loop --cross-repo --alias recv --register --full-body > %s 2>&1 & pid=$!; sleep 2; %s C2C_MCP_SESSION_ID=sender-sid c2c send --cross-repo --from sender recv 'registered receiver body'; sleep 2; kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null || true"
+            "%s %s --loop --cross-repo --alias recv --register --full-body > %s 2>&1 & pid=$!; sleep 2; %s C2C_MCP_SESSION_ID=sender-sid c2c send --cross-repo --from sender recv 'registered receiver body'; sleep 2; term_wait $pid"
             env
             (Filename.quote c2c_deliver_inbox_binary)
             (Filename.quote outfile)
             env
           in
-          let rc = Sys.command cmd in
+          let rc = run_daemon_oneliner cmd in
           check int "self-register harness exits 0" 0 rc;
           let out = read_file outfile in
           check bool "self-registered receiver gets alias send" true (string_contains out "registered receiver body");
