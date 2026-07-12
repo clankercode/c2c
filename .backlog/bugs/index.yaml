@@ -138,3 +138,4 @@ bugs:
     - file: B139-codex-c2c-skill-md-should-ment.todo
     - file: B140-implement-proper-alias-rename.todo
     - file: B141-app-server-codex-sessions-deli.todo
+    - file: B142-c2c-monitor-relay-watch-termin.todo

@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-12T00:07:32Z"
+depends_on: []
+estimate_hours: 1
+id: B142
+priority: high
+status: pending
+tags:
+    - c2c
+    - monitor
+    - relay
+    - receive
+title: 'c2c monitor: relay-watch TERMINAL failure kills the WHOLE monitor (local inbox watch dies too)'
+updated_at: "2026-07-12T00:07:32Z"
+---
+c2c monitor auto-enables a relay-peek watcher whenever a relay is configured (the default https://relay.c2c.im IS configured out of the box) + an alias/identity resolves (decide_relay_watch, c2c_monitor_logic.ml:320-329). So a purely LOCAL agent silently gets relay-peek with no --relay opt-in.
+
+On ANY terminal-classified relay error (not_found /peek_inbox endpoint mismatch, unauthorized no-identity-binding, timestamp_out_of_window clock skew), handle_terminal calls exit (c2c_monitor_cmd.ml:756-763). The relay-peek loop runs in a SEPARATE thread (Thread.create, line 810), but exit terminates the WHOLE process -- killing the main-thread local-broker inotify inbox watch too. A relay-side problem tears down local receive. That is the core defect.
+
+Downstream effect (the user-visible symptom): the dead monitor + the whoami/relay-status nudge ('connector: none -- start with c2c relay connect') drove session 21d51d98-57c1-4b5b-9f65-42483bbf0a46 (amaroo, alias claude-quip-neural-57cb) to manually run 'c2c relay connect' as a fragile run_in_background Bash (twice; one still alive, PID 888979) spewing unauthorized heartbeat errors for OTHER sessions' aliases. The user reported this as 'keeps trying to use a monitor like c2c relay connect > ... which is incorrect; it should monitor c2c monitor like normal'.
+
+FIX: c2c monitor must keep watching the LOCAL inbox regardless of relay health. On a relay-peek terminal failure, disable ONLY the relay-watch thread (log once to stderr), never exit the process. Keep a non-zero exit only when relay-watch is the SOLE reason the monitor started (no local watch active) so a supervisor still notices a pure-relay monitor dying.
+
+SECONDARY (separate slices):
+- Don't auto-enable relay-peek for local-only agents; gate behind explicit --relay or require a LIVE connector (not merely a configured URL).
+- Soften the whoami 'start with c2c relay connect' nudge -- it mis-steers local-only agents to a tool that misbehaves when run per-session (heartbeats other sessions' aliases -> unauthorized).
+
+ENV contributor (not a c2c bug): this host's clock is ~30s behind the relay -> timestamp_out_of_window. NTP would remove that trigger, but not_found/unauthorized would still kill the monitor.
+
+Full analysis: .collab/findings/2026-07-12T00-06-41Z-claude-stamp-spire-relay-watch-kills-whole-monitor.md
+Code refs: c2c_monitor_cmd.ml:756-763 (exit), :810-812 (relay thread); c2c_monitor_logic.ml:359-368 (terminal codes), :320-329 (auto-enable).
