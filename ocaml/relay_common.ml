@@ -285,6 +285,24 @@ let room_leave_content alias room_id = alias ^ " left room " ^ room_id
 let b64url_nopad_encode s =
   Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
 
+(* B149: OS tag for register connection metadata ("linux" / "darwin" /
+   lowercased uname, "unknown" on failure). Computed once per process.
+   Shared by every relay client (connector + Relay_client) so the /register
+   body is identical regardless of which client path registers. *)
+let client_os =
+  let cached = lazy (
+    match Sys.os_type with
+    | "Unix" ->
+      (try
+         let ic = Unix.open_process_in "uname -s" in
+         let s = try String.trim (input_line ic) with End_of_file -> "" in
+         ignore (Unix.close_process_in ic);
+         if s = "" then "unknown" else String.lowercase_ascii s
+       with _ -> "unknown")
+    | other -> String.lowercase_ascii other
+  ) in
+  fun () -> Lazy.force cached
+
 (* B148: humanize a "seconds ago" delta for the /stats generated_ago field.
    Pure and clock-free so it can be unit-tested directly. Contract:
      < 2s (incl. 0 and any negative)  -> "just now"
