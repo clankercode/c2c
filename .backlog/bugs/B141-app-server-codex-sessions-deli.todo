@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-12T03:02:27Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-11T17:16:31Z"
 depends_on: []
 estimate_hours: 1
 id: B141
 priority: low
-status: pending
+started_at: "2026-07-12T03:02:27Z"
+status: in_progress
 tags: []
 title: 'App-server codex sessions: deliver the global cross-repo inbox via the ingress loop (B137 follow-up)'
-updated_at: "2026-07-11T17:16:31Z"
+updated_at: "2026-07-12T03:02:27Z"
 ---
 B137 made the codex frontend hook identity-only (drains nothing) for app-server sessions, to close a nested-codex cross-repo mail theft (env markers propagate to descendants; the hook can't distinguish the attached frontend from a nested codex). Consequence: an app-server session's GLOBAL (cross-repo/sessions-broker) inbox is not delivered by the hook. Not a regression (pre-B137 the hook delivered under the wrong thread-id identity, so it never delivered the app-server global inbox either), but a functional gap. Fix: have the C2c_codex_ingress delivery loop (which owns arrival-time delivery for the attached app-server session and CAN distinguish the real attached thread) also surface the session's global/cross-repo inbox, without reopening the nested-theft vector. Ref: B137 report + local findings .collab/findings/2026-07-12T17-04-21Z-b137-codex-appserver-dual-identity.md (gitignored).
