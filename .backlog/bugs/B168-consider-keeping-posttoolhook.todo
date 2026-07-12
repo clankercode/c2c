@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-12T18:57:06Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T15:21:34Z"
 depends_on: []
 estimate_hours: 1
 id: B168
 priority: high
-status: pending
+started_at: "2026-07-12T18:57:06Z"
+status: in_progress
 tags: []
 title: Consider keeping PostToolHook active for codex app-server c2c agents, but also make sure that if they are idle or if they have messages sitting in their inbox for more than 2 minutes, we should ensure they are delivered (via the app-server). We must have e2e tests covering this (reminder, also, to use gpt-5.3-codex-spark for all testing e2e stuff with codex)
-updated_at: "2026-07-12T15:21:34Z"
+updated_at: "2026-07-12T18:57:06Z"
 ---
 
 Consider keeping PostToolHook active for codex app-server c2c agents, but also make sure that if they are idle or if they have messages sitting in their inbox for more than 2 minutes, we should ensure they are delivered (via the app-server). We must have e2e tests covering this (reminder, also, to use gpt-5.3-codex-spark for all testing e2e stuff with codex)
