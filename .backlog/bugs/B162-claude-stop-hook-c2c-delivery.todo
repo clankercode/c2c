@@ -1,0 +1,39 @@
+---
+complexity: medium
+created_at: "2026-07-12T14:08:36Z"
+depends_on: []
+estimate_hours: 2
+id: B162
+priority: high
+status: pending
+tags:
+    - claude
+    - hooks
+    - delivery
+    - ux
+title: Claude Stop-hook c2c delivery must not surface a message payload as
+updated_at: "2026-07-12T14:08:36Z"
+---
+Problem
+
+A real Claude Code session ran the installed c2c stop-delivery hook and rendered the inbound c2c XML envelope plus system reminder under `Stop hook error:`. The message itself was delivered, but presenting valid peer mail as a hook failure is misleading and makes normal stop-hook activity look broken.
+
+Observed shape
+
+Claude reported `Ran 6 stop hooks`, then the c2c payload (`<c2c event="message" ...>...</c2c>` plus the untrusted-peer reminder) directly after `Stop hook error:`. Current c2c tests intentionally assert that the stop hook emits full messages, so determine whether stdout is being interpreted as an invalid Claude Stop-hook protocol response, an expected but wrong transport convention, or a genuine nonzero/stderr failure.
+
+Relevant code
+
+Trace `C2c_hook_cmd.hook_stop_cmd` / `hook_stop`, generated `claude_stop_hook_script`, and the installed `~/.claude-p/hooks/c2c-stop-deliver.sh`. Preserve the message-bus safety invariant: peer content stays model-visible data and never becomes an approval/action.
+
+Acceptance criteria
+
+1. Reproduce against the installed Claude Code version with a controlled c2c message and capture exit code, stdout, stderr, and Claude-rendered result.
+2. Verify the current Claude Stop-hook output contract from authoritative docs/runtime behavior.
+3. If c2c is violating the contract, change the delivery encoding/channel so valid inbound mail is surfaced without a `Stop hook error`, while maintaining turn-boundary delivery and no-message silent exit behavior.
+4. If raw emitted payload is required by Claude, document why the UI labels it as an error and identify a supported alternative or explicitly record that it is unavoidable.
+5. Add regression coverage for the actual hook protocol (including exit status and output shape) and dogfood alongside the other installed stop hooks.
+
+Blockers
+
+Avoid swallowing or redirecting peer messages to a channel Claude does not make model-visible; delivery correctness is more important than cosmetic suppression.
