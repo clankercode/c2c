@@ -736,13 +736,16 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
         match final.C2c_codex_deliver_loop.thread_id with
         | Some exact_thread ->
             let argv =
+              let passthrough =
+                (match model_override with
+                 | Some m when String.trim m <> "" -> [ "--model"; m ]
+                 | _ -> [])
+                @ extra_args
+              in
               Array.of_list
                 ([ Sys.executable_name; "resume"; "codex"; alias;
                    "--thread-id"; exact_thread ]
-                 @ (match model_override with
-                    | Some m when String.trim m <> "" -> [ "--model"; m ]
-                    | _ -> [])
-                 @ (if extra_args = [] then [] else "--" :: extra_args))
+                 @ (if passthrough = [] then [] else "--" :: passthrough))
             in
             Printf.eprintf "%s restarting in place on thread %s\n%!"
               app_server_log_label exact_thread;
