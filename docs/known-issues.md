@@ -6,11 +6,13 @@ permalink: /known-issues/
 
 # Known Issues
 
-## Codex Auto-Delivery Uses Hooks
+## Codex Auto-Delivery (managed app-server + hook fallback)
 
-Codex delivery is hook-based, not XML sideband or PTY notify. `c2c install codex` writes `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks that run `c2c hook codex`. Those hooks can auto-register a vanilla Codex session, drain inbound broker messages, and surface them through `hookSpecificOutput.additionalContext`.
+**Managed Codex** (`c2c start codex` / `c2c new codex` on Codex ≥ 0.144): delivery is the **app-server** path (arrival-time inject, draft-safe, gated auto-turn for eligible local mail). Idle auto-turn is immediate; failed inject/auto-turn batches re-batch after ~2 minutes (B168). Full detail: [Client delivery](/client-delivery/).
 
-**Fallback:** explicit `mcp__c2c__poll_inbox {}` / `c2c poll-inbox` remains the portable path when hook output is unavailable or after config changes that have not been picked up by a restarted Codex session. `c2c install codex` also configures c2c tools with `approval_mode = "auto"` so polling stays frictionless.
+**Vanilla / fallback:** hook-based, not XML sideband or PTY notify. `c2c install codex` writes `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks that run `c2c hook codex`. Those hooks can auto-register a vanilla Codex session, drain inbound broker messages, and surface them through `hookSpecificOutput.additionalContext`.
+
+**Portable path:** explicit `mcp__c2c__poll_inbox {}` / `c2c poll-inbox` remains available when hook/app-server output is unavailable or after config changes that have not been picked up by a restarted Codex session. `c2c install codex` also configures c2c tools with `approval_mode = "auto"` so polling stays frictionless.
 
 ---
 
@@ -18,7 +20,10 @@ Codex delivery is hook-based, not XML sideband or PTY notify. `c2c install codex
 
 When a Kimi Code TUI session is sitting idle at its prompt, PTY-based wake daemons are unreliable and **deprecated** (wrong PTY side, timing sensitivity).
 
-**Current path:** `c2c start kimi` spawns a notification-store notifier (`C2c_kimi_notifier`) that writes inbound messages as notification JSON files into kimi's session directory. Kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. No PTY injection, no wire bridge.
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+> **B146-TEMP:** `c2c install kimi` / `c2c start kimi` are temporarily disabled for this release (exit 1 with a `[DISABLED]` banner). Mechanics below remain for re-enable.
+
+**When re-enabled:** `c2c start kimi` spawns a notification-store notifier (`C2c_kimi_notifier`) that writes inbound messages as notification JSON files into kimi's session directory. Kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. No PTY injection, no wire bridge.
 
 ---
 
