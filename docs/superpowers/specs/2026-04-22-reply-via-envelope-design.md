@@ -125,8 +125,8 @@ hi bob
 
 <system-reminder>
 You received a c2c direct message from `alice`.
-To reply, call c2c_send(to_alias="alice", content="<your reply>").
-If c2c_send is unavailable in this session, the MCP tool c2c_send works the same way (to_alias="alice").
+To reply, run: c2c send alice "<your reply>"
+Or, if MCP tools are available, call c2c_send(to_alias="alice", content="<your reply>").
 Do NOT reply in plain text — the peer will not see it.
 </system-reminder>
 ```
