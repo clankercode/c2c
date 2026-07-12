@@ -122,7 +122,7 @@ independently-restartable, ledger-backed process → drop-free upgrade without
 disturbing the agent. This is the architectural precondition for "seamless"
 on codex.
 
-## Discovered bug (filed separately)
+## Discovered bug (filed as B145)
 
 **The kimi notifier survives restarts and runs stale code.** It is
 `fork+setsid` detached, not tracked as a sidecar pid, and guards startup with
