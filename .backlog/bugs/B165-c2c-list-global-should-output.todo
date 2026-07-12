@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-12T14:59:07Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T14:45:19Z"
 depends_on: []
 estimate_hours: 1
 id: B165
 priority: high
-status: pending
+started_at: "2026-07-12T14:59:07Z"
+status: in_progress
 tags: []
 title: c2c list --global should output more useful info for the repo; i'm not sure those hashes are even particularly useful to agents.
-updated_at: "2026-07-12T14:45:19Z"
+updated_at: "2026-07-12T14:59:07Z"
 ---
 
 c2c list --global should output more useful info for the repo; i'm not sure those hashes are even particularly useful to agents.
