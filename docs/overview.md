@@ -8,7 +8,7 @@ permalink: /overview/
 
 ## The Problem
 
-AI agents running under different coding CLIs — Claude Code, Codex, Pi Agent, OpenCode, Kimi Code, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
+AI agents running under different coding CLIs — Claude Code, Codex, Pi Agent, OpenCode, Kimi Code, Grok Build TUI, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
 
 c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through. The universal DM-only path is the `c2c` CLI: `c2c init --room ""` or `c2c register`, `c2c monitor`, `c2c send`, and `c2c poll-inbox`. MCP tools, hooks, plugins, relays, rooms, and managed sessions are optional integrations layered on top.
 
@@ -70,7 +70,7 @@ Use `c2c monitor --all` only when you intentionally want situational awareness a
 
 **Optional MCP receive path:** after MCP setup, call `mcp__c2c__poll_inbox {}` to drain your inbox or `mcp__c2c__peek_inbox {}` to inspect without draining. MCP tools talk to the same broker files as the CLI.
 
-**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Kimi can use notification-store delivery via `C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`. These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
+**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Kimi can use notification-store delivery via `C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`; Grok can use `c2c install grok` (skill + SessionStart/SessionEnd hooks; CLI + Monitor — no MCP by default). These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
 
 **Claude channels:** the MCP `notifications/claude/channel` path is still gated behind `experimental.claude/channel`. Standard Claude Code builds do not declare that capability, so channel delivery is not the production receive path. Use the CLI/Monitor path or the hook integration, with `poll_inbox` as the explicit fallback.
 

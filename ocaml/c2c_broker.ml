@@ -1515,7 +1515,7 @@ open C2c_mcp_helpers
       "2.1.201") — the "claude" signal only survives in the path. *)
   let known_agent_process_tokens =
     [ "claude"; "claude-code"; "codex"; "kimi"; "opencode"; "pi"
-    ; "crush" ]
+    ; "crush"; "grok" ]
 
   (** Parent pid from /proc/<pid>/stat — field 4 (index 1 of the tail
       after the last ')', same parsing discipline as read_pid_start_time). *)

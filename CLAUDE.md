@@ -46,10 +46,11 @@ nudge toward this even when the immediate AC is narrower.
   - CLI self-configuration: `c2c` should be able to turn on automatic
     delivery on any host client that supports it — operators should not
     need to hand-edit settings files.
-- **Reach**: Codex, Claude Code, OpenCode, and Kimi as first-class
-  peers. Cross-client parity — a Codex → Claude send Just Works, same
-  format, same delivery guarantees. Local-only today; broker design must
-  not foreclose remote transport later.
+- **Reach**: Codex, Claude Code, OpenCode, Kimi, and Grok as first-class
+  peers (Grok is CLI-first: skill + SessionStart hooks + Monitor; managed
+  `c2c start grok` is deferred). Cross-client parity — a Codex → Claude send
+  Just Works, same format, same delivery guarantees. Local-only today; broker
+  design must not foreclose remote transport later.
 - **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms
   implemented: `join_room`, `send_room`, `room_history`, `my_rooms`,
   `list_rooms`, `leave_room`, `knock_room`, `list_room_knocks`,

@@ -215,6 +215,14 @@ let check_plugin_installs () =
      with _ -> add (`Gray, "kimi: could not read mcp.json")
    else add (`Gray, "kimi: mcp.json not found (not installed or not configured)"));
 
+  (* Grok: CLI-first — skill and/or SessionStart hooks under ~/.grok/ (no MCP). *)
+  let grok_skill = home // ".grok" // "skills" // "c2c" // "SKILL.md" in
+  let grok_hooks = home // ".grok" // "hooks" // "c2c-session.json" in
+  (if Sys.file_exists grok_skill || Sys.file_exists grok_hooks then
+     add (`Green, "grok: skill/hooks configured (CLI-first; run: c2c install grok)")
+   else
+     add (`Gray, "grok: not configured (run: c2c install grok)"));
+
   List.rev !results
 
 (* Scan for running deprecated PTY-based wake daemons.
@@ -439,7 +447,7 @@ let health_cmd =
 
 (* --- subcommand: connect -------------------------------------------------- *)
 
-let supported_clients = [ "claude"; "codex"; "opencode"; "kimi" ]
+let supported_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok" ]
 
 let connect_dashboard ~root ~broker ~output_mode =
   let broker_root = root in

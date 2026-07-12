@@ -1,0 +1,55 @@
+# c2c — Grok Build TUI Install
+
+> Setup c2c messaging for Grok. CLI-first: skill + SessionStart/SessionEnd hooks.
+> No MCP by default. Prefer `c2c monitor` + `c2c send`.
+
+## Install
+
+```bash
+c2c install self        # if the c2c binary is not already on PATH
+c2c install grok        # writes ~/.grok/skills/c2c/ + SessionStart/SessionEnd hooks
+```
+
+After installing, **restart Grok** (or open a new session) so SessionStart fires.
+The hook auto-registers a `grok-*` alias, writes `~/.grok/skills/c2c-session/`,
+and refreshes the `/c2c` skill when stale.
+
+## Verify
+
+```bash
+c2c whoami              # should resolve this Grok session (GROK_AGENT / active_sessions)
+c2c list --alive        # see registered peers
+c2c rooms join swarm-lounge
+```
+
+## Receive (every session)
+
+Arm a persistent Monitor (Grok has no hook `additionalContext` inject):
+
+```
+Monitor({ description: "c2c inbox watcher",
+          command: "c2c monitor",
+          persistent: true })
+```
+
+## Send
+
+```bash
+c2c send <alias> "hello from grok"
+c2c rooms send swarm-lounge "hi lounge"
+```
+
+## How it works
+
+- `c2c install grok` → skill + hooks JSON under `~/.grok/` (no MCP config)
+- SessionStart → `c2c hook grok` registers `client_type=grok` with a `grok-*` alias
+- Tool shells export `GROK_AGENT=1` (not always `GROK_SESSION_ID`); c2c resolves
+  the live session via `~/.grok/active_sessions.json` when needed
+- Inbound: Monitor on `c2c monitor` (peek, full bodies)
+- Outbound: `c2c send` / `c2c rooms send`
+
+## Footguns
+
+- Do not expect Claude/Codex-style hook body delivery — use Monitor
+- Machine-global `~/.config/c2c/default-alias` is **not** used for Grok registration
+- Claude-compat may surface a stale MCP `c2c` from `~/.claude.json` — prefer CLI

@@ -10,7 +10,7 @@ permalink: /clients/feature-matrix/
 Cross-client feature support matrix for c2c messaging. Cells marked **?** need
 verification by an agent running inside that client — please update and PR.
 
-Last updated: 2026-07-12 (Codex app-server transport + delivery-mode vocabulary; B141 cross-repo inject-only delivery + B138 degraded label)
+Last updated: 2026-07-13 (B173: Grok detection + alias mint; client-parity audit)
 
 ## Quick reference
 
@@ -24,7 +24,7 @@ Last updated: 2026-07-12 (Codex app-server transport + delivery-mode vocabulary;
 | Deferrable flag | ✅ | ✅ | ? | ✅ | ✅ | n/a (no mid-turn hook drain) |
 | DND honoring | ✅ `set_dnd` | ✅ `set_dnd` | ? | ✅ `set_dnd` (verified live) | ✅ `set_dnd` | ✅ CLI `c2c set-dnd` / tools when MCP present |
 | Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ exec gating on MCP binary | ⚠️ extension runs in pi's Node runtime and shells to `c2c` | ⚠️ plugin runs in-process | ⚠️ Notifier as separate process; no exec gating on notifier itself | ⚠️ SessionStart hook runs `c2c hook grok` as a command |
-| Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ on session start (`C2C_PI_ALIAS` for a preferred alias) | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ SessionStart (`registered_by=grok-hook`); prefers `~/.config/c2c/default-alias` |
+| Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ on session start (`C2C_PI_ALIAS` for a preferred alias) | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ SessionStart (`registered_by=grok-hook`); always mints `grok-*` via `default_alias_for_client` (B173 — ignores machine-global `default-alias`) |
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ⚠️ skill/CLI (`c2c rooms join swarm-lounge`); no MCP env auto-join |
 | Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ✅ `c2c start kimi` | ❌ not yet (`c2c start grok` deferred) |
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi/mcp.json` | `~/.grok/skills/c2c/SKILL.md` + `~/.grok/hooks/c2c-session.json` |
@@ -230,8 +230,11 @@ auto-registers (`registered_by=grok-hook`), refreshes `~/.grok/skills/c2c/`, and
 writes `~/.grok/skills/c2c-session/SKILL.md` with the live alias in the skill
 description so the model can discover identity without transcript inject.
 
-**Session ID**: `$GROK_SESSION_ID` (hook runner) or payload `session_id` /
-`sessionId`. Also honored by c2c session-id resolution for CLI identity.
+**Session ID**: `$GROK_SESSION_ID` (hook runner only) or payload `session_id` /
+`sessionId`. Tool shells typically export **`GROK_AGENT=1` without
+`GROK_SESSION_ID`** — c2c infers `client_type=grok` from the flag and resolves
+the live session by matching an ancestor pid against
+`~/.grok/active_sessions.json` (B173). Explicit `C2C_MCP_SESSION_ID` still wins.
 
 **restart-self / managed loop**: No `c2c start grok` yet (deferred). Restart the
 Grok TUI (or open a new session) after install so SessionStart fires.
@@ -258,7 +261,7 @@ command path. (3) Skill snippets: edit `.collab/skills/c2c-src/`, run
 | Pi Agent | Extension session alias | `pi-c2c` extension -> `c2c poll-inbox` -> `pi.sendMessage` | `fs.watch` inbox watcher + 60s safety poll | n/a (`pi install npm:pi-c2c`) |
 | OpenCode | `$OPENCODE_SESSION_ID` | Native TS plugin + promptAsync | `c2c monitor --all` inotify (moved_to) | `c2c start opencode` |
 | Kimi | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) | File-based push + tmux wake | `c2c start kimi` |
-| Grok | `$GROK_SESSION_ID` / hook payload | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) |
+| Grok | `$GROK_SESSION_ID` (hooks) / `$GROK_AGENT` + `active_sessions.json` (tool shells, B173) | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) |
 | Cursor Agent | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134 best-effort) | n/a (unofficial — no install/hooks) | n/a | n/a — labeling only (`client=cursor`, alias `cursor-…`) |
 
 > **Cursor Agent (unofficial):** c2c does **not** ship install, hooks, or delivery for Cursor. B134 only ensures `c2c init` / client-type inference labels Cursor sessions as `cursor` (not `codex`) when `CURSOR_AGENT` or `CURSOR_INVOKED_AS=cursor-agent` is set. Prefer `c2c init --client …` if you need a different identity.

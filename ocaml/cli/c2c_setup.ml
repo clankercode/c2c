@@ -2007,8 +2007,11 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
         Printf.eprintf "[c2c setup] no --alias given; auto-picked alias=%s. Pass --alias NAME to override.\n%!" a;
         a
   in
-  (* Write default-alias config so bare `c2c monitor` can resolve alias *)
-  if not dry_run then
+  (* Write default-alias config so bare `c2c monitor` can resolve alias.
+     Skip for Grok (B173 residual): Grok is CLI-first and multi-session; writing
+     the machine-global default-alias clobbers other clients' monitor fallback
+     and previously caused Grok hook registrations to adopt codex- aliases. *)
+  if (not dry_run) && client <> "grok" then
     (try
        let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
        C2c_mcp.mkdir_p config_dir;

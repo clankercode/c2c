@@ -15831,7 +15831,7 @@ let nonce_is_lowercase_alnum s =
 let test_blocklist_rejects_banned_aliases () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      let banned = [ "claude"; "claude-code"; "gpt" ] in
+      let banned = [ "claude"; "claude-code"; "gpt"; "grok" ] in
       List.iter
         (fun alias ->
            let raised =
@@ -16023,6 +16023,16 @@ let test_stable_pid_matches_versioned_install_path () =
         (Some 100)
         (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
 
+let test_stable_pid_matches_grok_ancestor () =
+  (* B173 parity: Grok TUI process must be a known agent for liveness pin. *)
+  with_temp_dir (fun proc ->
+      write_fake_proc_entry proc ~pid:300 ~ppid:100 ~argv:["bash"] ();
+      write_fake_proc_entry proc ~pid:100 ~ppid:1
+        ~argv:["/home/u/.grok/bin/grok"] ~comm:"grok" ();
+      check (option int) "grok ancestor is a known agent process"
+        (Some 100)
+        (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
+
 let () =
   run "c2c_mcp"
     [ ( "stable_client_pid",
@@ -16042,6 +16052,8 @@ let () =
             test_stable_pid_comm_only_match
         ; test_case "versioned install path matches via component" `Quick
             test_stable_pid_matches_versioned_install_path
+        ; test_case "grok ancestor is a known agent (B173 parity)" `Quick
+            test_stable_pid_matches_grok_ancestor
         ] )
     ; ( "broker",
         [ test_case "register and list" `Quick test_register_and_list

@@ -140,6 +140,12 @@ let print_enriched_landing () =
       if c = "pi" then
         if on_path then "on PATH — uses npm:pi-c2c (see pi.dev)"
         else "not on PATH — see pi.dev"
+      else if c = "grok" then
+        (* Grok is CLI-first: install writes skill + hooks, never MCP. *)
+        match on_path, configured with
+        | false, _ -> "not on PATH"
+        | true, true -> "configured (CLI + hooks ready)"
+        | true, false -> "on PATH, not configured — run 'c2c install grok'"
       else
         match on_path, configured with
         | false, _ -> "not on PATH"

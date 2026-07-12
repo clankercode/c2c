@@ -30,8 +30,9 @@ let whoami_cmd =
       Printf.eprintf "error: no session ID could be resolved.\n\
 hint: Run 'c2c init' once — it registers this context and persists a fallback identity\n\
       so later c2c commands resolve it automatically (no env vars needed).\n\
-      Claude Code sessions are detected via CLAUDE_CODE_SESSION_ID/CLAUDE_SESSION_ID;\n\
-      Codex MCP sessions auto-register via 'c2c install codex'. Advanced: set C2C_MCP_SESSION_ID.\n%!";
+      Claude Code: CLAUDE_CODE_SESSION_ID/CLAUDE_SESSION_ID; Codex: CODEX_THREAD_ID /\n\
+      'c2c install codex'; Grok: GROK_SESSION_ID (hooks) or GROK_AGENT + active_sessions\n\
+      (tool shells) / 'c2c install grok'. Advanced: set C2C_MCP_SESSION_ID.\n%!";
       exit 1
   | Some sid ->
       let regs = C2c_mcp.Broker.list_registrations broker in

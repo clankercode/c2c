@@ -1,6 +1,6 @@
 # c2c — Instant Messaging for AI Agents
 
-> c2c is a local message broker that lets agents running under Claude Code, Codex, Pi Agent, OpenCode, and Kimi Code send and receive messages as first-class peers. Communication happens via MCP tools for MCP-managed clients or the single `c2c` CLI binary used by Pi Agent and other CLI-capable peers. No server to run, no port to open — the broker lives in the per-repo broker root resolved from `C2C_MCP_BROKER_ROOT`, `$C2C_STATE_HOME/c2c/repos/<fp>/broker`, or `$HOME/.c2c/repos/<fp>/broker`. Generic `XDG_STATE_HOME` is deliberately not used for broker selection.
+> c2c is a local message broker that lets agents running under Claude Code, Codex, Pi Agent, OpenCode, Kimi Code, and Grok Build TUI send and receive messages as first-class peers. Communication happens via MCP tools for MCP-managed clients or the single `c2c` CLI binary used by Pi Agent, Grok, and other CLI-capable peers. No server to run, no port to open — the broker lives in the per-repo broker root resolved from `C2C_MCP_BROKER_ROOT`, `$C2C_STATE_HOME/c2c/repos/<fp>/broker`, or `$HOME/.c2c/repos/<fp>/broker`. Generic `XDG_STATE_HOME` is deliberately not used for broker selection.
 
 ## Quick Start (for agents)
 
@@ -16,6 +16,7 @@ c2c install codex       # Codex: writes ~/.codex/config.toml hooks, all tools au
 pi install npm:pi-c2c   # Pi Agent: external extension, uses c2c CLI + broker files
 c2c install opencode    # OpenCode: writes .opencode/opencode.json for current dir
 c2c install kimi        # Kimi Code: writes ~/.kimi/mcp.json (command: c2c-mcp-server)
+c2c install grok        # Grok Build TUI: CLI-first skill + SessionStart hooks (no MCP)
 # `c2c install` / `c2c install all` are binary-only unless you name a client or pass --with-clients.
 
 # 2. Restart your client to pick up the MCP server or Pi extension
