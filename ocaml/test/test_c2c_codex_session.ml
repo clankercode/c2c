@@ -208,6 +208,16 @@ let test_mapping_roundtrip () =
           Alcotest.(check string) "alias" m.alias m2.alias;
           Alcotest.(check (option string)) "thread_id" m.thread_id m2.thread_id)
 
+let test_restart_request_roundtrip () =
+  with_tmp_dir (fun dir ->
+      S.request_restart ~instance_dir:dir ~force:true;
+      match C2c_io.read_json_opt (S.restart_request_path ~instance_dir:dir) with
+      | Some (`Assoc fields) ->
+          Alcotest.(check (option bool)) "force persisted" (Some true)
+            (match List.assoc_opt "force" fields with
+             | Some (`Bool b) -> Some b | _ -> None)
+      | _ -> Alcotest.fail "restart request should be valid JSON")
+
 (* ------------------------------------------------------------------ *)
 (* Deliver-loop degraded signal persistence (B138)                     *)
 (* ------------------------------------------------------------------ *)
@@ -332,6 +342,16 @@ let test_glue_happy_publishes_after_start () =
           ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 99) () in
       Alcotest.(check bool) "fallback NOT used on happy path" false !fallback_called;
       Alcotest.(check int) "clean exit" 0 rc;
+      Alcotest.(check bool) "managed config persisted" true
+        (Sys.file_exists (C2c_start.config_path alias));
+      Alcotest.(check bool) "launcher pid persisted" true
+        (Sys.file_exists (C2c_start.outer_pid_path alias));
+      (match C2c_start.load_config_opt alias with
+       | Some cfg ->
+           Alcotest.(check string) "managed client is codex" "codex" cfg.client;
+           Alcotest.(check string) "exact resume target persisted" sid
+             (Option.value cfg.codex_resume_target ~default:"")
+       | None -> Alcotest.fail "managed config must load");
       (* The routable mapping is published only after start returned Ok. *)
       match S.load_mapping ~instance_dir:(C2c_start.instance_dir alias) with
       | None -> Alcotest.fail "mapping should be published after Running"
@@ -541,6 +561,8 @@ let () =
         ; test_case "split_client_alias" `Quick test_split_client_alias_passthrough ] )
     ; ( "thread-conflict",
         [ test_case "reconcile" `Quick test_reconcile_thread ] )
+    ; ( "restart-control",
+        [ test_case "request is atomic JSON" `Quick test_restart_request_roundtrip ] )
     ; ( "identity-resolve",
         [ test_case "resume unknown rejected" `Quick test_resolve_resume_unknown_rejected
         ; test_case "resume ok" `Quick test_resolve_resume_ok

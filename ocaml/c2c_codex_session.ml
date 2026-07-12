@@ -227,6 +227,27 @@ type mapping = {
 }
 
 let mapping_path ~instance_dir = instance_dir // "codex-session.json"
+let restart_request_path ~instance_dir = instance_dir // "restart.request.json"
+
+let request_restart ~instance_dir ~(force : bool) : unit =
+  let path = restart_request_path ~instance_dir in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      Yojson.Safe.to_channel oc
+        (`Assoc [ ("force", `Bool force);
+                  ("requested_at", `Float (Unix.gettimeofday ())) ]);
+      output_string oc "\n");
+  Unix.rename tmp path
+
+let consume_restart_request ~instance_dir : bool option =
+  let path = restart_request_path ~instance_dir in
+  match C2c_io.read_json_opt path with
+  | None -> None
+  | Some (`Assoc fields) ->
+      (try Sys.remove path with _ -> ());
+      Some (match List.assoc_opt "force" fields with Some (`Bool b) -> b | _ -> false)
+  | Some _ -> (try Sys.remove path with _ -> ()); Some false
 
 let write_mapping ~instance_dir (m : mapping) : unit =
   (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
@@ -404,7 +425,7 @@ let log_deliver_pass ~(instance_dir : string) (po : C2c_codex_autoturn.pass_outc
    result. Registration lifetime is bound to the loop (register on entry,
    deregister in the loop's finally + the signal path). *)
 let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
-    ~(alias : string) ~(instance_dir : string) : C2c_codex_app_server.supervise_result =
+    ~(alias : string) ~(instance_dir : string) : C2c_codex_deliver_loop.outcome =
   (* Unlock the real WS clients in THIS launcher process only (the frontend was
      already spawned with its env captured, so this does not leak into it). *)
   Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
@@ -418,6 +439,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
     match C2c_codex_app_server.raw_token_of handle with "" -> None | t -> Some t
   in
   let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let turn_client = C2c_codex_autoturn.real_turn_client () in
   let my_pid = Unix.getpid () in
   let register () =
     (try
@@ -451,7 +473,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
       endpoint;
       token_provider;
       inject_client = C2c_codex_ingress.real_client ();
-      turn_client = C2c_codex_autoturn.real_turn_client ();
+      turn_client;
       discover_threads =
         (fun () ->
           match token_provider () with
@@ -487,6 +509,40 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
            at loop start, false once a frontend thread loads. Best-effort —
            write_delivery_degraded never raises. *)
         (fun degraded -> write_delivery_degraded ~instance_dir ~unit_id degraded);
+      on_thread_discovered =
+        (fun thread_id ->
+          match load_mapping ~instance_dir with
+          | Some m when m.thread_id <> Some thread_id ->
+              write_mapping ~instance_dir
+                { m with thread_id = Some thread_id;
+                         updated_at = Unix.gettimeofday () };
+              (match C2c_start.load_config_opt name with
+               | Some cfg ->
+                   C2c_start.write_config
+                     { cfg with resume_session_id = thread_id;
+                                codex_resume_target = Some thread_id }
+               | None -> ())
+          | _ -> ());
+      restart_requested =
+        (fun ~thread_id ->
+          match consume_restart_request ~instance_dir with
+          | None -> false
+          | Some true -> true
+          | Some false ->
+              (match token_provider () with
+               | None ->
+                   Printf.eprintf "%s restart skipped: app-server status unknown\n%!"
+                     app_server_log_label;
+                   false
+               | Some token ->
+                   match turn_client.C2c_codex_autoturn.thread_status
+                           ~endpoint ~token ~thread_id with
+                   | `Idle -> true
+                   | status ->
+                       Printf.eprintf "%s restart skipped: thread is %s (use --force to override)\n%!"
+                         app_server_log_label
+                         (C2c_codex_autoturn.thread_status_to_string status);
+                       false));
       global_broker_root =
         (* B141: cross-repo (sessions-broker) mail for this session is
            delivered by the loop's inject-only global pass. None when the
@@ -546,7 +602,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
            was ever loaded, so c2c mail was not auto-delivered this session \
            (session was still supervised). c2c-alias=%s\n%!"
           (yellow ()) app_server_log_label (reset ()) alias;
-      o.C2c_codex_deliver_loop.final)
+      o)
 
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(yolo : bool) ~(extra_args : string list)
@@ -609,6 +665,28 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          session identity; the hook path owns its own alias handling. *)
       fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
   | Ok handle ->
+      (* B153: app-server launchers are first-class managed instances. Persist
+         the same config/pid surfaces used by instances/restart, but keep the
+         launcher itself as the outer process so its controlling TTY is never
+         transferred to an unrelated caller. *)
+      let now = Unix.gettimeofday () in
+      let created_at =
+        match C2c_start.load_config_opt name with
+        | Some c -> c.C2c_start.created_at
+        | None -> now
+      in
+      C2c_start.write_config
+        { C2c_start.name; client = "codex"; session_id;
+          resume_session_id = Option.value thread ~default:session_id;
+          codex_resume_target = thread; alias; extra_args; created_at;
+          last_launch_at = Some now; last_exit_code = None;
+          last_exit_reason = None;
+          broker_root = (try C2c_start.broker_root () with _ -> "");
+          auto_join_rooms = C2c_swarm_config.swarm_config_social_room ();
+          binary_override = None; model_override; agent_name = None };
+      let pid_oc = open_out (C2c_start.outer_pid_path name) in
+      Fun.protect ~finally:(fun () -> close_out pid_oc)
+        (fun () -> Printf.fprintf pid_oc "%d\n" (Unix.getpid ()); flush pid_oc);
       (* B138: the instant the unit is up (and therefore observable as
          online-attached by doctor/health), synchronously publish a fail-closed
          degraded record STAMPED with this unit's generation id — before the
@@ -627,7 +705,6 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          [run_delivery_loop] registers it into the broker on entry and tears the
          registration down on TUI exit. The mapping persisted here is the durable
          identity record; the broker registration is the in-flight routing entry. *)
-      let now = Unix.gettimeofday () in
       let created =
         match load_mapping ~instance_dir with Some m -> m.created_at | None -> now in
       write_mapping ~instance_dir
@@ -655,7 +732,24 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       (match load_mapping ~instance_dir with
        | Some m -> write_mapping ~instance_dir { m with updated_at = Unix.gettimeofday () }
        | None -> ());
-      (match final with
+      if final.C2c_codex_deliver_loop.restart_requested then begin
+        match final.C2c_codex_deliver_loop.thread_id with
+        | Some exact_thread ->
+            let argv =
+              Array.of_list
+                ([ Sys.executable_name; "resume"; "codex"; alias;
+                   "--thread-id"; exact_thread ]
+                 @ (match model_override with
+                    | Some m when String.trim m <> "" -> [ "--model"; m ]
+                    | _ -> [])
+                 @ (if extra_args = [] then [] else "--" :: extra_args))
+            in
+            Printf.eprintf "%s restarting in place on thread %s\n%!"
+              app_server_log_label exact_thread;
+            Unix.execve argv.(0) argv (Unix.environment ())
+        | None -> ()
+      end;
+      (match final.C2c_codex_deliver_loop.final with
        | C2c_codex_app_server.Sv_server_died ->
            Printf.eprintf "%s%s%s app-server died; session torn down.\n%!"
              (yellow ()) app_server_log_label (reset ());

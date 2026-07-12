@@ -127,6 +127,9 @@ val mapping_path : instance_dir:string -> string
 val load_mapping : instance_dir:string -> mapping option
 val write_mapping : instance_dir:string -> mapping -> unit
 
+val restart_request_path : instance_dir:string -> string
+val request_restart : instance_dir:string -> force:bool -> unit
+
 (* --------------------------------- run ------------------------------------ *)
 
 type launch_mode =

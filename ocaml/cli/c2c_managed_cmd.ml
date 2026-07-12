@@ -773,10 +773,29 @@ let restart_cmd =
       ~docv:"SECONDS"
       ~doc:"Seconds to wait for outer process to exit before spawning restart (default: 5).")
   in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force" ]
+      ~doc:"For an app-server Codex instance, restart even when thread status is active or unknown.")
+  in
   let+ name = name
-  and+ timeout = timeout in
+  and+ timeout = timeout
+  and+ force = force in
   let timeout_s = Option.value timeout ~default:5.0 in
-  exit (C2c_start.cmd_restart name ~timeout_s)
+  let instance_dir = C2c_start.instance_dir name in
+  match C2c_codex_session.load_mapping ~instance_dir,
+        C2c_codex_session.status_of_instance ~instance_dir with
+  | Some _, Some C2c_codex_session.Online_attached ->
+      (try
+         C2c_codex_session.request_restart ~instance_dir ~force;
+         Printf.printf
+           "[c2c restart] requested in-place app-server restart for '%s'%s\n%!"
+           name (if force then " (forced)" else " (idle-gated)");
+         exit 0
+       with exn ->
+         Printf.eprintf "error: could not request app-server restart: %s\n%!"
+           (Printexc.to_string exn);
+         exit 1)
+  | _ -> exit (C2c_start.cmd_restart name ~timeout_s)
 
 let restart : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart" ~doc:"Restart a managed c2c instance.") restart_cmd

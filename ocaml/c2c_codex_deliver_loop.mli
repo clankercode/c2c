@@ -63,6 +63,11 @@ type deps = {
           see it, so they don't overclaim LIVE app-server delivery for a session
           whose deliver loop is degraded. Best-effort — the loop swallows any
           exception it raises and never lets it wedge supervision. *)
+  on_thread_discovered : string -> unit;
+      (** Fired exactly once for the first authoritative loaded thread. *)
+  restart_requested : thread_id:string -> bool;
+      (** Checked between passes. Production returns [true] only after the
+          app-server thread is authoritatively Idle, or an explicit force. *)
   global_broker_root : string option;
       (** B141 (B137 follow-up): root of the machine-wide cross-repo sessions
           broker (canonically [~/.c2c/sessions/broker]). When [Some root] and
@@ -95,6 +100,7 @@ type outcome = {
   passes : int;                  (** number of deliver passes run *)
   global_passes : int;           (** B141: global (cross-repo) ingress passes run *)
   degraded : bool;               (** true iff no thread was ever discovered *)
+  restart_requested : bool;      (** launcher should stop and in-place re-exec *)
 }
 
 (** Build the autoturn config the loop drives, for a discovered [thread_id].
