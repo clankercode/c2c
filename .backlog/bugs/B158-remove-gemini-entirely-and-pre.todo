@@ -1,18 +1,18 @@
 ---
+claimed_at: "2026-07-12T14:59:06Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T14:03:54Z"
 depends_on: []
 estimate_hours: 2
 id: B158
 priority: high
-status: pending
-tags:
-    - gemini
-    - deprecation
-    - skills
-    - codegen
+started_at: "2026-07-12T14:59:06Z"
+status: in_progress
+tags: []
 title: Remove Gemini entirely and prevent regenerated c2c skills from resurrecting it
-updated_at: "2026-07-12T14:03:54Z"
+updated_at: "2026-07-12T14:59:06Z"
 ---
 Problem
 
