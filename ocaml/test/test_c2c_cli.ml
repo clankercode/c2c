@@ -3205,6 +3205,76 @@ let test_register_cmd_env_alias_rename_refused_sticky_alias () =
           let regs = C2c_mcp.Broker.list_registrations broker in
           check string "old alias remains" "env-original" (List.hd regs).alias))
 
+(* B140: the explicit `c2c rename` path performs the sanctioned atomic
+   rename-everywhere; the sticky-alias refusal now advertises it. *)
+let test_cli_rename_happy_path () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b140-cli" in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id ~alias:"b140-cli-old"
+        ~pid:None ~pid_start_time:None ();
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"b140-room"
+           ~alias:"b140-cli-old" ~session_id);
+      let out = Filename.temp_file "c2c-b140-rename" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out with _ -> ())
+        (fun () ->
+          let key_dir = Filename.concat dir "xkeys" in
+          Unix.mkdir key_dir 0o700;
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_KEY_DIR=%s \
+               %s > %s 2>&1"
+              (Filename.quote dir) (Filename.quote key_dir)
+              (c2c_cmd
+                 (Printf.sprintf
+                    "c2c rename b140-cli-new --session-id %s --json"
+                    (Filename.quote session_id)))
+              (Filename.quote out)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file out in
+          check int ("rename exits 0: " ^ content) 0 rc;
+          let json = Yojson.Safe.from_string content in
+          let open Yojson.Safe.Util in
+          check bool "rename ok json" true (json |> member "ok" |> to_bool);
+          check string "old alias reported" "b140-cli-old"
+            (json |> member "old_alias" |> to_string);
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check string "registry renamed via CLI" "b140-cli-new"
+            (List.hd regs).alias;
+          let rooms = C2c_mcp.Broker.my_rooms broker ~session_id in
+          check bool "room membership renamed via CLI" true
+            (List.exists
+               (fun ri ->
+                 ri.C2c_mcp.Broker.ri_room_id = "b140-room"
+                 && List.mem "b140-cli-new" ri.C2c_mcp.Broker.ri_members)
+               rooms)))
+
+let test_sticky_alias_error_advertises_rename () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b140-hint" in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id ~alias:"b140-hint-old"
+        ~pid:None ~pid_start_time:None ();
+      let out = Filename.temp_file "c2c-b140-hint" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out with _ -> ())
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > %s 2>&1"
+              (Filename.quote dir) (Filename.quote session_id)
+              (c2c_cmd "c2c register --alias b140-hint-new")
+              (Filename.quote out)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file out in
+          check bool "register --alias rename still refused" true (rc <> 0);
+          check bool "refusal advertises c2c rename" true
+            (string_contains content "c2c rename")))
+
 let run_capture command =
   let tmpfile = Filename.temp_file "c2c-cli-capture" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
@@ -4395,5 +4465,7 @@ let () =
         ; ( "register cmd explicit rename refused sticky alias", `Quick, test_register_cmd_explicit_rename_refused_sticky_alias )
         ; ( "register cmd same-alias refresh allowed", `Quick, test_register_cmd_same_alias_refresh_allowed )
         ; ( "register cmd env-alias rename refused sticky alias", `Quick, test_register_cmd_env_alias_rename_refused_sticky_alias )
+        ; ( "cli rename happy path (B140)", `Quick, test_cli_rename_happy_path )
+        ; ( "sticky alias error advertises c2c rename (B140)", `Quick, test_sticky_alias_error_advertises_rename )
         ] )
     ]

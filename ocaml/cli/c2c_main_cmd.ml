@@ -40,6 +40,7 @@ let all_cmds =
   ; C2c_git_cmd.git
   ; C2c_register_cmd.register
   ; C2c_register_cmd.deregister
+  ; C2c_rename_cmd.rename
   ; C2c_refresh_peer_cmd.refresh_peer
   ; C2c_coord.coord_cherry_pick_cmd
   ; C2c_coord.coord_group

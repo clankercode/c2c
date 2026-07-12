@@ -56,6 +56,7 @@ let command_tier_map () : (string * safety) list =
    ; "deliver", Tier1
   ; "register", Tier1
   ; "deregister", Tier1
+  ; "rename", Tier1
   ; "refresh-peer", Tier1
   ; "instances", Tier1
   ; "doctor", Tier1

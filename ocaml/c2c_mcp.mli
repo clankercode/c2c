@@ -326,6 +326,9 @@ module Broker : sig
   val get_pinned_ed25519 : string -> string option
   val pin_x25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
   val pin_ed25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
+  val set_relay_pins_save_hook_for_test : (unit -> unit) option -> unit
+  (** Test-only fault injection for relay-pins persistence.  Callers must
+      clear the hook in a [Fun.protect] finalizer. *)
 
   (** Slice B-min-version: per-alias minimum-observed-envelope-version
       pin. Defense-in-depth against MITM envelope_version 2→1 stripping.
@@ -401,8 +404,26 @@ module Broker : sig
   val sticky_alias_error : session_id:string -> existing_alias:string -> requested_alias:string -> string
   (** Canonical sticky-alias rejection message for CLI and MCP tool errors. *)
 
+  val rename_alias : t -> session_id:string -> new_alias:string -> (Yojson.Safe.t, string) result
+  (** B140: deliberate atomic alias rename-everywhere — the sanctioned
+      counterpart to the B135 sticky-alias forbid. Updates registry row,
+      room memberships, relay identity key files, TOFU pins, plus
+      best-effort follow-ups (allowed_signers, archive marker, peer_renamed
+      room notices, broker.log event, instance-config sync, schedules and
+      memory dir moves). Any failure before commit unwinds completed steps;
+      a failed undo is reported as an incomplete rollback. [Ok json] carries
+      {ok, old_alias, new_alias, rooms_renamed, keys_moved, pins_moved,
+      warnings}; [Error msg] explains the refusal, a rolled-back failure, or
+      an incomplete rollback. Shared by the CLI [c2c rename] and the MCP
+      [rename] tool. *)
+
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
+  val with_alias_identity_locks :
+    t -> aliases:string list -> (unit -> 'a) -> 'a
+  (** Serializes alias-keyed key/pin preparation.  Multi-alias callers use
+      deterministic case-folded lock ordering, so rename can safely lock its
+      old and target aliases together. *)
   val registration_is_alive : registration -> bool
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option

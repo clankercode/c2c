@@ -342,6 +342,36 @@ issue where the session_id doesn't match the expected alias.
 
 ---
 
+### `alias_renamed`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "ts": <float>,
+  "event": "alias_renamed",
+  "session_id": "<session-id>",
+  "old_alias": "<old-alias>",
+  "new_alias": "<new-alias>"
+}
+```
+
+**Fires when**: a deliberate `c2c rename` / MCP `rename` (B140) commits — the
+sanctioned atomic rename-everywhere. Emitted post-commit, after the registry
+row, room memberships, key files, and pins have all been updated.
+
+**File**: `ocaml/c2c_broker.ml` `rename_alias` function.
+
+**Operational meaning**: audit trail for identity changes. Every alias
+transition on this broker should have exactly one of these lines; a rename
+that peers dispute (old name still showing somewhere) can be cross-checked
+against it. Implicit half-renames do not exist by construction (B135 forbid
++ B140 rollback), so an alias change WITHOUT this event is a bug.
+
+---
+
 ### `dual_alias_dedup`
 
 **Severity**: MED

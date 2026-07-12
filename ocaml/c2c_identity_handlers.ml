@@ -193,6 +193,13 @@ let register ~broker ~session_id_override ~arguments =
                    Wait for the pending reply to arrive or for it to timeout before claiming this alias."
                   alias))
             else begin
+              (* Key creation/pinning happens before [Broker.register] can
+                 claim the alias in the registry.  Keep that preparation and
+                 the commit in the same alias-identity critical section so a
+                 concurrent B140 rename cannot move or roll back this
+                 claimant's target material. *)
+              Broker.with_alias_identity_locks broker ~aliases:[ alias ]
+                (fun () ->
               let plugin_version = optional_string_member "plugin_version" arguments in
               let role = optional_string_member "role" arguments in
               let tmux_location_arg = optional_string_member "tmux_location" arguments in
@@ -405,8 +412,41 @@ let register ~broker ~session_id_override ~arguments =
                 else
                   "registered " ^ alias
               in
-              Lwt.return (tool_ok response_content)
+              Lwt.return (tool_ok response_content))
             end)
+
+(* B140: deliberate atomic alias rename-everywhere. The sanctioned
+   counterpart to the B135 sticky-alias forbid — see
+   [Broker.rename_alias] for the store-by-store mechanics and the
+   rollback model. This handler is a thin shim so CLI and MCP share one
+   implementation. *)
+let rename ~broker ~session_id_override ~arguments =
+      let ambient_session_id =
+        match session_id_override with
+        | Some session_id -> Some session_id
+        | None -> current_session_id ()
+      in
+      match ambient_session_id, optional_string_member "session_id" arguments with
+      | Some ambient, Some requested when not (String.equal ambient requested) ->
+          (* A rename changes identity-bearing state.  Unlike the CLI's
+             explicit [--session-id] maintenance path, an MCP caller may only
+             rename the session bound to its transport/environment. *)
+          Lwt.return
+            (tool_err
+               (Printf.sprintf
+                  "rename rejected: session_id '%s' does not match the ambient MCP session '%s'"
+                  requested ambient))
+      | None, _ ->
+          Lwt.return
+            (tool_err
+               "rename rejected: no ambient MCP session is bound to this request")
+      | Some session_id, _ ->
+          match optional_string_member "new_alias" arguments with
+          | None -> Lwt.return (tool_err "rename rejected: new_alias is required")
+          | Some new_alias -> (
+              match Broker.rename_alias broker ~session_id ~new_alias with
+              | Ok json -> Lwt.return (tool_ok (Yojson.Safe.to_string json))
+              | Error e -> Lwt.return (tool_err e))
 
 let list ~broker ~session_id_override:_ ~arguments =
       let alive_only =

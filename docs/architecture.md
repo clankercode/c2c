@@ -225,13 +225,17 @@ Key behaviours:
   new session_id but the same alias, `join_room` replaces the stale
   entry rather than adding a duplicate. Prevents fan-out duplication
   after client restarts.
-- **Sticky alias (B135)** — alias is sticky per `session_id`. Explicit
-  rename via MCP `register` / `c2c init --alias` / `c2c register --alias`
-  is refused when the session already has a different alias; start a
-  fresh session for a new name. Same-alias re-register (PID refresh)
-  and omitted-alias reuse (B046 / MCP no-args) remain allowed.
-  The legacy `peer_renamed` room-history event type is unused under
-  this policy (code path retained but unreachable via public surfaces).
+- **Sticky alias (B135) + deliberate rename (B140)** — alias is sticky
+  per `session_id` through the registration surfaces: explicit rename via
+  MCP `register` / `c2c init --alias` / `c2c register --alias` is refused
+  when the session already has a different alias. Same-alias re-register
+  (PID refresh) and omitted-alias reuse (B046 / MCP no-args) remain
+  allowed. To actually change your name, `c2c rename <new-alias>` (or the
+  MCP `rename` tool) performs the sanctioned atomic rename-everywhere —
+  registry, room memberships, relay key files, TOFU pins,
+  `allowed_signers`, instance config, schedules/memory — with rollback on
+  partial failure. The `peer_renamed` room-history event is emitted by
+  this rename flow so room members see the identity change.
 - **Auto-join** — `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` (written by
   `c2c install <client>`) makes every agent auto-join the social room
   on startup without calling `join_room` manually.

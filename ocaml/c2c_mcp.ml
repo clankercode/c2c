@@ -47,6 +47,13 @@ let base_tool_definitions =
       ~description:"Send a C2C message to a registered peer alias. The sender alias is resolved from the current MCP session when possible; `from_alias` remains a legacy fallback for non-session callers. Optional `deferrable:true` marks the message as low-priority: push paths (channel notification, PostToolUse hook) skip it — recipient reads it on next explicit poll_inbox or idle flush. Optional `ephemeral:true` (local 1:1 only) delivers normally but skips the recipient-side archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification. For remote recipients (alias@host), the relay outbox persists by design and `ephemeral` is silently ignored on the relay side in v1 — cross-host ephemeral is a follow-up. Optional `tag:\"fail\"|\"blocking\"|\"urgent\"` (#392) prepends a visual marker to the body (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient spots the priority inline in their transcript — useful for peer-PASS FAIL verdicts and similar attention-asks. Receipt confirmation is impossible by design. On success returns a canonical schema-v1 message receipt (see docs/reference/message-schema-v1): {schema_version:1, type:\"dm\", ts:<epoch-seconds>, from:{alias}, to, content:<plaintext body as queued>, delivery:{state:\"queued\"|\"queued_offline\"}} plus the legacy compatibility keys {queued:true, from_alias, to_alias, queued_offline?}. B127: if the recipient alias is known but not alive, the message is still written to their durable inbox and the receipt uses delivery.state \"queued_offline\" (with queued_offline:true); unknown aliases remain errors."
       ~required:["to_alias"; "content"]
       ~properties:[ prop "to_alias" "Target peer alias."; prop "from_alias" "Legacy fallback sender alias (deprecated)."; prop "content" "Message body."; bool_prop "deferrable" "Optional bool. When true, marks the message as low-priority — push delivery is suppressed; recipient reads it on next poll_inbox or idle flush."; bool_prop "ephemeral" "Optional bool. Local 1:1 only — when true, the message is delivered normally but skipped on the recipient-side archive append. For alias@host recipients the relay outbox persists by design; the flag is silently ignored on the relay side in v1."; prop "tag" "Optional visual-marker tag (#392). One of \"fail\" (🔴 FAIL:), \"blocking\" (⛔ BLOCKING:), or \"urgent\" (⚠️ URGENT:). Prepended to the body at send-time so the recipient spots the priority inline in their transcript. Unknown tag values are rejected." ]
+  ; tool_definition ~name:"rename"
+      ~description:"Deliberately rename the current session's alias EVERYWHERE, atomically (B140). Updates the registry registration, room memberships, relay identity key files, TOFU pins, allowed_signers, managed instance config, and the repo-local schedules/memory dirs, and appends an alias_renamed marker to your archive — peers see the new alias immediately (no restart needed) and each of your rooms gets a peer_renamed notice. Partial failure runs rollback; if an undo cannot complete, the command reports rollback incomplete rather than claiming success. This is the sanctioned rename path; implicit renames via register/init --alias or C2C_MCP_AUTO_REGISTER_ALIAS drift remain refused (sticky alias, B135). Refused when the target alias is held by an alive session, has pending permission state, or carries pinned key material from a previous holder. Case-only changes (e.g. lyra-quill -> Lyra-Quill) are allowed as self-renames."
+      ~required:["new_alias"]
+      ~properties:
+        [ prop "new_alias" "The new alias to adopt. Must be a valid, non-reserved, non-blocklisted name not currently held by an alive peer."
+        ; prop "session_id" "Optional session id override; defaults to the current MCP session."
+        ]
   ; tool_definition ~name:"whoami"
       ~description:"Resolve the current C2C session registration."
       ~required:[]
@@ -258,6 +265,8 @@ let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~argum
       C2c_send_handlers.send_all ~broker ~session_id_override ~arguments
   | "whoami" ->
       C2c_identity_handlers.whoami ~broker ~session_id_override ~arguments
+  | "rename" ->
+      C2c_identity_handlers.rename ~broker ~session_id_override ~arguments
   | "debug" ->
       C2c_identity_handlers.debug ~broker ~session_id_override ~arguments
   | "poll_inbox" ->
