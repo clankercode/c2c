@@ -211,13 +211,26 @@ let install_teardown_signals () =
 
 (* Spawn `inotifywait <args>` via `exec`, so the pid returned by
    process_full_pid is the watcher itself (killing it kills inotifywait, not a
-   wrapping sh whose grandchild would orphan). Registers it for teardown. *)
+   wrapping sh whose grandchild would orphan). Registers it for teardown.
+
+   B156 (review): SIGTERM/SIGINT are blocked across spawn + pid lookup +
+   tracking, so the teardown handler can never fire in the window after the
+   watcher process exists but before it is tracked (which would let the handler
+   see an empty list and exit, orphaning the watcher). A signal raised while
+   blocked stays pending and is delivered on unblock — by which point the pid
+   is tracked and the handler kills it. *)
 let spawn_inotifywait (inotify_args : string) =
   let cmd = "exec inotifywait " ^ inotify_args in
-  let (ic, oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
-  let pid = Unix.process_full_pid (ic, oc, err_ic) in
-  track_inotify_child pid;
-  (ic, oc, err_ic, pid)
+  let blocked = [ Sys.sigterm; Sys.sigint ] in
+  let prev = try Thread.sigmask Unix.SIG_BLOCK blocked with _ -> [] in
+  Fun.protect
+    ~finally:(fun () ->
+      try ignore (Thread.sigmask Unix.SIG_SETMASK prev) with _ -> ())
+    (fun () ->
+      let (ic, oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+      let pid = Unix.process_full_pid (ic, oc, err_ic) in
+      track_inotify_child pid;
+      (ic, oc, err_ic, pid))
 
 (* Kill the watcher (uncatchable SIGKILL) then reap it. close_process_full
    returns promptly once the child is dead, so this never blocks on the

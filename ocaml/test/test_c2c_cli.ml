@@ -3421,7 +3421,21 @@ let test_deliver_inbox_inotify_ignores_unrelated_events () =
           check int "inotify unrelated-event harness exits 0" 0 rc;
           let out = read_file outfile in
           check bool "unrelated event does not emit delivery" false (string_contains out "delivered from=");
-          check bool "unrelated event does not emit zero summary" false (string_contains out "delivered=0")))
+          check bool "unrelated event does not emit zero summary" false (string_contains out "delivered=0");
+          (* B156 review: the daemon must leave NO orphaned inotifywait watcher
+             for this temp broker after teardown. Retry briefly to absorb the
+             post-SIGKILL reaping window; "CLEAN" only prints once no matching
+             watcher remains. *)
+          (* pgrep -x matches on the exact process NAME (inotifywait), so this
+             checker's own `sh` (whose command line contains the string
+             "inotifywait" and the broker path) does not self-match. *)
+          let _, leftover = run_capture
+            (Printf.sprintf
+               "for _ in 1 2 3 4 5 6 7 8 9 10; do pgrep -a -x inotifywait 2>/dev/null | grep -F %s >/dev/null && sleep 0.2 || { echo CLEAN; break; }; done"
+               (Filename.quote broker_root))
+          in
+          check bool "no orphaned inotifywait watcher for temp broker" true
+            (string_contains leftover "CLEAN")))
 
 let test_deliver_inbox_register_self_enables_alias_send () =
   with_temp_dir (fun broker_root ->
