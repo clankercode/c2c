@@ -1,6 +1,6 @@
 (* test_c2c_kimi_disabled — B146: kimi support temporarily disabled for release.
 
-   Mirrors test_c2c_gemini_deprecation.ml, but for the SOFT/temporary disable:
+   Covers the SOFT/temporary disable:
    - the single toggle C2c_start.kimi_disabled_for_release is on;
    - kimi is filtered out of the advertised client lists (known_clients,
      init_configurable_clients) so `c2c install all` / `c2c init` skip it;

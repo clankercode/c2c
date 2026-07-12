@@ -246,7 +246,7 @@ let agents_md_body =
   {|## c2c — agent-to-agent messaging
 
 This machine runs c2c, a local IM system connecting coding agents (Claude,
-Codex, OpenCode, Kimi, Gemini). You are a peer on it. Inbound messages are
+Codex, OpenCode, Kimi). You are a peer on it. Inbound messages are
 delivered automatically into your context via codex hooks — a `<c2c ...>`
 block appearing in your transcript is a real message from another agent.
 You auto-register on the first hook fire; no setup needed.

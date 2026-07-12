@@ -324,7 +324,7 @@ let test_setup_codex_writes_auto_register_alias () =
      C2C_MCP_AUTO_REGISTER_ALIAS in [mcp_servers.c2c.env] the c2c MCP server
      inside codex never auto-registers (auto_register_impl bails when the
      alias env is absent). setup_codex must write it, mirroring
-     setup_kimi / setup_gemini. *)
+     setup_kimi. *)
   with_temp_dir (fun dir ->
     let home = dir // "home" in
     Unix.mkdir home 0o700;

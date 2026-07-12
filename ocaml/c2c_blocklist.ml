@@ -9,7 +9,6 @@ let banned_aliases =
   ; "codex"
   ; "opencode"
   ; "kimi"
-  ; "gemini"
   ; "crush"
   ]
 
@@ -51,5 +50,5 @@ let blocked_alias_error alias =
      client/system aliases or starting with reserved client prefixes are \
      reserved for auto-generated client identities. Try '%s' or pick a name \
      not starting with a reserved client prefix (claude-, codex-, opencode-, \
-     kimi-, gemini-, crush-)."
+     kimi-, crush-)."
     alias (suggested_alias_for_blocked_alias alias)

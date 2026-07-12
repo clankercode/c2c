@@ -291,8 +291,8 @@ let test_prepare_launch_args_forwards_extra_args_for_codex () =
 (* B128: `--` passthrough is generalized across ALL managed `c2c start`
    clients via the single shared tail append in [prepare_launch_args]
    (`args @ extra_args`) — not per-client copies. The #372 tests above cover
-   claude/opencode/codex; these extend the coverage to kimi and gemini so
-   every supported client wrapper is proven to forward post-`--` args verbatim.
+   claude/opencode/codex; this extends coverage to kimi so every supported
+   client wrapper is proven to forward post-`--` args verbatim.
 
    Kimi note: pass an explicit `--mcp-config-file` in extra_args so the adapter
    skips writing a per-instance MCP config to disk (keeps the unit test
@@ -309,15 +309,6 @@ let test_prepare_launch_args_forwards_extra_args_for_kimi () =
   (* The whole extra_args block is the verbatim tail of the argv — no
      reorder/insert/truncate, commas preserved. *)
   check bool "kimi: full extra_args forwarded verbatim as the argv tail" true
-    (is_suffix extra args)
-
-let test_prepare_launch_args_forwards_extra_args_for_gemini () =
-  let extra = [ "--sandbox"; "a,b,c" ] in
-  let args =
-    C2c_start.prepare_launch_args ~name:"gem-b128" ~client:"gemini"
-      ~extra_args:extra ~broker_root:"/tmp/broker" ()
-  in
-  check bool "gemini: full extra_args forwarded verbatim as the argv tail" true
     (is_suffix extra args)
 
 (* B128: the `--` boundary is explicit and tested. Pre-`--` flags parse as c2c
@@ -481,9 +472,9 @@ let test_prepare_launch_args_adds_model_flag_for_opencode () =
 
 let test_tmux_shell_command_quotes_argv () =
   check string "quotes spaces and shell metacharacters"
-    "'gemini' 'hello world' '$(date)' 'a'\\''b'"
+    "'opencode' 'hello world' '$(date)' 'a'\\''b'"
     (C2c_start.tmux_shell_command_of_argv
-       [ "gemini"; "hello world"; "$(date)"; "a'b" ])
+       [ "opencode"; "hello world"; "$(date)"; "a'b" ])
 
 let test_tmux_message_payload_uses_c2c_envelope () =
   let msg : C2c_mcp.message =
@@ -1787,7 +1778,7 @@ let test_prepare_launch_args_codex_fresh_appends_kickoff_positionally () =
   check bool "no --xml-input-fd" false (List.mem "--xml-input-fd" args)
 
 (* Resumed codex sessions already carry their instructions — no re-kickoff
-   (parity with claude/kimi/gemini), for both resume --last and exact-target
+   (parity with claude/kimi), for both resume --last and exact-target
    resume. *)
 let test_prepare_launch_args_codex_resume_omits_kickoff () =
   let kickoff = "poll inbox; list peers; post hello" in
@@ -3399,71 +3390,9 @@ let test_gc_max_age_override () =
     let entries = dir_entries dir in
     check int "two-hours-old removed" 0 (List.length entries))
 
-(* #406b: Gemini adapter — build_start_args resume + model behavior. *)
-
-let test_prepare_launch_args_gemini_fresh_session () =
-  with_temp_dir @@ fun dir ->
-  with_cwd dir @@ fun () ->
-  let args =
-    C2c_start.prepare_launch_args ~name:"gemini-fresh" ~client:"gemini"
-      ~extra_args:[] ~broker_root:"/tmp/broker" ()
-  in
-  check bool "fresh session: no --resume flag" false
-    (List.mem "--resume" args);
-  check bool "no dev-channels (gemini has no equivalent)" false
-    (List.mem "--dangerously-load-development-channels" args)
-
-let test_prepare_launch_args_gemini_resume_default_to_latest () =
-  with_temp_dir @@ fun dir ->
-  with_cwd dir @@ fun () ->
-  let args =
-    C2c_start.prepare_launch_args ~name:"gemini-resume" ~client:"gemini"
-      ~extra_args:[] ~broker_root:"/tmp/broker"
-      ~resume_session_id:"gemini-resume" ()
-  in
-  check bool "non-numeric session_id resumes to 'latest'" true
-    (has_adjacent_pair "--resume" "latest" args)
-
-let test_prepare_launch_args_gemini_resume_numeric_index_preserved () =
-  with_temp_dir @@ fun dir ->
-  with_cwd dir @@ fun () ->
-  let args =
-    C2c_start.prepare_launch_args ~name:"gemini-idx" ~client:"gemini"
-      ~extra_args:[] ~broker_root:"/tmp/broker"
-      ~resume_session_id:"3" ()
-  in
-  check bool "numeric session_id passed through as resume index" true
-    (has_adjacent_pair "--resume" "3" args);
-  check bool "does NOT also set --resume latest" false
-    (has_adjacent_pair "--resume" "latest" args)
-
-let test_prepare_launch_args_gemini_model_flag () =
-  with_temp_dir @@ fun dir ->
-  with_cwd dir @@ fun () ->
-  let args =
-    C2c_start.prepare_launch_args ~name:"gemini-m" ~client:"gemini"
-      ~extra_args:[] ~broker_root:"/tmp/broker"
-      ~model_override:"gemini-2.5-flash" ()
-  in
-  check bool "model flag present" true
-    (has_adjacent_pair "--model" "gemini-2.5-flash" args)
-
-let test_prepare_launch_args_gemini_empty_resume_treated_as_fresh () =
-  with_temp_dir @@ fun dir ->
-  with_cwd dir @@ fun () ->
-  let args =
-    C2c_start.prepare_launch_args ~name:"gemini-empty" ~client:"gemini"
-      ~extra_args:[] ~broker_root:"/tmp/broker"
-      ~resume_session_id:"" ()
-  in
-  check bool "empty session_id: no --resume flag" false
-    (List.mem "--resume" args)
-
 (* Option C (MED-3 / #491 follow-up): codex-headless is NOT in client_adapters,
    so model_override is appended by the non-adapter else branch at
-   prepare_launch_args:2816-2820.  Gemini is in client_adapters so the adapter
-   handles model_override internally (pinned by test_prepare_launch_args_gemini_model_flag).
-   This test pins the non-adapter path so a future #479-style audit cannot
+   prepare_launch_args:2816-2820. This test pins the non-adapter path so a future #479-style audit cannot
    re-suspect the same dead-code suspicion and waste cycles re-checking. *)
 let test_prepare_launch_args_codex_headless_model_flag () =
   with_temp_dir @@ fun dir ->
@@ -3854,7 +3783,7 @@ let read_file path =
 let test_deliver_kickoff_all_adapters_succeed () =
   with_temp_dir @@ fun tmp ->
   with_instances_dir_override tmp @@ fun () ->
-  let clients = [ "claude"; "codex"; "opencode"; "kimi"; "gemini" ] in
+  let clients = [ "claude"; "codex"; "opencode"; "kimi" ] in
   List.iter (fun client ->
     match
       C2c_start.deliver_kickoff_for_client
@@ -3886,7 +3815,7 @@ let test_deliver_kickoff_empty_text_is_noop () =
         0 (List.length pairs)
     | Error msg ->
       fail (Printf.sprintf "%s empty kickoff returned Error: %s" client msg)
-  ) [ "claude"; "codex"; "opencode"; "kimi"; "gemini" ]
+  ) [ "claude"; "codex"; "opencode"; "kimi" ]
 
 (* OpenCode is the only adapter with a real impl in #143: it writes the
    kickoff text under <inst_dir>/kickoff-prompt.txt and returns the
@@ -4017,18 +3946,6 @@ let () =
         ; ( "format_c2c_envelope_reply_hint_room_uses_room_tool",
             `Quick, test_format_c2c_envelope_reply_hint_room_uses_room_tool )
         ] )
-    ; ( "gemini_adapter",
-        [ ( "fresh_session_no_resume_flag",
-            `Quick, test_prepare_launch_args_gemini_fresh_session )
-        ; ( "resume_default_to_latest",
-            `Quick, test_prepare_launch_args_gemini_resume_default_to_latest )
-        ; ( "resume_numeric_index_preserved",
-            `Quick, test_prepare_launch_args_gemini_resume_numeric_index_preserved )
-        ; ( "model_flag",
-            `Quick, test_prepare_launch_args_gemini_model_flag )
-        ; ( "empty_resume_treated_as_fresh",
-            `Quick, test_prepare_launch_args_gemini_empty_resume_treated_as_fresh )
-        ] )
     ; ( "kimi_adapter",
         [ ( "resume_passes_session_flag",
             `Quick, test_prepare_launch_args_kimi_resume_passes_session_flag )
@@ -4072,8 +3989,6 @@ let () =
             `Quick, test_prepare_launch_args_forwards_extra_args_for_codex )
         ; ( "prepare_launch_args_forwards_extra_args_for_kimi",
             `Quick, test_prepare_launch_args_forwards_extra_args_for_kimi )
-        ; ( "prepare_launch_args_forwards_extra_args_for_gemini",
-            `Quick, test_prepare_launch_args_forwards_extra_args_for_gemini )
         ; ( "extra_argv_boundary_c2c_flag_not_consumed_b128",
             `Quick, test_extra_argv_boundary_c2c_flag_not_consumed_b128 )
         ; ( "extra_argv_preserves_commas_470",

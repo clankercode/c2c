@@ -96,7 +96,7 @@ namespace. Pi Agent uses the `pi-c2c` extension and `c2c` CLI bridge instead.
 ## CLI Subcommands (fallback)
 
 ```
-c2c install <client>   # self / claude / codex / opencode / kimi / gemini / grok / all (grok = CLI+hook, no MCP)
+c2c install <client>   # self / claude / codex / opencode / kimi / grok / all (grok = CLI+hook, no MCP)
 pi install npm:pi-c2c  # Pi Agent extension; not a c2c install/start target
 c2c restart <name>     # restart a managed MCP-client instance
 c2c health             # quick broker diagnostic (registry, session, inbox, outer loops)

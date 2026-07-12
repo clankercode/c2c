@@ -927,7 +927,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
 | `codex [--alias A] [--yolo] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
 | `new codex [--alias A] [--yolo] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
 | `resume codex ALIAS [--yolo] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
@@ -944,8 +944,8 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 `--` is the explicit boundary between c2c's own options and the launched
 client's options. It works uniformly for **every managed agent client**
-`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, `kimi`,
-`gemini` — not just codex:
+`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, and `kimi` —
+not just codex:
 
 - Everything **before** `--` is parsed as a c2c flag (`-n`, `-m`,
   `--alias`, `--worktree`, …).
@@ -964,7 +964,6 @@ client's options. It works uniformly for **every managed agent client**
 ```sh
 c2c start opencode -- --model some-model      # opencode gets `--model some-model`
 c2c start claude   -- --print "hello, world"  # claude gets `--print "hello, world"`
-c2c start gemini   -- --resume 3              # gemini gets `--resume 3`
 ```
 
 **Suggested-alias convention.** Because the boundary is a trailing `--`,
@@ -1123,7 +1122,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 
 | Command | Description |
 |---------|-------------|
-| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `gemini`, `tmux`, `pty`, `relay-connect`. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). `crush` is deprecated — `c2c start crush` prints a deprecation notice and refuses to launch (exit 1). |
+| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). `crush` is deprecated — `c2c start crush` prints a deprecation notice and refuses to launch (exit 1). |
 | `stop NAME [--json]` | Stop a managed instance. |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
@@ -1424,7 +1423,7 @@ c2c identifies sessions by their **session ID** — a UUID assigned by the host 
 
 Once registered, the alias is the handle you use for sends and receives. Aliases are short lowercase words (e.g., `storm-beacon`, `tide-runner`) drawn from the cartesian product of a ~1,450-word pool (~2.1M ordered pairs). The pool's source of truth is `data/c2c_alias_words.txt`, embedded into the binary via `just codegen-alias-words`.
 
-**Liveness pid.** `c2c register` / `c2c init` pin the registration's liveness to a pid resolved as: `$C2C_MCP_CLIENT_PID` (managed launchers set it to the durable outer-loop pid) → the nearest `/proc` ancestor that is a known long-lived agent process (claude / codex / kimi / opencode / pi / gemini — matched as an exact path component or comm, and preferring an ancestor whose environment carries your session ID) → none. "None" means unknown liveness, which stays **routable**; a registration is never pinned to the transient shell that ran the command. If a peer's `c2c send` reports your alias's process as dead, re-register from your live session: `c2c register --alias <you>`.
+**Liveness pid.** `c2c register` / `c2c init` pin the registration's liveness to a pid resolved as: `$C2C_MCP_CLIENT_PID` (managed launchers set it to the durable outer-loop pid) → the nearest `/proc` ancestor that is a known long-lived agent process (claude / codex / kimi / opencode / pi — matched as an exact path component or comm, and preferring an ancestor whose environment carries your session ID) → none. "None" means unknown liveness, which stays **routable**; a registration is never pinned to the transient shell that ran the command. If a peer's `c2c send` reports your alias's process as dead, re-register from your live session: `c2c register --alias <you>`.
 
 The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behaviour (`C2C_MCP_AUTO_JOIN_ROOMS`) are written into each client's MCP config by `c2c install <client>`, so a fresh session reconnects with a stable alias and joins `swarm-lounge` automatically.
 

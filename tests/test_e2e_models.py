@@ -41,9 +41,3 @@ def test_unknown_client_without_env_raises(monkeypatch: pytest.MonkeyPatch) -> N
     _clear(monkeypatch)
     with pytest.raises(KeyError, match="no default E2E model"):
         e2e_model("nonexistent")
-
-
-def test_unknown_client_resolves_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    _clear(monkeypatch)
-    monkeypatch.setenv("C2C_E2E_GEMINI_MODEL", "gemini/x")
-    assert e2e_model("gemini") == "gemini/x"

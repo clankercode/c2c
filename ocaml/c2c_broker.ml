@@ -1458,7 +1458,7 @@ open C2c_mcp_helpers
       e.g. Claude Code is `~/.local/share/claude/versions/2.1.201` (comm
       "2.1.201") — the "claude" signal only survives in the path. *)
   let known_agent_process_tokens =
-    [ "claude"; "claude-code"; "codex"; "kimi"; "opencode"; "pi"; "gemini"
+    [ "claude"; "claude-code"; "codex"; "kimi"; "opencode"; "pi"
     ; "crush" ]
 
   (** Parent pid from /proc/<pid>/stat — field 4 (index 1 of the tail

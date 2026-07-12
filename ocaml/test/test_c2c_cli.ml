@@ -2110,36 +2110,6 @@ let test_install_all_dry_run_epilog () =
       check bool "install all output mentions CLI without MCP" true
         (string_contains content "without MCP" || string_contains content "c2c send")))
 
-let test_install_gemini_dry_run_refuses () =
-  let tmpfile = Filename.temp_file "c2c-install-gemini-dry" ".out" in
-  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
-    (fun () ->
-      let rc = Sys.command (c2c_cmd (Printf.sprintf
-        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile)) in
-      check bool "c2c install gemini --dry-run exits non-zero" true (rc <> 0);
-      let ch = open_in tmpfile in
-      let content = Fun.protect ~finally:(fun () -> close_in ch)
-        (fun () -> really_input_string ch (in_channel_length ch))
-      in
-      check bool "output mentions DEPRECATED or Gemini" true
-        (string_contains content "DEPRECATED" || string_contains content "Gemini"
-         || string_contains content "gemini"))
-
-let test_install_gemini_dry_run_shows_deprecation () =
-  let tmpfile = Filename.temp_file "c2c-install-gemini-dry2" ".out" in
-  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
-    (fun () ->
-      let rc = Sys.command (c2c_cmd (Printf.sprintf
-        "c2c install gemini --dry-run > %s 2>&1 < /dev/null" tmpfile)) in
-      check bool "c2c install gemini --dry-run exits non-zero" true (rc <> 0);
-      let ch = open_in tmpfile in
-      let content = Fun.protect ~finally:(fun () -> close_in ch)
-        (fun () -> really_input_string ch (in_channel_length ch))
-      in
-      check bool "output mentions not supported or DEPRECATED" true
-        (string_contains content "DEPRECATED" || string_contains content "not supported"
-         || string_contains content "Gemini"))
-
 (* c2c install opencode — real install (not dry-run) with temp HOME.
    Regression test: write_deliver_watch_scripts used non-recursive mkdir,
    crashing with Sys_error when ~/.c2c/clients/opencode/ didn't exist. *)
@@ -4277,8 +4247,6 @@ let () =
         ; ( "install all --with-clients --dry-run configures", `Quick, test_install_all_with_clients_dry_run_configures )
         ; ( "interactive install defaults skip all clients", `Quick, test_interactive_install_default_skips_all_clients )
         ; ( "install all --dry-run shows opt-in guidance", `Quick, test_install_all_dry_run_epilog )
-        ; ( "install gemini --dry-run refuses (deprecated)", `Quick, test_install_gemini_dry_run_refuses )
-        ; ( "install gemini --dry-run shows deprecation", `Quick, test_install_gemini_dry_run_shows_deprecation )
         ; ( "install kimi --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_kimi )
         ; ( "install opencode --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_opencode )
         ; ( "install codex --dry-run exits 0 and shows DRY-RUN", `Quick, test_install_dry_run_codex )

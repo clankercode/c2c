@@ -506,7 +506,7 @@ let default_alias_for_client ?(no_nonce = false) client =
 let c2c_tools_list = C2c_mcp.base_tool_names
 
 (* Supervisor script written to ~/.c2c/clients/<client>/ when
-   deliver_watch=true (kimi / opencode / gemini / crush setups; codex no
+   deliver_watch=true (kimi / opencode / crush setups; codex no
    longer writes these — its delivery is via config.toml hooks, `c2c hook
    codex`). The script polls for the session-id file, then runs `c2c deliver
    watch`. The pre-deliver hook (also written here) is sourced by `c2c start
@@ -639,7 +639,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
   (* Without C2C_MCP_AUTO_REGISTER_ALIAS the c2c MCP server inside codex never
      auto-registers (auto_register_impl bails when the alias env is absent) —
-     mirror setup_kimi/setup_gemini which have always written it. *)
+     mirror setup_kimi, which has always written it. *)
   Buffer.add_string buf (Printf.sprintf "C2C_MCP_AUTO_REGISTER_ALIAS = \"%s\"\n" alias_val);
   Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
   Buffer.add_string buf "C2C_MCP_AUTO_DRAIN_CHANNEL = \"0\"\n";
@@ -840,85 +840,6 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       ; ("hook_script", `String hook_path)
       ; ("hooks_toml_path", `String toml_config_path)
       ; ("hooks_toml_block", `String hook_block_status_str)
-      ]
-  }
-
-(* --- setup: Gemini CLI (JSON, user-scope) --- *)
-
-(* Gemini CLI keeps its config at ~/.gemini/settings.json (user scope) and
-   exposes MCP servers via the same `mcpServers` shape as Claude Code, plus
-   a `trust: true` flag that bypasses tool-call confirmation prompts.
-
-   We write user-scope (not project-scope) so the c2c MCP server is
-   available across every gemini session — matches kimi's precedent, and
-   the swarm-wide alias model. Use `gemini mcp remove c2c` to undo. *)
-let setup_gemini ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~deliver_watch ~alias_from_auto_gen =
-  let config_path =
-    Filename.concat (Sys.getenv "HOME") (".gemini" // "settings.json")
-  in
-  let existing =
-    if Sys.file_exists config_path then json_read_file config_path
-    else `Assoc []
-  in
-  (* When `c2c-mcp-server` is on PATH, use it directly. Otherwise fall
-     back to `opam exec -- <absolute-server-path>` — same shape as
-     setup_claude/setup_codex. resolve_mcp_server_paths picks the right
-     pair upstream. *)
-  let args_list =
-    if mcp_command = "c2c-mcp-server" then []
-    else [ `String "exec"; `String "--"; `String server_path ]
-  in
-  let c2c_entry =
-    `Assoc
-      [ ("command", `String mcp_command)
-      ; ("args", `List args_list)
-      ; ("env", `Assoc
-          ([ ("C2C_MCP_BROKER_ROOT", `String root)
-           ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
-           ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
-           ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
-           ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
-           ] @ (if alias_from_auto_gen then [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ] else [])))
-      ; ("trust", `Bool true)
-      ]
-  in
-  let config = match existing with
-    | `Assoc fields ->
-        let existing_mcp = match List.assoc_opt "mcpServers" fields with
-          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
-          | _ -> []
-        in
-        `Assoc (List.filter (fun (k, _) -> k <> "mcpServers") fields
-                @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
-    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
-  in
-  mkdir_or_dryrun dry_run (Filename.dirname config_path);
-  json_write_file_or_dryrun dry_run config_path config;
-  let home = Sys.getenv "HOME" in
-  let client_dir = home // ".c2c" // "clients" // "gemini" in
-  mkdir_or_dryrun dry_run client_dir;
-  let deliver_watch_artifacts =
-    let supervisor = client_dir // "deliver-watch.sh" in
-    let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
-    if deliver_watch then begin
-      write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"gemini";
-      [ C2c_install_manifest.owned_file supervisor
-      ; C2c_install_manifest.owned_file pre_deliver ]
-    end else if not dry_run then begin
-      (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
-      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ());
-      []
-    end else []
-  in
-  { artifacts =
-      [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcpServers.c2c" ~format:"json" ]
-      @ deliver_watch_artifacts
-  ; extra_json =
-      [ ("client", `String "gemini")
-      ; ("alias", `String alias_val)
-      ; ("broker_root", `String root)
-      ; ("config", `String config_path)
-      ; ("trust", `Bool true)
       ]
   }
 
@@ -1921,9 +1842,9 @@ let known_clients =
    unless the operator names a client or passes --with-clients. Keep every
    known client in [known_clients] so explicit [c2c install <client>] still
    works. *)
-(* crush + gemini remain recognized subcommands so they route to the
-   deprecation guard (helpful banner) instead of a generic unknown-command error. *)
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "crush"; "gemini" ]
+(* crush remains recognized so it routes to the deprecation guard (helpful
+   banner) instead of a generic unknown-command error. *)
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "crush" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
 (* B146: kimi filtered out while temporarily disabled so `c2c init` does not
@@ -1933,7 +1854,7 @@ let init_configurable_clients =
     [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "grok" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
 let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "cursor"; "crush" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "gemini"; "crush"; "tmux"; "pty"; "relay-connect" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
 (* codex is no longer here: its delivery is via config.toml hooks
@@ -2049,24 +1970,6 @@ let setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ?(skip_hooks=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
-  (* Gemini is deprecated — refuse immediately before any setup work. *)
-  if client = "gemini" then begin
-    (match output_mode with
-     | Json ->
-         print_json (`Assoc
-           [ ("ok", `Bool false)
-           ; ("error", `String "gemini is no longer a supported c2c client")
-           ; ("deprecated", `Bool true)
-           ; ("hint", `String "Use: claude | codex | opencode | pi")
-           ])
-     | Human ->
-         let use_color = Unix.isatty Unix.stderr in
-         let yellow = if use_color then "\027[1;33m" else "" in
-         let reset = if use_color then "\027[0m" else "" in
-         Printf.eprintf "%s[DEPRECATED]%s Gemini is no longer a supported c2c client.\n%!" yellow reset;
-         Printf.eprintf "  `c2c install gemini` refuses (exit 1). For new agents use: claude | codex | opencode | pi\n%!");
-    exit 1
-  end;
   (* B146: kimi is TEMPORARILY disabled for this release — refuse `c2c install
      kimi` before any setup work. Explicit installs still route here (kimi stays
      in install_subcommand_clients); `install all` no longer touches kimi
@@ -2219,18 +2122,6 @@ let client_configured client =
       let skill = home // ".grok" // "skills" // "c2c" // "SKILL.md" in
       let hooks = home // ".grok" // "hooks" // "c2c-session.json" in
       Sys.file_exists skill || Sys.file_exists hooks
-   | "gemini" ->
-      let p = home // ".gemini" // "settings.json" in
-      if not (Sys.file_exists p) then false
-      else
-        (try
-           match json_read_file p with
-           | `Assoc fields ->
-               (match List.assoc_opt "mcpServers" fields with
-                | Some (`Assoc m) -> List.mem_assoc "c2c" m
-                | _ -> false)
-           | _ -> false
-         with _ -> false)
   | "opencode" ->
       let p = Sys.getcwd () // ".opencode" // "opencode.json" in
       if not (Sys.file_exists p) then false

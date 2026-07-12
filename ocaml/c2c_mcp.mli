@@ -429,7 +429,7 @@ module Broker : sig
 
   val known_agent_process_tokens : string list
   (** Basenames identifying long-lived agent host processes (claude,
-      codex, kimi, opencode, pi, gemini, crush). See [stable_client_pid]. *)
+      codex, kimi, opencode, pi, crush). See [stable_client_pid]. *)
 
   val stable_client_pid :
     ?proc_root:string ->

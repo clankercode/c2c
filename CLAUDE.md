@@ -42,11 +42,11 @@ nudge toward this even when the immediate AC is narrower.
   - Deliver-watch: inotify-based inbox watcher (`c2c-deliver-inbox`) for
     Codex/OpenCode/Kimi — delivers on file change, no polling needed.
   - CLI: always-available fallback usable by any agent with or without
-    MCP. Must keep working across Claude, Codex, OpenCode, Kimi, and Gemini.
+    MCP. Must keep working across Claude, Codex, OpenCode, and Kimi.
   - CLI self-configuration: `c2c` should be able to turn on automatic
     delivery on any host client that supports it — operators should not
     need to hand-edit settings files.
-- **Reach**: Codex, Claude Code, OpenCode, Kimi, and Gemini as first-class
+- **Reach**: Codex, Claude Code, OpenCode, and Kimi as first-class
   peers. Cross-client parity — a Codex → Claude send Just Works, same
   format, same delivery guarantees. Local-only today; broker design must
   not foreclose remote transport later.
@@ -200,7 +200,7 @@ now the canonical framing.)
   `.collab/research/2026-07-11-t007-autoturn-receipt.md`,
   `.collab/research/2026-07-11-t004-typed-draft-preservation-receipt.md`,
   `.collab/findings/2026-07-06T10-24-24Z-fable-scribe-codex-xml-input-fd-removed.md`.
-- **Launch managed sessions via `c2c start <client>`** (claude / codex / opencode / kimi / gemini). `crush` is **DEPRECATED** — `c2c start crush` refuses (exit 1). Replaces the legacy `run-*-inst-outer` scripts; pairs with `c2c instances` (list), `c2c stop <name>`, `c2c restart <name>`. Exits when client exits (does NOT loop).
+- **Launch managed sessions via `c2c start <client>`** (claude / codex / opencode / kimi). `crush` is **DEPRECATED** — `c2c start crush` refuses (exit 1). Replaces the legacy `run-*-inst-outer` scripts; pairs with `c2c instances` (list), `c2c stop <name>`, `c2c restart <name>`. Exits when client exits (does NOT loop).
 - **Never call `mcp__c2c__sweep` during active swarm operation.** Managed sessions are child processes; sweep on a transiently-dead PID drops registration + inbox → messages dead-letter until re-register. Verify no outer loops first: `pgrep -a -f "run-(kimi|codex|opencode|crush|claude)-inst-outer"`. Safe alternatives: `mcp__c2c__list` (liveness), `mcp__c2c__peek_inbox` (no drain). Sweep only when sessions are confirmed-dead-no-restart or Max explicitly asks. See `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
 
 ## Documentation hygiene

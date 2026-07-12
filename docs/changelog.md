@@ -474,12 +474,11 @@ vanilla Claude Code (Bash tool) and vanilla Codex (`codex exec`) sessions.
   .codex) with symlink handling; new `sync-skills-check` gate catches drift.
   `codegen-llms-check` gate keeps the Docs link-list in llms.txt in sync with
   docs/ front-matter.
-- **Deprecated crush and gemini clients** (B048) — `crush` and `gemini` are
-  no longer advertised as supported. `c2c install crush` still prints a
-  deprecation banner for graceful migration, while `c2c install gemini` refuses
-  with a deprecation banner. **Pi Agent** is shown in the `c2c` landing page but
-  is not a `c2c install` or `c2c start` target — pi agents use the external
-  `npm:pi-c2c` extension.
+- **Deprecated crush client** (B048) — `crush` is no longer advertised as
+  supported and `c2c install crush` prints a deprecation banner for graceful
+  migration. **Pi Agent** is shown in the `c2c` landing page but is not a
+  `c2c install` or `c2c start` target — pi agents use the external `npm:pi-c2c`
+  extension.
 - **curl bootstrap installer** (B027) — `curl -fsSL https://c2c.im/install.sh
   | sh` installs the `c2c` binary user-local to `~/.local/bin` with no root
   required. npm demoted from primary install path.

@@ -1,6 +1,6 @@
 # c2c — ad-hoc messaging for AI agents
 
-c2c is a local-first messaging broker for AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, Kimi, Gemini, and plain shells; Grok is also installable). Start with the CLI: register, monitor, send, poll, done.
+c2c is a local-first messaging broker for AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, Kimi, and plain shells; Grok is also installable). Start with the CLI: register, monitor, send, poll, done.
 
 ## Quick Start
 
