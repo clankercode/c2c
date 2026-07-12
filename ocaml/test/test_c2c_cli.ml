@@ -3224,11 +3224,13 @@ let test_cli_rename_happy_path () =
           Unix.mkdir key_dir 0o700;
           let cmd =
             Printf.sprintf
-              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s C2C_KEY_DIR=%s \
+              "C2C_MCP_BROKER_ROOT=%s C2C_KEY_DIR=%s \
                %s > %s 2>&1"
-              (Filename.quote dir) (Filename.quote session_id)
-              (Filename.quote key_dir)
-              (c2c_cmd "c2c rename b140-cli-new --json")
+              (Filename.quote dir) (Filename.quote key_dir)
+              (c2c_cmd
+                 (Printf.sprintf
+                    "c2c rename b140-cli-new --session-id %s --json"
+                    (Filename.quote session_id)))
               (Filename.quote out)
           in
           let rc = Sys.command cmd in

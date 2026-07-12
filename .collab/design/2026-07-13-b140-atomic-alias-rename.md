@@ -52,9 +52,17 @@ prior state. Ordering:
    room notices (c2c-system), broker.log `alias_renamed` event, managed
    instance-config sync, schedules dir move, memory dir move.
 
-Lock discipline: locks are taken per-step, never nested across domains
-(registry, per-room, pins are separate lock files) — no ordering inversion
-with existing paths, which take them one-at-a-time too.
+Lock discipline: the reversible phase first takes deterministic, case-folded
+per-alias identity locks for both the old and target aliases. This serializes
+key creation/pinning by a concurrent claimant with the rename. It then holds
+the registry lock through steps 2–5; registry-to-pending, registry-to-pins,
+and registry-to-room are the only nested orders used by the transaction.
+Pending-reply open never takes the registry lock, claimant identity preparation
+holds its alias lock before its eventual registry commit, and post-commit
+notifications run only after all transaction locks are released. This avoids
+both lock inversion and a rollback deleting a claimant's target keys or pins.
+If an undo itself cannot complete, the operation reports an explicit
+`rollback incomplete` error rather than claiming the prior state was restored.
 
 ## Surfaces
 
@@ -68,6 +76,8 @@ with existing paths, which take them one-at-a-time too.
   session_id-keyed, and future implicit re-registers reuse the registry row's
   alias (the B046 reuse path), so a stale `C2C_MCP_AUTO_REGISTER_ALIAS` env
   cannot drag the name back (B135 guard refuses it explicitly).
+  A supplied MCP `session_id` must equal the ambient MCP session; unlike MCP,
+  the CLI deliberately continues to permit an explicit `--session-id`.
 - **B135 guard text**: `sticky_alias_error` now points at
   `c2c rename <new-alias>` as the sanctioned path.
 

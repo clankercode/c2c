@@ -615,13 +615,15 @@ open C2c_mcp_helpers
       have allowed a case-variant attempt to bypass the M4 alias-reuse
       block — composable with the now-closed hijack-then-evict path
       via slate's [e3c6aba0]. Closes the symmetry sweep. *)
+  let pending_permission_exists_for_alias_unlocked t alias =
+    let target = alias_casefold alias in
+    List.exists
+      (fun p -> alias_casefold p.requester_alias = target)
+      (get_active_pending_permissions t)
+
   let pending_permission_exists_for_alias t alias =
     with_pending_lock t (fun () ->
-      let now = Unix.gettimeofday () in
-      let target = alias_casefold alias in
-      List.exists
-        (fun p -> alias_casefold p.requester_alias = target && p.expires_at > now)
-        (load_pending_permissions t))
+      pending_permission_exists_for_alias_unlocked t alias)
 
   (* slice/coord-backup-fallthrough: stamp resolved_at on the entry whose
      perm_id matches. Returns true on first transition None→Some, false
@@ -770,6 +772,14 @@ open C2c_mcp_helpers
 
   let known_keys_ed25519 : (string, string) Hashtbl.t = Hashtbl.create 64
   let known_keys_x25519 : (string, string) Hashtbl.t = Hashtbl.create 64
+  (* Test-only fault injection for the rename snapshot regression.  Kept as
+     an in-process hook rather than an environment variable so production
+     callers cannot accidentally turn a persistence failure on. *)
+  let relay_pins_save_hook_for_test : (unit -> unit) option ref = ref None
+
+  let set_relay_pins_save_hook_for_test hook =
+    relay_pins_save_hook_for_test := hook
+
   let downgrade_states : (string, Relay_e2e.downgrade_state) Hashtbl.t = Hashtbl.create 64
   (** Slice B-min-version: per-alias minimum-observed-envelope-version
       pin. Defense-in-depth against MITM envelope_version 2→1 stripping.
@@ -870,6 +880,9 @@ open C2c_mcp_helpers
   (** Serialize both Hashtbls to disk atomically. Caller MUST hold
       [with_relay_pins_lock]. *)
   let save_relay_pins_to_disk () =
+    (match !relay_pins_save_hook_for_test with
+     | None -> ()
+     | Some hook -> hook ());
     match !relay_pins_root with
     | None -> ()
     | Some _ ->
@@ -1193,6 +1206,48 @@ open C2c_mcp_helpers
       (fun () ->
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
+
+  (* Alias-keyed identity material (the relay private keys and TOFU pins) is
+     prepared before a caller can commit its registry row.  A registry lock
+     alone therefore cannot protect a rename from a concurrent claimant that
+     is still constructing the target identity.  Take deterministic,
+     case-folded per-alias locks around that preparation and around the
+     reversible rename transaction.  The lock file uses a digest rather than
+     the alias directly so this remains safe if the alias grammar changes. *)
+  let alias_identity_locks_dir t =
+    Filename.concat t.root "alias-identity-locks"
+
+  let with_alias_identity_locks t ~aliases f =
+    ensure_root t;
+    let aliases =
+      aliases
+      |> List.map alias_casefold
+      |> List.sort_uniq String.compare
+    in
+    let dir = alias_identity_locks_dir t in
+    mkdir_p ~mode:0o700 dir;
+    let fds = ref [] in
+    let release () =
+      List.iter
+        (fun fd ->
+          (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+          (try Unix.close fd with _ -> ()))
+        !fds
+    in
+    (try
+       List.iter
+         (fun alias ->
+           let name = Digest.to_hex (Digest.string alias) ^ ".lock" in
+           let fd =
+             Unix.openfile (Filename.concat dir name) [ O_RDWR; O_CREAT ] 0o644
+           in
+           fds := fd :: !fds)
+         aliases;
+       List.iter (fun fd -> Unix.lockf fd Unix.F_LOCK 0) (List.rev !fds)
+     with e ->
+       release ();
+       raise e);
+    Fun.protect ~finally:release f
 
   (* --- Hardening B: Shell-Launch-Location Guard helpers ------------------- *)
 
@@ -2238,6 +2293,53 @@ open C2c_mcp_helpers
         (C2c_name.error_message "alias" alias));
     with_registry_lock t (fun () ->
         let regs = load_registrations t in
+        (* Registry → pending is the canonical multi-store order.  Keep the
+           pending lock through [save_registrations], not merely through the
+           observation, so a newly-opened prior-owner permission cannot slip
+           between this check and the claimant commit. *)
+        with_pending_lock t (fun () ->
+        (* The handler performs friendly preflight checks before it creates
+           alias-keyed keys and pins, but another claimant may commit while
+           that work is in flight.  Revalidate the ownership and M4 pending
+           guards at this registry commit point before evicting anything. *)
+        let target = alias_casefold alias in
+        (match
+           List.find_opt
+             (fun reg ->
+               alias_casefold reg.alias = target
+               && reg.session_id <> session_id
+               && Option.is_some reg.pid
+               && registration_is_alive reg)
+             regs
+         with
+         | Some conflict ->
+             let suggestion =
+               match suggest_alias_prime regs ~base_alias:alias with
+               | Some s -> Printf.sprintf " Suggested free alias: '%s'." s
+               | None -> ""
+             in
+             invalid_arg
+               (Printf.sprintf
+                  "register rejected: alias '%s' is currently held by an alive \
+                   session '%s'.%s"
+                  alias conflict.session_id suggestion)
+         | None -> ());
+        let already_owns_alias =
+          List.exists
+            (fun reg ->
+              reg.session_id = session_id
+              && alias_casefold reg.alias = target)
+            regs
+        in
+        if
+          not already_owns_alias
+          && pending_permission_exists_for_alias_unlocked t alias
+        then
+          invalid_arg
+            (Printf.sprintf
+               "register rejected: alias '%s' has pending permission state \
+                from a prior owner — wait for it to resolve or time out"
+               alias);
         (* Split registrations into:
            - conflicting: entries with our NEW alias held by a DIFFERENT session
              (alias conflict — must evict to claim the alias)
@@ -2433,7 +2535,7 @@ open C2c_mcp_helpers
                     let current = load_inbox t ~session_id in
                     save_inbox t ~session_id (current @ migrated))
             end)
-          conflicting);
+          conflicting));
     (* Docker: touch the lease file so cross-container peers see this session
        as alive via the shared broker volume. Inlined here (instead of calling
        touch_session) because touch_session is defined later in this module and
@@ -4966,10 +5068,11 @@ open C2c_mcp_helpers
      Inboxes and archives are session_id-keyed, so they follow for free.
 
      Atomicity model: perfect multi-file atomicity is impossible (three lock
-     domains), so the guarantee is "no half-rename ever sticks" — every
-     mutating step pushes an undo thunk; any failure unwinds them in reverse
-     and returns Error. Locks are taken per-step, never nested across
-     domains, so there is no ordering inversion with existing paths. *)
+     domains), so every mutating step pushes an undo thunk and a failure
+     unwinds them in reverse.  A failed undo is surfaced as an explicit
+     incomplete-rollback error, never reported as "rolled back".  The
+     reversible transaction orders locks alias-identity → registry →
+     pending/pins/room; post-commit notifications run after release. *)
 
   let rename_undo_stack_note = "rolled back"
 
@@ -5058,25 +5161,27 @@ open C2c_mcp_helpers
             (Printf.sprintf "rename rejected: %s"
                (C2c_name.error_message "alias" new_alias))
         else begin
-          (* Case-only rename ("lyra-quill" → "Lyra-Quill") is a self-rename:
-             the casefolded identity is unchanged, so the alive-holder and
-             pending-permission guards (both casefold-keyed) must not fire. *)
+          (* Case-only rename ("lyra-quill" → "Lyra-Quill") is a self-rename
+             only for this session.  A corrupted/contended registry can still
+             contain another live session with the same case-folded alias; that
+             holder must win exactly as it would for a spelling change. *)
           let case_only = alias_casefold old_alias = alias_casefold new_alias in
           let alive_holder regs =
-            if case_only then None
-            else
-              let target = alias_casefold new_alias in
-              List.find_opt
-                (fun reg ->
-                  alias_casefold reg.alias = target
-                  && reg.session_id <> session_id
-                  && Option.is_some reg.pid
-                  && registration_is_alive reg)
-                regs
+            let target = alias_casefold new_alias in
+            List.find_opt
+              (fun reg ->
+                alias_casefold reg.alias = target
+                && reg.session_id <> session_id
+                && Option.is_some reg.pid
+                && registration_is_alive reg)
+              regs
           in
-          let holder_error conflict =
+          let holder_error regs conflict =
             let suggestion =
-              match suggest_alias_for_alias t ~alias:new_alias with
+              (* We already hold the registry lock at the authoritative
+                 validation point.  Calling the public suggestion wrapper
+                 here would attempt to lock the same registry again. *)
+              match suggest_alias_prime regs ~base_alias:new_alias with
               | Some s -> Printf.sprintf " Suggested free alias: '%s'." s
               | None -> ""
             in
@@ -5085,30 +5190,144 @@ open C2c_mcp_helpers
                session '%s'.%s"
               new_alias conflict.session_id suggestion
           in
-          match alive_holder (list_registrations t) with
-          | Some conflict -> Error (holder_error conflict)
-          | None ->
-              if
-                (not case_only)
-                && pending_permission_exists_for_alias t new_alias
-              then
-                Error
-                  (Printf.sprintf
-                     "rename rejected: alias '%s' has pending permission \
-                      state from a prior owner — wait for it to resolve or \
-                      time out"
-                     new_alias)
-              else begin
+          let finish_success ~keys_moved ~pins_moved ~rooms =
+            (* Committed. Everything below is best-effort: never roll back a
+               completed rename over a cosmetic follow-up failure.  This runs
+               after the registry and alias-identity locks are released; room
+               notification itself resolves the registry. *)
+            let warnings = ref [] in
+            let warn fmt =
+              Printf.ksprintf (fun s -> warnings := s :: !warnings) fmt
+            in
+            (match write_allowed_signers_entry t ~alias:new_alias with
+             | Ok () -> ()
+             | Error e -> warn "allowed_signers: %s" e
+             | exception e -> warn "allowed_signers: %s" (Printexc.to_string e));
+            (let marker_content =
+               Yojson.Safe.to_string
+                 (`Assoc
+                   [ ("type", `String "alias_renamed")
+                   ; ("old_alias", `String old_alias)
+                   ; ("new_alias", `String new_alias)
+                   ])
+             in
+             try
+               append_archive ~drained_by:"rename" t ~session_id
+                 ~messages:
+                   [ { from_alias = room_system_alias
+                     ; to_alias = new_alias
+                     ; content = marker_content
+                     ; deferrable = false
+                     ; reply_via = None
+                     ; enc_status = None
+                     ; ts = Unix.gettimeofday ()
+                     ; ephemeral = false
+                     ; message_id = None
+                     ; pow_difficulty = None
+                     }
+                   ]
+             with e -> warn "archive marker: %s" (Printexc.to_string e));
+            let notice =
+              Printf.sprintf
+                "%s renamed to %s {\"type\":\"peer_renamed\",\"old_alias\":\"%s\",\"new_alias\":\"%s\"}"
+                old_alias new_alias old_alias new_alias
+            in
+            List.iter
+              (fun ri ->
+                try
+                  ignore
+                    (send_room t ~from_alias:room_system_alias
+                       ~room_id:ri.ri_room_id ~content:notice)
+                with e -> warn "room notice %s: %s" ri.ri_room_id
+                  (Printexc.to_string e))
+              rooms;
+            (try
+               log_broker_event ~broker_root:(root t) "alias_renamed"
+                 [ ("ts", `Float (Unix.gettimeofday ()))
+                 ; ("event", `String "alias_renamed")
+                 ; ("session_id", `String session_id)
+                 ; ("old_alias", `String old_alias)
+                 ; ("new_alias", `String new_alias)
+                 ]
+             with _ -> ());
+            List.iter (fun w -> warn "%s" w)
+              (rename_sync_instance_configs ~session_id ~new_alias);
+            let move_dir what src dst =
+              try
+                if Sys.file_exists src && Sys.is_directory src then
+                  if Sys.file_exists dst then
+                    warn "%s: target dir %s already exists — left %s in place"
+                      what dst src
+                  else Unix.rename src dst
+              with e -> warn "%s: %s" what (Printexc.to_string e)
+            in
+            move_dir "schedules" (schedule_base_dir old_alias)
+              (schedule_base_dir new_alias);
+            move_dir "memory" (memory_base_dir old_alias)
+              (memory_base_dir new_alias);
+            Ok
+              (`Assoc
+                [ ("ok", `Bool true)
+                ; ("old_alias", `String old_alias)
+                ; ("new_alias", `String new_alias)
+                ; ("rooms_renamed"
+                  , `List (List.map (fun ri -> `String ri.ri_room_id) rooms) )
+                ; ("keys_moved", `Int keys_moved)
+                ; ("pins_moved", `Bool pins_moved)
+                ; ("warnings"
+                  , `List
+                      (List.map (fun w -> `String w) (List.rev !warnings)) )
+                ])
+          in
+          let transaction =
+            with_alias_identity_locks t ~aliases:[ old_alias; new_alias ]
+              (fun () ->
+                with_registry_lock t (fun () ->
+                  let initial_regs = load_registrations t in
+                  match List.find_opt (fun r -> r.session_id = session_id) initial_regs with
+                  | None -> Error "session registration disappeared during rename"
+                  | Some cur when cur.alias <> old_alias ->
+                      Error
+                        (Printf.sprintf
+                           "registration changed concurrently (alias is now '%s')"
+                           cur.alias)
+                  | Some _ ->
+                      match alive_holder initial_regs with
+                      | Some conflict -> Error (holder_error initial_regs conflict)
+                      | None when
+                          (not case_only)
+                          && pending_permission_exists_for_alias t new_alias ->
+                          Error
+                            (Printf.sprintf
+                               "rename rejected: alias '%s' has pending permission \
+                                state from a prior owner — wait for it to resolve or \
+                                time out"
+                               new_alias)
+                      | None -> begin
                 let undos : (unit -> unit) list ref = ref [] in
                 let push_undo f = undos := f :: !undos in
                 let rollback () =
-                  List.iter (fun f -> try f () with _ -> ()) !undos
+                  List.fold_left
+                    (fun failures undo ->
+                      try
+                        undo ();
+                        failures
+                      with e -> Printexc.to_string e :: failures)
+                    [] !undos
                 in
                 let fail stage msg =
-                  rollback ();
-                  Error
-                    (Printf.sprintf "rename %s -> %s failed at %s: %s (%s)"
-                       old_alias new_alias stage msg rename_undo_stack_note)
+                  match rollback () with
+                  | [] ->
+                      Error
+                        (Printf.sprintf
+                           "rename %s -> %s failed at %s: %s (%s)"
+                           old_alias new_alias stage msg rename_undo_stack_note)
+                  | rollback_errors ->
+                      Error
+                        (Printf.sprintf
+                           "rename %s -> %s failed at %s: %s (rollback incomplete: %s)"
+                           old_alias new_alias stage msg
+                           (String.concat "; " (List.rev rollback_errors)))
                 in
                 (* Step 1: key material files. Alias-keyed on disk; move so
                    the identity (and its relay signatures) follows the name.
@@ -5130,26 +5349,74 @@ open C2c_mcp_helpers
                   let rec go = function
                     | [] -> Ok !moved
                     | (src, dst) :: rest ->
-                        if not (Sys.file_exists src) then go rest
-                        else if Sys.file_exists dst then
-                          if
-                            C2c_io.read_file_opt src
-                            = C2c_io.read_file_opt dst
-                          then go rest (* identical content — nothing to do *)
-                          else
+                        let src_exists = Sys.file_exists src in
+                        let dst_exists = Sys.file_exists dst in
+                        if not src_exists then
+                          if dst_exists then
+                            (* We cannot establish that a target-only raw key
+                               belongs to this old alias.  Treat it as stale
+                               rather than silently declaring a successful
+                               rename that leaves alias-keyed material behind. *)
                             Error
                               (Printf.sprintf
-                                 "alias '%s' already has different key \
-                                  material at %s — refusing to overwrite"
-                                 new_alias dst)
-                        else (
-                          match Unix.rename src dst with
-                          | () ->
-                              push_undo (fun () ->
-                                  try Unix.rename dst src with _ -> ());
-                              incr moved;
-                              go rest
-                          | exception e -> Error (Printexc.to_string e))
+                                 "alias '%s' has target-only key material at %s \
+                                  while source %s is missing — refusing stale key"
+                                 new_alias dst src)
+                          else go rest
+                        else
+                          let source = C2c_io.read_file src in
+                          let source_mode = (Unix.stat src).Unix.st_perm in
+                          let restore_source () =
+                            if Sys.file_exists src then
+                              failwith
+                                (Printf.sprintf
+                                   "rollback refused to overwrite changed source key %s"
+                                   src)
+                            else
+                              match C2c_io.write_file_atomic src source with
+                              | Error e ->
+                                  failwith
+                                    (Printf.sprintf
+                                       "could not restore source key %s: %s"
+                                       src e)
+                              | Ok () -> Unix.chmod src source_mode
+                          in
+                          if dst_exists then
+                            if source = C2c_io.read_file dst then begin
+                              (* Identical pre-existing target material still
+                                 requires removal of the old raw key.  Undo
+                                 recreates only our source and never deletes a
+                                 target that has changed since this step. *)
+                              (match Unix.unlink src with
+                               | () ->
+                                   push_undo (fun () ->
+                                       restore_source ());
+                                   incr moved;
+                                   go rest
+                               | exception e -> Error (Printexc.to_string e))
+                            end else
+                              Error
+                                (Printf.sprintf
+                                   "alias '%s' already has different key \
+                                    material at %s — refusing to overwrite"
+                                   new_alias dst)
+                          else
+                            (match Unix.rename src dst with
+                             | () ->
+                                 push_undo (fun () ->
+                                     if Sys.file_exists src then
+                                       failwith
+                                         (Printf.sprintf
+                                            "rollback refused to overwrite changed source key %s"
+                                            src)
+                                     else if
+                                       Sys.file_exists dst
+                                       && C2c_io.read_file dst = source
+                                     then Unix.rename dst src
+                                     else restore_source ());
+                                 incr moved;
+                                 go rest
+                             | exception e -> Error (Printexc.to_string e))
                   in
                   go pairs
                 in
@@ -5197,6 +5464,21 @@ open C2c_mcp_helpers
                             Hashtbl.find_opt min_observed_envelope_versions
                               new_alias
                           in
+                          let restore_snapshot () =
+                            let restore tbl alias prior =
+                              match prior with
+                              | Some v -> Hashtbl.replace tbl alias v
+                              | None -> Hashtbl.remove tbl alias
+                            in
+                            restore known_keys_ed25519 old_alias old_ed;
+                            restore known_keys_ed25519 new_alias new_ed;
+                            restore known_keys_x25519 old_alias old_x;
+                            restore known_keys_x25519 new_alias new_x;
+                            restore min_observed_envelope_versions old_alias
+                              old_min;
+                            restore min_observed_envelope_versions new_alias
+                              new_min
+                          in
                           let moved = ref false in
                           (match old_ed with
                           | Some pk ->
@@ -5223,84 +5505,93 @@ open C2c_mcp_helpers
                                 old_alias;
                               moved := true
                           | None -> ());
-                          if !moved then save_relay_pins_to_disk ();
                           if !moved then
-                            push_undo (fun () ->
-                                with_relay_pins_lock (fun () ->
-                                    load_relay_pins_from_disk ();
-                                    let restore tbl alias prior =
-                                      match prior with
-                                      | Some v -> Hashtbl.replace tbl alias v
-                                      | None -> Hashtbl.remove tbl alias
-                                    in
-                                    restore known_keys_ed25519 old_alias old_ed;
-                                    restore known_keys_ed25519 new_alias new_ed;
-                                    restore known_keys_x25519 old_alias old_x;
-                                    restore known_keys_x25519 new_alias new_x;
-                                    restore min_observed_envelope_versions
-                                      old_alias old_min;
-                                    restore min_observed_envelope_versions
-                                      new_alias new_min;
-                                    save_relay_pins_to_disk ()));
+                            (try
+                               save_relay_pins_to_disk ();
+                               push_undo (fun () ->
+                                   with_relay_pins_lock (fun () ->
+                                       load_relay_pins_from_disk ();
+                                       restore_snapshot ();
+                                       save_relay_pins_to_disk ()))
+                             with e ->
+                               (* [save_relay_pins_to_disk] is normally an
+                                  atomic temp+rename.  Nevertheless restore
+                                  the in-memory snapshot and best-effort
+                                  persist it before propagating an error, so a
+                                  failed save cannot leak a half-moved pin. *)
+                               restore_snapshot ();
+                               (try save_relay_pins_to_disk () with _ -> ());
+                               raise e);
                           Ok !moved)
                 in
                 (* Step 3: the registry row — the commit point peers observe
                    via list/whoami. Guards are revalidated under the registry
-                   lock (the pre-checks above are TOCTOU-racy by nature). *)
+                   lock (the pre-checks above are TOCTOU-racy by nature).
+                   The surrounding transaction already owns that lock. *)
                 let update_registry () =
-                  with_registry_lock t (fun () ->
-                      let regs = load_registrations t in
-                      match
-                        List.find_opt (fun r -> r.session_id = session_id) regs
-                      with
+                  let regs = load_registrations t in
+                  match List.find_opt (fun r -> r.session_id = session_id) regs with
+                  | None -> Error "session registration disappeared during rename"
+                  | Some cur when cur.alias <> old_alias ->
+                      Error
+                        (Printf.sprintf
+                           "registration changed concurrently (alias is now '%s')"
+                           cur.alias)
+                  | Some _ ->
+                      match alive_holder regs with
+                      | Some conflict -> Error (holder_error regs conflict)
                       | None ->
-                          Error
-                            "session registration disappeared during rename"
-                      | Some cur when cur.alias <> old_alias ->
-                          Error
-                            (Printf.sprintf
-                               "registration changed concurrently (alias is \
-                                now '%s')"
-                               cur.alias)
-                      | Some _ -> (
-                          match alive_holder regs with
-                          | Some conflict -> Error (holder_error conflict)
-                          | None ->
-                              let regs' =
-                                List.map
-                                  (fun r ->
-                                    if r.session_id = session_id then
-                                      { r with
-                                        alias = new_alias
-                                      ; canonical_alias =
-                                          Some
-                                            (compute_canonical_alias
-                                               ~deprecate_canonical_alias:
-                                                 t.deprecate_canonical_alias
-                                               ~alias:new_alias
-                                               ~broker_root:(root t) ())
-                                      }
-                                    else r)
-                                  regs
-                              in
-                              save_registrations t regs';
-                              push_undo (fun () ->
-                                  with_registry_lock t (fun () ->
-                                      let regs = load_registrations t in
-                                      let regs' =
-                                        List.map
-                                          (fun r ->
-                                            if r.session_id = session_id then
-                                              { r with
-                                                alias = old_alias
-                                              ; canonical_alias =
-                                                  old_reg.canonical_alias
-                                              }
-                                            else r)
-                                          regs
-                                      in
-                                      save_registrations t regs'));
-                              Ok ()))
+                          (* Registry → pending is the only multi-store order:
+                             opening a pending permission never takes the
+                             registry lock.  Keep the pending lock across the
+                             following registry write, so this is the actual
+                             linearization point rather than a TOCTOU check. *)
+                          with_pending_lock t (fun () ->
+                              if
+                                (not case_only)
+                                && pending_permission_exists_for_alias_unlocked
+                                     t new_alias
+                              then
+                                Error
+                                  (Printf.sprintf
+                                     "rename rejected: alias '%s' has pending permission \
+                                      state from a prior owner — wait for it to resolve or \
+                                      time out"
+                                     new_alias)
+                              else
+                                let regs' =
+                                  List.map
+                                    (fun r ->
+                                      if r.session_id = session_id then
+                                        { r with
+                                          alias = new_alias
+                                        ; canonical_alias =
+                                            Some
+                                              (compute_canonical_alias
+                                                 ~deprecate_canonical_alias:
+                                                   t.deprecate_canonical_alias
+                                                 ~alias:new_alias
+                                                 ~broker_root:(root t) ())
+                                        }
+                                      else r)
+                                    regs
+                                in
+                                save_registrations t regs';
+                                push_undo (fun () ->
+                                    let regs = load_registrations t in
+                                    let regs' =
+                                      List.map
+                                        (fun r ->
+                                          if r.session_id = session_id then
+                                            { r with
+                                              alias = old_alias
+                                            ; canonical_alias = old_reg.canonical_alias
+                                            }
+                                          else r)
+                                        regs
+                                    in
+                                    save_registrations t regs');
+                                Ok ())
                 in
                 (* Step 4: room memberships (per-room lock, keyed by
                    session_id, so this is order-independent of step 3). *)
@@ -5336,129 +5627,13 @@ open C2c_mcp_helpers
                             match rename_rooms () with
                             | Error e -> fail "rooms" e
                             | exception e -> fail "rooms" (Printexc.to_string e)
-                            | Ok () ->
-                                (* Committed. Everything below is best-effort:
-                                   never roll back a completed rename over a
-                                   cosmetic follow-up failure — surface
-                                   warnings instead. *)
-                                let warnings = ref [] in
-                                let warn fmt =
-                                  Printf.ksprintf
-                                    (fun s -> warnings := s :: !warnings)
-                                    fmt
-                                in
-                                (match
-                                   write_allowed_signers_entry t
-                                     ~alias:new_alias
-                                 with
-                                | Ok () -> ()
-                                | Error e -> warn "allowed_signers: %s" e
-                                | exception e ->
-                                    warn "allowed_signers: %s"
-                                      (Printexc.to_string e));
-                                (let marker_content =
-                                   Yojson.Safe.to_string
-                                     (`Assoc
-                                       [ ("type", `String "alias_renamed")
-                                       ; ("old_alias", `String old_alias)
-                                       ; ("new_alias", `String new_alias)
-                                       ])
-                                 in
-                                 try
-                                   append_archive ~drained_by:"rename" t
-                                     ~session_id
-                                     ~messages:
-                                       [ { from_alias = room_system_alias
-                                         ; to_alias = new_alias
-                                         ; content = marker_content
-                                         ; deferrable = false
-                                         ; reply_via = None
-                                         ; enc_status = None
-                                         ; ts = Unix.gettimeofday ()
-                                         ; ephemeral = false
-                                         ; message_id = None
-                                         ; pow_difficulty = None
-                                         }
-                                       ]
-                                 with e ->
-                                   warn "archive marker: %s"
-                                     (Printexc.to_string e));
-                                let notice =
-                                  Printf.sprintf
-                                    "%s renamed to %s \
-                                     {\"type\":\"peer_renamed\",\"old_alias\":\"%s\",\"new_alias\":\"%s\"}"
-                                    old_alias new_alias old_alias new_alias
-                                in
-                                List.iter
-                                  (fun ri ->
-                                    try
-                                      ignore
-                                        (send_room t
-                                           ~from_alias:room_system_alias
-                                           ~room_id:ri.ri_room_id
-                                           ~content:notice)
-                                    with e ->
-                                      warn "room notice %s: %s" ri.ri_room_id
-                                        (Printexc.to_string e))
-                                  rooms;
-                                (try
-                                   log_broker_event ~broker_root:(root t)
-                                     "alias_renamed"
-                                     [ ("ts", `Float (Unix.gettimeofday ()))
-                                     ; ("event", `String "alias_renamed")
-                                     ; ("session_id", `String session_id)
-                                     ; ("old_alias", `String old_alias)
-                                     ; ("new_alias", `String new_alias)
-                                     ]
-                                 with _ -> ());
-                                List.iter (fun w -> warn "%s" w)
-                                  (rename_sync_instance_configs ~session_id
-                                     ~new_alias);
-                                (* Repo-local alias-keyed dirs: schedules and
-                                   per-agent memory. Best-effort dir rename so
-                                   wake schedules and memory follow the new
-                                   identity. *)
-                                let move_dir what src dst =
-                                  try
-                                    if
-                                      Sys.file_exists src
-                                      && Sys.is_directory src
-                                    then
-                                      if Sys.file_exists dst then
-                                        warn
-                                          "%s: target dir %s already exists — \
-                                           left %s in place"
-                                          what dst src
-                                      else Unix.rename src dst
-                                  with e ->
-                                    warn "%s: %s" what (Printexc.to_string e)
-                                in
-                                move_dir "schedules"
-                                  (schedule_base_dir old_alias)
-                                  (schedule_base_dir new_alias);
-                                move_dir "memory"
-                                  (memory_base_dir old_alias)
-                                  (memory_base_dir new_alias);
-                                Ok
-                                  (`Assoc
-                                    [ ("ok", `Bool true)
-                                    ; ("old_alias", `String old_alias)
-                                    ; ("new_alias", `String new_alias)
-                                    ; ("rooms_renamed"
-                                      , `List
-                                          (List.map
-                                             (fun ri ->
-                                               `String ri.ri_room_id)
-                                             rooms) )
-                                    ; ("keys_moved", `Int keys_moved)
-                                    ; ("pins_moved", `Bool pins_moved)
-                                    ; ("warnings"
-                                      , `List
-                                          (List.map
-                                             (fun w -> `String w)
-                                             (List.rev !warnings)) )
-                                    ]))))
-              end
+                            | Ok () -> Ok (keys_moved, pins_moved, rooms))))
+                      end))
+          in
+          match transaction with
+          | Error e -> Error e
+          | Ok (keys_moved, pins_moved, rooms) ->
+              finish_success ~keys_moved ~pins_moved ~rooms
         end
 
   let resolve_authorizers t ~(authorizers : string list) : string option =

@@ -326,6 +326,9 @@ module Broker : sig
   val get_pinned_ed25519 : string -> string option
   val pin_x25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
   val pin_ed25519_sync : alias:string -> pk:string -> [ `Already_pinned | `Mismatch | `New_pin ]
+  val set_relay_pins_save_hook_for_test : (unit -> unit) option -> unit
+  (** Test-only fault injection for relay-pins persistence.  Callers must
+      clear the hook in a [Fun.protect] finalizer. *)
 
   (** Slice B-min-version: per-alias minimum-observed-envelope-version
       pin. Defense-in-depth against MITM envelope_version 2→1 stripping.
@@ -415,6 +418,11 @@ module Broker : sig
 
   val save_registrations : t -> registration list -> unit
   val with_registry_lock : t -> (unit -> 'a) -> 'a
+  val with_alias_identity_locks :
+    t -> aliases:string list -> (unit -> 'a) -> 'a
+  (** Serializes alias-keyed key/pin preparation.  Multi-alias callers use
+      deterministic case-folded lock ordering, so rename can safely lock its
+      old and target aliases together. *)
   val registration_is_alive : registration -> bool
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option

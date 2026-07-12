@@ -3285,6 +3285,227 @@ let test_rename_alias_noop_and_case_only () =
               in
               check string "case-only rename applied" "Rn-Case" r.alias)))
 
+let test_rename_alias_case_only_rejects_other_casefold_holder () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun _key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let pid = Unix.getpid () in
+          let pid_start_time = C2c_mcp.Broker.read_pid_start_time pid in
+          C2c_mcp.Broker.register broker ~session_id:"rn-case-self"
+            ~alias:"rn-case" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"rn-case-other"
+            ~alias:"rn-other" ~pid:(Some pid) ~pid_start_time ();
+          (* Deliberately model a legacy/corrupt registry that contains a
+             casefold-equivalent live holder.  A case-only request is a
+             self-rename, not a bypass for that other session. *)
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          C2c_mcp.Broker.save_registrations broker
+            (List.map
+               (fun r ->
+                 if r.C2c_mcp.session_id = "rn-case-other" then
+                   { r with alias = "RN-CASE" }
+                 else r)
+               regs);
+          match
+            C2c_mcp.Broker.rename_alias broker ~session_id:"rn-case-self"
+              ~new_alias:"Rn-Case"
+          with
+          | Ok _ -> fail "case-only rename must reject another live casefold holder"
+          | Error e ->
+              check bool "casefold holder error" true
+                (string_contains e "held by an alive session");
+              let self =
+                C2c_mcp.Broker.list_registrations broker
+                |> List.find (fun r -> r.C2c_mcp.session_id = "rn-case-self")
+              in
+              check string "self spelling remains unchanged" "rn-case" self.alias))
+
+let test_rename_alias_raw_key_target_rules () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let keys_dir = Filename.concat dir "keys" in
+          Unix.mkdir keys_dir 0o700;
+          (* A target-only raw key cannot be attributed to the source alias. *)
+          C2c_mcp.Broker.register broker ~session_id:"rn-stale-sess"
+            ~alias:"rn-stale-old" ~pid:None ~pid_start_time:None ();
+          let stale_target = Filename.concat keys_dir "rn-stale-new.ed25519" in
+          write_file stale_target "stale-target-key";
+          (match
+             C2c_mcp.Broker.rename_alias broker ~session_id:"rn-stale-sess"
+               ~new_alias:"rn-stale-new"
+           with
+           | Ok _ -> fail "target-only raw key must fail closed"
+           | Error e ->
+               check bool "target-only error identifies stale key" true
+                 (string_contains e "target-only key material"));
+          check string "target-only key preserved" "stale-target-key"
+            (read_file_str stale_target);
+          let stale_reg =
+            C2c_mcp.Broker.list_registrations broker
+            |> List.find (fun r -> r.C2c_mcp.session_id = "rn-stale-sess")
+          in
+          check string "target-only refusal keeps registry" "rn-stale-old"
+            stale_reg.alias;
+          (* Identical files are not a no-op: success must remove the old raw
+             alias key while preserving the target file. *)
+          C2c_mcp.Broker.register broker ~session_id:"rn-dup-sess"
+            ~alias:"rn-dup-old" ~pid:None ~pid_start_time:None ();
+          let dup_old = Filename.concat keys_dir "rn-dup-old.ed25519" in
+          let dup_new = Filename.concat keys_dir "rn-dup-new.ed25519" in
+          write_file dup_old "identical-key";
+          write_file dup_new "identical-key";
+          write_file (Filename.concat key_dir "rn-dup-old.x25519") "x-identical";
+          (match
+             C2c_mcp.Broker.rename_alias broker ~session_id:"rn-dup-sess"
+               ~new_alias:"rn-dup-new"
+           with
+           | Error e -> fail ("identical target key rename should succeed: " ^ e)
+           | Ok _ -> ());
+          check bool "identical old raw key removed" true
+            (not (Sys.file_exists dup_old));
+          check bool "identical target raw key remains" true
+            (Sys.file_exists dup_new)))
+
+let test_rename_alias_pin_save_failure_restores_snapshot () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun _key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-pin-fail-sess"
+            ~alias:"rn-pin-fail-old" ~pid:None ~pid_start_time:None ();
+          ignore
+            (C2c_mcp.Broker.pin_ed25519_sync ~alias:"rn-pin-fail-old"
+               ~pk:"rn-pin-fail-pk");
+          C2c_mcp.Broker.set_relay_pins_save_hook_for_test
+            (Some (fun () -> failwith "injected relay-pins save failure"));
+          Fun.protect
+            ~finally:(fun () ->
+              C2c_mcp.Broker.set_relay_pins_save_hook_for_test None)
+            (fun () ->
+              match
+                C2c_mcp.Broker.rename_alias broker
+                  ~session_id:"rn-pin-fail-sess" ~new_alias:"rn-pin-fail-new"
+              with
+              | Ok _ -> fail "injected pin save failure must fail rename"
+              | Error e ->
+                  check bool "pin failure is reported at pins stage" true
+                    (string_contains e "pins"));
+          check (option string) "old pin snapshot restored"
+            (Some "rn-pin-fail-pk")
+            (C2c_mcp.Broker.get_pinned_ed25519 "rn-pin-fail-old");
+          check (option string) "target pin never leaks"
+            None
+            (C2c_mcp.Broker.get_pinned_ed25519 "rn-pin-fail-new");
+          let reg =
+            C2c_mcp.Broker.list_registrations broker
+            |> List.find (fun r -> r.C2c_mcp.session_id = "rn-pin-fail-sess")
+          in
+          check string "registry was never committed" "rn-pin-fail-old" reg.alias))
+
+let test_rename_alias_mcp_rejects_spoofed_session_id () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun _key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-mcp-ambient"
+            ~alias:"rn-mcp-ambient-old" ~pid:None ~pid_start_time:None ();
+          C2c_mcp.Broker.register broker ~session_id:"rn-mcp-victim"
+            ~alias:"rn-mcp-victim-old" ~pid:None ~pid_start_time:None ();
+          let result =
+            Lwt_main.run
+              (C2c_mcp.handle_tool_call ~broker
+                 ~session_id_override:(Some "rn-mcp-ambient")
+                 ~tool_name:"rename"
+                 ~arguments:
+                   (`Assoc
+                     [ ("new_alias", `String "rn-mcp-victim-new")
+                     ; ("session_id", `String "rn-mcp-victim")
+                     ]))
+          in
+          let open Yojson.Safe.Util in
+          check bool "MCP spoof is rejected" true
+            (result |> member "isError" |> to_bool_option
+            |> Option.value ~default:false);
+          let content =
+            result |> member "content" |> index 0 |> member "text"
+            |> to_string_option
+            |> Option.value ~default:""
+          in
+          check bool "MCP spoof error names ambient session" true
+            (string_contains content "ambient MCP session");
+          let victim =
+            C2c_mcp.Broker.list_registrations broker
+            |> List.find (fun r -> r.C2c_mcp.session_id = "rn-mcp-victim")
+          in
+          check string "victim alias unchanged" "rn-mcp-victim-old" victim.alias))
+
+let test_rename_alias_mcp_requires_ambient_session () =
+  with_temp_dir (fun dir ->
+      with_rename_env dir (fun _key_dir ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker ~session_id:"rn-mcp-unbound"
+            ~alias:"rn-mcp-unbound-old" ~pid:None ~pid_start_time:None ();
+          let result =
+            Lwt_main.run
+              (C2c_mcp.handle_tool_call ~broker ~session_id_override:None
+                 ~tool_name:"rename"
+                 ~arguments:
+                   (`Assoc
+                     [ ("new_alias", `String "rn-mcp-unbound-new")
+                     ; ("session_id", `String "rn-mcp-unbound")
+                     ]))
+          in
+          let open Yojson.Safe.Util in
+          check bool "unbound MCP rename is rejected" true
+            (result |> member "isError" |> to_bool_option
+            |> Option.value ~default:false);
+          let content =
+            result |> member "content" |> index 0 |> member "text"
+            |> to_string_option |> Option.value ~default:""
+          in
+          check bool "unbound error names ambient session" true
+            (string_contains content "no ambient MCP session");
+          let reg =
+            C2c_mcp.Broker.list_registrations broker
+            |> List.find (fun r -> r.C2c_mcp.session_id = "rn-mcp-unbound")
+          in
+          check string "unbound target remains unchanged" "rn-mcp-unbound-old"
+            reg.alias))
+
+let test_register_revalidates_pending_permission_at_registry_commit () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let now = Unix.gettimeofday () in
+      let pending : C2c_mcp.pending_permission =
+        { perm_id = "rn-commit-pending"
+        ; kind = C2c_mcp.Permission
+        ; requester_session_id = "prior-owner"
+        ; requester_alias = "rn-commit-target"
+        ; supervisors = []
+        ; created_at = now
+        ; expires_at = now +. 60.0
+        ; fallthrough_fired_at = []
+        ; resolved_at = None
+        ; verdict = None
+        }
+      in
+      C2c_mcp.Broker.open_pending_permission broker pending;
+      let rejected =
+        try
+          C2c_mcp.Broker.register broker ~session_id:"rn-commit-claimant"
+            ~alias:"rn-commit-target" ~pid:None ~pid_start_time:None ();
+          false
+        with Invalid_argument e ->
+          check bool "commit guard names pending state" true
+            (string_contains e "pending permission state");
+          true
+      in
+      check bool "registry commit rejects pending claimant" true rejected;
+      check bool "claimant row was never written" true
+        (not
+           (List.exists
+              (fun r -> r.C2c_mcp.session_id = "rn-commit-claimant")
+              (C2c_mcp.Broker.list_registrations broker))))
+
 let test_rename_alias_refusals_mutate_nothing () =
   with_temp_dir (fun dir ->
       with_rename_env dir (fun _key_dir ->
@@ -15939,12 +16160,24 @@ let () =
              test_rename_alias_happy_path
          ; test_case "rename_alias noop + case-only self-rename (B140)" `Quick
              test_rename_alias_noop_and_case_only
+         ; test_case "rename_alias case-only rejects another live casefold holder (B140)" `Quick
+             test_rename_alias_case_only_rejects_other_casefold_holder
+         ; test_case "rename_alias rejects target-only raw keys and removes identical old keys (B140)" `Quick
+             test_rename_alias_raw_key_target_rules
+         ; test_case "rename_alias restores pin snapshot when pin save fails (B140)" `Quick
+             test_rename_alias_pin_save_failure_restores_snapshot
          ; test_case "rename_alias refusals mutate nothing (B140)" `Quick
              test_rename_alias_refusals_mutate_nothing
          ; test_case "rename_alias rolls back on mid-flight failure (B140)" `Quick
              test_rename_alias_rollback_on_room_failure
          ; test_case "tools/call rename applies rename (B140)" `Quick
              test_tools_call_rename
+         ; test_case "tools/call rename rejects spoofed session_id (B140)" `Quick
+             test_rename_alias_mcp_rejects_spoofed_session_id
+         ; test_case "tools/call rename requires an ambient session (B140)" `Quick
+             test_rename_alias_mcp_requires_ambient_session
+         ; test_case "register revalidates pending permission at registry commit (B140)" `Quick
+             test_register_revalidates_pending_permission_at_registry_commit
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
          ; test_case "server startup ignores dead client pid env" `Quick
