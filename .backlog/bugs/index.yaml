@@ -161,3 +161,4 @@ bugs:
     - file: B162-claude-stop-hook-c2c-delivery.todo
     - file: B163-separate-current-repository-pe.todo
     - file: B164-investigate-c2c-statusline-add.todo
+    - file: B165-c2c-list-global-should-output.todo
