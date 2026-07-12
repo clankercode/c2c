@@ -1,0 +1,72 @@
+---
+complexity: medium
+created_at: "2026-07-12T17:38:53Z"
+depends_on: []
+estimate_hours: 2
+id: B172
+priority: high
+status: pending
+tags: []
+title: 'c2c new codex / cx: managed banner alias not bound for in-session c2c whoami at first turn'
+updated_at: "2026-07-12T17:38:53Z"
+---
+## Symptom
+
+`cx` (`c2c new codex -- …`) prints a ready banner with a managed alias, e.g.:
+
+```
+c2c codex · ready · codex-stack-digit-ca73 · ws://127.0.0.1:42293
+```
+
+But the first in-session `c2c whoami` does not return that alias:
+
+```
+alias:     (not registered)
+session_id: 019f5761-cd05-7df1-9011-16a7cbfacacb
+```
+
+Banner identity ≠ CLI/tool identity. Agent cannot immediately use the same alias for send/list/whoami.
+
+## Expected
+
+The generated managed alias should be bound before the remote TUI attaches so first-turn `c2c whoami` returns the banner alias.
+
+Operator request: after the alias is generated, run the equivalent of:
+
+```
+c2c init --alias <generated-alias>
+```
+
+**before** TUI attach (or shared register/init path with the same alias).
+
+## Repro
+
+1. `cx` (fish: `c2c new codex -- --dangerously-bypass-approvals-and-sandbox`)
+2. Note alias in `c2c codex · ready · <alias> · ws://…`
+3. Immediately run `c2c whoami` in the TUI
+4. Observe `(not registered)` + different session_id (Codex thread-shaped UUID)
+
+Live repro 2026-07-12: banner `codex-stack-digit-ca73`, whoami sid `019f5761-cd05-7df1-9011-16a7cbfacacb`, codex v0.144.1.
+
+## Likely cause (hypothesis)
+
+- Launcher sets `C2C_MCP_SESSION_ID` on the **frontend** env only; Codex **shell tools** often resolve via `CODEX_THREAD_ID` without `C2C_MCP_SESSION_ID`.
+- Managed broker registration is under launcher session_id/alias, not the thread id → whoami lookup misses.
+- `default-session.json` is last-resort and loses when native thread id is present.
+- No pre-TUI `c2c init --alias <managed>` on `c2c new codex` today.
+
+## Fix directions
+
+1. Pre-TUI bind: `c2c init --alias <alias>` (or register-only / `--no-setup`) with the managed session_id/alias before attach.
+2. Also ensure shell whoami resolves managed identity when only `CODEX_THREAD_ID` is present (export `C2C_MCP_SESSION_ID` into tool env, or map thread→managed alias, or teach whoami managed-instance lookup). Do not rely on single-repo default-session alone.
+3. AC: `cx` → first-turn whoami prints banner alias; one identity in `c2c list`; no B137 dual-identity regression.
+
+## Related
+
+- Finding: `.collab/findings/2026-07-12T17-37-00Z-codex-new-whoami-alias-not-bound-before-tui.md`
+- Related prior work: B137 dual-identity, B166 alias stability, B167 delivery — hooks fixed; **CLI shell-tool whoami** still diverges.
+
+## Non-goals / cautions
+
+- Do not mint a second alias (B137).
+- Nested-codex env marker theft: keep identity env child-scoped.

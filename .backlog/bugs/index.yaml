@@ -168,3 +168,4 @@ bugs:
     - file: B169-c2c-statusline-should-not-say.todo
     - file: B170-error-updating-for-c2c-that-wa.todo
     - file: B171-c2c-start-claude-n-generates-a.todo
+    - file: B172-c2c-new-codex-cx-managed-banne.todo
