@@ -1,17 +1,18 @@
 ---
 claimed_at: "2026-07-12T19:23:40Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-12T19:27:01Z"
 complexity: medium
 created_at: "2026-07-12T19:22:45Z"
 depends_on: []
+duration_minutes: 3.3509295934
 estimate_hours: 1
 id: B173
 priority: high
 started_at: "2026-07-12T19:23:40Z"
-status: in_progress
+status: done
 tags: []
 title: Grok sessions not detected correctly; generated alias shows as 'codex-' instead
-updated_at: "2026-07-12T19:23:40Z"
+updated_at: "2026-07-12T19:27:01Z"
 ---
 Grok sessions are still not detected correctly. The generated alias shows as 'codex-' instead of a proper grok-prefixed (or grok-appropriate) alias.
