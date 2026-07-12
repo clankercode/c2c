@@ -166,3 +166,4 @@ bugs:
     - file: B167-c2c-codex-app-server-agents-do.todo
     - file: B168-consider-keeping-posttoolhook.todo
     - file: B169-c2c-statusline-should-not-say.todo
+    - file: B170-error-updating-for-c2c-that-wa.todo

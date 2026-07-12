@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-12T15:48:13Z"
+depends_on: []
+estimate_hours: 1
+id: B170
+priority: high
+status: pending
+tags: []
+title: 'Error updating for c2c that was v0.10.0, doesnt handle 302s:'
+updated_at: "2026-07-12T15:48:13Z"
+---
+
+Error updating for c2c that was v0.10.0, doesnt handle 302s:
