@@ -1,0 +1,39 @@
+---
+complexity: medium
+created_at: "2026-07-12T01:46:48Z"
+depends_on: []
+estimate_hours: 1
+id: B143
+priority: high
+status: pending
+tags:
+    - c2c
+    - ux
+    - delivery
+title: Delivery reply hint should default to CLI (c2c send), mention MCP c2c_send as alternative
+updated_at: "2026-07-12T01:46:48Z"
+---
+The reply-hint system-reminder appended to delivered c2c messages currently confuses the two send surfaces.
+
+Current text (DM case), from ocaml/c2c_mcp_helpers.ml:826-827:
+
+    To reply, call c2c_send(to_alias="<alias>", content="<your reply>").
+    If c2c_send is unavailable in this session, the MCP tool c2c_send works the same way (to_alias="<alias>").
+
+This is confusing: the first line and the fallback line both name c2c_send, so it reads as "call c2c_send; if c2c_send is unavailable use c2c_send". The intended distinction (function-style vs MCP tool) is unclear.
+
+Desired behaviour:
+- First line should default to the CLI:  use `c2c send <to-alias> "<reply>"`
+  (CLI is the always-available fallback usable by any agent, per the group goal).
+- Then mention the MCP `c2c_send` tool as the alternative WHEN MCP is available.
+
+Source locations (ocaml/c2c_mcp_helpers.ml):
+- DM branch: lines 822-834 (the `To reply, call c2c_send(...)` / `If c2c_send is unavailable ...` sprintf).
+- Room branch: lines 809-819 has the analogous c2c_send_room wording (`To reply to the room, call c2c_send_room(...)` / `If c2c_send_room is unavailable ...`) — apply the same CLI-first fix (`c2c send-room <room-id> "<reply>"` or equivalent) for consistency.
+
+AC:
+- DM reply hint leads with CLI `c2c send <alias> "<reply>"` and lists MCP `c2c_send` as the alternative.
+- Room reply hint leads with the CLI room-send command and lists MCP `c2c_send_room` as the alternative.
+- No more "call c2c_send ... if c2c_send unavailable use c2c_send" tautology.
+- Update the corresponding test expectations in ocaml/test/test_wire_bridge.ml.
+- Rebuild + install so live deliveries carry the new hint.
