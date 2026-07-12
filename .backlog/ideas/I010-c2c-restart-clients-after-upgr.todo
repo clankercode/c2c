@@ -40,3 +40,5 @@ ACCEPTANCE (first cut, subject to design)
 - Reports what it restarted, what it skipped, and any that failed.
 
 Discovered from: 2026-07-12 `just install-all` run leaving 2 live c2c-mcp-server procs on the old binary; related CLAUDE.md notes on restart-after-broker-update and SIGUSR1-to-inner-pid.
+
+DESIGN SYNTHESIS (2026-07-12): full write-up in `.collab/design/2026-07-12-c2c-client-upgrade-restart.md` — three-tier upgrade model (one-shots auto-upgrade free / agent-launched monitors use graceful-exit-reinvoke / supervisor-owned machinery needs this command), the CLI-side process map (run_outer_loop vs codex app-server; sidecars vs in-outer threads), the version-aware-skip primitive (SHA/git_hash already in server_info/runtime_identity), the hard codex-app-server case + sidecar-refactor recommendation, and a de-risked increment order. Surfaced a separate bug: the kimi notifier is detached+untracked and SURVIVES restarts running stale code (filed as its own bl bug).
