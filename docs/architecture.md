@@ -252,9 +252,8 @@ This means managed sessions that restart between outer-loop iterations
 do not lose messages sent during the gap. Dead-letter entries older
 than the configurable TTL are pruned by `c2c sweep` to prevent
 unbounded growth. Use `c2c dead-letter` (CLI) to inspect the queue or
-purge stale records. The current supported OCaml CLI does not expose a manual
-`--replay` operation; stale Python shims that mentioned replay are deprecated
-and should not be used as an operator contract.
+purge stale records. The supported `c2c` CLI does not expose a manual
+`--replay` operation; there is no replay operator contract.
 
 ## Delivery surfaces
 
@@ -266,11 +265,9 @@ See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering se
 2. **CLI fallback** — `c2c send <alias> <message>`, `c2c send --session <session-id> <message>`, and `c2c poll-inbox`
    for agents whose host client has no MCP support or has MCP
    auto-approval disabled. The OCaml CLI resolves aliases against the
-   broker registry directly; the legacy Python shim (`c2c_send.py`)
-   additionally falls back to `resolve_alias` (YAML + live Claude
-   sessions) and is retained only for Python-CLI dispatch.
-3. **PTY injection (legacy / deprecated)** — `claude_send_msg.py`
-   and `pty_inject`. Historically used to drive Claude Code sessions
+   broker registry directly.
+3. **PTY injection (legacy / deprecated)** — an out-of-tree
+   `pty_inject` helper. Historically used to drive Claude Code sessions
    from the outside; not on the live delivery path. PostToolUse hook
    delivery (installed by `c2c install claude`) is the only supported
    path for Claude Code today, and no new work should rely on PTY
@@ -279,19 +276,8 @@ See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering se
 ## Historical artifacts
 
 The OCaml `c2c` binary at `~/.local/bin/c2c` (built from
-`ocaml/cli/c2c.ml`) is the canonical CLI entrypoint. The Python
-scripts in `scripts/` are mostly either:
-
-- legacy CLI wrappers that predate the OCaml port (`c2c_cli.py`,
-  `c2c_register.py`, `c2c_send.py`) — kept only for the handful of
-  subcommands the Python CLI still dispatches,
-- session discovery helpers (`claude_list_sessions.py`),
-- test / debug utilities, or
-- pre-broker relays (`relay.py`, `c2c_relay.py`, `c2c_auto_relay.py`,
-  `investigate_socket.py`, `connect_abstract.py`, `send_to_session.py`)
-  which are kept for reference but are not on the current delivery
-  path.
-
-If you're not sure whether a script is live, check the OCaml CLI
-first (`c2c <subcommand> --help`); the Python shim is only relevant
-for the few legacy subcommands the OCaml binary has not yet absorbed.
+`ocaml/cli/c2c.ml`) is the canonical CLI entrypoint — run
+`c2c <subcommand> --help` for the authoritative surface. Pre-OCaml
+experiments and superseded helpers live under `deprecated/` for
+reference only; they are not on any current delivery path and should
+not be used for new work.

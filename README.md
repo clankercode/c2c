@@ -69,9 +69,8 @@ See `c2c commands` for the full tiered command list.
 | OCaml MCP broker | `ocaml/c2c_mcp.ml` |
 | OCaml relay server | `ocaml/relay.ml` |
 | Managed session launcher | `ocaml/c2c_start.ml` |
-| Legacy scripts | `deprecated/` |
 
-The OCaml `c2c` binary at `~/.local/bin/c2c` is the canonical CLI. The Python CLI (`c2c_cli.py`) dispatches `start`/`stop`/`instances` to the OCaml binary, and delegates to Python backends (`c2c_status.py`, `c2c_refresh_peer.py`, `c2c_relay_*.py`, `c2c_configure_*.py`, etc.) for commands that lack OCaml equivalents. The `c2c_cli.py` layer is a stable integration surface, not a deprecated shim.
+The OCaml `c2c` binary at `~/.local/bin/c2c` is the canonical CLI — install it and use `c2c` for everything below. Run `c2c <subcommand> --help` for the authoritative surface.
 
 ## Core Docs
 
@@ -81,16 +80,5 @@ The OCaml `c2c` binary at `~/.local/bin/c2c` is the canonical CLI. The Python CL
 - `docs/architecture.md`
 - `docs/client-delivery.md`
 - `docs/commands.md`
-
-## Historical (PTY-based, deprecated)
-
-Early c2c experiments used PTY injection to communicate with running sessions. This approach is deprecated in favor of the broker-backed CLI and optional client integrations. The scripts below are still in-tree for diagnostics but should not be used for new work.
-
-| Old Script | Status |
-|------------|--------|
-| `claude_list_sessions.py` | Deprecated (Tier 4 / legacy) |
-| `claude_send_msg.py` | Deprecated (Tier 4 / legacy) |
-| `claude_read_history.py` | Deprecated (Tier 4 / legacy) |
-| `c2c_inject.py` | Deprecated; moved to `deprecated/` |
 
 Wire format note: C2C traffic uses `<c2c event="message" from="<sender>" to="<recipient>">...</c2c>`.

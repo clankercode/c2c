@@ -153,7 +153,7 @@ and injects each message into the transcript through `pi.sendMessage` — urgent
 steer the active turn, nonurgent ones queue as follow-ups. A hardcoded 60-second
 safety-net poll backs up the watcher in case an inotify event is missed. The
 injected envelope matches the `<c2c event="message" …>` shape used by the other
-clients, so `c2c_verify` counts it identically.
+clients, so `c2c verify` counts it identically.
 
 **Room support**: full room suite via the `c2c` CLI room subcommands (`rooms join`,
 `rooms send`, `my-rooms`, …).
