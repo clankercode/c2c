@@ -8,11 +8,12 @@ depends_on: []
 estimate_hours: 2
 id: B162
 priority: high
+reason: 'Live UI proof still blocked: Max org weekly limit dialog (usage credits) on vanilla Claude 2.1.207; offline Stop envelope re-verified hookSpecificOutput after install. Note: scripts/cc-quota 7d=6% disagrees with client 7d 100%.'
 started_at: "2026-07-12T18:14:24Z"
-status: in_progress
+status: blocked
 tags: []
 title: Claude Stop-hook c2c delivery must not surface a message payload as Stop hook error
-updated_at: "2026-07-12T18:14:24Z"
+updated_at: "2026-07-12T18:19:04Z"
 ---
 Problem
 
