@@ -520,6 +520,20 @@ let test_stop_hook_returns_non_error_context () =
     check int "Stop drain is destructive" 0
       (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid)))
 
+let test_stop_help_describes_non_error_feedback () =
+  with_ctx (fun ctx ->
+    let output = Filename.dirname ctx.home // "stop-help.txt" in
+    let rc = Sys.command
+        (Printf.sprintf "%s hook stop --help > %s 2>&1"
+           (Filename.quote c2c_binary) (Filename.quote output))
+    in
+    check int "help exits 0" 0 rc;
+    let help = read_file output in
+    check bool "help describes non-error context" true
+      (contains ~haystack:help ~needle:"non-error additional context");
+    check bool "help no longer claims to block Stop" true
+      (not (contains ~haystack:help ~needle:"blocks stop")))
+
 let () =
   Random.self_init ();
   run "c2c_hook_claude"
@@ -555,5 +569,7 @@ let () =
             test_malformed_and_unhandled_payloads_are_silent
         ; test_case "Stop returns non-error additionalContext" `Quick
             test_stop_hook_returns_non_error_context
+        ; test_case "Stop help describes non-error feedback" `Quick
+            test_stop_help_describes_non_error_feedback
         ] )
     ]

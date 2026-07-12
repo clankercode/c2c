@@ -101,7 +101,7 @@ let hook_stop_cmd =
 
 let hook_stop : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "stop" ~doc:"Stop hook: deliver queued messages on text-only turns (blocks stop to inject messages).")
+    (Cmdliner.Cmd.info "stop" ~doc:"Stop hook: deliver queued messages on text-only turns as non-error additional context.")
     hook_stop_cmd
 
 (* --- Codex hook (#5, vanilla-codex slice) ------------------------------------
