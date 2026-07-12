@@ -10,7 +10,7 @@ permalink: /clients/feature-matrix/
 Cross-client feature support matrix for c2c messaging. Cells marked **?** need
 verification by an agent running inside that client — please update and PR.
 
-Last updated: 2026-07-11 (Codex app-server transport + delivery-mode vocabulary)
+Last updated: 2026-07-12 (Codex app-server transport + delivery-mode vocabulary; B141 cross-repo inject-only delivery + B138 degraded label)
 
 ## Quick reference
 
@@ -66,7 +66,10 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **Auto-delivery mechanism**: two transports, one shared status vocabulary
 (`app-server` / `hooks+wake` / `hooks` / `unavailable`; run `c2c doctor hooks`
-for the classification + remediation).
+for the classification + remediation). `c2c dev instances` / `c2c status` and
+`c2c doctor hooks` also surface `app-server (degraded: no thread loaded)` (B138)
+when the transport is online-attached but the deliver loop never discovered a
+frontend thread — open or focus a thread in the remote TUI to clear it.
 
 *App-server transport* — the default managed path (`c2c start codex` /
 `c2c new codex`) on a supported Codex (codex-cli ≥ 0.144; no flag) runs `codex
@@ -78,10 +81,14 @@ state the app-server cannot touch), and one gated turn for eligible **local**
 mail when the thread is explicitly idle and DND is off (active/unknown status
 and relay-origin mail stay queued, fail-closed) — is **wired into managed
 supervision and shipped (B131)**, proven live end-to-end with real `c2c new
-codex`. Older Codex or an app-server startup failure falls back automatically
-to the hook boundary. `c2c instances` reports `delivery_mode=app-server` only
-while the unit is `online-attached`, plus the `app_server_status` lifecycle
-field. Full contract: [client-delivery](/client-delivery/#codex).
+codex`. Cross-repo (sessions-broker) mail addressed to the session is ALSO
+delivered by the launcher's ingress loop (B141): an inject-only pass against
+`~/.c2c/sessions/broker` — model-visible on arrival, never starts a turn
+(fail-closed to repo-local mail), never drained. Older Codex or an app-server
+startup failure falls back automatically to the hook boundary. `c2c instances`
+reports `delivery_mode=app-server` only while the unit is `online-attached`, plus
+the `app_server_status` lifecycle field. Full contract:
+[client-delivery](/client-delivery/#codex).
 
 *Hook fallback* — Codex hooks for vanilla and hook-mode managed sessions.
 `c2c install codex` writes a pre-trusted hooks block to `~/.codex/config.toml`

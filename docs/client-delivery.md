@@ -148,6 +148,15 @@ for the full grammar. The delivery-relevant contract:
 - **Lifecycle**: exiting the TUI ends the session cleanly — the supervisor
   reaps the app-server when the frontend exits (no orphan processes), and the
   instance shows `offline`.
+- **Restart-in-place (B153)**: the launcher is the managed lifecycle owner
+  recorded by `c2c instances`. `c2c restart <alias>` sends it an idle-gated
+  control request; the launcher stops its authenticated unit and re-execs itself
+  on the persisted exact thread, preserving the current pane/TTY. `--force`
+  explicitly bypasses the idle gate. The caller waits for a durable owner result
+  rather than treating request-file creation as success; active/unknown skips and
+  owner timeouts are nonzero and machine-distinguishable for batch restart
+  orchestration. See [Commands](/commands/) for the fuller restart contract
+  (exit codes, PATH-upgrade preflight).
 - **Offline mail**: a send to a known-but-offline managed alias is written to
   its **durable inbox** and reported as `queued_offline` (exit 0 with a
   warning; exit 3 under `c2c send --fail-if-queued`). It drains on the next
@@ -155,9 +164,13 @@ for the full grammar. The delivery-relevant contract:
 
 Codex has **two delivery transports**. `c2c instances`, `c2c status`, and
 `c2c doctor` report which one a session actually has, using one shared
-vocabulary: `app-server` / `hooks+wake` / `hooks` / `unavailable` (doctor
-additionally distinguishes `app-server-unavailable`). Run
-`c2c doctor hooks` for the classification with per-state remediation. None of
+vocabulary: `app-server` / `hooks+wake` / `hooks` / `unavailable`. `c2c dev
+instances`, `c2c status`, and `c2c doctor hooks` also surface `app-server
+(degraded: no thread loaded)` when the transport is online-attached but the
+deliver loop never discovered a frontend thread (B138 — open or focus a thread
+in the remote TUI to clear it); doctor additionally distinguishes
+`app-server-unavailable`. Run `c2c doctor hooks` for the classification with
+per-state remediation. None of
 the hook modes is arrival-time delivery — output never claims "instant"
 delivery when only a hook boundary is available.
 
@@ -252,9 +265,19 @@ inherited `C2C_CODEX_APPSERVER_SESSION` marker (exported before the frontend is
 spawned). `c2c hook codex` adopts that identity instead of self-registering a
 *second* alias, so `c2c list` shows exactly one entry per session. The hook is
 then identity-only: it drains nothing (the delivery loop owns arrival-time
-delivery of the repo inbox), so there is no double-drain. (Cross-repo mail to an
-app-server session is not injected by the hook — that would let a nested Codex
-inheriting the marker steal it — and is a follow-up for the ingress loop.)
+delivery of the repo inbox), so there is no double-drain.
+
+**Cross-repo (sessions-broker) mail (B141).** Mail addressed to the session on
+the machine-wide cross-repo broker (`~/.c2c/sessions/broker`) is ALSO delivered
+by the launcher's ingress loop: each poll runs an extra inject-only pass against
+the session's global inbox, so cross-repo mail reaches the attached thread's
+model-visible history on arrival. It is **inject-only** — it never starts a turn
+(the T007 auto-turn stays scoped to repo-local mail, so cross-repo mail is
+fail-closed) and never drains the broker inbox, and it respects the same
+session-active / DND gates. Delivering here — in the launcher's supervision
+process, keyed to the discovered thread — rather than in the frontend hook is
+exactly what keeps the B137 nested-Codex marker-theft vector closed: a nested
+Codex inheriting the env marker never sees this path.
 
 Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
 protocol and hook events are upstream surfaces that can drift across Codex
@@ -377,10 +400,3 @@ Severity levels: `INFO` (difficulty decrease / recovery), `WARN` (difficulty
 increase, rate-limit rejection), `ERR` (PoW retry failure, dead-letter /
 undeliverable). Events are edge-triggered — a sustained high-difficulty
 plateau does not re-alert every sync.
-The launcher is also the managed lifecycle owner recorded by `c2c instances`.
-`c2c restart <alias>` sends it an idle-gated control request; the launcher
-stops its authenticated unit and re-execs itself on the persisted exact thread,
-preserving the current pane/TTY. `--force` explicitly bypasses the idle gate.
-The caller waits for a durable owner result rather than treating request-file
-creation as success; active/unknown skips and owner timeouts are nonzero and
-machine-distinguishable for batch restart orchestration.
