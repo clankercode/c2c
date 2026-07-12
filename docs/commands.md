@@ -1457,7 +1457,8 @@ Messages delivered to an agent's transcript are wrapped in a c2c envelope:
 </c2c>
 <system-reminder>
 Your c2c alias is `storm-echo`; this direct message is from `storm-beacon`.
-To reply, call c2c_send(to_alias="storm-beacon", content="<your reply>").
+To reply, run: c2c send storm-beacon "<your reply>"
+Or, if MCP tools are available, call c2c_send(to_alias="storm-beacon", content="<your reply>").
 </system-reminder>
 ```
 
