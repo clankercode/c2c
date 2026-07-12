@@ -1075,13 +1075,13 @@ let claude_stop_hook_script = {|
 # c2c-stop-deliver.sh — Stop hook for c2c auto-delivery in Claude Code
 #
 # Delivers queued c2c messages on text-only turns (no tool call).
-# When messages exist, blocks the stop so Claude continues and the model
-# sees the messages as the block reason. When no messages, exits silently
-# without blocking.
+# When messages exist, emits non-error Stop feedback so Claude continues and
+# sees the messages as additional context. When no messages, exits silently.
 #
 # Calls c2c-stop-hook-ocaml which reads session_id from stdin JSON (same
 # parser as the PostToolUse hook), drains the global sessions broker, and
-# emits {"decision":"block","reason":"<messages>"} if messages exist.
+# emits {"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"<messages>"}}
+# if messages exist.
 #
 # IMPORTANT: do NOT use `exec` for hook binaries (same ECHILD reason as
 # c2c-inbox-check.sh).

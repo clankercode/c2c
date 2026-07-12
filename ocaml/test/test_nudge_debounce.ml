@@ -465,16 +465,18 @@ let test_full_inject_mode_emits_full_messages () =
     (* Inbox should be drained in full inject mode *)
     check int "inbox drained in full inject mode" 0 (json_list_length inbox))
 
-let parse_stop_hook_reason result : string option =
+let parse_stop_hook_context result : string option =
   let s = String.trim result.stdout in
   if s = "" then None
   else
     try
       let json = Yojson.Safe.from_string s in
       let open Yojson.Safe.Util in
-      match json |> member "decision" |> to_string_option with
-      | Some "block" ->
-          json |> member "reason" |> to_string_option
+      match json |> member "hookSpecificOutput" |> member "hookEventName"
+            |> to_string_option with
+      | Some "Stop" ->
+          json |> member "hookSpecificOutput" |> member "additionalContext"
+          |> to_string_option
       | _ -> None
     with _ -> None
 
@@ -496,13 +498,17 @@ let test_stop_hook_delivers_deferrable_at_turn_boundary () =
        Stderr or a non-zero exit would instead be rendered as a hook error,
        which must never be how ordinary c2c mail reaches the model. *)
     check string "stop hook emits no stderr" "" r.stderr;
-    (match parse_stop_hook_reason r with
-     | None -> Alcotest.fail "expected stop hook to block with messages"
-     | Some reason ->
+    (match parse_stop_hook_context r with
+     | None -> Alcotest.fail "expected non-error Stop feedback with messages"
+     | Some context ->
          check bool "stop delivers push message" true
-           (string_contains reason "stop push body");
+           (string_contains context "stop push body");
          check bool "stop delivers deferrable message (turn boundary)" true
-           (string_contains reason "stop deferrable body"));
+           (string_contains context "stop deferrable body"));
+    let json = Yojson.Safe.from_string (String.trim r.stdout) in
+    let open Yojson.Safe.Util in
+    check bool "stop feedback is not a control decision" true
+      (match json |> member "decision" with `Null -> true | _ -> false);
     check int "stop hook drains everything" 0 (json_list_length inbox_path))
 
 let test_stop_hook_still_emits_full_messages () =
@@ -517,9 +523,9 @@ let test_stop_hook_still_emits_full_messages () =
     (* Stop hook should still emit full messages *)
     let r = run_hook ~env ~stdin_payload:payload ~hook_name:"c2c_stop_hook" () in
     check int "stop hook exits 0" 0 r.rc;
-    let reason = parse_stop_hook_reason r in
+    let context = parse_stop_hook_context r in
     check bool "stop hook emits full messages" true
-      (match reason with
+      (match context with
        | Some s -> string_contains s "msg-0-for-nudge-stop-hook"
        | None -> false);
     

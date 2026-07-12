@@ -1,9 +1,9 @@
 (* c2c_stop_hook — Stop hook for c2c auto-delivery in Claude Code
  *
  * Delivers queued c2c messages on text-only turns (no tool call).
- * When messages exist, blocks the stop so Claude continues and the model
- * sees the messages as the block reason. When no messages, exits silently
- * without blocking.
+ * When messages exist, returns Claude's non-error Stop feedback envelope so
+ * the conversation continues and the model sees the messages. When no
+ * messages, exits silently without blocking.
  *
  * Reuses the same stdin session_id parsing and global broker drain logic
  * as c2c_inbox_hook (PostToolUse), via c2c_hook_lib.
@@ -47,12 +47,16 @@ let () =
     (* Format messages as c2c envelope text *)
     let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
 
-    (* Block the stop so Claude continues and sees the messages.
-       The "reason" field surfaces to the model as context. *)
+    (* Claude Stop hooks support hookSpecificOutput.additionalContext as
+       non-error feedback. It continues the conversation like a block would,
+       but does not render ordinary c2c mail as a hook error. *)
     let json : Yojson.Safe.t =
       `Assoc
-        [ ("decision", `String "block")
-        ; ("reason", `String messages_text)
+        [ ( "hookSpecificOutput"
+          , `Assoc
+              [ ("hookEventName", `String "Stop")
+              ; ("additionalContext", `String messages_text)
+              ] )
         ]
     in
     Printf.printf "%s\n" (Yojson.Safe.to_string json);

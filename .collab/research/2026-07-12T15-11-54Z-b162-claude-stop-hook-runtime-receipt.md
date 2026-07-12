@@ -2,65 +2,80 @@
 
 ## Scope
 
-Determine whether ordinary c2c Stop-hook delivery is being emitted as a
-Claude Code hook error, without weakening the message-bus safety invariant.
+Ensure ordinary c2c mail drained at a Claude Stop boundary is delivered as
+model-visible, non-error feedback without weakening the message-bus safety
+invariant.
 
 ## Authoritative contract
 
-Claude Code v2.1.207 was installed at `/home/xertrov/.local/bin/claude` on
-2026-07-12. Its current official hook reference documents the Stop event as
-supporting the top-level successful JSON response
-`{"decision":"block","reason":"..."}`: exit status must be `0`, and the
-reason continues the conversation as model-visible feedback. A non-zero exit
-causes a hook error instead; plain stdout is not the Stop delivery channel.
+Claude Code v2.1.207 is installed at `/home/xertrov/.local/bin/claude`. The
+current official hook reference documents the successful, non-error Stop
+feedback form:
 
-Source: <https://code.claude.com/docs/en/hooks> (checked 2026-07-12).
-
-## Controlled installed-runtime reproduction
-
-The installed wrapper `/home/xertrov/.claude-p/hooks/c2c-stop-deliver.sh` was
-fed a controlled Stop payload and a temporary sessions-broker inbox containing
-one ordinary peer message:
-
-```text
-stdin:  {"session_id":"b162-runtime-controlled","hook_event_name":"Stop"}
-result: exit=0
-stdout: one JSON object with decision="block" and the c2c envelope in reason
-stderr: empty
-inbox:  []
+```json
+{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"..."}}
 ```
 
-The reason retained the normal untrusted-peer reminder. It did not create an
-approval, invoke an action, or alter the message body. This is the supported
-delivery form and preserves c2c's bus-not-RPC invariant.
+With exit status `0`, Claude continues so it can act on the context, but labels
+it `Stop hook feedback` rather than a hook error. The older top-level
+`{"decision":"block","reason":"..."}` form is for a hook that deliberately
+prevents stopping, not ordinary inbound mail.
 
-## Tmux dogfood attempts
+Source: <https://code.claude.com/docs/en/hooks> (rechecked 2026-07-13; Stop
+decision control).
 
-Used the mandated `scripts/c2c_tmux.py launch` path to launch managed alias
-`b162-claude-dogfood`, completing the local MCP and development-channel consent
-prompts, then stopped it with `scripts/c2c_tmux.py stop`. The managed launcher
-enables Claude's experimental c2c channel, which injects incoming mail before
-the Stop hook can consume the same destructive inbox entry; therefore it could
-not exercise the Stop fallback with a live queued message. The controlled run
-above exercised the exact installed Stop wrapper and binary instead.
+## B162 implementation and executable verification
 
-To test the fallback itself, a temporary `cc-*` wrapper launched a second real
-Claude v2.1.207 process in the same tmux pane without the development-channel
-arguments. A message was successfully queued to its exact UUID through
-`c2c send --session`. The client reached the prompt, but the account returned
-`You've hit your weekly limit` before it could complete a turn and invoke the
-Stop hook. The session was stopped via `scripts/c2c_tmux.py stop`.
+On 2026-07-13, both delivery entrypoints changed:
 
-## Conclusion and remaining blocker
+- standalone `c2c_stop_hook`, used by the installed Stop wrapper;
+- CLI fallback `c2c hook stop`.
 
-No current source or installed-wrapper protocol violation reproduced. The
-controlled installed-hook result satisfies the executable side of the current
-Claude contract, and regression coverage now checks exit 0 with empty stderr
-while draining both normal and deferrable messages at the Stop boundary.
+They now emit the documented `hookSpecificOutput` Stop envelope, retain the
+full Stop-boundary drain (including deferrable messages), exit 0, and leave
+stderr empty for normal mail. Focused executable tests passed under the repo's
+OPAM switch:
 
-However, a full Claude-rendered fallback result is still blocked by the local
-Claude weekly usage limit. Do not mark B162 done until a Claude account with
-available usage repeats the queued-message turn and confirms that the reason
-appears as a continuation rather than `Stop hook error:`. If it does render an
-error despite the recorded exit-0 JSON shape, capture the exact hook debug log
-and installed binary checksum before changing the delivery encoding.
+```text
+test_nudge_debounce: Stop full-body and deferrable-boundary cases pass
+test_c2c_hook_claude: 16 tests pass, including c2c hook stop JSON shape,
+  full message body, empty stderr, no top-level decision, and destructive drain
+test_c2c_setup_kimi: 20 tests pass, including wrapper JSON passthrough shape
+```
+
+The tests prove the bus-not-RPC invariant at this boundary: the emitted body
+is only model-visible context and there is no approval or decision field.
+
+## Earlier controlled wrapper reproduction
+
+Before the B162 source change, the installed wrapper
+`/home/xertrov/.claude-p/hooks/c2c-stop-deliver.sh` was fed a controlled Stop
+payload and a temporary sessions-broker inbox containing one ordinary peer
+message. It exited 0 with empty stderr, drained the inbox, and emitted the old
+top-level `decision="block"` form. The body preserved the untrusted-peer
+reminder and did not create an approval, invoke an action, or alter the message
+body. That controlled result established the drain mechanics, but its encoding
+was superseded by the current non-error feedback contract above.
+
+## Tmux dogfood and remaining external blocker
+
+The mandated `scripts/c2c_tmux.py launch` path previously launched managed
+alias `b162-claude-dogfood`, but its development channel injects incoming mail
+before the Stop hook can consume the same destructive inbox entry. A temporary
+`cc-*` wrapper also launched a real vanilla Claude process in tmux without that
+channel and queued a message to its exact UUID. The client reached the prompt,
+but the account returned `You've hit your weekly limit` before it could finish
+a turn and invoke Stop; the pane was stopped through `scripts/c2c_tmux.py
+stop`.
+
+On 2026-07-13, `scripts/cc-quota` reports 7d usage at 100%, resetting in about
+68 hours. No new live Claude pane was launched because it cannot complete the
+required turn; this is an externally verified quota block, not a protocol
+result.
+
+The source and focused executable tests now satisfy the documented Stop JSON
+contract. A full rendered fallback proof still requires an account with quota:
+queue one ordinary message to a vanilla Claude session, complete its turn, and
+confirm the transcript labels it `Stop hook feedback` for the new envelope. If
+it renders an error despite this exit-0 JSON shape, capture the exact hook debug
+log and installed binary checksum before changing the encoding.

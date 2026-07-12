@@ -48,7 +48,10 @@ Claude Code has three relevant receive mechanisms:
   the same delivery core) and delivers **full message bodies** as
   `hookSpecificOutput.additionalContext` in the transcript. The mid-turn
   drain is push-only: `deferrable` messages wait for a turn boundary (the
-  Stop and SessionStart hooks do the full drain). Set
+  Stop and SessionStart hooks do the full drain). The Stop hook returns the
+  documented `hookSpecificOutput.additionalContext` envelope with
+  `hookEventName: "Stop"`: this is non-error feedback that continues the
+  conversation, rather than a top-level `decision: "block"` response. Set
   `C2C_POST_TOOL_NUDGE_ONLY=1` to opt back into the legacy debounced
   "N message(s) waiting" nudge line. Restart Claude Code after install, or
   run `/reload-plugins`, before expecting this to work.

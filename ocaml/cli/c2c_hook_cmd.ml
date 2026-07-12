@@ -81,10 +81,16 @@ let hook_stop_cmd =
       in
       if messages = [] then exit 0;
       let messages_text = C2c_hook_lib.format_messages_as_text ~repo_broker messages in
+      (* Stop's additionalContext is the documented non-error feedback path:
+         it keeps the conversation going without representing ordinary c2c
+         mail as a failed hook or a control-plane decision. *)
       let json : Yojson.Safe.t =
         `Assoc
-          [ ("decision", `String "block")
-          ; ("reason", `String messages_text)
+          [ ( "hookSpecificOutput"
+            , `Assoc
+                [ ("hookEventName", `String "Stop")
+                ; ("additionalContext", `String messages_text)
+                ] )
           ]
       in
       Printf.printf "%s\n" (Yojson.Safe.to_string json);
@@ -95,7 +101,7 @@ let hook_stop_cmd =
 
 let hook_stop : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "stop" ~doc:"Stop hook: deliver queued messages on text-only turns (blocks stop to inject messages).")
+    (Cmdliner.Cmd.info "stop" ~doc:"Stop hook: deliver queued messages on text-only turns as non-error additional context.")
     hook_stop_cmd
 
 (* --- Codex hook (#5, vanilla-codex slice) ------------------------------------

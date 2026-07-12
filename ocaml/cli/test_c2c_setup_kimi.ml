@@ -584,18 +584,16 @@ let test_stop_hook_script_prefers_ocaml_binary () =
     true
     (contains_substring ~haystack:script ~needle:"exit 0")
 
-let test_stop_hook_blocks_when_messages () =
-  (* Verify that the Stop hook emits {"decision":"block","reason":"..."} when
-     messages exist. We test this by running the actual c2c_stop_hook binary
-     with a mock stdin that provides a session_id, and a global broker that
-     has a message queued. *)
+let test_stop_hook_returns_non_error_feedback_when_messages () =
+  (* Verify that the wrapper preserves Claude's Stop feedback envelope rather
+     than translating ordinary c2c mail into a decision:block response. *)
   with_temp_dir (fun dir ->
     let bin_dir = dir // "bin" in
     Unix.mkdir bin_dir 0o700;
     let stop_hook = bin_dir // "c2c-stop-hook-ocaml" in
-    (* Create a mock stop hook that returns a block decision *)
+    (* Create a mock stop hook that returns successful Stop feedback. *)
     write_file stop_hook
-      "#!/bin/sh\nprintf '%s\\n' '{\"decision\":\"block\",\"reason\":\"test message\\n\"}'\n";
+      "#!/bin/sh\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"test message\\n\"}}'\n";
     Unix.chmod stop_hook 0o755;
     let script_path = dir // "c2c-stop-deliver.sh" in
     write_file script_path C2c_setup.claude_stop_hook_script;
@@ -620,17 +618,26 @@ let test_stop_hook_blocks_when_messages () =
         in
         let rc = Sys.command cmd in
         Alcotest.(check int) "wrapper exits 0" 0 rc;
+        Alcotest.(check string) "wrapper emits no stderr" "" (read_file err);
         let output = read_file out in
         let json = Yojson.Safe.from_string output in
         match json with
         | `Assoc fields ->
-            let decision = List.assoc_opt "decision" fields in
-            Alcotest.(check (option string)) "decision is block"
-              (Some "block") (Option.map (function `String s -> s | _ -> "") decision);
-            let reason = List.assoc_opt "reason" fields in
-            Alcotest.(check bool) "reason contains test message"
-              (match reason with Some (`String s) -> contains_substring ~haystack:s ~needle:"test message" | _ -> false)
-              true
+            Alcotest.(check bool) "no top-level decision"
+              true (not (List.mem_assoc "decision" fields));
+            (match List.assoc_opt "hookSpecificOutput" fields with
+             | Some (`Assoc hook_fields) ->
+                 Alcotest.(check (option string)) "event is Stop"
+                   (Some "Stop")
+                   (Option.map (function `String s -> s | _ -> "")
+                      (List.assoc_opt "hookEventName" hook_fields));
+                 Alcotest.(check bool) "context contains test message"
+                   true
+                   (match List.assoc_opt "additionalContext" hook_fields with
+                    | Some (`String s) ->
+                        contains_substring ~haystack:s ~needle:"test message"
+                    | _ -> false)
+             | _ -> Alcotest.fail "hookSpecificOutput missing")
         | _ -> Alcotest.fail "stop hook output is not a JSON object"))
 
 let test_stop_hook_exits_silently_when_no_messages () =
@@ -728,8 +735,8 @@ let () =
     ; ("stop-hook",
         [ Alcotest.test_case "stop hook script prefers OCaml binary" `Quick
             test_stop_hook_script_prefers_ocaml_binary
-        ; Alcotest.test_case "stop hook blocks when messages exist" `Quick
-            test_stop_hook_blocks_when_messages
+        ; Alcotest.test_case "stop hook returns non-error feedback when messages exist" `Quick
+            test_stop_hook_returns_non_error_feedback_when_messages
         ; Alcotest.test_case "stop hook exits silently when no messages" `Quick
             test_stop_hook_exits_silently_when_no_messages
         ; Alcotest.test_case "no double delivery: drain is destructive" `Quick
