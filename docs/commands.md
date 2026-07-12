@@ -934,6 +934,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
+| `restart-stale [--dry-run] [--exclude-coordinator] [--force] [--timeout SECS] [--json]` | Version-aware rolling restart of managed instances running an outdated `c2c` binary (I010). App-server sessions restart in place (idle-gated; `--force` overrides the gate and treats every instance as stale); TUI clients are reported for a manual in-pane `c2c restart <name>`. The coordinator is restarted last unless `--exclude-coordinator`. |
 | `instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. |
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
@@ -1126,6 +1127,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 | `stop NAME [--json]` | Stop a managed instance. |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
+| `restart-stale [--dry-run] [--exclude-coordinator] [--force] [--timeout SECS] [--json]` | Version-aware rolling restart of managed instances on an outdated `c2c` binary (I010). App-server sessions restart in place (idle-gated; `--force` overrides); TUI clients are reported for manual in-pane restart. Coordinator restarted last unless `--exclude-coordinator`. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `await-reply --token TOKEN [--timeout SECS] [--poll-interval SECS]` | Block until the host-local verdict file for `TOKEN` contains `allow` or `deny`. Peer inbox and relay messages are never verdicts. Exits 0 after printing the verdict, or 1 on timeout. |
 | `register [--alias A] [--session-id ID] [--no-metadata] [--cross-repo]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. Explicit `--alias` that differs from an existing registration for this session_id is refused (sticky alias B135 — start a fresh session for a new name). `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. `--cross-repo` writes the registration to the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
