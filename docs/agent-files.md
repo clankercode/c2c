@@ -2,13 +2,20 @@
 
 c2c unifies agent personas across MCP-managed clients. A single canonical role
 definition in `.c2c/roles/<name>.md` is compiled on-the-fly into each native
-agent file format (Claude Code, Codex, OpenCode, Kimi) whenever you launch an
-agent. Pi Agent is a first-class messaging peer through `pi-c2c`, but it does
+agent file format (Claude Code, Codex, OpenCode, and Kimi) whenever you launch
+an agent. Pi Agent is a first-class messaging peer through `pi-c2c`, but it does
 not currently consume this role-file compiler.
 
-> Status: the MCP-managed clients (Claude Code, Codex, OpenCode, Kimi Code)
-> render from the same canonical role file. `c2c roles compile --client all`
-> renders to every supported role-file client simultaneously.
+> **B146-TEMP:** Kimi remains a supported *role-file compile* target
+> (`compatible_clients`, `kimi:` namespace, `c2c roles compile --client kimi`),
+> but managed `c2c install kimi` / `c2c start kimi` / `c2c new kimi` currently
+> **refuse** (temporarily disabled; machinery retained for easy re-enable).
+> Prefer Claude, Codex, or OpenCode for live managed launches until B146 lifts.
+
+> Status: the MCP-managed clients (Claude Code, Codex, OpenCode; Kimi Code
+> when re-enabled) render from the same canonical role file.
+> `c2c roles compile --client all` renders to every supported role-file client
+> simultaneously (including Kimi compile output even while install/start refuse).
 
 ## Quick start
 
@@ -81,7 +88,7 @@ Fields are grouped by who consumes them:
 | `opencode`             | OpenCode only | Theme, permission, model options     |
 | `claude`               | Claude Code   | Tools list, Claude-specific settings |
 | `codex`                | Codex         | Codex-specific settings              |
-| `kimi`                 | Kimi          | Kimi-specific settings               |
+| `kimi`                 | Kimi          | Kimi-specific settings (**B146-TEMP:** compile OK; install/start refuse) |
 
 **Do not put client-specific fields at the top level.** Unknown top-level
 keys get forwarded to the model as options (per OpenCode's doc), which can

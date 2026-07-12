@@ -15,18 +15,19 @@ Two knobs on the same push-gate:
 
 Both paths converge in the broker: if either condition is true, the
 inbox write happens but the push paths (PostToolUse hook, opencode
-plugin promptAsync, codex PTY sentinel, channel notification) skip
-the emit. Deferred messages remain queued until the recipient explicitly polls or another explicit drain reads them.
+plugin promptAsync, Codex hooks / managed app-server auto-turn, channel
+notification) skip the emit. Deferred messages remain queued until the
+recipient explicitly polls or another explicit drain reads them.
 
 ## Motivation
 
 Agents in a complex turn (mid-thought, mid-tool-call, mid-permission
 dialog) currently receive pushed messages that interrupt their context
 and force early reaction. They have inbox polling, but push paths
-(PostToolUse hook, plugin promptAsync, PTY sentinel, channel
-notification) fire regardless of agent state. DND mode lets an agent
-say *"queue, don't push"* and have the broker honor it until the
-agent explicitly clears DND or an optional epoch timeout expires.
+(PostToolUse hook, plugin promptAsync, Codex hooks / managed app-server
+auto-turn, channel notification) fire regardless of agent state. DND mode
+lets an agent say *"queue, don't push"* and have the broker honor it until
+the agent explicitly clears DND or an optional epoch timeout expires.
 
 ## Surface
 
@@ -60,14 +61,23 @@ Every push path must check `dnd` before delivering:
   inject if recipient is in DND.
 - **OpenCode plugin** (`run-opencode-inst.d/plugins/c2c.ts`) — skip
   `promptAsync` call when own session is in DND (self-respecting).
-- **Codex PTY sentinel** — skip sentinel write when in DND.
-- **Codex app-server auto-turn** (T007, `C2c_codex_autoturn`) — the
-  dispatcher's DND gate leaves mail durably queued (no inject, no turn,
-  `queued_reason=dnd`) and re-evaluates on the next pass once DND
-  clears/expires. See [Per-Client Delivery § Codex](/client-delivery/#codex).
+- **Codex hooks** (`c2c hook codex` on UserPromptSubmit / PostToolUse /
+  SessionStart / SessionEnd) — skip hook-boundary `additionalContext`
+  delivery when the recipient is in DND (vanilla Codex and managed
+  fallback).
+- **Codex managed app-server** (primary for managed `c2c start codex` /
+  `c2c new codex` on codex-cli ≥ 0.144, B131) — arrival-time
+  model-visible inject and gated auto-turn both honor DND. The T007
+  dispatcher (`C2c_codex_autoturn`) leaves mail durably queued (no
+  inject, no turn, `queued_reason=dnd`) and re-evaluates on the next
+  pass once DND clears/expires. See
+  [Per-Client Delivery § Codex](/client-delivery/#codex).
 - **Channel notification** (`notifications/claude/channel`) — skip
   emit when recipient in DND.
 - **Relay push** — skip when recipient in DND where that push path is active.
+- **Legacy Codex PTY sentinel** — not a primary production path (XML /
+  PTY sideband removed upstream; hooks + app-server replaced it). If a
+  residual sentinel path still runs, it must skip writes when in DND.
 
 `poll_inbox` **does not** check DND — the agent can always explicitly
 drain. DND only gates *push*.
@@ -90,7 +100,7 @@ sees the accumulated room traffic on next poll.
 ## Tests
 
 1. Agent enables DND → sender's `send` returns `recipient_dnd: true`.
-2. Inbox JSON grows; no hook/plugin/PTY push fires.
+2. Inbox JSON grows; no hook/plugin/app-server auto-turn/channel push fires.
 3. Optional `until_epoch` passes → broker treats DND as expired.
 4. `poll_inbox` drains regardless of DND state.
 5. DND survives broker restart until explicit off or timeout (persisted in registry.json).
@@ -143,9 +153,10 @@ The `send` response includes `deferrable: true` when set so the sender's log is 
 
 1. Message is written to the recipient's inbox as normal, with a
    `deferrable: true` field on the envelope.
-2. Push paths (PostToolUse hook, opencode plugin promptAsync, codex
-   PTY sentinel, channel notification) check the envelope: if
-   `deferrable` is true, skip the push. The message stays queued.
+2. Push paths (PostToolUse hook, opencode plugin promptAsync, Codex
+   hooks / managed app-server auto-turn, channel notification) check
+   the envelope: if `deferrable` is true, skip the push. The message
+   stays queued.
 3. Delivery push drains skip deferrable rows; explicit `poll_inbox` returns them identically to any other queued message.
 4. `poll_inbox` returns deferred messages identically to any other.
 5. Room fan-out is currently non-deferrable at the public MCP surface; if a future room API exposes the flag, each recipient's copy should carry it.

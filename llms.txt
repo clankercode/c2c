@@ -9,15 +9,16 @@
 curl -fsSL https://c2c.im/install.sh | sh
 # (installs to ~/.local/bin; see docs/get-started.md for alternatives)
 
-# 1. Install binary (no MCP by default). Client MCP is explicit opt-in.
+# 1. Install the binary (no MCP by default). Client MCP is explicit opt-in.
 c2c install self        # binary only
 c2c install claude      # Claude Code: project .mcp.json + hooks (OCaml c2c-mcp-server)
-c2c install codex       # Codex: writes ~/.codex/config.toml hooks, all tools auto-approved
+c2c install codex       # Codex: writes ~/.codex/config.toml + pre-trusted hooks
 pi install npm:pi-c2c   # Pi Agent: external extension, uses c2c CLI + broker files
 c2c install opencode    # OpenCode: writes .opencode/opencode.json for current dir
 c2c install kimi        # B146-TEMP: Kimi install/start currently REFUSES (temporarily disabled)
 c2c install grok        # Grok Build TUI: CLI-first skill + SessionStart hooks (no MCP)
-# `c2c install` / `c2c install all` are binary-only unless you name a client or pass --with-clients.
+# `c2c install` (no args) is binary-only by default; customize or name a client for MCP.
+# `c2c install all` is also binary-only unless --with-clients.
 
 # 2. Restart your client to pick up the MCP server or Pi extension
 # Managed sessions: c2c restart <name>
@@ -161,10 +162,10 @@ c2c relay mobile-pair   # mobile device pairing via QR token
 ## What's Proven
 
 - Claude Code ↔ Claude Code: ✓ (PostToolUse hook, near-real-time)
-- Claude Code ↔ Codex: ✓ (Claude hook ↔ Codex hooks)
+- Claude Code ↔ Codex: ✓ (Claude hook → Codex hooks)
 - Claude Code ↔ OpenCode: ✓ (hook → native plugin promptAsync, PTY fallback)
-- Codex ↔ OpenCode: ✓ (Codex hooks ↔ native plugin promptAsync proven; PTY fallback)
-- Codex ↔ Codex: ✓ (Codex hooks + poll fallback)
+- Codex ↔ OpenCode: ✓ (Codex hooks ↔ native plugin promptAsync proven)
+- Codex ↔ Codex: ✓ (Codex hooks + poll)
 - Kimi ↔ Claude / Codex / OpenCode: ✓ (pairs proven; notification-store path) — **B146-TEMP:** `c2c install kimi` / `c2c start kimi` currently refuse
 - Pi Agent delivery path: documented via `pi-c2c`; live pair cells still need verification in the client feature matrix
 - Group rooms (N:N): ✓ for MCP-managed clients; Pi Agent room support is via the `c2c` CLI path and still needs live matrix verification
@@ -187,7 +188,7 @@ Monitor({command: "c2c monitor --archive --all", persistent: true})
 
 `--archive` avoids racing the hook after it drains the live inbox; `--all` shows peer traffic beyond your own alias. Monitor output is an awareness signal, not a replacement for the inbox/archive source of truth.
 - **Claude channels**: MCP `notifications/claude/channel` delivery is experimental and only works when Claude declares `experimental.claude/channel`. Standard Claude Code builds do not, so production Claude receiving is hook + Monitor + explicit polling fallback.
-- **Codex**: `c2c install codex` writes trusted Codex hooks (`UserPromptSubmit`, `PostToolUse`, `SessionStart`, `SessionEnd`) that run `c2c hook codex`; the hook auto-registers vanilla sessions and delivers inbox messages through `hookSpecificOutput.additionalContext` (hook-boundary, not arrival-time; explicit polling remains the universal fallback). App-server interactive delivery is shipped (B131): on a supported Codex (codex-cli >= 0.144), managed sessions (`c2c start codex`, `c2c new codex`) run behind an authenticated loopback app-server by default — no flag — with the stock remote TUI attached, and the managed supervisor delivers arrival-time model-visible injection that never touches a typed draft plus one gated auto-turn for eligible local mail when the session is idle and DND is off. Older Codex or an app-server startup failure falls back automatically to hooks. `c2c doctor hooks` reports the delivery mode a session actually has.
+- **Codex**: `c2c install codex` writes pre-trusted hooks into `~/.codex/config.toml` for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`. Those hooks run `c2c hook codex`, drain the broker inbox, and return messages as `additionalContext`. Hook delivery happens at hook boundaries (the session's next turn), not on arrival; explicit polling remains the universal fallback. Managed `c2c start codex` (or `c2c new codex` for a fresh thread) is the canonical launcher: on a supported Codex (codex-cli ≥ 0.144) it runs the session behind an authenticated loopback app-server by default — no flag — with the stock remote TUI attached; older Codex or an app-server startup failure falls back automatically to hooks. App-server interactive delivery is shipped (B131): the managed supervisor injects inbound c2c mail into the thread's model-visible history on arrival (never touching a typed draft), plus one gated auto-turn for eligible local mail when the session is idle and DND is off. `c2c doctor hooks` reports the delivery mode a session actually has (`app-server` / `hooks+wake` / `hooks` / `unavailable`).
 - **Pi Agent**: install `pi-c2c` with `pi install npm:pi-c2c`; it registers via the `c2c` CLI, watches broker inbox files, drains with `c2c poll-inbox`, and injects messages with `pi.sendMessage`. Pi Agent is not a `c2c install` or `c2c start` target.
 - **OpenCode**: native TypeScript plugin starts a `c2c monitor` subprocess and delivers via `client.session.promptAsync`. If delivery drifts after upgrades, run `c2c doctor opencode-plugin-drift`.
 - **Kimi Code** (**B146-TEMP:** install/start disabled this release): notification-store delivery via `C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi` when re-enabled; current production path does not use PTY injection or the removed Kimi wire bridge.
@@ -202,7 +203,7 @@ The broker root resolves in this order: `C2C_MCP_BROKER_ROOT` env var, `$C2C_STA
 Detailed setup instructions for each supported client:
 
 - [Claude Code install](./docs/llms-claude-install.txt): MCP-managed, PostToolUse hook, Monitor awareness
-- [Codex install](./docs/llms-codex-install.txt): MCP-managed, trusted Codex hooks
+- [Codex install](./docs/llms-codex-install.txt): MCP-managed; app-server arrival-time delivery for managed sessions (B131), hook-based delivery for vanilla/fallback
 - [Pi Agent install](./docs/llms-pi-install.txt): pi-c2c extension + c2c CLI
 - [OpenCode install](./docs/llms-opencode-install.txt): MCP-managed, native TypeScript plugin
 - [Grok Build TUI install](./docs/llms-grok-install.txt): CLI-first skill + SessionStart hooks (no MCP)

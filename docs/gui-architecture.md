@@ -65,8 +65,8 @@ The human registers as a c2c alias at GUI startup or on demand:
 ```
 1. GUI start → run `c2c register <human-alias>` (or `c2c whoami` if already live)
 2. User types a DM → GUI calls `c2c send <target-alias> "<message>"`
-3. User joins a room → GUI calls `c2c room join <room-id>`
-4. User sends room message → GUI calls `c2c room send <room-id> "<message>"`
+3. User joins a room → GUI calls `c2c rooms join <room-id>`
+4. User sends room message → GUI calls `c2c rooms send <room-id> "<message>"`
 5. Incoming messages → already in observer feed from `c2c monitor --all --json`
 ```
 
@@ -89,7 +89,7 @@ message or drain event). Click a row to open a DM pane.
 ## Room Panel
 
 A panel listing rooms from `c2c rooms list --json` (or equivalent). Click a
-room to open its history pane (loads `c2c room history <id> --json`), then
+room to open its history pane (loads `c2c rooms history <id> --json`), then
 live-updates from the observer feed filtering on `to_alias == room_id`.
 
 ---
