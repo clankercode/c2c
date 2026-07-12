@@ -33,7 +33,7 @@ module type RELAY = sig
   val add_peer_relay : t -> peer_relay_t -> unit
   val peer_relay_of : t -> name:string -> peer_relay_t option
   val peer_relays_list : t -> peer_relay_t list
-  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> (string * RegistrationLease.t)
+  val register : t -> node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?client_version:string -> ?client_os:string -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> (string * RegistrationLease.t)
   val identity_pk_of : t -> alias:string -> string option
   val alias_of_identity_pk : t -> identity_pk:string -> string option
   val alias_of_session : t -> node_id:string -> session_id:string -> string option
@@ -120,6 +120,11 @@ module type RELAY = sig
   val stats_note_message : t -> from_alias:string -> ts:float -> unit
   val stats_note_activity : t -> node_id:string -> alias:string -> ts:float -> unit
   val stats : t -> now:float -> Yojson.Safe.t
+  (* B149: persist one historical snapshot of the full [stats] JSON, stamped
+     [now]. Sqlite appends a row to the stats_snapshots table; the memory
+     backend appends a line to <persist_dir>/stats-history.jsonl (no-op
+     without persist_dir). Driven hourly by the server loop. Never raises. *)
+  val record_stats_snapshot : t -> now:float -> unit
 end
 
 (* --- B147: usage-stats window definitions shared by both backends --- *)
@@ -155,21 +160,28 @@ let stats_windows_json ~now ~messages_in_window ~aliases_in_window
 
 (* B148: render the /stats "connected" object — aggregate liveness counts only
    (NEVER aliases, node_ids, or session ids; same privacy rule as the windows).
-   [by_client_type] keys are sorted for deterministic JSON so the landing page
-   and tests can pin it, and so the two backends can't emit a different key
-   order. Both backends funnel through this so the shape cannot diverge. *)
+   Count-map keys are sorted for deterministic JSON so the landing page and
+   tests can pin them, and so the two backends can't emit a different key
+   order. Both backends funnel through this so the shape cannot diverge.
+   B149 adds by_version / by_os from client-reported connection metadata
+   (clients that predate the fields land under "unknown"). *)
+let sorted_count_map (counts : (string * int) list) : Yojson.Safe.t =
+  `Assoc
+    (List.map
+       (fun (k, v) -> (k, `Int v))
+       (List.sort (fun (a, _) (b, _) -> String.compare a b) counts))
+
 let stats_connected_json ~clients ~machines
-    ~(by_client_type : (string * int) list) : Yojson.Safe.t =
+    ~(by_client_type : (string * int) list)
+    ~(by_version : (string * int) list) ~(by_os : (string * int) list) :
+    Yojson.Safe.t =
   `Assoc
     [
       ("clients", `Int clients);
       ("machines", `Int machines);
-      ( "by_client_type",
-        `Assoc
-          (List.map
-             (fun (k, v) -> (k, `Int v))
-             (List.sort (fun (a, _) (b, _) -> String.compare a b) by_client_type))
-      );
+      ("by_client_type", sorted_count_map by_client_type);
+      ("by_version", sorted_count_map by_version);
+      ("by_os", sorted_count_map by_os);
     ]
 
 (* B148: full /stats stats object — the 1d/7d/28d/ever windows (byte-compatible

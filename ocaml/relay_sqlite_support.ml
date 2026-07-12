@@ -19,7 +19,9 @@ CREATE TABLE IF NOT EXISTS leases (
     enc_pubkey TEXT NOT NULL DEFAULT '',
     signed_at REAL NOT NULL DEFAULT 0,
     sig_b64 TEXT NOT NULL DEFAULT '',
-    opaque_host_id TEXT NOT NULL DEFAULT ''
+    opaque_host_id TEXT NOT NULL DEFAULT '',
+    client_version TEXT NOT NULL DEFAULT '',
+    client_os TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS inboxes (
@@ -154,6 +156,15 @@ CREATE TABLE IF NOT EXISTS stats_seen_machines (
     machine_id TEXT PRIMARY KEY,
     last_seen REAL NOT NULL
 );
+
+-- B149: hourly historical snapshots of the full /stats JSON (one row per
+-- snapshot, appended by the server's snapshot loop; also one at startup).
+-- ~9k rows/year — no pruning needed.
+CREATE TABLE IF NOT EXISTS stats_snapshots (
+    ts REAL NOT NULL,
+    json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stats_snapshots_ts ON stats_snapshots(ts);
 |sql}
 
 let exec_no_rows db sql =

@@ -2,7 +2,7 @@ open Relay_common
 
 module RegistrationLease : sig
   type t
-  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?registered_at:float -> ?last_seen:float -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> t
+  val make : node_id:string -> session_id:string -> alias:string -> ?client_type:string -> ?client_version:string -> ?client_os:string -> ?registered_at:float -> ?last_seen:float -> ?ttl:float -> ?identity_pk:string -> ?enc_pubkey:string -> ?signed_at:float -> ?sig_b64:string -> ?opaque_host_id:string option -> unit -> t
   val is_alive : t -> bool
   val touch : t -> unit
   val set_last_seen : t -> float -> unit
@@ -11,6 +11,8 @@ module RegistrationLease : sig
   val session_id : t -> string
   val alias : t -> string
   val client_type : t -> string
+  val client_version : t -> string
+  val client_os : t -> string
   val identity_pk : t -> string
   val enc_pubkey : t -> string
   val signed_at : t -> float
@@ -24,6 +26,11 @@ end = struct
     session_id : string;
     alias : string;
     client_type : string;
+    (* B149: client-reported connection metadata — c2c binary version and OS
+       ("" for clients that predate the fields). Purely additive; feeds the
+       aggregate /stats connected.by_version / by_os counts. *)
+    client_version : string;
+    client_os : string;
     registered_at : float;
     mutable last_seen : float;
     ttl : float;
@@ -40,11 +47,11 @@ end = struct
         consumers (no field in JSON) continue to work unchanged. *)
   }
 
-  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?registered_at ?last_seen ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
+  let make ~node_id ~session_id ~alias ?(client_type = "unknown") ?(client_version = "") ?(client_os = "") ?registered_at ?last_seen ?(ttl = default_lease_ttl) ?(identity_pk = "") ?(enc_pubkey = "") ?(signed_at = 0.0) ?(sig_b64 = "") ?(opaque_host_id : string option = None) () =
     let now = Unix.gettimeofday () in
     let registered_at = Option.value registered_at ~default:now in
     let last_seen = Option.value last_seen ~default:now in
-    { node_id; session_id; alias; client_type; registered_at; last_seen; ttl; identity_pk; enc_pubkey; signed_at; sig_b64; opaque_host_id }
+    { node_id; session_id; alias; client_type; client_version; client_os; registered_at; last_seen; ttl; identity_pk; enc_pubkey; signed_at; sig_b64; opaque_host_id }
 
   let is_alive t =
     let now = Unix.gettimeofday () in
@@ -93,12 +100,23 @@ end = struct
       | Some h -> base @ [("opaque_host_id", `String h)]
       | None -> base
     in
+    (* B149: additive — absent for leases registered by older clients. *)
+    let base =
+      if t.client_version = "" then base
+      else base @ [("client_version", `String t.client_version)]
+    in
+    let base =
+      if t.client_os = "" then base
+      else base @ [("client_os", `String t.client_os)]
+    in
     `Assoc base
 
   let node_id t = t.node_id
   let session_id t = t.session_id
   let alias t = t.alias
   let client_type t = t.client_type
+  let client_version t = t.client_version
+  let client_os t = t.client_os
   let identity_pk t = t.identity_pk
   let enc_pubkey t = t.enc_pubkey
   let signed_at t = t.signed_at
