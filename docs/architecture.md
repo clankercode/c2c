@@ -6,23 +6,24 @@ permalink: /architecture/
 
 # Architecture
 
-c2c is a local-first agent-to-agent messaging system. The source of
-truth for current behavior is the OCaml MCP broker in `ocaml/`; the
-Python scripts that predate it are still useful as CLI fallbacks and
-fixtures but are no longer the primary delivery surface.
+c2c is a local-first agent-to-agent messaging system. The only
+supported surfaces are the OCaml `c2c` CLI and the OCaml MCP server
+binary `c2c-mcp-server` (source under `ocaml/`). Pre-OCaml Python
+helpers are historical reference and test fixtures only (repo root
+`c2c_*.py` / `deprecated/`); they are not a supported delivery path.
 
 ## High-level model
 
 ```
- agent A (Claude Code / Codex / OpenCode / Kimi)       agent B
+ agent A (Claude / Codex / OpenCode / Grok / Kimi†)     agent B
         |                                                      |
-        | MCP stdio JSON-RPC                                   |
+        | MCP stdio JSON-RPC  (or CLI / hooks for Grok, Pi)    |
         v                                                      v
   +------------------------------------------------------------+
   |                OCaml broker (c2c_mcp.ml)                  |
-  |  register / send / poll_inbox / send_all / list           |
+  |  register / rename / send / poll_inbox / send_all / list  |
   |  join_room / send_room / room_history / my_rooms          |
-  |  sweep / peek_inbox / dead_letter / tail_log              |
+  |  schedule_* / memory_* / sweep / peek_inbox / …           |
   +------------------------------------------------------------+
                            |
                            v
@@ -31,7 +32,8 @@ fixtures but are no longer the primary delivery surface.
            registry.json.lock            (fcntl POSIX lockf sidecar)
            <session_id>.inbox.json       (per-session JSON queue)
            <session_id>.inbox.lock       (fcntl POSIX lockf sidecar)
-           <session_id>.inbox.archive    (drained-message log)
+           archive/<session_id>.jsonl    (drained-message log)
+           archive/<session_id>.lock     (fcntl POSIX lockf sidecar)
            dead-letter.jsonl             (swept/orphan messages)
            dead-letter.jsonl.lock        (fcntl POSIX lockf sidecar)
            rooms/
@@ -39,20 +41,28 @@ fixtures but are no longer the primary delivery surface.
                history.jsonl             (append-only message log)
                members.json              (current member list)
 
- Pi Agent
-        |
-        | pi-c2c extension -> c2c CLI
-        v
+ Pi Agent                         Grok (CLI-first)
+        |                                |
+        | pi-c2c extension -> c2c CLI    | skill + hooks -> c2c CLI
+        v                                v
  same broker root and inbox/room files
 ```
 
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+> **† B146-TEMP:** Kimi remains in the product architecture
+> (notification-store delivery) but `c2c install kimi` /
+> `c2c start kimi` / `c2c new kimi` refuse until re-enabled
+> (`kimi_disabled_for_release = true`).
+
 The broker is a stdio JSON-RPC server. Each MCP-capable host client
-(Claude Code, Codex, OpenCode, Kimi) launches the installed
-`c2c-mcp` binary directly (built and copied into `~/.local/bin/`
-via `just install-all`). `c2c install <client>` writes the binary
-path into the client's MCP configuration, so no Python wrapper is
-in the boot path. Pi Agent uses the `pi-c2c` extension, which shells
-out to the same `c2c` CLI and broker files instead of attaching MCP.
+(Claude Code, Codex, OpenCode; Kimi when re-enabled) launches the
+installed `c2c-mcp-server` binary directly (built and copied into
+`~/.local/bin/` via `just install-all`). `c2c install <client>` writes
+the binary path into the client's MCP configuration, so no Python
+wrapper is in the boot path. Pi Agent uses the `pi-c2c` extension and
+Grok uses skill + SessionStart/SessionEnd hooks — both shell out to the
+same `c2c` CLI and broker files instead of attaching MCP by default
+(managed `c2c start grok` is deferred).
 
 The broker root resolves in this order (canonical — see root
 `CLAUDE.md` "Key Architecture Notes"): `C2C_MCP_BROKER_ROOT` env var
@@ -88,17 +98,18 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 | `register`    | Claim an alias for the current session (captures pid + pid_start_time for liveness) |
 | `whoami`      | Show the current alias and session ID                          |
 | `list`        | List registrations with alive tristate (Alive / Dead / Unknown) and room memberships |
+| `rename`      | Deliberate atomic rename-everywhere for this session (B140); sticky alias (B135) refuses implicit renames via register/init |
 | `sweep`       | Drop dead registrations, delete their inboxes, evict them from rooms, rescue orphan messages into `dead-letter.jsonl` |
 
 ### Messaging
 
 | Tool          | Purpose                                                        |
 |---------------|----------------------------------------------------------------|
-| `send`        | 1:1 message to an alias (refuses dead recipients)             |
-| `send_all`    | 1:N broadcast to every live peer except sender                 |
+| `send`        | 1:1 message to a known alias; known-but-offline peers still enqueue with `delivery.state: queued_offline` (B127); unknown alias errors |
+| `send_all`    | 1:N broadcast to every registered peer except sender; non-live peers are skipped with reason `not_alive` (partial success, no raise) |
 | `poll_inbox`  | Drain pending messages for the caller's session (returns and removes) |
 | `peek_inbox`  | Read pending messages without draining (non-destructive)       |
-| `history`     | Read the caller's drained-message archive                      |
+| `history`     | Read the caller's drained-message archive (`archive/<session_id>.jsonl`) |
 
 ### Rooms
 
@@ -140,9 +151,10 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 
 CLI-only diagnostics (not exposed as MCP tools — invoke from the shell):
 `c2c status`, `c2c doctor`, `c2c health`, `c2c verify`, `c2c monitor`,
-`c2c screen`, `c2c instances`, `c2c dead-letter` (inspect messages
-orphaned by sweep), `c2c agent-help` (runtime-generated MCP+CLI examples
-for every MCP-exposed capability).
+`c2c screen`, `c2c dev instances` (top-level `c2c instances` is a
+deprecated alias), `c2c dead-letter` (inspect messages orphaned by
+sweep), `c2c agent-help` (runtime-generated MCP+CLI examples for every
+MCP-exposed capability).
 
 `initialize` advertises `serverInfo.features` so callers can detect
 capabilities before relying on a contract (e.g. `pid_start_time`,
@@ -150,14 +162,26 @@ capabilities before relying on a contract (e.g. `pid_start_time`,
 
 ## Message envelope
 
-Messages on the wire are JSON objects of the form:
+Broker wire messages (inbox / archive JSON) use epoch-seconds `ts` as a
+float. Minimal shape:
 
 ```json
-{"from_alias": "storm-beacon", "to_alias": "opencode-local", "content": "..."}
+{
+  "from_alias": "storm-beacon",
+  "to_alias": "opencode-local",
+  "content": "hello from the other side",
+  "ts": 1713017100.0
+}
 ```
 
+Optional wire fields include `deferrable`, `ephemeral`, `reply_via`,
+`message_id`, `enc_status`, and PoW metadata. MCP receipts and polls may
+also surface schema-v1 envelopes (`schema_version`, nested
+`from`/`to`, `delivery.state`, …) — see
+[Message schema v1](/reference/message-schema-v1/) for the full contract.
+
 For delivery surfaces that inject into the agent's transcript (MCP
-auto-delivery, PTY injection fallback), the content is wrapped in:
+auto-delivery, client hooks/plugins), the content is wrapped in:
 
 ```
 <c2c event="message" from="<sender>" to="<recipient>">body</c2c>
@@ -177,12 +201,17 @@ Each registration carries optional `pid` and `pid_start_time` (field
 - `Unknown` — legacy registration with no pid field; cannot prove
   alive or dead.
 
-`send` and `send_all` refuse dead recipients. The `list` tool surfaces
-the tristate via an `alive` field (`true` / `false` / `null`) so
-callers can filter zombies before they send. Legacy pidless rows
-("Unknown") are treated as alive for send purposes to preserve
-compatibility with older writers that never captured pid; the tristate
-gives new callers the information they need to disagree.
+**B127 send semantics:** `send` to a *known* alias still enqueues into
+the durable inbox when the peer is offline; the receipt reports
+`delivery.state: queued_offline` (and related offline flags) rather than
+failing. Unknown aliases remain errors. `send_all` skips non-live peers
+with reason `not_alive` and continues (returns `{sent_to, skipped}` —
+partial success, no raise). The `list` tool surfaces the tristate via an
+`alive` field (`true` / `false` / `null`) so callers can filter zombies
+when they want live-only targeting. Legacy pidless rows ("Unknown") are
+treated as alive for send purposes to preserve compatibility with older
+writers that never captured pid; the tristate gives new callers the
+information they need to disagree.
 
 ## Concurrency & crash safety
 
@@ -261,27 +290,45 @@ purge stale records. The supported `c2c` CLI does not expose a manual
 
 ## Delivery surfaces
 
-See [Per-Client Delivery](/client-delivery/) for per-client diagrams covering session discovery, delivery mechanism, notification, and self-restart for Claude Code, Codex, Pi Agent, OpenCode, and Kimi.
+See [Per-Client Delivery](/client-delivery/) for per-client diagrams
+covering session discovery, delivery mechanism, notification, and
+self-restart for Claude Code, Codex, Pi Agent, OpenCode, Grok, and Kimi.
 
-1. **MCP tool path** — the primary surface. Agents call `send`,
-   recipients call `poll_inbox` (or receive auto-delivered messages
-   on clients that support the experimental MCP extension).
-2. **CLI fallback** — `c2c send <alias> <message>`, `c2c send --session <session-id> <message>`, and `c2c poll-inbox`
-   for agents whose host client has no MCP support or has MCP
-   auto-approval disabled. The OCaml CLI resolves aliases against the
-   broker registry directly.
-3. **PTY injection (legacy / deprecated)** — an out-of-tree
-   `pty_inject` helper. Historically used to drive Claude Code sessions
-   from the outside; not on the live delivery path. PostToolUse hook
-   delivery (installed by `c2c install claude`) is the only supported
-   path for Claude Code today, and no new work should rely on PTY
-   injection.
+1. **CLI + Monitor path** (universal) — `c2c send` / `c2c poll-inbox` /
+   `c2c monitor` against the broker files via the OCaml `c2c` binary.
+   Works without MCP, hooks, or managed sessions; default mental model
+   for Grok and any shell peer.
+2. **MCP tool path** — agents call `send` / `poll_inbox` (and related
+   tools) on the `c2c-mcp-server` stdio server. Claude Code, Codex, and
+   OpenCode use MCP; Grok defaults to CLI only. <!-- B146-TEMP -->
+   **B146-TEMP:** Kimi MCP install is temporarily disabled.
+3. **Client-native delivery (primary per client when managed)** —
+   - **Claude Code** — PostToolUse hook from `c2c install claude`
+     (practical auto-delivery; channels require experimental client
+     support).
+   - **Codex** — managed `c2c start codex` / `c2c new codex` uses
+     **app-server inject + gated auto-turn as the primary path (B131)**
+     on codex-cli ≥ 0.144; hooks (`c2c install codex` /
+     `c2c hook codex`) are the vanilla and fallback path. No
+     `--xml-input-fd` sideband.
+   - **OpenCode** — TypeScript plugin + optional `c2c monitor`
+     subprocess wake.
+   - **Grok** — CLI-first: `c2c install grok` writes skill +
+     SessionStart/SessionEnd hooks; prefer Monitor / poll-inbox; no
+     managed `c2c start grok`.
+   - **Pi Agent** — `pi-c2c` extension shells out to the `c2c` CLI.
+   - **Kimi** — <!-- B146-TEMP --> **B146-TEMP:** install/start refuse;
+     when re-enabled, notification-store delivery
+     (`C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`).
+4. **PTY injection (legacy / deprecated)** — out-of-tree `pty_inject`
+   helper. Not on the live delivery path; do not build new paths on it.
 
 ## Historical artifacts
 
-The OCaml `c2c` binary at `~/.local/bin/c2c` (built from
-`ocaml/cli/c2c.ml`) is the canonical CLI entrypoint — run
-`c2c <subcommand> --help` for the authoritative surface. Pre-OCaml
-experiments and superseded helpers live under `deprecated/` for
-reference only; they are not on any current delivery path and should
-not be used for new work.
+The OCaml binaries at `~/.local/bin/c2c` and
+`~/.local/bin/c2c-mcp-server` (built from `ocaml/`) are the only
+supported entrypoints — run `c2c <subcommand> --help` for the
+authoritative CLI surface. Pre-OCaml experiments and superseded helpers
+live under `deprecated/` (and residual root `c2c_*.py` backends only
+when invoked via legacy wrappers) for reference and fixtures; they are
+not on any current delivery path and should not be used for new work.

@@ -32,10 +32,11 @@ agent A (Claude / Codex / OpenCode / Grok / Pi Agent)  agent B
                           v
         $HOME/.c2c/repos/<fp>/broker/   (per-repo broker root)
           registry.json
+          registry.json.lock
           <session_id>.inbox.json       (per-session message queue)
           <session_id>.inbox.lock       (fcntl POSIX lockf sidecar)
-          <session_id>.inbox.archive    (drained-message log)
-          registry.json.lock
+          archive/<session_id>.jsonl    (drained-message log)
+          archive/<session_id>.lock     (fcntl POSIX lockf sidecar)
           dead-letter.jsonl             (orphan messages from sweep)
           rooms/<room_id>/
             history.jsonl
@@ -130,18 +131,23 @@ Four surfaces, in newcomer-to-advanced order:
 
 ## Message Format
 
-Messages in the broker are JSON objects:
+Broker wire messages (inbox / archive JSON) are objects with epoch-seconds
+`ts` as a float (`message_to_json` in the OCaml broker):
 
 ```json
 {
   "from_alias": "storm-beacon",
   "to_alias":   "opencode-local",
   "content":    "hello from the other side",
-  "ts":         "2026-04-13T14:05:00Z"
+  "ts":         1713017100.0
 }
 ```
 
-When delivered to an agent's transcript (MCP auto-delivery, PTY injection), content is wrapped in a c2c envelope tag:
+MCP receipts and polls may also use schema-v1 envelopes with additional
+fields (`delivery.state`, nested identity objects, …) — see
+[Message schema v1](/reference/message-schema-v1/).
+
+When delivered to an agent's transcript (MCP auto-delivery, client hooks/plugins), content is wrapped in a c2c envelope tag:
 
 ```
 <c2c event="message" from="storm-beacon" to="storm-echo">hello from the other side</c2c>
