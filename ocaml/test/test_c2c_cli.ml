@@ -4036,24 +4036,24 @@ let test_statusline_json_reports_state () =
                 (Filename.quote dir) (Filename.quote sessions_dir)))
       in
       check int "human statusline exits 0" 0 human_rc;
-      check bool "human output uses relay glyph" true
-        (string_contains human "⇄");
+      check bool "human output uses globe+relay glyph" true
+        (string_contains human "🌐⇄");
       check bool "human output drops old 'relay:' token" true
         (not (string_contains human "relay:"));
-      check bool "human output shows repo icon + count" true
+      check bool "human output shows repo icon + spaced count" true
         (string_contains human "📦 2");
-      check bool "human output shows machine icon + count" true
-        (string_contains human "🖥 3");
+      check bool "human output shows machine icon + spaced count" true
+        (string_contains human "🖥️ 3");
       check bool "human output drops literal '2 repo' wording" true
         (not (string_contains human "2 repo"));
       check bool "human output drops literal '3 machine' wording" true
         (not (string_contains human "3 machine")))
 
 (* B169: PI_C2C_ASCII=1 swaps the unicode glyphs for plain-text fallbacks in
-   the human line (the `⇄` relay token becomes `[relay]`, and the 📦/🖥 peer
+   the human line (the `🌐⇄` relay token becomes `[relay]`, and the 📦/🖥️ peer
    icons revert to the words `repo`/`machine`). The assertions are robust to
    the relay classification: any relay state still yields a `[relay]<suffix>`
-   token, so `[relay]` is present and `⇄` is not. *)
+   token, so `[relay]` is present and `🌐`/`⇄` are not. *)
 let test_statusline_ascii_fallback () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -4074,7 +4074,9 @@ let test_statusline_ascii_fallback () =
         (string_contains human "repo");
       check bool "ascii output uses 'machine' word" true
         (string_contains human "machine");
-      check bool "ascii output drops unicode relay glyph" true
+      check bool "ascii output drops unicode globe" true
+        (not (string_contains human "🌐"));
+      check bool "ascii output drops unicode relay arrows" true
         (not (string_contains human "⇄"));
       check bool "ascii output drops unicode repo icon" true
         (not (string_contains human "📦"));

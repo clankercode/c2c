@@ -19,12 +19,12 @@ The human output uses glyphs for its two peer segments and relay state;
 | Segment | JSON field | Meaning |
 |---------|------------|---------|
 | `📦` | `peers_repo_alive` | Alive registrations in the current repository's broker. |
-| `🖥` | `peers_machine_alive` | Alive registrations in the deduplicated union of the current repository broker and the shared sessions broker. |
-| `⇄` | `relay_state` | Relay connectivity, derived from local connector state only. |
+| `🖥️` | `peers_machine_alive` | Alive registrations in the deduplicated union of the current repository broker and the shared sessions broker. |
+| `🌐⇄` | `relay_state` | Relay connectivity (globe + arrows), derived from local connector state only. |
 
 `peers_alive` is retained for compatibility and equals `peers_repo_alive`.
-The machine-wide (`🖥`) count is not a relay or internet-wide peer count:
-relay state is reported separately by the `⇄` segment / `relay_state` field,
+The machine-wide (`🖥️`) count is not a relay or internet-wide peer count:
+relay state is reported separately by the `🌐⇄` segment / `relay_state` field,
 from local connector state only.
 
 When the same `(session_id, alias)` is present in both brokers, it is counted
@@ -35,7 +35,7 @@ For example, with two alive registrations in the current repository, one of
 which is also in the sessions broker, plus one sessions-only registration:
 
 ```
-c2c my-alias · ⇄off · 📦 2 · 🖥 3
+c2c my-alias · 🌐⇄off · 📦 2 · 🖥️ 3
 ```
 
 ```json
@@ -50,7 +50,7 @@ c2c my-alias · ⇄off · 📦 2 · 🖥 3
 
 Set `PI_C2C_ASCII=1` to render the line with plain-text tokens instead of
 unicode glyphs — useful in minimal terminals or fonts that lack emoji/arrow
-support. The fallbacks are: `⇄` → `[relay]`, `📦` → `repo`, `🖥` → `machine`
+support. The fallbacks are: `🌐⇄` → `[relay]`, `📦` → `repo`, `🖥️` → `machine`
 (e.g. `c2c my-alias · [relay]off · repo 2 · machine 3`). The `--json` output
 and its field names are unaffected.
 
