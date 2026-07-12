@@ -58,7 +58,9 @@ SCRIPT_DIR = REPO_ROOT / "scripts"
 
 GATE_ENV = "C2C_CODEX_APPSERVER_LIVE"
 CODEX = os.environ.get("CODEX_BIN", shutil.which("codex") or "/home/xertrov/.bun/bin/codex")
-MODEL = os.environ.get("C2C_APPSERVER_E2E_MODEL", "gpt-5.6-luna")
+# B168: all live codex e2e must use gpt-5.3-codex-spark unless the operator
+# explicitly overrides via C2C_APPSERVER_E2E_MODEL.
+MODEL = os.environ.get("C2C_APPSERVER_E2E_MODEL", "gpt-5.3-codex-spark")
 MIN_CODEX = (0, 144)
 
 # ASCII-only draft with a unique short token: proves the composer survives the

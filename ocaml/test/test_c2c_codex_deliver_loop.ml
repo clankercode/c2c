@@ -83,6 +83,21 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
 
 (* ------------------------------------------------------------------ *)
 
+let test_b168_default_stale_threshold_on_autoturn_config () =
+  (* B168: the production loop must inherit the 2-minute stale-inbox SLA on
+     both the T003 inject config and the T007 auto-turn config. *)
+  let h = mk_harness () in
+  let d = mk_deps h in
+  let at = DL.build_autoturn_config d ~thread_id:"thread-1" in
+  Alcotest.(check (float 1e-6)) "autoturn stale threshold = 120s"
+    120.0 at.AT.stale_inbox_threshold_s;
+  Alcotest.(check (float 1e-6)) "ingress stale-pending threshold = 120s"
+    120.0 at.AT.ingress_cfg.Ing.stale_pending_threshold_s;
+  Alcotest.(check (float 1e-6)) "autoturn default constant"
+    AT.default_stale_inbox_threshold_s 120.0;
+  Alcotest.(check (float 1e-6)) "ingress default constant"
+    Ing.default_stale_pending_threshold_s 120.0
+
 let test_start_on_attach_and_drive () =
   let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
   let o = DL.run (mk_deps h) in
@@ -305,4 +320,7 @@ let () =
         ; test_case "no inbox file: no pass, no artifacts" `Quick test_global_no_inbox_file_no_artifacts
         ; test_case "DND skips the global pass" `Quick test_global_respects_dnd
         ; test_case "build_global_ingress_config shape" `Quick test_build_global_ingress_config ] )
+    ; ( "b168-stale-sla",
+        [ test_case "default stale thresholds are 120s" `Quick
+            test_b168_default_stale_threshold_on_autoturn_config ] )
     ]

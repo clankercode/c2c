@@ -116,7 +116,15 @@ type config = {
   max_turn_batch : int;
   backoff_base_s : float;
   backoff_max_s : float;
+  stale_inbox_threshold_s : float;
+      (** B168: age after which a [Turn_failed] batch is released so its
+          messages can re-batch via the app-server path (default [120.] =
+          2 minutes). Idle delivery still fires immediately; this is the
+          backstop for failed turns that would otherwise claim mail forever. *)
 }
+
+(** Default B168 stale-inbox threshold (2 minutes). *)
+val default_stale_inbox_threshold_s : float
 
 (** Build a config reusing a T003 {!Ingress.config} (broker root, session id,
     managed identity, endpoint, thread id, token provider, inject client).
@@ -174,6 +182,11 @@ type pass_outcome = {
   po_eligible_pending : int;
   po_remote_pending : int;
   po_injected_count : int;
+  po_oldest_eligible_age_s : float;
+      (** B168: age of the oldest turn-eligible pending message (0 when none). *)
+  po_stale_released : int;
+      (** B168: number of [Turn_failed] batches released this pass because they
+          exceeded {!config.stale_inbox_threshold_s}. *)
   po_recipient : string;   (** redacted — never the raw managed identity *)
 }
 

@@ -153,12 +153,17 @@ type config = {
   max_turn_batch : int;            (** cap message_ids coalesced into one turn *)
   backoff_base_s : float;
   backoff_max_s : float;
+  stale_inbox_threshold_s : float; (** B168: release failed batches after this age *)
 }
+
+(* B168: 2-minute SLA for re-batching Turn_failed mail via the app-server path. *)
+let default_stale_inbox_threshold_s = 120.0
 
 let default_config ~ingress_cfg ~turn_client ~session_active ~is_dnd =
   { ingress_cfg; turn_client; session_active; is_dnd;
     provenance = default_provenance; now = Unix.gettimeofday;
-    max_turn_batch = 64; backoff_base_s = 1.0; backoff_max_s = 60.0 }
+    max_turn_batch = 64; backoff_base_s = 1.0; backoff_max_s = 60.0;
+    stale_inbox_threshold_s = default_stale_inbox_threshold_s }
 
 (* --------------------------------- ledger --------------------------------- *)
 
@@ -311,11 +316,38 @@ let active_batch_key (cfg : config) : string option =
   (load_ledger cfg).tl_active_batch_key
 
 (* Set of message_ids already claimed by SOME batch (any state). Such a message
-   must never be re-batched into a fresh turn. *)
+   must never be re-batched into a fresh turn. [Turn_failed] batches that have
+   already been released by {!release_stale_failed_batches} are not present, so
+   their messages become re-batchable (B168). *)
 let claimed_message_ids (lg : ledger) : (string, unit) Hashtbl.t =
   let s = Hashtbl.create 64 in
   Hashtbl.iter (fun _ b -> List.iter (fun mid -> Hashtbl.replace s mid ()) b.b_message_ids) lg.tl_batches;
   s
+
+(* B168: release [Turn_failed] batches whose first_seen is older than the
+   stale-inbox threshold so their messages can re-enter eligible_pending and
+   get another app-server auto-turn. [Turn_done] stays claimed forever
+   (idempotent — never double-act). Returns how many batches were released. *)
+let release_stale_failed_batches (cfg : config) (lg : ledger) : int =
+  let now = cfg.now () in
+  let released = ref 0 in
+  let to_drop = ref [] in
+  Hashtbl.iter
+    (fun key b ->
+      match b.b_state with
+      | Turn_failed when now -. b.b_first_seen >= cfg.stale_inbox_threshold_s ->
+          to_drop := key :: !to_drop
+      | _ -> ())
+    lg.tl_batches;
+  List.iter
+    (fun key ->
+      Hashtbl.remove lg.tl_batches key;
+      (match lg.tl_active_batch_key with
+       | Some k when k = key -> lg.tl_active_batch_key <- None
+       | _ -> ());
+      incr released)
+    !to_drop;
+  !released
 
 (* Bound + single-line a server-controlled reason string so a hostile/echoing
    app-server can't smuggle payload content or newlines into the structured
@@ -390,6 +422,8 @@ type pass_outcome = {
   po_eligible_pending : int;
   po_remote_pending : int;
   po_injected_count : int;
+  po_oldest_eligible_age_s : float;
+  po_stale_released : int;
   po_recipient : string;
 }
 
@@ -405,16 +439,22 @@ let pass_outcome_to_json o =
       ("eligible_pending", `Int o.po_eligible_pending);
       ("remote_pending", `Int o.po_remote_pending);
       ("injected_count", `Int o.po_injected_count);
+      ("oldest_eligible_age_s", `Float o.po_oldest_eligible_age_s);
+      ("stale_released", `Int o.po_stale_released);
       ("recipient", `String o.po_recipient) ]
 
 let mk_outcome ?queued_reason ?turn_started ?batch_key ?(batch_message_ids = [])
     ?completed_batch ?reconciled_batch ?(eligible_pending = 0) ?(remote_pending = 0)
-    ?(injected_count = 0) (cfg : config) : pass_outcome =
+    ?(injected_count = 0) ?(oldest_eligible_age_s = 0.0) ?(stale_released = 0)
+    (cfg : config) : pass_outcome =
   { po_queued_reason = queued_reason; po_turn_started = turn_started;
     po_batch_key = batch_key; po_batch_message_ids = batch_message_ids;
     po_completed_batch = completed_batch; po_reconciled_batch = reconciled_batch;
     po_eligible_pending = eligible_pending; po_remote_pending = remote_pending;
-    po_injected_count = injected_count; po_recipient = redacted_recipient cfg }
+    po_injected_count = injected_count;
+    po_oldest_eligible_age_s = oldest_eligible_age_s;
+    po_stale_released = stale_released;
+    po_recipient = redacted_recipient cfg }
 
 (* --------------------------------- driver --------------------------------- *)
 
@@ -520,6 +560,24 @@ let advance_active (cfg : config) (lg : ledger) : bool * string option * string 
               | _ -> (true, None, None)))
       )
 
+(* Age of the oldest turn-eligible pending message. Prefer the T003 ledger
+   first_seen (how long the deliver loop has known about it); fall back to the
+   broker message timestamp. Used for B168 metrics / SLA visibility. *)
+let oldest_eligible_age (cfg : config) (pending : (C2c_mcp.message * string) list) : float =
+  let now = cfg.now () in
+  List.fold_left
+    (fun acc ((m : C2c_mcp.message), mid) ->
+      let first_seen =
+        match Ingress.ledger_entry cfg.ingress_cfg ~message_id:mid with
+        | Some e -> e.Ingress.le_first_seen
+        | None ->
+            (* Broker message timestamp (send/enqueue time). *)
+            m.C2c_mcp.ts
+      in
+      let age = Float.max 0.0 (now -. first_seen) in
+      if age > acc then age else acc)
+    0.0 pending
+
 let deliver_pass (cfg : config) : pass_outcome =
   with_turn_lock cfg @@ fun () ->
   (* 1. offline gate: never inject, never turn, leave durably queued. *)
@@ -528,10 +586,14 @@ let deliver_pass (cfg : config) : pass_outcome =
   else if cfg.is_dnd () then mk_outcome ~queued_reason:Q_dnd cfg
   else begin
     (* 3. persist-first + inject (T003). Makes eligible mail model-visible;
-       idempotent; never drains. *)
+       idempotent; never drains. B168: ingress itself force-retries injects
+       that have sat longer than its stale threshold. *)
     let ingress_health = Ingress.deliver_pass cfg.ingress_cfg in
     let injected_count = ingress_health.Ingress.injected_count in
     let lg = load_ledger cfg in
+    (* 3b. B168: release stale Turn_failed batches so mail can re-batch. *)
+    let stale_released = release_stale_failed_batches cfg lg in
+    if stale_released > 0 then save_ledger cfg lg;
     (* 4. advance / reconcile the active batch (detect completion, reconcile
        ambiguous). *)
     let blocked, completed, reconciled = advance_active cfg lg in
@@ -539,13 +601,17 @@ let deliver_pass (cfg : config) : pass_outcome =
     let broker = C2c_mcp.Broker.create ~root:cfg.ingress_cfg.broker_root in
     let msgs = C2c_mcp.Broker.read_inbox broker ~session_id:cfg.ingress_cfg.session_id in
     let pending, remote_pending = eligible_pending cfg lg msgs in
-    let base_fields ?queued_reason () =
-      mk_outcome ?queued_reason ?completed_batch:completed ?reconciled_batch:reconciled
-        ~eligible_pending:(List.length pending) ~remote_pending ~injected_count cfg
+    let oldest_age = oldest_eligible_age cfg pending in
+    let base_fields ?queued_reason ?turn_started ?batch_key ?(batch_message_ids = []) () =
+      mk_outcome ?queued_reason ?turn_started ?batch_key ~batch_message_ids
+        ?completed_batch:completed ?reconciled_batch:reconciled
+        ~eligible_pending:(List.length pending) ~remote_pending ~injected_count
+        ~oldest_eligible_age_s:oldest_age ~stale_released cfg
     in
     if blocked then begin
       (* a turn is still in flight (or an ambiguous batch is held): accumulate,
-         do NOT start a second turn. *)
+         do NOT start a second turn. Stale age does NOT override serialization
+         (B098 / T007: never concurrent turns). *)
       save_ledger cfg lg;
       let qr =
         match lg.tl_active_batch_key with
@@ -564,8 +630,9 @@ let deliver_pass (cfg : config) : pass_outcome =
     end
     else begin
       (* 6. no active turn + eligible mail → claim + start ONE batched turn.
-         Double-check the thread is idle first (an operator/other turn may be
-         running even with no batch of ours). *)
+         Idle path (B168 AC): fire immediately — do NOT wait for the 2-minute
+         stale threshold. Double-check the thread is idle first (an
+         operator/other turn may be running even with no batch of ours). *)
       match cfg.ingress_cfg.token_provider () with
       | None ->
           save_ledger cfg lg;
@@ -581,7 +648,7 @@ let deliver_pass (cfg : config) : pass_outcome =
              confirm the thread is idle, so we must fail closed and queue —
              firing here could start a turn concurrent with an in-flight one
              (the prohibited case). A later pass retries once the status is
-             confirmable. *)
+             confirmable. Stale age does not override this gate. *)
           if status <> `Idle then begin
             save_ledger cfg lg;
             let qr = if status = `Active then Q_active_turn else Q_status_unknown in
@@ -597,10 +664,14 @@ let deliver_pass (cfg : config) : pass_outcome =
             let now = cfg.now () in
             let existing = Hashtbl.find_opt lg.tl_batches key in
             (* idempotency: a fully-acked batch with this exact key is never
-               re-fired. *)
+               re-fired. Turn_failed for this exact key was released above if
+               stale; a fresh failure this pass still lands as Turn_failed. *)
             (match existing with
-             | Some { b_state = (Turn_running _ | Turn_done | Turn_ambiguous_held _); _ } ->
-                 (* already fired/held for this exact message set — do not refire. *)
+             | Some { b_state = (Turn_running _ | Turn_done | Turn_ambiguous_held _
+                                | Turn_failed); _ } ->
+                 (* already fired/held/failed for this exact message set — do not
+                    refire. Stale Turn_failed was released above so it will not
+                    match here; non-stale Turn_failed stays claimed. *)
                  save_ledger cfg lg
              | _ ->
                  let retry = match existing with Some e -> e.b_retry_count | None -> 0 in
@@ -644,17 +715,13 @@ let deliver_pass (cfg : config) : pass_outcome =
             let final_state = Option.map (fun b -> b.b_state) (Hashtbl.find_opt lg.tl_batches key) in
             match final_state with
             | Some (Turn_running tid) ->
-                mk_outcome ~turn_started:tid ~batch_key:key ~batch_message_ids:batch_ids
-                  ?completed_batch:completed ?reconciled_batch:reconciled
-                  ~eligible_pending:(List.length pending) ~remote_pending ~injected_count cfg
+                base_fields ~turn_started:tid ~batch_key:key ~batch_message_ids:batch_ids ()
             | Some (Turn_ambiguous_held _) ->
-                mk_outcome ~queued_reason:Q_ambiguous_held ~batch_key:key ~batch_message_ids:batch_ids
-                  ?completed_batch:completed ?reconciled_batch:reconciled
-                  ~eligible_pending:(List.length pending) ~remote_pending ~injected_count cfg
+                base_fields ~queued_reason:Q_ambiguous_held ~batch_key:key
+                  ~batch_message_ids:batch_ids ()
             | Some Turn_failed ->
-                mk_outcome ~queued_reason:Q_turn_failed ~batch_key:key ~batch_message_ids:batch_ids
-                  ?completed_batch:completed ?reconciled_batch:reconciled
-                  ~eligible_pending:(List.length pending) ~remote_pending ~injected_count cfg
+                base_fields ~queued_reason:Q_turn_failed ~batch_key:key
+                  ~batch_message_ids:batch_ids ()
             | _ ->
                 (* rolled back (recoverable) or already-done idempotent hit *)
                 let qr =

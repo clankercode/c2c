@@ -1,4 +1,4 @@
-(* B144 — in-suite gate + skip proof for the two live Codex E2E transports.
+(* B144 / B168 — in-suite gate + skip proof for the two live Codex E2E transports.
 
    These two cases keep the live E2E paths inside the canonical `dune runtest`
    surface WITHOUT making the default suite non-hermetic:
@@ -17,6 +17,11 @@
      * hooks+CLI     — scripts/codex-hooks-live-e2e.py, gate C2C_CODEX_HOOKS_LIVE
      * managed app-server — scripts/codex-managed-appserver-live-e2e.py,
        gate C2C_CODEX_APPSERVER_LIVE
+       B168: harness defaults to model gpt-5.3-codex-spark and proves idle
+       arrival-time inject + auto-turn (PostToolHook stays installed but is
+       identity-only for app-server; the deliver loop owns idle/stale delivery).
+       The 2-minute stale-inbox force-retry path is covered by unit tests with
+       a compressed clock (waiting 2+ minutes in live e2e is not practical).
 
    The gate vocabulary reuses the established C2C_CODEX_APPSERVER_LIVE (already
    the live app-server gate in test_c2c_codex_app_server.ml) and a parallel
