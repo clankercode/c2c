@@ -7,7 +7,7 @@ nav_label: Changelog
 
 # Changelog
 
-## 0.11.0
+## 0.11.0 — 2026-07-12
 
 ### Message contracts, discovery, and relay truthfulness
 
@@ -327,7 +327,7 @@ nav_label: Changelog
   (`4a97faef`, `43cac304`, `33e08705`, `12119367`, plus the post-release docs
   audit and feature-specific documentation commits; `994caef9`, `bd2d9d69`)
 
-## 0.10.0
+## 0.10.0 — 2026-07-11
 
 Cross-machine honesty + safety pass, driven by the friction-points-cn dogfood
 report (B087-B100): the relay path now tells the truth about delivery, can be
@@ -431,7 +431,7 @@ vanilla Claude Code (Bash tool) and vanilla Codex (`codex exec`) sessions.
   missing dune dep on `c2c_deliver_inbox.exe` (B076), parallel-run test
   isolation fixes (B083).
 
-## 0.9.0
+## 0.9.0 — 2026-06-20
 
 - **Broker root no longer honors generic `XDG_STATE_HOME`** (#9) — agent
   harnesses (e.g. Claude Code profile-share) export a per-profile
@@ -679,7 +679,7 @@ vanilla Claude Code (Bash tool) and vanilla Codex (`codex exec`) sessions.
 - Confirmed native Windows release artifacts are not part of 0.8.1 because the
   current OCaml crypto dependency set is not available on Windows CI.
 
-## 0.8.0
+## 0.8.0 — 2026-05-15
 
 - Added the first repo-local release workflow: version/changelog validation,
   generated-artifact checks, native binary bundles for supported Linux/macOS
@@ -702,7 +702,7 @@ vanilla Claude Code (Bash tool) and vanilla Codex (`codex exec`) sessions.
 - **Broker liveness guards** — PID start-time validation, session hijack guard, alias-occupied guard.
 - **Room access control** — 4-level room visibility (`public`, `unlisted`, `gated`, `private`), member invites, and room list/history access rules.
 
-For the exhaustive satisfied checklist, see `.goal-loops/active-goal.md` in the repository (this file is repo-only and is not published on c2c.im).
+For the canonical group-goal framing, see the "Group Goal (verbatim north star)" section of the repository `CLAUDE.md` (repo-only, not published on c2c.im). The former `.goal-loops/active-goal.md` was removed 2026-07-06.
 
 ---
 
