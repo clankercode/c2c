@@ -1,8 +1,11 @@
 # c2c Environment Variables Reference
 
 **Source**: CLAUDE.md "Key Architecture Notes" env-var dictionary
-**Purpose**: Complete reference for c2c environment variables — kept here to
-keep CLAUDE.md lean. All values are verbatim from source; do not paraphrase.
+**Purpose**: Reference for the operator-relevant c2c environment variables —
+kept here to keep CLAUDE.md lean. Internal/test-fixture vars (`C2C_*_FIXTURE`,
+`C2C_TEST_*`, codex ingress/probe plumbing, etc.) are intentionally excluded;
+this is not an exhaustive dump of every `C2C_*` token in the source. All values
+are verbatim from source; do not paraphrase.
 
 ---
 
@@ -73,6 +76,32 @@ Tmux target for managed sessions (set by `c2c start`). Used by the inner MCP ser
 
 Comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c install <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
 
+### `C2C_MCP_AUTO_DRAIN_CHANNEL`
+
+Controls whether the inner MCP server auto-drains the inbox into a
+`notifications/claude/channel` push after each RPC. **Default `1` (ON) since the
+#346 flip** — when unset the server treats it as enabled (`c2c_mcp_server_inner.ml`:
+`None ⇒ true`). The drain only fires for clients that declare
+`experimental.claude/channel` support in `initialize`; standard Claude Code does
+NOT declare it, so the default has no effect there (no silent inbox drain). Values
+`0`/`false`/`no`/`off` (case-insensitive) disable it. **Managed installs write `0`**
+explicitly (`c2c install`/`c2c start` — `c2c_setup.ml`, `c2c_start.ml`), overriding
+the default so managed clients never auto-drain. The old footgun (silent inbox
+drain, messages lost) is fixed. See CLAUDE.md "Key Architecture Notes" and
+`.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`.
+
+### `C2C_MCP_SCHEDULE_TIMER`
+
+Enables the inner MCP server's built-in Lwt schedule timer, which reads
+`.c2c/schedules/<alias>/*.toml` and fires due schedules as self-DMs
+(`c2c_mcp_server_inner.ml`: `schedule_timer_enabled`). **Default OFF** — when unset
+the timer does not run; truthy values `1`/`true`/`yes`/`on` (case-insensitive)
+enable it. **Managed sessions set `1`** automatically: `c2c start` sets it in the
+MCP child's env (and mirrors it into its own env, S6c) and then skips its own
+stat-poll schedule-watcher thread, so there is no double-fire. Raw (non-managed)
+MCP-configured sessions can opt in by exporting it before launch. See
+`.collab/runbooks/agent-wake-setup.md` § Option 0b for the full mechanics.
+
 ---
 
 ## Inbox / Delivery
@@ -138,6 +167,17 @@ Test-only companion to the fixture gate: the `agent_status` value the herdr idle
 
 ## Codex app-server delivery + nudge (B131 / B136)
 
+### `C2C_CODEX_FORCE_HOOKS`
+
+Hidden operator/testing-only escape. The app-server transport is the **default
+and only** managed codex path on a supported codex (B131) — there is no
+`--app-server` flag and no `C2C_CODEX_APP_SERVER` gate (both removed). Setting
+`C2C_CODEX_FORCE_HOOKS=1` makes a managed launch skip the app-server path
+entirely and fall back to the hook delivery path
+(`c2c_codex_session.ml`; only the exact value `1` triggers it). Not user-facing —
+intended for operator testing of the hook fallback. Any other value (or unset)
+leaves app-server as the default.
+
 ### `C2C_CODEX_MANAGED`
 
 Set to `1` by every managed Codex launch (`C2c_codex_session.run`, `ocaml/c2c_codex_session.ml`) **before** any codex child (app-server frontend/server, or the hook-fallback child) is spawned, so all of them — and the hooks they fire — inherit it. It is the load-bearing "this codex session is managed" marker for the B136 nudge: a managed app-server session otherwise resolves in the hook as vanilla (it persists `codex-session.json` rather than the legacy instance `config.json`, registers under the managed instance name not the payload thread id, and sets no `C2C_MCP_SESSION_ID`), so this env is what reliably suppresses the nudge for real `c2c new codex` sessions. Non-secret; read only by the nudge gate.
@@ -153,6 +193,37 @@ Set to `1` by a managed app-server Codex session (`C2c_codex_session.run_deliver
 ### `C2C_CODEX_APPSERVER_NUDGE_EVERY`
 
 Integer cadence (default `5`) for the `c2c hook codex` SessionStart tip that steers vanilla / hook-fallback Codex sessions toward the managed app-server path (`c2c new codex`, arrival-time delivery). The tip appears once every N **eligible** (truly-vanilla) SessionStart fires — a per-invocation counter persisted at `<broker_root>/codex-appserver-nudge.count` is incremented only on eligible fires. Non-integer values fall back to `5`; **`0` (or any value ≤ 0) disables the nudge entirely** (a clean off switch). The tip is NEVER shown in a session that already has managed/app-server delivery: suppressed when `C2C_CODEX_MANAGED` is set (the load-bearing marker — every managed codex launch), `C2C_CODEX_INGRESS_LIVE` is set, `C2C_MCP_SESSION_ID` is set (hook-fallback managed), the payload thread maps to a managed c2c instance, or the resolved registration is `client_type=codex-app-server`. It also only emits after the incremented counter is durably written (an I/O failure yields no tip), and the read-modify-write is flock-serialized so concurrent SessionStart hooks can't all emit at once. The whole path is best-effort: any error simply hides the tip and never fails the codex turn.
+
+### `C2C_CODEX_TURN_MODEL`
+
+Advanced/operator override for the T007 auto-turn: when set (non-empty), the
+app-server auto-turn dispatcher pins `model` on the `turn/start` params
+(`c2c_codex_autoturn.ml`) instead of leaving it to the thread's configured client
+policy. Unset (the default) means the thread's own default model is used. Primarily
+used by the live E2E to keep runs deterministic; production leaves it unset.
+
+### `C2C_CODEX_TURN_APPROVAL_POLICY`
+
+Advanced/operator override for the T007 auto-turn: when set (non-empty), pins
+`approvalPolicy` on the auto-turn `turn/start` params (`c2c_codex_autoturn.ml`).
+Unset (the default) uses the thread's configured approval policy. Same
+E2E-determinism use case as `C2C_CODEX_TURN_MODEL`.
+
+---
+
+## Permission supervisors
+
+### `C2C_PERMISSION_SUPERVISOR` / `C2C_SUPERVISORS`
+
+Override the supervisor alias(es) the permission-notice path (opencode plugin,
+kimi PreToolUse hook, `c2c health`) resolves. `C2C_PERMISSION_SUPERVISOR` is a
+**single alias** and has the **highest priority** (default supervisor when nothing
+else is configured is `coordinator1`); `C2C_SUPERVISORS` is a **comma-separated
+list** consulted as the fallback when `C2C_PERMISSION_SUPERVISOR` is unset/empty
+(`c2c_health_cmd.ml`, `c2c_config_cmd.ml`, `c2c_opencode_plugin_embedded.ml`). Both
+override the `supervisors[]` list in `.c2c/repo.json` (#490 Slice 5e) when set.
+`c2c config` prints the effective override hint
+(`Override: C2C_PERMISSION_SUPERVISOR=alias or C2C_SUPERVISORS=a,b`).
 
 ---
 

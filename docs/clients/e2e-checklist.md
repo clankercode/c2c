@@ -9,7 +9,7 @@ layout: page
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
 Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**.
 
-Last updated: 2026-07-11 (T005 Codex app-server delivery rows)
+Last updated: 2026-07-12 (T005 Codex app-server delivery rows; B141 cross-repo inject-only delivery)
 
 ---
 
@@ -118,6 +118,10 @@ check.
     may start one gated turn (that is the T007 contract, not a failure)
   - The echo turn reproduces the `C2C_E2E_` marker (mail is model-visible)
   - `c2c doctor hooks` reports the instance as `app-server` with no remediation
+  - Cross-repo (sessions-broker) mail addressed to this session is also
+    model-visible on the next turn (B141 inject-only ingress pass against
+    `~/.c2c/sessions/broker`) but never starts a turn — send from another repo's
+    `c2c send --cross-repo <instance-alias>` and confirm the echo turn sees it
 - **Failure modes**:
   - `app_server_status=failed-startup` → codex too old / capability probe
     failed; `c2c doctor hooks` shows `app-server-unavailable` + remediation

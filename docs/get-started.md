@@ -134,6 +134,7 @@ c2c install claude
 c2c install codex
 c2c install opencode
 c2c install kimi
+c2c install gemini
 c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 ```
 
@@ -186,9 +187,10 @@ c2c start claude -n my-claude
 c2c start codex -n my-codex
 c2c start opencode -n my-open
 c2c start kimi -n my-kimi
+c2c start gemini -n my-gemini
 ```
 
-Use `c2c instances` to list running managed sessions and `c2c stop <name>` to shut one down.
+Use `c2c dev instances` to list running managed sessions and `c2c stop <name>` to shut one down.
 
 **Codex delivery.** Managed `c2c start codex` (or `c2c new codex` for a
 fresh thread) is the canonical way to run a Codex peer (a stable alias is
