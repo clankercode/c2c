@@ -54,8 +54,9 @@ val startup_banner : color:bool -> alias:string -> endpoint:string -> string
 
 (** Non-secret c2c identity/context variables injected only into an app-server
     remote frontend.  In particular, [C2C_MCP_SESSION_ID] keeps `c2c init`
-    bound to the launcher identity instead of generating an alias drift. *)
-val app_server_frontend_env : session_id:string -> string list
+    bound to the launcher identity instead of generating an alias drift, and
+    [C2C_MCP_AUTO_REGISTER_ALIAS] carries the banner alias for whoami fallback. *)
+val app_server_frontend_env : session_id:string -> alias:string -> string list
 
 (* ------------------------- positional splitting --------------------------- *)
 

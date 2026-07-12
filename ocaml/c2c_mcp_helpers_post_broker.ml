@@ -772,6 +772,72 @@ let managed_instances_dir () =
       let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
       Filename.concat home ".local/share/c2c/instances"
 
+let string_field_of_assoc fields key =
+  match List.assoc_opt key fields with
+  | Some (`String value) when String.trim value <> "" ->
+      Some (String.trim value)
+  | _ -> None
+
+(* Prefer the durable app-server mapping (codex-session.json). Managed
+   `c2c new/start codex` persists the live Codex thread there on discovery
+   (B131), while legacy config.json thread fields are written in the same
+   pass — both are consulted so CLI whoami and MCP hooks share one map. *)
+let managed_session_id_from_codex_session_json ~instance_dir ~thread_id =
+  let path = Filename.concat instance_dir "codex-session.json" in
+  if not (Sys.file_exists path) then None
+  else
+    try
+      let fields =
+        match Yojson.Safe.from_file path with
+        | `Assoc assoc -> assoc
+        | _ -> []
+      in
+      match string_field_of_assoc fields "thread_id",
+            string_field_of_assoc fields "session_id" with
+      | Some tid, Some sid when String.equal tid thread_id -> Some sid
+      | _ -> None
+    with _ -> None
+
+let managed_session_id_from_codex_config_json ~instance_dir ~broker_root ~thread_id =
+  let config_path = Filename.concat instance_dir "config.json" in
+  if not (Sys.file_exists config_path) then None
+  else
+    try
+      let fields =
+        match Yojson.Safe.from_file config_path with
+        | `Assoc assoc -> assoc
+        | _ -> []
+      in
+      let string_field = string_field_of_assoc fields in
+      let is_codex_family =
+        match string_field "client" with
+        | Some ("codex" | "codex-headless") -> true
+        | _ -> false
+      in
+      let broker_matches =
+        match string_field "broker_root" with
+        | Some root -> String.equal root broker_root
+        (* #504 intentionally omits a default broker root from managed
+           instance configs so they do not pin a stale fingerprint.
+           An omitted value therefore means "this invocation's
+           resolver-default broker", not "unmanaged".  Requiring a
+           serialized root here made an app-server SessionStart miss
+           its own thread mapping and mint a second Codex alias. *)
+        | None -> true
+      in
+      let thread_matches =
+        (match string_field "resume_session_id" with
+         | Some value -> String.equal value thread_id
+         | None -> false)
+        || (match string_field "codex_resume_target" with
+            | Some value -> String.equal value thread_id
+            | None -> false)
+      in
+      if is_codex_family && broker_matches && thread_matches
+      then string_field "session_id"
+      else None
+    with _ -> None
+
 let managed_session_id_from_codex_thread ~broker_root ~thread_id =
   let instances_dir = managed_instances_dir () in
   if not (Sys.file_exists instances_dir && Sys.is_directory instances_dir) then None
@@ -780,48 +846,14 @@ let managed_session_id_from_codex_thread ~broker_root ~thread_id =
     let matches =
       List.filter_map
         (fun name ->
-          let config_path =
-            Filename.concat (Filename.concat instances_dir name) "config.json"
-          in
-          if not (Sys.file_exists config_path) then None
+          let instance_dir = Filename.concat instances_dir name in
+          if not (Sys.file_exists instance_dir && Sys.is_directory instance_dir) then None
           else
-            try
-              let json = Yojson.Safe.from_file config_path in
-              let fields = match json with `Assoc assoc -> assoc | _ -> [] in
-              let string_field key =
-                match List.assoc_opt key fields with
-                | Some (`String value) when String.trim value <> "" ->
-                    Some (String.trim value)
-                | _ -> None
-              in
-              let is_codex_family =
-                match string_field "client" with
-                | Some ("codex" | "codex-headless") -> true
-                | _ -> false
-              in
-              let broker_matches =
-                match string_field "broker_root" with
-                | Some root -> String.equal root broker_root
-                (* #504 intentionally omits a default broker root from managed
-                   instance configs so they do not pin a stale fingerprint.
-                   An omitted value therefore means "this invocation's
-                   resolver-default broker", not "unmanaged".  Requiring a
-                   serialized root here made an app-server SessionStart miss
-                   its own thread mapping and mint a second Codex alias. *)
-                | None -> true
-              in
-              let thread_matches =
-                (match string_field "resume_session_id" with
-                 | Some value -> String.equal value thread_id
-                 | None -> false)
-                || (match string_field "codex_resume_target" with
-                    | Some value -> String.equal value thread_id
-                    | None -> false)
-              in
-              if is_codex_family && broker_matches && thread_matches
-              then string_field "session_id"
-              else None
-            with _ -> None)
+            match managed_session_id_from_codex_session_json ~instance_dir ~thread_id with
+            | Some _ as sid -> sid
+            | None ->
+                managed_session_id_from_codex_config_json
+                  ~instance_dir ~broker_root ~thread_id)
         entries
     in
     match matches with

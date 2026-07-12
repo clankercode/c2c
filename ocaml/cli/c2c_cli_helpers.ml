@@ -175,11 +175,93 @@ let session_id_from_statefile () =
         None
       end
 
+(* B172: Codex app-server shell tools often export only CODEX_THREAD_ID (the
+   live thread UUID). Managed identity markers stay frontend-scoped on purpose
+   (B137 nested-theft guard), so bare `c2c whoami`/`send` would otherwise look
+   up the unregistered thread id. Prefer, in order:
+   1. durable thread→managed map (codex-session.json / config.json)
+   2. sole alive codex-app-server registration (first-turn race before the
+      deliver loop persists the discovered thread — only when unambiguous) *)
+(* First-turn race helper: only adopt a sole alive app-server identity when
+   unambiguous AND that instance is not already bound to a *different* thread.
+   Never steals a thread that is itself already registered (vanilla codex). *)
+let sole_alive_codex_app_server_session ~broker_root ~thread_id =
+  try
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    let regs = C2c_mcp.Broker.list_registrations broker in
+    if List.exists (fun (r : C2c_mcp.registration) -> r.session_id = thread_id) regs
+    then None
+    else
+      let candidates =
+        List.filter
+          (fun (r : C2c_mcp.registration) ->
+            r.client_type = Some "codex-app-server"
+            && C2c_mcp.Broker.registration_is_alive r)
+          regs
+      in
+      match candidates with
+      | [ r ] ->
+          (* If this managed instance already has a durable thread that is NOT
+             ours, do not adopt it (another conversation owns that unit). *)
+          let instances_dir =
+            C2c_mcp_helpers_post_broker.managed_instances_dir ()
+          in
+          let mapping_path =
+            Filename.concat (Filename.concat instances_dir r.alias)
+              "codex-session.json"
+          in
+          let bound_other_thread =
+            try
+              if not (Sys.file_exists mapping_path) then false
+              else
+                match Yojson.Safe.from_file mapping_path with
+                | `Assoc fields ->
+                    (match List.assoc_opt "thread_id" fields with
+                     | Some (`String t) ->
+                         let t = String.trim t in
+                         t <> "" && t <> thread_id
+                     | _ -> false)
+                | _ -> false
+            with _ -> false
+          in
+          if bound_other_thread then None else Some r.session_id
+      | _ -> None
+  with _ -> None
+
+let managed_session_id_for_codex_thread_env ~sid =
+  let explicit_mcp =
+    match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+    | Some v when String.trim v <> "" -> true
+    | _ -> false
+  in
+  if explicit_mcp then None
+  else
+    let from_codex_thread =
+      match Sys.getenv_opt "CODEX_THREAD_ID" with
+      | Some tid when String.trim tid <> "" && String.trim tid = sid -> true
+      | _ -> false
+    in
+    if not from_codex_thread then None
+    else
+      let broker_root = resolve_broker_root () in
+      match
+        C2c_mcp_helpers_post_broker.managed_session_id_from_codex_thread
+          ~broker_root ~thread_id:sid
+      with
+      | Some _ as managed -> managed
+      | None -> sole_alive_codex_app_server_session ~broker_root ~thread_id:sid
+
 let env_session_id () =
   match C2c_mcp.session_id_from_env () with
   | Some s ->
-      if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning Some=%s\n%!" s;
-      Some s
+      let resolved =
+        match managed_session_id_for_codex_thread_env ~sid:s with
+        | Some managed -> managed
+        | None -> s
+      in
+      if debug_enabled then
+        Printf.eprintf "[DEBUG env_session_id] returning Some=%s\n%!" resolved;
+      Some resolved
   | None ->
       (match session_id_from_statefile () with
        | Some s ->
