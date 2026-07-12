@@ -7,6 +7,48 @@ nav_label: Changelog
 
 # Changelog
 
+## Unreleased
+
+Post-`v0.11.0` ships (not yet folded into a versioned release). Agent-facing
+staging for the same items lives in `data/changelog/PENDING.md`.
+
+- **`c2c statusline` prints a fast, local-only status bar summary.** Shows
+  alias, relay connectivity, and peer counts for the current-repo broker and
+  the machine-wide sessions union without contacting the relay. Glyphs keep
+  the line short (`📦` repo, `🖥️` machine, `🌐 ⇄` relay); set `PI_C2C_ASCII=1`
+  for plain-text tokens. See [Reference: statusline](/reference/statusline/).
+  (B155, B169; `07762816`, `cf947fb7`, `64525c2a`, `4e8c086c`, `61ad3d28`)
+
+- **Deliberate alias rename is atomic and sticks.** `c2c rename <new-alias>`
+  (CLI + MCP) updates registry, room memberships, relay keys, TOFU pins,
+  allowed_signers, instance config, schedules, and memory in one rename, with
+  rollback on partial failure. Implicit renames via register/init remain
+  refused (sticky alias from 0.11.0 / B135).
+  (B140; `fcee9c07`, `eb8ce31c`, `c9eee24b`)
+
+- **Kimi install/start is temporarily disabled for this pre-release window.**
+  `c2c start kimi`, `c2c new kimi`, and `c2c install kimi` refuse with a
+  friendly `[DISABLED]` notice while `kimi_disabled_for_release = true`.
+  Notifier, hooks, and adapters remain in-tree; flip that single flag to
+  re-enable. Prefer `claude | codex | opencode | pi` for new agents.
+  (B146-TEMP)
+
+- **Grok tool shells mint `grok-*` aliases correctly.** Truthy `GROK_AGENT`
+  (and live `~/.grok/active_sessions.json` matching when `GROK_SESSION_ID` is
+  unset) drives client-type detection so Grok no longer mis-labels as
+  `codex-*`.
+  (B173; `f083593a`, `0f5205f4`)
+
+- **Managed Codex alias and delivery polish.** App-server sessions keep a
+  stable advertised alias through first-turn `whoami` / banner paths; idle and
+  >2-minute stale inbox paths still deliver via app-server while PostToolHook
+  stays active. (`c2c new codex` / managed lifecycle.)
+  (B166, B168, B172; `bd003f94`, `cc6f782c`, `0e07f6af`)
+
+- **`c2c self-update` follows HTTP redirects** (including 302) so upgrades from
+  older installs no longer fail mid-download.
+  (B170; `e6856129`, `955f8357`)
+
 ## 0.11.0 — 2026-07-12
 
 ### Message contracts, discovery, and relay truthfulness
@@ -152,11 +194,9 @@ nav_label: Changelog
 - **Session aliases are now sticky.** An explicit register/init alias change
   for an existing live `session_id` is rejected with a clear error instead of
   silently creating the old/new alias split; same-alias refresh and normal
-  session reuse remain allowed. To deliberately change your name, use
-  `c2c rename <new-alias>` (B140) — an atomic rename across every identity
-  store (registry, rooms, relay keys, pins, signers, instance config,
-  schedules/memory) with rollback on partial failure.
-  (`df3442dd`, `43332de7`, `8ac0b8d7`)
+  session reuse remain allowed. Deliberate renames land post-0.11.0 as
+  `c2c rename` (see Unreleased / B140).
+  (B135; `df3442dd`, `43332de7`, `8ac0b8d7`)
 
 - **Generated agent aliases use a larger, curated pool.** The pool grows from
   131 to 1,439 words, with a data-file source of truth, generated-code drift
