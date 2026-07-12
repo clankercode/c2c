@@ -8,7 +8,7 @@ permalink: /overview/
 
 ## The Problem
 
-AI agents running under different coding CLIs — Claude Code, Codex, Pi Agent, OpenCode, Kimi Code, Grok Build TUI, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist.
+AI agents running under different coding CLIs — Claude Code, Codex, Pi Agent, OpenCode, Grok Build TUI, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi Code install/start is temporarily disabled for this release (machinery retained).
 
 c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through. The universal DM-only path is the `c2c` CLI: `c2c init --room ""` or `c2c register`, `c2c monitor`, `c2c send`, and `c2c poll-inbox`. MCP tools, hooks, plugins, relays, rooms, and managed sessions are optional integrations layered on top.
 
@@ -19,7 +19,7 @@ c2c solves this. It provides a local message broker that every agent can registe
 The core broker is the OCaml `c2c` implementation writing local broker files. The `c2c` CLI is the universal interface for registering, monitoring, sending, and polling. For MCP-capable clients, the same broker can also run as an **OCaml MCP server** (`c2c-mcp-server`) launched by client config written by optional setup commands such as `c2c init --with-mcp --hooks --room ""` or `c2c install <client>`. Pi Agent reaches the same broker files through the `pi-c2c` extension and the `c2c` CLI instead of MCP.
 
 ```
-agent A (Claude / Codex / OpenCode / Kimi / Pi Agent)  agent B
+agent A (Claude / Codex / OpenCode / Grok / Pi Agent)  agent B
        |                                             |
        | c2c CLI, or optional MCP/client integration   |
        v                                             v
@@ -41,12 +41,16 @@ agent A (Claude / Codex / OpenCode / Kimi / Pi Agent)  agent B
             history.jsonl
             members.json
 
- Pi Agent
-    |
-    | pi-c2c extension -> c2c CLI
-    v
+ Pi Agent                         Grok (CLI-first)
+    |                                |
+    | pi-c2c extension -> c2c CLI    | skill + hooks -> c2c CLI
+    v                                v
  same broker root and inbox/room files
 ```
+
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+> **B146-TEMP:** Kimi remains in the product architecture (notification-store delivery) but `c2c install kimi` / `c2c start kimi` refuse until re-enabled.
+
 
 The broker root resolves in this order (canonical — see root `CLAUDE.md` "Key Architecture Notes"): `C2C_MCP_BROKER_ROOT` env var (explicit override) → `$C2C_STATE_HOME/c2c/repos/<fp>/broker` (if set — c2c-specific relocation escape hatch) → `$HOME/.c2c/repos/<fp>/broker` (canonical default). Generic `XDG_STATE_HOME` is deliberately not honored: agent harnesses repurpose it per-profile, which would fragment the machine-wide broker (#9 split-brain fix). The fingerprint (`<fp>`) is SHA-256 of `remote.origin.url` (so clones of the same upstream share a broker), falling back to `git rev-parse --show-toplevel`. This sidesteps `.git/`-RO sandboxes permanently and lets all worktrees and clones of the same repo share the same inboxes automatically. No separate daemon or port to configure. Use `c2c migrate-broker --dry-run` to migrate from the legacy `<git-common-dir>/c2c/mcp/` path.
 
@@ -70,7 +74,7 @@ Use `c2c monitor --all` only when you intentionally want situational awareness a
 
 **Optional MCP receive path:** after MCP setup, call `mcp__c2c__poll_inbox {}` to drain your inbox or `mcp__c2c__peek_inbox {}` to inspect without draining. MCP tools talk to the same broker files as the CLI.
 
-**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Kimi can use notification-store delivery via `C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`; Grok can use `c2c install grok` (skill + SessionStart/SessionEnd hooks; CLI + Monitor — no MCP by default). These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
+**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Grok can use `c2c install grok` (skill + SessionStart/SessionEnd hooks; CLI + Monitor — no MCP by default; no managed `c2c start grok`). <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi notification-store delivery (`C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`) is temporarily offline for install/start. These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
 
 **Claude channels:** the MCP `notifications/claude/channel` path is still gated behind `experimental.claude/channel`. Standard Claude Code builds do not declare that capability, so channel delivery is not the production receive path. Use the CLI/Monitor path or the hook integration, with `poll_inbox` as the explicit fallback.
 
@@ -84,7 +88,8 @@ For near-real-time delivery inside specific clients:
 - **Codex** — `c2c install codex` writes Codex hooks for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`. Those hooks run `c2c hook codex`, which can auto-register the session, drain inbound broker messages, and surface them through `hookSpecificOutput.additionalContext`; explicit `poll_inbox` remains the fallback. Hook delivery happens at hook boundaries (the session's next turn), not on arrival. Managed `c2c start codex` (or `c2c new codex` for a fresh thread) is the canonical way to run a Codex peer: on a supported Codex (codex-cli ≥ 0.144) it runs the session behind an authenticated loopback app-server by default — no flag — with the stock remote TUI attached; older Codex or an app-server startup failure falls back automatically to hooks. App-server interactive delivery is shipped (B131): the managed supervisor injects inbound c2c mail into the thread's model-visible history on arrival (draft-safe — it never touches a typed draft), and fires one gated auto-turn for eligible local mail when the session is idle and DND is off. `c2c doctor hooks` reports the delivery mode a session actually has. Full contract: [Per-Client Delivery § Codex](/client-delivery/#codex). The legacy `--xml-input-fd` XML sideband for interactive Codex is gone (current Codex removed the flag; the codex-headless bridge keeps its own XML fifo path). Use `c2c reset-thread <name> <thread>` to force a managed Codex instance onto an exact thread instead of `resume --last`.
 - **Pi Agent** — `pi install npm:pi-c2c` installs the external Pi extension. It registers via the `c2c` CLI, watches the broker inbox with `fs.watch`, drains via `c2c poll-inbox`, and injects messages into the transcript with `pi.sendMessage`.
 - **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts` under the target project, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. In a dev checkout it symlinks to `data/opencode-plugin/c2c.ts`; in a binary-only install it is written from the embedded blob in the compiled `c2c` binary. Background wake can use a `c2c monitor` subprocess with inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session.
-- **Kimi Code** — `c2c start kimi` manages the session with notification-store delivery. The `C2c_kimi_notifier` daemon writes inbound messages as notification JSON files into kimi's session directory; kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. Use `c2c install kimi` for standalone setup.
+- **Grok** — CLI-first peer via `c2c install grok` (skill + SessionStart/SessionEnd hooks). Prefer `c2c monitor` / `c2c send` / `c2c poll-inbox`; no MCP by default and no managed `c2c start grok`.
+- **Kimi Code** — <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** `c2c install kimi` / `c2c start kimi` are temporarily disabled for this release (exit 1). Machinery below is retained for re-enable: managed sessions use notification-store delivery (`C2c_kimi_notifier` writes inbound messages as notification JSON files into kimi's session directory; kimi reads them on its own cadence; a tmux wake-prompt fires when the pane is idle).
 - **Any client** — keep `c2c monitor` visible and/or set up a periodic loop (cron, `loop` slash command, etc.) that calls `c2c poll-inbox` on each tick.
 
 **Orientation:** Run `c2c status` anytime for a compact overview (alive peers, sent/received counts, room memberships). Run `c2c health` for full diagnostics including broker freshness, stale inboxes, and deliver-daemon status. Run `c2c agent-help` for runtime-generated MCP tool-call examples and equivalent CLI commands for every MCP-exposed capability.
@@ -101,9 +106,9 @@ Four surfaces, in newcomer-to-advanced order:
 
 1. **CLI + Monitor path** (universal/default) — agents register with `c2c init --room ""` or `c2c register`, receive with `c2c monitor` and `c2c poll-inbox`, and send with `c2c send <alias> <message>` or `c2c send --session <session-id> <message>`. This talks to the broker files through the single `c2c` binary and works without MCP, hooks, relays, rooms, or managed sessions.
 
-2. **MCP tool path** (optional integration) — after MCP setup, agents call `mcp__c2c__send`, `mcp__c2c__poll_inbox`, and related tools. Claude Code, Codex, OpenCode, and Kimi can use MCP directly; Pi Agent drives the same broker through the `c2c` CLI wrapped by its `pi-c2c` extension.
+2. **MCP tool path** (optional integration) — after MCP setup, agents call `mcp__c2c__send`, `mcp__c2c__poll_inbox`, and related tools. Claude Code, Codex, and OpenCode can use MCP directly; Grok defaults to CLI only; Pi Agent drives the same broker through the `c2c` CLI wrapped by its `pi-c2c` extension. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi MCP install is temporarily disabled.
 
-3. **Client-native delivery hooks/plugins** (optional integration) — Claude hooks, Codex hooks, Pi extension, OpenCode plugin, and Kimi notification-store delivery make inbound messages appear in client-specific surfaces. Message bodies remain broker-native; these integrations are convenience layers over the same inbox model.
+3. **Client-native delivery hooks/plugins** (optional integration) — Claude hooks, Codex hooks, Pi extension, OpenCode plugin, and Grok skill/hooks make inbound messages appear in client-specific surfaces. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi notification-store delivery is temporarily offline for install/start. Message bodies remain broker-native; these integrations are convenience layers over the same inbox model.
 
 4. **PTY content injection** (historical, not recommended) — a legacy out-of-tree `pty_inject` helper. Predates the broker. Not on the live delivery path; do not build new delivery paths on it. Use the CLI path or optional MCP/client integrations above for message content.
 
@@ -232,12 +237,23 @@ than using `c2c install`. It registers an alias on session start, watches the
 broker inbox, drains with `c2c poll-inbox`, and injects inbound messages into
 the transcript.
 
+### Grok
+
+```bash
+c2c install grok
+```
+
+Writes the Grok `/c2c` skill plus SessionStart/SessionEnd hooks. CLI-first: no MCP by default; no managed `c2c start grok`. Open a new Grok session so SessionStart can auto-register, then arm `c2c monitor` (or poll with `c2c poll-inbox`).
+
 ### Kimi Code
+
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+> **B146-TEMP:** `c2c install kimi` / `c2c start kimi` are temporarily disabled for this release (exit 1 with a `[DISABLED]` banner). Recipe and mechanics kept for re-enable.
 
 ```bash
 c2c install kimi
 ```
 
-Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.
+Writes `~/.kimi/mcp.json` with a `c2c` stdio MCP server entry and a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate (once re-enabled).
 
 For supported clients see [feature-matrix.md](/clients/feature-matrix/).
