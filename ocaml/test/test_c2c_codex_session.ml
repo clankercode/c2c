@@ -417,6 +417,20 @@ let test_glue_happy_publishes_after_start () =
         (Sys.file_exists (C2c_start.config_path alias));
       Alcotest.(check bool) "launcher pid persisted" true
         (Sys.file_exists (C2c_start.outer_pid_path alias));
+      (* B167: the app-server loop must register under the exact managed
+         session id supplied to the remote frontend in C2C_MCP_SESSION_ID,
+         rather than under the display/instance name.  Otherwise the first
+         SessionStart hook cannot adopt this alias and mints a second identity;
+         mail to that user-visible alias then bypasses the arrival loop. *)
+      let broker = C2c_mcp.Broker.create
+          ~root:(Sys.getenv "C2C_MCP_BROKER_ROOT") in
+      (match List.find_opt
+               (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+               (C2c_mcp.Broker.list_registrations broker)
+       with
+       | Some r -> Alcotest.(check string) "broker row uses frontend session id"
+                     alias r.alias
+       | None -> Alcotest.fail "managed frontend session id was never registered");
       (match C2c_start.load_config_opt alias with
        | Some cfg ->
            Alcotest.(check string) "managed client is codex" "codex" cfg.client;

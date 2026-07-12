@@ -534,8 +534,21 @@ let log_deliver_pass ~(instance_dir : string) (po : C2c_codex_autoturn.pass_outc
    installs SIGTERM/SIGINT teardown, and returns the terminal supervision
    result. Registration lifetime is bound to the loop (register on entry,
    deregister in the loop's finally + the signal path). *)
+let register_managed_app_server_identity ~(broker_root : string)
+    ~(session_id : string) ~(alias : string) ~(pid : int) : unit =
+  (* Publish as soon as the authenticated app-server unit is running.  The
+     remote frontend's first hook must find this exact row before it processes
+     a user turn; otherwise it creates a second identity and its inbox is not
+     the one watched by the delivery loop (B167). *)
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id ~alias
+    ~pid:(Some pid)
+    ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time pid)
+    ~client_type:(Some "codex-app-server") ~from_auto_gen:true ()
+
 let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
-    ~(alias : string) ~(instance_dir : string) : C2c_codex_deliver_loop.outcome =
+    ~(session_id : string) ~(alias : string) ~(instance_dir : string)
+    : C2c_codex_deliver_loop.outcome =
   (* Unlock the real WS clients in THIS launcher process only (the frontend was
      already spawned with its env captured, so this does not leak into it). *)
   Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
@@ -553,10 +566,13 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   let my_pid = Unix.getpid () in
   let register () =
     (try
-       C2c_mcp.Broker.register broker ~session_id:name ~alias
-         ~pid:(Some my_pid)
-         ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time my_pid)
-         ~client_type:(Some "codex-app-server") ()
+       (* The remote frontend receives [session_id] in C2C_MCP_SESSION_ID.
+          The broker row and delivery loop must use that same id: using the
+          managed instance [name] here made the advertised alias unreachable
+          to the frontend hook, which then minted a second identity on its
+          first user turn (B167). *)
+       register_managed_app_server_identity ~broker_root ~session_id ~alias
+         ~pid:my_pid
      with _ -> ());
     (* Swarm onboarding parity: join the social room like other managed sessions. *)
     (let rooms =
@@ -565,7 +581,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
      in
      List.iter
        (fun room_id ->
-         try ignore (C2c_mcp.Broker.join_room broker ~room_id ~alias ~session_id:name)
+         try ignore (C2c_mcp.Broker.join_room broker ~room_id ~alias ~session_id)
          with _ -> ())
        rooms)
   in
@@ -573,12 +589,12 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   let deregister () =
     if not !deregistered then begin
       deregistered := true;
-      (try C2c_start.clear_registration_pid ~broker_root ~session_id:name with _ -> ())
+      (try C2c_start.clear_registration_pid ~broker_root ~session_id with _ -> ())
     end
   in
   let deps : C2c_codex_deliver_loop.deps =
     { broker_root;
-      session_id = name;
+      session_id;
       managed_identity = alias;
       endpoint;
       token_provider;
@@ -592,7 +608,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
       supervise_step = (fun () -> C2c_codex_app_server.supervise_step handle);
       session_active =
         (fun () -> C2c_codex_app_server.current_state handle = C2c_codex_app_server.Running);
-      is_dnd = (fun () -> try C2c_mcp.Broker.is_dnd broker ~session_id:name with _ -> false);
+      is_dnd = (fun () -> try C2c_mcp.Broker.is_dnd broker ~session_id with _ -> false);
       register;
       deregister;
       on_pass =
@@ -828,6 +844,12 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
         { session_id; alias;
           thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
           created_at = created; updated_at = now };
+      (* Register before the remote TUI can fire SessionStart.  The delivery
+         loop refreshes the same row while it is attached, but cannot be the
+         first registration because it waits for a loaded frontend thread. *)
+      register_managed_app_server_identity
+        ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
+        ~pid:(Unix.getpid ());
       let endpoint =
         C2c_codex_app_server.endpoint_uri
           (C2c_codex_app_server.endpoint_of handle)
@@ -842,7 +864,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          registration + loop down on TUI exit. Falls back to plain supervision
          (degraded) if no thread is ever loaded — never crashes the session. *)
       let final =
-        run_delivery_loop ~handle ~name ~alias ~instance_dir
+        run_delivery_loop ~handle ~name ~session_id ~alias ~instance_dir
       in
       C2c_codex_app_server.stop handle;
       (* Refresh the mapping's updated_at + thread on clean shutdown. *)
