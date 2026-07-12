@@ -26,7 +26,12 @@ let derive_alias_base (session_id : string) : string =
   let i2raw = idx_of_hex h ~start:8 ~modulo:n in
   (* Guarantee two DIFFERENT words (matches [generate_alias] invariant). *)
   let i2 = if i2raw = i1 then (i2raw + 1) mod n else i2raw in
-  Printf.sprintf "%s-%s" words.(i1) words.(i2)
+  (* Match the normal managed-session shape while keeping resume stable. The
+     session id is freshly generated for a new launch, so these four digest
+     characters provide the random-looking hexadecimal nonce operators expect;
+     deriving it from the stable id avoids changing identity on restart. *)
+  let nonce = String.sub h 16 4 in
+  Printf.sprintf "codex-%s-%s-%s" words.(i1) words.(i2) nonce
 
 let derive_alias ~(session_id : string) ~(taken : string -> bool) : string =
   let base = derive_alias_base session_id in
@@ -59,6 +64,11 @@ let yolo_warning =
 
 let frontend_extra_args ~(yolo : bool) ~(extra : string list) : string list =
   (if yolo then [ yolo_bypass_flag ] else []) @ extra
+
+let app_server_log_label = "[c2c codex app-server]"
+
+let online_attached_log_body ~(alias : string) ~(endpoint : string) : string =
+  Printf.sprintf "online-attached: c2c-alias=%s endpoint=%s" alias endpoint
 
 (* ------------------------- positional splitting --------------------------- *)
 
@@ -283,8 +293,9 @@ let gen_session_id () =
    at the hook fallback. *)
 let report_diagnostic (d : C2c_codex_app_server.diagnostic) : unit =
   let j = C2c_codex_app_server.diagnostic_to_json d in
-  Printf.eprintf "%s[codex app-server]%s startup failed: %s\n"
-    (yellow ()) (reset ()) d.C2c_codex_app_server.message;
+  Printf.eprintf "%s%s%s startup failed: %s\n"
+    (yellow ()) app_server_log_label (reset ())
+    d.C2c_codex_app_server.message;
   (match d.C2c_codex_app_server.codex_version, d.C2c_codex_app_server.min_codex_version with
    | Some cur, Some min ->
        Printf.eprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min
@@ -531,10 +542,10 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
       let o = C2c_codex_deliver_loop.run deps in
       if o.C2c_codex_deliver_loop.degraded then
         Printf.eprintf
-          "%s[codex app-server]%s delivery loop ran DEGRADED: no frontend thread \
+          "%s%s%s delivery loop ran DEGRADED: no frontend thread \
            was ever loaded, so c2c mail was not auto-delivered this session \
-           (session was still supervised). alias=%s\n%!"
-          (yellow ()) (reset ()) alias;
+           (session was still supervised). c2c-alias=%s\n%!"
+          (yellow ()) app_server_log_label (reset ()) alias;
       o.C2c_codex_deliver_loop.final)
 
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
@@ -623,9 +634,13 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
         { session_id; alias;
           thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
           created_at = created; updated_at = now };
-      Printf.eprintf "%s[codex app-server]%s online-attached: alias=%s endpoint=%s\n%!"
-        (yellow ()) (reset ()) alias
-        (C2c_codex_app_server.endpoint_uri (C2c_codex_app_server.endpoint_of handle));
+      let endpoint =
+        C2c_codex_app_server.endpoint_uri
+          (C2c_codex_app_server.endpoint_of handle)
+      in
+      Printf.eprintf "%s%s%s %s\n%!"
+        (yellow ()) app_server_log_label (reset ())
+        (online_attached_log_body ~alias ~endpoint);
       (* B131: drive the proven T003 ingress + T007 auto-turn pipeline against
          THIS live session while the frontend is attached. The loop registers a
          routable broker alias, discovers the frontend's loaded thread, injects
@@ -642,8 +657,8 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
        | None -> ());
       (match final with
        | C2c_codex_app_server.Sv_server_died ->
-           Printf.eprintf "%s[codex app-server]%s app-server died; session torn down.\n%!"
-             (yellow ()) (reset ());
+           Printf.eprintf "%s%s%s app-server died; session torn down.\n%!"
+             (yellow ()) app_server_log_label (reset ());
            1
        | _ -> 0)
 

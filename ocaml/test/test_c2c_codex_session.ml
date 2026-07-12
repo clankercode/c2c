@@ -14,6 +14,20 @@ module S = C2c_codex_session
 
 let no_taken _ = false
 
+let has_prefix prefix value =
+  String.length value >= String.length prefix
+  && String.sub value 0 (String.length prefix) = prefix
+
+let is_lower_hex value =
+  String.for_all
+    (function '0' .. '9' | 'a' .. 'f' -> true | _ -> false)
+    value
+
+let string_mem needle hay =
+  let nl = String.length needle and hl = String.length hay in
+  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i+1)) in
+  nl = 0 || go 0
+
 let test_alias_deterministic () =
   (* Same fixed id + same taken predicate => identical alias every call. *)
   let a1 = S.derive_alias ~session_id:"fixed-session-A" ~taken:no_taken in
@@ -21,8 +35,10 @@ let test_alias_deterministic () =
   Alcotest.(check string) "stable across calls" a1 a2;
   Alcotest.(check string) "base == derived when free"
     (S.derive_alias_base "fixed-session-A") a1;
-  (* Must be a two-word alias (contains a dash separating distinct words). *)
-  Alcotest.(check bool) "has a hyphen" true (String.contains a1 '-')
+  Alcotest.(check bool) "codex prefix" true (has_prefix "codex-" a1);
+  let suffix = String.sub a1 (String.length a1 - 4) 4 in
+  Alcotest.(check bool) "four-character lowercase hex suffix" true
+    (String.length suffix = 4 && is_lower_hex suffix)
 
 let test_alias_distinct_for_distinct_ids () =
   let a = S.derive_alias ~session_id:"fixed-session-A" ~taken:no_taken in
@@ -62,6 +78,18 @@ let test_alias_collision_chain_deterministic () =
   Alcotest.(check bool) "distinct from base" false (c1 = base);
   Alcotest.(check bool) "distinct from first ext" false (c1 = first_ext);
   Alcotest.(check string) "second extension deterministic" c1 c2
+
+let test_app_server_log_vocabulary () =
+  Alcotest.(check string) "colored label content"
+    "[c2c codex app-server]" S.app_server_log_label;
+  Alcotest.(check string) "online-attached fields"
+    "online-attached: c2c-alias=codex-oak-fern-a1b2 endpoint=ws://127.0.0.1:37305"
+    (S.online_attached_log_body ~alias:"codex-oak-fern-a1b2"
+       ~endpoint:"ws://127.0.0.1:37305");
+  Alcotest.(check bool) "legacy generic alias field absent" false
+    (string_mem " alias="
+       (S.online_attached_log_body ~alias:"codex-oak-fern-a1b2"
+          ~endpoint:"ws://127.0.0.1:37305"))
 
 (* ------------------------------------------------------------------ *)
 (* --yolo forwarding + non-persistence                                 *)
@@ -464,11 +492,6 @@ let test_resolve_start_alias_resumes_mapping () =
 (* --yolo is NEVER persisted into the identity mapping                 *)
 (* ------------------------------------------------------------------ *)
 
-let string_mem needle hay =
-  let nl = String.length needle and hl = String.length hay in
-  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i+1)) in
-  nl = 0 || go 0
-
 let test_yolo_not_persisted () =
   let sid = unique_sid () in
   let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
@@ -507,7 +530,8 @@ let () =
         ; test_case "distinct ids" `Quick test_alias_distinct_for_distinct_ids
         ; test_case "resume stable" `Quick test_alias_resume_stable
         ; test_case "collision extension" `Quick test_alias_collision_extension_deterministic
-        ; test_case "collision chain" `Quick test_alias_collision_chain_deterministic ] )
+        ; test_case "collision chain" `Quick test_alias_collision_chain_deterministic
+        ; test_case "app-server log vocabulary" `Quick test_app_server_log_vocabulary ] )
     ; ( "yolo",
         [ test_case "forwards bypass" `Quick test_yolo_forwards_bypass
         ; test_case "absent by default" `Quick test_yolo_absent_by_default ] )
