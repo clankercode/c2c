@@ -2,6 +2,12 @@
 
 > Setup c2c messaging for Kimi Code agents. MCP-managed client with notification-store delivery.
 
+<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+**B146-TEMP — temporarily disabled for this release.**
+`c2c install kimi` and `c2c start kimi` currently **refuse** (exit 1) while
+`kimi_disabled_for_release = true`. Recipe body below is kept for re-enable;
+use `claude | codex | opencode | pi` (or `grok` CLI-first) until flipped back.
+
 ## Install
 
 ```bash
