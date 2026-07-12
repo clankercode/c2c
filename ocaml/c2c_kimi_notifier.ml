@@ -675,15 +675,20 @@ let running_binary_sha pid =
   | "unknown" -> None
   | sha -> Some sha
 
-(* SHA of the binary THIS process is running (/proc/self/exe) — i.e. the
-   just-installed image a fresh notifier fork would execute. [None] if
-   undeterminable. *)
+(* SHA of the binary THIS process is running — i.e. the just-installed image a
+   fresh notifier fork would execute. Read [/proc/self/exe] DIRECTLY (the magic
+   symlink resolves to the running inode; robust even if the readlink path would
+   carry a " (deleted)" suffix after an in-place replace). Falls back to the
+   readlink'd path, then [None]. *)
 let installed_binary_sha () =
-  match
-    C2c_mcp_helpers.best_effort_file_sha256
-      (C2c_mcp_helpers.best_effort_server_executable ())
-  with
-  | "unknown" -> None
+  match C2c_mcp_helpers.best_effort_file_sha256 "/proc/self/exe" with
+  | "unknown" ->
+    (match
+       C2c_mcp_helpers.best_effort_file_sha256
+         (C2c_mcp_helpers.best_effort_server_executable ())
+     with
+     | "unknown" -> None
+     | sha -> Some sha)
   | sha -> Some sha
 
 (* Fixture hook (repo convention: external effects gated by env vars). When set,
