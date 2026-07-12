@@ -17,3 +17,5 @@ ideas:
       id: I008
     - file: I009-grok-c2c-plugin-packaging-defe.todo
       id: I009
+    - file: I010-c2c-restart-clients-after-upgr.todo
+      id: I010

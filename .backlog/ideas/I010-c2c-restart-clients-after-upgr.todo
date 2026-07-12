@@ -1,0 +1,42 @@
+---
+complexity: medium
+created_at: "2026-07-12T02:17:41Z"
+depends_on: []
+estimate_hours: 10
+id: I010
+priority: medium
+status: pending
+tags:
+    - c2c
+    - upgrade
+    - dx
+    - restart
+title: 'c2c restart-clients-after-upgrade: auto-upgrade running instances after a build'
+updated_at: "2026-07-12T02:17:41Z"
+---
+After building/installing a new c2c version, running managed instances keep executing the OLD binary until manually restarted (see the just install-all warning: "live process(es) hold binaries about to be replaced ... will not auto-pick-up the new binary"). We should have a single command — e.g. `c2c restart-clients-after-upgrade` (name TBD; could also be `c2c upgrade-restart` or a flag on install) — that upgrades all running c2c instances to the freshly-installed binary in one step.
+
+MOTIVATION
+- Today the operator must eyeball the install warning, run `c2c instances`, and `c2c restart <name>` for each session by hand. Easy to forget; leaves the swarm split across binary versions (a known source of routing/feature-visibility bugs — new broker tools/flags are invisible until restart per CLAUDE.md).
+- The upgrade path should be one command, ideally wired so `just install-all` / `just bi` can optionally trigger it.
+
+"SEAMLESS" IS THE HARD PART — options to weigh (this is an intake; design before building):
+1. Naive sweep-restart: enumerate managed instances (`c2c instances`), `c2c restart <name>` each. Simple, but each restart drops the session transcript/context and interrupts any in-flight turn. NOT seamless — disruptive to active agents.
+2. Signal-based hot reconnect: SIGUSR1 to the inner MCP/opencode pid reconnects the MCP session to the broker WITHOUT a full restart (CLAUDE.md documents SIGUSR1-to-inner-pid recovery). This refreshes the broker connection but does NOT swap the on-disk binary the process already exec`d — so it does not actually upgrade code, only re-establishes signals. Need to confirm what a SIGUSR1 reconnect can vs cannot pick up.
+3. Drain + graceful restart: mark instance idle/DND, wait for the current turn to finish (idle-gate, like native scheduling), then restart so no turn is interrupted. Closer to seamless but needs an idle-wait loop and a timeout/force fallback.
+4. Staged/rolling restart: restart one instance at a time so the swarm never fully goes dark; coordinator restarts last. Preserves swarm liveness during the upgrade.
+5. Version-aware skip: only restart instances whose running binary SHA != installed SHA (compare `/proc/<pid>/exe` target or the build-SHA the process reports) — avoid needless restarts. `c2c-install-live-holders.sh` already detects live holders; extend it to report per-instance running version.
+
+OPEN QUESTIONS
+- Can a running managed session actually adopt a new binary without re-exec? (If not, "restart" is unavoidable and "seamless" reduces to "graceful + rolling + idle-gated".)
+- Where should this live: a new `c2c` subcommand, a flag on `c2c install`, or a `just` recipe wrapping it? Coordinator excluded by default (self-restart is riskier)?
+- Interaction with `c2c-install-live-holders.sh` (already enumerates holders) — reuse its detection.
+- Should it be opt-in per session (some agents mid-task should not be force-restarted)?
+
+ACCEPTANCE (first cut, subject to design)
+- One command upgrades all (or version-mismatched) managed instances to the installed binary.
+- Idle-gated / graceful by default: never interrupts an in-flight turn without an explicit --force.
+- Rolling by default so the swarm is never fully down; coordinator last (or skipped).
+- Reports what it restarted, what it skipped, and any that failed.
+
+Discovered from: 2026-07-12 `just install-all` run leaving 2 live c2c-mcp-server procs on the old binary; related CLAUDE.md notes on restart-after-broker-update and SIGUSR1-to-inner-pid.
