@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-07-12T09:37:21Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-12T02:17:41Z"
 depends_on:
@@ -6,14 +9,11 @@ depends_on:
 estimate_hours: 18
 id: I010
 priority: medium
-status: pending
-tags:
-    - c2c
-    - upgrade
-    - dx
-    - restart
+started_at: "2026-07-12T09:37:21Z"
+status: in_progress
+tags: []
 title: 'c2c restart-stale: rolling restart of managed instances on old binaries'
-updated_at: "2026-07-12T02:17:41Z"
+updated_at: "2026-07-12T09:37:21Z"
 ---
 After building/installing a new c2c version, running managed instances keep executing the OLD binary until manually restarted (see the just install-all warning: "live process(es) hold binaries about to be replaced ... will not auto-pick-up the new binary"). Add a single explicit command, `c2c restart-stale`, that identifies managed instances running an older installed binary and restarts them sequentially.
 

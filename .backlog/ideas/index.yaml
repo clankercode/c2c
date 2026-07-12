@@ -17,7 +17,15 @@ ideas:
       id: I008
     - file: I009-grok-c2c-plugin-packaging-defe.todo
       id: I009
-    - file: I010-c2c-restart-clients-after-upgr.todo
+    - complexity: medium
+      depends_on:
+        - B153
+      estimate_hours: 18
+      file: I010-c2c-restart-clients-after-upgr.todo
       id: I010
+      priority: medium
+      status: in_progress
+      tags: []
+      title: 'c2c restart-stale: rolling restart of managed instances on old binaries'
     - file: I011-seamless-managed-client-upgrad.todo
       id: I011
