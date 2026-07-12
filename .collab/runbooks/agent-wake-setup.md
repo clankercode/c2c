@@ -93,9 +93,12 @@ c2c schedule rm wake
 `schedule_rm` — same semantics as the CLI.
 
 **Flags:**
-- `--only-when-idle=BOOL` (default: `true`) — only fires the message when
-  the agent is not actively processing a turn. Avoids interrupting deep work.
-  Omit from commands to use the default; pass `--only-when-idle=false` to disable.
+- `--only-when-idle` (the default) — only fires the message when the agent is
+  not actively processing a turn. Avoids interrupting deep work. Pass
+  `--no-only-when-idle` to fire even when the agent is busy. (These are cmdliner
+  flags — there is no `=BOOL` value form.)
+- `--idle-threshold DURATION` — how long the session must be idle before the
+  schedule fires (default: same as `--interval`).
 - `--align @1h+7m` — wall-clock alignment (e.g. fire at :07 past each hour).
 
 **Tradeoffs:**
@@ -371,17 +374,22 @@ more — don't just sit polling empty inboxes indefinitely.
 
 ## Codex idle wake (tmux/herdr injection)
 
-> **T005 note (2026-07-11):** this whole section describes the **legacy
-> input-injecting** wake for hook-boundary codex sessions (`delivery_mode=
-> hooks+wake`). The app-server delivery stack removes the need for it —
-> inbound mail injected into the thread history on arrival, plus one gated
-> turn for eligible LOCAL mail when the thread is idle and DND is off (T007
-> — no pane typing involved). That stack is library-proven; wiring it into
-> `c2c start codex --app-server` supervision is the follow-up slice, so
-> until it lands, ALL codex sessions (app-server-launched included) still
-> rely on hooks + this wake. `c2c doctor hooks` classifies which mode a
-> session actually has. Contract + wiring status:
-> `docs/client-delivery.md` § Codex.
+> **Note (T005; updated 2026-07-12):** this whole section describes the
+> **input-injecting** wake, which is the **hook-fallback path only**
+> (`delivery_mode=hooks+wake` / `hooks`). It is NOT how managed codex delivers
+> anymore. The **app-server transport is the default and only** managed codex
+> path on a supported codex (B131/B141, shipped and wired into managed
+> supervision) — inbound mail is injected into the thread history on arrival,
+> plus one gated turn for eligible LOCAL mail when the thread is idle and DND is
+> off (T007 — no pane typing involved). The old `--app-server` flag and the
+> `C2C_CODEX_APP_SERVER` gate are **GONE**; a hidden `C2C_CODEX_FORCE_HOOKS=1`
+> escape forces this hook path (operator testing only). Cross-repo
+> (sessions-broker) mail addressed to the session is also delivered inject-only
+> by the app-server loop (B141). This input-injecting wake still applies to
+> vanilla/hook-fallback codex sessions and to a too-old codex or an app-server
+> startup failure that falls back to hooks. `c2c doctor hooks` classifies which
+> mode a session actually has. Contract + details: `docs/client-delivery.md`
+> § Codex; CLAUDE.md "Codex delivery — app-server transport".
 
 Codex hooks (`c2c hook codex`) only fire on session activity, so a schedule
 or heartbeat self-DM cannot by itself wake an idle codex session — the
