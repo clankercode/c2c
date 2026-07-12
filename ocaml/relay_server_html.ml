@@ -197,6 +197,7 @@ which route through the same <code>c2c</code> CLI and broker.</p>
 let landing_html_tail = {|
 <pre>GET  /              this page                            (anonymous)
 GET  /health        liveness probe                       (anonymous)
+GET  /stats         usage stats over 1d/7d/28d/ever      (anonymous)
 GET  /list          list peers — Ed25519 peer auth       (?include_dead=1 → Bearer admin)
 GET  /list_rooms    list rooms: public + gated; rosters as alias#room@relay  (anonymous)
 GET  /dead_letter   dead-letter queue                    (Bearer admin)

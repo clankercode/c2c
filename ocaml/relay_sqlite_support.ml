@@ -127,6 +127,33 @@ CREATE TABLE IF NOT EXISTS pairing_tokens (
     used INTEGER NOT NULL DEFAULT 0,
     expires_at REAL NOT NULL
 );
+
+-- B147: usage stats backing GET /stats. stats_message_events holds one row
+-- per relay-accepted message (DM /send, /send_all broadcast, /send_room,
+-- inbound /forward); gc prunes rows older than the largest window (+ slack),
+-- so windowed counts stay cheap. stats_totals ('messages_ever') and the
+-- distinct-actor tables survive pruning, which is what makes the 'ever'
+-- column meaningful. last_seen upserts let a windowed unique count be
+-- "rows with last_seen >= cutoff".
+CREATE TABLE IF NOT EXISTS stats_message_events (
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stats_message_events_ts ON stats_message_events(ts);
+
+CREATE TABLE IF NOT EXISTS stats_totals (
+    key TEXT PRIMARY KEY,
+    value INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stats_seen_aliases (
+    alias TEXT PRIMARY KEY,
+    last_seen REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stats_seen_machines (
+    machine_id TEXT PRIMARY KEY,
+    last_seen REAL NOT NULL
+);
 |sql}
 
 let exec_no_rows db sql =
