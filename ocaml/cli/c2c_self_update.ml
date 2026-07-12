@@ -61,13 +61,30 @@ let strip_prefix_v s =
 
 (* ---- HTTP helpers -------------------------------------------------------- *)
 
+let rec call_with_redirects ?(max_redirects = 10) ~headers uri =
+  Cohttp_lwt_unix.Client.call ~headers `GET uri >>= fun (resp, body) ->
+  let status = Cohttp.Code.code_of_status resp.status in
+  if status >= 300 && status < 400 then
+    if max_redirects <= 0 then
+      Lwt.return (resp, body)
+    else
+      match Cohttp.Header.get resp.headers "location" with
+      | Some loc ->
+          let next_uri = Uri.resolve "GET" uri (Uri.of_string loc) in
+          Cohttp_lwt.Body.to_string body >>= fun _ ->
+          call_with_redirects ~max_redirects:(max_redirects - 1) ~headers next_uri
+      | None ->
+          Lwt.return (resp, body)
+  else
+    Lwt.return (resp, body)
+
 let http_get uri_s =
   let uri = Uri.of_string uri_s in
   let headers = Cohttp.Header.of_list [
     ("User-Agent", "c2c-self-update");
     ("Accept", "application/json");
   ] in
-  Cohttp_lwt_unix.Client.call ~headers `GET uri >>= fun (resp, body) ->
+  call_with_redirects ~headers uri >>= fun (resp, body) ->
   let status = Cohttp.Code.code_of_status resp.status in
   Cohttp_lwt.Body.to_string body >>= fun text ->
   if status >= 200 && status < 300 then Lwt.return (Ok text)
@@ -79,7 +96,7 @@ let http_get_binary uri_s =
   let headers = Cohttp.Header.of_list [
     ("User-Agent", "c2c-self-update");
   ] in
-  Cohttp_lwt_unix.Client.call ~headers `GET uri >>= fun (resp, body) ->
+  call_with_redirects ~headers uri >>= fun (resp, body) ->
   let status = Cohttp.Code.code_of_status resp.status in
   Cohttp_lwt.Body.to_string body >>= fun data ->
   if status >= 200 && status < 300 then Lwt.return (Ok data)
