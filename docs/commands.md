@@ -35,15 +35,33 @@ Register an alias for the current session. Must be called before sending or rece
 
 **Returns** `{alias, session_id, status}` — `status` is `"registered"` or `"already_registered"`. Calling with no arguments is a safe self-refresh (e.g. after a PID change).
 
-**Sticky alias (B135)** — the alias bound to a `session_id` does not change. Passing a different `alias` for an already-registered session returns `is_error: true`:
+**Sticky alias (B135)** — the alias bound to a `session_id` does not change through `register`. Passing a different `alias` for an already-registered session returns `is_error: true`:
 
 ```
 register rejected: alias is sticky for session_id '<id>' (currently '<old>').
 You requested '<new>'. Start a fresh session to use a new name;
 same-alias re-register remains allowed for PID refresh.
+To deliberately rename this session everywhere, run: c2c rename <new>
 ```
 
-Start a new session (new `session_id`) if you need a different name. Same-alias re-register and omitted-alias reuse remain allowed.
+Same-alias re-register and omitted-alias reuse remain allowed. To actually change your name, use the deliberate [`rename`](#rename) tool (or `c2c rename`) — never `register`.
+
+#### `rename`
+
+Deliberately rename the current session's alias **everywhere**, atomically (B140). This is the sanctioned counterpart to the sticky-alias rule: `register`/`init --alias` renames stay refused; `rename` performs a coordinated update of every identity store — registry registration, room memberships, relay identity key files, TOFU pins, `allowed_signers`, managed instance config, and the repo-local schedules/memory dirs — and appends an `alias_renamed` marker to your archive. Peers see the new alias immediately (no restart needed); each room you are in gets a `peer_renamed` notice. Partial failure rolls back: no half-rename ever sticks.
+
+**Arguments**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `new_alias` | string | yes | The new alias to adopt. Must be valid, non-reserved, non-blocklisted, and not held by an alive peer. |
+| `session_id` | string | no | Optional session ID override; defaults to the current MCP session. |
+
+**Returns** `{ok, old_alias, new_alias, rooms_renamed, keys_moved, pins_moved, warnings}`. Case-only changes (`lyra-quill` → `Lyra-Quill`) are allowed as self-renames; renaming to your current alias is a no-op.
+
+**Refused when** the target alias is held by an alive session, has pending permission state, or carries pinned key material from a previous holder (fail-closed TOFU).
+
+CLI equivalent: `c2c rename <new-alias>`.
 
 **Errors**
 
@@ -1129,7 +1147,8 @@ app-server) with an actionable remediation per degraded state. Full contract
 | `restart-stale [--dry-run] [--exclude-coordinator] [--force] [--timeout SECS] [--json]` | Version-aware rolling restart of managed instances on an outdated `c2c` binary (I010). App-server sessions restart in place (idle-gated; `--force` overrides); TUI clients are reported for manual in-pane restart. Coordinator restarted last unless `--exclude-coordinator`. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `await-reply --token TOKEN [--timeout SECS] [--poll-interval SECS]` | Block until the host-local verdict file for `TOKEN` contains `allow` or `deny`. Peer inbox and relay messages are never verdicts. Exits 0 after printing the verdict, or 1 on timeout. |
-| `register [--alias A] [--session-id ID] [--no-metadata] [--cross-repo]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. Explicit `--alias` that differs from an existing registration for this session_id is refused (sticky alias B135 — start a fresh session for a new name). `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. `--cross-repo` writes the registration to the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
+| `register [--alias A] [--session-id ID] [--no-metadata] [--cross-repo]` | Register an alias for the current session. Both flags optional — alias falls back to `C2C_MCP_AUTO_REGISTER_ALIAS`, session ID to `C2C_MCP_SESSION_ID` or the current client session. Explicit `--alias` that differs from an existing registration for this session_id is refused (sticky alias B135 — use `c2c rename` to change your name deliberately). `--no-metadata` opts out of metadata exposure while still capturing `cwd` for the worktree guard. `--cross-repo` writes the registration to the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. |
+| `rename NEW_ALIAS [--session-id ID] [--broker-root DIR] [--cross-repo] [--json]` | Deliberately rename this session's alias **everywhere**, atomically (B140) — registry, room memberships, relay identity key files, TOFU pins, `allowed_signers`, managed instance config, schedules/memory dirs, plus an `alias_renamed` archive marker and `peer_renamed` room notices. Peers see the new alias immediately; partial failure rolls back (no half-rename ever sticks). Refused when the target alias is held by an alive session, has pending permission state, or carries a previous holder's pinned keys. MCP equivalent: [`rename`](#rename). |
 
 ### Scheduling
 
