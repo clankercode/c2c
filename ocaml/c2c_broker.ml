@@ -2303,13 +2303,31 @@ open C2c_mcp_helpers
            that work is in flight.  Revalidate the ownership and M4 pending
            guards at this registry commit point before evicting anything. *)
         let target = alias_casefold alias in
+        (* Same-process exemption: a holder row whose pid IS this
+           registration's pid is the same process reclaiming its alias under
+           a new session_id — the documented managed-relaunch flow (see
+           [old_alias_opt] in the MCP register handler and the
+           register-serializes-with-concurrent-enqueue regression test).
+           Eviction remains correct there; only a DIFFERENT live process
+           holding the alias is a hijack. When both rows carry a
+           pid_start_time they must agree, so a recycled PID cannot claim
+           the exemption. *)
+        let same_process (conflict : registration) =
+          match conflict.pid, pid with
+          | Some cpid, Some npid when cpid = npid -> (
+              match conflict.pid_start_time, pid_start_time with
+              | Some cst, Some nst -> cst = nst
+              | _ -> true)
+          | _ -> false
+        in
         (match
            List.find_opt
              (fun reg ->
                alias_casefold reg.alias = target
                && reg.session_id <> session_id
                && Option.is_some reg.pid
-               && registration_is_alive reg)
+               && registration_is_alive reg
+               && not (same_process reg))
              regs
          with
          | Some conflict ->
