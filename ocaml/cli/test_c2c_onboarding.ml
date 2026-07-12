@@ -63,6 +63,8 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "CODEX_THREAD_ID="
   ; "C2C_OPENCODE_SESSION_ID="
   ; "GROK_SESSION_ID="
+  ; "GROK_AGENT="
+  ; "C2C_GROK_ACTIVE_SESSIONS="
   ; "CURSOR_AGENT="
   ; "CURSOR_INVOKED_AS="
   (* Hermeticity: when this suite runs from inside a Claude Code session the
@@ -703,6 +705,24 @@ let test_init_detects_grok_from_env () =
   check (option string) "registration client_type=grok" (Some "grok")
     (registration_client_type ~broker:tmp ~session_id:sid)
 
+let test_init_detects_grok_from_agent_flag () =
+  (* B173: Grok tool shells export GROK_AGENT=1 without GROK_SESSION_ID.
+     init must still mint a grok- alias (not PATH-guessed codex-). *)
+  with_temp_env @@ fun tmp ->
+  let rc, out, err =
+    run_c2c_status_split ~env:[ "GROK_AGENT", "1" ]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias =
+    match Yojson.Safe.from_string out |> json_assoc_string "alias" with
+    | Some a -> a
+    | None -> failf "init --json missing alias: %s" out
+  in
+  check bool ("alias starts with grok-: " ^ alias) true
+    (String.starts_with ~prefix:"grok-" alias)
+
 let test_init_detects_cursor_agent_not_codex () =
   (* B134: Cursor Agent is unofficial best-effort labeling only — must get
      cursor- alias / client=cursor, never silent PATH-based codex-. *)
@@ -770,6 +790,7 @@ let () =
         ; test_case "send without alias suggests onboarding commands" `Quick test_send_without_alias_error_suggests_onboarding_commands
         ; test_case "init creates identity.json" `Quick test_identity_json_created
         ; test_case "init GROK_SESSION_ID → grok client/alias (B134)" `Quick test_init_detects_grok_from_env
+        ; test_case "init GROK_AGENT=1 → grok alias (B173)" `Quick test_init_detects_grok_from_agent_flag
         ; test_case "init CURSOR_AGENT → cursor not codex (B134)" `Quick test_init_detects_cursor_agent_not_codex
         ; test_case "init CODEX_THREAD_ID still codex (B134)" `Quick test_init_codex_thread_id_still_codex
         ] )

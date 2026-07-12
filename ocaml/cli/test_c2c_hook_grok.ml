@@ -117,11 +117,16 @@ let list_aliases broker_root =
               | _ -> None)
          | _ -> None)
 
+let first_alias broker_root =
+  match list_aliases broker_root with
+  | a :: _ -> a
+  | [] -> ""
+
 let test_session_start_registers_and_writes_identity_skill () =
   with_ctx (fun ctx ->
-    (* Seed installer alias so auto-register prefers it. *)
+    (* B173: seed a foreign default-alias — Grok must ignore it and mint grok-*. *)
     let alias_path = ctx.home // ".config" // "c2c" // "default-alias" in
-    write_file alias_path "smoke-grok-alias\n";
+    write_file alias_path "codex-stale-from-other-client\n";
     let rc, stdout, stderr =
       run_hook ctx ~payload:session_start_payload
         ~extra_env:[ ("GROK_SESSION_ID", session_id) ]
@@ -129,37 +134,43 @@ let test_session_start_registers_and_writes_identity_skill () =
     check int "exit 0" 0 rc;
     check string "no additionalContext stdout" "" (String.trim stdout);
     let aliases = list_aliases ctx.broker_root in
-    check bool "registered smoke-grok-alias" true
-      (List.mem "smoke-grok-alias" aliases);
+    check bool "registered exactly one alias" true (List.length aliases = 1);
+    let alias = first_alias ctx.broker_root in
+    check bool ("alias starts with grok-: " ^ alias) true
+      (String.starts_with ~prefix:"grok-" alias);
+    check bool "did not adopt foreign default-alias" true
+      (not (List.mem "codex-stale-from-other-client" aliases));
     let id_skill =
       ctx.home // ".grok" // "skills" // "c2c-session" // "SKILL.md"
     in
     check bool "identity skill written" true (Sys.file_exists id_skill);
     let body = read_file id_skill in
     check bool "alias in identity skill" true
-      (contains ~haystack:body ~needle:"smoke-grok-alias");
+      (contains ~haystack:body ~needle:alias);
     if String.trim stderr <> "" && contains ~haystack:stderr ~needle:"failed"
     then failf "unexpected stderr: %s" stderr)
 
 let test_session_end_deregisters () =
   with_ctx (fun ctx ->
+    (* Foreign default-alias must not become the registered identity. *)
     write_file
       (ctx.home // ".config" // "c2c" // "default-alias")
-      "smoke-grok-end\n";
+      "codex-should-not-register\n";
     let rc1, _, _ =
       run_hook ctx ~payload:session_start_payload
         ~extra_env:[ ("GROK_SESSION_ID", session_id) ]
     in
     check int "start exit 0" 0 rc1;
-    check bool "registered before end" true
-      (List.mem "smoke-grok-end" (list_aliases ctx.broker_root));
+    let alias = first_alias ctx.broker_root in
+    check bool ("registered grok- alias before end: " ^ alias) true
+      (String.starts_with ~prefix:"grok-" alias);
     let rc2, _, _ =
       run_hook ctx ~payload:session_end_payload
         ~extra_env:[ ("GROK_SESSION_ID", session_id) ]
     in
     check int "end exit 0" 0 rc2;
     check bool "deregistered after end" false
-      (List.mem "smoke-grok-end" (list_aliases ctx.broker_root));
+      (List.mem alias (list_aliases ctx.broker_root));
     let id_skill =
       ctx.home // ".grok" // "skills" // "c2c-session" // "SKILL.md"
     in

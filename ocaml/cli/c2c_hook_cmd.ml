@@ -1202,23 +1202,12 @@ let hook_grok_cmd =
              (match sid_opt with
               | None -> exit 0
               | Some sid ->
-                  let alias =
-                    let path =
-                      (try Sys.getenv "HOME" with Not_found -> "/tmp")
-                      ^ "/.config/c2c/default-alias"
-                    in
-                    match
-                      try
-                        if Sys.file_exists path then
-                          let ic = open_in path in
-                          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-                            Some (String.trim (input_line ic)))
-                        else None
-                      with _ -> None
-                    with
-                    | Some a when a <> "" -> a
-                    | _ -> C2c_setup.default_alias_for_client "grok"
-                  in
+                  (* B173: never adopt machine-global ~/.config/c2c/default-alias
+                     for Grok auto-register — that file is clobbered by any
+                     client's `c2c init` and was minting codex-/claude- aliases
+                     for client_type=grok. Parity with vanilla codex/claude
+                     hooks: always generate a client-prefixed alias. *)
+                  let alias = C2c_setup.default_alias_for_client "grok" in
                   (try
                      C2c_mcp.Broker.register broker ~session_id:sid ~alias
                        ~pid:None
@@ -1243,8 +1232,7 @@ let hook_grok_cmd =
                    | _ ->
                        C2c_cli_helpers.write_session_statefile ~broker_root
                          ~session_id:sid ~alias ~client:(Some "grok"));
-                  (sid, Some alias))
-       in
+                  (sid, Some alias))       in
        let alias =
          match onboarded_alias with
          | Some a -> a

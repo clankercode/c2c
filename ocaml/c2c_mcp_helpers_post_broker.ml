@@ -715,21 +715,27 @@ let native_session_id_env_keys = function
   | "kimi" | "crush" | "codex-headless" -> []
   | _ -> []
 
+let truthy_env_flag = function
+  | Some v ->
+      let v = String.lowercase_ascii (String.trim v) in
+      v <> "" && not (List.mem v [ "0"; "false"; "no" ])
+  | None -> false
+
 (* Cursor Agent (unofficial / best-effort labeling only — B134): not a
    first-class install/hooks client, but must not be mislabeled as Codex when
    CURSOR_AGENT / CURSOR_INVOKED_AS markers are present. *)
 let cursor_agent_env_present () =
-  let truthy_flag = function
-    | Some v ->
-        let v = String.lowercase_ascii (String.trim v) in
-        v <> "" && not (List.mem v [ "0"; "false"; "no" ])
-    | None -> false
-  in
-  truthy_flag (Sys.getenv_opt "CURSOR_AGENT")
+  truthy_env_flag (Sys.getenv_opt "CURSOR_AGENT")
   ||
   match Sys.getenv_opt "CURSOR_INVOKED_AS" with
   | Some v when String.lowercase_ascii (String.trim v) = "cursor-agent" -> true
   | _ -> false
+
+(* Grok Build TUI tool shells export GROK_AGENT (often "1") but do NOT export
+   GROK_SESSION_ID — that key is hook-process-only. Treat any non-falsey
+   GROK_AGENT as a client-type marker so init/whoami/statusline detect Grok
+   without a session-id key (B173). *)
+let grok_agent_env_present () = truthy_env_flag (Sys.getenv_opt "GROK_AGENT")
 
 let inferred_client_type_from_env () =
   match first_nonempty_env [ "C2C_MCP_CLIENT_TYPE" ] with
@@ -741,8 +747,79 @@ let inferred_client_type_from_env () =
       else if first_nonempty_env [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID" ] <> None then Some "claude"
       else if first_nonempty_env [ "C2C_OPENCODE_SESSION_ID" ] <> None then Some "opencode"
       else if first_nonempty_env [ "GROK_SESSION_ID" ] <> None then Some "grok"
+      else if grok_agent_env_present () then Some "grok"
       else if cursor_agent_env_present () then Some "cursor"
       else None
+
+(* Grok tool shells lack GROK_SESSION_ID. Resolve the live session by matching
+   an ancestor pid against ~/.grok/active_sessions.json (written by the TUI).
+   Override path via C2C_GROK_ACTIVE_SESSIONS for tests. *)
+let grok_active_sessions_path () =
+  match Sys.getenv_opt "C2C_GROK_ACTIVE_SESSIONS" with
+  | Some p when String.trim p <> "" -> String.trim p
+  | _ ->
+      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+      Filename.concat home (Filename.concat ".grok" "active_sessions.json")
+
+let read_ppid pid =
+  try
+    let ic = open_in (Printf.sprintf "/proc/%d/status" pid) in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      let rec loop () =
+        match input_line ic with
+        | line when String.length line >= 5 && String.sub line 0 5 = "PPid:" ->
+            int_of_string_opt (String.trim (String.sub line 5 (String.length line - 5)))
+        | _ -> loop ()
+        | exception End_of_file -> None
+      in
+      loop ())
+  with _ -> None
+
+let ancestor_pids ?(max_depth = 32) start_pid =
+  let rec walk pid depth acc =
+    if depth <= 0 || pid <= 1 then List.rev acc
+    else
+      match read_ppid pid with
+      | None -> List.rev (pid :: acc)
+      | Some ppid -> walk ppid (depth - 1) (pid :: acc)
+  in
+  walk start_pid max_depth []
+
+let session_id_from_grok_active_sessions () =
+  let path = grok_active_sessions_path () in
+  if not (Sys.file_exists path) then None
+  else
+    match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+    | Some (`List entries) ->
+        let ancestors = ancestor_pids (Unix.getpid ()) in
+        let matches =
+          List.filter_map
+            (function
+              | `Assoc fields ->
+                  let sid =
+                    match List.assoc_opt "session_id" fields with
+                    | Some (`String s) when String.trim s <> "" ->
+                        Some (String.trim s)
+                    | _ -> None
+                  in
+                  let pid =
+                    match List.assoc_opt "pid" fields with
+                    | Some (`Int p) -> Some p
+                    | Some (`Intlit s) -> int_of_string_opt s
+                    | Some (`Float f) -> Some (int_of_float f)
+                    | _ -> None
+                  in
+                  (match sid, pid with
+                   | Some sid, Some pid when List.mem pid ancestors -> Some sid
+                   | _ -> None)
+              | _ -> None)
+            entries
+        in
+        (match matches with
+         | [ sid ] -> Some sid
+         | sid :: _ -> Some sid (* multiple rare; first listed is fine *)
+         | [] -> None)
+    | _ -> None
 
 let session_id_from_env ?client_type () =
   match first_nonempty_env [ "C2C_MCP_SESSION_ID" ] with
@@ -760,7 +837,16 @@ let session_id_from_env ?client_type () =
         | Some kind -> native_session_id_env_keys kind
         | None -> []
       in
-      first_nonempty_env fallback_keys
+      (match first_nonempty_env fallback_keys with
+       | Some _ as sid -> sid
+       | None ->
+           (* B173: Grok tool shells export GROK_AGENT but not GROK_SESSION_ID. *)
+           let want_grok =
+             match resolved_client_type with
+             | Some "grok" -> true
+             | _ -> grok_agent_env_present ()
+           in
+           if want_grok then session_id_from_grok_active_sessions () else None)
 
 let current_session_id () =
   session_id_from_env ()
