@@ -1,5 +1,5 @@
 ---
-claimed_at: "2026-07-12T14:59:06Z"
+claimed_at: "2026-07-12T15:43:01Z"
 claimed_by: cli-user
 completed_at: null
 complexity: medium
@@ -8,12 +8,11 @@ depends_on: []
 estimate_hours: 2
 id: B162
 priority: high
-reason: Live vanilla Claude Stop-hook UI confirmation is blocked by the local Claude account weekly limit; installed-wrapper protocol test and full OCaml suite pass, but task receipt requires a completed real fallback turn before closure.
-started_at: "2026-07-12T14:59:06Z"
-status: blocked
+started_at: "2026-07-12T15:43:01Z"
+status: in_progress
 tags: []
 title: Claude Stop-hook c2c delivery must not surface a message payload as Stop hook error
-updated_at: "2026-07-12T15:40:02Z"
+updated_at: "2026-07-12T15:43:01Z"
 ---
 Problem
 
