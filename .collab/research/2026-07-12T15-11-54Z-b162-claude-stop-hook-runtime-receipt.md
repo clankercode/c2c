@@ -73,6 +73,59 @@ On 2026-07-13, `scripts/cc-quota` reports 7d usage at 100%, resetting in about
 required turn; this is an externally verified quota block, not a protocol
 result.
 
+The operator requested an explicit Haiku availability check.  Using the
+required tmux path, `scripts/c2c_tmux.py launch claude --name
+b162-haiku-runtime --new-window --cwd
+/home/xertrov/src/c2c/.worktrees/b162-installed-runtime-evidence --extra
+--model haiku` launched Claude Code 2.1.207 with `--model haiku`.  The client
+rendered `Haiku 4.5 · Claude Max`, so model selection was accepted.  A minimal
+text-only prompt (`Reply exactly HAIKU_OK. Do not use tools.`) then rendered
+`You've hit your weekly limit · resets Jul 15, 10pm (Australia/Sydney)` and
+never completed a turn.  The managed pane also advertises the experimental
+`server:c2c` channel, which direct-injects mail before the destructive Stop
+fallback can observe it; consequently this availability trial proves neither
+the vanilla fallback nor a Stop render.  The pane was stopped with
+`scripts/c2c_tmux.py stop b162-haiku-runtime`.
+
+## Installed-client offline inspection (2026-07-13)
+
+The installed native client is precisely `Claude Code 2.1.207`, commit
+`bc512d563325`, at
+`/home/xertrov/.local/share/claude/versions/2.1.207` (the same executable
+reported by `claude doctor`).  This was inspected without creating a Claude
+turn or sending a request to the model service.
+
+Its embedded changelog says that Stop and SubagentStop hooks can return
+`hookSpecificOutput.additionalContext` to provide feedback, continue the
+turn, and avoid a hook-error label.  More strongly, the executable's embedded
+hook reference contains this event-specific statement:
+
+```text
+Hook-specific output for the Stop event. additionalContext is non-error
+feedback delivered to the model; the conversation continues so the model can
+act on it.
+```
+
+The same executable includes the exact transcript/UI strings `Stop hook
+feedback`, `Stop hook feedback:`, and the parser diagnostic
+`hookSpecificOutput is missing required field "hookEventName"`.  It also
+documents `--include-hook-events` as a `--print` + `stream-json` facility and
+`--debug [filter]` (including the `hooks` filter).  Together these establish
+that this installed build contains the Stop feedback parser and renderer that
+the B162 envelope targets, rather than merely accepting the schema in remote
+documentation.
+
+There is no offline public CLI command that accepts a captured hook stdin JSON
+and asks Claude Code to parse/render it.  `claude doctor` is local and reports
+the installed build healthy, but it performs installation diagnostics only;
+its help exposes no hook-fixture or parser subcommand.  `--include-hook-events`
+and hook debug logging attach to a real `--print` session, which requires a
+model turn.  Therefore this inspection is strong installed-artifact evidence,
+but deliberately does **not** claim a rendered runtime transcript.  The
+quota-free deterministic transcript proof does not exist in this client
+surface; the remaining live proof is exactly the queued-mail vanilla-Claude
+turn described above.
+
 The source and focused executable tests now satisfy the documented Stop JSON
 contract. A full rendered fallback proof still requires an account with quota:
 queue one ordinary message to a vanilla Claude session, complete its turn, and
