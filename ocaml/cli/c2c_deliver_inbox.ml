@@ -173,6 +173,60 @@ let deliver_new_messages
   end else
     !last_seen_count
 
+(* ---------------------------------------------------------------------------
+ * B156: inotifywait child lifecycle. `inotifywait -m` never exits on its own,
+ * so if the daemon is killed (SIGTERM) or a loop returns without explicitly
+ * killing the watcher, the inotifywait process orphans — and Unix.close_process_*
+ * can then block forever waiting for it (the intermittent test hang). We
+ * therefore (a) exec inotifywait directly so the tracked pid IS the watcher
+ * (not a wrapping sh whose grandchild we could not reach), (b) explicitly kill
+ * the watcher on loop teardown, and (c) install a SIGTERM/SIGINT handler that
+ * kills any live watcher and exits promptly so a killed daemon never wedges a
+ * `wait` in the caller.
+ * ------------------------------------------------------------------------- *)
+
+let inotify_children : int list ref = ref []
+
+let track_inotify_child pid = inotify_children := pid :: !inotify_children
+
+let forget_inotify_child pid =
+  inotify_children := List.filter (fun p -> p <> pid) !inotify_children
+
+let teardown_signals_installed = ref false
+
+(* Install once: on SIGTERM/SIGINT, hard-kill every tracked watcher and exit
+   promptly. Idempotent across the (mutually exclusive) inotify loop modes. *)
+let install_teardown_signals () =
+  if not !teardown_signals_installed then begin
+    teardown_signals_installed := true;
+    let handler _ =
+      List.iter
+        (fun pid -> try Unix.kill pid Sys.sigkill with _ -> ())
+        !inotify_children;
+      exit 0
+    in
+    (try Sys.set_signal Sys.sigterm (Sys.Signal_handle handler) with _ -> ());
+    (try Sys.set_signal Sys.sigint (Sys.Signal_handle handler) with _ -> ())
+  end
+
+(* Spawn `inotifywait <args>` via `exec`, so the pid returned by
+   process_full_pid is the watcher itself (killing it kills inotifywait, not a
+   wrapping sh whose grandchild would orphan). Registers it for teardown. *)
+let spawn_inotifywait (inotify_args : string) =
+  let cmd = "exec inotifywait " ^ inotify_args in
+  let (ic, oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+  let pid = Unix.process_full_pid (ic, oc, err_ic) in
+  track_inotify_child pid;
+  (ic, oc, err_ic, pid)
+
+(* Kill the watcher (uncatchable SIGKILL) then reap it. close_process_full
+   returns promptly once the child is dead, so this never blocks on the
+   otherwise-immortal `inotifywait -m`. *)
+let close_inotifywait (ic, oc, err_ic) pid =
+  (try Unix.kill pid Sys.sigkill with _ -> ());
+  (try ignore (Unix.close_process_full (ic, oc, err_ic)) with _ -> ());
+  forget_inotify_child pid
+
 (* Run the inotifywait subprocess. Falls back to polling on failure. *)
 let run_inotify_loop
     ~(broker_root : string)
@@ -194,8 +248,9 @@ let run_inotify_loop
     Printf.printf "[c2c-deliver-inbox] inotify: watching %s (checkpoint=%d)\n%!"
       inbox_path !last_seen_count;
   flush stdout;
-  let cmd = Printf.sprintf
-    "inotifywait -m -e close_write,modify --format '%%e %%f' %s"
+  install_teardown_signals ();
+  let inotify_args = Printf.sprintf
+    "-m -e close_write,modify --format '%%e %%f' %s"
     (Filename.quote inbox_path)
   in
   let rec fallback_poll () =
@@ -222,7 +277,7 @@ let run_inotify_loop
     in
     poll_loop ()
   and run_inotify () =
-    let (ic, _oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
+    let (ic, _oc, err_ic, watcher_pid) = spawn_inotifywait inotify_args in
     let ready_flag = Atomic.make false in
     let _err_thread = Thread.create (fun () ->
       (try
@@ -237,7 +292,7 @@ let run_inotify_loop
     done;
     Printf.printf "[c2c-deliver-inbox] inotify: watcher ready\n%!";
     flush stdout;
-    Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
+    Fun.protect ~finally:(fun () -> close_inotifywait (ic, _oc, err_ic) watcher_pid) (fun () ->
       let rec loop () =
         match max_iterations with
         | Some m when !iterations >= m ->
@@ -421,9 +476,13 @@ let run_inotify_drain_loop
   flush stdout;
   (* Drain anything already queued before waiting for future writes. *)
   drain_once ();
-  let cmd = Printf.sprintf
-    "mkdir -p %s && inotifywait -m -e close_write,modify,create,moved_to --format '%%e %%f' %s"
-    (Filename.quote inbox_dir)
+  install_teardown_signals ();
+  (* B156: create the watched dir in-process (was `mkdir -p` inside the shell
+     command) so the spawned process can be a bare `exec inotifywait` whose pid
+     we can kill directly. *)
+  (try Unix.mkdir inbox_dir 0o755 with _ -> ());
+  let inotify_args = Printf.sprintf
+    "-m -e close_write,modify,create,moved_to --format '%%e %%f' %s"
     (Filename.quote inbox_dir)
   in
   let rec fallback_poll () =
@@ -438,8 +497,8 @@ let run_inotify_drain_loop
              Unix.sleepf (max 0.01 poll_interval);
              fallback_poll ())
   in
-  let (ic, _oc, err_ic) = Unix.open_process_full cmd (Unix.environment ()) in
-  Fun.protect ~finally:(fun () -> ignore (Unix.close_process_full (ic, _oc, err_ic))) (fun () ->
+  let (ic, _oc, err_ic, watcher_pid) = spawn_inotifywait inotify_args in
+  Fun.protect ~finally:(fun () -> close_inotifywait (ic, _oc, err_ic) watcher_pid) (fun () ->
     let _err_thread = Thread.create (fun () ->
       try while true do ignore (input_line err_ic : string) done
       with End_of_file | Sys_error _ -> ()) () in
