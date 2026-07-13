@@ -37,6 +37,11 @@ EMBEDS = {
         "grok_skill_src",
         "assembled grok harness",
     ),
+    "agy": (
+        "c2c_agy_skill_embedded.ml",
+        "agy_skill_src",
+        "assembled agy harness",
+    ),
 }
 
 

@@ -158,6 +158,14 @@ let remove_grok_session_identity_skill () =
     if Sys.file_exists path then Sys.remove path
   with _ -> ()
 
+let agy_skill_dir () =
+  Filename.concat (Sys.getenv "HOME") (".gemini" // "skills" // "c2c")
+
+let write_agy_skill ~output_mode ~dry_run () =
+  write_c2c_skill ~content:C2c_agy_skill_embedded.content
+    ~skill_dir:(agy_skill_dir ()) ~output_mode ~dry_run ()
+
+
 
 let current_c2c_command () =
   let fallback =
@@ -1836,7 +1844,7 @@ let canonical_install_client client =
    toggle: C2c_start.kimi_disabled_for_release. *)
 let known_clients =
   List.filter (fun c -> not (c = "kimi" && C2c_start.kimi_disabled_for_release))
-    [ "claude"; "codex"; "opencode"; "kimi"; "grok" ]
+    [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy" ]
 (* B122: client MCP / host integrations are never installed by default.
    Convenience paths (`c2c install`, `c2c install all`) stay binary-only
    unless the operator names a client or passes --with-clients. Keep every
@@ -1844,23 +1852,23 @@ let known_clients =
    works. *)
 (* crush remains recognized so it routes to the deprecation guard (helpful
    banner) instead of a generic unknown-command error. *)
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "crush" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "crush" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
 (* B146: kimi filtered out while temporarily disabled so `c2c init` does not
    offer a client that immediately refuses. Same single toggle. *)
 let init_configurable_clients =
   List.filter (fun c -> not (c = "kimi" && C2c_start.kimi_disabled_for_release))
-    [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "grok" ]
+    [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "grok"; "agy" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
-let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "cursor"; "crush" ]
-let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "crush"; "tmux"; "pty"; "relay-connect" ]
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "agy"; "cursor"; "crush" ]
+let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "agy"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
 (* codex is no longer here: its delivery is via config.toml hooks
    (`c2c hook codex`), and setup_codex ignores deliver_watch entirely
    (it removes any stale supervisor scripts on re-install). *)
-let deliver_watch_clients = [ "opencode"; "kimi" ]
+let deliver_watch_clients = [ "opencode"; "kimi"; "agy" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
 let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
@@ -1968,6 +1976,70 @@ let setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
    | Json -> ());
   { artifacts; extra_json = extra }
 
+let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
+  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+  let skill_artifact, skill_path = write_agy_skill ~output_mode ~dry_run () in
+  let artifacts = match skill_artifact with Some a -> [ a ] | None -> [] in
+  let hooks_path = home // ".gemini" // "config" // "hooks.json" in
+  let existing_json =
+    if Sys.file_exists hooks_path then
+      try Yojson.Safe.from_file hooks_path with _ -> `Assoc []
+    else `Assoc []
+  in
+  let agy_hooks =
+    `Assoc [
+      ("SessionStart", `List [
+        `Assoc [ ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String "c2c hook agy SessionStart"); ("timeout", `Int 10) ] ]) ]
+      ]);
+      ("PostToolUse", `List [
+        `Assoc [ ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String "c2c hook agy PostToolUse"); ("timeout", `Int 10) ] ]) ]
+      ]);
+      ("Stop", `List [
+        `Assoc [ ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String "c2c hook agy Stop"); ("timeout", `Int 10) ] ]) ]
+      ])
+    ]
+  in
+  let updated_fields =
+    match existing_json with
+    | `Assoc fields ->
+        let filtered = List.filter (fun (k, _) -> k <> "c2c-hooks") fields in
+        ("c2c-hooks", agy_hooks) :: filtered
+    | _ -> [ ("c2c-hooks", agy_hooks) ]
+  in
+  let updated_json = `Assoc updated_fields in
+  if dry_run then
+    Printf.printf "[DRY-RUN] would merge c2c-hooks into %s\n%!" hooks_path
+  else begin
+    let dir = Filename.dirname hooks_path in
+    (try C2c_mcp.mkdir_p dir with _ -> ());
+    let oc = open_out_bin (hooks_path ^ ".tmp") in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> Yojson.Safe.pretty_to_channel oc updated_json; output_string oc "\n");
+    Unix.rename (hooks_path ^ ".tmp") hooks_path
+  end;
+  let artifacts =
+    artifacts @ [ C2c_install_manifest.shared_key ~path:hooks_path ~key:"c2c-hooks" ~format:"json" ]
+  in
+  let extra =
+    [ ("skill_path", `String skill_path)
+    ; ("hooks_path", `String hooks_path)
+    ; ("mcp", `Bool false)
+    ; ("receive", `String "agentapi")
+    ; ("alias", `String alias_val)
+    ; ("alias_from_auto_gen", `Bool alias_from_auto_gen)
+    ]
+  in
+  (match output_mode with
+   | Human ->
+       Printf.printf "Installed c2c for Antigravity (CLI + skill + hooks; no MCP).\n";
+       Printf.printf "  skill: %s\n" skill_path;
+       Printf.printf "  hooks: %s\n" hooks_path;
+       Printf.printf "  alias hint: %s\n" alias_val;
+       Printf.printf "  receive: agy agentapi send-message (delivered by c2c start deliver-watch sidecar)\n";
+       Printf.printf "  Restart agy (or open a new session) so hooks can auto-register.\n%!"
+   | Json -> ());
+  { artifacts; extra_json = extra }
+
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ?(skip_hooks=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   (* B146: kimi is TEMPORARILY disabled for this release — refuse `c2c install
@@ -2026,6 +2098,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
     | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
     | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
     | "grok" -> setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
+    | "agy" -> setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | _ ->
         let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
         (match output_mode with

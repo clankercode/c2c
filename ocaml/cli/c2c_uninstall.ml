@@ -9,7 +9,7 @@ open C2c_types
 open Cmdliner.Term.Syntax
 
 let known_components =
-  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "self"; "git-hook"; "git-shim"; "all" ]
+  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "self"; "git-hook"; "git-shim"; "all" ]
 
 let home_dir () = try Sys.getenv "HOME" with Not_found -> ""
 
@@ -452,6 +452,14 @@ let recompute_grok_artifacts () =
     ]
   , None )
 
+let recompute_agy_artifacts () =
+  let home = home_dir () in
+  let skill = home // ".gemini" // "skills" // "c2c" // "SKILL.md" in
+  let hooks_path = home // ".gemini" // "config" // "hooks.json" in
+  ( [ C2c_install_manifest.shared_key ~path:hooks_path ~key:"c2c-hooks" ~format:"json" ]
+  , [ C2c_install_manifest.owned_file skill ]
+  , None )
+
 let recompute_self_artifacts () =
   let home = home_dir () in
   let bin = home // ".local" // "bin" in
@@ -504,6 +512,7 @@ let recompute_artifacts_for_component ~component ~target_dir =
   | "opencode" -> recompute_opencode_artifacts ~target_dir
   | "crush" -> recompute_crush_artifacts ()
   | "grok" -> recompute_grok_artifacts ()
+  | "agy" -> recompute_agy_artifacts ()
   | "git-hook" -> ([], recompute_git_hook_artifacts ~target_dir, None)
   | "git-shim" -> ([], recompute_git_shim_artifacts (), None)
   | _ -> ([], [], None)
@@ -657,7 +666,7 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
     exit 124
   end;
   if component = "all" then begin
-    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "crush"; "git-shim"; "git-hook" ] in
+    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "crush"; "git-shim"; "git-hook" ] in
     let target_dir = resolve_target_dir target_dir_opt in
     let all_removed = ref [] in
     List.iter

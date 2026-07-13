@@ -79,6 +79,7 @@ type delivery_mode =
   | Mode_wake_inject           (* codex: tmux/herdr wake-nudge watcher — never drains;
                                   codex hooks deliver bodies on the injected turn *)
   | Mode_poll                  (* generic/kimi polling loop *)
+  | Mode_agy_inject            (* agy: agentapi delivery watcher *)
 
 let select_delivery_mode
     ~(pty_master_fd : int option)
@@ -99,6 +100,7 @@ let select_delivery_mode
               its own inotify/poll fallback, so use_inotify is irrelevant
               here. codex-headless is NOT affected (matches "codex" only). *)
            if client = "codex" then Mode_wake_inject
+           else if client = "agy" then Mode_agy_inject
            else if use_inotify then
              if client = "generic" then Mode_inotify_drain
              else Mode_inotify_print

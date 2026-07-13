@@ -1599,6 +1599,11 @@ let () =
       needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
   ;
+  Stdlib.Hashtbl.add clients "agy"
+    { binary = "agy"; deliver_client = "agy";
+      needs_deliver = true; needs_poker = false;
+      poker_event = None; poker_from = None; extra_env = [] }
+  ;
   (* tmux: generic lifecycle-decoupled delivery to an existing pane. The
      "binary" is only used for preflight availability; c2c owns no inner
      client process in this mode. *)
@@ -3756,6 +3761,46 @@ end
 let () = Stdlib.Hashtbl.add client_adapters "claude" (module ClaudeAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "codex" (module CodexAdapter)
 let () = Stdlib.Hashtbl.add client_adapters "kimi" (module KimiAdapter)
+
+module AgyAdapter : CLIENT_ADAPTER = struct
+  let name = "agy"
+  let config_dir = ".gemini"
+  let agent_dir = "skills"
+  let instances_subdir = "agy"
+
+  let binary = "agy"
+  let needs_deliver = true
+
+  let needs_poker = false
+  let poker_event = None
+  let poker_from = None
+  let extra_env = []
+  let session_id_env = Some "C2C_MCP_SESSION_ID"
+
+  let build_start_args ~name ?alias_override:_ ?model_override ?resume_session_id
+      ?(extra_args = []) ?alias_from_auto_gen:_ () =
+    ignore extra_args;
+    let base =
+      match resume_session_id with
+      | Some sid -> [ "--conversation"; sid ]
+      | None -> [ "--conversation"; name ]
+    in
+    match model_override with
+    | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
+    | _ -> base
+
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_
+      ~agent_name:_ =
+    ()
+
+  let probe_capabilities ~binary_path:_ =
+    [ "agentapi_wake", true ]
+
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text:_ ?broker_root:_ () =
+    Ok []
+end
+
+let () = Stdlib.Hashtbl.add client_adapters "agy" (module AgyAdapter)
 
 (* #143: top-level helper that dispatches kickoff delivery to the
    registered [CLIENT_ADAPTER] for [client], or returns [Ok []] if no

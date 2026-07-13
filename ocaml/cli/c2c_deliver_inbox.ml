@@ -676,6 +676,17 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
         ?watched_pid
         ?max_iterations:args.max_iterations
         ()
+  | C2c_pty_inject.Mode_agy_inject ->
+      Printf.printf
+        "[c2c-deliver-inbox] agy-inject: watching %s for %s\n%!"
+        args.broker_root session_id;
+      C2c_agy_deliver.deliver_loop
+        ~broker_root:args.broker_root
+        ~session_id
+        ?watched_pid:watched_pid
+        ?max_iterations:args.max_iterations
+        ~interval:args.interval
+        ()
   | C2c_pty_inject.Mode_poll ->
             let iterations = ref 0 in
             let total_delivered = ref 0 in

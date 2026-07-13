@@ -28,12 +28,22 @@ type dir_result = {
   skipped : int;
 }
 
+type agy_result = {
+  installed : bool;
+  skill_exists : bool;
+  hooks_exists : bool;
+  has_c2c_hooks : bool;
+  alias_prefix_ok : bool;
+  alias_prefix_reason : string option;
+}
+
 type result = {
   dirs : dir_result list;
   total_referenced : int;
   total_dangling : int;
   total_skipped : int;
   codex : codex_result;
+  agy : agy_result;
 }
 
 and block_diff = {
@@ -611,6 +621,42 @@ let claude_dirs () =
            if home = "" then []
            else [ home // ".claude"; home // ".claude-p"; home // ".claude-w" ])
 
+let check_agy_status ?home () =
+  let home = match home with Some h -> h | None -> try Sys.getenv "HOME" with Not_found -> "/tmp" in
+  let skill = home // ".gemini" // "skills" // "c2c" // "SKILL.md" in
+  let hooks = home // ".gemini" // "config" // "hooks.json" in
+  let skill_exists = Sys.file_exists skill in
+  let hooks_exists = Sys.file_exists hooks in
+  let has_c2c_hooks =
+    if hooks_exists then
+      try
+        let json = Yojson.Safe.from_file hooks in
+        match json with
+        | `Assoc fields -> List.mem_assoc "c2c-hooks" fields
+        | _ -> false
+      with _ -> false
+    else false
+  in
+  let installed = skill_exists || has_c2c_hooks in
+  let broker_root = C2c_utils.resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let regs = try C2c_mcp.Broker.list_registrations broker with _ -> [] in
+  let agy_regs = List.filter (fun (r : C2c_mcp.registration) -> r.client_type = Some "agy" || r.registered_by = Some "agy-hook") regs in
+  let bad_prefixes =
+    List.filter (fun (r : C2c_mcp.registration) ->
+      let len = String.length r.alias in
+      not (len >= 4 && String.sub r.alias 0 4 = "agy-")
+    ) agy_regs
+  in
+  let alias_prefix_ok = (bad_prefixes = []) in
+  let alias_prefix_reason =
+    if alias_prefix_ok then None
+    else
+      let aliases = List.map (fun (r : C2c_mcp.registration) -> r.alias) bad_prefixes in
+      Some (Printf.sprintf "The following agy sessions do not have 'agy-' prefix: %s" (String.concat ", " aliases))
+  in
+  { installed; skill_exists; hooks_exists; has_c2c_hooks; alias_prefix_ok; alias_prefix_reason }
+
 let check ?(dirs = claude_dirs ()) () =
   let dirs = List.filter (fun d -> Sys.file_exists d && Sys.is_directory d) dirs in
   let dir_results = List.map scan_dir dirs in
@@ -618,7 +664,8 @@ let check ?(dirs = claude_dirs ()) () =
   let total_dangling = List.fold_left (fun acc d -> acc + List.length d.dangling) 0 dir_results in
   let total_skipped = List.fold_left (fun acc d -> acc + d.skipped) 0 dir_results in
   let codex = check_codex_managed_blocks () in
-  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex }
+  let agy = check_agy_status () in
+  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy }
 
 (* --- output formatters ---------------------------------------------------- *)
 
@@ -675,6 +722,17 @@ let pp_human r =
         "  trust hashes: positional group indices drifted — run `c2c install codex`.\n";
     Printf.printf "\nSummary: %d Codex managed block issue(s)\n"
       r.codex.total_issues
+  end;
+  Printf.printf "\n=== Antigravity (agy) custom skill & hooks check ===\n\n";
+  if not r.agy.installed then
+    Printf.printf "Antigravity c2c install not detected.\n"
+  else begin
+    Printf.printf "  skill: %s\n" (if r.agy.skill_exists then "OK" else "MISSING — run `c2c install agy`");
+    Printf.printf "  hooks: %s\n" (if r.agy.hooks_exists then "OK" else "MISSING (no hooks.json file)");
+    Printf.printf "  c2c hooks key: %s\n" (if r.agy.has_c2c_hooks then "OK" else "MISSING — run `c2c install agy`");
+    (match r.agy.alias_prefix_reason with
+     | Some reason -> Printf.printf "  ⚠ %s\n" reason
+     | None -> Printf.printf "  alias prefix constraints: OK (all live agy sessions are agy-*)\n")
   end
 
 let to_json r =
@@ -721,13 +779,24 @@ let to_json r =
       ("trust_index_drift", `Bool c.trust_index_drift)
     ]
   in
+  let agy_to_json (a : agy_result) =
+    `Assoc [
+      ("installed", `Bool a.installed);
+      ("skill_exists", `Bool a.skill_exists);
+      ("hooks_exists", `Bool a.hooks_exists);
+      ("has_c2c_hooks", `Bool a.has_c2c_hooks);
+      ("alias_prefix_ok", `Bool a.alias_prefix_ok);
+      ("alias_prefix_reason", match a.alias_prefix_reason with Some s -> `String s | None -> `Null)
+    ]
+  in
   `Assoc [
     ("dirs", `List (List.map dir_to_json r.dirs));
     ("total_referenced", `Int r.total_referenced);
     ("total_dangling", `Int r.total_dangling);
     ("total_skipped", `Int r.total_skipped);
     ("codex_managed_blocks", codex_to_json r.codex);
-    ("total_codex_issues", `Int r.codex.total_issues)
+    ("total_codex_issues", `Int r.codex.total_issues);
+    ("agy", agy_to_json r.agy)
   ]
 
 let pp_json r = print_endline (Yojson.Safe.to_string (to_json r))

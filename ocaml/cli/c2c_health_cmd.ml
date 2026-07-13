@@ -223,6 +223,24 @@ let check_plugin_installs () =
    else
      add (`Gray, "grok: not configured (run: c2c install grok)"));
 
+  (* Antigravity (agy): CLI-first — skill and hooks under ~/.gemini/ (no MCP). *)
+  let agy_skill = home // ".gemini" // "skills" // "c2c" // "SKILL.md" in
+  let agy_hooks = home // ".gemini" // "config" // "hooks.json" in
+  let has_agy_hooks =
+    if Sys.file_exists agy_hooks then
+      try
+        let json = Yojson.Safe.from_file agy_hooks in
+        match json with
+        | `Assoc fields -> List.mem_assoc "c2c-hooks" fields
+        | _ -> false
+      with _ -> false
+    else false
+  in
+  (if Sys.file_exists agy_skill || has_agy_hooks then
+     add (`Green, "agy: skill/hooks configured (CLI-first; run: c2c install agy)")
+   else
+     add (`Gray, "agy: not configured (run: c2c install agy)"));
+
   List.rev !results
 
 (* Scan for running deprecated PTY-based wake daemons.
@@ -447,7 +465,7 @@ let health_cmd =
 
 (* --- subcommand: connect -------------------------------------------------- *)
 
-let supported_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok" ]
+let supported_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy" ]
 
 let connect_dashboard ~root ~broker ~output_mode =
   let broker_root = root in

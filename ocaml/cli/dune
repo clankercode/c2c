@@ -1,12 +1,12 @@
  (executable
    (name c2c)
-  (modules c2c c2c_stats c2c_stats_cmd c2c_sitrep c2c_relay_managed c2c_docs_drift c2c_opencode_plugin_drift c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_grok_skill_embedded c2c_doctor_cherry_pick_readiness c2c_doctor_hooks c2c_doctor_schedule c2c_doctor_relay c2c_doctor_cmd c2c_types c2c_commands c2c_commands_cmd c2c_agent_help c2c_setup c2c_init_cmd c2c_utils c2c_broker_root_check c2c_worktree c2c_rooms c2c_stickers c2c_signing_helpers c2c_memory c2c_migrate c2c_migrate_cmd c2c_mcp_config_rewriter c2c_peer_pass c2c_agent c2c_coord c2c_git_shim c2c_git_cmd c2c_host_cmd c2c_relay_pins_cmd c2c_relay_state c2c_refresh_peer_cmd c2c_serve_cmd c2c_inbox_cmd c2c_register_cmd c2c_rename_cmd c2c_whoami_cmd c2c_list_cmd c2c_find_cmd c2c_send_cmd c2c_root_cmd c2c_dev_cmd c2c_main_cmd c2c_history c2c_history_cmd c2c_changelog_embedded c2c_changelog c2c_changelog_cmd c2c_glyphs_cmd c2c_broker_cmd c2c_kimi_hook c2c_approval_paths c2c_authorizers role_designer_embedded role_templates c2c_deliver_watch c2c_deliver_inbox_log c2c_monitor_watcher c2c_schedule c2c_uninstall c2c_watch c2c_watch_state c2c_watch_data c2c_watch_render c2c_relay_subscribe_daemon c2c_self_update c2c_self_update_provenance c2c_monitor_logic c2c_monitor_cmd c2c_relay_cmd c2c_mesh_cmd c2c_skills_cmd c2c_health_cmd c2c_gui_cmd c2c_config_cmd c2c_statefile_cmd c2c_instances_cmd c2c_stale c2c_managed_cmd c2c_codex_cmd c2c_approval_cmd c2c_inject_cmd c2c_supervisor_cmd c2c_sweep_cmd c2c_hook_cmd c2c_codex_hooks c2c_statusline_cmd c2c_cli_helpers)
+  (modules c2c c2c_stats c2c_stats_cmd c2c_sitrep c2c_relay_managed c2c_docs_drift c2c_opencode_plugin_drift c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_grok_skill_embedded c2c_agy_skill_embedded c2c_agy_deliver c2c_doctor_cherry_pick_readiness c2c_doctor_hooks c2c_doctor_schedule c2c_doctor_relay c2c_doctor_cmd c2c_types c2c_commands c2c_commands_cmd c2c_agent_help c2c_setup c2c_init_cmd c2c_utils c2c_broker_root_check c2c_worktree c2c_rooms c2c_stickers c2c_signing_helpers c2c_memory c2c_migrate c2c_migrate_cmd c2c_mcp_config_rewriter c2c_peer_pass c2c_agent c2c_coord c2c_git_shim c2c_git_cmd c2c_host_cmd c2c_relay_pins_cmd c2c_relay_state c2c_refresh_peer_cmd c2c_serve_cmd c2c_inbox_cmd c2c_register_cmd c2c_rename_cmd c2c_whoami_cmd c2c_list_cmd c2c_find_cmd c2c_send_cmd c2c_root_cmd c2c_dev_cmd c2c_main_cmd c2c_history c2c_history_cmd c2c_changelog_embedded c2c_changelog c2c_changelog_cmd c2c_glyphs_cmd c2c_broker_cmd c2c_kimi_hook c2c_approval_paths c2c_authorizers role_designer_embedded role_templates c2c_deliver_watch c2c_deliver_inbox_log c2c_monitor_watcher c2c_schedule c2c_uninstall c2c_watch c2c_watch_state c2c_watch_data c2c_watch_render c2c_relay_subscribe_daemon c2c_self_update c2c_self_update_provenance c2c_monitor_logic c2c_monitor_cmd c2c_relay_cmd c2c_mesh_cmd c2c_skills_cmd c2c_health_cmd c2c_gui_cmd c2c_config_cmd c2c_statefile_cmd c2c_instances_cmd c2c_stale c2c_managed_cmd c2c_codex_cmd c2c_approval_cmd c2c_inject_cmd c2c_supervisor_cmd c2c_sweep_cmd c2c_hook_cmd c2c_codex_hooks c2c_statusline_cmd c2c_cli_helpers)
    (libraries c2c_mcp c2c_hook_lib c2c_cold_boot_context_lib c2c_post_compact_hook_lib cmdliner yojson logs unix str lwt.unix cohttp-lwt-unix lambda-term uucp digestif.ocaml))
 
 ; #482 S1/S3a: deliver-inbox daemon executable
 (executable
  (name c2c_deliver_inbox)
- (modules c2c_deliver_inbox c2c_deliver_inbox_log)
+ (modules c2c_deliver_inbox c2c_deliver_inbox_log c2c_agy_deliver)
  (libraries c2c_mcp cmdliner yojson unix)
  (public_name c2c-deliver-inbox))
 
@@ -218,7 +218,7 @@
 ; #478 slice 2: setup_kimi JSON merge idempotency + allowedTools presence.
 (test
  (name test_c2c_setup_kimi)
- (modules test_c2c_setup_kimi c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
+ (modules test_c2c_setup_kimi c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
 ; #5 vanilla-codex: trust-hash scheme + hooks-block rendering + AGENTS.md upsert.
@@ -230,7 +230,7 @@
 ; #5 vanilla-codex: setup_codex writes hooks block + AGENTS.md idempotently.
 (test
  (name test_c2c_setup_codex)
- (modules test_c2c_setup_codex c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
+ (modules test_c2c_setup_codex c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
 ; codex-xmlfd-removal: manifest-less `c2c uninstall codex` recompute fallback
@@ -238,7 +238,7 @@
 ; deliver-watch scripts).
 (test
  (name test_c2c_uninstall_codex)
- (modules test_c2c_uninstall_codex c2c_uninstall c2c_setup c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_grok_skill_embedded)
+ (modules test_c2c_uninstall_codex c2c_uninstall c2c_setup c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_grok_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest cmdliner yojson unix str digestif.ocaml))
 
 ; #5 vanilla-codex: `c2c hook codex` end-to-end against a temp broker
@@ -262,7 +262,7 @@
 ; idempotently; uninstall strips it; claude /c2c skill auto-refresh.
 (test
  (name test_c2c_setup_claude)
- (modules test_c2c_setup_claude c2c_uninstall c2c_setup c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_grok_skill_embedded)
+ (modules test_c2c_setup_claude c2c_uninstall c2c_setup c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_grok_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest cmdliner yojson unix digestif.ocaml))
 
 (test
@@ -287,7 +287,7 @@
 
 (test
   (name test_c2c_doctor_hooks)
-  (modules test_c2c_doctor_hooks c2c_doctor_hooks c2c_codex_hooks)
+  (modules test_c2c_doctor_hooks c2c_doctor_hooks c2c_codex_hooks c2c_utils c2c_broker_root_check)
   (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
  (test
@@ -307,14 +307,14 @@
 ; refuse + advertised lists cleaned (soft, single-toggle revert).
 (test
  (name test_c2c_kimi_disabled)
- (modules test_c2c_kimi_disabled c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
+ (modules test_c2c_kimi_disabled c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest cmdliner yojson unix digestif.ocaml)
  (deps c2c.exe))
 
 ; Grok CLI-first install: skill + SessionStart hooks, no MCP.
 (test
  (name test_c2c_setup_grok)
- (modules test_c2c_setup_grok c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded)
+ (modules test_c2c_setup_grok c2c_setup c2c_grok_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
 ; Grok SessionStart/SessionEnd hook (register + identity skill; no additionalContext).

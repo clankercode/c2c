@@ -132,7 +132,7 @@ let test_relay_released_alias_hides_identity_before_gc () =
    | `Error (err, _) when err = Relay.relay_err_unknown_alias -> ()
    | `Error (err, _) -> fail_fmt "inmemory: released alias send_room should be unknown_alias, got %s" err
    | `Ok _ -> fail_fmt "inmemory: released alias should not send_room before gc");
-  let (hb_status, _) = Relay.InMemoryRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" in
+  let (hb_status, _) = Relay.InMemoryRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" ?opaque_host_id:None in
   if hb_status <> Relay.relay_err_unknown_alias then
     fail_fmt "inmemory: heartbeat should not revive released alias, got %s" hb_status;
   if Relay.InMemoryRelay.identity_pk_of t ~alias:"alice" <> None then
@@ -283,13 +283,13 @@ let test_relay_heartbeat_refreshes_existing () =
   let t = make_test_relay () in
   let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:1.0 () in
   Unix.sleep 1;
-  let (status, lease) = Relay.InMemoryRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" in
+  let (status, lease) = Relay.InMemoryRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" ?opaque_host_id:None in
   if status <> "ok" then fail_fmt "expected ok, got %s" status;
   if not (Relay.RegistrationLease.is_alive lease) then fail_fmt "lease should still be alive"
 
 let test_relay_heartbeat_unknown_session_raises_error () =
   let t = make_test_relay () in
-  let (status, _) = Relay.InMemoryRelay.heartbeat t ~node_id:"nope" ~session_id:"nope" in
+  let (status, _) = Relay.InMemoryRelay.heartbeat t ~node_id:"nope" ~session_id:"nope" ?opaque_host_id:None in
   if status <> Relay.relay_err_unknown_alias then fail_fmt "expected unknown_alias, got %s" status
 
 (* F4: relay-side re-registration inbox migration.
@@ -762,7 +762,7 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
      | `Error (err, _) when err = Relay.relay_err_unknown_alias -> ()
      | `Error (err, _) -> fail_fmt "sqlite: released alias send_room should be unknown_alias, got %s" err
      | `Ok _ -> fail_fmt "sqlite: released alias should not send_room before gc");
-    let (hb_status, _) = Relay.SqliteRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" in
+    let (hb_status, _) = Relay.SqliteRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" ?opaque_host_id:None in
     if hb_status <> Relay.relay_err_unknown_alias then
       fail_fmt "sqlite: heartbeat should not revive released alias, got %s" hb_status;
     if Relay.SqliteRelay.identity_pk_of t ~alias:"alice" <> None then

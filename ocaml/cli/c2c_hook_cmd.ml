@@ -1259,10 +1259,155 @@ let hook_grok : unit Cmdliner.Cmd.t =
        ~doc:"Grok Build TUI SessionStart/SessionEnd hook: auto-registers the session (registered_by=grok-hook), refreshes the /c2c skill, and writes a c2c-session identity skill (Grok cannot inject additionalContext). Installed by `c2c install grok`. Never fails the host turn.")
     hook_grok_cmd
 
+let hook_agy_cmd =
+  let open Cmdliner.Term in
+  const (fun event_opt ->
+    (try
+       Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+       ignore (Unix.alarm 8)
+     with _ -> ());
+    (try
+       if C2c_hook_lib.is_subagent_quiet () then exit 0;
+       let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
+       let payload =
+         try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
+       in
+       let event =
+         match event_opt with
+         | Some e -> e
+         | None ->
+             (match payload_string_field payload "hook_event_name" with
+              | Some e -> e
+              | None ->
+                  (match payload_string_field payload "hookEventName" with
+                   | Some e -> e
+                   | None ->
+                       (match Sys.getenv_opt "ANTIGRAVITY_HOOK_EVENT" with
+                        | Some e when String.trim e <> "" -> String.trim e
+                        | _ -> exit 0)))
+       in
+       let event =
+         match String.lowercase_ascii event with
+         | "session_start" | "sessionstart" -> "SessionStart"
+         | "post_tool_use" | "posttooluse" -> "PostToolUse"
+         | "stop" -> "Stop"
+         | "session_end" | "sessionend" -> "SessionEnd"
+         | other -> event
+       in
+       let conversation_id =
+         match Sys.getenv_opt "ANTIGRAVITY_CONVERSATION_ID" with
+         | Some s when String.trim s <> "" -> Some (String.trim s)
+         | _ ->
+             (match payload_string_field payload "conversationId" with
+              | Some s -> Some s
+              | None ->
+                  (match payload_string_field payload "conversation_id" with
+                   | Some s -> Some s
+                   | None -> None))
+       in
+       let validated s =
+         match C2c_mcp.validate_session_id s with
+         | Ok sid -> Some sid
+         | Error _ -> None
+       in
+       let payload_sid =
+         match payload_string_field payload "session_id" with
+         | Some s -> validated s
+         | None ->
+             (match payload_string_field payload "sessionId" with
+              | Some s -> validated s
+              | None -> None)
+       in
+       let env_sid =
+         match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s when String.trim s <> "" -> validated (String.trim s)
+         | _ -> None
+       in
+       let target_sid =
+         match env_sid with
+         | Some s -> Some s
+         | None ->
+             (match payload_sid with
+              | Some s -> Some s
+              | None -> conversation_id)
+       in
+       let sid = match target_sid with Some s -> s | None -> exit 0 in
+       let broker_root = C2c_utils.resolve_broker_root () in
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+
+       let ls_address =
+         match Sys.getenv_opt "ANTIGRAVITY_LS_ADDRESS" with
+         | Some s when String.trim s <> "" -> Some (String.trim s)
+         | _ -> None
+       in
+       (match ls_address, conversation_id with
+        | Some ls, Some conv ->
+            C2c_agy_deliver.write_agy_env sid ~ls_address:ls ~conversation_id:conv
+        | _ -> ());
+
+       if event = "SessionStart" then begin
+         let regs = C2c_mcp.Broker.list_registrations broker in
+         let registered = List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs in
+         if not registered then begin
+           let alias = C2c_setup.default_alias_for_client "agy" in
+           (try
+              C2c_mcp.Broker.register broker ~session_id:sid ~alias
+                ~pid:None
+                ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time None)
+                ~client_type:(Some "agy")
+                ~cwd:
+                  (match payload_string_field payload "cwd" with
+                   | Some c -> Some c
+                   | None -> payload_string_field payload "workspaceRoot")
+                ~registered_by:(Some "agy-hook")
+                ~from_auto_gen:true ()
+            with _ -> ());
+           (match C2c_cli_helpers.read_session_statefile ~broker_root with
+            | Some existing
+              when C2c_cli_helpers.statefile_session_registered ~broker_root existing -> ()
+            | _ ->
+                C2c_cli_helpers.write_session_statefile ~broker_root
+                  ~session_id:sid ~alias ~client:(Some "agy"));
+           ()
+         end
+       end;
+
+       if event = "Stop" || event = "SessionEnd" then begin
+         let regs = C2c_mcp.Broker.list_registrations broker in
+         (match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) ->
+                 r.registered_by = Some "agy-hook" && r.session_id = sid)
+              regs
+          with
+          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | None -> ());
+         let env_file = C2c_agy_deliver.env_file_path sid in
+         (try if Sys.file_exists env_file then Sys.remove env_file with _ -> ());
+         exit 0
+       end;
+
+       if event = "PostToolUse" || event = "Stop" then begin
+         (try
+            C2c_agy_deliver.deliver_loop ~broker_root ~session_id:sid ~max_iterations:1 ~interval:0.01 ()
+          with _ -> ())
+       end;
+       exit 0
+     with e ->
+       (try prerr_endline ("c2c hook agy: " ^ Printexc.to_string e) with _ -> ());
+       exit 0))
+  $ Cmdliner.Arg.(value & pos 0 (some string) None & info [] ~docv:"EVENT" ~doc:"Hook event name")
+
+let hook_agy : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "agy"
+       ~doc:"Antigravity CLI (agy) SessionStart/PostToolUse/Stop hook: auto-registers the session, updates the agy-env.json metadata, and triggers backup inbox draining. Installed by `c2c install agy`.")
+    hook_agy_cmd
+
 let hook : unit Cmdliner.Cmd.t =
   let info = Cmdliner.Cmd.info "hook"
-    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, and 'codex' for all Codex CLI hook events, and 'grok' for Grok SessionStart/SessionEnd."
+    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, 'codex' for all Codex CLI hook events, 'grok' for Grok SessionStart/SessionEnd, and 'agy' for Antigravity CLI."
   in
   (* Default to post-tool for backward compat: `c2c hook` (no subcommand) behaves
      as the PostToolUse hook, same as before the hook group refactor. *)
-  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok ]
+  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok; hook_agy ]
