@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:34:59Z"
+depends_on: []
+estimate_hours: 1
+id: B179
+priority: high
+status: pending
+tags:
+    - relay
+    - rename
+    - ux
+title: 'rename: auto re-register/rebind relay identity for new alias'
+updated_at: "2026-07-13T11:34:59Z"
+---
+## Problem
+After `c2c rename` (e.g. codex-black-sledge-* -> gk-black), local session alias works immediately but relay registration stays on the old identity binding. First post-rename `c2c monitor` relay peek fails TERMINAL with: unauthorized: alias \"<new>\" has no identity binding. Operator must discover and run `c2c relay register --alias=<new>` manually.
+
+## Expected
+Rename should either:
+- atomically re-register the new alias on the configured relay (same identity key), and/or
+- print a hard, copy-pasteable next step if re-register cannot be automatic, and
+- leave old alias lease in a defined state (release / transfer / dual-bind window).
+
+## Actual
+Silent split: local OK, relay broken until manual register. Agents that rename mid-handoff drop cross-host receive until someone re-registers.
+
+## Context
+Observed 2026-07-13 during multi-agent Amaroo handoff. Local same-host DMs continued; relay watch died.
+
+## Suggested fix
+On successful rename, if relay URL is configured: call the same path as `c2c relay register --alias=<new>`; surface success/failure in rename output; optionally auto-restart monitor identity or emit a structured event monitors can react to.

@@ -175,3 +175,4 @@ bugs:
     - file: B176-improve-codex-app-server-start.todo
     - file: B177-c2c-send-prints-false-no-relay.todo
     - file: B178-relay-monitor-peek-terminal-ti.todo
+    - file: B179-rename-auto-re-register-rebind.todo
