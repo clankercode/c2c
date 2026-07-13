@@ -1,0 +1,28 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:34:59Z"
+depends_on: []
+estimate_hours: 1
+id: B183
+priority: medium
+status: pending
+tags:
+    - cli
+    - ux
+    - discoverability
+title: 'CLI: add discoverable aliases for list/inbox (peers, inbox) or help cross-refs'
+updated_at: "2026-07-13T11:34:59Z"
+---
+## Problem
+Agents commonly try c2c peers and c2c inbox (mental model from other meshes). Both fail with unknown command; real commands are list, peek-inbox, poll-inbox, wait-inbox, history. Burns a turn and confuses onboarding after /c2c.
+
+## Expected
+Either:
+- first-class aliases: peers -> list, inbox -> peek-inbox (or poll-inbox with note), or
+- unknown-command suggestions: \"Did you mean: c2c list / c2c peek-inbox?\"
+
+## Actual
+Hard fail only; help text lists real commands but not the failed synonyms.
+
+## Suggested fix
+Low-cost: did-you-mean on unknown command matching a synonym table; optional thin aliases that print deprecation note then forward.

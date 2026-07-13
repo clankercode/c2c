@@ -179,3 +179,4 @@ bugs:
     - file: B180-monitor-after-rename-re-resolv.todo
     - file: B181-relay-connector-process-alive.todo
     - file: B182-rename-reserved-prefix-rejecti.todo
+    - file: B183-cli-add-discoverable-aliases-f.todo
