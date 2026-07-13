@@ -1,0 +1,37 @@
+---
+complexity: medium
+created_at: "2026-07-13T13:17:13Z"
+depends_on: []
+estimate_hours: 1
+id: B187
+priority: high
+status: pending
+tags:
+    - identity
+    - whoami
+    - cli
+    - safety
+    - agy
+title: whoami/send must not present borrowed or fallback identity as success
+updated_at: "2026-07-13T13:17:13Z"
+---
+## Problem
+When identity is resolved via soft fallbacks (c2c init session statefile, C2C_MCP_AUTO_REGISTER_ALIAS, sole-alive codex adoption, etc.), `c2c whoami` and `c2c send` can present another client's alias as this shell's identity — success-shaped output for a known-wrong or low-confidence result.
+
+Dogfood (2026-07-13): interactive agy ran `c2c whoami`, got `codex-yew-spout-s4m7`, then sent a pong stamped as that codex peer. Authorship lie; operators/models treat the whoami block as authoritative.
+
+## Desired
+1. Never present known-wrong / low-confidence identity as success.
+2. Fail closed (nonzero) for whoami and send when provenance is borrowed fallback, ambiguous, or client-prefix mismatch (e.g. agy shell → codex-* alias).
+3. Every error must include how to fix / how to proceed (pasteable steps: init/register with correct prefix, set session env, re-check whoami, then send).
+4. JSON mode: error object + fix_steps, not empty/wrong alias.
+
+## Fix sketch
+- `session_id_from_statefile` / `resolve_alias` / `c2c_whoami_cmd`: treat init statefile fallback as untrusted unless bound to this process session.
+- Client prefix guard when intended client is known (agy/codex/claude/grok).
+- Shared `identity_error ~reason ~candidate ~steps` helper.
+
+## References
+- Finding: `.collab/findings/2026-07-13T13-13-32Z-grok-uranium-ring-wrong-alias-presented-as-identity.md`
+- Code: `ocaml/cli/c2c_cli_helpers.ml`, `ocaml/cli/c2c_whoami_cmd.ml`
+- Related: agy support plan (always agy- prefix + session isolation)
