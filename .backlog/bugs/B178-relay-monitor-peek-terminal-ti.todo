@@ -1,0 +1,70 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:33:51Z"
+depends_on: []
+estimate_hours: 1
+id: B178
+priority: high
+status: pending
+tags:
+    - relay
+    - monitor
+    - auth
+    - rename
+title: 'relay monitor peek: terminal timestamp_out_of_window (-30.5s) after nonce_replay; local NTP fine'
+updated_at: "2026-07-13T11:33:51Z"
+---
+## Summary
+After renaming a session alias (codex-black-sledge-* -> gk-black) and re-registering on the public relay, `c2c monitor` relay watch fails open→terminal with a fixed ~30.5s timestamp skew even though the host clock is NTP-synced and matches relay HTTP Date to the second. Local inbox watch continues; same-host DMs work.
+
+## Environment
+- host: linux (Australia/Sydney)
+- c2c client 0.12.0 (git_hash fd5eac2 observed via relay status)
+- relay: https://relay.c2c.im
+- alias: gk-black (session CLI)
+- node_id/session_id after register: cli-gk-black
+- timedatectl: System clock synchronized: yes; NTP active
+- curl -sI https://relay.c2c.im Date header matched local UTC second-for-second at failure window
+
+## Sequence observed (2026-07-13 ~11:32 UTC)
+1. `c2c rename` to gk-black succeeded (local).
+2. `c2c monitor` started; identity line: monitoring as gk-black; relay watch peek cli-gk-black/cli-gk-black every 5.0s
+3. First failure after rename (before re-register): unauthorized: alias "gk-black" has no identity binding → TERMINAL, relay watch disabled
+4. `c2c relay register --alias=gk-black` → ok, lease alive
+5. Restart monitor → peek starts
+6. Transient: nonce_replay: request nonce replay (attempt 1, then 2; backing off)
+7. TERMINAL: timestamp_out_of_window: request ts skew -30.5s outside window
+8. Same TERMINAL pattern on a second monitor restart (~21:33 AEST / 11:33 UTC) after another register: skew again exactly -30.5s after nonce_replay backoff
+
+## Parallel whoami / register notes
+- `c2c whoami --relay` after register: often "registered_unreachable — relay lease alive but no live connector bridge — inbound relay traffic will not reach this broker"
+- connector reported down, last sync ~1.4d (a long-lived `c2c relay connect` process was present on the host)
+- At one intermediate moment whoami also reported: Ed25519 request signature does not verify
+- Register itself returns ok with receipt
+
+## Expected
+- After alias rename + register, relay peek for cli-<alias> should succeed or degrade with actionable recoverable errors
+- Clock-skew errors should not fire when host NTP and relay HTTP Date agree
+- nonce_replay during peek backoff should not poison subsequent signed request timestamps into a permanent -30.5s skew TERMINAL that requires manual re-register + monitor restart
+
+## Actual
+- Relay watch enters TERMINAL timestamp_out_of_window (-30.5s) and self-disables
+- Local inbox continues (good)
+- Cross-host receive via monitor is dead until operator intervenes; re-register does not reliably prevent the next cycle
+
+## Impact
+Agents that depend on relay for cross-host DMs lose inbound relay after rename/register; false "fix the clock" guidance when clock is fine; noisy ops during multi-agent handoffs.
+
+## Repro sketch
+1. On a machine with live local broker + configured public relay
+2. Rename session alias to a new unused alias
+3. Start `c2c monitor` (relay watch peeks cli-<alias>/<alias>)
+4. Observe identity-binding failure if not yet registered
+5. `c2c relay register --alias=<new>`
+6. Restart monitor
+7. Watch for nonce_replay then timestamp_out_of_window -30.5s TERMINAL
+
+## Notes for fix investigation
+- Skew magnitude is suspiciously constant at -30.5s across restarts
+- Failure only after nonce_replay backoff path — possible stale signed request / reused ts under backoff
+- Connector bridge liveness vs CLI register/peek identity may be split incorrectly after rename
