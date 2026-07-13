@@ -41,16 +41,17 @@ Local server endpoints discovered from source (`MoonshotAI/kimi-code`):
 
 ## Chosen design: REST prompt injection + skill + re-enable
 
-> **2026-07-13 integration fix:** Kimi Code 0.23+ does not recognize
-> c2c-generated `session_<uuid>` IDs passed via `kimi --session <sid>`;
-> it returns "Session not found".  Managed `c2c start kimi` therefore
-> launches `kimi` without `--session` and lets Kimi Code mint its own
-> CLI/TUI session ID.  Kimi Code's REST prompt endpoint
-> (`POST /api/v1/sessions/{id}/prompts`) only works for sessions created
-> through the API, not for CLI/TUI sessions.  Consequently, the practical
-> delivery path for managed Kimi sessions is the `/c2c` skill + Monitor
-> (`c2c monitor`); `C2c_kimi_deliver` is retained for future API/web
-> session support.
+> **2026-07-13 integration note:** Kimi Code 0.23+ mints its own
+> `session_<uuid>` IDs for CLI/TUI sessions and does not resume arbitrary
+> IDs passed via `kimi --session <sid>`.  Managed `c2c start kimi`
+> therefore launches `kimi` without `--session`.  The c2c notifier
+> discovers the real session id for the current workdir from
+> `~/.kimi-code/session_index.jsonl`, ensures `kimi server run` is
+> listening, and POSTs inbound c2c messages as user prompts to
+> `/api/v1/sessions/{id}/prompts`.  This REST prompt injection is the
+> primary delivery path for both managed TUI sessions and future API/web
+> sessions; `c2c monitor` is a fallback for unmanaged or serverless
+> setups.
 
 ### Components
 
@@ -102,7 +103,7 @@ Local server endpoints discovered from source (`MoonshotAI/kimi-code`):
 
 ### Data flow
 
-For managed `c2c start kimi` TUI sessions (no API-addressable session id):
+For managed `c2c start kimi` TUI sessions:
 
 ```
 c2c broker inbox (per-repo or global sessions)
@@ -112,18 +113,21 @@ C2c_kimi_notifier.run_once (daemon loop)
         |
         +--> system event? -> chat-log only (when session dir known)
         |
-        +--> no configured session id? -> skip REST, log, tmux wake
+        +--> ensure kim server is running
+        +--> discover session id from ~/.kimi-code/session_index.jsonl
         |
-        +--> C2c_kimi_deliver.submit (future API/web sessions only)
+        +--> C2c_kimi_deliver.submit
                  |
                  +--> read ~/.kimi-code/server.token
                  +--> POST /api/v1/sessions/{sid}/prompts
                  +--> on 200: drain message from broker
                  +--> on failure: leave message, log, retry next tick
+        |
+        +--> tmux wake (secondary refresh signal when pane is idle)
 ```
 
-The operator-visible delivery path for managed Kimi sessions is the `/c2c`
-skill + Monitor (`c2c monitor`).
+The operator-visible delivery path for managed Kimi sessions is REST prompt
+injection via the local Kimi Code server.
 
 ### Error handling
 

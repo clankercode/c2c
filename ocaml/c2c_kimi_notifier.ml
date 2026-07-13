@@ -11,6 +11,8 @@ let home () =
 
 let ( // ) = Filename.concat
 
+open Lwt.Infix
+
 (* ─── Constants + path helpers ───────────────────────────────────────────── *)
 
 (* Kimi Code's share-dir resolution mirrors share.py:
@@ -220,19 +222,69 @@ let write_notification
   atomic_write_string event_path event_json;
   atomic_write_string delivery_path delivery_json
 
-(* REST prompt delivery seam. Replaces the legacy on-disk notification-store
-   writer for live injection; write_notification above is retained for tests
-   and diagnostics. *)
+(* Check whether the Kimi server is reachable on its discovered base URL. *)
+let kimi_server_is_responding () =
+  match C2c_kimi_deliver.server_base_url () with
+  | None -> false
+  | Some base ->
+      let url = base ^ "/api/v1/healthz" in
+      let uri = Uri.of_string url in
+      (match C2c_kimi_deliver.read_server_token () with
+       | None -> false
+       | Some token ->
+           let headers =
+             Cohttp.Header.of_list [ "Authorization", "Bearer " ^ token ]
+           in
+           try
+             Lwt_main.run (
+               Cohttp_lwt_unix.Client.get ~headers uri
+               >>= fun (resp, _body) ->
+               let code =
+                 Cohttp.Code.code_of_status (Cohttp.Response.status resp)
+               in
+               Lwt.return (code = 200))
+           with _ -> false)
+
+(* Start the Kimi server if it is not already running.  The command is
+   idempotent: if a server is already bound it prints the existing URL and
+   exits.  We only start a real server outside of fixture/test mode. *)
+let ensure_kimi_server_running () =
+  if C2c_kimi_deliver.fixture_enabled () then ()
+  else if not (kimi_server_is_responding ()) then begin
+    Printf.eprintf
+      "[kimi-notifier] Kimi server not responding; starting it...\n%!";
+    let cmd = "kimi server run --keep-alive >/dev/null 2>&1" in
+    ignore (Unix.system cmd);
+    let deadline = Unix.gettimeofday () +. 10.0 in
+    let rec wait () =
+      if Unix.gettimeofday () > deadline then
+        Printf.eprintf
+          "[kimi-notifier] timed out waiting for Kimi server\n%!"
+      else if kimi_server_is_responding () then ()
+      else (
+        Unix.sleepf 0.2;
+        wait ())
+    in
+    wait ()
+  end
+
+(* Resolve the Kimi session id for the current working directory by reading
+   ~/.kimi-code/session_index.jsonl.  Managed [c2c start kimi] sessions launch
+   without --session, so Kimi mints the id; we discover it afterwards. *)
+let resolve_kimi_session_id ~cwd =
+  C2c_kimi_deliver.session_id_for_workdir ~workdir:cwd
+
+(* REST prompt delivery seam.  Discovers the Kimi session id for the current
+   workdir, ensures the local server is running, and POSTs the message as a
+   user prompt.  Messages stay in the broker inbox if delivery fails so the
+   next poll can retry. *)
 let deliver_via_rest ~alias ~msg =
-  match read_session_id_from_config alias with
+  let cwd = Sys.getcwd () in
+  ensure_kimi_server_running ();
+  match resolve_kimi_session_id ~cwd with
   | None ->
-      Printf.eprintf
-        "[kimi-notifier] no session id for alias %s; skipping REST delivery \
-         (managed Kimi sessions are delivered via the /c2c skill + Monitor)\n%!"
-        alias;
-      Ok ()
-  | Some session_id ->
-      C2c_kimi_deliver.deliver_message ~session_id ~msg
+      Error (Printf.sprintf "no Kimi session for workdir %s" cwd)
+  | Some session_id -> C2c_kimi_deliver.deliver_message ~session_id ~msg
 
 (* ─── Tmux idle detection + wake ─────────────────────────────────────────── *)
 
@@ -406,7 +458,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
     (* Resolve the kimi session-dir. *)
     let cwd = Sys.getcwd () in
     let session_dir_opt =
-      match read_session_id_from_config alias with
+      match resolve_kimi_session_id ~cwd with
       | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
       | None -> None
     in
@@ -498,7 +550,7 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
       (* Resolve the kimi session-dir for notification delivery. *)
       let cwd = Sys.getcwd () in
       let session_dir_opt =
-        match read_session_id_from_config alias with
+        match resolve_kimi_session_id ~cwd with
         | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
         | None -> None
       in

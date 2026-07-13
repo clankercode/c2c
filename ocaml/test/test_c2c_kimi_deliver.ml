@@ -157,6 +157,69 @@ let test_submit_prompt_errors_without_token () =
               Alcotest.(check (result int string)) "no token → Error"
                 (Error "no server token") result)))
 
+let test_session_index_parsing () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          let kc = Filename.concat tmp ".kimi-code" in
+          Unix.mkdir kc 0o700;
+          let index_path = Filename.concat kc "session_index.jsonl" in
+          let oc = open_out index_path in
+          output_string oc
+            "{\"sessionId\":\"session_a\",\"sessionDir\":\"/x/a\",\"workDir\":\"/proj/a\",\"created_at\":\"2026-07-13T10:00:00.000Z\",\"updated_at\":\"2026-07-13T10:00:00.000Z\"}\n";
+          output_string oc
+            "{\"sessionId\":\"session_b\",\"sessionDir\":\"/x/b\",\"workDir\":\"/proj/b\",\"created_at\":\"2026-07-13T11:00:00.000Z\",\"updated_at\":\"2026-07-13T12:00:00.000Z\"}\n";
+          output_string oc
+            "{\"sessionId\":\"session_c\",\"sessionDir\":\"/x/c\",\"workDir\":\"/proj/b\",\"created_at\":\"2026-07-13T11:00:00.000Z\",\"updated_at\":\"2026-07-13T13:00:00.000Z\"}\n";
+          close_out oc;
+          Alcotest.(check (option string))
+            "finds most recent session for workdir"
+            (Some "session_c")
+            (C2c_kimi_deliver.session_id_for_workdir ~workdir:"/proj/b");
+          Alcotest.(check (option string))
+            "returns None for unknown workdir"
+            None
+            (C2c_kimi_deliver.session_id_for_workdir ~workdir:"/proj/z");
+          let entries = C2c_kimi_deliver.read_session_index () in
+          Alcotest.(check int) "reads all valid entries" 3 (List.length entries)))
+
+let test_server_listening_url_parses_log () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          let kc = Filename.concat tmp ".kimi-code" in
+          Unix.mkdir kc 0o700;
+          let server_dir = Filename.concat kc "server" in
+          Unix.mkdir server_dir 0o700;
+          let log_path = Filename.concat server_dir "server.log" in
+          let oc = open_out log_path in
+          output_string oc "{\"level\":30,\"msg\":\"other\"}\n";
+          output_string oc
+            "{\"level\":30,\"msg\":\"server listening\",\"address\":\"http://127.0.0.1:58629\"}\n";
+          output_string oc
+            "{\"level\":30,\"msg\":\"server listening\",\"address\":\"http://127.0.0.1:58630\"}\n";
+          close_out oc;
+          Alcotest.(check (option string))
+            "returns latest listening URL"
+            (Some "http://127.0.0.1:58630")
+            (C2c_kimi_deliver.server_listening_url ())))
+
+let test_server_base_url_prefers_listening_log () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              let kc = Filename.concat tmp ".kimi-code" in
+              Unix.mkdir kc 0o700;
+              let server_dir = Filename.concat kc "server" in
+              Unix.mkdir server_dir 0o700;
+              let log_path = Filename.concat server_dir "server.log" in
+              let oc = open_out log_path in
+              output_string oc
+                "{\"level\":30,\"msg\":\"server listening\",\"address\":\"http://127.0.0.1:58631\"}\n";
+              close_out oc;
+              Alcotest.(check (option string))
+                "base URL uses discovered listening port"
+                (Some "http://127.0.0.1:58631")
+                (C2c_kimi_deliver.server_base_url ()))))
+
 let test_submit_prompt_detects_http_200_error_code () =
   (* Kimi Code local server returns HTTP 200 for many errors, with the real
      outcome in a JSON [code] field. submit_prompt must surface those as Error. *)
@@ -244,6 +307,16 @@ let () =
           test_server_base_url_returns_fixture_url
       ; Alcotest.test_case "uses $C2C_KIMI_SERVER_PORT override" `Quick
           test_server_base_url_uses_kimi_server_port_override
+      ; Alcotest.test_case "prefers discovered listening URL" `Quick
+          test_server_base_url_prefers_listening_log
+      ]
+    ; "session_index",
+      [ Alcotest.test_case "parses index and resolves by workdir" `Quick
+          test_session_index_parsing
+      ]
+    ; "server_log",
+      [ Alcotest.test_case "parses listening URL from server.log" `Quick
+          test_server_listening_url_parses_log
       ]
     ; "submit_prompt",
       [ Alcotest.test_case "errors when no token available" `Quick

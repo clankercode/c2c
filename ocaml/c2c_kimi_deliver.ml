@@ -44,10 +44,82 @@ let default_port () =
   | Some p when p <> "" -> p
   | _ -> "58627"
 
+let server_log_path () = kimi_code_home () // "server" // "server.log"
+
+let server_listening_url () =
+  let path = server_log_path () in
+  if not (Sys.file_exists path) then None
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () ->
+         let rec scan last =
+           match input_line ic with
+           | line ->
+               let last' =
+                 try
+                   let json = Yojson.Safe.from_string line in
+                   let open Yojson.Safe.Util in
+                   match json |> member "msg" |> to_string_option with
+                   | Some "server listening" ->
+                       (match json |> member "address" |> to_string_option with
+                        | Some _ as addr -> addr
+                        | None -> last)
+                   | _ -> last
+                 with _ -> last
+               in
+               scan last'
+           | exception End_of_file -> last
+         in
+         scan None)
+
 let server_base_url () =
   match fixture_enabled (), Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" with
   | true, Some u when String.trim u <> "" -> Some (String.trim u)
-  | _ -> Some (Printf.sprintf "http://127.0.0.1:%s" (default_port ()))
+  | _ ->
+      (match server_listening_url () with
+       | Some url -> Some url
+       | None -> Some (Printf.sprintf "http://127.0.0.1:%s" (default_port ())))
+
+let session_index_path () = kimi_code_home () // "session_index.jsonl"
+
+let parse_session_index_line line =
+  try
+    let json = Yojson.Safe.from_string line in
+    let open Yojson.Safe.Util in
+    let sid = json |> member "sessionId" |> to_string in
+    let workdir = json |> member "workDir" |> to_string in
+    let updated_at = json |> member "updated_at" |> to_string in
+    Some (sid, workdir, updated_at)
+  with _ -> None
+
+let read_session_index () =
+  let path = session_index_path () in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () ->
+         let rec loop acc =
+           match input_line ic with
+           | line ->
+               (match parse_session_index_line line with
+                | Some triple -> loop (triple :: acc)
+                | None -> loop acc)
+           | exception End_of_file -> acc
+         in
+         loop [])
+
+let session_id_for_workdir ~workdir =
+  let entries = read_session_index () in
+  let matching = List.filter (fun (_, wd, _) -> wd = workdir) entries in
+  match matching with
+  | [] -> None
+  | _ ->
+      let sorted =
+        List.sort (fun (_, _, a) (_, _, b) -> String.compare b a) matching
+      in
+      Some (let (sid, _, _) = List.hd sorted in sid)
 
 open Lwt.Infix
 

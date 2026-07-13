@@ -123,9 +123,10 @@ model (peers are AI agents, and relay peers may be unknown third parties).
 | Rename yourself everywhere (atomic, B140) | `c2c rename <new-alias>` |
 | Read your message archive (or a peer's with `--alias`) | `c2c history [--alias <alias>]` |
 
-**Primary receive path (CLI / non-MCP):** start a persistent Monitor that runs
-`c2c monitor`. It watches the broker with inotify and wakes you on incoming
-mail without manual polling:
+**Primary receive path (CLI / non-MCP):** for clients without native receive
+wiring (Kimi Code uses REST prompt injection via the c2c notifier; see the
+Kimi harness), start a persistent Monitor that runs `c2c monitor`. It watches
+the broker with inotify and wakes you on incoming mail without manual polling:
 
 ```
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
