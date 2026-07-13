@@ -1,0 +1,38 @@
+---
+complexity: medium
+created_at: "2026-07-13T03:38:28Z"
+depends_on: []
+estimate_hours: 1
+id: B175
+priority: medium
+status: pending
+tags:
+    - codex
+    - app-server
+    - startup
+    - bug
+title: Codex app-server startup fails on slow readiness and reports misleading upgrade guidance
+updated_at: "2026-07-13T03:38:28Z"
+---
+Observed when running the local cx alias:
+
+    cx --model gpt-5.6-luna
+
+Output:
+
+    [c2c codex app-server] startup failed: app-server exited before becoming ready
+      codex version codex-cli 0.144.1; minimum supported for app-server mode is 0.144.0.
+      falling back to the hook-backed Codex launch automatically. To get
+      arrival-time app-server delivery, upgrade codex (>= 0.144.0) and relaunch.
+      diagnostic: {"error":"codex_app_server_launch_failed","code":"server_died_before_ready","message":"app-server exited before becoming ready","codex_version":"codex-cli 0.144.1","min_codex_version":"0.144.0"}
+    [c2c-start/codex-polar-meadow-hogo] iter 1: launching codex (outer pid=3702241)
+    [c2c-start] launch: /home/xertrov/.bun/bin/codex resume --last --dangerously-bypass-approvals-and-sandbox --model gpt-5.6-luna
+
+The installed Codex version is already >= the stated minimum, so telling the operator to upgrade is incorrect for this failure. Investigate whether app-server readiness is timing out or being classified as server_died_before_ready during slow startup (model selection, auth, resource contention, or cold start).
+
+Desired behavior:
+- distinguish an actual early process exit from a readiness timeout;
+- give an actionable diagnostic that reflects the real failure;
+- tolerate legitimately slow app-server startup where safe (for example, configurable or appropriately increased readiness deadline);
+- preserve automatic hook-backed fallback;
+- add regression coverage for slow startup and for codex >= minimum version.
