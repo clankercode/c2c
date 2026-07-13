@@ -1,0 +1,29 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:34:59Z"
+depends_on: []
+estimate_hours: 1
+id: B181
+priority: high
+status: pending
+tags:
+    - relay
+    - connector
+    - ops
+title: 'relay connector: process alive but last-sync stale / no live bridge despite lease'
+updated_at: "2026-07-13T11:34:59Z"
+---
+## Problem
+`c2c whoami --relay` reports registered_unreachable with: relay lease alive but no live connector bridge — inbound relay traffic will not reach this broker. Concurrently a long-lived `c2c relay connect` process can exist on the host (observed multi-hour ELAPSED) while connector last sync is ~1.4d. Operators cannot tell whether to restart connect, re-register, or ignore.
+
+## Expected
+- Clear liveness: process presence != bridge health
+- Actionable remediation in whoami/status (restart connect, check token, check socket)
+- Self-heal or loud fail if connect is wedged
+- last_sync should update when connect is actually healthy
+
+## Actual
+Lease alive + connect PID present + last sync 1.4d + inbound relay unreliable. Status language is partial but not enough to drive recovery.
+
+## Suggested fix
+Connector heartbeat into broker status; whoami distinguishes (no process | process dead socket | process alive not authenticated | bridge ok); optional watchdog to restart wedged connect.
