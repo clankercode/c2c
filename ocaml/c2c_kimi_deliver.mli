@@ -12,3 +12,9 @@ val submit_prompt : session_id:string -> body:string -> (int, string) result
 val deliver_message : session_id:string -> msg:C2c_mcp.message -> (unit, string) result
 (** [deliver_message ~session_id ~msg] serialises a c2c message into a Kimi
     text prompt and submits it. Returns [Ok ()] only on HTTP 200. *)
+
+val message_envelope : msg:C2c_mcp.message -> string
+(** [message_envelope ~msg] returns the raw XML envelope string that
+    [deliver_message] would POST as the prompt body. Exported for tests and
+    diagnostics; the output is not escaped beyond the canonical xml_escape
+    rendering of alias and content fields. *)

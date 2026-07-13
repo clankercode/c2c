@@ -39,7 +39,7 @@ let read_server_token () =
             Some (String.trim (input_line ic)))
         with _ -> None
 
-let default_port =
+let default_port () =
   match Sys.getenv_opt "C2C_KIMI_SERVER_PORT" with
   | Some p when p <> "" -> p
   | _ -> "58627"
@@ -47,7 +47,7 @@ let default_port =
 let server_base_url () =
   match fixture_enabled (), Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" with
   | true, Some u when String.trim u <> "" -> Some (String.trim u)
-  | _ -> Some (Printf.sprintf "http://127.0.0.1:%s" default_port)
+  | _ -> Some (Printf.sprintf "http://127.0.0.1:%s" (default_port ()))
 
 open Lwt.Infix
 
@@ -81,14 +81,14 @@ let submit_prompt ~session_id ~body =
         )
       with exn -> Error (Printexc.to_string exn)
 
+let message_envelope ~msg =
+  Printf.sprintf "<c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c>"
+    (C2c_mcp.xml_escape msg.C2c_mcp.from_alias)
+    (C2c_mcp.xml_escape msg.C2c_mcp.to_alias)
+    (C2c_mcp.xml_escape msg.C2c_mcp.content)
+
 let deliver_message ~session_id ~msg =
-  let body =
-    Printf.sprintf "<c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c>"
-      (C2c_mcp.xml_escape msg.C2c_mcp.from_alias)
-      (C2c_mcp.xml_escape msg.C2c_mcp.to_alias)
-      (C2c_mcp.xml_escape msg.C2c_mcp.content)
-  in
-  match submit_prompt ~session_id ~body with
+  match submit_prompt ~session_id ~body:(message_envelope ~msg) with
   | Ok 200 -> Ok ()
   | Ok code -> Error (Printf.sprintf "unexpected HTTP %d" code)
   | Error e -> Error e
