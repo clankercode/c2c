@@ -225,7 +225,12 @@ let write_notification
    and diagnostics. *)
 let deliver_via_rest ~alias ~msg =
   match read_session_id_from_config alias with
-  | None -> Error "no resume_session_id in config"
+  | None ->
+      Printf.eprintf
+        "[kimi-notifier] no session id for alias %s; skipping REST delivery \
+         (managed Kimi sessions are delivered via the /c2c skill + Monitor)\n%!"
+        alias;
+      Ok ()
   | Some session_id ->
       C2c_kimi_deliver.deliver_message ~session_id ~msg
 
@@ -453,9 +458,12 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
     let to_keep = to_skip @ !undelivered in
     write_inbox_file ~broker_root ~session_id:drain_sid to_keep;
     let n = List.length !delivered in
-    (* Wake pane if idle and something was delivered. *)
+    (* Wake pane if idle and something was delivered.  The wake fires even
+       when we have no session_dir (managed Kimi sessions have no predictable
+       session id) because tmux_pane_is_idle falls back to the captured-pane
+       heuristic when session_dir is absent. *)
     (match tmux_pane with
-     | Some pane when session_dir_opt <> None && n > 0 ->
+     | Some pane when n > 0 ->
        if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
          tmux_wake ~pane
      | _ -> ());
@@ -542,7 +550,7 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
          not recoverable without sender re-send. *)
       let n = List.length !delivered in
       (match tmux_pane with
-       | Some pane when session_dir_opt <> None && n > 0 ->
+       | Some pane when n > 0 ->
          if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
            tmux_wake ~pane
        | _ -> ());

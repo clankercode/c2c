@@ -6,6 +6,14 @@
 
 **Architecture:** A new `C2c_kimi_deliver` module talks to the Kimi Code local server (`POST /api/v1/sessions/{sid}/prompts`) using the bearer token in `~/.kimi-code/server.token`. `C2c_kimi_notifier` keeps its daemon lifecycle but delegates delivery to that module. `C2c_setup` writes a Kimi-specific `/c2c` skill into `~/.kimi-code/skills/c2c/SKILL.md` and updates hook/MCP paths to `~/.kimi-code`.
 
+**2026-07-13 integration fix:** Kimi Code 0.23+ does not resume
+`session_<uuid>` IDs passed via `kimi --session <sid>`, and its REST prompt
+endpoint only works for API-created sessions, not CLI/TUI sessions.  Managed
+`c2c start kimi` therefore launches `kimi` without `--session`.  The practical
+delivery path for managed Kimi sessions is the `/c2c` skill + Monitor
+(`c2c monitor`); `C2c_kimi_deliver` is retained for future API/web session
+support.
+
 **Tech Stack:** OCaml 5.x, Dune, Cohttp (existing HTTP client in repo), Yojson, Cmdliner, Alcotest.
 
 ## Global Constraints

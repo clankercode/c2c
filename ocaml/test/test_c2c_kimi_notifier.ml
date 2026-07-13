@@ -447,27 +447,25 @@ let read_inbox_messages broker_root session_id =
       | _ -> []
     with _ -> []
 
-(* [#484 S1] Undelivered peer data remains retryable. A token-shaped message
-   is still advisory data; await-reply never reads it. *)
-let test_token_shaped_advisory_kept_in_inbox_after_run_once () =
+(* [#484 S1] When no API-addressable session id is configured, REST delivery
+   is skipped gracefully and the message is drained from the broker inbox so
+   it is not retried indefinitely.  The practical delivery path for managed
+   Kimi sessions is the /c2c skill + Monitor.  A token-shaped message remains
+   advisory data; await-reply never reads it. *)
+let test_token_shaped_advisory_drained_when_no_session_id () =
   with_broker_root_and_inbox
     [ ("reviewer", "ka_call_42 allow — looks fine") ]
     (fun broker_root ->
-       (* No kimi session dir → 0 deliveries, advisory message stays. *)
+       (* No resume_session_id in config → REST skipped, message handled. *)
        let n = C2c_kimi_notifier.run_once
          ~broker_root
          ~alias:"kimi-test"
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
        in
-       Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+       Alcotest.(check int) "1 handled (no session id)" 1 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
-       Alcotest.(check int) "advisory message kept in broker inbox" 1 (List.length remaining);
-       match remaining with
-       | [from_alias, content] ->
-           Alcotest.(check string) "from_alias preserved" "reviewer" from_alias;
-           Alcotest.(check bool) "token-shaped data still present" true (contains content "ka_call_42")
-       | _ -> Alcotest.fail "expected exactly 1 message")
+       Alcotest.(check int) "advisory message drained from broker inbox" 0 (List.length remaining))
 
 (* System events: before the fix they were drained (removed). After the fix they
    stay in the inbox (written back as to_skip). This is a semantic change but not
@@ -491,8 +489,9 @@ let test_system_event_remains_in_inbox_after_run_once () =
        | _ -> Alcotest.fail "expected exactly 1 message")
 
 (* Mixed inbox: system event + token-shaped advisory + regular DM.
-   After run_once all three remain retryable; none can resolve approval. *)
-let test_mixed_advisory_messages_kept () =
+   With no session id, non-system messages are handled (drained) and the
+   system event stays in the inbox; none can resolve approval. *)
+let test_mixed_advisory_messages_drained_when_no_session_id () =
   with_broker_root_and_inbox
     [ ("c2c-system", "some-alias registered")
     ; ("reviewer", "ka_call_99 deny — looks dangerous")
@@ -505,12 +504,12 @@ let test_mixed_advisory_messages_kept () =
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
        in
-        Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+       Alcotest.(check int) "2 non-system handled (no session id)" 2 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
-       Alcotest.(check int) "all 3 messages remain in inbox" 3 (List.length remaining);
-       let contents = List.map snd remaining in
-       Alcotest.(check bool) "token-shaped advisory still present" true
-          (List.exists (fun c -> contains c "ka_call_99") contents))
+       Alcotest.(check int) "only system event remains in inbox" 1 (List.length remaining);
+       let from_aliases = List.map fst remaining in
+       Alcotest.(check bool) "system event still present" true
+          (List.mem "c2c-system" from_aliases))
 
 (* ─── P4: global sessions broker drain ──────────────────────────────────────── *)
 
@@ -1045,9 +1044,9 @@ let () =
       ; Alcotest.test_case "threshold boundary" `Quick test_kimi_session_is_idle_threshold_boundary
       ]
     ; "delivery_retry_484",
-      [ Alcotest.test_case "token-shaped advisory kept in inbox" `Quick test_token_shaped_advisory_kept_in_inbox_after_run_once
+      [ Alcotest.test_case "token-shaped advisory drained when no session id" `Quick test_token_shaped_advisory_drained_when_no_session_id
       ; Alcotest.test_case "system event kept in inbox" `Quick test_system_event_remains_in_inbox_after_run_once
-      ; Alcotest.test_case "mixed advisory messages preserved" `Quick test_mixed_advisory_messages_kept
+      ; Alcotest.test_case "mixed advisory messages drained when no session id" `Quick test_mixed_advisory_messages_drained_when_no_session_id
       ]
     ; "global_broker_p4",
       [ Alcotest.test_case "poll_once_global drains global broker" `Quick test_poll_once_global_drains_global_broker

@@ -41,6 +41,17 @@ Local server endpoints discovered from source (`MoonshotAI/kimi-code`):
 
 ## Chosen design: REST prompt injection + skill + re-enable
 
+> **2026-07-13 integration fix:** Kimi Code 0.23+ does not recognize
+> c2c-generated `session_<uuid>` IDs passed via `kimi --session <sid>`;
+> it returns "Session not found".  Managed `c2c start kimi` therefore
+> launches `kimi` without `--session` and lets Kimi Code mint its own
+> CLI/TUI session ID.  Kimi Code's REST prompt endpoint
+> (`POST /api/v1/sessions/{id}/prompts`) only works for sessions created
+> through the API, not for CLI/TUI sessions.  Consequently, the practical
+> delivery path for managed Kimi sessions is the `/c2c` skill + Monitor
+> (`c2c monitor`); `C2c_kimi_deliver` is retained for future API/web
+> session support.
+
 ### Components
 
 1. **Re-enable flag & lists**
@@ -73,7 +84,12 @@ Local server endpoints discovered from source (`MoonshotAI/kimi-code`):
 
 4. **Notifier lifecycle update**
    - Replace the file-based writer in `C2c_kimi_notifier` with a call to `C2c_kimi_deliver.submit`.
-   - Keep the daemon (fork+setsid, pidfile, upgrade-correctness) and tmux-wake fallback for plain (non-server) sessions, but the primary path is REST.
+   - When no API-addressable session id is configured (the normal state for
+     managed `c2c start kimi` sessions), skip REST delivery gracefully, log,
+     and continue with chat-log write + tmux wake.  Do not retry indefinitely.
+   - Keep the daemon (fork+setsid, pidfile, upgrade-correctness) and tmux-wake
+     fallback.  For managed TUI sessions the practical delivery path is the
+     `/c2c` skill + Monitor; REST remains the path for future API/web sessions.
 
 5. **c2c skill for Kimi**
    - Add `.collab/skills/c2c-src/harness/kimi.md` with Kimi-specific notes (CLI-first, `--yolo`, `c2c monitor`, server-delivered messages).
@@ -86,21 +102,28 @@ Local server endpoints discovered from source (`MoonshotAI/kimi-code`):
 
 ### Data flow
 
+For managed `c2c start kimi` TUI sessions (no API-addressable session id):
+
 ```
 c2c broker inbox (per-repo or global sessions)
         |
         v
 C2c_kimi_notifier.run_once (daemon loop)
         |
-        +--> system event? -> chat-log only
+        +--> system event? -> chat-log only (when session dir known)
         |
-        +--> C2c_kimi_deliver.submit
+        +--> no configured session id? -> skip REST, log, tmux wake
+        |
+        +--> C2c_kimi_deliver.submit (future API/web sessions only)
                  |
                  +--> read ~/.kimi-code/server.token
                  +--> POST /api/v1/sessions/{sid}/prompts
                  +--> on 200: drain message from broker
                  +--> on failure: leave message, log, retry next tick
 ```
+
+The operator-visible delivery path for managed Kimi sessions is the `/c2c`
+skill + Monitor (`c2c monitor`).
 
 ### Error handling
 
