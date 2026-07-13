@@ -182,3 +182,4 @@ bugs:
     - file: B183-cli-add-discoverable-aliases-f.todo
     - file: B184-relay-auth-intermittent-ed2551.todo
     - file: B185-monitor-nonce-replay-backoff-s.todo
+    - file: B186-claude-code-with-c2c-sets-up-a.todo
