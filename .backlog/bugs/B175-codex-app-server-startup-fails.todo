@@ -1,16 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T03:38:28Z"
 depends_on: []
 estimate_hours: 1
 id: B175
 priority: medium
+started_at: null
 status: pending
-tags:
-    - codex
-    - app-server
-    - startup
-    - bug
+tags: []
 title: Codex app-server startup fails on slow readiness and reports misleading upgrade guidance
 updated_at: "2026-07-13T03:38:28Z"
 ---
@@ -36,3 +34,7 @@ Desired behavior:
 - tolerate legitimately slow app-server startup where safe (for example, configurable or appropriately increased readiness deadline);
 - preserve automatic hook-backed fallback;
 - add regression coverage for slow startup and for codex >= minimum version.
+
+Additional operator-facing issue:
+
+When app-server startup fails and c2c falls back to the hook-backed launch, it currently resumes the most recent Codex session (`resume --last`). This was confusing and may attach the new invocation to unrelated prior work. Do not resume the most recent session as the failure fallback; start a fresh session or make the session-selection behavior explicit and intentional.
