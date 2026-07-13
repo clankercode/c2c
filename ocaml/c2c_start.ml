@@ -5331,18 +5331,6 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?no_prompt
     ?(opencode_plugin_embedded : string = "")
     () : int =
-  (* B146: temporary-disable guard — refuse kimi before the unknown-client path.
-     Also reap any kimi notifier still alive from a pre-disable session (upgrade
-     path): with kimi disabled no new session will cycle it, so sweep it here so
-     a lingering daemon does not keep running against a now-unsupported client. *)
-  (if client = "kimi" && kimi_disabled_for_release then begin
-     let use_color = Unix.isatty Unix.stderr in
-     let yellow = if use_color then "\027[1;33m" else "" in
-     let reset = if use_color then "\027[0m" else "" in
-     Printf.eprintf "%s[DISABLED]%s %s\n%!" yellow reset kimi_disabled_notice;
-     (try ignore (C2c_kimi_notifier.stop_all_daemons ()) with _ -> ());
-     exit 1
-   end);
   (* Deprecation guard: reject crush early with banner, before unknown-client path *)
   (if client = "crush" then
      let use_color = Unix.isatty Unix.stderr in

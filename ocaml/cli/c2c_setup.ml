@@ -1850,16 +1850,7 @@ let canonical_install_client client =
 
 (* pi is NOT here: pi agents use the npm:pi-c2c extension, not `c2c install`.
    pi is shown in the landing page via a synthetic entry (print_enriched_landing). *)
-(* B146: drop kimi from [known_clients] while it is temporarily disabled so the
-   convenience paths (`c2c install`, `c2c install all --with-clients`) skip it —
-   they iterate [known_clients], and the do_install_client kimi guard exits 1, so
-   leaving kimi here would abort a whole `install all`. kimi stays in
-   [install_subcommand_clients] + [start_clients] so an EXPLICIT `c2c install
-   kimi` / `c2c start kimi` still routes to the friendly disabled banner. Single
-   toggle: C2c_start.kimi_disabled_for_release. *)
-let known_clients =
-  List.filter (fun c -> not (c = "kimi" && C2c_start.kimi_disabled_for_release))
-    [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy" ]
+let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy" ]
 (* B122: client MCP / host integrations are never installed by default.
    Convenience paths (`c2c install`, `c2c install all`) stay binary-only
    unless the operator names a client or passes --with-clients. Keep every
@@ -1870,11 +1861,7 @@ let known_clients =
 let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "crush" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
-(* B146: kimi filtered out while temporarily disabled so `c2c init` does not
-   offer a client that immediately refuses. Same single toggle. *)
-let init_configurable_clients =
-  List.filter (fun c -> not (c = "kimi" && C2c_start.kimi_disabled_for_release))
-    [ "claude"; "opencode"; "codex"; "codex-headless"; "kimi"; "grok"; "agy" ]
+let init_configurable_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
 let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "agy"; "cursor"; "crush" ]
 let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "agy"; "crush"; "tmux"; "pty"; "relay-connect" ]
@@ -2057,29 +2044,6 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
 
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ?(skip_hooks=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
-  (* B146: kimi is TEMPORARILY disabled for this release — refuse `c2c install
-     kimi` before any setup work. Explicit installs still route here (kimi stays
-     in install_subcommand_clients); `install all` no longer touches kimi
-     because it was filtered out of known_clients above. Single toggle:
-     C2c_start.kimi_disabled_for_release. NOT a permanent deprecation. *)
-  if client = "kimi" && C2c_start.kimi_disabled_for_release then begin
-    (match output_mode with
-     | Json ->
-         print_json (`Assoc
-           [ ("ok", `Bool false)
-           ; ("error", `String C2c_start.kimi_disabled_notice)
-           ; ("disabled", `Bool true)
-           ; ("temporary", `Bool true)
-           ; ("hint", `String "Use: claude | codex | opencode | pi")
-           ])
-     | Human ->
-         let use_color = Unix.isatty Unix.stderr in
-         let yellow = if use_color then "\027[1;33m" else "" in
-         let reset = if use_color then "\027[0m" else "" in
-         Printf.eprintf "%s[DISABLED]%s %s\n%!" yellow reset C2c_start.kimi_disabled_notice;
-         Printf.eprintf "  `c2c install kimi` refuses (exit 1) for this release.\n%!");
-    exit 1
-  end;
   let root =
     match broker_root_opt with
     | Some r -> r
