@@ -1,9 +1,8 @@
 (* c2c_kimi_notifier.ml — push c2c broker DMs into a managed kimi instance via
-   kimi-cli's file-based notification store. Replaces c2c-kimi-wire-bridge.
+   Kimi Code's local REST prompt endpoint. Replaces both the legacy file-based
+   notification store and c2c-kimi-wire-bridge.
 
-   See c2c_kimi_notifier.mli for the architecture overview, and
-   .collab/research/2026-04-29T10-27-00Z-stanza-coder-kimi-notification-store-
-   push-validated.md for the probe that grounds this design. *)
+   See c2c_kimi_notifier.mli for the architecture overview. *)
 
 let home () =
   match Sys.getenv_opt "HOME" with
@@ -221,6 +220,15 @@ let write_notification
   atomic_write_string event_path event_json;
   atomic_write_string delivery_path delivery_json
 
+(* REST prompt delivery seam. Replaces the legacy on-disk notification-store
+   writer for live injection; write_notification above is retained for tests
+   and diagnostics. *)
+let deliver_via_rest ~alias ~msg =
+  match read_session_id_from_config alias with
+  | None -> Error "no resume_session_id in config"
+  | Some session_id ->
+      C2c_kimi_deliver.deliver_message ~session_id ~msg
+
 (* ─── Tmux idle detection + wake ─────────────────────────────────────────── *)
 
 (* Capture last few lines of pane scrollback. Empty/None on failure. *)
@@ -375,7 +383,8 @@ let write_inbox_file ~broker_root ~session_id messages =
    peer messages are advisory data. Flow:
    1. read_inbox (peek, no side effects)
    2. Partition: to_deliver (non-system), to_skip (system events)
-   3. Deliver to_deliver to kimi; track which deliveries succeeded
+   3. Deliver to_deliver to kimi via REST prompt injection; track which
+      deliveries succeeded.
    4. write_inbox_file: write back to_skip + any to_deliver that failed delivery
       This means undelivered advisory messages stay in the broker inbox if kimi
       delivery failed or the session dir is missing.
@@ -419,27 +428,25 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
       (fun (msg : C2c_mcp.message) ->
         let from_alias = msg.from_alias in
         let body = msg.content in
-        let ts = msg.ts in
-        let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
-        match session_dir_opt with
-        | Some sdir ->
-          (* Sidecar chat-log for all messages. *)
-          (try write_chat_log ~session_dir:sdir ~from_alias ~body
-           with exn ->
-             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
-               (Printexc.to_string exn));
-          (* JSON notification store: skip system events (#475 identity-confusion guard). *)
-          (try write_notification ~session_dir:sdir ~notification_id:nid
-                 ~from_alias ~to_alias:msg.to_alias ~body;
-           delivered := msg :: !delivered
-           with exn ->
-             Printf.eprintf "[kimi-notifier] write failed: %s\n%!"
-               (Printexc.to_string exn);
-           undelivered := msg :: !undelivered)
-        | None ->
-          undelivered := msg :: !undelivered;
-          Printf.eprintf
-            "[kimi-notifier] no kimi session-id resolved; message archived but undelivered\n%!")
+        (* Sidecar chat-log for all messages. *)
+        (try
+           match session_dir_opt with
+           | Some sdir -> write_chat_log ~session_dir:sdir ~from_alias ~body
+           | None -> ()
+         with exn ->
+           Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+             (Printexc.to_string exn));
+        (* REST prompt injection. System events are already partitioned out. *)
+        try
+          match deliver_via_rest ~alias ~msg with
+          | Ok () -> delivered := msg :: !delivered
+          | Error reason ->
+              Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
+              undelivered := msg :: !undelivered
+        with exn ->
+          Printf.eprintf "[kimi-notifier] delivery exception: %s\n%!"
+            (Printexc.to_string exn);
+          undelivered := msg :: !undelivered)
       to_deliver;
     (* Write back to_skip (system events) + any undelivered non-system messages
        so delivery can retry. await-reply never reads this inbox. *)
@@ -461,7 +468,7 @@ let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 
 (* [#P4] Drain messages from the global sessions broker (C2C_SESSIONS_BROKER_ROOT)
-   and deliver them via the kimi notification store. This enables cross-client
+   and deliver them via the Kimi REST prompt endpoint. This enables cross-client
    delivery: `c2c send --session <kimi-session-id>` reaches kimi sessions.
 
    Uses drain_inbox (destructive) since the global broker is separate from the
@@ -510,25 +517,25 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
         (fun (msg : C2c_mcp.message) ->
           let from_alias = msg.from_alias in
           let body = msg.content in
-          let ts = msg.ts in
-          let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
-          match session_dir_opt with
-          | Some sdir ->
-            (try write_chat_log ~session_dir:sdir ~from_alias ~body
-             with exn ->
-               Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
-                 (Printexc.to_string exn));
-            (try write_notification ~session_dir:sdir ~notification_id:nid
-                   ~from_alias ~to_alias:msg.to_alias ~body;
-             delivered := msg :: !delivered
-             with exn ->
-               Printf.eprintf "[kimi-notifier] global write failed: %s\n%!"
-                 (Printexc.to_string exn);
-               undelivered := msg :: !undelivered)
-          | None ->
-            undelivered := msg :: !undelivered;
-            Printf.eprintf
-              "[kimi-notifier] no kimi session-id resolved for global msg; dropping\n%!")
+          (* Sidecar chat-log for all messages. *)
+          (try
+             match session_dir_opt with
+             | Some sdir -> write_chat_log ~session_dir:sdir ~from_alias ~body
+             | None -> ()
+           with exn ->
+             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+               (Printexc.to_string exn));
+          (* REST prompt injection. System events are already partitioned out. *)
+          try
+            match deliver_via_rest ~alias ~msg with
+            | Ok () -> delivered := msg :: !delivered
+            | Error reason ->
+                Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
+                undelivered := msg :: !undelivered
+          with exn ->
+            Printf.eprintf "[kimi-notifier] delivery exception: %s\n%!"
+              (Printexc.to_string exn);
+            undelivered := msg :: !undelivered)
         to_deliver;
       (* Global broker drain is destructive — no write-back since the global broker
          is separate from the per-repo broker. Undleivered messages are logged but
