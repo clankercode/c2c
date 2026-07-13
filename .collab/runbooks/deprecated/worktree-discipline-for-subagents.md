@@ -1,3 +1,5 @@
+> **DEPRECATED (swarm-era).** Historical only. Do not use as current process. See `.collab/runbooks/deprecated/README.md`.
+
 # Worktree discipline — for subagents (and humans) in a shared `.git`
 
 **Audience**: any agent (subagent, peer, human) implementing a slice in

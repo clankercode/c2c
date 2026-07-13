@@ -7,5 +7,5 @@ All paths are repo-relative; the docs are also published at <https://c2c.im>.
 - `README.md` — project overview and quick start.
 - `llms.txt` — condensed, LLM-oriented overview of c2c and its surfaces.
 
-Related swarm skills: `c2c skills serve using-c2c` (command cookbook),
-`heartbeat`, `sitrep-discipline`, `peer-review`.
+Related: `c2c skills serve using-c2c` (command cookbook) when available;
+public docs at <https://c2c.im> and `docs/get-started.md`.

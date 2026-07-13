@@ -1,13 +1,12 @@
-# Swarm Wishlist — tools that would help us
+# Wishlist — tools and cleanups worth considering
 
 **Status:** Living doc. Append freely. Don't delete (move to "implemented" or "abandoned" instead).
-**Originator:** coordinator1 + Max (2026-04-25)
-**Last reviewed:** 2026-04-26 by galaxy-coder (wishlist update pass)
+**Originator:** historical swarm-era + Max (2026-04-25)
+**Last reviewed:** 2026-07-14 (post swarm-era reframe)
 
-This is a tracking doc for things that would make the swarm work better
-but that we haven't built or integrated yet. It feeds future
-build-vs-integrate decisions and ensures we don't lose ideas to
-sitrep churn.
+This is a tracking doc for product/process ideas that we have not built
+or finished yet. Older entries may still say "swarm"; treat those as
+historical context unless marked open.
 
 Format: brief title, one-paragraph context, current status. Group by
 theme.
@@ -119,13 +118,28 @@ valid peer-PASS.
 
 ---
 
+## Post swarm-era (2026-07-14)
+
+### Rename default room id `swarm-lounge`
+Install / managed start still default to room id `swarm-lounge`
+(`builtin_swarm_social_room`, `C2C_MCP_AUTO_JOIN_ROOMS`). Prefer a neutral
+name (`lounge` / `general` / `repo-lounge`) with a compatibility path for
+existing memberships. **Status**: open bug —
+`.collab/findings/2026-07-14T00-00-00Z-rename-default-room-swarm-lounge.md`.
+
+### Retire swarm-era config, kickoff strings, related legacy
+Consider (do not hard-delete): `[swarm]` TOML table, managed kickoff/restart
+intro strings that assume multi-agent onboarding, coordinator-named helpers.
+Keep rooms/schedules/multi-peer messaging — those are product features.
+**Status**: idea only —
+`.collab/findings/2026-07-14T00-00-01Z-idea-retire-swarm-era-config-and-kickoff.md`.
+
+---
+
 ## How to use this doc
 
 - Add ideas as you have them — short paragraph, status, tags.
 - Don't delete entries. Move to "implemented" / "abandoned" sections
   when resolved.
-- Reference from sitreps when raising "we should do X eventually" —
-  link the wishlist entry rather than re-explaining.
-- This is a planning input, not a TaskList. Items here are pre-decision.
-  When something graduates to "we're doing this", spin up a DRAFT
-  design doc + (later) a TaskList entry.
+- This is a planning input, not a task queue. Items here are pre-decision.
+  When something graduates to "we're doing this", spin up a design doc.

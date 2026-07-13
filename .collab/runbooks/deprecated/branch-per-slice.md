@@ -1,3 +1,5 @@
+> **DEPRECATED (swarm-era).** Historical only. Do not use as current process. See `.collab/runbooks/deprecated/README.md`.
+
 # Branch-Per-Slice Convention
 
 **Status**: Active convention as of 2026-04-25 (supersedes `per-agent-worktrees` pattern)

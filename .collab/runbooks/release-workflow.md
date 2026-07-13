@@ -5,13 +5,13 @@ Release work has two separate decisions:
 1. Publish versioned artifacts from a tag.
 2. Deploy a relay/site change to production.
 
-Do not let the artifact release workflow bypass coordinator push policy. A
-normal merge to `master` is not a release. A release is a version tag or an
-explicit `workflow_dispatch` run.
+Do not let the artifact release workflow bypass deploy caution: pushing
+`master` / production tags has real cost. A normal merge to `master` is not
+a release. A release is a version tag or an explicit `workflow_dispatch` run.
 
 ## Sequence At A Glance
 
-Once coordinator1 has approved the release, the order is:
+Once the operator has approved the release, the order is:
 
 1. **Bump the version** — `ocaml/version.ml` + `docs/changelog.md`
    (`## X.Y.Z`) + regenerated files (see Prepare).
@@ -41,7 +41,7 @@ existing version rules in `ocaml/dune`.
 
 ## Prepare
 
-1. Start from the coordinator-approved release SHA.
+1. Start from the operator-approved release SHA.
 2. Ensure `git status --short` is clean.
 3. Update `ocaml/version.ml`.
 4. Add a top-level `## X.Y.Z` entry to `docs/changelog.md`.
@@ -90,7 +90,7 @@ A tag push is the normal artifact-release path. It runs the mandatory
 updates the GitHub Release, dry-run packs every npm package, and publishes npm
 packages through Trusted Publishing.
 
-Signed tags are not required for normal c2c releases. If coordinator1
+Signed tags are not required for normal c2c releases. If the operator
 explicitly requests a signed tag for a particular release, use
 `git tag -s vX.Y.Z`; otherwise use the unsigned annotated tag form above.
 
@@ -200,7 +200,7 @@ uploaded tarball.
 
 ## Deploy
 
-Artifact release is not the same as deploy. Only deploy when coordinator1
+Artifact release is not the same as deploy. Only deploy when the operator
 decides the change needs to be live.
 
 After a deploy, verify:

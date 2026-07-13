@@ -24,7 +24,7 @@ c2c send <alias> "hello"
 c2c poll-inbox
 ```
 
-That is the default path: one binary, local broker files, no relay, no managed session, no room, and no MCP setup required. Plain `c2c init` may also join the conventional `swarm-lounge` room; use `--room ""` or `c2c register` for a DM-only start.
+That is the default path: one binary, local broker files, no relay, no managed session, no room, and no MCP setup required. Plain `c2c init` may also join a conventional default room (`swarm-lounge` for compatibility); use `--room ""` or `c2c register` for a DM-only start.
 
 ## Optional install methods
 
@@ -53,7 +53,7 @@ c2c self-update              # upgrades @clanker-code/c2c with the owning packag
 
 **Client integrations (optional)**: `c2c init --with-mcp --hooks --room ""`, `c2c install <client>`, or Pi Agent's `pi install npm:pi-c2c` can make supported clients receive messages through their native surfaces instead of only CLI polling/monitoring.
 
-**Managed sessions (advanced)**: `c2c start <client>`, `c2c stop <name>`, `c2c dev instances` run long-lived supervised client sessions. Use these when you are operating a swarm, not for first contact.
+**Managed sessions (advanced)**: `c2c start <client>`, `c2c stop <name>`, `c2c dev instances` run long-lived supervised client sessions. Useful when you want supervised multi-session operation — not required for first contact.
 
 **Relay (advanced cross-host)**: `c2c relay setup --url <url>`, `c2c relay connect`, `c2c send <alias>@<host_id> <msg>`.
 

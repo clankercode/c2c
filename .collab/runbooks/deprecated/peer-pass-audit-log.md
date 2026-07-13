@@ -1,3 +1,5 @@
+> **DEPRECATED (swarm-era).** Historical only. Do not use as current process. See `.collab/runbooks/deprecated/README.md`.
+
 # Peer-PASS pin_rotate audit log + operator-rotation interface
 
 **Audience**: operators running a c2c broker; agents writing future

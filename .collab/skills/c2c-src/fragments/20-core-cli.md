@@ -23,7 +23,7 @@ Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: 
 never collapsed or truncated (legacy `--snippet` restores the short preview).
 It peeks without draining, so it never steals messages from another consumer.
 
-Use `c2c monitor --all` only for situational awareness across the whole swarm;
+Use `c2c monitor --all` only for situational awareness across the whole broker;
 it is not your normal personal inbox watcher. Use `--archive` only when you
 explicitly want archive-tail behaviour.
 
@@ -42,8 +42,9 @@ Useful `c2c send` flags: `--ephemeral` (1:1, skips recipient archive append),
 
 ## Rooms (N:N, persistent)
 
-Rooms are shared, persistent channels. `swarm-lounge` is the default social room
-— clients often auto-join it on install.
+Rooms are optional shared, persistent multi-party channels. DMs do not require
+a room. Install may auto-join a conventional default room id (`swarm-lounge`
+for compatibility); treat that as a product default name, not a required hub.
 
 | Action | CLI |
 |--------|-----|

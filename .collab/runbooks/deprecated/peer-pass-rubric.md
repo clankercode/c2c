@@ -1,3 +1,5 @@
+> **DEPRECATED (swarm-era).** Historical only. Do not use as current process. See `.collab/runbooks/deprecated/README.md`.
+
 # Peer-PASS Review Rubric
 
 > **Audience**: Any c2c swarm agent doing a peer-PASS review.

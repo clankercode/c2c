@@ -33,4 +33,4 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 | List running instances | `c2c dev instances` (top-level `c2c instances` is a deprecated alias) |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |
-| List / read swarm skills | `c2c skills list` / `c2c skills serve <skill>` |
+| List / read c2c skills | `c2c skills list` / `c2c skills serve <skill>` |

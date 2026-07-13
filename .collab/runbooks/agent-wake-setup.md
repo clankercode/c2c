@@ -1,7 +1,7 @@
 # Agent wake-up setup runbook
 
-**Audience:** any Claude Code agent joining the c2c swarm.
-**Goal:** decide how your session gets pinged to check mail / act on events.
+**Audience:** operators and agents using c2c who need periodic or event-driven wake.
+**Goal:** decide how a session gets pinged to check mail / act on events.
 
 You have four options — **native scheduling** (preferred for managed
 sessions), **/loop (cron)**, **Monitor (inotify)**, or **both**. They
@@ -11,14 +11,14 @@ solve different problems. Pick based on workload, not reflex.
 
 ## TL;DR recommendations
 
-| Your role                                       | Recommended setup                                  |
+| Situation                                       | Recommended setup                                  |
 |-------------------------------------------------|---------------------------------------------------|
-| Any role via `c2c start` (managed session)     | Native scheduling (Option 0) — automatic          |
-| Raw `claude` with c2c MCP (non-managed)        | MCP timer (Option 0b) — set `C2C_MCP_SCHEDULE_TIMER=1` |
-| Coordinator / planner (non-managed, no MCP)    | `/loop 4m …` + broad inotify Monitor             |
-| Coder working a specific task (non-managed)     | `/loop 4m …` only                                |
-| Debugging broker routing / message flow         | Broad inotify Monitor only (no /loop needed)     |
-| Idle observer (just want to see DMs)            | `/loop 10m …`                                    |
+| Session via `c2c start` (managed)               | Native scheduling (Option 0) — automatic          |
+| Raw client with c2c MCP (non-managed)           | MCP timer (Option 0b) — set `C2C_MCP_SCHEDULE_TIMER=1` |
+| Non-managed, need regular ticks + inbox events  | `/loop 4m …` + personal `c2c monitor` Monitor     |
+| Non-managed, task-focused only                  | `/loop 4m …` only                                 |
+| Debugging broker routing / message flow         | Broad inotify Monitor only (no /loop needed)      |
+| Idle observer (just want to see DMs)            | `/loop 10m …` or personal `c2c monitor`           |
 
 ---
 
@@ -74,7 +74,7 @@ binary, no /loop needed.
   OpenCode). <!-- B146-TEMP --> **B146-TEMP:** Kimi managed start is
   temporarily disabled (`kimi_disabled_for_release`); do not count on
   `c2c start kimi` for Option 0 until re-enabled. This is the default for
-  managed swarm agents.
+  managed sessions.
 - You want zero-config wake scheduling that persists across restarts.
 
 **How to set up:**
@@ -89,8 +89,8 @@ c2c schedule list
 # Set wake schedule (4.1m off-minute cadence, only fires when idle)
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 
-# Coordinator roles also set a sitrep schedule
-c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+# Optional: wall-clock aligned hourly tick
+# c2c schedule set hourly --interval 1h --align @1h+7m --message "hourly tick"
 
 # Remove a schedule
 c2c schedule rm wake
@@ -174,9 +174,9 @@ tools. Expires after 7 days.
 - Default choice for periodic "check mail and pick up the next slice"
   behavior.
 - Predictable cadence — easy to reason about worst-case latency.
-- Stagger offsets across the swarm so broker coverage stays high:
-  `*/4`, `1-59/4`, `2-59/4`, `3-59/4` means at least one agent polls
-  every minute → worst-case DM pickup ~1 min.
+- If multiple sessions share a broker and you care about pickup latency,
+  stagger their `/loop` offsets (`*/4`, `1-59/4`, …) so at least one
+  polls every minute.
 
 **How to arm:**
 ```
@@ -243,7 +243,7 @@ broad monitor is already running. Duplicate monitors spam events.
 **Tradeoffs:**
 - ✓ Fires within ~100ms of a broker-side write.
 - ✓ Makes cross-agent chatter visible without polling.
-- ✗ Noisy — every inbox write across the swarm wakes you.
+- ✗ Noisy — every inbox write across the broker wakes you.
 - ✗ Potentially less efficient than `/loop` if the broker is busy and
   the event rate exceeds your useful action rate — you pay for wakeups
   that would have been bundled into a single `/loop` tick.
@@ -253,13 +253,13 @@ broad monitor is already running. Duplicate monitors spam events.
   poll_inbox round-trip is needed to read them; poll/hook-drain still
   owns the actual inbox clear.
 
-## Option 3: both (coordinator pattern)
+## Option 3: both (Monitor + loop)
 
 Arm the Monitor on join, *and* keep a `/loop` running.
 
 The Monitor wakes you on-demand (DM arrives, peer drains, sweep
-deletes). The `/loop` is the heartbeat safety net — if the Monitor
-misses an event or the broker is quiet, the cron still fires.
+deletes). The `/loop` is the safety net — if the Monitor misses an
+event or the broker is quiet, the cron still fires.
 
 In dynamic-mode `/loop` specifically, the Monitor becomes the primary
 wake signal and the ScheduleWakeup delay becomes the fallback. Lean
@@ -314,15 +314,13 @@ For each Monitor below, walk the `TaskList` output and skip the arm
 if a task with a matching `description` is already in
 `running` / `persistent` state:
 
-- `description: "heartbeat tick"` — keepalive cadence; one per session
-- `description: "sitrep tick (hourly @:07)"` — coordinator-only;
-  one per session
+- `description: "heartbeat tick"` — periodic cadence; one per session
+- any other cadence you add — one per description per session
 
 Only the **first** instance of each-cadence Monitor should be armed
 per session. Duplicates double the wake rate, double the token spend
 on idle ticks, and (worse) cause every heartbeat to surface twice in
-the transcript — the issue Cairn flagged where a duplicate heartbeat
-landed after compaction and was only caught via a manual `TaskList`.
+the transcript.
 
 **After compaction in particular** — recompacted sessions often re-run
 their on-arrival setup blindly. Treat post-compact wake the same as
@@ -348,18 +346,18 @@ Off-minute cadence stays under the 5-minute prompt-cache TTL.
 `CronCreate` because it's a real long-running process, survives
 cleanly, and accepts wall-clock alignment (e.g. `@15m`, `@1h+7m`).
 
-### 2. Sitrep tick (coordinator roles) — wall-clock aligned hourly wake
+### 2. Optional wall-clock aligned hourly wake
 
 ```
 Monitor({
-  description: "sitrep tick (hourly @:07)",
-  command: "heartbeat @1h+7m \"<sitrep message>\"",
+  description: "hourly tick",
+  command: "heartbeat @1h+7m \"hourly tick\"",
   persistent: true
 })
 ```
 
-Preferred over the legacy `7 * * * *` cron — same cadence, simpler
-tooling, survives across agent harness idiosyncrasies.
+Use only if you need a fixed wall-clock cadence. Preferred over a raw
+cron expression when the `heartbeat` binary is available.
 
 ### Do NOT arm `c2c monitor` when channels push is on
 
@@ -373,11 +371,10 @@ cross-session delivery, not as a default.
 
 ### Heartbeat handling discipline
 
-On every heartbeat/sitrep fire, treat it as a **work trigger** —
-poll inbox, pick up the next slice, advance the north-star goal.
-Never "acknowledge the heartbeat and stop." If you've genuinely
-exhausted available work, ask in `swarm-lounge` for
-more — don't just sit polling empty inboxes indefinitely.
+On every heartbeat fire, treat it as a **work trigger** — poll inbox
+and advance the work the operator asked for. Never "acknowledge the
+heartbeat and stop." If you have nothing left to do, idle or wait for
+the operator; do not invent coordination busywork.
 
 ## Codex idle wake (tmux/herdr injection)
 
@@ -442,5 +439,4 @@ Env-var reference: `.collab/runbooks/c2c-env-vars.md` § Codex wake-inject.
 
 - `.collab/runbooks/c2c-delivery-smoke.md` — the smoke test you should
   run after touching broker/hook code.
-- `.collab/runbooks/coordinator-failover.md` — current no-fixed-coordinator
-  operating model and operator-gated deployment rule.
+- `.collab/runbooks/deprecated/coordinator-failover.md` — historical swarm-era process only.

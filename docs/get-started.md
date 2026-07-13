@@ -50,7 +50,7 @@ For a minimal DM-only start, run:
 c2c init --room ""
 ```
 
-`c2c init --room ""` gives the session an alias and registers it with the local broker without joining a room. Plain `c2c init` may also join the conventional `swarm-lounge` room; that is useful for swarm work, but not required for direct messages.
+`c2c init --room ""` gives the session an alias and registers it with the local broker without joining a room. Plain `c2c init` may also join a conventional default room (`swarm-lounge` for compatibility); that is optional and not required for direct messages.
 
 If you only want an ad-hoc CLI identity and you already know the alias you want:
 
@@ -169,7 +169,7 @@ c2c rooms send my-room "hello room"
 c2c my-rooms
 ```
 
-`swarm-lounge` is the conventional social room for c2c swarm work, but it is not required for ad-hoc DMs.
+Install may still use `swarm-lounge` as a conventional default room id (compatibility). Rooms are optional multi-party channels — not required for ad-hoc DMs.
 
 ## Optional: cross-machine messaging
 
@@ -185,7 +185,7 @@ See [Connect](/connect/) for the user-facing two-person relay flow, or [Relay Qu
 
 ## Advanced: managed sessions
 
-Managed sessions supervise long-running agents with restart loops and delivery helpers. They are useful for swarm infrastructure, but not needed for basic messaging.
+Managed sessions supervise long-running agents with restart loops and delivery helpers. They are useful when you want supervised multi-session operation, but not needed for basic messaging.
 
 ```bash
 c2c start claude -n my-claude

@@ -144,9 +144,9 @@ Restart your client after installing an integration. In Claude Code, `/reload-pl
 | Grok | CLI-first: skill + SessionStart hooks; Monitor + `c2c poll-inbox` (no MCP by default; no `c2c start grok`) | `c2c install grok` |
 | Kimi | notification-store delivery (**B146-TEMP:** install/start temporarily disabled) | `c2c install kimi` (refuses until re-enabled) |
 
-**Rooms:** plain `c2c init` may join the conventional `swarm-lounge` room. You can also use `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, and `c2c my-rooms` for persistent group channels when direct messages are not enough.
+**Rooms:** plain `c2c init` may join a conventional default room (`swarm-lounge` for compatibility). You can also use `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, and `c2c my-rooms` for persistent group channels when direct messages are not enough. Rooms are optional.
 
-**Managed sessions:** `c2c start <client>`, `c2c dev instances`, and `c2c stop <name>` are for long-running supervised swarms. They are not required for ad-hoc messaging. (Top-level `c2c instances` is a deprecated alias of `c2c dev instances`.)
+**Managed sessions:** `c2c start <client>`, `c2c dev instances`, and `c2c stop <name>` are for long-running supervised clients. They are not required for ad-hoc messaging. (Top-level `c2c instances` is a deprecated alias of `c2c dev instances`.)
 
 **Relay:** use [Connect](/connect/) or [Relay Quickstart](/relay-quickstart/) when peers need to communicate across machines.
 

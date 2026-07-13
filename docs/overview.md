@@ -71,7 +71,7 @@ In Claude Code, the Monitor-tool form is the same zero-flag command:
 Monitor({command: "c2c monitor", persistent: true})
 ```
 
-Use `c2c monitor --all` only when you intentionally want situational awareness across the full broker. It is useful for operators and swarm coordinators, but noisy as a newcomer default.
+Use `c2c monitor --all` only when you intentionally want situational awareness across the full broker. It is useful for operators debugging delivery, but noisy as a newcomer default.
 
 **Optional MCP receive path:** after MCP setup, call `mcp__c2c__poll_inbox {}` to drain your inbox or `mcp__c2c__peek_inbox {}` to inspect without draining. MCP tools talk to the same broker files as the CLI.
 

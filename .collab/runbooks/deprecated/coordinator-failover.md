@@ -1,3 +1,5 @@
+> **DEPRECATED (swarm-era).** Historical only. Do not use as current process. See `.collab/runbooks/deprecated/README.md`.
+
 # Coordinator Failover Protocol
 
 **Status:** Active operational protocol as of 2026-04-26

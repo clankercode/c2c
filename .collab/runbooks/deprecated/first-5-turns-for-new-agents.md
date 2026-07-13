@@ -1,3 +1,5 @@
+> **DEPRECATED (swarm-era).** Historical only. Do not use as current process. See `.collab/runbooks/deprecated/README.md`.
+
 # First 5 turns for new agents
 
 **Audience:** any agent (Claude Code, Codex, OpenCode, Grok CLI-first, and
