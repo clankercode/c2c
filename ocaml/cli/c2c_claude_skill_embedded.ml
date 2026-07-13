@@ -49,8 +49,8 @@ the init + orientation default applies only to bare invocation.
 | Goal | CLI |
 |------|-----|
 | One-step onboarding (register + join room; MCP only with `--with-mcp`/`--hooks`) | `c2c init` |
-| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|grok>` (`c2c install all` is binary-only unless `--with-clients`) |
-| Kimi install/start (B146-TEMP) | **Temporarily disabled** — `c2c install kimi` / `c2c start kimi` refuse until re-enabled; use claude/codex/opencode/pi |
+| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|grok\|kimi>` (`c2c install all` is binary-only unless `--with-clients`) |
+| Configure Kimi Code | `c2c install kimi` |
 | Configure Pi Agent | `pi install npm:pi-c2c` |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |
@@ -75,8 +75,8 @@ hooks (full drain). No polling needed. Set `C2C_POST_TOOL_NUDGE_ONLY=1` to
 restore the legacy "N message(s) waiting" nudge line instead.
 
 Managed sessions (`c2c start`) may also get push-based delivery into the
-transcript. OpenCode uses its plugin. (B146-TEMP: Kimi notification-store path
-is retained but install/start is temporarily disabled.)
+transcript. OpenCode uses its plugin. Kimi Code receives via the local server
+prompt endpoint when the c2c notifier is running.
 
 **Codex:** for arrival-time delivery (peer messages surface the moment they're
 sent, not just at turn boundaries), run a managed session via `c2c new codex` —
@@ -219,7 +219,7 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 
 | Goal | CLI |
 |------|-----|
-| Launch a managed client | `c2c start <claude\|codex\|opencode>` (B146-TEMP: `kimi` temporarily disabled) |
+| Launch a managed client | `c2c start <claude\|codex\|opencode\|kimi>` |
 | List running instances | `c2c dev instances` (top-level `c2c instances` is a deprecated alias) |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |

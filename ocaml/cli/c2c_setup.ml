@@ -115,6 +115,17 @@ let refresh_grok_skill_if_stale () =
   refresh_skill_if_stale ~content:C2c_grok_skill_embedded.content
     ~skill_dir:(grok_skill_dir ()) ()
 
+let kimi_skill_dir () =
+  Filename.concat (Sys.getenv "HOME") (".kimi-code" // "skills" // "c2c")
+
+let write_kimi_skill ~output_mode ~dry_run () =
+  write_c2c_skill ~content:C2c_kimi_skill_embedded.content
+    ~skill_dir:(kimi_skill_dir ()) ~output_mode ~dry_run ()
+
+let refresh_kimi_skill_if_stale () =
+  refresh_skill_if_stale ~content:C2c_kimi_skill_embedded.content
+    ~skill_dir:(kimi_skill_dir ()) ()
+
 (* Dynamic identity skill: Grok cannot inject SessionStart additionalContext
    into the model transcript (stdout is ignored for passive hooks). Writing a
    small always-present skill with the live alias in its description is the
@@ -817,6 +828,8 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
     C2c_kimi_hook.toml_block_end_marker
       ~block_id:C2c_kimi_hook.approval_hook_block_id
   in
+  (* Install /c2c skill into the Kimi Code skills directory. *)
+  let skill_artifact, skill_path = write_kimi_skill ~output_mode ~dry_run () in
   let client_dir = home // ".c2c" // "clients" // "kimi" in
   mkdir_or_dryrun dry_run client_dir;
   let deliver_watch_artifacts =
@@ -840,6 +853,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       ; C2c_install_manifest.owned_file hook_path
       ]
       @ deliver_watch_artifacts
+      @ (match skill_artifact with Some a -> [ a ] | None -> [])
   ; extra_json =
       [ ("client", `String "kimi")
       ; ("alias", `String alias_val)
@@ -848,6 +862,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       ; ("hook_script", `String hook_path)
       ; ("hooks_toml_path", `String toml_config_path)
       ; ("hooks_toml_block", `String hook_block_status_str)
+      ; ("skill", `String skill_path)
       ]
   }
 
