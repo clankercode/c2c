@@ -1802,6 +1802,24 @@ let () = Stdlib.Hashtbl.add client_adapters "opencode" (module OpenCodeAdapter)
 let home_dir () =
   try Sys.getenv "HOME" with Not_found -> "/home/" ^ Sys.getenv "USER"
 
+(* Kimi Code CLI uses `session_<uuid>` session IDs (e.g. session_550e8400-…).
+   Accept either that form or a bare UUID for backwards compatibility with
+   persisted legacy ids. *)
+let is_kimi_session_id_like sid =
+  let prefix = "session_" in
+  let plen = String.length prefix in
+  if String.length sid > plen && String.sub sid 0 plen = prefix then
+    match Uuidm.of_string (String.sub sid plen (String.length sid - plen)) with
+    | Some _ -> true
+    | None -> false
+  else
+    match Uuidm.of_string sid with
+    | Some _ -> true
+    | None -> false
+
+let fresh_kimi_session_id () =
+  "session_" ^ Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
+
 let opencode_log_dir () = home_dir () // ".local" // "share" // "opencode" // "log"
 
 let latest_opencode_log () : string option =
@@ -3660,7 +3678,7 @@ end
 
 module KimiAdapter : CLIENT_ADAPTER = struct
   let name = "kimi"
-  let config_dir = ".kimi"
+  let config_dir = ".kimi-code"
   let agent_dir = ""   (* kimi has no agent-dir concept *)
   let instances_subdir = "kimi"
 
@@ -4584,7 +4602,7 @@ let run_outer_loop ~(name : string) ~(client : string)
              let kimi_share =
                match Sys.getenv_opt "KIMI_SHARE_DIR" with
                | Some d when d <> "" -> d
-               | _ -> (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".kimi"
+               | _ -> (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".kimi-code"
              in
              let sdir = kimi_share // "sessions" // wh // sid in
              mkdir_p sdir;
@@ -5028,7 +5046,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                ())
            );
           (* Start kimi-notifier (file-based notification-store push).
-             File-based notification push to ~/.kimi/sessions/<wh>/<sid>/notifications/.
+             File-based notification push to ~/.kimi-code/sessions/<wh>/<sid>/notifications/.
              Optionally tmux send-keys-wakes the kimi pane when idle. See
              c2c_kimi_notifier.mli + .collab/research/2026-04-29T10-27-00Z-stanza-
              coder-kimi-notification-store-push-validated.md. *)
@@ -5552,9 +5570,12 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           else None
         in
         (* codex-headless stores the Codex bridge thread id here. It is opaque and
-           intentionally not UUID-validated like Claude/Codex TUI resume ids. *)
+           intentionally not UUID-validated like Claude/Codex TUI resume ids.
+           Kimi Code uses `session_<uuid>` ids, so accept that shape too. *)
         let rs_valid =
           if client = "codex-headless" then
+            Some ex.resume_session_id
+          else if client = "kimi" && is_kimi_session_id_like ex.resume_session_id then
             Some ex.resume_session_id
           else
             match Uuidm.of_string ex.resume_session_id with
@@ -5569,7 +5590,10 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
               let ses_file = instance_dir name // "opencode-session.txt" in
               (try Sys.remove ses_file with _ -> ())
             end;
-            Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
+            if client = "kimi" then
+              Some (fresh_kimi_session_id ())
+            else
+              Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
           end else
           match session_id_override with
           | Some s -> Some s
@@ -5579,7 +5603,11 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
                | None ->
                    (match rs_valid with
                     | Some v -> Some v
-                    | None -> Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))))
+                    | None ->
+                        if client = "kimi" then
+                          Some (fresh_kimi_session_id ())
+                        else
+                          Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))))
         in
         let codex_target =
           match client, session_id_override with
@@ -5605,6 +5633,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
                | Some sid when claude_session_exists sid -> sid
                | _ ->
                    Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
+            else if client = "kimi" then
+              fresh_kimi_session_id ()
             else
               Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
         in

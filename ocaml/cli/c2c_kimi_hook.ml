@@ -10,7 +10,7 @@
       ~/.local/bin/c2c-kimi-approval-hook.sh.
 
    2. The fully-commented [[hooks]] block ([toml_block_template]) —
-      appended to ~/.kimi/config.toml by `c2c install kimi`. The block
+      appended to ~/.kimi-code/config.toml by `c2c install kimi`. The block
       is COMMENTED by default per Cairn 2026-04-30: discoverability-
       by-comment-block over cleverness of negative-lookahead matchers.
       Operator opts in by uncommenting + picking a matcher.
@@ -401,7 +401,7 @@ case "$SUPERVISOR_STRATEGY" in
 esac
 |bash}
 
-(* Fully-commented [[hooks]] block appended to ~/.kimi/config.toml.
+(* Fully-commented [[hooks]] block appended to ~/.kimi-code/config.toml.
 
    Default-no-forwarding posture: kimi-cli's HookDef.matcher is a regex
    that defaults to "" (empty), and engine.py:196-198 treats empty as
@@ -447,7 +447,7 @@ let toml_block_template = {toml|
 # only: `Bash` or `^(Bash|Edit)$`. There is no `:argRegex` half.
 # Operators porting hook configs between the two CLIs must rewrite
 # the matcher accordingly — a Claude-style `Bash` matcher in
-# ~/.kimi/config.toml will match every tool whose name+args contains
+# ~/.kimi-code/config.toml will match every tool whose name+args contains
 # the substring `Bash` (probably way too broad).
 #
 # An empty matcher (`""`) is match-all in kimi-cli (engine.py:196-198),

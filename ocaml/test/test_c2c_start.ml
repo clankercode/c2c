@@ -3440,7 +3440,7 @@ let test_prepare_launch_args_kimi_agent_file_uses_role_name () =
       ~extra_args:[] ~broker_root:"/tmp/broker"
       ~agent_name:"coordinator1" ()
   in
-  (* --agent-file should point to .kimi/agents/coordinator1/agent.yaml *)
+  (* --agent-file should point to .kimi-code/agents/coordinator1/agent.yaml *)
   let idx =
     try List.find_index (fun a -> a = "--agent-file") args
     with Not_found -> None
@@ -3452,13 +3452,13 @@ let test_prepare_launch_args_kimi_agent_file_uses_role_name () =
    | Some i when i + 1 < List.length args ->
        let path = List.nth args (i + 1) in
        check string "agent-file path uses role name"
-         (".kimi/agents/coordinator1/agent.yaml")
+         (".kimi-code/agents/coordinator1/agent.yaml")
          path
    | _ ->
         Alcotest.fail "--agent-file missing or has no value")
 
 (* #489 regression: verify kimi_agent_yaml_path returns a path under
-   .kimi/agents/<name>/agent.yaml (yaml dir), NOT .kimi/agents/<name>.md.
+   .kimi-code/agents/<name>/agent.yaml (yaml dir), NOT .kimi-code/agents/<name>.md.
    This is the contract that write_agent_file (c2c.ml) and
    C2c_commands.agent_file_path both depend on. The bug: c2c.ml's local
    agent_file_path shadowed C2c_commands.agent_file_path and hardcoded .md. *)
@@ -3467,11 +3467,11 @@ let test_kimi_write_agent_file_uses_yaml_path () =
   check string "kimi_agent_yaml_path ends with agent.yaml"
     "agent.yaml" (Filename.basename path);
   check string "kimi_agent_yaml_path uses directory per agent"
-    ".kimi/agents/test-agent" (Filename.dirname path);
-  (* Ensure it's NOT the old wrong path (which was .kimi/agents/<name>.md) *)
+    ".kimi-code/agents/test-agent" (Filename.dirname path);
+  (* Ensure it's NOT the old wrong path (which was .kimi-code/agents/<name>.md) *)
   let wrong_path = Filename.concat (C2c_role.client_agent_dir ~client:"kimi") "test-agent.md" in
   check string "kimi_agent_yaml_path is NOT .md extension"
-    ".kimi/agents/test-agent.md" wrong_path;
+    ".kimi-code/agents/test-agent.md" wrong_path;
   (* The correct path must differ from the .md wrong path *)
   check bool "correct path differs from wrong .md path"
     true (path <> wrong_path)

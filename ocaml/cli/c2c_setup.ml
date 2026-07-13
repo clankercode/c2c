@@ -742,7 +742,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
 
 (* [build_kimi_mcp_config ~root ~alias_val ~server_path existing]
    is the pure JSON merge at the heart of setup_kimi.  It takes the
-   pre-existing ~/.kimi/mcp.json value (already parsed) and returns the
+   pre-existing ~/.kimi-code/mcp.json value (already parsed) and returns the
    updated config with the c2c entry (including #478 allowedTools) merged in.
    Running this twice on the same input yields identical output (idempotent
    replacement — the old c2c entry is removed before the new one is added,
@@ -784,8 +784,8 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen exi
 
 let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ?(force=false) () =
   let home = Sys.getenv "HOME" in
-  let config_path = Filename.concat home (".kimi" // "mcp.json") in
-  let toml_config_path = Filename.concat home (".kimi" // "config.toml") in
+  let config_path = Filename.concat home (".kimi-code" // "mcp.json") in
+  let toml_config_path = Filename.concat home (".kimi-code" // "config.toml") in
   let hook_install_dir = Filename.concat home (".local" // "bin") in
   let existing =
     if Sys.file_exists config_path then json_read_file config_path
@@ -795,7 +795,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
   mkdir_p dry_run (Filename.dirname config_path);
   json_write_file_or_dryrun dry_run config_path config;
   (* Slice 2 of #142: install the PreToolUse approval hook script and
-     append a fully-commented [[hooks]] block to ~/.kimi/config.toml.
+     append a fully-commented [[hooks]] block to ~/.kimi-code/config.toml.
      Idempotent — running `c2c install kimi` twice yields one block. *)
   let hook_path =
     C2c_kimi_hook.install_approval_hook_script ~dest_dir:hook_install_dir ~dry_run
@@ -2183,7 +2183,7 @@ let client_configured client =
             loop 0
           with _ -> false)
    | "kimi" ->
-      let p = home // ".kimi" // "mcp.json" in
+      let p = home // ".kimi-code" // "mcp.json" in
       if not (Sys.file_exists p) then false
       else
         (try

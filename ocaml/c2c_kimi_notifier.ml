@@ -14,12 +14,12 @@ let ( // ) = Filename.concat
 
 (* ─── Constants + path helpers ───────────────────────────────────────────── *)
 
-(* Kimi-cli's share-dir resolution mirrors share.py:
-     get_share_dir = $KIMI_SHARE_DIR or ~/.kimi *)
+(* Kimi Code's share-dir resolution mirrors share.py:
+     get_share_dir = $KIMI_SHARE_DIR or ~/.kimi-code *)
 let kimi_share_dir () =
   match Sys.getenv_opt "KIMI_SHARE_DIR" with
   | Some d when d <> "" -> d
-  | _ -> home () // ".kimi"
+  | _ -> home () // ".kimi-code"
 
 let kimi_log_path () = kimi_share_dir () // "logs" // "kimi.log"
 let kimi_sessions_root () = kimi_share_dir () // "sessions"
