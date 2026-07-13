@@ -1,0 +1,29 @@
+---
+complexity: medium
+created_at: "2026-07-13T03:43:34Z"
+depends_on: []
+estimate_hours: 1
+id: B176
+priority: medium
+status: pending
+tags:
+    - codex
+    - app-server
+    - startup
+    - logging
+    - ux
+title: Improve Codex app-server startup feedback and lifecycle logging
+updated_at: "2026-07-13T03:43:34Z"
+---
+The `[c2c codex app-server]` startup procedure should provide timely, unambiguous lifecycle feedback.
+
+Requested behavior:
+- Add a local `HH:MM:SS` timestamp to every log line whose prefix is `[c2c codex app-server]`, formatted as `[c2c codex app-server] [HH:MM:SS] <message>` (or the corresponding existing prefix), with the existing/appropriate color styling preserved.
+- Emit a line immediately before launching the app-server so the user gets feedback before a potentially slow startup.
+- Emit a line once the app-server is confirmed ready/started.
+- Emit a final line immediately before the TUI takes over, including the managed agent alias/name and other useful context.
+
+Acceptance criteria:
+- Slow startup is visibly progressing rather than appearing hung.
+- The three lifecycle phases (launching, ready, handing off to TUI) are distinguishable in captured output.
+- Timestamp formatting and color behavior have regression coverage.
