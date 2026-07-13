@@ -1,0 +1,33 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:34:59Z"
+depends_on: []
+estimate_hours: 1
+id: B180
+priority: high
+status: pending
+tags:
+    - monitor
+    - rename
+    - ux
+title: 'monitor: after rename, re-resolve alias and re-arm relay watch without full restart'
+updated_at: "2026-07-13T11:34:59Z"
+---
+## Problem
+`c2c monitor` binds identity at start. After the session renames, an already-running monitor keeps the old alias context (or needs a full kill+restart) before it watches as the new alias. Agents miss inbox events during the window; operators must remember to restart the Monitor tool.
+
+## Expected
+Monitor should detect alias rename (broker event / alias file mtime / periodic whoami) and:
+- re-resolve identity
+- re-arm local inbox watch under the new alias
+- re-arm relay peek under cli-<new> after identity is bound
+without requiring an external process restart when possible.
+
+## Actual
+Post-rename: had to kill and re-run `c2c monitor` as gk-black before reliable live watch under the new name.
+
+## Related
+Pairs with rename->relay re-register. Even after register, monitor restart was still required for clean identity line \"monitoring as gk-black\".
+
+## Suggested fix
+Subscribe to local rename/registration events; on change, re-run the same identity resolution path used at monitor startup and swap watchers.

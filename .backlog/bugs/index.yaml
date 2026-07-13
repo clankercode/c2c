@@ -176,3 +176,4 @@ bugs:
     - file: B177-c2c-send-prints-false-no-relay.todo
     - file: B178-relay-monitor-peek-terminal-ti.todo
     - file: B179-rename-auto-re-register-rebind.todo
+    - file: B180-monitor-after-rename-re-resolv.todo
