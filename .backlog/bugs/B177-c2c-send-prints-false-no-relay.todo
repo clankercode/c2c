@@ -1,0 +1,36 @@
+---
+complexity: medium
+created_at: "2026-07-13T10:15:00Z"
+depends_on: []
+estimate_hours: 1
+id: B177
+priority: medium
+status: pending
+tags:
+    - relay
+    - send
+    - ux
+title: c2c send prints false no-relay-connector-detected warning when a bare c2c relay connect is running (only managed daemons detected)
+updated_at: "2026-07-13T10:15:00Z"
+---
+Symptom: `c2c send <alias>@<host>` prints
+
+  warning: queued locally; no relay connector detected — run `c2c relay connect` ...
+
+even when a relay connector IS running and messages are actually being delivered. The warning is self-contradictory: it tells you to run the very command that is already running.
+
+Repro:
+1. Start the connector as a bare foreground process: `c2c relay connect` (e.g. in tmux, or backgrounded by a harness) — NOT via `c2c managed start relay-connect`.
+2. `c2c send peer@host "msg"`.
+Result: the "no relay connector detected" warning prints on every remote send, while `c2c whoami` simultaneously reports `connector: live (last sync Ns ago)` and the message does deliver (the peer replies).
+
+Root cause: ocaml/cli/c2c_send_cmd.ml, `relay_connector_running_best_effort ()` (~line 138) only detects a *managed* relay-connect daemon, via `C2c_health_cmd.read_managed_instances` filtered on `mi_client = "relay-connect" && mi_status = "running"`. A bare `c2c relay connect` has no managed-instance dir / outer.pid, so it is invisible to the probe. The code comment acknowledges this and argues the fallback warning is "still accurate (we have no evidence one is running)" — but in practice it is misleading: it causes users/agents to believe delivery failed and take wrong actions (re-run connect, switch to `c2c relay dm send`, or report a false send failure).
+
+The authoritative signal already exists: `c2c whoami` reports connector liveness from broker-owned relay sync state (`registered_live — connector bridge live ... last sync 12s ago`). The send-time probe simply does not use it.
+
+Suggested fix: make `relay_connector_running_best_effort ()` also return true when either
+  (a) the broker-owned relay connector sync-state is fresh — the same source whoami/health already use (e.g. last sync within a small window); or
+  (b) a foreground `c2c relay connect` is detectable via a pidfile/lock that the connect command writes (or a process scan).
+Prefer (a): reuse the existing fresh-sync signal so managed and foreground connectors are treated identically, then suppress/downgrade the warning whenever a live connector is detected.
+
+Impact: correctness of delivery reporting (follow-on to B088). Non-breaking — delivery works — but actively confusing and causes wasted/incorrect agent actions. Observed live 2026-07-13 with a bare `c2c relay connect` (whoami: connector live, last sync 12s) while every `c2c send @host` printed the false warning.

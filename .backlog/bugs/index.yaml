@@ -173,3 +173,4 @@ bugs:
     - file: B174-relay-stats-for-unique-machine.todo
     - file: B175-codex-app-server-startup-fails.todo
     - file: B176-improve-codex-app-server-start.todo
+    - file: B177-c2c-send-prints-false-no-relay.todo
