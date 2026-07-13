@@ -157,6 +157,48 @@ let test_submit_prompt_errors_without_token () =
               Alcotest.(check (result int string)) "no token → Error"
                 (Error "no server token") result)))
 
+let test_submit_prompt_detects_http_200_error_code () =
+  (* Kimi Code local server returns HTTP 200 for many errors, with the real
+     outcome in a JSON [code] field. submit_prompt must surface those as Error. *)
+  let session_id = "missing-session-123" in
+  let prompt_path = "/api/v1/sessions/" ^ session_id ^ "/prompts" in
+  let routes =
+    [ Relay_test_support.route ~meth:"POST" ~path:prompt_path
+        [ Relay_test_support.response ~status:200
+            {|{"code":40401,"msg":"session missing-session-123 does not exist"}|}
+        ]
+    ]
+  in
+  Relay_test_support.with_server ~routes (fun server ->
+      let base_url =
+        Printf.sprintf "http://127.0.0.1:%d" server.Relay_test_support.port
+      in
+      let old_gate = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE" in
+      let old_token = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_TOKEN" in
+      let old_url = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" in
+      Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "1";
+      Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "fixture-token";
+      Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" base_url;
+      Fun.protect
+        ~finally:(fun () ->
+          (match old_gate with
+           | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" v
+           | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "");
+          (match old_token with
+           | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" v
+           | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "");
+          (match old_url with
+           | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" v
+           | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" ""))
+        (fun () ->
+           let result =
+             C2c_kimi_deliver.submit_prompt ~session_id ~body:"hello"
+           in
+           Alcotest.(check (result int string))
+             "HTTP 200 with non-zero code → Error"
+             (Error "kimi server error 40401: session missing-session-123 does not exist")
+             result))
+
 let test_deliver_message_escapes_content () =
   let msg =
     { C2c_mcp.from_alias = "send<er"
@@ -206,6 +248,8 @@ let () =
     ; "submit_prompt",
       [ Alcotest.test_case "errors when no token available" `Quick
           test_submit_prompt_errors_without_token
+      ; Alcotest.test_case "detects HTTP 200 with non-zero error code" `Quick
+          test_submit_prompt_detects_http_200_error_code
       ]
     ; "deliver_message",
       [ Alcotest.test_case "message_envelope escapes hostile content" `Quick

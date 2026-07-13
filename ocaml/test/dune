@@ -123,7 +123,7 @@
 (test
  (name test_c2c_kimi_deliver)
  (modules test_c2c_kimi_deliver)
- (libraries c2c_mcp alcotest str unix))
+ (libraries c2c_mcp relay_test_support alcotest str unix))
 
 (test
  (name test_c2c_name)

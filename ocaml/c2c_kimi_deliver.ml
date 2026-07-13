@@ -74,10 +74,26 @@ let submit_prompt ~session_id ~body =
         Lwt_main.run (
           Cohttp_lwt_unix.Client.post ~headers ~body:req_body uri
           >>= fun (resp, resp_body) ->
-          let code = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
+          let http_code = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
           Cohttp_lwt.Body.to_string resp_body
-          >>= fun _text ->
-          Lwt.return (Ok code)
+          >>= fun body_text ->
+          let result =
+            match Yojson.Safe.from_string body_text with
+            | exception _ ->
+                Error (Printf.sprintf "non-JSON response (HTTP %d): %s" http_code body_text)
+            | json ->
+                let open Yojson.Safe.Util in
+                let code = json |> member "code" |> to_int_option in
+                let msg =
+                  match json |> member "msg" |> to_string_option with
+                  | Some s -> s
+                  | None -> "(no message)"
+                in
+                match code with
+                | None | Some 0 -> Ok http_code
+                | Some n -> Error (Printf.sprintf "kimi server error %d: %s" n msg)
+          in
+          Lwt.return result
         )
       with exn -> Error (Printexc.to_string exn)
 

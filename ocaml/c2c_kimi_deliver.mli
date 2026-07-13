@@ -6,8 +6,10 @@ val read_server_token : unit -> string option
 
 val submit_prompt : session_id:string -> body:string -> (int, string) result
 (** [submit_prompt ~session_id ~body] POSTs a text prompt to
-    /api/v1/sessions/{session_id}/prompts. Returns [Ok http_code] on a completed
-    HTTP round-trip, [Error reason] on transport/parse failure. *)
+    /api/v1/sessions/{session_id}/prompts. Returns [Ok http_code] when the
+    server responds with a JSON body whose top-level [code] field is [0] or
+    absent, [Error reason] on a non-zero [code], transport failure, or
+    non-JSON response. *)
 
 val deliver_message : session_id:string -> msg:C2c_mcp.message -> (unit, string) result
 (** [deliver_message ~session_id ~msg] serialises a c2c message into a Kimi

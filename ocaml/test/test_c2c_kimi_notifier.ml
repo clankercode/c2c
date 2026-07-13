@@ -617,7 +617,7 @@ let test_poll_once_global_drains_global_broker () =
        let prompt_path = "/api/v1/sessions/" ^ sid ^ "/prompts" in
        let routes =
          [ Relay_test_support.route ~meth:"POST" ~path:prompt_path
-             [ Relay_test_support.response ~status:200 {|{"ok":true}|} ]
+             [ Relay_test_support.response ~status:200 {|{"code":0,"msg":"success"}|} ]
          ]
        in
        Relay_test_support.with_server ~routes (fun server ->
