@@ -61,9 +61,15 @@ Local server endpoints discovered from source (`MoonshotAI/kimi-code`):
      - Default port `58627`; read lock/info if present; allow `C2C_KIMI_SERVER_PORT` override.
    - Resolve session: `resume_session_id` is the server session id (`session_<uuid>`).
    - POST `{"content":[{"type":"text","text":"<envelope>"}]}` to `/api/v1/sessions/{sid}/prompts`.
+   - The prompt body is the canonical c2c XML envelope
+     `<c2c event="message" from="..." to="...">...</c2c>` with the `from_alias`,
+     `to_alias`, and `content` fields XML-escaped.
    - On success, remove the message from the broker inbox (drain, not peek). On failure, leave it for retry.
    - Safety: respect DND; skip system events; never resolve approvals.
    - Idle-gate: check `GET /api/v1/sessions/{sid}/status` or wire.jsonl mtime before injecting, to avoid interrupting an active turn.
+   - Fixture gating: all external HTTP interactions are gated by
+     `C2C_KIMI_DELIVER_FIXTURE=1`; tests may also set
+     `C2C_KIMI_DELIVER_FIXTURE_BASE_URL` and `C2C_KIMI_DELIVER_FIXTURE_TOKEN`.
 
 4. **Notifier lifecycle update**
    - Replace the file-based writer in `C2c_kimi_notifier` with a call to `C2c_kimi_deliver.submit`.
@@ -106,9 +112,14 @@ C2c_kimi_notifier.run_once (daemon loop)
 
 ### Testing plan
 
-- Unit tests for `C2c_kimi_deliver` with a mock HTTP server (env-fixture gated).
+- Unit tests for `C2c_kimi_deliver` with a mock HTTP server
+  (`C2C_KIMI_DELIVER_FIXTURE=1`, optional
+  `C2C_KIMI_DELIVER_FIXTURE_BASE_URL` / `C2C_KIMI_DELIVER_FIXTURE_TOKEN`
+  overrides).
 - Update `test_c2c_setup_kimi.ml` for new paths and skill install.
 - Update `test_c2c_kimi_notifier.ml` to exercise REST delivery and fallback.
+- `C2c_kimi_deliver.message_envelope` is exported so tests can assert the
+  exact XML envelope shape (including XML escaping) without making an HTTP call.
 - E2E: managed `c2c start kimi` in tmux, send a DM, verify the prompt appears in Kimi's transcript.
 - Build: `just build`, `just check`, `just bi`.
 
