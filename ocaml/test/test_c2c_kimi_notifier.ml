@@ -601,8 +601,12 @@ let read_global_inbox_messages global_root session_id =
     with _ -> []
 
 (* [#P4] Core invariant: poll_once_global drains messages from the global
-   sessions broker and delivers them via the kimi notification store.
-   After delivery, the global inbox is empty (destructive drain). *)
+   sessions broker and delivers them via the Kimi REST prompt endpoint.
+   After delivery, the global inbox is empty (destructive drain).
+
+   We stand up a local mock Kimi server (Relay_test_support) and point the
+   delivery module at it via the fixture env vars so no real Kimi process is
+   needed. *)
 let test_poll_once_global_drains_global_broker () =
   let session_id = "kimi-global-test-sid" in
   with_global_broker_and_inbox ~session_id
@@ -610,20 +614,59 @@ let test_poll_once_global_drains_global_broker () =
     (fun global_root sid ->
        Alcotest.(check int) "inbox has 1 message before drain" 1
          (List.length (read_global_inbox_messages global_root sid));
-       (* Set C2C_SESSIONS_BROKER_ROOT so poll_once_global uses our temp broker. *)
-       let old_sessions_root = Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" in
-       Unix.putenv "C2C_SESSIONS_BROKER_ROOT" global_root;
-       let n = C2c_kimi_notifier.poll_once_global
-         ~session_id:sid
-         ~alias:"kimi-global-test"
-         ~tmux_pane:None
+       let prompt_path = "/api/v1/sessions/" ^ sid ^ "/prompts" in
+       let routes =
+         [ Relay_test_support.route ~meth:"POST" ~path:prompt_path
+             [ Relay_test_support.response ~status:200 {|{"ok":true}|} ]
+         ]
        in
-       (match old_sessions_root with
-        | Some v -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" v
-        | None -> ());
-       Alcotest.(check int) "1 delivery" 1 n;
-       Alcotest.(check int) "global inbox drained after delivery" 0
-         (List.length (read_global_inbox_messages global_root sid)))
+       Relay_test_support.with_server ~routes (fun server ->
+         let base_url = Printf.sprintf "http://127.0.0.1:%d" server.Relay_test_support.port in
+         (* Save and set fixture env vars so C2c_kimi_deliver talks to the mock. *)
+         let old_gate = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE" in
+         let old_token = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_TOKEN" in
+         let old_url = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" in
+         let old_sessions_root = Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" in
+         Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "1";
+         Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "fixture-token";
+         Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" base_url;
+         Unix.putenv "C2C_SESSIONS_BROKER_ROOT" global_root;
+         Fun.protect
+           ~finally:(fun () ->
+             (match old_gate with
+              | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" v
+              | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "");
+             (match old_token with
+              | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" v
+              | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "");
+             (match old_url with
+              | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" v
+              | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" "");
+             (match old_sessions_root with
+              | Some v -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" v
+              | None -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" ""))
+           (fun () ->
+              let n = C2c_kimi_notifier.poll_once_global
+                ~session_id:sid
+                ~alias:"kimi-global-test"
+                ~tmux_pane:None
+              in
+              Alcotest.(check int) "1 delivery" 1 n;
+              Alcotest.(check int) "global inbox drained after delivery" 0
+                (List.length (read_global_inbox_messages global_root sid));
+              let reqs = Relay_test_support.requests server in
+              Alcotest.(check int) "exactly one POST to prompts endpoint" 1
+                (List.length reqs);
+              match reqs with
+              | [ req ] ->
+                 Alcotest.(check string) "POST method" "POST" req.Relay_test_support.meth_;
+                 Alcotest.(check string) "prompts path" prompt_path req.Relay_test_support.path;
+                 Alcotest.(check (option string)) "bearer token"
+                   (Some "Bearer fixture-token")
+                   (Relay_test_support.header req "authorization");
+                 Alcotest.(check bool) "body contains escaped message content" true
+                   (contains req.Relay_test_support.body "hello from global broker")
+              | _ -> Alcotest.fail "expected exactly one request")))
 
 (* [#P4] Cross-session isolation: a message for session A must NOT be drained
    when polling session B. *)

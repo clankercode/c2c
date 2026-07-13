@@ -120,6 +120,28 @@ let test_read_json_capped_missing_file_returns_default () =
   check bool "returns default for missing file" true
     (match result with `Assoc [("missing", `Bool true)] -> true | _ -> false)
 
+(* Task 2 (kimi re-enable): session ID shape for `kimi --session`. *)
+let test_is_kimi_session_id_like_accepts_session_uuid () =
+  check bool "session_<uuid> is valid" true
+    (C2c_start.is_kimi_session_id_like "session_550e8400-e29b-41d4-a716-446655440000")
+
+let test_is_kimi_session_id_like_accepts_bare_uuid () =
+  check bool "bare uuid is valid" true
+    (C2c_start.is_kimi_session_id_like "550e8400-e29b-41d4-a716-446655440000")
+
+let test_is_kimi_session_id_like_rejects_garbage () =
+  check bool "random string is invalid" false
+    (C2c_start.is_kimi_session_id_like "not-a-session-id");
+  check bool "session_ prefix without uuid is invalid" false
+    (C2c_start.is_kimi_session_id_like "session_foo")
+
+let test_fresh_kimi_session_id_shape () =
+  let sid = C2c_start.fresh_kimi_session_id () in
+  check bool "fresh id passes is_kimi_session_id_like" true
+    (C2c_start.is_kimi_session_id_like sid);
+  check bool "fresh id has session_ prefix" true
+    (String.starts_with ~prefix:"session_" sid)
+
 let test_prepare_launch_args_claude_uses_development_channel_flag () =
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
@@ -4455,5 +4477,15 @@ let () =
             `Quick, test_claude_onboarding_preamble_has_no_heartbeat_monitor )
         ; ( "intro_on_no_role_excludes_raw_clients",
             `Quick, test_intro_on_no_role_excludes_raw_clients )
+        ] )
+    ; ( "kimi_session_id_shape",
+        [ ( "session_<uuid> accepted",
+            `Quick, test_is_kimi_session_id_like_accepts_session_uuid )
+        ; ( "bare uuid accepted",
+            `Quick, test_is_kimi_session_id_like_accepts_bare_uuid )
+        ; ( "garbage rejected",
+            `Quick, test_is_kimi_session_id_like_rejects_garbage )
+        ; ( "fresh id has expected shape",
+            `Quick, test_fresh_kimi_session_id_shape )
         ] )
     ]

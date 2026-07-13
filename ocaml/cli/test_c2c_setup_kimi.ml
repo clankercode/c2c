@@ -270,6 +270,44 @@ let test_kimi_config_uses_configured_social_room () =
          | _ -> None)))
 
 (* ------------------------------------------------------------------ *)
+(* setup_kimi end-to-end: writes ~/.kimi-code/mcp.json and skill      *)
+(* ------------------------------------------------------------------ *)
+
+let run_setup_kimi ~alias_from_auto_gen ~alias_val ~home ~server_path () =
+  let old_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () ->
+      match old_home with
+      | Some h -> Unix.putenv "HOME" h
+      | None -> Unix.putenv "HOME" "")
+    (fun () ->
+      Unix.putenv "HOME" home;
+      ignore
+        (C2c_setup.setup_kimi
+           ~output_mode:C2c_types.Human ~dry_run:false
+           ~root:"/fake/broker/root" ~alias_val
+           ~server_path ~deliver_watch:false
+           ~alias_from_auto_gen
+           ()))
+
+let test_setup_kimi_writes_mcp_config_and_skill () =
+  with_temp_dir (fun dir ->
+    let home = dir // "home" in
+    Unix.mkdir home 0o700;
+    run_setup_kimi ~alias_from_auto_gen:false
+      ~alias_val:"lyra-quill"
+      ~home ~server_path:"/fake/bin/c2c_mcp_server.exe" ();
+    let config_path = home // ".kimi-code" // "mcp.json" in
+    let skill_path = home // ".kimi-code" // "skills" // "c2c" // "SKILL.md" in
+    Alcotest.(check bool) "~/.kimi-code/mcp.json exists" true
+      (Sys.file_exists config_path);
+    Alcotest.(check bool) "~/.kimi-code/skills/c2c/SKILL.md exists" true
+      (Sys.file_exists skill_path);
+    let content = read_file skill_path in
+    Alcotest.(check bool) "skill file is non-empty" true
+      (String.length content > 0))
+
+(* ------------------------------------------------------------------ *)
 (* Feature B env-marker: setup_codex writes marker in config.toml      *)
 (* ------------------------------------------------------------------ *)
 
@@ -741,6 +779,10 @@ let () =
             test_stop_hook_exits_silently_when_no_messages
         ; Alcotest.test_case "no double delivery: drain is destructive" `Quick
             test_no_double_delivery_drain_is_destructive
+        ] )
+    ; ("setup-kimi",
+        [ Alcotest.test_case "setup_kimi writes ~/.kimi-code/mcp.json and skill" `Quick
+            test_setup_kimi_writes_mcp_config_and_skill
         ] )
     ; ("setup-codex-env-marker",
         [ Alcotest.test_case "setup_codex writes FROM_AUTO_GEN marker when alias auto-picked" `Quick
