@@ -1,0 +1,31 @@
+---
+complexity: medium
+created_at: "2026-07-13T11:35:00Z"
+depends_on: []
+estimate_hours: 1
+id: B185
+priority: medium
+status: pending
+tags:
+    - relay
+    - monitor
+    - resilience
+title: 'monitor: nonce_replay backoff should not disable relay permanently without recovery path'
+updated_at: "2026-07-13T11:35:00Z"
+---
+## Problem
+Relay peek hits nonce_replay (attempt 1, 2 with backoff) then escalates to TERMINAL timestamp_out_of_window and disables relay watch entirely with \"will not self-heal\". Local watch continues. Operator must re-register and/or restart monitor. Even if B178 fixes the -30.5s skew root cause, terminal disable without a recovery budget is harsh for transient relay glitches.
+
+## Expected
+- Transient relay errors stay transient: bounded retries, then slow poll, then optional re-auth
+- TERMINAL only for true config/auth breakages (missing key, revoked lease)
+- On TERMINAL, emit structured remediation and optionally attempt re-register if configured
+
+## Actual
+Two nonce_replays -> TERMINAL disable; false guidance to fix clock/key when issue may be backoff/nonce state.
+
+## Related
+B178 filed for the skew symptom; this bug is about monitor policy/resilience.
+
+## Suggested fix
+Separate error classes: retryable (nonce, 5xx, timeout) vs fatal (unauthorized unbound, permanent 401). Retryable never permanently disables without N consecutive failures over M minutes.
