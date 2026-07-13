@@ -235,6 +235,21 @@ a:visited { color: var(--c2c-amber-dim); }
   letter-spacing: 0.02em;
 }
 
+.hero-subtagline {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--c2c-text-muted);
+  letter-spacing: 0.04em;
+  margin-top: 0.15rem;
+}
+
+.hero-subtagline em {
+  color: var(--c2c-cyan);
+  font-style: italic;
+  font-weight: 600;
+}
+
 .hero-lead {
   font-size: 1.05rem;
   color: var(--c2c-text);
@@ -382,6 +397,7 @@ a:visited { color: var(--c2c-amber-dim); }
 @media (max-width: 700px) {
   .hero-brand { font-size: 2.5rem; }
   .hero-tagline { font-size: 0.95rem; }
+  .hero-subtagline { font-size: 0.85rem; }
   .hero-stats { flex-wrap: wrap; padding: 0.75rem 0.5rem; }
   .stat-node { min-width: auto; width: 33.333%; padding: 0 0.45rem; font-size: 0.68rem; }
   .hero-install-cmd {
