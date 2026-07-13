@@ -86,13 +86,21 @@ let test_read_server_token_missing_no_fixture () =
                 None (C2c_kimi_deliver.read_server_token ()))))
 
 let test_read_server_token_fixture_gate_required () =
-  (* Even with C2C_KIMI_DELIVER_FIXTURE_TOKEN set, the gate must be =1. *)
+  (* Even with C2C_KIMI_DELIVER_FIXTURE_TOKEN set, the gate must be =1.
+     A real token file must exist so that the test fails if the gate logic
+     is absent and the fixture override leaks through. *)
   with_tmpdir (fun tmp ->
       with_home tmp (fun () ->
           without_fixture (fun () ->
+              let token_dir = Filename.concat tmp ".kimi-code" in
+              Unix.mkdir token_dir 0o700;
+              let token_path = Filename.concat token_dir "server.token" in
+              let oc = open_out token_path in
+              Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+                output_string oc "real-token-abc\n");
               Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "should-be-ignored";
               Alcotest.(check (option string)) "token override ignored without gate"
-                None (C2c_kimi_deliver.read_server_token ()))))
+                (Some "real-token-abc") (C2c_kimi_deliver.read_server_token ()))))
 
 let test_read_server_token_returns_fixture_token () =
   with_tmpdir (fun tmp ->
