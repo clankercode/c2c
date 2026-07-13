@@ -182,6 +182,40 @@ let test_session_index_parsing () =
           let entries = C2c_kimi_deliver.read_session_index () in
           Alcotest.(check int) "reads all valid entries" 3 (List.length entries)))
 
+let test_session_index_missing_updated_at () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          let kc = Filename.concat tmp ".kimi-code" in
+          Unix.mkdir kc 0o700;
+          let index_path = Filename.concat kc "session_index.jsonl" in
+          let oc = open_out index_path in
+          output_string oc
+            "{\"sessionId\":\"session_old\",\"sessionDir\":\"/x/old\",\"workDir\":\"/proj/w\"}\n";
+          output_string oc
+            "{\"sessionId\":\"session_new\",\"sessionDir\":\"/x/new\",\"workDir\":\"/proj/w\"}\n";
+          close_out oc;
+          Alcotest.(check (option string))
+            "falls back to last appended entry when updated_at is missing"
+            (Some "session_new")
+            (C2c_kimi_deliver.session_id_for_workdir ~workdir:"/proj/w")))
+
+let test_session_index_prefers_timestamp_when_available () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          let kc = Filename.concat tmp ".kimi-code" in
+          Unix.mkdir kc 0o700;
+          let index_path = Filename.concat kc "session_index.jsonl" in
+          let oc = open_out index_path in
+          output_string oc
+            "{\"sessionId\":\"session_last\",\"sessionDir\":\"/x/last\",\"workDir\":\"/proj/w\"}\n";
+          output_string oc
+            "{\"sessionId\":\"session_ts\",\"sessionDir\":\"/x/ts\",\"workDir\":\"/proj/w\",\"updated_at\":\"2026-07-13T13:00:00.000Z\"}\n";
+          close_out oc;
+          Alcotest.(check (option string))
+            "prefers entry with timestamp over later entries without one"
+            (Some "session_ts")
+            (C2c_kimi_deliver.session_id_for_workdir ~workdir:"/proj/w")))
+
 let test_server_listening_url_parses_log () =
   with_tmpdir (fun tmp ->
       with_home tmp (fun () ->
@@ -313,6 +347,10 @@ let () =
     ; "session_index",
       [ Alcotest.test_case "parses index and resolves by workdir" `Quick
           test_session_index_parsing
+      ; Alcotest.test_case "resolves without updated_at" `Quick
+          test_session_index_missing_updated_at
+      ; Alcotest.test_case "prefers timestamp when available" `Quick
+          test_session_index_prefers_timestamp_when_available
       ]
     ; "server_log",
       [ Alcotest.test_case "parses listening URL from server.log" `Quick

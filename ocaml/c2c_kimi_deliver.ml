@@ -89,7 +89,11 @@ let parse_session_index_line line =
     let open Yojson.Safe.Util in
     let sid = json |> member "sessionId" |> to_string in
     let workdir = json |> member "workDir" |> to_string in
-    let updated_at = json |> member "updated_at" |> to_string in
+    let updated_at =
+      match json |> member "updated_at" |> to_string_option with
+      | Some s -> s
+      | None -> ""
+    in
     Some (sid, workdir, updated_at)
   with _ -> None
 
@@ -116,10 +120,48 @@ let session_id_for_workdir ~workdir =
   match matching with
   | [] -> None
   | _ ->
-      let sorted =
-        List.sort (fun (_, _, a) (_, _, b) -> String.compare b a) matching
+      (* Prefer entries with a non-empty updated_at timestamp (most recent
+         first).  If none have timestamps, fall back to the last appended
+         entry — session_index.jsonl is append-only, so the last match is
+         the most recently created session for this workdir. *)
+      let with_ts, without_ts =
+        List.partition (fun (_, _, ts) -> ts <> "") matching
       in
-      Some (let (sid, _, _) = List.hd sorted in sid)
+      let sorted_with_ts =
+        List.sort (fun (_, _, a) (_, _, b) -> String.compare b a) with_ts
+      in
+      let candidate =
+        match sorted_with_ts with
+        | (sid, _, _) :: _ -> sid
+        | [] ->
+            (* matching is non-empty; take the head of the reversed list,
+               which corresponds to the last line in the JSONL file. *)
+            let (sid, _, _) = List.hd without_ts in
+            sid
+      in
+      Some candidate
+
+let session_dir_for_session_id ~session_id =
+  let path = session_index_path () in
+  if not (Sys.file_exists path) then None
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () ->
+         let rec scan () =
+           match input_line ic with
+           | line ->
+               (try
+                  let json = Yojson.Safe.from_string line in
+                  let open Yojson.Safe.Util in
+                  let sid = json |> member "sessionId" |> to_string in
+                  if sid = session_id then
+                    json |> member "sessionDir" |> to_string_option
+                  else scan ()
+                with _ -> scan ())
+           | exception End_of_file -> None
+         in
+         scan ())
 
 open Lwt.Infix
 

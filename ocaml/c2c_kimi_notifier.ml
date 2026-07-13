@@ -23,7 +23,6 @@ let kimi_share_dir () =
   | _ -> home () // ".kimi-code"
 
 let kimi_log_path () = kimi_share_dir () // "logs" // "kimi.log"
-let kimi_sessions_root () = kimi_share_dir () // "sessions"
 
 let pidfile_path alias =
   home () // ".local" // "share" // "c2c" // "kimi-notifiers" // (alias ^ ".pid")
@@ -68,10 +67,13 @@ let read_session_id_from_config alias =
       | _ -> None
     with _ -> None
 
-(* Resolve the session-dir for a given session-id, anchored to cwd. *)
+(* Resolve the session-dir for a given session-id by looking it up in
+   ~/.kimi-code/session_index.jsonl.  This is more reliable than recomputing
+   Kimi Code's workspace-hash scheme, which uses a `wd_<name>_<hash>` prefix
+   rather than the raw md5 of the path. *)
 let session_dir_for ~cwd ~session_id =
-  let wh = workspace_hash_for_path cwd in
-  kimi_sessions_root () // wh // session_id
+  ignore cwd;
+  C2c_kimi_deliver.session_dir_for_session_id ~session_id
 
 (* ─── Notification ID + writer ───────────────────────────────────────────── *)
 
@@ -459,7 +461,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
     let cwd = Sys.getcwd () in
     let session_dir_opt =
       match resolve_kimi_session_id ~cwd with
-      | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
+      | Some sid -> session_dir_for ~cwd ~session_id:sid
       | None -> None
     in
     (* Partition: to_deliver = non-system (deliver to kimi), to_skip = system events. *)
@@ -551,7 +553,7 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
       let cwd = Sys.getcwd () in
       let session_dir_opt =
         match resolve_kimi_session_id ~cwd with
-        | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
+        | Some sid -> session_dir_for ~cwd ~session_id:sid
         | None -> None
       in
       (* Partition: to_deliver = non-system, to_skip = system events. *)

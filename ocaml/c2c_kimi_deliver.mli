@@ -15,6 +15,12 @@ val session_id_for_workdir : workdir:string -> string option
 (** [session_id_for_workdir ~workdir] returns the most recently updated Kimi
     session id whose [workDir] equals [workdir]. *)
 
+val session_dir_for_session_id : session_id:string -> string option
+(** [session_dir_for_session_id ~session_id] returns the [sessionDir] path
+    recorded in ~/.kimi-code/session_index.jsonl for [session_id], if present.
+    This is the authoritative session directory used by Kimi Code, avoiding
+    any drift between c2c's hash computation and Kimi Code's on-disk layout. *)
+
 val server_listening_url : unit -> string option
 (** [server_listening_url ()] scans ~/.kimi-code/server/server.log for the
     latest "server listening" log line and returns the bound address. *)
