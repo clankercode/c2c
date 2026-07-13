@@ -1621,7 +1621,7 @@ let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
    revert: kimi's machinery is kept intact (notifier, hooks, adapters) so
    re-enabling is just this flag. Unlike crush this is NOT a permanent
    deprecation. Tracked in backlog B146. *)
-let kimi_disabled_for_release = true
+let kimi_disabled_for_release = false
 
 let kimi_disabled_notice =
   "kimi support is temporarily disabled for this release. It will return in a \
