@@ -178,3 +178,4 @@ bugs:
     - file: B179-rename-auto-re-register-rebind.todo
     - file: B180-monitor-after-rename-re-resolv.todo
     - file: B181-relay-connector-process-alive.todo
+    - file: B182-rename-reserved-prefix-rejecti.todo
