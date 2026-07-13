@@ -46,3 +46,4 @@ reviews/
 .mcp.json
 *.x25519
 *.tmp.*
+tmp/
