@@ -496,6 +496,44 @@ let test_glue_diagnostic_falls_back_no_publish () =
         (Option.map (fun (m : S.mapping) -> m.alias)
            (S.load_mapping ~instance_dir:(C2c_start.instance_dir alias))))
 
+(* B175: upgrade guidance only for version/capability gaps; readiness timeout
+   / process exit on a supported Codex must NOT tell the operator to upgrade. *)
+let test_diagnostic_followup_upgrade_only_when_version_issue () =
+  let min = "0.144.0" in
+  let version_diag : diagnostic =
+    { code = Codex_version_unsupported;
+      message = "codex too old";
+      codex_version = Some "codex-cli 0.100.0";
+      min_codex_version = Some min }
+  in
+  let timeout_diag : diagnostic =
+    { code = Readiness_timeout;
+      message = "app-server did not become ready within 90.0s";
+      codex_version = Some "codex-cli 0.144.1";
+      min_codex_version = Some min }
+  in
+  let died_diag : diagnostic =
+    { code = Server_died_before_ready;
+      message = "app-server exited before becoming ready (exited:1)";
+      codex_version = Some "codex-cli 0.144.1";
+      min_codex_version = Some min }
+  in
+  let v = S.diagnostic_followup version_diag in
+  let t = S.diagnostic_followup timeout_diag in
+  let d = S.diagnostic_followup died_diag in
+  Alcotest.(check bool) "version failure mentions upgrade" true
+    (string_mem "upgrade codex" v);
+  Alcotest.(check bool) "timeout does NOT say upgrade" false
+    (string_mem "upgrade codex" t);
+  Alcotest.(check bool) "timeout mentions readiness" true
+    (string_mem "readiness timeout" t);
+  Alcotest.(check bool) "died does NOT say upgrade" false
+    (string_mem "upgrade codex" d);
+  Alcotest.(check bool) "died mentions process exit" true
+    (string_mem "exited before it was" d);
+  Alcotest.(check bool) "timeout still falls back to hooks" true
+    (string_mem "hook-backed" t)
+
 let test_force_hooks_env_uses_fallback () =
   (* The hidden C2C_CODEX_FORCE_HOOKS=1 escape (operator testing only) skips the
      app-server path entirely and runs the hook fallback; --yolo still forwards
@@ -679,5 +717,7 @@ let () =
         ; test_case "new codex (default, no flag) engages app-server"
             `Quick test_glue_new_mode_default_engages_app_server
         ; test_case "unsupported codex auto-falls-back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish
-        ; test_case "force-hooks env uses fallback" `Quick test_force_hooks_env_uses_fallback ] )
+        ; test_case "force-hooks env uses fallback" `Quick test_force_hooks_env_uses_fallback
+        ; test_case "diagnostic followup upgrade only for version issues (B175)"
+            `Quick test_diagnostic_followup_upgrade_only_when_version_issue ] )
     ]

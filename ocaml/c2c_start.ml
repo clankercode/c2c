@@ -3281,13 +3281,17 @@ let prepare_launch_args ~(name : string) ~(client : string)
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id ~alias_from_auto_gen ()
         @ agent_args
     | "codex" ->
-        (* Normalise the two resume signals into the single resume_session_id understood
-           by CodexAdapter: non-empty = specific session; "" = resume --last; None = fresh. *)
+        (* B175: only an explicit codex_resume_target selects a Codex thread.
+           The c2c-side resume_session_id is broker/session identity, NOT a
+           Codex thread id — mapping "Some resume_session_id" onto
+           `codex resume --last` attached hook-fallback launches (including
+           app-server startup failures) to unrelated prior work. Exact target
+           resumes; otherwise start a fresh Codex session. *)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "codex") : CLIENT_ADAPTER) in
         let eff_resume =
           match codex_resume_target with
           | Some sid when String.trim sid <> "" -> Some sid
-          | _ -> (match resume_session_id with Some _ -> Some "" | None -> None)
+          | _ -> None
         in
         (* Codex v0.142.x starts the interactive TUI with a positional
            [PROMPT] submitted as the first user turn (`codex [OPTIONS]
@@ -3625,8 +3629,10 @@ module CodexAdapter : CLIENT_ADAPTER = struct
 
   let build_start_args ~name:_ ?alias_override:_ ?model_override ?resume_session_id
       ?(extra_args = []) ?alias_from_auto_gen:_ () =
-    (* Note: resume_session_id="" signals "resume --last" (generic resume);
-       resume_session_id=<non-empty> is a specific codex session id. *)
+    (* resume_session_id=<non-empty> is an exact Codex thread id.
+       resume_session_id="" remains the explicit `resume --last` escape (not
+       used by prepare_launch_args after B175 — bare c2c session ids must not
+       imply --last). None = fresh session. *)
     ignore extra_args;
     let base =
       match resume_session_id with

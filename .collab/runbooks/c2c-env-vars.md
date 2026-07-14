@@ -180,6 +180,17 @@ entirely and fall back to the hook delivery path
 intended for operator testing of the hook fallback. Any other value (or unset)
 leaves app-server as the default.
 
+### `C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S`
+
+Positive finite float (seconds) for how long the managed launcher waits for
+`codex app-server` to accept an authenticated WebSocket handshake before
+classifying the failure as a readiness timeout (B175). Default is **90**
+(`C2c_codex_app_server.default_readiness_timeout_s`). Non-positive / non-numeric
+values fall back to the default. Timeout is distinct from process exit
+(`server_died_before_ready`): a still-running but slow server reports
+`readiness_timeout` and the operator message points at this env var plus the
+app-server log path. Does not change the automatic hook-backed fallback.
+
 ### `C2C_CODEX_MANAGED`
 
 Set to `1` by every managed Codex launch (`C2c_codex_session.run`, `ocaml/c2c_codex_session.ml`) **before** any codex child (app-server frontend/server, or the hook-fallback child) is spawned, so all of them — and the hooks they fire — inherit it. It is the load-bearing "this codex session is managed" marker for the B136 nudge: a managed app-server session otherwise resolves in the hook as vanilla (it persists `codex-session.json` rather than the legacy instance `config.json`, registers under the managed instance name not the payload thread id, and sets no `C2C_MCP_SESSION_ID`), so this env is what reliably suppresses the nudge for real `c2c new codex` sessions. Non-secret; read only by the nudge gate.
