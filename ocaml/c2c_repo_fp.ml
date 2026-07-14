@@ -218,26 +218,25 @@ let list_all_broker_roots () =
       if existing = "" then Hashtbl.add fp_to_paths fp path
     end
   in
+  let scan_repos_dir repos_dir =
+    try
+      Array.iter
+        (fun fp -> consider_path fp (repos_dir // fp // "broker"))
+        (Sys.readdir repos_dir)
+    with Sys_error _ -> ()
+  in
+  (* $C2C_STATE_HOME/c2c/repos/<fp>/broker — explicit relocation (first win) *)
+  (match c2c_state_home () with
+   | Some s -> scan_repos_dir (s // "c2c" // "repos")
+   | None -> ());
   (* ~/.c2c/repos/<fp>/broker — canonical default *)
   (match Sys.getenv_opt "HOME" with
    | Some h when String.trim h <> "" ->
-       let repos_dir = String.trim h // ".c2c" // "repos" in
-       (try
-          Array.iter (fun fp ->
-            consider_path fp (repos_dir // fp // "broker")
-          ) (Sys.readdir repos_dir)
-        with Sys_error _ -> ())
+       scan_repos_dir (String.trim h // ".c2c" // "repos")
    | _ -> ());
-  (* $XDG_STATE_HOME/c2c/repos/<fp>/broker — XDG overrides, scanned second *)
+  (* $XDG_STATE_HOME/c2c/repos/<fp>/broker — XDG overrides / last resort *)
   let xdg = xdg_state_home () in
-  if xdg <> "" then begin
-    let repos_dir = xdg // "c2c" // "repos" in
-    (try
-       Array.iter (fun fp ->
-         consider_path fp (repos_dir // fp // "broker")
-       ) (Sys.readdir repos_dir)
-     with Sys_error _ -> ())
-  end;
+  if xdg <> "" then scan_repos_dir (xdg // "c2c" // "repos");
   (* Collect into sorted (fp, path) list *)
   let results = ref [] in
   Hashtbl.iter (fun fp path -> results := (fp, path) :: !results) fp_to_paths;

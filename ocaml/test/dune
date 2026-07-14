@@ -421,6 +421,11 @@
 ; #9 split-brain fix: broker-root resolution order (XDG_STATE_HOME dropped,
 ; C2C_STATE_HOME escape hatch) + orphaned XDG-profile broker detection.
 (test
+ (name test_b188_sticky_fingerprint)
+ (modules test_b188_sticky_fingerprint)
+ (libraries c2c_mcp alcotest unix))
+
+(test
  (name test_broker_root_resolution)
  (modules test_broker_root_resolution)
  (libraries c2c_mcp alcotest unix))

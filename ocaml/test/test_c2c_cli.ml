@@ -700,6 +700,68 @@ let test_send_auto_register_failure_falls_back_to_raw_session_id () =
           let msg = List.hd drained in
           check string "fallback preserves old sender label" sender_sid msg.from_alias))
 
+(* B188: path-fingerprint → remote.origin.url fingerprint switch must not
+   mint a second alias for the same session_id on CLI send auto-register. *)
+let test_send_auto_register_reuses_sticky_across_fingerprint () =
+  with_temp_dir (fun home ->
+      let ( // ) = Filename.concat in
+      let old_fp = "4cd37eaee8ca" in
+      let new_fp = "f61c9ead06dc" in
+      let old_root = home // ".c2c" // "repos" // old_fp // "broker" in
+      let new_root = home // ".c2c" // "repos" // new_fp // "broker" in
+      C2c_mcp.mkdir_p old_root;
+      C2c_mcp.mkdir_p new_root;
+      let sid = "fa3c5d7d-b987-41e6-ad0f-6b7bf9ffdb43" in
+      let sticky = "claude-wagon-chapel-l9nq" in
+      let old_b = C2c_mcp.Broker.create ~root:old_root in
+      C2c_mcp.Broker.register old_b ~session_id:sid ~alias:sticky
+        ~pid:(Some 77206) ~pid_start_time:None ~client_type:(Some "claude")
+        ~from_auto_gen:true ();
+      (* Ensure registry.json exists so list_all_broker_roots discovers old_fp. *)
+      ignore (C2c_mcp.Broker.list_registrations old_b);
+      let new_b = C2c_mcp.Broker.create ~root:new_root in
+      C2c_mcp.Broker.register new_b
+        ~session_id:"b188-recipient-sid" ~alias:"b188-recipient" ~pid:None
+        ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-b188" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "env -u C2C_MCP_AUTO_REGISTER_ALIAS HOME=%s XDG_STATE_HOME=%s \
+               C2C_STATE_HOME= C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s \
+               C2C_MCP_SESSION_ID=%s C2C_MCP_CLIENT_TYPE=claude %s send \
+               b188-recipient 'b188 sticky reuse' > %s 2>&1"
+              (Filename.quote home)
+              (Filename.quote (home // "xdg-empty"))
+              (Filename.quote new_root)
+              (Filename.quote sid)
+              (Filename.quote c2c_binary)
+              (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int (Printf.sprintf "send exits 0 (output: %s)" content) 0 rc;
+          check bool "notice mentions auto-registration" true
+            (string_contains content "auto-registered as ");
+          check bool "notice mentions sticky reuse" true
+            (string_contains content "reused sticky alias");
+          check bool "notice includes prior alias" true
+            (string_contains content sticky);
+          let regs = C2c_mcp.Broker.list_registrations new_b in
+          let sender =
+            List.find_opt
+              (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+              regs
+          in
+          match sender with
+          | None -> fail "expected sender auto-registration on new fingerprint"
+          | Some reg ->
+              check string "reused sticky alias not new random" sticky reg.alias;
+              check bool "ok line uses sticky alias" true
+                (string_contains content
+                   (Printf.sprintf "ok -> b188-recipient (from %s)" sticky))))
+
 (* B052: cross-broker send fallback — alias registered only in sibling
    broker is found and the message is routed there. *)
 let test_send_cross_broker_fallback () =
@@ -4318,6 +4380,7 @@ let () =
         ; ( "send unknown alias routes to relay outbox", `Quick, test_send_unknown_alias_routes_to_relay_outbox )
         ; ( "send auto-registers unregistered sender (B078)", `Quick, test_send_auto_registers_unregistered_session )
         ; ( "send falls back when auto-registration fails (B078)", `Quick, test_send_auto_register_failure_falls_back_to_raw_session_id )
+        ; ( "send auto-register reuses sticky across fingerprint (B188)", `Quick, test_send_auto_register_reuses_sticky_across_fingerprint )
         ; ( "send cross-broker fallback routes to sibling broker", `Quick, test_send_cross_broker_fallback )
         ; ( "send not-found error mentions scanned brokers", `Quick, test_send_not_found_error_mentions_scanned_brokers )
         ; ( "send to dead alias queues offline (B072/B127)", `Quick, test_send_dead_alias_queues_offline )

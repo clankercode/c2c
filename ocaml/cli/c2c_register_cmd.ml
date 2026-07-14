@@ -25,26 +25,10 @@ let register_cmd =
   and+ no_metadata = no_metadata
   and+ cross_repo = cross_repo_flag
   and+ broker_root_opt = broker_root_opt in
-  let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()) in
-  let alias, alias_from_auto_gen =
-    match alias_opt with
-    | Some a -> (a, false)
-    | None -> (
-        match env_auto_alias () with
-        | Some a ->
-            let from_auto_gen =
-              match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" with
-              | Some v -> String.trim v = "1"
-              | None -> false
-            in
-            (a, from_auto_gen)
-        | None ->
-            Printf.eprintf
-              "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n\
-               hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
-               Pass --alias ALIAS to register explicitly.\n%!";
-            exit 1)
+  let broker_root =
+    resolve_effective_broker_root ~explicit_root:broker_root_opt ~cross_repo ()
   in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
   let session_id =
     match session_id_opt with
     | Some s -> s
@@ -57,6 +41,39 @@ let register_cmd =
                hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
                Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
+  in
+  (* B188: when no explicit --alias, prefer sticky alias for this session_id
+     on another broker fingerprint over minting / env alias drift. *)
+  let prior_hit =
+    match alias_opt with
+    | Some _ -> None
+    | None ->
+        C2c_mcp.find_prior_session_across_brokers ~session_id
+          ~exclude_root:broker_root ()
+  in
+  let alias, alias_from_auto_gen =
+    match alias_opt with
+    | Some a -> (a, false)
+    | None -> (
+        match prior_hit with
+        | Some hit -> (hit.registration.alias, true)
+        | None -> (
+            match env_auto_alias () with
+            | Some a ->
+                let from_auto_gen =
+                  match
+                    Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"
+                  with
+                  | Some v -> String.trim v = "1"
+                  | None -> false
+                in
+                (a, from_auto_gen)
+            | None ->
+                Printf.eprintf
+                  "error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set.\n\
+                   hint: Are you running this from inside the coding agent? Have you run `c2c install <client>` for your client?\n\
+                   Pass --alias ALIAS to register explicitly.\n%!";
+                exit 1))
   in
   (* B135: alias is sticky per session_id — refuse rename via --alias OR
      C2C_MCP_AUTO_REGISTER_ALIAS when it differs from the live registration.
@@ -76,6 +93,12 @@ let register_cmd =
         else
           Printf.eprintf "error: %s\n%!" msg);
        exit 1
+   | None -> ());
+  (match prior_hit with
+   | Some hit ->
+       ignore
+         (C2c_mcp.migrate_alias_ed25519_keys ~from_root:hit.broker_root
+            ~to_root:broker_root ~alias)
    | None -> ());
   (* B071: C2C_MCP_CLIENT_PID env (managed launchers set it to the durable
      outer-loop pid) → stable agent-ancestor pid from /proc → None (unknown
