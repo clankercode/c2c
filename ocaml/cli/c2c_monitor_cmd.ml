@@ -736,53 +736,54 @@ let monitor_cmd =
             let url = Option.get relay_url_resolved in
             let client = Relay.Relay_client.make ?token:relay_token_resolved url in
             (* Sign against the EXACT body bytes peek_inbox_signed will send, so
-               the relay's signature verification matches (mirrors B096 `dm peek`). *)
+               the relay's signature verification matches (mirrors B096 `dm peek`).
+               B185: mint a FRESH Authorization header on EVERY peek — a once-
+               signed header reuses ts+nonce, so the second peek hits
+               nonce_replay and after ~request_ts_past_window (30s) of backoff
+               escalates to timestamp_out_of_window TERMINAL disable. *)
             let body_str = Yojson.Safe.to_string (`Assoc [
               ("node_id", `String node_id);
               ("session_id", `String session_id)]) in
-            let auth_header_opt =
-              match identity with
-              | Some id ->
-                  Some (Relay_signed_ops.sign_request id ~alias:alias_str
-                          ~meth:"POST" ~path:"/peek_inbox" ~body_str ())
-              | None -> None
-            in
             let peek_once () =
               (* Non-draining: peek_inbox* return the FULL relay response
                  (`{ ok, messages }` or `{ ok:false, error_code, error }`)
                  WITHOUT clearing the relay inbox. The response is classified by
                  the caller — errors are surfaced (not swallowed), and a terminal
                  auth/identity failure applies the local-watch terminal policy
-                 (H3/B142). *)
-              match auth_header_opt with
-              | Some auth ->
+                 (H3/B142/B185). *)
+              match identity with
+              | Some id ->
+                  let auth =
+                    Relay_signed_ops.sign_request id ~alias:alias_str
+                      ~meth:"POST" ~path:"/peek_inbox" ~body_str ()
+                  in
                   Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
                                   ~node_id ~session_id ~auth_header:auth)
               | None ->
                   Lwt_main.run (Relay.Relay_client.peek_inbox client
                                   ~node_id ~session_id)
             in
-            (* H3 error honesty: distinguish transient (retry, may recover) from
-               terminal (auth/identity — will not self-heal) relay failures.
-               [err_streak] drives exponential backoff and reconnect reporting so
-               a flapping relay does not hammer the endpoint and a recovery is
-               announced. A terminal failure is reported clearly and then either
-               exits a pure-relay monitor non-zero for its supervisor, or disables
-               only relay watching while local receive continues. *)
+            (* H3/B185 error honesty: distinguish transient (retry, may recover),
+               soft-terminal (budgeted retry with fresh sign), and hard-terminal
+               (true config/auth break — disable/exit). [err_streak] drives
+               exponential backoff and reconnect reporting. Soft terminal never
+               permanently disables without a recovery budget (B185). *)
             let err_streak = ref 0 in
-            (* B142: log the terminal message ONCE (a terminal error repeats
-               every peek cycle; without this guard the relay loop would spam
-               stderr each interval). *)
+            let soft_budget = ref C2c_monitor_logic.empty_soft_budget in
+            (* B142: log the permanent-disable message ONCE. *)
             let terminal_logged = ref false in
-            let handle_terminal detail =
+            let handle_disable ~code detail remediation =
               if not !terminal_logged then begin
                 terminal_logged := true;
                 Printf.eprintf
                   "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
-                   %s relay watch: this will not self-heal (auth / identity / \
-                   config). Re-register (c2c relay register) or fix the key/clock, \
-                   then restart the monitor.\n%!"
-                  (now_hms ()) node_id session_id detail (now_hms ())
+                   %s relay watch: recovery budget exhausted (or hard auth/config \
+                   break — code=%s). Relay watch will not self-heal without \
+                   operator action.\n\
+                   %s relay watch: remediation: %s\n%!"
+                  (now_hms ()) node_id session_id detail
+                  (now_hms ()) code
+                  (now_hms ()) remediation
               end;
               if C2c_monitor_logic.should_exit_on_relay_terminal ~local_watch_active
               then
@@ -806,8 +807,9 @@ let monitor_cmd =
               if Atomic.get relay_stop || Unix.getppid () = 1 then ()
               else begin
                 let now = Unix.gettimeofday () in
-                (* Backoff: after consecutive transient errors wait longer before
-                   the next peek, capped at 60s. Zero streak == normal interval. *)
+                (* Backoff: after consecutive transient/soft errors wait longer
+                   before the next peek, capped at 60s. Zero streak == normal
+                   interval. *)
                 let effective_interval =
                   if !err_streak = 0 then relay_interval
                   else Float.min 60.0 (relay_interval *. float_of_int (!err_streak + 1))
@@ -822,19 +824,43 @@ let monitor_cmd =
                        if !err_streak > 0 then begin
                          Printf.eprintf
                            "%s relay watch: reconnected (recovered after %d \
-                            transient error%s)\n%!"
+                            error%s)\n%!"
                            (now_hms ()) !err_streak
                            (if !err_streak = 1 then "" else "s");
                          err_streak := 0
                        end;
+                       soft_budget := C2c_monitor_logic.empty_soft_budget;
                        ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
                    | C2c_monitor_logic.Peek_transient detail ->
+                       (* Transient (incl. nonce_replay) never permanently
+                          disables; reset soft budget so a later soft code
+                          starts a fresh recovery window. *)
+                       soft_budget := C2c_monitor_logic.empty_soft_budget;
                        incr err_streak;
                        Printf.eprintf
                          "%s relay watch: transient error peeking %s/%s: %s \
                           (attempt %d; backing off, will retry)\n%!"
                          (now_hms ()) node_id session_id detail !err_streak
-                   | C2c_monitor_logic.Peek_terminal detail -> handle_terminal detail);
+                   | C2c_monitor_logic.Peek_terminal { code; detail } ->
+                       let action, budget' =
+                         C2c_monitor_logic.decide_on_terminal
+                           ~now ~code ~budget:!soft_budget ()
+                       in
+                       soft_budget := budget';
+                       (match action with
+                        | C2c_monitor_logic.Retry_soft
+                            { consecutive; threshold; remediation_hint } ->
+                            incr err_streak;
+                            Printf.eprintf
+                              "%s relay watch: recoverable error peeking %s/%s: \
+                               %s (soft %d/%d; backing off, will retry — not \
+                               disabling yet)\n\
+                               %s relay watch: hint: %s\n%!"
+                              (now_hms ()) node_id session_id detail
+                              consecutive threshold
+                              (now_hms ()) remediation_hint
+                        | C2c_monitor_logic.Disable { remediation; severity = _ } ->
+                            handle_disable ~code detail remediation));
                   relay_loop now
                 end else begin
                   (* Short sleep so the stop flag / parent-death is noticed
@@ -1307,17 +1333,19 @@ let monitor =
                   With no connector it falls back to $(b,cli-<alias>) (matching \
                   $(b,c2c relay register --alias)). Explicit $(b,--relay-node-id) / \
                   $(b,--relay-session-id) always override the resolved default."
-            ; `P "Error honesty (H3): a relay error is never silently swallowed. An \
+            ; `P "Error honesty (H3/B185): a relay error is never silently swallowed. An \
                   $(b,ok:false) response is surfaced on stderr. A TRANSIENT error \
-                  (network blip, timeout, rate-limit) is retried with backoff and a \
-                  $(b,reconnected) line is emitted on recovery. A TERMINAL error \
-                  (auth / identity / signature / bad-request — will not self-heal) prints \
-                  a clear message ONCE and DISABLES the relay watcher — the \
-                  main-thread local inbox watch KEEPS RUNNING (B142), so a \
-                  relay-side problem never tears down local receive. The monitor \
-                  exits with a non-zero code on a terminal relay failure ONLY when \
-                  relay-watch is the sole reason it started (no local watch active), \
-                  so a supervisor still notices a dead pure-relay monitor."
+                  (network blip, timeout, rate-limit, $(b,nonce_replay)) is retried with \
+                  backoff and a $(b,reconnected) line is emitted on recovery. Soft-terminal \
+                  codes ($(b,timestamp_out_of_window), $(b,signature_invalid)) get a \
+                  recovery budget (bounded retries + backoff; each peek is re-signed) \
+                  before the watcher is disabled. Hard-terminal errors (missing binding, \
+                  unknown node, bad-request — true config/auth breaks) disable immediately \
+                  with structured remediation. On permanent disable the main-thread local \
+                  inbox watch KEEPS RUNNING (B142). The monitor exits non-zero on terminal \
+                  relay failure ONLY when relay-watch is the sole reason it started (no \
+                  local watch active), so a supervisor still notices a dead pure-relay \
+                  monitor."
             ; `S "EXIT STATUS"
             ; `P "0  clean exit (parent gone / stop; also after a terminal relay \
                   failure when a local inbox watch is active — the local watch keeps \

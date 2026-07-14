@@ -349,15 +349,15 @@ let decide_relay_watch
 type relay_peek_outcome =
   | Peek_ok of Yojson.Safe.t list  (* ok:true / legacy: pending messages *)
   | Peek_transient of string       (* retry, may recover (network/5xx/rate-limit) *)
-  | Peek_terminal of string        (* auth/identity — terminal policy applies *)
+  | Peek_terminal of { code : string; detail : string }
+    (* auth/identity — terminal policy applies; [code] drives soft vs hard severity *)
 
-(* Error codes that mean the peek can NEVER succeed by retrying with the same
-   identity/key: the operator must re-register, fix the clock, fix the key, or
-   fix the request. The monitor applies its terminal policy to these errors:
-   pure-relay monitoring exits non-zero, while a local watch disables only its
-   relay loop. Anything not listed defaults to transient — better to keep
-   retrying an unrecognized/blip error than to kill a monitor on a code we did
-   not anticipate. *)
+(* Error codes that are NOT plain network blips: the monitor's terminal policy
+   applies (hard disable or soft recovery budget — see [terminal_severity_of_code]).
+   True retryables (nonce_replay, connection_error, 5xx, rate_limit, unknown)
+   stay off this list so they never permanently disable the relay watch.
+   Anything not listed defaults to transient — better to keep retrying an
+   unrecognized/blip error than to kill a monitor on a code we did not anticipate. *)
 let is_terminal_error_code = function
   | "unauthorized"
   | "signature_invalid"
@@ -388,7 +388,8 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
              | c, "" -> c
              | c, m -> Printf.sprintf "%s: %s" c m
            in
-           if is_terminal_error_code code then Peek_terminal detail
+           if is_terminal_error_code code then
+             Peek_terminal { code; detail }
            else Peek_transient detail
        | Some true | None ->
            (* ok:true, or a legacy relay with no `ok` field — messages are
@@ -400,6 +401,102 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
    usage/startup exit 1 so a supervisor can tell an auth/identity relay failure
    apart from a bad-invocation or broker-root error (A038/B182/B196). *)
 let exit_relay_terminal = 3
+
+(* ---------- B185: soft vs hard terminal + recovery budget ---------- *)
+
+(* Hard terminal = true config/auth breakage (missing binding, unknown node,
+   malformed request) — will not self-heal by retrying the same setup.
+   Soft terminal = can be a transient client/relay glitch (stale signed request
+   after backoff, brief clock blip, intermittent verify failure). Soft codes
+   get a recovery budget before the monitor permanently disables relay watch
+   (B185: two nonce_replays escalating into timestamp_out_of_window used to
+   TERMINAL-disable forever with "will not self-heal" even when the host clock
+   was fine). nonce_replay itself is *not* terminal — it is Peek_transient. *)
+type terminal_severity =
+  | Soft_terminal
+  | Hard_terminal
+
+let terminal_severity_of_code = function
+  | "timestamp_out_of_window"
+  | "signature_invalid" -> Soft_terminal
+  | _ -> Hard_terminal
+
+(* Consecutive soft-terminal peeks required before permanent disable. With a
+   5s peek interval + backoff this is ~tens of seconds of sustained failure —
+   long enough for a fresh-sign retry or brief skew to clear, short enough that
+   a real broken identity still fails closed. *)
+let default_soft_terminal_threshold = 6
+
+(* Also require the soft streak to span at least this many wall-clock seconds
+   before disable, so a fast burst of retries cannot burn the budget instantly. *)
+let default_soft_terminal_min_span_s = 30.0
+
+type soft_terminal_budget = {
+  consecutive : int;
+  first_at : float option;
+}
+
+let empty_soft_budget = { consecutive = 0; first_at = None }
+
+let remediation_for_code = function
+  | "timestamp_out_of_window" ->
+      "Clock skew or a stale signed request. The monitor re-signs each peek; \
+       if this persists, check host NTP vs the relay HTTP Date header, then \
+       restart the monitor (c2c relay register if the lease looks dead)."
+  | "signature_invalid" ->
+      "Request signature does not verify. Re-run `c2c relay register --alias \
+       <alias>` with this session's identity key, then restart the monitor."
+  | "unauthorized" | "not_registered" ->
+      "No valid relay identity binding for this alias. Run `c2c relay register \
+       --alias <alias>` (or fix the key), then restart the monitor."
+  | "unknown_node" | "not_found" ->
+      "Relay does not know this node/session. Re-register (`c2c relay register`) \
+       and confirm the peek key (connector-managed vs cli-<alias>)."
+  | "missing_proof_field" | "bad_request" ->
+      "Malformed signed request or client/relay protocol skew. Upgrade c2c and \
+       the relay if needed, then restart the monitor."
+  | _ ->
+      "Re-register (`c2c relay register`) or fix the key/clock, then restart \
+       the monitor."
+
+type terminal_action =
+  | Retry_soft of {
+      consecutive : int;
+      threshold : int;
+      remediation_hint : string;
+    }
+  | Disable of {
+      severity : terminal_severity;
+      remediation : string;
+    }
+
+(* B185 pure policy: hard terminal → disable immediately; soft terminal →
+   retry until [threshold] consecutive failures spanning at least [min_span_s]
+   wall-clock seconds, then disable with structured remediation. [budget] is
+   the caller's soft-streak state (reset on Peek_ok / Peek_transient). *)
+let decide_on_terminal
+    ?(threshold = default_soft_terminal_threshold)
+    ?(min_span_s = default_soft_terminal_min_span_s)
+    ~now
+    ~code
+    ~budget
+    () : terminal_action * soft_terminal_budget =
+  let severity = terminal_severity_of_code code in
+  let remediation = remediation_for_code code in
+  match severity with
+  | Hard_terminal ->
+      (Disable { severity; remediation }, empty_soft_budget)
+  | Soft_terminal ->
+      let first = match budget.first_at with Some t -> t | None -> now in
+      let consecutive = budget.consecutive + 1 in
+      let budget' = { consecutive; first_at = Some first } in
+      let elapsed = now -. first in
+      if consecutive >= threshold && elapsed >= min_span_s then
+        (Disable { severity; remediation }, empty_soft_budget)
+      else
+        ( Retry_soft
+            { consecutive; threshold; remediation_hint = remediation }
+        , budget' )
 
 (* B142: on a relay-peek TERMINAL failure, decide whether to tear the WHOLE
    monitor process down. The relay-peek watcher runs in a background thread; a
