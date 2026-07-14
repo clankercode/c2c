@@ -583,20 +583,41 @@ let hook_codex_cmd =
                   let managed_sid = managed_sid_for_payload in
                   let sid = Option.value managed_sid ~default:payload_sid in
                   let is_managed = Option.is_some managed_sid in
-                  let alias, from_auto_gen =
-                    if is_managed then
-                      match C2c_cli_helpers.env_auto_alias () with
-                      | Some a ->
-                          ( a
-                          , Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"
-                            |> Option.map String.trim = Some "1" )
-                      | None ->
-                          (match C2c_codex_hooks.installer_alias_hint ~config_path with
-                           | Some a -> (a, true)
-                           | None -> (C2c_setup.default_alias_for_client "codex", true))
-                    else
-                      (C2c_setup.default_alias_for_client "codex", true)
+                  (* B188: prefer sticky alias for this session_id from another
+                     broker fingerprint before minting / env alias. Managed
+                     sessions with an explicit install/env alias still fall
+                     through mint when no prior sticky hit exists. *)
+                  let alias, from_auto_gen, prior_hit =
+                    C2c_mcp.resolve_auto_register_alias ~session_id:sid
+                      ~broker_root
+                      ~mint:(fun () ->
+                        if is_managed then
+                          match C2c_cli_helpers.env_auto_alias () with
+                          | Some a ->
+                              ( a
+                              , Sys.getenv_opt
+                                  "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN"
+                                |> Option.map String.trim = Some "1" )
+                          | None ->
+                              (match
+                                 C2c_codex_hooks.installer_alias_hint
+                                   ~config_path
+                               with
+                               | Some a -> (a, true)
+                               | None ->
+                                   ( C2c_setup.default_alias_for_client "codex"
+                                   , true ))
+                        else
+                          (C2c_setup.default_alias_for_client "codex", true))
+                      ()
                   in
+                  (match prior_hit with
+                   | Some hit ->
+                       ignore
+                         (C2c_mcp.migrate_alias_ed25519_keys
+                            ~from_root:hit.broker_root ~to_root:broker_root
+                            ~alias)
+                   | None -> ());
                   let pid =
                     if is_managed then
                       C2c_cli_helpers.resolve_registration_pid ~session_id:sid ()
@@ -966,7 +987,21 @@ let hook_claude_cmd =
                      The payload UUID is stable for the conversation, so the
                      registration persists and every later fire resolves via
                      step 2 (no re-register loop). *)
-                  let alias = C2c_setup.default_alias_for_client "claude" in
+                  (* B188: reuse sticky alias across broker fingerprints. *)
+                  let alias, from_auto_gen, prior_hit =
+                    C2c_mcp.resolve_auto_register_alias ~session_id:sid
+                      ~broker_root
+                      ~mint:(fun () ->
+                        (C2c_setup.default_alias_for_client "claude", true))
+                      ()
+                  in
+                  (match prior_hit with
+                   | Some hit ->
+                       ignore
+                         (C2c_mcp.migrate_alias_ed25519_keys
+                            ~from_root:hit.broker_root ~to_root:broker_root
+                            ~alias)
+                   | None -> ());
                   (try
                      C2c_mcp.Broker.register broker ~session_id:sid ~alias
                        ~pid:None
@@ -974,7 +1009,7 @@ let hook_claude_cmd =
                        ~client_type:(Some "claude")
                        ~cwd:(payload_string_field payload "cwd")
                        ~registered_by:(Some "claude-hook")
-                       ~from_auto_gen:true ()
+                       ~from_auto_gen ()
                    with e ->
                      (try
                         prerr_endline
@@ -1206,8 +1241,22 @@ let hook_grok_cmd =
                      for Grok auto-register — that file is clobbered by any
                      client's `c2c init` and was minting codex-/claude- aliases
                      for client_type=grok. Parity with vanilla codex/claude
-                     hooks: always generate a client-prefixed alias. *)
-                  let alias = C2c_setup.default_alias_for_client "grok" in
+                     hooks: mint a client-prefixed alias when no prior sticky
+                     exists. B188: reuse sticky alias across fingerprints. *)
+                  let alias, from_auto_gen, prior_hit =
+                    C2c_mcp.resolve_auto_register_alias ~session_id:sid
+                      ~broker_root
+                      ~mint:(fun () ->
+                        (C2c_setup.default_alias_for_client "grok", true))
+                      ()
+                  in
+                  (match prior_hit with
+                   | Some hit ->
+                       ignore
+                         (C2c_mcp.migrate_alias_ed25519_keys
+                            ~from_root:hit.broker_root ~to_root:broker_root
+                            ~alias)
+                   | None -> ());
                   (try
                      C2c_mcp.Broker.register broker ~session_id:sid ~alias
                        ~pid:None
@@ -1218,7 +1267,7 @@ let hook_grok_cmd =
                           | Some c -> Some c
                           | None -> payload_string_field payload "workspaceRoot")
                        ~registered_by:(Some "grok-hook")
-                       ~from_auto_gen:true ()
+                       ~from_auto_gen ()
                    with e ->
                      (try
                         prerr_endline
@@ -1349,7 +1398,19 @@ let hook_agy_cmd =
          let regs = C2c_mcp.Broker.list_registrations broker in
          let registered = List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs in
          if not registered then begin
-           let alias = C2c_setup.default_alias_for_client "agy" in
+           (* B188: reuse sticky alias across broker fingerprints. *)
+           let alias, from_auto_gen, prior_hit =
+             C2c_mcp.resolve_auto_register_alias ~session_id:sid ~broker_root
+               ~mint:(fun () ->
+                 (C2c_setup.default_alias_for_client "agy", true))
+               ()
+           in
+           (match prior_hit with
+            | Some hit ->
+                ignore
+                  (C2c_mcp.migrate_alias_ed25519_keys
+                     ~from_root:hit.broker_root ~to_root:broker_root ~alias)
+            | None -> ());
            (try
               C2c_mcp.Broker.register broker ~session_id:sid ~alias
                 ~pid:None
@@ -1360,7 +1421,7 @@ let hook_agy_cmd =
                    | Some c -> Some c
                    | None -> payload_string_field payload "workspaceRoot")
                 ~registered_by:(Some "agy-hook")
-                ~from_auto_gen:true ()
+                ~from_auto_gen ()
             with _ -> ());
            (match C2c_cli_helpers.read_session_statefile ~broker_root with
             | Some existing

@@ -890,6 +890,50 @@ val pop_channel_test_code : unit -> string option
 (** [pop_channel_test_code ()] returns and clears the pending channel-test code,
     if one was generated during registration. Returns [None] if no test is pending. *)
 
+(** {1 B188: sticky alias across broker fingerprints}
+
+    When [remote.origin.url] appears (or changes), the broker root fingerprint
+    switches. Auto-register surfaces consult other known
+    [~/.c2c/repos/*/broker] registries before minting a new alias so the same
+    [session_id] keeps one identity. *)
+
+type prior_session_hit =
+  { broker_root : string
+  ; fingerprint : string
+  ; registration : registration
+  }
+
+val find_prior_session_across_brokers :
+  session_id:string ->
+  ?exclude_root:string ->
+  ?exclude_roots:string list ->
+  unit ->
+  prior_session_hit option
+(** Best prior registration for [session_id] on any known broker root other
+    than [exclude_root] / [exclude_roots]. Prefers alive+pid, then alive,
+    then newest [registered_at]. *)
+
+val migrate_alias_ed25519_keys :
+  from_root:string -> to_root:string -> alias:string -> int
+(** Copy missing alias-keyed Ed25519 material from [from_root] into
+    [to_root]. Never overwrites; returns count of files copied. *)
+
+val resolve_auto_register_alias :
+  session_id:string ->
+  broker_root:string ->
+  mint:(unit -> string * bool) ->
+  unit ->
+  string * bool * prior_session_hit option
+(** Resolve the alias for an auto-register of [session_id] on [broker_root].
+    Reuses a cross-broker sticky hit when available and not occupied by a live
+    foreign session; otherwise calls [mint] which returns
+    [(alias, from_auto_gen)]. *)
+
+val auto_register_impl :
+  broker_root:string -> ?session_id_override:string -> unit -> unit
+(** MCP/server auto-register implementation (also used by tests). Adopts
+    cross-broker sticky aliases (B188) and same-session hook rows (B119). *)
+
 val handle_tool_call :
   broker:Broker.t ->
   session_id_override:string option ->

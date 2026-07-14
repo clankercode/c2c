@@ -165,18 +165,39 @@ let init_cmd =
     match alias_opt with
     | Some a -> a
     | None ->
-        (* B046: check if session_id already has a registration; reuse alias *)
+        (* B046: check if session_id already has a registration; reuse alias.
+           B188: also look across other broker fingerprints under
+           ~/.c2c/repos/*/broker so path→remote.origin.url switches keep
+           the sticky alias instead of minting a second identity. *)
         let existing_alias_opt =
           try
             let regs = C2c_mcp.Broker.list_registrations broker in
             match List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = session_id) regs with
-            | Some reg -> Some reg.alias
-            | None -> None
+            | Some reg -> Some (reg.alias, None)
+            | None ->
+                (match
+                   C2c_mcp.find_prior_session_across_brokers ~session_id
+                     ~exclude_root:root ()
+                 with
+                 | Some hit -> Some (hit.registration.alias, Some hit)
+                 | None -> None)
           with _ -> None
         in
         match existing_alias_opt with
-        | Some existing_alias ->
-            Printf.eprintf "[c2c register] reusing existing alias=%s for session_id=%s\n%!" existing_alias session_id;
+        | Some (existing_alias, prior_hit) ->
+            (match prior_hit with
+             | Some hit ->
+                 ignore
+                   (C2c_mcp.migrate_alias_ed25519_keys ~from_root:hit.broker_root
+                      ~to_root:root ~alias:existing_alias);
+                 Printf.eprintf
+                   "[c2c register] reusing sticky alias=%s for session_id=%s \
+                    (from broker fingerprint %s)\n%!"
+                   existing_alias session_id hit.fingerprint
+             | None ->
+                 Printf.eprintf
+                   "[c2c register] reusing existing alias=%s for session_id=%s\n%!"
+                   existing_alias session_id);
             existing_alias
         | None ->
             let use_easy = easy_pool || require_easy in

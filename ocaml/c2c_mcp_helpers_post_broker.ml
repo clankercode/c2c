@@ -979,6 +979,179 @@ let request_session_id_override ~broker_root ~tool_name ~params =
    so this fallback only fires for plain opencode runs without that env var. *)
 let derived_session_id_from_alias alias = alias
 
+(* B188: sticky alias across broker-fingerprint changes.
+   When remote.origin.url appears (or changes), the broker root fingerprint
+   switches and a fresh empty broker would otherwise mint a new random alias
+   for the same session_id. Before minting, look up session_id under every
+   known ~/.c2c/repos/*/broker (and C2C_STATE_HOME / XDG equivalents) and
+   reuse the prior sticky alias. *)
+
+type prior_session_hit =
+  { broker_root : string
+  ; fingerprint : string
+  ; registration : registration
+  }
+
+let normalize_broker_root path =
+  let p = String.trim path in
+  if p = "" then ""
+  else
+    let abs =
+      if Filename.is_relative p then Filename.concat (Sys.getcwd ()) p else p
+    in
+    let len = String.length abs in
+    if len > 1 && abs.[len - 1] = '/' then String.sub abs 0 (len - 1) else abs
+
+let find_session_hits_across_brokers ~session_id ?(exclude_roots = []) () =
+  if session_id = "" then []
+  else
+    let excluded =
+      List.filter
+        (fun r -> r <> "")
+        (List.map normalize_broker_root exclude_roots)
+    in
+    let is_excluded root =
+      let n = normalize_broker_root root in
+      List.exists (fun e -> e = n) excluded
+    in
+    let hits = ref [] in
+    let consider ~fp ~root =
+      if not (is_excluded root) then
+        try
+          let broker = Broker.create ~root in
+          match
+            List.find_opt
+              (fun (r : registration) -> r.session_id = session_id)
+              (Broker.list_registrations broker)
+          with
+          | Some reg ->
+              hits :=
+                { broker_root = root; fingerprint = fp; registration = reg }
+                :: !hits
+          | None -> ()
+        with _ -> ()
+    in
+    (try
+       List.iter
+         (fun (fp, root) -> consider ~fp ~root)
+         (C2c_repo_fp.list_all_broker_roots ())
+     with _ -> ());
+    (* Optional extra scan dirs (tests / operators), colon-separated. *)
+    (match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
+     | Some dirs when String.trim dirs <> "" ->
+         String.split_on_char ':' (String.trim dirs)
+         |> List.iter (fun d ->
+                let d = String.trim d in
+                if d <> "" then consider ~fp:"scan" ~root:d)
+     | _ -> ());
+    !hits
+
+let prior_hit_rank (hit : prior_session_hit) =
+  let reg = hit.registration in
+  let alive = Broker.registration_is_alive reg in
+  let has_pid = Option.is_some reg.pid in
+  let ts = match reg.registered_at with Some t -> t | None -> 0. in
+  (* Higher is better: prefer alive+pid, then alive, then newest. *)
+  let tier =
+    if alive && has_pid then 3 else if alive then 2 else if has_pid then 1 else 0
+  in
+  (tier, ts)
+
+let pick_best_prior_session_hit hits =
+  match hits with
+  | [] -> None
+  | _ ->
+      Some
+        (List.fold_left
+           (fun best h ->
+             if prior_hit_rank h > prior_hit_rank best then h else best)
+           (List.hd hits) (List.tl hits))
+
+(** [Some hit] when [session_id] is already registered on another known broker
+    root (excluding [exclude_root] and any other [exclude_roots]). Used by
+    auto-register surfaces to keep sticky alias across fingerprint changes. *)
+let find_prior_session_across_brokers ~session_id ?exclude_root
+    ?(exclude_roots = []) () =
+  let exclude_roots =
+    match exclude_root with
+    | Some r when String.trim r <> "" -> r :: exclude_roots
+    | _ -> exclude_roots
+  in
+  pick_best_prior_session_hit
+    (find_session_hits_across_brokers ~session_id ~exclude_roots ())
+
+(** Copy alias-keyed Ed25519 material from [from_root] into [to_root] when the
+    destination is missing it. Does not move (old broker stays usable) and
+    never overwrites existing destination keys. X25519 keys are global by
+    alias under ~/.config/c2c/keys and need no migration. *)
+let migrate_alias_ed25519_keys ~from_root ~to_root ~alias =
+  if from_root = "" || to_root = "" || alias = "" then 0
+  else if normalize_broker_root from_root = normalize_broker_root to_root then 0
+  else
+    let src_dir = Filename.concat from_root "keys" in
+    let dst_dir = Filename.concat to_root "keys" in
+    let suffixes = [ ".ed25519"; ".ed25519.ssh"; ".ed25519.ssh.pub" ] in
+    let copied = ref 0 in
+    List.iter
+      (fun sfx ->
+        let src = Filename.concat src_dir (alias ^ sfx) in
+        let dst = Filename.concat dst_dir (alias ^ sfx) in
+        if Sys.file_exists src && not (Sys.file_exists dst) then
+          try
+            mkdir_p ~mode:0o700 dst_dir;
+            let data = C2c_io.read_file src in
+            let mode =
+              try (Unix.stat src).Unix.st_perm with _ -> 0o600
+            in
+            let oc = open_out_gen [ Open_wronly; Open_creat; Open_excl ] mode dst in
+            (try
+               output_string oc data;
+               close_out oc
+             with e ->
+               close_out_noerr oc;
+               (try Sys.remove dst with _ -> ());
+               raise e);
+            incr copied
+          with _ -> ())
+      suffixes;
+    !copied
+
+(** Resolve the alias to use when auto-registering [session_id] on [broker_root].
+    Prefers a prior sticky registration for the same session_id on another
+    broker fingerprint. Returns [(alias, from_auto_gen, prior_hit_opt)].
+    [mint] is only called when no prior sticky alias is available. *)
+let resolve_auto_register_alias ~session_id ~broker_root ~mint () =
+  match find_prior_session_across_brokers ~session_id ~exclude_root:broker_root () with
+  | Some hit ->
+      (* Refuse to reclaim an alias that is live under a different session on
+         the target broker (hijack guard). Fall back to minting in that case. *)
+      let target = Broker.alias_casefold hit.registration.alias in
+      let occupied =
+        try
+          let broker = Broker.create ~root:broker_root in
+          List.exists
+            (fun (reg : registration) ->
+              Broker.alias_casefold reg.alias = target
+              && reg.session_id <> session_id
+              && Option.is_some reg.pid
+              && Broker.registration_is_alive reg)
+            (Broker.list_registrations broker)
+        with _ -> false
+      in
+      if occupied then
+        let alias, from_auto_gen = mint () in
+        (alias, from_auto_gen, None)
+      else
+        let from_auto_gen =
+          match hit.registration.registered_by with
+          | Some _ -> true
+          | None -> true (* prior sticky was established; treat as auto for blocklist *)
+        in
+        (hit.registration.alias, from_auto_gen, Some hit)
+  | None ->
+      let alias, from_auto_gen = mint () in
+      (alias, from_auto_gen, None)
+
 let auto_register_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
   | Some value when String.trim value <> "" -> Some (String.trim value)
@@ -1064,7 +1237,7 @@ let is_subagent_context () =
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
-  | Some alias ->
+  | Some env_alias ->
   (* B042: skip auto-registration when C2C_NO_AUTO_REGISTER=1 (explicit
      operator/wrapper opt-out). See [is_subagent_context]. *)
   (if is_subagent_context ()
@@ -1076,7 +1249,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
     | _ ->
         (match current_session_id () with
          | Some sid -> sid
-         | None -> derived_session_id_from_alias alias)
+         | None -> derived_session_id_from_alias env_alias)
   in
   begin
       let broker = Broker.create ~root:broker_root in
@@ -1121,6 +1294,15 @@ let auto_register_impl ~broker_root ?session_id_override () =
         | None -> false
         | Some reg -> hook_client_type_conflict_with reg
       in
+      (* B188: when this broker has no row for session_id yet, prefer a sticky
+         alias from another fingerprint (path→remote.origin.url) over the
+         static install-time env alias, which would otherwise fork identity. *)
+      let prior_cross_broker =
+        if List.exists (fun (r : registration) -> r.session_id = session_id) existing
+        then None
+        else
+          find_prior_session_across_brokers ~session_id ~exclude_root:broker_root ()
+      in
       let alias, adopted_registered_by =
         match hook_identity_row with
         | Some reg when not hook_client_type_conflict ->
@@ -1128,7 +1310,23 @@ let auto_register_impl ~broker_root ?session_id_override () =
                cleanup still recognises its own auto-registration (also when
                the aliases already match). *)
             (reg.alias, reg.registered_by)
-        | _ -> (alias, None)
+        | _ ->
+            (match prior_cross_broker with
+             | Some hit ->
+                 ignore
+                   (migrate_alias_ed25519_keys ~from_root:hit.broker_root
+                      ~to_root:broker_root ~alias:hit.registration.alias);
+                 (* Carry registered_by when present so SessionEnd cleanup still
+                    matches; otherwise mark cross-broker sticky so
+                    from_auto_gen=true and client-prefix blocklist is skipped
+                    (the prior alias was already validated when first minted). *)
+                 let adopted_rb =
+                   match hit.registration.registered_by with
+                   | Some _ as rb -> rb
+                   | None -> Some "cross-broker-sticky"
+                 in
+                 (hit.registration.alias, adopted_rb)
+             | None -> (env_alias, None))
       in
       (* Guard 1: if an alive registration already exists for this session_id
          with a DIFFERENT alias, skip — prevents session hijack when a child
