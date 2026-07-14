@@ -22,6 +22,12 @@ set -eu
 REPO="clankercode/c2c"
 INSTALL_DIR="${HOME}/.local/bin"
 GITHUB_API="https://api.github.com/repos/${REPO}"
+# Official Linux release binaries are built on Ubuntu 22.04 (B190).
+# Hosts older than glibc 2.35 get a clear error instead of a dynamic-linker
+# "GLIBC_X.Y not found" failure after download. Ubuntu 20.04 / glibc 2.31
+# still needs a local `just install-all` build (or a future manylinux/static
+# artifact). macOS is unaffected.
+MIN_LINUX_GLIBC="2.35"
 
 # ---- helpers --------------------------------------------------------------
 
@@ -36,6 +42,49 @@ error() {
 
 need_cmd() {
   command -v "$1" >/dev/null 2>&1 || error "required command '$1' not found"
+}
+
+# version_lt A B → exit 0 if A is strictly older than B (sort -V).
+version_lt() {
+  _a="$1"
+  _b="$2"
+  _newest="$(printf '%s\n%s\n' "$_a" "$_b" | sort -Vu | tail -n 1)"
+  [ "$_newest" = "$_b" ] && [ "$_a" != "$_b" ]
+}
+
+# host_glibc_version → prints X.Y on glibc Linux, empty otherwise.
+host_glibc_version() {
+  if ! command -v ldd >/dev/null 2>&1; then
+    return 0
+  fi
+  # First line: "ldd (GNU libc) 2.35" or "ldd (Ubuntu GLIBC 2.35-0ubuntu3) 2.35"
+  # Reject musl early — official releases are glibc-linked.
+  _ldd_line="$(ldd --version 2>&1 | head -n 1 || true)"
+  case "$_ldd_line" in
+    *musl*|*Musl*|*MUSL*)
+      printf 'musl'
+      return 0
+      ;;
+  esac
+  printf '%s' "$_ldd_line" | sed -n 's/.* \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p'
+}
+
+# Fail fast on Linux hosts that cannot run the official release binary.
+check_linux_glibc_floor() {
+  case "$(uname -s)" in
+    Linux*) ;;
+    *) return 0 ;;
+  esac
+  _glibc="$(host_glibc_version)"
+  if [ "$_glibc" = "musl" ]; then
+    error "official Linux releases are glibc-linked and do not run on musl (e.g. Alpine). Build from source on this host ('just install-all' in a checkout) or use a glibc-based distro (Ubuntu 22.04+, Debian 12+, RHEL 9+)."
+  fi
+  if [ -n "$_glibc" ] && version_lt "$_glibc" "$MIN_LINUX_GLIBC"; then
+    error "host glibc ${_glibc} is older than the minimum supported by official Linux releases (glibc ≥ ${MIN_LINUX_GLIBC} / Ubuntu 22.04+). Build c2c from source on this host ('just install-all' in a checkout), or upgrade the OS. Ubuntu 20.04 (glibc 2.31) is below this floor until a manylinux/static artifact ships. Runtime shared libs also required: libsqlite3, libgmp."
+  fi
+  if [ -n "$_glibc" ]; then
+    info "host glibc ${_glibc} meets release floor (≥ ${MIN_LINUX_GLIBC})"
+  fi
 }
 
 # ---- root guard -----------------------------------------------------------
@@ -186,6 +235,12 @@ find_asset_url_and_checksum() {
   printf '%s %s' "$_url" "$_checksum"
 }
 
+# ---- Linux glibc floor before any download / self-update (B190) ---------
+# Must run before self-update delegation: a host-built c2c on Ubuntu 20.04
+# can self-update into an official release binary that will not start.
+
+check_linux_glibc_floor
+
 # ---- delegate to self-update if c2c exists and supports it --------------
 #
 # B092: Some older c2c binaries (notably the @clanker-code/c2c npm wrapper
@@ -300,9 +355,23 @@ fi
 # Install to ~/.local/bin
 mkdir -p "$INSTALL_DIR"
 chmod +x "${EXTRACT_DIR}/c2c"
+
+# Smoke-test the extracted binary before replacing anything on PATH.
+# Catches glibc / missing shared-lib failures with a clear message (B190).
+if ! VERIFY_OUT="$("${EXTRACT_DIR}/c2c" --version 2>&1)"; then
+  if printf '%s\n' "$VERIFY_OUT" | grep -q 'GLIBC_'; then
+    error "downloaded binary cannot start (glibc too old for this host): ${VERIFY_OUT}. Official Linux releases need glibc ≥ ${MIN_LINUX_GLIBC} (Ubuntu 22.04+). Build from source on this host ('just install-all'), or upgrade the OS. Also ensure libsqlite3 and libgmp are installed."
+  fi
+  if printf '%s\n' "$VERIFY_OUT" | grep -Eq 'libsqlite3|libgmp|error while loading shared libraries'; then
+    error "downloaded binary cannot start (missing shared library): ${VERIFY_OUT}. Install runtime deps: libsqlite3 and libgmp (Debian/Ubuntu: libsqlite3-0 libgmp10)."
+  fi
+  error "downloaded binary failed to start: ${VERIFY_OUT}"
+fi
+
 mv "${EXTRACT_DIR}/c2c" "${INSTALL_DIR}/c2c"
 
 info "installed c2c ${VERSION} to ${INSTALL_DIR}/c2c"
+info "verified: ${VERIFY_OUT}"
 
 # PATH hygiene check
 case ":${PATH}:" in

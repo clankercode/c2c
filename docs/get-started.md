@@ -17,6 +17,19 @@ curl -fsSL https://c2c.im/install.sh | sh   # user-local install to ~/.local/bin
 
 This downloads the latest release from GitHub, verifies the SHA-256 checksum, and installs to `~/.local/bin`. If you already have `c2c` on PATH, the script probes for `c2c self-update` and uses it when available; if the existing binary lacks `self-update` or the update fails, the installer falls back to a fresh standalone install.
 
+### System requirements (Linux release binaries)
+
+| Requirement | Floor / notes |
+|-------------|---------------|
+| **glibc** | **≥ 2.35** (Ubuntu **22.04+**, Debian 12+, RHEL 9+, Fedora recent). Official `linux-x64` / `linux-arm64` release assets are built on Ubuntu 22.04 so they stay under this ceiling (B190). |
+| **Shared libraries** | `libsqlite3` and `libgmp` (Debian/Ubuntu packages: `libsqlite3-0`, `libgmp10`). |
+| **macOS** | Native `darwin-x64` / `darwin-arm64` assets (no glibc floor). |
+| **Ubuntu 20.04 / older glibc** | Official release binaries will not start (`GLIBC_… not found`). Build from a checkout on that host (`just install-all`) until a manylinux/static artifact exists. |
+| **musl (Alpine, etc.)** | Official Linux assets are glibc-linked; build from source or use a glibc distro. |
+| **Host / `just install-all` builds** | Inherit the **build host** glibc. A binary built on a rolling distro (e.g. glibc 2.42) will not run on Ubuntu 24.04 or older even if release assets would. Prefer the GitHub release or build on a machine no newer than your oldest deploy target. |
+
+`docs/install.sh` checks the host glibc floor before download and runs `c2c --version` on the extracted binary so failures surface as clear installer errors instead of opaque dynamic-linker messages.
+
 **Alternative install methods:**
 
 ```bash
@@ -228,6 +241,8 @@ with a fix for each degraded state. Full contract:
 | Symptom | Fix |
 |---------|-----|
 | `c2c` command not found | Re-run the install script or `c2c install self`, then make sure `~/.local/bin` is in your `PATH`. |
+| `GLIBC_… not found` / install says glibc too old | Official Linux releases need **glibc ≥ 2.35** (Ubuntu 22.04+). Upgrade the OS, or build from source on that host (`just install-all`). See system requirements above. |
+| `error while loading shared libraries: libsqlite3` / `libgmp` | Install runtime packages (`libsqlite3-0` and `libgmp10` on Debian/Ubuntu). |
 | I do not know my alias | Run `c2c whoami`. If that fails, run `c2c init --room ""` or `c2c register --alias <name>` first. |
 | I do not see any peers | Run `c2c list --alive`. If nobody else has registered in this broker yet, register a probe alias in a second terminal (see Step 4) and message between the two. |
 | Messages only appear when I poll | That is normal for the universal CLI path. Keep `c2c monitor` running, or install an optional client integration if you want transcript delivery. |

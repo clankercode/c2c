@@ -6,6 +6,37 @@ permalink: /known-issues/
 
 # Known Issues
 
+## Linux glibc floor for official release binaries (B190)
+
+Official **Linux** release assets (`c2c-*-linux-x64.tar.gz`, `linux-arm64`, and the matching npm platform packages) are built on **Ubuntu 22.04** so the maximum required GLIBC symbol version stays at **2.35**.
+
+| Distro | Typical glibc | Official release binary |
+|--------|---------------|-------------------------|
+| Ubuntu 22.04 / 24.04+ | 2.35 / 2.39+ | OK (with `libsqlite3` + `libgmp`) |
+| Debian 12+ / RHEL 9+ | ≥ 2.35 | OK |
+| Ubuntu 20.04 | 2.31 | **Fails** — build from source on the host |
+| Alpine / musl | n/a | **Fails** — glibc-linked assets |
+
+**Symptoms:**
+
+```text
+/c2c: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by /c2c)
+```
+
+(or `GLIBC_2.35` / similar on hosts below the floor).
+
+**Also required at runtime:** `libsqlite3.so.0` and `libgmp.so.10` (not statically linked).
+
+**CI guard:** release builds run `scripts/check-glibc-max.sh 2.35` over shipped ELF binaries and a Docker smoke (`ubuntu:22.04` + those shared libs) on `c2c --version`.
+
+**Local builds:** `just install-all` / host-built binaries inherit the builder's glibc. A rolling-distro build can require GLIBC 2.42 and fail even on Ubuntu 24.04. Prefer release assets, or build on a host no newer than your oldest target.
+
+**Installer:** `docs/install.sh` preflights host glibc ≥ 2.35 on Linux and verifies the extracted binary before installing.
+
+**Not yet shipped:** manylinux / fully static / musl artifacts for Ubuntu 20.04 and older.
+
+---
+
 ## Codex Auto-Delivery (managed app-server + hook fallback)
 
 **Managed Codex** (`c2c start codex` / `c2c new codex` on Codex ≥ 0.144): delivery is the **app-server** path (arrival-time inject, draft-safe, gated auto-turn for eligible local mail). Idle auto-turn is immediate; failed inject/auto-turn batches re-batch after ~2 minutes (B168). Full detail: [Client delivery](/client-delivery/).
