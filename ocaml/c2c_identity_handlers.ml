@@ -419,7 +419,8 @@ let register ~broker ~session_id_override ~arguments =
    counterpart to the B135 sticky-alias forbid — see
    [Broker.rename_alias] for the store-by-store mechanics and the
    rollback model. This handler is a thin shim so CLI and MCP share one
-   implementation. *)
+   implementation. B179: after a successful local rename, best-effort
+   relay rebind (async, same Lwt loop — never Lwt_main.run here). *)
 let rename ~broker ~session_id_override ~arguments =
       let ambient_session_id =
         match session_id_override with
@@ -445,8 +446,38 @@ let rename ~broker ~session_id_override ~arguments =
           | None -> Lwt.return (tool_err "rename rejected: new_alias is required")
           | Some new_alias -> (
               match Broker.rename_alias broker ~session_id ~new_alias with
-              | Ok json -> Lwt.return (tool_ok (Yojson.Safe.to_string json))
-              | Error e -> Lwt.return (tool_err e))
+              | Error e -> Lwt.return (tool_err e)
+              | Ok rename_json ->
+                  let open Lwt.Infix in
+                  let old_alias =
+                    match rename_json with
+                    | `Assoc fields ->
+                        (match List.assoc_opt "old_alias" fields with
+                         | Some (`String s) -> s
+                         | _ -> "")
+                    | _ -> ""
+                  in
+                  let is_noop =
+                    match rename_json with
+                    | `Assoc fields ->
+                        List.assoc_opt "noop" fields = Some (`Bool true)
+                    | _ -> false
+                  in
+                  (if is_noop then
+                     Lwt.return
+                       (`Assoc
+                          [ ("status", `String "skipped")
+                          ; ("reason", `String "noop rename")
+                          ; ("new_alias", `String new_alias)
+                          ])
+                   else
+                     Relay_rename_rebind.rebind_lwt ~old_alias ~new_alias ())
+                  >>= fun rebind_json ->
+                  let result_json =
+                    Relay_rename_rebind.merge_into_rename_result ~rename_json
+                      ~rebind_json
+                  in
+                  Lwt.return (tool_ok (Yojson.Safe.to_string result_json)))
 
 let list ~broker ~session_id_override:_ ~arguments =
       let alive_only =

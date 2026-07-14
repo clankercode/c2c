@@ -27,7 +27,7 @@ live session) remain refused.
 | Managed instance config (`instances/<name>/config.json` `alias`) | session_id | `C2c_start.sync_instance_alias` (#159 Slice C, already exists) so restart doesn't resurrect the old alias / trip the sticky guard |
 | Schedules (`.c2c/schedules/<alias>/`) | alias dir | best-effort dir move post-commit (repo-local; warning on failure) |
 | Per-agent memory (`.c2c/memory/<alias>/`) | alias dir | best-effort dir move post-commit (repo-local; warning on failure) |
-| Relay remote lease | alias, signed | NOT touched in-line: leases are TTL'd; next announce under new alias signs with the moved key. Old lease expires naturally. Logged. |
+| Relay remote lease | alias, signed | B179: post-commit best-effort rebind via `Relay_rename_rebind` (same path as `c2c relay register --alias=<new>`, same Ed25519 identity). Old alias lease remains until TTL (dual-bind window). Failure is non-fatal; rename output surfaces `relay_rebind` + copy-pasteable next step. |
 
 ## Atomicity model
 

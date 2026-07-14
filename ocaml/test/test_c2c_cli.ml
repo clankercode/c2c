@@ -542,7 +542,11 @@ let test_rename_help_documents_reserved_alias_guidance () =
        check bool "rename help names relay rebind command" true
          (string_contains output "c2c relay register");
        check bool "rename help names relay rebind alias flag" true
-         (string_contains output "--alias=<new>"))
+         (string_contains output "--alias=<new>");
+       check bool "rename help documents auto-rebind when relay configured (B179)" true
+         (string_contains output "automatically re-registers"
+          || string_contains output "auto-rebinds"
+          || string_contains output "auto-rebind"))
 
 (* ------------------------------------------------------------------------- *)
 (* c2c send — fixture-gated send test                                       *)
@@ -3347,9 +3351,15 @@ let test_cli_rename_happy_path () =
           let key_dir = Filename.concat dir "xkeys" in
           Unix.mkdir key_dir 0o700;
           let cmd =
+            (* Isolate HOME so a developer-local ~/.config/c2c/relay.json
+               cannot trigger a live rebind during the B140 unit path.
+               B179's rebind semantics are covered by test_relay_rename_rebind. *)
             Printf.sprintf
-              "C2C_MCP_BROKER_ROOT=%s C2C_KEY_DIR=%s \
+              "env -u C2C_RELAY_URL -u C2C_RELAY_TOKEN -u C2C_RELAY_CONFIG \
+               HOME=%s XDG_CONFIG_HOME=%s C2C_MCP_BROKER_ROOT=%s C2C_KEY_DIR=%s \
                %s > %s 2>&1"
+              (Filename.quote dir)
+              (Filename.quote (Filename.concat dir ".config"))
               (Filename.quote dir) (Filename.quote key_dir)
               (c2c_cmd
                  (Printf.sprintf
@@ -3365,6 +3375,9 @@ let test_cli_rename_happy_path () =
           check bool "rename ok json" true (json |> member "ok" |> to_bool);
           check string "old alias reported" "b140-cli-old"
             (json |> member "old_alias" |> to_string);
+          (* B179: always surface relay_rebind; with no URL it is skipped. *)
+          check string "relay_rebind skipped without relay URL" "skipped"
+            (json |> member "relay_rebind" |> member "status" |> to_string);
           let regs = C2c_mcp.Broker.list_registrations broker in
           check string "registry renamed via CLI" "b140-cli-new"
             (List.hd regs).alias;
