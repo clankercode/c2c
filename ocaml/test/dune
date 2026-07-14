@@ -239,6 +239,15 @@
  (libraries c2c_mcp relay_test_support_real alcotest base64 yojson unix
    lwt.unix cohttp))
 
+; B179: rename auto re-registers/rebinds the new alias on the configured
+; relay (same identity key). Skips cleanly with no URL; surfaces
+; copy-pasteable next_step on failure; dual-bind window for old lease.
+(test
+ (name test_relay_rename_rebind)
+ (modules test_relay_rename_rebind)
+ (libraries c2c_mcp relay_test_support_real alcotest yojson unix
+   lwt.unix cohttp))
+
 (test
  (name test_relay_device_pair)
  (modules test_relay_device_pair)

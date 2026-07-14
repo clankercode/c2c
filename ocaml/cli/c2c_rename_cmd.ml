@@ -5,7 +5,12 @@
    relay key files, TOFU pins, allowed_signers, instance config, schedules,
    memory) with rollback on partial failure. Implicit renames via
    register/init --alias or env drift remain refused. The heavy lifting is
-   [C2c_mcp.Broker.rename_alias] — shared with the MCP `rename` tool. *)
+   [C2c_mcp.Broker.rename_alias] — shared with the MCP `rename` tool.
+
+   B179: after a successful local rename, best-effort rebind of the new
+   alias on the configured relay (same identity key as `c2c relay
+   register --alias`). Failure is non-fatal for the local rename and is
+   surfaced under `relay_rebind` with a copy-pasteable next step. *)
 
 open C2c_cli_helpers
 open Cmdliner.Term.Syntax
@@ -25,9 +30,9 @@ let rename_cmd =
                 non-blocklisted name not currently held by an alive peer. \
                 Reserved auto-generated-client prefixes: %s. For a \
                 Grok-family handoff, use a neutral alias such as gk-<name>. \
-                Rename is local and atomic; re-bind a relay identity \
-                separately when needed with `c2c relay register \
-                --alias=<new>`."
+                When a relay URL is configured, rename auto-rebinds the new \
+                alias (same identity key). If auto-rebind fails, run \
+                `c2c relay register --alias=<new>`."
                reserved_prefixes))
   in
   let session_id_opt =
@@ -81,7 +86,36 @@ let rename_cmd =
          print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
        else Printf.eprintf "error: %s\n%!" msg);
       exit 1
-  | Ok result_json ->
+  | Ok rename_json ->
+      (* B179: post-commit relay rebind. Local rename already committed —
+         never exit non-zero solely because the relay is down. *)
+      let old_alias =
+        match rename_json with
+        | `Assoc fields ->
+            (match List.assoc_opt "old_alias" fields with
+             | Some (`String s) -> s
+             | _ -> "")
+        | _ -> ""
+      in
+      let is_noop =
+        match rename_json with
+        | `Assoc fields -> List.assoc_opt "noop" fields = Some (`Bool true)
+        | _ -> false
+      in
+      let rebind_json =
+        if is_noop then
+          `Assoc
+            [ ("status", `String "skipped")
+            ; ("reason", `String "noop rename")
+            ; ("new_alias", `String new_alias)
+            ]
+        else
+          Relay_rename_rebind.rebind_sync ~old_alias ~new_alias ()
+      in
+      let result_json =
+        Relay_rename_rebind.merge_into_rename_result ~rename_json
+          ~rebind_json
+      in
       if json then print_json result_json
       else begin
         let member name =
@@ -114,6 +148,32 @@ let rename_cmd =
                       | `String w -> Printf.printf "  warning: %s\n" w
                       | _ -> ())
                     warnings
+              | _ -> ());
+             (match member "relay_rebind" with
+              | Some (`Assoc rb) ->
+                  let rb_str k =
+                    match List.assoc_opt k rb with
+                    | Some (`String s) -> s
+                    | _ -> ""
+                  in
+                  (match List.assoc_opt "status" rb with
+                   | Some (`String "ok") ->
+                       Printf.printf
+                         "  relay: rebound identity for %s on %s \
+                          (old alias lease: dual-bind until TTL)\n"
+                         (rb_str "new_alias") (rb_str "relay_url")
+                   | Some (`String "skipped") ->
+                       let reason = rb_str "reason" in
+                       if reason <> "" && reason <> "no relay URL configured"
+                       then
+                         Printf.printf "  relay: rebind skipped (%s)\n" reason
+                   | Some (`String "error") ->
+                       Printf.printf "  relay: rebind failed: %s\n"
+                         (rb_str "error");
+                       let next = rb_str "next_step" in
+                       if next <> "" then
+                         Printf.printf "  next step: %s\n" next
+                   | _ -> ())
               | _ -> ()));
         Printf.printf "%!"
       end
@@ -144,6 +204,14 @@ let rename : unit Cmdliner.Cmd.t =
               via $(b,c2c register --alias) / $(b,c2c init --alias) on a \
               live session or C2C_MCP_AUTO_REGISTER_ALIAS drift remain \
               refused (sticky alias, B135)."
+         ; `P
+             "When a relay URL is configured ($(b,C2C_RELAY_URL) / \
+              $(b,c2c relay setup)), rename automatically re-registers the \
+              new alias on the relay with the same Ed25519 identity (B179). \
+              The prior alias lease remains until TTL expiry (dual-bind \
+              window). If auto-rebind fails, the local rename still \
+              succeeds and the output prints a copy-pasteable \
+              $(b,c2c relay register --alias=<new>) next step."
          ; `S "EXAMPLES"
          ; `P "$(b,c2c rename amaroo-coord)  — adopt the alias amaroo-coord"
          ; `P "$(b,c2c rename Lyra-Quill)  — case-only self-rename"
