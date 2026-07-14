@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-14T12:05:59Z"
+depends_on: []
+estimate_hours: 1
+id: B191
+priority: high
+status: pending
+tags: []
+title: a since agent can 'cd ../x && c2c blah' and 'cd ../y && c2c blah' at the same time and get different aliases. This should not be possible. We should consider the starting location's git root + session id; anything else we need to be careful with.
+updated_at: "2026-07-14T12:05:59Z"
+---
+
+a since agent can 'cd ../x && c2c blah' and 'cd ../y && c2c blah' at the same time and get different aliases. This should not be possible. We should consider the starting location's git root + session id; anything else we need to be careful with.
