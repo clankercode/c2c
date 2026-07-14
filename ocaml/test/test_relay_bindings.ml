@@ -159,6 +159,42 @@ let test_request_blob_roundtrip () =
   Alcotest.(check bool) "mutation on method rejected" false
     (Relay_identity.verify ~pk:id.public_key ~msg:tampered ~sig_)
 
+(* B184: whoami --relay / doctor --relay / mesh status sign GET /list with
+   body_str:"" (empty hash token). Pre-fix, Relay_client.request_raw sent
+   body "{}" when body=None, so the server hashed "{}" and verification
+   failed — intermittently when a proxy stripped GET bodies (empty then
+   matched). This unit test pins the two hashes diverge and that a sig
+   over empty does not verify against the "{}" hash. *)
+let test_b184_empty_vs_json_object_body_hash () =
+  let empty_hash = body_sha256_b64 "" in
+  let obj_hash = body_sha256_b64 "{}" in
+  Alcotest.(check string) "empty body → empty hash token" "" empty_hash;
+  Alcotest.(check bool) "empty and {} hashes differ" true (empty_hash <> obj_hash);
+  let id = Relay_identity.generate () in
+  let ts = "1776698000.000000" in
+  let nonce = "b184nonce000000" in
+  let blob_empty =
+    Relay_signed_ops.canonical_request_blob ~meth:"GET" ~path:"/list"
+      ~query:"" ~body_sha256_b64:empty_hash ~ts ~nonce
+  in
+  let sig_ = Relay_identity.sign id blob_empty in
+  Alcotest.(check bool) "sig over empty body verifies" true
+    (Relay_identity.verify ~pk:id.public_key ~msg:blob_empty ~sig_);
+  let blob_obj =
+    Relay_signed_ops.canonical_request_blob ~meth:"GET" ~path:"/list"
+      ~query:"" ~body_sha256_b64:obj_hash ~ts ~nonce
+  in
+  Alcotest.(check bool) "same sig fails against {} body hash (B184 root cause)"
+    false
+    (Relay_identity.verify ~pk:id.public_key ~msg:blob_obj ~sig_);
+  (* And the real sign_request helper produces a header that covers empty. *)
+  let auth =
+    Relay_signed_ops.sign_request id ~alias:"b184-probe"
+      ~meth:"GET" ~path:"/list" ~body_str:"" ()
+  in
+  Alcotest.(check bool) "sign_request emits Ed25519 header" true
+    (String.length auth > 10 && String.sub auth 0 8 = "Ed25519 ")
+
 let test_request_nonce_cache () =
   let r = InMemoryRelay.create () in
   let now = Unix.gettimeofday () in
@@ -537,6 +573,7 @@ let tests = [
   "sorted_query_string",           `Quick, test_sorted_query_string;
   "body_sha256_b64",               `Quick, test_body_sha256_b64;
   "request_blob_roundtrip",        `Quick, test_request_blob_roundtrip;
+  "b184_empty_vs_json_object_body_hash", `Quick, test_b184_empty_vs_json_object_body_hash;
   "request_nonce_cache",           `Quick, test_request_nonce_cache;
   "room_join_signed_ok",           `Quick, test_room_join_signed_ok;
   "room_leave_ctx_distinct",       `Quick, test_room_leave_ctx_distinct;

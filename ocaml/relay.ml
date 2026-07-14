@@ -4026,8 +4026,14 @@ end = struct
                           ~body_sha256_b64:body_sha256 ~ts:ts_str ~nonce
                       in
                       if not (Relay_identity.verify ~pk:peer_relay.identity_pk ~msg:blob ~sig_:sig_) then
+                        let pk_fp =
+                          Relay_identity.fingerprint_of_pk peer_relay.identity_pk
+                        in
                         respond_unauthorized (json_error_str relay_err_signature_invalid
-                          "Ed25519 request signature does not verify")
+                          (Printf.sprintf
+                             "Ed25519 request signature does not verify \
+(alias=%s, bound_pk=%s, meth=POST, path=/forward)"
+                             claimed_alias pk_fp))
                       else
                         match Yojson.Safe.from_string body_str with
                         | exception Yojson.Json_error msg ->
@@ -5204,8 +5210,24 @@ end = struct
                        in
                        Ok (Some display_alias)
                      else
-                         Error (relay_err_signature_invalid,
-                           "Ed25519 request signature does not verify"))
+                       (* B184: include which bound key + which signed fields
+                          failed so operators can distinguish key drift after
+                          rename/register from body/path/query mismatches
+                          (empty-vs-"{}" body was a common intermittent cause). *)
+                       let pk_fp = Relay_identity.fingerprint_of_pk pk in
+                       let body_tok =
+                         if body_sha256_b64 = "" then "empty"
+                         else
+                           let n = min 12 (String.length body_sha256_b64) in
+                           String.sub body_sha256_b64 0 n ^ "..."
+                       in
+                       Error (relay_err_signature_invalid,
+                         Printf.sprintf
+                           "Ed25519 request signature does not verify \
+(alias=%s, bound_pk=%s, meth=%s, path=%s, query=%S, body_sha256=%s). \
+If you just renamed/re-registered, re-run: c2c relay register --alias %s \
+(same machine identity as c2c relay identity show)"
+                           alias pk_fp meth path query body_tok alias))
 
   let get_client_ip (flow:Conduit_lwt_unix.flow) =
     match flow with

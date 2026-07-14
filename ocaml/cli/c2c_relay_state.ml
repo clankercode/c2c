@@ -152,6 +152,13 @@ let fetch_alias_lease ?(timeout = 4.0) ~alias ~relay_url ~our_host_id ()
                     | `String s -> s
                     | _ -> Yojson.Safe.to_string resp
                   in
+                  (* B184: surface actionable stderr hints for auth/verify
+                     failures so whoami --relay is not opaque after
+                     rename/register. *)
+                  let alias_source = Relay_client_hints.Explicit a in
+                  (match Relay_client_hints.hint_for_response ~alias_source resp with
+                   | Some hint -> Printf.eprintf "%s%!" hint
+                   | None -> ());
                   Relay_unreachable detail
                 end
                 else

@@ -406,7 +406,18 @@ end = struct
            | Some tok -> Cohttp.Header.add base "Authorization" ("Bearer " ^ tok)
            | None -> base)
     in
-    let body_str = Yojson.Safe.to_string (Option.value body ~default:(`Assoc [])) in
+    (* B184: when no body is provided, send a true empty body (""), NOT "{}".
+       Callers that pre-sign with Relay_signed_ops.sign_request ~body_str:""
+       (whoami --relay, doctor --relay, mesh status, relay list) cover the
+       empty hash token. Sending "{}" while signing "" makes the relay reject
+       with signature_invalid — intermittently when a proxy strips GET bodies
+       (signature then happens to match) vs preserves them (mismatch). The
+       body on the wire MUST equal the body used for the Ed25519 blob. *)
+    let body_str =
+      match body with
+      | Some b -> Yojson.Safe.to_string b
+      | None -> ""
+    in
     let body_payload = Cohttp_lwt.Body.of_string body_str in
     Lwt.catch
       (fun () ->
