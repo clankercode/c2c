@@ -82,3 +82,45 @@ Root cause class: broker root fingerprint change (path-only → remote.origin.ur
 ## Peer follow-up (status update): relay-side desync
 
 After the alias fork, Ed25519 signer could SEND but relay READ (peek/poll) returned 403 signature_invalid / does not own session (cli-claude-radar-source-lnbk...). Cleared by `c2c relay register --alias=claude-radar-source-lnbk`. Downstream of B188: send works, relay inbox reads 403 until re-register on the new alias.
+
+
+## Additional details (consolidated 2026-07-14, post status-update)
+
+### Trigger surface (exact)
+- Auto-register fires at **CLI** on `c2c send` (not SessionStart re-fire). Stdout line:
+  `auto-registered as claude-radar-source-lnbk (replies will reach you: c2c wait-inbox)`
+- Initial identity came from `c2c init` at SessionStart → wagon-chapel.
+- cwd never changed: `/home/xertrov/src/demo-crew` entire session.
+
+### Fingerprint math (repro anchors)
+| When | Fingerprint input | fp[:12] | Broker | Alias |
+|------|-------------------|---------|--------|-------|
+| Before remote | git toplevel path `/home/xertrov/src/demo-crew` | `4cd37eaee8ca` | `~/.c2c/repos/4cd37eaee8ca/broker` | claude-wagon-chapel-l9nq |
+| After origin set | `git@github.com:AmarooHQ/pagtown.git` | `f61c9ead06dc` | `~/.c2c/repos/f61c9ead06dc/broker` | claude-radar-source-lnbk |
+
+Same `session_id=fa3c5d7d-b987-41e6-ad0f-6b7bf9ffdb43` + same `pid=77206` in both registries. Sticky-alias does not bridge fingerprints.
+
+### Peer confirmation
+Peer agrees B188 root cause (broker fp keyed by path/remote; adding origin→pagtown minted f61 + new alias). Second peer (cc-max-vecnet-pagtown-fable / build agent) hit identical fork: auto-registered `claude-neon-photon-j1j7` from same demo-crew cwd.
+
+### Recovery attempts + secondary bugs
+1. `c2c rename claude-wagon-chapel-l9nq` → REJECTED: `blocked alias — claude- prefix reserved for auto-generated identities` (cannot reclaim prior auto alias after fork).
+2. `c2c relay register --alias=claude-radar-source-lnbk` + `c2c relay connect` + restart inbox monitor → local+relay usable again.
+3. **Relay ownership desync (downstream):** after alias fork, Ed25519 signer could **send** via relay but **read** own inbox failed with 403 `signature_invalid` / `does not own session (cli-claude-radar-source-lnbk...)`. Cleared only after relay re-register on the *new* alias. Send-OK / read-403 asymmetry is part of the user-visible fallout.
+
+### Addressing that still worked
+- Session-id target (`c2c send --session fa3c5d7d-...`) delivered during/after the fork (fallback path OK).
+- Peers addressing old alias (wagon-chapel) during the gap would misroute / miss.
+
+### Dogfood observation (operator agent)
+Sending into the demo-crew broker with `c2c send --root <f61 broker>` from a c2c-repo session auto-registered the *sender* as a **second** alias on that broker (`grok-pickle-stump-7fla` vs primary `grok-sonic-rest-72qu` on c2c fingerprint). Same class: empty/other broker + auto-register → extra identity for one session_id across broker roots.
+
+### Suggested fix directions (not implemented)
+1. When broker fingerprint changes (path→remote or remote rewrite), **migrate or link** session_id → prior sticky alias instead of minting a new one; or warn loudly and refuse auto-register if session_id already has a live alias on another fingerprint under the same host.
+2. On auto-register, look up session_id globally under `~/.c2c/repos/*/broker` (or a host-level session map) before minting.
+3. Allow `c2c rename` back to a previous auto-generated `claude-*` alias owned by this session_id (or provide `c2c rename --force-reclaim` for recovery).
+4. On alias change / re-register local, **auto-refresh relay registration** so send/read ownership cannot desync.
+5. Acceptance: same Claude session_id keeps one alias across adding `remote.origin.url` to a previously remote-less repo; peers keep addressing the same name; relay peek/poll works without manual re-register.
+
+### Related
+- B189 — TLS relay WebSocket subscribe unsupported (separate; poll workaround). Peer first-hand notes live on B189.
