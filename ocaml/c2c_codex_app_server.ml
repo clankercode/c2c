@@ -639,6 +639,12 @@ let real_backend () : backend =
 (* Config                                                                      *)
 (* --------------------------------------------------------------------------- *)
 
+(* B176: progressive startup feedback. Formatted by the public session layer. *)
+type lifecycle_phase =
+  | Launching
+  | Ready of string
+  | Tui_handoff of string
+
 type config = {
   cwd : string;
   codex_bin : string;
@@ -655,6 +661,8 @@ type config = {
      server needs only its capability-token hash. *)
   frontend_env : string list;
   resume_thread : string option;
+  (* Best-effort operator feedback at true start transitions (B176). *)
+  lifecycle_log : lifecycle_phase -> unit;
 }
 
 let default_config ~instance_name ~instance_dir ~cwd =
@@ -663,7 +671,11 @@ let default_config ~instance_name ~instance_dir ~cwd =
     readiness_timeout_s = 30.0; reap_timeout_s = 5.0; min_codex_version = (0, 144, 0);
     extra_server_args = []; extra_frontend_args = []; frontend_env = [];
     resume_thread = None;
+    lifecycle_log = (fun _ -> ());
   }
+
+let emit_lifecycle (cfg : config) (phase : lifecycle_phase) : unit =
+  try cfg.lifecycle_log phase with _ -> ()
 
 (* --------------------------------------------------------------------------- *)
 (* Persisted (non-secret) identity                                             *)
@@ -968,6 +980,8 @@ let start ?(backend = real_backend ()) (cfg : config) : (handle, diagnostic) res
                     Error (mk_diag ~codex_version:ver ~min_codex_version:min_str code msg)
                   in
                   h.h_state <- Starting_server; persist_best_effort h;
+                  (* B176 phase 1: feedback before a potentially slow spawn/ready. *)
+                  emit_lifecycle cfg Launching;
                   let server_argv = build_server_argv cfg ep ~sha256 in
                   let server_env = build_server_env () in
                   let log_path = persisted_path ~instance_dir:cfg.instance_dir ^ ".appserver.log" in
@@ -992,7 +1006,13 @@ let start ?(backend = real_backend ()) (cfg : config) : (handle, diagnostic) res
                              fail Endpoint_ownership_unverified
                                "endpoint listener is not owned by the launched app-server (possible port race); refusing to attach frontend"
                            else begin
+                             let ep_uri = endpoint_uri ep in
+                             (* B176 phase 2: confirmed ready before TUI attach. *)
+                             emit_lifecycle cfg (Ready ep_uri);
                              h.h_state <- Starting_frontend; persist_best_effort h;
+                             (* B176 phase 3: final line immediately before TUI
+                                owns the terminal (spawn inherits stdio). *)
+                             emit_lifecycle cfg (Tui_handoff ep_uri);
                              let fe_argv = build_frontend_argv cfg ep ~token_env_var in
                              let fe_env =
                                build_frontend_env ~extra_env:cfg.frontend_env
