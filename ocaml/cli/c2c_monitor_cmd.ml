@@ -790,21 +790,21 @@ let monitor_cmd =
                       Lwt_main.run (Relay.Relay_client.peek_inbox client
                                       ~node_id ~session_id)
             in
-            (* H3 error honesty: distinguish transient (retry, may recover) from
-               terminal (auth/identity — will not self-heal) relay failures.
-               [err_streak] drives exponential backoff and reconnect reporting so
-               a flapping relay does not hammer the endpoint and a recovery is
-               announced. A terminal failure is reported clearly and then either
-               exits a pure-relay monitor non-zero for its supervisor, or disables
-               only relay watching while local receive continues. *)
+            (* H3/B185 error honesty: distinguish transient (retry, may recover),
+               soft-terminal (budgeted retry with fresh sign), and hard-terminal
+               (true config/auth break — disable/exit). [err_streak] drives
+               exponential backoff and reconnect reporting. Soft terminal never
+               permanently disables without a recovery budget (B185).
+               B178: re-sign every peek (fresh ts+nonce). B180: peek target and
+               signing alias are refs so rename rebinds without restarting. *)
             let err_streak = ref 0 in
-            (* B142: log the terminal message ONCE (a terminal error repeats
-               every peek cycle; without this guard the relay loop would spam
-               stderr each interval). B180: reset when identity rebinds so a
-               post-rename auth recovery is re-attempted honestly. *)
+            let soft_budget = ref C2c_monitor_logic.empty_soft_budget in
+            (* B142: log the permanent-disable message ONCE. B180: reset when
+               identity rebinds (peek target changes) so post-rename recovery
+               is re-attempted honestly. *)
             let terminal_logged = ref false in
             let last_terminal_target = ref "" in
-            let handle_terminal ~node_id ~session_id detail =
+            let handle_disable ~node_id ~session_id ~code detail remediation =
               let target = node_id ^ "/" ^ session_id in
               if !last_terminal_target <> target then begin
                 terminal_logged := false;
@@ -814,10 +814,13 @@ let monitor_cmd =
                 terminal_logged := true;
                 Printf.eprintf
                   "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
-                   %s relay watch: this will not self-heal (auth / identity / \
-                   config). Re-register (c2c relay register) or fix the key/clock, \
-                   then restart the monitor.\n%!"
-                  (now_hms ()) node_id session_id detail (now_hms ())
+                   %s relay watch: recovery budget exhausted (or hard auth/config \
+                   break — code=%s). Relay watch will not self-heal without \
+                   operator action.\n\
+                   %s relay watch: remediation: %s\n%!"
+                  (now_hms ()) node_id session_id detail
+                  (now_hms ()) code
+                  (now_hms ()) remediation
               end;
               if C2c_monitor_logic.should_exit_on_relay_terminal ~local_watch_active
               then
@@ -841,8 +844,9 @@ let monitor_cmd =
               if Atomic.get relay_stop || Unix.getppid () = 1 then ()
               else begin
                 let now = Unix.gettimeofday () in
-                (* Backoff: after consecutive transient errors wait longer before
-                   the next peek, capped at 60s. Zero streak == normal interval. *)
+                (* Backoff: after consecutive transient/soft errors wait longer
+                   before the next peek, capped at 60s. Zero streak == normal
+                   interval. *)
                 let effective_interval =
                   if !err_streak = 0 then relay_interval
                   else Float.min 60.0 (relay_interval *. float_of_int (!err_streak + 1))
@@ -858,25 +862,58 @@ let monitor_cmd =
                     | Some k -> k.node_id, k.session_id
                     | None -> "?", "?"
                   in
+                  (* B180: when rename rebinds the peek key mid-loop, clear soft
+                     budget + terminal-once so the new identity gets a fresh
+                     recovery window. *)
+                  let target = node_id ^ "/" ^ session_id in
+                  if !last_terminal_target <> "" && !last_terminal_target <> target then begin
+                    soft_budget := C2c_monitor_logic.empty_soft_budget;
+                    terminal_logged := false;
+                    err_streak := 0
+                  end;
                   (match outcome with
                    | C2c_monitor_logic.Peek_ok msgs ->
                        if !err_streak > 0 then begin
                          Printf.eprintf
                            "%s relay watch: reconnected (recovered after %d \
-                            transient error%s)\n%!"
+                            error%s)\n%!"
                            (now_hms ()) !err_streak
                            (if !err_streak = 1 then "" else "s");
                          err_streak := 0
                        end;
+                       soft_budget := C2c_monitor_logic.empty_soft_budget;
                        ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
                    | C2c_monitor_logic.Peek_transient detail ->
+                       (* Transient (incl. nonce_replay) never permanently
+                          disables; reset soft budget so a later soft code
+                          starts a fresh recovery window. *)
+                       soft_budget := C2c_monitor_logic.empty_soft_budget;
                        incr err_streak;
                        Printf.eprintf
                          "%s relay watch: transient error peeking %s/%s: %s \
                           (attempt %d; backing off, will retry)\n%!"
                          (now_hms ()) node_id session_id detail !err_streak
-                   | C2c_monitor_logic.Peek_terminal detail ->
-                       handle_terminal ~node_id ~session_id detail);
+                   | C2c_monitor_logic.Peek_terminal { code; detail } ->
+                       let action, budget' =
+                         C2c_monitor_logic.decide_on_terminal
+                           ~now ~code ~budget:!soft_budget ()
+                       in
+                       soft_budget := budget';
+                       (match action with
+                        | C2c_monitor_logic.Retry_soft
+                            { consecutive; threshold; remediation_hint } ->
+                            incr err_streak;
+                            Printf.eprintf
+                              "%s relay watch: recoverable error peeking %s/%s: \
+                               %s (soft %d/%d; backing off, will retry — not \
+                               disabling yet)\n\
+                               %s relay watch: hint: %s\n%!"
+                              (now_hms ()) node_id session_id detail
+                              consecutive threshold
+                              (now_hms ()) remediation_hint
+                        | C2c_monitor_logic.Disable { remediation; severity = _ } ->
+                            handle_disable ~node_id ~session_id ~code detail
+                              remediation));
                   relay_loop now
                 end else begin
                   (* Short sleep so the stop flag / parent-death is noticed
