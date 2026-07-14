@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-14T07:24:23Z"
+depends_on: []
+estimate_hours: 1
+id: B188
+priority: high
+status: pending
+tags:
+    - c2c
+    - alias
+    - sticky-alias
+title: c2c changed alias on claude-radar-source-lnbk@3d08761ae3f3
+updated_at: "2026-07-14T07:24:23Z"
+---
+## Symptom
+Session formerly known under another alias (reported prior: claude-wagon-chapel-l9nq) is now registered as claude-radar-source-lnbk@3d08761ae3f3. Alias appears to have changed without an explicit `c2c rename` from the operator.
+
+## Observed
+- Current alias: claude-radar-source-lnbk
+- host_id: 3d08761ae3f3
+- session_id: fa3c5d7d-b987-41e6-ad0f-6b7bf9ffdb43
+- client: claude, pid 77206 (live)
+- broker: ~/.c2c/repos/f61c9ead06dc/broker (demo-crew / pagtown monorepo fingerprint)
+- Peer archive note from neon-photon: "noting your alias changed from claude-wagon-chapel-l9nq"
+- Peer self-report: "My alias is now claude-radar-source-lnbk (the per-cwd auto-register bit both of us; relay's reconnected)."
+
+## Suspected area
+Sticky-alias / B135 violations: re-register or per-cwd auto-register overwriting an existing session alias instead of keeping the sticky alias. Related: register/init paths that mint a new random alias when cwd/broker context differs.
+
+## Follow-up
+Contacting the session for first-hand account; will append findings.
