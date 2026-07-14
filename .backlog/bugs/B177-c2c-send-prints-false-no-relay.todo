@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-14T06:18:51Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-14T06:18:51Z"
 complexity: medium
 created_at: "2026-07-13T10:15:00Z"
 depends_on: []
+duration_minutes: 0.0014896161
 estimate_hours: 1
 id: B177
 priority: medium
 started_at: "2026-07-14T06:18:51Z"
-status: in_progress
+status: done
 tags: []
 title: c2c send prints false no-relay-connector-detected warning when a bare c2c relay connect is running (only managed daemons detected)
 updated_at: "2026-07-14T06:18:51Z"

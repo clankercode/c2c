@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-14T06:18:51Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-14T06:18:51Z"
 complexity: medium
 created_at: "2026-07-13T11:34:59Z"
 depends_on: []
+duration_minutes: 0.0015117974833333333
 estimate_hours: 1
 id: B182
 priority: medium
 started_at: "2026-07-14T06:18:51Z"
-status: in_progress
+status: done
 tags: []
 title: 'rename: reserved prefix rejection should name allowed alternatives and rename path'
 updated_at: "2026-07-14T06:18:51Z"
