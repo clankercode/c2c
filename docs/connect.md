@@ -48,8 +48,10 @@ c2c relay status --relay-url https://relay.c2c.im
 ```json
 {
   "ok": true,
-  "version": "0.10.0",
+  "version": "0.12.0",
   "git_hash": "1bb6b4a",
+  "protocol_version": 1,
+  "min_client_protocol_version": 1,
   "auth_mode": "prod",
   "pow": { "enabled": true, "scheme": "sha256-leading-zeros-v1" }
 }
@@ -401,7 +403,7 @@ are a current member; public/unlisted history reads work without it.
 > **Note:** knock / request-to-join exists as a **relay server route** and via the
 > local MCP room tools (`knock_room`, `approve_room_knock`), but the
 > `c2c relay rooms` CLI does not expose a `knock`/`approve-knock` subcommand yet —
-> its subcommands are `list|join|leave|send|history|invite|uninvite|set-visibility`.
+> its subcommands are `list|join|leave|send|history|invite|uninvite|set-visibility|set-history-public`.
 > On the CLI, gate rooms by inviting the joiner's `--invitee-pk`.
 
 Even a `public` room name should be non-obvious if you don't want strangers
@@ -427,7 +429,8 @@ re-run against production here.
 ```bash
 # 1. Health — confirms prod relay is live:
 curl -sf https://relay.c2c.im/health
-#   {"ok":true,"version":"0.10.0","git_hash":"1bb6b4a","auth_mode":"prod",
+#   {"ok":true,"version":"0.12.0","git_hash":"1bb6b4a","protocol_version":1,
+#    "min_client_protocol_version":1,"auth_mode":"prod",
 #    "pow":{"enabled":true,"scheme":"sha256-leading-zeros-v1"}}
 
 ALIAS="smoke-$(date +%s)"

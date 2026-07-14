@@ -218,7 +218,7 @@ vary by deploy):
 ```json
 {
   "ok": true,
-  "version": "0.11.0",
+  "version": "0.12.0",
   "git_hash": "b7d94a6",
   "protocol_version": 1,
   "min_client_protocol_version": 1,
@@ -245,7 +245,7 @@ line looks like (no peer count; probe URL defaults to the public relay
 unless `C2C_RELAY_URL` is set):
 
 ```text
-relay: reachable — 0.11.0 @ b7d94a6 prod mode (https://relay.c2c.im)
+relay: reachable — 0.12.0 @ b7d94a6 prod mode (https://relay.c2c.im)
 ```
 
 or, when unreachable:
