@@ -52,4 +52,11 @@ wedged vs absent or give copy-paste recovery.
 
 ## Commits / SHAs
 
-(filled after commit)
+| Role | SHA |
+|------|-----|
+| Fix commit | `d001d504e8c55403b3f76de4c9fe99d5d0f32710` (`d001d504`) |
+| Branch tip | `fix/bl-b181` @ `d001d504` |
+
+Claim commit (pre-existing on branch history): see `git log --oneline` for `bl claim B181` if present; worktree started from claim already applied.
+
+**Not done:** merge to master, `bl done`, push (per instructions).
