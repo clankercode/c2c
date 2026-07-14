@@ -737,6 +737,13 @@ let list : unit Cmdliner.Cmd.t =
     (Cmdliner.Cmd.info "list" ~doc:"List registered C2C peers.")
     list_cmd
 
+(** B183: discoverable synonym for agents that try `c2c peers`. *)
+let peers : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "peers"
+       ~doc:"Alias for $(b,list) — list registered C2C peers.")
+    list_cmd
+
 let sessions : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "sessions" ~doc:"List registered sessions with session_id, alias, client_type, cwd, and liveness.")

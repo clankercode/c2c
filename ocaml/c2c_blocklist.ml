@@ -11,7 +11,14 @@ let banned_aliases =
   ; "kimi"
   ; "crush"
   ; "grok"
+  ; "agy"
   ]
+
+(** Human-readable reserved client prefixes (include trailing hyphen). Keep in
+    sync with [banned_aliases] client names so register/rename rejections name
+    the full set operators hit in the wild (B182). *)
+let reserved_client_prefixes =
+  [ "claude-"; "codex-"; "opencode-"; "kimi-"; "crush-"; "grok-"; "agy-" ]
 
 let alias_casefold s = String.lowercase_ascii s
 
@@ -46,10 +53,17 @@ let suggested_alias_for_blocked_alias alias =
       if valid_candidate prefixed then prefixed else "agent-name"
 
 let blocked_alias_error alias =
+  (* Shared by register + rename (B182). Neutral "alias rejected" so rename
+     does not look like a failed register. Name every reserved client prefix,
+     suggest the stripped form, and give Grok-family handoff examples like
+     gk-NAME. *)
+  let suggestion = suggested_alias_for_blocked_alias alias in
+  let prefixes = String.concat ", " reserved_client_prefixes in
   Printf.sprintf
-    "register rejected: '%s' is a blocked alias. Names equal to reserved \
+    "alias rejected: '%s' is a blocked alias. Names equal to reserved \
      client/system aliases or starting with reserved client prefixes are \
-     reserved for auto-generated client identities. Try '%s' or pick a name \
-     not starting with a reserved client prefix (claude-, codex-, opencode-, \
-     kimi-, crush-, grok-)."
-    alias (suggested_alias_for_blocked_alias alias)
+     reserved for auto-generated client identities (prefixes: %s). Try '%s' \
+     or pick a name not starting with a reserved client prefix — e.g. Grok \
+     handoffs often use 'gk-%s' or bare '%s'. After a successful local rename, \
+     re-bind relay if needed: `c2c relay register --alias=<new>`."
+    alias prefixes suggestion suggestion suggestion

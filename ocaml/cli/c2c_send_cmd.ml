@@ -136,23 +136,37 @@ let maybe_auto_register_sender broker ~from_override =
     same-broker targets still deliver synchronously and legitimately report
     [ok]/[delivered]. *)
 let relay_connector_running_best_effort () =
-  (* Best-effort liveness probe. Detects a managed [relay-connect] daemon via
-     its instance dir + [outer.pid] ([Unix.kill pid 0]). A foreground
-     [c2c relay connect] run directly in a terminal/tmux is NOT detected —
-     in that case the warning falls back to the generic "no relay connector
-     detected" guidance, which is still accurate (we have no evidence one is
-     running). Fails closed to [false] on any read error so sends never break. *)
+  (* Best-effort liveness probe (B177). Prefer evidence that matches whoami /
+     doctor so a bare foreground `c2c relay connect` is not misreported as
+     missing:
+     1. Managed [relay-connect] instance with a live outer.pid
+     2. Fresh broker-owned connector-state file (same signal as
+        [Relay_doctor.connector_running] / whoami "connector: live")
+     Fails closed to [false] on any read error so sends never break. *)
   try
-    C2c_health_cmd.read_managed_instances ()
-    |> List.exists (fun (i : managed_instance_view) ->
-         i.mi_client = "relay-connect" && i.mi_status = "running")
+    let managed =
+      try
+        C2c_health_cmd.read_managed_instances ()
+        |> List.exists (fun (i : managed_instance_view) ->
+             i.mi_client = "relay-connect" && i.mi_status = "running")
+      with _ -> false
+    in
+    if managed then true
+    else
+      let root = resolve_broker_root () in
+      let state =
+        try C2c_relay_connector.read_connector_state root with _ -> None
+      in
+      let now = Unix.gettimeofday () in
+      Relay_doctor.connector_running ~scoped_procs:[] ~state ~now
   with _ -> false
 
 let remote_queued_warning () =
   if relay_connector_running_best_effort () then
-    "queued locally for the relay outbox; a managed relay-connect daemon is \
-     running, but delivery is async and not confirmed here. Use \
-     `c2c relay dm send` for a synchronous relay send."
+    "queued locally for the relay outbox; a relay connector is running \
+     (managed daemon and/or fresh broker connector sync), but delivery is \
+     async and not confirmed here. Use `c2c relay dm send` for a synchronous \
+     relay send."
   else
     "queued locally; no relay connector detected — run `c2c relay connect` \
      (or `c2c managed start relay-connect`) or use `c2c relay dm send` to \

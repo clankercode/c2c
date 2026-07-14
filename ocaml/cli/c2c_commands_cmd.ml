@@ -19,11 +19,13 @@ let commands_by_safety_cmd =
   let tier1 = [
     ("ping", "Connection status dashboard + loopback delivery probe (--verify)");
     ("list", "List registered c2c peers");
+    ("peers", "Alias for list — list registered c2c peers");
     ("find", "Find a peer by alias substring or exact session ID (alive-first)");
     ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
+    ("inbox", "Alias for peek-inbox — peek without draining");
     ("wait-inbox", "Block until a message arrives, then drain once and exit (for clients with no push delivery)");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
@@ -201,11 +203,13 @@ let fast_path_commands () =
   let tier1 = [
     ("ping", "Connection status dashboard + loopback delivery probe (--verify)");
     ("list", "List registered c2c peers");
+    ("peers", "Alias for list — list registered c2c peers");
     ("find", "Find a peer by alias substring or exact session ID (alive-first)");
     ("sessions", "List registered sessions (session_id, alias, client_type, liveness)");
     ("whoami", "Show current c2c identity");
     ("poll-inbox", "Drain (or peek at) your inbox");
     ("peek-inbox", "Peek at your inbox without draining");
+    ("inbox", "Alias for peek-inbox — peek without draining");
     ("wait-inbox", "Block until a message arrives, then drain once and exit (for clients with no push delivery)");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");

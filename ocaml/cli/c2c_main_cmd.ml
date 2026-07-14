@@ -4,6 +4,7 @@ open C2c_commands
 let all_cmds =
   [ C2c_send_cmd.send
   ; C2c_list_cmd.list
+  ; C2c_list_cmd.peers (* B183 synonym for list *)
   ; C2c_find_cmd.find
   ; C2c_list_cmd.sessions
   ; C2c_whoami_cmd.whoami
@@ -13,6 +14,7 @@ let all_cmds =
   ; C2c_inbox_cmd.check_pending_reply
   ; C2c_inbox_cmd.poll_inbox
   ; C2c_inbox_cmd.peek_inbox
+  ; C2c_inbox_cmd.inbox (* B183 synonym for peek-inbox *)
   ; C2c_inbox_cmd.wait_inbox
   ; C2c_approval_cmd.await_reply
   ; C2c_approval_cmd.approval_reply

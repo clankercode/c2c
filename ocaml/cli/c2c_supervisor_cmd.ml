@@ -18,8 +18,8 @@ let supervisor_send ~to_alias ~content =
         just keeps the output honest if a cross-host target is ever used. *)
      if C2c_mcp.Broker.is_remote_alias to_alias then begin
        Printf.printf "queued -> %s (from %s)\n" to_alias from_alias;
-       Printf.eprintf "warning: queued locally; no relay connector detected \
-         — run `c2c relay connect` or use `c2c relay dm send` to ship it.\n%!"
+       (* Share B177 / B088 connector honesty with `c2c send`. *)
+       Printf.eprintf "warning: %s\n%!" (C2c_send_cmd.remote_queued_warning ())
      end else
        Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
    with Invalid_argument msg ->

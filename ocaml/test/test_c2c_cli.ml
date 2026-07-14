@@ -406,6 +406,17 @@ let test_list_exits_zero () =
   let rc = Sys.command cmd in
   check int "c2c list exits 0" 0 rc
 
+(* B183: discoverable synonyms for list / peek-inbox *)
+let test_peers_alias_exits_zero () =
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c peers > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c peers exits 0" 0 rc
+
+let test_inbox_alias_exits_zero () =
+  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c inbox > /dev/null 2>&1" in
+  let rc = Sys.command cmd in
+  check int "c2c inbox exits 0" 0 rc
+
 let test_list_output_contains_peer_entries () =
   let tmpfile = Filename.temp_file "c2c-list" ".out" in
   Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
@@ -4242,6 +4253,8 @@ let () =
         ] )
     ; ( "list",
         [ ( "list exits 0", `Quick, test_list_exits_zero )
+        ; ( "peers alias exits 0 (B183)", `Quick, test_peers_alias_exits_zero )
+        ; ( "inbox alias exits 0 (B183)", `Quick, test_inbox_alias_exits_zero )
         ; ( "list output contains peer entries", `Quick, test_list_output_contains_peer_entries )
         ; ( "unknown liveness is not labeled unknown client type", `Quick, test_list_unknown_liveness_is_not_labeled_unknown_client_type )
         ; ( "register happy path omits relay identity debug noise", `Quick, test_register_happy_path_does_not_emit_relay_identity_debug_noise )

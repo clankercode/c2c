@@ -441,3 +441,13 @@ let peek_inbox : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "peek-inbox" ~doc:"Peek at your inbox without draining.")
     peek_inbox_cmd
+
+(** B183: discoverable synonym for agents that try `c2c inbox`. Non-draining
+    peek (same as peek-inbox) so a casual `inbox` check never silently drops
+    messages; use poll-inbox / wait-inbox to drain. *)
+let inbox : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "inbox"
+       ~doc:"Alias for $(b,peek-inbox) — peek without draining. Use \
+             $(b,poll-inbox) / $(b,wait-inbox) to drain.")
+    peek_inbox_cmd
