@@ -308,7 +308,7 @@ let monitor_cmd =
     in
     (* B069: session registration outranks the machine-global default-alias
        file. Order + labels live in the pure, unit-tested C2c_monitor_logic. *)
-    let my_alias, alias_source =
+    let my_alias0, alias_source0 =
       C2c_monitor_logic.resolve_alias
         ~flag:alias_arg
         ~auto_env:(C2c_utils.alias_from_env_only ())
@@ -318,6 +318,11 @@ let monitor_cmd =
         ~single_alive
         ()
     in
+    (* B180: identity is mutable after startup so a rename can rebind without
+       killing the process. --alias freezes identity (flag_bound). *)
+    let my_alias_r = ref my_alias0 in
+    let alias_source_r = ref alias_source0 in
+    let flag_bound = match alias_arg with Some _ -> true | None -> false in
     (* Session whose live inbox we watch (B070). Prefer the resolved session id;
        otherwise map the resolved alias back to its registration's session id so
        inbox-watching still works when the alias came from a fallback source. *)
@@ -325,7 +330,7 @@ let monitor_cmd =
       match resolved_sid with
       | Some _ as s -> s
       | None ->
-          (match my_alias with
+          (match !my_alias_r with
            | None -> None
            | Some a ->
                (match List.find_opt
@@ -346,101 +351,113 @@ let monitor_cmd =
            by truncating + rewriting the lockfile and retrying. If holder is alive,
            refuse with a clear error unless --force is set; with --force we kill
            the holder (SIGTERM) and take over.
-       Skip the guard when no alias is set (e.g. unscoped `c2c monitor --all`). *)
+       Skip the guard when no alias is set (e.g. unscoped `c2c monitor --all`).
+       B180: lock state is held in refs so a rename can migrate the lock to the
+       new alias without restarting. *)
+    let lock_dir = Filename.concat broker_root ".monitor-locks" in
+    let pid_alive p =
+      try Sys.is_directory (Printf.sprintf "/proc/%d" p)
+      with _ -> false
+    in
+    let read_holder_pid fd =
+      try
+        ignore (Unix.lseek fd 0 Unix.SEEK_SET);
+        let buf = Bytes.create 32 in
+        let n = Unix.read fd buf 0 32 in
+        if n <= 0 then None
+        else int_of_string_opt (String.trim (Bytes.sub_string buf 0 n))
+      with _ -> None
+    in
+    let write_pid fd =
+      (try Unix.ftruncate fd 0 with _ -> ());
+      ignore (Unix.lseek fd 0 Unix.SEEK_SET);
+      let s = string_of_int (Unix.getpid ()) ^ "\n" in
+      ignore (Unix.write_substring fd s 0 (String.length s))
+    in
+    let release_lock_pair fd path =
+      (try Unix.ftruncate fd 0 with _ -> ());
+      (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+      (try Unix.close fd with _ -> ());
+      (try Unix.unlink path with _ -> ())
+    in
+    (* Current lock held by this process (if any). Migrated on B180 rebind. *)
+    let monitor_lock_r : (Unix.file_descr * string) option ref = ref None in
+    let acquire_monitor_lock ~alias ~force_displace : (Unix.file_descr * string) option =
+      (try Unix.mkdir lock_dir 0o700
+       with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+          | _ -> ());
+      let lock_path = Filename.concat lock_dir (alias ^ ".lock") in
+      let rec acquire ~retry =
+        let fd =
+          Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT] 0o644
+        in
+        match Unix.lockf fd Unix.F_TLOCK 0 with
+        | () ->
+            write_pid fd;
+            Some (fd, lock_path)
+        | exception Unix.Unix_error
+            ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
+            let holder = read_holder_pid fd in
+            Unix.close fd;
+            (match holder with
+             | Some p when pid_alive p && not force_displace ->
+                 None
+             | Some p when pid_alive p (* && force_displace *) ->
+                 (try Unix.kill p Sys.sigterm with _ -> ());
+                 let deadline = Unix.gettimeofday () +. 2.0 in
+                 while pid_alive p && Unix.gettimeofday () < deadline do
+                   Unix.sleepf 0.05
+                 done;
+                 if retry > 0 then acquire ~retry:(retry - 1) else None
+             | _ ->
+                 if retry > 0 then acquire ~retry:(retry - 1) else None)
+        | exception _ ->
+            (try Unix.close fd with _ -> ());
+            None
+      in
+      acquire ~retry:3
+    in
     let _monitor_lock_fd : Unix.file_descr option =
-      match my_alias with
+      match !my_alias_r with
       | None -> None
       | Some alias ->
-          let lock_dir = Filename.concat broker_root ".monitor-locks" in
-          (try Unix.mkdir lock_dir 0o700
-           with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
-              | _ -> ());
-          let lock_path = Filename.concat lock_dir (alias ^ ".lock") in
-          let pid_alive p =
-            try Sys.is_directory (Printf.sprintf "/proc/%d" p)
-            with _ -> false
-          in
-          let read_holder_pid fd =
-            try
-              ignore (Unix.lseek fd 0 Unix.SEEK_SET);
-              let buf = Bytes.create 32 in
-              let n = Unix.read fd buf 0 32 in
-              if n <= 0 then None
-              else int_of_string_opt (String.trim (Bytes.sub_string buf 0 n))
-            with _ -> None
-          in
-          let write_pid fd =
-            (try Unix.ftruncate fd 0 with _ -> ());
-            ignore (Unix.lseek fd 0 Unix.SEEK_SET);
-            let s = string_of_int (Unix.getpid ()) ^ "\n" in
-            ignore (Unix.write_substring fd s 0 (String.length s))
-          in
-          let rec acquire ~retry =
-            let fd =
-              Unix.openfile lock_path [Unix.O_RDWR; Unix.O_CREAT] 0o644
-            in
-            match Unix.lockf fd Unix.F_TLOCK 0 with
-            | () ->
-                write_pid fd;
-                (* Cleanup on exit: release lock + remove lockfile.
-                   Closing fd releases the lock automatically. *)
-                at_exit (fun () ->
-                  (try Unix.ftruncate fd 0 with _ -> ());
-                  (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
-                  (try Unix.close fd with _ -> ());
-                  (try Unix.unlink lock_path with _ -> ()));
-                Some fd
-            | exception Unix.Unix_error
-                ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
-                let holder = read_holder_pid fd in
-                Unix.close fd;
-                (match holder with
-                 | Some p when pid_alive p && not force ->
-                     Printf.eprintf
-                       "c2c monitor: alias '%s' already has a live monitor \
-                        (pid %d). Refusing to start (#354 fork-bomb guard).\n\
-                        \  Stop it first:  kill %d\n\
-                        \  Or override:    c2c monitor --alias %s --force\n%!"
-                       alias p p alias;
-                     exit 1
-                 | Some p when pid_alive p (* && force *) ->
-                     Printf.eprintf
-                       "c2c monitor: --force given; sending SIGTERM to existing \
-                        monitor (alias=%s pid=%d) and taking over.\n%!" alias p;
-                     (try Unix.kill p Sys.sigterm with _ -> ());
-                     (* Brief grace period to let the holder release the lock. *)
-                     let deadline = Unix.gettimeofday () +. 2.0 in
-                     while pid_alive p && Unix.gettimeofday () < deadline do
-                       Unix.sleepf 0.05
-                     done;
-                     if retry > 0 then acquire ~retry:(retry - 1)
-                     else begin
-                       Printf.eprintf
-                         "c2c monitor: failed to displace holder pid %d after \
-                          --force; giving up.\n%!" p;
-                       exit 1
-                     end
-                 | _ ->
-                     (* Stale lock (holder dead or unreadable PID). Take over. *)
-                     if retry > 0 then acquire ~retry:(retry - 1)
-                     else begin
-                       Printf.eprintf
-                         "c2c monitor: stale lock for alias '%s'; takeover \
-                          retries exhausted.\n%!" alias;
-                       exit 1
-                     end)
-            | exception e ->
-                Unix.close fd;
-                Printf.eprintf
-                  "c2c monitor: unexpected error acquiring lockfile %s: %s\n%!"
-                  lock_path (Printexc.to_string e);
-                exit 1
-          in
-          (* On the stale-lock path the F_TLOCK retry must actually succeed —
-             since the dead holder's fd is gone the kernel will grant us the
-             lock on the next attempt. Cap retries at 3 to avoid any pathological
-             loop (e.g. another concurrent monitor racing us). *)
-          acquire ~retry:3
+          (match acquire_monitor_lock ~alias ~force_displace:force with
+           | Some (fd, lock_path) ->
+               monitor_lock_r := Some (fd, lock_path);
+               at_exit (fun () ->
+                 match !monitor_lock_r with
+                 | Some (f, p) -> release_lock_pair f p; monitor_lock_r := None
+                 | None -> ());
+               Some fd
+           | None ->
+               (* Mirror the original hard-fail startup messages. *)
+               let lock_path = Filename.concat lock_dir (alias ^ ".lock") in
+               let holder =
+                 try
+                   let fd = Unix.openfile lock_path [Unix.O_RDONLY] 0o644 in
+                   Fun.protect ~finally:(fun () -> Unix.close fd)
+                     (fun () -> read_holder_pid fd)
+                 with _ -> None
+               in
+               (match holder with
+                | Some p when pid_alive p && not force ->
+                    Printf.eprintf
+                      "c2c monitor: alias '%s' already has a live monitor \
+                       (pid %d). Refusing to start (#354 fork-bomb guard).\n\
+                       \  Stop it first:  kill %d\n\
+                       \  Or override:    c2c monitor --alias %s --force\n%!"
+                      alias p p alias;
+                    exit 1
+                | Some p when pid_alive p ->
+                    Printf.eprintf
+                      "c2c monitor: failed to displace holder pid %d after \
+                       --force; giving up.\n%!" p;
+                    exit 1
+                | _ ->
+                    Printf.eprintf
+                      "c2c monitor: stale lock for alias '%s'; takeover \
+                       retries exhausted.\n%!" alias;
+                    exit 1))
     in
     let registry_path = Filename.concat broker_root "registry.json" in
     (* Read aliases from registry.json — returns (alias, session_id) pairs. *)
@@ -600,7 +617,9 @@ let monitor_cmd =
        drained into the archive by any consumer, the archive event must not
        re-print it. Keyed on message identity (see C2c_monitor_logic.msg_key). *)
     let seen = C2c_monitor_logic.create_seen () in
-    (* Apply --from + self filters, then drop messages already surfaced. *)
+    (* Apply --from + self filters, then drop messages already surfaced.
+       B180: self-filter reads the live alias ref so post-rename echoes from
+       the new name are suppressed and old-name self-echo is not. *)
     let apply_filters msgs =
       let msgs = match from_filter with
         | None -> msgs
@@ -610,10 +629,13 @@ let monitor_cmd =
       in
       let msgs =
         if include_self then msgs
-        else match my_alias with
+        else match !my_alias_r with
           | None -> msgs
           | Some me -> List.filter (fun m -> match m with
-              | `Assoc fields -> jstr fields "from_alias" "" <> me
+              | `Assoc fields ->
+                  (* Case-insensitive: rename may only change case. *)
+                  not (C2c_monitor_logic.alias_eq
+                         (jstr fields "from_alias" "") me)
               | _ -> true) msgs
       in
       C2c_monitor_logic.filter_unseen seen msgs
@@ -635,7 +657,7 @@ let monitor_cmd =
                   (C2c_monitor_ndjson.message_event ~monitor_ts:ts ~source m))
                 msgs
           end else
-            emit_messages ~my_alias ~all ~full_body ~source msgs
+            emit_messages ~my_alias:(!my_alias_r) ~all ~full_body ~source msgs
     in
     (* B089: the local (inotify) path and the relay-peek thread both feed the
        shared [seen] dedup set and stdout. Serialize filter+emit under one mutex
@@ -663,7 +685,6 @@ let monitor_cmd =
        from outliving the monitor. *)
     let relay_stop = Atomic.make false in
     at_exit (fun () -> Atomic.set relay_stop true);
-    let alias_str = Option.value my_alias ~default:"" in
     let node_id_override =
       match relay_node_id with
       | Some _ -> relay_node_id
@@ -692,10 +713,11 @@ let monitor_cmd =
        without the operator hand-supplying --relay-node-id / --relay-session-id.
        Node-id preference: the connector's persisted node_id (honours a
        `relay connect --node-id` override), else the same host hash the connector
-       derives by default (Host_id.compute_host_hash). *)
-    let connector_key : C2c_monitor_logic.relay_key option =
-      match my_alias, inbox_sid with
-      | Some alias, Some sid ->
+       derives by default (Host_id.compute_host_hash). B180: recomputed on
+       identity rebind so a post-rename connector roster update is honoured. *)
+    let resolve_connector_key (alias : string) : C2c_monitor_logic.relay_key option =
+      match inbox_sid with
+      | Some sid ->
           (match C2c_relay_connector.read_connector_state broker_root with
            | Some cs when
                List.exists
@@ -709,8 +731,15 @@ let monitor_cmd =
                if node_id = "" then None
                else Some C2c_monitor_logic.{ node_id; session_id = sid }
            | _ -> None)
-      | _ -> None
+      | None -> None
     in
+    let connector_key0 =
+      match !my_alias_r with Some a -> resolve_connector_key a | None -> None
+    in
+    (* B180: live relay peek target. Updated in place on identity rebind so the
+       background peek thread adopts cli-<new> (or connector key) without a
+       process restart. None = relay watcher not armed. *)
+    let relay_peek_r : C2c_monitor_logic.relay_key option ref = ref None in
     let relay_status_label, _relay_thread =
       if no_relay || relay_interval <= 0.0 then
         ("off (--no-relay / --relay-interval 0)", None)
@@ -725,65 +754,70 @@ let monitor_cmd =
       else
         let decision =
           C2c_monitor_logic.decide_relay_watch
-            ~my_alias ~relay_url:relay_url_resolved ~identity
-            ~node_id_override ~session_id_override ~connector_key ()
+            ~my_alias:(!my_alias_r) ~relay_url:relay_url_resolved ~identity
+            ~node_id_override ~session_id_override ~connector_key:connector_key0 ()
         in
         match decision with
         | C2c_monitor_logic.Relay_watch_off reason ->
             (Printf.sprintf "off (%s)" reason, None)
         | C2c_monitor_logic.Relay_watch { node_id; session_id } ->
-            (* node_id/session_id guaranteed non-empty here by decide_relay_watch. *)
+            relay_peek_r := Some C2c_monitor_logic.{ node_id; session_id };
             let url = Option.get relay_url_resolved in
             let client = Relay.Relay_client.make ?token:relay_token_resolved url in
-            (* Sign against the EXACT body bytes peek_inbox_signed will send, so
-               the relay's signature verification matches (mirrors B096 `dm peek`).
-               B185: mint a FRESH Authorization header on EVERY peek — a once-
-               signed header reuses ts+nonce, so the second peek hits
-               nonce_replay and after ~request_ts_past_window (30s) of backoff
-               escalates to timestamp_out_of_window TERMINAL disable. *)
-            let body_str = Yojson.Safe.to_string (`Assoc [
-              ("node_id", `String node_id);
-              ("session_id", `String session_id)]) in
             let peek_once () =
-              (* Non-draining: peek_inbox* return the FULL relay response
-                 (`{ ok, messages }` or `{ ok:false, error_code, error }`)
-                 WITHOUT clearing the relay inbox. The response is classified by
-                 the caller — errors are surfaced (not swallowed), and a terminal
-                 auth/identity failure applies the local-watch terminal policy
-                 (H3/B142/B185). *)
-              match identity with
-              | Some id ->
-                  let auth =
-                    Relay_signed_ops.sign_request id ~alias:alias_str
-                      ~meth:"POST" ~path:"/peek_inbox" ~body_str ()
-                  in
-                  Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
-                                  ~node_id ~session_id ~auth_header:auth)
+              (* Non-draining peek. B180: read node/session/alias from refs so a
+                 mid-run rename rebinds the peek key + signing alias without
+                 restarting this thread. *)
+              match !relay_peek_r with
               | None ->
-                  Lwt_main.run (Relay.Relay_client.peek_inbox client
-                                  ~node_id ~session_id)
+                  `Assoc [ ("ok", `Bool false)
+                         ; ("error_code", `String "not_registered")
+                         ; ("error", `String "relay peek target cleared") ]
+              | Some { node_id; session_id } ->
+                  let body_str = Yojson.Safe.to_string (`Assoc [
+                    ("node_id", `String node_id);
+                    ("session_id", `String session_id)]) in
+                  let alias_str = Option.value !my_alias_r ~default:"" in
+                  match identity with
+                  | Some id ->
+                      let auth =
+                        Relay_signed_ops.sign_request id ~alias:alias_str
+                          ~meth:"POST" ~path:"/peek_inbox" ~body_str ()
+                      in
+                      Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
+                                      ~node_id ~session_id ~auth_header:auth)
+                  | None ->
+                      Lwt_main.run (Relay.Relay_client.peek_inbox client
+                                      ~node_id ~session_id)
             in
-            (* H3/B185 error honesty: distinguish transient (retry, may recover),
-               soft-terminal (budgeted retry with fresh sign), and hard-terminal
-               (true config/auth break — disable/exit). [err_streak] drives
-               exponential backoff and reconnect reporting. Soft terminal never
-               permanently disables without a recovery budget (B185). *)
+            (* H3 error honesty: distinguish transient (retry, may recover) from
+               terminal (auth/identity — will not self-heal) relay failures.
+               [err_streak] drives exponential backoff and reconnect reporting so
+               a flapping relay does not hammer the endpoint and a recovery is
+               announced. A terminal failure is reported clearly and then either
+               exits a pure-relay monitor non-zero for its supervisor, or disables
+               only relay watching while local receive continues. *)
             let err_streak = ref 0 in
-            let soft_budget = ref C2c_monitor_logic.empty_soft_budget in
-            (* B142: log the permanent-disable message ONCE. *)
+            (* B142: log the terminal message ONCE (a terminal error repeats
+               every peek cycle; without this guard the relay loop would spam
+               stderr each interval). B180: reset when identity rebinds so a
+               post-rename auth recovery is re-attempted honestly. *)
             let terminal_logged = ref false in
-            let handle_disable ~code detail remediation =
+            let last_terminal_target = ref "" in
+            let handle_terminal ~node_id ~session_id detail =
+              let target = node_id ^ "/" ^ session_id in
+              if !last_terminal_target <> target then begin
+                terminal_logged := false;
+                last_terminal_target := target
+              end;
               if not !terminal_logged then begin
                 terminal_logged := true;
                 Printf.eprintf
                   "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
-                   %s relay watch: recovery budget exhausted (or hard auth/config \
-                   break — code=%s). Relay watch will not self-heal without \
-                   operator action.\n\
-                   %s relay watch: remediation: %s\n%!"
-                  (now_hms ()) node_id session_id detail
-                  (now_hms ()) code
-                  (now_hms ()) remediation
+                   %s relay watch: this will not self-heal (auth / identity / \
+                   config). Re-register (c2c relay register) or fix the key/clock, \
+                   then restart the monitor.\n%!"
+                  (now_hms ()) node_id session_id detail (now_hms ())
               end;
               if C2c_monitor_logic.should_exit_on_relay_terminal ~local_watch_active
               then
@@ -807,60 +841,42 @@ let monitor_cmd =
               if Atomic.get relay_stop || Unix.getppid () = 1 then ()
               else begin
                 let now = Unix.gettimeofday () in
-                (* Backoff: after consecutive transient/soft errors wait longer
-                   before the next peek, capped at 60s. Zero streak == normal
-                   interval. *)
+                (* Backoff: after consecutive transient errors wait longer before
+                   the next peek, capped at 60s. Zero streak == normal interval. *)
                 let effective_interval =
                   if !err_streak = 0 then relay_interval
                   else Float.min 60.0 (relay_interval *. float_of_int (!err_streak + 1))
                 in
                 if now -. last_tick >= effective_interval then begin
+                  let peek_target = !relay_peek_r in
                   let outcome =
                     try C2c_monitor_logic.classify_relay_response (peek_once ())
                     with e -> C2c_monitor_logic.Peek_transient (Printexc.to_string e)
+                  in
+                  let node_id, session_id =
+                    match peek_target with
+                    | Some k -> k.node_id, k.session_id
+                    | None -> "?", "?"
                   in
                   (match outcome with
                    | C2c_monitor_logic.Peek_ok msgs ->
                        if !err_streak > 0 then begin
                          Printf.eprintf
                            "%s relay watch: reconnected (recovered after %d \
-                            error%s)\n%!"
+                            transient error%s)\n%!"
                            (now_hms ()) !err_streak
                            (if !err_streak = 1 then "" else "s");
                          err_streak := 0
                        end;
-                       soft_budget := C2c_monitor_logic.empty_soft_budget;
                        ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
                    | C2c_monitor_logic.Peek_transient detail ->
-                       (* Transient (incl. nonce_replay) never permanently
-                          disables; reset soft budget so a later soft code
-                          starts a fresh recovery window. *)
-                       soft_budget := C2c_monitor_logic.empty_soft_budget;
                        incr err_streak;
                        Printf.eprintf
                          "%s relay watch: transient error peeking %s/%s: %s \
                           (attempt %d; backing off, will retry)\n%!"
                          (now_hms ()) node_id session_id detail !err_streak
-                   | C2c_monitor_logic.Peek_terminal { code; detail } ->
-                       let action, budget' =
-                         C2c_monitor_logic.decide_on_terminal
-                           ~now ~code ~budget:!soft_budget ()
-                       in
-                       soft_budget := budget';
-                       (match action with
-                        | C2c_monitor_logic.Retry_soft
-                            { consecutive; threshold; remediation_hint } ->
-                            incr err_streak;
-                            Printf.eprintf
-                              "%s relay watch: recoverable error peeking %s/%s: \
-                               %s (soft %d/%d; backing off, will retry — not \
-                               disabling yet)\n\
-                               %s relay watch: hint: %s\n%!"
-                              (now_hms ()) node_id session_id detail
-                              consecutive threshold
-                              (now_hms ()) remediation_hint
-                        | C2c_monitor_logic.Disable { remediation; severity = _ } ->
-                            handle_disable ~code detail remediation));
+                   | C2c_monitor_logic.Peek_terminal detail ->
+                       handle_terminal ~node_id ~session_id detail);
                   relay_loop now
                 end else begin
                   (* Short sleep so the stop flag / parent-death is noticed
@@ -881,6 +897,162 @@ let monitor_cmd =
             (Printf.sprintf "peek %s/%s every %.1fs%s"
                node_id session_id relay_interval id_tag,
              Some th)
+    in
+    (* B180: rebind identity after rename without process restart.
+       Triggers: registry change, archive alias_renamed marker, periodic poll.
+       Re-arms include-self filter (via my_alias_r), monitor lockfile, and
+       relay peek key (cli-<new> / connector). --alias freezes identity. *)
+    let rebind_mutex = Mutex.create () in
+    let session_reg_alias_now () : string option =
+      match resolved_sid with
+      | None -> None
+      | Some sid ->
+          (match List.find_opt
+                   (fun (r : registration) -> r.session_id = sid)
+                   (lookup_regs ()) with
+           | Some r -> Some r.alias
+           | None -> None)
+    in
+    let emit_identity_changed ~old_alias ~new_alias ~reason ~relay_label () =
+      (* Share emit_mutex with message emit so NDJSON lines never interleave
+         with the relay/local emit paths (poll thread can rebind concurrently). *)
+      Mutex.lock emit_mutex;
+      Fun.protect ~finally:(fun () -> Mutex.unlock emit_mutex) (fun () ->
+        if json then begin
+          let ts = Printf.sprintf "%.3f" (Unix.gettimeofday ()) in
+          print_string (Yojson.Safe.to_string
+            (`Assoc [ "event_type", `String "identity.changed"
+                    ; "monitor_ts", `String ts
+                    ; "old_alias", (match old_alias with Some a -> `String a | None -> `Null)
+                    ; "new_alias", `String new_alias
+                    ; "reason", `String reason
+                    ; "alias_source", `String (C2c_monitor_logic.source_label !alias_source_r)
+                    ; "relay_watch", `String relay_label ]));
+          print_newline ()
+        end else begin
+          (match old_alias with
+           | Some o ->
+               Printf.printf "%s identity rebind: %s → %s (%s)\n%!"
+                 (now_hms ()) o new_alias reason
+           | None ->
+               Printf.printf "%s identity rebind: monitoring as %s (%s)\n%!"
+                 (now_hms ()) new_alias reason);
+          Printf.printf "%s monitoring as %s (session %s)\n%!"
+            (now_hms ()) new_alias
+            (match resolved_sid with Some s -> s | None -> "?");
+          Printf.printf "%s relay watch: %s\n%!" (now_hms ()) relay_label
+        end)
+    in
+    let migrate_lock ~new_alias =
+      match !monitor_lock_r with
+      | Some (old_fd, old_path) ->
+          let old_base = Filename.basename old_path in
+          (* Only migrate when the held lock is for a different alias. *)
+          if old_base <> (new_alias ^ ".lock") then
+            (match acquire_monitor_lock ~alias:new_alias ~force_displace:false with
+             | Some (fd, path) ->
+                 release_lock_pair old_fd old_path;
+                 monitor_lock_r := Some (fd, path)
+             | None ->
+                 (* Keep old lock; another monitor may already hold the new name. *)
+                 Printf.eprintf
+                   "%s identity rebind: could not acquire lock for '%s' \
+                    (keeping previous lock)\n%!" (now_hms ()) new_alias)
+      | None ->
+          (match acquire_monitor_lock ~alias:new_alias ~force_displace:false with
+           | Some (fd, path) -> monitor_lock_r := Some (fd, path)
+           | None -> ())
+    in
+    let rearm_relay_for_alias new_alias =
+      if no_relay || relay_interval <= 0.0 || not archive then
+        match !relay_peek_r with
+        | Some k ->
+            Printf.sprintf "peek %s/%s every %.1fs (unchanged; relay re-arm gated)"
+              k.node_id k.session_id relay_interval
+        | None -> relay_status_label
+      else
+        let ck = resolve_connector_key new_alias in
+        match
+          C2c_monitor_logic.decide_relay_watch
+            ~my_alias:(Some new_alias) ~relay_url:relay_url_resolved ~identity
+            ~node_id_override ~session_id_override ~connector_key:ck ()
+        with
+        | C2c_monitor_logic.Relay_watch_off reason ->
+            relay_peek_r := None;
+            Printf.sprintf "off (%s)" reason
+        | C2c_monitor_logic.Relay_watch { node_id; session_id } ->
+            let prev = !relay_peek_r in
+            relay_peek_r := Some C2c_monitor_logic.{ node_id; session_id };
+            (* If the relay thread was previously stopped on a terminal error
+               under the OLD key, do not auto-restart it here — B142 stop is
+               sticky for the process. Only swap the peek target when the
+               loop is still running. *)
+            let id_tag = if identity = None then " (unsigned)" else "" in
+            let label =
+              Printf.sprintf "peek %s/%s every %.1fs%s"
+                node_id session_id relay_interval id_tag
+            in
+            (match prev with
+             | Some p when p.node_id = node_id && p.session_id = session_id -> ()
+             | _ when not (Atomic.get relay_stop) ->
+                 Printf.eprintf
+                   "%s relay watch re-armed: %s\n%!" (now_hms ()) label
+             | _ -> ());
+            label
+    in
+    let try_rebind_identity ?hint () =
+      if flag_bound then ()
+      else begin
+        Mutex.lock rebind_mutex;
+        Fun.protect ~finally:(fun () -> Mutex.unlock rebind_mutex) (fun () ->
+          let session_alias =
+            match hint with
+            | Some n when String.trim n <> "" -> Some (String.trim n)
+            | _ -> session_reg_alias_now ()
+          in
+          (* Prefer live registration when available; hint only fills gaps
+             (e.g. archive marker races ahead of registry re-read). *)
+          let session_alias =
+            match session_reg_alias_now () with
+            | Some _ as s -> s
+            | None -> session_alias
+          in
+          match
+            C2c_monitor_logic.decide_identity_rebind
+              ~flag_bound
+              ~current_alias:(!my_alias_r)
+              ~session_reg_alias:session_alias
+              ()
+          with
+          | C2c_monitor_logic.No_rebind -> ()
+          | C2c_monitor_logic.Rebind { old_alias; new_alias; reason } ->
+              (* Migrate lock BEFORE swapping the alias ref so the expected
+                 old lock name still matches the held lock path. *)
+              migrate_lock ~new_alias;
+              my_alias_r := Some new_alias;
+              (match resolved_sid with
+               | Some sid -> alias_source_r := C2c_monitor_logic.Session_reg sid
+               | None -> ());
+              let relay_label = rearm_relay_for_alias new_alias in
+              emit_identity_changed ~old_alias ~new_alias ~reason ~relay_label ())
+      end
+    in
+    (* Background poll: registry renames that arrive while the main thread is
+       blocked on inotify still rebind within a few seconds. Cheap: one
+       registry list read. Skipped when --alias froze identity. *)
+    let _identity_poll_thread =
+      if flag_bound then None
+      else
+        Some (Thread.create (fun () ->
+          let rec loop () =
+            if Unix.getppid () = 1 then ()
+            else begin
+              (try try_rebind_identity () with _ -> ());
+              Thread.delay 2.0;
+              loop ()
+            end
+          in
+          loop ()) ())
     in
     (* Belt-and-braces startup orphan check: if the parent already died before
        we enter the inotify loop, exit immediately rather than loop forever. *)
@@ -953,24 +1125,24 @@ let monitor_cmd =
       print_string (Yojson.Safe.to_string
         (`Assoc [ "event_type", `String "monitor.ready"
                 ; "monitor_ts", `String ts
-                ; "alias", (match my_alias with Some a -> `String a | None -> `Null)
+                ; "alias", (match !my_alias_r with Some a -> `String a | None -> `Null)
                 ; "session_id", (match resolved_sid with Some s -> `String s | None -> `Null)
-                ; "alias_source", `String (C2c_monitor_logic.source_label alias_source)
+                ; "alias_source", `String (C2c_monitor_logic.source_label !alias_source_r)
                 ; "inbox_watch", `Bool do_inbox_watch
                 ; "relay_watch", `String relay_status_label ]));
       print_newline ()
     end else begin
-      (match my_alias with
+      (match !my_alias_r with
        | Some a ->
            Printf.printf "%s monitoring as %s (session %s)%s\n%!"
              (now_hms ()) a sid_str
-             (if C2c_monitor_logic.is_fallback_source alias_source
+             (if C2c_monitor_logic.is_fallback_source !alias_source_r
               then Printf.sprintf " — resolved via %s"
-                     (C2c_monitor_logic.source_label alias_source)
+                     (C2c_monitor_logic.source_label !alias_source_r)
               else "")
        | None ->
            Printf.printf "%s monitoring ALL peers — no alias resolved (%s)\n%!"
-             (now_hms ()) (C2c_monitor_logic.source_label alias_source));
+             (now_hms ()) (C2c_monitor_logic.source_label !alias_source_r));
       if do_inbox_watch then
         Printf.printf "%s watching live inbox (%s)\n%!"
           (now_hms ()) (if drain then "drain" else "peek");
@@ -1032,10 +1204,25 @@ let monitor_cmd =
                let path = Filename.concat watch_dir filename in
                let is_mine =
                  C2c_monitor_logic.archive_owner_is_mine ~archive_id:sid
-                   ~my_alias ~my_session_id:inbox_sid ()
+                   ~my_alias:(!my_alias_r) ~my_session_id:inbox_sid ()
                in
-               ignore (emit_filtered ~is_mine ~source:"local"
-                         (read_new_archive_entries path))
+               let entries = read_new_archive_entries path in
+               (* B180: B140 rename appends an alias_renamed marker to THIS
+                  session's archive. Detect it early and rebind before emit so
+                  filters/relay already use the new alias. *)
+               if is_mine then
+                 List.iter
+                   (fun m ->
+                     match C2c_monitor_logic.parse_alias_renamed_marker m with
+                     | Some (_old, new_a) -> try_rebind_identity ~hint:new_a ()
+                     | None -> ())
+                   entries;
+               ignore (emit_filtered ~is_mine ~source:"local" entries)
+             end else if filename = "registry.json" then begin
+               (* B180: registry rewrite (rename/register) while archive mode
+                  already watches the broker root for the live inbox. Re-resolve
+                  this session's alias so monitor identity tracks rename. *)
+               try_rebind_identity ()
              end else begin
                match inbox_filename with
                | Some ifn when filename = ifn ->
@@ -1045,7 +1232,7 @@ let monitor_cmd =
                    let event_up = String.uppercase_ascii event in
                    let is_delete = String.length event_up >= 6
                                    && String.sub event_up 0 6 = "DELETE" in
-                   let label = match my_alias with
+                   let label = match !my_alias_r with
                      | Some a -> a | None -> String.sub filename 0 (n - 11) in
                    if is_delete then begin
                      if sweeps then begin
@@ -1129,10 +1316,12 @@ let monitor_cmd =
                  (* Drop self-sent unless --include-self *)
                  let msgs =
                    if include_self then msgs
-                   else match my_alias with
+                   else match !my_alias_r with
                      | None -> msgs
                      | Some me -> List.filter (fun m -> match m with
-                         | `Assoc fields -> jstr fields "from_alias" "" <> me
+                         | `Assoc fields ->
+                             not (C2c_monitor_logic.alias_eq
+                                    (jstr fields "from_alias" "") me)
                          | _ -> true) msgs
                  in
                  (match msgs with
@@ -1150,8 +1339,9 @@ let monitor_cmd =
                       end
                   | msgs ->
                       if json then begin
-                        let is_mine = match my_alias with
-                          | None -> true | Some me -> alias = me in
+                        let is_mine = match !my_alias_r with
+                          | None -> true
+                          | Some me -> C2c_monitor_logic.alias_eq alias me in
                         if all || is_mine then
                           (* J3: canonical v1 shape (legacy keys additive).
                              The live path is always local-sourced; pre-J3 it
@@ -1164,10 +1354,13 @@ let monitor_cmd =
                                  ~monitor_ts:ts ~source:"local" m)
                           ) msgs
                       end else
-                        emit_messages ~my_alias ~all ~full_body ~source:"local" msgs)
+                        emit_messages ~my_alias:(!my_alias_r) ~all ~full_body
+                          ~source:"local" msgs)
                end
              end else if filename = "registry.json" && not archive then begin
-               (* Registry changed — diff against snapshot and emit peer events. *)
+               (* Registry changed — diff against snapshot and emit peer events.
+                  B180: also rebind our own identity if this session renamed. *)
+               try_rebind_identity ();
                let new_regs = read_registry_aliases () in
                let new_tbl : (string, string) Hashtbl.t = Hashtbl.create 16 in
                List.iter (fun (a, s) -> Hashtbl.replace new_tbl a s) new_regs;
@@ -1303,8 +1496,13 @@ let monitor =
                   $(b,~/.config/c2c/default-alias)), then that file, then \
                   $(b,C2C_MCP_SESSION_ID), then a single alive registration. The \
                   resolved identity is printed as the first line so a misresolution \
-                  is visible, not silent. New messages only — drains and sweeps \
-                  suppressed unless $(b,--drains)/$(b,--sweeps) are set."
+                  is visible, not silent. After $(b,c2c rename) the monitor \
+                  re-resolves this session's registration, re-arms the local \
+                  identity filter and relay peek key ($(b,cli-<new>) when not \
+                  connector-managed), and emits $(b,identity.changed) — no full \
+                  process restart required (B180). Explicit $(b,--alias) freezes \
+                  identity. New messages only — drains and sweeps suppressed \
+                  unless $(b,--drains)/$(b,--sweeps) are set."
             ; `P "Receive without a drainer: in the default (archive) mode the \
                   monitor ALSO watches your session's live inbox, so a bare CLI \
                   session with no hook/poll consumer still sees incoming messages \
@@ -1333,19 +1531,17 @@ let monitor =
                   With no connector it falls back to $(b,cli-<alias>) (matching \
                   $(b,c2c relay register --alias)). Explicit $(b,--relay-node-id) / \
                   $(b,--relay-session-id) always override the resolved default."
-            ; `P "Error honesty (H3/B185): a relay error is never silently swallowed. An \
+            ; `P "Error honesty (H3): a relay error is never silently swallowed. An \
                   $(b,ok:false) response is surfaced on stderr. A TRANSIENT error \
-                  (network blip, timeout, rate-limit, $(b,nonce_replay)) is retried with \
-                  backoff and a $(b,reconnected) line is emitted on recovery. Soft-terminal \
-                  codes ($(b,timestamp_out_of_window), $(b,signature_invalid)) get a \
-                  recovery budget (bounded retries + backoff; each peek is re-signed) \
-                  before the watcher is disabled. Hard-terminal errors (missing binding, \
-                  unknown node, bad-request — true config/auth breaks) disable immediately \
-                  with structured remediation. On permanent disable the main-thread local \
-                  inbox watch KEEPS RUNNING (B142). The monitor exits non-zero on terminal \
-                  relay failure ONLY when relay-watch is the sole reason it started (no \
-                  local watch active), so a supervisor still notices a dead pure-relay \
-                  monitor."
+                  (network blip, timeout, rate-limit) is retried with backoff and a \
+                  $(b,reconnected) line is emitted on recovery. A TERMINAL error \
+                  (auth / identity / signature / bad-request — will not self-heal) prints \
+                  a clear message ONCE and DISABLES the relay watcher — the \
+                  main-thread local inbox watch KEEPS RUNNING (B142), so a \
+                  relay-side problem never tears down local receive. The monitor \
+                  exits with a non-zero code on a terminal relay failure ONLY when \
+                  relay-watch is the sole reason it started (no local watch active), \
+                  so a supervisor still notices a dead pure-relay monitor."
             ; `S "EXIT STATUS"
             ; `P "0  clean exit (parent gone / stop; also after a terminal relay \
                   failure when a local inbox watch is active — the local watch keeps \

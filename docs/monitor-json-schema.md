@@ -56,6 +56,30 @@ Fields:
 - `inbox_watch`: `true` when the default archive-mode monitor also watches this session's live inbox. That live-inbox watch lets a bare CLI session see incoming messages by peeking unless `--drain` is set.
 - `relay_watch`: human-readable relay watcher status, such as `peek <node_id>/<session_id> every 5.0s`, `peek <node_id>/<session_id> every 5.0s (unsigned)`, `off (--no-relay / --relay-interval 0)`, `off (--live mode: relay watcher requires the default archive mode for dedup)`, or `off (no relay URL configured (c2c relay setup / C2C_RELAY_URL))`.
 
+### `identity.changed`
+
+Emitted when a running monitor rebinds its alias after a session rename (B180) without a process restart. Detection sources: this session's broker registration (registry poll / `registry.json` inotify), or the B140 `alias_renamed` archive marker. Suppressed when the monitor was started with an explicit `--alias` flag (operator froze identity).
+
+```json
+{
+  "event_type": "identity.changed",
+  "monitor_ts": "1745241234.500",
+  "old_alias": "old-name",
+  "new_alias": "gk-black",
+  "reason": "session registration alias changed",
+  "alias_source": "session 01HXEXAMPLESESSION registration",
+  "relay_watch": "peek cli-gk-black/cli-gk-black every 5.0s"
+}
+```
+
+Fields:
+
+- `old_alias`: previous monitor alias, or `null` if the monitor had no alias before rebind.
+- `new_alias`: alias adopted after rebind (matches the session registration).
+- `reason`: human-readable cause (`session registration alias changed`, `session registration casefold rename`, `session registration appeared`, …).
+- `alias_source`: source label after rebind (typically this session's registration).
+- `relay_watch`: relay watcher status after re-arm (peek key updates to `cli-<new>` unless a connector-managed key or explicit `--relay-node-id` override applies).
+
 ### `message`
 
 A new message was written to a broker inbox/live-inbox watch, appended to the archive, or peeked from the relay inbox.

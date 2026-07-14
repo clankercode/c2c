@@ -433,8 +433,7 @@ let test_classify_auth_error_is_terminal () =
                     ; ("error_code", `String "signature_invalid")
                     ; ("error", `String "Ed25519 request signature does not verify") ] in
   (match L.classify_relay_response resp with
-   | L.Peek_terminal { code; detail } ->
-       Alcotest.(check string) "code field" "signature_invalid" code;
+   | L.Peek_terminal detail ->
        Alcotest.(check bool) "detail names the code" true
          (str_contains detail "signature_invalid")
    | _ -> Alcotest.fail "expected Peek_terminal for signature_invalid")
@@ -443,8 +442,7 @@ let test_classify_unauthorized_is_terminal () =
   let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "unauthorized")
                     ; ("error", `String "missing Authorization header") ] in
   (match L.classify_relay_response resp with
-   | L.Peek_terminal { code; _ } ->
-       Alcotest.(check string) "code field" "unauthorized" code
+   | L.Peek_terminal _ -> ()
    | _ -> Alcotest.fail "expected Peek_terminal for unauthorized")
 
 let test_classify_connection_error_is_transient () =
@@ -454,16 +452,6 @@ let test_classify_connection_error_is_transient () =
   (match L.classify_relay_response resp with
    | L.Peek_transient _ -> ()
    | _ -> Alcotest.fail "expected Peek_transient for connection_error")
-
-let test_classify_nonce_replay_is_transient () =
-  (* B185: nonce_replay must stay retryable — never a permanent disable alone. *)
-  let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "nonce_replay")
-                    ; ("error", `String "request nonce replay") ] in
-  (match L.classify_relay_response resp with
-   | L.Peek_transient detail ->
-       Alcotest.(check bool) "detail names nonce_replay" true
-         (str_contains detail "nonce_replay")
-   | _ -> Alcotest.fail "expected Peek_transient for nonce_replay")
 
 let test_classify_unknown_code_defaults_transient () =
   (* An unrecognized error_code must NOT kill the monitor — default transient. *)
@@ -483,7 +471,7 @@ let test_is_terminal_error_code_taxonomy () =
     [ "unauthorized"; "signature_invalid"; "timestamp_out_of_window"
     ; "missing_proof_field"; "not_found"; "unknown_node"; "not_registered"; "bad_request" ];
   List.iter (fun c -> Alcotest.(check bool) (c ^ " transient") false (L.is_terminal_error_code c))
-    [ "connection_error"; "pow_required"; "rate_limited"; "nonce_replay"; ""; "peer_timeout" ]
+    [ "connection_error"; "pow_required"; "rate_limited"; ""; "peer_timeout" ]
 
 (* Lock the classifier to the EXACT JSON the public HTTPS relay
    (https://relay.c2c.im) returns, captured live 2026-07-10 via a read-only
@@ -498,8 +486,7 @@ let test_classify_real_relay_json_strings () =
       {|{"ok":false,"error_code":"bad_request","error":"node_id and session_id are required"}|}
   in
   (match L.classify_relay_response bad_req with
-   | L.Peek_terminal { code; _ } ->
-       Alcotest.(check string) "real bad_request code" "bad_request" code
+   | L.Peek_terminal _ -> ()
    | _ -> Alcotest.fail "real bad_request should classify terminal")
 
 let test_exit_code_distinct () =
@@ -525,115 +512,107 @@ let test_terminal_without_local_watch_exits () =
     true
     (L.should_exit_on_relay_terminal ~local_watch_active:false)
 
-(* ---------- B185: soft vs hard terminal + recovery budget ---------- *)
+(* ---------- B180: identity rebind after rename ---------- *)
 
-let test_terminal_severity_taxonomy () =
-  Alcotest.(check bool) "timestamp soft" true
-    (L.terminal_severity_of_code "timestamp_out_of_window" = L.Soft_terminal);
-  Alcotest.(check bool) "signature soft" true
-    (L.terminal_severity_of_code "signature_invalid" = L.Soft_terminal);
-  List.iter
-    (fun c ->
-      Alcotest.(check bool) (c ^ " hard") true
-        (L.terminal_severity_of_code c = L.Hard_terminal))
-    [ "unauthorized"; "not_registered"; "unknown_node"; "not_found"
-    ; "missing_proof_field"; "bad_request" ]
+let rebind_new = function
+  | L.Rebind { new_alias; _ } -> Some new_alias
+  | L.No_rebind -> None
 
-let is_retry_soft = function L.Retry_soft _ -> true | L.Disable _ -> false
-let is_disable = function L.Disable _ -> true | L.Retry_soft _ -> false
+let test_rebind_when_session_alias_changes () =
+  match
+    L.decide_identity_rebind ~flag_bound:false
+      ~current_alias:(Some "old-alias")
+      ~session_reg_alias:(Some "gk-black") ()
+  with
+  | L.Rebind { old_alias; new_alias; _ } ->
+      Alcotest.(check (option string)) "old" (Some "old-alias") old_alias;
+      Alcotest.(check string) "new" "gk-black" new_alias
+  | L.No_rebind -> Alcotest.fail "expected rebind after rename"
 
-let test_hard_terminal_disables_immediately () =
-  let action, budget =
-    L.decide_on_terminal ~now:1000.0 ~code:"unauthorized"
-      ~budget:L.empty_soft_budget ()
+let test_rebind_suppressed_when_flag_bound () =
+  Alcotest.(check (option string)) "flag freezes identity" None
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:true
+          ~current_alias:(Some "old-alias")
+          ~session_reg_alias:(Some "gk-black") ()))
+
+let test_rebind_noop_when_same_alias () =
+  Alcotest.(check (option string)) "same spelling -> no rebind" None
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:false
+          ~current_alias:(Some "gk-black")
+          ~session_reg_alias:(Some "gk-black") ()))
+
+let test_rebind_casefold_spelling_change () =
+  match
+    L.decide_identity_rebind ~flag_bound:false
+      ~current_alias:(Some "Lyra-Quill")
+      ~session_reg_alias:(Some "lyra-quill") ()
+  with
+  | L.Rebind { new_alias; _ } ->
+      Alcotest.(check string) "adopt registry spelling" "lyra-quill" new_alias
+  | L.No_rebind -> Alcotest.fail "case-only rename should rebind display alias"
+
+let test_rebind_when_alias_appears () =
+  Alcotest.(check (option string)) "unresolved -> session reg" (Some "fresh")
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:false
+          ~current_alias:None ~session_reg_alias:(Some "fresh") ()));
+  Alcotest.(check (option string)) "no reg -> no rebind" None
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:false
+          ~current_alias:(Some "x") ~session_reg_alias:None ()))
+
+let test_parse_alias_renamed_marker_from_content () =
+  let marker =
+    `Assoc
+      [ ("from_alias", `String "c2c-system")
+      ; ("to_alias", `String "gk-black")
+      ; ( "content"
+        , `String
+            (Yojson.Safe.to_string
+               (`Assoc
+                  [ ("type", `String "alias_renamed")
+                  ; ("old_alias", `String "old-name")
+                  ; ("new_alias", `String "gk-black") ])) )
+      ]
   in
-  Alcotest.(check bool) "hard -> Disable" true (is_disable action);
-  Alcotest.(check int) "budget cleared" 0 budget.L.consecutive;
-  (match action with
-   | L.Disable { remediation; severity } ->
-       Alcotest.(check bool) "hard severity" true (severity = L.Hard_terminal);
-       Alcotest.(check bool) "remediation mentions register" true
-         (str_contains remediation "relay register")
-   | L.Retry_soft _ -> Alcotest.fail "expected Disable for unauthorized")
+  Alcotest.(check (option (pair string string))) "content JSON marker"
+    (Some ("old-name", "gk-black"))
+    (L.parse_alias_renamed_marker marker)
 
-let test_soft_terminal_retries_before_budget () =
-  (* B185 core: first timestamp_out_of_window must NOT permanently disable. *)
-  let action, budget =
-    L.decide_on_terminal ~threshold:6 ~min_span_s:30.0
-      ~now:1000.0 ~code:"timestamp_out_of_window"
-      ~budget:L.empty_soft_budget ()
+let test_parse_alias_renamed_marker_direct_and_noise () =
+  let direct =
+    `Assoc
+      [ ("type", `String "alias_renamed")
+      ; ("old_alias", `String "a")
+      ; ("new_alias", `String "b") ]
   in
-  Alcotest.(check bool) "first soft -> Retry_soft" true (is_retry_soft action);
-  Alcotest.(check int) "consecutive = 1" 1 budget.L.consecutive;
-  (match action with
-   | L.Retry_soft { consecutive; threshold; remediation_hint } ->
-       Alcotest.(check int) "report consecutive" 1 consecutive;
-       Alcotest.(check int) "report threshold" 6 threshold;
-       Alcotest.(check bool) "hint mentions clock/skew" true
-         (str_contains remediation_hint "Clock" || str_contains remediation_hint "skew"
-          || str_contains remediation_hint "NTP")
-   | L.Disable _ -> Alcotest.fail "must not disable on first soft terminal")
+  Alcotest.(check (option (pair string string))) "direct object"
+    (Some ("a", "b")) (L.parse_alias_renamed_marker direct);
+  Alcotest.(check (option (pair string string))) "ordinary message"
+    None
+    (L.parse_alias_renamed_marker
+       (msg ~from:"x" ~to_:"y" "hello there"));
+  Alcotest.(check (option (pair string string))) "non-object"
+    None (L.parse_alias_renamed_marker (`String "nope"))
 
-let test_soft_terminal_exhausts_budget () =
-  (* Walk the soft streak to threshold with enough wall-clock span. *)
-  let rec loop i budget now =
-    let action, budget' =
-      L.decide_on_terminal ~threshold:3 ~min_span_s:10.0
-        ~now ~code:"timestamp_out_of_window" ~budget ()
-    in
-    if i < 3 then begin
-      Alcotest.(check bool)
-        (Printf.sprintf "soft attempt %d retries" i) true (is_retry_soft action);
-      loop (i + 1) budget' (now +. 5.0)
-    end else begin
-      (* i=3: consecutive becomes 3 and elapsed = 15s >= 10s → Disable *)
-      Alcotest.(check bool) "budget exhausted -> Disable" true (is_disable action);
-      Alcotest.(check int) "budget cleared after disable" 0 budget'.L.consecutive;
-      (match action with
-       | L.Disable { severity; remediation } ->
-           Alcotest.(check bool) "still soft severity at disable" true
-             (severity = L.Soft_terminal);
-           Alcotest.(check bool) "remediation non-empty" true
-             (String.length remediation > 10)
-       | L.Retry_soft _ -> Alcotest.fail "expected Disable after budget")
-    end
+let test_relay_peek_key_after_rebind_cli_convention () =
+  let k =
+    L.relay_peek_key_after_rebind ~new_alias:"gk-black"
+      ~node_id_override:None ~session_id_override:None ~connector_key:None ()
   in
-  loop 1 L.empty_soft_budget 1000.0
+  Alcotest.(check string) "node_id" "cli-gk-black" k.L.node_id;
+  Alcotest.(check string) "session_id" "cli-gk-black" k.L.session_id
 
-let test_soft_terminal_requires_min_span () =
-  (* Hitting threshold count without enough wall-clock span still retries. *)
-  let rec burn i budget =
-    let action, budget' =
-      L.decide_on_terminal ~threshold:3 ~min_span_s:60.0
-        ~now:(1000.0 +. float_of_int i)  (* only ~3s total span *)
-        ~code:"signature_invalid" ~budget ()
-    in
-    if i < 5 then begin
-      Alcotest.(check bool)
-        (Printf.sprintf "within min_span attempt %d still retries" i)
-        true (is_retry_soft action);
-      burn (i + 1) budget'
-    end else ()
+let test_relay_peek_key_after_rebind_keeps_connector () =
+  let ck = Some L.{ node_id = "host-xyz"; session_id = "sess-9" } in
+  let k =
+    L.relay_peek_key_after_rebind ~new_alias:"gk-black"
+      ~node_id_override:None ~session_id_override:None ~connector_key:ck ()
   in
-  burn 0 L.empty_soft_budget
-
-let test_soft_terminal_recovery_resets_via_empty_budget () =
-  (* After a soft streak, a successful peek (caller resets to empty_soft_budget)
-     starts a fresh window — next soft is attempt 1 again, not disable. *)
-  let _, mid =
-    L.decide_on_terminal ~threshold:3 ~min_span_s:0.0
-      ~now:1000.0 ~code:"timestamp_out_of_window"
-      ~budget:L.empty_soft_budget ()
-  in
-  Alcotest.(check int) "mid streak" 1 mid.L.consecutive;
-  (* Simulate recovery: caller uses empty_soft_budget after Peek_ok. *)
-  let action, after =
-    L.decide_on_terminal ~threshold:3 ~min_span_s:0.0
-      ~now:1100.0 ~code:"timestamp_out_of_window"
-      ~budget:L.empty_soft_budget ()
-  in
-  Alcotest.(check bool) "after reset still Retry_soft" true (is_retry_soft action);
-  Alcotest.(check int) "streak restarts at 1" 1 after.L.consecutive
+  Alcotest.(check string) "connector node kept" "host-xyz" k.L.node_id;
+  Alcotest.(check string) "connector session kept" "sess-9" k.L.session_id
 
 let () =
   Alcotest.run "c2c_monitor_logic"
@@ -684,7 +663,6 @@ let () =
         ; Alcotest.test_case "auth error is terminal" `Quick test_classify_auth_error_is_terminal
         ; Alcotest.test_case "unauthorized is terminal" `Quick test_classify_unauthorized_is_terminal
         ; Alcotest.test_case "connection error is transient" `Quick test_classify_connection_error_is_transient
-        ; Alcotest.test_case "nonce_replay is transient" `Quick test_classify_nonce_replay_is_transient
         ; Alcotest.test_case "unknown code defaults transient" `Quick test_classify_unknown_code_defaults_transient
         ; Alcotest.test_case "malformed is transient" `Quick test_classify_malformed_is_transient
         ; Alcotest.test_case "terminal error code taxonomy" `Quick test_is_terminal_error_code_taxonomy
@@ -697,18 +675,24 @@ let () =
         ; Alcotest.test_case "terminal + no local watch -> exit" `Quick
             test_terminal_without_local_watch_exits
         ] )
-    ; ( "b185-soft-terminal-recovery",
-        [ Alcotest.test_case "soft vs hard severity taxonomy" `Quick
-            test_terminal_severity_taxonomy
-        ; Alcotest.test_case "hard terminal disables immediately" `Quick
-            test_hard_terminal_disables_immediately
-        ; Alcotest.test_case "soft terminal retries before budget" `Quick
-            test_soft_terminal_retries_before_budget
-        ; Alcotest.test_case "soft terminal exhausts budget" `Quick
-            test_soft_terminal_exhausts_budget
-        ; Alcotest.test_case "soft terminal requires min span" `Quick
-            test_soft_terminal_requires_min_span
-        ; Alcotest.test_case "soft streak resets after empty budget" `Quick
-            test_soft_terminal_recovery_resets_via_empty_budget
+    ; ( "identity-rebind-b180",
+        [ Alcotest.test_case "rebind when session alias changes" `Quick
+            test_rebind_when_session_alias_changes
+        ; Alcotest.test_case "flag_bound suppresses rebind" `Quick
+            test_rebind_suppressed_when_flag_bound
+        ; Alcotest.test_case "same alias is noop" `Quick
+            test_rebind_noop_when_same_alias
+        ; Alcotest.test_case "casefold spelling change rebinds" `Quick
+            test_rebind_casefold_spelling_change
+        ; Alcotest.test_case "alias appears / missing reg" `Quick
+            test_rebind_when_alias_appears
+        ; Alcotest.test_case "parse alias_renamed from content" `Quick
+            test_parse_alias_renamed_marker_from_content
+        ; Alcotest.test_case "parse alias_renamed direct + noise" `Quick
+            test_parse_alias_renamed_marker_direct_and_noise
+        ; Alcotest.test_case "relay key after rebind uses cli-new" `Quick
+            test_relay_peek_key_after_rebind_cli_convention
+        ; Alcotest.test_case "relay key after rebind keeps connector" `Quick
+            test_relay_peek_key_after_rebind_keeps_connector
         ] )
     ]

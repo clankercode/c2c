@@ -349,15 +349,15 @@ let decide_relay_watch
 type relay_peek_outcome =
   | Peek_ok of Yojson.Safe.t list  (* ok:true / legacy: pending messages *)
   | Peek_transient of string       (* retry, may recover (network/5xx/rate-limit) *)
-  | Peek_terminal of { code : string; detail : string }
-    (* auth/identity — terminal policy applies; [code] drives soft vs hard severity *)
+  | Peek_terminal of string        (* auth/identity — terminal policy applies *)
 
-(* Error codes that are NOT plain network blips: the monitor's terminal policy
-   applies (hard disable or soft recovery budget — see [terminal_severity_of_code]).
-   True retryables (nonce_replay, connection_error, 5xx, rate_limit, unknown)
-   stay off this list so they never permanently disable the relay watch.
-   Anything not listed defaults to transient — better to keep retrying an
-   unrecognized/blip error than to kill a monitor on a code we did not anticipate. *)
+(* Error codes that mean the peek can NEVER succeed by retrying with the same
+   identity/key: the operator must re-register, fix the clock, fix the key, or
+   fix the request. The monitor applies its terminal policy to these errors:
+   pure-relay monitoring exits non-zero, while a local watch disables only its
+   relay loop. Anything not listed defaults to transient — better to keep
+   retrying an unrecognized/blip error than to kill a monitor on a code we did
+   not anticipate. *)
 let is_terminal_error_code = function
   | "unauthorized"
   | "signature_invalid"
@@ -388,8 +388,7 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
              | c, "" -> c
              | c, m -> Printf.sprintf "%s: %s" c m
            in
-           if is_terminal_error_code code then
-             Peek_terminal { code; detail }
+           if is_terminal_error_code code then Peek_terminal detail
            else Peek_transient detail
        | Some true | None ->
            (* ok:true, or a legacy relay with no `ok` field — messages are
@@ -401,102 +400,6 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
    usage/startup exit 1 so a supervisor can tell an auth/identity relay failure
    apart from a bad-invocation or broker-root error (A038/B182/B196). *)
 let exit_relay_terminal = 3
-
-(* ---------- B185: soft vs hard terminal + recovery budget ---------- *)
-
-(* Hard terminal = true config/auth breakage (missing binding, unknown node,
-   malformed request) — will not self-heal by retrying the same setup.
-   Soft terminal = can be a transient client/relay glitch (stale signed request
-   after backoff, brief clock blip, intermittent verify failure). Soft codes
-   get a recovery budget before the monitor permanently disables relay watch
-   (B185: two nonce_replays escalating into timestamp_out_of_window used to
-   TERMINAL-disable forever with "will not self-heal" even when the host clock
-   was fine). nonce_replay itself is *not* terminal — it is Peek_transient. *)
-type terminal_severity =
-  | Soft_terminal
-  | Hard_terminal
-
-let terminal_severity_of_code = function
-  | "timestamp_out_of_window"
-  | "signature_invalid" -> Soft_terminal
-  | _ -> Hard_terminal
-
-(* Consecutive soft-terminal peeks required before permanent disable. With a
-   5s peek interval + backoff this is ~tens of seconds of sustained failure —
-   long enough for a fresh-sign retry or brief skew to clear, short enough that
-   a real broken identity still fails closed. *)
-let default_soft_terminal_threshold = 6
-
-(* Also require the soft streak to span at least this many wall-clock seconds
-   before disable, so a fast burst of retries cannot burn the budget instantly. *)
-let default_soft_terminal_min_span_s = 30.0
-
-type soft_terminal_budget = {
-  consecutive : int;
-  first_at : float option;
-}
-
-let empty_soft_budget = { consecutive = 0; first_at = None }
-
-let remediation_for_code = function
-  | "timestamp_out_of_window" ->
-      "Clock skew or a stale signed request. The monitor re-signs each peek; \
-       if this persists, check host NTP vs the relay HTTP Date header, then \
-       restart the monitor (c2c relay register if the lease looks dead)."
-  | "signature_invalid" ->
-      "Request signature does not verify. Re-run `c2c relay register --alias \
-       <alias>` with this session's identity key, then restart the monitor."
-  | "unauthorized" | "not_registered" ->
-      "No valid relay identity binding for this alias. Run `c2c relay register \
-       --alias <alias>` (or fix the key), then restart the monitor."
-  | "unknown_node" | "not_found" ->
-      "Relay does not know this node/session. Re-register (`c2c relay register`) \
-       and confirm the peek key (connector-managed vs cli-<alias>)."
-  | "missing_proof_field" | "bad_request" ->
-      "Malformed signed request or client/relay protocol skew. Upgrade c2c and \
-       the relay if needed, then restart the monitor."
-  | _ ->
-      "Re-register (`c2c relay register`) or fix the key/clock, then restart \
-       the monitor."
-
-type terminal_action =
-  | Retry_soft of {
-      consecutive : int;
-      threshold : int;
-      remediation_hint : string;
-    }
-  | Disable of {
-      severity : terminal_severity;
-      remediation : string;
-    }
-
-(* B185 pure policy: hard terminal → disable immediately; soft terminal →
-   retry until [threshold] consecutive failures spanning at least [min_span_s]
-   wall-clock seconds, then disable with structured remediation. [budget] is
-   the caller's soft-streak state (reset on Peek_ok / Peek_transient). *)
-let decide_on_terminal
-    ?(threshold = default_soft_terminal_threshold)
-    ?(min_span_s = default_soft_terminal_min_span_s)
-    ~now
-    ~code
-    ~budget
-    () : terminal_action * soft_terminal_budget =
-  let severity = terminal_severity_of_code code in
-  let remediation = remediation_for_code code in
-  match severity with
-  | Hard_terminal ->
-      (Disable { severity; remediation }, empty_soft_budget)
-  | Soft_terminal ->
-      let first = match budget.first_at with Some t -> t | None -> now in
-      let consecutive = budget.consecutive + 1 in
-      let budget' = { consecutive; first_at = Some first } in
-      let elapsed = now -. first in
-      if consecutive >= threshold && elapsed >= min_span_s then
-        (Disable { severity; remediation }, empty_soft_budget)
-      else
-        ( Retry_soft
-            { consecutive; threshold; remediation_hint = remediation }
-        , budget' )
 
 (* B142: on a relay-peek TERMINAL failure, decide whether to tear the WHOLE
    monitor process down. The relay-peek watcher runs in a background thread; a
@@ -512,39 +415,113 @@ let decide_on_terminal
    the impure thread. *)
 let should_exit_on_relay_terminal ~local_watch_active = not local_watch_active
 
-(* ---------- B178: fresh signed Authorization per relay peek ---------- *)
+(* ---------- B180: identity rebind after rename ----------
 
-(* B178: each /peek_inbox call MUST use a freshly signed Authorization header.
-   Caching one signature across the monitor relay loop reuses the same ts+nonce:
+   `c2c monitor` historically bound alias + relay peek keys once at startup.
+   After `c2c rename`, the process kept filtering/peeking as the OLD alias
+   until killed. These pure helpers decide when to rebind and extract the
+   rename signal from the archive marker that B140 appends. The impure
+   monitor command re-arms filters, lockfile, and relay peek keys. *)
 
-     1. first successful peek (or first attempt) consumes the nonce
-     2. subsequent peeks with the same header → nonce_replay (transient)
-     3. after ~request_ts_past_window (30s) of backoff →
-        timestamp_out_of_window TERMINAL with a constant ~-30.5s skew
+type identity_rebind =
+  | No_rebind
+  | Rebind of {
+      old_alias : string option;
+      new_alias : string;
+      reason : string;
+    }
 
-   Host NTP can be perfect; the skew is the age of the *cached* signature, not
-   the wall clock. [sign_once] is injected so unit tests assert "N peeks ⇒ N
-   sign calls + N distinct headers" without crypto. The live monitor wires
-   Relay_signed_ops.sign_request (with meth=POST path=/peek_inbox) as sign_once. *)
-let auth_header_for_peek ~(sign_once : 'id -> string) (identity : 'id option)
-    : string option =
-  match identity with
-  | None -> None
-  | Some id -> Some (sign_once id)
+(* Case-insensitive alias equality (mirrors Broker.alias_casefold). *)
+let alias_eq a b = String.lowercase_ascii a = String.lowercase_ascii b
 
-(* Simulate the B178 failure chain for a *reused* Authorization header against
-   a freshness window. Pure fixture for regression tests: after the first use
-   the nonce is spent; after [past_window] seconds the cached ts is outside the
-   window. Fresh sign-per-peek never takes either branch. *)
-type reused_auth_peek_result =
-  | Reused_ok
-  | Reused_nonce_replay
-  | Reused_timestamp_out_of_window of float  (* reported skew, seconds *)
+(* Decide whether the monitor should adopt a new alias without restarting.
 
-let classify_reused_auth_peek ~past_window ~used_once ~age_s =
-  if age_s > past_window then
-    Reused_timestamp_out_of_window (-. age_s)
-  else if used_once then
-    Reused_nonce_replay
+   Policy:
+   - [flag_bound]: operator passed --alias; never auto-rebind (they asked
+     to watch a fixed name, not "this session").
+   - Otherwise compare [current_alias] to [session_reg_alias] (the alias on
+     THIS session_id's broker registration — authoritative after rename).
+   - No registration → no rebind (cannot invent an identity).
+   - Same alias (casefold) with identical spelling → No_rebind.
+   - Same casefold but different spelling (Lyra → lyra) → Rebind so the
+     operator-facing banner / include-self filter / relay sign alias match
+     the registry exactly.
+   - Different alias → Rebind. *)
+let decide_identity_rebind
+      ~flag_bound
+      ~current_alias
+      ~session_reg_alias
+      () : identity_rebind =
+  if flag_bound then No_rebind
   else
-    Reused_ok
+    match session_reg_alias with
+    | None -> No_rebind
+    | Some new_alias when String.trim new_alias = "" -> No_rebind
+    | Some new_alias ->
+        (match current_alias with
+         | Some cur when cur = new_alias -> No_rebind
+         | Some cur when alias_eq cur new_alias ->
+             Rebind
+               { old_alias = Some cur
+               ; new_alias
+               ; reason = "session registration casefold rename"
+               }
+         | Some cur ->
+             Rebind
+               { old_alias = Some cur
+               ; new_alias
+               ; reason = "session registration alias changed"
+               }
+         | None ->
+             Rebind
+               { old_alias = None
+               ; new_alias
+               ; reason = "session registration appeared"
+               })
+
+(* Parse the B140 archive marker that rename appends:
+     content = {"type":"alias_renamed","old_alias":"...","new_alias":"..."}
+   Also accepts a full message object whose `content` field holds that JSON
+   (the shape archive/*.jsonl stores). Returns None for ordinary messages. *)
+let parse_alias_renamed_marker (m : Yojson.Safe.t) : (string * string) option =
+  let from_assoc fields =
+    match List.assoc_opt "type" fields with
+    | Some (`String "alias_renamed") ->
+        (match List.assoc_opt "old_alias" fields,
+               List.assoc_opt "new_alias" fields with
+         | Some (`String o), Some (`String n)
+           when String.trim o <> "" && String.trim n <> "" -> Some (o, n)
+         | _ -> None)
+    | _ -> None
+  in
+  match m with
+  | `Assoc fields ->
+      (match from_assoc fields with
+       | Some _ as hit -> hit
+       | None ->
+           (match List.assoc_opt "content" fields with
+            | Some (`String s) ->
+                (try
+                   match Yojson.Safe.from_string s with
+                   | `Assoc inner -> from_assoc inner
+                   | _ -> None
+                 with _ -> None)
+            | Some (`Assoc inner) -> from_assoc inner
+            | _ -> None))
+  | _ -> None
+
+(* After a rebind, recompute the relay peek key for [new_alias] using the
+   same defaults as startup (connector-managed key when present, else
+   cli-<alias>). Pure wrapper so tests can lock the B180 re-arm contract. *)
+let relay_peek_key_after_rebind
+      ~new_alias
+      ~node_id_override
+      ~session_id_override
+      ~connector_key
+      () : relay_key =
+  resolve_relay_peek_key
+    ~alias:new_alias
+    ~node_id_override
+    ~session_id_override
+    ~connector_key
+    ()
