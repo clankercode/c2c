@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-14T08:41:37Z"
 claimed_by: grok-sonic-rest-72qu
-completed_at: null
+completed_at: "2026-07-14T09:08:07Z"
 complexity: medium
 created_at: "2026-07-13T03:38:28Z"
 depends_on: []
+duration_minutes: 26.5140533204
 estimate_hours: 1
 id: B175
 priority: medium
 started_at: "2026-07-14T08:41:37Z"
-status: in_progress
+status: done
 tags: []
 title: Codex app-server startup fails on slow readiness and reports misleading upgrade guidance
-updated_at: "2026-07-14T08:41:37Z"
+updated_at: "2026-07-14T09:08:07Z"
 ---
 Observed when running the local cx alias:
 
