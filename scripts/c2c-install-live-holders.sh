@@ -40,17 +40,25 @@ binaries=(
 # symlinks robustly (they may resolve to a deleted-but-still-open file
 # after rm). We use stat output rather than readlink because /proc/exe
 # can show the (deleted) suffix.
+# NOTE: keep an explicit count — `${#inode_to_name[@]}` on an EMPTY assoc
+# array trips `set -u` on bash 5.1 (first install: no binaries exist yet,
+# the map stays empty, and the whole install aborts). Indexed arrays are
+# not affected.
 declare -A inode_to_name
+inode_count=0
 for bin in "${binaries[@]}"; do
   if [ -e "$bin" ]; then
     # Format: dev:inode → friendly name
     key=$(stat -c '%d:%i' "$bin" 2>/dev/null || echo "")
-    [ -n "$key" ] && inode_to_name["$key"]="$(basename "$bin")"
+    if [ -n "$key" ]; then
+      inode_to_name["$key"]="$(basename "$bin")"
+      inode_count=$((inode_count + 1))
+    fi
   fi
 done
 
 # No installed binaries to scan against.
-if [ "${#inode_to_name[@]}" -eq 0 ]; then
+if [ "$inode_count" -eq 0 ]; then
   exit 0
 fi
 
