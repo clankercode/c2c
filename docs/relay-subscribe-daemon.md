@@ -48,7 +48,7 @@ Options:
 | `--relay-url URL` | Relay base URL. Resolution order above; recommend always setting this (or `C2C_RELAY_URL`) for non-public relays. |
 | `--socket PATH` | Unix socket path. Defaults to `~/.c2c/relay-subscribe.sock`. |
 
-The daemon opens WebSocket connections on behalf of aliases registered over the Unix socket IPC. The subscribe/subscribe-daemon push path still has a TLS/WebSocket caveat: if WSS/TLS push is not available for an HTTPS relay, drain inbound relay DMs with `c2c relay dm --alias <you> poll` instead. This fallback is scoped to relay subscribe push and does not change the `c2c relay connect` guidance.
+The daemon opens WebSocket connections on behalf of aliases registered over the Unix socket IPC. TLS (`https://` / `wss://`) is supported (B189) for edge-terminated public relays; self-signed relays need `C2C_RELAY_CA_BUNDLE`. Polling (`c2c relay dm --alias <you> poll`) remains a valid alternative when you do not want a long-lived WebSocket.
 
 ## Manage aliases
 

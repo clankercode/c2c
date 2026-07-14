@@ -45,13 +45,13 @@ you can extend to two real machines with SSH or Tailscale.
 >   configured and an alias is resolved, `c2c monitor` peeks the relay inbox on
 >   an interval and surfaces cross-host DMs like local ones. It does not consume
 >   relay messages; keep `relay connect` or `relay dm poll` as the delivery path.
-> - **`relay subscribe` / `relay subscribe-daemon` do not support wss/TLS yet.**
->   Use an `http://` relay URL for the subscription path (details in Step 3).
->   For HTTPS relays, poll DMs directly with `c2c relay dm ... poll`.
+> - **`relay subscribe` / `relay subscribe-daemon` support wss/TLS** (B189)
+>   against edge-terminated HTTPS relays such as `https://relay.c2c.im`.
+>   Polling (`c2c relay dm ... poll`) remains a valid fallback when you do
+>   not want a long-lived WebSocket.
 >
-> The send path (`c2c send <alias>@<host_id> ...`) and the connector/monitor
-> receive paths are usable today; the remaining caveat is transparent TLS
-> WebSocket subscribe support.
+> The send path (`c2c send <alias>@<host_id> ...`), subscribe push, and the
+> connector/monitor receive paths are usable today on the public TLS relay.
 
 ---
 
@@ -199,7 +199,11 @@ cleans up that client's aliases — durable registration requires a long-lived
 client holding the socket open (e.g. the subscribe-daemon itself or a persistent
 wrapper).
 
-**Limitation**: `relay subscribe` and `relay subscribe-daemon start` do not support TLS WebSocket URLs yet — use an `http://` relay URL for the subscription path. For HTTPS relays, use `c2c relay connect` for local-broker delivery or poll DMs directly with `c2c relay dm --alias <you> poll` (loop it yourself, e.g. `while true; do c2c relay dm --alias <you> poll; sleep 30; done`).
+**TLS / wss**: `relay subscribe` and `relay subscribe-daemon start` accept
+`https://` and `wss://` relay URLs (B189). Self-signed relays need
+`C2C_RELAY_CA_BUNDLE` (same as the HTTPS client). If you prefer not to hold a
+WebSocket open, use `c2c relay connect` for local-broker delivery or poll with
+`c2c relay dm --alias <you> poll`.
 
 ---
 

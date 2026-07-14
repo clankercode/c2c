@@ -7,10 +7,10 @@
    no clock unless [now] is passed in) so the doctor/capability truth can be
    asserted without a live relay. See test_c2c_doctor_capabilities.ml.
 
-   B093 defects this closes:
+   B093 defects this closes (historical; B189 later enabled TLS subscribe):
    - capabilities used to claim `subscribe=yes` on TLS relays even though
-     `c2c relay subscribe` rejects https/wss (exit 1). [subscribe_url_supported]
-     is now the single source of truth both surfaces consult, so the reported
+     `c2c relay subscribe` rejected https/wss (exit 1). [subscribe_url_supported]
+     is the single source of truth both surfaces consult, so the reported
      capability always matches what an actual attempt would do.
    - connector detection was machine-global `pgrep`; an unrelated connector on
      the same box falsely reported "connector running" for an isolated broker.
@@ -45,15 +45,13 @@ let docs_url = "https://c2c.im/relay-quickstart/"
  * Capabilities (scheme/attempt-aware)
  * --------------------------------------------------------------------------- *)
 
-(* subscribe = WebSocket push (`/ws/subscribe`). Only plaintext ws/http is
-   implemented; TLS WebSocket (wss/https) is unsupported and `c2c relay
-   subscribe` rejects it with exit 1. This predicate is the ONE place that
-   decision lives — the subscribe command guard and the doctor capability
-   matrix both call it, guaranteeing the advertised capability equals the
-   actual attempt's outcome. *)
+(* subscribe = WebSocket push (`/ws/subscribe`). Plaintext (ws/http) and TLS
+   (wss/https) client paths are both supported as of B189 via Relay_ws_client.
+   Reject only obviously unusable schemes so the doctor matrix stays
+   attempt-parity with `c2c relay subscribe`. *)
 let subscribe_scheme_supported = function
-  | Some "https" | Some "wss" -> false
-  | _ -> true
+  | Some ("http" | "https" | "ws" | "wss") | None -> true
+  | Some _ -> false
 
 let subscribe_url_supported url =
   subscribe_scheme_supported (Uri.scheme (Uri.of_string url))
@@ -94,7 +92,7 @@ let capabilities_detail c =
   String.concat "\n"
     [ row "send" c.send "POST /send (DMs)"
     ; row "subscribe" c.subscribe
-        "WebSocket push (/ws/subscribe; plaintext ws only, no TLS yet)"
+        "WebSocket push (/ws/subscribe; ws and wss/TLS)"
     ; row "connect" c.connect "live connector bridge"
     ; row "poll" c.poll "POST /poll_inbox (fallback fetch)"
     ]

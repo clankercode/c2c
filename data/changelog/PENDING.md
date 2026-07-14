@@ -9,11 +9,12 @@ changelog feeds `update_available`, so a version heading newer than
 
 _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
-### Linux release binaries target glibc 2.35 (Ubuntu 22.04+)
-summary: Official linux-x64/linux-arm64 release assets are built on Ubuntu
-  22.04 and CI-gated so they require at most GLIBC 2.35. They run on Ubuntu
-  22.04+ / Debian 12+ / RHEL 9+ with libsqlite3 + libgmp. Ubuntu 20.04 and
-  musl still need a local source build. install.sh preflights the host glibc
-  floor and verifies the binary before installing.
-clients: all
-audience: all
+### Fixed
+
+- **B189: `c2c relay subscribe` supports TLS WebSocket (wss/https).** The
+  public relay (`https://relay.c2c.im`) no longer fails immediately with
+  "does not support TLS WebSocket URLs yet". Client uses `tls-lwt` for the
+  upgrade path; `c2c doctor --relay` capability matrix now reports
+  `subscribe=yes` on TLS relays. Self-signed relays still use
+  `C2C_RELAY_CA_BUNDLE`. Poll via `c2c relay dm poll` remains a valid
+  fallback when a long-lived WebSocket is not wanted.
