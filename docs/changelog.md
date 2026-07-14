@@ -9,6 +9,13 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Linux release glibc floor is 2.35 (Ubuntu 22.04+).** Official
+  `linux-x64` / `linux-arm64` assets are built on Ubuntu 22.04 and CI-gated
+  (`scripts/check-glibc-max.sh` + Docker smoke) so they no longer require
+  GLIBC 2.38+ from `ubuntu-latest`. Runtime deps remain `libsqlite3` and
+  `libgmp`. Ubuntu 20.04 and musl still need a local source build.
+  `install.sh` preflights the host glibc floor. (B190)
+
 - **CLI-first Google Antigravity (`agy`) integration.** `c2c` now sets up,
   delivers to, and tears down the Antigravity CLI as a first-class client:
   a managed `c2c start agy` adapter, SessionStart/PostToolUse/Stop hooks

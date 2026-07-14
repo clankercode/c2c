@@ -99,10 +99,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # B190: build Linux release artifacts on Ubuntu 22.04 (glibc 2.35)
+          # so official binaries run on Ubuntu 22.04+ / RHEL 9+ / Debian 12+.
+          # Building on ubuntu-latest (currently 24.04+) embeds GLIBC_2.38+
+          # symbols and breaks 22.04. Ubuntu 20.04 (glibc 2.31) still needs a
+          # local build or a future manylinux/static artifact.
           - target: linux-x64
-            os: ubuntu-latest
+            os: ubuntu-22.04
+            max_glibc: '2.35'
+            smoke_image: ubuntu:22.04
           - target: linux-arm64
-            os: ubuntu-24.04-arm
+            os: ubuntu-22.04-arm
+            max_glibc: '2.35'
+            smoke_image: arm64v8/ubuntu:22.04
           - target: darwin-x64
             os: macos-15-intel
           - target: darwin-arm64
@@ -172,10 +181,43 @@ jobs:
           chmod +x "dist/c2c-${{ matrix.target }}/${cold_boot_name}"
           chmod +x "dist/c2c-${{ matrix.target }}/${post_compact_name}"
           "dist/c2c-${{ matrix.target }}/${c2c_name}" --version
+
+          # B190: refuse to ship Linux binaries that need GLIBC newer than the
+          # documented floor (Ubuntu 22.04 / glibc 2.35).
+          if [ -n "${{ matrix.max_glibc || '' }}" ]; then
+            chmod +x scripts/check-glibc-max.sh
+            scripts/check-glibc-max.sh "${{ matrix.max_glibc }}" \
+              "dist/c2c-${{ matrix.target }}/${c2c_name}" \
+              "dist/c2c-${{ matrix.target }}/${deliver_name}" \
+              "dist/c2c-${{ matrix.target }}/${server_name}" \
+              "dist/c2c-${{ matrix.target }}/${inner_name}" \
+              "dist/c2c-${{ matrix.target }}/${hook_name}" \
+              "dist/c2c-${{ matrix.target }}/${cold_boot_name}" \
+              "dist/c2c-${{ matrix.target }}/${post_compact_name}"
+          fi
+
           tar -czf "dist/c2c-${{ matrix.target }}/c2c-${{ needs.validate.outputs.version }}-${{ matrix.target }}.tar.gz" \
             -C "dist/c2c-${{ matrix.target }}" \
             "${c2c_name}" "${deliver_name}" "${server_name}" "${inner_name}" "${hook_name}" \
             "${cold_boot_name}" "${post_compact_name}"
+
+      # Optional runtime smoke: prove the binary starts on the floor distro
+      # with only the documented shared-library deps (B190).
+      - name: Docker smoke on minimum glibc distro
+        if: ${{ matrix.smoke_image != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          image='${{ matrix.smoke_image }}'
+          bin="dist/c2c-${{ matrix.target }}/c2c"
+          docker run --rm \
+            -v "${{ github.workspace }}/${bin}:/c2c:ro" \
+            "$image" \
+            bash -lc 'set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update -qq
+              apt-get install -y -qq libsqlite3-0 libgmp10 >/dev/null
+              /c2c --version'
 
       - name: Upload binary artifact
         uses: actions/upload-artifact@v4

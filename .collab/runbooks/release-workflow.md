@@ -137,10 +137,21 @@ package, release-upload, or npm publish step runs until that gate passes.
 
 The release workflow builds native c2c binary bundles for:
 
-- `linux-x64`
-- `linux-arm64`
+- `linux-x64` — built on **`ubuntu-22.04`** (glibc 2.35 floor; B190)
+- `linux-arm64` — built on **`ubuntu-22.04-arm`** (same floor)
 - `darwin-x64`
 - `darwin-arm64`
+
+**Linux glibc policy (B190):** do not build release Linux assets on
+`ubuntu-latest` / 24.04+. That embeds `GLIBC_2.38+` and breaks Ubuntu 22.04.
+The build matrix sets `max_glibc: '2.35'` and runs
+`scripts/check-glibc-max.sh` on every shipped ELF; a Docker smoke on
+`ubuntu:22.04` (with `libsqlite3-0` + `libgmp10`) runs `c2c --version`.
+Ubuntu 20.04 (glibc 2.31) remains below the official floor until a
+manylinux/static artifact exists — document that, do not silently raise
+the ceiling.
+
+**Runtime shared libraries (Linux):** `libsqlite3`, `libgmp` (dynamic).
 
 The `darwin-x64` lane runs on GitHub's `macos-15-intel` runner. Do not use
 `macos-13`; that runner image is retired and may leave release jobs stuck in
