@@ -67,4 +67,8 @@ opam exec -- dune exec --root . ocaml/cli/test_c2c_monitor_logic.exe
 
 ## Commit SHAs
 
-(filled after commit)
+| Ref | SHA |
+|-----|-----|
+| Fix commit | `bbbd69686ea3ae9c982be44ec3b3338c9d7fa192` (`bbbd6968`) |
+| Branch tip | `bbbd69686ea3ae9c982be44ec3b3338c9d7fa192` (before RESULT SHA fill-in) |
+| Claim base | `0e2559d7` |
