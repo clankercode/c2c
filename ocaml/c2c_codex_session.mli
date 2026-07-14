@@ -47,16 +47,25 @@ val frontend_extra_args : yolo:bool -> extra:string list -> string list
     explicit while preserving the Codex app-server context. *)
 val app_server_log_label : string
 
-(** Operator-facing follow-up text after an app-server startup diagnostic.
-    Suggests "upgrade codex" only for version/capability/not-found failures;
-    readiness timeouts and process exits on a supported Codex get actionable
-    non-upgrade guidance (B175). *)
-val diagnostic_followup : C2c_codex_app_server.diagnostic -> string
+(** Local wall-clock [HH:MM:SS] for a Unix timestamp (B176). Pure / testable. *)
+val app_server_log_hms : float -> string
+
+(** Format one operator-facing app-server log line:
+    [[c2c codex app-server] [HH:MM:SS] <body>]. When [color] is true the label
+    is yellow-bold (historical styling); the timestamp and body stay plain.
+    [now] defaults to [Unix.gettimeofday]. *)
+val format_app_server_log : color:bool -> ?now:float -> string -> string
 
 (** Stable, testable content of the online-attached lifecycle log. *)
 val online_attached_log_body : alias:string -> endpoint:string -> string
 
 val startup_banner : color:bool -> alias:string -> endpoint:string -> string
+
+(** B176 lifecycle phase bodies (no label/timestamp) — launching / ready /
+    pre-TUI handoff. *)
+val lifecycle_launching_body : alias:string -> string
+val lifecycle_ready_body : endpoint:string -> string
+val lifecycle_tui_handoff_body : alias:string -> endpoint:string -> string
 
 (** Non-secret c2c identity/context variables injected only into an app-server
     remote frontend.  In particular, [C2C_MCP_SESSION_ID] keeps `c2c init`

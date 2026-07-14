@@ -89,6 +89,59 @@ let test_app_server_log_vocabulary () =
     (S.startup_banner ~color:true ~alias:"codex-oak-fern-a1b2"
        ~endpoint:"ws://127.0.0.1:37305")
 
+(* B176: local HH:MM:SS stamp + three distinguishable lifecycle phases. *)
+let test_app_server_log_timestamp_format () =
+  (* 2020-01-15 14:05:09 local — use a fixed epoch via localtime shape checks
+     rather than a brittle absolute epoch (timezone-dependent). *)
+  let fixed = fst (Unix.mktime {
+      Unix.tm_sec = 9; tm_min = 5; tm_hour = 14;
+      tm_mday = 15; tm_mon = 0; tm_year = 120; tm_wday = 0; tm_yday = 0;
+      tm_isdst = false;
+    }) in
+  Alcotest.(check string) "HH:MM:SS local" "14:05:09" (S.app_server_log_hms fixed);
+  Alcotest.(check string) "plain line shape"
+    "[c2c codex app-server] [14:05:09] hello"
+    (S.format_app_server_log ~color:false ~now:fixed "hello");
+  Alcotest.(check string) "coloured label preserved"
+    ("\027[1;33m[c2c codex app-server]\027[0m [14:05:09] hello")
+    (S.format_app_server_log ~color:true ~now:fixed "hello");
+  (* Label is a single unit; timestamp follows as [HH:MM:SS]. *)
+  let line = S.format_app_server_log ~color:false ~now:fixed "x" in
+  Alcotest.(check bool) "starts with label" true
+    (has_prefix S.app_server_log_label line);
+  Alcotest.(check bool) "contains bracketed timestamp" true
+    (string_mem " [14:05:09] " line)
+
+let test_app_server_lifecycle_phase_bodies () =
+  let alias = "codex-oak-fern-a1b2" in
+  let endpoint = "ws://127.0.0.1:37305" in
+  let launch = S.lifecycle_launching_body ~alias in
+  let ready = S.lifecycle_ready_body ~endpoint in
+  let handoff = S.lifecycle_tui_handoff_body ~alias ~endpoint in
+  Alcotest.(check string) "launching body"
+    "launching app-server (c2c-alias=codex-oak-fern-a1b2)" launch;
+  Alcotest.(check string) "ready body"
+    "app-server ready (ws://127.0.0.1:37305)" ready;
+  Alcotest.(check string) "handoff reuses polished banner"
+    (S.online_attached_log_body ~alias ~endpoint) handoff;
+  (* Three phases must be distinguishable in captured output. *)
+  Alcotest.(check bool) "launch ≠ ready" false (launch = ready);
+  Alcotest.(check bool) "ready ≠ handoff" false (ready = handoff);
+  Alcotest.(check bool) "launch ≠ handoff" false (launch = handoff);
+  Alcotest.(check bool) "launch mentions alias" true (string_mem alias launch);
+  Alcotest.(check bool) "handoff mentions alias" true (string_mem alias handoff);
+  Alcotest.(check bool) "ready mentions endpoint" true (string_mem endpoint ready);
+  (* Full timestamped lines for each phase (what operators see). *)
+  let now = 0. in
+  let fmt body = S.format_app_server_log ~color:false ~now body in
+  Alcotest.(check bool) "launch line has label+ts" true
+    (has_prefix S.app_server_log_label (fmt launch)
+     && string_mem (S.app_server_log_hms now) (fmt launch));
+  Alcotest.(check bool) "ready line has label+ts" true
+    (has_prefix S.app_server_log_label (fmt ready));
+  Alcotest.(check bool) "handoff line has label+ts" true
+    (has_prefix S.app_server_log_label (fmt handoff))
+
 let test_app_server_frontend_identity_env () =
   let env =
     S.app_server_frontend_env ~session_id:"managed-codex-session"
@@ -677,6 +730,10 @@ let () =
         ; test_case "collision extension" `Quick test_alias_collision_extension_deterministic
         ; test_case "collision chain" `Quick test_alias_collision_chain_deterministic
         ; test_case "app-server log vocabulary" `Quick test_app_server_log_vocabulary
+        ; test_case "app-server log timestamp format (B176)" `Quick
+            test_app_server_log_timestamp_format
+        ; test_case "app-server lifecycle phase bodies (B176)" `Quick
+            test_app_server_lifecycle_phase_bodies
         ; test_case "app-server frontend inherits managed identity" `Quick
             test_app_server_frontend_identity_env ] )
     ; ( "yolo",

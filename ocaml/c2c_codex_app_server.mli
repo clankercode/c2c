@@ -132,6 +132,17 @@ val make_real_child : ?group_leader:bool -> int -> child
 
 (* --------------------------------- config --------------------------------- *)
 
+(** Operator-facing startup phases (B176). The public session layer formats
+    these into timestamped [[c2c codex app-server]] lines; the default is a
+    no-op so scripted tests stay silent. *)
+type lifecycle_phase =
+  | Launching
+  | Ready of string
+      (** app-server accepted the capability token; [string] is the endpoint URI *)
+  | Tui_handoff of string
+      (** immediately before spawning the remote frontend/TUI; [string] is the
+          endpoint URI *)
+
 type config = {
   cwd : string;
   codex_bin : string;
@@ -147,6 +158,9 @@ type config = {
       not passed to the app-server process. *)
   frontend_env : string list;
   resume_thread : string option;
+  (** Optional progressive-startup feedback. Invoked at the true transition
+      points inside {!start}; must not raise (best-effort). Default: ignore. *)
+  lifecycle_log : lifecycle_phase -> unit;
 }
 
 val default_config : instance_name:string -> instance_dir:string -> cwd:string -> config

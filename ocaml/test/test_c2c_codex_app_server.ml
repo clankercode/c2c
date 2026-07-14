@@ -151,6 +151,59 @@ let test_happy_path_to_running () =
           Alcotest.(check bool) "server pid recorded" true (p.server_pid = Some 111);
           Alcotest.(check bool) "frontend pid recorded" true (p.frontend_pid = Some 222))
 
+(* B176: start emits Launching → Ready → Tui_handoff in order, with Ready and
+   Tui_handoff carrying the endpoint URI, and Launching firing before spawn. *)
+let test_lifecycle_phases_order_b176 () =
+  with_tmp_dir (fun dir ->
+      let clock = ref 0.0 in
+      let sf = { status = Running_; signals = []; reaped = 0 } in
+      let ff = { status = Running_; signals = []; reaped = 0 } in
+      let phases = ref [] in
+      let server_spawned = ref false in
+      let frontend_spawned = ref false in
+      let bk =
+        scripted_backend ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+            (* Launching must already have been recorded. *)
+            Alcotest.(check bool) "Launching before spawn_server" true
+              (List.exists (function Launching -> true | _ -> false) !phases);
+            server_spawned := true;
+            Ok (mk_fake ~id:111 sf))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ ->
+            Alcotest.(check bool) "Ready before spawn_frontend" true
+              (List.exists (function Ready _ -> true | _ -> false) !phases);
+            Alcotest.(check bool) "Tui_handoff before spawn_frontend" true
+              (List.exists (function Tui_handoff _ -> true | _ -> false) !phases);
+            frontend_spawned := true;
+            Ok (mk_fake ~id:222 ff))
+          ~probe_ready:(fun _ ~token:_ -> Ok ()) ()
+      in
+      let cfg =
+        { (cfg_for dir) with
+          lifecycle_log = (fun p -> phases := !phases @ [ p ]) }
+      in
+      match start ~backend:bk cfg with
+      | Error d -> Alcotest.failf "expected Running: %s" (diag_code_to_string d.code)
+      | Ok h ->
+          Alcotest.(check bool) "server spawned" true !server_spawned;
+          Alcotest.(check bool) "frontend spawned" true !frontend_spawned;
+          let tags =
+            List.map
+              (function
+                | Launching -> "launching"
+                | Ready ep -> "ready:" ^ ep
+                | Tui_handoff ep -> "handoff:" ^ ep)
+              !phases
+          in
+          Alcotest.(check int) "three phases" 3 (List.length tags);
+          (match tags with
+           | [ "launching"; ready; handoff ] ->
+               let ep = endpoint_uri (endpoint_of h) in
+               Alcotest.(check string) "ready endpoint" ("ready:" ^ ep) ready;
+               Alcotest.(check string) "handoff endpoint" ("handoff:" ^ ep) handoff
+           | _ -> Alcotest.failf "unexpected phase sequence: %s" (String.concat "," tags));
+          stop h)
+
 (* ------------------------------------------------------------------ *)
 (* failure transitions                                                 *)
 (* ------------------------------------------------------------------ *)
@@ -705,7 +758,9 @@ let () =
           Alcotest.test_case "gate unparseable" `Quick test_version_gate_unparseable;
           Alcotest.test_case "capability gate rejects" `Quick test_capability_gate_rejects ] );
       ( "lifecycle-happy",
-        [ Alcotest.test_case "to running" `Quick test_happy_path_to_running ] );
+        [ Alcotest.test_case "to running" `Quick test_happy_path_to_running;
+          Alcotest.test_case "lifecycle phases order (B176)" `Quick
+            test_lifecycle_phases_order_b176 ] );
       ( "lifecycle-failures",
         [ Alcotest.test_case "endpoint alloc fail" `Quick test_endpoint_alloc_failure;
           Alcotest.test_case "server spawn fail" `Quick test_server_spawn_failure;

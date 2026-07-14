@@ -67,6 +67,12 @@ let frontend_extra_args ~(yolo : bool) ~(extra : string list) : string list =
 
 let app_server_log_label = "[c2c codex app-server]"
 
+(* B176: local wall-clock HH:MM:SS for every [c2c codex app-server] line. Pure
+   so tests can pin [now] without racing the clock. *)
+let app_server_log_hms (t : float) : string =
+  let tm = Unix.localtime t in
+  Printf.sprintf "%02d:%02d:%02d" tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
+
 let startup_banner ~color ~(alias : string) ~(endpoint : string) : string =
   let paint code s = if color then code ^ s ^ "\027[0m" else s in
   let sep = paint "\027[2m" " · " in
@@ -79,6 +85,31 @@ let startup_banner ~color ~(alias : string) ~(endpoint : string) : string =
 
 let online_attached_log_body ~(alias : string) ~(endpoint : string) : string =
   startup_banner ~color:false ~alias ~endpoint
+
+(* Lifecycle phase bodies (no label/timestamp) — distinguishable for operators
+   and for regression tests of the three B176 phases. *)
+let lifecycle_launching_body ~(alias : string) : string =
+  Printf.sprintf "launching app-server (c2c-alias=%s)" alias
+
+let lifecycle_ready_body ~(endpoint : string) : string =
+  Printf.sprintf "app-server ready (%s)" endpoint
+
+let lifecycle_tui_handoff_body ~(alias : string) ~(endpoint : string) : string =
+  (* Final pre-TUI line reuses the B159 statusline-quality banner content so the
+     handoff still reads as a polished ready signal with alias + endpoint. *)
+  startup_banner ~color:false ~alias ~endpoint
+
+(** [format_app_server_log ~color ?now body] builds
+    [[c2c codex app-server] [HH:MM:SS] body], painting only the label when
+    [color] is set (matches historical yellow-label styling). *)
+let format_app_server_log ~(color : bool) ?now (body : string) : string =
+  let t = match now with Some t -> t | None -> Unix.gettimeofday () in
+  let ts = app_server_log_hms t in
+  let label =
+    if color then "\027[1;33m" ^ app_server_log_label ^ "\027[0m"
+    else app_server_log_label
+  in
+  Printf.sprintf "%s [%s] %s" label ts body
 
 (* Keep managed identity scoped to the remote frontend.  This is intentionally
    the normal c2c session marker: bare `c2c init` and CLI commands then reuse
@@ -417,6 +448,10 @@ let red () = if use_color () then "\027[1;31m" else ""
 let yellow () = if use_color () then "\027[1;33m" else ""
 let reset () = if use_color () then "\027[0m" else ""
 
+(* B176: every [c2c codex app-server] line gets a local [HH:MM:SS] stamp. *)
+let emit_app_server_log (body : string) : unit =
+  Printf.eprintf "%s\n%!" (format_app_server_log ~color:(use_color ()) body)
+
 (* A saved alias is "taken" by a DIFFERENT owner when an instance mapping exists
    under that alias whose session seed differs from ours. Used both for the
    collision predicate (fresh derivation) and the --alias conflict check. *)
@@ -433,57 +468,18 @@ let alias_taken_by_other ~(our_session_id : string) (alias : string) : bool =
 let gen_session_id () =
   Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
 
-(* Operator-facing follow-up after a structured app-server startup failure.
-   Pure so tests can assert we only suggest "upgrade codex" for real version/
-   capability gaps (B175) — not for readiness timeouts or process exits when
-   the installed Codex already meets the minimum. *)
-let diagnostic_followup (d : C2c_codex_app_server.diagnostic) : string =
-  let min_str =
-    let (a, b, c) = codex_min_version in Printf.sprintf "%d.%d.%d" a b c
-  in
-  let version_line =
-    match d.C2c_codex_app_server.codex_version, d.C2c_codex_app_server.min_codex_version with
-    | Some cur, Some min ->
-        Printf.sprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min
-    | Some cur, None ->
-        Printf.sprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min_str
-    | None, Some min ->
-        Printf.sprintf "  minimum supported for app-server mode is %s.\n" min
-    | None, None -> ""
-  in
-  let advice =
-    match d.C2c_codex_app_server.code with
-    | C2c_codex_app_server.Codex_version_unsupported
-    | C2c_codex_app_server.Codex_capability_unsupported
-    | C2c_codex_app_server.Codex_not_found ->
-        Printf.sprintf
-          "  falling back to the hook-backed Codex launch automatically. To get\n\
-          \  arrival-time app-server delivery, upgrade codex (>= %s) and relaunch.\n"
-          min_str
-    | C2c_codex_app_server.Readiness_timeout ->
-        "  falling back to the hook-backed Codex launch automatically. The installed\n\
-        \  Codex meets the version gate; this was a readiness timeout (slow cold start\n\
-        \  or hung app-server). Retry, raise C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S,\n\
-        \  or inspect the app-server log path in the message above.\n"
-    | C2c_codex_app_server.Server_died_before_ready ->
-        "  falling back to the hook-backed Codex launch automatically. The installed\n\
-        \  Codex meets the version gate; the app-server process exited before it was\n\
-        \  ready. Inspect the exit status and app-server log in the message above.\n"
-    | _ ->
-        "  falling back to the hook-backed Codex launch automatically. The installed\n\
-        \  Codex version is not the issue — see the diagnostic code/message above.\n\
-        \  After fixing the failure, relaunch for arrival-time app-server delivery.\n"
-  in
-  version_line ^ advice
-
 (* Print T002's structured diagnostic in an operator-actionable form and point
    at the hook fallback. *)
 let report_diagnostic (d : C2c_codex_app_server.diagnostic) : unit =
   let j = C2c_codex_app_server.diagnostic_to_json d in
-  Printf.eprintf "%s%s%s startup failed: %s\n"
-    (yellow ()) app_server_log_label (reset ())
-    d.C2c_codex_app_server.message;
-  Printf.eprintf "%s" (diagnostic_followup d);
+  emit_app_server_log (Printf.sprintf "startup failed: %s" d.C2c_codex_app_server.message);
+  (match d.C2c_codex_app_server.codex_version, d.C2c_codex_app_server.min_codex_version with
+   | Some cur, Some min ->
+       Printf.eprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min
+   | _ -> ());
+  Printf.eprintf "  falling back to the hook-backed Codex launch automatically. To get\n\
+                 \  arrival-time app-server delivery, upgrade codex (>= %s) and relaunch.\n"
+    (let (a, b, c) = codex_min_version in Printf.sprintf "%d.%d.%d" a b c);
   Printf.eprintf "  diagnostic: %s\n%!" (Yojson.Safe.to_string j)
 
 type resolved = {
@@ -721,8 +717,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
                | None ->
                    write_restart_result ~instance_dir ~request_id:req.rr_id
                      ~result:"skipped-unknown";
-                   Printf.eprintf "%s restart skipped: app-server status unknown\n%!"
-                     app_server_log_label;
+                   emit_app_server_log "restart skipped: app-server status unknown";
                    None
                | Some token ->
                    match turn_client.C2c_codex_autoturn.thread_status
@@ -740,9 +735,9 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
                    | status ->
                        write_restart_result ~instance_dir ~request_id:req.rr_id
                          ~result:(match status with `Active -> "skipped-active" | _ -> "skipped-unknown");
-                       Printf.eprintf "%s restart skipped: thread is %s (use --force to override)\n%!"
-                         app_server_log_label
-                         (C2c_codex_autoturn.thread_status_to_string status);
+                       emit_app_server_log
+                         (Printf.sprintf "restart skipped: thread is %s (use --force to override)"
+                            (C2c_codex_autoturn.thread_status_to_string status));
                        None));
       global_broker_root =
         (* B141: cross-repo (sessions-broker) mail for this session is
@@ -800,11 +795,12 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   Fun.protect ~finally:restore (fun () ->
       let o = C2c_codex_deliver_loop.run deps in
       if o.C2c_codex_deliver_loop.degraded then
-        Printf.eprintf
-          "%s%s%s delivery loop ran DEGRADED: no frontend thread \
-           was ever loaded, so c2c mail was not auto-delivered this session \
-           (session was still supervised). c2c-alias=%s\n%!"
-          (yellow ()) app_server_log_label (reset ()) alias;
+        emit_app_server_log
+          (Printf.sprintf
+             "delivery loop ran DEGRADED: no frontend thread was ever loaded, so \
+              c2c mail was not auto-delivered this session (session was still \
+              supervised). c2c-alias=%s"
+             alias);
       o)
 
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
@@ -836,7 +832,22 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       extra_frontend_args =
         frontend_extra_args ~yolo ~extra:(model_args @ extra_args);
       frontend_env = app_server_frontend_env ~session_id ~alias;
-      resume_thread = thread }
+      resume_thread = thread;
+      (* B176: progressive lifecycle feedback during (possibly slow) start.
+         Bodies are pure helpers; emit_app_server_log stamps [HH:MM:SS] + paints
+         the label. Phases fire inside start() at the true transition points so
+         "ready" appears before the TUI owns the terminal. *)
+      lifecycle_log =
+        (function
+         | C2c_codex_app_server.Launching ->
+             emit_app_server_log (lifecycle_launching_body ~alias)
+         | C2c_codex_app_server.Ready endpoint ->
+             emit_app_server_log (lifecycle_ready_body ~endpoint)
+         | C2c_codex_app_server.Tui_handoff endpoint ->
+             (* Preserve B159 multi-segment color on the handoff body when the
+                terminal supports it; label still painted by emit_app_server_log. *)
+             emit_app_server_log
+               (startup_banner ~color:(use_color ()) ~alias ~endpoint)) }
   in
   (* B166/B137: the remote frontend receives the launcher session id BEFORE it
      starts. Hooks adopt that identity and bare `c2c init` reuses its alias;
@@ -914,12 +925,9 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       register_managed_app_server_identity
         ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
         ~pid:(Unix.getpid ());
-      let endpoint =
-        C2c_codex_app_server.endpoint_uri
-          (C2c_codex_app_server.endpoint_of handle)
-      in
-      Printf.eprintf "%s\n%!"
-        (startup_banner ~color:(use_color ()) ~alias ~endpoint);
+      (* B176: the pre-TUI handoff line (with alias + endpoint) is emitted inside
+         start() via lifecycle_log immediately before spawn_frontend — do not
+         reprint a second banner here (avoids duplicate/interleaved TUI noise). *)
       (* B131: drive the proven T003 ingress + T007 auto-turn pipeline against
          THIS live session while the frontend is attached. The loop registers a
          routable broker alias, discovers the frontend's loaded thread, injects
@@ -949,14 +957,13 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
                    "--thread-id"; exact_thread ]
                  @ (if passthrough = [] then [] else "--" :: passthrough))
             in
-            Printf.eprintf "%s restarting in place on thread %s\n%!"
-              app_server_log_label exact_thread;
+            emit_app_server_log
+              (Printf.sprintf "restarting in place on thread %s" exact_thread);
             Unix.execve argv.(0) argv (restart_environment ())
         | _ -> ());
       (match final.C2c_codex_deliver_loop.final with
        | C2c_codex_app_server.Sv_server_died ->
-           Printf.eprintf "%s%s%s app-server died; session torn down.\n%!"
-             (yellow ()) app_server_log_label (reset ());
+           emit_app_server_log "app-server died; session torn down.";
            1
        | _ -> 0)
 
