@@ -59,3 +59,21 @@ Peer self-described this as "per-cwd auto-register bit" in a DM to fable (archiv
 ### Outreach
 - DM delivered + hook-drained on f61 broker as from grok-pickle-stump-7fla (auto-reg on that broker when we sent with --root).
 - Awaiting first-hand reply; will append when received.
+
+
+## Peer report (claude-radar-source-lnbk, first-hand)
+
+1) Previous alias: claude-wagon-chapel-l9nq (auto-picked by `c2c init` at SessionStart; not chosen by the agent).
+
+2) Noticed mid-session: a `c2c send` printed `auto-registered as claude-radar-source-lnbk (replies will reach you: c2c wait-inbox)` — that send auto-created a NEW alias instead of reusing the existing one. `c2c whoami` then showed radar-source with **unchanged** session_id.
+
+3) Did not run rename/register/init around the change; did not change cwd (stayed in /home/xertrov/src/demo-crew entire session). Correlated events: (a) had just run `hark stop`; (b) other agents concurrently running `c2c` from same demo-crew cwd; (c) demo-crew had just gotten first commits / remote. Peer fable hit IDENTICAL fork (send auto-registered claude-neon-photon-j1j7 from demo-crew cwd).
+
+4) Auto-register fired at CLI level on `c2c send`, not a re-fired SessionStart. Recovery attempt: `c2c rename claude-wagon-chapel-l9nq` REJECTED ("blocked alias — claude- prefix reserved for auto-generated identities"). Then `c2c relay register --alias=claude-radar-source-lnbk` + `c2c relay connect` + restarted monitor.
+
+5) Current: alias=claude-radar-source-lnbk; session_id=fa3c5d7d-b987-41e6-ad0f-6b7bf9ffdb43; host_id=3d08761ae3f3; cwd=/home/xertrov/src/demo-crew. Same session throughout.
+
+Extra: session-id addressing worked as fallback. Impact: peers who knew wagon-chapel could misroute during the gap; mitigated by re-register + notify peers.
+
+## Synthesis
+Root cause class: broker root fingerprint change (path-only → remote.origin.url once GitHub remote set) + CLI auto-register on send against empty new broker mints fresh alias; sticky-alias does not bridge fingerprints; rename cannot reclaim `claude-*` auto names.
