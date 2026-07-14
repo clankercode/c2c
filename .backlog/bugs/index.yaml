@@ -185,3 +185,4 @@ bugs:
     - file: B186-claude-code-with-c2c-sets-up-a.todo
     - file: B187-whoami-send-must-not-present-b.todo
     - file: B188-c2c-changed-alias-on-claude-ra.todo
+    - file: B189-websocket-subscribe-path-isn-t.todo

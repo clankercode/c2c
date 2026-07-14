@@ -1,0 +1,27 @@
+---
+complexity: medium
+created_at: "2026-07-14T07:51:53Z"
+depends_on: []
+estimate_hours: 1
+id: B189
+priority: high
+status: pending
+tags:
+    - c2c
+    - relay
+    - websocket
+    - tls
+title: WebSocket subscribe path isn't supported on the TLS relay yet
+updated_at: "2026-07-14T07:51:53Z"
+---
+## Symptom
+The WebSocket subscribe path is not supported on the TLS relay yet.
+
+## Context
+Relay TLS path lacks WS subscribe support that (presumably) works or is planned for non-TLS / local paths. Clients expecting subscribe-over-WebSocket against the production TLS relay fail or fall back.
+
+## Expected
+TLS relay (`relay.c2c.im` / wss) supports the same WebSocket subscribe path as the non-TLS design.
+
+## Notes
+Filed as tracking bug; implement subscribe on the TLS-terminated relay path (or document explicit non-support + client fallback).
