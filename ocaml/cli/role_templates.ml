@@ -53,15 +53,13 @@ security-class.
 Otherwise you go silent between user turns and the swarm sees a dark
 pane.
 
-**Default (managed sessions via `c2c start`)** — native scheduling is
-automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
-idle-gated). On session start, verify it exists:
-```
-c2c schedule list
-```
-If missing, create it:
+**Default (managed sessions via `c2c start`)** — native idle-gated wake is
+automatic (~4.1m default, under Anthropic's 5-minute prompt-cache TTL).
+Install does **not** seed schedule files; set optional named schedules only
+if you want them:
 ```
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
+c2c schedule list
 ```
 
 **Fallback (non-managed sessions)** — Monitor + heartbeat binary.
@@ -269,16 +267,13 @@ Orientation before action. Don't route a slice in your first response.
 
 ## Wake scheduling (arm ONCE per session)
 
-**Default (managed sessions via `c2c start`)** — native scheduling is
-automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
-idle-gated). On session start, verify:
-```
-c2c schedule list
-```
-If schedules are missing, set them:
+**Default (managed sessions via `c2c start`)** — native idle-gated wake is
+automatic (~4.1m default). Install does **not** seed schedule files; set
+optional named schedules if you want them (coordinator sitrep is recommended):
 ```
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+c2c schedule list
 ```
 
 **Fallback (non-managed sessions)** — Monitor + heartbeat binary.
@@ -370,15 +365,12 @@ Then: take your first slice when greenlit. Bounded, small.
 
 ## Wake scheduling (arm ONCE per session)
 
-**Default (managed sessions via `c2c start`)** — native scheduling is
-automatic. `c2c install` creates a `wake.toml` schedule (interval=4.1m,
-idle-gated). On session start, verify:
-```
-c2c schedule list
-```
-If missing, create it:
+**Default (managed sessions via `c2c start`)** — native idle-gated wake is
+automatic (~4.1m default). Install does **not** seed schedule files; set
+optional named schedules only if you want them:
 ```
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
+c2c schedule list
 ```
 
 **Fallback (non-managed sessions)** — Monitor + heartbeat binary.

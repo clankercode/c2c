@@ -80,10 +80,13 @@ session will not see hook-delivered messages until it wakes; Monitor is the
 idle-session awareness path. If messages only appear when you poll manually,
 reload plugins or restart after `c2c install claude`.
 
-**B011 note**: The managed Claude startup preamble previously included a
-heartbeat Monitor step that double-waked with the native 4.1m schedule. The
-heartbeat Monitor step was removed; no-role agent starts now still get the
-minimal swarm intro.
+**B011 / B186 note**: The managed Claude startup preamble previously included a
+heartbeat Monitor step that double-waked with the native managed wake. The
+Monitor step was removed; no-role agent starts now still get the minimal swarm
+intro. Install/init also no longer seeds `.c2c/schedules/<alias>/wake.toml`
+(that file only fires under a schedule timer and was dead config for raw
+clients). Opt-in: `c2c schedule set`. Managed start still provides an
+idle-gated native heartbeat.
 
 ### Non-Claude receiving
 

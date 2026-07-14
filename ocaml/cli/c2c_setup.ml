@@ -295,9 +295,6 @@ type install_result = {
   extra_json : (string * Yojson.Safe.t) list;
 }
 
-let schedule_artifact alias =
-  C2c_install_manifest.schedule (C2c_mcp.schedule_entry_path alias "wake")
-
 let manifest_record ~component ~alias ~target_dir artifacts =
   { C2c_install_manifest.component
   ; alias
@@ -1871,45 +1868,13 @@ let start_client_list = String.concat ", " start_clients
 let deliver_watch_clients = [ "opencode"; "kimi"; "agy" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
-let ensure_default_wake_schedule ~quiet ~dry_run ~output_mode ~alias =
-  let dir = C2c_mcp.schedule_base_dir alias in
-  let path = C2c_mcp.schedule_entry_path alias "wake" in
-  if Sys.file_exists path then
-    (* Don't clobber an existing wake schedule — user may have customized it *)
-    (if not quiet then
-       match output_mode with
-       | Human -> Printf.eprintf "[c2c setup] schedule: wake.toml already exists, skipping.\n%!"
-       | Json -> print_json (`Assoc [ ("schedule", `String "exists"); ("name", `String "wake") ]))
-  else begin
-    if not dry_run then begin
-      C2c_mcp.mkdir_p dir;
-      let now_ts = C2c_time.now_iso8601_utc () in
-      let interval_s = 246.0 in (* 4.1 minutes *)
-      let content = Printf.sprintf
-        "[schedule]\n\
-         name = \"wake\"\n\
-         interval_s = %d\n\
-         align = \"\"\n\
-         message = \"wake — poll inbox, advance work\"\n\
-         only_when_idle = true\n\
-         idle_threshold_s = %d\n\
-         enabled = true\n\
-         created_at = \"%s\"\n\
-         updated_at = \"%s\"\n"
-        (int_of_float interval_s) (int_of_float interval_s) now_ts now_ts
-      in
-      C2c_io.write_file path content
-    end;
-    if not quiet then
-      match output_mode with
-      | Human ->
-          if dry_run then
-            Printf.eprintf "[c2c setup] schedule: would create wake.toml (interval=4.1m, idle-gated).\n%!"
-          else
-            Printf.eprintf "[c2c setup] schedule: created wake.toml (interval=4.1m, idle-gated).\n%!"
-      | Json -> print_json (`Assoc [ ("schedule", `String (if dry_run then "would_create" else "created")); ("name", `String "wake"); ("interval_s", `Int 246) ])
-  end
-
+(* B186: do NOT auto-create .c2c/schedules/<alias>/wake.toml on install/init.
+   That file only fires when a schedule timer is active (managed `c2c start`
+   with C2C_MCP_SCHEDULE_TIMER=1, or an explicit operator opt-in). Install for
+   raw clients left a dead wake.toml that looked like it should work and, for
+   managed sessions that also run builtin_managed_heartbeat, could double-wake.
+   Opt-in remains: `c2c schedule set` / MCP schedule_set. Managed start still
+   provides an idle-gated native heartbeat without install-time seeding. *)
 
 (* Grok Build TUI: CLI-first install (no MCP by default). Writes the assembled
    grok /c2c skill and a SessionStart/SessionEnd hook that auto-registers the
@@ -2108,9 +2073,8 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
              exit 1);
         { artifacts = []; extra_json = [] }
   in
-  (* After successful client setup, ensure a default wake schedule exists *)
-  if List.mem client known_clients then
-    ensure_default_wake_schedule ~quiet:(output_mode = Json) ~dry_run ~output_mode ~alias:alias_val;
+  (* B186: no install-time wake.toml seed (see comment near former
+     ensure_default_wake_schedule). *)
   let target_dir =
     match client with
     | "opencode" ->
@@ -2124,7 +2088,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
               | None -> Sys.getcwd ())
     | _ -> Sys.getenv "HOME"
   in
-  let artifacts = result.artifacts @ [ schedule_artifact alias_val ] in
+  let artifacts = result.artifacts in
   if not dry_run then
     write_manifest_best_effort ~component:client ~alias:(Some alias_val) ~target_dir artifacts;
   if not skip_summary then

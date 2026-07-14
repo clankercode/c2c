@@ -97,18 +97,13 @@ canonical recipes copy-paste-able instead of "go read the runbook":
 3. **Verbatim wake scheduling recipe** as the on-arrival setup.
    Include this exact block:
    ````
-   **Default (managed sessions via `c2c start`)** — native scheduling is
-   automatic. `c2c install` creates a `wake.toml` schedule. Verify with:
-   ```
-   c2c schedule list
-   ```
-   If missing, create it:
+   **Default (managed sessions via `c2c start`)** — native idle-gated wake is
+   automatic (~4.1m default). Install does **not** seed schedule files; set
+   optional named schedules only if you want them:
    ```
    c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
-   ```
-   Coordinator roles also set a sitrep schedule:
-   ```
    c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+   c2c schedule list
    ```
 
    **Fallback (non-managed sessions)** — Monitor + heartbeat binary.

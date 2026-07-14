@@ -37,7 +37,10 @@ let test_render_known_coder () =
         (string_contains body "heartbeat 4.1m");
       (* peer-PASS sentence must be present *)
       check bool "peer-PASS sentence present" true
-        (string_contains body "peer-PASS")
+        (string_contains body "peer-PASS");
+      (* B186: install no longer seeds wake.toml — templates must not claim it *)
+      check bool "no install-creates-wake claim" false
+        (string_contains body "c2c install` creates")
 
 let test_render_known_coordinator () =
   match Role_templates.render ~role_class:"coordinator" ~alias:"coord-alias" ~display_name_hint:"" with
