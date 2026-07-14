@@ -414,3 +414,114 @@ let exit_relay_terminal = 3
    running. Pure + unit-tested so the exit-vs-continue policy is decoupled from
    the impure thread. *)
 let should_exit_on_relay_terminal ~local_watch_active = not local_watch_active
+
+(* ---------- B180: identity rebind after rename ----------
+
+   `c2c monitor` historically bound alias + relay peek keys once at startup.
+   After `c2c rename`, the process kept filtering/peeking as the OLD alias
+   until killed. These pure helpers decide when to rebind and extract the
+   rename signal from the archive marker that B140 appends. The impure
+   monitor command re-arms filters, lockfile, and relay peek keys. *)
+
+type identity_rebind =
+  | No_rebind
+  | Rebind of {
+      old_alias : string option;
+      new_alias : string;
+      reason : string;
+    }
+
+(* Case-insensitive alias equality (mirrors Broker.alias_casefold). *)
+let alias_eq a b = String.lowercase_ascii a = String.lowercase_ascii b
+
+(* Decide whether the monitor should adopt a new alias without restarting.
+
+   Policy:
+   - [flag_bound]: operator passed --alias; never auto-rebind (they asked
+     to watch a fixed name, not "this session").
+   - Otherwise compare [current_alias] to [session_reg_alias] (the alias on
+     THIS session_id's broker registration — authoritative after rename).
+   - No registration → no rebind (cannot invent an identity).
+   - Same alias (casefold) with identical spelling → No_rebind.
+   - Same casefold but different spelling (Lyra → lyra) → Rebind so the
+     operator-facing banner / include-self filter / relay sign alias match
+     the registry exactly.
+   - Different alias → Rebind. *)
+let decide_identity_rebind
+      ~flag_bound
+      ~current_alias
+      ~session_reg_alias
+      () : identity_rebind =
+  if flag_bound then No_rebind
+  else
+    match session_reg_alias with
+    | None -> No_rebind
+    | Some new_alias when String.trim new_alias = "" -> No_rebind
+    | Some new_alias ->
+        (match current_alias with
+         | Some cur when cur = new_alias -> No_rebind
+         | Some cur when alias_eq cur new_alias ->
+             Rebind
+               { old_alias = Some cur
+               ; new_alias
+               ; reason = "session registration casefold rename"
+               }
+         | Some cur ->
+             Rebind
+               { old_alias = Some cur
+               ; new_alias
+               ; reason = "session registration alias changed"
+               }
+         | None ->
+             Rebind
+               { old_alias = None
+               ; new_alias
+               ; reason = "session registration appeared"
+               })
+
+(* Parse the B140 archive marker that rename appends:
+     content = {"type":"alias_renamed","old_alias":"...","new_alias":"..."}
+   Also accepts a full message object whose `content` field holds that JSON
+   (the shape archive/*.jsonl stores). Returns None for ordinary messages. *)
+let parse_alias_renamed_marker (m : Yojson.Safe.t) : (string * string) option =
+  let from_assoc fields =
+    match List.assoc_opt "type" fields with
+    | Some (`String "alias_renamed") ->
+        (match List.assoc_opt "old_alias" fields,
+               List.assoc_opt "new_alias" fields with
+         | Some (`String o), Some (`String n)
+           when String.trim o <> "" && String.trim n <> "" -> Some (o, n)
+         | _ -> None)
+    | _ -> None
+  in
+  match m with
+  | `Assoc fields ->
+      (match from_assoc fields with
+       | Some _ as hit -> hit
+       | None ->
+           (match List.assoc_opt "content" fields with
+            | Some (`String s) ->
+                (try
+                   match Yojson.Safe.from_string s with
+                   | `Assoc inner -> from_assoc inner
+                   | _ -> None
+                 with _ -> None)
+            | Some (`Assoc inner) -> from_assoc inner
+            | _ -> None))
+  | _ -> None
+
+(* After a rebind, recompute the relay peek key for [new_alias] using the
+   same defaults as startup (connector-managed key when present, else
+   cli-<alias>). Pure wrapper so tests can lock the B180 re-arm contract. *)
+let relay_peek_key_after_rebind
+      ~new_alias
+      ~node_id_override
+      ~session_id_override
+      ~connector_key
+      () : relay_key =
+  resolve_relay_peek_key
+    ~alias:new_alias
+    ~node_id_override
+    ~session_id_override
+    ~connector_key
+    ()

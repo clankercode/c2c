@@ -512,6 +512,108 @@ let test_terminal_without_local_watch_exits () =
     true
     (L.should_exit_on_relay_terminal ~local_watch_active:false)
 
+(* ---------- B180: identity rebind after rename ---------- *)
+
+let rebind_new = function
+  | L.Rebind { new_alias; _ } -> Some new_alias
+  | L.No_rebind -> None
+
+let test_rebind_when_session_alias_changes () =
+  match
+    L.decide_identity_rebind ~flag_bound:false
+      ~current_alias:(Some "old-alias")
+      ~session_reg_alias:(Some "gk-black") ()
+  with
+  | L.Rebind { old_alias; new_alias; _ } ->
+      Alcotest.(check (option string)) "old" (Some "old-alias") old_alias;
+      Alcotest.(check string) "new" "gk-black" new_alias
+  | L.No_rebind -> Alcotest.fail "expected rebind after rename"
+
+let test_rebind_suppressed_when_flag_bound () =
+  Alcotest.(check (option string)) "flag freezes identity" None
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:true
+          ~current_alias:(Some "old-alias")
+          ~session_reg_alias:(Some "gk-black") ()))
+
+let test_rebind_noop_when_same_alias () =
+  Alcotest.(check (option string)) "same spelling -> no rebind" None
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:false
+          ~current_alias:(Some "gk-black")
+          ~session_reg_alias:(Some "gk-black") ()))
+
+let test_rebind_casefold_spelling_change () =
+  match
+    L.decide_identity_rebind ~flag_bound:false
+      ~current_alias:(Some "Lyra-Quill")
+      ~session_reg_alias:(Some "lyra-quill") ()
+  with
+  | L.Rebind { new_alias; _ } ->
+      Alcotest.(check string) "adopt registry spelling" "lyra-quill" new_alias
+  | L.No_rebind -> Alcotest.fail "case-only rename should rebind display alias"
+
+let test_rebind_when_alias_appears () =
+  Alcotest.(check (option string)) "unresolved -> session reg" (Some "fresh")
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:false
+          ~current_alias:None ~session_reg_alias:(Some "fresh") ()));
+  Alcotest.(check (option string)) "no reg -> no rebind" None
+    (rebind_new
+       (L.decide_identity_rebind ~flag_bound:false
+          ~current_alias:(Some "x") ~session_reg_alias:None ()))
+
+let test_parse_alias_renamed_marker_from_content () =
+  let marker =
+    `Assoc
+      [ ("from_alias", `String "c2c-system")
+      ; ("to_alias", `String "gk-black")
+      ; ( "content"
+        , `String
+            (Yojson.Safe.to_string
+               (`Assoc
+                  [ ("type", `String "alias_renamed")
+                  ; ("old_alias", `String "old-name")
+                  ; ("new_alias", `String "gk-black") ])) )
+      ]
+  in
+  Alcotest.(check (option (pair string string))) "content JSON marker"
+    (Some ("old-name", "gk-black"))
+    (L.parse_alias_renamed_marker marker)
+
+let test_parse_alias_renamed_marker_direct_and_noise () =
+  let direct =
+    `Assoc
+      [ ("type", `String "alias_renamed")
+      ; ("old_alias", `String "a")
+      ; ("new_alias", `String "b") ]
+  in
+  Alcotest.(check (option (pair string string))) "direct object"
+    (Some ("a", "b")) (L.parse_alias_renamed_marker direct);
+  Alcotest.(check (option (pair string string))) "ordinary message"
+    None
+    (L.parse_alias_renamed_marker
+       (msg ~from:"x" ~to_:"y" "hello there"));
+  Alcotest.(check (option (pair string string))) "non-object"
+    None (L.parse_alias_renamed_marker (`String "nope"))
+
+let test_relay_peek_key_after_rebind_cli_convention () =
+  let k =
+    L.relay_peek_key_after_rebind ~new_alias:"gk-black"
+      ~node_id_override:None ~session_id_override:None ~connector_key:None ()
+  in
+  Alcotest.(check string) "node_id" "cli-gk-black" k.L.node_id;
+  Alcotest.(check string) "session_id" "cli-gk-black" k.L.session_id
+
+let test_relay_peek_key_after_rebind_keeps_connector () =
+  let ck = Some L.{ node_id = "host-xyz"; session_id = "sess-9" } in
+  let k =
+    L.relay_peek_key_after_rebind ~new_alias:"gk-black"
+      ~node_id_override:None ~session_id_override:None ~connector_key:ck ()
+  in
+  Alcotest.(check string) "connector node kept" "host-xyz" k.L.node_id;
+  Alcotest.(check string) "connector session kept" "sess-9" k.L.session_id
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -572,5 +674,25 @@ let () =
             test_terminal_with_local_watch_does_not_exit
         ; Alcotest.test_case "terminal + no local watch -> exit" `Quick
             test_terminal_without_local_watch_exits
+        ] )
+    ; ( "identity-rebind-b180",
+        [ Alcotest.test_case "rebind when session alias changes" `Quick
+            test_rebind_when_session_alias_changes
+        ; Alcotest.test_case "flag_bound suppresses rebind" `Quick
+            test_rebind_suppressed_when_flag_bound
+        ; Alcotest.test_case "same alias is noop" `Quick
+            test_rebind_noop_when_same_alias
+        ; Alcotest.test_case "casefold spelling change rebinds" `Quick
+            test_rebind_casefold_spelling_change
+        ; Alcotest.test_case "alias appears / missing reg" `Quick
+            test_rebind_when_alias_appears
+        ; Alcotest.test_case "parse alias_renamed from content" `Quick
+            test_parse_alias_renamed_marker_from_content
+        ; Alcotest.test_case "parse alias_renamed direct + noise" `Quick
+            test_parse_alias_renamed_marker_direct_and_noise
+        ; Alcotest.test_case "relay key after rebind uses cli-new" `Quick
+            test_relay_peek_key_after_rebind_cli_convention
+        ; Alcotest.test_case "relay key after rebind keeps connector" `Quick
+            test_relay_peek_key_after_rebind_keeps_connector
         ] )
     ]
