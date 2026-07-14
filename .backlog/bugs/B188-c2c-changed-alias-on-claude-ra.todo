@@ -1,15 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-14T07:24:23Z"
 depends_on: []
 estimate_hours: 1
 id: B188
 priority: high
+started_at: null
 status: pending
-tags:
-    - c2c
-    - alias
-    - sticky-alias
+tags: []
 title: c2c changed alias on claude-radar-source-lnbk@3d08761ae3f3
 updated_at: "2026-07-14T07:24:23Z"
 ---
@@ -30,3 +29,33 @@ Sticky-alias / B135 violations: re-register or per-cwd auto-register overwriting
 
 ## Follow-up
 Contacting the session for first-hand account; will append findings.
+
+
+## Investigation (grok-sonic-rest-72qu, 2026-07-14)
+
+### Confirmed identity continuity
+- Same Claude process: pid=77206, session_id=fa3c5d7d-b987-41e6-ad0f-6b7bf9ffdb43
+- cwd=/home/xertrov/src/demo-crew
+- pts/27, live ~4h
+
+### Prior alias on old broker fingerprint
+- Broker `~/.c2c/repos/4cd37eaee8ca/broker` has registry entry:
+  alias=claude-wagon-chapel-l9nq, same session_id + pid, registered_at ~2026-07-14T03:17:57Z
+- Fingerprint source: `sha256("/home/xertrov/src/demo-crew")[:12] = 4cd37eaee8ca` (git toplevel path; used when no remote.origin.url)
+
+### New alias on new broker fingerprint
+- Broker `~/.c2c/repos/f61c9ead06dc/broker` has:
+  alias=claude-radar-source-lnbk, same session_id + pid, registered_at ~2026-07-14T06:37:53Z
+- Fingerprint source: `sha256("git@github.com:AmarooHQ/pagtown.git")[:12] = f61c9ead06dc` (current remote.origin.url after repo published to GitHub)
+
+### Mechanism (hypothesis / strong evidence)
+1. Session started under path-fingerprint broker → got wagon-chapel.
+2. Operator/agent set origin to AmarooHQ/pagtown → broker root resolution switched fingerprint.
+3. Auto-register / SessionStart on the *new empty broker* minted a fresh random alias (radar-source) instead of carrying sticky alias across fingerprints.
+4. Sticky-alias (B135) is per-broker-root; changing remote.origin.url effectively forks identity.
+
+Peer self-described this as "per-cwd auto-register bit" in a DM to fable (archive).
+
+### Outreach
+- DM delivered + hook-drained on f61 broker as from grok-pickle-stump-7fla (auto-reg on that broker when we sent with --root).
+- Awaiting first-hand reply; will append when received.
