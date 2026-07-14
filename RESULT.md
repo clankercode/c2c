@@ -42,7 +42,16 @@ Full release compile on ubuntu-22.04 is gated to GHA release workflow (not run l
 
 ## Commits / SHAs
 
-See `git log fix/bl-b190 --oneline` after commit (filled below when committing).
+| Ref | SHA |
+|-----|-----|
+| Fix commit | `8c735d6c151f5eedc36ec2d165fcd69091c0ba1b` |
+| Short | `8c735d6c` |
+| Branch tip | `fix/bl-b190` @ `8c735d6c` |
+| Parent (claim base) | `0e2559d7` |
+
+```text
+8c735d6c fix(B190): lower Linux release glibc floor to 2.35 (Ubuntu 22.04)
+```
 
 ## Review
 
