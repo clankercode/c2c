@@ -55,6 +55,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) () :
     (* H3 added cs_node_id to connector_state; this H5 fixture predates it.
        None = no node-id recorded, the pre-H3 behaviour. *)
     cs_node_id = None;
+    cs_pid = None;
     cs_registered = [];
     cs_outbox_forwarded = 0;
     cs_outbox_failed = 0;
@@ -213,12 +214,17 @@ let now = 1_000_000.0
 
 let test_connector_fresh_state_is_live () =
   let st = conn_state ~last_sync:(now -. 30.0) ~last_ok:(now -. 30.0) () in
-  let info = connector_info ~state:(Some st) ~now in
+  let info = connector_info ~state:(Some st) ~now () in
   check bool "fresh state -> live" true info.conn_live;
   check bool "state file present" true info.conn_state_present;
+  check string "health ok" "ok" (health_to_string info.conn_health);
+  check bool "no remediation when live" true (info.conn_remediation = None);
   (match info.conn_last_sync_age_s with
    | Some a -> check (float 0.001) "age = now - last_sync" 30.0 a
    | None -> fail "expected last-sync age");
+  (match info.conn_last_ok_age_s with
+   | Some a -> check (float 0.001) "ok age = now - last_ok" 30.0 a
+   | None -> fail "expected last-ok age");
   (* Same verdict as the doctor's broker-owned signal. *)
   check bool "agrees with Relay_doctor.connector_running"
     (Relay_doctor.connector_running ~scoped_procs:[] ~state:(Some st) ~now)
@@ -226,18 +232,54 @@ let test_connector_fresh_state_is_live () =
 
 let test_connector_stale_state_is_down () =
   let st = conn_state ~last_sync:(now -. 3600.0) ~last_ok:(now -. 3600.0) () in
-  let info = connector_info ~state:(Some st) ~now in
+  let info = connector_info ~state:(Some st) ~now () in
   check bool "stale state -> down" false info.conn_live;
   check bool "state file still present" true info.conn_state_present;
+  check string "health stale" "stale" (health_to_string info.conn_health);
+  check bool "remediation present" true (info.conn_remediation <> None);
   check bool "agrees with Relay_doctor.connector_running"
     (Relay_doctor.connector_running ~scoped_procs:[] ~state:(Some st) ~now)
     info.conn_live
 
+let test_connector_wedged_process_present () =
+  (* B181: process alive + stale last_sync = wedged, not live. *)
+  let st = conn_state ~last_sync:(now -. 3600.0) ~last_ok:(now -. 3600.0) () in
+  let info = connector_info ~process_present:true ~state:(Some st) ~now () in
+  check bool "wedged is not live" false info.conn_live;
+  check string "health wedged" "wedged" (health_to_string info.conn_health);
+  check bool "process_present recorded" true info.conn_process_present;
+  check bool "remediation mentions restart or connect" true
+    (match info.conn_remediation with
+     | Some r ->
+         string_contains ~needle:"restart" r
+         || string_contains ~needle:"relay connect" r
+     | None -> false);
+  let human = connector_human info in
+  check bool "human says wedged" true (string_contains ~needle:"wedged" human);
+  check bool "human notes process≠bridge" true
+    (string_contains ~needle:"process≠bridge" human
+    || string_contains ~needle:"process" human)
+
+let test_connector_pid_alive_helper () =
+  (* Self PID must look alive; impossible PID must not. *)
+  let base = conn_state ~last_sync:now ~last_ok:now () in
+  let self =
+    { base with C2c_relay_connector.cs_pid = Some (Unix.getpid ()) }
+  in
+  let gone = { base with C2c_relay_connector.cs_pid = Some 999_999_999 } in
+  let none = { base with C2c_relay_connector.cs_pid = None } in
+  check bool "self pid alive" true (C2c_relay_connector.connector_pid_alive self);
+  check bool "bogus pid not alive" false
+    (C2c_relay_connector.connector_pid_alive gone);
+  check bool "missing pid not alive" false
+    (C2c_relay_connector.connector_pid_alive none)
+
 let test_connector_absent_state () =
-  let info = connector_info ~state:None ~now in
+  let info = connector_info ~state:None ~now () in
   check bool "no state file -> down" false info.conn_live;
   check bool "no state file recorded" false info.conn_state_present;
-  check bool "no age" true (info.conn_last_sync_age_s = None)
+  check bool "no age" true (info.conn_last_sync_age_s = None);
+  check string "health absent" "absent" (health_to_string info.conn_health)
 
 (* --- human/JSON parity ------------------------------------------------------- *)
 
@@ -281,9 +323,19 @@ let test_classification_human_json_parity () =
 
 let test_connector_human_json_parity () =
   let cases =
-    [ connector_info ~state:(Some (conn_state ~last_sync:(now -. 5.0) ())) ~now;
-      connector_info ~state:(Some (conn_state ~last_sync:(now -. 9999.0) ())) ~now;
-      connector_info ~state:None ~now ]
+    [ connector_info
+        ~state:(Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
+        ~now ();
+      connector_info
+        ~state:
+          (Some (conn_state ~last_sync:(now -. 9999.0) ~last_ok:(now -. 9999.0) ()))
+        ~now ();
+      connector_info
+        ~process_present:true
+        ~state:
+          (Some (conn_state ~last_sync:(now -. 9999.0) ~last_ok:(now -. 9999.0) ()))
+        ~now ();
+      connector_info ~state:None ~now () ]
   in
   List.iter
     (fun info ->
@@ -296,13 +348,32 @@ let test_connector_human_json_parity () =
               | _ -> failwith "connector_json missing live")
          | _ -> failwith "expected Assoc"
        in
+       let health_json =
+         match j with
+         | `Assoc fields ->
+             (match List.assoc_opt "health" fields with
+              | Some (`String s) -> s
+              | _ -> failwith "connector_json missing health")
+         | _ -> failwith "expected Assoc"
+       in
        let human = connector_human info in
        check bool "json live flag matches record" info.conn_live live_json;
-       let human_says_live = string_contains ~needle:"live" human
-                             && not (string_contains ~needle:"down" human)
-                             && not (string_contains ~needle:"none" human) in
+       check string "json health matches record"
+         (health_to_string info.conn_health) health_json;
+       (* Live bridge: human leads with "live (". Other classes must not. *)
+       let human_says_live =
+         String.length human >= 4 && String.sub human 0 4 = "live"
+       in
        check bool "human leading word agrees with json live" live_json
-         human_says_live)
+         human_says_live;
+       check bool "json has process_present" true
+         (match j with
+          | `Assoc fields -> List.mem_assoc "process_present" fields
+          | _ -> false);
+       check bool "json has remediation key" true
+         (match j with
+          | `Assoc fields -> List.mem_assoc "remediation" fields
+          | _ -> false))
     cases
 
 (* --- end-to-end: c2c whoami human/JSON parity (isolated env) ---------------- *)
@@ -423,6 +494,10 @@ let () =
       ( "connector signal",
         [ test_case "fresh state live" `Quick test_connector_fresh_state_is_live;
           test_case "stale state down" `Quick test_connector_stale_state_is_down;
+          test_case "wedged process present (B181)" `Quick
+            test_connector_wedged_process_present;
+          test_case "connector_pid_alive helper" `Quick
+            test_connector_pid_alive_helper;
           test_case "absent state" `Quick test_connector_absent_state ] );
       ( "human/JSON parity",
         [ test_case "state strings distinct + pinned" `Quick

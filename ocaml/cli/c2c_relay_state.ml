@@ -183,15 +183,60 @@ let registration_evidence (lease : lease_result option) :
   | Some No_relay | Some No_identity | Some No_alias | None ->
       Relay_state.Reg_not_checked
 
+(* Best-effort connector process presence (B181). Prefer the broker-owned
+   PID recorded in connector-state.json (works for the canonical
+   `c2c relay connect` argv that carries no --broker-root). Fall back to
+   broker-scoped pgrep for first-sync / pre-pid state files. Never raises. *)
+let connector_process_present ~broker_root ~conn_state =
+  let from_state =
+    match conn_state with
+    | Some st -> C2c_relay_connector.connector_pid_alive st
+    | None -> false
+  in
+  if from_state then true
+  else if broker_root = "" || broker_root = "<unresolved>" then false
+  else
+    try
+      let patterns = [ "c2c relay connect"; "c2c_relay_connector" ] in
+      let lines =
+        List.concat_map
+          (fun pat ->
+             let cmd =
+               Printf.sprintf "pgrep -af %s 2>/dev/null" (Filename.quote pat)
+             in
+             let ic = Unix.open_process_in cmd in
+             Fun.protect
+               ~finally:(fun () -> ignore (Unix.close_process_in ic))
+               (fun () ->
+                  let acc = ref [] in
+                  (try
+                     while true do
+                       acc := input_line ic :: !acc
+                     done
+                   with End_of_file -> ());
+                  List.rev !acc))
+          patterns
+      in
+      Relay_doctor.scope_connector_lines ~broker_root lines <> []
+    with _ -> false
+
 (* Composite state + connector info for a snapshot. Reads the broker-owned
-   connector-state file (never raises; missing file = no evidence). *)
+   connector-state file (never raises; missing file = no evidence). Also
+   notes process presence for wedged vs down (B181). *)
 let composite (s : snapshot) (lease : lease_result option) ~now :
     Relay_state.classification * Relay_state.connector_info =
-  let conn_state =
-    try C2c_relay_connector.read_connector_state (resolve_broker_root ())
-    with _ -> None
+  let broker_root =
+    try resolve_broker_root () with _ -> "<unresolved>"
   in
-  let conn = Relay_state.connector_info ~state:conn_state ~now in
+  let conn_state =
+    try C2c_relay_connector.read_connector_state broker_root with _ -> None
+  in
+  let process_present =
+    connector_process_present ~broker_root ~conn_state
+  in
+  let conn =
+    Relay_state.connector_info ~process_present ~state:conn_state ~now ()
+  in
   let classification =
     Relay_state.classify
       ~relay_configured:(relay_configured s)
@@ -216,12 +261,10 @@ let lease_result_json = function
 
 (* JSON "relay" object combining snapshot + optional lease_result.
 
-   H5 additions (additive — no existing key changed meaning): "registration"
-   ({state, reason} — the composite classified state, distinct from the local
-   "alias") and "connector" ({live, state_file, last_sync_age_s} — the
-   broker-owned connector signal). Same facts as the human "state:" /
-   "connector:" lines in [print_relay_section] (parity pinned by
-   test_c2c_relay_state.ml). *)
+   H5 + B181 additions (additive): "registration" ({state, reason}) and
+   "connector" ({live, state_file, last_sync_age_s, last_ok_age_s,
+   process_present, health, remediation}). Same facts as the human
+   "state:" / "connector:" lines in [print_relay_section]. *)
 let relay_json ?now (s : snapshot) (lease : lease_result option) : Yojson.Safe.t =
   let now = match now with Some n -> n | None -> Unix.gettimeofday () in
   let classification, conn = composite s lease ~now in

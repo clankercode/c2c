@@ -941,9 +941,19 @@ and the matching `--json` fields under `relay`:
 "connector": {
     "live": false,
     "state_file": false,
-    "last_sync_age_s": null
+    "last_sync_age_s": null,
+    "last_ok_age_s": null,
+    "process_present": false,
+    "health": "absent",
+    "remediation": "c2c start relay-connect 2>/dev/null || c2c relay connect &"
 }
 ```
+
+`connector.live` is **bridge health** (fresh successful sync / `last_ok`), not
+process presence. A long-lived `c2c relay connect` PID with stale `last_sync`
+is `health: "wedged"` / `live: false` — restart the connector; do not assume
+the PID means inbound relay traffic is flowing. `remediation` is a
+copy-pasteable recovery command when not live.
 
 Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 `alias`, `host_id`, `identity_pk`, `fingerprint`, `lease`) are unchanged.

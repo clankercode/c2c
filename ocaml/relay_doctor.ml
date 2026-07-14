@@ -15,7 +15,8 @@
    - connector detection was machine-global `pgrep`; an unrelated connector on
      the same box falsely reported "connector running" for an isolated broker.
      [scope_connector_lines] scopes matches to this broker root and
-     [connector_running] requires broker-owned evidence.
+     [connector_running] requires broker-owned *fresh successful sync*
+     evidence (B181: process presence alone is never bridge health).
    - every emitted docs URL 404'd (`https://c2c.im/docs/relay`); [docs_url] now
      points at the published `/relay-quickstart/` permalink. *)
 
@@ -150,12 +151,8 @@ let connector_stale_threshold_s = 120.0
 let connector_state_is_fresh ~now (st : C2c_relay_connector.connector_state) =
   now -. st.C2c_relay_connector.cs_last_sync_ts < connector_stale_threshold_s
 
-(* Broker-owned "connector running" signal used to gate the connect capability:
-   a broker-attributed process OR a fresh broker-owned connector-state file.
-   Machine-global pgrep alone is deliberately NOT enough. *)
-let connector_running ~scoped_procs ~state ~now =
-  scoped_procs <> []
-  || (match state with Some st -> connector_state_is_fresh ~now st | None -> false)
+let connector_state_ok_is_fresh ~now (st : C2c_relay_connector.connector_state) =
+  now -. st.C2c_relay_connector.cs_last_ok_ts < connector_stale_threshold_s
 
 (* Compact relative-age formatter for connector messages. *)
 let age_str now ts =
@@ -167,24 +164,46 @@ let age_str now ts =
 
 let recent_error_window_s = 300.0
 
-(* Pure connector check. Every FAIL carries a copy-pasteable fix_command
-   (B093 item 5 — some FAIL branches previously had fix_command=None).
+let has_recent_error ~now (st : C2c_relay_connector.connector_state) =
+  match st.C2c_relay_connector.cs_last_error_ts with
+  | Some ts when now -. ts < recent_error_window_s -> true
+  | _ -> false
 
-   The "is the connector running?" determination is the SAME broker-owned
-   signal the capabilities matrix consumes ([connector_running]): a scoped
-   process OR a fresh broker-owned state file. This closes the peer-review B1
-   false negative: the canonical launch `c2c relay connect --relay-url <url>`
-   carries NO --broker-root on argv, so [scope_connector_lines] yields
-   scoped_procs=[] for a genuinely-running healthy connector; the broker-owned
-   state file (the authoritative signal, per the design note above) must then
-   drive the running/PASS verdict on its own. Deriving both surfaces from
-   [connector_running] guarantees they can never contradict — capabilities
-   connect=yes ⇒ this check agrees the connector is running (PASS on the
-   healthy path, never the "connector not running" falsehood). *)
+(* Live bridge = a *successful* sync completed recently (last_ok fresh).
+   last_sync alone is insufficient: a wedged process may never write state,
+   and a looping-but-always-failing connector writes last_sync without
+   delivering. Process presence is intentionally ignored here (B181): a
+   multi-hour `c2c relay connect` PID with last_sync 1.4d is not a live
+   bridge. [scoped_procs] is retained in the signature so call sites and
+   diagnostics can still surface process evidence separately. *)
+let connector_bridge_live ~state ~now =
+  match state with
+  | Some st ->
+      connector_state_is_fresh ~now st && connector_state_ok_is_fresh ~now st
+  | None -> false
+
+let connector_running ~scoped_procs:_ ~state ~now =
+  connector_bridge_live ~state ~now
+
+let fix_restart_connect relay_url =
+  Printf.sprintf
+    "c2c restart relay-connect 2>/dev/null || \
+     (pkill -f 'c2c relay connect' 2>/dev/null; \
+      c2c relay connect --relay-url %s &)"
+    relay_url
+
+let fix_start_connect relay_url =
+  Printf.sprintf
+    "c2c start relay-connect --relay-url %s 2>/dev/null || \
+     c2c relay connect --relay-url %s &"
+    relay_url relay_url
+
+(* Pure connector check. Every FAIL carries a copy-pasteable fix_command
+   (B093 item 5). Bridge liveness is [connector_running] (fresh last_ok),
+   which capabilities also consume — the two surfaces never disagree about
+   whether the bridge is live. Process presence is a *separate* diagnostic:
+   process alive + stale last_sync = wedged (FAIL, restart), not PASS. *)
 let connector_check ~relay_url ~scoped_procs ~state ~now =
-  let fix_connect =
-    Printf.sprintf "c2c relay connect --relay-url %s &" relay_url
-  in
   let base id status message detail fix =
     {
       check_id = id;
@@ -196,66 +215,99 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
     }
   in
   let id = "relay.connector" in
-  let running = connector_running ~scoped_procs ~state ~now in
-  match running, state with
-  | false, None ->
+  let n_procs = List.length scoped_procs in
+  let live = connector_running ~scoped_procs ~state ~now in
+  match live, state, n_procs with
+  | false, None, 0 ->
       base id Fail
         "no relay connector attributable to this broker root and no prior sync state"
         (Some
            "Outbound remote-alias messages will queue in remote-outbox.jsonl \
-            indefinitely.")
-        (Some fix_connect)
-  | false, Some st ->
-      (* Not running: scoped_procs=[] AND the state file is stale — the
-         connector is genuinely down (its last sync aged past the freshness
-         threshold). *)
-      let last_sync = st.C2c_relay_connector.cs_last_sync_ts in
-      base id Fail
-        (Printf.sprintf "connector not running (last sync %s ago)"
-           (age_str now last_sync))
-        (Some "Outbox will not drain until a connector restarts.")
-        (Some fix_connect)
-  | true, None ->
-      (* Running signal came from a scoped process while no state file exists
-         yet — the first sync is still in flight (state=None can only pair with
-         running=true via a scoped process). *)
+            indefinitely. Process presence is not checked as bridge health — \
+            start a connector for this broker.")
+        (Some (fix_start_connect relay_url))
+  | false, None, n when n > 0 ->
+      (* Process attributed to this broker, no state file yet — first sync
+         still in flight, OR a process that never successfully wrote state. *)
       base id Inconclusive
         (Printf.sprintf
            "connector process attributable to this broker (%d); no state file \
-            yet"
-           (List.length scoped_procs))
-        (Some "First sync may still be in flight.")
-        None
-  | true, Some st ->
-      (* Running with a state file to read: evidence is a scoped process
-         AND/OR a fresh broker-owned state file. A fresh healthy state file
-         alone (scoped_procs=[]) is authoritative → PASS, matching what
-         capabilities reports for the same inputs. *)
-      let n = List.length scoped_procs in
+            yet (process≠bridge health)"
+           n)
+        (Some
+           "First sync may still be in flight. If this persists beyond ~2m, \
+            kill and restart the connector.")
+        (Some (fix_restart_connect relay_url))
+  | false, Some st, n ->
+      let last_sync = st.C2c_relay_connector.cs_last_sync_ts in
+      let last_ok = st.C2c_relay_connector.cs_last_ok_ts in
+      let sync_age = age_str now last_sync in
+      let ok_age = age_str now last_ok in
+      if n > 0 then
+        (* B181: process alive + stale bridge = wedged. Never PASS on PID alone. *)
+        base id Fail
+          (Printf.sprintf
+             "connector process present but bridge stale (last sync %s ago, \
+              last ok %s ago) — wedged; process≠bridge health"
+             sync_age ok_age)
+          (Some
+             "A long-lived `c2c relay connect` PID is not proof of delivery. \
+              Restart the connector so last_sync refreshes; check token/socket \
+              if restart immediately re-stales.")
+          (Some (fix_restart_connect relay_url))
+      else if connector_state_is_fresh ~now st
+              && not (connector_state_ok_is_fresh ~now st) then
+        (* Cycling but not succeeding. *)
+        let err =
+          match st.C2c_relay_connector.cs_last_error_detail with
+          | Some e -> Printf.sprintf " last error: %s" e
+          | None -> ""
+        in
+        base id Fail
+          (Printf.sprintf
+             "connector syncing but not healthy (last sync %s ago, last ok %s \
+              ago)%s"
+             sync_age ok_age err)
+          (Some
+             "Bridge process may be alive (last_sync fresh) but successful \
+              sync is stale — check token, identity, and relay reachability.")
+          (Some (fix_restart_connect relay_url))
+      else
+        base id Fail
+          (Printf.sprintf "connector not running (last sync %s ago)" sync_age)
+          (Some
+             "No broker-attributed process and last_sync is past the freshness \
+              threshold. Outbox will not drain until a connector restarts.")
+          (Some (fix_start_connect relay_url))
+  | true, None, _ ->
+      (* live requires a state file; unreachable in practice. *)
+      base id Inconclusive
+        "connector reported live without state file (internal inconsistency)"
+        None None
+  | true, Some st, n ->
       let evidence =
-        if n > 0 then Printf.sprintf "%d proc" n else "state file"
+        if n > 0 then Printf.sprintf "%d proc + fresh last_ok" n
+        else "fresh last_ok (state file)"
       in
       let last_err =
         match st.C2c_relay_connector.cs_last_error_detail with
         | Some e -> Printf.sprintf " last error: %s" e
         | None -> ""
       in
-      let recent_err =
-        match st.C2c_relay_connector.cs_last_error_ts with
-        | Some ts when now -. ts < recent_error_window_s -> true
-        | _ -> false
-      in
+      let recent_err = has_recent_error ~now st in
       let status, detail, fix =
         if recent_err then
-          let op = Option.value st.C2c_relay_connector.cs_last_error_op ~default:"?" in
-          let ts = Option.value st.C2c_relay_connector.cs_last_error_ts ~default:0.0 in
+          let op =
+            Option.value st.C2c_relay_connector.cs_last_error_op ~default:"?"
+          in
+          let ts =
+            Option.value st.C2c_relay_connector.cs_last_error_ts ~default:0.0
+          in
           ( Fail,
             Some
               (Printf.sprintf "recent error %s ago on %s%s" (age_str now ts) op
                  last_err),
-            (* B093 item 5: a running-but-erroring connector must still offer a
-               fix (previously fix_command=None here). *)
-            Some fix_connect )
+            Some (fix_restart_connect relay_url) )
         else
           ( Pass,
             Some
@@ -269,6 +321,6 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
             None )
       in
       base id status
-        (Printf.sprintf "connector running (%s); last sync %s ago%s" evidence
+        (Printf.sprintf "connector bridge live (%s); last sync %s ago%s" evidence
            (age_str now st.C2c_relay_connector.cs_last_sync_ts) last_err)
         detail fix

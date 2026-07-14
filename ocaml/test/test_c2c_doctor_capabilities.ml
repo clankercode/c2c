@@ -32,6 +32,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?err_op ?err_detail ?err_ts
     (* H3 added cs_node_id to connector_state; this H4 fixture predates it.
        None = connector state without a node-id (pre-H3 shape). *)
     cs_node_id = None;
+    cs_pid = None;
     cs_outbox_forwarded = fwd;
     cs_outbox_failed = failed;
     cs_outbox_dlqed = dlq;
@@ -154,14 +155,26 @@ let test_scope_empty_or_unresolved_broker () =
 
 let test_connector_running_signal () =
   let now = 1000.0 in
-  let fresh = conn_state ~last_sync:(now -. 10.0) () in
-  let stale = conn_state ~last_sync:(now -. 10000.0) () in
-  Alcotest.(check bool) "scoped proc → running" true
+  let fresh =
+    conn_state ~last_sync:(now -. 10.0) ~last_ok:(now -. 10.0) ()
+  in
+  let stale =
+    conn_state ~last_sync:(now -. 10000.0) ~last_ok:(now -. 10000.0) ()
+  in
+  let sync_only =
+    conn_state ~last_sync:(now -. 10.0) ~last_ok:(now -. 10000.0) ()
+  in
+  (* B181: process presence alone is NOT a live bridge. *)
+  Alcotest.(check bool) "scoped proc alone → NOT running" false
     (connector_running ~scoped_procs:[ "x" ] ~state:None ~now);
-  Alcotest.(check bool) "fresh state → running" true
+  Alcotest.(check bool) "fresh last_ok → running" true
     (connector_running ~scoped_procs:[] ~state:(Some fresh) ~now);
   Alcotest.(check bool) "stale state only → NOT running" false
     (connector_running ~scoped_procs:[] ~state:(Some stale) ~now);
+  Alcotest.(check bool) "fresh last_sync but stale last_ok → NOT running" false
+    (connector_running ~scoped_procs:[] ~state:(Some sync_only) ~now);
+  Alcotest.(check bool) "proc + stale state → still NOT running (B181)" false
+    (connector_running ~scoped_procs:[ "x" ] ~state:(Some stale) ~now);
   Alcotest.(check bool) "nothing → NOT running" false
     (connector_running ~scoped_procs:[] ~state:None ~now)
 
@@ -191,15 +204,15 @@ let test_connector_check_fresh_state_no_proc () =
      process is the canonical production path — `c2c relay connect --relay-url
      <url>` carries no --broker-root on argv, so scope_connector_lines yields
      []. The broker-owned state file is authoritative → PASS with a truthful
-     "connector running" message (was the false "connector not running"
+     "bridge live" message (was the false "connector not running"
      Inconclusive before). *)
   let st =
     conn_state ~last_sync:(now -. 10.0) ~last_ok:(now -. 10.0) ~fwd:4 ~inbound:2 ()
   in
   let r = cc ~state:st () in
   Alcotest.(check bool) "fresh healthy state alone → PASS" true (r.status = Pass);
-  Alcotest.(check bool) "message says running" true
-    (has_needle ~needle:"connector running" r.message);
+  Alcotest.(check bool) "message says bridge live" true
+    (has_needle ~needle:"bridge live" r.message);
   Alcotest.(check bool) "message is NOT the 'not running' falsehood" false
     (has_needle ~needle:"not running" r.message)
 
@@ -224,8 +237,8 @@ let test_connector_check_production_argv_no_broker_root () =
   in
   let r = connector_check ~relay_url ~scoped_procs:scoped ~state:(Some st) ~now in
   Alcotest.(check bool) "production fresh-state → PASS" true (r.status = Pass);
-  Alcotest.(check bool) "truthful running message" true
-    (has_needle ~needle:"connector running" r.message
+  Alcotest.(check bool) "truthful bridge-live message" true
+    (has_needle ~needle:"bridge live" r.message
     && not (has_needle ~needle:"not running" r.message))
 
 (* Coherence: capabilities and the connector check consume the same
@@ -239,14 +252,14 @@ let test_capabilities_connector_coherence () =
        Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
     ; ("proc + fresh healthy state", [ "p" ],
        Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0) ()))
-    ; ("proc + stale state", [ "p" ],
-       Some (conn_state ~last_sync:(now -. 9000.0) ()))
+    ; ("proc + stale state (wedged)", [ "p" ],
+       Some (conn_state ~last_sync:(now -. 9000.0) ~last_ok:(now -. 9000.0) ()))
     ; ("proc, no state (first sync)", [ "p" ], None)
-    ; ("fresh erroring state, no proc", [],
-       Some (conn_state ~last_sync:(now -. 5.0) ~err_op:"sync"
-               ~err_detail:"429" ~err_ts:(now -. 5.0) ()))
+    ; ("fresh sync stale ok, no proc", [],
+       Some (conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 9000.0)
+               ~err_op:"sync" ~err_detail:"429" ~err_ts:(now -. 5.0) ()))
     ; ("stale state, no proc (down)", [],
-       Some (conn_state ~last_sync:(now -. 9000.0) ()))
+       Some (conn_state ~last_sync:(now -. 9000.0) ~last_ok:(now -. 9000.0) ()))
     ; ("nothing", [], None)
     ]
   in
@@ -270,7 +283,8 @@ let test_capabilities_connector_coherence () =
           (has_needle ~needle:"no relay connector attributable" cr.message)
       end)
     combos;
-  (* Strong form on the healthy path: connect=yes ⇒ connector_check PASS. *)
+  (* Strong form on the healthy path: connect=yes ⇒ connector_check PASS
+     (unless recent_err still marks FAIL while last_ok is fresh). *)
   List.iter
     (fun (label, procs, state) ->
       let running = connector_running ~scoped_procs:procs ~state ~now in
@@ -285,18 +299,49 @@ let test_capabilities_connector_coherence () =
 let test_connector_check_proc_no_state () =
   let r = cc ~procs:[ "12345 c2c relay connect" ] () in
   Alcotest.(check bool) "proc, no state → Inconclusive (first sync)" true
-    (r.status = Inconclusive)
+    (r.status = Inconclusive);
+  Alcotest.(check bool) "mentions process≠bridge" true
+    (has_needle ~needle:"process≠bridge" r.message
+    || has_needle ~needle:"process" r.message)
+
+let test_connector_check_proc_wedged () =
+  (* B181: long-lived PID + stale last_sync must FAIL as wedged, never PASS. *)
+  let st =
+    conn_state ~last_sync:(now -. 9000.0) ~last_ok:(now -. 9000.0) ()
+  in
+  let r = cc ~procs:[ "12345 c2c relay connect --broker-root /x" ] ~state:st () in
+  Alcotest.(check bool) "proc + stale → FAIL" true (r.status = Fail);
+  Alcotest.(check bool) "message says wedged" true
+    (has_needle ~needle:"wedged" r.message);
+  Alcotest.(check bool) "mentions process≠bridge health" true
+    (has_needle ~needle:"process≠bridge" r.message);
+  Alcotest.(check bool) "wedged still has a fix" true (r.fix_command <> None);
+  Alcotest.(check bool) "bridge not live" false
+    (connector_running ~scoped_procs:[ "p" ] ~state:(Some st) ~now)
 
 let test_connector_check_proc_recent_error () =
-  (* B093 item 5 regression: a running-but-erroring connector must FAIL AND
-     still carry a fix_command (was None before). *)
+  (* Sync cycling but last_ok stale / recent error → FAIL with fix. With B181
+     last_ok freshness, this is not "live"; it is erroring/wedged. *)
   let st =
     conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 400.0)
       ~err_op:"sync" ~err_detail:"register: 429" ~err_ts:(now -. 5.0) ()
   in
   let r = cc ~procs:[ "12345 c2c relay connect" ] ~state:st () in
-  Alcotest.(check bool) "proc + recent error → FAIL" true (r.status = Fail);
-  Alcotest.(check bool) "erroring connector STILL has a fix" true (r.fix_command <> None)
+  Alcotest.(check bool) "proc + stale last_ok → FAIL" true (r.status = Fail);
+  Alcotest.(check bool) "erroring connector STILL has a fix" true
+    (r.fix_command <> None)
+
+let test_connector_check_live_with_recent_error () =
+  (* last_ok still fresh (transient blip) but recent_err set → FAIL + fix. *)
+  let st =
+    conn_state ~last_sync:(now -. 5.0) ~last_ok:(now -. 5.0)
+      ~err_op:"sync" ~err_detail:"register: 429" ~err_ts:(now -. 5.0) ()
+  in
+  let r = cc ~procs:[ "12345 c2c relay connect" ] ~state:st () in
+  Alcotest.(check bool) "live last_ok + recent error → FAIL" true (r.status = Fail);
+  Alcotest.(check bool) "still has a fix" true (r.fix_command <> None);
+  Alcotest.(check bool) "connector_running still true (fresh last_ok)" true
+    (connector_running ~scoped_procs:[ "p" ] ~state:(Some st) ~now)
 
 let test_connector_check_proc_healthy () =
   let st =
@@ -390,7 +435,9 @@ let () =
           Alcotest.test_case "fresh state no proc → PASS (B1)" `Quick test_connector_check_fresh_state_no_proc;
           Alcotest.test_case "production argv no broker-root → PASS (B1)" `Quick test_connector_check_production_argv_no_broker_root;
           Alcotest.test_case "proc no state → Inconclusive" `Quick test_connector_check_proc_no_state;
-          Alcotest.test_case "proc recent error → FAIL+fix" `Quick test_connector_check_proc_recent_error;
+          Alcotest.test_case "proc + stale → wedged FAIL (B181)" `Quick test_connector_check_proc_wedged;
+          Alcotest.test_case "proc stale last_ok → FAIL+fix" `Quick test_connector_check_proc_recent_error;
+          Alcotest.test_case "live last_ok + recent err → FAIL+fix" `Quick test_connector_check_live_with_recent_error;
           Alcotest.test_case "proc healthy → PASS" `Quick test_connector_check_proc_healthy;
           Alcotest.test_case "every FAIL has a fix" `Quick test_every_fail_has_fix ] );
       ( "capabilities-connector-coherence",

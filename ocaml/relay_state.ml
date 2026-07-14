@@ -7,7 +7,10 @@
 
    The connector signal is deliberately single-sourced from
    Relay_doctor.connector_running so `c2c status` / `c2c whoami` can never
-   contradict `c2c doctor --relay` about whether a connector is live. *)
+   contradict `c2c doctor --relay` about whether a connector is live.
+
+   B181: process presence is NOT bridge health. [connector_info] reports
+   process evidence, health class, and remediation separately from [conn_live]. *)
 
 type registration_evidence =
   | Reg_not_checked
@@ -54,7 +57,9 @@ let classify ~relay_configured ~has_identity ~has_alias ~registration
           { state = Registered_unreachable;
             reason =
               "relay lease alive but no live connector bridge — inbound \
-               relay traffic will not reach this broker" }
+               relay traffic will not reach this broker (process presence \
+               alone is not bridge health; restart connect if last_sync is \
+               stale)" }
     | Reg_lease { alive = false; reserved } ->
         { state = Registered_expired;
           reason =
@@ -87,7 +92,9 @@ let classify ~relay_configured ~has_identity ~has_alias ~registration
         else if local_reg_evidence then
           { state = Registered_unreachable;
             reason =
-              "prior connector sync state exists but the connector is down" }
+              "prior connector sync state exists but the connector is down \
+               (stale last_sync — restart connect; do not assume a live PID \
+               is a live bridge)" }
         else
           { state = Configured_unverified;
             reason = "registration not checked — pass --relay to query" }
@@ -112,20 +119,85 @@ let registration_of_lease_json (lease : Yojson.Safe.t) : registration_evidence =
 
 (* --- connector rendering --------------------------------------------------- *)
 
+type connector_health =
+  | Health_ok
+  | Health_stale
+  | Health_wedged
+  | Health_erroring
+  | Health_starting
+  | Health_absent
+
+let health_to_string = function
+  | Health_ok -> "ok"
+  | Health_stale -> "stale"
+  | Health_wedged -> "wedged"
+  | Health_erroring -> "erroring"
+  | Health_starting -> "starting"
+  | Health_absent -> "absent"
+
 type connector_info = {
   conn_live : bool;
   conn_state_present : bool;
   conn_last_sync_age_s : float option;
+  conn_last_ok_age_s : float option;
+  conn_process_present : bool;
+  conn_health : connector_health;
+  conn_remediation : string option;
 }
 
-let connector_info ~(state : C2c_relay_connector.connector_state option) ~now =
+let default_remediation_start =
+  "c2c start relay-connect 2>/dev/null || c2c relay connect &"
+
+let default_remediation_restart =
+  "c2c restart relay-connect 2>/dev/null || \
+   (pkill -f 'c2c relay connect' 2>/dev/null; c2c relay connect &)"
+
+let derive_health ~live ~process_present ~state ~now : connector_health =
+  match state with
+  | None ->
+      if process_present then Health_starting else Health_absent
+  | Some st ->
+      if live then Health_ok
+      else if Relay_doctor.connector_state_is_fresh ~now st
+              && not (Relay_doctor.connector_state_ok_is_fresh ~now st) then
+        Health_erroring
+      else if process_present then Health_wedged
+      else Health_stale
+
+let remediation_for = function
+  | Health_ok -> None
+  | Health_absent -> Some default_remediation_start
+  | Health_starting -> Some default_remediation_restart
+  | Health_stale -> Some default_remediation_start
+  | Health_wedged -> Some default_remediation_restart
+  | Health_erroring ->
+      Some
+        (default_remediation_restart
+         ^ "  # also: check token (c2c relay setup), identity (c2c init), \
+            relay reachability")
+
+let connector_info ?(process_present = false)
+    ~(state : C2c_relay_connector.connector_state option) ~now () =
+  let live =
+    Relay_doctor.connector_running ~scoped_procs:[] ~state ~now
+  in
+  let health = derive_health ~live ~process_present ~state ~now in
   {
-    conn_live = Relay_doctor.connector_running ~scoped_procs:[] ~state ~now;
+    conn_live = live;
     conn_state_present = state <> None;
     conn_last_sync_age_s =
       (match state with
-       | Some st -> Some (max 0.0 (now -. st.C2c_relay_connector.cs_last_sync_ts))
+       | Some st ->
+           Some (max 0.0 (now -. st.C2c_relay_connector.cs_last_sync_ts))
        | None -> None);
+    conn_last_ok_age_s =
+      (match state with
+       | Some st ->
+           Some (max 0.0 (now -. st.C2c_relay_connector.cs_last_ok_ts))
+       | None -> None);
+    conn_process_present = process_present;
+    conn_health = health;
+    conn_remediation = remediation_for health;
   }
 
 let connector_json (c : connector_info) : Yojson.Safe.t =
@@ -136,6 +208,16 @@ let connector_json (c : connector_info) : Yojson.Safe.t =
         match c.conn_last_sync_age_s with
         | Some a -> `Float a
         | None -> `Null )
+    ; ( "last_ok_age_s",
+        match c.conn_last_ok_age_s with
+        | Some a -> `Float a
+        | None -> `Null )
+    ; ("process_present", `Bool c.conn_process_present)
+    ; ("health", `String (health_to_string c.conn_health))
+    ; ( "remediation",
+        match c.conn_remediation with
+        | Some s -> `String s
+        | None -> `Null )
     ]
 
 let fmt_age_s a =
@@ -145,9 +227,44 @@ let fmt_age_s a =
   else Printf.sprintf "%.1fd" (a /. 86400.0)
 
 let connector_human (c : connector_info) =
-  match c.conn_live, c.conn_last_sync_age_s with
-  | true, Some a -> Printf.sprintf "live (last sync %s ago)" (fmt_age_s a)
-  | true, None -> "live"
-  | false, Some a -> Printf.sprintf "down (last sync %s ago)" (fmt_age_s a)
-  | false, None ->
-      "none (no connector sync state — start with 'c2c relay connect')"
+  let age_bit =
+    match c.conn_last_sync_age_s with
+    | Some a -> Printf.sprintf "last sync %s ago" (fmt_age_s a)
+    | None -> "no last_sync"
+  in
+  let ok_bit =
+    match c.conn_last_ok_age_s with
+    | Some a when c.conn_state_present ->
+        Printf.sprintf ", last ok %s ago" (fmt_age_s a)
+    | _ -> ""
+  in
+  let proc_bit =
+    if c.conn_process_present then "; process present" else ""
+  in
+  let rem_bit =
+    match c.conn_remediation with
+    | Some r -> Printf.sprintf " — %s" r
+    | None -> ""
+  in
+  match c.conn_health with
+  | Health_ok ->
+      Printf.sprintf "live (%s%s%s)" age_bit ok_bit
+        (if c.conn_process_present then "; process present" else "")
+  | Health_absent ->
+      Printf.sprintf
+        "none (no connector sync state — start with 'c2c relay connect')%s"
+        rem_bit
+  | Health_starting ->
+      Printf.sprintf
+        "starting (process present, no state file yet; process≠bridge health)%s"
+        rem_bit
+  | Health_wedged ->
+      Printf.sprintf
+        "wedged (%s%s; process present but bridge not live — process≠bridge \
+         health)%s"
+        age_bit ok_bit rem_bit
+  | Health_stale ->
+      Printf.sprintf "down (%s%s; no attributable process)%s" age_bit ok_bit
+        rem_bit
+  | Health_erroring ->
+      Printf.sprintf "erroring (%s%s%s)%s" age_bit ok_bit proc_bit rem_bit
