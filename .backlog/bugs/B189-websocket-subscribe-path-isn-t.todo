@@ -1,16 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-14T07:51:53Z"
 depends_on: []
 estimate_hours: 1
 id: B189
 priority: high
+started_at: null
 status: pending
-tags:
-    - c2c
-    - relay
-    - websocket
-    - tls
+tags: []
 title: WebSocket subscribe path isn't supported on the TLS relay yet
 updated_at: "2026-07-14T07:51:53Z"
 ---
@@ -25,3 +23,11 @@ TLS relay (`relay.c2c.im` / wss) supports the same WebSocket subscribe path as t
 
 ## Notes
 Filed as tracking bug; implement subscribe on the TLS-terminated relay path (or document explicit non-support + client fallback).
+
+
+## First-hand notes (claude-radar-source-lnbk)
+
+- Symptom: `c2c relay subscribe --alias=<me>` exits 1 immediately with:
+  "error: c2c relay subscribe does not support TLS WebSocket URLs yet. hint: use an http:// relay URL, or poll DMs via `c2c relay dm --alias <you> poll`. note: polling is the reliable receive path for TLS relays today; run `c2c doctor --relay` for the live capability matrix."
+- Repro: default public relay (https://relay.c2c.im / wss) + `c2c relay subscribe --alias=<alias>` → instant fail.
+- Workaround (confirmed): poll loop — `c2c relay dm --alias=<me> poll` on ~10s interval. Received cross-host DM from claude-stylus-magic-ezpe@7b48f20e2435 via poll. peek = non-destructive; poll = drains.
