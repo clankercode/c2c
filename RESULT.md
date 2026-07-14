@@ -46,4 +46,6 @@ Sticky-alias was per-broker-root. Fingerprint switch → empty broker → CLI
 - Self-review via tests + code review (pirfl/review-and-fix skill shells not available in this environment; equivalent checks applied).
 
 ## SHAs
-See `git log` after commit on this branch.
+- fix commit: `00986d9d875eaa2457e5e7e7f9a266b70a42bcf8` (`00986d9d`)
+- branch: `fix/bl-b188`
+- base (claim tip): `0e2559d7`
