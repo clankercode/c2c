@@ -47,6 +47,12 @@ val frontend_extra_args : yolo:bool -> extra:string list -> string list
     explicit while preserving the Codex app-server context. *)
 val app_server_log_label : string
 
+(** Operator-facing follow-up text after an app-server startup diagnostic.
+    Suggests "upgrade codex" only for version/capability/not-found failures;
+    readiness timeouts and process exits on a supported Codex get actionable
+    non-upgrade guidance (B175). *)
+val diagnostic_followup : C2c_codex_app_server.diagnostic -> string
+
 (** Stable, testable content of the online-attached lifecycle log. *)
 val online_attached_log_body : alias:string -> endpoint:string -> string
 

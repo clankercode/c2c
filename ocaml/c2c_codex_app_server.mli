@@ -151,6 +151,14 @@ type config = {
 
 val default_config : instance_name:string -> instance_dir:string -> cwd:string -> config
 
+(** Default readiness deadline (seconds) when the env override is unset. *)
+val default_readiness_timeout_s : float
+
+(** Resolve readiness timeout from [C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S]
+    (positive finite float) or [default] (defaults to
+    {!default_readiness_timeout_s}). Invalid values fall back to [default]. *)
+val readiness_timeout_from_env : ?default:float -> unit -> float
+
 (* -------------------------------- backend --------------------------------- *)
 
 type ready_error = Re_unauthorized | Re_not_yet | Re_server_gone

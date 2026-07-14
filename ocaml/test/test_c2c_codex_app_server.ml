@@ -77,6 +77,11 @@ let cfg_for dir =
 
 let diag_code_str = function Ok _ -> "ok" | Error (d : diagnostic) -> diag_code_to_string d.code
 
+let string_mem needle hay =
+  let nl = String.length needle and hl = String.length hay in
+  let rec go i = i + nl <= hl && (String.sub hay i nl = needle || go (i + 1)) in
+  nl = 0 || go 0
+
 (* ------------------------------------------------------------------ *)
 (* version parsing / gate                                              *)
 (* ------------------------------------------------------------------ *)
@@ -176,8 +181,65 @@ let test_readiness_timeout () =
       in
       let r = start ~backend:bk (cfg_for dir) in
       Alcotest.(check string) "code" "readiness_timeout" (diag_code_str r);
+      (match r with
+       | Error d ->
+           Alcotest.(check bool) "timeout message mentions process still running" true
+             (string_mem "process still running" d.message);
+           Alcotest.(check bool) "timeout message points at env override" true
+             (string_mem "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" d.message);
+           Alcotest.(check string) "version recorded even on timeout" "codex-cli 0.144.1"
+             (Option.value d.codex_version ~default:"")
+       | Ok _ -> Alcotest.fail "expected timeout diagnostic");
       Alcotest.(check bool) "server reaped (no orphan)" true (sf.reaped >= 1);
       Alcotest.(check bool) "frontend never spawned" false !fe_spawned)
+
+(* B175: a slow-but-alive app-server that becomes ready before the deadline
+   must succeed (not be misclassified as server_died_before_ready). *)
+let test_slow_startup_becomes_ready () =
+  with_tmp_dir (fun dir ->
+      let clock = ref 0.0 in
+      let sf = { status = Running_; signals = []; reaped = 0 } in
+      let ff = { status = Running_; signals = []; reaped = 0 } in
+      let ready_at = 2.5 in
+      let bk =
+        scripted_backend ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake sf))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ff))
+          ~probe_ready:(fun _ ~token:_ ->
+            if !clock >= ready_at then Ok () else Error Re_not_yet)
+          ()
+      in
+      let cfg = { (cfg_for dir) with readiness_timeout_s = 5.0 } in
+      match start ~backend:bk cfg with
+      | Error d ->
+          Alcotest.fail
+            (Printf.sprintf "slow ready should succeed, got %s: %s"
+               (diag_code_to_string d.code) d.message)
+      | Ok h ->
+          Alcotest.(check string) "running" "running"
+            (state_to_string (current_state h));
+          stop h)
+
+(* Supported Codex (>= min) that times out still returns readiness_timeout,
+   not a version diagnostic. *)
+let test_supported_version_timeout_not_version_error () =
+  with_tmp_dir (fun dir ->
+      let clock = ref 0.0 in
+      let sf = { status = Running_; signals = []; reaped = 0 } in
+      let bk =
+        scripted_backend ~clock ~codex_version:(Ok "codex-cli 0.144.1")
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake sf))
+          ~probe_ready:(fun _ ~token:_ -> Error Re_not_yet) ()
+      in
+      let r = start ~backend:bk (cfg_for dir) in
+      Alcotest.(check string) "code" "readiness_timeout" (diag_code_str r);
+      match r with
+      | Error d ->
+          Alcotest.(check string) "supported version kept" "codex-cli 0.144.1"
+            (Option.value d.codex_version ~default:"");
+          Alcotest.(check bool) "not a version code" false
+            (d.code = Codex_version_unsupported)
+      | Ok _ -> Alcotest.fail "expected error")
 
 let test_server_died_before_ready () =
   with_tmp_dir (fun dir ->
@@ -190,7 +252,33 @@ let test_server_died_before_ready () =
       in
       let r = start ~backend:bk (cfg_for dir) in
       Alcotest.(check string) "code" "server_died_before_ready" (diag_code_str r);
+      (match r with
+       | Error d ->
+           Alcotest.(check bool) "exit status in message" true
+             (string_mem "exited:3" d.message);
+           Alcotest.(check string) "supported version kept" "codex-cli 0.144.1"
+             (Option.value d.codex_version ~default:"")
+       | Ok _ -> Alcotest.fail "expected died diagnostic");
       Alcotest.(check bool) "dead server still reaped (no zombie)" true (sf.reaped >= 1))
+
+let test_readiness_timeout_from_env () =
+  let restore =
+    match Sys.getenv_opt "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" with
+    | Some v -> fun () -> Unix.putenv "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" v
+    | None -> fun () ->
+        (* putenv cannot unset; set empty is invalid and falls back to default *)
+        Unix.putenv "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" ""
+  in
+  Fun.protect ~finally:restore (fun () ->
+      Unix.putenv "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" "123.5";
+      Alcotest.(check (float 1e-6)) "env override" 123.5
+        (readiness_timeout_from_env ());
+      Unix.putenv "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" "nope";
+      Alcotest.(check (float 1e-6)) "invalid falls back" default_readiness_timeout_s
+        (readiness_timeout_from_env ());
+      Unix.putenv "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" "-1";
+      Alcotest.(check (float 1e-6)) "non-positive falls back" default_readiness_timeout_s
+        (readiness_timeout_from_env ()))
 
 let test_capability_gate_rejects () =
   with_tmp_dir (fun dir ->
@@ -622,7 +710,11 @@ let () =
         [ Alcotest.test_case "endpoint alloc fail" `Quick test_endpoint_alloc_failure;
           Alcotest.test_case "server spawn fail" `Quick test_server_spawn_failure;
           Alcotest.test_case "readiness timeout" `Quick test_readiness_timeout;
+          Alcotest.test_case "slow startup becomes ready (B175)" `Quick test_slow_startup_becomes_ready;
+          Alcotest.test_case "supported version timeout not version error (B175)"
+            `Quick test_supported_version_timeout_not_version_error;
           Alcotest.test_case "server died before ready" `Quick test_server_died_before_ready;
+          Alcotest.test_case "readiness timeout from env (B175)" `Quick test_readiness_timeout_from_env;
           Alcotest.test_case "ownership unverified (port race)" `Quick test_ownership_unverified;
           Alcotest.test_case "frontend spawn fail" `Quick test_frontend_spawn_failure;
           Alcotest.test_case "auth setup fail" `Quick test_auth_setup_failure;

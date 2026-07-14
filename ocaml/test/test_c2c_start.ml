@@ -1711,6 +1711,10 @@ let test_missing_role_capabilities_satisfied_for_claude_channel () =
   in
   check (list string) "claude channel satisfied" [] missing
 
+(* B175: bare c2c resume_session_id is broker identity, not a Codex thread.
+   Without an explicit codex_resume_target the launch is fresh — never
+   `codex resume --last` (that attached app-server failure fallbacks to
+   unrelated prior work). *)
 let test_prepare_launch_args_codex_resume_last_by_default () =
   let args =
     C2c_start.prepare_launch_args ~name:"codex-proof" ~client:"codex"
@@ -1718,8 +1722,8 @@ let test_prepare_launch_args_codex_resume_last_by_default () =
       ~resume_session_id:"placeholder-uuid"
       ()
   in
-  check (list string) "codex resume last"
-    [ "resume"; "--last" ] args
+  check (list string) "bare session id => fresh (no resume --last)" [] args;
+  check bool "no resume subcommand" false (List.mem "resume" args)
 
 let test_prepare_launch_args_codex_uses_exact_resume_target_when_set () =
   let args =
@@ -1733,9 +1737,7 @@ let test_prepare_launch_args_codex_uses_exact_resume_target_when_set () =
     [ "resume"; "thread-abc" ] args
 
 (* #491: codex-headless was ignoring codex_resume_target and only checking
-   resume_session_id for --thread-id. Now it normalises the same way as
-   the codex adapter: codex_resume_target wins, resume_session_id is the
-   fallback signal ("" = resume --last, None = fresh). *)
+   resume_session_id for --thread-id. codex_resume_target wins when set. *)
 let test_prepare_launch_args_codex_headless_uses_exact_resume_target () =
   let args =
     C2c_start.prepare_launch_args ~name:"cx-headless" ~client:"codex-headless"
@@ -1778,19 +1780,19 @@ let test_prepare_launch_args_codex_fresh_appends_kickoff_positionally () =
   check bool "no --xml-input-fd" false (List.mem "--xml-input-fd" args)
 
 (* Resumed codex sessions already carry their instructions — no re-kickoff
-   (parity with claude/kimi), for both resume --last and exact-target
-   resume. *)
+   (parity with claude/kimi). B175: bare resume_session_id is a *fresh* start
+   (kickoff allowed); only an exact codex_resume_target is a resume. *)
 let test_prepare_launch_args_codex_resume_omits_kickoff () =
   let kickoff = "poll inbox; list peers; post hello" in
-  let resume_last =
+  let bare_session =
     C2c_start.prepare_launch_args ~name:"codex-proof" ~client:"codex"
       ~extra_args:[] ~broker_root:"/tmp/broker"
       ~resume_session_id:"placeholder-uuid"
       ~kickoff_prompt:kickoff
       ()
   in
-  check (list string) "resume --last: no kickoff"
-    [ "resume"; "--last" ] resume_last;
+  check (list string) "bare session id is fresh: kickoff present"
+    [ kickoff ] bare_session;
   let resume_exact =
     C2c_start.prepare_launch_args ~name:"codex-proof" ~client:"codex"
       ~extra_args:[] ~broker_root:"/tmp/broker"
@@ -4135,7 +4137,7 @@ let () =
             `Quick, test_missing_role_capabilities_reports_unknown_codex_xml_fd )
         ; ( "missing_role_capabilities_satisfied_for_claude_channel",
             `Quick, test_missing_role_capabilities_satisfied_for_claude_channel )
-        ; ( "prepare_launch_args_codex_resume_last_by_default",
+        ; ( "prepare_launch_args_codex_bare_session_id_starts_fresh (B175)",
             `Quick, test_prepare_launch_args_codex_resume_last_by_default )
         ; ( "prepare_launch_args_codex_uses_exact_resume_target_when_set",
             `Quick, test_prepare_launch_args_codex_uses_exact_resume_target_when_set )

@@ -433,6 +433,49 @@ let alias_taken_by_other ~(our_session_id : string) (alias : string) : bool =
 let gen_session_id () =
   Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
 
+(* Operator-facing follow-up after a structured app-server startup failure.
+   Pure so tests can assert we only suggest "upgrade codex" for real version/
+   capability gaps (B175) — not for readiness timeouts or process exits when
+   the installed Codex already meets the minimum. *)
+let diagnostic_followup (d : C2c_codex_app_server.diagnostic) : string =
+  let min_str =
+    let (a, b, c) = codex_min_version in Printf.sprintf "%d.%d.%d" a b c
+  in
+  let version_line =
+    match d.C2c_codex_app_server.codex_version, d.C2c_codex_app_server.min_codex_version with
+    | Some cur, Some min ->
+        Printf.sprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min
+    | Some cur, None ->
+        Printf.sprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min_str
+    | None, Some min ->
+        Printf.sprintf "  minimum supported for app-server mode is %s.\n" min
+    | None, None -> ""
+  in
+  let advice =
+    match d.C2c_codex_app_server.code with
+    | C2c_codex_app_server.Codex_version_unsupported
+    | C2c_codex_app_server.Codex_capability_unsupported
+    | C2c_codex_app_server.Codex_not_found ->
+        Printf.sprintf
+          "  falling back to the hook-backed Codex launch automatically. To get\n\
+          \  arrival-time app-server delivery, upgrade codex (>= %s) and relaunch.\n"
+          min_str
+    | C2c_codex_app_server.Readiness_timeout ->
+        "  falling back to the hook-backed Codex launch automatically. The installed\n\
+        \  Codex meets the version gate; this was a readiness timeout (slow cold start\n\
+        \  or hung app-server). Retry, raise C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S,\n\
+        \  or inspect the app-server log path in the message above.\n"
+    | C2c_codex_app_server.Server_died_before_ready ->
+        "  falling back to the hook-backed Codex launch automatically. The installed\n\
+        \  Codex meets the version gate; the app-server process exited before it was\n\
+        \  ready. Inspect the exit status and app-server log in the message above.\n"
+    | _ ->
+        "  falling back to the hook-backed Codex launch automatically. The installed\n\
+        \  Codex version is not the issue — see the diagnostic code/message above.\n\
+        \  After fixing the failure, relaunch for arrival-time app-server delivery.\n"
+  in
+  version_line ^ advice
+
 (* Print T002's structured diagnostic in an operator-actionable form and point
    at the hook fallback. *)
 let report_diagnostic (d : C2c_codex_app_server.diagnostic) : unit =
@@ -440,13 +483,7 @@ let report_diagnostic (d : C2c_codex_app_server.diagnostic) : unit =
   Printf.eprintf "%s%s%s startup failed: %s\n"
     (yellow ()) app_server_log_label (reset ())
     d.C2c_codex_app_server.message;
-  (match d.C2c_codex_app_server.codex_version, d.C2c_codex_app_server.min_codex_version with
-   | Some cur, Some min ->
-       Printf.eprintf "  codex version %s; minimum supported for app-server mode is %s.\n" cur min
-   | _ -> ());
-  Printf.eprintf "  falling back to the hook-backed Codex launch automatically. To get\n\
-                 \  arrival-time app-server delivery, upgrade codex (>= %s) and relaunch.\n"
-    (let (a, b, c) = codex_min_version in Printf.sprintf "%d.%d.%d" a b c);
+  Printf.eprintf "%s" (diagnostic_followup d);
   Printf.eprintf "  diagnostic: %s\n%!" (Yojson.Safe.to_string j)
 
 type resolved = {
