@@ -27,42 +27,48 @@ let whoami_cmd =
   let output_mode = if json then Json else Human in
   match env_session_id () with
   | None ->
-      Printf.eprintf "error: no session ID could be resolved.\n\
-hint: Run 'c2c init' once — it registers this context and persists a fallback identity\n\
-      so later c2c commands resolve it automatically (no env vars needed).\n\
-      Claude Code: CLAUDE_CODE_SESSION_ID/CLAUDE_SESSION_ID; Codex: CODEX_THREAD_ID /\n\
-      'c2c install codex'; Grok: GROK_SESSION_ID (hooks) or GROK_AGENT + active_sessions\n\
-      (tool shells) / 'c2c install grok'. Advanced: set C2C_MCP_SESSION_ID.\n%!";
-      exit 1
+      identity_error ~json
+        ~reason:"no session ID could be resolved."
+        ~candidate:None
+        ~steps:
+          [ "c2c init   # registers this context and persists a fallback session when no env is set"
+          ; "Claude Code: CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID"
+          ; "Codex: CODEX_THREAD_ID / `c2c install codex` / managed `c2c new codex`"
+          ; "Grok: GROK_SESSION_ID (hooks) or GROK_AGENT + active_sessions / `c2c install grok`"
+          ; "Agy: ANTIGRAVITY_CONVERSATION_ID / `c2c install agy`"
+          ; "Advanced: export C2C_MCP_SESSION_ID=<your-session>"
+          ; "c2c whoami   # re-check before send"
+          ]
+        ()
   | Some sid ->
       let regs = C2c_mcp.Broker.list_registrations broker in
-      let alias =
-        match List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs with
-        | Some r -> Some r.alias
-        | None ->
-            (* fall back: resolve by C2C_MCP_AUTO_REGISTER_ALIAS when session_id drifted *)
-            (match env_auto_alias () with
-             | None -> None
-             | Some a ->
-                 (match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = a) regs with
-                  | Some r -> Some r.alias
-                  | None -> None))
+      let reg_opt =
+        List.find_opt (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs
       in
+      (* B187: never present AUTO_REGISTER_ALIAS (or empty alias) as success
+         when this session is not registered — that was the dogfood path that
+         stamped another client's identity onto whoami/send. *)
+      let alias, reg_client_type =
+        match reg_opt with
+        | Some r -> (r.alias, r.client_type)
+        | None ->
+            (match env_auto_alias () with
+             | Some a ->
+                 refuse_borrowed_auto_alias ~json ~session_id:sid ~alias:a ()
+             | None -> refuse_unregistered_identity ~json ~session_id:sid ())
+      in
+      assert_identity_client_ok ~json ~alias ~reg_client_type ();
       (* Load per-alias Ed25519 key if --keys was requested and alias is known *)
       let identity_data =
         if keys then
-          match alias with
+          match C2c_signing_helpers.per_alias_key_path ~alias with
           | None -> None
-          | Some a ->
-              (match C2c_signing_helpers.per_alias_key_path ~alias:a with
-               | None -> None
-               | Some path ->
-                   (match Sys.file_exists path with
-                    | false -> None
-                    | true ->
-                        (match Relay_identity.load ~path () with
-                         | Ok id -> Some id
-                         | Error _ -> None)))
+          | Some path ->
+              if not (Sys.file_exists path) then None
+              else
+                (match Relay_identity.load ~path () with
+                 | Ok id -> Some id
+                 | Error _ -> None)
         else None
       in
       (* B094: relay state (configured URL, relay identity fingerprint, host_id,
@@ -81,7 +87,7 @@ hint: Run 'c2c init' once — it registers this context and persists a fallback 
       | Json ->
           let base = [
             ("session_id", `String sid);
-            ("alias", `String (Option.value alias ~default:""));
+            ("alias", `String alias);
           ] in
           let with_keys = match identity_data with
             | None -> base
@@ -96,9 +102,7 @@ hint: Run 'c2c init' once — it registers this context and persists a fallback 
           let with_relay = with_keys @ [ ("relay", C2c_relay_state.relay_json relay_snap relay_lease) ] in
           print_json (`Assoc with_relay)
       | Human ->
-          Printf.printf "alias:     %s\nsession_id: %s\n"
-            (Option.value alias ~default:"(not registered)")
-            sid;
+          Printf.printf "alias:     %s\nsession_id: %s\n" alias sid;
           (match identity_data with
            | None -> ()
            | Some id ->
@@ -116,5 +120,7 @@ let whoami : unit Cmdliner.Cmd.t =
             configured relay URL, host_id, identity fingerprint). Addressing: \
             bare <alias> = local; <alias>@<host_id> = cross-host via relay \
             (use 'c2c relay list' for peer host_ids; 'c2c host-id' for your own). \
-            Pass --relay to query the live lease for your alias.")
+            Pass --relay to query the live lease for your alias. Refuses \
+            borrowed/cross-client identities (B187) instead of presenting them \
+            as success.")
     whoami_cmd

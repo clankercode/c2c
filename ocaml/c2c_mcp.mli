@@ -877,9 +877,10 @@ val with_session_lwt :
 val inferred_client_type_from_env : unit -> string option
 (** Infer the host client type from ambient env. Order: explicit
     [C2C_MCP_CLIENT_TYPE], then harness-native session keys ([CODEX_THREAD_ID],
-    Claude, OpenCode, [GROK_SESSION_ID]), then unofficial Cursor Agent markers
-    ([CURSOR_AGENT] / [CURSOR_INVOKED_AS=cursor-agent]) — best-effort labeling
-    only (B134); not install/hooks parity. *)
+    Claude, OpenCode, [GROK_SESSION_ID]), then [GROK_AGENT], Antigravity
+    ([ANTIGRAVITY_CONVERSATION_ID] / hook / LS markers), then unofficial Cursor
+    Agent markers ([CURSOR_AGENT] / [CURSOR_INVOKED_AS=cursor-agent]) —
+    best-effort labeling only (B134/B187); not install/hooks parity. *)
 
 val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers
