@@ -34,15 +34,17 @@ even when the immediate task is narrower.
   - Deliver-watch: inotify-based inbox watcher (`c2c-deliver-inbox`) for
     clients that need file-change delivery without polling.
   - CLI: always-available fallback usable by any agent with or without
-    MCP. Must keep working across Claude, Codex, OpenCode, Kimi, and Grok.
+    MCP. Must keep working across Claude, Codex, OpenCode, Kimi, Grok, and agy.
   - CLI self-configuration: `c2c` should turn on automatic delivery on any
     host client that supports it — operators should not need to hand-edit
     settings files.
-- **Reach**: Codex, Claude Code, OpenCode, Kimi, and Grok as first-class
+- **Reach**: Codex, Claude Code, OpenCode, Kimi, Grok, and agy as first-class
   peers (Grok is CLI-first: skill + SessionStart hooks + Monitor; managed
-  `c2c start grok` is deferred). Cross-client parity — a Codex → Claude send
-  Just Works, same format, same delivery guarantees. Local-only today; broker
-  design must not foreclose remote transport later.
+  `c2c start grok` is deferred. agy / Antigravity is CLI-first: skill + hooks
+  under `~/.gemini/`; managed `c2c start agy` is real via `AgyAdapter` +
+  agentapi wake). Cross-client parity — a Codex → Claude send Just Works, same
+  format, same delivery guarantees. Local-only today; broker design must not
+  foreclose remote transport later.
 - **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms:
   `join_room`, `send_room`, `room_history`, `my_rooms`, `list_rooms`,
   `leave_room`, `knock_room`, `list_room_knocks`, `approve_room_knock`,

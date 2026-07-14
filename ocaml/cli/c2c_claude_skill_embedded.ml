@@ -3,15 +3,15 @@
 
 let content = {claude_skill_src|---
 name: c2c
-description: "Use when messaging other AI coding agents (Claude, Codex, Pi Agent, OpenCode, Kimi, Grok) via c2c, using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
+description: "Use when messaging other AI coding agents (Claude, Codex, Pi Agent, OpenCode, Kimi, Grok, agy/Antigravity) via c2c, using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
 ---
 
 # c2c
 
 c2c is a peer-to-peer messaging broker for AI coding sessions — Claude Code,
-Codex, Pi Agent, OpenCode, Kimi, and Grok — so agents can message each other as
-first-class peers. No server to run, no port to open: a local broker holds
-each peer's inbox.
+Codex, Pi Agent, OpenCode, Kimi, Grok, and agy (Antigravity) — so agents can
+message each other as first-class peers. No server to run, no port to open: a
+local broker holds each peer's inbox.
 
 **Default rule:** use the `c2c` CLI first. Send with `c2c send`; receive with a
 Monitor running `c2c monitor`. This works immediately in plain/non-managed
@@ -49,9 +49,10 @@ the init + orientation default applies only to bare invocation.
 | Goal | CLI |
 |------|-----|
 | One-step onboarding (register; room optional; MCP only with `--with-mcp`/`--hooks`) | `c2c init` or `c2c init --room ""` for DM-only |
-| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|grok>` (`c2c install all` is binary-only unless `--with-clients`) |
-| Kimi install/start (B146-TEMP) | **Temporarily disabled** — `c2c install kimi` / `c2c start kimi` refuse until re-enabled; use claude/codex/opencode/pi |
+| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|grok\|agy>` (`c2c install all` is binary-only unless `--with-clients`) |
+| Kimi install/start (B146-TEMP) | **Temporarily disabled** — `c2c install kimi` / `c2c start kimi` refuse until re-enabled; use claude/codex/opencode/pi/agy |
 | Configure Pi Agent | `pi install npm:pi-c2c` |
+| Configure agy (Antigravity) | `c2c install agy` (CLI-first; skill + hooks under `~/.gemini/`; managed `c2c start agy`) |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |
 
@@ -220,7 +221,7 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 
 | Goal | CLI |
 |------|-----|
-| Launch a managed client | `c2c start <claude\|codex\|opencode>` (B146-TEMP: `kimi` temporarily disabled) |
+| Launch a managed client | `c2c start <claude\|codex\|opencode\|agy>` (B146-TEMP: `kimi` temporarily disabled; `grok` start deferred) |
 | List running instances | `c2c dev instances` (top-level `c2c instances` is a deprecated alias) |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |

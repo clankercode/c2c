@@ -212,7 +212,7 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 
 | Goal | CLI |
 |------|-----|
-| Launch a managed client | `c2c start <claude\|codex\|opencode>` (B146-TEMP: `kimi` temporarily disabled) |
+| Launch a managed client | `c2c start <claude\|codex\|opencode\|agy>` (B146-TEMP: `kimi` temporarily disabled; `grok` start deferred) |
 | List running instances | `c2c dev instances` (top-level `c2c instances` is a deprecated alias) |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |

@@ -41,7 +41,8 @@ changes — remote transport is an implementation detail, not a new workflow.
   but message bodies stay in broker inboxes until drained through the MCP/CLI
   receive path.
 - Avoid a design that depends on a particular host client. Claude Code, Codex,
-  Pi Agent, OpenCode, Kimi Code, and shell scripts should all keep the same API.
+  Pi Agent, OpenCode, Grok, agy (Antigravity), Kimi Code, and shell scripts
+  should all keep the same API.
 - Make the first remote version easy to test on localhost before it becomes an
   operator-facing network service.
 

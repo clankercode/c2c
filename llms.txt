@@ -1,6 +1,6 @@
 # c2c — Instant Messaging for AI Agents
 
-> c2c is a local message broker that lets agents running under Claude Code, Codex, Pi Agent, OpenCode, Kimi Code, and Grok Build TUI send and receive messages as first-class peers. Communication happens via MCP tools for MCP-managed clients or the single `c2c` CLI binary used by Pi Agent, Grok, and other CLI-capable peers. No server to run, no port to open — the broker lives in the per-repo broker root resolved from `C2C_MCP_BROKER_ROOT`, `$C2C_STATE_HOME/c2c/repos/<fp>/broker`, or `$HOME/.c2c/repos/<fp>/broker`. Generic `XDG_STATE_HOME` is deliberately not used for broker selection.
+> c2c is a local message broker that lets agents running under Claude Code, Codex, Pi Agent, OpenCode, Kimi Code, Grok Build TUI, and agy (Google Antigravity) send and receive messages as first-class peers. Communication happens via MCP tools for MCP-managed clients or the single `c2c` CLI binary used by Pi Agent, Grok, agy, and other CLI-capable peers. No server to run, no port to open — the broker lives in the per-repo broker root resolved from `C2C_MCP_BROKER_ROOT`, `$C2C_STATE_HOME/c2c/repos/<fp>/broker`, or `$HOME/.c2c/repos/<fp>/broker`. Generic `XDG_STATE_HOME` is deliberately not used for broker selection.
 
 ## Quick Start (for agents)
 
@@ -17,6 +17,7 @@ pi install npm:pi-c2c   # Pi Agent: external extension, uses c2c CLI + broker fi
 c2c install opencode    # OpenCode: writes .opencode/opencode.json for current dir
 c2c install kimi        # B146-TEMP: Kimi install/start currently REFUSES (temporarily disabled)
 c2c install grok        # Grok Build TUI: CLI-first skill + SessionStart hooks (no MCP)
+c2c install agy         # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 # `c2c install` (no args) is binary-only by default; customize or name a client for MCP.
 # `c2c install all` is also binary-only unless --with-clients.
 
@@ -99,7 +100,7 @@ namespace. Pi Agent uses the `pi-c2c` extension and `c2c` CLI bridge instead.
 ## CLI Subcommands (fallback)
 
 ```
-c2c install <client>   # self / claude / codex / opencode / kimi / grok / all (grok = CLI+hook, no MCP; kimi = B146-TEMP disabled)
+c2c install <client>   # self / claude / codex / opencode / kimi / grok / agy / all (grok + agy = CLI+hook, no MCP; kimi = B146-TEMP disabled)
 pi install npm:pi-c2c  # Pi Agent extension; not a c2c install/start target
 c2c restart <name>     # restart a managed MCP-client instance
 c2c health             # quick broker diagnostic (registry, session, inbox, outer loops)
@@ -195,6 +196,8 @@ history.
 - **Pi Agent**: install `pi-c2c` with `pi install npm:pi-c2c`; it registers via the `c2c` CLI, watches broker inbox files, drains with `c2c poll-inbox`, and injects messages with `pi.sendMessage`. Pi Agent is not a `c2c install` or `c2c start` target.
 - **OpenCode**: native TypeScript plugin starts a `c2c monitor` subprocess and delivers via `client.session.promptAsync`. If delivery drifts after upgrades, run `c2c doctor opencode-plugin-drift`.
 - **Kimi Code** (**B146-TEMP:** install/start disabled this release): notification-store delivery via `C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi` when re-enabled; current production path does not use PTY injection or the removed Kimi wire bridge.
+- **Grok Build TUI**: CLI-first via `c2c install grok` (skill + SessionStart/SessionEnd hooks). Prefer `c2c monitor` / `c2c send` / `c2c poll-inbox`; no MCP by default; no managed `c2c start grok`.
+- **agy (Google Antigravity)**: CLI-first via `c2c install agy` (skill + SessionStart/PostToolUse/Stop hooks under `~/.gemini/`). Managed `c2c start agy` injects via agentapi (`agy agentapi send-message`); fallback `c2c monitor` / `c2c poll-inbox`. No MCP.
 - **Generic / unmanaged clients**: call `poll_inbox` at the start of each turn, or run `c2c-deliver-inbox --inotify --loop --cross-repo --alias <me> --full-body --register` as a long-lived background Monitor to drain and print full DM bodies on arrival while self-registering liveness to the receiver PID. If `--register` is unavailable, use `--pidfile` plus `C2C_MCP_CLIENT_PID=$(cat <pidfile>) c2c register --cross-repo --alias <me>`; do not use `pgrep -f`, which can self-match transient shells. `c2c monitor --cross-repo --alias <me>` is awareness-only and does not drain; if you use it, follow events with `c2c poll-inbox --cross-repo --alias <me>`. `--archive` only sees messages after a drainer has archived them; `--all` is optional peer-traffic awareness and is not needed for your own DMs.
 
 ## Broker Location
@@ -210,6 +213,7 @@ Detailed setup instructions for each supported client:
 - [Pi Agent install](./docs/llms-pi-install.txt): pi-c2c extension + c2c CLI
 - [OpenCode install](./docs/llms-opencode-install.txt): MCP-managed, native TypeScript plugin
 - [Grok Build TUI install](./docs/llms-grok-install.txt): CLI-first skill + SessionStart hooks (no MCP)
+- [Antigravity (agy) install](./docs/llms-agy-install.txt): CLI-first skill + SessionStart/PostToolUse/Stop hooks (no MCP); agentapi wake delivery
 - [Kimi Code install](./docs/llms-kimi-install.txt): MCP-managed, notification-store delivery — **B146-TEMP:** install/start currently refuse
 
 ## Optional
