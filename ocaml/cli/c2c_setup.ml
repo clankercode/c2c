@@ -815,7 +815,18 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
     C2c_kimi_hook.append_toml_block
       ~config_path:toml_config_path ~hook_path ~dry_run ()
   in
+  (* SessionStart auto-register hook: active by default so Kimi Code
+     sessions are broker-registered without manual `c2c register`. *)
+  let session_start_block_status =
+    C2c_kimi_hook.append_session_start_toml_block
+      ~config_path:toml_config_path ~dry_run ()
+  in
   let hook_block_status_str = match hook_block_status with
+    | `Already_present -> "already_present"
+    | `Appended -> "appended"
+    | `Created -> "created"
+  in
+  let session_start_block_status_str = match session_start_block_status with
     | `Already_present -> "already_present"
     | `Appended -> "appended"
     | `Created -> "created"
@@ -827,6 +838,14 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
   let end_marker =
     C2c_kimi_hook.toml_block_end_marker
       ~block_id:C2c_kimi_hook.approval_hook_block_id
+  in
+  let session_start_begin_marker =
+    C2c_kimi_hook.toml_block_begin_marker
+      ~block_id:C2c_kimi_hook.session_start_hook_block_id
+  in
+  let session_start_end_marker =
+    C2c_kimi_hook.toml_block_end_marker
+      ~block_id:C2c_kimi_hook.session_start_hook_block_id
   in
   (* Install /c2c skill into the Kimi Code skills directory. *)
   let skill_artifact, skill_path = write_kimi_skill ~output_mode ~dry_run () in
@@ -850,6 +869,10 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       ; C2c_install_manifest.shared_block ~path:toml_config_path
           ~begin_marker ~end_marker
           ~legacy_marker:C2c_kimi_hook.toml_block_legacy_marker ()
+      ; C2c_install_manifest.shared_block ~path:toml_config_path
+          ~begin_marker:session_start_begin_marker
+          ~end_marker:session_start_end_marker
+          ()
       ; C2c_install_manifest.owned_file hook_path
       ]
       @ deliver_watch_artifacts
@@ -862,6 +885,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
       ; ("hook_script", `String hook_path)
       ; ("hooks_toml_path", `String toml_config_path)
       ; ("hooks_toml_block", `String hook_block_status_str)
+      ; ("session_start_toml_block", `String session_start_block_status_str)
       ; ("skill", `String skill_path)
       ]
   }

@@ -282,22 +282,24 @@ let run_setup_kimi ~alias_from_auto_gen ~alias_val ~home ~server_path () =
       | None -> Unix.putenv "HOME" "")
     (fun () ->
       Unix.putenv "HOME" home;
-      ignore
-        (C2c_setup.setup_kimi
-           ~output_mode:C2c_types.Human ~dry_run:false
-           ~root:"/fake/broker/root" ~alias_val
-           ~server_path ~deliver_watch:false
-           ~alias_from_auto_gen
-           ()))
+      C2c_setup.setup_kimi
+        ~output_mode:C2c_types.Human ~dry_run:false
+        ~root:"/fake/broker/root" ~alias_val
+        ~server_path ~deliver_watch:false
+        ~alias_from_auto_gen
+        ())
 
 let test_setup_kimi_writes_mcp_config_and_skill () =
   with_temp_dir (fun dir ->
     let home = dir // "home" in
     Unix.mkdir home 0o700;
-    run_setup_kimi ~alias_from_auto_gen:false
-      ~alias_val:"lyra-quill"
-      ~home ~server_path:"/fake/bin/c2c_mcp_server.exe" ();
+    let result =
+      run_setup_kimi ~alias_from_auto_gen:false
+        ~alias_val:"lyra-quill"
+        ~home ~server_path:"/fake/bin/c2c_mcp_server.exe" ()
+    in
     let config_path = home // ".kimi-code" // "mcp.json" in
+    let toml_path = home // ".kimi-code" // "config.toml" in
     let skill_path = home // ".kimi-code" // "skills" // "c2c" // "SKILL.md" in
     Alcotest.(check bool) "~/.kimi-code/mcp.json exists" true
       (Sys.file_exists config_path);
@@ -305,7 +307,36 @@ let test_setup_kimi_writes_mcp_config_and_skill () =
       (Sys.file_exists skill_path);
     let content = read_file skill_path in
     Alcotest.(check bool) "skill file is non-empty" true
-      (String.length content > 0))
+      (String.length content > 0);
+    (* SessionStart auto-register hook block should be written active. *)
+    Alcotest.(check bool) "~/.kimi-code/config.toml exists" true
+      (Sys.file_exists toml_path);
+    let toml_content = read_file toml_path in
+    Alcotest.(check bool) "SessionStart hook block present" true
+      (contains_substring ~haystack:toml_content
+         ~needle:"# c2c-managed:BEGIN session-start-hook-kimi");
+    Alcotest.(check bool) "SessionStart hook event present" true
+      (contains_substring ~haystack:toml_content ~needle:"event = \"SessionStart\"");
+    Alcotest.(check bool) "SessionStart hook command present" true
+      (contains_substring ~haystack:toml_content ~needle:"command = \"c2c hook kimi\"");
+    (* Approval hook block is commented by default; just ensure marker present. *)
+    Alcotest.(check bool) "approval hook block marker present" true
+      (contains_substring ~haystack:toml_content
+         ~needle:"# c2c-managed:BEGIN preuse-approval-hook-142");
+    (* Manifest records both shared blocks. *)
+    let shared_blocks =
+      List.filter
+        (fun (a : C2c_install_manifest.artifact) -> a.kind = "shared-block")
+        result.C2c_setup.artifacts
+    in
+    Alcotest.(check int) "two shared-block artifacts" 2 (List.length shared_blocks);
+    Alcotest.(check bool) "session_start shared-block artifact recorded" true
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-block"
+            && Option.value ~default:"" a.begin_marker
+               = "# c2c-managed:BEGIN session-start-hook-kimi")
+         result.C2c_setup.artifacts))
 
 (* ------------------------------------------------------------------ *)
 (* Feature B env-marker: setup_codex writes marker in config.toml      *)

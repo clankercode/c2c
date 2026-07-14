@@ -1259,6 +1259,132 @@ let hook_grok : unit Cmdliner.Cmd.t =
        ~doc:"Grok Build TUI SessionStart/SessionEnd hook: auto-registers the session (registered_by=grok-hook), refreshes the /c2c skill, and writes a c2c-session identity skill (Grok cannot inject additionalContext). Installed by `c2c install grok`. Never fails the host turn.")
     hook_grok_cmd
 
+let kimi_session_events = [ "SessionStart"; "SessionEnd" ]
+
+let hook_kimi_cmd =
+  let open Cmdliner.Term in
+  const (fun () ->
+    (try
+       Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+       ignore (Unix.alarm 8)
+     with _ -> ());
+    (try
+       if C2c_hook_lib.is_subagent_quiet () then exit 0;
+       let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
+       let payload =
+         try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
+       in
+       let event =
+         match payload_string_field payload "hook_event_name" with
+         | Some e -> e
+         | None ->
+             (match payload_string_field payload "hookEventName" with
+              | Some e -> e
+              | None ->
+                  (match Sys.getenv_opt "KIMI_HOOK_EVENT" with
+                   | Some e when String.trim e <> "" -> String.trim e
+                   | _ -> exit 0))
+       in
+       let event =
+         match String.lowercase_ascii event with
+         | "session_start" | "sessionstart" -> "SessionStart"
+         | "session_end" | "sessionend" -> "SessionEnd"
+         | _ -> event
+       in
+       if not (List.mem event kimi_session_events) then exit 0;
+       let broker_root = C2c_utils.resolve_broker_root () in
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let validated s =
+         match C2c_mcp.validate_session_id s with
+         | Ok sid -> Some sid
+         | Error _ -> None
+       in
+       let payload_sid =
+         match payload_string_field payload "session_id" with
+         | Some s -> validated s
+         | None ->
+             (match payload_string_field payload "sessionId" with
+              | Some s -> validated s
+              | None -> None)
+       in
+       let env_sid =
+         match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s when String.trim s <> "" -> validated (String.trim s)
+         | _ -> None
+       in
+       let session_id_opt =
+         match env_sid with
+         | Some _ -> env_sid
+         | None -> payload_sid
+       in
+       let session_id = match session_id_opt with Some s -> s | None -> exit 0 in
+       if event = "SessionEnd" then begin
+         let candidates = List.filter_map (fun x -> x) [ env_sid; payload_sid ] in
+         (match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) ->
+                 r.registered_by = Some "kimi-hook"
+                 && List.exists (fun sid -> r.session_id = sid) candidates)
+              (C2c_mcp.Broker.list_registrations broker)
+          with
+          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | None -> ());
+         exit 0
+       end;
+       (* SessionStart: refresh skill, then ensure session is registered. *)
+       C2c_setup.refresh_kimi_skill_if_stale ();
+       let regs = C2c_mcp.Broker.list_registrations broker in
+       let already_registered =
+         List.exists (fun (r : C2c_mcp.registration) -> r.session_id = session_id) regs
+       in
+       if not already_registered then begin
+         let alias, from_auto_gen =
+           match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+           | Some a when String.trim a <> "" ->
+               let from_auto_gen =
+                 match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" with
+                 | Some v when String.trim v = "1" -> true
+                 | _ -> false
+               in
+               (String.trim a, from_auto_gen)
+           | _ -> (C2c_setup.default_alias_for_client "kimi", true)
+         in
+         (try
+            C2c_mcp.Broker.register broker ~session_id ~alias
+              ~pid:None
+              ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time None)
+              ~client_type:(Some "kimi")
+              ~cwd:
+                (match payload_string_field payload "cwd" with
+                 | Some c -> Some c
+                 | None -> payload_string_field payload "workspaceRoot")
+              ~registered_by:(Some "kimi-hook")
+              ~from_auto_gen ()
+          with e ->
+            (try
+               prerr_endline ("c2c hook kimi: auto-register failed: " ^ Printexc.to_string e)
+             with _ -> ());
+            exit 0);
+         (match C2c_cli_helpers.read_session_statefile ~broker_root with
+          | Some existing
+            when C2c_cli_helpers.statefile_session_registered ~broker_root existing -> ()
+          | _ ->
+              C2c_cli_helpers.write_session_statefile ~broker_root
+                ~session_id ~alias ~client:(Some "kimi"))
+       end;
+       (* Kimi receives via REST prompt injection; no additionalContext or
+          identity skill is needed here. *)
+       exit 0
+     with e ->
+       (try prerr_endline ("c2c hook kimi: " ^ Printexc.to_string e) with _ -> ());
+       exit 0)) $ const ()
+
+let hook_kimi : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "kimi"
+       ~doc:"Kimi Code SessionStart/SessionEnd hook: auto-registers the session (registered_by=kimi-hook) and refreshes the /c2c skill. Installed by `c2c install kimi`. Never fails the host turn.")
+    hook_kimi_cmd
+
 let hook_agy_cmd =
   let open Cmdliner.Term in
   const (fun event_opt ->
@@ -1406,8 +1532,8 @@ let hook_agy : unit Cmdliner.Cmd.t =
 
 let hook : unit Cmdliner.Cmd.t =
   let info = Cmdliner.Cmd.info "hook"
-    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, 'codex' for all Codex CLI hook events, 'grok' for Grok SessionStart/SessionEnd, and 'agy' for Antigravity CLI."
+    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, 'codex' for all Codex CLI hook events, 'grok' for Grok SessionStart/SessionEnd, 'kimi' for Kimi Code SessionStart/SessionEnd, and 'agy' for Antigravity CLI."
   in
   (* Default to post-tool for backward compat: `c2c hook` (no subcommand) behaves
      as the PostToolUse hook, same as before the hook group refactor. *)
-  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok; hook_agy ]
+  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok; hook_kimi; hook_agy ]
