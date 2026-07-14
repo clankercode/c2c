@@ -676,7 +676,13 @@ module Relay_client = struct
     let headers =
       Cohttp.Header.init_with "Content-Type" "application/json"
     in
-    let body_str = Yojson.Safe.to_string (Option.value body ~default:(`Assoc [])) in
+    (* B184: body on the wire must match the body covered by the Ed25519
+       request signature. No body → empty string (not "{}"); see relay_client. *)
+    let body_str =
+      match body with
+      | Some b -> Yojson.Safe.to_string b
+      | None -> ""
+    in
     let body_payload = Cohttp_lwt.Body.of_string body_str in
     let headers =
       if is_unauth_path base_path then headers

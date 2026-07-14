@@ -102,15 +102,43 @@ let test_no_hint_on_success_or_unrelated_error () =
        ~alias_source:Relay_client_hints.Anon_fallback
        (`Assoc [ ("ok", `Bool true) ])
      = None);
-  Alcotest.(check bool) "no hint on unrelated error" true
+  Alcotest.(check bool) "no hint on unrelated unauthorized" true
     (Relay_client_hints.hint_for_response
        ~alias_source:(Relay_client_hints.Explicit "x")
        (`Assoc [
           ("ok", `Bool false);
           ("error_code", `String "unauthorized");
-          ("error", `String "Ed25519 request signature does not verify");
+          ("error", `String "request nonce replay");
         ])
      = None)
+
+let signature_invalid_response alias : Yojson.Safe.t =
+  `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "signature_invalid");
+    ("error", `String (Printf.sprintf
+      "Ed25519 request signature does not verify (alias=%s, bound_pk=SHA256:x)"
+      alias));
+  ]
+
+let test_signature_invalid_hint () =
+  Alcotest.(check bool) "signature_invalid detected" true
+    (Relay_client_hints.is_signature_invalid
+       (signature_invalid_response "lyra-quill"));
+  Alcotest.(check bool) "missing-binding is not signature_invalid" false
+    (Relay_client_hints.is_signature_invalid
+       (missing_binding_response "lyra-quill"));
+  match
+    Relay_client_hints.hint_for_response
+      ~alias_source:(Relay_client_hints.Explicit "lyra-quill")
+      (signature_invalid_response "lyra-quill")
+  with
+  | None -> Alcotest.fail "expected a hint for signature_invalid"
+  | Some hint ->
+      Alcotest.(check bool) "hint names re-register" true
+        (contains ~needle:"c2c relay register --alias lyra-quill" hint);
+      Alcotest.(check bool) "hint mentions whoami --relay" true
+        (contains ~needle:"c2c whoami --relay" hint)
 
 (* Guard against drift: the substring the client keys on must stay in sync
    with the server-side format string (relay.ml / relay_ws_server.ml:
@@ -135,6 +163,7 @@ let () =
           Alcotest.test_case "explicit alias hint" `Quick test_explicit_alias_hint_names_register_command;
           Alcotest.test_case "anon fallback hint" `Quick test_anon_fallback_hint_explains_missing_alias;
           Alcotest.test_case "no hint otherwise" `Quick test_no_hint_on_success_or_unrelated_error;
+          Alcotest.test_case "signature_invalid hint" `Quick test_signature_invalid_hint;
           Alcotest.test_case "server format in sync" `Quick test_server_format_string_in_sync;
         ] );
     ]
