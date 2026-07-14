@@ -89,7 +89,7 @@ the canonical framing.)
   `data/opencode-plugin/c2c.ts`, run `just codegen-opencode-plugin` and
   commit both the TS source and `ocaml/cli/c2c_opencode_plugin_embedded.ml`.
 - **`c2c uninstall <component>`** removes what `c2c install` wrote.
-  Components: `claude|codex|kimi|opencode|grok|self|git-hook|git-shim|all`.
+  Components: `claude|codex|kimi|opencode|grok|agy|self|git-hook|git-shim|all`.
   Uses the install manifest with known-path fallback; shared files are
   stripped surgically. `--dry-run` to preview.
 - **Document problems as you hit them.** Routing bugs, stale binaries,

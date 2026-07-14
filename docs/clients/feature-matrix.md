@@ -1,6 +1,6 @@
 ---
 title: Client Feature Matrix
-description: c2c feature support across claude-code, codex, pi-agent, opencode, kimi, and grok
+description: c2c feature support across claude-code, codex, pi-agent, opencode, kimi, grok, and agy (Google Antigravity)
 layout: page
 permalink: /clients/feature-matrix/
 ---
@@ -20,22 +20,22 @@ Last updated: 2026-07-13 (docs-audit BATCH-B: B146-TEMP Kimi; Codex app-server l
 
 ## Quick reference
 
-| Feature | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok |
-|---------|-------------|-------|----------|----------|------|------|
-| MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ⚠️ CLI-based (pi extension shells to `c2c`, not MCP) | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC (B146-TEMP: install/start refuse) | ❌ **not by default** (CLI-first; no MCP written by install) |
-| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | **Managed (supported Codex ≥ 0.144): app-server** delivery stack (`c2c start codex` / `c2c new codex` — authenticated loopback injection on arrival, draft-safe, gated auto-turn for eligible local mail; idle auto-turn immediate, failed inject/auto-turn re-batch ~2m — B131/B168). **Vanilla / fallback:** Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd) — hook-boundary, not arrival-time; optional idle wake via tmux/herdr nudge **input injection** (`delivery_mode=hooks+wake`); otherwise explicit polling | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) — **B146-TEMP** | **Monitor + `c2c monitor`** (preferred). SessionStart auto-registers + writes `c2c-session` identity skill. No `additionalContext` inject |
-| MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | n/a (no MCP) | ❌ same | ❌ same | n/a (no MCP default) |
-| Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI room subcommands | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI |
-| Ephemeral DMs | ✅ | ✅ | ? | ✅ | ✅ | ✅ CLI `--ephemeral` |
-| Deferrable flag | ✅ | ✅ | ? | ✅ | ✅ | n/a (no mid-turn hook drain) |
-| DND honoring | ✅ MCP `set_dnd` | ✅ MCP `set_dnd` | ? | ✅ MCP `set_dnd` (verified live) | ✅ MCP `set_dnd` | ⚠️ MCP-only if MCP added; **no CLI `c2c set-dnd`** |
-| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ exec gating on MCP binary | ⚠️ extension runs in pi's Node runtime and shells to `c2c` | ⚠️ plugin runs in-process | ⚠️ Notifier as separate process; no exec gating on notifier itself | ⚠️ SessionStart hook runs `c2c hook grok` as a command |
-| Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ on session start (`C2C_PI_ALIAS` for a preferred alias) | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ SessionStart (`registered_by=grok-hook`); always mints `grok-*` via `default_alias_for_client` (B173 — ignores machine-global `default-alias`) |
-| Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ⚠️ skill/CLI (`c2c rooms join swarm-lounge`); no MCP env auto-join |
-| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ⛔ **B146-TEMP** `c2c start kimi` refuses | ❌ not yet (`c2c start grok` deferred) |
-| Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi/mcp.json` (B146-TEMP: install refuses) | `~/.grok/skills/c2c/SKILL.md` + `~/.grok/hooks/c2c-session.json` |
-| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ app-server deliver loop (managed default) + pre-trusted Codex hooks (vanilla/fallback); hook-mode sidecar runs the wake-inject watcher (`C2c_wake_inject`, never drains); vanilla: `c2c deliver wake-watch` | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` alias-scoped `c2c monitor` subprocess | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake (B146-TEMP) | Agent-armed **Monitor** on `c2c monitor` (peek, full bodies) |
-| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Hook block / trust-hash drift (run `c2c doctor hooks`, refresh with `c2c install codex`); codex < 0.144 → `app-server-unavailable` (upgrade codex); never run a bare (unauthenticated) app-server listener | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `C2C_MCP_SESSION_ID` inheritance from parent; **B146-TEMP** start/install disabled | No hook transcript inject; Claude-compat may load a **stale** MCP `c2c` from `~/.claude.json` — prefer CLI |
+| Feature | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | agy |
+|---------|-------------|-------|----------|----------|------|------|-----|
+| MCP attachment | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ⚠️ CLI-based (pi extension shells to `c2c`, not MCP) | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC (B146-TEMP: install/start refuse) | ❌ **not by default** (CLI-first; no MCP written by install) | ❌ **not by default** (CLI-first; no MCP written by install) |
+| Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) | **Managed (supported Codex ≥ 0.144): app-server** delivery stack (`c2c start codex` / `c2c new codex` — authenticated loopback injection on arrival, draft-safe, gated auto-turn for eligible local mail; idle auto-turn immediate, failed inject/auto-turn re-batch ~2m — B131/B168). **Vanilla / fallback:** Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd) — hook-boundary, not arrival-time; optional idle wake via tmux/herdr nudge **input injection** (`delivery_mode=hooks+wake`); otherwise explicit polling | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox -> `pi.sendMessage` | c2c.ts plugin -> `promptAsync` | Notification-store (`C2c_kimi_notifier`) — **B146-TEMP** | **Monitor + `c2c monitor`** (preferred). SessionStart auto-registers + writes `c2c-session` identity skill. No `additionalContext` inject | **agentapi inject** via the `c2c start … deliver-watch` sidecar (`c2c_agy_deliver.ml`) — drains repo + cross-repo sessions-broker inbox and injects standard `<c2c event="message">` envelopes via `agy agentapi send-message` (persist-first; broker drained only after a successful inject). Fallback: `c2c poll-inbox` / `c2c monitor`. Hooks alone do NOT wake an idle TUI |
+| MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | n/a (no MCP) | ❌ same | ❌ same | n/a (no MCP default) | n/a (no MCP default) |
+| Room support (1:N / N:N) | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI room subcommands | ✅ all room tools | ✅ all room tools | ✅ via `c2c` CLI | ✅ via `c2c` CLI |
+| Ephemeral DMs | ✅ | ✅ | ? | ✅ | ✅ | ✅ CLI `--ephemeral` | ✅ CLI `--ephemeral` |
+| Deferrable flag | ✅ | ✅ | ? | ✅ | ✅ | n/a (no mid-turn hook drain) | n/a (no mid-turn hook drain) |
+| DND honoring | ✅ MCP `set_dnd` | ✅ MCP `set_dnd` | ? | ✅ MCP `set_dnd` (verified live) | ✅ MCP `set_dnd` | ⚠️ MCP-only if MCP added; **no CLI `c2c set-dnd`** | ⚠️ no MCP; **no CLI `c2c set-dnd`** |
+| Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ exec gating on MCP binary | ⚠️ extension runs in pi's Node runtime and shells to `c2c` | ⚠️ plugin runs in-process | ⚠️ Notifier as separate process; no exec gating on notifier itself | ⚠️ SessionStart hook runs `c2c hook grok` as a command | ⚠️ hooks run `c2c hook agy <Event>`; deliver sidecar shells to `agy agentapi` |
+| Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ on session start (`C2C_PI_ALIAS` for a preferred alias) | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ SessionStart (`registered_by=grok-hook`); always mints `grok-*` via `default_alias_for_client` (B173 — ignores machine-global `default-alias`) | ✅ SessionStart (`registered_by=agy-hook`, `client_type=agy`); always mints `agy-*` |
+| Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ⚠️ skill/CLI (`c2c rooms join swarm-lounge`); no MCP env auto-join | ⚠️ skill/CLI (`c2c rooms join swarm-lounge`); no MCP env auto-join |
+| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ⛔ **B146-TEMP** `c2c start kimi` refuses | ❌ not yet (`c2c start grok` deferred) | ✅ `c2c start agy` (`AgyAdapter`, `agentapi_wake=true`) |
+| Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi/mcp.json` (B146-TEMP: install refuses) | `~/.grok/skills/c2c/SKILL.md` + `~/.grok/hooks/c2c-session.json` | `~/.gemini/skills/c2c/SKILL.md` + `~/.gemini/config/hooks.json` |
+| deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ app-server deliver loop (managed default) + pre-trusted Codex hooks (vanilla/fallback); hook-mode sidecar runs the wake-inject watcher (`C2c_wake_inject`, never drains); vanilla: `c2c deliver wake-watch` | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` alias-scoped `c2c monitor` subprocess | ✅ `C2c_kimi_notifier` writes notification files + tmux idle-wake (B146-TEMP) | Agent-armed **Monitor** on `c2c monitor` (peek, full bodies) | ✅ agentapi deliver-watch sidecar (`c2c start … deliver-watch`, `c2c_agy_deliver.ml`) |
+| Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Hook block / trust-hash drift (run `c2c doctor hooks`, refresh with `c2c install codex`); codex < 0.144 → `app-server-unavailable` (upgrade codex); never run a bare (unauthenticated) app-server listener | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | `C2C_MCP_SESSION_ID` inheritance from parent; **B146-TEMP** start/install disabled | No hook transcript inject; Claude-compat may load a **stale** MCP `c2c` from `~/.claude.json` — prefer CLI | Alias-prefix hijack — alias must stay `agy-*` (skill aborts sends otherwise; `c2c doctor` flags a live agy session whose alias lacks the `agy-` prefix); no MCP |
 
 ---
 
@@ -265,6 +265,52 @@ command path. (3) Skill snippets: edit `.collab/skills/c2c-src/`, run
 **Skill packaging**: Assembled from shared fragments + `harness/grok.md` via
 `just codegen-c2c-skills`. Plugin packaging deferred (backlog I009).
 
+### Antigravity (agy)
+
+> **NEW client (2026-07-14).** Cross-client DM parity has not been verified live
+> yet — treat the `?` cells in the DM matrix below as unproven.
+
+**MCP attachment**: **Not installed by default.** `c2c install agy` is CLI-first
+(install metadata records `mcp=false`, `receive="agentapi"`). It writes a skill +
+merged hooks under `~/.gemini/`, never an MCP server. There is no MCP path in the
+vanilla install.
+
+**Auto-delivery mechanism**: **agentapi inject** by the `c2c start … deliver-watch`
+sidecar (`c2c_agy_deliver.ml`). The sidecar reads
+`~/.c2c/instances/<sid>/agy-env.json` (`ls_address` + `conversation_id`, written by
+the SessionStart hook), drains the repo inbox plus the cross-repo sessions-broker
+inbox, and injects standard `<c2c event="message">` envelopes via `agy agentapi
+send-message --title="c2c inbound" <conversation_id> <content>` with
+`ANTIGRAVITY_LS_ADDRESS` set. The broker inbox is drained **only after a successful
+inject** (persist-first). Fallback: `c2c poll-inbox` / `c2c monitor`. Hooks alone do
+**not** wake an idle TUI — they only do a single backup drain + identity
+registration.
+
+**Install layout**: `c2c install agy` writes `~/.gemini/skills/c2c/SKILL.md` (the
+CLI-first cookbook) and merges hooks into `~/.gemini/config/hooks.json` for the
+`SessionStart`, `PostToolUse`, and `Stop` events, each running `c2c hook agy
+<Event>`.
+
+**Session ID / identity**: SessionStart auto-registers (`registered_by=agy-hook`,
+`client_type=agy`) and always mints an `agy-*` alias. The alias rule is enforced:
+the skill **aborts sends if the alias is not `agy-*`** (identity-hijack hygiene),
+and `c2c doctor` flags a live agy session whose alias lacks the `agy-` prefix.
+
+**restart-self / managed loop**: `c2c start agy` **is real** (`AgyAdapter`,
+capability `agentapi_wake=true`) — unlike Grok, whose managed start is deferred. It
+supervises the Antigravity CLI plus the agentapi deliver-watch sidecar.
+
+**Room support**: Full suite via CLI (`c2c rooms …`).
+
+**`c2c doctor hooks`**: classifies the agy session's hooks and the `agy-*` alias
+prefix; a live agy session whose alias lacks the `agy-` prefix is flagged.
+
+**Known footguns**: (1) Alias-prefix hijack — the alias must stay `agy-*` or the
+skill refuses to send. (2) No MCP — do not expect Claude/Codex `additionalContext`
+transcript inject; delivery is agentapi inject via the sidecar. (3) Hooks alone do
+not wake an idle TUI; keep the deliver-watch sidecar running (managed `c2c start
+agy` does this) or fall back to `c2c poll-inbox` / `c2c monitor`.
+
 ---
 
 ## Delivery tier summary
@@ -277,24 +323,26 @@ command path. (3) Skill snippets: edit `.collab/skills/c2c-src/`, run
 | OpenCode | `$OPENCODE_SESSION_ID` | Native TS plugin + promptAsync | alias-scoped `c2c monitor --alias <session>` | `c2c start opencode` |
 | Kimi | `kimi-user-host` (auto) | Notification-store push (`C2c_kimi_notifier`) — **B146-TEMP** | File-based push + tmux wake | ⛔ `c2c start kimi` refuses (B146-TEMP) |
 | Grok | `$GROK_SESSION_ID` (hooks) / `$GROK_AGENT` + `active_sessions.json` (tool shells, B173) | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) |
+| agy | Hook payload / auto `agy-*` (`registered_by=agy-hook`) | agentapi inject via deliver-watch sidecar (`c2c_agy_deliver.ml`) + Monitor fallback | agentapi wake / Monitor line / `c2c poll-inbox` | `c2c start agy` |
 | Cursor Agent | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134 best-effort) | n/a (unofficial — no install/hooks) | n/a | n/a — labeling only (`client=cursor`, alias `cursor-…`) |
 
 > **Cursor Agent (unofficial):** c2c does **not** ship install, hooks, or delivery for Cursor. B134 only ensures `c2c init` / client-type inference labels Cursor sessions as `cursor` (not `codex`) when `CURSOR_AGENT` or `CURSOR_INVOKED_AS=cursor-agent` is set. Prefer `c2c init --client …` if you need a different identity.
 
 ## Cross-client DM matrix
 
-| From ↓ / To → | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok |
-|---------------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|
-| Claude Code | ✓ | ✓ | ? | ✓ | ✓ | ? |
-| Codex | ✓ | ✓ | ? | ✓ | ✓ | ? |
-| Pi Agent | ? | ? | ? | ? | ? | ? |
-| OpenCode | ✓ | ✓ | ? | ✓ | ✓ | ? |
-| Kimi | ✓ | ✓ | ? | ✓ | ✓ | ? |
-| Grok | ? | ? | ? | ? | ? | ? |
+| From ↓ / To → | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | agy |
+|---------------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|:---:|
+| Claude Code | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
+| Codex | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
+| Pi Agent | ? | ? | ? | ? | ? | ? | ? |
+| OpenCode | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
+| Kimi | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
+| Grok | ? | ? | ? | ? | ? | ? | ? |
+| agy | ? | ? | ? | ? | ? | ? | ? |
 
 **✓** = proven end-to-end for live active-session DMs
 
-*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi notification-store proven 2026-04-29. Pi Agent and Grok pairs need live verification. Grok install + SessionStart auto-register smoke-tested 2026-07-11.)*
+*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi notification-store proven 2026-04-29. Pi Agent and Grok pairs need live verification. Grok install + SessionStart auto-register smoke-tested 2026-07-11. agy is new (2026-07-14); agy↔peer DM parity not yet verified live.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.
 

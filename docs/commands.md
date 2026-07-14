@@ -775,17 +775,18 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 | `install` (no subcommand) | 2 | Interactive TUI: binary-only by default. Client MCP/hooks are never pre-selected (B122); press `c` to customize (client prompts default to no). |
 | `install self [--dest DIR] [--mcp-server]` | 2 | Install the running c2c binary to `~/.local/bin`. Optional `--mcp-server` also installs `c2c-mcp-server` (OCaml). |
 | `install all [--with-clients]` | 2 | Scriptable binary install only by default. Does **not** configure client MCP unless `--with-clients` (explicit bulk opt-in). Prefer `c2c install <client>`. |
-| `install claude\|codex\|codex-headless\|opencode\|kimi\|grok [--alias A] [--broker-root DIR] [--dry-run]` | 2 | Configure one client for c2c messaging. MCP clients write MCP config + auto-join + auto-register; `grok` is CLI-first (skill + SessionStart/SessionEnd hooks under `~/.grok/`, no MCP). **B146-TEMP:** `kimi` is recognized but currently refuses with a `[DISABLED]` banner until re-enabled. `claude` also wires hooks into `~/.claude/settings.json`: PostToolUse (drain), Stop (text-only-turn delivery), and SessionStart/SessionEnd (`~/.claude/hooks/c2c-session-hook.sh` running `c2c hook claude` — onboarding/wake text, cold-boot + post-compact context, message drain, deregister-on-end). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; both copies auto-refresh on SessionStart via the c2c hooks). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. (`install crush` still routes for legacy cleanup but prints `[DEPRECATED]` and is not a supported client.) |
+| `install claude\|codex\|codex-headless\|opencode\|kimi\|grok\|agy [--alias A] [--broker-root DIR] [--dry-run]` | 2 | Configure one client for c2c messaging. MCP clients write MCP config + auto-join + auto-register; `grok` is CLI-first (skill + SessionStart/SessionEnd hooks under `~/.grok/`, no MCP); `agy` — Antigravity CLI: embedded skill + SessionStart/PostToolUse/Stop hooks under `~/.gemini/`, agentapi wake delivery, no MCP. **B146-TEMP:** `kimi` is recognized but currently refuses with a `[DISABLED]` banner until re-enabled. `claude` also wires hooks into `~/.claude/settings.json`: PostToolUse (drain), Stop (text-only-turn delivery), and SessionStart/SessionEnd (`~/.claude/hooks/c2c-session-hook.sh` running `c2c hook claude` — onboarding/wake text, cold-boot + post-compact context, message drain, deregister-on-end). `claude` and `codex` also install the embedded `/c2c` skill (`~/.claude/skills/c2c/SKILL.md` / `~/.codex/skills/c2c/SKILL.md`; both copies auto-refresh on SessionStart via the c2c hooks). Replaces the legacy per-client `configure-*` subcommands. On success, prints a consolidated "Installed c2c for <component>" summary with owned/shared artifacts and a `c2c uninstall <component>` hint. (`install crush` still routes for legacy cleanup but prints `[DEPRECATED]` and is not a supported client.) |
 | `install git-hook [--dry-run]` | 2 | Install the c2c pre-commit hook into `.git/hooks`. |
 | `uninstall claude [--target-dir DIR]` | 2 | Remove c2c artifacts for Claude (global `~/.claude.json` or project `.mcp.json`, plus `~/.claude/hooks/c2c-*.sh` — including `c2c-session-hook.sh` — and the PostToolUse/Stop/SessionStart/SessionEnd entries in `~/.claude/settings.json`). |
 | `uninstall codex` | 2 | Remove the c2c stanza from `~/.codex/config.toml`, the `~/.codex/skills/c2c/` skill, and owned `~/.c2c/clients/codex/` files. |
 | `uninstall kimi [--alias A]` | 2 | Remove `mcpServers.c2c` from `~/.kimi/mcp.json`, the approval-hook block from `~/.kimi/config.toml`, and owned files. (**B146-TEMP:** uninstall remains useful for cleaning prior installs while start/install are disabled.) |
 | `uninstall opencode [--target-dir DIR]` | 2 | Remove `mcp.c2c` from `<target>/.opencode/opencode.json` and owned plugin files. |
 | `uninstall grok` | 2 | Remove `~/.grok/skills/c2c/`, `~/.grok/skills/c2c-session/`, and `~/.grok/hooks/c2c-session.json` (CLI-first Grok install artifacts).
+| `uninstall agy` | 2 | Remove Antigravity (agy) install artifacts: the `c2c` skill under `~/.gemini/skills/` and the `c2c-hooks` block in `~/.gemini/config/hooks.json`, plus owned instance files. |
 | `uninstall self` | 2 | Remove the c2c binaries from `~/.local/bin` (warns that this removes the running binary). |
 | `uninstall git-hook` | 2 | Remove the c2c pre-commit/pre-push hooks from `.git/hooks` only if they match the c2c source. |
 | `uninstall git-shim` | 2 | Remove the swarm git shim binaries from `$XDG_STATE_HOME/c2c/bin/` and per-instance copies. |
-| `uninstall all` | 2 | Uninstall every component above (clients first, then git pieces, then `self` last). |
+| `uninstall all` | 2 | Uninstall every component above — including `agy` — in the sweep (clients first, then git pieces, then `self` last). |
 | `init [-c CLIENT] [-a ALIAS] [-r ROOM] [-S SUPERVISORS] [--no-setup] [--with-mcp] [--hooks]` | 2 | One-command project onboarding: register + join `swarm-lounge` (or `--room`). MCP/hooks are **off by default** — pass `--with-mcp` / `--hooks` deliberately. CLI messaging works without MCP. Explicit `-a`/`--alias` that differs from an existing registration for this session_id is refused (sticky alias B135). |
 
 All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
@@ -975,7 +976,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `agy`, `tmux`, `pty`, `relay-connect`. `agy` runs a managed start via `AgyAdapter`, launching the Antigravity CLI behind the deliver sidecar. **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
 | `codex [--alias A] [--yolo] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
 | `new codex [--alias A] [--yolo] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
 | `resume codex ALIAS [--yolo] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
@@ -992,8 +993,8 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 `--` is the explicit boundary between c2c's own options and the launched
 client's options. It works uniformly for **every managed agent client**
-`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, and `kimi`
-(**B146-TEMP:** kimi start is currently refused) — not just codex:
+`c2c start CLIENT` wrapper — `claude`, `codex`, `opencode`, `kimi`, and
+`agy` (**B146-TEMP:** kimi start is currently refused) — not just codex:
 
 - Everything **before** `--` is parsed as a c2c flag (`-n`, `-m`,
   `--alias`, `--worktree`, …).
@@ -1171,7 +1172,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 
 | Command | Description |
 |---------|-------------|
-| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `tmux`, `pty`, `relay-connect`. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. `crush` is deprecated — `c2c start crush` prints a deprecation notice and refuses to launch (exit 1). |
+| `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `agy`, `tmux`, `pty`, `relay-connect`. `agy` runs a managed start via `AgyAdapter`, launching the Antigravity CLI behind the deliver sidecar. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. `crush` is deprecated — `c2c start crush` prints a deprecation notice and refuses to launch (exit 1). |
 | `stop NAME [--json]` | Stop a managed instance. |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
@@ -1364,7 +1365,7 @@ command which both drains and prints message bodies.
 | `--alias A`, `-a A` | Alias whose session ID should be reverse-looked-up in the selected broker. Useful for unmanaged CLI peers. |
 | `--broker-root DIR` | Broker root directory. Defaults to `C2C_MCP_BROKER_ROOT` or the fallback repo broker. |
 | `--cross-repo`, `--global-broker` | Use the shared sessions broker (`~/.c2c/sessions/broker`). |
-| `--client TYPE` | Client type — `kimi` uses the Kimi notification store; `generic` drains and prints messages. Other managed values include `claude`, `codex`, `codex-headless`, and `opencode`. |
+| `--client TYPE` | Client type — `kimi` uses the Kimi notification store; `generic` drains and prints messages. Other managed values include `claude`, `codex`, `codex-headless`, `opencode`, and `agy`. |
 | `--loop` | Keep polling/delivering continuously. |
 | `--inotify` | Watch for inbox changes instead of polling. For `--client generic`, this drains on arrival and prints message bodies. |
 | `--interval SECS` | Polling interval in seconds. |
@@ -1431,7 +1432,7 @@ for current flags.
 | `debug …` | Debug tools for c2c statefile and broker (build-flag-gated). |
 | `cc-plugin …` | Claude Code plugin sink commands (called by PostToolUse / PreCompact / PostCompact hooks). |
 | `oc-plugin …` | OpenCode plugin sink commands (called by the c2c TypeScript plugin). |
-| `hook` | Host hook entry points: `post-tool` (Claude PostToolUse drain; also the no-subcommand default), `stop` (Claude Stop text-only-turn delivery), `claude` (Claude SessionStart/SessionEnd: env-first identity, auto-register, onboarding/wake + cold-boot/post-compact context, deregister-on-end), `codex` (all Codex CLI hook events). |
+| `hook` | Host hook entry points (six subcommands): `post-tool` (Claude PostToolUse drain; also the no-subcommand default), `stop` (Claude Stop text-only-turn delivery), `claude` (Claude SessionStart/SessionEnd: env-first identity, auto-register, onboarding/wake + cold-boot/post-compact context, deregister-on-end), `codex` (all Codex CLI hook events), `grok` (Grok SessionStart/SessionEnd), and `agy` (Antigravity CLI SessionStart/PostToolUse/Stop hook events). |
 | `deliver watch --session-id ID` | Poll one broker inbox continuously; see **Delivery commands** above. |
 | `get-tmux-location [--json]` | Print the current tmux pane address (`session:window.pane`). |
 

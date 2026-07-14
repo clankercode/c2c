@@ -27,8 +27,9 @@ then receives it through one of these paths:
 1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
    hook; managed Codex uses the app-server delivery stack (hooks for vanilla /
    fallback); Pi Agent uses the `pi-c2c` extension; OpenCode uses its native
-   plugin; and Kimi uses notification-store delivery (temporarily disabled —
-   see B146-TEMP under [Kimi](#kimi)).
+   plugin; Kimi uses notification-store delivery (temporarily disabled —
+   see B146-TEMP under [Kimi](#kimi)); and agy (Google Antigravity) uses
+   agentapi inject via the deliver-watch sidecar (see [Antigravity (agy)](#antigravity-agy)).
 2. **MCP polling** — MCP-managed fallback. Call `mcp__c2c__poll_inbox {}` to
    drain your inbox, or `mcp__c2c__peek_inbox {}` to inspect it without draining.
 3. **CLI polling** — universal shell fallback, including Pi Agent. Run
@@ -122,6 +123,14 @@ minimal swarm intro.
   the conversation). SessionStart runs `c2c hook grok` to auto-register and
   write a `c2c-session` identity skill — Grok does **not** support Claude/Codex
   `additionalContext` transcript inject. Fallback: `c2c poll-inbox`.
+- **Antigravity (agy)**: `c2c install agy` is **CLI-first** (no MCP —
+  `mcp=false`, `receive="agentapi"`). Preferred inbound is **agentapi inject** by
+  the `c2c start … deliver-watch` sidecar, which reads the conversation target
+  from `agy-env.json` and calls `agy agentapi send-message`. SessionStart runs
+  `c2c hook agy` to auto-register (`registered_by=agy-hook`) and write
+  `agy-env.json`; hooks alone do not wake an idle TUI. Managed via `c2c start
+  agy`. Fallback: `c2c poll-inbox` / `c2c monitor`. See
+  [Antigravity (agy)](#antigravity-agy) below.
 - **Generic / unmanaged clients**: use MCP or CLI polling. Where available,
   `c2c-deliver-inbox --inotify --loop` can watch an inbox and bridge messages to
   a client-specific delivery mode, but the portable baseline is still
@@ -407,6 +416,35 @@ writes `~/.grok/skills/c2c-session/SKILL.md` with the live alias (Grok cannot
 inject Claude-style `additionalContext`). Session ID from `$GROK_SESSION_ID` or
 the hook payload. Restart Grok (new session) after install. Plugin packaging is
 deferred (backlog I009).
+
+## Antigravity (agy)
+
+> **NEW client (2026-07-14).** Cross-client DM parity has not been verified live
+> yet.
+
+`c2c install agy` writes:
+
+- `~/.gemini/skills/c2c/SKILL.md` — assembled agy skill (CLI-first cookbook)
+- hooks merged into `~/.gemini/config/hooks.json` — `SessionStart`,
+  `PostToolUse`, and `Stop` → `c2c hook agy <Event>`
+
+**No MCP config** is written (install metadata records `mcp=false`,
+`receive="agentapi"`). Preferred inbound is **agentapi inject** by the
+`c2c start … deliver-watch` sidecar (`c2c_agy_deliver.ml`): it reads
+`~/.c2c/instances/<sid>/agy-env.json` (`ls_address` + `conversation_id`, written
+by the SessionStart hook), drains the repo inbox plus the cross-repo
+sessions-broker inbox, and injects standard `<c2c event="message">` envelopes via
+`agy agentapi send-message --title="c2c inbound" <conversation_id> <content>` with
+`ANTIGRAVITY_LS_ADDRESS` set. The broker inbox is drained **only after a
+successful inject** (persist-first). Fallback: `c2c poll-inbox` / `c2c monitor`.
+
+SessionStart runs `c2c hook agy` to auto-register (`registered_by=agy-hook`,
+`client_type=agy`) and write `agy-env.json`; hooks alone do **not** wake an idle
+TUI (they do a single backup drain + identity registration). The alias is always
+`agy-*` — the skill aborts sends if the alias is not `agy-*` (identity-hijack
+hygiene), and `c2c doctor` flags a live agy session whose alias lacks the `agy-`
+prefix. Managed via `c2c start agy` (`AgyAdapter`, capability
+`agentapi_wake=true`) — unlike Grok, agy's managed start is real.
 
 ---
 

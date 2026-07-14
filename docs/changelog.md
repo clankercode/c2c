@@ -9,7 +9,21 @@ nav_label: Changelog
 
 ## Unreleased
 
-_(empty — next cycle)_
+- **CLI-first Google Antigravity (`agy`) integration.** `c2c` now sets up,
+  delivers to, and tears down the Antigravity CLI as a first-class client:
+  a managed `c2c start agy` adapter, SessionStart/PostToolUse/Stop hooks
+  (`c2c hook agy`), `c2c install agy` / `c2c uninstall agy` wiring, an embedded
+  `agy` skill, and `c2c doctor` / `c2c health` diagnostics. CLI-first (no MCP);
+  inbound mail is delivered by the `c2c start … deliver-watch` sidecar via
+  `agy agentapi send-message`. Config lives under `~/.gemini/`; aliases are
+  always `agy-*`. (`6f4f87dc`)
+
+- **Relay `/stats` counts unique machines correctly.** `unique_machines` and
+  `connected.machines` were keyed on `node_id`, which CLI clients set to
+  `cli-<alias>`, so multi-session hosts over-counted. Counts now key on the
+  client's `opaque_host_id` (`c2c host-id`); legacy `node_id` keys are retired
+  on re-register/heartbeat and leases self-heal on heartbeat. (Takes effect on
+  `relay.c2c.im` after the next relay deploy.) (B174; `d6a03124`)
 
 ## 0.12.0 — 2026-07-13
 

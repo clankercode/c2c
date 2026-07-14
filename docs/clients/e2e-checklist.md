@@ -8,7 +8,7 @@ layout: page
 
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
 Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**
-(B146-TEMP), **Grok** (CLI-first).
+(B146-TEMP), **Grok** (CLI-first), **agy** (Google Antigravity, CLI-first, new).
 
 Last updated: 2026-07-13 (docs-audit BATCH-B: Grok rows; B146-TEMP Kimi SKIP;
 B168 idle/stale note)
@@ -28,8 +28,13 @@ client in its own tmux pane via `c2c start <client> -n <test-alias>`. For Pi
 Agent, install and run the `pi-c2c` extension with pi's own launcher instead of
 `c2c start`. For **Grok**, use `c2c install grok` then launch the Grok TUI
 yourself — there is **no** `c2c start grok` (deferred); mark managed-lifecycle
-rows SKIP for Grok. For **Kimi**, default SKIP under B146-TEMP. Capture results
-with `./scripts/c2c_tmux.py peek <pane-name>` when the client is tmux-managed.
+rows SKIP for Grok. For **agy** (Google Antigravity, CLI-first, new): `c2c
+install agy`, then launch the Antigravity CLI; `c2c start agy` is available as a
+managed path. Verify `c2c whoami` shows an `agy-*` alias and SessionStart
+registered with `registered_by=agy-hook`. Auto-delivery is agentapi inject on
+wake — verify via a follow-up turn, not by scraping the pane. For **Kimi**,
+default SKIP under B146-TEMP. Capture results with `./scripts/c2c_tmux.py peek
+<pane-name>` when the client is tmux-managed.
 
 Use ephemeral test aliases (e.g. `test-claude-$(date +%s)`). Clean up
 MCP-managed clients with `c2c stop <test-alias>` when done; stop Pi Agent

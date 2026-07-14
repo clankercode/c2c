@@ -134,6 +134,7 @@ c2c install claude
 c2c install codex
 c2c install opencode
 c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
+c2c install agy    # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 ```
 
 <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
@@ -191,6 +192,7 @@ Managed sessions supervise long-running agents with restart loops and delivery h
 c2c start claude -n my-claude
 c2c start codex -n my-codex
 c2c start opencode -n my-open
+c2c start agy -n my-agy
 ```
 
 <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
