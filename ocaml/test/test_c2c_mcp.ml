@@ -2188,7 +2188,9 @@ let with_scrubbed_client_env f =
     [ "C2C_MCP_SESSION_ID"; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"
     ; "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_OPENCODE_SESSION_ID"
     ; "GROK_SESSION_ID"; "GROK_AGENT"; "C2C_GROK_ACTIVE_SESSIONS"
-    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS" ]
+    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"
+    ; "ANTIGRAVITY_CONVERSATION_ID"; "ANTIGRAVITY_HOOK_EVENT"; "ANTIGRAVITY_LS_ADDRESS"
+    ]
   in
   List.iter (fun k -> Unix.putenv k "") keys;
   Fun.protect ~finally:(fun () -> List.iter (fun k -> Unix.putenv k "") keys) f
@@ -2229,6 +2231,16 @@ let test_session_id_from_grok_active_sessions () =
             (C2c_mcp.inferred_client_type_from_env ());
           check (option string) "session from active_sessions" (Some sid)
             (C2c_mcp.session_id_from_env ())))
+
+let test_inferred_client_type_from_env_agy () =
+  (* B187: Antigravity markers must label client=agy so whoami/send can refuse
+     a borrowed codex-* statefile identity. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "ANTIGRAVITY_CONVERSATION_ID" "agy-conv-b187";
+      check (option string) "ANTIGRAVITY_CONVERSATION_ID → agy" (Some "agy")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "session id via inferred agy" (Some "agy-conv-b187")
+        (C2c_mcp.session_id_from_env ()))
 
 let test_inferred_client_type_from_env_cursor_agent_flag () =
   with_scrubbed_client_env (fun () ->
@@ -16215,6 +16227,8 @@ let () =
              test_inferred_client_type_from_env_grok
          ; test_case "inferred_client_type_from_env: GROK_AGENT=1 → grok (B173)" `Quick
              test_inferred_client_type_from_env_grok_agent_flag
+         ; test_case "inferred_client_type_from_env: ANTIGRAVITY_* → agy (B187)" `Quick
+             test_inferred_client_type_from_env_agy
          ; test_case "session_id_from_env: GROK_AGENT + active_sessions (B173)" `Quick
              test_session_id_from_grok_active_sessions
          ; test_case "inferred_client_type_from_env: CURSOR_AGENT=1 → cursor (B134)" `Quick

@@ -67,6 +67,9 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "C2C_GROK_ACTIVE_SESSIONS="
   ; "CURSOR_AGENT="
   ; "CURSOR_INVOKED_AS="
+  ; "ANTIGRAVITY_CONVERSATION_ID="
+  ; "ANTIGRAVITY_HOOK_EVENT="
+  ; "ANTIGRAVITY_LS_ADDRESS="
   (* Hermeticity: when this suite runs from inside a Claude Code session the
      operator's CLAUDE_CONFIG_DIR (e.g. ~/.claude-p) leaks in and
      resolve_claude_dir writes the /c2c skill there instead of the temp HOME. *)
@@ -487,6 +490,158 @@ let test_whoami_sole_codex_app_server_before_thread_map () =
     (string_contains out ("session_id: " ^ managed_sid));
   check bool "not unregistered" false (string_contains out "(not registered)")
 
+(* ---------------------------------------------------------------- *)
+(* B187: whoami/send must not present borrowed / cross-client identity *)
+
+let test_b187_whoami_refuses_agy_shell_borrowing_codex_statefile () =
+  (* Dogfood: interactive agy ran whoami and got codex-* from init statefile.
+     Use C2C_MCP_CLIENT_TYPE=agy without a native session key so the CLI falls
+     through to default-session.json (the borrowed identity), then refuses. *)
+  with_temp_env @@ fun tmp ->
+  let codex_alias = Printf.sprintf "codex-yew-spout-%04x" (Random.bits () land 0xffff) in
+  let codex_sid = Printf.sprintf "codex-borrow-sid-%d" (Unix.getpid ()) in
+  let rc, _, err =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", codex_sid
+        ; "C2C_MCP_CLIENT_TYPE", "codex"
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", codex_alias
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "register" ]
+  in
+  check int ("register codex peer exits 0: " ^ err) 0 rc;
+  (* Persist that codex session as the broker's default-session.json fallback. *)
+  write_file (tmp // "broker" // "default-session.json")
+    (Printf.sprintf
+       {|{"session_id":%S,"alias":%S,"client":"codex","created_at":"2026-07-13T00:00:00Z"}|}
+       codex_sid codex_alias);
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "C2C_MCP_CLIENT_TYPE", "agy" ]
+      ~home:tmp ~broker:tmp ["whoami"]
+  in
+  check bool "whoami fails closed for agy→codex borrow" true (rc <> 0);
+  let combined = out ^ "\n" ^ err in
+  check bool "does not print codex alias as success identity" false
+    (string_contains out ("alias:     " ^ codex_alias));
+  check bool "error mentions cross-client / borrowed" true
+    (string_contains combined "borrowed" || string_contains combined "cross-client"
+     || string_contains combined "B187");
+  check bool "error includes how to fix (init/register/whoami)" true
+    (string_contains combined "c2c init" || string_contains combined "c2c register");
+  check bool "error mentions whoami re-check" true (string_contains combined "c2c whoami")
+
+let test_b187_whoami_json_error_has_fix_steps () =
+  with_temp_env @@ fun tmp ->
+  let codex_alias = Printf.sprintf "codex-json-err-%04x" (Random.bits () land 0xffff) in
+  let codex_sid = Printf.sprintf "codex-json-sid-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", codex_sid
+        ; "C2C_MCP_CLIENT_TYPE", "codex"
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", codex_alias
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "register" ]
+  in
+  check int "register exits 0" 0 rc;
+  write_file (tmp // "broker" // "default-session.json")
+    (Printf.sprintf
+       {|{"session_id":%S,"alias":%S,"client":"codex","created_at":"2026-07-13T00:00:00Z"}|}
+       codex_sid codex_alias);
+  let rc, out, _ =
+    run_c2c_status_split
+      ~env:[ "C2C_MCP_CLIENT_TYPE", "agy" ]
+      ~home:tmp ~broker:tmp ["whoami"; "--json"]
+  in
+  check bool "whoami --json fails closed" true (rc <> 0);
+  let json =
+    try Yojson.Safe.from_string out
+    with _ -> failf "expected JSON error object on stdout, got: %s" out
+  in
+  check bool "error field present" true
+    (match json_str_member "error" json with Some s -> s <> "" | None -> false);
+  check bool "candidate names codex alias" true
+    (match json_str_member "candidate" json with
+     | Some c -> string_contains c codex_alias || c = codex_alias
+     | None -> false);
+  let steps = Option.value (json_string_list_member "fix_steps" json) ~default:[] in
+  check bool "fix_steps non-empty" true (steps <> []);
+  check bool "fix_steps mention whoami or init" true
+    (List.exists
+       (fun s -> string_contains s "whoami" || string_contains s "init" || string_contains s "register")
+       steps)
+
+let test_b187_send_refuses_borrowed_auto_register_alias () =
+  (* Session env present but unregistered; AUTO_REGISTER_ALIAS points at a
+     different live peer — must not send stamped as that peer.
+     Disable send-side auto-mint so we exercise the borrowed-alias refusal. *)
+  with_temp_env @@ fun tmp ->
+  let peer_alias = Printf.sprintf "codex-peer-send-%04x" (Random.bits () land 0xffff) in
+  let peer_sid = Printf.sprintf "peer-send-sid-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", peer_sid
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", peer_alias
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "register" ]
+  in
+  check int "register peer exits 0" 0 rc;
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", "unregistered-shell-sid-b187"
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", peer_alias
+        ; "C2C_SEND_AUTOREGISTER_FAIL_FIXTURE", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "send"; peer_alias; "pong-as-wrong-identity" ]
+  in
+  check bool "send fails closed" true (rc <> 0);
+  let combined = out ^ "\n" ^ err in
+  check bool "mentions borrowed / AUTO_REGISTER" true
+    (string_contains combined "AUTO_REGISTER" || string_contains combined "borrowed"
+     || string_contains combined "B187" || string_contains combined "cross-client");
+  check bool "fix steps present" true
+    (string_contains combined "how to fix" || string_contains combined "c2c init"
+     || string_contains combined "c2c register")
+
+let test_b187_whoami_matching_client_still_ok () =
+  (* Positive control: agy shell + agy- alias succeeds. *)
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "agy-honest-%04x" (Random.bits () land 0xffff) in
+  let sid = "agy-conv-honest-b187" in
+  let rc, _, err =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", sid
+        ; "C2C_MCP_CLIENT_TYPE", "agy"
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", alias
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "register" ]
+  in
+  check int ("register agy exits 0: " ^ err) 0 rc;
+  let rc, out, _ =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", sid
+        ; "C2C_MCP_CLIENT_TYPE", "agy"
+        ; "ANTIGRAVITY_CONVERSATION_ID", sid
+        ]
+      ~home:tmp ~broker:tmp ["whoami"]
+  in
+  check int "whoami exits 0 for matching client" 0 rc;
+  check bool "whoami prints agy alias" true (string_contains out alias)
+
 let test_register_captures_cwd () =
   with_temp_env @@ fun tmp ->
   let alias = Printf.sprintf "test-cwd-%d" (Unix.getpid ()) in
@@ -815,6 +970,14 @@ let () =
             test_whoami_maps_codex_thread_to_managed_alias
         ; test_case "B172 whoami sole codex-app-server before thread map" `Quick
             test_whoami_sole_codex_app_server_before_thread_map
+        ; test_case "B187 whoami refuses agy shell borrowing codex statefile" `Quick
+            test_b187_whoami_refuses_agy_shell_borrowing_codex_statefile
+        ; test_case "B187 whoami --json error includes fix_steps" `Quick
+            test_b187_whoami_json_error_has_fix_steps
+        ; test_case "B187 send refuses borrowed AUTO_REGISTER_ALIAS" `Quick
+            test_b187_send_refuses_borrowed_auto_register_alias
+        ; test_case "B187 whoami matching agy client still ok" `Quick
+            test_b187_whoami_matching_client_still_ok
         ] )
     ; ( "json_schema_v1",
         [ test_case "send/peek/poll --json emit schema-v1 + legacy keys" `Quick test_send_poll_peek_json_schema_v1

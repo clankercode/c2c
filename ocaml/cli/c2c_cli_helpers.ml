@@ -281,6 +281,149 @@ let env_client_type () =
   | Some v when String.trim v <> "" -> Some (String.trim v)
   | _ -> None
 
+(* --- B187: honest identity (no borrowed / cross-client success) ----------- *)
+
+(** Normalize client labels so codex-app-server / codex-headless compare equal
+    to the codex- reserved alias prefix. *)
+let normalize_client_kind s =
+  match String.lowercase_ascii (String.trim s) with
+  | "codex-app-server" | "codex-headless" -> "codex"
+  | other -> other
+
+(** If [alias] starts with a reserved client prefix (e.g. "codex-"), return the
+    client kind without the trailing hyphen ("codex"). *)
+let alias_reserved_client_kind alias =
+  let a = String.lowercase_ascii (String.trim alias) in
+  let rec loop = function
+    | [] -> None
+    | p :: rest ->
+        if String.starts_with ~prefix:p a then
+          let kind = String.sub p 0 (String.length p - 1) in
+          Some kind
+        else loop rest
+  in
+  loop C2c_blocklist.reserved_client_prefixes
+
+let intended_client_kind () =
+  match C2c_mcp.inferred_client_type_from_env () with
+  | Some c -> Some (normalize_client_kind c)
+  | None -> None
+
+let argv_requests_json () =
+  let n = Array.length Sys.argv in
+  let rec loop i =
+    i < n
+    && (Sys.argv.(i) = "--json" || Sys.argv.(i) = "-j" || loop (i + 1))
+  in
+  loop 1
+
+(** Shared fail-closed identity error (B187). Human text on stderr; with
+    [--json]/-j] also emit a machine-readable error object on stdout. *)
+let identity_error ?(json = false) ~reason ~candidate ~steps () =
+  let use_json = json || argv_requests_json () in
+  if use_json then begin
+    let payload =
+      `Assoc
+        [ ("error", `String reason)
+        ; ( "candidate",
+            match candidate with
+            | Some c -> `String c
+            | None -> `Null )
+        ; ("fix_steps", `List (List.map (fun s -> `String s) steps))
+        ]
+    in
+    Yojson.Safe.pretty_to_channel stdout payload;
+    print_newline ()
+  end else begin
+    Printf.eprintf "error: %s\n" reason;
+    (match candidate with
+     | Some c -> Printf.eprintf "candidate: %s\n" c
+     | None -> ());
+    Printf.eprintf "how to fix:\n";
+    List.iteri (fun i s -> Printf.eprintf "  %d. %s\n" (i + 1) s) steps;
+    Printf.eprintf "%!"
+  end;
+  exit 1
+
+let default_identity_fix_steps ~intended =
+  let prefix_hint =
+    match intended with
+    | Some c ->
+        Printf.sprintf
+          "c2c init --client %s   # or: c2c register --alias %s-<words> --session-id <your-session>"
+          c c
+    | None ->
+        "c2c init --client <claude|codex|opencode|grok|agy|…>   # mint a client-prefixed alias"
+  in
+  [ prefix_hint
+  ; "c2c register --alias <your-alias> --session-id <your-session>"
+  ; "export C2C_MCP_SESSION_ID=<session that owns YOUR alias>   # or the native client session key"
+  ; "unset C2C_MCP_AUTO_REGISTER_ALIAS   # if it points at another agent"
+  ; "c2c whoami   # must print YOUR alias before sending"
+  ; "c2c send <peer> <message>   # only after whoami is honest"
+  ; "Advanced: set C2C_MCP_SESSION_ID or a client-native session key; do not reuse another peer's C2C_MCP_AUTO_REGISTER_ALIAS"
+  ]
+
+(** Fail closed when the resolved alias / registration clearly belongs to a
+    different host client than this shell (e.g. agy shell → codex-* alias). *)
+let assert_identity_client_ok ?(json = false) ~alias ~reg_client_type () =
+  match intended_client_kind () with
+  | None -> ()
+  | Some intended ->
+      let alias_kind = alias_reserved_client_kind alias in
+      let reg_kind = Option.map normalize_client_kind reg_client_type in
+      let conflict_prefix =
+        match alias_kind with
+        | Some k when k <> intended -> true
+        | _ -> false
+      in
+      let conflict_reg =
+        match reg_kind with
+        | Some k when k <> intended -> true
+        | _ -> false
+      in
+      if conflict_prefix || conflict_reg then
+        let detail =
+          match alias_kind, reg_kind with
+          | Some k, _ -> Printf.sprintf "alias prefix is '%s-'" k
+          | None, Some k -> Printf.sprintf "registration client_type is '%s'" k
+          | None, None -> "cross-client identity"
+        in
+        identity_error ~json
+          ~reason:
+            (Printf.sprintf
+               "refusing borrowed/cross-client identity: this shell looks like \
+                client '%s' but resolved alias '%s' (%s). Presenting that \
+                alias as success would forge authorship (B187)."
+               intended alias detail)
+          ~candidate:(Some alias)
+          ~steps:(default_identity_fix_steps ~intended:(Some intended))
+          ()
+
+let refuse_borrowed_auto_alias ?(json = false) ~session_id ~alias () =
+  let intended = intended_client_kind () in
+  identity_error ~json
+    ~reason:
+      (Printf.sprintf
+         "session_id %S is not registered on this broker; refusing to adopt \
+          C2C_MCP_AUTO_REGISTER_ALIAS=%S as identity (borrowed fallback, B187)."
+         session_id alias)
+    ~candidate:(Some alias)
+    ~steps:(default_identity_fix_steps ~intended)
+    ()
+
+let refuse_unregistered_identity ?(json = false) ~session_id () =
+  let intended = intended_client_kind () in
+  identity_error ~json
+    ~reason:
+      (Printf.sprintf
+         "session_id %S is not registered on this broker — no honest alias to \
+          report (B187)."
+         session_id)
+    ~candidate:None
+    ~steps:(default_identity_fix_steps ~intended)
+    ()
+
 (** B071: pid to pin on a CLI-side registration (`c2c register`, `c2c init`).
     Resolution: C2C_MCP_CLIENT_PID env (unchanged — managed launchers set it
     to the durable outer-loop pid; the literal value is trusted as-is, incl.
@@ -346,7 +489,7 @@ let validate_from_override broker ~caller_session_id ~from_alias =
     end
   end
 
-let resolve_alias ?(override : string option = None) broker =
+let resolve_alias ?(override : string option = None) ?(json = false) broker =
   match override with
   | Some a when String.trim a <> "" ->
       let r = String.trim a in
@@ -354,6 +497,10 @@ let resolve_alias ?(override : string option = None) broker =
         ~caller_session_id:(env_session_id ())
         ~from_alias:r;
       if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] override=%s\n%!" r;
+      (* Still refuse --from when the override itself is a reserved prefix for
+         a different client than this shell (B187). Coordinator may spoof. *)
+      if not (is_coordinator ()) then
+        assert_identity_client_ok ~json ~alias:r ~reg_client_type:None ();
       r
   | _ ->
       (* Prefer C2C_MCP_SESSION_ID lookup over C2C_MCP_AUTO_REGISTER_ALIAS.
@@ -371,13 +518,25 @@ let resolve_alias ?(override : string option = None) broker =
            with
           | Some r ->
               if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_sid=%s -> alias=%s\n%!" sid r.alias;
+              assert_identity_client_ok ~json ~alias:r.alias
+                ~reg_client_type:r.client_type ();
               r.alias
           | None -> (
-              (* Session not registered in this broker; fall back to
-                 env_auto_alias for non-MCP callers. *)
+              (* B187: do NOT adopt C2C_MCP_AUTO_REGISTER_ALIAS when our
+                 session_id is unregistered — that env often belongs to
+                 another managed peer and forges authorship on send/whoami. *)
               match env_auto_alias () with
+              | Some a when not (is_coordinator ()) ->
+                  if debug_enabled then
+                    Printf.eprintf
+                      "[DEBUG resolve_alias] sid=%s not registered; refusing borrowed auto_alias=%s\n%!"
+                      sid a;
+                  refuse_borrowed_auto_alias ~json ~session_id:sid ~alias:a ()
               | Some a ->
-                  if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] sid=%s not registered, fallback=%s\n%!" sid a;
+                  (* Coordinator may still self-label via AUTO_REGISTER_ALIAS. *)
+                  if debug_enabled then
+                    Printf.eprintf
+                      "[DEBUG resolve_alias] coordinator auto_alias fallback=%s\n%!" a;
                   a
               | None ->
                   if is_coordinator () then (
@@ -389,14 +548,18 @@ let resolve_alias ?(override : string option = None) broker =
                   ) else (
                     (* B040: Session not registered here — common when --root
                        targets a different broker. Use the session_id itself as
-                       the sender label rather than failing hard. *)
+                       the sender label rather than failing hard (honest label,
+                       not another peer's alias). *)
                     if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] sid=%s not registered in target broker, using sid as sender label\n%!" sid;
                     sid
                   )))
       | None -> (
           match env_auto_alias () with
           | Some a ->
+              (* No session id at all: AUTO_REGISTER_ALIAS is only acceptable
+                 when it does not conflict with the intended client prefix. *)
               if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] from_env_auto_alias=%s\n%!" a;
+              assert_identity_client_ok ~json ~alias:a ~reg_client_type:None ();
               a
           | None ->
               if is_coordinator () then (
@@ -404,14 +567,12 @@ let resolve_alias ?(override : string option = None) broker =
                 if debug_enabled then Printf.eprintf "[DEBUG resolve_alias] coordinator fallback to 'coordinator'\n%!";
                 "coordinator"
               ) else begin
-                Printf.eprintf
-                  "error: cannot determine your alias.\n\
-                   Try one of these fixes:\n\
-                     c2c init\n\
-                     c2c register --alias <your-alias> --session-id <session-id>\n\
-                     c2c whoami\n\
-                   Advanced: set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
-                exit 1
+                let intended = intended_client_kind () in
+                identity_error ~json
+                  ~reason:"cannot determine your alias (no session id / registration)."
+                  ~candidate:None
+                  ~steps:(default_identity_fix_steps ~intended)
+                  ()
               end)
 
 let resolve_session_id () =

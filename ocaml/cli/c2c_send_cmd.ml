@@ -253,26 +253,11 @@ let send_cmd =
   maybe_auto_register_sender broker ~from_override;
   let from_alias =
     match target with
-    | `Alias _ -> resolve_alias ~override:from_override broker
+    | `Alias _ -> resolve_alias ~override:from_override ~json broker
     | `Session _ ->
-        (match from_override with
-         | Some a when String.trim a <> "" ->
-             let r = String.trim a in
-             validate_from_override broker
-               ~caller_session_id:(env_session_id ())
-               ~from_alias:r;
-             r
-         | _ ->
-             (match env_session_id () with
-              | Some sid ->
-                  let regs = C2c_mcp.Broker.list_registrations broker in
-                  (match List.find_opt
-                           (fun (r : C2c_mcp.registration) -> r.session_id = sid)
-                           regs
-                   with
-                   | Some r -> r.alias
-                   | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli")
-              | None -> Option.value (env_auto_alias ()) ~default:"c2c-cli"))
+        (* Same honesty rules as resolve_alias (B187): never stamp another
+           peer's AUTO_REGISTER_ALIAS when our session is unregistered. *)
+        resolve_alias ~override:from_override ~json broker
   in
   (* B044: Warn when --from aliases a different identity than the caller's own.
      The recipient cannot reply to a sender that isn't the caller's registered
@@ -580,7 +565,7 @@ let send_all_cmd =
     else None
   in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  let from_alias = resolve_alias ~override:from_override broker in
+  let from_alias = resolve_alias ~override:from_override ~json broker in
   let content = String.concat " " message in
   let broker_raw = C2c_broker.create ~root:(resolve_broker_root ()) in
   let result =

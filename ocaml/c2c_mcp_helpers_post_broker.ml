@@ -712,6 +712,8 @@ let native_session_id_env_keys = function
   | "codex" -> [ "CODEX_THREAD_ID" ]
   | "opencode" -> [ "C2C_OPENCODE_SESSION_ID" ]
   | "grok" -> [ "GROK_SESSION_ID" ]
+  (* Antigravity (agy): conversation id is the stable session key hooks use. *)
+  | "agy" -> [ "ANTIGRAVITY_CONVERSATION_ID" ]
   | "kimi" | "crush" | "codex-headless" -> []
   | _ -> []
 
@@ -737,6 +739,14 @@ let cursor_agent_env_present () =
    without a session-id key (B173). *)
 let grok_agent_env_present () = truthy_env_flag (Sys.getenv_opt "GROK_AGENT")
 
+(* Antigravity (agy) tool shells / hooks export ANTIGRAVITY_* markers. Without
+   these, an agy shell can fall through to a broker statefile or AUTO_REGISTER
+   alias from another client and present that identity as success (B187). *)
+let agy_env_present () =
+  first_nonempty_env
+    [ "ANTIGRAVITY_CONVERSATION_ID"; "ANTIGRAVITY_HOOK_EVENT"; "ANTIGRAVITY_LS_ADDRESS" ]
+  <> None
+
 let inferred_client_type_from_env () =
   match first_nonempty_env [ "C2C_MCP_CLIENT_TYPE" ] with
   | Some client_type -> Some client_type
@@ -748,6 +758,7 @@ let inferred_client_type_from_env () =
       else if first_nonempty_env [ "C2C_OPENCODE_SESSION_ID" ] <> None then Some "opencode"
       else if first_nonempty_env [ "GROK_SESSION_ID" ] <> None then Some "grok"
       else if grok_agent_env_present () then Some "grok"
+      else if agy_env_present () then Some "agy"
       else if cursor_agent_env_present () then Some "cursor"
       else None
 
