@@ -665,10 +665,24 @@ type config = {
   lifecycle_log : lifecycle_phase -> unit;
 }
 
+(* Default readiness deadline: app-server cold start can exceed 30s under model
+   download / auth / resource contention (B175). Override via
+   C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S (positive float, seconds). *)
+let default_readiness_timeout_s = 90.0
+
+let readiness_timeout_from_env ?(default = default_readiness_timeout_s) () : float =
+  match Sys.getenv_opt "C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S" with
+  | None -> default
+  | Some s ->
+      (match float_of_string_opt (String.trim s) with
+       | Some t when t > 0. && Float.is_finite t -> t
+       | _ -> default)
+
 let default_config ~instance_name ~instance_dir ~cwd =
   {
     cwd; codex_bin = "codex"; instance_name; alias = None; instance_dir;
-    readiness_timeout_s = 30.0; reap_timeout_s = 5.0; min_codex_version = (0, 144, 0);
+    readiness_timeout_s = readiness_timeout_from_env ();
+    reap_timeout_s = 5.0; min_codex_version = (0, 144, 0);
     extra_server_args = []; extra_frontend_args = []; frontend_env = [];
     resume_thread = None;
     lifecycle_log = (fun _ -> ());
@@ -902,14 +916,46 @@ let reap_frontend (h : handle) =
 let mk_diag ?codex_version ?min_codex_version code message =
   { code; message; codex_version; min_codex_version }
 
+(* Last [max_bytes] of a file (best-effort). Used to surface app-server stderr
+   in startup diagnostics without keeping a full in-memory copy. *)
+let tail_file ~(max_bytes : int) (path : string) : string option =
+  try
+    let ic = open_in_bin path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      let len = in_channel_length ic in
+      if len <= 0 then None
+      else begin
+        let take = min len max_bytes in
+        seek_in ic (len - take);
+        let raw = really_input_string ic take in
+        let trimmed = String.trim raw in
+        if trimmed = "" then None else Some trimmed
+      end)
+  with _ -> None
+
+let format_log_snippet = function
+  | None -> ""
+  | Some s ->
+      let one_line =
+        String.map (function '\n' | '\r' -> ' ' | c -> c) s
+      in
+      let cap = 400 in
+      let clipped =
+        if String.length one_line <= cap then one_line
+        else String.sub one_line (String.length one_line - cap) cap
+      in
+      Printf.sprintf "; log: %s" clipped
+
 (* Wait until the authed handshake succeeds, the server child dies, or the
-   readiness deadline passes. *)
+   readiness deadline passes. Timeout and process-exit are distinct error
+   codes so operators are not told the process died when it was merely slow. *)
 let wait_ready (bk : backend) (ep : endpoint) ~(raw_token : string) ~(server : child)
-    ~(timeout : float) : (unit, [ `Timeout | `Server_died | `Auth ]) result =
+    ~(timeout : float) :
+    (unit, [ `Timeout | `Server_died of child_status | `Auth ]) result =
   let deadline = bk.now () +. timeout in
   let rec loop () =
     match child_poll server with
-    | Exited _ | Signaled _ -> Error `Server_died
+    | (Exited _ | Signaled _) as st -> Error (`Server_died st)
     | Running_ -> (
         match bk.probe_ready ep ~token:raw_token with
         | Ok () -> Ok ()
@@ -990,46 +1036,64 @@ let start ?(backend = real_backend ()) (cfg : config) : (handle, diagnostic) res
                   | Ok server ->
                       h.h_server <- Some server; persist_best_effort h;
                       h.h_state <- Waiting_ready; persist_best_effort h;
+                      let log_hint () = format_log_snippet (tail_file ~max_bytes:2048 log_path) in
                       (match wait_ready bk ep ~raw_token ~server ~timeout:cfg.readiness_timeout_s with
-                       | Error `Timeout -> fail Readiness_timeout
-                           (Printf.sprintf "app-server did not become ready within %.1fs" cfg.readiness_timeout_s)
-                       | Error `Server_died -> fail Server_died_before_ready "app-server exited before becoming ready"
+                       | Error `Timeout ->
+                           fail Readiness_timeout
+                             (Printf.sprintf
+                                "app-server did not become ready within %.1fs (process still running; increase C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S or inspect %s)%s"
+                                cfg.readiness_timeout_s log_path (log_hint ()))
+                       | Error (`Server_died st) ->
+                           fail Server_died_before_ready
+                             (Printf.sprintf
+                                "app-server exited before becoming ready (%s; log %s)%s"
+                                (child_status_to_string st) log_path (log_hint ()))
                        | Error `Auth -> fail Auth_setup_failed
                            "app-server rejected the launcher's own capability token (auth setup error)"
                        | Ok () ->
                            (* Startup-race gate: prove the listener is OUR server's
                               before handing the frontend the bearer token. Also
                               re-check the server is still alive. *)
-                           if (match child_poll server with Running_ -> false | _ -> true) then
-                             fail Server_died_before_ready "app-server exited immediately after readiness"
-                           else if not (bk.verify_owner ep ~server_pid:server.child_id) then
-                             fail Endpoint_ownership_unverified
-                               "endpoint listener is not owned by the launched app-server (possible port race); refusing to attach frontend"
-                           else begin
-                             let ep_uri = endpoint_uri ep in
-                             (* B176 phase 2: confirmed ready before TUI attach. *)
-                             emit_lifecycle cfg (Ready ep_uri);
-                             h.h_state <- Starting_frontend; persist_best_effort h;
-                             (* B176 phase 3: final line immediately before TUI
-                                owns the terminal (spawn inherits stdio). *)
-                             emit_lifecycle cfg (Tui_handoff ep_uri);
-                             let fe_argv = build_frontend_argv cfg ep ~token_env_var in
-                             let fe_env =
-                               build_frontend_env ~extra_env:cfg.frontend_env
-                                 ~token_env_var ~raw_token
-                             in
-                             match bk.spawn_frontend ~argv:fe_argv ~env:fe_env with
-                             | Error e -> fail Frontend_spawn_failed (Printf.sprintf "frontend spawn failed: %s" e)
-                             | Ok frontend ->
-                                 h.h_frontend <- Some frontend;
-                                 h.h_state <- Running;
-                                 (* The Running mapping is the durable record used
-                                    for later orphan cleanup — it MUST persist. *)
-                                 (match write_persisted ~instance_dir:cfg.instance_dir (persisted_of h) with
-                                  | Ok () -> Ok h
-                                  | Error e -> fail Persistence_failed
-                                      (Printf.sprintf "could not persist running unit state: %s" e))
-                           end)))))
+                           (match child_poll server with
+                            | (Exited _ | Signaled _) as st ->
+                                fail Server_died_before_ready
+                                  (Printf.sprintf
+                                     "app-server exited immediately after readiness (%s; log %s)%s"
+                                     (child_status_to_string st) log_path (log_hint ()))
+                            | Running_ ->
+                                if not (bk.verify_owner ep ~server_pid:server.child_id) then
+                                  fail Endpoint_ownership_unverified
+                                    "endpoint listener is not owned by the launched app-server (possible port race); refusing to attach frontend"
+                                else begin
+                                  let ep_uri = endpoint_uri ep in
+                                  (* B176 phase 2: confirmed ready before TUI attach. *)
+                                  emit_lifecycle cfg (Ready ep_uri);
+                                  h.h_state <- Starting_frontend; persist_best_effort h;
+                                  (* B176 phase 3: final line immediately before TUI
+                                     owns the terminal (spawn inherits stdio). *)
+                                  emit_lifecycle cfg (Tui_handoff ep_uri);
+                                  let fe_argv = build_frontend_argv cfg ep ~token_env_var in
+                                  let fe_env =
+                                    build_frontend_env ~extra_env:cfg.frontend_env
+                                      ~token_env_var ~raw_token
+                                  in
+                                  match bk.spawn_frontend ~argv:fe_argv ~env:fe_env with
+                                  | Error e ->
+                                      fail Frontend_spawn_failed
+                                        (Printf.sprintf "frontend spawn failed: %s" e)
+                                  | Ok frontend ->
+                                      h.h_frontend <- Some frontend;
+                                      h.h_state <- Running;
+                                      (* The Running mapping is the durable record used
+                                         for later orphan cleanup — it MUST persist. *)
+                                      (match write_persisted ~instance_dir:cfg.instance_dir
+                                               (persisted_of h) with
+                                       | Ok () -> Ok h
+                                       | Error e ->
+                                           fail Persistence_failed
+                                             (Printf.sprintf
+                                                "could not persist running unit state: %s" e))
+                                end))))))
 
 (* --------------------------------------------------------------------------- *)
 (* Supervision + stop                                                          *)
