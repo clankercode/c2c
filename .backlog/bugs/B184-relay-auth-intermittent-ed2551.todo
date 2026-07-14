@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-14T08:41:37Z"
 claimed_by: grok-sonic-rest-72qu
-completed_at: null
+completed_at: "2026-07-14T09:03:34Z"
 complexity: medium
 created_at: "2026-07-13T11:34:59Z"
 depends_on: []
+duration_minutes: 21.9656998356
 estimate_hours: 1
 id: B184
 priority: medium
 started_at: "2026-07-14T08:41:37Z"
-status: in_progress
+status: done
 tags: []
 title: 'relay auth: intermittent Ed25519 request signature does not verify after rename/register'
-updated_at: "2026-07-14T08:41:37Z"
+updated_at: "2026-07-14T09:03:34Z"
 ---
 ## Problem
 During post-rename relay recovery, c2c whoami --relay sometimes reports: Ed25519 request signature does not verify, then later succeeds after re-register. Unclear if race with lease propagation, key/path confusion after alias change, or clock/nonce interaction (see also B178 timestamp skew).
