@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-14T08:41:37Z"
 claimed_by: grok-sonic-rest-72qu
-completed_at: null
+completed_at: "2026-07-14T09:03:35Z"
 complexity: medium
 created_at: "2026-07-14T08:36:29Z"
 depends_on: []
+duration_minutes: 21.976041138083332
 estimate_hours: 1
 id: B190
 priority: high
 started_at: "2026-07-14T08:41:37Z"
-status: in_progress
+status: done
 tags: []
 title: glibc issues for certain systems
-updated_at: "2026-07-14T08:41:37Z"
+updated_at: "2026-07-14T09:03:35Z"
 ---
 ## Symptom
 c2c (or shipped binaries) hit glibc compatibility issues on older / certain Linux systems.
