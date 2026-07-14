@@ -34,6 +34,18 @@ Last updated: 2026-07-13
 | 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin + alias-scoped `c2c monitor`, delivers via `promptAsync` | No | No | No | Yes | No | No | Proven; preferred for OpenCode |
 | 9 | [Kimi Notification-Store](#9-kimi-notification-store) | File-based notification push to Kimi's native notification subsystem | No | No | No | No | Yes (B146-TEMP) | No | Preferred for Kimi when re-enabled |
 
+> **agy (Google Antigravity)** — new client, 2026-07-14; not in the 0.12.0
+> release. Not broken out as its own column above to keep these matrices
+> aligned. agy **mirrors the Grok / CLI-first row**: no MCP, `poll_inbox` /
+> `c2c poll-inbox` as the universal baseline and a persistent **Monitor** on
+> `c2c monitor`. Beyond Grok, agy adds a **managed agentapi wake path** — the
+> `c2c start agy` deliver-watch sidecar (`c2c_agy_deliver.ml`) injects standard
+> `<c2c event="message">` envelopes via `agy agentapi send-message`
+> (`ANTIGRAVITY_LS_ADDRESS`). Managed `c2c start agy` **is real** (via
+> `AgyAdapter`), unlike Grok's deferred managed start. Install is CLI-first
+> (`c2c install agy`; skill + SessionStart/PostToolUse/Stop hooks under
+> `~/.gemini/`). See [Per-Client Delivery § Antigravity (agy)](/client-delivery/#antigravity-agy).
+
 ---
 
 ## Detailed Method Descriptions
@@ -667,6 +679,13 @@ Codex on a supported binary uses the app-server path (not hooks) as Primary.
 **Fallback** = works but superseded by a better method.
 **--** = not applicable or not supported.
 
+**agy (Google Antigravity)** is omitted from the column set above to keep the
+table aligned. It mirrors the Grok row — `poll_inbox` / `c2c poll-inbox`
+**Baseline** and a **Monitor** on `c2c monitor` — and adds a managed
+**agentapi wake** path (`c2c start agy` deliver-watch sidecar,
+`c2c_agy_deliver.ml`, via `agy agentapi send-message`) as its **Primary** when
+managed. Unlike Grok, managed `c2c start agy` is real (via `AgyAdapter`). No MCP.
+
 ---
 
 ## Message Flow: End-to-End
@@ -690,6 +709,7 @@ Recipient's inbox file
     |  +-- Native plugin + alias-scoped c2c monitor (OpenCode)
     |  +-- Notification-store delivers via C2c_kimi_notifier (Kimi; B146-TEMP)
     |  +-- Monitor on c2c monitor (Grok preferred)
+    |  +-- agentapi inject via deliver-watch sidecar (agy, managed c2c start agy)
     |  +-- Wake daemon PTY-injects sentinel (legacy)
     |  +-- Agent manually calls poll_inbox (universal)
     v

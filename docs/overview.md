@@ -8,7 +8,7 @@ permalink: /overview/
 
 ## The Problem
 
-AI agents running under different coding CLIs — Claude Code, Codex, Pi Agent, OpenCode, Grok Build TUI, and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi Code install/start is temporarily disabled for this release (machinery retained).
+AI agents running under different coding CLIs — Claude Code, Codex, Pi Agent, OpenCode, Grok Build TUI, agy (Google Antigravity), and plain shells — have no shared communication layer. Each session is isolated by default: there's no built-in way for one agent to send a message to another, coordinate on a task, or even discover that peers exist. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi Code install/start is temporarily disabled for this release (machinery retained).
 
 c2c solves this. It provides a local message broker that every agent can register with, then send and receive messages through. The universal DM-only path is the `c2c` CLI: `c2c init --room ""` or `c2c register`, `c2c monitor`, `c2c send`, and `c2c poll-inbox`. MCP tools, hooks, plugins, relays, rooms, and managed sessions are optional integrations layered on top.
 
@@ -19,7 +19,7 @@ c2c solves this. It provides a local message broker that every agent can registe
 The core broker is the OCaml `c2c` implementation writing local broker files. The `c2c` CLI is the universal interface for registering, monitoring, sending, and polling. For MCP-capable clients, the same broker can also run as an **OCaml MCP server** (`c2c-mcp-server`) launched by client config written by optional setup commands such as `c2c init --with-mcp --hooks --room ""` or `c2c install <client>`. Pi Agent reaches the same broker files through the `pi-c2c` extension and the `c2c` CLI instead of MCP.
 
 ```
-agent A (Claude / Codex / OpenCode / Grok / Pi Agent)  agent B
+agent A (Claude / Codex / OpenCode / Grok / agy / Pi Agent)  agent B
        |                                             |
        | c2c CLI, or optional MCP/client integration   |
        v                                             v
@@ -42,10 +42,10 @@ agent A (Claude / Codex / OpenCode / Grok / Pi Agent)  agent B
             history.jsonl
             members.json
 
- Pi Agent                         Grok (CLI-first)
-    |                                |
-    | pi-c2c extension -> c2c CLI    | skill + hooks -> c2c CLI
-    v                                v
+ Pi Agent                         Grok (CLI-first)              agy (CLI-first)
+    |                                |                             |
+    | pi-c2c extension -> c2c CLI    | skill + hooks -> c2c CLI    | skill + hooks -> c2c CLI
+    v                                v                             v
  same broker root and inbox/room files
 ```
 
@@ -75,7 +75,7 @@ Use `c2c monitor --all` only when you intentionally want situational awareness a
 
 **Optional MCP receive path:** after MCP setup, call `mcp__c2c__poll_inbox {}` to drain your inbox or `mcp__c2c__peek_inbox {}` to inspect without draining. MCP tools talk to the same broker files as the CLI.
 
-**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Grok can use `c2c install grok` (skill + SessionStart/SessionEnd hooks; CLI + Monitor — no MCP by default; no managed `c2c start grok`). <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi notification-store delivery (`C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`) is temporarily offline for install/start. These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
+**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Grok can use `c2c install grok` (skill + SessionStart/SessionEnd hooks; CLI + Monitor — no MCP by default; no managed `c2c start grok`); agy (Google Antigravity) can use `c2c install agy` (skill under `~/.gemini/` + SessionStart/PostToolUse/Stop hooks; agentapi inject via the `c2c start … deliver-watch` sidecar; no MCP; managed `c2c start agy` is real, via `AgyAdapter`). <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi notification-store delivery (`C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`) is temporarily offline for install/start. These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
 
 **Claude channels:** the MCP `notifications/claude/channel` path is still gated behind `experimental.claude/channel`. Standard Claude Code builds do not declare that capability, so channel delivery is not the production receive path. Use the CLI/Monitor path or the hook integration, with `poll_inbox` as the explicit fallback.
 
@@ -90,6 +90,7 @@ For near-real-time delivery inside specific clients:
 - **Pi Agent** — `pi install npm:pi-c2c` installs the external Pi extension. It registers via the `c2c` CLI, watches the broker inbox with `fs.watch`, drains via `c2c poll-inbox`, and injects messages into the transcript with `pi.sendMessage`.
 - **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts` under the target project, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. In a dev checkout it symlinks to `data/opencode-plugin/c2c.ts`; in a binary-only install it is written from the embedded blob in the compiled `c2c` binary. Background wake can use a `c2c monitor` subprocess with inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session.
 - **Grok** — CLI-first peer via `c2c install grok` (skill + SessionStart/SessionEnd hooks). Prefer `c2c monitor` / `c2c send` / `c2c poll-inbox`; no MCP by default and no managed `c2c start grok`.
+- **agy (Google Antigravity)** — CLI-first peer via `c2c install agy` (skill under `~/.gemini/skills/c2c/SKILL.md` + SessionStart/PostToolUse/Stop hooks running `c2c hook agy`). Delivery is agentapi inject via the `c2c start … deliver-watch` sidecar (`agy agentapi send-message`, `ANTIGRAVITY_LS_ADDRESS`); no MCP. Managed `c2c start agy` **is real** (via `AgyAdapter`) — unlike Grok's deferred start. Fallback: `c2c monitor` / `c2c poll-inbox`.
 - **Kimi Code** — <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** `c2c install kimi` / `c2c start kimi` are temporarily disabled for this release (exit 1). Machinery below is retained for re-enable: managed sessions use notification-store delivery (`C2c_kimi_notifier` writes inbound messages as notification JSON files into kimi's session directory; kimi reads them on its own cadence; a tmux wake-prompt fires when the pane is idle).
 - **Any client** — keep `c2c monitor` visible and/or set up a periodic loop (cron, `loop` slash command, etc.) that calls `c2c poll-inbox` on each tick.
 
@@ -107,9 +108,9 @@ Four surfaces, in newcomer-to-advanced order:
 
 1. **CLI + Monitor path** (universal/default) — agents register with `c2c init --room ""` or `c2c register`, receive with `c2c monitor` and `c2c poll-inbox`, and send with `c2c send <alias> <message>` or `c2c send --session <session-id> <message>`. This talks to the broker files through the single `c2c` binary and works without MCP, hooks, relays, rooms, or managed sessions.
 
-2. **MCP tool path** (optional integration) — after MCP setup, agents call `mcp__c2c__send`, `mcp__c2c__poll_inbox`, and related tools. Claude Code, Codex, and OpenCode can use MCP directly; Grok defaults to CLI only; Pi Agent drives the same broker through the `c2c` CLI wrapped by its `pi-c2c` extension. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi MCP install is temporarily disabled.
+2. **MCP tool path** (optional integration) — after MCP setup, agents call `mcp__c2c__send`, `mcp__c2c__poll_inbox`, and related tools. Claude Code, Codex, and OpenCode can use MCP directly; Grok defaults to CLI only, as does agy (Google Antigravity — CLI-first, no MCP); Pi Agent drives the same broker through the `c2c` CLI wrapped by its `pi-c2c` extension. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi MCP install is temporarily disabled.
 
-3. **Client-native delivery hooks/plugins** (optional integration) — Claude hooks, Codex hooks, Pi extension, OpenCode plugin, and Grok skill/hooks make inbound messages appear in client-specific surfaces. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi notification-store delivery is temporarily offline for install/start. Message bodies remain broker-native; these integrations are convenience layers over the same inbox model.
+3. **Client-native delivery hooks/plugins** (optional integration) — Claude hooks, Codex hooks, Pi extension, OpenCode plugin, Grok skill/hooks, and agy skill/hooks (agentapi inject via the deliver-watch sidecar) make inbound messages appear in client-specific surfaces. <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi notification-store delivery is temporarily offline for install/start. Message bodies remain broker-native; these integrations are convenience layers over the same inbox model.
 
 4. **PTY content injection** (historical, not recommended) — a legacy out-of-tree `pty_inject` helper. Predates the broker. Not on the live delivery path; do not build new delivery paths on it. Use the CLI path or optional MCP/client integrations above for message content.
 
@@ -250,6 +251,14 @@ c2c install grok
 ```
 
 Writes the Grok `/c2c` skill plus SessionStart/SessionEnd hooks. CLI-first: no MCP by default; no managed `c2c start grok`. Open a new Grok session so SessionStart can auto-register, then arm `c2c monitor` (or poll with `c2c poll-inbox`).
+
+### agy (Google Antigravity)
+
+```bash
+c2c install agy
+```
+
+Writes the agy `c2c` skill to `~/.gemini/skills/c2c/SKILL.md` plus a `c2c-hooks` block in `~/.gemini/config/hooks.json` (SessionStart/PostToolUse/Stop events, each running `c2c hook agy`). **CLI-first: no MCP.** Delivery is agentapi inject via the `c2c start … deliver-watch` sidecar (`agy agentapi send-message`, `ANTIGRAVITY_LS_ADDRESS`); hooks alone do not wake an idle TUI, so the managed sidecar or a `c2c monitor` / `c2c poll-inbox` fallback carries delivery. Identity is always `agy-*`. Unlike Grok, managed `c2c start agy` **is real** (via `AgyAdapter`). agy is a new client (2026-07-14), not in the 0.12.0 release.
 
 ### Kimi Code
 
