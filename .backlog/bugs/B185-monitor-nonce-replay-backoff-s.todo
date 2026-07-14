@@ -1,17 +1,18 @@
 ---
+claimed_at: "2026-07-14T08:41:37Z"
+claimed_by: grok-sonic-rest-72qu
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T11:35:00Z"
 depends_on: []
 estimate_hours: 1
 id: B185
 priority: medium
-status: pending
-tags:
-    - relay
-    - monitor
-    - resilience
+started_at: "2026-07-14T08:41:37Z"
+status: in_progress
+tags: []
 title: 'monitor: nonce_replay backoff should not disable relay permanently without recovery path'
-updated_at: "2026-07-13T11:35:00Z"
+updated_at: "2026-07-14T08:41:37Z"
 ---
 ## Problem
 Relay peek hits nonce_replay (attempt 1, 2 with backoff) then escalates to TERMINAL timestamp_out_of_window and disables relay watch entirely with \"will not self-heal\". Local watch continues. Operator must re-register and/or restart monitor. Even if B178 fixes the -30.5s skew root cause, terminal disable without a recovery budget is harsh for transient relay glitches.

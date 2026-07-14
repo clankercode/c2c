@@ -1,18 +1,18 @@
 ---
+claimed_at: "2026-07-14T08:41:37Z"
+claimed_by: grok-sonic-rest-72qu
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T11:33:51Z"
 depends_on: []
 estimate_hours: 1
 id: B178
 priority: high
-status: pending
-tags:
-    - relay
-    - monitor
-    - auth
-    - rename
+started_at: "2026-07-14T08:41:37Z"
+status: in_progress
+tags: []
 title: 'relay monitor peek: terminal timestamp_out_of_window (-30.5s) after nonce_replay; local NTP fine'
-updated_at: "2026-07-13T11:33:51Z"
+updated_at: "2026-07-14T08:41:37Z"
 ---
 ## Summary
 After renaming a session alias (codex-black-sledge-* -> gk-black) and re-registering on the public relay, `c2c monitor` relay watch fails open→terminal with a fixed ~30.5s timestamp skew even though the host clock is NTP-synced and matches relay HTTP Date to the second. Local inbox watch continues; same-host DMs work.

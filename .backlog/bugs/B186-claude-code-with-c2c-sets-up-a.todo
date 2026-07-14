@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-14T08:41:37Z"
+claimed_by: grok-sonic-rest-72qu
+completed_at: null
 complexity: medium
 created_at: "2026-07-13T11:47:42Z"
 depends_on: []
 estimate_hours: 1
 id: B186
 priority: high
-status: pending
+started_at: "2026-07-14T08:41:37Z"
+status: in_progress
 tags: []
 title: Claude code with c2c sets up a schedule toml thing but I don't think it works and only claude does it. we should probably remove it. If we want to keep that feature we should fix it and also set it up for other clients. The period of a heartbeat should be dependent on the caching used by the provider. anthropic does 5 min caching unless you use the 1hr cache flag (2x usage). OpenAI codex I think does like 30 minutes caching with the launch of gpt-5.6 but i'm not sure (please check online). For others, we need to research.
-updated_at: "2026-07-13T11:47:42Z"
+updated_at: "2026-07-14T08:41:37Z"
 ---
 
 Claude code with c2c sets up a schedule toml thing but I don't think it works and only claude does it. we should probably remove it. If we want to keep that feature we should fix it and also set it up for other clients. The period of a heartbeat should be dependent on the caching used by the provider. anthropic does 5 min caching unless you use the 1hr cache flag (2x usage). OpenAI codex I think does like 30 minutes caching with the launch of gpt-5.6 but i'm not sure (please check online). For others, we need to research.
