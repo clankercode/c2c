@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-14T08:41:37Z"
 claimed_by: grok-sonic-rest-72qu
-completed_at: null
+completed_at: "2026-07-14T09:08:08Z"
 complexity: medium
 created_at: "2026-07-13T11:34:59Z"
 depends_on: []
+duration_minutes: 26.523433302583335
 estimate_hours: 1
 id: B179
 priority: high
 started_at: "2026-07-14T08:41:37Z"
-status: in_progress
+status: done
 tags: []
 title: 'rename: auto re-register/rebind relay identity for new alias'
-updated_at: "2026-07-14T08:41:37Z"
+updated_at: "2026-07-14T09:08:08Z"
 ---
 ## Problem
 After `c2c rename` (e.g. codex-black-sledge-* -> gk-black), local session alias works immediately but relay registration stays on the old identity binding. First post-rename `c2c monitor` relay peek fails TERMINAL with: unauthorized: alias \"<new>\" has no identity binding. Operator must discover and run `c2c relay register --alias=<new>` manually.
