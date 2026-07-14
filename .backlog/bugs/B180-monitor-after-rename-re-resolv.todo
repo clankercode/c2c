@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-14T08:41:37Z"
 claimed_by: grok-sonic-rest-72qu
-completed_at: null
+completed_at: "2026-07-14T09:08:08Z"
 complexity: medium
 created_at: "2026-07-13T11:34:59Z"
 depends_on: []
+duration_minutes: 26.5293859931
 estimate_hours: 1
 id: B180
 priority: high
 started_at: "2026-07-14T08:41:37Z"
-status: in_progress
+status: done
 tags: []
 title: 'monitor: after rename, re-resolve alias and re-arm relay watch without full restart'
-updated_at: "2026-07-14T08:41:37Z"
+updated_at: "2026-07-14T09:08:08Z"
 ---
 ## Problem
 `c2c monitor` binds identity at start. After the session renames, an already-running monitor keeps the old alias context (or needs a full kill+restart) before it watches as the new alias. Agents miss inbox events during the window; operators must remember to restart the Monitor tool.
