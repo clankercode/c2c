@@ -11,14 +11,24 @@ open C2c_cli_helpers
 open Cmdliner.Term.Syntax
 
 let rename_cmd =
+  let reserved_prefixes =
+    String.concat ", " C2c_blocklist.reserved_client_prefixes
+  in
   let new_alias_arg =
     Cmdliner.Arg.(
       required
       & pos 0 (some string) None
       & info [] ~docv:"NEW_ALIAS"
           ~doc:
-            "The new alias to adopt. Must be a valid, non-reserved, \
-             non-blocklisted name not currently held by an alive peer.")
+            (Printf.sprintf
+               "The new alias to adopt. Must be a valid, non-reserved, \
+                non-blocklisted name not currently held by an alive peer. \
+                Reserved auto-generated-client prefixes: %s. For a \
+                Grok-family handoff, use a neutral alias such as gk-<name>. \
+                Rename is local and atomic; re-bind a relay identity \
+                separately when needed with `c2c relay register \
+                --alias=<new>`."
+               reserved_prefixes))
   in
   let session_id_opt =
     Cmdliner.Arg.(

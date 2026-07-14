@@ -521,6 +521,29 @@ let test_register_cli_blocked_alias_explains_reason_and_suggestion () =
            check bool "stderr suggests avoiding client prefixes" true
              (string_contains stderr "not starting with a reserved client prefix")))
 
+let test_rename_help_documents_reserved_alias_guidance () =
+  let outfile = Filename.temp_file "c2c-rename-help" ".out" in
+  Fun.protect
+    ~finally:(fun () -> try Sys.remove outfile with _ -> ())
+    (fun () ->
+       let cmd =
+         c2c_cmd
+           (Printf.sprintf
+              "C2C_CLI_FORCE=1 c2c rename --help > %s 2>&1"
+              outfile)
+       in
+       let rc = Sys.command cmd in
+       let output = read_file outfile in
+       check int "c2c rename --help exits 0" 0 rc;
+       check bool "rename help lists newest reserved client prefix" true
+         (string_contains output "agy-");
+       check bool "rename help gives Grok-family alternative" true
+         (string_contains output "gk-<name>");
+       check bool "rename help names relay rebind command" true
+         (string_contains output "c2c relay register");
+       check bool "rename help names relay rebind alias flag" true
+         (string_contains output "--alias=<new>"))
+
 (* ------------------------------------------------------------------------- *)
 (* c2c send — fixture-gated send test                                       *)
 (* ------------------------------------------------------------------------- *)
@@ -4259,6 +4282,7 @@ let () =
         ; ( "unknown liveness is not labeled unknown client type", `Quick, test_list_unknown_liveness_is_not_labeled_unknown_client_type )
         ; ( "register happy path omits relay identity debug noise", `Quick, test_register_happy_path_does_not_emit_relay_identity_debug_noise )
         ; ( "register CLI blocked alias explains reason and suggestion", `Quick, test_register_cli_blocked_alias_explains_reason_and_suggestion )
+        ; ( "rename help documents reserved alias guidance (B182)", `Quick, test_rename_help_documents_reserved_alias_guidance )
         ] )
     ; ( "send",
         [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )
