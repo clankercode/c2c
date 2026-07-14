@@ -171,7 +171,7 @@ Only the host-local CLI can do that.
 
 ## M4 Alias-Reuse Guard
 
-**Broker path**: `ocaml/c2c_mcp_helpers_post_broker.ml` registration guard helpers and `ocaml/c2c_broker.ml` pending-permission store
+**Broker path**: `ocaml/c2c_identity_handlers.ml` registration guard (`pending_permission_exists_for_alias` + alive check) and `ocaml/c2c_broker.ml` pending-permission store
 
 When a new `register` arrives for alias `X`:
 

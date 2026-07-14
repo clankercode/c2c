@@ -170,7 +170,7 @@ You get a versioned, diffable persona instead of an ephemeral CLI flag.
 
 ## Example canonical roles
 
-See `.c2c/roles/` for the seeded swarm roles (coordinator1, ceo,
+See `.c2c/roles/` for the seeded example roles (coordinator1, ceo,
 galaxy-coder, jungle-coder) as reference implementations.
 
 ## See also
