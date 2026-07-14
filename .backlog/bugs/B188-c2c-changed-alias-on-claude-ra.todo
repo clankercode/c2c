@@ -77,3 +77,8 @@ Extra: session-id addressing worked as fallback. Impact: peers who knew wagon-ch
 
 ## Synthesis
 Root cause class: broker root fingerprint change (path-only → remote.origin.url once GitHub remote set) + CLI auto-register on send against empty new broker mints fresh alias; sticky-alias does not bridge fingerprints; rename cannot reclaim `claude-*` auto names.
+
+
+## Peer follow-up (status update): relay-side desync
+
+After the alias fork, Ed25519 signer could SEND but relay READ (peek/poll) returned 403 signature_invalid / does not own session (cli-claude-radar-source-lnbk...). Cleared by `c2c relay register --alias=claude-radar-source-lnbk`. Downstream of B188: send works, relay inbox reads 403 until re-register on the new alias.
