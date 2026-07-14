@@ -435,6 +435,7 @@ type connector_state = {
   cs_last_error_ts : float option;
   cs_registered : string list;
   cs_node_id : string option;  (* H3: connector node-id for monitor peek-key resolution *)
+  cs_pid : int option;  (* B181: writer PID for process≠bridge diagnostics *)
   cs_outbox_forwarded : int;
   cs_outbox_failed : int;
   cs_outbox_dlqed : int;
@@ -479,6 +480,7 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float last_ok_ts)
+    ; ("pid", `Int (Unix.getpid ()))
     ; ("registered", `List (List.map (fun a -> `String a) result.registered))
     ; ("outbox_forwarded", `Int result.outbox_forwarded)
     ; ("outbox_failed", `Int result.outbox_failed)
@@ -507,6 +509,10 @@ let read_connector_state broker_root : connector_state option =
       in
       let get_str k = match json |> member k with `String s -> Some s | _ -> None in
       let get_int k = match json |> member k with `Int i -> i | _ -> 0 in
+      let get_int_opt k = match json |> member k with
+        | `Int i -> Some i
+        | _ -> None
+      in
       let last_sync_ts = Option.value (get_float "last_sync_ts") ~default:0.0 in
       let last_ok_ts = Option.value (get_float "last_ok_ts") ~default:0.0 in
       let registered = match json |> member "registered" with
@@ -521,12 +527,29 @@ let read_connector_state broker_root : connector_state option =
         cs_last_error_ts = get_float "last_error_ts";
         cs_registered = registered;
         cs_node_id = get_str "node_id";
+        cs_pid = get_int_opt "pid";
         cs_outbox_forwarded = get_int "outbox_forwarded";
         cs_outbox_failed = get_int "outbox_failed";
         cs_outbox_dlqed = get_int "outbox_dlqed";
         cs_inbound_delivered = get_int "inbound_delivered";
         cs_inbound_rejected = get_int "inbound_rejected";
       }
+
+(** True when [connector-state.json] records a PID that still exists.
+    Broker-owned process evidence that does not require argv --broker-root
+    scoping (B181). Best-effort: missing pid field or unreadable /proc → false. *)
+let connector_pid_alive (st : connector_state) : bool =
+  match st.cs_pid with
+  | None -> false
+  | Some pid when pid <= 1 -> false
+  | Some pid ->
+      try
+        Unix.kill pid 0;
+        true
+      with
+      | Unix.Unix_error (Unix.ESRCH, _, _) -> false
+      | Unix.Unix_error (Unix.EPERM, _, _) -> true (* exists, not signalable *)
+      | _ -> false
 
 (** Write a minimal connector-state.json recording that a sync raised an
     exception (B093). Lets `c2c doctor --relay` report the last error even
@@ -546,6 +569,7 @@ let write_connector_state_error broker_root ~op ~detail =
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float prev_ok_ts)
+    ; ("pid", `Int (Unix.getpid ()))
     ; ("registered", `List [])
     ; ("outbox_forwarded", `Int 0)
     ; ("outbox_failed", `Int 0)
@@ -1252,8 +1276,44 @@ let sync (t : t) : sync_result Lwt.t =
  * Run loop with graceful signal handling
  * --------------------------------------------------------------------------- *)
 
+(* B181: wall-clock cap for one sync pass so a hung HTTP path cannot leave
+   a multi-hour PID with stale last_sync. Defaults to max(90s, 4 * interval).
+   Implemented with SIGALRM because [sync] drives work via nested
+   Lwt_main.run (a Lwt.pick sibling never races those calls). On timeout we
+   write an error state and count consecutive strikes; after 3 the process
+   exits 3 so managed `c2c start relay-connect` / supervisors can restart. *)
+let sync_watchdog_s (t : t) =
+  max 90.0 (t.interval *. 4.0)
+
+exception Sync_watchdog of string
+
+let run_sync_once (t : t) :
+    (sync_result, [ `Exn of exn | `Watchdog of string ]) result =
+  let deadline = sync_watchdog_s t in
+  let deadline_i =
+    int_of_float (Float.ceil deadline) |> max 1
+  in
+  let prev_alrm = Sys.signal Sys.sigalrm Sys.Signal_ignore in
+  let finally () =
+    ignore (Unix.alarm 0);
+    Sys.set_signal Sys.sigalrm prev_alrm
+  in
+  Fun.protect ~finally (fun () ->
+      Sys.set_signal Sys.sigalrm
+        (Sys.Signal_handle
+           (fun _ ->
+              raise
+                (Sync_watchdog
+                   (Printf.sprintf
+                      "sync wall-clock exceeded %ds (B181 watchdog)" deadline_i))));
+      ignore (Unix.alarm deadline_i);
+      try Ok (Lwt_main.run (sync t)) with
+      | Sync_watchdog detail -> Error (`Watchdog detail)
+      | exn -> Error (`Exn exn))
+
 let run (t : t) : unit =
   let shutdown = ref false in
+  let watchdog_strikes = ref 0 in
   let install_signal sig_name =
     Sys.signal sig_name (Sys.Signal_handle (fun _ ->
       if not !shutdown then begin
@@ -1268,31 +1328,47 @@ let run (t : t) : unit =
     if !shutdown then (
       Printf.printf "[relay-connector] shutdown complete\n%!";
     ) else (
-      (try
-        let result = Lwt_main.run (sync t) in
-        write_connector_state ~node_id:t.node_id t.broker_root result;
-        let err_str = match result.last_error with
-          | None -> ""
-          | Some e ->
-              Printf.sprintf " [%s: %s]" e.err_op
-                (if String.length e.err_detail > 80 then
-                  String.sub e.err_detail 0 80 ^ "..."
-                else e.err_detail)
-        in
-        Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
-          (List.length result.registered)
-          (List.length result.heartbeated)
-          result.outbox_forwarded
-          result.outbox_failed
-          result.outbox_dlqed
-          result.inbound_delivered
-          result.inbound_rejected
-          result.alerts_emitted
-          err_str
-      with exn ->
-        write_connector_state_error t.broker_root ~op:"sync"
-          ~detail:(Printexc.to_string exn);
-        Printf.eprintf "[relay-connector] sync exception: %s\n%!" (Printexc.to_string exn));
+      (match run_sync_once t with
+       | Ok result ->
+           watchdog_strikes := 0;
+           write_connector_state ~node_id:t.node_id t.broker_root result;
+           let err_str = match result.last_error with
+             | None -> ""
+             | Some e ->
+                 Printf.sprintf " [%s: %s]" e.err_op
+                   (if String.length e.err_detail > 80 then
+                     String.sub e.err_detail 0 80 ^ "..."
+                   else e.err_detail)
+           in
+           Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
+             (List.length result.registered)
+             (List.length result.heartbeated)
+             result.outbox_forwarded
+             result.outbox_failed
+             result.outbox_dlqed
+             result.inbound_delivered
+             result.inbound_rejected
+             result.alerts_emitted
+             err_str
+       | Error (`Watchdog detail) ->
+           incr watchdog_strikes;
+           write_connector_state_error t.broker_root ~op:"sync_watchdog"
+             ~detail;
+           Printf.eprintf
+             "[relay-connector] %s (strike %d/3)\n%!" detail !watchdog_strikes;
+           if !watchdog_strikes >= 3 then begin
+             Printf.eprintf
+               "[relay-connector] wedged: %d consecutive sync watchdog \
+                timeouts — exiting so a supervisor can restart (B181)\n%!"
+               !watchdog_strikes;
+             exit 3
+           end
+       | Error (`Exn exn) ->
+           watchdog_strikes := 0;
+           write_connector_state_error t.broker_root ~op:"sync"
+             ~detail:(Printexc.to_string exn);
+           Printf.eprintf "[relay-connector] sync exception: %s\n%!"
+             (Printexc.to_string exn));
       if not !shutdown then begin
         Unix.sleepf t.interval;
         loop ()

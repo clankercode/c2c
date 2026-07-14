@@ -15,7 +15,10 @@
    truth is hermetically testable — see test_c2c_relay_state.ml. The
    connector signal is Relay_doctor.connector_running — the same broker-owned
    signal `c2c doctor --relay` uses — so the two surfaces can never disagree
-   about whether a connector is live. *)
+   about whether a connector is live.
+
+   B181: process presence ≠ bridge health. [connector_info] reports process
+   evidence, health class, and remediation separately from [conn_live]. *)
 
 (** Evidence about this alias's registration on the configured relay. *)
 type registration_evidence =
@@ -67,7 +70,8 @@ type classification = {
     - [has_alias]: a current session alias resolved.
     - [registration]: relay-side evidence, see {!registration_evidence}.
     - [connector_live]: broker-owned connector signal
-      (Relay_doctor.connector_running).
+      (Relay_doctor.connector_running) — fresh successful sync, NOT process
+      presence (B181).
     - [local_reg_evidence]: a broker-owned connector-state file exists
       (proof some past sync/registration happened here). *)
 val classify :
@@ -97,24 +101,49 @@ val registration_of_lease_json : Yojson.Safe.t -> registration_evidence
 
 (* --- connector rendering ------------------------------------------------- *)
 
+(** Bridge health class (B181). Distinct from process presence. *)
+type connector_health =
+  | Health_ok  (** Fresh last_ok — live bridge. *)
+  | Health_stale  (** State file present, last_sync stale, no process. *)
+  | Health_wedged  (** Process present but last_sync/last_ok stale. *)
+  | Health_erroring  (** last_sync fresh but last_ok stale / failing. *)
+  | Health_starting  (** Process present, no state file yet. *)
+  | Health_absent  (** No process, no state file. *)
+
+val health_to_string : connector_health -> string
+
 type connector_info = {
-  conn_live : bool;  (** Relay_doctor.connector_running verdict. *)
+  conn_live : bool;
+      (** Relay_doctor.connector_running — fresh successful sync. *)
   conn_state_present : bool;  (** connector-state.json exists. *)
   conn_last_sync_age_s : float option;
       (** now - last_sync_ts when the state file exists. *)
+  conn_last_ok_age_s : float option;
+      (** now - last_ok_ts when the state file exists. *)
+  conn_process_present : bool;
+      (** Broker-attributed connector process observed (optional input). *)
+  conn_health : connector_health;
+  conn_remediation : string option;
+      (** Copy-pasteable recovery when not live. *)
 }
 
 (** Derive connector info from the broker-owned connector-state file (already
     read by the caller) at time [now]. Uses
-    [Relay_doctor.connector_running ~scoped_procs:[]] — the state file is the
-    authoritative broker-owned signal for status surfaces (no pgrep). *)
+    [Relay_doctor.connector_running] — the state file's last_ok freshness is
+    the authoritative bridge signal (no pgrep for liveness). Pass
+    [~process_present:true] when a broker-scoped process was observed so
+    health can distinguish wedged vs merely down. *)
 val connector_info :
-  state:C2c_relay_connector.connector_state option -> now:float -> connector_info
+  ?process_present:bool ->
+  state:C2c_relay_connector.connector_state option ->
+  now:float ->
+  unit ->
+  connector_info
 
-(** [{"live": bool, "state_file": bool, "last_sync_age_s": float|null}] *)
+(** [{"live", "state_file", "last_sync_age_s", "last_ok_age_s",
+     "process_present", "health", "remediation"}] *)
 val connector_json : connector_info -> Yojson.Safe.t
 
-(** e.g. ["live (last sync 12s ago)"], ["down (last sync 6m ago)"],
-    ["none (no connector sync state — start with 'c2c relay connect')"]. The
-    leading word agrees with [connector_json]'s ["live"] field. *)
+(** Human connector line. Leading word agrees with [conn_live] /
+    [health]: live | down | wedged | erroring | starting | none. *)
 val connector_human : connector_info -> string

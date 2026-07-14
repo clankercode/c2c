@@ -596,15 +596,29 @@ let run_checks () =
       ; peers = []; list_error = None; list_needs_auth = false }
   in
   let probe = { probe with url_source } in
-  (* Scope machine-global pgrep matches to THIS broker root, then derive the
-     broker-owned connector signal (scoped process OR fresh state file). Both
-     the connector check and the capabilities matrix consume this — no more
-     machine-global false positive (B093). *)
+  (* Scope machine-global pgrep matches to THIS broker root for diagnostics
+     (wedged vs absent). Bridge liveness is fresh last_ok only (B181) — process
+     presence alone never marks the connector live. Both the connector check
+     and the capabilities matrix consume connector_running. *)
   let now = Unix.gettimeofday () in
   let scoped_procs =
     Relay_doctor.scope_connector_lines ~broker_root (detect_connector_processes ())
   in
   let state = C2c_relay_connector.read_connector_state broker_root in
+  (* B181: treat a live PID recorded in connector-state as process evidence
+     even when argv lacks --broker-root (canonical production launch). *)
+  let scoped_procs =
+    match state with
+    | Some st when C2c_relay_connector.connector_pid_alive st ->
+        let tag =
+          match st.C2c_relay_connector.cs_pid with
+          | Some p -> Printf.sprintf "%d connector-state.pid" p
+          | None -> "connector-state.pid"
+        in
+        if List.exists (fun l -> l = tag) scoped_procs then scoped_procs
+        else tag :: scoped_procs
+    | _ -> scoped_procs
+  in
   let connector_running =
     Relay_doctor.connector_running ~scoped_procs ~state ~now
   in
