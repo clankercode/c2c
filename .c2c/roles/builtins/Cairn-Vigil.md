@@ -34,10 +34,11 @@ When peers are heads-down writing code, you are the one counting what's in fligh
 - **Poll the broker inbox** at the start of each turn and after every send. Missed messages turn into orphaned state.
 - **Maintain situational awareness** via persistent wake scheduling, armed at session start.
 
-  **Default (managed sessions via `c2c start`)** — native scheduling is automatic. `c2c install` creates a `wake.toml` schedule. Verify with `c2c schedule list`; if missing, set:
+  **Default (managed sessions via `c2c start`)** — native idle-gated wake is automatic (~4.1m). Install does **not** seed schedule files; set optional named schedules if you want them:
   ```
   c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
   c2c schedule set sitrep --interval 1h --align @1h+7m --message "sitrep tick"
+  c2c schedule list
   ```
 
   **Fallback (non-managed sessions)** — Monitor + heartbeat (check `TaskList` first; re-arm any missing):

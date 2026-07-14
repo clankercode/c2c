@@ -683,12 +683,13 @@ let builtin_swarm_restart_intro : string =
    The swarm coordinates via c2c instant messaging. You are now part of it.\n\
    Reminder: replies to peers must go through c2c_send (`mcp__c2c__send` / `c2c send`) — they don't see your assistant output."
 
-(* B011: startup-steps preamble injected as the first transcript turn for a
-   managed `c2c start claude` session. Deliberately has NO heartbeat-Monitor
-   step: managed sessions already get a native 4.1m wake.toml that fires via
-   the inner MCP schedule timer, so arming a Monitor here would double-wake
-   (violates CLAUDE.md "Agent wake-up + scheduling" / "dedupe before arming").
-   Step 5 has the agent verify the native schedule instead. Non-managed
+(* B011 / B186: startup-steps preamble injected as the first transcript turn
+   for a managed `c2c start claude` session. Deliberately has NO
+   heartbeat-Monitor step: managed sessions already get an idle-gated native
+   wake via builtin_managed_heartbeat (and any optional schedules under
+   .c2c/schedules/), so arming a Monitor here would double-wake (violates
+   CLAUDE.md "Agent wake-up + scheduling" / "dedupe before arming").
+   Install/init deliberately does NOT seed wake.toml (B186). Non-managed
    sessions are not launched via `c2c start` and keep the Monitor + `heartbeat`
    fallback documented in .collab/runbooks/agent-wake-setup.md. *)
 let claude_onboarding_preamble ~name =
@@ -699,9 +700,9 @@ let claude_onboarding_preamble ~name =
      3. Send a message to coordinator1 introducing yourself: use `send` with \
      {\"to_alias\": \"coordinator1\", \"content\": \"<brief intro of your role and capabilities>\"}.\n\
      4. Call `poll_inbox` to check for any messages addressed to you.\n\
-     5. Verify your wake schedule with `c2c schedule list` — this managed \
-     session already has a native 4.1m wake; do NOT arm a separate heartbeat \
-     Monitor (that would double-wake).\n\
+     5. This managed session already has a native idle-gated wake (~4.1m); \
+     do NOT arm a separate heartbeat Monitor (that would double-wake). \
+     Optional named schedules: `c2c schedule list` / `c2c schedule set`.\n\
      Begin now."
     name
 

@@ -24,6 +24,11 @@ or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
 ## v0.12.0 — 2026-07-13
 
+### No install-time wake.toml seed (B186)
+summary: `c2c install` / `c2c init` no longer write a default `.c2c/schedules/<alias>/wake.toml`. That file only fired under a schedule timer (managed start or explicit `C2C_MCP_SCHEDULE_TIMER=1`), so raw installs got dead config and managed sessions could double-wake with the built-in heartbeat. Opt in with `c2c schedule set`; managed `c2c start` still provides an idle-gated native wake.
+setup: c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
+audience: all
+
 ### Deliberate rename-everywhere
 summary: You can now change your alias without restarting: an explicit rename atomically updates every identity store — registry, room memberships, relay keys, TOFU pins, allowed_signers, instance config, schedules and memory — and peers see the new name immediately. On failure it rolls back completed work and explicitly reports any incomplete rollback. Implicit renames via register/init stay refused (sticky alias).
 setup: c2c rename <new-alias>

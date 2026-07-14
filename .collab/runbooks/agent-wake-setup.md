@@ -79,14 +79,19 @@ binary, no /loop needed.
 
 **How to set up:**
 
-Schedules are typically set before the session starts (by the operator or
-a prior session). To verify or set from inside a running session:
+Managed `c2c start` already runs an idle-gated native heartbeat (~4.1m
+default) without any schedule file. `c2c install` / `c2c init` do **not**
+seed `.c2c/schedules/<alias>/wake.toml` (B186) — that seed was dead for
+raw clients (no schedule timer) and redundant/double-waking for managed
+sessions. Optional named schedules are opt-in:
 
 ```
 # Check existing schedules
 c2c schedule list
 
 # Set wake schedule (4.1m off-minute cadence, only fires when idle)
+# Prefer ~4.1m under Anthropic's 5m prompt-cache TTL; ~25–28m under
+# OpenAI GPT-5.6's 30m prompt_cache_options.ttl minimum.
 c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"
 
 # Optional: wall-clock aligned hourly tick

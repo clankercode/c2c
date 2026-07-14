@@ -3880,9 +3880,9 @@ let test_deliver_kickoff_unknown_client_returns_empty () =
   | Error msg ->
     fail ("crush should not Error: " ^ msg)
 
-(* B011: the claude onboarding preamble must NOT instruct the agent to arm a
-   heartbeat Monitor — managed sessions already get a native 4.1m wake.toml, so
-   a Monitor would double-wake. *)
+(* B011 / B186: the claude onboarding preamble must NOT instruct the agent to
+   arm a heartbeat Monitor — managed sessions already get a native idle-gated
+   wake, so a Monitor would double-wake. Install does not seed wake.toml. *)
 let test_claude_onboarding_preamble_has_no_heartbeat_monitor () =
   let s = C2c_start.claude_onboarding_preamble ~name:"qa-agent" in
   check bool "contains agent name" true (string_contains s "qa-agent");
@@ -3894,8 +3894,11 @@ let test_claude_onboarding_preamble_has_no_heartbeat_monitor () =
   check bool "step: whoami" true (string_contains s "whoami");
   check bool "step: swarm-lounge" true (string_contains s "swarm-lounge");
   check bool "step: poll_inbox" true (string_contains s "poll_inbox");
-  (* positive native-wake guidance present *)
-  check bool "step: verify schedule" true (string_contains s "c2c schedule list")
+  (* positive native-wake guidance present; no install-seed claim *)
+  check bool "step: native wake guidance" true
+    (string_contains s "native idle-gated wake");
+  check bool "no install wake.toml claim" false
+    (string_contains s "wake.toml")
 
 let test_intro_on_no_role_excludes_raw_clients () =
   (* Raw passthrough / bridge clients: no minimal intro. *)
