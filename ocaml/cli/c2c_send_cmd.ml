@@ -135,38 +135,29 @@ let maybe_auto_register_sender broker ~from_override =
     text never implies delivery for a remote-only-queued message. Local
     same-broker targets still deliver synchronously and legitimately report
     [ok]/[delivered]. *)
-let relay_connector_running_best_effort () =
-  (* Best-effort liveness probe (B177). Prefer evidence that matches whoami /
-     doctor so a bare foreground `c2c relay connect` is not misreported as
-     missing:
-     1. Managed [relay-connect] instance with a live outer.pid
-     2. Fresh broker-owned connector-state file (same signal as
-        [Relay_doctor.connector_running] / whoami "connector: live")
-     Fails closed to [false] on any read error so sends never break. *)
+(* A remote [alias@host] send only reaches this broker's remote outbox, so its
+   connector liveness must be scoped to that broker. Managed instance configs
+   are global and do not record a broker root; treating any live managed
+   [relay-connect] as evidence would make an unrelated repository suppress this
+   broker's warning. *)
+let relay_connector_state_is_live_at_root root =
   try
-    let managed =
-      try
-        C2c_health_cmd.read_managed_instances ()
-        |> List.exists (fun (i : managed_instance_view) ->
-             i.mi_client = "relay-connect" && i.mi_status = "running")
-      with _ -> false
+    let state =
+      try C2c_relay_connector.read_connector_state root with _ -> None
     in
-    if managed then true
-    else
-      let root = resolve_broker_root () in
-      let state =
-        try C2c_relay_connector.read_connector_state root with _ -> None
-      in
-      let now = Unix.gettimeofday () in
-      Relay_doctor.connector_running ~scoped_procs:[] ~state ~now
+    let now = Unix.gettimeofday () in
+    Relay_doctor.connector_running ~scoped_procs:[] ~state ~now
   with _ -> false
 
-let remote_queued_warning () =
-  if relay_connector_running_best_effort () then
-    "queued locally for the relay outbox; a relay connector is running \
-     (managed daemon and/or fresh broker connector sync), but delivery is \
-     async and not confirmed here. Use `c2c relay dm send` for a synchronous \
-     relay send."
+let remote_queued_warning ~broker_root =
+  (* B177: use exactly the fresh connector-state signal reported by whoami
+     and doctor for the broker that accepted this message. This covers both
+     foreground and managed connectors after their first sync without
+     inventing cross-broker liveness. *)
+  if relay_connector_state_is_live_at_root broker_root then
+    "queued locally for the relay outbox; a relay connector has recently \
+     synced this broker, but delivery is async and not confirmed here. Use \
+     `c2c relay dm send` for a synchronous relay send."
   else
     "queued locally; no relay connector detected — run `c2c relay connect` \
      (or `c2c managed start relay-connect`) or use `c2c relay dm send` to \
@@ -467,7 +458,8 @@ let send_cmd =
      let delivery_state_v1, delivery_warning_opt =
        match !enqueue_status with
        | Some (C2c_mcp.Broker.Relay_outbox) ->
-           (C2c_schema_v1.Queued, Some (remote_queued_warning ()))
+           (C2c_schema_v1.Queued,
+            Some (remote_queued_warning ~broker_root:primary_root))
        | Some (C2c_mcp.Broker.Local_offline { session_id = _ }) ->
            let a =
              match target with `Alias a -> a | `Session sid -> sid
@@ -476,7 +468,8 @@ let send_cmd =
        | Some (C2c_mcp.Broker.Local_live _) | None ->
            (match target with
             | `Alias a when C2c_mcp.Broker.is_remote_alias a ->
-                (C2c_schema_v1.Queued, Some (remote_queued_warning ()))
+                (C2c_schema_v1.Queued,
+                 Some (remote_queued_warning ~broker_root:primary_root))
             | `Alias _ | `Session _ ->
                 (C2c_schema_v1.Delivered, None))
      in

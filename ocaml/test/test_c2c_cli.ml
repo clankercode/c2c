@@ -555,6 +555,34 @@ let test_send_missing_args_exits_nonzero () =
   let rc = Sys.command cmd in
   check bool "c2c send with no args exits non-zero" true (rc <> 0)
 
+let test_remote_connector_liveness_is_scoped_to_broker_state () =
+  with_temp_dir (fun broker_root ->
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b177-sender-sid" ~alias:"b177-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      let state_path = C2c_relay_connector.connector_state_path broker_root in
+      let oc = open_out state_path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+          Printf.fprintf oc
+            "{\"last_sync_ts\": %.6f, \"last_ok_ts\": %.6f}\n"
+            (Unix.gettimeofday ()) (Unix.gettimeofday ());
+          flush oc);
+      let outfile = Filename.temp_file "c2c-send-b177" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+           let cmd = Printf.sprintf
+             "env -u C2C_MCP_BROKER_ROOT C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=b177-sender-sid %s send --root %s peer@remotehost.example 'fresh connector state' > %s 2>&1"
+             c2c_binary (Filename.quote broker_root) (Filename.quote outfile)
+           in
+           let rc = Sys.command cmd in
+           let content = read_file outfile in
+           check int (Printf.sprintf "remote send exits 0 (output: %s)" content) 0 rc;
+           check bool "fresh state suppresses no-connector warning" false
+             (string_contains content "no relay connector detected");
+           check bool "warning attributes fresh state to current broker" true
+             (string_contains content "recently synced this broker")))
+
 let test_send_unknown_alias_routes_to_relay_outbox () =
   with_temp_dir (fun dir ->
       (* Use a temp broker root with no registrations so the alias is
@@ -4286,6 +4314,7 @@ let () =
         ] )
     ; ( "send",
         [ ( "send missing args exits non-zero", `Quick, test_send_missing_args_exits_nonzero )
+        ; ( "remote connector liveness uses send broker root (B177)", `Quick, test_remote_connector_liveness_is_scoped_to_broker_state )
         ; ( "send unknown alias routes to relay outbox", `Quick, test_send_unknown_alias_routes_to_relay_outbox )
         ; ( "send auto-registers unregistered sender (B078)", `Quick, test_send_auto_registers_unregistered_session )
         ; ( "send falls back when auto-registration fails (B078)", `Quick, test_send_auto_register_failure_falls_back_to_raw_session_id )

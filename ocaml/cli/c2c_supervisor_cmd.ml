@@ -8,7 +8,8 @@ open C2c_cli_helpers
    sentinels without crafting raw protocol strings by hand. *)
 
 let supervisor_send ~to_alias ~content =
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let broker_root = resolve_broker_root () in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
   let from_alias = resolve_alias ~override:None broker in
   (try
      C2c_mcp.Broker.enqueue_message broker ~from_alias ~to_alias ~content ();
@@ -19,7 +20,8 @@ let supervisor_send ~to_alias ~content =
      if C2c_mcp.Broker.is_remote_alias to_alias then begin
        Printf.printf "queued -> %s (from %s)\n" to_alias from_alias;
        (* Share B177 / B088 connector honesty with `c2c send`. *)
-       Printf.eprintf "warning: %s\n%!" (C2c_send_cmd.remote_queued_warning ())
+       Printf.eprintf "warning: %s\n%!"
+         (C2c_send_cmd.remote_queued_warning ~broker_root)
      end else
        Printf.printf "ok -> %s (from %s)\n" to_alias from_alias
    with Invalid_argument msg ->
