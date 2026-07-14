@@ -512,6 +512,60 @@ let test_terminal_without_local_watch_exits () =
     true
     (L.should_exit_on_relay_terminal ~local_watch_active:false)
 
+(* ---------- B178: fresh Authorization per relay peek ---------- *)
+
+(* Cached auth across peeks is the B178 root cause: nonce_replay then a fixed
+   ~-30.5s timestamp_out_of_window once age exceeds the 30s past window. *)
+let test_reused_auth_poison_sequence () =
+  let past_window = 30.0 in
+  (match L.classify_reused_auth_peek ~past_window ~used_once:false ~age_s:0.0 with
+   | L.Reused_ok -> ()
+   | _ -> Alcotest.fail "fresh unused header should be ok");
+  (match L.classify_reused_auth_peek ~past_window ~used_once:true ~age_s:5.0 with
+   | L.Reused_nonce_replay -> ()
+   | _ -> Alcotest.fail "reuse inside window must be nonce_replay");
+  (match L.classify_reused_auth_peek ~past_window ~used_once:true ~age_s:30.5 with
+   | L.Reused_timestamp_out_of_window skew ->
+       Alcotest.(check (float 0.01)) "constant ~-30.5s skew from cached ts age"
+         (-30.5) skew
+   | _ -> Alcotest.fail "reuse past window must be timestamp_out_of_window")
+
+let test_auth_header_for_peek_signs_every_call () =
+  (* N peeks must invoke sign_once N times and yield distinct headers — the
+     contract the live monitor relies on to avoid B178. *)
+  let calls = ref 0 in
+  let sign_once id =
+    incr calls;
+    Printf.sprintf "auth-%s-%d" id !calls
+  in
+  let h1 = L.auth_header_for_peek ~sign_once (Some "id") in
+  let h2 = L.auth_header_for_peek ~sign_once (Some "id") in
+  let h3 = L.auth_header_for_peek ~sign_once (Some "id") in
+  Alcotest.(check int) "sign_once called once per peek" 3 !calls;
+  Alcotest.(check (option string)) "peek 1 header" (Some "auth-id-1") h1;
+  Alcotest.(check (option string)) "peek 2 header" (Some "auth-id-2") h2;
+  Alcotest.(check (option string)) "peek 3 header" (Some "auth-id-3") h3;
+  Alcotest.(check bool) "headers distinct across peeks" true (h1 <> h2 && h2 <> h3)
+
+let test_auth_header_for_peek_unsigned_when_no_identity () =
+  let calls = ref 0 in
+  let sign_once _ = incr calls; "should-not-run" in
+  Alcotest.(check (option string)) "no identity -> no auth"
+    None (L.auth_header_for_peek ~sign_once None);
+  Alcotest.(check int) "sign_once not called without identity" 0 !calls
+
+let test_nonce_replay_is_transient () =
+  (* nonce_replay must stay retryable; B178 is fixed by re-signing, not by
+     treating replay as terminal. *)
+  let resp = `Assoc [ ("ok", `Bool false)
+                    ; ("error_code", `String "nonce_replay")
+                    ; ("error", `String "request nonce replay") ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_transient detail ->
+       Alcotest.(check bool) "detail names nonce_replay" true
+         (str_contains detail "nonce_replay")
+   | _ -> Alcotest.fail "nonce_replay must be Peek_transient (retry with fresh sig)")
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -572,5 +626,15 @@ let () =
             test_terminal_with_local_watch_does_not_exit
         ; Alcotest.test_case "terminal + no local watch -> exit" `Quick
             test_terminal_without_local_watch_exits
+        ] )
+    ; ( "b178-fresh-peek-auth",
+        [ Alcotest.test_case "reused auth poisons: nonce_replay then -30.5s TERMINAL" `Quick
+            test_reused_auth_poison_sequence
+        ; Alcotest.test_case "auth_header_for_peek signs every call" `Quick
+            test_auth_header_for_peek_signs_every_call
+        ; Alcotest.test_case "auth_header_for_peek None when no identity" `Quick
+            test_auth_header_for_peek_unsigned_when_no_identity
+        ; Alcotest.test_case "nonce_replay is transient (retry with fresh sig)" `Quick
+            test_nonce_replay_is_transient
         ] )
     ]
