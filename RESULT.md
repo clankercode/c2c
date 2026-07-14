@@ -55,7 +55,8 @@ wedged vs absent or give copy-paste recovery.
 | Role | SHA |
 |------|-----|
 | Fix commit | `d001d504e8c55403b3f76de4c9fe99d5d0f32710` (`d001d504`) |
-| Branch tip | `fix/bl-b181` @ `d001d504` |
+| RESULT SHA note | `7a15d33e11add0fd8ac5a06242a4dbc37fc996d4` (`7a15d33e`) |
+| Branch tip | `fix/bl-b181` @ `7a15d33e` |
 
 Claim commit (pre-existing on branch history): see `git log --oneline` for `bl claim B181` if present; worktree started from claim already applied.
 
