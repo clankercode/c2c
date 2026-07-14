@@ -86,4 +86,5 @@ Sources: Anthropic prompt-caching docs; OpenAI developers prompt-caching guide
   managed schedule timer (operator can `c2c schedule rm wake`).
 
 ## SHAs
-Recorded after commit in the final report.
+- Fix commit: `3c0cb2c5425b3f9e2bf50d667fda0c3447fe5080` (`3c0cb2c5`)
+- Branch: `fix/bl-b186` (not merged; backlog not marked done)
