@@ -414,3 +414,40 @@ let exit_relay_terminal = 3
    running. Pure + unit-tested so the exit-vs-continue policy is decoupled from
    the impure thread. *)
 let should_exit_on_relay_terminal ~local_watch_active = not local_watch_active
+
+(* ---------- B178: fresh signed Authorization per relay peek ---------- *)
+
+(* B178: each /peek_inbox call MUST use a freshly signed Authorization header.
+   Caching one signature across the monitor relay loop reuses the same ts+nonce:
+
+     1. first successful peek (or first attempt) consumes the nonce
+     2. subsequent peeks with the same header → nonce_replay (transient)
+     3. after ~request_ts_past_window (30s) of backoff →
+        timestamp_out_of_window TERMINAL with a constant ~-30.5s skew
+
+   Host NTP can be perfect; the skew is the age of the *cached* signature, not
+   the wall clock. [sign_once] is injected so unit tests assert "N peeks ⇒ N
+   sign calls + N distinct headers" without crypto. The live monitor wires
+   Relay_signed_ops.sign_request (with meth=POST path=/peek_inbox) as sign_once. *)
+let auth_header_for_peek ~(sign_once : 'id -> string) (identity : 'id option)
+    : string option =
+  match identity with
+  | None -> None
+  | Some id -> Some (sign_once id)
+
+(* Simulate the B178 failure chain for a *reused* Authorization header against
+   a freshness window. Pure fixture for regression tests: after the first use
+   the nonce is spent; after [past_window] seconds the cached ts is outside the
+   window. Fresh sign-per-peek never takes either branch. *)
+type reused_auth_peek_result =
+  | Reused_ok
+  | Reused_nonce_replay
+  | Reused_timestamp_out_of_window of float  (* reported skew, seconds *)
+
+let classify_reused_auth_peek ~past_window ~used_once ~age_s =
+  if age_s > past_window then
+    Reused_timestamp_out_of_window (-. age_s)
+  else if used_once then
+    Reused_nonce_replay
+  else
+    Reused_ok

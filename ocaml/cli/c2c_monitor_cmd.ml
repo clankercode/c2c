@@ -736,17 +736,15 @@ let monitor_cmd =
             let url = Option.get relay_url_resolved in
             let client = Relay.Relay_client.make ?token:relay_token_resolved url in
             (* Sign against the EXACT body bytes peek_inbox_signed will send, so
-               the relay's signature verification matches (mirrors B096 `dm peek`). *)
+               the relay's signature verification matches (mirrors B096 `dm peek`).
+
+               B178: sign FRESH on every peek — never cache Authorization. A
+               one-shot signature reuses ts+nonce → nonce_replay backoff, then
+               after the 30s request window timestamp_out_of_window TERMINAL
+               with a constant ~-30.5s skew even when host NTP is fine. *)
             let body_str = Yojson.Safe.to_string (`Assoc [
               ("node_id", `String node_id);
               ("session_id", `String session_id)]) in
-            let auth_header_opt =
-              match identity with
-              | Some id ->
-                  Some (Relay_signed_ops.sign_request id ~alias:alias_str
-                          ~meth:"POST" ~path:"/peek_inbox" ~body_str ())
-              | None -> None
-            in
             let peek_once () =
               (* Non-draining: peek_inbox* return the FULL relay response
                  (`{ ok, messages }` or `{ ok:false, error_code, error }`)
@@ -754,7 +752,13 @@ let monitor_cmd =
                  the caller — errors are surfaced (not swallowed), and a terminal
                  auth/identity failure applies the local-watch terminal policy
                  (H3/B142). *)
-              match auth_header_opt with
+              match
+                C2c_monitor_logic.auth_header_for_peek
+                  ~sign_once:(fun id ->
+                    Relay_signed_ops.sign_request id ~alias:alias_str
+                      ~meth:"POST" ~path:"/peek_inbox" ~body_str ())
+                  identity
+              with
               | Some auth ->
                   Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
                                   ~node_id ~session_id ~auth_header:auth)
