@@ -117,6 +117,26 @@ let test_client_session_recv_replies_to_ping_with_masked_pong () =
       Relay_ws_frame.opcode_pong frame.Relay_ws_frame.opcode;
     Lwt.return_unit)
 
+let test_parse_endpoint_tls_defaults () =
+  let https = Relay_ws_client.parse_endpoint "https://relay.c2c.im" in
+  Alcotest.(check string) "https host" "relay.c2c.im" https.Relay_ws_client.host;
+  Alcotest.(check int) "https default port 443" 443 https.Relay_ws_client.port;
+  Alcotest.(check bool) "https use_tls" true https.Relay_ws_client.use_tls;
+  Alcotest.(check string) "https path" "/ws/subscribe" https.Relay_ws_client.path;
+  let wss = Relay_ws_client.parse_endpoint "wss://relay.c2c.im/custom" in
+  Alcotest.(check bool) "wss use_tls" true wss.Relay_ws_client.use_tls;
+  Alcotest.(check int) "wss default port 443" 443 wss.Relay_ws_client.port;
+  let http = Relay_ws_client.parse_endpoint "http://localhost:7331" in
+  Alcotest.(check bool) "http not tls" false http.Relay_ws_client.use_tls;
+  Alcotest.(check int) "http explicit port" 7331 http.Relay_ws_client.port;
+  let bare = Relay_ws_client.parse_endpoint "http://localhost" in
+  Alcotest.(check int) "http default port 7331" 7331 bare.Relay_ws_client.port;
+  Alcotest.(check string) "host header omits default 443"
+    "relay.c2c.im" (Relay_ws_client.host_header https);
+  let custom = Relay_ws_client.parse_endpoint "https://relay.example:8443" in
+  Alcotest.(check string) "host header keeps non-default port"
+    "relay.example:8443" (Relay_ws_client.host_header custom)
+
 let () =
   Alcotest.run "Relay WS Server"
     [ ( "auth",
@@ -132,5 +152,9 @@ let () =
     ; ( "client_session",
         [ Alcotest.test_case "recv replies to ping with masked pong" `Quick
             test_client_session_recv_replies_to_ping_with_masked_pong
+        ] )
+    ; ( "ws_client_endpoint",
+        [ Alcotest.test_case "parse endpoint tls defaults (B189)" `Quick
+            test_parse_endpoint_tls_defaults
         ] )
     ]

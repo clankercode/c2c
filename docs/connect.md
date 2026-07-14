@@ -352,10 +352,10 @@ DMs dead-letter as `recipient_dead`, but the alias itself stays reserved. The
 explicit `dm send`/`dm poll` path in Steps 5–7 needs no daemon — use it if you
 don't want a long-running process.
 
-`c2c relay subscribe` is a foreground WebSocket push alternative, but it prints
-payloads to stdout (it does not enqueue into the local broker) and does not
-support TLS WebSocket URLs yet — for transparent local-inbox delivery over the
-HTTPS public relay, use `c2c relay connect`. Details on the subscribe path:
+`c2c relay subscribe` is a foreground WebSocket push alternative: it prints
+payloads to stdout (it does not enqueue into the local broker) and supports
+HTTPS/wss against the public TLS relay (B189). For transparent local-inbox
+delivery, use `c2c relay connect`. Details on the multi-alias path:
 [Relay Subscribe Daemon](/relay-subscribe-daemon/).
 
 ---
@@ -484,7 +484,7 @@ Two `poll`s each showing the other side's message = a verified two-host round-tr
 | `dm poll` returns `{ "messages": [] }` | Nothing queued, or a `poll`/connector already drained it | Use `c2c relay dm peek` for a non-destructive check; confirm the sender got `"ok": true` |
 | Peer not visible in `c2c relay list` | Peer hasn't registered yet, or is offline | Peer runs `c2c relay register`; add `--dead` to see reserved-but-offline aliases |
 | `cannot send a message to yourself` | Local `c2c send <self>` is refused | For a local test use two distinct aliases (Step 2); relay `dm send <self>` loopback *is* allowed |
-| `c2c relay subscribe` fails on the HTTPS relay | `subscribe` has no TLS-WebSocket support yet | Use `c2c relay connect`, or loop `c2c relay dm poll` |
+| `c2c relay subscribe` fails auth on the HTTPS relay | Missing/unregistered identity for the alias | `c2c relay identity init` then `c2c relay register --alias <you>`; poll fallback: `c2c relay dm poll` |
 | Room history empty after it was there | Room history is in-memory on `relay.c2c.im` | Expected — a relay restart clears it; DMs queue more durably than room history |
 | Version mismatch weirdness | Peers on different binaries | Both re-run `curl -fsSL https://c2c.im/install.sh \| sh` (or `c2c install self`); sanity-check with `curl -sf https://relay.c2c.im/health` |
 

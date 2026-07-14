@@ -160,63 +160,13 @@ type daemon_state = {
   mutable lock_fd : Unix.file_descr option;
   socket_path : string;
   identity : Relay_identity.t;
-  relay_host : string;
-  relay_port : int;
+  relay_endpoint : Relay_ws_client.endpoint;
 }
 
 (* === WebSocket Connection Management (non-blocking Lwt) === *)
 
-let create_ws_session_lwt ~host ~port ~alias ~identity =
-  let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
-  let msg = alias ^ ts in
-  let sig_ = Relay_identity.sign identity msg in
-  let sig_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_ in
-  (* DNS + connect via Lwt *)
-  Lwt_unix.getaddrinfo host (string_of_int port) [Unix.AI_FAMILY Unix.PF_INET] >>= fun addrs ->
-  match addrs with
-  | [] -> Lwt.fail_with (Printf.sprintf "DNS lookup failed for %s" host)
-  | addr :: _ ->
-    let sock = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-    let handshake_ok = ref false in
-    Lwt.finalize
-      (fun () ->
-         Lwt_unix.connect sock addr.Lwt_unix.ai_addr >>= fun () ->
-         let ic = Lwt_io.of_fd ~mode:Lwt_io.Input sock in
-         let oc = Lwt_io.of_fd ~mode:Lwt_io.Output sock in
-         let ws_key = Base64.encode_string (String.init 16 (fun _ -> Char.chr (Random.int 256))) in
-         let request = Printf.sprintf
-           "GET /ws/subscribe HTTP/1.1\r\n\
-            Host: %s\r\n\
-            Upgrade: websocket\r\n\
-            Connection: Upgrade\r\n\
-            Sec-WebSocket-Key: %s\r\n\
-            Sec-WebSocket-Version: 13\r\n\
-            X-C2C-Alias: %s\r\n\
-            X-C2C-Timestamp: %s\r\n\
-            X-C2C-Signature: %s\r\n\
-            \r\n"
-           host ws_key alias ts sig_b64 in
-         Lwt_io.write oc request >>= fun () ->
-         Lwt_io.flush oc >>= fun () ->
-         Lwt_io.read_line ic >>= fun status_line ->
-         if not (String.length status_line >= 12 && String.sub status_line 0 12 = "HTTP/1.1 101") then
-           Lwt.fail_with (Printf.sprintf "WS upgrade failed: %s" (String.sub status_line 0 (min 200 (String.length status_line))))
-         else begin
-           let rec skip_headers () =
-             Lwt_io.read_line ic >>= fun line ->
-             if line = "" then Lwt.return_unit
-             else skip_headers ()
-           in
-           skip_headers () >>= fun () ->
-           handshake_ok := true;
-           let masking_key = String.init 4 (fun _ -> Char.chr (Random.int 256)) in
-           let session = Relay_ws_frame.Client_session.create ic oc masking_key in
-           Lwt.return (session, ic, oc, sock)
-         end)
-      (fun () ->
-         (* Only close sock on failure; on success, caller owns it *)
-         if !handshake_ok then Lwt.return_unit
-         else Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit))
+let create_ws_session_lwt ~endpoint ~alias ~identity =
+  Relay_ws_client.connect_subscribe ~endpoint ~alias ~identity ()
 
 (* Run a single alias WS connection: connects, reads frames, forwards DMs.
    Handles reconnection with exponential backoff. *)
@@ -226,9 +176,9 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
     else begin
       Lwt.catch
         (fun () ->
-           create_ws_session_lwt ~host:state.relay_host ~port:state.relay_port
+           create_ws_session_lwt ~endpoint:state.relay_endpoint
              ~alias:conn.alias ~identity:state.identity
-           >>= fun (session, ic, oc, sock) ->
+           >>= fun (session, close) ->
            conn.ws_session := Some session;
            conn.session_alive <- true;
            conn.ws_backoff <- reconnect_backoff_initial;
@@ -297,10 +247,9 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
                 (* Always close WS resources on exit *)
                 conn.ws_session := None;
                 conn.session_alive <- false;
-                Lwt.catch (fun () -> Relay_ws_frame.Client_session.close session) (fun _ -> Lwt.return_unit) >>= fun () ->
-                Lwt.catch (fun () -> Lwt_io.close ic) (fun _ -> Lwt.return_unit) >>= fun () ->
-                Lwt.catch (fun () -> Lwt_io.close oc) (fun _ -> Lwt.return_unit) >>= fun () ->
-                Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit)))
+                Lwt.catch (fun () -> Relay_ws_frame.Client_session.close session) (fun _ -> Lwt.return_unit)
+                >>= fun () ->
+                Lwt.catch close (fun _ -> Lwt.return_unit)))
         (fun exn ->
            Printf.eprintf "[subscribe-daemon] WS connect failed for %s: %s\n%!"
              conn.alias (Printexc.to_string exn);
@@ -553,20 +502,26 @@ let start_daemon_cmd =
          | _ -> "https://relay.c2c.im"
        with _ -> "https://relay.c2c.im")
   in
-  let uri = Uri.of_string url in
-  let host = Option.value (Uri.host uri) ~default:"localhost" in
-  let port = Option.value (Uri.port uri) ~default:7331 in
+  if not (Relay_doctor.subscribe_url_supported url) then begin
+    Printf.eprintf
+      "error: c2c relay subscribe-daemon does not support this relay URL scheme.\n\
+       hint: use http(s):// or ws(s):// (e.g. https://relay.c2c.im).\n%!";
+    exit 1
+  end;
+  let endpoint = Relay_ws_client.parse_endpoint url in
   match Relay_identity.load () with
   | Error msg ->
     Printf.eprintf "error: cannot load identity.json: %s\n%!" msg;
     Printf.eprintf "Run 'c2c relay identity init' first.\n%!";
     exit 1
   | Ok identity ->
-    Printf.eprintf "[subscribe-daemon] starting (relay=%s:%d socket=%s)\n%!" host port socket_path;
+    let scheme = if endpoint.Relay_ws_client.use_tls then "wss" else "ws" in
+    Printf.eprintf "[subscribe-daemon] starting (relay=%s://%s:%d socket=%s)\n%!"
+      scheme endpoint.Relay_ws_client.host endpoint.Relay_ws_client.port socket_path;
     let state = {
       clients = []; shutdown_requested = false; listen_sock = None;
       shutdown_waker = None; lock_fd = None;
-      socket_path; identity; relay_host = host; relay_port = port;
+      socket_path; identity; relay_endpoint = endpoint;
     } in
     let handle_signal _sig =
       state.shutdown_requested <- true;

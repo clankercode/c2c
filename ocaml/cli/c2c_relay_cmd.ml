@@ -1448,17 +1448,16 @@ let relay_subscribe_cmd =
       Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
-      let uri = Uri.of_string url in
       (* Scheme support is decided by Relay_doctor.subscribe_url_supported — the
          SAME predicate `c2c doctor --relay`'s capability matrix consults — so
          the advertised `subscribe` capability always matches this actual
-         attempt (B090/B093 actual-attempt parity). TLS WebSocket (wss/https)
-         is not yet implemented. *)
+         attempt (B090/B093 actual-attempt parity). B189: wss/https are supported
+         via Relay_ws_client. *)
       if not (Relay_doctor.subscribe_url_supported url) then begin
         Printf.eprintf
-          "error: c2c relay subscribe does not support TLS WebSocket URLs yet.\n\
-           hint: use an http:// relay URL, or poll DMs via `c2c relay dm --alias <you> poll`.\n\
-           note: polling is the reliable receive path for TLS relays today; run `c2c doctor --relay` for the live capability matrix.\n%!";
+          "error: c2c relay subscribe does not support this relay URL scheme.\n\
+           hint: use http(s):// or ws(s):// (e.g. https://relay.c2c.im), or poll DMs via `c2c relay dm --alias <you> poll`.\n\
+           note: run `c2c doctor --relay` for the live capability matrix.\n%!";
         exit 1
       end;
       (* Load identity for signing *)
@@ -1468,84 +1467,48 @@ let relay_subscribe_cmd =
           Printf.eprintf "Run 'c2c relay identity init' first.\n%!";
           exit 1
       | Ok id ->
-          (* Parse relay URL to get host/port *)
-          let host = Option.value (Uri.host uri) ~default:"localhost" in
-          let port = Option.value (Uri.port uri) ~default:7331 in
-          (* Create auth headers *)
-          let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
-          let msg = alias ^ ts in
-          let sig_ = Relay_identity.sign id msg in
-          let sig_b64 = Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_ in
-          Printf.eprintf "[relay subscribe] connecting to %s:%d as %s...\n%!" host port alias;
-          (* Open TCP connection *)
-          let addr = Unix.ADDR_INET (Unix.inet_addr_of_string 
-            (try (Unix.gethostbyname host).Unix.h_addr_list.(0) |> Unix.string_of_inet_addr
-             with _ -> host), port) in
-          let sockfd = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
-          (try Unix.connect sockfd addr with e -> Printf.eprintf "connect error: %s\n%!" (Printexc.to_string e); exit 1);
-          (* Generate WebSocket key *)
-          let ws_key = Base64.encode_string (String.init 16 (fun _ -> Char.chr (Random.int 256))) in
-          (* Send HTTP upgrade request *)
-          let path = "/ws/subscribe" in
-          let request = Printf.sprintf
-            "GET %s HTTP/1.1\r\n\
-             Host: %s\r\n\
-             Upgrade: websocket\r\n\
-             Connection: Upgrade\r\n\
-             Sec-WebSocket-Key: %s\r\n\
-             Sec-WebSocket-Version: 13\r\n\
-             X-C2C-Alias: %s\r\n\
-             X-C2C-Timestamp: %s\r\n\
-             X-C2C-Signature: %s\r\n\
-             \r\n"
-            path host ws_key alias ts sig_b64
-          in
-          let _ = Unix.write_substring sockfd request 0 (String.length request) in
-          (* Read response *)
-          let buf = Bytes.create 4096 in
-          let n = Unix.read sockfd buf 0 4096 in
-          let response = Bytes.sub_string buf 0 n in
-          if not (String.sub response 0 (min 12 n) = "HTTP/1.1 101") then begin
-            Printf.eprintf "error: WebSocket upgrade failed:\n%s\n%!" response;
-            Unix.close sockfd;
-            exit 1
-          end;
-          Printf.eprintf "[relay subscribe] WebSocket connected. Listening for DMs...\n%!";
-          (* Now in WebSocket mode - read frames and output to stdout *)
-          let fd_lwt = Lwt_unix.of_unix_file_descr sockfd in
-          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd_lwt in
-          let oc = Lwt_io.of_fd ~mode:Lwt_io.Output fd_lwt in
-          let session = Relay_ws_frame.Client_session.create ic oc "c2c!" in
-          let rec loop () =
-            let open Lwt.Infix in
+          let endpoint = Relay_ws_client.parse_endpoint url in
+          let scheme = if endpoint.Relay_ws_client.use_tls then "wss" else "ws" in
+          Printf.eprintf "[relay subscribe] connecting to %s://%s:%d as %s...\n%!"
+            scheme endpoint.Relay_ws_client.host endpoint.Relay_ws_client.port alias;
+          let open Lwt.Infix in
+          let run =
             Lwt.catch
               (fun () ->
-                Relay_ws_frame.Client_session.recv session >>= fun msg ->
-                (match msg with
-                 | Some (`Text payload) ->
-                     (* Output JSON line to stdout *)
-                     print_endline payload;
-                     flush stdout;
-                     loop ()
-                 | Some (`Ping) ->
-                     (* Client_session.recv already answered with a masked pong. *)
-                     loop ()
-                 | Some `Pong ->
-                     loop ()
-                 | Some (`Close (code, reason)) ->
-                     Printf.eprintf "[relay subscribe] connection closed: code=%d reason=%s\n%!" code reason;
-                     Lwt.return_unit
-                 | Some (`Binary _) ->
-                     loop ()
-                 | None ->
-                     loop ()))
+                 Relay_ws_client.connect_subscribe ~endpoint ~alias ~identity:id ()
+                 >>= fun (session, close) ->
+                 Printf.eprintf "[relay subscribe] WebSocket connected. Listening for DMs...\n%!";
+                 let rec loop () =
+                   Lwt.catch
+                     (fun () ->
+                        Relay_ws_frame.Client_session.recv session >>= fun msg ->
+                        match msg with
+                        | Some (`Text payload) ->
+                            print_endline payload;
+                            flush stdout;
+                            loop ()
+                        | Some (`Ping) ->
+                            (* Client_session.recv already answered with a masked pong. *)
+                            loop ()
+                        | Some `Pong -> loop ()
+                        | Some (`Close (code, reason)) ->
+                            Printf.eprintf
+                              "[relay subscribe] connection closed: code=%d reason=%s\n%!"
+                              code reason;
+                            Lwt.return 0
+                        | Some (`Binary _) -> loop ()
+                        | None -> loop ())
+                     (fun e ->
+                        Printf.eprintf "[relay subscribe] error: %s\n%!"
+                          (Printexc.to_string e);
+                        Lwt.return 1)
+                 in
+                 Lwt.finalize loop close)
               (fun e ->
-                Printf.eprintf "[relay subscribe] error: %s\n%!" (Printexc.to_string e);
-                Lwt.return_unit)
+                 Printf.eprintf "error: %s\n%!" (Printexc.to_string e);
+                 Lwt.return 1)
           in
-          Lwt_main.run (loop ());
-          Unix.close sockfd;
-          exit 0
+          exit (Lwt_main.run run)
 
 let relay_gc_cmd =
   let relay_url =

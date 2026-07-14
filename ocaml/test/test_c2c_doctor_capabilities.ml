@@ -43,17 +43,17 @@ let has_needle ~needle haystack = string_contains ~needle haystack
 
 (* ---- capabilities: scheme awareness ------------------------------------- *)
 
-let test_https_subscribe_no_poll_yes () =
+let test_https_subscribe_yes_poll_yes () =
   let c = capabilities ~url:"https://relay.c2c.im" ~reachable:true ~connector_running:false in
   Alcotest.(check bool) "https send=yes" true c.send;
-  Alcotest.(check bool) "https subscribe=NO" false c.subscribe;
+  Alcotest.(check bool) "https subscribe=YES (B189 wss)" true c.subscribe;
   Alcotest.(check bool) "https poll=yes" true c.poll;
   Alcotest.(check bool) "https tls=yes" true c.tls;
   Alcotest.(check bool) "https connect follows connector_running (false)" false c.connect
 
-let test_wss_subscribe_no () =
+let test_wss_subscribe_yes () =
   let c = capabilities ~url:"wss://relay.c2c.im/ws" ~reachable:true ~connector_running:true in
-  Alcotest.(check bool) "wss subscribe=NO" false c.subscribe;
+  Alcotest.(check bool) "wss subscribe=YES (B189)" true c.subscribe;
   Alcotest.(check bool) "wss tls=yes" true c.tls;
   Alcotest.(check bool) "wss connect=yes" true c.connect
 
@@ -75,8 +75,8 @@ let test_unreachable_all_no () =
 
 let test_capabilities_message_shape () =
   let m_https = capabilities_message (capabilities ~url:"https://relay.c2c.im" ~reachable:true ~connector_running:false) in
-  Alcotest.(check bool) "message has subscribe=no over https" true
-    (has_needle ~needle:"subscribe=no" m_https);
+  Alcotest.(check bool) "message has subscribe=yes over https" true
+    (has_needle ~needle:"subscribe=yes" m_https);
   Alcotest.(check bool) "message has poll=yes over https" true
     (has_needle ~needle:"poll=yes" m_https);
   Alcotest.(check bool) "message tagged TLS" true (has_needle ~needle:"(TLS)" m_https);
@@ -100,10 +100,11 @@ let test_actual_attempt_parity () =
         supported cap)
     [ "https://relay.c2c.im"; "wss://relay.c2c.im/ws"; "http://localhost:7331";
       "ws://localhost:7331/ws"; "relay.c2c.im" (* no scheme → supported *) ];
-  Alcotest.(check bool) "https NOT supported" false (subscribe_url_supported "https://relay.c2c.im");
-  Alcotest.(check bool) "wss NOT supported" false (subscribe_url_supported "wss://x/ws");
+  Alcotest.(check bool) "https supported (B189)" true (subscribe_url_supported "https://relay.c2c.im");
+  Alcotest.(check bool) "wss supported (B189)" true (subscribe_url_supported "wss://x/ws");
   Alcotest.(check bool) "http supported" true (subscribe_url_supported "http://localhost:7331");
-  Alcotest.(check bool) "ws supported" true (subscribe_url_supported "ws://x/ws")
+  Alcotest.(check bool) "ws supported" true (subscribe_url_supported "ws://x/ws");
+  Alcotest.(check bool) "ftp unsupported" false (subscribe_url_supported "ftp://x/ws")
 
 (* ---- capabilities_check: id / status / fix ------------------------------ *)
 
@@ -356,21 +357,21 @@ let test_public_smoke () =
       in
       Alcotest.(check bool) "public relay /health ok=true" true ok;
       let c = capabilities ~url ~reachable:(health <> None) ~connector_running:false in
-      Alcotest.(check bool) "live: subscribe=NO over TLS" false c.subscribe;
+      Alcotest.(check bool) "live: subscribe=YES over TLS (B189)" true c.subscribe;
       Alcotest.(check bool) "live: poll=yes" true c.poll;
       Alcotest.(check bool) "live: tls=yes" true c.tls
   | _ ->
       (* Not enabled: assert the deterministic scheme logic instead so the case
          is never vacuously empty. *)
       let c = capabilities ~url:"https://relay.c2c.im" ~reachable:true ~connector_running:false in
-      Alcotest.(check bool) "offline stand-in: subscribe=NO over TLS" false c.subscribe;
+      Alcotest.(check bool) "offline stand-in: subscribe=YES over TLS (B189)" true c.subscribe;
       Alcotest.(check bool) "offline stand-in: poll=yes" true c.poll
 
 let () =
   Alcotest.run "c2c_doctor_capabilities"
     [ ( "capabilities-scheme",
-        [ Alcotest.test_case "https subscribe=no poll=yes" `Quick test_https_subscribe_no_poll_yes;
-          Alcotest.test_case "wss subscribe=no" `Quick test_wss_subscribe_no;
+        [ Alcotest.test_case "https subscribe=yes poll=yes" `Quick test_https_subscribe_yes_poll_yes;
+          Alcotest.test_case "wss subscribe=yes" `Quick test_wss_subscribe_yes;
           Alcotest.test_case "http subscribe=yes" `Quick test_http_subscribe_yes;
           Alcotest.test_case "ws subscribe=yes" `Quick test_ws_subscribe_yes;
           Alcotest.test_case "unreachable all=no" `Quick test_unreachable_all_no;

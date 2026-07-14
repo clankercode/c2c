@@ -2566,21 +2566,24 @@ let test_monitor_help_lists_relay () =
       check bool "monitor --help lists --relay-interval" true
         (string_contains out "--relay-interval"))
 
-let test_relay_subscribe_rejects_https_until_tls_supported () =
+let test_relay_subscribe_https_no_longer_rejected_for_tls_scheme () =
+  (* B189: https/wss are scheme-supported. Without a local identity the command
+     still exits non-zero, but it must NOT fail on the old TLS-scheme guard. *)
   let outfile = Filename.temp_file "relay-subscribe-https" ".out" in
   let errfile = Filename.temp_file "relay-subscribe-https" ".err" in
   Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
     (fun () ->
       let cmd = Printf.sprintf
-        "C2C_CLI_FORCE=1 %s relay subscribe --relay-url https://relay.example --alias alice > %s 2> %s"
-        c2c_exe outfile errfile
+        "C2C_CLI_FORCE=1 HOME=%s %s relay subscribe --relay-url https://relay.example --alias alice > %s 2> %s"
+        (Filename.get_temp_dir_name ()) c2c_exe outfile errfile
       in
       let rc = Sys.command cmd in
-      check int "relay subscribe https exits non-zero" 1 rc;
+      check int "relay subscribe https exits non-zero without identity" 1 rc;
       let err = read_file errfile in
-      check bool "stderr explains TLS unsupported" true
-        (string_contains err "does not support TLS"))
-
+      check bool "stderr does NOT claim TLS unsupported" false
+        (string_contains err "does not support TLS");
+      check bool "stderr mentions identity (past scheme guard)" true
+        (string_contains err "identity"))
 (* ------------------------------------------------------------------------- *)
 (* c2c send --from spoofing protection tests                                 *)
 (* ------------------------------------------------------------------------- *)
@@ -4487,7 +4490,7 @@ let () =
         ; ( "relay dead-letter without relay-url exits non-zero", `Quick, test_relay_dead_letter_no_relay_url_exits_nonzero )
         ; ( "relay dm peek --help exits 0 and is listed", `Quick, test_relay_dm_peek_help_exits_zero )
         ; ( "monitor --help lists relay watcher flags", `Quick, test_monitor_help_lists_relay )
-        ; ( "relay subscribe rejects https until TLS is supported", `Quick, test_relay_subscribe_rejects_https_until_tls_supported )
+        ; ( "relay subscribe https passes TLS scheme guard (B189)", `Quick, test_relay_subscribe_https_no_longer_rejected_for_tls_scheme )
         ] )
     ; ( "send_from_spoofing",
         [ ( "send --from spoofing rejected when alias held by different session", `Quick, test_send_from_spoofing_rejected )
