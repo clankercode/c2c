@@ -1,0 +1,40 @@
+---
+complexity: medium
+created_at: "2026-07-14T08:36:29Z"
+depends_on: []
+estimate_hours: 1
+id: B190
+priority: high
+status: pending
+tags:
+    - c2c
+    - glibc
+    - portability
+    - docker
+title: glibc issues for certain systems
+updated_at: "2026-07-14T08:36:29Z"
+---
+## Symptom
+c2c (or shipped binaries) hit glibc compatibility issues on older / certain Linux systems.
+
+## Context
+Some hosts report glibc-related failures (binary requires a newer glibc than the system provides, or similar). Exact error surface and which artifact(s) fail still to pin down.
+
+## Repro idea
+Confirm with an older baseline image, e.g.:
+
+```bash
+docker run --rm -it ubuntu:20.04 bash
+# then install/copy the c2c binary and run: c2c --version / c2c doctor / basic send path
+```
+
+Ubuntu 20.04 is a good first probe (older glibc than current rolling/LTS build hosts). Also try other targets if needed (e.g. older Debian).
+
+## Expected
+Either:
+- ship binaries that run on a documented minimum glibc (and CI tests that floor), or
+- document minimum glibc clearly and fail with a clear install-time message, or
+- provide alternate builds (static / musl / multi-glibc) for older systems.
+
+## Notes
+Filed as tracking + repro sketch; fill in concrete error text and affected platforms once confirmed in the Ubuntu 20.04 (or similar) container.
