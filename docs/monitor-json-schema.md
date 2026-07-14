@@ -243,8 +243,9 @@ The relay watcher is gated to the default archive mode for deduplication. Under 
 A relay error is never silently swallowed (the old behaviour surfaced nothing and spun forever against a dead relay stream — "misleading success"):
 
 - An `ok:false` relay response is surfaced on stderr with its `error_code` and message.
-- **Transient** errors (network blip, timeout, rate-limit, unrecognized code) are retried with exponential backoff (capped at 60s). On recovery the monitor prints a `reconnected` line.
-- **Terminal** errors (`unauthorized`, `signature_invalid`, `timestamp_out_of_window`, `missing_proof_field`, `not_found`, `unknown_node`, `not_registered`, `bad_request` — auth/identity/config, will not self-heal) print a clear message and **exit the monitor with a non-zero code** so a supervisor notices. The first peek fires immediately at startup, so a terminal auth failure surfaces right away rather than one interval late.
+- **Transient** errors (network blip, timeout, rate-limit, `nonce_replay`, unrecognized code) are retried with exponential backoff (capped at 60s). On recovery the monitor prints a `reconnected` line. Each signed peek mints a fresh Authorization header (new ts+nonce) so retries do not cascade into nonce replay / stale-timestamp failures.
+- **Soft-terminal** errors (`timestamp_out_of_window`, `signature_invalid`) use a recovery budget (bounded consecutive failures over a minimum wall-clock span) before permanent disable — they are not "will not self-heal" on the first hit (B185).
+- **Hard-terminal** errors (`unauthorized`, `missing_proof_field`, `not_found`, `unknown_node`, `not_registered`, `bad_request` — true config/auth breaks) print structured remediation and disable the relay watcher immediately (local inbox watch continues when active — B142). A pure-relay monitor exits non-zero so a supervisor notices. The first peek fires immediately at startup, so a hard auth failure surfaces right away rather than one interval late.
 
 Exit status:
 
