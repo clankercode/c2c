@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-14T08:41:37Z"
 claimed_by: grok-sonic-rest-72qu
-completed_at: null
+completed_at: "2026-07-14T09:03:36Z"
 complexity: medium
 created_at: "2026-07-14T07:24:23Z"
 depends_on: []
+duration_minutes: 21.99884067383333
 estimate_hours: 1
 id: B188
 priority: high
 started_at: "2026-07-14T08:41:37Z"
-status: in_progress
+status: done
 tags: []
 title: c2c changed alias on claude-radar-source-lnbk@3d08761ae3f3
-updated_at: "2026-07-14T08:41:37Z"
+updated_at: "2026-07-14T09:03:36Z"
 ---
 ## Symptom
 Session formerly known under another alias (reported prior: claude-wagon-chapel-l9nq) is now registered as claude-radar-source-lnbk@3d08761ae3f3. Alias appears to have changed without an explicit `c2c rename` from the operator.
