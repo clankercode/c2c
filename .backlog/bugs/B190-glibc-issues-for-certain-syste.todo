@@ -1,16 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-14T08:36:29Z"
 depends_on: []
 estimate_hours: 1
 id: B190
 priority: high
+started_at: null
 status: pending
-tags:
-    - c2c
-    - glibc
-    - portability
-    - docker
+tags: []
 title: glibc issues for certain systems
 updated_at: "2026-07-14T08:36:29Z"
 ---
@@ -38,3 +36,66 @@ Either:
 
 ## Notes
 Filed as tracking + repro sketch; fill in concrete error text and affected platforms once confirmed in the Ubuntu 20.04 (or similar) container.
+
+
+## Investigation results (2026-07-14) — theory CONFIRMED
+
+Tested installed binary (`~/.local/bin/c2c`, host-built) and official release `c2c-0.12.0-linux-x64` inside Docker. Deps installed where noted: `libsqlite3-0` + `libgmp10`.
+
+### Binary GLIBC floors (objdump -T)
+
+| Binary | Max GLIBC symbol version | Notes |
+|--------|--------------------------|-------|
+| Host `~/.local/bin/c2c` | **GLIBC_2.42** | Built on rolling host (glibc 2.43); `file` says `for GNU/Linux 6.1.0` |
+| Release v0.12.0 linux-x64 | **GLIBC_2.38** | Built on GHA `ubuntu-latest`; `for GNU/Linux 3.2.0` |
+
+High symbols (host build): `cfgetispeed`/`cfsetispeed` @ 2.42; `__isoc23_strtol`/`fmod` @ 2.38; many pthread/dl* @ 2.34.
+High symbols (release): tops out at `fmod` / `__isoc23_strtol` @ **2.38** (no 2.42).
+
+Both dynamically link: `libsqlite3.so.0`, `libgmp.so.10`, `libm`, `libc` (not static).
+
+### Docker matrix (exec `/c2c --version`)
+
+| Image | glibc | Host-built c2c | Release 0.12.0 linux-x64 |
+|-------|-------|----------------|--------------------------|
+| ubuntu:20.04 | 2.31 | **FAIL** many versions (2.32–2.42) | **FAIL** (needs ≥2.32/2.33/2.34/2.35/2.38) |
+| ubuntu:22.04 | 2.35 | **FAIL** (2.38, 2.42) | **FAIL** (`GLIBC_2.38` not found) |
+| ubuntu:24.04 | 2.39 | **FAIL** (`GLIBC_2.42` not found) | **OK** (`0.12.0 …`) |
+| ubuntu:26.04 | 2.42 | **OK** | (not retested; expected OK) |
+
+### Canonical error (ubuntu:20.04 + release binary + deps)
+
+```
+/c2c: /lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.38' not found (required by /c2c)
+/c2c: /lib/x86_64-linux-gnu/libm.so.6: version `GLIBC_2.35' not found (required by /c2c)
+/c2c: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by /c2c)
+/c2c: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.33' not found (required by /c2c)
+/c2c: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.34' not found (required by /c2c)
+/c2c: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.32' not found (required by /c2c)
+```
+
+### Root cause
+Release CI builds on `ubuntu-latest` (currently ≥ glibc 2.38 symbols leak in), so published linux-x64 needs **glibc ≥ 2.38** → breaks Ubuntu 20.04 and **22.04**. Host-local builds on rolling distros are worse (need **2.42**, break even Ubuntu 24.04).
+
+No manylinux / older-ubuntu / musl / fully-static path in `.github/workflows/release.yml` today (matrix: `ubuntu-latest` for linux-x64, `ubuntu-24.04-arm` for arm64).
+
+### Repro (copy-paste)
+
+```bash
+# release asset
+gh release download v0.12.0 -p 'c2c-0.12.0-linux-x64.tar.gz'
+tar xzf c2c-0.12.0-linux-x64.tar.gz
+docker run --rm -v "$PWD/c2c:/c2c:ro" ubuntu:20.04 bash -lc \
+  'apt-get update -qq && apt-get install -y -qq libsqlite3-0 libgmp10 && /c2c --version'
+# expect: GLIBC_2.* not found, exit 1
+```
+
+### Fix directions
+1. Build linux release on an older base (e.g. `ubuntu:22.04` still too new if we need 20.04; use `manylinux_2_28` / Ubuntu 20.04 / Debian bullseye container for compile) so max symbol ≤ target floor.
+2. Or ship musl/static binary for portability.
+3. CI gate: `objdump -T c2c | rg GLIBC_` max version check + smoke `docker run ubuntu:22.04 … c2c --version`.
+4. Document minimum glibc (today effectively **2.38** for release, **2.42** for host-built) and runtime deps `libsqlite3` + `libgmp`.
+5. Installer: detect glibc version and print a clear error before opaque loader failures.
+
+### Verdict
+**Confirmed.** Official release fails on Ubuntu 20.04 *and* 22.04; host-built binary fails on 20.04/22.04/24.04. Theory holds.
