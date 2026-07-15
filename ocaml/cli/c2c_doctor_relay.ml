@@ -77,7 +77,13 @@ let rec take_first k xs = match xs, k with
   | x :: tl, _ -> x :: take_first (k - 1) tl
 
 (* Detect a running relay connector process (OCaml `c2c relay connect` or the
-   Python c2c_relay_connector.py). Returns matching pgrep lines. *)
+   Python c2c_relay_connector.py). Returns the raw `pgrep -af` "PID cmdline"
+   lines — INCLUDING substring-only false positives (the sh -c wrapper this
+   very function spawns, bug-report shells, grep, the doctor's own process).
+   Classification into real connectors is the pure Relay_doctor classifier
+   ([is_real_connector_line], consumed by scope_connector_lines /
+   persistent_connector_pids); callers must NOT treat these raw lines as
+   connectors directly (B218). *)
 let detect_connector_processes () =
   let patterns =
     [ "c2c relay connect"
@@ -96,9 +102,14 @@ let detect_connector_processes () =
                with End_of_file -> ());
               List.rev !acc)
        in
-       (* pgrep never matches itself; the patterns are specific enough
-          ("c2c relay connect" / "c2c_relay_connector") that false positives
-          from unrelated shells are rare. Return all matches as-is. *)
+       (* B218: pgrep -af matches the FULL cmdline of ANY process containing
+          the pattern as a SUBSTRING — not just real connector daemons. It
+          excludes only pgrep's own pid, NOT the `sh -c` wrapper that
+          open_process_in spawns to run this pipeline, nor unrelated shells
+          whose argv quotes "c2c relay connect" (bug reports, the doctor's own
+          remediation strings), grep/editors, or `c2c doctor --relay` itself.
+          These raw lines are returned as-is; the pure Relay_doctor classifier
+          (is_real_connector_line) filters them downstream. *)
        lines)
     patterns
 

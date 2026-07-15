@@ -440,6 +440,95 @@ let test_duplicate_check_fail_when_multiple () =
       Alcotest.(check bool) "has fix command" true (c.Relay_doctor.fix_command <> None)
   | None -> Alcotest.fail "expected duplicate-connector FAIL for 3 pids"
 
+(* B218: is_real_connector_line — classify pgrep "PID cmdline" lines by the
+   ACTUAL executable + subcommand, not substring presence. The false-positive
+   lines below all embed "c2c relay connect" yet must NOT count as connectors;
+   they are exactly what pgrep -af returns on a dev host and what promoted the
+   phantom "N connectors running" FAIL. Fails-before / passes-after: against the
+   OLD substring logic (`not (contains "--once")` + pid extract), every one of
+   the reject cases below returned true → these assertions failed; the new
+   classifier makes them pass. *)
+let test_is_real_connector_accepts_real () =
+  List.iter
+    (fun (label, line) ->
+      Alcotest.(check bool) label true (Relay_doctor.is_real_connector_line line))
+    [ ("bare c2c relay connect", "1001 c2c relay connect");
+      ("managed child --all-brokers", "1002 c2c relay connect --all-brokers --broker-root /a/broker");
+      ("manual with --relay-url", "1003 c2c relay connect --relay-url https://relay.c2c.im");
+      ("absolute c2c path", "1004 /home/agent/.local/bin/c2c relay connect --all-brokers");
+      ("c2c.exe", "1005 /opt/c2c/bin/c2c.exe relay connect");
+      ("python interpreter runs script",
+       "1006 python3 /opt/c2c/scripts/c2c_relay_connector.py --relay-url https://relay.c2c.im");
+      ("shebang script direct exec",
+       "1007 /opt/c2c/scripts/c2c_relay_connector.py --relay-url https://relay.c2c.im") ]
+
+let test_is_real_connector_rejects_false_positives () =
+  List.iter
+    (fun (label, line) ->
+      Alcotest.(check bool) label false (Relay_doctor.is_real_connector_line line))
+    [ (* the sh -c wrapper Unix.open_process_in spawns to run the pgrep pipe *)
+      ("sh -c pgrep wrapper", "2001 sh -c pgrep -af 'c2c relay connect' 2>/dev/null");
+      ("bash -c pgrep wrapper", "2002 bash -c pgrep -af 'c2c relay connect'");
+      (* bug-report / editor shell whose argv only quotes the string *)
+      ("bash -c bl bug body",
+       "2003 bash -c bl bug --title x --body \"repro: c2c relay connect dies\"");
+      ("bl bug direct (quoted body)",
+       "2004 bl bug --body \"...c2c relay connect false-positive...\"");
+      ("grep the pattern", "2005 grep c2c relay connect");
+      ("pgrep the pattern", "2006 pgrep -af c2c relay connect");
+      (* c2c's OWN doctor process — subcommand is `doctor`, not `relay connect` *)
+      ("c2c doctor --relay itself", "2007 c2c doctor --relay");
+      ("c2c doctor json", "2008 /home/agent/.local/bin/c2c doctor --relay --json");
+      (* --once transient sync is not a persistent connector *)
+      ("c2c relay connect --once", "2009 c2c relay connect --once --broker-root /b/broker");
+      (* editor/pager holding a file that mentions the pattern *)
+      ("editor with file arg", "2010 vim /home/agent/notes/c2c-relay-connect.md");
+      (* non-integer leading token → not a pgrep PID line *)
+      ("garbage line", "not-a-pid c2c relay connect") ]
+
+(* Zero real connectors among a realistic pgrep dump ⇒ no duplicate FAIL. *)
+let test_zero_real_connectors_no_false_fail () =
+  let noise =
+    [ "3001 sh -c pgrep -af 'c2c relay connect' 2>/dev/null";
+      "3002 bash -c bl bug --body \"...c2c relay connect...\"";
+      "3003 grep c2c relay connect";
+      "3004 c2c doctor --relay" ]
+  in
+  let pids = Relay_doctor.persistent_connector_pids noise in
+  Alcotest.(check (list int)) "zero real connectors → no pids" [] pids;
+  Alcotest.(check bool) "zero connectors → duplicate check None" true
+    (Relay_doctor.duplicate_connector_check ~pids = None)
+
+(* Exactly N real connectors ⇒ exactly N pids, false positives filtered out. *)
+let test_counts_real_connectors_only () =
+  let mixed =
+    [ "4001 c2c relay connect --all-brokers";                       (* real *)
+      "4002 c2c relay connect --relay-url https://relay.c2c.im";    (* real *)
+      "4003 sh -c pgrep -af 'c2c relay connect'";                   (* wrapper *)
+      "4004 grep c2c relay connect";                                (* grep *)
+      "4005 c2c doctor --relay";                                    (* self *)
+      "4006 c2c relay connect --once" ]                             (* transient *)
+  in
+  let pids = Relay_doctor.persistent_connector_pids mixed in
+  Alcotest.(check (list int)) "only the two real persistent connectors counted"
+    [ 4001; 4002 ] pids;
+  (match Relay_doctor.duplicate_connector_check ~pids with
+   | Some c -> Alcotest.(check bool) "2 real connectors → FAIL" true
+                 (c.Relay_doctor.status = Relay_doctor.Fail)
+   | None -> Alcotest.fail "expected FAIL for 2 real connectors")
+
+(* scope_connector_lines must also reject substring-only lines that happen to
+   mention the broker root (e.g. a bug-report shell quoting the broker path). *)
+let test_scope_rejects_substring_only_broker_mention () =
+  let broker = "/home/agent/.c2c/repos/cccc3333/broker" in
+  let lines =
+    [ Printf.sprintf "5001 bash -c bl bug --body \"c2c relay connect wedged under %s\"" broker;
+      Printf.sprintf "5002 c2c relay connect --broker-root %s" broker ]
+  in
+  let scoped = Relay_doctor.scope_connector_lines ~broker_root:broker lines in
+  Alcotest.(check int) "only the real connector for this broker is scoped" 1
+    (List.length scoped)
+
 let () =
   Alcotest.run "c2c_doctor_capabilities"
     [ ( "B210 duplicate-connector",
@@ -449,6 +538,17 @@ let () =
             test_duplicate_check_none_when_singleton;
           Alcotest.test_case ">1 connector → FAIL+fix" `Quick
             test_duplicate_check_fail_when_multiple ] );
+      ( "B218 connector-line classifier",
+        [ Alcotest.test_case "accepts real OCaml + Python connectors" `Quick
+            test_is_real_connector_accepts_real;
+          Alcotest.test_case "rejects wrappers/grep/self/quoted-arg" `Quick
+            test_is_real_connector_rejects_false_positives;
+          Alcotest.test_case "zero real connectors → no false FAIL" `Quick
+            test_zero_real_connectors_no_false_fail;
+          Alcotest.test_case "counts real connectors only" `Quick
+            test_counts_real_connectors_only;
+          Alcotest.test_case "scope rejects substring-only broker mention" `Quick
+            test_scope_rejects_substring_only_broker_mention ] );
       ( "capabilities-scheme",
         [ Alcotest.test_case "https subscribe=yes poll=yes" `Quick test_https_subscribe_yes_poll_yes;
           Alcotest.test_case "wss subscribe=yes" `Quick test_wss_subscribe_yes;
