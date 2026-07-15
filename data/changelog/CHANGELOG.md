@@ -19,8 +19,8 @@ or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
 ## v0.12.0 — 2026-07-13
 
-### Forward a session transcript to an observer (B193)
-summary: You can mirror a coding session's human-visible conversation to another c2c peer — locally or on a colleague's machine via alias@host. `c2c forward-agent-log` follows a session jsonl file (Claude Code format) and forwards only user input (`[user] …`) and assistant plaintext (`[agent] …`), dropping tool calls, thinking, and system/meta noise. It starts at end-of-file by default (no history flood) and truncates long messages at --max-bytes (default 2000).
+### Forward a session transcript to an observer (B193, B194)
+summary: You can mirror a coding session's human-visible conversation to another c2c peer — locally or on a colleague's machine via alias@host. `c2c forward-agent-log` follows a session transcript for ANY supported client (claude, codex, kimi, grok, agy jsonl files; opencode via its session message directory) and forwards only user input (`[user] …`) and assistant plaintext (`[agent] …`), dropping tool calls, thinking, and system/meta noise. The format is auto-detected from the path or file content (`--format` to override). It starts at end-of-file by default (no history flood) and truncates long messages at --max-bytes (default 2000).
 setup: c2c forward-agent-log --file ~/.claude/projects/<project-slug>/<session-id>.jsonl <observer-alias>
 audience: all
 

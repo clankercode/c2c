@@ -21,20 +21,23 @@ let forward_agent_log_term =
     Cmdliner.Arg.(
       required
       & opt (some string) None
-      & info [ "file"; "f" ] ~docv:"SESSION_JSONL"
+      & info [ "file"; "f" ] ~docv:"SESSION"
           ~doc:
-            "Path to the session transcript to follow, e.g. a Claude Code \
-             session file under \
-             ~/.claude*/projects/<project-slug>/<session-id>.jsonl.")
+            "Path to the session transcript to follow — a session jsonl \
+             file (claude / codex / kimi / grok / agy), or for opencode the \
+             session's message DIRECTORY \
+             (~/.local/share/opencode/storage/message/<sessionID>).")
   in
   let format_arg =
     Cmdliner.Arg.(
       value
-      & opt string "claude"
+      & opt string "auto"
       & info [ "format" ] ~docv:"FORMAT"
           ~doc:
-            "Transcript format. Currently supported: $(b,claude) (Claude \
-             Code session jsonl). Other clients' formats can be added later.")
+            "Transcript format: $(b,auto) (default; resolved from the path \
+             or by sniffing the first line), $(b,claude), $(b,codex), \
+             $(b,kimi), $(b,grok), $(b,agy), or $(b,opencode) (directory \
+             source).")
   in
   let from_override =
     Cmdliner.Arg.(
@@ -109,16 +112,6 @@ let forward_agent_log_term =
   and+ from_start = from_start_flag
   and+ once = once_flag
   and+ dry_run = dry_run_flag in
-  let classify =
-    match F.classifier_for_format format with
-    | Some c -> c
-    | None ->
-        Printf.eprintf
-          "error: unsupported transcript format '%s' (supported: %s)\n%!"
-          format
-          (String.concat ", " F.supported_formats);
-        exit 2
-  in
   if max_bytes < 64 then begin
     Printf.eprintf "error: --max-bytes must be at least 64 (got %d)\n%!"
       max_bytes;
@@ -132,6 +125,52 @@ let forward_agent_log_term =
     Printf.eprintf "error: transcript file not found: %s\n%!" file;
     exit 1
   end;
+  let is_dir = try Sys.is_directory file with Sys_error _ -> false in
+  let format =
+    match String.lowercase_ascii (String.trim format) with
+    | "auto" -> (
+        let head = if is_dir then [] else F.read_head_lines file in
+        match F.detect_format ~is_dir ~head file with
+        | Some f -> f
+        | None ->
+            Printf.eprintf
+              "error: cannot auto-detect transcript format for %s; pass \
+               --format (supported: %s)\n%!"
+              file
+              (String.concat ", " F.supported_formats);
+            exit 2)
+    | f -> f
+  in
+  let classify =
+    if format = "opencode" then begin
+      if not is_dir then begin
+        Printf.eprintf
+          "error: --format opencode expects the session message DIRECTORY \
+           (~/.local/share/opencode/storage/message/<sessionID>), got a \
+           file: %s\n%!"
+          file;
+        exit 2
+      end;
+      None
+    end
+    else begin
+      if is_dir then begin
+        Printf.eprintf
+          "error: %s is a directory; only --format opencode follows a \
+           directory\n%!"
+          file;
+        exit 2
+      end;
+      match F.classifier_for_format format with
+      | Some c -> Some c
+      | None ->
+          Printf.eprintf
+            "error: unsupported transcript format '%s' (supported: %s)\n%!"
+            format
+            (String.concat ", " F.supported_formats);
+          exit 2
+    end
+  in
   let dry_run = dry_run || F.send_fixture_mode () in
   let send =
     if dry_run then fun body ->
@@ -156,7 +195,13 @@ let forward_agent_log_term =
        and agent text only\n%!"
       file format to_alias;
   let stats =
-    F.run ~path:file ~classify ~max_bytes ~interval ~from_start ~once ~send
+    match classify with
+    | Some classify ->
+        F.run ~path:file ~classify ~max_bytes ~interval ~from_start ~once
+          ~send
+    | None ->
+        F.run_opencode ~message_dir:file ~max_bytes ~interval ~from_start
+          ~once ~send
   in
   if once then begin
     Printf.printf
@@ -182,6 +227,19 @@ let forward_agent_log =
          newline-complete lines are consumed, so a live mid-write transcript \
          never produces garbage."
     ; `P
+        "All supported clients work. Session jsonl transcripts are tailed: \
+         $(b,claude) (~/.claude*/projects/<slug>/<session-id>.jsonl), \
+         $(b,codex) (~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl), \
+         $(b,kimi) (~/.kimi/sessions/<project>/<uuid>/context.jsonl), \
+         $(b,grok) (~/.grok/sessions/<cwd>/<uuid>/chat_history.jsonl), \
+         $(b,agy) (~/.gemini/tmp/<project>/chats/session-*.jsonl). \
+         $(b,opencode) keeps per-message files instead of one transcript, \
+         so --file takes the session's message directory \
+         (~/.local/share/opencode/storage/message/<sessionID>) and it is \
+         polled: user messages forward on appearance, assistant messages \
+         once their turn completes. --format defaults to $(b,auto), \
+         resolved from the path or the first transcript line."
+    ; `P
         "Intended for observation/monitoring — e.g. mirroring a local \
          session to a colleague's agent on another machine via \
          $(b,alias@host). Forwarded content is plain message DATA on the \
@@ -193,6 +251,15 @@ let forward_agent_log =
          observer-alias"
     ; `Noblank
     ; `P
+        "c2c forward-agent-log --file \
+         ~/.codex/sessions/2026/07/15/rollout-<ts>-<thread-id>.jsonl \
+         observer-alias"
+    ; `Noblank
+    ; `P
+        "c2c forward-agent-log --file \
+         ~/.local/share/opencode/storage/message/<sessionID> observer-alias"
+    ; `Noblank
+    ; `P
         "c2c forward-agent-log --file session.jsonl --from-start \
          --max-bytes 1000 colleague@a1b2c3d4e5f6"
     ]
@@ -200,7 +267,7 @@ let forward_agent_log =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "forward-agent-log"
        ~doc:
-         "Follow a session transcript (jsonl) and forward user input + \
-          agent text to a c2c address."
+         "Follow a session transcript (any supported client) and forward \
+          user input + agent text to a c2c address."
        ~man)
     forward_agent_log_term

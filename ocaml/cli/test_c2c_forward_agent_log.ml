@@ -1,9 +1,17 @@
-(* test_c2c_forward_agent_log.ml — B193 `c2c forward-agent-log`.
+(* test_c2c_forward_agent_log.ml — B193/B194 `c2c forward-agent-log`.
 
    Covers:
    1. classify_claude_line — keep user text + assistant text; drop thinking,
       tool_use, tool_result, meta/sidechain/system/summary lines, hook and
       c2c-envelope injections, malformed JSON.
+   1b. per-client classifiers (B194): codex event_msg stream, kimi context
+      roles, grok <user_query> extraction + synthetic turns, agy message /
+      $set journal lines.
+   1c. detect_format — path heuristics over the standard session stores and
+      first-lines content sniffing.
+   1d. opencode directory source — user forwards on appearance, assistant
+      waits for time.completed, synthetic/tool/reasoning parts dropped,
+      attach-time history not replayed.
    2. split_complete_lines / tail_read — only newline-complete lines are
       consumed; partial trailing writes stay pending; file truncation resets.
    3. format_forward_body — [user]/[agent] labels + UTF-8-safe truncation.
@@ -13,7 +21,8 @@
       recipient inbox via the normal send path).
    6. Binary e2e: `c2c forward-agent-log --once` with the repo-standard
       C2C_SEND_MESSAGE_FIXTURE=1 send gate — prints would-send lines, sends
-      nothing. *)
+      nothing; --format auto sniffing (codex), opencode dir source, and
+      directory/format mismatch rejection. *)
 
 open Alcotest
 module F = C2c_forward_agent_log
@@ -170,6 +179,253 @@ let test_classify_malformed () =
   List.iter
     (fun l -> check (option event) ("malformed skipped: " ^ l) None (classify l))
     [ ""; "   "; "not json"; {|{"type":"user","message":{|}; "[1,2,3]"; "42" ]
+
+(* --- 1b. per-client classifiers (B194) ------------------------------------ *)
+
+let test_classify_codex () =
+  let c = F.classify_codex_line in
+  check (option event) "user_message kept" (Some (F.User, "do the thing"))
+    (c
+       {|{"timestamp":"2026-07-15T00:00:00Z","type":"event_msg","payload":{"type":"user_message","message":"do the thing"}}|});
+  check (option event) "agent_message kept" (Some (F.Agent, "done"))
+    (c
+       {|{"timestamp":"2026-07-15T00:00:01Z","type":"event_msg","payload":{"type":"agent_message","message":"done"}}|});
+  List.iter
+    (fun (name, l) -> check (option event) ("noise dropped: " ^ name) None (c l))
+    [ ( "token_count"
+      , {|{"type":"event_msg","payload":{"type":"token_count","info":{}}}|} )
+    ; ( "task_started"
+      , {|{"type":"event_msg","payload":{"type":"task_started","turn_id":"t"}}|} )
+    ; ( "session_meta"
+      , {|{"type":"session_meta","payload":{"id":"s"}}|} )
+    ; ( "response_item user mirror"
+      , {|{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"mirrored"}]}}|} )
+    ; ( "injected user_instructions"
+      , {|{"type":"event_msg","payload":{"type":"user_message","message":"<user_instructions>be nice</user_instructions>"}}|} )
+    ; ( "injected environment_context"
+      , {|{"type":"event_msg","payload":{"type":"user_message","message":"<environment_context>linux</environment_context>"}}|} )
+    ; ("empty message", {|{"type":"event_msg","payload":{"type":"agent_message","message":"  "}}|})
+    ; ("malformed", "{nope")
+    ]
+
+let test_classify_kimi () =
+  let c = F.classify_kimi_line in
+  check (option event) "user string kept" (Some (F.User, "fix it"))
+    (c {|{"role":"user","content":"fix it"}|});
+  check (option event) "assistant string kept" (Some (F.Agent, "done"))
+    (c {|{"role":"assistant","content":"done","tool_calls":[]}|});
+  check (option event) "assistant text block kept" (Some (F.Agent, "hello"))
+    (c
+       {|{"role":"assistant","content":[{"type":"think","think":"private"},{"type":"text","text":"hello"}]}|});
+  List.iter
+    (fun (name, l) -> check (option event) ("noise dropped: " ^ name) None (c l))
+    [ ( "think-only assistant"
+      , {|{"role":"assistant","content":[{"type":"think","think":"private"}]}|} )
+    ; ("tool result", {|{"role":"tool","content":"out","tool_call_id":"1"}|})
+    ; ("_system_prompt", {|{"role":"_system_prompt","content":"You are Kimi"}|})
+    ; ("_checkpoint", {|{"role":"_checkpoint","id":"c1"}|})
+    ; ("_usage", {|{"role":"_usage","token_count":12}|})
+    ; ( "injected system-reminder"
+      , {|{"role":"user","content":"<system-reminder>hook</system-reminder>"}|} )
+    ; ("malformed", "]")
+    ]
+
+let test_classify_grok () =
+  let c = F.classify_grok_line in
+  check (option event) "user_query inner text extracted"
+    (Some (F.User, "fix the bug"))
+    (c
+       {|{"type":"user","content":[{"type":"text","text":"<user_query>\nfix the bug\n</user_query>"}],"prompt_index":0}|});
+  check (option event) "assistant text kept" (Some (F.Agent, "on it"))
+    (c
+       {|{"type":"assistant","content":"on it","tool_calls":[],"model_id":"grok-4.5"}|});
+  List.iter
+    (fun (name, l) -> check (option event) ("noise dropped: " ^ name) None (c l))
+    [ ( "synthetic user turn"
+      , {|{"type":"user","content":[{"type":"text","text":"<user_query>continue</user_query>"}],"synthetic_reason":"auto"}|} )
+    ; ( "user line without user_query (injected reminder)"
+      , {|{"type":"user","content":[{"type":"text","text":"<system-reminder>skills</system-reminder>"}]}|} )
+    ; ( "assistant tool-only empty content"
+      , {|{"type":"assistant","content":"","tool_calls":[{"id":"x"}]}|} )
+    ; ("system prompt", {|{"type":"system","content":"You are Grok"}|})
+    ; ("tool_result", {|{"type":"tool_result","content":"out","tool_call_id":"x"}|})
+    ; ("reasoning", {|{"type":"reasoning","id":"r","summary":null}|})
+    ; ("malformed", "not json")
+    ]
+
+let test_classify_agy () =
+  let c = F.classify_agy_line in
+  check (option event) "user part kept" (Some (F.User, "review this"))
+    (c
+       {|{"id":"1","timestamp":"2026-07-15T00:00:00Z","type":"user","content":[{"text":"review this"}]}|});
+  check (option event) "gemini text kept" (Some (F.Agent, "CLEAR-TO-MERGE"))
+    (c
+       {|{"id":"2","timestamp":"2026-07-15T00:00:01Z","type":"gemini","content":"CLEAR-TO-MERGE","thoughts":[{"subject":"s","description":"d"}]}|});
+  List.iter
+    (fun (name, l) -> check (option event) ("noise dropped: " ^ name) None (c l))
+    [ ( "session header"
+      , {|{"sessionId":"s","projectHash":"p","startTime":"t","kind":"main"}|} )
+    ; ("$set journal op", {|{"$set":{"lastUpdated":"t"}}|})
+    ; ( "injected session_context"
+      , {|{"id":"0","type":"user","content":[{"text":"<session_context>\nThis is the Gemini CLI.\n</session_context>"}]}|} )
+    ; ( "thoughts-only gemini turn"
+      , {|{"id":"3","type":"gemini","content":"","thoughts":[{"subject":"s"}]}|} )
+    ; ("malformed", "{") ]
+
+(* --- 1c. format auto-detection --------------------------------------------- *)
+
+let test_detect_format_by_path () =
+  let d p = F.detect_format ~is_dir:false ~head:[] p in
+  check (option string) "codex store"
+    (Some "codex")
+    (d "/home/u/.codex/sessions/2026/07/15/rollout-2026-07-15T01-38-13-x.jsonl");
+  check (option string) "rollout basename anywhere" (Some "codex")
+    (d "/tmp/copies/rollout-foo.jsonl");
+  check (option string) "grok chat_history" (Some "grok")
+    (d "/home/u/.grok/sessions/%2Fhome/019f-uuid/chat_history.jsonl");
+  check (option string) "kimi context" (Some "kimi")
+    (d "/home/u/.kimi/sessions/hash/uuid/context.jsonl");
+  check (option string) "agy chats" (Some "agy")
+    (d "/home/u/.gemini/tmp/proj/chats/session-2026-05-30T16-08-x.jsonl");
+  check (option string) "claude projects" (Some "claude")
+    (d "/home/u/.claude/projects/-home-u-src-p/sid.jsonl");
+  check (option string) "claude-w variant" (Some "claude")
+    (d "/home/u/.claude-w/projects/-home-u-src-p/sid.jsonl");
+  check (option string) "opencode storage path" (Some "opencode")
+    (d "/home/u/.local/share/opencode/storage/message/ses_x");
+  check (option string) "directory -> opencode" (Some "opencode")
+    (F.detect_format ~is_dir:true ~head:[] "/anywhere/at/all");
+  check (option string) "unknown path, no sniff" None (d "/tmp/whatever.jsonl")
+
+let test_detect_format_by_sniff () =
+  let d line =
+    F.detect_format ~is_dir:false ~head:[ line ] "/tmp/x.jsonl"
+  in
+  check (option string) "codex session_meta" (Some "codex")
+    (d {|{"timestamp":"t","type":"session_meta","payload":{"id":"s"}}|});
+  check (option string) "agy header" (Some "agy")
+    (d {|{"sessionId":"s","projectHash":"p","startTime":"t"}|});
+  check (option string) "kimi role line" (Some "kimi")
+    (d {|{"role":"_system_prompt","content":"You are Kimi"}|});
+  check (option string) "claude line" (Some "claude")
+    (d {|{"type":"summary","summary":"s","message":null,"leafUuid":"x"}|});
+  check (option string) "claude user line" (Some "claude")
+    (d {|{"type":"user","message":{"role":"user","content":"hi"}}|});
+  check (option string) "grok system line" (Some "grok")
+    (d {|{"type":"system","content":"You are Grok"}|});
+  check (option string) "garbage" None (d "not json")
+
+(* --- 1d. opencode directory source ----------------------------------------- *)
+
+(* Build a minimal opencode storage tree:
+   <root>/storage/message/<sid>/msg_*.json + <root>/storage/part/<msgid>/... *)
+let write_file path s =
+  let oc = open_out_bin path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc s)
+
+let mk_opencode_session root =
+  let storage = root // "storage" in
+  let msg_dir = storage // "message" // "ses_test" in
+  let part_root = storage // "part" in
+  List.iter
+    (fun d -> ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote d))))
+    [ msg_dir; part_root ];
+  (msg_dir, part_root)
+
+let add_opencode_message ~msg_dir ~part_root ~id ~role ~completed parts =
+  let time = if completed then {|{"created":1,"completed":2}|} else {|{"created":1}|} in
+  write_file (msg_dir // (id ^ ".json"))
+    (Printf.sprintf {|{"id":"%s","sessionID":"ses_test","role":"%s","time":%s}|}
+       id role time);
+  let pdir = part_root // id in
+  ignore (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote pdir)));
+  List.iteri
+    (fun i part -> write_file (pdir // Printf.sprintf "prt_%02d.json" i) part)
+    parts
+
+let test_opencode_once_forwards_conversation () =
+  with_temp_dir (fun root ->
+      let msg_dir, part_root = mk_opencode_session root in
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_01" ~role:"user"
+        ~completed:false
+        [ {|{"id":"p1","type":"text","text":"build the app"}|} ];
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_02" ~role:"assistant"
+        ~completed:true
+        [ {|{"id":"p2","type":"step-start"}|}
+        ; {|{"id":"p3","type":"reasoning","text":"let me think"}|}
+        ; {|{"id":"p4","type":"text","text":"starting now"}|}
+        ; {|{"id":"p5","type":"tool","tool":"bash","state":{}}|}
+        ];
+      (* synthetic text part on a user message is injected context: NOISE *)
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_03" ~role:"user"
+        ~completed:false
+        [ {|{"id":"p6","type":"text","synthetic":true,"text":"injected context"}|} ];
+      let sent = ref [] in
+      let send b = sent := b :: !sent; Ok () in
+      let stats =
+        F.run_opencode ~message_dir:msg_dir ~max_bytes:2000 ~interval:0.01
+          ~from_start:false ~once:true ~send
+      in
+      check (list string) "user + completed assistant forwarded, noise dropped"
+        [ "[user] build the app"; "[agent] starting now" ]
+        (List.rev !sent);
+      check int "forwarded count" 2 stats.F.forwarded)
+
+let test_opencode_assistant_waits_for_completion () =
+  with_temp_dir (fun root ->
+      let msg_dir, part_root = mk_opencode_session root in
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_01" ~role:"assistant"
+        ~completed:false
+        [ {|{"id":"p1","type":"text","text":"half a sent"}|} ];
+      let sent = ref [] in
+      let send b = sent := b :: !sent; Ok () in
+      let st = F.opencode_initial_state ~from_start:true msg_dir in
+      let stats = { F.forwarded = 0; send_failures = 0 } in
+      let stats =
+        F.opencode_step ~message_dir:msg_dir ~max_bytes:2000 ~send st stats
+      in
+      check (list string) "in-flight assistant not forwarded" [] !sent;
+      (* the turn completes (message file rewritten with time.completed,
+         part text grown) -> forwarded exactly once *)
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_01" ~role:"assistant"
+        ~completed:true
+        [ {|{"id":"p1","type":"text","text":"half a sentence, now whole"}|} ];
+      let stats =
+        F.opencode_step ~message_dir:msg_dir ~max_bytes:2000 ~send st stats
+      in
+      let stats =
+        F.opencode_step ~message_dir:msg_dir ~max_bytes:2000 ~send st stats
+      in
+      check (list string) "forwarded once after completion"
+        [ "[agent] half a sentence, now whole" ]
+        (List.rev !sent);
+      check int "forwarded count" 1 stats.F.forwarded)
+
+let test_opencode_attach_skips_existing () =
+  with_temp_dir (fun root ->
+      let msg_dir, part_root = mk_opencode_session root in
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_01" ~role:"user"
+        ~completed:false
+        [ {|{"id":"p1","type":"text","text":"old history"}|} ];
+      (* default attach = everything present is consumed unsent *)
+      let st = F.opencode_initial_state msg_dir in
+      let sent = ref [] in
+      let send b = sent := b :: !sent; Ok () in
+      let stats = { F.forwarded = 0; send_failures = 0 } in
+      let stats =
+        F.opencode_step ~message_dir:msg_dir ~max_bytes:2000 ~send st stats
+      in
+      check (list string) "history not replayed" [] !sent;
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_02" ~role:"user"
+        ~completed:false
+        [ {|{"id":"p2","type":"text","text":"new message"}|} ];
+      let stats =
+        F.opencode_step ~message_dir:msg_dir ~max_bytes:2000 ~send st stats
+      in
+      check (list string) "only post-attach messages forwarded"
+        [ "[user] new message" ]
+        (List.rev !sent);
+      check int "forwarded count" 1 stats.F.forwarded)
 
 (* --- 2. line consumption / tailing ---------------------------------------- *)
 
@@ -383,7 +639,7 @@ let test_binary_rejects_unknown_format () =
       let cmd =
         Printf.sprintf
           "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 %s forward-agent-log \
-           --file %s --format codex --once zztfwd-target > %s 2>&1"
+           --file %s --format nosuchclient --once zztfwd-target > %s 2>&1"
           (Filename.quote c2c_binary)
           (Filename.quote fixture_path)
           (Filename.quote out)
@@ -420,6 +676,81 @@ let test_binary_missing_file_errors () =
            true
          with Not_found -> false))
 
+let contains ~needle haystack =
+  try
+    ignore (Str.search_forward (Str.regexp_string needle) haystack 0);
+    true
+  with Not_found -> false
+
+let test_binary_auto_detects_codex_by_sniff () =
+  with_temp_dir (fun dir ->
+      (* a codex rollout copied to a nondescript path: the path heuristics
+         miss, the first-line sniff must hit *)
+      let transcript = dir // "copied-transcript.jsonl" in
+      write_file transcript
+        (String.concat "\n"
+           [ {|{"timestamp":"t","type":"session_meta","payload":{"id":"s"}}|}
+           ; {|{"timestamp":"t","type":"event_msg","payload":{"type":"user_message","message":"ship it"}}|}
+           ; {|{"timestamp":"t","type":"event_msg","payload":{"type":"token_count","info":{}}}|}
+           ; {|{"timestamp":"t","type":"event_msg","payload":{"type":"agent_message","message":"shipped"}}|}
+           ]
+        ^ "\n");
+      let out = dir // "out.txt" in
+      let cmd =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 %s forward-agent-log \
+           --file %s --once zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary)
+          (Filename.quote transcript)
+          (Filename.quote out)
+      in
+      let rc = Sys.command cmd in
+      let content = read_file out in
+      check int (Printf.sprintf "exit 0 (output: %s)" content) 0 rc;
+      check bool "user forwarded" true
+        (contains ~needle:"would send -> zztfwd-target: [user] ship it" content);
+      check bool "agent forwarded" true
+        (contains ~needle:"would send -> zztfwd-target: [agent] shipped" content);
+      check bool "token_count not forwarded" false
+        (contains ~needle:"token_count" content))
+
+let test_binary_auto_detects_opencode_dir () =
+  with_temp_dir (fun root ->
+      let msg_dir, part_root = mk_opencode_session root in
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_01" ~role:"user"
+        ~completed:false
+        [ {|{"id":"p1","type":"text","text":"hello opencode"}|} ];
+      let out = root // "out.txt" in
+      let cmd =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 %s forward-agent-log \
+           --file %s --once zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary)
+          (Filename.quote msg_dir)
+          (Filename.quote out)
+      in
+      let rc = Sys.command cmd in
+      let content = read_file out in
+      check int (Printf.sprintf "exit 0 (output: %s)" content) 0 rc;
+      check bool "user message forwarded from dir source" true
+        (contains ~needle:"would send -> zztfwd-target: [user] hello opencode"
+           content))
+
+let test_binary_rejects_dir_for_jsonl_format () =
+  with_temp_dir (fun dir ->
+      let out = dir // "out.txt" in
+      let cmd =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 %s forward-agent-log \
+           --file %s --format claude --once zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary) (Filename.quote dir)
+          (Filename.quote out)
+      in
+      let rc = Sys.command cmd in
+      check bool "directory with jsonl format exits non-zero" true (rc <> 0);
+      check bool "mentions directory" true
+        (contains ~needle:"is a directory" (read_file out)))
+
 (* --------------------------------------------------------------------------- *)
 
 let () =
@@ -439,6 +770,24 @@ let () =
         ; test_case "meta/sidechain/other types" `Quick
             test_classify_meta_and_other_types
         ; test_case "malformed lines" `Quick test_classify_malformed
+        ] )
+    ; ( "classify-clients"
+      , [ test_case "codex" `Quick test_classify_codex
+        ; test_case "kimi" `Quick test_classify_kimi
+        ; test_case "grok" `Quick test_classify_grok
+        ; test_case "agy" `Quick test_classify_agy
+        ] )
+    ; ( "detect-format"
+      , [ test_case "path heuristics" `Quick test_detect_format_by_path
+        ; test_case "first-line sniff" `Quick test_detect_format_by_sniff
+        ] )
+    ; ( "opencode"
+      , [ test_case "once forwards conversation" `Quick
+            test_opencode_once_forwards_conversation
+        ; test_case "assistant waits for completion" `Quick
+            test_opencode_assistant_waits_for_completion
+        ; test_case "attach skips existing" `Quick
+            test_opencode_attach_skips_existing
         ] )
     ; ( "tail"
       , [ test_case "split_complete_lines" `Quick test_split_complete_lines
@@ -468,5 +817,11 @@ let () =
             test_binary_rejects_unknown_format
         ; test_case "missing file rejected" `Quick
             test_binary_missing_file_errors
+        ; test_case "auto-detects codex by sniff" `Quick
+            test_binary_auto_detects_codex_by_sniff
+        ; test_case "auto-detects opencode dir" `Quick
+            test_binary_auto_detects_opencode_dir
+        ; test_case "dir rejected for jsonl format" `Quick
+            test_binary_rejects_dir_for_jsonl_format
         ] )
     ]
