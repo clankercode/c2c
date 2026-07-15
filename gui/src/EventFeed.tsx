@@ -201,7 +201,22 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
   const [search, setSearch] = useState("");
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const listRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const prevLenRef = useRef(0);
+
+  // "/" focuses search (skip when typing in an input/textarea)
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      e.preventDefault();
+      searchInputRef.current?.focus();
+      searchInputRef.current?.select();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Refs for dynamic row measurement
   const rowRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -334,15 +349,17 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
           ))
         )}
         <input
+          ref={searchInputRef}
           value={search}
           onChange={e => setSearch(e.target.value)}
           onKeyDown={e => {
             if (e.key === "Escape") {
               e.preventDefault();
               setSearch("");
+              (e.target as HTMLInputElement).blur();
             }
           }}
-          placeholder="search…"
+          placeholder="search… (/)"
           aria-label="Search events"
           style={{
             marginLeft: "auto",
