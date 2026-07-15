@@ -16,10 +16,11 @@
    whole pipeline is unit-testable without pulling in the CLI helper stack.
    The Cmdliner wiring lives in [C2c_forward_agent_log_cmd].
 
-   SAFETY (B098 "bus, never RPC"): forwarded transcript excerpts are DATA.
-   This command only reads a local file and enqueues ordinary messages via
-   the normal send path; it adds no approval or RPC semantics, and nothing a
-   recipient replies with feeds back into this watcher. *)
+   SAFETY (B098 "bus, never RPC"): forwarded transcript excerpts are
+   untrusted DATA. This command only reads a local file and enqueues ordinary
+   messages via the normal send path; it adds no approval or RPC semantics,
+   and nothing a recipient replies with feeds back into this watcher. The
+   outbound sanitizer below is defence in depth, not a trust boundary. *)
 
 module Broker = C2c_mcp.Broker
 
@@ -656,6 +657,208 @@ let tail_read ~(path : string) (st : tail_state) : string list * tail_state =
 (* Forwarded-message formatting                                        *)
 (* ------------------------------------------------------------------ *)
 
+(* Drop terminal control strings before the Unicode control pass. Merely
+   deleting ESC / C1 code points would leave their printable payload behind
+   (for example "31m" from a CSI colour sequence, or an OSC window title).
+   Both the 7-bit ESC introducers and their UTF-8-encoded C1 forms are
+   recognised. Unterminated string controls consume the rest of the input:
+   forwarding less is safer than leaking an OSC/DCS payload. *)
+let strip_terminal_sequences (s : string) : string =
+  let len = String.length s in
+  let out = Buffer.create len in
+  let rec consume_csi i =
+    if i >= len then len
+    else
+      let c = Char.code s.[i] in
+      if c >= 0x40 && c <= 0x7e then i + 1 else consume_csi (i + 1)
+  in
+  let rec consume_string_control i =
+    if i >= len then len
+    else if s.[i] = '\007' then i + 1
+    else if s.[i] = '\027' && i + 1 < len && s.[i + 1] = '\\' then i + 2
+    else if i + 1 < len && Char.code s.[i] = 0xc2
+            && Char.code s.[i + 1] = 0x9c
+    then i + 2
+    else consume_string_control (i + 1)
+  in
+  let rec consume_escape i =
+    if i >= len then len
+    else
+      let c = Char.code s.[i] in
+      if c >= 0x20 && c <= 0x2f then consume_escape (i + 1)
+      else i + 1
+  in
+  let rec loop i =
+    if i >= len then Buffer.contents out
+    else if s.[i] = '\027' then
+      if i + 1 >= len then loop len
+      else
+        (match s.[i + 1] with
+         | '[' -> loop (consume_csi (i + 2))
+         | ']' | 'P' | 'X' | '^' | '_' ->
+             loop (consume_string_control (i + 2))
+         | _ -> loop (consume_escape (i + 1)))
+    else if i + 1 < len && Char.code s.[i] = 0xc2 then
+      (match Char.code s.[i + 1] with
+       | 0x9b -> loop (consume_csi (i + 2))
+       | 0x9d | 0x90 | 0x98 | 0x9e | 0x9f ->
+           loop (consume_string_control (i + 2))
+       | _ ->
+           Buffer.add_char out s.[i];
+           loop (i + 1))
+    else begin
+      Buffer.add_char out s.[i];
+      loop (i + 1)
+    end
+  in
+  loop 0
+
+(* Remove all Unicode control and format characters. [Cc] covers NUL, C0,
+   DEL and C1; [Cf] covers bidi isolates/overrides, zero-width spoofing
+   controls, BOM, and related invisible formatting characters. [Zl]/[Zp]
+   are also removed because renderers can treat them as unframed newlines.
+   ASCII newlines are split before this pass and restored only by
+   [frame_continuation_lines]. Malformed UTF-8 is dropped so the outbound
+   boundary always emits UTF-8. *)
+let strip_unicode_controls (s : string) : string =
+  let out = Buffer.create (String.length s) in
+  Uutf.String.fold_utf_8
+    (fun () _ -> function
+      | `Malformed _ -> ()
+      | `Uchar u ->
+          (match Uucp.Gc.general_category u with
+           | `Cc | `Cf | `Zl | `Zp -> ()
+           | _ -> Uutf.Buffer.add_utf_8 out u))
+    () s;
+  Buffer.contents out
+
+let global_substitute (regexp : Str.regexp) (f : string -> string)
+    (s : string) : string =
+  Str.global_substitute regexp (fun whole -> f (Str.matched_string whole)) s
+
+let authorization_re =
+  Str.regexp_case_fold
+    "\\b\\(authorization\\|proxy-authorization\\)[ \t]*:[^\n]*"
+
+let bearer_re =
+  Str.regexp_case_fold "\\bbearer[ \t]+[A-Za-z0-9._~+/-]+"
+
+let credential_assignment_re =
+  Str.regexp_case_fold
+    ("\\b\\(password\\|passwd\\|pwd\\|secret\\|token\\|api[_-]*key\\|"
+    ^ "access[_-]*key\\|access[_-]*token\\|client[_-]*secret\\|"
+    ^ "private[_-]*key\\)\\b\\([ \t]*[=:][ \t]*\\)"
+    ^ "\\(\"[^\"]*\"\\|'[^']*'\\|[^ \t&,;]+\\)")
+
+let json_credential_assignment_re =
+  Str.regexp_case_fold
+    ("\"\\(authorization\\|proxy-authorization\\|password\\|passwd\\|pwd\\|"
+    ^ "secret\\|token\\|api[_-]*key\\|access[_-]*key\\|access[_-]*token\\|"
+    ^ "client[_-]*secret\\|private[_-]*key\\)\"\\([ \t]*:[ \t]*\\)"
+    ^ "\\(\"[^\"]*\"\\|'[^']*'\\|[^ \t,;}]+\\)")
+
+let url_userinfo_re =
+  Str.regexp_case_fold
+    "\\b\\([A-Za-z][A-Za-z0-9+.-]*://\\)[^/@ \t]+@"
+
+let url_query_secret_re =
+  Str.regexp_case_fold
+    ("\\([?&]\\)\\(api[_-]*key\\|access[_-]*key\\|access[_-]*token\\|"
+    ^ "authorization\\|password\\|passwd\\|secret\\|token\\|auth\\|key\\|"
+    ^ "signature\\|sig\\|x-amz-signature\\|x-goog-signature\\)"
+    ^ "\\([ \t]*=[ \t]*\\)\\([^&# \t]+\\)")
+
+let jwt_re =
+  Str.regexp
+    "[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+"
+
+let api_key_shape_re =
+  Str.regexp
+    ("\\(sk-[A-Za-z0-9_-]+\\|gh[pousr]_[A-Za-z0-9]+\\|"
+    ^ "xox[baprs]-[A-Za-z0-9-]+\\|AKIA[0-9A-Z]+\\|"
+    ^ "AIza[0-9A-Za-z_-]+\\)")
+
+let redact_line (line : string) : string =
+  let line =
+    global_substitute authorization_re (fun _ -> "Authorization: [REDACTED]")
+      line
+  in
+  let line =
+    global_substitute url_userinfo_re
+      (fun _ -> Str.matched_group 1 line ^ "[REDACTED]@") line
+  in
+  let line =
+    global_substitute url_query_secret_re
+      (fun _ ->
+        Str.matched_group 1 line ^ Str.matched_group 2 line
+        ^ Str.matched_group 3 line ^ "[REDACTED]")
+      line
+  in
+  let line =
+    global_substitute json_credential_assignment_re
+      (fun _ ->
+        "\"" ^ Str.matched_group 1 line ^ "\"" ^ Str.matched_group 2 line
+        ^ "[REDACTED]")
+      line
+  in
+  let line =
+    global_substitute credential_assignment_re
+      (fun _ ->
+        Str.matched_group 1 line ^ Str.matched_group 2 line ^ "[REDACTED]")
+      line
+  in
+  let line =
+    global_substitute bearer_re (fun _ -> "Bearer [REDACTED]") line
+  in
+  let line =
+    global_substitute jwt_re
+      (fun token ->
+        match String.split_on_char '.' token with
+        | [ header; payload; signature ]
+          when String.length header >= 8 && String.length payload >= 8
+               && String.length signature >= 8 ->
+            "[REDACTED JWT]"
+        | _ -> token)
+      line
+  in
+  global_substitute api_key_shape_re
+    (fun token ->
+      if String.length token >= 16 then "[REDACTED API KEY]" else token)
+    line
+
+let pem_begin_re = Str.regexp "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+let pem_end_re = Str.regexp "-----END [A-Z0-9 ]*PRIVATE KEY-----"
+
+let contains_re regexp s =
+  try
+    ignore (Str.search_forward regexp s 0);
+    true
+  with Not_found -> false
+
+(* Sanitisation is deliberately centralized here, immediately before the
+   role label / truncation formatter used by every forward-agent-log source. *)
+let sanitize_forward_text (text : string) : string =
+  let lines = String.split_on_char '\n' (strip_terminal_sequences text) in
+  let rec redact_pem inside acc = function
+    | [] -> List.rev acc
+    | line :: rest ->
+        let line = strip_unicode_controls line in
+        if inside then
+          if contains_re pem_end_re line then redact_pem false acc rest
+          else redact_pem true acc rest
+        else if contains_re pem_begin_re line then
+          redact_pem (not (contains_re pem_end_re line))
+            ("[REDACTED PRIVATE KEY]" :: acc) rest
+        else redact_pem false (redact_line line :: acc) rest
+  in
+  String.concat "\n" (redact_pem false [] lines)
+
+let frame_continuation_lines (text : string) : string =
+  match String.split_on_char '\n' text with
+  | [] -> ""
+  | first :: rest ->
+      String.concat "\n" (first :: List.map (fun line -> "> " ^ line) rest)
+
 (* Cut [s] to at most [max_bytes] bytes without splitting a UTF-8 sequence
    (back off over continuation bytes). *)
 let truncate_utf8 (s : string) (max_bytes : int) : string =
@@ -669,11 +872,13 @@ let truncate_utf8 (s : string) (max_bytes : int) : string =
 let format_forward_body ~(role : role) ~(max_bytes : int) (text : string) :
     string =
   let label = role_label role in
-  if String.length text <= max_bytes then label ^ " " ^ text
+  let text = sanitize_forward_text text in
+  if String.length text <= max_bytes then
+    label ^ " " ^ frame_continuation_lines text
   else
     let cut = truncate_utf8 text max_bytes in
-    Printf.sprintf "%s %s… [truncated: %d of %d bytes shown]" label cut
-      (String.length cut) (String.length text)
+    Printf.sprintf "%s %s… [truncated: %d of %d bytes shown]" label
+      (frame_continuation_lines cut) (String.length cut) (String.length text)
 
 (* ------------------------------------------------------------------ *)
 (* Forwarding loop                                                     *)
