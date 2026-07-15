@@ -42,6 +42,14 @@ let register_cmd =
                Pass --session-id ID to specify explicitly.\n%!";
             exit 1)
   in
+  (* B191: hold the global per-session registration lock across the
+     [cross-broker sticky scan -> register] sequence so a concurrent
+     registration of the same session under another broker root cannot
+     interleave and mint a second alias. Released after register; the
+     kernel releases it on the error-path [exit]s. *)
+  let reg_lock =
+    C2c_mcp.acquire_session_registration_lock ~session_id ()
+  in
   (* B188: when no explicit --alias, prefer sticky alias for this session_id
      on another broker fingerprint over minting / env alias drift. *)
   let prior_hit =
@@ -116,6 +124,7 @@ let register_cmd =
       else
         Printf.eprintf "error: %s\n%!" msg);
      exit 1);
+  C2c_mcp.release_session_registration_lock reg_lock;
   (match C2c_mcp.Broker.write_allowed_signers_entry broker ~alias with
    | Ok () -> ()
    | Error e -> Printf.eprintf "[allowed_signers] warning: %s\n%!" e);

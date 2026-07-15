@@ -157,6 +157,16 @@ let init_cmd =
          | None -> C2c_setup.generate_session_id ())
   in
 
+  (* B191: hold the global per-session registration lock from the sticky
+     alias resolution below through Broker.register, so a concurrent c2c
+     invocation of the same session in another repo cannot interleave the
+     [scan -> mint -> register] sequence and mint a second alias. The fd is
+     O_CLOEXEC (the relay-identity shell-out below never inherits it);
+     error-path [exit]s release it at process exit. *)
+  let reg_lock =
+    C2c_mcp.acquire_session_registration_lock ~session_id ()
+  in
+
   (* Resolve alias ONCE before do_install_client so both the .mcp.json env
      (C2C_MCP_AUTO_REGISTER_ALIAS) and Broker.register use the same alias.
      B046: when --alias is not given, check for an existing registration
@@ -328,6 +338,10 @@ let init_cmd =
   if env_derived_session_id = None then
     write_session_statefile ~broker_root:root ~session_id ~alias
       ~client:client_resolved;
+
+  (* B191: identity is committed — release the per-session registration
+     lock before the room/supervisor/relay phases. *)
+  C2c_mcp.release_session_registration_lock reg_lock;
 
   let room_result =
     if String.trim room = "" then `Skipped

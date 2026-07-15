@@ -1127,6 +1127,82 @@ let migrate_alias_ed25519_keys ~from_root ~to_root ~alias =
       suffixes;
     !copied
 
+(** {1 B191: global per-session registration lock}
+
+    The B188 cross-broker sticky-alias scan and the subsequent
+    [Broker.register] are not atomic across brokers: two concurrent
+    registrations of the same session id under two different broker roots
+    (agent runs [cd ../x && c2c ...] and [cd ../y && c2c ...] at the same
+    time) both scan, both find nothing, and both mint distinct aliases.
+    Per-broker registry flocks cannot see each other.
+
+    This machine-global advisory lock — keyed by session id, following the
+    same state-home chain as broker roots so [C2C_STATE_HOME] relocation
+    moves it together with the brokers it guards — is held across the
+    [scan -> alias choice -> register] critical section on every
+    registration surface, making the sequence atomic: the second
+    registrant blocks, then observes the first's row and adopts its alias.
+
+    Best-effort: acquisition failure (unwritable lock dir) degrades to the
+    unlocked pre-B191 behavior — registration must never hard-fail because
+    of the lock.
+
+    NON-REENTRANT: [Unix.lockf] locks do not conflict within one process,
+    and an inner unlock drops the outer lock. Never nest two locked
+    sections for the same session id in one process. *)
+
+let session_registration_locks_dir () =
+  match C2c_repo_fp.c2c_state_home () with
+  | Some s -> Filename.concat (Filename.concat s "c2c") "locks"
+  | None ->
+      (match Sys.getenv_opt "HOME" with
+       | Some h when String.trim h <> "" ->
+           Filename.concat (Filename.concat (String.trim h) ".c2c") "locks"
+       | _ -> Filename.concat (Filename.get_temp_dir_name ()) "c2c-locks")
+
+(** Deterministic lock path for [session_id]. Hashed so arbitrary session
+    ids (UUIDs, thread ids, synthesized ids) are always filename-safe. *)
+let session_registration_lock_path ~session_id =
+  let hex = Digestif.SHA256.(to_hex (digest_string session_id)) in
+  Filename.concat
+    (session_registration_locks_dir ())
+    (Printf.sprintf "session-reg-%s.lock" (String.sub hex 0 16))
+
+(** Acquire the per-session registration lock (blocking). [None] on
+    failure — callers proceed unlocked rather than failing registration.
+    Fd is [O_CLOEXEC] so shell-outs inside the critical section (e.g.
+    [c2c init]'s relay-identity subprocess) never inherit it. *)
+let acquire_session_registration_lock ~session_id () =
+  try
+    let dir = session_registration_locks_dir () in
+    mkdir_p ~mode:0o700 dir;
+    let fd =
+      Unix.openfile
+        (session_registration_lock_path ~session_id)
+        [ Unix.O_RDWR; Unix.O_CREAT; Unix.O_CLOEXEC ]
+        0o600
+    in
+    (try
+       Unix.lockf fd Unix.F_LOCK 0;
+       Some fd
+     with e ->
+       (try Unix.close fd with _ -> ());
+       raise e)
+  with _ -> None
+
+let release_session_registration_lock = function
+  | None -> ()
+  | Some fd ->
+      (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+      (try Unix.close fd with _ -> ())
+
+(** Closure form. Note: [Stdlib.exit] inside [f] skips the finalizer; the
+    kernel releases the lock at process exit, so CLI error paths that
+    [exit] under the lock are still safe. *)
+let with_session_registration_lock ~session_id f =
+  let lock = acquire_session_registration_lock ~session_id () in
+  Fun.protect ~finally:(fun () -> release_session_registration_lock lock) f
+
 (** Resolve the alias to use when auto-registering [session_id] on [broker_root].
     Prefers a prior sticky registration for the same session_id on another
     broker fingerprint. Returns [(alias, from_auto_gen, prior_hit_opt)].
@@ -1162,6 +1238,27 @@ let resolve_auto_register_alias ~session_id ~broker_root ~mint () =
   | None ->
       let alias, from_auto_gen = mint () in
       (alias, from_auto_gen, None)
+
+(** B191: the common auto-register sequence — [resolve_auto_register_alias]
+    -> Ed25519 key migration from the prior broker -> the caller's
+    [register] — executed atomically under the per-session registration
+    lock so concurrent registrations of one session id across different
+    broker roots converge on a single alias. [register] performs the
+    actual [Broker.register] (each surface passes different metadata) and
+    may [exit] on failure. Returns [(alias, from_auto_gen, prior_hit)]. *)
+let locked_sticky_auto_register ~session_id ~broker_root ~mint ~register () =
+  with_session_registration_lock ~session_id (fun () ->
+      let alias, from_auto_gen, prior_hit =
+        resolve_auto_register_alias ~session_id ~broker_root ~mint ()
+      in
+      (match prior_hit with
+       | Some hit ->
+           ignore
+             (migrate_alias_ed25519_keys ~from_root:hit.broker_root
+                ~to_root:broker_root ~alias)
+       | None -> ());
+      register ~alias ~from_auto_gen;
+      (alias, from_auto_gen, prior_hit))
 
 let auto_register_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
@@ -1262,6 +1359,11 @@ let auto_register_impl ~broker_root ?session_id_override () =
          | Some sid -> sid
          | None -> derived_session_id_from_alias env_alias)
   in
+  (* B191: hold the global per-session registration lock across the
+     [registry read -> cross-broker sticky scan -> register] sequence so a
+     concurrent registration of the same session id under another broker
+     root cannot interleave (both minting distinct aliases). *)
+  with_session_registration_lock ~session_id @@ fun () ->
   begin
       let broker = Broker.create ~root:broker_root in
       (* Safety guard: if an alive registration already exists for this

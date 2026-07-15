@@ -434,6 +434,13 @@
  (modules test_b188_sticky_fingerprint)
  (libraries c2c_mcp alcotest unix))
 
+; B191: global per-session registration lock — concurrent cross-repo
+; registrations of one session id must converge on a single alias.
+(test
+ (name test_b191_session_reg_lock)
+ (modules test_b191_session_reg_lock)
+ (libraries c2c_mcp alcotest unix))
+
 (test
  (name test_broker_root_resolution)
  (modules test_broker_root_resolution)

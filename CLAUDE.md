@@ -204,6 +204,12 @@ archive append. Full caveats: `.collab/runbooks/ephemeral-dms.md`.
 - **Message envelope**:
   `<c2c event="message" from="name" to="alias">body</c2c>`.
   `c2c verify` is the canonical transcript check.
+- **One alias across repos (B188/B191)**: auto-register surfaces reuse the
+  session_id's sticky alias from any other `~/.c2c/repos/*/broker` before
+  minting, and the scan→register sequence holds a machine-global per-session
+  lock (`~/.c2c/locks/`), so concurrent `c2c` calls from two git roots cannot
+  mint two aliases. Lock helpers (`with_session_registration_lock`,
+  `locked_sticky_auto_register`) are NON-REENTRANT per process.
 - **Alias pool** ~1,450 words (B112; count in generated header of
   `ocaml/c2c_alias_words.ml`). Source: `data/c2c_alias_words.txt` (+ easy
   subset); embed via `just codegen-alias-words` — edit data files, never the
