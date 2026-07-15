@@ -1,13 +1,18 @@
 ---
+claimed_at: "2026-07-15T15:01:48Z"
+claimed_by: cli-user
+completed_at: "2026-07-15T15:15:46Z"
 complexity: medium
 created_at: "2026-07-15T14:40:18Z"
 depends_on: []
+duration_minutes: 13.98277597845
 estimate_hours: 1
 id: B211
 priority: high
-status: pending
+started_at: "2026-07-15T15:01:48Z"
+status: done
 tags: []
 title: Relay connector can remain wedged with stale sync while process stays alive
-updated_at: "2026-07-15T14:40:18Z"
+updated_at: "2026-07-15T15:15:46Z"
 ---
 Dogfood follow-up to B181. GitHub issue: https://github.com/clankercode/c2c/issues/5. On host 3d08761ae3f3, c2c 0.12.0 5faddd4b, whoami reported registered_unreachable and a connector process present while last successful sync was hours stale. Monitor then emitted request_timeout for tens of minutes. The process PID is not sufficient bridge health. Investigate connector liveness, watchdog/restart behavior, timeout classification, and monitor escalation. Acceptance: a live PID with stale bridge is detected promptly; recovery is automatic or one safe documented command; monitor reports a bounded actionable failure instead of indefinite timeout spam.

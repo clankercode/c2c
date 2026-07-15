@@ -1,13 +1,18 @@
 ---
+claimed_at: "2026-07-15T15:15:47Z"
+claimed_by: cli-user
+completed_at: "2026-07-15T15:25:30Z"
 complexity: medium
 created_at: "2026-07-15T14:40:18Z"
 depends_on: []
+duration_minutes: 9.722108120916667
 estimate_hours: 1
 id: B213
 priority: high
-status: pending
+started_at: "2026-07-15T15:15:47Z"
+status: done
 tags: []
 title: Relay signature_invalid flaps persist in released binary after connector-key fix
-updated_at: "2026-07-15T14:40:18Z"
+updated_at: "2026-07-15T15:25:30Z"
 ---
 Dogfood follow-up to B209. GitHub issue: https://github.com/clankercode/c2c/issues/7. On host 3d08761ae3f3 with c2c 0.12.0 5faddd4b, monitor relay peeks intermittently returned signature_invalid mixed with HTTP 429. B209 is merged to master and fixes connector-managed key resolution in source, but the reported binary predates that merge, so first verify install and runtime executable provenance before changing protocol code. If reproduced after installing the merged build, investigate remaining stale lease or rate-limit interactions. Acceptance: installed c2c uses the B209 connector session key fix; signature_invalid is distinguishable from 429; one safe recovery path exists and no repeated re-register storm is required.
