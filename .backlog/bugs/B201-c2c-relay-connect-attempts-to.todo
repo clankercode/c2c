@@ -15,12 +15,16 @@ updated_at: "2026-07-15T05:04:22Z"
 
 ## Steps to Reproduce
 
-1. TODO: Add steps
+1. Generate a broker registry containing many dead/historical registrations (e.g. 50+ entries).
+2. Start the relay connector:
+   `c2c relay connect`
+3. Observe connector logs or status.
 
 ## Expected Behavior
 
-TODO: Describe expected behavior
+The connector should only heartbeat/register ALIVE registrations, or batch/throttle its requests to the relay to avoid triggering HTTP 429 rate limit errors.
 
 ## Actual Behavior
 
-TODO: Describe actual behavior
+The connector reads all registrations directly from `registry.json` and tries to register/heartbeat every single one in sequence. The relay answers with HTTP 429 `rate_limit_exceeded`, causing the connector's sync loop to fail for all sessions (including the active one).
+

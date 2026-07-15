@@ -15,12 +15,15 @@ updated_at: "2026-07-15T05:04:47Z"
 
 ## Steps to Reproduce
 
-1. TODO: Add steps
+1. Initialize a new CLI registration using `c2c init` or `c2c register` without passing a PID.
+2. Check `registry.json` to confirm the registration has `pid = null` or the `pid` field is missing.
+3. Run `c2c sweep-dryrun`.
 
 ## Expected Behavior
 
-TODO: Describe expected behavior
+Registrations that do not have an active process should be considered dead, and `c2c sweep` should be able to garbage-collect them.
 
 ## Actual Behavior
 
-TODO: Describe actual behavior
+`C2c_mcp.Broker.registration_is_alive` evaluates registrations with `pid = None` as `true` (alive). As a result, `c2c sweep` refuses to clean them up without `--force`, causing dead registrations to accumulate in `registry.json` indefinitely.
+
