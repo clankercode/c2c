@@ -661,25 +661,113 @@ type t = {
 let local_inbox_path broker_root session_id =
   broker_root // (session_id ^ ".inbox.json")
 
+type local_registration = {
+  lr_session_id : string;
+  lr_alias : string;
+  lr_client_type : string;
+  lr_pid : int option;
+  lr_pid_start_time : int option;
+  lr_registered_at : float option;
+  lr_last_activity_ts : float option;
+  lr_registered_by : string option;
+}
+
+let read_pid_start_time_local pid =
+  let path = Printf.sprintf "/proc/%d/stat" pid in
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      let line = input_line ic in
+      match String.rindex_opt line ')' with
+      | None -> None
+      | Some idx ->
+          let tail = String.sub line (idx + 2) (String.length line - idx - 2) in
+          String.split_on_char ' ' tail |> fun fields ->
+          (match List.nth_opt fields 19 with
+           | Some token -> int_of_string_opt token
+           | None -> None))
+  with Sys_error _ | End_of_file -> None
+
+let env_truthy name =
+  match Sys.getenv_opt name with
+  | Some "1" | Some "true" | Some "yes" -> true
+  | _ -> false
+
+let is_hook_registration = function
+  | Some source -> String.ends_with ~suffix:"-hook" source
+  | None -> false
+
+let relay_registration_is_eligible ~broker_root reg =
+  if env_truthy "C2C_IN_DOCKER" then
+    match reg.lr_pid with
+    | None -> false
+    | Some _ ->
+        let lease = broker_root // ".leases" // reg.lr_session_id in
+        (try Unix.gettimeofday () -. (Unix.stat lease).st_mtime <= 300.0
+         with Unix.Unix_error _ -> false)
+  else
+    match reg.lr_pid with
+    | Some pid ->
+        (match reg.lr_pid_start_time, read_pid_start_time_local pid with
+         | Some stored, Some current -> stored = current
+         | _ -> false)
+    | None when is_hook_registration reg.lr_registered_by ->
+        (* Vanilla client hooks are short-lived and intentionally register no
+           PID. Their bounded activity lease is the only positive liveness
+           evidence; it preserves active Claude/Grok/Agy/Codex aliases without
+           reviving old hook history indefinitely. *)
+        let anchor = match reg.lr_last_activity_ts with
+          | Some _ as ts -> ts
+          | None -> reg.lr_registered_at
+        in
+        (match anchor with
+         | Some ts -> Unix.gettimeofday () -. ts <= 24.0 *. 60.0 *. 60.0
+         | None -> false)
+    | None -> false
+
+let read_local_registrations_with_skipped broker_root =
+  let int_opt key fields = match List.assoc_opt key fields with
+    | Some (`Int n) -> Some n | _ -> None in
+  let float_opt key fields = match List.assoc_opt key fields with
+    | Some (`Float f) -> Some f | Some (`Int n) -> Some (float_of_int n)
+    | _ -> None in
+  let string_opt key fields = match List.assoc_opt key fields with
+    | Some (`String s) -> Some s | _ -> None in
+  let parsed =
+    match C2c_io.read_json_opt (broker_root // "registry.json") with
+    | Some (`List rows) ->
+        List.filter_map (function
+          | `Assoc fields ->
+              (match string_opt "session_id" fields, string_opt "alias" fields with
+               | Some lr_session_id, Some lr_alias -> Some {
+                   lr_session_id; lr_alias;
+                   lr_client_type = Option.value (string_opt "client_type" fields)
+                       ~default:"unknown";
+                   lr_pid = int_opt "pid" fields;
+                   lr_pid_start_time = int_opt "pid_start_time" fields;
+                   lr_registered_at = float_opt "registered_at" fields;
+                   lr_last_activity_ts = float_opt "last_activity_ts" fields;
+                   lr_registered_by = string_opt "registered_by" fields;
+                 }
+               | _ -> None)
+          | _ -> None) rows
+    | _ -> []
+  in
+  List.fold_left
+    (fun (eligible, skipped) reg ->
+       if relay_registration_is_eligible ~broker_root reg then
+         ((reg.lr_session_id, reg.lr_alias, reg.lr_client_type) :: eligible,
+          skipped)
+       else eligible, skipped + 1)
+    ([], 0) parsed
+  |> fun (eligible, skipped) -> List.rev eligible, skipped
+
 let read_local_registrations broker_root =
-  let reg_path = broker_root // "registry.json" in
-  match C2c_io.read_json_opt reg_path with
-  | None -> []
-  | Some json ->
-      let open Yojson.Safe.Util in
-      match json with
-      | `List regs ->
-          List.fold_left (fun acc r ->
-            match r with
-            | `Assoc _ ->
-                (match r |> member "session_id", r |> member "alias" with
-                 | `String sid, `String alias ->
-                     let ct = match r |> member "client_type" with `String s -> s | _ -> "unknown" in
-                     (sid, alias, ct) :: acc
-                 | _ -> acc)
-            | _ -> acc
-          ) [] regs
-      | _ -> []
+  fst (read_local_registrations_with_skipped broker_root)
+
+let retain_eligible_registered regs registered =
+  let eligible_session_ids = List.map (fun (sid, _, _) -> sid) regs in
+  List.filter (fun sid -> List.mem sid eligible_session_ids) registered
 
 let append_to_local_inbox broker_root session_id messages =
   if messages = [] then 0
@@ -1681,7 +1769,11 @@ let deliver_alert_emissions broker_root regs (emissions : C2c_relay_alert.emissi
 
 let sync (t : t) : sync_result Lwt.t =
   let client = Relay_client.make ?token:t.token ?identity:t.identity t.relay_url in
-  let regs = read_local_registrations t.broker_root in
+  let regs, skipped_regs = read_local_registrations_with_skipped t.broker_root in
+  if t.verbose && skipped_regs > 0 then
+    Printf.printf
+      "[relay-connector] skipped %d dead/unverified historical registration(s) in %s\n%!"
+      skipped_regs t.broker_root;
   (* Reload each pass so an operator can tighten local ingress controls without
      restarting the connector.  A present-but-invalid policy fails closed for
      inbound rows; registration, heartbeat, and outbound delivery continue. *)
@@ -1713,6 +1805,10 @@ let sync (t : t) : sync_result Lwt.t =
   maintain_ws_connections t;
 
   (* 1. Register / heartbeat each local session *)
+  (* Drop cached relay registrations that are no longer locally Alive. Without
+     this intersection, a process that dies after the first pass is still
+     heartbeated and polled forever even though it disappeared from [regs]. *)
+  t.registered <- retain_eligible_registered regs t.registered;
   let registered, heartbeated, new_registered, reg_errors =
     List.fold_left (fun (registered, heartbeated, reg_list, errs) (session_id, alias, client_type) ->
       if List.mem session_id t.registered then

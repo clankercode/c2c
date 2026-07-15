@@ -67,6 +67,92 @@ let test_machine_broker_discovery_is_dynamic () =
       Alcotest.(check int) "primary + startup repo + later repo discovered" 0
         (match status with Unix.WEXITED n -> n | Unix.WSIGNALED n | Unix.WSTOPPED n -> 128 + n)
 
+let test_relay_registration_filters_historical_rows () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let live_pid = Unix.getpid () in
+  let live_start =
+    match Conn.read_pid_start_time_local live_pid with
+    | Some n -> n
+    | None -> Alcotest.fail "current process must have a readable start time"
+  in
+  let live = `Assoc [
+    "session_id", `String "live-session";
+    "alias", `String "live-alias";
+    "client_type", `String "codex";
+    "pid", `Int live_pid;
+    "pid_start_time", `Int live_start;
+  ] in
+  let dead =
+    List.init 64 (fun i -> `Assoc [
+      "session_id", `String (Printf.sprintf "dead-%d" i);
+      "alias", `String (Printf.sprintf "dead-alias-%d" i);
+      "pid", `Int (900_000 + i);
+      "pid_start_time", `Int 1;
+    ])
+  in
+  let unknown = `Assoc [
+    "session_id", `String "pidless-history";
+    "alias", `String "pidless-history";
+  ] in
+  let recent_hook = `Assoc [
+    "session_id", `String "recent-hook";
+    "alias", `String "recent-hook-alias";
+    "client_type", `String "claude";
+    "registered_by", `String "claude-hook";
+    "last_activity_ts", `Float (Unix.gettimeofday ());
+  ] in
+  let stale_hook = `Assoc [
+    "session_id", `String "stale-hook";
+    "alias", `String "stale-hook-alias";
+    "registered_by", `String "grok-hook";
+    "last_activity_ts", `Float (Unix.gettimeofday () -. 25.0 *. 60.0 *. 60.0);
+  ] in
+  let oc = open_out (Filename.concat tmp "registry.json") in
+  Yojson.Safe.to_channel oc (`List (live :: recent_hook :: stale_hook :: unknown :: dead));
+  close_out oc;
+  let regs, skipped = Conn.read_local_registrations_with_skipped tmp in
+  Alcotest.(check int) "pid-live + recent hook" 2 (List.length regs);
+  Alcotest.(check int) "dead + stale/unverified skipped" 66 skipped;
+  Alcotest.(check (list (triple string string string))) "eligible identity"
+    [ "live-session", "live-alias", "codex";
+      "recent-hook", "recent-hook-alias", "claude" ] regs;
+  Alcotest.(check (list string)) "cached dead sessions pruned"
+    [ "live-session"; "recent-hook" ]
+    (Conn.retain_eligible_registered regs
+       [ "dead-1"; "live-session"; "recent-hook"; "pidless-history" ])
+
+let test_docker_registration_lease_boundaries () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      Unix.putenv "C2C_IN_DOCKER" "1";
+      let mk session_id = Conn.{
+        lr_session_id = session_id; lr_alias = session_id;
+        lr_client_type = "codex"; lr_pid = Some 42;
+        lr_pid_start_time = Some 1; lr_registered_at = None;
+        lr_last_activity_ts = None; lr_registered_by = None;
+      } in
+      let lease_dir = Filename.concat tmp ".leases" in
+      Unix.mkdir lease_dir 0o700;
+      let fresh_path = Filename.concat lease_dir "fresh" in
+      let stale_path = Filename.concat lease_dir "stale" in
+      let touch path = let oc = open_out path in close_out oc in
+      touch fresh_path; touch stale_path;
+      let now = Unix.gettimeofday () in
+      Unix.utimes stale_path (now -. 301.0) (now -. 301.0);
+      let ok =
+        Conn.relay_registration_is_eligible ~broker_root:tmp (mk "fresh")
+        && not (Conn.relay_registration_is_eligible ~broker_root:tmp (mk "stale"))
+        && not (Conn.relay_registration_is_eligible ~broker_root:tmp (mk "missing"))
+      in
+      exit (if ok then 0 else 12)
+  | pid ->
+      let _, status = Unix.waitpid [] pid in
+      Alcotest.(check int) "fresh=true, expired/missing=false in originating root" 0
+        (match status with Unix.WEXITED n -> n | Unix.WSIGNALED n | Unix.WSTOPPED n -> 128 + n)
+
 (* --- path constructors --- *)
 
 let test_local_inbox_path () =
@@ -864,6 +950,12 @@ let () =
     "B200 machine brokers", [
       Alcotest.test_case "dynamic repository discovery" `Quick
         test_machine_broker_discovery_is_dynamic;
+    ];
+    "B201 relay registration eligibility", [
+      Alcotest.test_case "dead history skipped; recent hooks retained" `Quick
+        test_relay_registration_filters_historical_rows;
+      Alcotest.test_case "Docker leases are bounded and per-root" `Quick
+        test_docker_registration_lease_boundaries;
     ];
     "parse_relay_url", [
       Alcotest.test_case "host:port" `Quick test_parse_relay_url_host_port;
