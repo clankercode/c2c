@@ -150,9 +150,16 @@
  (modules test_c2c_send_handlers)
  (libraries c2c_mcp alcotest yojson unix))
 
+(rule
+ (targets c2c_start_cli_dep.ml)
+ (deps %{exe:../cli/c2c.exe})
+ (action
+  (with-stdout-to %{targets}
+   (echo "let built = true"))))
+
 (test
  (name test_c2c_start)
- (modules test_c2c_start)
+ (modules test_c2c_start c2c_start_cli_dep)
  (libraries c2c_mcp alcotest cmdliner yojson unix)
  (deps %{exe:../cli/c2c.exe}))
 

@@ -3070,6 +3070,11 @@ let test_coord_broadcast_room_empty_disables () =
    from the former so the test runs against the freshly-built binary
    rather than whatever happens to be on PATH. *)
 let built_c2c_binary () =
+  (* Referencing the generated support module makes the test executable's
+     build graph depend on the production CLI.  The [test] stanza's [deps]
+     alone applies to the runtest action, not to direct [dune exec], which can
+     otherwise launch a stale c2c binary after source changes (B221). *)
+  ignore C2c_start_cli_dep.built;
   let exe = Sys.executable_name in
   let exe = if Filename.is_relative exe then Filename.concat (Sys.getcwd ()) exe else exe in
   let exe = try Unix.realpath exe with _ -> exe in
@@ -3182,10 +3187,15 @@ let test_generic_start_tmux_consumes_namespaced_control_b221 () =
   let log = read_all_file log_path in
   check bool "reserved name never reaches tmux" false
     (string_contains log "--c2c:");
-  if not
-       (string_contains log
-          "send-keys -t fixture:0.0 'bash' '-lc' 'echo hello'")
-  then
+  check bool "split-form name value never reaches tmux" false
+    (string_contains log alias);
+  let ordinary_command_sent =
+    String.split_on_char '\n' log
+    |> List.exists (fun line ->
+         string_contains line "send-keys -t "
+         && string_contains line "'bash' '-lc' 'echo hello'")
+  in
+  if not ordinary_command_sent then
     Alcotest.failf "ordinary command did not reach tmux send-keys; log=%S" log
 
 let run_instances_and_capture_json ~instances_dir ~extra_args =
