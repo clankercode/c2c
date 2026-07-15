@@ -29,7 +29,7 @@ let commands_by_safety_cmd =
     ("wait-inbox", "Block until a message arrives, then drain once and exit (for clients with no push delivery)");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
-    ("forward-agent-log", "Follow a session transcript (jsonl) and forward user input + agent text to a c2c address");
+    ("forward-agent-log", "Follow a session transcript (any supported client) and forward user input + agent text to a c2c address");
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
     ("my-rooms", "List rooms you are a member of");
     ("history", "Show archived inbox messages");
@@ -214,7 +214,7 @@ let fast_path_commands () =
     ("wait-inbox", "Block until a message arrives, then drain once and exit (for clients with no push delivery)");
     ("send", "Send a message to a registered peer alias or session ID");
     ("send-all", "Broadcast a message to all peers");
-    ("forward-agent-log", "Follow a session transcript (jsonl) and forward user input + agent text to a c2c address");
+    ("forward-agent-log", "Follow a session transcript (any supported client) and forward user input + agent text to a c2c address");
     ("rooms", "Manage persistent N:N rooms (list/join/leave/send/history/tail/invite/members/visibility)");
     ("my-rooms", "List rooms you are a member of");
     ("history", "Show archived inbox messages");
