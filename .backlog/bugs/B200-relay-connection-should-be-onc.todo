@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-15T05:04:04Z"
+depends_on: []
+estimate_hours: 1
+id: B200
+priority: high
+status: pending
+tags: []
+title: Relay connection should be once for the whole machine, should be autorestarted when c2c updates, and connecting to the relay should only be required once (each agent still needs to register their alias if they want to recieve messages via <alias>@<relay-hostname>). Undecided whether registration should be required for delivery via 'alias@machineid'
+updated_at: "2026-07-15T05:04:04Z"
+---
+
+Relay connection should be once for the whole machine, should be autorestarted when c2c updates, and connecting to the relay should only be required once (each agent still needs to register their alias if they want to recieve messages via <alias>@<relay-hostname>). Undecided whether registration should be required for delivery via 'alias@machineid'
