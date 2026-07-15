@@ -19,6 +19,11 @@ or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
 ## v0.12.0 — 2026-07-13
 
+### Forward a session transcript to an observer (B193)
+summary: You can mirror a coding session's human-visible conversation to another c2c peer — locally or on a colleague's machine via alias@host. `c2c forward-agent-log` follows a session jsonl file (Claude Code format) and forwards only user input (`[user] …`) and assistant plaintext (`[agent] …`), dropping tool calls, thinking, and system/meta noise. It starts at end-of-file by default (no history flood) and truncates long messages at --max-bytes (default 2000).
+setup: c2c forward-agent-log --file ~/.claude/projects/<project-slug>/<session-id>.jsonl <observer-alias>
+audience: all
+
 ### No install-time wake.toml seed (B186)
 summary: `c2c install` / `c2c init` no longer write a default `.c2c/schedules/<alias>/wake.toml`. That file only fired under a schedule timer (managed start or explicit `C2C_MCP_SCHEDULE_TIMER=1`), so raw installs got dead config and managed sessions could double-wake with the built-in heartbeat. Opt in with `c2c schedule set`; managed `c2c start` still provides an idle-gated native wake.
 setup: c2c schedule set wake --interval 4.1m --message "wake — poll inbox, advance work"

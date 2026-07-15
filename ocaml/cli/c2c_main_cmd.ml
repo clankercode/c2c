@@ -101,6 +101,7 @@ let all_cmds =
   ; C2c_statefile_cmd.cc_plugin_group
   ; C2c_supervisor_cmd.supervisor_group
   ; C2c_deliver_watch.deliver_group
+  ; C2c_forward_agent_log_cmd.forward_agent_log
   ; C2c_commands_cmd.commands_by_safety
   ; C2c_agent_help.agent_help
   ; C2c_watch.watch_cmd

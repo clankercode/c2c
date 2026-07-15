@@ -68,6 +68,9 @@ let command_tier_map () : (string * safety) list =
   ; "commands", Tier1
   ; "agent-help", Tier1   (* agent-oriented MCP+CLI example help — safe everywhere *)
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
+  (* forward-agent-log (B193): read-only transcript tail + ordinary sends via
+     the normal broker path — same safety class as monitor + send. *)
+  ; "forward-agent-log", Tier1
   ; "skills", Tier1
   (* list-glyphs: read-only, side-effect-free glyph registry dump. Tier1 so
      filter_commands NEVER drops it from the dispatch group — pi-c2c invokes
