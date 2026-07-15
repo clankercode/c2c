@@ -619,24 +619,56 @@ let split_complete_lines (buf : string) : string list * string =
   done;
   (List.rev !lines, String.sub buf !start (n - !start))
 
-type tail_state = { offset : int; pending : string }
+(* Input limits are intentionally independent from [--max-bytes], which caps
+   the sanitized outbound body.  These limits protect the parser before it
+   has classified or sanitized hostile/malformed live transcript data. *)
+let max_raw_line_bytes = 1024 * 1024
+let max_tail_read_bytes = 1024 * 1024
+let max_lines_per_step = 256
+let max_opencode_file_bytes = 1024 * 1024
+let max_complete_message_bytes = 1024 * 1024
+
+type tail_state = {
+  offset : int;
+  pending : string;
+  dropping_oversize : bool;
+  oversize_lines : int;
+}
 
 let initial_tail_state ?(from_start = false) (path : string) : tail_state =
   let size = try (Unix.stat path).Unix.st_size with _ -> 0 in
-  { offset = (if from_start then 0 else size); pending = "" }
+  {
+    offset = (if from_start then 0 else size);
+    pending = "";
+    dropping_oversize = false;
+    oversize_lines = 0;
+  }
 
 (* Read newly-appended bytes past [st.offset] and return the complete lines
    they yield. Handles truncation / rotation (file shrank below our offset →
    restart from 0 and drop the stale partial). Read errors are non-fatal and
    yield no lines. *)
-let tail_read ~(path : string) (st : tail_state) : string list * tail_state =
+let tail_read ?(max_offset : int option) ~(path : string) (st : tail_state) :
+    string list * tail_state =
   match Unix.stat path with
   | exception _ -> ([], st)
-  | { Unix.st_size = size; _ } ->
+  | { Unix.st_size = actual_size; _ } ->
       let st =
-        if size < st.offset then { offset = 0; pending = "" } else st
+        if actual_size < st.offset then
+          {
+            offset = 0;
+            pending = "";
+            dropping_oversize = false;
+            oversize_lines = st.oversize_lines;
+          }
+        else st
       in
-      if size = st.offset then ([], st)
+      let size =
+        match max_offset with
+        | Some ceiling -> min actual_size ceiling
+        | None -> actual_size
+      in
+      if size <= st.offset then ([], st)
       else begin
         match open_in_bin path with
         | exception _ -> ([], st)
@@ -645,12 +677,44 @@ let tail_read ~(path : string) (st : tail_state) : string list * tail_state =
               ~finally:(fun () -> close_in_noerr ic)
               (fun () ->
                 seek_in ic st.offset;
-                let len = size - st.offset in
-                let chunk = really_input_string ic len in
-                let lines, pending =
-                  split_complete_lines (st.pending ^ chunk)
-                in
-                (lines, { offset = size; pending }))
+                let available = min (size - st.offset) max_tail_read_bytes in
+                let chunk = really_input_string ic available in
+                let lines = ref [] in
+                let current = Buffer.create (String.length st.pending + 256) in
+                Buffer.add_string current st.pending;
+                let dropping = ref st.dropping_oversize in
+                let dropped = ref st.oversize_lines in
+                let consumed = ref 0 in
+                let completed = ref 0 in
+                while
+                  !consumed < String.length chunk
+                  && !completed < max_lines_per_step
+                do
+                  let c = chunk.[!consumed] in
+                  incr consumed;
+                  if c = '\n' then begin
+                    if !dropping then begin
+                      dropping := false
+                    end else lines := Buffer.contents current :: !lines;
+                    Buffer.clear current;
+                    incr completed
+                  end else if not !dropping then begin
+                    if Buffer.length current < max_raw_line_bytes then
+                      Buffer.add_char current c
+                    else begin
+                      Buffer.clear current;
+                      dropping := true;
+                      incr dropped
+                    end
+                  end
+                done;
+                ( List.rev !lines
+                , {
+                    offset = st.offset + !consumed;
+                    pending = Buffer.contents current;
+                    dropping_oversize = !dropping;
+                    oversize_lines = !dropped;
+                  } ))
       end
 
 (* ------------------------------------------------------------------ *)
@@ -902,12 +966,48 @@ let deliver_via_broker ~(broker : Broker.t) ~(from_alias : string)
 
 type run_stats = { forwarded : int; send_failures : int }
 
+let max_delivery_attempts = 4
+let initial_retry_delay_s = 0.05
+let max_retry_delay_s = 0.20
+
+type delivery_outcome = Delivered | Abandoned of string
+
+(* Keep the complete formatted event in this stack frame until delivery
+   succeeds or the explicit bounded-loss policy is reached.  Backoff is
+   deliberately short: this command mirrors a live conversation and must not
+   stall transcript consumption indefinitely when its destination is down. *)
+let send_with_retry ?(sleep = fun seconds ->
+    ignore (Unix.select [] [] [] seconds))
+    ~(send : string -> (unit, string) result) (body : string) :
+    delivery_outcome =
+  let rec attempt number delay =
+    match send body with
+    | Ok () -> Delivered
+    | Error msg when number < max_delivery_attempts ->
+        Printf.eprintf
+          "[c2c-forward-agent-log] delivery attempt %d/%d failed: %s; retrying in %.2fs\n%!"
+          number max_delivery_attempts msg delay;
+        sleep delay;
+        attempt (number + 1) (min max_retry_delay_s (delay *. 2.))
+    | Error msg ->
+        Printf.eprintf
+          "[c2c-forward-agent-log] delivery failed after %d attempts: %s; dropping this event under the bounded retry loss policy. Restore the destination and replay with --from-start or --since.\n%!"
+          max_delivery_attempts msg;
+        Abandoned msg
+  in
+  attempt 1 initial_retry_delay_s
+
 (* One pass: consume newly-completed lines, classify, forward. [send] is
    injected so tests can capture instead of enqueueing. *)
-let step ~(path : string) ~(classify : string -> (role * string) option)
+let step ?(max_offset : int option) ~(path : string)
+    ~(classify : string -> (role * string) option)
     ~(max_bytes : int) ~(send : string -> (unit, string) result)
     (st : tail_state) (stats : run_stats) : tail_state * run_stats =
-  let lines, st = tail_read ~path st in
+  let lines, st' = tail_read ?max_offset ~path st in
+  if st'.oversize_lines > st.oversize_lines then
+    Printf.eprintf
+      "[c2c-forward-agent-log] dropped %d oversized transcript line(s) (limit %d bytes each); this is the documented malformed-input loss policy\n%!"
+      (st'.oversize_lines - st.oversize_lines) max_raw_line_bytes;
   let stats =
     List.fold_left
       (fun stats line ->
@@ -915,15 +1015,13 @@ let step ~(path : string) ~(classify : string -> (role * string) option)
         | None -> stats
         | Some (role, text) ->
             let body = format_forward_body ~role ~max_bytes text in
-            (match send body with
-             | Ok () -> { stats with forwarded = stats.forwarded + 1 }
-             | Error msg ->
-                 Printf.eprintf "[c2c-forward-agent-log] send failed: %s\n%!"
-                   msg;
+            (match send_with_retry ~send body with
+             | Delivered -> { stats with forwarded = stats.forwarded + 1 }
+             | Abandoned _ ->
                  { stats with send_failures = stats.send_failures + 1 }))
       stats lines
   in
-  (st, stats)
+  (st', stats)
 
 (* Follow [path] and forward filtered events until the process is killed
    (or, with [once], drain what is currently readable and return).
@@ -941,8 +1039,22 @@ let run ?(start_offset : int option) ~(path : string)
   in
   let stats = { forwarded = 0; send_failures = 0 } in
   if once then
-    let _st, stats = step ~path ~classify ~max_bytes ~send st stats in
-    stats
+    (* [tail_read] deliberately bounds each pass. Drain up to the file size
+       observed at invocation so --once retains its current-history contract
+       without chasing a transcript that is still growing forever. *)
+    let target_offset =
+      try (Unix.stat path).Unix.st_size with _ -> st.offset
+    in
+    let rec drain st stats =
+      if st.offset >= target_offset then stats
+      else
+        let st', stats =
+          step ~max_offset:target_offset ~path ~classify ~max_bytes ~send st
+            stats
+        in
+        if st'.offset <= st.offset then stats else drain st' stats
+    in
+    drain st stats
   else begin
     let rec loop st stats =
       let st, stats = step ~path ~classify ~max_bytes ~send st stats in
@@ -977,9 +1089,16 @@ type opencode_state = { done_ids : (string, unit) Hashtbl.t }
 let opencode_part_root ~(message_dir : string) : string =
   Filename.concat (Filename.dirname (Filename.dirname message_dir)) "part"
 
-let read_json_file (path : string) : Yojson.Safe.t option =
-  match open_in_bin path with
-  | exception _ -> None
+type bounded_json = Json of Yojson.Safe.t | Unreadable | Json_too_large
+
+let read_json_file_bounded (path : string) : bounded_json =
+  match Unix.stat path with
+  | exception _ -> Unreadable
+  | { Unix.st_size = size; _ } when size > max_opencode_file_bytes ->
+      Json_too_large
+  | _ ->
+    match open_in_bin path with
+    | exception _ -> Unreadable
   | ic ->
       Fun.protect
         ~finally:(fun () -> close_in_noerr ic)
@@ -988,8 +1107,11 @@ let read_json_file (path : string) : Yojson.Safe.t option =
             Yojson.Safe.from_string
               (really_input_string ic (in_channel_length ic))
           with
-          | exception _ -> None
-          | j -> Some j)
+          | exception _ -> Unreadable
+          | j -> Json j)
+
+let read_json_file (path : string) : Yojson.Safe.t option =
+  match read_json_file_bounded path with Json j -> Some j | _ -> None
 
 let opencode_message_files (dir : string) : string list =
   match Sys.readdir dir with
@@ -1001,30 +1123,53 @@ let opencode_message_files (dir : string) : string list =
              && Filename.check_suffix e ".json")
       |> List.sort compare
 
-let opencode_message_text ~(part_root : string) ~(msg_id : string)
-    ~(for_user : bool) : string =
+type opencode_text = Text_ready of string | Text_not_ready | Text_too_large
+
+let opencode_message_text_bounded ~(part_root : string) ~(msg_id : string)
+    ~(for_user : bool) : opencode_text =
   let dir = Filename.concat part_root msg_id in
   match Sys.readdir dir with
-  | exception _ -> ""
+  | exception _ -> Text_not_ready
   | entries ->
-      Array.to_list entries
-      |> List.sort compare
-      |> List.filter_map (fun e ->
-             match read_json_file (Filename.concat dir e) with
-             | None -> None
-             | Some p ->
-                 if member "type" p <> `String "text" then None
-                 else if bool_field "synthetic" p then None
-                 else (
+      let files = Array.to_list entries |> List.sort compare in
+      let out = Buffer.create 256 in
+      let rec collect = function
+        | [] -> Text_ready (Buffer.contents out)
+        | e :: rest ->
+            (match read_json_file_bounded (Filename.concat dir e) with
+             | Unreadable -> Text_not_ready
+             | Json_too_large -> Text_too_large
+             | Json p ->
+                 if member "type" p <> `String "text"
+                    || bool_field "synthetic" p
+                 then collect rest
+                 else
                    match member "text" p with
                    | `String t ->
                        let trimmed = String.trim t in
                        if trimmed = ""
                           || (for_user && is_user_noise_text trimmed)
-                       then None
-                       else Some trimmed
-                   | _ -> None))
-      |> String.concat "\n\n"
+                       then collect rest
+                       else
+                         let separator = if Buffer.length out = 0 then 0 else 2 in
+                         if
+                           Buffer.length out + separator + String.length trimmed
+                           > max_complete_message_bytes
+                         then Text_too_large
+                         else begin
+                           if separator <> 0 then Buffer.add_string out "\n\n";
+                           Buffer.add_string out trimmed;
+                           collect rest
+                         end
+                   | _ -> collect rest)
+      in
+      collect files
+
+let opencode_message_text ~(part_root : string) ~(msg_id : string)
+    ~(for_user : bool) : string =
+  match opencode_message_text_bounded ~part_root ~msg_id ~for_user with
+  | Text_ready text -> text
+  | Text_not_ready | Text_too_large -> ""
 
 (* opencode message times are millisecond epochs under "time". *)
 let opencode_message_time (j : Yojson.Safe.t) : float option =
@@ -1045,29 +1190,46 @@ let opencode_step ?(since : float option) ?(until_ : float option)
       let msg_id = Filename.chop_suffix fname ".json" in
       if Hashtbl.mem st.done_ids msg_id then stats
       else
-        match read_json_file (Filename.concat message_dir fname) with
-        | None -> stats
-        | Some j ->
+        match read_json_file_bounded (Filename.concat message_dir fname) with
+        | Unreadable -> stats
+        | Json_too_large ->
+            Printf.eprintf
+              "[c2c-forward-agent-log] dropping oversized OpenCode message metadata %s (limit %d bytes); this is the documented malformed-input loss policy\n%!"
+              msg_id max_opencode_file_bytes;
+            Hashtbl.replace st.done_ids msg_id ();
+            stats
+        | Json j ->
             let forward role =
-              Hashtbl.replace st.done_ids msg_id ();
-              let text =
-                if in_time_range ~since ~until_ (opencode_message_time j)
-                then
-                  opencode_message_text ~part_root ~msg_id
+              if not (in_time_range ~since ~until_ (opencode_message_time j))
+              then begin
+                Hashtbl.replace st.done_ids msg_id ();
+                stats
+              end else
+                match
+                  opencode_message_text_bounded ~part_root ~msg_id
                     ~for_user:(role = User)
-                else ""
-              in
-              if text = "" then stats
-              else
-                let body = format_forward_body ~role ~max_bytes text in
-                (match send body with
-                | Ok () -> { stats with forwarded = stats.forwarded + 1 }
-                | Error msg ->
+                with
+                | Text_not_ready -> stats
+                | Text_too_large ->
                     Printf.eprintf
-                      "[c2c-forward-agent-log] send failed: %s\n%!" msg;
-                    { stats with
-                      send_failures = stats.send_failures + 1
-                    })
+                      "[c2c-forward-agent-log] dropping oversized OpenCode message %s (complete text limit %d bytes); this is the documented malformed-input loss policy\n%!"
+                      msg_id max_complete_message_bytes;
+                    Hashtbl.replace st.done_ids msg_id ();
+                    stats
+                | Text_ready "" ->
+                    Hashtbl.replace st.done_ids msg_id ();
+                    stats
+                | Text_ready text ->
+                    let body = format_forward_body ~role ~max_bytes text in
+                    (match send_with_retry ~send body with
+                     | Delivered ->
+                         Hashtbl.replace st.done_ids msg_id ();
+                         { stats with forwarded = stats.forwarded + 1 }
+                     | Abandoned _ ->
+                         Hashtbl.replace st.done_ids msg_id ();
+                         { stats with
+                           send_failures = stats.send_failures + 1
+                         })
             in
             (match member "role" j with
             | `String "user" -> forward User
