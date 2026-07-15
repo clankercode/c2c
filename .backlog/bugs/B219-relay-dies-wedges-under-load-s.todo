@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-15T20:57:25Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T16:00:57Z"
 depends_on: []
 estimate_hours: 1
 id: B219
 priority: high
-status: pending
+started_at: "2026-07-15T20:57:25Z"
+status: in_progress
 tags: []
 title: Relay dies/wedges under load (silent death, no app error) - OOM vs deadlock vs serverless-sleep
-updated_at: "2026-07-15T16:00:57Z"
+updated_at: "2026-07-15T20:57:25Z"
 ---
 Root-cause follow-up to B215. Deployed relay v0.12.0 git=a91bee6 on Railway (vigilant-laughter/c2c/production) goes unresponsive (HTTP 502; app upstream not answering) with NO OCaml exception/backtrace before each death - i.e. externally killed or wedged, not an app crash-with-error. Boots seen at 2026-07-15 09:27/09:44/11:46/12:47/13:25 UTC then ~2.5h silent while 502; railway ssh reports container 'not running / unexpected state (maybe serverless scaled to zero)'. Three hypotheses (see .collab/findings/2026-07-16T02-00-00Z-...-relay-down-crashloop.md): (1) OOM under the B210 multi-connect 429 storm + PoW-12 load; (2) Lwt event-loop deadlock/wedge (candidate: blocking Mutex.lock in relay.ml ~403/1502, or blocking I/O in a handler) - fits binds-8080-but-no-HTTP + TCP-healthcheck-passes-so-no-restart; (3) serverless 'sleep when idle' misconfig for a service that must stay resident, with failing/slow cold starts. To disambiguate: once up, SSH and read /sys/fs/cgroup/memory.events (oom_kill) + memory.current/max; add a periodic relay memory/heap log line; verify Railway healthcheck is HTTP /health not TCP-only; check 'sleep when idle' setting. Fixes depend on which: raise mem limit / fix state growth; or fix the blocking-in-Lwt deadlock; or disable idle-sleep + HTTP healthcheck. Also deploy B210 broadly to cut storm load. Acceptance: relay stays resident and responsive under sustained multi-peer load; a killed/wedged relay is auto-restarted promptly; incident is diagnosable from logs.
