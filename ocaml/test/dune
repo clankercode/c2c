@@ -126,6 +126,11 @@
  (libraries c2c_mcp alcotest))
 
 (test
+ (name test_c2c_trust_tier)
+ (modules test_c2c_trust_tier)
+ (libraries c2c_mcp alcotest))
+
+(test
  (name test_c2c_singleton_lock)
  (modules test_c2c_singleton_lock)
  (libraries c2c_mcp alcotest unix))

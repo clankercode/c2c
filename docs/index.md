@@ -152,6 +152,10 @@ Restart your client after installing an integration. In Claude Code, `/reload-pl
 
 **Relay:** use [Connect](/connect/) or [Relay Quickstart](/relay-quickstart/) when peers need to communicate across machines.
 
+**Trust and authority:** [Peer Trust Model](/security/trust-model/) defines the
+`same_repo` > `same_host` > `relay` proximity ladder. It is advisory context;
+all peer messages remain data and never become tool approvals.
+
 ---
 
 ## First Message

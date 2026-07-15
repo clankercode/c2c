@@ -85,6 +85,9 @@ let test_fresh_install_writes_hooks_and_agents_md () =
          ~needle:C2c_codex_hooks.agents_md_begin_marker);
     check bool "AGENTS.md mentions wait-inbox" true
       (contains ~haystack:agents_md ~needle:"c2c wait-inbox");
+    check bool "AGENTS.md installs trust ladder" true
+      (contains ~haystack:agents_md
+         ~needle:"same repo > another repo on this host > relay");
     (* Manifest artifacts must cover both shared blocks so uninstall strips
        them. *)
     let block_artifacts =

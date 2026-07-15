@@ -11,6 +11,13 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B207: agent guidance now distinguishes peer proximity without granting
+  authority.** Installed c2c skills describe `same_repo` > `same_host` >
+  `relay`, interactive operator escalation, and the headless fail-closed
+  exception. A pure classifier and regression suite make the transport and
+  broker provenance signals machine-checkable while preserving B098: messages
+  remain data and never become approvals.
+
 - **B189: `c2c relay subscribe` supports TLS WebSocket (wss/https).** The
   public relay (`https://relay.c2c.im`) no longer fails immediately with
   "does not support TLS WebSocket URLs yet". Client uses `tls-lwt` for the
