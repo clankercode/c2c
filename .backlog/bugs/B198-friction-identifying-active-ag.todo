@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T05:11:46Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:43:54Z"
 complexity: medium
 created_at: "2026-07-15T04:15:12Z"
 depends_on: []
+duration_minutes: 32.147886081383334
 estimate_hours: 1
 id: B198
 priority: high
 started_at: "2026-07-15T05:11:46Z"
-status: in_progress
+status: done
 tags: []
 title: 'Friction: identifying active agy session IDs is hard without proc env dumping'
-updated_at: "2026-07-15T05:11:46Z"
+updated_at: "2026-07-15T05:43:54Z"
 ---
 
 # Friction: identifying active agy session IDs is hard without proc env dumping
