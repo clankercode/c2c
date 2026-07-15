@@ -1967,8 +1967,8 @@ open C2c_mcp_helpers
        - Pidless confirmed: only kept for a brief handoff window
          (pidless_keep_window_s, 1h) — long enough to cover daemon
          restart transients but bounded so true zombies are reaped.
-     [registration_is_alive] is intentionally unchanged so enqueue
-     and resolve paths keep their lenient semantics. *)
+     [registration_is_alive] is intentionally unchanged so delivery and
+     resolve paths keep their lenient semantics. *)
   let pidless_keep_window_s = 3600.0
 
   let is_sweep_keepable reg =
@@ -3508,6 +3508,43 @@ open C2c_mcp_helpers
       reg.alias
       detected_at reason last_seen
 
+  (* B127: a dead registration with recent offline mail remains protected so
+     it can resume and drain. Shared by preview and mutation paths. *)
+  let offline_mail_protects t (reg : registration) =
+    let msgs = load_inbox t ~session_id:reg.session_id in
+    match msgs with
+    | [] -> false
+    | _ ->
+        let newest =
+          List.fold_left (fun acc (m : message) -> max acc m.ts) 0. msgs
+        in
+        let anchor =
+          match reg.registered_at with Some ra -> max ra newest | None -> newest
+        in
+        Unix.gettimeofday () -. anchor < offline_mail_ttl_s ()
+
+  let classify_sweep t regs =
+    let keepable, dead = List.partition is_sweep_keepable regs in
+    let protected, dead =
+      List.partition (fun reg -> offline_mail_protects t reg) dead
+    in
+    (keepable @ protected, dead)
+
+  let sweep_preview t =
+    with_registry_lock t (fun () ->
+        let alive, dead = classify_sweep t (load_registrations t) in
+        let alive_sids = List.map (fun reg -> reg.session_id) alive in
+        let deleted_inboxes =
+          list_inbox_session_ids t
+          |> List.filter (fun sid -> not (List.mem sid alive_sids))
+        in
+        let preserved_messages =
+          List.fold_left
+            (fun acc sid -> acc + List.length (load_inbox t ~session_id:sid))
+            0 deleted_inboxes
+        in
+        { dropped_regs = dead; deleted_inboxes; preserved_messages })
+
   let sweep t =
     (* Partition under lock, but broadcast peer_offline AFTER releasing it
        to avoid nested lock issues with send_all (which also takes the
@@ -3522,36 +3559,10 @@ open C2c_mcp_helpers
             ignore (send_all t ~from_alias:"broker" ~content ~exclude_aliases:[dead_reg.alias]))
           !dead_confirmed_regs
     in
-    (* B127: keep a dead registration (and its inbox) when it still holds
-       offline-queued mail within C2C_OFFLINE_MAIL_TTL_S. Anchor is the max of
-       registered_at and newest inbox message ts. Past the TTL, reg drops and
-       non-empty inboxes still go to dead-letter.jsonl (recoverable on
-       re-register). Does NOT mark the peer alive. *)
-    let offline_mail_protects t (reg : registration) =
-      let msgs = load_inbox t ~session_id:reg.session_id in
-      match msgs with
-      | [] -> false
-      | _ ->
-          let newest =
-            List.fold_left (fun acc (m : message) -> max acc m.ts) 0. msgs
-          in
-          let anchor =
-            match reg.registered_at with Some ra -> max ra newest | None -> newest
-          in
-          Unix.gettimeofday () -. anchor < offline_mail_ttl_s ()
-    in
     let result =
       with_registry_lock t (fun () ->
           let regs = load_registrations t in
-          (* Dead: PID-based liveness check failed OR provisional registration
-             that has never been confirmed and has timed out. *)
-          let alive, dead = List.partition is_sweep_keepable regs in
-          (* B127: offline-mail hold — keep dead regs with non-empty durable
-             mail still inside the offline TTL so resume can drain exactly once. *)
-          let protected, dead =
-            List.partition (fun reg -> offline_mail_protects t reg) dead
-          in
-          let alive = alive @ protected in
+          let alive, dead = classify_sweep t regs in
           (* #383: capture confirmed dead aliases for peer_offline broadcast.
              Only confirmed registrations (confirmed_at = Some) were fully alive;
              provisional-only timeouts don't emit peer_offline.

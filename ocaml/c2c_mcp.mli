@@ -425,6 +425,9 @@ module Broker : sig
       deterministic case-folded lock ordering, so rename can safely lock its
       old and target aliases together. *)
   val registration_is_alive : registration -> bool
+  (** Sweep-specific bounded liveness. Unlike [registration_is_alive], old
+      pidless rows eventually become reappable. *)
+  val is_sweep_keepable : registration -> bool
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option
 
@@ -584,6 +587,9 @@ module Broker : sig
   val with_inbox_lock : t -> session_id:string -> (unit -> 'a) -> 'a
   val inbox_has_push_messages_locked : t -> session_id:string -> bool
   type sweep_result = { dropped_regs : registration list; deleted_inboxes : string list; preserved_messages : int }
+  (** Read-only projection using the exact sweep classification, including
+      bounded pidless liveness and offline-mail protection. *)
+  val sweep_preview : t -> sweep_result
   val sweep : t -> sweep_result
   val registry_prune : t -> managed_session_ids:string list -> patterns:string list -> registration list
   val registry_prune_preview : t -> managed_session_ids:string list -> patterns:string list -> registration list
