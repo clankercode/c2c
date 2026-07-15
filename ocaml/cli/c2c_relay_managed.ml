@@ -8,11 +8,18 @@
 
 let ( // ) = Filename.concat
 
+(* Keep the relay connector's config, pid, log, and singleton-lock paths in
+   lockstep with [C2c_start.instances_dir].  This matters for isolated test/dev
+   environments: without the override here, restart could read config from
+   [$C2C_INSTANCES_DIR] while signalling a supervisor under [$HOME]. *)
 let instances_dir () =
-  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
+  match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+      Filename.concat (Sys.getenv "HOME")
+        (".local" // "share" // "c2c" // "instances")
 
-let machine_state_dir () =
-  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c")
+let machine_state_dir () = Filename.dirname (instances_dir ())
 
 let machine_lock_resource () = machine_state_dir () // "relay-connect"
 
