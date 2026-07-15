@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-15T15:39:12Z"
+depends_on: []
+estimate_hours: 1
+id: B218
+priority: high
+status: pending
+tags: []
+title: 'B210 connector-singleton detection false-positives: pgrep -af matches shell wrappers and substring-only cmdlines'
+updated_at: "2026-07-15T15:39:12Z"
+---
+Regression in the B210 fix (shipped this session). ocaml/cli/c2c_doctor_relay.ml detect_connector_processes uses 'pgrep -af "c2c relay connect"' (and 'c2c_relay_connector'), which matches the FULL command line of ANY process containing that substring — NOT just real connector daemons. Confirmed live on host 3d08761ae3f3: with ZERO actual 'c2c relay connect' processes running, 'c2c doctor --relay' reports '3 relay connector processes running (expected 1)'. The false matches are: (a) the sh -c / zsh -c wrapper that Unix.open_process_in itself spawns to run the pgrep pipeline (ephemeral pids that change every run — e.g. 3897365/3897367, 3902603 which is literally the shell running the doctor's own command); (b) unrelated persistent shells whose argv contains the string, e.g. a 'bash -c bl bug --title ... --body ...' whose body text mentions c2c relay connect (pid 1411499). The code comment at c2c_doctor_relay.ml:99-101 ('pgrep never matches itself; ... false positives ... rare') is WRONG: pgrep excludes only its own pid, not the sh wrapper, and any doc/bug-report/remediation string containing 'c2c relay connect' triggers it. Impact: doctor's B210 relay.connector_singleton check produces spurious FAILs and misleading pid lists / remediation on essentially any dev host (the doctor's OWN remediation string and c2c's bug reports contain the pattern), undermining B210. Fix: match the actual connector process — argv[0] basename is the c2c binary (or c2c_relay_connector[.py]) AND the subcommand is 'relay connect' (or the python script is argv[0]) — not an arbitrary substring; exclude shell wrappers (sh -c/zsh -c/bash -c), pgrep/grep, and the current process subtree. Correct the comment. Add a regression test feeding representative ps/pgrep lines (real connector, sh -c wrapper, bl bug shell, doctor's own pipeline) and asserting only real connectors are counted. Acceptance: zero real connectors => check PASSes; N real connectors => counts exactly N; shell wrappers and substring-only cmdlines never counted.
