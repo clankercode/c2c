@@ -45,6 +45,15 @@ type sync_error = {
 
 type sync_result = {
   registered : string list;
+  (* B209: the exact (alias, session_id) bindings this connector has
+     registered on the relay this sync. The relay keys each lease by
+     (node_id, session_id) and enforces ONE lease row per alias
+     (ON CONFLICT(alias) DO UPDATE), so a connector register moves the
+     alias's live lease from the CLI convention (cli-<alias>/cli-<alias>)
+     to (connector node_id, this session_id). Persisting the session_id
+     lets a `c2c monitor` peek the EXACT binding the connector established
+     instead of guessing cli-<alias> and hitting signature_invalid. *)
+  registered_sessions : (string * string) list;
   heartbeated : string list;
   outbox_forwarded : int;
   outbox_failed : int;
@@ -1108,6 +1117,11 @@ type connector_state = {
   cs_last_error_ts : float option;
   cs_registered : string list;
   cs_node_id : string option;  (* H3: connector node-id for monitor peek-key resolution *)
+  (* B209: alias -> session_id for each relay-registered local session. The
+     authoritative peek key for a connector-managed alias is
+     (cs_node_id, cs_sessions[alias]); older state files without this field
+     leave it empty and callers fall back to the local session-id. *)
+  cs_sessions : (string * string) list;
   cs_pid : int option;  (* B181: writer PID for process≠bridge diagnostics *)
   cs_outbox_forwarded : int;
   cs_outbox_failed : int;
@@ -1150,6 +1164,15 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
     | Some n when n <> "" -> [ ("node_id", `String n) ]
     | _ -> []
   in
+  (* B209: record alias -> session_id so a monitor can peek the exact relay
+     binding the connector established. Additive/optional. *)
+  let sessions_assoc =
+    match result.registered_sessions with
+    | [] -> []
+    | pairs ->
+        [ ("sessions",
+           `Assoc (List.map (fun (alias, sid) -> (alias, `String sid)) pairs)) ]
+  in
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float last_ok_ts)
@@ -1160,7 +1183,7 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
     ; ("outbox_dlqed", `Int result.outbox_dlqed)
     ; ("inbound_delivered", `Int result.inbound_delivered)
     ; ("inbound_rejected", `Int result.inbound_rejected)
-    ] @ node_id_assoc @ err_assoc) in
+    ] @ node_id_assoc @ sessions_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
@@ -1192,6 +1215,14 @@ let read_connector_state broker_root : connector_state option =
         | `List xs -> List.filter_map (function `String s -> Some s | _ -> None) xs
         | _ -> []
       in
+      (* B209: alias -> session_id map (optional; absent in older state files). *)
+      let sessions = match json |> member "sessions" with
+        | `Assoc kvs ->
+            List.filter_map
+              (function (alias, `String sid) -> Some (alias, sid) | _ -> None)
+              kvs
+        | _ -> []
+      in
       Some {
         cs_last_sync_ts = last_sync_ts;
         cs_last_ok_ts = last_ok_ts;
@@ -1200,6 +1231,7 @@ let read_connector_state broker_root : connector_state option =
         cs_last_error_ts = get_float "last_error_ts";
         cs_registered = registered;
         cs_node_id = get_str "node_id";
+        cs_sessions = sessions;
         cs_pid = get_int_opt "pid";
         cs_outbox_forwarded = get_int "outbox_forwarded";
         cs_outbox_failed = get_int "outbox_failed";
@@ -1207,6 +1239,45 @@ let read_connector_state broker_root : connector_state option =
         cs_inbound_delivered = get_int "inbound_delivered";
         cs_inbound_rejected = get_int "inbound_rejected";
       }
+
+(** B209: the authoritative relay peek key for a connector-managed [alias].
+
+    The relay enforces one lease row per alias and rekeys it on every register
+    (ON CONFLICT(alias) DO UPDATE SET node_id, session_id), so once the machine
+    connector registers a local session it OWNS the alias's live lease under
+    (connector node_id, that session's session_id) — NOT the cli-<alias>/
+    cli-<alias> convention a bare `c2c monitor` would otherwise peek. Peeking
+    the stale cli-<alias> key then fails the relay's owner check with
+    signature_invalid even though the alias/identity are healthy (B209).
+
+    Returns [(node_id, session_id)] when [alias] is connector-managed:
+    - node_id: the connector's persisted node_id, else [fallback_node_id]
+      (the host hash the connector derives by default);
+    - session_id: the connector's recorded session_id for this alias
+      ([cs_sessions]), else [fallback_session_id] (the monitor's locally
+      resolved session-id) for backward compatibility with older state files
+      written before [cs_sessions] existed.
+    Returns [None] when the alias is not connector-managed or no key can be
+    resolved. Case-insensitive alias match (per the alias-comparison rule). *)
+let connector_peek_key (cs : connector_state) ~alias
+    ~fallback_node_id ~fallback_session_id : (string * string) option =
+  let casefold = String.lowercase_ascii in
+  let alias_cf = casefold alias in
+  if not (List.exists (fun a -> casefold a = alias_cf) cs.cs_registered) then None
+  else
+    let node_id =
+      match cs.cs_node_id with Some n when n <> "" -> n | _ -> fallback_node_id
+    in
+    if node_id = "" then None
+    else
+      let session_id =
+        match
+          List.find_opt (fun (a, _) -> casefold a = alias_cf) cs.cs_sessions
+        with
+        | Some (_, sid) when sid <> "" -> sid
+        | _ -> fallback_session_id
+      in
+      if session_id = "" then None else Some (node_id, session_id)
 
 (** True when [connector-state.json] records a PID that still exists.
     Broker-owned process evidence that does not require argv --broker-root
@@ -1954,8 +2025,20 @@ let sync (t : t) : sync_result Lwt.t =
   t.alert_state <- new_alert_state;
   let alerts_emitted = deliver_alert_emissions t.broker_root regs emissions in
 
+  (* B209: pair every currently relay-registered session with its alias so
+     connector-state.json records the authoritative (node_id, session_id)
+     binding per alias. [t.registered] holds the session_ids that are live on
+     the relay after this sync; [regs] maps session_id -> alias. *)
+  let registered_sessions =
+    List.filter_map
+      (fun (session_id, alias, _client_type) ->
+        if List.mem session_id t.registered then Some (alias, session_id) else None)
+      regs
+  in
+
   Lwt.return {
     registered;
+    registered_sessions;
     heartbeated;
     outbox_forwarded;
     outbox_failed;

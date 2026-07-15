@@ -729,22 +729,27 @@ let monitor_cmd =
        `relay connect --node-id` override), else the same host hash the connector
        derives by default (Host_id.compute_host_hash). B180: recomputed on
        identity rebind so a post-rename connector roster update is honoured. *)
+    (* B209: peek the EXACT (node_id, session_id) the connector registered for
+       this alias. The connector persists that binding in connector-state.json
+       (cs_sessions); using it is authoritative and independent of this shell's
+       local session-id resolution — which previously left [inbox_sid = None]
+       for CLI-first clients (Grok) and forced a fallback to cli-<alias>, then
+       hit signature_invalid because the connector already owned the alias's
+       live lease under its own key. The locally resolved [inbox_sid] is passed
+       only as a backward-compat fallback for state files written before
+       cs_sessions existed. *)
     let resolve_connector_key (alias : string) : C2c_monitor_logic.relay_key option =
-      match inbox_sid with
-      | Some sid ->
-          (match C2c_relay_connector.read_connector_state broker_root with
-           | Some cs when
-               List.exists
-                 (fun a -> Broker.alias_casefold a = Broker.alias_casefold alias)
-                 cs.C2c_relay_connector.cs_registered ->
-               let node_id =
-                 match cs.C2c_relay_connector.cs_node_id with
-                 | Some n when n <> "" -> n
-                 | _ -> (try Host_id.compute_host_hash () with _ -> "")
-               in
-               if node_id = "" then None
-               else Some C2c_monitor_logic.{ node_id; session_id = sid }
-           | _ -> None)
+      match C2c_relay_connector.read_connector_state broker_root with
+      | Some cs ->
+          let fallback_node_id = (try Host_id.compute_host_hash () with _ -> "") in
+          let fallback_session_id = match inbox_sid with Some s -> s | None -> "" in
+          (match
+             C2c_relay_connector.connector_peek_key cs ~alias
+               ~fallback_node_id ~fallback_session_id
+           with
+           | Some (node_id, session_id) ->
+               Some C2c_monitor_logic.{ node_id; session_id }
+           | None -> None)
       | None -> None
     in
     let connector_key0 =

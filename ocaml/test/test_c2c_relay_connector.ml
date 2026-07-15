@@ -938,6 +938,134 @@ let test_response_difficulty_no_crash () =
   Alcotest.(check (option int)) "relay_response:string -> None"
     None (Conn.response_difficulty (`Assoc [("relay_response", `String "garbage")]))
 
+(* ---------------------------------------------------------------------------
+ * B209: connector persists the per-alias (node_id, session_id) it registered
+ * on the relay, and the monitor peeks that EXACT key instead of guessing
+ * cli-<alias>. The relay keys leases by (node_id, session_id) with one row per
+ * alias (ON CONFLICT(alias) DO UPDATE), so once the machine connector
+ * registers a session it owns the alias's live lease under (connector node_id,
+ * that session_id). A bare `c2c monitor` that fell back to cli-<alias>/
+ * cli-<alias> (because its local session-id was unresolved — Grok CLI-first)
+ * then failed the relay owner check with signature_invalid.
+ * --------------------------------------------------------------------------- *)
+
+let sync_result_with_sessions sessions : Conn.sync_result =
+  { registered = List.map fst sessions;
+    registered_sessions = sessions;
+    heartbeated = [];
+    outbox_forwarded = 0;
+    outbox_failed = 0;
+    outbox_dlqed = 0;
+    inbound_delivered = 0;
+    inbound_rejected = 0;
+    alerts_emitted = 0;
+    last_error = None }
+
+(* Round-trip: write_connector_state persists [sessions]; read_connector_state
+   recovers the alias -> session_id map (cs_sessions). *)
+let test_connector_state_sessions_roundtrip () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let result =
+      sync_result_with_sessions
+        [ ("grok-powder-kelo-6z5j", "019f64e1-04be-73c0-83e3-c71a3b40d406")
+        ; ("claude-fixture-alpha", "sid-claude-1") ]
+    in
+    Conn.write_connector_state ~node_id:"host-hash-abc" dir result;
+    match Conn.read_connector_state dir with
+    | None -> Alcotest.fail "read_connector_state returned None after write"
+    | Some cs ->
+        Alcotest.(check (option string)) "node_id persisted"
+          (Some "host-hash-abc") cs.Conn.cs_node_id;
+        Alcotest.(check (option string))
+          "grok alias -> its real connector session_id"
+          (Some "019f64e1-04be-73c0-83e3-c71a3b40d406")
+          (List.assoc_opt "grok-powder-kelo-6z5j" cs.Conn.cs_sessions);
+        Alcotest.(check (option string)) "second alias round-trips too"
+          (Some "sid-claude-1")
+          (List.assoc_opt "claude-fixture-alpha" cs.Conn.cs_sessions))
+
+(* The regression: a CLI-first client (Grok) whose local session-id is
+   UNRESOLVED (fallback_session_id = "") still resolves the connector's
+   authoritative key from cs_sessions. Before B209 the monitor required a
+   resolvable local session-id and otherwise fell back to cli-<alias>, which
+   the relay rejected with signature_invalid. *)
+let test_connector_peek_key_uses_recorded_session_when_local_unresolved () =
+  let cs =
+    { Conn.cs_last_sync_ts = 0.0; cs_last_ok_ts = 0.0;
+      cs_last_error_op = None; cs_last_error_detail = None;
+      cs_last_error_ts = None;
+      cs_registered = [ "grok-powder-kelo-6z5j" ];
+      cs_node_id = Some "host-hash-abc";
+      cs_sessions =
+        [ ("grok-powder-kelo-6z5j", "019f64e1-04be-73c0-83e3-c71a3b40d406") ];
+      cs_pid = None;
+      cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
+      cs_inbound_delivered = 0; cs_inbound_rejected = 0 }
+  in
+  (match
+     Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
+       ~fallback_node_id:"host-hash-abc" ~fallback_session_id:""
+   with
+   | Some (node_id, session_id) ->
+       Alcotest.(check string) "peek node_id = connector node_id"
+         "host-hash-abc" node_id;
+       Alcotest.(check string)
+         "peek session_id = connector-recorded session (NOT cli-<alias>)"
+         "019f64e1-04be-73c0-83e3-c71a3b40d406" session_id
+   | None ->
+       Alcotest.fail
+         "connector_peek_key returned None despite a recorded connector \
+          session — this is the B209 signature_invalid regression");
+  (* Case-insensitive alias match. *)
+  (match
+     Conn.connector_peek_key cs ~alias:"GROK-POWDER-KELO-6Z5J"
+       ~fallback_node_id:"host-hash-abc" ~fallback_session_id:""
+   with
+   | Some (_, session_id) ->
+       Alcotest.(check string) "case-insensitive alias resolves same session"
+         "019f64e1-04be-73c0-83e3-c71a3b40d406" session_id
+   | None -> Alcotest.fail "case-insensitive alias match failed");
+  (* An alias the connector does not manage yields None (fall back to
+     cli-<alias> at the call site). *)
+  Alcotest.(check bool) "unmanaged alias -> None" true
+    (Conn.connector_peek_key cs ~alias:"stranger-nope-9z9z"
+       ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"whatever"
+     = None)
+
+(* Backward-compat: a state file written before cs_sessions existed (no
+   "sessions" key) still resolves a key by falling back to the locally
+   resolved session-id. *)
+let test_connector_peek_key_backward_compat_fallback () =
+  let cs =
+    { Conn.cs_last_sync_ts = 0.0; cs_last_ok_ts = 0.0;
+      cs_last_error_op = None; cs_last_error_detail = None;
+      cs_last_error_ts = None;
+      cs_registered = [ "grok-powder-kelo-6z5j" ];
+      cs_node_id = Some "host-hash-abc";
+      cs_sessions = [];  (* pre-B209 state file *)
+      cs_pid = None;
+      cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
+      cs_inbound_delivered = 0; cs_inbound_rejected = 0 }
+  in
+  match
+    Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
+      ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"local-sid-fallback"
+  with
+  | Some (node_id, session_id) ->
+      Alcotest.(check string) "node_id" "host-hash-abc" node_id;
+      Alcotest.(check string) "falls back to local session-id when no cs_sessions"
+        "local-sid-fallback" session_id;
+      (* The exact pre-B209 Grok situation: connector manages the alias but the
+         monitor could resolve NEITHER a recorded session (old state file) NOR a
+         local session-id -> no connector key, forcing the cli-<alias> fallback
+         that the relay rejected. With cs_sessions populated (the other test)
+         this no longer happens. *)
+      Alcotest.(check bool) "no recorded + no local session-id -> None" true
+        (Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
+           ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"" = None)
+  | None -> Alcotest.fail "backward-compat fallback returned None"
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
@@ -1027,5 +1155,13 @@ let () =
     ];
     "B087 response_difficulty", [
       Alcotest.test_case "no crash on null/missing/wrong-type/valid" `Quick test_response_difficulty_no_crash;
+    ];
+    "B209 connector peek key", [
+      Alcotest.test_case "alias -> session_id round-trips through connector-state" `Quick
+        test_connector_state_sessions_roundtrip;
+      Alcotest.test_case "recorded session used when local session-id unresolved" `Quick
+        test_connector_peek_key_uses_recorded_session_when_local_unresolved;
+      Alcotest.test_case "backward-compat fallback to local session-id" `Quick
+        test_connector_peek_key_backward_compat_fallback;
     ];
   ]

@@ -32,6 +32,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?err_op ?err_detail ?err_ts
     (* H3 added cs_node_id to connector_state; this H4 fixture predates it.
        None = connector state without a node-id (pre-H3 shape). *)
     cs_node_id = None;
+    cs_sessions = [];
     cs_pid = None;
     cs_outbox_forwarded = fwd;
     cs_outbox_failed = failed;
