@@ -66,7 +66,7 @@ let with_server ?token ?rate_limiter f =
      let stop, wake_stop = Lwt.wait () in
      let callback (conn, _) req body =
        RS.make_callback relay token conn req body ?broker_root:None
-         ~rate_limiter
+         ~native_tls:false ~rate_limiter
      in
      let spec = Cohttp_lwt_unix.Server.make ~callback () in
      let server =

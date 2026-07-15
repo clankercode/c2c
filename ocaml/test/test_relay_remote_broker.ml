@@ -72,6 +72,7 @@ module Backend_http_tests (R : Relay.RELAY) = struct
        let stop, wake_stop = Lwt.wait () in
        let callback (conn, _) request body =
          RS.make_callback relay token conn request body ?broker_root:None
+           ~native_tls:false
            ~rate_limiter
        in
        let spec = Cohttp_lwt_unix.Server.make ~callback () in

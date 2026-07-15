@@ -38,19 +38,21 @@ let xor_bytes ~(key:string) ~(data:string) =
   done;
   Bytes.to_string r
 
-(* Read exactly n bytes from an Lwt_io.input_channel. *)
-let rec read_exactly (ic:Lwt_io.input_channel) buf off n =
+(* Read exactly [n] bytes using an arbitrary channel reader.  Cohttp keeps a
+   small read-ahead buffer in front of its Lwt channel, so upgraded sessions
+   must consume through that buffer instead of reaching around it. *)
+let rec read_exactly_with read_into buf off n =
   if n = 0 then Lwt.return ()
   else
-    Lwt_io.read_into ic buf off n >>= fun m ->
+    read_into buf off n >>= fun m ->
     if m = 0 then Lwt.fail End_of_file
-    else if m < n then read_exactly ic buf (off + m) (n - m)
+    else if m < n then read_exactly_with read_into buf (off + m) (n - m)
     else Lwt.return ()
 
 (* Read one WebSocket frame. Returns None on EOF. *)
-let read_frame (ic:Lwt_io.input_channel) =
+let read_frame_with read_into =
   let header = Bytes.create 14 in
-  read_exactly ic header 0 2 >>= fun () ->
+  read_exactly_with read_into header 0 2 >>= fun () ->
   let b0 = Bytes.get_uint8 header 0 in
   let b1 = Bytes.get_uint8 header 1 in
   let fin    = (b0 lsr 7) = 1 in
@@ -61,7 +63,7 @@ let read_frame (ic:Lwt_io.input_channel) =
     if len0 < 126 then Lwt.return len0
     else if len0 = 126 then
       let ext = Bytes.create 2 in
-      read_exactly ic ext 0 2 >>= fun () ->
+      read_exactly_with read_into ext 0 2 >>= fun () ->
       Lwt.return (((Bytes.get_uint8 ext 0 lsl 8) lor (Bytes.get_uint8 ext 1)) |> fun n -> n)
     else
       Lwt.return 0  (* 64-bit not needed for v1 — fallback *)
@@ -70,19 +72,22 @@ let read_frame (ic:Lwt_io.input_channel) =
   let mask_key =
     if masked then
       let m = Bytes.create 4 in
-      read_exactly ic m 0 4 >|= fun () ->
+      read_exactly_with read_into m 0 4 >|= fun () ->
       Some (Bytes.unsafe_to_string m)
     else Lwt.return None
   in
   mask_key >>= fun mask_opt ->
   let payload_buf = Bytes.create payload_len in
-  read_exactly ic payload_buf 0 payload_len >>= fun () ->
+  read_exactly_with read_into payload_buf 0 payload_len >>= fun () ->
   let payload =
     match mask_opt with
     | None -> Bytes.unsafe_to_string payload_buf
     | Some k -> xor_bytes ~key:k ~data:(Bytes.unsafe_to_string payload_buf)
   in
   Lwt.return { opcode; fin; payload }
+
+let read_frame (ic:Lwt_io.input_channel) =
+  read_frame_with (Lwt_io.read_into ic)
 
 (* Write one WebSocket frame. Server sends unmasked (RFC 6455 §5.1). *)
 let write_frame ~(opcode:int) ~(payload:string) (oc:Lwt_io.output_channel) =
@@ -126,11 +131,14 @@ let parse_message f =
   | _ -> None
 
 (* Build HTTP 101 Switching Protocols response. *)
-let make_handshake_response (key:string) =
+let websocket_accept (key:string) =
   let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" in
   let combined = key ^ guid in
   let hash = Digestif.SHA1.to_raw_string (Digestif.SHA1.digest_string combined) in
-  let accept = Base64.encode_string hash in
+  Base64.encode_string hash
+
+let make_handshake_response (key:string) =
+  let accept = websocket_accept key in
   Printf.sprintf
     "HTTP/1.1 101 Switching Protocols\r\n\
      Upgrade: websocket\r\n\
@@ -142,7 +150,8 @@ let make_handshake_response (key:string) =
 (* Server-side session from a bidirectional file descriptor. *)
 module Session = struct
   type t = {
-    ic : Lwt_io.input_channel;
+    read_into : bytes -> int -> int -> int Lwt.t;
+    close_input : unit -> unit Lwt.t;
     oc : Lwt_io.output_channel;
     mutable closed : bool;
   }
@@ -150,7 +159,23 @@ module Session = struct
   let of_fd (fd:Lwt_unix.file_descr) =
     let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd in
     let oc = Lwt_io.of_fd ~mode:Lwt_io.Output fd in
-    { ic; oc; closed = false }
+    { read_into = Lwt_io.read_into ic;
+      close_input = (fun () -> Lwt_io.close ic);
+      oc; closed = false }
+
+  let of_cohttp_channels
+      (ic : Cohttp_lwt_unix.Private.Input_channel.t)
+      (oc : Lwt_io.output_channel) =
+    let read_into buf off len =
+      Cohttp_lwt_unix.Private.Input_channel.read ic len >|= fun chunk ->
+      let n = String.length chunk in
+      Bytes.blit_string chunk 0 buf off n;
+      n
+    in
+    { read_into;
+      close_input =
+        (fun () -> Cohttp_lwt_unix.Private.Input_channel.close ic);
+      oc; closed = false }
 
   let send_text t msg =
     if t.closed then Lwt.return ()
@@ -166,14 +191,14 @@ module Session = struct
       t.closed <- true;
       let payload = Printf.sprintf "%04X%s" code reason in
       write_frame ~opcode:opcode_close ~payload t.oc >>= fun () ->
-      Lwt_io.close t.ic >>= fun () ->
+      t.close_input () >>= fun () ->
       Lwt_io.close t.oc
     )
 
   let recv t =
     if t.closed then Lwt.return None
     else
-      read_frame t.ic >>= fun f ->
+      read_frame_with t.read_into >>= fun f ->
       match parse_message f with
       | Some (`Ping) ->
           write_pong t.oc >|= fun () ->

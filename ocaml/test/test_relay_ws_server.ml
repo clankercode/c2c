@@ -117,6 +117,29 @@ let test_client_session_recv_replies_to_ping_with_masked_pong () =
       Relay_ws_frame.opcode_pong frame.Relay_ws_frame.opcode;
     Lwt.return_unit)
 
+let test_server_session_reads_cohttp_upgrade_channels () =
+  let open Lwt.Infix in
+  Lwt_main.run (
+    let raw_ic, raw_oc = Lwt_io.pipe () in
+    let _sink_ic, sink_oc = Lwt_io.pipe () in
+    let cohttp_ic = Cohttp_lwt_unix.Private.Input_channel.create raw_ic in
+    let session =
+      Relay_ws_frame.Session.of_cohttp_channels cohttp_ic sink_oc
+    in
+    Relay_ws_frame.write_frame_masked ~opcode:Relay_ws_frame.opcode_text
+      ~masking_key:"mask" ~payload:"native-tls-frame" raw_oc
+    >>= fun () ->
+    Lwt_io.flush raw_oc >>= fun () ->
+    Relay_ws_frame.Session.recv session >>= fun msg ->
+    Alcotest.(check bool) "reads frame through cohttp input buffer" true
+      (msg = Some (`Text "native-tls-frame"));
+    Lwt_io.close raw_oc)
+
+let test_websocket_accept_rfc_example () =
+  Alcotest.(check string) "RFC 6455 accept value"
+    "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    (Relay_ws_frame.websocket_accept "dGhlIHNhbXBsZSBub25jZQ==")
+
 let test_parse_endpoint_tls_defaults () =
   let https = Relay_ws_client.parse_endpoint "https://relay.c2c.im" in
   Alcotest.(check string) "https host" "relay.c2c.im" https.Relay_ws_client.host;
@@ -152,6 +175,10 @@ let () =
     ; ( "client_session",
         [ Alcotest.test_case "recv replies to ping with masked pong" `Quick
             test_client_session_recv_replies_to_ping_with_masked_pong
+        ; Alcotest.test_case "server reads cohttp upgrade channels (B195)" `Quick
+            test_server_session_reads_cohttp_upgrade_channels
+        ; Alcotest.test_case "RFC websocket accept value" `Quick
+            test_websocket_accept_rfc_example
         ] )
     ; ( "ws_client_endpoint",
         [ Alcotest.test_case "parse endpoint tls defaults (B189)" `Quick

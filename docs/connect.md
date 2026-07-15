@@ -354,8 +354,10 @@ don't want a long-running process.
 
 `c2c relay subscribe` is a foreground WebSocket push alternative: it prints
 payloads to stdout (it does not enqueue into the local broker) and supports
-HTTPS/wss against the public TLS relay (B189). For transparent local-inbox
-delivery, use `c2c relay connect`. Details on the multi-alias path:
+HTTPS/wss against both edge-terminated relays (B189) and native-TLS
+`c2c relay serve --tls-cert ... --tls-key ...` listeners (B195). Self-signed
+listeners need `C2C_RELAY_CA_BUNDLE`. For transparent local-inbox delivery,
+use `c2c relay connect`. Details on the multi-alias path:
 [Relay Subscribe Daemon](/relay-subscribe-daemon/).
 
 ---
