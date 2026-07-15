@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-15T05:11:45Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T04:12:31Z"
 depends_on: []
 estimate_hours: 1
 id: B197
 priority: high
-status: pending
+started_at: "2026-07-15T05:11:45Z"
+status: in_progress
 tags: []
 title: 'after B196: what other similar controls should each user/machine/agent have? Particularly for untrusted incoming sources, but maybe also safeguarsd for local sources'
-updated_at: "2026-07-15T04:12:31Z"
+updated_at: "2026-07-15T05:11:45Z"
 ---
 
 after B196: what other similar controls should each user/machine/agent have? Particularly for untrusted incoming sources, but maybe also safeguarsd for local sources
