@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T03:19:14Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T03:42:12Z"
 complexity: medium
 created_at: "2026-07-15T03:02:58Z"
 depends_on: []
+duration_minutes: 22.977760142616667
 estimate_hours: 1
 id: B192
 priority: high
 started_at: "2026-07-15T03:19:14Z"
-status: in_progress
+status: done
 tags: []
 title: c2c-session skill; where is it referenced and do we need it? grok likes to call it. not sure if it's a real skill or how it's injected into the client.
-updated_at: "2026-07-15T03:19:14Z"
+updated_at: "2026-07-15T03:42:12Z"
 ---
 
 c2c-session skill; where is it referenced and do we need it? grok likes to call it. not sure if it's a real skill or how it's injected into the client.
