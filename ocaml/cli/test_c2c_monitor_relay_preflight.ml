@@ -113,22 +113,25 @@ let c2c_bin = Filename.concat (Filename.dirname Sys.executable_name) "c2c.exe"
    issue a second signed /list preflight, keep relay OFF, and remain alive for
    local inbox watching instead of arming a doomed relay peek. *)
 let test_unbound_rebind_keeps_local_monitor_alive () =
-  let missing alias =
-    Relay_test_support.response ~status:401
-      (Yojson.Safe.to_string
-         (`Assoc
-           [ ("ok", `Bool false)
-           ; ("error_code", `String "unauthorized")
-           ; ("error", `String (Printf.sprintf "alias %S has no identity binding" alias))
-           ]))
-  in
   (* The response matcher need not know which signed alias was used; request
      capture below proves startup and rebind each probed /list. *)
-  let route =
+  let list_route =
     Relay_test_support.route ~meth:"GET" ~path:"/list"
-      [ missing "b206-unbound" ]
+      [ Relay_test_support.response {|{"ok":true,"peers":[]}|}
+      ; Relay_test_support.response ~status:401 ~delay_s:0.35
+          (Yojson.Safe.to_string
+             (`Assoc
+               [ ("ok", `Bool false)
+               ; ("error_code", `String "unauthorized")
+               ; ("error", `String "alias \"b206-new\" has no identity binding")
+               ]))
+      ]
   in
-  Relay_test_support.with_server ~routes:[ route ] (fun server ->
+  let peek_route =
+    Relay_test_support.route ~meth:"POST" ~path:"/peek_inbox"
+      [ Relay_test_support.response {|{"ok":true,"messages":[]}|} ]
+  in
+  Relay_test_support.with_server ~routes:[ list_route; peek_route ] (fun server ->
       with_identity (fun identity identity_path ->
           let base = Filename.dirname identity_path in
           let broker_root = Filename.concat base "broker" in
@@ -153,7 +156,7 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
           in
           let pid =
             Unix.create_process_env c2c_bin
-              [| c2c_bin; "monitor"; "--relay-interval"; "0.1" |]
+              [| c2c_bin; "monitor"; "--relay-interval"; "0.01" |]
               env Unix.stdin out_fd err_fd
           in
           Unix.close out_fd;
@@ -163,8 +166,20 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
               (try Unix.kill pid Sys.sigkill with _ -> ());
               (try ignore (Unix.waitpid [] pid) with _ -> ()))
             (fun () ->
-              check bool "startup missing binding keeps relay off" true
-                (wait_for ~timeout:4.0 out_path "local inbox watch continues");
+              check bool "startup bound alias arms relay" true
+                (wait_for ~timeout:4.0 out_path "relay watch: peek");
+              let rec wait_for_old_peek deadline =
+                let peeks =
+                  Relay_test_support.requests server
+                  |> List.filter (fun r ->
+                         r.Relay_test_support.path = "/peek_inbox")
+                in
+                if peeks <> [] then true
+                else if Unix.gettimeofday () >= deadline then false
+                else (Unix.sleepf 0.02; wait_for_old_peek deadline)
+              in
+              check bool "old relay watch is active before rename" true
+                (wait_for_old_peek (Unix.gettimeofday () +. 4.0));
               (match C2c_mcp.Broker.rename_alias broker ~session_id:sid
                        ~new_alias:"b206-new" with
                | Ok _ -> ()
@@ -176,12 +191,23 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
                  || contains (slurp out_path) "alias \"b206-new\" is not registered");
               check bool "local monitor remains alive" true
                 (try Unix.kill pid 0; true with _ -> false);
+              let requests = Relay_test_support.requests server in
               let list_probes =
-                Relay_test_support.requests server
+                requests
                 |> List.filter (fun r -> r.Relay_test_support.path = "/list")
               in
               check bool "startup + rebind each preflight" true
-                (List.length list_probes >= 2))))
+                (List.length list_probes >= 2);
+              let mixed_peek =
+                requests
+                |> List.filter (fun r -> r.Relay_test_support.path = "/peek_inbox")
+                |> List.exists (fun r ->
+                       match Relay_test_support.header r "authorization" with
+                       | Some auth -> contains auth "alias=b206-new,"
+                       | None -> false)
+              in
+              check bool "no old-key/new-alias mixed relay request" false
+                mixed_peek)))
 
 let () =
   run "c2c monitor relay preflight"
