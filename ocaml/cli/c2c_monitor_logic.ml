@@ -308,6 +308,31 @@ type relay_watch_decision =
   | Relay_watch of { node_id : string; session_id : string }
   | Relay_watch_off of string
 
+type direct_register_eligibility =
+  | Register_allowed
+  | Register_refused of string
+
+(* `c2c monitor --register-relay-alias` is an explicit alias-binding action,
+   so it must never act on an ambiguous fallback identity or a connector/custom
+   inbox key. Those cases need the operator to name the alias/key or let the
+   connector own registration. *)
+let direct_register_eligibility ~alias_source ~connector_managed
+      ~has_explicit_key ~identity_available =
+  if connector_managed then
+    Register_refused "this alias is connector-managed; repair/restart the connector"
+  else if has_explicit_key then
+    Register_refused
+      "custom relay node/session keys cannot be established by alias registration"
+  else if not identity_available then
+    Register_refused
+      "no local Ed25519 identity (run `c2c relay identity init`)"
+  else
+    match alias_source with
+    | Flag | Auto_env | Session_reg _ -> Register_allowed
+    | Default_alias_file | Session_id_env | Single_alive | Unresolved ->
+        Register_refused
+          "alias was resolved from a fallback source; pass --alias explicitly"
+
 let decide_relay_watch
       ~my_alias
       ~relay_url

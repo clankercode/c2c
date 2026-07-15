@@ -18,6 +18,7 @@ c2c monitor --json --from coder1           # only messages from coder1
 c2c monitor --json --include-self          # include your own echo/broadcast traffic
 c2c monitor --json --drain                 # make monitor the live-inbox consumer
 c2c monitor --json --no-relay              # local broker only
+c2c monitor --json --alias me --register-relay-alias # explicitly bind direct relay alias
 c2c monitor --json --relay-node-id machine-42
 c2c monitor --json --relay-node-id host-1 --relay-session-id <sid>
 ```
@@ -54,7 +55,7 @@ Fields:
 - `session_id`: resolved local session id, or `null` if none was found.
 - `alias_source`: human-readable source used to resolve `alias`. Current labels include `--alias flag`, `C2C_MCP_AUTO_REGISTER_ALIAS`, `session <sid> registration`, `default-alias file (fallback — may be another agent's)`, `C2C_MCP_SESSION_ID (fallback)`, `single alive registration (fallback)`, and `unresolved`.
 - `inbox_watch`: `true` when the default archive-mode monitor also watches this session's live inbox. That live-inbox watch lets a bare CLI session see incoming messages by peeking unless `--drain` is set.
-- `relay_watch`: human-readable relay watcher status, such as `peek <node_id>/<session_id> every 5.0s`, `peek <node_id>/<session_id> every 5.0s (unsigned)`, `off (--no-relay / --relay-interval 0)`, `off (--live mode: relay watcher requires the default archive mode for dedup)`, or `off (no relay URL configured (c2c relay setup / C2C_RELAY_URL))`.
+- `relay_watch`: human-readable relay watcher status, such as `peek <node_id>/<session_id> every 5.0s`, `peek <node_id>/<session_id> every 5.0s (unsigned)`, `off (--no-relay / --relay-interval 0)`, `off (--live mode: relay watcher requires the default archive mode for dedup)`, `off (no relay URL configured (c2c relay setup / C2C_RELAY_URL))`, or `off (alias "me" is not registered on the relay; ...; local inbox watch continues)`. The last state is the B206 signed preflight: monitor does not advertise a relay watch that is guaranteed to fail. It never binds implicitly; use `c2c relay register --alias me` or the explicit `--register-relay-alias` bootstrap.
 
 ### `identity.changed`
 
