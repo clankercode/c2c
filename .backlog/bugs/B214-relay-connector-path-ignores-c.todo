@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-15T22:53:54Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T15:30:08Z"
 depends_on: []
 estimate_hours: 1
 id: B214
 priority: high
-status: pending
+started_at: "2026-07-15T22:53:54Z"
+status: in_progress
 tags: []
 title: Relay connector path ignores C2C_INSTANCES_DIR while C2c_start honors it (latent split)
-updated_at: "2026-07-15T15:30:08Z"
+updated_at: "2026-07-15T22:53:54Z"
 ---
 Follow-up finding from B212 work. ocaml/c2c_start.ml instances_dir (line ~1825) honors C2C_INSTANCES_DIR, but ocaml/cli/c2c_relay_managed.ml instances_dir/machine_state_dir hardcode $HOME/.local/share/c2c. Master's B212 connector-restart path is internally self-consistent (reads+signals via C2c_relay_managed under $HOME), so the reported B212 Not_found bug is fixed and this is INERT in production (C2C_INSTANCES_DIR unset => identical paths). But if C2C_INSTANCES_DIR is set (test/dev isolation), the connector's config lookup (C2c_start) and supervisor pid/lock (C2c_relay_managed) can resolve to different dirs. Low priority. An implemented+tested fix exists on the discarded branch fix/b212-restart-relay-connect (make C2c_relay_managed.instances_dir honor C2C_INSTANCES_DIR, machine_state_dir=dirname of it) if we choose to pursue. Priority low.
