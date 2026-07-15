@@ -190,3 +190,4 @@ bugs:
     - file: B191-a-since-agent-can-cd-x-c2c-bla.todo
     - file: B192-c2c-session-skill-where-is-it.todo
     - file: B193-c2c-should-have-a-forward-agen.todo
+    - file: B194-forward-agent-log-should-suppo.todo
