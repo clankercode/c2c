@@ -2651,6 +2651,13 @@ let load_config_opt (name : string) : instance_config option =
     match C2c_io.read_json_opt path with
     | None -> None
     | Some json ->
+      (* B212 defence-in-depth: a config that is not a harness-client instance
+         (e.g. the machine-wide relay connector's supervised config, which omits
+         session_id/alias/resume) must not escape as an uncaught Not_found from
+         the [gs]/[gf]/[gl] helpers below. Any missing-required-field failure
+         degrades to None (treated as "no usable config") rather than crashing
+         a recovery path like `c2c restart`. *)
+      (try
         let a = match json with `Assoc a -> a | _ -> raise Not_found in
         let gs k = match List.assoc_opt k a with Some (`String s) -> s | _ -> raise Not_found in
         let gso k = match List.assoc_opt k a with Some (`String s) -> Some s | _ -> None in
@@ -2678,6 +2685,7 @@ let load_config_opt (name : string) : instance_config option =
                agent_name = gso "agent_name";
                last_exit_code = gio "last_exit_code";
                last_exit_reason = gso "last_exit_reason" }
+      with Not_found -> None)
 
 (* Resolve effective extra_args on (re-)launch.
 

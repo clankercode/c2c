@@ -236,6 +236,77 @@ let read_ready fd =
   let n = Unix.read fd buf 0 (Bytes.length buf) in
   Bytes.sub_string buf 0 n
 
+(* B212: the machine-wide relay connector persists a distinct config shape
+   ({client:"relay-connect", scope:"machine", supervised:true, relay_url,
+   interval}) that deliberately omits the session_id/alias/resume fields the
+   harness-client [C2c_start.load_config_opt] requires. Feeding that config to
+   the harness restart path raised an uncaught [Not_found]; [c2c restart
+   relay-connect] must recognise it and drive the machine lifecycle instead. *)
+type managed_config = {
+  mc_relay_url : string option;
+  mc_interval : int;
+}
+
+(* Pure classifier: is this JSON a supervised relay-connect config? If so,
+   extract the relay URL + poll interval. Never raises. *)
+let parse_managed_config (json : Yojson.Safe.t) : managed_config option =
+  match json with
+  | `Assoc a ->
+      let is_relay_connect =
+        (match List.assoc_opt "client" a with
+         | Some (`String "relay-connect") -> true
+         | _ -> false)
+        || (match List.assoc_opt "supervised" a with
+            | Some (`Bool true) -> true
+            | _ -> false)
+      in
+      if not is_relay_connect then None
+      else
+        let mc_relay_url =
+          match List.assoc_opt "relay_url" a with
+          | Some (`String s) when String.trim s <> "" -> Some s
+          | _ -> None
+        in
+        let mc_interval =
+          match List.assoc_opt "interval" a with
+          | Some (`Int i) when i > 0 -> i
+          | _ -> 30
+        in
+        Some { mc_relay_url; mc_interval }
+  | _ -> None
+
+(* Read the named instance's config.json and classify it. Returns None when
+   the instance dir has no config, the config is not JSON, or it is some other
+   managed client (not the supervised relay connector). Never raises. *)
+let read_managed_config ~name : managed_config option =
+  let path = instances_dir () // name // "config.json" in
+  if not (Sys.file_exists path) then None
+  else
+    match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+    | Some json -> parse_managed_config json
+    | None -> None
+
+(* Stop the supervisor recorded in the instance's outer.pid (SIGTERM, then
+   SIGKILL after [timeout_s]). Returns true when no supervisor is running or
+   it has exited; false if a pid is still alive after the SIGKILL fallback. *)
+let stop_supervisor ~name ~timeout_s : bool =
+  let pid_path = instances_dir () // name // "outer.pid" in
+  match read_pidfile pid_path with
+  | Some pid when pid_alive pid ->
+      (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+      let deadline = Unix.gettimeofday () +. timeout_s in
+      let rec wait () =
+        if not (pid_alive pid) then true
+        else if Unix.gettimeofday () >= deadline then begin
+          (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+          Unix.sleepf 0.2;
+          not (pid_alive pid)
+        end
+        else (Unix.sleepf 0.1; wait ())
+      in
+      wait ()
+  | _ -> true
+
 (** Start the one machine-wide relay service.  A different [name] changes
     only its managed display/stop name; it cannot create a second connector. *)
 let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args () =
@@ -270,3 +341,46 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
           exit 1
         end
   end
+
+(** Restart the machine-wide relay connector [name]: stop the running
+    supervisor, resolve its relay URL (saved config → [C2C_RELAY_URL]), then
+    relaunch the daemon. Returns a clean nonzero exit with an actionable
+    message (never an uncaught exception) when the config is not a managed
+    relay connector or no relay URL can be resolved. Does not return on
+    success (relaunches via the [@noreturn] [start]). *)
+let restart ~name ~broker_root ~timeout_s () =
+  match read_managed_config ~name with
+  | None ->
+      Printf.eprintf
+        "error: '%s' is not a managed relay connector.\n\
+        \  Use 'c2c instances' to find managed sessions and 'c2c restart NAME' for one.\n%!"
+        name;
+      exit 1
+  | Some mc ->
+      let relay_url =
+        match mc.mc_relay_url with
+        | Some _ as u -> u
+        | None -> Sys.getenv_opt "C2C_RELAY_URL"
+      in
+      (match relay_url with
+       | None ->
+           Printf.eprintf
+             "error: cannot restart relay connector '%s': no relay URL known.\n\
+             \  The saved config has no relay_url and C2C_RELAY_URL is unset.\n\
+             \  Restart it explicitly: c2c start relay-connect --relay-url <URL>\n%!"
+             name;
+           exit 1
+       | Some _ ->
+           if not (stop_supervisor ~name ~timeout_s) then begin
+             Printf.eprintf
+               "error: could not stop the existing relay connector '%s' \
+                (supervisor pid still alive after SIGKILL).\n\
+               \  Investigate with 'c2c instances', then retry.\n%!"
+               name;
+             exit 1
+           end;
+           Printf.printf
+             "[c2c restart] relaunching machine-wide relay connector '%s'\n%!"
+             name;
+           start ~name ~daemon:true ~relay_url ~broker_root
+             ~interval:mc.mc_interval ~extra_args:[] ())

@@ -238,8 +238,110 @@ let test_supervisor_restarts_child_on_binary_update () =
           check int "supervisor stops cleanly" 0
             (C2c_relay_managed.child_status_code status))
 
+(* B212: `c2c restart relay-connect` used to raise an uncaught Not_found because
+   the supervised relay-connect config omits the session_id/alias/resume fields
+   the harness restart path requires. The fix routes relay-connect through the
+   machine lifecycle, gated on [parse_managed_config]/[read_managed_config]. *)
+
+let relay_connect_json ?(relay_url = Some "https://relay.example") ?(interval = 30) () =
+  `Assoc [
+    ("client", `String "relay-connect");
+    ("scope", `String "machine");
+    ("supervised", `Bool true);
+    ("created_at", `Float 1234.0);
+    ("relay_url", (match relay_url with Some u -> `String u | None -> `Null));
+    ("interval", `Int interval);
+  ]
+
+let test_parse_managed_config_recognises_relay_connect () =
+  (match C2c_relay_managed.parse_managed_config
+           (relay_connect_json ~relay_url:(Some "https://r.example") ~interval:17 ()) with
+   | Some mc ->
+       check (option string) "relay url extracted" (Some "https://r.example") mc.C2c_relay_managed.mc_relay_url;
+       check int "interval extracted" 17 mc.C2c_relay_managed.mc_interval
+   | None -> failf "expected relay-connect config to be recognised");
+  (* supervised:true without an explicit relay_url still classifies (url None). *)
+  (match C2c_relay_managed.parse_managed_config (relay_connect_json ~relay_url:None ()) with
+   | Some mc -> check (option string) "no relay url" None mc.C2c_relay_managed.mc_relay_url
+   | None -> failf "expected supervised config to be recognised")
+
+let test_parse_managed_config_rejects_harness_client () =
+  (* A harness-client (claude) instance config must NOT be treated as a managed
+     relay connector — otherwise restart would hijack it into the daemon path. *)
+  let claude_json = `Assoc [
+    ("name", `String "sunny"); ("client", `String "claude");
+    ("session_id", `String "sid"); ("resume_session_id", `String "sid");
+    ("alias", `String "sunny"); ("auto_join_rooms", `String "");
+    ("created_at", `Float 1.0);
+  ] in
+  check bool "claude config is not a managed relay connector" true
+    (C2c_relay_managed.parse_managed_config claude_json = None);
+  check bool "non-object json rejected" true
+    (C2c_relay_managed.parse_managed_config (`String "nope") = None)
+
+let test_read_managed_config_roundtrip () =
+  with_temp_dir @@ fun home ->
+  let old_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
+    (fun () ->
+      Unix.putenv "HOME" home;
+      let name = "relay-connect" in
+      let inst = home // ".local" // "share" // "c2c" // "instances" // name in
+      mkdir_p inst;
+      C2c_relay_managed.write_config ~config_path:(inst // "config.json")
+        ~relay_url:(Some "https://relay.example") ~interval:42;
+      (match C2c_relay_managed.read_managed_config ~name with
+       | Some mc ->
+           check (option string) "url round-trips" (Some "https://relay.example")
+             mc.C2c_relay_managed.mc_relay_url;
+           check int "interval round-trips" 42 mc.C2c_relay_managed.mc_interval
+       | None -> failf "expected written relay-connect config to be read back");
+      (* Absent instance dir → None, never raises. *)
+      check bool "missing instance yields None" true
+        (C2c_relay_managed.read_managed_config ~name:"does-not-exist-b212" = None))
+
+let test_stop_supervisor_noop_when_absent () =
+  with_temp_dir @@ fun home ->
+  let old_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
+    (fun () ->
+      Unix.putenv "HOME" home;
+      (* No outer.pid recorded → nothing to stop → true, no exception. *)
+      check bool "stop with no supervisor returns true" true
+        (C2c_relay_managed.stop_supervisor ~name:"relay-connect" ~timeout_s:0.5))
+
+(* Defence-in-depth: the harness config loader must degrade a foreign/managed
+   config to None rather than raising Not_found (the original crash site). *)
+let test_load_config_opt_degrades_on_relay_connect_shape () =
+  let name = Printf.sprintf "b212-loadcfg-%d" (Unix.getpid ()) in
+  let dir = C2c_start.instance_dir name in
+  mkdir_p dir;
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote dir)))
+    (fun () ->
+      let oc = open_out (C2c_start.config_path name) in
+      Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+        output_string oc (Yojson.Safe.pretty_to_string (relay_connect_json ())));
+      (* Previously raised Not_found (uncaught); must now return None cleanly. *)
+      check bool "relay-connect config yields None from harness loader" true
+        (C2c_start.load_config_opt name = None))
+
 let () =
   run "c2c relay managed" [
+    "B212 relay-connect restart routing", [
+      test_case "parse recognises relay-connect config" `Quick
+        test_parse_managed_config_recognises_relay_connect;
+      test_case "parse rejects harness-client config" `Quick
+        test_parse_managed_config_rejects_harness_client;
+      test_case "read_managed_config round-trips" `Quick
+        test_read_managed_config_roundtrip;
+      test_case "stop_supervisor no-op when absent" `Quick
+        test_stop_supervisor_noop_when_absent;
+      test_case "load_config_opt degrades, no Not_found" `Quick
+        test_load_config_opt_degrades_on_relay_connect_shape;
+    ];
     "machine singleton", [ test_case "resource ignores instance name" `Quick test_machine_lock_is_name_independent ];
     "machine brokers", [ test_case "captures root and enables discovery" `Quick test_managed_argv_captures_root_and_machine_mode ];
     "binary machine brokers", [
