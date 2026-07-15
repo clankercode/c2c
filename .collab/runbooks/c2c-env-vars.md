@@ -304,6 +304,20 @@ Seconds the hook will block on `c2c await-reply` before falling closed
 
 ## E2E / Relay
 
+### `C2C_RELAY_INBOUND_POLICY_FILE` (B196)
+
+Local path to the native relay connector's inbound-policy JSON. When unset or
+empty, the connector reads `<broker_root>/relay-inbound-policy.json`; when that
+file is absent, safe built-in limits apply (256 KiB per message, 60 messages
+per sender per 60 seconds, and 600 messages per connector/machine per 60
+seconds). The policy stays local and is never sent to the relay. It is reloaded
+on every sync pass; sliding-window rate state is persisted and process-locked
+under the broker root. A present but unreadable, malformed, or invalid policy
+fails closed for relay inbound delivery while registration, heartbeat, and
+outbound sync continue. See
+`.collab/runbooks/cross-machine-relay-proof.md` under "Local inbound controls"
+for the schema and override examples.
+
 ### `C2C_REQUIRE_SIGNED_ROOM_OPS` (B114 — dev-only downgrade gate)
 
 Server-side (relay) switch for the signed room-op / room-send requirement.

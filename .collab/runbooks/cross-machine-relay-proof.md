@@ -91,6 +91,55 @@ c2c relay connect --relay-url https://relay.c2c.im
 This allows normal `c2c send <alias>` DMs to route through the relay automatically
 when the target alias is on a different machine.
 
+### Local inbound controls
+
+The native connector enforces local limits after it polls the relay and before
+it writes any message to a local broker inbox. The relay does not receive or
+manage this policy. With no policy file, the defaults are:
+
+- maximum serialized message row: 262144 bytes;
+- per-sender rate: 60 messages per 60 seconds;
+- aggregate connector/machine rate: 600 messages per 60 seconds.
+
+To override them, create `<broker_root>/relay-inbound-policy.json` (or point
+`C2C_RELAY_INBOUND_POLICY_FILE` at another local path):
+
+```json
+{
+  "default_max_bytes": 262144,
+  "default_sender_rate": {
+    "messages": 60,
+    "window_seconds": 60
+  },
+  "machine_rate": {
+    "messages": 600,
+    "window_seconds": 60
+  },
+  "senders": {
+    "noisy-agent@remote-machine": {
+      "max_bytes": 32768,
+      "rate": {
+        "messages": 10,
+        "window_seconds": 60
+      }
+    }
+  }
+}
+```
+
+Sender keys are case-insensitive and overrides inherit omitted values from the
+defaults. Sizes count the compact UTF-8 JSON encoding of the complete inbound
+message row, including `content` and envelope metadata; rates use sliding windows
+and count only schema-valid, size-valid messages accepted for local delivery.
+The machine rate is aggregate across every local session handled by that connector.
+Rate state is persisted atomically under the broker root and locked across
+connector processes, so restart or concurrent `--once` runs do not reset or
+multiply the machine allowance. The policy file is reloaded every sync pass. A
+present but malformed or invalid file
+denies all relay inbound rows until corrected; it does not stop registration,
+heartbeat, or outbound delivery. Rejected rows are counted in connector state
+and logged by reason without logging their untrusted content.
+
 ---
 
 ## Room Proof (cross-machine shared room)
