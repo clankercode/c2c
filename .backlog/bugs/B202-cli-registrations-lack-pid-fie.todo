@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-15T05:11:49Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T05:04:47Z"
 depends_on: []
 estimate_hours: 1
 id: B202
 priority: high
-status: pending
+started_at: "2026-07-15T05:11:49Z"
+status: in_progress
 tags: []
 title: CLI registrations lack pid field, causing sweep to treat them as permanently alive
-updated_at: "2026-07-15T05:04:47Z"
+updated_at: "2026-07-15T05:11:49Z"
 ---
 
 # CLI registrations lack pid field, causing sweep to treat them as permanently alive
