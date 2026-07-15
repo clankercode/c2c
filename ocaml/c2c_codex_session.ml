@@ -142,6 +142,24 @@ let split_client_alias raw =
   | [ client ] -> (Some client, None, [])
   | [] -> (None, None, [])
 
+(* B221: resolve the reserved post-separator wrapper namespace for Codex's
+   reduced command forms. Fresh/start forms may use --c2c:name as the alias +
+   managed instance name; resume already has an authoritative positional alias
+   and rejects a second identity selector. *)
+let resolve_namespaced_passthrough ~allow_name ~(existing_name : string option)
+    (extra_args : string list) : ((string option * string list), string) result =
+  match C2c_start.parse_namespaced_passthrough extra_args with
+  | Error _ as error -> error
+  | Ok parsed when not allow_name && parsed.C2c_start.c2c_name <> None ->
+      Error
+        "--c2c:name is not valid with `c2c resume codex`; the positional ALIAS \
+         selects the saved identity"
+  | Ok parsed ->
+      (match C2c_start.merge_namespaced_name ~existing:existing_name
+               ~namespaced:parsed.C2c_start.c2c_name with
+       | Ok name -> Ok (name, parsed.C2c_start.client_args)
+       | Error _ as error -> error)
+
 (* --thread-id reconciliation: a requested thread that conflicts with the saved
    thread is rejected rather than guessed. *)
 let reconcile_thread ~(requested : string option) ~(saved : string option)

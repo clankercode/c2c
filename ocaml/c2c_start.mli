@@ -431,10 +431,35 @@ val normalize_model_override_for_client :
     either bare model names or provider:model input and emit just the model. *)
 
 val strip_start_extra_argv_prefix : string list -> string list
-(** Strip the leading client name (pos 0) and [--] (pos 1) from the raw
-    [pos_all] positional capture of [c2c start], yielding the child's extra
-    argv. Shared by the [c2c start] Cmdliner term and the B129 tests so both
-    exercise the same production logic. Exported for tests. *)
+(** Strip the leading client name (pos 0) from the raw [pos_all] positional
+    capture of [c2c start], yielding the child's extra argv. Cmdliner consumes
+    the [--] separator in production; a literal separator is also tolerated
+    for direct helper callers. Shared by the command term and B129/B221 tests. *)
+
+type namespaced_passthrough = {
+  c2c_name : string option;
+  client_args : string list;
+}
+
+val parse_namespaced_passthrough :
+  string list -> (namespaced_passthrough, string) result
+(** Extract the reserved post-separator [--c2c:name NAME] or
+    [--c2c:name=NAME] wrapper control while preserving every ordinary client
+    argument in order. Rejects missing/invalid/duplicate names and unknown
+    [--c2c:*] keys (B221). *)
+
+val merge_namespaced_name :
+  existing:string option ->
+  namespaced:string option ->
+  (string option, string) result
+(** Merge a normal pre-separator name with [--c2c:name]. Equal values coalesce;
+    conflicting values are rejected. *)
+
+val codex_alias_override_for_namespaced_name :
+  existing:string option -> namespaced:string option -> string option
+(** Resolve the alias override for generic [c2c start codex]. A normal
+    explicit or role-derived alias wins; otherwise [--c2c:name] supplies the
+    alias consumed by the app-server launch path (B221). *)
 
 val parse_pty_cmd_argv : string list -> string * string list
 (** Parse the command + argv for [c2c start pty] from the already-stripped

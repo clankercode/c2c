@@ -8,8 +8,9 @@
      c2c new codex ...       (always a new thread + identity)
      c2c resume codex <alias> ...  (resume the thread saved for that alias)
 
-   Everything after a literal `--` is forwarded verbatim to the stock
-   `codex --remote` frontend argv and is NEVER parsed as a c2c flag. *)
+   Everything after a literal `--` is forwarded to the stock `codex --remote`
+   frontend argv except reserved `--c2c:*` wrapper controls. B221 initially
+   defines `--c2c:name NAME` / `--c2c:name=NAME`. *)
 
 open Cmdliner
 
@@ -36,11 +37,14 @@ let thread_id_t =
 (* pos_all captures every positional token, including whatever follows a literal
    `--` (cmdliner ends option parsing there). [strip_leading_client] /
    [strip_leading_client_alias] peel the fixed leading positionals and an
-   optional `--` separator, leaving the verbatim codex passthrough. *)
+   optional `--` separator, leaving the codex passthrough plus any reserved
+   namespaced c2c controls. *)
 let positionals_t =
   Arg.(value & pos_all string [] & info [] ~docv:"ARG"
-    ~doc:"Positional args. Everything after a literal `--` is forwarded verbatim \
-          to the codex frontend (e.g. `c2c new codex -- --model gpt-5.3-codex-spark`).")
+    ~doc:"Positional args. Everything after a literal `--` is forwarded to the \
+          codex frontend except reserved namespaced controls. Use `--c2c:name NAME` \
+          to set the managed name from an alias ending in `--` (e.g. \
+          `c2c new codex -- --model MODEL --c2c:name my-codex`).")
 
 let drop_sep = C2c_codex_session.drop_sep
 let strip_leading_client = C2c_codex_session.split_client
@@ -56,6 +60,14 @@ let require_codex_client = function
   | None ->
       Printf.eprintf "error: missing client. Usage includes `codex`, e.g. `c2c new codex`.\n%!";
       exit 1
+
+let resolve_namespaced_name ~command ~allow_name ~existing extra_args =
+  match C2c_codex_session.resolve_namespaced_passthrough
+          ~allow_name ~existing_name:existing extra_args with
+  | Error msg ->
+      Printf.eprintf "error: %s (%s)\n%!" msg command;
+      exit 1
+  | Ok resolved -> resolved
 
 (* --------------------------- fallback thunks ------------------------------ *)
 
@@ -105,6 +117,10 @@ let codex_term =
   and+ thread_id = thread_id_t
   and+ positionals = positionals_t in
   let extra_args = drop_sep positionals in
+  let alias_override, extra_args =
+    resolve_namespaced_name ~command:"c2c codex" ~allow_name:true
+      ~existing:alias_override extra_args
+  in
   exit (dispatch ~mode:C2c_codex_session.Start ~alias_override ~thread_id ~yolo
           ~extra_args ())
 
@@ -133,6 +149,10 @@ let new_term =
   and+ positionals = positionals_t in
   let (client, extra_args) = strip_leading_client positionals in
   require_codex_client client;
+  let alias_override, extra_args =
+    resolve_namespaced_name ~command:"c2c new codex" ~allow_name:true
+      ~existing:alias_override extra_args
+  in
   exit (dispatch ~mode:C2c_codex_session.New ~alias_override ~thread_id ~yolo
           ~extra_args ())
 
@@ -141,8 +161,10 @@ let new_cmd : unit Cmd.t =
            ~doc:"Start a NEW managed session (codex): always a fresh thread + identity."
            ~man:[ `S "DESCRIPTION"
                 ; `P "Always creates a new Codex thread and a new c2c identity; \
-                      never silently resumes. Forward codex options after $(b,--), \
-                      e.g. $(b,c2c new codex -- --model gpt-5.3-codex-spark)." ])
+                      never silently resumes. Forward codex options after $(b,--). \
+                      Aliases ending in $(b,--) can set the managed name with \
+                      $(b,--c2c:name NAME), e.g. $(b,c2c new codex -- --model MODEL \
+                      --c2c:name my-codex)." ])
     new_term
 
 (* ------------------------------- resume ----------------------------------- *)
@@ -154,6 +176,10 @@ let resume_term =
   and+ positionals = positionals_t in
   let (client, alias, extra_args) = strip_leading_client_alias positionals in
   require_codex_client client;
+  let _, extra_args =
+    resolve_namespaced_name ~command:"c2c resume codex" ~allow_name:false
+      ~existing:None extra_args
+  in
   (match alias with
    | Some a when String.length a > 0 && a.[0] = '-' ->
        (* Guard against a mis-parsed flag being taken as the alias (e.g.

@@ -311,12 +311,10 @@ let test_prepare_launch_args_forwards_extra_args_for_kimi () =
   check bool "kimi: full extra_args forwarded verbatim as the argv tail" true
     (is_suffix extra args)
 
-(* B128: the `--` boundary is explicit and tested. Pre-`--` flags parse as c2c
-   flags; post-`--` tokens are forwarded verbatim and NEVER parsed as c2c flags
-   — even when they are byte-for-byte identical to a real c2c flag name
-   (`--model`, `-n`, `--alias`). Proven against a minimal cmdliner term that
-   mirrors the `c2c start` grammar (client pos + -n/--name + -m/--model opts +
-   `pos_all` passthrough, stripping the leading client name + `--`). *)
+(* B128/B221: the `--` boundary is explicit and tested. Ordinary post-`--`
+   tokens remain client args even when identical to real c2c flags (`--model`,
+   `-n`, `--alias`). The reserved `--c2c:` namespace is the sole exception:
+   --c2c:name is consumed by the wrapper and removed from the client argv. *)
 let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
   let extra_argv =
     Cmdliner.Arg.(value & pos_all string [] & info [] ~docv:"ARG" ~doc:"")
@@ -338,6 +336,7 @@ let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
   let captured_name = ref None in
   let captured_model = ref None in
   let captured_alias = ref (Some "sentinel") in
+  let captured_namespaced_name = ref None in
   let captured_extra = ref [] in
   let term =
     let open Cmdliner.Term.Syntax in
@@ -349,13 +348,20 @@ let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
     captured_name := n;
     captured_model := m;
     captured_alias := a;
-    (* Strip client name (pos 0) and `--` (pos 1) — same as the real term. *)
-    captured_extra := (match all with _ :: _ :: rest -> rest | _ -> [])
+    (* Apply the same client-prefix stripping and B221 namespace parser as the
+       production term. *)
+    let raw = C2c_start.strip_start_extra_argv_prefix all in
+    (match C2c_start.parse_namespaced_passthrough raw with
+     | Ok parsed ->
+         captured_namespaced_name := parsed.C2c_start.c2c_name;
+         captured_extra := parsed.C2c_start.client_args
+     | Error msg -> fail msg)
   in
   let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
   let argv =
-    [| "c2c"; "start"; "opencode"; "-n"; "real-name";
-       "--"; "--model"; "gpt-x"; "-n"; "not-c2c-name"; "--alias"; "z" |]
+    [| "c2c"; "opencode"; "-n"; "real-name";
+       "--"; "--model"; "gpt-x"; "--c2c:name"; "alias-wrapper-name";
+       "-n"; "not-c2c-name"; "--alias"; "z" |]
   in
   let _ = Cmdliner.Cmd.eval ~argv cmd in
   check (option string) "pre-`--` -n parses as c2c name"
@@ -364,13 +370,119 @@ let test_extra_argv_boundary_c2c_flag_not_consumed_b128 () =
     None !captured_model;
   check (option string) "post-`--` --alias NOT parsed as c2c alias"
     None !captured_alias;
-  check (list string) "post-`--` tokens forwarded verbatim"
+  check (option string) "namespaced name parsed after `--`"
+    (Some "alias-wrapper-name") !captured_namespaced_name;
+  check (list string) "ordinary post-`--` tokens forwarded in order"
     [ "--model"; "gpt-x"; "-n"; "not-c2c-name"; "--alias"; "z" ]
     !captured_extra
 
+let result_ok = function
+  | Ok value -> value
+  | Error msg -> fail msg
+
+let result_is_error = function Error _ -> true | Ok _ -> false
+
+let test_namespaced_passthrough_extracts_name_b221 () =
+  let parsed =
+    result_ok
+      (C2c_start.parse_namespaced_passthrough
+         [ "--model"; "gpt-5.6-sol"; "--c2c:name"; "cx-custom";
+           "--profile"; "fast" ])
+  in
+  check (option string) "two-token name" (Some "cx-custom")
+    parsed.C2c_start.c2c_name;
+  check (list string) "frontend args preserved around extracted control"
+    [ "--model"; "gpt-5.6-sol"; "--profile"; "fast" ]
+    parsed.C2c_start.client_args;
+  let equals =
+    result_ok
+      (C2c_start.parse_namespaced_passthrough
+         [ "before"; "--c2c:name=cx-equals"; "after" ])
+  in
+  check (option string) "equals-form name" (Some "cx-equals")
+    equals.C2c_start.c2c_name;
+  check (list string) "equals form preserves neighbours"
+    [ "before"; "after" ] equals.C2c_start.client_args
+
+let test_namespaced_passthrough_rejects_bad_controls_b221 () =
+  check bool "missing name rejected" true
+    (result_is_error
+       (C2c_start.parse_namespaced_passthrough [ "--c2c:name" ]));
+  check bool "empty equals name rejected" true
+    (result_is_error
+       (C2c_start.parse_namespaced_passthrough [ "--c2c:name=" ]));
+  check bool "whitespace-bearing split name rejected, not normalized" true
+    (result_is_error
+       (C2c_start.parse_namespaced_passthrough [ "--c2c:name"; " bad " ]));
+  check bool "whitespace-bearing equals name rejected, not normalized" true
+    (result_is_error
+       (C2c_start.parse_namespaced_passthrough [ "--c2c:name=bad " ]));
+  check bool "unknown reserved key rejected" true
+    (result_is_error
+       (C2c_start.parse_namespaced_passthrough [ "--c2c:alias"; "x" ]));
+  check bool "duplicate name rejected" true
+    (result_is_error
+       (C2c_start.parse_namespaced_passthrough
+          [ "--c2c:name"; "one"; "--c2c:name=two" ]))
+
+let test_merge_namespaced_name_b221 () =
+  check (option string) "post-separator name fills absent pre-name"
+    (Some "post")
+    (result_ok
+       (C2c_start.merge_namespaced_name ~existing:None
+          ~namespaced:(Some "post")));
+  check (option string) "matching pre/post name accepted"
+    (Some "same")
+    (result_ok
+       (C2c_start.merge_namespaced_name ~existing:(Some "same")
+          ~namespaced:(Some "same")));
+  check bool "conflicting pre/post name rejected" true
+    (result_is_error
+       (C2c_start.merge_namespaced_name ~existing:(Some "before")
+          ~namespaced:(Some "after")))
+
+let test_namespaced_name_wires_generic_codex_alias_b221 () =
+  let parsed =
+    result_ok
+      (C2c_start.parse_namespaced_passthrough
+         [ "--model"; "gpt-5.6-sol"; "--c2c:name"; "cx-custom" ])
+  in
+  let name =
+    result_ok
+      (C2c_start.merge_namespaced_name ~existing:None
+         ~namespaced:parsed.C2c_start.c2c_name)
+  in
+  let app_server_alias =
+    C2c_start.codex_alias_override_for_namespaced_name ~existing:None
+      ~namespaced:parsed.C2c_start.c2c_name
+  in
+  check (option string) "generic instance name" (Some "cx-custom") name;
+  check (option string) "normal app-server alias override" (Some "cx-custom")
+    app_server_alias;
+  check (list string) "codex frontend args remain filtered and ordered"
+    [ "--model"; "gpt-5.6-sol" ] parsed.C2c_start.client_args;
+  check (option string) "explicit alias stays authoritative" (Some "broker-alias")
+    (C2c_start.codex_alias_override_for_namespaced_name
+       ~existing:(Some "broker-alias") ~namespaced:parsed.C2c_start.c2c_name)
+
+let test_namespaced_name_filtered_from_generic_tmux_command_b221 () =
+  (* [c2c_managed_cmd] now passes this single filtered [client_args] value as
+     both ordinary passthrough and [tmux_command].  This exercises the exact
+     parser output consumed at that wiring point, including args on both sides
+     of the reserved wrapper control. *)
+  let parsed =
+    result_ok
+      (C2c_start.parse_namespaced_passthrough
+         [ "bash"; "--c2c:name=tmux-custom"; "-lc"; "echo hello" ])
+  in
+  check (option string) "tmux managed name extracted" (Some "tmux-custom")
+    parsed.C2c_start.c2c_name;
+  check (list string) "tmux command contains no reserved control"
+    [ "bash"; "-lc"; "echo hello" ] parsed.C2c_start.client_args
+
 (* B129 regression guard: `c2c start pty -- bash -i` must parse with a SINGLE
-   `--`. The `c2c start` Cmdliner term strips the leading client name + `--`
-   (via the real `C2c_start.strip_start_extra_argv_prefix`), so
+   `--`. Cmdliner consumes the separator; the shared helper removes CLIENT
+   from the [pos_all] capture, so
    `parse_pty_cmd_argv` receives the raw command tokens `["bash"; "-i"]` and
    must NOT hunt for another `--`. Prior to the fix it required a second `--`,
    forcing users to type the double-`--` form `c2c start pty -- -- bash -i`.
@@ -389,11 +501,10 @@ let test_parse_pty_cmd_argv_single_dashdash_b129 () =
     let open Cmdliner.Term.Syntax in
     let+ _client = client
     and+ all = extra_argv in
-    (* Same strip helper the production `c2c start` term uses. *)
     captured := C2c_start.strip_start_extra_argv_prefix all
   in
   let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
-  let argv = [| "c2c"; "start"; "pty"; "--"; "bash"; "-i" |] in
+  let argv = [| "c2c"; "pty"; "--"; "bash"; "-i" |] in
   let _ = Cmdliner.Cmd.eval ~argv cmd in
   check (list string) "single `--`: extra_args is the raw command tokens"
     [ "bash"; "-i" ] !captured;
@@ -426,8 +537,8 @@ let test_parse_pty_cmd_argv_bare_command_b129 () =
    split each token on commas — so `c2c start claude -- --prompt "Hello, world"`
    would arrive as ["--prompt"; "Hello"; " world"] instead of
    ["--prompt"; "Hello, world"]. `pos_all string []` preserves each token
-   verbatim; commas inside arguments are NOT split. The first 2 positional
-   elements (client name + `--`) are stripped before the result is used, so
+   verbatim; commas inside arguments are NOT split. The leading client
+   positional is stripped before the result is used, so
    the final extra_argv contains only the args after `--`. *)
 let test_extra_argv_preserves_commas_470 () =
   let extra_argv =
@@ -445,12 +556,11 @@ let test_extra_argv_preserves_commas_470 () =
     let+ _client = client
     and+ _name = name
     and+ all = extra_argv in
-    (* Strip client name (pos 0) and `--` (pos 1) *)
-    captured := Some (match all with _ :: _ :: rest -> rest | _ -> [])
+    captured := Some (C2c_start.strip_start_extra_argv_prefix all)
   in
   let cmd = Cmdliner.Cmd.v (Cmdliner.Cmd.info "start") term in
   let argv =
-    [| "c2c"; "start"; "claude"; "-n"; "kimi-470";
+    [| "c2c"; "claude"; "-n"; "kimi-470";
        "--"; "--prompt"; "Hello, world"; "--flag=a,b,c"; "plain" |]
   in
   let _ = Cmdliner.Cmd.eval ~argv cmd in
@@ -3022,6 +3132,62 @@ let read_all_file path =
         assert false
       with End_of_file -> Buffer.contents b)
 
+let test_generic_start_tmux_consumes_namespaced_control_b221 () =
+  (* Full command-wiring regression for the second B221 review finding.  The
+     fake tmux accepts the initial target validation, records the command
+     sent to the pane, then reports the target gone so the managed loop exits
+     deterministically.  The reserved wrapper control must never reach any
+     tmux argv, while ordinary command tokens remain present and ordered. *)
+  with_temp_dir @@ fun dir ->
+  let fake_bin = Filename.concat dir "bin" in
+  Unix.mkdir fake_bin 0o755;
+  let fake_tmux = Filename.concat fake_bin "tmux" in
+  let log_path = Filename.concat dir "tmux.log" in
+  let count_path = Filename.concat dir "display-seen" in
+  let instances_dir = Filename.concat dir "instances" in
+  let broker_root = Filename.concat dir "broker" in
+  let output_path = Filename.concat dir "output.log" in
+  write_file fake_tmux
+    "#!/bin/sh\n\
+     printf '%s\\n' \"$*\" >> \"$C2C_TEST_TMUX_LOG\"\n\
+     if [ \"$1\" = display-message ]; then\n\
+       if [ ! -e \"$C2C_TEST_TMUX_COUNT\" ]; then\n\
+         : > \"$C2C_TEST_TMUX_COUNT\"\n\
+         printf 'fixture:0.0 %%42\\n'\n\
+         exit 0\n\
+       fi\n\
+       exit 1\n\
+     fi\n\
+     if [ \"$1\" = capture-pane ]; then exit 1; fi\n\
+     exit 0\n";
+  Unix.chmod fake_tmux 0o755;
+  let bin = built_c2c_binary () in
+  let alias =
+    Printf.sprintf "tmux-custom-%d-%d" (Unix.getpid ()) (Random.bits ())
+  in
+  let cmd =
+    Printf.sprintf
+      "env -u C2C_INSTANCE_NAME -u C2C_MCP_SESSION_ID \
+       PATH=%s:\"$PATH\" C2C_NO_PROMPT=1 C2C_INSTANCES_DIR=%s \
+       C2C_MCP_BROKER_ROOT=%s C2C_TEST_TMUX_LOG=%s C2C_TEST_TMUX_COUNT=%s \
+       %s start tmux --loc fixture --no-prompt -- --c2c:name %s \
+       bash -lc 'echo hello' > %s 2>&1"
+      (Filename.quote fake_bin) (Filename.quote instances_dir)
+      (Filename.quote broker_root) (Filename.quote log_path)
+      (Filename.quote count_path) (Filename.quote bin) (Filename.quote alias)
+      (Filename.quote output_path)
+  in
+  let rc = Sys.command cmd in
+  check int "fixture exits when tmux target disappears" 1 rc;
+  let log = read_all_file log_path in
+  check bool "reserved name never reaches tmux" false
+    (string_contains log "--c2c:");
+  if not
+       (string_contains log
+          "send-keys -t fixture:0.0 'bash' '-lc' 'echo hello'")
+  then
+    Alcotest.failf "ordinary command did not reach tmux send-keys; log=%S" log
+
 let run_instances_and_capture_json ~instances_dir ~extra_args =
   let bin = built_c2c_binary () in
   if not (Sys.file_exists bin) then
@@ -3996,6 +4162,18 @@ let () =
             `Quick, test_prepare_launch_args_forwards_extra_args_for_kimi )
         ; ( "extra_argv_boundary_c2c_flag_not_consumed_b128",
             `Quick, test_extra_argv_boundary_c2c_flag_not_consumed_b128 )
+        ; ( "namespaced_passthrough_extracts_name_b221",
+            `Quick, test_namespaced_passthrough_extracts_name_b221 )
+        ; ( "namespaced_passthrough_rejects_bad_controls_b221",
+            `Quick, test_namespaced_passthrough_rejects_bad_controls_b221 )
+        ; ( "merge_namespaced_name_b221",
+            `Quick, test_merge_namespaced_name_b221 )
+        ; ( "namespaced_name_wires_generic_codex_alias_b221",
+            `Quick, test_namespaced_name_wires_generic_codex_alias_b221 )
+        ; ( "namespaced_name_filtered_from_generic_tmux_command_b221",
+            `Quick, test_namespaced_name_filtered_from_generic_tmux_command_b221 )
+        ; ( "generic_start_tmux_consumes_namespaced_control_b221",
+            `Quick, test_generic_start_tmux_consumes_namespaced_control_b221 )
         ; ( "extra_argv_preserves_commas_470",
             `Quick, test_extra_argv_preserves_commas_470 )
         ; ( "parse_pty_cmd_argv_single_dashdash_b129",
