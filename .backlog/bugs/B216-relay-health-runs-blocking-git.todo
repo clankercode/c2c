@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-15T15:36:36Z"
+depends_on: []
+estimate_hours: 1
+id: B216
+priority: low
+status: pending
+tags: []
+title: Relay /health runs blocking git rev-parse subprocess per request when RAILWAY_GIT_COMMIT_SHA unset
+updated_at: "2026-07-15T15:36:36Z"
+---
+ocaml/relay.ml handle_health (lines ~3313-3318): if RAILWAY_GIT_COMMIT_SHA is not set, the health handler falls back to Unix.open_process_in "git rev-parse --short HEAD" on EVERY /health request. In the Docker image .git is absent so it fails, but forking a subprocess synchronously inside the request handler is a latent slow-health / resource risk — and Railway health checks hit /health frequently. On prod the env var is normally set (fast path), so this is latent, not the current outage cause. Fix: resolve git_hash ONCE at startup (memoize) instead of per-request, and never fork in the hot request path. Priority low.

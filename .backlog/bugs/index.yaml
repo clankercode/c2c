@@ -212,3 +212,4 @@ bugs:
     - file: B213-relay-signature-invalid-flaps.todo
     - file: B214-relay-connector-path-ignores-c.todo
     - file: B215-relay-relay-c2c-im-application.todo
+    - file: B216-relay-health-runs-blocking-git.todo
