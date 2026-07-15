@@ -209,6 +209,34 @@ let test_split_client_alias_passthrough () =
   Alcotest.(check (option string)) "alias2" (Some "a") alias2;
   Alcotest.(check (list string)) "passthrough2" [ "--model" ] extra2
 
+let test_namespaced_name_for_new_alias_wrapper_b221 () =
+  (* alias cx='c2c new codex --'; cx --model gpt-5.6-sol --c2c:name mine *)
+  let client, extra =
+    S.split_client
+      [ "codex"; "--"; "--model"; "gpt-5.6-sol";
+        "--c2c:name"; "mine-codex" ]
+  in
+  Alcotest.(check (option string)) "client" (Some "codex") client;
+  match S.resolve_namespaced_passthrough ~allow_name:true ~existing_name:None extra with
+  | Error msg -> Alcotest.fail msg
+  | Ok (name, frontend_args) ->
+      Alcotest.(check (option string)) "managed name extracted"
+        (Some "mine-codex") name;
+      Alcotest.(check (list string)) "codex args preserved"
+        [ "--model"; "gpt-5.6-sol" ] frontend_args
+
+let test_namespaced_name_codex_conflict_and_resume_rejected_b221 () =
+  Alcotest.(check bool) "pre-separator alias conflict rejected" true
+    (match
+       S.resolve_namespaced_passthrough ~allow_name:true
+         ~existing_name:(Some "before") [ "--c2c:name"; "after" ]
+     with Error _ -> true | Ok _ -> false);
+  Alcotest.(check bool) "resume positional alias remains authoritative" true
+    (match
+       S.resolve_namespaced_passthrough ~allow_name:false ~existing_name:None
+         [ "--model"; "x"; "--c2c:name"; "other" ]
+     with Error _ -> true | Ok _ -> false)
+
 (* ------------------------------------------------------------------ *)
 (* thread-id conflict rejection                                        *)
 (* ------------------------------------------------------------------ *)
@@ -499,6 +527,49 @@ let test_glue_happy_publishes_after_start () =
           Alcotest.(check string) "published alias" alias m.alias;
           Alcotest.(check string) "seed persisted" sid m.session_id)
 
+let test_generic_start_namespaced_name_reaches_app_server_alias_b221 () =
+  (* Wiring regression: generic [c2c start codex] parses the reserved control,
+     converts it to the app-server's [alias_override], and the normal
+     app-server lifecycle exports that exact routable identity to the remote
+     frontend.  Testing only the fallback [C2c_start.cmd_start] path would miss
+     this because that path derives its alias from the instance name. *)
+  let alias =
+    Printf.sprintf "cx-custom-%d-%d" (Unix.getpid ()) (Random.bits ())
+  in
+  let sid = unique_sid () in
+  let parsed =
+    match C2c_start.parse_namespaced_passthrough
+            [ "--model"; "gpt-5.6-sol"; "--c2c:name"; alias ] with
+    | Ok parsed -> parsed
+    | Error msg -> Alcotest.fail msg
+  in
+  let alias_override =
+    C2c_start.codex_alias_override_for_namespaced_name ~existing:None
+      ~namespaced:parsed.C2c_start.c2c_name
+  in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      let clock = ref 0.0 in
+      let server = { status = Running_ } in
+      let frontend = { status = Exited 0 } in
+      let frontend_env = ref [||] in
+      let bk = scripted ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+            Ok (mk_fake ~id:311 server))
+          ~spawn_frontend:(fun ~argv:_ ~env ->
+            frontend_env := env;
+            Ok (mk_fake ~id:322 frontend)) () in
+      let rc = S.run ~mode:S.Start ?alias_override ~yolo:false
+          ~extra_args:parsed.C2c_start.client_args ~thread_id:sid ~backend:bk
+          ~fallback:(fun ~extra_args:_ () -> 99) () in
+      Alcotest.(check int) "normal app-server path succeeds" 0 rc;
+      Alcotest.(check bool) "frontend receives requested broker alias" true
+        (Array.exists (( = ) ("C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias))
+           !frontend_env);
+      match S.load_mapping ~instance_dir:(C2c_start.instance_dir alias) with
+      | None -> Alcotest.fail "namespaced alias mapping should be published"
+      | Some mapping ->
+          Alcotest.(check string) "published namespaced alias" alias mapping.alias)
+
 let test_glue_new_mode_default_engages_app_server () =
   (* AC (B131): plain `c2c new codex` (mode=New, NO --app-server flag) must select
      the app-server path on a supported codex — never the hook fallback. Mirrors
@@ -742,7 +813,11 @@ let () =
     ; ( "passthrough",
         [ test_case "drop_sep" `Quick test_drop_sep
         ; test_case "split_client" `Quick test_split_client_passthrough
-        ; test_case "split_client_alias" `Quick test_split_client_alias_passthrough ] )
+        ; test_case "split_client_alias" `Quick test_split_client_alias_passthrough
+        ; test_case "namespaced name for new alias wrapper (B221)" `Quick
+            test_namespaced_name_for_new_alias_wrapper_b221
+        ; test_case "namespaced conflict + resume rejection (B221)" `Quick
+            test_namespaced_name_codex_conflict_and_resume_rejected_b221 ] )
     ; ( "thread-conflict",
         [ test_case "reconcile" `Quick test_reconcile_thread ] )
     ; ( "restart-control",
@@ -771,6 +846,8 @@ let () =
     ; ( "lifecycle-glue",
         [ test_case "default (no flag) engages app-server, publishes after start"
             `Quick test_glue_happy_publishes_after_start
+        ; test_case "generic start namespaced name reaches app-server alias (B221)"
+            `Quick test_generic_start_namespaced_name_reaches_app_server_alias_b221
         ; test_case "new codex (default, no flag) engages app-server"
             `Quick test_glue_new_mode_default_engages_app_server
         ; test_case "unsupported codex auto-falls-back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish

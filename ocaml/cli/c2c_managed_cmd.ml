@@ -191,7 +191,8 @@ let start_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"CLIENT"
       ~doc:(Printf.sprintf "Client to start (%s)." C2c_setup.start_client_list))
   in
-  (* Trailing args after `--`: appended verbatim to the client's argv.
+  (* Trailing args after `--`: appended to the client's argv, except for the
+     reserved [--c2c:name] wrapper control (B221).
      e.g. `c2c start claude -- --foo bar` runs claude with `--foo bar`;
      `c2c start pty -- bash -i` runs bash with `-i`.
 
@@ -201,9 +202,9 @@ let start_cmd =
      ["--prompt"; "Hello"; " world"]). With plain `string`, each positional
      token is preserved verbatim. *)
   let extra_argv =
-    (* #470: `pos_all string []` captures all positional args after the subcommand
-       as individual tokens (preserving commas). Cmdliner puts `--` at position 1,
-       so we strip the first 2 elements (client name + `--`). This replaces the
+    (* #470: `pos_all string []` captures every positional (including CLIENT)
+       as individual tokens while preserving commas. Cmdliner consumes `--`;
+       the shared helper removes the leading CLIENT. This replaces the
        broken `pos_right 1 (list string) []` which mangled comma-containing args
        and included `--` literally in the string. *)
     let extra_argv_term =
@@ -211,14 +212,14 @@ let start_cmd =
         ~doc:"Extra arguments forwarded to the spawned client's argv (e.g. \
               `c2c start claude -- --print hello` runs claude with `--print hello`). \
               Tokens are preserved verbatim — commas inside an argument are NOT \
-              split. For CLIENT=tmux, the tail is typed into the target pane instead \
+              split. The reserved `--c2c:name NAME` / `--c2c:name=NAME` control \
+              sets the managed instance name and is removed from the client argv. \
+              For CLIENT=tmux, the tail is typed into the target pane instead \
               of appended to argv. For CLIENT=pty, the first tail arg is the command \
               to spawn under the PTY (e.g. `c2c start pty -- bash -i`).")
     in
     let open Cmdliner.Term.Syntax in
     let+ extra_argv = extra_argv_term in
-    (* Strip client name (pos 0) and `--` (pos 1); rest is the child's extra
-       argv. Shared helper so the B129 tests exercise this exact logic. *)
     C2c_start.strip_start_extra_argv_prefix extra_argv
   in
   let name =
@@ -278,10 +279,6 @@ let start_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "loc" ] ~docv:"TMUX_TARGET"
       ~doc:"Tmux target for generic tmux mode (e.g. 0:1.2 or %42). Required when CLIENT=tmux.")
   in
-  let tmux_tail =
-    Cmdliner.Arg.(value & pos_right 1 string [] & info [] ~docv:"CMD"
-      ~doc:"For CLIENT=tmux, optional command argv to type into the target pane. Use -- before the command.")
-  in
   let new_session_flag =
     Cmdliner.Arg.(value & flag & info [ "new-session" ]
       ~doc:"Start a fresh session even when an existing instance config is found. \
@@ -333,7 +330,6 @@ let start_cmd =
   and+ worktree_flag = worktree
   and+ branch_flag = branch_opt
   and+ tmux_loc = tmux_loc
-  and+ tmux_tail = tmux_tail
   and+ extra_argv = extra_argv
   and+ new_session = new_session_flag
   and+ foreground_flag = foreground_flag
@@ -341,6 +337,23 @@ let start_cmd =
   and+ interval_opt = interval_opt
   and+ yolo_flag = yolo_flag
   and+ thread_id_flag = thread_id_flag in
+  let namespaced =
+    match C2c_start.parse_namespaced_passthrough extra_argv with
+    | Ok parsed -> parsed
+    | Error msg ->
+        Printf.eprintf "error: %s\n%!" msg;
+        exit 1
+  in
+  let namespaced_name = namespaced.C2c_start.c2c_name in
+  let name_opt =
+    match C2c_start.merge_namespaced_name ~existing:name_opt
+            ~namespaced:namespaced_name with
+    | Ok value -> value
+    | Error msg ->
+        Printf.eprintf "error: %s\n%!" msg;
+        exit 1
+  in
+  let extra_argv = namespaced.C2c_start.client_args in
   (* #470: extra_argv is now string list. The positional converter was changed
      from `pos_right 1 (list string) []` (which split each token on commas, so
      `c2c start claude -- --prompt "Hello, world"` would arrive as
@@ -410,7 +423,8 @@ let start_cmd =
     Printf.eprintf "error: --loc is only valid with `c2c start tmux`.\n%!";
     exit 1
   end;
-  (* Args after `--` are forwarded to the spawned client's argv (per
+  (* Args after `--` (apart from reserved --c2c:* controls) are forwarded to
+     the spawned client's argv (per
      `c2c start --help`). For CLIENT=tmux, the tail is the command typed
      into the target pane (handled separately via tmux_command). For all
      other clients, the tail flows through extra_argv → prepare_launch_args,
@@ -683,15 +697,23 @@ let start_cmd =
       ?auto_join_rooms
       ?reply_to
       ?tmux_location:tmux_loc
-      ~tmux_command:tmux_tail
+      (* B221: use the same filtered tail for tmux that every other client
+         receives.  Keeping a second raw positional capture here leaked
+         reserved --c2c:* controls into the command typed into the pane. *)
+      ~tmux_command:extra_args
       ~alias_from_auto_gen
       ~no_prompt
       ~opencode_plugin_embedded:C2c_opencode_plugin_embedded.content
       ()
   in
   if client = "codex" then
+    let codex_alias_override =
+      C2c_start.codex_alias_override_for_namespaced_name
+        ~existing:alias_override ~namespaced:namespaced_name
+    in
     exit (C2c_codex_cmd.start_delegate
-            ~alias_override ~thread_id:thread_id_flag ~yolo:yolo_flag
+            ~alias_override:codex_alias_override
+            ~thread_id:thread_id_flag ~yolo:yolo_flag
             ?model_override ~extra_args:extra_argv
             ~fallback:cmd_start_with ())
   else begin

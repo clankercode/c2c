@@ -86,11 +86,21 @@ val app_server_frontend_env : session_id:string -> alias:string -> string list
 val drop_sep : string list -> string list
 
 (** [split_client raw] peels the leading client token; the remainder (past an
-    optional [--]) is the verbatim codex passthrough. *)
+    optional [--]) is the codex passthrough plus reserved wrapper controls. *)
 val split_client : string list -> string option * string list
 
 (** [split_client_alias raw] peels the leading client + alias tokens. *)
 val split_client_alias : string list -> string option * string option * string list
+
+val resolve_namespaced_passthrough :
+  allow_name:bool ->
+  existing_name:string option ->
+  string list ->
+  ((string option * string list), string) result
+(** Resolve B221's reserved [--c2c:name] control for the reduced Codex command
+    forms. When [allow_name] is false (resume), any namespaced name is rejected;
+    otherwise it is merged with the pre-separator alias and removed from the
+    frontend argv. *)
 
 (** [reconcile_thread ~requested ~saved] returns the effective thread id. A
     non-empty [requested] that differs from a [saved] thread is [Error] — the

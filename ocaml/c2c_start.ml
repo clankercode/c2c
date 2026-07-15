@@ -4204,19 +4204,100 @@ let start_headless_thread_id_watcher ~(name : string) ~(path : string) : Thread.
    When all callers migrate to c2c_pty_inject.ml this alias can be removed. *)
 let pty_inject = C2c_pty_inject.pty_inject
 
-(* Strip the leading client name (pos 0) and `--` (pos 1) from the raw
-   `pos_all` positional capture of `c2c start`, yielding the child's extra
-   argv. Cmdliner places `--` at position 1 when present. Shared by the
-   `c2c start` Cmdliner term (c2c_managed_cmd.ml) and the B129 regression
-   tests so both exercise the same production logic. *)
+(* Strip the leading client name (pos 0) from the raw [pos_all] positional
+   capture of [c2c start], yielding the child's extra argv. Cmdliner normally
+   consumes the [--] separator rather than returning it; tolerate an explicit
+   separator as well so direct helper callers retain the documented shape.
+   Shared by the production term and the B129/B221 wiring regressions. *)
 let strip_start_extra_argv_prefix : string list -> string list = function
-  | _ :: _ :: rest -> rest
-  | _ -> []
+  | _client :: "--" :: rest -> rest
+  | _client :: rest -> rest
+  | [] -> []
+
+(* B221: shell aliases conventionally end in the client passthrough separator,
+   e.g. [alias cx='c2c new codex --']. Reserve the [--c2c:] namespace inside
+   that tail for wrapper controls which must remain usable after the alias has
+   committed Cmdliner to passthrough mode. The initial contract intentionally
+   exposes one control only: [--c2c:name NAME] (or [--c2c:name=NAME]). *)
+type namespaced_passthrough = {
+  c2c_name : string option;
+  client_args : string list;
+}
+
+let parse_namespaced_passthrough (args : string list) :
+    (namespaced_passthrough, string) result =
+  let prefix = "--c2c:" in
+  let starts_with ~prefix value =
+    String.length value >= String.length prefix
+    && String.sub value 0 (String.length prefix) = prefix
+  in
+  let set_name current value =
+    if value = "" then Error "--c2c:name requires a non-empty NAME"
+    else if not (C2c_name.is_valid value) then
+      Error (C2c_name.error_message "--c2c:name" value)
+    else
+      match current with
+      | None -> Ok (Some value)
+      | Some prior when prior = value ->
+          Error "--c2c:name may only be specified once"
+      | Some prior ->
+          Error
+            (Printf.sprintf
+               "conflicting --c2c:name values '%s' and '%s'" prior value)
+  in
+  let rec loop c2c_name rev_client_args = function
+    | [] -> Ok { c2c_name; client_args = List.rev rev_client_args }
+    | "--c2c:name" :: [] -> Error "--c2c:name requires a NAME"
+    | "--c2c:name" :: value :: _ when starts_with ~prefix:"--" value ->
+        Error "--c2c:name requires a NAME before the next option"
+    | "--c2c:name" :: value :: rest ->
+        (match set_name c2c_name value with
+         | Ok c2c_name -> loop c2c_name rev_client_args rest
+         | Error _ as error -> error)
+    | token :: rest when starts_with ~prefix:"--c2c:name=" token ->
+        let value =
+          String.sub token (String.length "--c2c:name=")
+            (String.length token - String.length "--c2c:name=")
+        in
+        (match set_name c2c_name value with
+         | Ok c2c_name -> loop c2c_name rev_client_args rest
+         | Error _ as error -> error)
+    | token :: _ when starts_with ~prefix token ->
+        Error
+          (Printf.sprintf
+             "unknown namespaced c2c option '%s' (supported: --c2c:name)" token)
+    | token :: rest -> loop c2c_name (token :: rev_client_args) rest
+  in
+  loop None [] args
+
+let merge_namespaced_name ~(existing : string option)
+    ~(namespaced : string option) : (string option, string) result =
+  match existing, namespaced with
+  | None, value | value, None -> Ok value
+  | Some before, Some after when before = after -> Ok (Some before)
+  | Some before, Some after ->
+      Error
+        (Printf.sprintf
+           "name '%s' before `--` conflicts with --c2c:name '%s'" before after)
+
+(* Generic [c2c start codex] has two launch paths: the normal app-server path
+   receives [alias_override] directly, while the legacy managed-client path
+   derives its alias from the instance [name].  A post-separator B221 name
+   therefore has to fill an otherwise-absent app-server override as well as
+   the instance name.  An explicit/role-derived alias remains authoritative,
+   preserving the existing ability to give the instance and broker alias
+   different names. *)
+let codex_alias_override_for_namespaced_name ~(existing : string option)
+    ~(namespaced : string option) : string option =
+  match existing with
+  | Some _ -> existing
+  | None -> namespaced
 
 (* Parse the command + argv for `c2c start pty` from [extra_args].
 
    B129: [extra_args] is ALREADY the raw command tokens — the shared positional
-   parser in c2c_managed_cmd.ml strips the leading client name + `--` before
+   parser in c2c_managed_cmd.ml strips the leading client name (and Cmdliner
+   consumes `--`) before
    run_pty_loop is reached. So for `c2c start pty -- bash -i` we receive
    ["bash"; "-i"]; the first token is the command and the rest is its argv.
    Do NOT hunt for another `--` here (that required the double-`--` form

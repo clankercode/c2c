@@ -988,10 +988,10 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 
 | Subcommand | Description |
 |------------|-------------|
-| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `agy`, `tmux`, `pty`, `relay-connect`. `relay-connect` is one supervised machine-wide service, dynamically covers all repository brokers, and automatically reloads an updated c2c binary. `agy` runs a managed start via `AgyAdapter`, launching the Antigravity CLI behind the deliver sidecar. **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded verbatim to the launched client's argv (see **Argument passthrough** below; `tmux`/`pty` handle the tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
-| `codex [--alias A] [--yolo] [--thread-id ID] [-- codex-options…]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
-| `new codex [--alias A] [--yolo] [-- codex-options…]` | Start a **new** Codex thread + c2c identity — never resumes. |
-| `resume codex ALIAS [--yolo] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`. |
+| `start CLIENT [-n NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] … [-- client-options… [--c2c:name NAME]]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `agy`, `tmux`, `pty`, `relay-connect`. `relay-connect` is one supervised machine-wide service, dynamically covers all repository brokers, and automatically reloads an updated c2c binary. `agy` runs a managed start via `AgyAdapter`, launching the Antigravity CLI behind the deliver sidecar. **B146-TEMP:** `c2c start kimi` refuses with a `[DISABLED]` banner until re-enabled. NAME becomes the alias by default. For agent clients, everything after a literal `--` is forwarded to the launched client's argv except the reserved `--c2c:*` wrapper namespace (see **Argument passthrough** below; `tmux`/`pty` handle the remaining tail differently). For `codex`, also accepts `--yolo`, `--thread-id ID` (see the Codex session grammar below). |
+| `codex [--alias A] [--yolo] [--thread-id ID] [-- codex-options… [--c2c:name NAME]]` | Shortcut for `c2c start codex` (same session semantics; reduced flag surface — for `-n`/`-m`/`--worktree`/`--agent` use `c2c start codex`). See the Codex session grammar below. |
+| `new codex [--alias A] [--yolo] [-- codex-options… [--c2c:name NAME]]` | Start a **new** Codex thread + c2c identity — never resumes. |
+| `resume codex ALIAS [--yolo] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`; `--c2c:name` is rejected because `ALIAS` is authoritative. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
@@ -1011,10 +1011,16 @@ client's options. It works uniformly for **every managed agent client**
 - Everything **before** `--` is parsed as a c2c flag (`-n`, `-m`,
   `--alias`, `--worktree`, …).
 - Everything **after** `--` is forwarded **verbatim** to the client's
-  argv and is **never** interpreted as a c2c flag — even a token that is
+  argv except the explicitly reserved `--c2c:*` wrapper namespace. Ordinary
+  flags are never interpreted as c2c flags — even a token that is
   byte-for-byte identical to a real c2c flag (e.g. `--model` after `--`
   reaches the client, not c2c). Commas inside an argument are preserved
   (no token splitting).
+- `--c2c:name NAME` (or `--c2c:name=NAME`) is the initial namespaced control.
+  It sets the managed instance name and is removed from the client argv, which
+  makes c2c naming usable through shell aliases that already end in `--`.
+  An identical pre-`--` name is accepted; conflicting names, duplicates,
+  missing values, and unknown `--c2c:*` keys fail clearly.
 
 > The two non-agent launchers (`c2c start tmux`, `c2c start pty`) do **not**
 > use this agent-argv passthrough: `tmux` **types** the tail into the target
@@ -1035,11 +1041,13 @@ below), but the convention generalizes:
 ```sh
 alias oc='c2c start opencode --'
 oc --model some-model                          # -> c2c start opencode -- --model some-model
+oc --model some-model --c2c:name custom-oc     # c2c name=custom-oc; opencode gets only --model some-model
 ```
 
-Codex additionally exposes the `--` boundary on its own `c2c codex` /
+Codex additionally exposes the `--` boundary and `--c2c:name` on its own `c2c codex` /
 `c2c new codex` / `c2c resume codex` shortcuts (see the Codex session
-grammar below); the passthrough semantics are identical.
+grammar below); resume rejects `--c2c:name` because its positional ALIAS is
+already authoritative.
 
 ### Codex session grammar (app-server-backed)
 
@@ -1060,6 +1068,11 @@ Key semantics:
   **optional** override of the display/routing identity — it never replaces the
   authoritative Codex thread id, and a conflict with a differently-owned saved
   alias is rejected.
+- **Namespaced name after `--`.** `--c2c:name NAME` is equivalent to the
+  pre-separator alias/name selector for `c2c codex` and `c2c new codex`, but
+  can be written after an alias-provided trailing `--`. It is removed before
+  Codex sees its argv. `c2c resume codex ALIAS` rejects it because `ALIAS`
+  already selects the saved identity.
 - **`--thread-id ID`** pins the exact Codex thread to resume; a conflict with the
   saved thread is rejected rather than guessed.
 - **`--yolo`** prints a conspicuous warning and forwards exactly Codex's
@@ -1080,8 +1093,9 @@ Key semantics:
 
 **`--` passthrough (recommended).** This is the codex-specific instance of the
 general [Argument passthrough (`--`)](#argument-passthrough----any-client-wrapper)
-rule above: everything after a literal `--` is forwarded verbatim to the stock
-`codex` frontend and is never parsed as a c2c flag. For example:
+rule above: ordinary arguments after a literal `--` are forwarded verbatim to
+the stock `codex` frontend, while reserved `--c2c:*` controls are consumed by
+the wrapper. For example:
 
 ```sh
 c2c new codex -- --model gpt-5.3-codex-spark
@@ -1095,6 +1109,8 @@ Because of this boundary, the handy convention is a shell alias that **ends in
 alias cx='c2c new codex --'
 # then:
 cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-spark
+cx --model gpt-5.6-sol --c2c:name cx-custom
+# c2c name=cx-custom; Codex receives only --model gpt-5.6-sol
 ```
 
 **Delivery + diagnostics.** Managed Codex sessions on a supported Codex deliver

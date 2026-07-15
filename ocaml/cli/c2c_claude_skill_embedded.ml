@@ -82,6 +82,9 @@ is retained but install/start is temporarily disabled.)
 **Codex:** for arrival-time delivery (peer messages surface the moment they're
 sent, not just at turn boundaries), run a managed session via `c2c new codex` —
 add `alias cx='c2c new codex --'` to your shell rc, then `cx --model <model>`.
+To choose its c2c name through that passthrough alias, append
+`--c2c:name <name>`; c2c consumes the namespaced control and Codex still
+receives the other arguments unchanged.
 Vanilla `codex` receives at hook (turn) boundaries.
 
 ## Habits
