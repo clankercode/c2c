@@ -2079,6 +2079,43 @@ let rate_limit_backoff ~base ~strikes =
     capped +. jitter
   end
 
+(* B211: staleness-exit watchdog for the *completes-but-erroring* wedge.
+   The B181 SIGALRM watchdog only catches a sync pass that HANGS past the
+   wall-clock deadline. A different wedge is just as fatal: each pass returns
+   [Ok result] promptly but with [last_error = Some _] (e.g. every HTTP call
+   fails fast with request_timeout / connection_error), so [watchdog_strikes]
+   resets to 0 every pass, the process stays alive indefinitely, and
+   [last_ok_ts] never advances — a live PID with an hours-stale bridge
+   (exactly the B211 report). Neither the strike counter nor the 429 backoff
+   ever terminates it.
+
+   Fix: track wall-clock time since the last pass that made progress — either
+   a fully successful sync ([last_error = None]) or a rate-limited pass (the
+   relay is up and deliberately throttling us; B210 backs off, restarting
+   would just re-hit the 429). When no progress has been made for
+   [stale_exit_threshold_s], the connector is wedged: log an actionable line
+   and exit 3 so a supervisor (managed `c2c start relay-connect`) restarts it.
+   Unsupervised, the exit makes whoami/doctor report `absent`/`stale` with the
+   documented `c2c restart relay-connect` remediation instead of a silently
+   wedged live PID. Both predicates are pure so they are unit-testable. *)
+let stale_exit_threshold_s ~interval =
+  match Option.bind (Sys.getenv_opt "C2C_RELAY_CONNECTOR_STALE_EXIT_S")
+          float_of_string_opt with
+  | Some v when v > 0.0 -> v
+  | _ -> Float.max 600.0 (interval *. 20.0)
+
+(* [true] when the connector has made no forward progress for at least
+   [threshold] wall-clock seconds and should exit so a supervisor restarts it.
+   [last_progress] is the epoch of the most recent ok / rate-limited pass. *)
+let should_exit_stale ~now ~last_progress ~threshold =
+  now -. last_progress >= threshold
+
+(* A sync pass counts as forward progress if it fully succeeded or was merely
+   rate-limited (relay reachable, throttling). Any other errored pass does NOT
+   reset the staleness timer. *)
+let sync_made_progress (result : sync_result) =
+  result.last_error = None || result.rate_limited
+
 (* B181: wall-clock cap for one sync pass so a hung HTTP path cannot leave
    a multi-hour PID with stale last_sync. Defaults to max(90s, 4 * interval).
    Implemented with SIGALRM because [sync] drives work via nested
@@ -2123,6 +2160,24 @@ let run (t : t) : unit =
   let watchdog_strikes = ref 0 in
   (* B210: consecutive rate-limited passes drive the bounded backoff below. *)
   let rl_strikes = ref 0 in
+  (* B211: wall-clock epoch of the last pass that made forward progress (ok or
+     rate-limited). Seeded to process start so a connector that NEVER succeeds
+     still exits after the staleness threshold. *)
+  let last_progress = ref (Unix.gettimeofday ()) in
+  let stale_threshold = stale_exit_threshold_s ~interval:t.interval in
+  let check_stale_exit () =
+    if not !shutdown
+       && should_exit_stale ~now:(Unix.gettimeofday ())
+            ~last_progress:!last_progress ~threshold:stale_threshold
+    then begin
+      Printf.eprintf
+        "[relay-connector] wedged: no successful sync for %.0fs (>= %.0fs \
+         threshold) though the process is alive — exiting so a supervisor can \
+         restart (B211). Recover manually with: c2c restart relay-connect\n%!"
+        (Unix.gettimeofday () -. !last_progress) stale_threshold;
+      exit 3
+    end
+  in
   let install_signal sig_name =
     Sys.signal sig_name (Sys.Signal_handle (fun _ ->
       if not !shutdown then begin
@@ -2141,6 +2196,8 @@ let run (t : t) : unit =
        | Ok result ->
            watchdog_strikes := 0;
            if result.rate_limited then incr rl_strikes else rl_strikes := 0;
+           if sync_made_progress result then
+             last_progress := Unix.gettimeofday ();
            write_connector_state ~node_id:t.node_id t.broker_root result;
            let err_str = match result.last_error with
              | None -> ""
@@ -2179,6 +2236,9 @@ let run (t : t) : unit =
              ~detail:(Printexc.to_string exn);
            Printf.eprintf "[relay-connector] sync exception: %s\n%!"
              (Printexc.to_string exn));
+      (* B211: an alive-but-erroring connector never advances last_progress;
+         terminate once it has been wedged past the threshold. *)
+      check_stale_exit ();
       if not !shutdown then begin
         let delay = rate_limit_backoff ~base:t.interval ~strikes:!rl_strikes in
         if !rl_strikes > 0 then
@@ -2244,6 +2304,35 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
   end else begin
     let states = Hashtbl.create 8 in
     let strikes = Hashtbl.create 8 in
+    (* B211: per-root wall-clock epoch of the last progress-making pass; seeded
+       lazily to service start so a root that never succeeds still exits. *)
+    let progress = Hashtbl.create 8 in
+    let stale_threshold = stale_exit_threshold_s ~interval in
+    (* Seed a root's progress window the first time it is synced (NOT at service
+       start): a broker root discovered hours later must get a fresh staleness
+       window, or an erroring first pass on a late-joining repo would trip the
+       exit and kill the whole machine service. *)
+    let last_progress_for root =
+      match Hashtbl.find_opt progress root with
+      | Some t -> t
+      | None ->
+          let now = Unix.gettimeofday () in
+          Hashtbl.replace progress root now;
+          now
+    in
+    let check_root_stale_exit root =
+      if should_exit_stale ~now:(Unix.gettimeofday ())
+           ~last_progress:(last_progress_for root) ~threshold:stale_threshold
+      then begin
+        Printf.eprintf
+          "[relay-connector %s] wedged: no successful sync for %.0fs (>= %.0fs \
+           threshold) though the process is alive — exiting so a supervisor \
+           can restart (B211). Recover manually with: c2c restart \
+           relay-connect\n%!"
+          root (Unix.gettimeofday () -. last_progress_for root) stale_threshold;
+        exit 3
+      end
+    in
     let state_for root =
       match Hashtbl.find_opt states root with
       | Some t -> t
@@ -2258,27 +2347,34 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
     let rl_seen = ref false in
     let sync_root root =
       let t = state_for root in
-      match run_sync_once t with
-      | Ok result ->
-          Hashtbl.replace strikes root 0;
-          if result.rate_limited then rl_seen := true;
-          write_connector_state ~node_id t.broker_root result;
-          print_sync_result ~broker_root:root result;
-          (match result.last_error with None -> true | Some _ -> false)
-      | Error (`Watchdog detail) ->
-          let n = 1 + Option.value ~default:0 (Hashtbl.find_opt strikes root) in
-          Hashtbl.replace strikes root n;
-          write_connector_state_error root ~op:"sync_watchdog" ~detail;
-          Printf.eprintf "[relay-connector %s] %s (strike %d/3)\n%!" root detail n;
-          if n >= 3 then exit 3;
-          false
-      | Error (`Exn exn) ->
-          Hashtbl.replace strikes root 0;
-          write_connector_state_error root ~op:"sync"
-            ~detail:(Printexc.to_string exn);
-          Printf.eprintf "[relay-connector %s] sync exception: %s\n%!"
-            root (Printexc.to_string exn);
-          false
+      let outcome =
+        match run_sync_once t with
+        | Ok result ->
+            Hashtbl.replace strikes root 0;
+            if result.rate_limited then rl_seen := true;
+            if sync_made_progress result then
+              Hashtbl.replace progress root (Unix.gettimeofday ());
+            write_connector_state ~node_id t.broker_root result;
+            print_sync_result ~broker_root:root result;
+            (match result.last_error with None -> true | Some _ -> false)
+        | Error (`Watchdog detail) ->
+            let n = 1 + Option.value ~default:0 (Hashtbl.find_opt strikes root) in
+            Hashtbl.replace strikes root n;
+            write_connector_state_error root ~op:"sync_watchdog" ~detail;
+            Printf.eprintf "[relay-connector %s] %s (strike %d/3)\n%!" root detail n;
+            if n >= 3 then exit 3;
+            false
+        | Error (`Exn exn) ->
+            Hashtbl.replace strikes root 0;
+            write_connector_state_error root ~op:"sync"
+              ~detail:(Printexc.to_string exn);
+            Printf.eprintf "[relay-connector %s] sync exception: %s\n%!"
+              root (Printexc.to_string exn);
+            false
+      in
+      (* B211: terminate a persistently-wedged (alive-but-erroring) root. *)
+      check_root_stale_exit root;
+      outcome
     in
     let identity_tag = match identity with Some _ -> "Ed25519-signed" | None -> "token-only" in
     Printf.printf

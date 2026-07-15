@@ -537,6 +537,78 @@ let decide_on_terminal
    the impure thread. *)
 let should_exit_on_relay_terminal ~local_watch_active = not local_watch_active
 
+(* ---------- B211: bounded transient (wedged-bridge) escalation ----------
+
+   A relay bridge (connector) that is alive but wedged makes every monitor
+   peek fail with a *transient* error — request_timeout / connection_error
+   map to [Peek_transient], never to a terminal code. Before B211 the monitor
+   logged one "transient error ... will retry" line PER attempt forever: the
+   reported symptom was tens of minutes of identical request_timeout spam with
+   no actionable signal (the connector, not the monitor, was wedged).
+
+   Bound it without killing the watch (a transient error may still recover, and
+   per B142 a relay-side problem must never stop local receive): after
+   [threshold] consecutive transient peeks spanning at least [min_span_s]
+   wall-clock seconds, emit ONE escalation naming the safe recovery command,
+   then log subsequent transient peeks only once every [log_every] attempts.
+   The streak resets on any Peek_ok / Peek_terminal so a genuine blip that
+   clears never escalates. Pure so the policy is unit-testable. *)
+
+let default_transient_wedge_threshold = 6
+let default_transient_wedge_min_span_s = 60.0
+let transient_log_every_after_wedge = 12
+
+let transient_wedge_remediation =
+  "relay bridge (connector) appears wedged — its process may be alive but its \
+   last successful sync is stale. Recover with: c2c restart relay-connect \
+   (check first with: c2c doctor --relay). The monitor keeps retrying and \
+   local inbox receive is unaffected."
+
+type transient_streak = {
+  ts_consecutive : int;
+  ts_first_at : float option;
+  ts_escalated : bool;  (** the one-time wedged escalation already emitted *)
+}
+
+let empty_transient_streak =
+  { ts_consecutive = 0; ts_first_at = None; ts_escalated = false }
+
+type transient_action =
+  | Transient_log of int
+      (** log this attempt normally (attempt count) *)
+  | Transient_wedged of { attempt : int; remediation : string }
+      (** first crossing of the wedge threshold — log + escalate once *)
+  | Transient_quiet of int
+      (** already escalated and not a periodic re-log — suppress the line *)
+
+(* Advance the transient streak by one peek at [now] and decide what to log. *)
+let note_transient
+    ?(threshold = default_transient_wedge_threshold)
+    ?(min_span_s = default_transient_wedge_min_span_s)
+    ?(log_every = transient_log_every_after_wedge)
+    ~now
+    ~streak
+    () : transient_action * transient_streak =
+  let first = match streak.ts_first_at with Some t -> t | None -> now in
+  let consecutive = streak.ts_consecutive + 1 in
+  let elapsed = now -. first in
+  if streak.ts_escalated then
+    let streak' =
+      { streak with ts_consecutive = consecutive; ts_first_at = Some first }
+    in
+    if log_every > 0 && consecutive mod log_every = 0 then
+      (Transient_log consecutive, streak')
+    else (Transient_quiet consecutive, streak')
+  else if consecutive >= threshold && elapsed >= min_span_s then
+    ( Transient_wedged
+        { attempt = consecutive; remediation = transient_wedge_remediation },
+      { ts_consecutive = consecutive; ts_first_at = Some first;
+        ts_escalated = true } )
+  else
+    ( Transient_log consecutive,
+      { ts_consecutive = consecutive; ts_first_at = Some first;
+        ts_escalated = false } )
+
 (* ---------- B180: identity rebind after rename ----------
 
    `c2c monitor` historically bound alias + relay peek keys once at startup.

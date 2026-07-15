@@ -1090,6 +1090,50 @@ let test_backoff_grows_then_caps () =
   Alcotest.(check bool) "huge strike >= cap" true
     (big >= Conn.rate_limit_backoff_cap_s)
 
+(* B211: staleness-exit watchdog for the alive-but-erroring wedge. *)
+let mk_result ?(rate_limited = false) ?last_error () : Conn.sync_result =
+  { registered = []; registered_sessions = []; heartbeated = [];
+    outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
+    inbound_delivered = 0; inbound_rejected = 0; alerts_emitted = 0;
+    rate_limited; last_error }
+
+let test_stale_exit_default_threshold () =
+  (* default = max(600, interval*20); 30s interval -> 600s, 60s -> 1200s. *)
+  Alcotest.(check (float 1e-9)) "30s interval -> 600s floor" 600.0
+    (Conn.stale_exit_threshold_s ~interval:30.0);
+  Alcotest.(check (float 1e-9)) "60s interval -> 20x" 1200.0
+    (Conn.stale_exit_threshold_s ~interval:60.0)
+
+let test_should_exit_stale_predicate () =
+  let now = 10_000.0 in
+  let threshold = 600.0 in
+  (* fresh progress -> keep running *)
+  Alcotest.(check bool) "recent progress -> no exit" false
+    (Conn.should_exit_stale ~now ~last_progress:(now -. 60.0) ~threshold);
+  (* stale past threshold -> exit *)
+  Alcotest.(check bool) "hours-stale progress -> exit" true
+    (Conn.should_exit_stale ~now ~last_progress:(now -. 7200.0) ~threshold);
+  (* exactly at threshold -> exit (>=) *)
+  Alcotest.(check bool) "exactly at threshold -> exit" true
+    (Conn.should_exit_stale ~now ~last_progress:(now -. 600.0) ~threshold)
+
+let test_sync_made_progress () =
+  (* ok pass (no error) is progress; rate-limited pass is progress (relay up,
+     throttling — restarting would not help); a plain errored pass is NOT. *)
+  Alcotest.(check bool) "ok pass is progress" true
+    (Conn.sync_made_progress (mk_result ()));
+  Alcotest.(check bool) "rate-limited pass is progress" true
+    (Conn.sync_made_progress
+       (mk_result ~rate_limited:true
+          ~last_error:{ Conn.err_op = "poll_inbox";
+                        err_detail = "rate_limit_exceeded";
+                        err_ts = 0.0 } ()));
+  Alcotest.(check bool) "errored pass (request_timeout) is NOT progress" false
+    (Conn.sync_made_progress
+       (mk_result ~last_error:{ Conn.err_op = "poll_inbox";
+                                err_detail = "request_timeout";
+                                err_ts = 0.0 } ()))
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
@@ -1098,6 +1142,14 @@ let () =
         test_backoff_zero_strikes_is_base;
       Alcotest.test_case "grows exponentially then caps" `Quick
         test_backoff_grows_then_caps;
+    ];
+    "B211 staleness-exit watchdog", [
+      Alcotest.test_case "default threshold = max(600, 20x interval)" `Quick
+        test_stale_exit_default_threshold;
+      Alcotest.test_case "exit predicate fires past threshold" `Quick
+        test_should_exit_stale_predicate;
+      Alcotest.test_case "ok/rate-limited count as progress, errors do not"
+        `Quick test_sync_made_progress;
     ];
     "paths", [
       Alcotest.test_case "local_inbox_path" `Quick test_local_inbox_path;
