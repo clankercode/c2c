@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T22:54:07Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T23:44:57Z"
 complexity: medium
 created_at: "2026-07-15T22:49:22Z"
 depends_on: []
+duration_minutes: 50.84962892678333
 estimate_hours: 1
 id: B221
 priority: high
 started_at: "2026-07-15T22:54:07Z"
-status: in_progress
+status: done
 tags: []
 title: 'When we run ''c2c new codex -- '' or something, that''s useful for aliases. Great. But also it would be nice to be able to add c2c flags after this so they''re usable with the alias. So for example, if cx=''c2c new codex -- '', then ''cx --model gpt-5.6-sol'' works as expected, but this would be even better: ''cx --model gpt-5.6-sol --c2c:name cx-custom-c2c-alias'''
-updated_at: "2026-07-15T22:54:07Z"
+updated_at: "2026-07-15T23:44:57Z"
 ---
 
 When we run 'c2c new codex -- ' or something, that's useful for aliases. Great. But also it would be nice to be able to add c2c flags after this so they're usable with the alias. So for example, if cx='c2c new codex -- ', then 'cx --model gpt-5.6-sol' works as expected, but this would be even better: 'cx --model gpt-5.6-sol --c2c:name cx-custom-c2c-alias'
