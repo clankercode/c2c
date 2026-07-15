@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-15T15:36:36Z"
+depends_on: []
+estimate_hours: 1
+id: B217
+priority: low
+status: pending
+tags: []
+title: Relay connector ignores SIGTERM when blocked on unreachable relay (needs SIGKILL)
+updated_at: "2026-07-15T15:36:36Z"
+---
+Observed 2026-07-16 during B210 stray-connector cleanup on host 3d08761ae3f3: three bare 'c2c relay connect' processes (pids 154135/705472/3962236), each 1+ day old and blocked against the unresponsive relay (see B215), did NOT exit within ~2s of SIGTERM and required SIGKILL. Low confidence — 2s may be too short for a graceful shutdown that flushes state, and a process blocked in a network syscall should still take SIGTERM. Worth confirming whether the connector installs a SIGTERM handler that can hang (e.g. waiting on an in-flight relay request before exiting) vs a genuinely too-long/absent graceful-shutdown path. If a handler blocks on relay I/O, add a bounded shutdown deadline then force-exit. Priority low; verify before fixing.

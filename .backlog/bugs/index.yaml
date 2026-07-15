@@ -213,3 +213,4 @@ bugs:
     - file: B214-relay-connector-path-ignores-c.todo
     - file: B215-relay-relay-c2c-im-application.todo
     - file: B216-relay-health-runs-blocking-git.todo
+    - file: B217-relay-connector-ignores-sigter.todo
