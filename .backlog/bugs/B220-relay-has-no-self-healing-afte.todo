@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-15T20:57:25Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T20:57:25Z"
 complexity: medium
 created_at: "2026-07-15T16:04:23Z"
 depends_on: []
+duration_minutes: 0.014248906333333334
 estimate_hours: 1
 id: B220
 priority: high
 started_at: "2026-07-15T20:57:25Z"
-status: in_progress
+status: done
 tags: []
 title: 'Relay has no self-healing after 5 failures: railway.json restartPolicyMaxRetries=5 leaves relay permanently down'
 updated_at: "2026-07-15T20:57:25Z"
