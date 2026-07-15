@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T05:11:45Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T05:34:16Z"
 complexity: medium
 created_at: "2026-07-15T04:11:24Z"
 depends_on: []
+duration_minutes: 22.517995974316666
 estimate_hours: 1
 id: B196
 priority: high
 started_at: "2026-07-15T05:11:45Z"
-status: in_progress
+status: done
 tags: []
 title: Over relay the agnet should be able to configure maximum size of incoming msg (default), per-sender max-size, default per-sender rate limit, individual per-sender rate limit, per-machine incoming rate limit, etc. All of this I think can be managed locally so that we don't need to send this stuff to the relayer.
-updated_at: "2026-07-15T05:11:45Z"
+updated_at: "2026-07-15T05:34:16Z"
 ---
 
 Over relay the agnet should be able to configure maximum size of incoming msg (default), per-sender max-size, default per-sender rate limit, individual per-sender rate limit, per-machine incoming rate limit, etc. All of this I think can be managed locally so that we don't need to send this stuff to the relayer.
