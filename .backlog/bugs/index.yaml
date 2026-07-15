@@ -215,3 +215,4 @@ bugs:
     - file: B216-relay-health-runs-blocking-git.todo
     - file: B217-relay-connector-ignores-sigter.todo
     - file: B218-b210-connector-singleton-detec.todo
+    - file: B219-relay-dies-wedges-under-load-s.todo
