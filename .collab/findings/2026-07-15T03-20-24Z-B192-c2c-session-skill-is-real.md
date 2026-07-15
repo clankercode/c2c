@@ -49,6 +49,14 @@ Grok skill:
 | `~/.grok/hooks/c2c-session.json` | Grok | hook config that regenerates the skill |
 | `~/.claude/hooks/c2c-session-hook.sh` | Claude | unrelated SessionStart/SessionEnd hook script |
 
+## Related caveat
+
+The skill body says "trust `c2c whoami` if this drifts" — but see
+`2026-07-13T13-13-32Z-grok-uranium-ring-wrong-alias-presented-as-identity.md`:
+`whoami`'s soft fallbacks can present a borrowed identity as truth. That is a
+separate open identity-resolution bug (adjacent to B191), not a defect in this
+skill.
+
 ## Conclusion
 
 No bug, no removal. Keep as-is. If future confusion recurs, the only candidate
