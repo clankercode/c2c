@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-15T14:40:18Z"
+depends_on: []
+estimate_hours: 1
+id: B212
+priority: high
+status: pending
+tags: []
+title: c2c restart relay-connect raises uncaught Not_found instead of recovering connector
+updated_at: "2026-07-15T14:40:18Z"
+---
+GitHub issue: https://github.com/clankercode/c2c/issues/6. Dogfood on host 3d08761ae3f3 with c2c 0.12.0 5faddd4b: after whoami reported a wedged or registered_unreachable connector, running c2c restart relay-connect raised an uncaught Not_found and left the connector unchanged. This is a distinct recovery-path defect and makes the remediation printed by whoami unsafe or unusable. Investigate managed-instance lookup and the mismatch between relay-connect service naming and c2c restart names. Acceptance: restart either finds and restarts the connector or returns a clear actionable error without an uncaught exception; whoami remediation names a command that matches the actual managed lifecycle.
