@@ -20,6 +20,14 @@
  (modules test_c2c_stale c2c_stale)
  (libraries alcotest digestif.ocaml unix))
 
+; B200: the relay connector is one supervised machine-wide service and the
+; child is replaced when an install atomically replaces the c2c executable.
+(test
+ (name test_c2c_relay_managed)
+ (modules test_c2c_relay_managed c2c_relay_managed)
+ (libraries c2c_mcp alcotest yojson str unix)
+ (deps c2c.exe))
+
 (test
   (name test_c2c_worktree)
   (modules test_c2c_worktree c2c_worktree)

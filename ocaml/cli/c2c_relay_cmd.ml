@@ -421,6 +421,10 @@ let relay_connect_cmd =
   let once =
     Cmdliner.Arg.(value & flag & info [ "once" ] ~doc:"Run once and exit.")
   in
+  let all_brokers =
+    Cmdliner.Arg.(value & flag & info [ "all-brokers" ]
+      ~doc:"Dynamically sync every known repository broker on this machine. Used by the managed machine-wide connector.")
+  in
   let verbose =
     Cmdliner.Arg.(value & flag & info [ "verbose"; "v" ] ~doc:"Enable verbose output.")
   in
@@ -431,6 +435,7 @@ let relay_connect_cmd =
   and+ broker_root = broker_root
   and+ interval = interval
   and+ once = once
+  and+ all_brokers = all_brokers
   and+ verbose = verbose in
   let use_python = Sys.getenv_opt "C2C_RELAY_CONNECTOR_BACKEND" = Some "python" in
   let effective_broker_root = match broker_root with
@@ -465,17 +470,28 @@ let relay_connect_cmd =
   in
   let effective_relay_url = Option.value (resolve_relay_url relay_url) ~default:"http://localhost:7331" in
   if not use_python then
-    exit (C2c_relay_connector.start
-      ~relay_url:effective_relay_url
-      ~token:effective_token
-      ~identity:effective_identity
-      ~broker_root:effective_broker_root
-      ~node_id:effective_node_id
-      ~heartbeat_ttl:300.0
-      ~interval:effective_interval
-      ~verbose
-      ~once)
+    if all_brokers then
+      exit (C2c_relay_connector.start_machine
+        ~relay_url:effective_relay_url ~token:effective_token
+        ~identity:effective_identity ~primary_broker_root:effective_broker_root
+        ~node_id:effective_node_id ~heartbeat_ttl:300.0
+        ~interval:effective_interval ~verbose ~once)
+    else
+      exit (C2c_relay_connector.start
+        ~relay_url:effective_relay_url
+        ~token:effective_token
+        ~identity:effective_identity
+        ~broker_root:effective_broker_root
+        ~node_id:effective_node_id
+        ~heartbeat_ttl:300.0
+        ~interval:effective_interval
+        ~verbose
+        ~once)
   else
+    if all_brokers then begin
+      Printf.eprintf "error: --all-brokers requires the OCaml connector backend.\n%!";
+      exit 1
+    end else
     match find_python_script "c2c_relay_connector.py" with
     | None ->
         Printf.eprintf "error: cannot find c2c_relay_connector.py. Run from inside the c2c git repo.\n%!";
@@ -1908,4 +1924,3 @@ let relay_subscribe_daemon = C2c_relay_subscribe_daemon.subscribe_daemon_cmd
     [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair; relay_subscribe; relay_subscribe_daemon ]
 
 (* --- mesh ------------------------------------------------------------------- *)
-
