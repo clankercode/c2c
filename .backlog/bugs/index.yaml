@@ -210,3 +210,4 @@ bugs:
     - file: B211-relay-connector-can-remain-wed.todo
     - file: B212-c2c-restart-relay-connect-rais.todo
     - file: B213-relay-signature-invalid-flaps.todo
+    - file: B214-relay-connector-path-ignores-c.todo
