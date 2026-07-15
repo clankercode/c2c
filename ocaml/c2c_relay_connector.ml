@@ -50,10 +50,394 @@ type sync_result = {
   outbox_failed : int;
   outbox_dlqed : int;  (* entries moved to local DLQ this sync *)
   inbound_delivered : int;
-  inbound_rejected : int;  (* H9: schema-invalid poll rows dropped this sync *)
+  inbound_rejected : int;  (* schema- or B196 policy-rejected rows this sync *)
   alerts_emitted : int;  (* B010: c2c-system alert messages injected this sync *)
   last_error : sync_error option;
 }
+
+(* B196: relay ingress is untrusted.  These limits are enforced locally,
+   after polling but before any row is appended to a broker inbox.  A sliding
+   window is deliberately used here: it is deterministic, bounded by the
+   configured message count, and does not make the relay a policy authority. *)
+type inbound_rate = {
+  rate_messages : int;
+  rate_window_s : float;
+}
+
+type inbound_sender_policy = {
+  sender_max_bytes : int;
+  sender_rate : inbound_rate;
+}
+
+type inbound_policy = {
+  default_max_bytes : int;
+  default_sender_rate : inbound_rate;
+  machine_rate : inbound_rate;
+  sender_overrides : (string * inbound_sender_policy) list;
+}
+
+type inbound_rate_state = {
+  mutable machine_events : float list;
+  sender_events : (string, float list) Hashtbl.t;
+}
+
+type inbound_rejection =
+  | Inbound_schema
+  | Inbound_policy
+  | Inbound_oversize
+  | Inbound_sender_rate
+  | Inbound_machine_rate
+
+let default_inbound_policy = {
+  default_max_bytes = 256 * 1024;
+  default_sender_rate = { rate_messages = 60; rate_window_s = 60.0 };
+  machine_rate = { rate_messages = 600; rate_window_s = 60.0 };
+  sender_overrides = [];
+}
+
+let create_inbound_rate_state () = {
+  machine_events = [];
+  sender_events = Hashtbl.create 17;
+}
+
+let inbound_policy_path broker_root =
+  match Sys.getenv_opt "C2C_RELAY_INBOUND_POLICY_FILE" with
+  | Some path when String.trim path <> "" -> path
+  | _ -> broker_root // "relay-inbound-policy.json"
+
+let inbound_config_error field detail =
+  Error (Printf.sprintf "invalid relay inbound policy field %s: %s" field detail)
+
+let validate_object_fields ~context ~allowed fields =
+  let rec loop seen = function
+    | [] -> Ok ()
+    | (key, _) :: rest ->
+        if List.mem key seen then inbound_config_error context ("duplicate key " ^ key)
+        else if not (List.mem key allowed) then
+          inbound_config_error context ("unknown key " ^ key)
+        else loop (key :: seen) rest
+  in
+  loop [] fields
+
+let positive_int fields field ~default =
+  match List.assoc_opt field fields with
+  | None -> Ok default
+  | Some (`Int n) when n > 0 -> Ok n
+  | Some _ -> inbound_config_error field "expected a positive integer"
+
+let positive_float fields field ~default =
+  match List.assoc_opt field fields with
+  | None -> Ok default
+  | Some (`Int n) when n > 0 -> Ok (float_of_int n)
+  | Some (`Float n) when Float.is_finite n && n > 0.0 -> Ok n
+  | Some _ -> inbound_config_error field "expected a positive finite number"
+
+let parse_inbound_rate ~field ~default = function
+  | None -> Ok default
+  | Some (`Assoc fields) ->
+      (match validate_object_fields ~context:field
+               ~allowed:[ "messages"; "window_seconds" ] fields with
+       | Error _ as e -> e
+       | Ok () -> match positive_int fields "messages" ~default:default.rate_messages with
+       | Error _ as e -> e
+       | Ok rate_messages ->
+           match positive_float fields "window_seconds"
+                   ~default:default.rate_window_s with
+           | Error _ as e -> e
+           | Ok rate_window_s -> Ok { rate_messages; rate_window_s })
+  | Some _ -> inbound_config_error field "expected an object"
+
+let parse_inbound_sender ~default_max_bytes ~default_rate alias = function
+  | `Assoc fields ->
+      (match validate_object_fields ~context:alias
+               ~allowed:[ "max_bytes"; "rate" ] fields with
+       | Error _ as e -> e
+       | Ok () -> match positive_int fields "max_bytes" ~default:default_max_bytes with
+       | Error _ as e -> e
+       | Ok sender_max_bytes ->
+           match parse_inbound_rate ~field:(alias ^ ".rate")
+                   ~default:default_rate (List.assoc_opt "rate" fields) with
+           | Error _ as e -> e
+           | Ok sender_rate -> Ok {
+               sender_max_bytes;
+               sender_rate;
+             })
+  | _ -> inbound_config_error alias "expected an object"
+
+let parse_inbound_policy = function
+  | `Assoc fields ->
+      (match validate_object_fields ~context:"root"
+               ~allowed:[ "default_max_bytes"; "default_sender_rate";
+                          "machine_rate"; "senders" ] fields with
+       | Error _ as e -> e
+       | Ok () -> match positive_int fields "default_max_bytes"
+               ~default:default_inbound_policy.default_max_bytes with
+       | Error _ as e -> e
+       | Ok default_max_bytes ->
+           match parse_inbound_rate ~field:"default_sender_rate"
+                   ~default:default_inbound_policy.default_sender_rate
+                   (List.assoc_opt "default_sender_rate" fields) with
+           | Error _ as e -> e
+           | Ok default_sender_rate ->
+               match parse_inbound_rate ~field:"machine_rate"
+                       ~default:default_inbound_policy.machine_rate
+                       (List.assoc_opt "machine_rate" fields) with
+               | Error _ as e -> e
+               | Ok machine_rate ->
+                   match List.assoc_opt "senders" fields with
+                   | None -> Ok {
+                       default_max_bytes; default_sender_rate; machine_rate;
+                       sender_overrides = [];
+                     }
+                   | Some (`Assoc senders) ->
+                       let rec parse acc = function
+                         | [] -> Ok {
+                             default_max_bytes; default_sender_rate; machine_rate;
+                             sender_overrides = List.rev acc;
+                           }
+                         | (alias, json) :: rest ->
+                             let alias = String.trim alias in
+                             if alias = "" then
+                               inbound_config_error "senders" "sender alias is empty"
+                             else if List.mem_assoc
+                                       (String.lowercase_ascii alias) acc then
+                               inbound_config_error "senders"
+                                 ("duplicate case-insensitive sender " ^ alias)
+                             else
+                               match parse_inbound_sender ~default_max_bytes
+                                       ~default_rate:default_sender_rate alias json with
+                               | Error _ as e -> e
+                               | Ok policy ->
+                                   parse
+                                     ((String.lowercase_ascii alias, policy) :: acc)
+                                     rest
+                       in
+                       parse [] senders
+                   | Some _ -> inbound_config_error "senders" "expected an object")
+  | _ -> inbound_config_error "root" "expected an object"
+
+let load_inbound_policy broker_root =
+  let path = inbound_policy_path broker_root in
+  if not (Sys.file_exists path) then Ok default_inbound_policy
+  else
+    match C2c_io.read_json_opt path with
+    | None -> Error (Printf.sprintf "cannot parse relay inbound policy %s" path)
+    | Some json -> parse_inbound_policy json
+
+let inbound_rate_state_path broker_root =
+  broker_root // "relay-inbound-rate-state.json"
+
+let inbound_rate_lock_path broker_root =
+  broker_root // "relay-inbound-rate-state.lock"
+
+let with_inbound_rate_lock broker_root f =
+  let fd =
+    Unix.openfile (inbound_rate_lock_path broker_root)
+      [ Unix.O_RDWR; Unix.O_CREAT ] 0o600
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+      (try Unix.close fd with _ -> ()))
+    (fun () ->
+      Unix.lockf fd Unix.F_LOCK 0;
+      f ())
+
+let json_float_list = function
+  | `List items ->
+      let rec parse acc = function
+        | [] -> Ok (List.rev acc)
+        | `Float n :: rest when Float.is_finite n -> parse (n :: acc) rest
+        | `Int n :: rest -> parse (float_of_int n :: acc) rest
+        | `Intlit s :: rest ->
+            (match float_of_string_opt s with
+             | Some n when Float.is_finite n -> parse (n :: acc) rest
+             | _ -> Error "rate-state timestamp is not finite")
+        | _ -> Error "rate-state timestamp list contains a non-number"
+      in
+      parse [] items
+  | _ -> Error "rate-state timestamps must be a list"
+
+let inbound_rate_state_of_json = function
+  | `Assoc fields ->
+      (match validate_object_fields ~context:"rate-state root"
+               ~allowed:[ "machine"; "senders" ] fields with
+       | Error e -> Error e
+       | Ok () ->
+           match List.assoc_opt "machine" fields,
+                 List.assoc_opt "senders" fields with
+           | Some machine, Some (`Assoc senders) ->
+               (match json_float_list machine with
+                | Error e -> Error e
+                | Ok machine_events ->
+                    let table = Hashtbl.create (max 17 (List.length senders)) in
+                    let rec parse_senders seen = function
+                      | [] -> Ok { machine_events; sender_events = table }
+                      | (sender, events) :: rest ->
+                          let sender = String.lowercase_ascii sender in
+                          if sender = "" || List.mem sender seen then
+                            Error "rate-state contains an empty or duplicate sender"
+                          else
+                            match json_float_list events with
+                            | Error e -> Error e
+                            | Ok events ->
+                                Hashtbl.add table sender events;
+                                parse_senders (sender :: seen) rest
+                    in
+                    parse_senders [] senders)
+           | _ -> Error "rate-state requires machine list and senders object")
+  | _ -> Error "rate-state root must be an object"
+
+let inbound_rate_state_to_json state =
+  let times xs = `List (List.map (fun ts -> `Float ts) xs) in
+  let senders =
+    Hashtbl.to_seq state.sender_events |> List.of_seq
+    |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+    |> List.map (fun (sender, events) -> sender, times events)
+  in
+  `Assoc [ ("machine", times state.machine_events); ("senders", `Assoc senders) ]
+
+let load_inbound_rate_state broker_root =
+  let path = inbound_rate_state_path broker_root in
+  if not (Sys.file_exists path) then Ok (create_inbound_rate_state ())
+  else
+    match C2c_io.read_json_opt path with
+    | None -> Error (Printf.sprintf "cannot parse relay inbound rate state %s" path)
+    | Some json -> inbound_rate_state_of_json json
+
+let save_inbound_rate_state broker_root state =
+  let path = inbound_rate_state_path broker_root in
+  let tmp = path ^ ".tmp" in
+  try
+    let oc =
+      open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_text ] 0o600 tmp
+    in
+    Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+      output_string oc
+        (Yojson.Safe.to_string (inbound_rate_state_to_json state) ^ "\n");
+      flush oc);
+    Unix.rename tmp path;
+    Ok ()
+  with exn -> Error (Printexc.to_string exn)
+
+let inbound_sender_policy policy sender =
+  let key = String.lowercase_ascii sender in
+  match List.assoc_opt key policy.sender_overrides with
+  | Some override -> override
+  | None -> {
+      sender_max_bytes = policy.default_max_bytes;
+      sender_rate = policy.default_sender_rate;
+    }
+
+let prune_window ~now rate events =
+  let cutoff = now -. rate.rate_window_s in
+  List.filter (fun ts -> ts > cutoff && ts <= now) events
+
+let inbound_row_fields = function
+  | `Assoc fields ->
+      (match List.assoc_opt "from_alias" fields,
+             List.assoc_opt "to_alias" fields,
+             List.assoc_opt "content" fields with
+       | Some (`String sender), Some (`String _), Some (`String _) -> Some sender
+       | _ -> None)
+  | _ -> None
+
+let inbound_row_size_bytes row = String.length (Yojson.Safe.to_string row)
+
+let filter_inbound_messages ~now policy state messages =
+  (* Keep sender bookkeeping bounded by the aggregate machine window.  Without
+     this cleanup, a long-running connector could retain one empty hash entry
+     for every sender it had ever seen. *)
+  Hashtbl.filter_map_inplace
+    (fun sender events ->
+       let sender_policy = inbound_sender_policy policy sender in
+       match prune_window ~now sender_policy.sender_rate events with
+       | [] -> None
+       | live -> Some live)
+    state.sender_events;
+  state.machine_events <- prune_window ~now policy.machine_rate state.machine_events;
+  let accepted, rejected =
+    List.fold_left
+      (fun (accepted, rejected) row ->
+         match inbound_row_fields row with
+         | None -> (accepted, Inbound_schema :: rejected)
+         | Some sender ->
+             let sender_policy = inbound_sender_policy policy sender in
+             if inbound_row_size_bytes row > sender_policy.sender_max_bytes then
+               (accepted, Inbound_oversize :: rejected)
+             else
+               let sender_key = String.lowercase_ascii sender in
+               let sender_events =
+                 Hashtbl.find_opt state.sender_events sender_key
+                 |> Option.value ~default:[]
+                 |> prune_window ~now sender_policy.sender_rate
+               in
+               if List.length sender_events >=
+                    sender_policy.sender_rate.rate_messages then begin
+                 Hashtbl.replace state.sender_events sender_key sender_events;
+                 (accepted, Inbound_sender_rate :: rejected)
+               end else
+                 let machine_events =
+                   prune_window ~now policy.machine_rate state.machine_events
+                 in
+                 if List.length machine_events >= policy.machine_rate.rate_messages
+                 then begin
+                   state.machine_events <- machine_events;
+                   (accepted, Inbound_machine_rate :: rejected)
+                 end else begin
+                   Hashtbl.replace state.sender_events sender_key
+                     (now :: sender_events);
+                   state.machine_events <- now :: machine_events;
+                   (row :: accepted, rejected)
+                 end)
+      ([], []) messages
+  in
+  List.rev accepted, List.rev rejected
+
+let filter_inbound_messages_guarded ~now policy state messages =
+  match policy with
+  | Error _ -> [], List.map (fun _ -> Inbound_policy) messages
+  | Ok policy -> filter_inbound_messages ~now policy state messages
+
+let filter_inbound_messages_persisted ~now ~broker_root policy messages =
+  match policy with
+  | Error _ ->
+      [], List.map (fun _ -> Inbound_policy) messages, None
+  | Ok policy ->
+      with_inbound_rate_lock broker_root (fun () ->
+        match load_inbound_rate_state broker_root with
+        | Error detail ->
+            [], List.map (fun _ -> Inbound_policy) messages, Some detail
+        | Ok state ->
+            let accepted, rejected =
+              filter_inbound_messages ~now policy state messages
+            in
+            match save_inbound_rate_state broker_root state with
+            | Ok () -> accepted, rejected, None
+            | Error detail ->
+                [], List.map (fun _ -> Inbound_policy) messages,
+                Some ("cannot persist relay inbound rate state: " ^ detail))
+
+let inbound_rejection_name = function
+  | Inbound_schema -> "schema"
+  | Inbound_policy -> "policy"
+  | Inbound_oversize -> "oversize"
+  | Inbound_sender_rate -> "sender_rate"
+  | Inbound_machine_rate -> "machine_rate"
+
+let summarize_inbound_rejections reasons =
+  let counts = Hashtbl.create 4 in
+  List.iter
+    (fun reason ->
+       let name = inbound_rejection_name reason in
+       Hashtbl.replace counts name
+         (1 + Option.value ~default:0 (Hashtbl.find_opt counts name)))
+    reasons;
+  [ "schema"; "policy"; "oversize"; "sender_rate"; "machine_rate" ]
+  |> List.filter_map (fun name ->
+         Hashtbl.find_opt counts name
+         |> Option.map (fun count -> Printf.sprintf "%s=%d" name count))
+  |> String.concat ", "
 
 type t = {
   relay_url : string;
@@ -1097,6 +1481,10 @@ let deliver_alert_emissions broker_root regs (emissions : C2c_relay_alert.emissi
 let sync (t : t) : sync_result Lwt.t =
   let client = Relay_client.make ?token:t.token ?identity:t.identity t.relay_url in
   let regs = read_local_registrations t.broker_root in
+  (* Reload each pass so an operator can tighten local ingress controls without
+     restarting the connector.  A present-but-invalid policy fails closed for
+     inbound rows; registration, heartbeat, and outbound delivery continue. *)
+  let inbound_policy = load_inbound_policy t.broker_root in
 
   (* B010: accumulate relay-event observations across this sync pass. *)
   let obs_difficulty = ref None in
@@ -1201,6 +1589,11 @@ let sync (t : t) : sync_result Lwt.t =
      misbehaving relay can neither inflate [inbound_delivered] nor poison
      the local inbox. Partial-batch delivery: valid rows in a batch with
      invalid siblings still deliver. *)
+  let initial_poll_errors =
+    match inbound_policy with
+    | Ok _ -> []
+    | Error detail -> [ ("inbound_policy", detail ^ "; inbound delivery denied") ]
+  in
   let inbound_delivered, inbound_rejected, poll_errors =
     List.fold_left (fun (delivered, rejected, errs) (session_id, alias, _) ->
       if List.mem session_id t.registered then
@@ -1208,26 +1601,29 @@ let sync (t : t) : sync_result Lwt.t =
         note_observation ~sender:None json;
         let msgs = json_list_member ~key:"messages" json in
         if msgs <> [] then begin
-          let deliverable, bad = List.partition inbound_row_is_deliverable msgs in
+          let deliverable, rejection_reasons, rate_state_error =
+            filter_inbound_messages_persisted ~now:(Unix.gettimeofday ())
+              ~broker_root:t.broker_root inbound_policy msgs
+          in
           let errs =
-            if bad = [] then errs
+            if rejection_reasons = [] then errs
             else
-              let sample = Yojson.Safe.to_string (`List bad) in
-              let sample =
-                if String.length sample > 512 then String.sub sample 0 512 ^ "..."
-                else sample
-              in
               let detail = Printf.sprintf
-                "dropped %d schema-invalid inbound row(s) of %d for %s: %s"
-                (List.length bad) (List.length msgs) alias sample
+                "dropped %d policy-rejected inbound row(s) of %d for %s (%s)"
+                (List.length rejection_reasons) (List.length msgs) alias
+                (summarize_inbound_rejections rejection_reasons)
               in
               ("poll_inbox", detail) :: errs
+          in
+          let errs = match rate_state_error with
+            | None -> errs
+            | Some detail -> ("inbound_rate_state", detail) :: errs
           in
           let delivered =
             if deliverable = [] then delivered
             else delivered + append_to_local_inbox t.broker_root session_id deliverable
           in
-          delivered, rejected + List.length bad, errs
+          delivered, rejected + List.length rejection_reasons, errs
         end
         else if json_bool_member ~key:"ok" json then
           delivered, rejected, errs
@@ -1236,7 +1632,7 @@ let sync (t : t) : sync_result Lwt.t =
           delivered, rejected, ("poll_inbox", detail) :: errs
       else
         delivered, rejected, errs
-    ) (0, 0, []) regs
+    ) (0, 0, initial_poll_errors) regs
   in
 
   let last_error = match reg_errors @ send_errors @ poll_errors with

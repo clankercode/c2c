@@ -555,6 +555,74 @@ let test_connector_poll_garbage_rows_dropped () =
                 (Printf.sprintf "broker read %d messages, expected 1"
                    (List.length msgs))))
 
+let write_inbound_policy broker_root json =
+  write_file
+    (C2c_relay_connector.inbound_policy_path broker_root)
+    (Yojson.Safe.to_string json)
+
+let b196_poll_body =
+  Yojson.Safe.to_string
+    (`Assoc [ ("ok", `Bool true); ("messages", `List [ h9_good_row ]) ])
+
+let test_connector_invalid_policy_denies_inbound_but_keeps_sync () =
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/send"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/poll_inbox"
+        [ S.response b196_poll_body ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          write_file (C2c_relay_connector.inbound_policy_path broker_root)
+            {|{"default_max_bytes":|};
+          C2c_relay_connector.append_outbox_entry broker_root
+            ~from_alias:sm_alias ~to_alias:"remote-peer@host"
+            ~content:"outbound-still-works" ();
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "registration continues" [ sm_alias ] r.registered;
+          check int "outbound continues" 1 r.outbox_forwarded;
+          check int "invalid policy delivers nothing" 0 r.inbound_delivered;
+          check int "invalid policy rejects polled row" 1 r.inbound_rejected;
+          check bool "invalid policy writes no inbox" false
+            (Sys.file_exists
+               (Filename.concat broker_root (sm_session ^ ".inbox.json")));
+          match r.last_error with
+          | Some _ -> ()
+          | None -> fail "invalid policy must remain observable as a sync error"))
+
+let test_connector_reloads_policy_between_syncs () =
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/heartbeat"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/poll_inbox"
+        [ S.response b196_poll_body; S.response b196_poll_body ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          write_inbound_policy broker_root
+            (`Assoc [ ("default_max_bytes", `Int 1) ]);
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (first : C2c_relay_connector.sync_result) = run_sync t in
+          check int "tight policy rejects" 0 first.inbound_delivered;
+          check int "tight policy rejection counted" 1 first.inbound_rejected;
+          write_inbound_policy broker_root
+            (`Assoc [ ("default_max_bytes", `Int 1_000_000) ]);
+          let (second : C2c_relay_connector.sync_result) = run_sync t in
+          check int "reloaded policy accepts" 1 second.inbound_delivered;
+          check int "reloaded policy rejects none" 0 second.inbound_rejected;
+          check bool "accepted row reaches local inbox" true
+            (Sys.file_exists
+               (Filename.concat broker_root (sm_session ^ ".inbox.json")))))
+
 let test_connector_non_object_response_start_once () =
   (* B249/B093 — repinned by H10 item 5 (non-object hardening): a
      non-object JSON answer (here to /register) used to make the sync
@@ -1152,6 +1220,11 @@ let () =
           test_case
             "connector: poll garbage rows dropped, valid rows delivered (H9)"
             `Quick test_connector_poll_garbage_rows_dropped;
+          test_case
+            "connector: invalid local policy denies inbound, keeps other sync"
+            `Quick test_connector_invalid_policy_denies_inbound_but_keeps_sync;
+          test_case "connector: local policy reload applies next sync" `Quick
+            test_connector_reloads_policy_between_syncs;
           test_case
             "connector: non-object response -> per-op error, --once exit 2"
             `Quick test_connector_non_object_response_start_once ] );

@@ -121,6 +121,224 @@ let test_json_list_member () =
   let wrong_type = Conn.json_list_member ~key:"scalar" j in
   Alcotest.(check int) "wrong-type → []" 0 (List.length wrong_type)
 
+(* --- B196: local relay ingress controls --- *)
+
+let inbound_message ~sender content =
+  `Assoc [
+    ("from_alias", `String sender);
+    ("to_alias", `String "local-agent");
+    ("content", `String content);
+  ]
+
+let test_inbound_policy_defaults () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    match Conn.load_inbound_policy dir with
+    | Error e -> Alcotest.fail e
+    | Ok policy ->
+        Alcotest.(check int) "default max bytes" (256 * 1024)
+          policy.Conn.default_max_bytes;
+        Alcotest.(check int) "default sender messages" 60
+          policy.Conn.default_sender_rate.rate_messages;
+        Alcotest.(check int) "default machine messages" 600
+          policy.Conn.machine_rate.rate_messages)
+
+let test_inbound_policy_parses_sender_override () =
+  let json = `Assoc [
+    ("default_max_bytes", `Int 4096);
+    ("default_sender_rate", `Assoc [
+      ("messages", `Int 12); ("window_seconds", `Float 30.0) ]);
+    ("machine_rate", `Assoc [
+      ("messages", `Int 100); ("window_seconds", `Int 10) ]);
+    ("senders", `Assoc [
+      ("Alice@Remote", `Assoc [
+        ("max_bytes", `Int 512);
+        ("rate", `Assoc [
+          ("messages", `Int 2); ("window_seconds", `Int 60) ]) ]) ]);
+  ] in
+  match Conn.parse_inbound_policy json with
+  | Error e -> Alcotest.fail e
+  | Ok policy ->
+      let alice = Conn.inbound_sender_policy policy "ALICE@REMOTE" in
+      Alcotest.(check int) "override max" 512 alice.Conn.sender_max_bytes;
+      Alcotest.(check int) "override rate" 2
+        alice.Conn.sender_rate.rate_messages;
+      let other = Conn.inbound_sender_policy policy "other@remote" in
+      Alcotest.(check int) "other gets default max" 4096
+        other.Conn.sender_max_bytes;
+      Alcotest.(check int) "other gets default rate" 12
+        other.Conn.sender_rate.rate_messages
+
+let test_inbound_policy_invalid_fails () =
+  let invalid = `Assoc [ ("machine_rate", `Assoc [ ("messages", `Int 0) ]) ] in
+  match Conn.parse_inbound_policy invalid with
+  | Error _ as invalid_policy ->
+      let state = Conn.create_inbound_rate_state () in
+      let accepted, rejected =
+        Conn.filter_inbound_messages_guarded ~now:100.0 invalid_policy state
+          [ inbound_message ~sender:"alice@remote" "must not deliver" ]
+      in
+      Alcotest.(check int) "invalid policy accepts nothing" 0
+        (List.length accepted);
+      Alcotest.(check (list string)) "invalid policy rejection"
+        [ "policy" ] (List.map Conn.inbound_rejection_name rejected)
+  | Ok _ -> Alcotest.fail "zero machine rate must not silently disable controls"
+
+let test_inbound_policy_rejects_unknown_and_duplicate_keys () =
+  let rejects label json =
+    match Conn.parse_inbound_policy json with
+    | Error _ -> ()
+    | Ok _ -> Alcotest.fail (label ^ " must fail closed")
+  in
+  rejects "top-level typo" (`Assoc [ ("default_max_byte", `Int 1) ]);
+  rejects "rate typo"
+    (`Assoc [ ("machine_rate", `Assoc [ ("message", `Int 1) ]) ]);
+  rejects "sender typo"
+    (`Assoc [ ("senders", `Assoc [
+      ("alice@remote", `Assoc [ ("max_byte", `Int 1) ]) ]) ]);
+  rejects "duplicate key"
+    (`Assoc [ ("default_max_bytes", `Int 1);
+              ("default_max_bytes", `Int 2) ]);
+  rejects "case-colliding sender"
+    (`Assoc [ ("senders", `Assoc [
+      ("Alice@Remote", `Assoc []); ("alice@remote", `Assoc []) ]) ])
+
+let policy ~max_bytes ~sender_messages ~machine_messages = {
+  Conn.default_max_bytes = max_bytes;
+  default_sender_rate = {
+    Conn.rate_messages = sender_messages; rate_window_s = 60.0 };
+  machine_rate = {
+    Conn.rate_messages = machine_messages; rate_window_s = 60.0 };
+  sender_overrides = [];
+}
+
+let rejection_names reasons = List.map Conn.inbound_rejection_name reasons
+
+let test_inbound_size_and_schema_filter () =
+  let state = Conn.create_inbound_rate_state () in
+  let bounded = inbound_message ~sender:"alice@remote" "1234" in
+  let max_bytes = Conn.inbound_row_size_bytes bounded in
+  let rows = [
+    bounded;
+    inbound_message ~sender:"alice@remote" "12345";
+    `Assoc [ ("from_alias", `String "alice@remote") ];
+  ] in
+  let accepted, rejected =
+    Conn.filter_inbound_messages ~now:100.0
+      (policy ~max_bytes ~sender_messages:10 ~machine_messages:10)
+      state rows
+  in
+  Alcotest.(check int) "only bounded valid row accepted" 1
+    (List.length accepted);
+  Alcotest.(check (list string)) "rejection reasons"
+    [ "oversize"; "schema" ] (rejection_names rejected)
+
+let test_inbound_per_sender_rate_and_recovery () =
+  let state = Conn.create_inbound_rate_state () in
+  let policy = policy ~max_bytes:100 ~sender_messages:2 ~machine_messages:10 in
+  let rows = [
+    inbound_message ~sender:"Alice@Remote" "one";
+    inbound_message ~sender:"alice@remote" "two";
+    inbound_message ~sender:"ALICE@REMOTE" "three";
+  ] in
+  let accepted, rejected =
+    Conn.filter_inbound_messages ~now:100.0 policy state rows
+  in
+  Alcotest.(check int) "two sender messages accepted" 2 (List.length accepted);
+  Alcotest.(check (list string)) "casefolded sender limit"
+    [ "sender_rate" ] (rejection_names rejected);
+  let accepted_after_window, rejected_after_window =
+    Conn.filter_inbound_messages ~now:161.0 policy state
+      [ inbound_message ~sender:"alice@remote" "four" ]
+  in
+  Alcotest.(check int) "sender recovers after window" 1
+    (List.length accepted_after_window);
+  Alcotest.(check int) "no rejection after recovery" 0
+    (List.length rejected_after_window)
+
+let test_inbound_machine_rate_across_senders () =
+  let state = Conn.create_inbound_rate_state () in
+  let policy = policy ~max_bytes:100 ~sender_messages:10 ~machine_messages:3 in
+  let rows = [
+    inbound_message ~sender:"a@remote" "one";
+    inbound_message ~sender:"b@remote" "two";
+    inbound_message ~sender:"c@remote" "three";
+    inbound_message ~sender:"d@remote" "four";
+  ] in
+  let accepted, rejected =
+    Conn.filter_inbound_messages ~now:100.0 policy state rows
+  in
+  Alcotest.(check int) "aggregate machine cap" 3 (List.length accepted);
+  Alcotest.(check (list string)) "machine rejection"
+    [ "machine_rate" ] (rejection_names rejected)
+
+let test_inbound_machine_rate_persists_across_instances () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let policy = Ok (policy ~max_bytes:1000 ~sender_messages:10
+      ~machine_messages:1) in
+    let first, first_rejected, first_error =
+      Conn.filter_inbound_messages_persisted ~now:100.0 ~broker_root:dir
+        policy [ inbound_message ~sender:"a@remote" "one" ]
+    in
+    Alcotest.(check int) "first instance accepts" 1 (List.length first);
+    Alcotest.(check int) "first instance rejects none" 0
+      (List.length first_rejected);
+    Alcotest.(check (option string)) "first state write succeeds" None first_error;
+    let second, second_rejected, second_error =
+      Conn.filter_inbound_messages_persisted ~now:101.0 ~broker_root:dir
+        policy [ inbound_message ~sender:"b@remote" "two" ]
+    in
+    Alcotest.(check int) "fresh instance cannot reset machine allowance" 0
+      (List.length second);
+    Alcotest.(check (list string)) "persisted aggregate rejection"
+      [ "machine_rate" ] (rejection_names second_rejected);
+    Alcotest.(check (option string)) "second state read succeeds" None second_error;
+    let after_window, _, _ =
+      Conn.filter_inbound_messages_persisted ~now:161.0 ~broker_root:dir
+        policy [ inbound_message ~sender:"b@remote" "three" ]
+    in
+    Alcotest.(check int) "persisted state recovers after sliding window" 1
+      (List.length after_window))
+
+let test_inbound_machine_rate_serializes_concurrent_processes () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let policy = Ok (policy ~max_bytes:1000 ~sender_messages:10
+      ~machine_messages:1) in
+    let start_r, start_w = Unix.pipe () in
+    let spawn sender =
+      match Unix.fork () with
+      | 0 ->
+          Unix.close start_w;
+          let gate = Bytes.create 1 in
+          ignore (Unix.read start_r gate 0 1);
+          let accepted, rejected, error =
+            Conn.filter_inbound_messages_persisted ~now:100.0
+              ~broker_root:dir policy [ inbound_message ~sender "one" ]
+          in
+          let code =
+            if error <> None then 12
+            else if List.length accepted = 1 then 10
+            else if rejection_names rejected = [ "machine_rate" ] then 11
+            else 13
+          in
+          Unix._exit code
+      | pid -> pid
+    in
+    let p1 = spawn "a@remote" in
+    let p2 = spawn "b@remote" in
+    Unix.close start_r;
+    ignore (Unix.write_substring start_w "xx" 0 2);
+    Unix.close start_w;
+    let status pid = match snd (Unix.waitpid [] pid) with
+      | Unix.WEXITED code -> code
+      | _ -> 99
+    in
+    let statuses = List.sort Int.compare [ status p1; status p2 ] in
+    Alcotest.(check (list int)) "exactly one concurrent process consumes slot"
+      [ 10; 11 ] statuses)
+
 (* --- outbox round-trip (file IO via tmpdir) --- *)
 
 let test_outbox_roundtrip () =
@@ -438,6 +656,25 @@ let () =
     "json helpers", [
       Alcotest.test_case "json_bool_member" `Quick test_json_bool_member;
       Alcotest.test_case "json_list_member" `Quick test_json_list_member;
+    ];
+    "B196 relay inbound policy", [
+      Alcotest.test_case "safe defaults" `Quick test_inbound_policy_defaults;
+      Alcotest.test_case "sender override parse + casefold" `Quick
+        test_inbound_policy_parses_sender_override;
+      Alcotest.test_case "invalid config fails" `Quick
+        test_inbound_policy_invalid_fails;
+      Alcotest.test_case "unknown + duplicate keys fail" `Quick
+        test_inbound_policy_rejects_unknown_and_duplicate_keys;
+      Alcotest.test_case "size + schema rejection" `Quick
+        test_inbound_size_and_schema_filter;
+      Alcotest.test_case "per-sender rate + recovery" `Quick
+        test_inbound_per_sender_rate_and_recovery;
+      Alcotest.test_case "machine aggregate rate" `Quick
+        test_inbound_machine_rate_across_senders;
+      Alcotest.test_case "machine rate persists across instances" `Quick
+        test_inbound_machine_rate_persists_across_instances;
+      Alcotest.test_case "machine rate serializes concurrent processes" `Quick
+        test_inbound_machine_rate_serializes_concurrent_processes;
     ];
     "outbox", [
       Alcotest.test_case "round-trip + append + clear" `Quick test_outbox_roundtrip;
