@@ -148,15 +148,29 @@ The connector:
 4. Heartbeats all sessions every tick to keep leases alive.
 
 For production, prefer the managed wrapper (instance dir, pidfile, log,
-`c2c stop` / `c2c instances`). A relay URL is required (`--relay-url` or
-`C2C_RELAY_URL` — the managed path does not fall back to localhost alone):
+`c2c stop` / `c2c instances`). It is a **machine-wide service**: starting it
+again, even with a different instance name or from another repository, is
+refused because only one relay connection is needed. The service supervises
+the foreground connector and automatically replaces that child when the
+installed `c2c` executable changes, so an update does not require a manual
+reconnect. It dynamically discovers repository brokers under the machine's
+c2c state roots on every pass; aliases, inboxes, outboxes, ingress policy and
+connector status remain isolated in their originating broker. Repositories
+first used after the service starts are picked up automatically. A relay URL
+is required (`--relay-url` or `C2C_RELAY_URL` — the managed path does not fall
+back to localhost alone):
 
 ```bash
-# Preferred managed path (daemonizes by default; default instance name: relay-connect):
-c2c start relay-connect --relay-url http://RELAY_HOST:7331 --name my-relay-connector
+# Preferred managed path (daemonizes by default; default name: relay-connect):
+c2c start relay-connect --relay-url http://RELAY_HOST:7331
 # Optional: --interval SECONDS (default 30)  --foreground / --fg  (no daemonize)
-# Stop with: c2c stop my-relay-connector
+# Stop with: c2c stop relay-connect
 ```
+
+Each local agent still registers its own alias before it can receive mail
+addressed as `alias@relay-hostname`; the one machine connection does not turn
+alias registration into a machine-global identity. Delivery semantics for
+`alias@machineid` remain unchanged.
 
 `c2c relay connect` itself has no `--daemon` flag. If you need a one-off
 manual daemon without managed instances, wrap the foreground command:

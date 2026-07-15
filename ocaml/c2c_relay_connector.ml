@@ -1975,6 +1975,115 @@ let run (t : t) : unit =
   in
   loop ()
 
+(* B200: one managed connector service discovers every repository broker on
+   the machine. Each broker keeps its own registration cache, ingress policy,
+   rate state, outbox, inboxes, alerts, and connector-state file; only the
+   process/service and relay configuration are shared. Discovery is repeated
+   every pass so a repository first used after service startup joins without
+   another `c2c start relay-connect`. *)
+let discover_machine_broker_roots ~primary =
+  let roots = primary :: List.map snd (C2c_repo_fp.list_all_broker_roots ()) in
+  List.fold_left
+    (fun acc root ->
+       let root = String.trim root in
+       if root = "" || List.mem root acc then acc else root :: acc)
+    [] roots
+  |> List.rev
+
+let make_state ~relay_url ~token ~identity ~broker_root ~node_id
+    ~heartbeat_ttl ~interval ~verbose =
+  { relay_url; token; identity; broker_root; node_id;
+    heartbeat_ttl; interval; verbose;
+    registered = []; active_ws_bindings = [];
+    alert_state = C2c_relay_alert.initial_state }
+
+let print_sync_result ?broker_root result =
+  let prefix = match broker_root with
+    | None -> "[relay-connector]"
+    | Some root -> Printf.sprintf "[relay-connector %s]" root
+  in
+  let err_str = match result.last_error with
+    | None -> ""
+    | Some e ->
+        Printf.sprintf " [%s: %s]" e.err_op
+          (if String.length e.err_detail > 80 then
+             String.sub e.err_detail 0 80 ^ "..."
+           else e.err_detail)
+  in
+  Printf.printf
+    "%s sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
+    prefix (List.length result.registered) (List.length result.heartbeated)
+    result.outbox_forwarded result.outbox_failed result.outbox_dlqed
+    result.inbound_delivered result.inbound_rejected result.alerts_emitted
+    err_str
+
+let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
+    ~(heartbeat_ttl : float) ~(interval : float) ~(verbose : bool)
+    ~(once : bool) : int =
+  if not (is_ocaml_backend ()) then begin
+    Printf.eprintf
+      "[relay-connector] --all-brokers requires the OCaml connector backend\n%!";
+    1
+  end else begin
+    let states = Hashtbl.create 8 in
+    let strikes = Hashtbl.create 8 in
+    let state_for root =
+      match Hashtbl.find_opt states root with
+      | Some t -> t
+      | None ->
+          let t = make_state ~relay_url ~token ~identity ~broker_root:root
+              ~node_id ~heartbeat_ttl ~interval ~verbose in
+          Hashtbl.add states root t;
+          t
+    in
+    let sync_root root =
+      let t = state_for root in
+      match run_sync_once t with
+      | Ok result ->
+          Hashtbl.replace strikes root 0;
+          write_connector_state ~node_id t.broker_root result;
+          print_sync_result ~broker_root:root result;
+          (match result.last_error with None -> true | Some _ -> false)
+      | Error (`Watchdog detail) ->
+          let n = 1 + Option.value ~default:0 (Hashtbl.find_opt strikes root) in
+          Hashtbl.replace strikes root n;
+          write_connector_state_error root ~op:"sync_watchdog" ~detail;
+          Printf.eprintf "[relay-connector %s] %s (strike %d/3)\n%!" root detail n;
+          if n >= 3 then exit 3;
+          false
+      | Error (`Exn exn) ->
+          Hashtbl.replace strikes root 0;
+          write_connector_state_error root ~op:"sync"
+            ~detail:(Printexc.to_string exn);
+          Printf.eprintf "[relay-connector %s] sync exception: %s\n%!"
+            root (Printexc.to_string exn);
+          false
+    in
+    let identity_tag = match identity with Some _ -> "Ed25519-signed" | None -> "token-only" in
+    Printf.printf
+      "[relay-connector] starting machine service — relay=%s node=%s auth=%s interval=%.0fs\n%!"
+      relay_url node_id identity_tag interval;
+    if once then begin
+      let roots = discover_machine_broker_roots ~primary:primary_broker_root in
+      if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2
+    end else begin
+      let shutdown = ref false in
+      let handle_signal _ = shutdown := true in
+      Sys.set_signal Sys.sigterm (Sys.Signal_handle handle_signal);
+      Sys.set_signal Sys.sigint (Sys.Signal_handle handle_signal);
+      let rec loop () =
+        if not !shutdown then begin
+          discover_machine_broker_roots ~primary:primary_broker_root
+          |> List.iter (fun root -> ignore (sync_root root));
+          if not !shutdown then (Unix.sleepf interval; loop ())
+        end
+      in
+      loop ();
+      Printf.printf "[relay-connector] shutdown complete\n%!";
+      0
+    end
+  end
+
 (* ---------------------------------------------------------------------------
  * Entry point (slice 1 stub)
  * --------------------------------------------------------------------------- *)

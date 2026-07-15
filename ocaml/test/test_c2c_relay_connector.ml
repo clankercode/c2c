@@ -33,6 +33,40 @@ let rmrf path =
   in
   try aux path with _ -> ()
 
+let rec mkdir_p path =
+  if path = "" || path = "/" || Sys.file_exists path then ()
+  else (mkdir_p (Filename.dirname path); Unix.mkdir path 0o700)
+
+let write_empty_registry broker =
+  mkdir_p broker;
+  let oc = open_out (Filename.concat broker "registry.json") in
+  output_string oc "[]\n";
+  close_out oc
+
+let test_machine_broker_discovery_is_dynamic () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      Unix.putenv "HOME" tmp;
+      Unix.putenv "C2C_STATE_HOME" (Filename.concat tmp "state");
+      Unix.putenv "XDG_STATE_HOME" (Filename.concat tmp "xdg");
+      let primary = Filename.concat tmp "primary-broker" in
+      let repo_a = Filename.concat tmp ".c2c/repos/aaaa/broker" in
+      let repo_b = Filename.concat tmp ".c2c/repos/bbbb/broker" in
+      write_empty_registry repo_a;
+      let first = Conn.discover_machine_broker_roots ~primary in
+      if not (List.mem primary first && List.mem repo_a first && not (List.mem repo_b first))
+      then exit 10;
+      write_empty_registry repo_b;
+      let second = Conn.discover_machine_broker_roots ~primary in
+      if List.mem primary second && List.mem repo_a second && List.mem repo_b second
+      then exit 0 else exit 11
+  | pid ->
+      let _, status = Unix.waitpid [] pid in
+      Alcotest.(check int) "primary + startup repo + later repo discovered" 0
+        (match status with Unix.WEXITED n -> n | Unix.WSIGNALED n | Unix.WSTOPPED n -> 128 + n)
+
 (* --- path constructors --- *)
 
 let test_local_inbox_path () =
@@ -826,6 +860,10 @@ let () =
       Alcotest.test_case "outbox_path" `Quick test_outbox_path;
       Alcotest.test_case "pseudo_reg_path" `Quick test_pseudo_reg_path;
       Alcotest.test_case "mobile_bindings_path" `Quick test_mobile_bindings_path;
+    ];
+    "B200 machine brokers", [
+      Alcotest.test_case "dynamic repository discovery" `Quick
+        test_machine_broker_discovery_is_dynamic;
     ];
     "parse_relay_url", [
       Alcotest.test_case "host:port" `Quick test_parse_relay_url_host_port;

@@ -399,6 +399,7 @@ let start_cmd =
       ~name
       ~daemon:(not foreground_flag)
       ~relay_url:resolved_url
+      ~broker_root:(resolve_broker_root ())
       ~interval:interval_opt
       ~extra_args:extra_argv
       () [@ocaml.warning "-21"];
