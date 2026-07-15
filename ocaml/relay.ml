@@ -3195,6 +3195,7 @@ module Relay_server(R : RELAY) : sig
     Cohttp.Request.t ->
     Cohttp_lwt.Body.t ->
     ?broker_root:string option ->
+    native_tls:bool ->
     rate_limiter:Rate_limiter_inst.t ->
     Cohttp_lwt_unix.Server.response Lwt.t
 
@@ -3243,6 +3244,8 @@ module Relay_server(R : RELAY) : sig
 end = struct
 
   include Relay_server_auth
+
+  exception Ws_subscribe_upgrade of string * string
   include Relay_server_json
   include Relay_server_response
   include Relay_server_html
@@ -5253,7 +5256,8 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     | Domain_socket { fd } -> Some fd
     | _ -> None
 
-  let make_callback relay token conn req body ?(broker_root=None) ~rate_limiter =
+  let make_callback relay token conn req body ?(broker_root=None)
+      ~native_tls ~rate_limiter =
     let open Cohttp in
     let open Cohttp_lwt_unix in
     let uri = Request.uri req in
@@ -5292,7 +5296,7 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       | _ ->
         (match Uri.scheme uri with
          | Some s when s <> "" -> s
-         | _ -> "http")
+         | _ -> if native_tls then "https" else "http")
     in
     let relay_url =
       match host_header with
@@ -5547,26 +5551,7 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
                    ~result:"auth_failed" ();
                  respond_unauthorized (json_error_str "auth_failed" msg)
                | Relay_ws_server.Auth_ok validated_alias ->
-                 match get_fd_from_flow conn with
-                 | None ->
-                   respond_json ~status:`Internal_server_error (json_error_str "internal_error" "Could not extract connection fd")
-                 | Some orig_fd ->
-                   let ws_accept = Relay_ws_server.make_upgrade_response ws_key in
-                   let fd_dup = Lwt_unix.unix_file_descr orig_fd |> Unix.dup in
-                   let fd_dup_lwt = Lwt_unix.of_unix_file_descr fd_dup in
-                   let (_:int) = Unix.write (Lwt_unix.unix_file_descr orig_fd) (Bytes.of_string ws_accept) 0 (String.length ws_accept) in
-                   Unix.close (Lwt_unix.unix_file_descr orig_fd);
-                   Relay_ratelimit.structured_log
-                     ~event:"ws_subscribe"
-                     ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
-                     ~result:"upgraded" ();
-                   Lwt.async (fun () ->
-                     Lwt.catch
-                       (fun () ->
-                          let lookup_pk_for_sub ~alias = R.identity_pk_of relay ~alias in
-                          Relay_ws_server.handle_subscriber ~aliases:[validated_alias] ~fd:fd_dup_lwt ~lookup_pk:lookup_pk_for_sub)
-                       (fun _ -> Lwt.return_unit));
-                   respond_ok (`Assoc ["ok", `Bool true; "msg", `String "ws_subscribe_session_started"])))
+                 raise (Ws_subscribe_upgrade (ws_key, validated_alias))))
          | _ ->
            respond_bad_request (json_error_str "websocket_upgrade_required" "Upgrade: websocket header required"))
 
@@ -5820,7 +5805,33 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
        Printf.printf "allowlist: %d pinned identities\n%!" (List.length allowlist));
       let rate_limiter = Rate_limiter_inst.create ~gc_interval:300.0 () in
     let callback (conn, _) req body =
-      make_callback relay token conn req body ~rate_limiter ?broker_root
+      Lwt.catch
+        (fun () ->
+           make_callback relay token conn req body ~rate_limiter ?broker_root
+             ~native_tls:(tls <> None)
+           >|= fun response -> `Response response)
+        (function
+          | Ws_subscribe_upgrade (ws_key, validated_alias) ->
+              let accept = Relay_ws_frame.websocket_accept ws_key in
+              let headers =
+                Cohttp.Header.init_with "Upgrade" "websocket"
+                |> fun h -> Cohttp.Header.add h "Connection" "Upgrade"
+                |> fun h -> Cohttp.Header.add h "Sec-WebSocket-Accept" accept
+              in
+              let response =
+                Cohttp.Response.make ~status:`Switching_protocols ~headers ()
+              in
+              let io_handler ic oc =
+                Relay_ratelimit.structured_log
+                  ~event:"ws_subscribe"
+                  ~source_ip_prefix:(Relay_ratelimit.prefix8 (get_client_ip conn))
+                  ~result:"upgraded" ();
+                let lookup_pk ~alias = R.identity_pk_of relay ~alias in
+                Relay_ws_server.handle_subscriber_channels
+                  ~aliases:[validated_alias] ~ic ~oc ~lookup_pk
+              in
+              Lwt.return (`Expert (response, io_handler))
+          | e -> Lwt.fail e)
     in
     let gc_thread =
       if gc_interval > 0.0 then
@@ -5858,7 +5869,7 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       Printf.printf "gc: running every %.0fs\n%!" gc_interval
     else
       Printf.printf "gc: disabled\n%!";
-    let spec = Cohttp_lwt_unix.Server.make ~callback () in
+    let spec = Cohttp_lwt_unix.Server.make_response_action ~callback () in
     match tls with
     | None ->
         Cohttp_lwt_unix.Server.create ~mode:(`TCP (`Port port)) spec

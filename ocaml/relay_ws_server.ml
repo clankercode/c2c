@@ -345,8 +345,7 @@ let recv_loop ~(lookup_pk : alias:string -> string option) (sub : subscriber) =
    Called after HTTP upgrade is complete.
    ~aliases: initial set of aliases to subscribe (from HTTP headers)
    ~lookup_pk: function to validate Ed25519 signatures for dynamic subscribe *)
-let handle_subscriber ~aliases ~fd ~lookup_pk =
-  let session = Relay_ws_frame.Session.of_fd fd in
+let handle_subscriber_session ~aliases ~session ~lookup_pk =
   let sub = {
     aliases = StringSet.of_list aliases;
     session;
@@ -371,8 +370,15 @@ let handle_subscriber ~aliases ~fd ~lookup_pk =
         recv_loop ~lookup_pk sub;
       ])
     (fun () ->
-      cleanup ();
-      Lwt.return_unit)
+      cleanup ())
+
+let handle_subscriber ~aliases ~fd ~lookup_pk =
+  handle_subscriber_session ~aliases
+    ~session:(Relay_ws_frame.Session.of_fd fd) ~lookup_pk
+
+let handle_subscriber_channels ~aliases ~ic ~oc ~lookup_pk =
+  handle_subscriber_session ~aliases
+    ~session:(Relay_ws_frame.Session.of_cohttp_channels ic oc) ~lookup_pk
 
 (* Backward-compatible: handle a single-alias subscriber (Phase 1 behavior) *)
 let handle_subscriber_single ~alias ~fd =

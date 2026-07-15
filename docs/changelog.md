@@ -9,6 +9,13 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Native-TLS relay listeners support WebSocket subscriptions.**
+  `c2c relay serve --tls-cert ... --tls-key ...` now upgrades
+  `/ws/subscribe` through Cohttp's channel-safe expert path, preserving TLS
+  framing and buffered input. Native-TLS registration also signs against the
+  correct `https://` relay URL. `relay subscribe` and `subscribe-daemon` now
+  work with direct TLS termination as well as edge-terminated TLS. (B195)
+
 - **Linux release glibc floor is 2.35 (Ubuntu 22.04+).** Official
   `linux-x64` / `linux-arm64` assets are built on Ubuntu 22.04 and CI-gated
   (`scripts/check-glibc-max.sh` + Docker smoke) so they no longer require
