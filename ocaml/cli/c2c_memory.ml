@@ -145,11 +145,21 @@ let revoke_aliases ?(all_targeted=false) aliases existing =
                revoked))
       existing
 
-let current_alias_or_die () =
-  let broker =
-    C2c_mcp.Broker.create ~root:(C2c_cli_helpers.resolve_broker_root ())
-  in
-  C2c_cli_helpers.resolve_alias ~override:None broker
+(* Keep the memory module independently unit-testable.  The executable wires
+   this to the shared identity resolver before Cmdliner evaluates a command;
+   putting [C2c_cli_helpers] directly in this module makes the small
+   [test_c2c_memory] target depend on the entire CLI module graph. *)
+let alias_resolver = ref (fun () ->
+  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
+  | Some alias when String.trim alias <> "" -> String.trim alias
+  | _ ->
+      Printf.eprintf
+        "error: cannot determine your alias (CLI identity resolver is not configured)\n%!";
+      exit 1)
+
+let configure_alias_resolver resolve = alias_resolver := resolve
+
+let current_alias_or_die () = !alias_resolver ()
 
 let resolve_alias_arg = function
   | Some a when String.trim a <> "" -> String.trim a
