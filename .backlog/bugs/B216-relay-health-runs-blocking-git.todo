@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-15T20:57:25Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T20:57:25Z"
 complexity: medium
 created_at: "2026-07-15T15:36:36Z"
 depends_on: []
+duration_minutes: 0.008831952283333333
 estimate_hours: 1
 id: B216
 priority: low
 started_at: "2026-07-15T20:57:25Z"
-status: in_progress
+status: done
 tags: []
 title: Relay /health runs blocking git rev-parse subprocess per request when RAILWAY_GIT_COMMIT_SHA unset
 updated_at: "2026-07-15T20:57:25Z"
