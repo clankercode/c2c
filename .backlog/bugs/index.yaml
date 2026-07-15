@@ -201,3 +201,4 @@ bugs:
     - file: B202-cli-registrations-lack-pid-fie.todo
     - file: B203-compare-forward-agent-log-beha.todo
     - file: B204-harden-forward-agent-log-trans.todo
+    - file: B205-make-forward-agent-log-deliver.todo
