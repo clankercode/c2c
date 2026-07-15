@@ -15,7 +15,6 @@ import c2c_health
 import c2c_setup
 import c2c_init
 import c2c_inject
-import c2c_install
 import c2c_list
 import c2c_mcp
 import c2c_poll_inbox
@@ -137,15 +136,14 @@ def main(argv: list[str] | None = None) -> int:
     if subcommand == "inject":
         return c2c_inject.main(remainder)
     if subcommand == "install":
-        from c2c_python_legacy import require_python_legacy
-
-        refused = require_python_legacy(
-            "c2c install (Python)",
-            ocaml_hint="c2c install self  # or: c2c install <client>",
+        print(
+            "error: `c2c install` under the Python CLI is retired and removed (B123).\n"
+            "Use the OCaml binary instead:\n"
+            "  c2c install self\n"
+            "  c2c install <client>",
+            file=sys.stderr,
         )
-        if refused is not None:
-            return refused
-        return c2c_install.main(remainder)
+        return 2
     if subcommand == "list":
         return c2c_list.main(remainder)
     if subcommand == "mcp":
