@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-15T22:52:53Z"
+depends_on: []
+estimate_hours: 1
+id: B222
+priority: high
+status: pending
+tags: []
+title: c2c-system always sends a c2c-relay WARN about PoW difficulty increasing. That is not ideal since it can start a session early when the user doesn't want to. In general, we should avoid forwarding messages like this to agents when the agent is not itself responsible for causing some kind of rate limiting event. We can log the warning somewhere still, like under ~/.c2c/relay-connection.log or something. Doesn't have to be ~/.c2c/ if another dir is more appropriate.
+updated_at: "2026-07-15T22:52:53Z"
+---
+
+c2c-system always sends a c2c-relay WARN about PoW difficulty increasing. That is not ideal since it can start a session early when the user doesn't want to. In general, we should avoid forwarding messages like this to agents when the agent is not itself responsible for causing some kind of rate limiting event. We can log the warning somewhere still, like under ~/.c2c/relay-connection.log or something. Doesn't have to be ~/.c2c/ if another dir is more appropriate.

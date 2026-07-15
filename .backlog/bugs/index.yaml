@@ -218,3 +218,4 @@ bugs:
     - file: B219-relay-dies-wedges-under-load-s.todo
     - file: B220-relay-has-no-self-healing-afte.todo
     - file: B221-when-we-run-c2c-new-codex-or-s.todo
+    - file: B222-c2c-system-always-sends-a-c2c.todo
