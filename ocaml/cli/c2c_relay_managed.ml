@@ -270,3 +270,77 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
           exit 1
         end
   end
+
+(** B212: resolve the relaunch parameters (relay URL + poll interval) for the
+    machine connector from its persisted supervisor [config.json] fields.
+    [relay_url] persists as [`Null] when the connector was started from
+    [$C2C_RELAY_URL] rather than [--relay-url]; fall back to the env var in
+    that case.  Returns [Error msg] with an actionable message when no relay
+    URL can be determined at all, so [restart] can print a clear error instead
+    of failing deep inside a re-launch. *)
+let restart_params_of_config (fields : (string * Yojson.Safe.t) list) :
+    (string option * int, string) result =
+  let relay_url =
+    match List.assoc_opt "relay_url" fields with
+    | Some (`String u) when String.trim u <> "" -> Some u
+    | _ ->
+        (* An empty/whitespace $C2C_RELAY_URL is not a usable URL — treat it as
+           unset so restart reports the clear no-URL error rather than trying to
+           relaunch with a blank URL. *)
+        (match Sys.getenv_opt "C2C_RELAY_URL" with
+         | Some u when String.trim u <> "" -> Some u
+         | _ -> None)
+  in
+  let interval =
+    match List.assoc_opt "interval" fields with
+    | Some (`Int i) -> i
+    | Some (`Float f) -> int_of_float f
+    | _ -> 30
+  in
+  match relay_url with
+  | None ->
+      Error
+        "no relay URL is known (config has no relay_url and $C2C_RELAY_URL is \
+         unset); restart it explicitly with: c2c start relay-connect \
+         --relay-url <URL>"
+  | Some _ -> Ok (relay_url, interval)
+
+(** B212: restart the one machine-wide relay connector.  `c2c restart
+    relay-connect` previously fell through to the harness-client restart path,
+    whose [load_config_opt] raised an uncaught [Not_found] on the connector's
+    minimal supervisor [config.json].  Stop the current supervisor (SIGTERM its
+    outer pid, wait up to [timeout_s], then SIGKILL) so the machine singleton
+    lock is released, then start a fresh supervisor reusing the persisted relay
+    URL + interval.  [start] is [@noreturn]: it daemonizes and exits, so this
+    only returns (with an int status) on the no-URL error path. *)
+let restart ~name ~fields ~broker_root ~timeout_s : int =
+  match restart_params_of_config fields with
+  | Error msg ->
+      Printf.eprintf "error: cannot restart relay connector '%s': %s\n%!" name msg;
+      1
+  | Ok (relay_url, interval) ->
+      let inst_dir = instances_dir () // name in
+      let pid_path = inst_dir // "outer.pid" in
+      (match read_pidfile pid_path with
+       | Some pid when pid_alive pid ->
+           Printf.eprintf
+             "[c2c restart] stopping relay connector supervisor pid %d for '%s'...\n%!"
+             pid name;
+           (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+           let deadline = Unix.gettimeofday () +. timeout_s in
+           let rec wait () =
+             if pid_alive pid && Unix.gettimeofday () < deadline then
+               (Unix.sleepf 0.1; wait ())
+           in
+           wait ();
+           if pid_alive pid then begin
+             Printf.eprintf
+               "[c2c restart] supervisor pid %d did not exit within %.0fs; sending SIGKILL\n%!"
+               pid timeout_s;
+             (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
+           end
+       | _ ->
+           Printf.eprintf
+             "[c2c restart] no live relay connector supervisor for '%s'; starting a fresh one\n%!"
+             name);
+      start ~name ~daemon:true ~relay_url ~broker_root ~interval ~extra_args:[] ()

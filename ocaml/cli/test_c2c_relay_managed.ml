@@ -238,8 +238,61 @@ let test_supervisor_restarts_child_on_binary_update () =
           check int "supervisor stops cleanly" 0
             (C2c_relay_managed.child_status_code status))
 
+(* B212: `c2c restart relay-connect` resolves its relaunch parameters from the
+   connector's persisted supervisor config.json. relay_url comes from the
+   config, falling back to $C2C_RELAY_URL when the config stored a null
+   (env-driven start), and errors clearly when neither is available — so the
+   restart path never crashes with the old uncaught Not_found. *)
+let with_relay_url_env value f =
+  let key = "C2C_RELAY_URL" in
+  let saved = Sys.getenv_opt key in
+  (match value with Some v -> Unix.putenv key v | None -> Unix.putenv key "");
+  Fun.protect
+    ~finally:(fun () -> match saved with Some v -> Unix.putenv key v | None -> Unix.putenv key "")
+    f
+
+let test_restart_params_uses_config_relay_url () =
+  with_relay_url_env None @@ fun () ->
+  let fields =
+    [ ("client", `String "relay-connect");
+      ("relay_url", `String "https://relay.example");
+      ("interval", `Int 17) ]
+  in
+  match C2c_relay_managed.restart_params_of_config fields with
+  | Ok (url, interval) ->
+      check (option string) "relay url from config" (Some "https://relay.example") url;
+      check int "interval from config" 17 interval
+  | Error msg -> failf "expected Ok, got Error: %s" msg
+
+let test_restart_params_falls_back_to_env () =
+  with_relay_url_env (Some "https://env-relay.example") @@ fun () ->
+  (* Connector started from $C2C_RELAY_URL persists relay_url as null. *)
+  let fields = [ ("client", `String "relay-connect"); ("relay_url", `Null) ] in
+  match C2c_relay_managed.restart_params_of_config fields with
+  | Ok (url, interval) ->
+      check (option string) "relay url from env fallback"
+        (Some "https://env-relay.example") url;
+      check int "interval defaults to 30" 30 interval
+  | Error msg -> failf "expected Ok, got Error: %s" msg
+
+let test_restart_params_errors_without_url () =
+  with_relay_url_env None @@ fun () ->
+  let fields = [ ("client", `String "relay-connect"); ("relay_url", `Null) ] in
+  match C2c_relay_managed.restart_params_of_config fields with
+  | Ok _ -> fail "expected Error when no relay URL is known"
+  | Error msg ->
+      check bool "error names the explicit-restart command" true
+        (try ignore (Str.search_forward
+                       (Str.regexp_string "c2c start relay-connect") msg 0); true
+         with Not_found -> false)
+
 let () =
   run "c2c relay managed" [
+    "B212 restart params", [
+      test_case "relay url from config" `Quick test_restart_params_uses_config_relay_url;
+      test_case "relay url falls back to env" `Quick test_restart_params_falls_back_to_env;
+      test_case "clear error when no url" `Quick test_restart_params_errors_without_url;
+    ];
     "machine singleton", [ test_case "resource ignores instance name" `Quick test_machine_lock_is_name_independent ];
     "machine brokers", [ test_case "captures root and enables discovery" `Quick test_managed_argv_captures_root_and_machine_mode ];
     "binary machine brokers", [

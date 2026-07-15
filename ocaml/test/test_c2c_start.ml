@@ -2118,6 +2118,29 @@ let test_write_config_omits_broker_root_when_default () =
       check string "load_config_opt falls back to resolver default"
         default_root saved.broker_root
 
+(* B212: the machine-wide relay connector persists a minimal config.json
+   (client/scope/supervised/relay_url/interval) with none of the harness-client
+   fields. load_config_opt must read that as None rather than escaping an
+   uncaught Not_found — which is exactly what crashed `c2c restart relay-connect`
+   before the fix. *)
+let test_load_config_opt_returns_none_on_connector_config () =
+  let name = Printf.sprintf "relay-connect-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  let path = C2c_start.config_path name in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc
+      "{\"client\":\"relay-connect\",\"scope\":\"machine\",\"supervised\":true,\
+       \"created_at\":1234567890.0,\"relay_url\":\"https://relay.example\",\
+       \"interval\":30}\n");
+  (match (try `Result (C2c_start.load_config_opt name) with e -> `Raised e) with
+   | `Raised e ->
+       failf "load_config_opt raised %s on a minimal connector config"
+         (Printexc.to_string e)
+   | `Result None -> ()
+   | `Result (Some _) ->
+       fail "expected None for a connector config lacking harness-client fields")
+
 let test_write_config_persists_broker_root_when_overridden () =
   let name = Printf.sprintf "broker-override-%d" (Random.bits ()) in
   with_instance_dir name @@ fun _dir ->
@@ -4168,6 +4191,8 @@ let () =
             `Quick, test_write_config_omits_broker_root_when_default )
         ; ( "write_config_persists_broker_root_when_overridden",
             `Quick, test_write_config_persists_broker_root_when_overridden )
+        ; ( "load_config_opt_returns_none_on_connector_config",
+            `Quick, test_load_config_opt_returns_none_on_connector_config )
         ; ( "kimi_mcp_config_uses_canonical_server",
             `Quick, test_kimi_mcp_config_uses_canonical_server )
         ; ( "kimi_mcp_config_omits_broker_root_env_when_default",

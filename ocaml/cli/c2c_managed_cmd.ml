@@ -783,6 +783,27 @@ let restart_cmd =
   and+ force = force in
   let timeout_s = Option.value timeout ~default:5.0 in
   let instance_dir = C2c_start.instance_dir name in
+  (* B212: the machine-wide relay connector persists a minimal supervisor
+     config.json (client/scope/supervised/relay_url/interval) that lacks the
+     harness-client fields cmd_restart's load_config_opt requires — falling
+     through raised an uncaught Not_found and left the connector unchanged.
+     Detect the connector by its config's client field and restart it through
+     its own machine-supervisor lifecycle instead. *)
+  let connector_fields =
+    let path = instance_dir // "config.json" in
+    match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+    | Some (`Assoc fields)
+      when (match List.assoc_opt "client" fields with
+            | Some (`String "relay-connect") -> true
+            | _ -> false) -> Some fields
+    | _ -> None
+  in
+  match connector_fields with
+  | Some fields ->
+      exit
+        (C2c_relay_managed.restart ~name ~fields
+           ~broker_root:(resolve_broker_root ()) ~timeout_s)
+  | None ->
   match C2c_codex_session.load_mapping ~instance_dir with
   | Some _ ->
       (* Any app-server mapping stays on the owner-control seam, including

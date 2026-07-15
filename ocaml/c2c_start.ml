@@ -2669,15 +2669,24 @@ let load_config_opt (name : string) : instance_config option =
           | Some s when s <> "" -> s
           | _ -> (try resolve_broker_root () with _ -> "")
         in
-        Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
-               resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
-               extra_args = gl "extra_args"; created_at = gf "created_at"; last_launch_at = gfo "last_launch_at";
-               broker_root = broker_root_loaded; auto_join_rooms = gs "auto_join_rooms";
-               binary_override = gso "binary_override";
-               model_override = gso "model_override";
-               agent_name = gso "agent_name";
-               last_exit_code = gio "last_exit_code";
-               last_exit_reason = gso "last_exit_reason" }
+        (* B212: config.json shapes that lack a required harness-client field
+           (e.g. the machine-wide relay connector persists only
+           client/scope/relay_url/interval) must read as "no harness config"
+           rather than escaping an uncaught [Not_found] into callers such as
+           [cmd_restart]. [gs]/[gf]/[gl] raise [Not_found] on a missing key;
+           treat that as [None] here so [load_config_opt] is total, matching
+           its .mli contract. *)
+        (try
+           Some { name = gs "name"; client = gs "client"; session_id = gs "session_id";
+                  resume_session_id = gs "resume_session_id"; codex_resume_target = gso "codex_resume_target"; alias = gs "alias";
+                  extra_args = gl "extra_args"; created_at = gf "created_at"; last_launch_at = gfo "last_launch_at";
+                  broker_root = broker_root_loaded; auto_join_rooms = gs "auto_join_rooms";
+                  binary_override = gso "binary_override";
+                  model_override = gso "model_override";
+                  agent_name = gso "agent_name";
+                  last_exit_code = gio "last_exit_code";
+                  last_exit_reason = gso "last_exit_reason" }
+         with Not_found -> None)
 
 (* Resolve effective extra_args on (re-)launch.
 
