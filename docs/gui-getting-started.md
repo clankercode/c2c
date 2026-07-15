@@ -115,7 +115,7 @@ The GUI will:
 | `@tanstack/react-virtual` not installed | ✅ FIXED (2026-05-03) — run `bun install` in `gui/` first time; both `el` and `virtualRow` implicit-`any` errors were secondary effects of the missing package |
 | Implicit `any` types on `el` and `virtualRow` params in EventFeed.tsx | ✅ FIXED (2026-05-03) — resolved by `bun install` installing `@tanstack/react-virtual` types |
 | Dark/light theme toggle | Not implemented |
-| Message search | UI placeholder; not wired up |
+| Message search | ✅ Wired — full message body + aliases (not only 120-char preview); Esc clears |
 | File/paste attachments | Not implemented |
 | Multi-account | Single alias per installation |
 

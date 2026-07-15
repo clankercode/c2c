@@ -1,7 +1,7 @@
 [package]
 name = "c2c-gui"
 version = "0.1.0"
-description = "c2c Swarm Chat GUI"
+description = "c2c Agent Monitor GUI"
 authors = ["Max Kaye"]
 license = "MIT"
 repository = "https://github.com/clankercode/c2c"

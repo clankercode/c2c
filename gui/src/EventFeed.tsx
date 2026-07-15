@@ -1,5 +1,6 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
+import { matchesSearch } from "./eventSearch";
 import { C2cEvent, MessageEvent } from "./types";
 
 type Filter = "all" | "messages" | "peers" | "rooms";
@@ -226,10 +227,12 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
     }
   }, [selectedRoom, selectedPeer, events, focusHistoryEvents, myAlias, filter]);
 
-  // Apply search filter (runs every render since search changes frequently)
-  const visible = search.trim()
-    ? filteredVisible.filter(e => eventLabel(e).toLowerCase().includes(search.trim().toLowerCase()))
-    : filteredVisible;
+  // Full-body search (not the 120-char preview label) — see eventSearch.ts
+  const searchQuery = search.trim();
+  const visible = useMemo(
+    () => (searchQuery ? filteredVisible.filter(e => matchesSearch(e, searchQuery)) : filteredVisible),
+    [filteredVisible, searchQuery],
+  );
 
   // Track user scroll position for focused mode
   const isAtBottomRef = useRef(true);
@@ -333,7 +336,14 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
         <input
           value={search}
           onChange={e => setSearch(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setSearch("");
+            }
+          }}
           placeholder="search…"
+          aria-label="Search events"
           style={{
             marginLeft: "auto",
             background: "#1e1e2e",
@@ -343,11 +353,24 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
             padding: "1px 6px",
             fontSize: 11,
             outline: "none",
-            width: 100,
+            width: 120,
           }}
         />
+        {searchQuery ? (
+          <button
+            type="button"
+            onClick={() => setSearch("")}
+            title="Clear search (Esc)"
+            aria-label="Clear search"
+            style={{ ...FILTER_BTN, padding: "1px 6px" }}
+          >
+            ✕
+          </button>
+        ) : null}
         <span style={{ fontSize: 11, color: "#45475a", flexShrink: 0 }}>
-          {visible.length}{!focusLabel && !search && ` / ${events.length}`}
+          {searchQuery
+            ? `${visible.length} / ${filteredVisible.length}`
+            : `${visible.length}${!focusLabel ? ` / ${events.length}` : ""}`}
         </span>
       </div>
 
@@ -366,7 +389,11 @@ export function EventFeed({ events, selectedRoom, selectedPeer, myAlias = "", fo
       >
         {visible.length === 0 ? (
           <div style={{ padding: 16, color: "#45475a" }}>
-            {focusLabel ? `No messages with ${selectedRoom ?? selectedPeer} yet.` : "No events match filter."}
+            {searchQuery
+              ? `No events match “${searchQuery}”.`
+              : focusLabel
+                ? `No messages with ${selectedRoom ?? selectedPeer} yet.`
+                : "No events match filter."}
           </div>
         ) : (
           <div

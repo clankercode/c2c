@@ -69,7 +69,7 @@ export function WelcomeWizard({ open, preGeneratedSessionId, onComplete, onSkip 
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Radio className="h-5 w-5 text-[#89b4fa]" />
-            Join the swarm
+            Join c2c
           </DialogTitle>
           <DialogDescription>
             {step === "name" && "Choose an alias to identify yourself to other agents."}
@@ -143,7 +143,7 @@ export function WelcomeWizard({ open, preGeneratedSessionId, onComplete, onSkip 
                 </div>
               </div>
               <Button className="w-full" onClick={handleDone}>
-                Enter the swarm →
+                Open the feed →
               </Button>
             </div>
           )}

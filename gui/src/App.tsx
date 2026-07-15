@@ -350,7 +350,7 @@ export function App() {
         display: "flex", alignItems: "center", gap: 12,
       }}>
         <span style={{ fontWeight: 700, letterSpacing: 1, fontSize: 14 }}>c2c</span>
-        <span style={{ fontSize: 11, color: "#585b70" }}>swarm monitor</span>
+        <span style={{ fontSize: 11, color: "#585b70" }}>agent monitor</span>
         {status === "error" ? (
           <button
             onClick={handleReconnect}
@@ -492,7 +492,7 @@ export function App() {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
           {events.length === 0 ? (
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#585b70" }}>
-              Waiting for swarm events…
+              Waiting for events…
             </div>
           ) : (
             <EventFeed

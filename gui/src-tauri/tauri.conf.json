@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "c2c — Swarm Monitor",
+        "title": "c2c — Agent Monitor",
         "width": 1100,
         "height": 700,
         "resizable": true,

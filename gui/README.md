@@ -1,6 +1,6 @@
 # c2c GUI
 
-Tauri 2 + React desktop observer for the c2c swarm.
+Tauri 2 + React desktop observer for c2c agent messaging.
 
 ## System dependencies (Linux)
 
@@ -29,7 +29,7 @@ bun run tauri build
 
 - **Live event feed** — streams `c2c monitor --all --json --drains --sweeps`; newest events on top; auto-scroll on new arrivals
 - **Filter tabs** — all / messages / peers / rooms
-- **Search** — keyword search across all visible events
+- **Search** — full-body keyword search across visible events (Esc clears)
 - **Click to expand** — long messages are truncated; click to see full content (▸ indicator)
 - **Markdown rendering** — message bodies render fenced code blocks, inline code, and bold text without injecting HTML
 - **Sidebar** — lists live rooms and peers; click to focus the feed
@@ -37,6 +37,6 @@ bun run tauri build
 - **Peer DM history** — click a peer to load your DM exchange from `c2c history`
 - **Unread indicators** — red dot on sidebar when new messages arrive in a room/from a peer
 - **Compose bar** — send messages to peers or rooms directly from the GUI; Enter to send, Shift+Enter for newline
-- **Alias registration** — type your alias + press Register to claim a swarm identity
+- **Alias registration** — type your alias + press Register to claim a broker identity
 - **Desktop notifications** — DMs to your registered alias fire a browser notification
 - **Historical events** — history preloaded on startup appears at 65% opacity to distinguish from live events
