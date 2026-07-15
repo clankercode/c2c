@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-15T16:04:23Z"
+depends_on: []
+estimate_hours: 1
+id: B220
+priority: high
+status: pending
+tags: []
+title: 'Relay has no self-healing after 5 failures: railway.json restartPolicyMaxRetries=5 leaves relay permanently down'
+updated_at: "2026-07-15T16:04:23Z"
+---
+Root cause of the LONG (2.5h+) B215 outage duration (distinct from the crash trigger B219). railway.json deploy config: restartPolicyType=ON_FAILURE, restartPolicyMaxRetries=5. Railway restarts the relay at most 5 times on failure then GIVES UP, leaving it down indefinitely until a human runs 'railway redeploy'. Observed 2026-07-15: boots at 09:27/09:44/11:46/12:47/13:25 UTC (~5), then ~2.5h fully down (502; railway ssh: 'not running'); a manual redeploy reset the counter and restored service instantly. Also: healthcheckPath=/health (timeout 30s) only gates DEPLOYMENTS, not continuous liveness, so a wedged-but-alive process is never auto-restarted either. OOM is ruled out (cgroup memory.events oom_kill=0; relay RSS ~28MB peak ~20MB vs 8GB limit). sleepApplication is NOT set (not serverless-sleep). Fix options: raise restartPolicyMaxRetries to Railway max (10) or set restartPolicyType=ALWAYS; add EXTERNAL uptime monitoring/alerting (relay-smoke-test on a cron / healthcheck pinger) since Railway's finite retries can't guarantee availability; and fix the underlying crash/wedge (B219). NOTE: the railway.json change only takes effect on deploy (git push origin master), which is currently 124 commits ahead of origin - a large deploy surface; operator must decide scope/timing of the push. Acceptance: a transient relay failure does not become a permanent outage; recovery is automatic; operators are alerted when the relay is unhealthy.
