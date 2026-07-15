@@ -782,6 +782,17 @@ let restart_cmd =
   and+ timeout = timeout
   and+ force = force in
   let timeout_s = Option.value timeout ~default:5.0 in
+  (* B212: the machine-wide relay connector persists a config shape that the
+     harness-client restart path cannot parse (no session_id/alias/resume),
+     which used to escape as an uncaught Not_found. Recognise it up front and
+     drive the machine lifecycle (stop supervisor + relaunch daemon) instead.
+     [restart] does not return on success and exits cleanly on error. *)
+  (match C2c_relay_managed.read_managed_config ~name with
+   | Some _ ->
+       C2c_relay_managed.restart ~name
+         ~broker_root:(resolve_broker_root ()) ~timeout_s ()
+         [@ocaml.warning "-21"]
+   | None -> ());
   let instance_dir = C2c_start.instance_dir name in
   match C2c_codex_session.load_mapping ~instance_dir with
   | Some _ ->
