@@ -1,5 +1,6 @@
 import { useState, useEffect, KeyboardEvent } from "react";
-import { sendMessage } from "./useSend";
+import { sendMessage, type SendDelivery } from "./useSend";
+import { toast } from "./useToast";
 import { MessageEvent } from "./types";
 
 interface Props {
@@ -46,6 +47,7 @@ export function ComposeBar({
   const [sending, setSending] = useState(false);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastOk, setLastOk] = useState(false);
+  const [lastDelivery, setLastDelivery] = useState<SendDelivery | null>(null);
   // Store the full failed attempt so retry sends to the exact same target
   const [failedAttempt, setFailedAttempt] = useState<{ text: string; to: string; isRoom: boolean } | null>(null);
 
@@ -62,6 +64,7 @@ export function ComposeBar({
     setSending(true);
     setLastError(null);
     setLastOk(false);
+    setLastDelivery(null);
     setFailedAttempt(null);
     // Create pending outbox entry before send attempt
     const outboxId = onSendAttempt?.(target, body, room) ?? "";
@@ -71,22 +74,35 @@ export function ComposeBar({
       onSendSuccess?.(outboxId);
       const nowEpoch = String(Date.now() / 1000);
       const nowIso = new Date().toISOString();
+      // Use the attempt fields (not live form state) so retry path is correct
       onSent?.({
         event_type: "message",
         monitor_ts: nowEpoch,
         ts: nowIso,
-        from_alias: myAlias,
-        to_alias: to.trim(),
-        room_id: isRoom ? to.trim() : undefined,
-        content: text.trim(),
+        from_alias: myAlias || "me",
+        to_alias: target,
+        room_id: room ? target : undefined,
+        content: body,
       });
       setText("");
+      const delivery = res.delivery ?? "unknown";
+      setLastDelivery(delivery);
       setLastOk(true);
-      setTimeout(() => setLastOk(false), 1500);
+      if (delivery === "queued") {
+        toast.warning(`Queued to ${target} (recipient may be offline)`, 4);
+      } else if (delivery === "delivered") {
+        toast.success(`Sent to ${target}`, 2);
+      }
+      // Keep confirmation long enough to read; queued stays a bit longer
+      setTimeout(() => {
+        setLastOk(false);
+        setLastDelivery(null);
+      }, delivery === "queued" ? 4000 : 2500);
     } else {
       onSendFailure?.(outboxId);
       setLastError(res.error ?? "unknown error");
       setFailedAttempt({ text: body, to: target, isRoom: room });
+      toast.error(`Send failed: ${res.error ?? "unknown"}`, 5);
     }
   }
 
@@ -192,7 +208,12 @@ export function ComposeBar({
           </button>
         )}
         {lastOk && (
-          <div style={{ fontSize: 10, color: "#a6e3a1" }}>sent ✓</div>
+          <div style={{
+            fontSize: 10,
+            color: lastDelivery === "queued" ? "#f9e2af" : "#a6e3a1",
+          }}>
+            {lastDelivery === "queued" ? "queued ⏳" : lastDelivery === "delivered" ? "sent ✓" : "sent"}
+          </div>
         )}
         {outboxCount > 0 && !lastOk && (
           <div style={{ fontSize: 10, color: "#fab387" }}>

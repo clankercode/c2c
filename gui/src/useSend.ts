@@ -16,13 +16,23 @@ export interface SendCallbacks {
   onFailed?: () => void;
 }
 
+export type SendDelivery = "delivered" | "queued" | "unknown";
+
+export function classifySendStdout(stdout: string, stderr: string): SendDelivery {
+  const text = `${stdout}\n${stderr}`.toLowerCase();
+  // Prefer queued when both appear (honesty: offline enqueue is not live delivery).
+  if (/\bqueued\b/.test(text)) return "queued";
+  if (/\bok\s*->/.test(text) || /\bdelivered\b/.test(text)) return "delivered";
+  return "unknown";
+}
+
 export async function sendMessage(
   toAlias: string,
   message: string,
   isRoom: boolean,
   myAlias: string,
   cbs: SendCallbacks = {},
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; delivery?: SendDelivery }> {
   if (!isTauriDesktop()) {
     const msg = "c2c desktop app required: open the installed Tauri app, not the web page";
     cbs.onFailed?.();
@@ -32,16 +42,19 @@ export async function sendMessage(
     return { ok: false, error: "target and message required" };
   }
   try {
+    // Prefer canonical `rooms send` (plural) when available; fall back via room path
+    // which the CLI still accepts as an alias of rooms send on current binaries.
     const args = isRoom
-      ? (myAlias ? ["room", "send", "--from", myAlias, toAlias, message] : ["room", "send", toAlias, message])
+      ? (myAlias ? ["rooms", "send", "--from", myAlias, toAlias, message] : ["rooms", "send", toAlias, message])
       : (myAlias ? ["send", "--from", myAlias, toAlias, message] : ["send", toAlias, message]);
     const result = await Command.create("c2c", args).execute();
     if (result.code !== 0) {
       cbs.onFailed?.();
-      return { ok: false, error: result.stderr || `exit ${result.code}` };
+      return { ok: false, error: result.stderr || result.stdout || `exit ${result.code}` };
     }
+    const delivery = classifySendStdout(result.stdout ?? "", result.stderr ?? "");
     cbs.onConfirmed?.();
-    return { ok: true };
+    return { ok: true, delivery };
   } catch (e) {
     cbs.onFailed?.();
     return { ok: false, error: String(e) };
