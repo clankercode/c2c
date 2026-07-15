@@ -1,0 +1,105 @@
+---
+complexity: medium
+created_at: "2026-07-15T05:48:10Z"
+depends_on: []
+estimate_hours: 1
+id: B206
+priority: high
+status: pending
+tags:
+    - relay
+    - monitor
+    - grok
+    - identity
+    - onboarding
+title: c2c monitor relay watch dies with 'alias has no identity binding' on Grok (and possibly CLI-first clients)
+updated_at: "2026-07-15T05:48:10Z"
+---
+## Symptom
+
+`c2c monitor` arms local + relay watch. Relay watch immediately hits a **terminal** auth failure and self-disables:
+
+```
+[15:45:39] monitoring as grok-arch-osprey-qsnz (session 019f644e-4f23-7d71-abbb-fc9d5b6ab678)
+[15:45:39] watching live inbox (peek)
+[15:45:39] relay watch: peek cli-grok-arch-osprey-qsnz/cli-grok-arch-osprey-qsnz every 5.0s
+[15:45:40] relay watch: TERMINAL failure peeking cli-grok-arch-osprey-qsnz/cli-grok-arch-osprey-qsnz: unauthorized: alias "grok-arch-osprey-qsnz" has no identity binding
+[15:45:40] relay watch: recovery budget exhausted (or hard auth/config break — code=unauthorized). Relay watch will not self-heal without operator action.
+[15:45:40] relay watch: remediation: No valid relay identity binding for this alias. Run `c2c relay register --alias <alias>` (or fix the key), then restart the monitor.
+[15:45:40] relay watch: disabled — local inbox watch continues (relay failure does not stop local receive)
+```
+
+(Log lines repeated twice in the paste — possible double-start or dual peek path.)
+
+Local inbox watch continues; **cross-host receive via monitor is silently off** unless the operator notices the terminal message.
+
+## Repro / evidence (2026-07-15, host with public relay)
+
+- Local identity exists: `c2c whoami` shows Ed25519 fingerprint `SHA256:NEstCw_c5DCM3pJ3CGtl1bN02rPPPd18IVERVF3ciUU`.
+- Relay URL configured: `https://relay.c2c.im`.
+- Connector state: `registered_unreachable` / connector down (stale last_sync) — separate but adjacent.
+- **Both** the session alias in the log and the current Grok alias fail the same way:
+
+```
+c2c relay list --alias grok-arch-osprey-qsnz
+→ unauthorized: alias "…" has no identity binding
+
+c2c relay list --alias grok-fallow-hyacinth-9hx4
+→ unauthorized: alias "…" has no identity binding
+```
+
+Hint path is correct: `c2c relay register --alias <alias>`.
+
+## What to investigate
+
+1. **Root cause chain**
+   - Who starts relay peek as `cli-<alias>/cli-<alias>` (monitor default when no connector manages the alias — see `docs/monitor-json-schema.md`)?
+   - Why does monitor enable relay watch when there is no identity binding for the session alias?
+   - Is missing binding expected for every freshly minted Grok/CLI alias (sticky alias per session id, new Grok sessions often mint new aliases)?
+   - Does `c2c install grok` / SessionStart / auto-register only touch the **local** broker and never call `relay register`?
+
+2. **Why terminal + no self-heal is correct or not**
+   - Auth failures are hard-fail by design (`c2c_monitor_cmd.ml` recovery budget / unauthorized).
+   - Operator remediation is printed once then relay watch is disabled — easy to miss in a long session.
+   - Should first missing-binding failure auto-attempt `relay register` when a local identity already exists (or offer a single opt-in flag)?
+
+3. **Architectural questions (reconsider?)**
+   - **Per-alias relay registration vs host identity**: Local has one Ed25519 identity per machine; relay binds that key to each alias via `relay register`. Every new session alias needs a register step. Is that the right product model for high-churn CLI-first clients (Grok, agy) that mint new aliases often?
+   - **Monitor assumes relay readiness**: Monitor always attempts relay peek. For local-only dogfood this creates permanent noise and a false sense that cross-host is "on". Options:
+     - Preflight: skip relay watch if binding missing (quiet + one-line hint).
+     - Auto-register on first monitor if identity exists and alias unbound.
+     - Gate relay watch on `relay connect` / connector healthy / explicit `C2C_RELAY_WATCH=1`.
+   - **CLI-first install path gap**: Product goals say Grok is CLI-first (skill + SessionStart + Monitor). If monitor is the receive path, identity binding should be part of install/SessionStart or monitor preflight — not a hidden second ceremony.
+   - **Rename/rebind**: rename rebind exists (`relay_rename_rebind.ml`); fresh mint does not auto-bind. Symmetric gap.
+   - **Connector vs direct-register**: when connector is down, monitor falls back to `cli-<alias>` peek — which still needs binding. Dual paths both fail the same way today.
+   - **Double log lines**: investigate whether monitor spawns two relay-watch loops (noise / bug).
+
+4. **Impact**
+   - Severity: **high for multi-host**, medium for local-only (local still works).
+   - Silent degradation: agent thinks it is monitoring; only local mail arrives.
+   - Dogfood friction for Grok agents that follow SessionStart "arm Monitor" without ever learning `relay register`.
+
+## Suggested investigation outcomes (not decisions yet)
+
+- Findings note under `.collab/findings/` with root cause + whether intentional.
+- Product recommendation on one of:
+  - (A) auto `relay register` on SessionStart/install/monitor when identity present and alias unbound;
+  - (B) soft-skip relay watch with clear one-shot UX when unbound;
+  - (C) document + doctor check only (status quo + better visibility).
+- Tests: monitor preflight for missing binding; install/SessionStart path for CLI-first clients; optional auto-register unit/integration.
+- Consider `c2c doctor` / `c2c whoami` surfacing "session alias not bound on relay" as a first-class check (whoami already shows identity fingerprint but not "this alias is registered").
+
+## Related code / docs (starting points)
+
+- `ocaml/cli/c2c_monitor_cmd.ml` — relay watch terminal failure / remediation
+- `ocaml/relay_client_hints.ml` — `is_missing_identity_binding`, fix-it hints
+- `ocaml/relay.ml` / `relay_ws_server.ml` — server-side "has no identity binding"
+- `docs/monitor-json-schema.md` — `cli-<alias>` direct-register fallback
+- `docs/relay-quickstart.md`, `docs/connect.md` — identity init + register ceremony
+- Grok install / SessionStart hooks under install surface
+
+## Non-goals for the bug itself
+
+- Do not silently weaken relay auth.
+- Do not auto-register without a clear security story (binding an alias to a host key is intentional).
+- Local inbox must remain independent of relay failures (current behavior is good).
