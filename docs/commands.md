@@ -996,7 +996,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
 | `restart-stale [--dry-run] [--exclude-coordinator] [--force] [--timeout SECS] [--json]` | Version-aware rolling restart of managed instances running an outdated `c2c` binary (I010). App-server sessions restart in place (idle-gated; `--force` overrides the gate and treats every instance as stale); TUI clients are reported for a manual in-pane `c2c restart <name>`. The coordinator is restarted last unless `--exclude-coordinator`. |
-| `dev instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. **Canonical.** Top-level `c2c instances` is a deprecated compatibility alias that prints a deprecation notice and forwards here. |
+| `dev instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. agy rows include the managed session ID, conversation ID, credential-stripped LS endpoint, and deliver-watch status/PID; `--json` exposes these under the row's `agy` object. **Canonical.** Top-level `c2c instances` is a deprecated compatibility alias that prints a deprecation notice and forwards here. |
 | `sessions [--json]` | List registered broker sessions with session ID, alias, client type, cwd, and liveness. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
 | `scripts/c2c_tmux.py supervise [--manifest PATH] [--once] [--dry-run] [--interval S]` | Declarative self-healing tmux supervisor (Python script, not a `c2c` subcommand). Reads a TOML manifest (default: `.c2c/supervise.toml`) and keeps declared agents alive via exponential-backoff respawn. Must run inside a tmux session. `--dry-run` shows what would respawn without acting. |
@@ -1172,7 +1172,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 
 | Command | Description |
 |---------|-------------|
-| `dev instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances (**canonical**). Top-level `c2c instances` is a deprecated compatibility alias. |
+| `dev instances [--all] [--prune-older-than DAYS] [--json]` | List managed c2c instances (**canonical**). agy rows include session/conversation identity, a credential-stripped LS endpoint, and deliver-watch status. Top-level `c2c instances` is a deprecated compatibility alias. |
 | `monitor [--all] [--archive] [--live] [--drain] [--drains] [--sweeps] [-a A \| --alias A] [--from A] [--full-body] [--snippet] [--json] [--cross-repo] [--no-relay]` | Watch broker events and emit formatted lines. Defaults: **archive + full body**; use `--live` / `--snippet` to opt out. `--cross-repo` monitors the shared sessions broker (`~/.c2c/sessions/broker`) instead of this repo's per-repo broker. With a configured relay, it also non-destructively peeks the resolved alias's relay inbox so cross-host DMs surface without draining; `--no-relay` disables that source. Startup backlog surface (B150) runs in the default archive+inbox-watch path only — not in `--live` mode. |
 | `screen [--claude-session ID\|--pid P\|--terminal-pid T --pts N]` | Capture PTY screen content as text. |
 | `refresh-peer ALIAS_OR_SESSION_ID [--pid PID] [--dry-run] [--json]` | Refresh a stale registration to a new live PID. |

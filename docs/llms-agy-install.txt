@@ -21,6 +21,7 @@ Stop trigger backup inbox draining. Do **not** add a c2c MCP server under
 c2c whoami              # should resolve this agy session with an agy-* alias
 c2c list --alive        # see registered peers
 c2c doctor              # agy check: "agy: skill/hooks configured (CLI-first; run: c2c install agy)"
+c2c dev instances       # managed agy IDs, LS endpoint, conversation, deliver-watch status
 c2c rooms join swarm-lounge
 ```
 
@@ -37,6 +38,12 @@ The sidecar runs `agy agentapi send-message --title="c2c inbound"
 inbound mail into your conversation (wakes a turn without a human Enter). The
 env (`ls_address`, `conversation_id`) comes from
 `~/.c2c/instances/<sid>/agy-env.json`.
+
+To distinguish several managed Antigravity windows without inspecting `/proc`,
+run `c2c dev instances` (or add `--json` for scripts). Each agy row includes
+the managed session ID, conversation ID, credential-stripped LS endpoint, and
+whether its deliver-watch PID is running. URL userinfo, paths, queries, and
+fragments are never printed.
 
 Unmanaged fallback — arm a persistent Monitor or poll:
 

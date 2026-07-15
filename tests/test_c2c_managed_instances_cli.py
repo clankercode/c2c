@@ -108,3 +108,133 @@ class ManagedInstancesCLITests(unittest.TestCase):
         self.assertEqual(len(payload["managed_instances"]), 1)
         self.assertEqual(payload["managed_instances"][0]["name"], "opencode-test")
         self.assertEqual(payload["managed_instances"][0]["delivery_mode"], "plugin")
+
+    def test_dev_instances_reports_active_agy_identity_and_deliver_watch(self):
+        agy_dir = (
+            self.home / ".local" / "share" / "c2c" / "instances" / "agy-window-a"
+        )
+        agy_dir.mkdir(parents=True, exist_ok=True)
+        (agy_dir / "config.json").write_text(
+            json.dumps(
+                {
+                    "name": "agy-window-a",
+                    "client": "agy",
+                    "session_id": "agy-window-a",
+                    "created_at": 1713910800.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (agy_dir / "outer.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        (agy_dir / "deliver.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        agy_metadata_dir = self.home / ".c2c" / "instances" / "agy-window-a"
+        agy_metadata_dir.mkdir(parents=True, exist_ok=True)
+        (agy_metadata_dir / "agy-env.json").write_text(
+            json.dumps(
+                {
+                    "ls_address": "http://127.0.0.1:43123",
+                    "conversation_id": "conversation-7f3a",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        result = self._run("dev", "instances", "--json")
+        payload = json.loads(result.stdout)
+        agy = next(item for item in payload["instances"] if item["client"] == "agy")
+        self.assertEqual(
+            agy["agy"],
+            {
+                "session_id": "agy-window-a",
+                "ls_address": "http://127.0.0.1:43123",
+                "conversation_id": "conversation-7f3a",
+                "deliver_watch": {"status": "running", "pid": os.getpid()},
+            },
+        )
+        human = self._run("dev", "instances").stdout
+        self.assertIn("session=agy-window-a", human)
+        self.assertIn("conversation=conversation-7f3a", human)
+        self.assertIn("ls=http://127.0.0.1:43123", human)
+        self.assertIn(f"deliver-watch=running(pid={os.getpid()})", human)
+
+    def test_dev_instances_rejects_malformed_agy_ls_addresses_without_leaking(self):
+        agy_dir = (
+            self.home / ".local" / "share" / "c2c" / "instances" / "agy-window-malformed"
+        )
+        agy_dir.mkdir(parents=True, exist_ok=True)
+        (agy_dir / "config.json").write_text(
+            json.dumps({"name": "agy-window-malformed", "client": "agy"}),
+            encoding="utf-8",
+        )
+        (agy_dir / "outer.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        metadata_dir = self.home / ".c2c" / "instances" / "agy-window-malformed"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+        malformed = [
+            "http://operator:credential-secret@127.0.0.1:43123",
+            "http://127.0.0.1:43123\\backslash-secret",
+            "http://127.0.0.1:43123/authority-secret",
+            "http://127.0.0.1:43123\x01control-secret",
+            "not-an-authority-secret",
+        ]
+        for address in malformed:
+            with self.subTest(address=address):
+                (metadata_dir / "agy-env.json").write_text(
+                    json.dumps({"ls_address": address, "conversation_id": "conversation-safe"}),
+                    encoding="utf-8",
+                )
+                result = self._run("dev", "instances", "--json")
+                payload = json.loads(result.stdout)
+                agy = next(
+                    item for item in payload["instances"]
+                    if item["name"] == "agy-window-malformed"
+                )
+                self.assertIsNone(agy["agy"]["ls_address"])
+                self.assertNotIn("secret", result.stdout)
+
+                human = self._run("dev", "instances").stdout
+                self.assertNotIn("secret", human)
+
+    def test_dev_instances_ignores_non_positive_agy_deliver_pidfiles(self):
+        agy_dir = (
+            self.home / ".local" / "share" / "c2c" / "instances" / "agy-window-pid"
+        )
+        agy_dir.mkdir(parents=True, exist_ok=True)
+        (agy_dir / "config.json").write_text(
+            json.dumps({"name": "agy-window-pid", "client": "agy"}),
+            encoding="utf-8",
+        )
+        (agy_dir / "outer.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        for pid, expected in ((0, {"status": "not-found", "pid": None}),
+                              (-1, {"status": "not-found", "pid": None}),
+                              (999999, {"status": "stopped", "pid": 999999})):
+            with self.subTest(pid=pid):
+                (agy_dir / "deliver.pid").write_text(f"{pid}\n", encoding="utf-8")
+                result = self._run("dev", "instances", "--json")
+                payload = json.loads(result.stdout)
+                agy = next(
+                    item for item in payload["instances"] if item["name"] == "agy-window-pid"
+                )
+                self.assertEqual(agy["agy"]["deliver_watch"], expected)
+
+    def test_dev_instances_reports_missing_agy_metadata_without_proc_lookup(self):
+        agy_dir = (
+            self.home / ".local" / "share" / "c2c" / "instances" / "agy-window-b"
+        )
+        agy_dir.mkdir(parents=True, exist_ok=True)
+        (agy_dir / "config.json").write_text(
+            json.dumps({"name": "agy-window-b", "client": "agy"}),
+            encoding="utf-8",
+        )
+        (agy_dir / "outer.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+
+        result = self._run("dev", "instances", "--json")
+        payload = json.loads(result.stdout)
+        agy = next(item for item in payload["instances"] if item["client"] == "agy")
+        self.assertEqual(agy["agy"]["session_id"], "agy-window-b")
+        self.assertIsNone(agy["agy"]["ls_address"])
+        self.assertIsNone(agy["agy"]["conversation_id"])
+        self.assertEqual(
+            agy["agy"]["deliver_watch"], {"status": "not-found", "pid": None}
+        )
