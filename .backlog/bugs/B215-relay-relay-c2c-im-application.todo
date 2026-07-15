@@ -1,0 +1,25 @@
+---
+complexity: medium
+created_at: "2026-07-15T15:36:23Z"
+depends_on: []
+estimate_hours: 1
+id: B215
+priority: high
+status: pending
+tags: []
+title: Relay relay.c2c.im application unresponsive (Railway 502; app upstream hung/dead)
+updated_at: "2026-07-15T15:36:23Z"
+---
+CRITICAL: cross-host relay traffic is down. Observed 2026-07-16 ~01:30 local from host 3d08761ae3f3 with freshly-installed c2c (master ba2034fe).
+
+Evidence:
+- TCP connect succeeds (time_connect ~0.01-0.11s) and TLS handshake succeeds (time_appconnect ~0.03s) — the Railway edge/proxy is up and terminating TLS.
+- GET /health with 25s timeout returns HTTP 502 after 15.3s; GET / times out (000) at 10s; GET /health at 5s times out (000). So the edge returns 502 (no healthy upstream) once its ~15s upstream timeout elapses.
+- c2c relay status => {ok:false, error_code:connection_error, error:request_timeout, transport:true}.
+- Interpretation: the relay APPLICATION upstream is not responding (hung, deadlocked, crash-looping, or OOM-restart-looping); this is NOT a network/DNS/TLS outage.
+
+Likely contributing context (unconfirmed): the multi-connect 429 storm (B210 — 9 stray 'c2c relay connect' processes were live on this host; now killed) plus relay PoW difficulty raised 0->12 under load. May have wedged or crash-looped the relay.
+
+BLOCKED on diagnosis: Railway CLI auth expired (Unauthorized); need 'railway login' (project vigilant-laughter, service c2c, env production) to pull deploy logs and confirm crash vs deadlock vs OOM, and likely to restart/redeploy the relay to recover. relay.ml serve loop uses blocking Mutex (lines ~403,1502) — a deadlock candidate to check against logs. handle_health itself is lightweight (no lock/DB).
+
+Acceptance: identify root cause from Railway logs; relay responds to /health and /stats again; a documented recovery path exists; if a code cause is found (deadlock/unbounded work/OOM under load/PoW), fix it and add coverage.

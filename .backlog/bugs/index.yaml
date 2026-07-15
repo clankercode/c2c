@@ -211,3 +211,4 @@ bugs:
     - file: B212-c2c-restart-relay-connect-rais.todo
     - file: B213-relay-signature-invalid-flaps.todo
     - file: B214-relay-connector-path-ignores-c.todo
+    - file: B215-relay-relay-c2c-im-application.todo
