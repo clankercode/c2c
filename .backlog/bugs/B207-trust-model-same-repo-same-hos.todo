@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T05:58:46Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T06:27:20Z"
 complexity: medium
 created_at: "2026-07-15T05:57:47Z"
 depends_on: []
+duration_minutes: 28.57703156455
 estimate_hours: 1
 id: B207
 priority: medium
 started_at: "2026-07-15T05:58:46Z"
-status: in_progress
+status: done
 tags: []
 title: 'Trust model: same-repo > same-host > relay; escalate to operator when unsure'
-updated_at: "2026-07-15T05:58:46Z"
+updated_at: "2026-07-15T06:27:20Z"
 ---
 ## Intent / product rule
 
