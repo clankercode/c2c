@@ -142,7 +142,9 @@ c2c relay connect          # loop every 30s (default)
 ```
 
 The connector:
-1. Registers all local aliases from `registry.json` with the relay.
+1. Registers only locally verified-alive aliases from `registry.json` with the
+   relay. Dead processes and unverified historical rows are skipped rather
+   than consuming relay registration/rate-limit budget.
 2. Forwards messages queued in `remote-outbox.jsonl` to remote peers.
 3. Pulls inbound remote messages into local session inboxes.
 4. Heartbeats all sessions every tick to keep leases alive.
