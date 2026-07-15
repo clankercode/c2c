@@ -64,40 +64,63 @@ type inbound_rate = {
   rate_window_s : float;
 }
 
+type inbound_action =
+  | Inbound_allow
+  | Inbound_deny
+
 type inbound_sender_policy = {
+  sender_action : inbound_action;
   sender_max_bytes : int;
   sender_rate : inbound_rate;
 }
 
+type inbound_recipient_policy = {
+  recipient_enabled : bool;
+  recipient_max_bytes : int;
+  recipient_rate : inbound_rate;
+}
+
 type inbound_policy = {
+  default_sender_action : inbound_action;
   default_max_bytes : int;
   default_sender_rate : inbound_rate;
+  default_recipient_rate : inbound_rate;
   machine_rate : inbound_rate;
   sender_overrides : (string * inbound_sender_policy) list;
+  recipient_overrides : (string * inbound_recipient_policy) list;
 }
 
 type inbound_rate_state = {
   mutable machine_events : float list;
   sender_events : (string, float list) Hashtbl.t;
+  recipient_events : (string, float list) Hashtbl.t;
 }
 
 type inbound_rejection =
   | Inbound_schema
   | Inbound_policy
+  | Inbound_sender_denied
+  | Inbound_recipient_mismatch
+  | Inbound_recipient_disabled
   | Inbound_oversize
   | Inbound_sender_rate
+  | Inbound_recipient_rate
   | Inbound_machine_rate
 
 let default_inbound_policy = {
+  default_sender_action = Inbound_allow;
   default_max_bytes = 256 * 1024;
   default_sender_rate = { rate_messages = 60; rate_window_s = 60.0 };
+  default_recipient_rate = { rate_messages = 120; rate_window_s = 60.0 };
   machine_rate = { rate_messages = 600; rate_window_s = 60.0 };
   sender_overrides = [];
+  recipient_overrides = [];
 }
 
 let create_inbound_rate_state () = {
   machine_events = [];
   sender_events = Hashtbl.create 17;
+  recipient_events = Hashtbl.create 17;
 }
 
 let inbound_policy_path broker_root =
@@ -132,6 +155,21 @@ let positive_float fields field ~default =
   | Some (`Float n) when Float.is_finite n && n > 0.0 -> Ok n
   | Some _ -> inbound_config_error field "expected a positive finite number"
 
+let bool_value fields field ~default =
+  match List.assoc_opt field fields with
+  | None -> Ok default
+  | Some (`Bool b) -> Ok b
+  | Some _ -> inbound_config_error field "expected a boolean"
+
+let parse_inbound_action ~field ~default = function
+  | None -> Ok default
+  | Some (`String action) ->
+      (match String.lowercase_ascii (String.trim action) with
+       | "allow" -> Ok Inbound_allow
+       | "deny" -> Ok Inbound_deny
+       | _ -> inbound_config_error field "expected \"allow\" or \"deny\"")
+  | Some _ -> inbound_config_error field "expected \"allow\" or \"deny\""
+
 let parse_inbound_rate ~field ~default = function
   | None -> Ok default
   | Some (`Assoc fields) ->
@@ -147,30 +185,83 @@ let parse_inbound_rate ~field ~default = function
            | Ok rate_window_s -> Ok { rate_messages; rate_window_s })
   | Some _ -> inbound_config_error field "expected an object"
 
-let parse_inbound_sender ~default_max_bytes ~default_rate alias = function
+let parse_inbound_sender ~default_action ~default_max_bytes ~default_rate alias = function
   | `Assoc fields ->
       (match validate_object_fields ~context:alias
-               ~allowed:[ "max_bytes"; "rate" ] fields with
+               ~allowed:[ "action"; "max_bytes"; "rate" ] fields with
        | Error _ as e -> e
-       | Ok () -> match positive_int fields "max_bytes" ~default:default_max_bytes with
+       | Ok () -> match parse_inbound_action ~field:(alias ^ ".action")
+                          ~default:default_action (List.assoc_opt "action" fields) with
        | Error _ as e -> e
-       | Ok sender_max_bytes ->
+       | Ok sender_action ->
+           match positive_int fields "max_bytes" ~default:default_max_bytes with
+           | Error _ as e -> e
+           | Ok sender_max_bytes ->
            match parse_inbound_rate ~field:(alias ^ ".rate")
                    ~default:default_rate (List.assoc_opt "rate" fields) with
            | Error _ as e -> e
            | Ok sender_rate -> Ok {
+               sender_action;
                sender_max_bytes;
                sender_rate;
              })
   | _ -> inbound_config_error alias "expected an object"
 
+let parse_inbound_recipient ~default_max_bytes ~default_rate alias = function
+  | `Assoc fields ->
+      (match validate_object_fields ~context:alias
+               ~allowed:[ "enabled"; "max_bytes"; "rate" ] fields with
+       | Error _ as e -> e
+       | Ok () -> match bool_value fields "enabled" ~default:true with
+       | Error _ as e -> e
+       | Ok recipient_enabled ->
+           match positive_int fields "max_bytes" ~default:default_max_bytes with
+           | Error _ as e -> e
+           | Ok recipient_max_bytes ->
+               match parse_inbound_rate ~field:(alias ^ ".rate")
+                       ~default:default_rate (List.assoc_opt "rate" fields) with
+               | Error _ as e -> e
+               | Ok recipient_rate -> Ok {
+                   recipient_enabled;
+                   recipient_max_bytes;
+                   recipient_rate;
+                 })
+  | _ -> inbound_config_error alias "expected an object"
+
+let parse_casefolded_overrides ~field ~parse_entry = function
+  | None -> Ok []
+  | Some (`Assoc entries) ->
+      let rec parse acc = function
+        | [] -> Ok (List.rev acc)
+        | (alias, json) :: rest ->
+            let alias = String.trim alias in
+            let key = String.lowercase_ascii alias in
+            if alias = "" then
+              inbound_config_error field "alias is empty"
+            else if List.mem_assoc key acc then
+              inbound_config_error field
+                ("duplicate case-insensitive alias " ^ alias)
+            else
+              match parse_entry alias json with
+              | Error _ as e -> e
+              | Ok policy -> parse ((key, policy) :: acc) rest
+      in
+      parse [] entries
+  | Some _ -> inbound_config_error field "expected an object"
+
 let parse_inbound_policy = function
   | `Assoc fields ->
       (match validate_object_fields ~context:"root"
-               ~allowed:[ "default_max_bytes"; "default_sender_rate";
-                          "machine_rate"; "senders" ] fields with
+               ~allowed:[ "default_sender_action"; "default_max_bytes";
+                          "default_sender_rate"; "default_recipient_rate";
+                          "machine_rate"; "senders"; "recipients" ] fields with
        | Error _ as e -> e
-       | Ok () -> match positive_int fields "default_max_bytes"
+       | Ok () -> match parse_inbound_action ~field:"default_sender_action"
+                          ~default:default_inbound_policy.default_sender_action
+                          (List.assoc_opt "default_sender_action" fields) with
+       | Error _ as e -> e
+       | Ok default_sender_action ->
+           match positive_int fields "default_max_bytes"
                ~default:default_inbound_policy.default_max_bytes with
        | Error _ as e -> e
        | Ok default_max_bytes ->
@@ -179,41 +270,39 @@ let parse_inbound_policy = function
                    (List.assoc_opt "default_sender_rate" fields) with
            | Error _ as e -> e
            | Ok default_sender_rate ->
+               match parse_inbound_rate ~field:"default_recipient_rate"
+                       ~default:default_inbound_policy.default_recipient_rate
+                       (List.assoc_opt "default_recipient_rate" fields) with
+               | Error _ as e -> e
+               | Ok default_recipient_rate ->
                match parse_inbound_rate ~field:"machine_rate"
                        ~default:default_inbound_policy.machine_rate
                        (List.assoc_opt "machine_rate" fields) with
                | Error _ as e -> e
                | Ok machine_rate ->
-                   match List.assoc_opt "senders" fields with
-                   | None -> Ok {
-                       default_max_bytes; default_sender_rate; machine_rate;
-                       sender_overrides = [];
-                     }
-                   | Some (`Assoc senders) ->
-                       let rec parse acc = function
-                         | [] -> Ok {
-                             default_max_bytes; default_sender_rate; machine_rate;
-                             sender_overrides = List.rev acc;
-                           }
-                         | (alias, json) :: rest ->
-                             let alias = String.trim alias in
-                             if alias = "" then
-                               inbound_config_error "senders" "sender alias is empty"
-                             else if List.mem_assoc
-                                       (String.lowercase_ascii alias) acc then
-                               inbound_config_error "senders"
-                                 ("duplicate case-insensitive sender " ^ alias)
-                             else
-                               match parse_inbound_sender ~default_max_bytes
-                                       ~default_rate:default_sender_rate alias json with
-                               | Error _ as e -> e
-                               | Ok policy ->
-                                   parse
-                                     ((String.lowercase_ascii alias, policy) :: acc)
-                                     rest
-                       in
-                       parse [] senders
-                   | Some _ -> inbound_config_error "senders" "expected an object")
+                   match parse_casefolded_overrides ~field:"senders"
+                           ~parse_entry:(parse_inbound_sender
+                             ~default_action:default_sender_action
+                             ~default_max_bytes
+                             ~default_rate:default_sender_rate)
+                           (List.assoc_opt "senders" fields) with
+                   | Error _ as e -> e
+                   | Ok sender_overrides ->
+                       match parse_casefolded_overrides ~field:"recipients"
+                               ~parse_entry:(parse_inbound_recipient
+                                 ~default_max_bytes
+                                 ~default_rate:default_recipient_rate)
+                               (List.assoc_opt "recipients" fields) with
+                       | Error _ as e -> e
+                       | Ok recipient_overrides -> Ok {
+                           default_sender_action;
+                           default_max_bytes;
+                           default_sender_rate;
+                           default_recipient_rate;
+                           machine_rate;
+                           sender_overrides;
+                           recipient_overrides;
+                         })
   | _ -> inbound_config_error "root" "expected an object"
 
 let load_inbound_policy broker_root =
@@ -261,7 +350,7 @@ let json_float_list = function
 let inbound_rate_state_of_json = function
   | `Assoc fields ->
       (match validate_object_fields ~context:"rate-state root"
-               ~allowed:[ "machine"; "senders" ] fields with
+               ~allowed:[ "machine"; "senders"; "recipients" ] fields with
        | Error e -> Error e
        | Ok () ->
            match List.assoc_opt "machine" fields,
@@ -270,32 +359,57 @@ let inbound_rate_state_of_json = function
                (match json_float_list machine with
                 | Error e -> Error e
                 | Ok machine_events ->
-                    let table = Hashtbl.create (max 17 (List.length senders)) in
-                    let rec parse_senders seen = function
-                      | [] -> Ok { machine_events; sender_events = table }
-                      | (sender, events) :: rest ->
-                          let sender = String.lowercase_ascii sender in
-                          if sender = "" || List.mem sender seen then
-                            Error "rate-state contains an empty or duplicate sender"
-                          else
-                            match json_float_list events with
-                            | Error e -> Error e
-                            | Ok events ->
-                                Hashtbl.add table sender events;
-                                parse_senders (sender :: seen) rest
+                    let parse_event_table kind entries =
+                      let table = Hashtbl.create (max 17 (List.length entries)) in
+                      let rec parse seen = function
+                        | [] -> Ok table
+                        | (alias, events) :: rest ->
+                            let alias = String.lowercase_ascii alias in
+                            if alias = "" || List.mem alias seen then
+                              Error ("rate-state contains an empty or duplicate " ^ kind)
+                            else
+                              match json_float_list events with
+                              | Error e -> Error e
+                              | Ok events ->
+                                  Hashtbl.add table alias events;
+                                  parse (alias :: seen) rest
+                      in
+                      parse [] entries
                     in
-                    parse_senders [] senders)
+                    match parse_event_table "sender" senders with
+                    | Error _ as e -> e
+                    | Ok sender_events ->
+                        let recipients =
+                          match List.assoc_opt "recipients" fields with
+                          | None -> Ok []
+                          | Some (`Assoc recipients) -> Ok recipients
+                          | Some _ -> Error "rate-state recipients must be an object"
+                        in
+                        match recipients with
+                        | Error _ as e -> e
+                        | Ok recipients ->
+                            match parse_event_table "recipient" recipients with
+                            | Error _ as e -> e
+                            | Ok recipient_events -> Ok {
+                                machine_events;
+                                sender_events;
+                                recipient_events;
+                              })
            | _ -> Error "rate-state requires machine list and senders object")
   | _ -> Error "rate-state root must be an object"
 
 let inbound_rate_state_to_json state =
   let times xs = `List (List.map (fun ts -> `Float ts) xs) in
-  let senders =
-    Hashtbl.to_seq state.sender_events |> List.of_seq
+  let event_table table =
+    Hashtbl.to_seq table |> List.of_seq
     |> List.sort (fun (a, _) (b, _) -> String.compare a b)
     |> List.map (fun (sender, events) -> sender, times events)
   in
-  `Assoc [ ("machine", times state.machine_events); ("senders", `Assoc senders) ]
+  `Assoc [
+    ("machine", times state.machine_events);
+    ("senders", `Assoc (event_table state.sender_events));
+    ("recipients", `Assoc (event_table state.recipient_events));
+  ]
 
 let load_inbound_rate_state broker_root =
   let path = inbound_rate_state_path broker_root in
@@ -325,8 +439,19 @@ let inbound_sender_policy policy sender =
   match List.assoc_opt key policy.sender_overrides with
   | Some override -> override
   | None -> {
+      sender_action = policy.default_sender_action;
       sender_max_bytes = policy.default_max_bytes;
       sender_rate = policy.default_sender_rate;
+    }
+
+let inbound_recipient_policy policy recipient =
+  let key = String.lowercase_ascii recipient in
+  match List.assoc_opt key policy.recipient_overrides with
+  | Some override -> override
+  | None -> {
+      recipient_enabled = true;
+      recipient_max_bytes = policy.default_max_bytes;
+      recipient_rate = policy.default_recipient_rate;
     }
 
 let prune_window ~now rate events =
@@ -338,13 +463,39 @@ let inbound_row_fields = function
       (match List.assoc_opt "from_alias" fields,
              List.assoc_opt "to_alias" fields,
              List.assoc_opt "content" fields with
-       | Some (`String sender), Some (`String _), Some (`String _) -> Some sender
+       | Some (`String sender), Some (`String recipient), Some (`String _) ->
+           Some (sender, recipient)
        | _ -> None)
   | _ -> None
 
 let inbound_row_size_bytes row = String.length (Yojson.Safe.to_string row)
 
-let filter_inbound_messages ~now policy state messages =
+(* Relay rows retain their wire destination for delivery metadata: a direct
+   recipient may be [alias@host], and a room fanout copy is [alias#room]
+   (optionally followed by [@host]).  Admission must bind either form to the
+   trusted alias whose inbox was polled.  Do not use [recipient_identity]
+   alone here: it is deliberately presentation-oriented and would also accept
+   malformed delimiter ordering such as [alias@host#room]. *)
+let canonical_inbound_recipient recipient =
+  let direct, host = Relay_host_routing.split_alias_host recipient in
+  let valid_host = function
+    | None -> true
+    | Some "relay" -> true
+    | Some value -> C2c_name.is_opaque_host_id value
+  in
+  if not (valid_host host) then None
+  else
+    match String.index_opt direct '#' with
+    | None -> if C2c_name.is_valid direct then Some direct else None
+    | Some i ->
+        let alias = String.sub direct 0 i in
+        let room = String.sub direct (i + 1) (String.length direct - i - 1) in
+        if not (C2c_name.is_valid alias)
+           || not (Relay_common.valid_relay_room_id room)
+        then None
+        else Some alias
+
+let filter_inbound_messages ?expected_recipient ~now policy state messages =
   (* Keep sender bookkeeping bounded by the aggregate machine window.  Without
      this cleanup, a long-running connector could retain one empty hash entry
      for every sender it had ever seen. *)
@@ -355,18 +506,48 @@ let filter_inbound_messages ~now policy state messages =
        | [] -> None
        | live -> Some live)
     state.sender_events;
+  Hashtbl.filter_map_inplace
+    (fun recipient events ->
+       let recipient_policy = inbound_recipient_policy policy recipient in
+       match prune_window ~now recipient_policy.recipient_rate events with
+       | [] -> None
+       | live -> Some live)
+    state.recipient_events;
   state.machine_events <- prune_window ~now policy.machine_rate state.machine_events;
   let accepted, rejected =
     List.fold_left
       (fun (accepted, rejected) row ->
          match inbound_row_fields row with
          | None -> (accepted, Inbound_schema :: rejected)
-         | Some sender ->
+         | Some (sender, recipient) ->
              let sender_policy = inbound_sender_policy policy sender in
-             if inbound_row_size_bytes row > sender_policy.sender_max_bytes then
+             let policy_recipient =
+               match expected_recipient with
+               | None -> Some recipient
+               | Some expected ->
+                   match canonical_inbound_recipient recipient with
+                   | Some canonical
+                     when String.equal (String.lowercase_ascii expected)
+                            (String.lowercase_ascii canonical) -> Some expected
+                   | Some _ | None -> None
+             in
+             match policy_recipient with
+             | None -> (accepted, Inbound_recipient_mismatch :: rejected)
+             | Some policy_recipient ->
+             let recipient_policy =
+               inbound_recipient_policy policy policy_recipient
+             in
+             if sender_policy.sender_action = Inbound_deny then
+               (accepted, Inbound_sender_denied :: rejected)
+             else if not recipient_policy.recipient_enabled then
+               (accepted, Inbound_recipient_disabled :: rejected)
+             else if inbound_row_size_bytes row >
+                       min sender_policy.sender_max_bytes
+                         recipient_policy.recipient_max_bytes then
                (accepted, Inbound_oversize :: rejected)
              else
                let sender_key = String.lowercase_ascii sender in
+               let recipient_key = String.lowercase_ascii policy_recipient in
                let sender_events =
                  Hashtbl.find_opt state.sender_events sender_key
                  |> Option.value ~default:[]
@@ -377,6 +558,17 @@ let filter_inbound_messages ~now policy state messages =
                  Hashtbl.replace state.sender_events sender_key sender_events;
                  (accepted, Inbound_sender_rate :: rejected)
                end else
+                 let recipient_events =
+                   Hashtbl.find_opt state.recipient_events recipient_key
+                   |> Option.value ~default:[]
+                   |> prune_window ~now recipient_policy.recipient_rate
+                 in
+                 if List.length recipient_events >=
+                      recipient_policy.recipient_rate.rate_messages then begin
+                   Hashtbl.replace state.recipient_events recipient_key
+                     recipient_events;
+                   (accepted, Inbound_recipient_rate :: rejected)
+                 end else
                  let machine_events =
                    prune_window ~now policy.machine_rate state.machine_events
                  in
@@ -387,6 +579,8 @@ let filter_inbound_messages ~now policy state messages =
                  end else begin
                    Hashtbl.replace state.sender_events sender_key
                      (now :: sender_events);
+                   Hashtbl.replace state.recipient_events recipient_key
+                     (now :: recipient_events);
                    state.machine_events <- now :: machine_events;
                    (row :: accepted, rejected)
                  end)
@@ -394,12 +588,13 @@ let filter_inbound_messages ~now policy state messages =
   in
   List.rev accepted, List.rev rejected
 
-let filter_inbound_messages_guarded ~now policy state messages =
+let filter_inbound_messages_guarded ?expected_recipient ~now policy state messages =
   match policy with
   | Error _ -> [], List.map (fun _ -> Inbound_policy) messages
-  | Ok policy -> filter_inbound_messages ~now policy state messages
+  | Ok policy ->
+      filter_inbound_messages ?expected_recipient ~now policy state messages
 
-let filter_inbound_messages_persisted ~now ~broker_root policy messages =
+let filter_inbound_messages_persisted ?expected_recipient ~now ~broker_root policy messages =
   match policy with
   | Error _ ->
       [], List.map (fun _ -> Inbound_policy) messages, None
@@ -410,7 +605,7 @@ let filter_inbound_messages_persisted ~now ~broker_root policy messages =
             [], List.map (fun _ -> Inbound_policy) messages, Some detail
         | Ok state ->
             let accepted, rejected =
-              filter_inbound_messages ~now policy state messages
+              filter_inbound_messages ?expected_recipient ~now policy state messages
             in
             match save_inbound_rate_state broker_root state with
             | Ok () -> accepted, rejected, None
@@ -421,8 +616,12 @@ let filter_inbound_messages_persisted ~now ~broker_root policy messages =
 let inbound_rejection_name = function
   | Inbound_schema -> "schema"
   | Inbound_policy -> "policy"
+  | Inbound_sender_denied -> "sender_denied"
+  | Inbound_recipient_mismatch -> "recipient_mismatch"
+  | Inbound_recipient_disabled -> "recipient_disabled"
   | Inbound_oversize -> "oversize"
   | Inbound_sender_rate -> "sender_rate"
+  | Inbound_recipient_rate -> "recipient_rate"
   | Inbound_machine_rate -> "machine_rate"
 
 let summarize_inbound_rejections reasons =
@@ -433,7 +632,9 @@ let summarize_inbound_rejections reasons =
        Hashtbl.replace counts name
          (1 + Option.value ~default:0 (Hashtbl.find_opt counts name)))
     reasons;
-  [ "schema"; "policy"; "oversize"; "sender_rate"; "machine_rate" ]
+  [ "schema"; "policy"; "sender_denied"; "recipient_mismatch";
+    "recipient_disabled"; "oversize"; "sender_rate"; "recipient_rate";
+    "machine_rate" ]
   |> List.filter_map (fun name ->
          Hashtbl.find_opt counts name
          |> Option.map (fun count -> Printf.sprintf "%s=%d" name count))
@@ -1603,7 +1804,8 @@ let sync (t : t) : sync_result Lwt.t =
         if msgs <> [] then begin
           let deliverable, rejection_reasons, rate_state_error =
             filter_inbound_messages_persisted ~now:(Unix.gettimeofday ())
-              ~broker_root:t.broker_root inbound_policy msgs
+              ~broker_root:t.broker_root ~expected_recipient:alias
+              inbound_policy msgs
           in
           let errs =
             if rejection_reasons = [] then errs

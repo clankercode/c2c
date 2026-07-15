@@ -99,6 +99,7 @@ manage this policy. With no policy file, the defaults are:
 
 - maximum serialized message row: 262144 bytes;
 - per-sender rate: 60 messages per 60 seconds;
+- per-recipient agent rate: 120 messages per 60 seconds;
 - aggregate connector/machine rate: 600 messages per 60 seconds.
 
 To override them, create `<broker_root>/relay-inbound-policy.json` (or point
@@ -106,6 +107,7 @@ To override them, create `<broker_root>/relay-inbound-policy.json` (or point
 
 ```json
 {
+  "default_sender_action": "allow",
   "default_max_bytes": 262144,
   "default_sender_rate": {
     "messages": 60,
@@ -116,29 +118,71 @@ To override them, create `<broker_root>/relay-inbound-policy.json` (or point
     "window_seconds": 60
   },
   "senders": {
+    "blocked-agent@remote-machine": {
+      "action": "deny"
+    },
     "noisy-agent@remote-machine": {
+      "action": "allow",
       "max_bytes": 32768,
       "rate": {
         "messages": 10,
         "window_seconds": 60
       }
     }
+  },
+  "default_recipient_rate": {
+    "messages": 120,
+    "window_seconds": 60
+  },
+  "recipients": {
+    "sensitive-local-agent": {
+      "enabled": true,
+      "max_bytes": 16384,
+      "rate": {
+        "messages": 20,
+        "window_seconds": 60
+      }
+    },
+    "relay-disabled-local-agent": {
+      "enabled": false
+    }
   }
 }
 ```
 
-Sender keys are case-insensitive and overrides inherit omitted values from the
-defaults. Sizes count the compact UTF-8 JSON encoding of the complete inbound
-message row, including `content` and envelope metadata; rates use sliding windows
-and count only schema-valid, size-valid messages accepted for local delivery.
-The machine rate is aggregate across every local session handled by that connector.
+Sender and recipient keys are case-insensitive and overrides inherit omitted
+values from the defaults. `default_sender_action` is either `"allow"` or
+`"deny"`; the latter creates an allowlist by requiring explicit sender entries
+with `"action": "allow"`. Conversely, the default `"allow"` plus explicit
+`"deny"` entries is a denylist. A recipient can disable all relay ingress with
+`"enabled": false`. Its `max_bytes` is combined with the sender limit by taking
+the stricter value.
+
+Sizes count the compact UTF-8 JSON encoding of the complete inbound message row,
+including `content` and envelope metadata. Rates use sliding windows and count
+only schema-valid, admitted, size-valid messages accepted for local delivery.
+The connector binds each row's `to_alias` to the locally registered agent whose
+relay inbox was polled. Bare aliases, `alias@host` relay addresses, and
+`alias#room` fanout copies are accepted only when their alias component matches
+that local agent; mismatched qualified or fanout destinations are rejected before
+admission or rate policy is evaluated. Recipient policy and rate state always use
+the trusted polled local alias, never the relay-supplied decorated destination.
+The recipient rate is aggregate across senders for one local agent; the machine
+rate is aggregate across every local session handled by that connector.
 Rate state is persisted atomically under the broker root and locked across
 connector processes, so restart or concurrent `--once` runs do not reset or
-multiply the machine allowance. The policy file is reloaded every sync pass. A
+multiply sender, recipient, or machine allowances. B196 state files without a
+`recipients` object remain readable and begin with empty recipient windows. The
+policy file is reloaded every sync pass. A
 present but malformed or invalid file
 denies all relay inbound rows until corrected; it does not stop registration,
 heartbeat, or outbound delivery. Rejected rows are counted in connector state
 and logged by reason without logging their untrusted content.
+
+This policy only governs relay-pulled rows. Local-broker messages are a separate
+trust boundary and do not inherit relay allow/deny decisions. The remaining
+resource and trust controls identified by B197 are recorded in
+`.collab/research/2026-07-15-relay-ingress-controls-audit.md`.
 
 ---
 
