@@ -1,17 +1,18 @@
 ---
+claimed_at: "2026-07-15T05:11:31Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T03:54:36Z"
 depends_on: []
 estimate_hours: 1
 id: B195
 priority: medium
-status: pending
-tags:
-    - relay
-    - tls
-    - websocket
+started_at: "2026-07-15T05:11:31Z"
+status: in_progress
+tags: []
 title: in-process c2c relay serve --tls-cert may still break WebSocket subscribe
-updated_at: "2026-07-15T03:54:36Z"
+updated_at: "2026-07-15T05:11:31Z"
 ---
 ## Symptom
 `c2c relay serve --tls-cert …` (in-process native TLS on the cohttp/fd-dup upgrade path) may not correctly end-to-end WebSocket-subscribe clients. Production edge TLS (Railway/Cloudflare terminating TLS in front of plain `relay serve`) works; the residual is the **in-process** TLS mode only.
