@@ -2142,7 +2142,7 @@ let sync_watchdog_s (t : t) =
 
 exception Sync_watchdog of string
 
-let run_sync_once (t : t) :
+let run_sync_once ?shutdown ?(sync_fn = sync) (t : t) :
     (sync_result, [ `Exn of exn | `Watchdog of string ]) result =
   let deadline = sync_watchdog_s t in
   let deadline_i =
@@ -2157,16 +2157,58 @@ let run_sync_once (t : t) :
       Sys.set_signal Sys.sigalrm
         (Sys.Signal_handle
            (fun _ ->
-              raise
-                (Sync_watchdog
-                   (Printf.sprintf
-                      "sync wall-clock exceeded %ds (B181 watchdog)" deadline_i))));
+              match shutdown with
+              | Some requested when !requested -> Unix._exit 0
+              | _ ->
+                  raise
+                    (Sync_watchdog
+                       (Printf.sprintf
+                          "sync wall-clock exceeded %ds (B181 watchdog)"
+                          deadline_i))));
       ignore (Unix.alarm deadline_i);
-      try Ok (Lwt_main.run (sync t)) with
+      try Ok (Lwt_main.run (sync_fn t)) with
       | Sync_watchdog detail -> Error (`Watchdog detail)
       | exn -> Error (`Exn exn))
 
-let run (t : t) : unit =
+(* B217: a signal handler that only sets [shutdown] cannot make progress while
+   the connector is indefinitely pending inside [Lwt_main.run]. Allow a short
+   graceful window, then force-exit from the SIGALRM handler. [Unix._exit] is
+   deliberate: unlike an OCaml exception, an Lwt catch boundary cannot consume
+   it and leave the process wedged. *)
+let with_bounded_shutdown ?(grace_s = 2.0) ~shutdown ~on_signal f =
+  let grace_i = max 1 (int_of_float (Float.ceil grace_s)) in
+  let handle_signal _ =
+    if !shutdown then Unix._exit 0
+    else begin
+      shutdown := true;
+      on_signal ();
+      ignore (Unix.alarm grace_i)
+    end
+  in
+  let previous_alarm =
+    Sys.signal Sys.sigalrm
+      (Sys.Signal_handle (fun _ -> Unix._exit 0))
+  in
+  let previous_term =
+    Sys.signal Sys.sigterm (Sys.Signal_handle handle_signal)
+  in
+  let previous_int =
+    Sys.signal Sys.sigint (Sys.Signal_handle handle_signal)
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Unix.alarm 0);
+      Sys.set_signal Sys.sigint previous_int;
+      Sys.set_signal Sys.sigterm previous_term;
+      Sys.set_signal Sys.sigalrm previous_alarm)
+    f
+
+let sleep_interruptibly delay =
+  try Unix.sleepf delay with
+  | Unix.Unix_error (Unix.EINTR, _, _) -> ()
+
+let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
+    (t : t) : unit =
   (* B210: seed per-process so the backoff jitter actually desynchronises
      concurrent connectors (without a seed every process draws the same
      sequence, re-aligning them into a storm). *)
@@ -2193,21 +2235,9 @@ let run (t : t) : unit =
       exit 3
     end
   in
-  let install_signal sig_name =
-    Sys.signal sig_name (Sys.Signal_handle (fun _ ->
-      if not !shutdown then begin
-        shutdown := true;
-        if t.verbose then
-          Printf.printf "[relay-connector] received signal, shutting down...\n%!"
-      end))
-  in
-  let _ = install_signal Sys.sigterm in
-  let _ = install_signal Sys.sigint in
   let rec loop () =
-    if !shutdown then (
-      Printf.printf "[relay-connector] shutdown complete\n%!";
-    ) else (
-      (match run_sync_once t with
+    if !shutdown then () else (
+      (match sync_once shutdown t with
        | Ok result ->
            watchdog_strikes := 0;
            if result.rate_limited then incr rl_strikes else rl_strikes := 0;
@@ -2260,12 +2290,17 @@ let run (t : t) : unit =
           Printf.eprintf
             "[relay-connector] relay rate-limited (429); backing off %.0fs \
              (strike %d)\n%!" delay !rl_strikes;
-        Unix.sleepf delay;
+        sleep_interruptibly delay;
         loop ()
       end
     )
   in
-  loop ()
+  with_bounded_shutdown ~shutdown
+    ~on_signal:(fun () ->
+      if t.verbose then
+        Printf.printf "[relay-connector] received signal, shutting down...\n%!")
+    (fun () -> loop ());
+  Printf.printf "[relay-connector] shutdown complete\n%!"
 
 (* B200: one managed connector service discovers every repository broker on
    the machine. Each broker keeps its own registration cache, ingress policy,
@@ -2309,7 +2344,8 @@ let print_sync_result ?broker_root result =
     result.inbound_delivered result.inbound_rejected result.alerts_emitted
     err_str
 
-let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
+let start_machine_impl ~sync_once ~discover_roots
+    ~relay_url ~token ~identity ~primary_broker_root ~node_id
     ~(heartbeat_ttl : float) ~(interval : float) ~(verbose : bool)
     ~(once : bool) : int =
   if not (is_ocaml_backend ()) then begin
@@ -2319,6 +2355,7 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
   end else begin
     let states = Hashtbl.create 8 in
     let strikes = Hashtbl.create 8 in
+    let shutdown = ref false in
     (* B211: per-root wall-clock epoch of the last progress-making pass; seeded
        lazily to service start so a root that never succeeds still exits. *)
     let progress = Hashtbl.create 8 in
@@ -2336,7 +2373,8 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
           now
     in
     let check_root_stale_exit root =
-      if should_exit_stale ~now:(Unix.gettimeofday ())
+      if not !shutdown
+         && should_exit_stale ~now:(Unix.gettimeofday ())
            ~last_progress:(last_progress_for root) ~threshold:stale_threshold
       then begin
         Printf.eprintf
@@ -2363,7 +2401,7 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
     let sync_root root =
       let t = state_for root in
       let outcome =
-        match run_sync_once t with
+        match sync_once shutdown t with
         | Ok result ->
             Hashtbl.replace strikes root 0;
             if result.rate_limited then rl_seen := true;
@@ -2396,21 +2434,18 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
       "[relay-connector] starting machine service — relay=%s node=%s auth=%s interval=%.0fs\n%!"
       relay_url node_id identity_tag interval;
     if once then begin
-      let roots = discover_machine_broker_roots ~primary:primary_broker_root in
+      let roots = discover_roots ~primary:primary_broker_root in
       if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2
     end else begin
       (* B210: seed jitter per-process (see [run]). *)
       Random.self_init ();
-      let shutdown = ref false in
       let rl_strikes = ref 0 in
-      let handle_signal _ = shutdown := true in
-      Sys.set_signal Sys.sigterm (Sys.Signal_handle handle_signal);
-      Sys.set_signal Sys.sigint (Sys.Signal_handle handle_signal);
       let rec loop () =
         if not !shutdown then begin
           rl_seen := false;
-          discover_machine_broker_roots ~primary:primary_broker_root
-          |> List.iter (fun root -> ignore (sync_root root));
+          discover_roots ~primary:primary_broker_root
+          |> List.iter (fun root ->
+               if not !shutdown then ignore (sync_root root));
           if !rl_seen then incr rl_strikes else rl_strikes := 0;
           if not !shutdown then begin
             let delay = rate_limit_backoff ~base:interval ~strikes:!rl_strikes in
@@ -2418,15 +2453,24 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
               Printf.eprintf
                 "[relay-connector] relay rate-limited (429); backing off %.0fs \
                  (strike %d)\n%!" delay !rl_strikes;
-            Unix.sleepf delay; loop ()
+            sleep_interruptibly delay; loop ()
           end
         end
       in
-      loop ();
+      with_bounded_shutdown ~shutdown ~on_signal:(fun () -> ())
+        (fun () -> loop ());
       Printf.printf "[relay-connector] shutdown complete\n%!";
       0
     end
   end
+
+let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
+    ~(heartbeat_ttl : float) ~(interval : float) ~(verbose : bool)
+    ~(once : bool) : int =
+  start_machine_impl ~sync_once:(fun shutdown t -> run_sync_once ~shutdown t)
+    ~discover_roots:discover_machine_broker_roots
+    ~relay_url ~token ~identity ~primary_broker_root ~node_id
+    ~heartbeat_ttl ~interval ~verbose ~once
 
 (* ---------------------------------------------------------------------------
  * Entry point (slice 1 stub)

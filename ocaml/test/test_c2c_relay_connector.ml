@@ -1165,6 +1165,160 @@ let test_sync_made_progress () =
                                 err_detail = "request_timeout";
                                 err_ts = 0.0 } ()))
 
+let waitpid_until ~timeout_s pid =
+  let deadline = Unix.gettimeofday () +. timeout_s in
+  let rec loop () =
+    match Unix.waitpid [ Unix.WNOHANG ] pid with
+    | 0, _ when Unix.gettimeofday () < deadline ->
+        Unix.sleepf 0.02;
+        loop ()
+    | 0, _ -> None
+    | _, status -> Some status
+    | exception Unix.Unix_error (Unix.EINTR, _, _) -> loop ()
+  in
+  loop ()
+
+let connector_state_has_watchdog broker_root =
+  C2c_io.read_file_opt (Conn.connector_state_path broker_root)
+  |> fun raw -> contains_sub ~needle:"sync_watchdog" raw
+
+let test_signal_bounds_blocked_sync ~machine ~signal_name signal () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let ready_r, ready_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close ready_r;
+      let t =
+        Conn.make_state ~relay_url:"http://unreachable.invalid"
+          ~token:None ~identity:None ~broker_root:tmp ~node_id:"b217-test"
+          ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false
+      in
+      let never_sync _t =
+        ignore (Unix.write_substring ready_w "R" 0 1);
+        Unix.close ready_w;
+        let promise, _resolver = Lwt.wait () in
+        promise
+      in
+      let sync_once shutdown t =
+        Conn.run_sync_once ~shutdown ~sync_fn:never_sync t
+      in
+      if machine then
+        Unix._exit
+          (Conn.start_machine_impl ~sync_once
+             ~discover_roots:(fun ~primary -> [ primary ])
+             ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+             ~primary_broker_root:tmp ~node_id:"b217-test"
+             ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false ~once:false)
+      else begin
+        Conn.run ~sync_once t;
+        Unix._exit 0
+      end
+  | pid ->
+      Unix.close ready_w;
+      let ready = Bytes.create 1 in
+      let n = Unix.read ready_r ready 0 1 in
+      Unix.close ready_r;
+      Alcotest.(check int) "child entered blocked sync" 1 n;
+      Unix.sleepf 0.1;
+      Unix.kill pid signal;
+      match waitpid_until ~timeout_s:3.0 pid with
+      | Some (Unix.WEXITED 0) ->
+          Alcotest.(check bool) "shutdown is not a B181 watchdog strike" false
+            (connector_state_has_watchdog tmp)
+      | Some status ->
+          Alcotest.failf "connector exited abnormally after %s: %s" signal_name
+            (match status with
+             | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+             | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+             | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+      | None ->
+          Unix.kill pid Sys.sigkill;
+          ignore (Unix.waitpid [] pid);
+          Alcotest.failf "connector remained blocked more than 3s after %s"
+            signal_name
+
+let test_b181_alarm_stays_watchdog () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let t =
+    Conn.make_state ~relay_url:"http://unreachable.invalid"
+      ~token:None ~identity:None ~broker_root:tmp ~node_id:"b181-test"
+      ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false
+  in
+  let trigger_alarm _t =
+    Unix.kill (Unix.getpid ()) Sys.sigalrm;
+    let promise, _resolver = Lwt.wait () in
+    promise
+  in
+  match Conn.run_sync_once ~shutdown:(ref false) ~sync_fn:trigger_alarm t with
+  | Error (`Watchdog detail) ->
+      Alcotest.(check bool) "B181 detail retained" true
+        (contains_sub ~needle:"B181 watchdog" detail)
+  | Ok _ -> Alcotest.fail "ordinary SIGALRM unexpectedly completed sync"
+  | Error (`Exn exn) ->
+      Alcotest.failf "ordinary SIGALRM became generic exception: %s"
+        (Printexc.to_string exn)
+
+let test_machine_graceful_completion_stops_remaining_roots () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let call_r, call_w = Unix.pipe () in
+  let release_r, release_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      Unix.close release_w;
+      let calls = ref 0 in
+      let sync_once _shutdown _t =
+        incr calls;
+        ignore (Unix.write_substring call_w "C" 0 1);
+        if !calls = 1 then begin
+          let byte = Bytes.create 1 in
+          let rec await_release () =
+            match Unix.read release_r byte 0 1 with
+            | 1 -> ()
+            | _ -> Unix._exit 4
+            | exception Unix.Unix_error (Unix.EINTR, _, _) -> await_release ()
+          in
+          await_release ()
+        end;
+        Ok (mk_result ())
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; primary ^ "-second" ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:tmp ~node_id:"b217-grace-test"
+          ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false ~once:false
+      in
+      Unix.close release_r;
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      Unix.close release_r;
+      let first = Bytes.create 1 in
+      Alcotest.(check int) "first machine root entered" 1
+        (Unix.read call_r first 0 1);
+      Unix.sleepf 0.1;
+      Unix.kill pid Sys.sigterm;
+      ignore (Unix.write_substring release_w "R" 0 1);
+      Unix.close release_w;
+      (match waitpid_until ~timeout_s:3.0 pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | Some _ -> Alcotest.fail "graceful machine shutdown exited abnormally"
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "graceful machine shutdown exceeded deadline");
+      let extra = Bytes.create 1 in
+      Alcotest.(check int) "second machine root was skipped" 0
+        (Unix.read call_r extra 0 1);
+      Unix.close call_r;
+      Alcotest.(check bool) "graceful shutdown has no watchdog strike" false
+        (connector_state_has_watchdog tmp)
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
@@ -1181,6 +1335,24 @@ let () =
         test_should_exit_stale_predicate;
       Alcotest.test_case "ok/rate-limited count as progress, errors do not"
         `Quick test_sync_made_progress;
+    ];
+    "B217 bounded SIGTERM shutdown", [
+      Alcotest.test_case "bare connector SIGTERM" `Quick
+        (test_signal_bounds_blocked_sync ~machine:false ~signal_name:"SIGTERM"
+           Sys.sigterm);
+      Alcotest.test_case "bare connector SIGINT" `Quick
+        (test_signal_bounds_blocked_sync ~machine:false ~signal_name:"SIGINT"
+           Sys.sigint);
+      Alcotest.test_case "machine connector SIGTERM" `Quick
+        (test_signal_bounds_blocked_sync ~machine:true ~signal_name:"SIGTERM"
+           Sys.sigterm);
+      Alcotest.test_case "machine connector SIGINT" `Quick
+        (test_signal_bounds_blocked_sync ~machine:true ~signal_name:"SIGINT"
+           Sys.sigint);
+      Alcotest.test_case "ordinary alarm remains B181 watchdog" `Quick
+        test_b181_alarm_stays_watchdog;
+      Alcotest.test_case "machine sync completes during grace" `Quick
+        test_machine_graceful_completion_stops_remaining_roots;
     ];
     "paths", [
       Alcotest.test_case "local_inbox_path" `Quick test_local_inbox_path;
