@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-15T05:17:41Z"
+depends_on: []
+estimate_hours: 1
+id: B203
+priority: high
+status: pending
+tags: []
+title: Compare forward-agent-log behavior to ~/src/agent-session-forwarder. Is there anything in ~/src/agent-session-forwarder that we are missing that woudl be good to adopt? note that ~/src/agent-session-forwarder was an early draft of the forward-agent-log feature.
+updated_at: "2026-07-15T05:17:41Z"
+---
+
+Compare forward-agent-log behavior to ~/src/agent-session-forwarder. Is there anything in ~/src/agent-session-forwarder that we are missing that woudl be good to adopt? note that ~/src/agent-session-forwarder was an early draft of the forward-agent-log feature.
