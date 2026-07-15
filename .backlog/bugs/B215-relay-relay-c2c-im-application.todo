@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-15T16:05:42Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T15:36:23Z"
 depends_on: []
 estimate_hours: 1
 id: B215
 priority: high
-status: pending
+started_at: "2026-07-15T16:05:42Z"
+status: in_progress
 tags: []
 title: Relay relay.c2c.im application unresponsive (Railway 502; app upstream hung/dead)
-updated_at: "2026-07-15T15:36:23Z"
+updated_at: "2026-07-15T16:05:42Z"
 ---
 CRITICAL: cross-host relay traffic is down. Observed 2026-07-16 ~01:30 local from host 3d08761ae3f3 with freshly-installed c2c (master ba2034fe).
 
