@@ -334,10 +334,16 @@ let forward_agent_log =
         "All transcript noise is filtered out: tool calls and tool results, \
          thinking blocks, system/meta/summary events, hook and \
          system-reminder injections, local-command output echoes, subagent \
-         (sidechain) lines, and c2c-envelope-delivered messages. Malformed \
-         or partially-written lines are skipped without crashing; only \
-         newline-complete lines are consumed, so a live mid-write transcript \
-         never produces garbage."
+         (sidechain) lines, and c2c-envelope-delivered messages. Partially \
+         written lines are retained until their newline arrives. Raw lines, \
+         partial buffers, OpenCode files, and assembled messages are bounded \
+         at 1 MiB; oversized malformed input is dropped with a warning."
+    ; `P
+        "A failed broker send is retried up to four times with capped \
+         exponential backoff while the complete event remains in memory. \
+         Only success marks it delivered. Exhaustion is an explicit loss \
+         policy: the command prints an actionable replay instruction, counts \
+         a failure, and $(b,--once) exits non-zero."
     ; `P
         "All supported clients work. Session jsonl transcripts are tailed: \
          $(b,claude) (~/.claude*/projects/<slug>/<session-id>.jsonl), \
