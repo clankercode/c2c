@@ -134,29 +134,120 @@ let string_contains ~needle haystack =
     in
     go 0
 
-(* A machine-global `pgrep` line is attributable to THIS broker only when it
-   references this broker root path — the unique per-broker discriminator. A
-   bare `c2c relay connect` for another repo/broker (or an unrelated shell that
-   merely mentions the string) is NOT this broker's connector. This is the fix
-   for the B093 false positive where unrelated machine connectors promoted an
-   isolated broker's capabilities to PASS. *)
+(* ---------------------------------------------------------------------------
+ * Connector-line classification (B218)
+ *
+ * `pgrep -af <pat>` matches the FULL command line of ANY process whose argv
+ * contains <pat> as a substring — NOT only real connector daemons. That
+ * includes: the `sh -c "pgrep …"` wrapper that Unix.open_process_in spawns to
+ * run the pipeline; unrelated shells whose argv quotes the string (e.g.
+ * `bash -c bl bug --body "…c2c relay connect…"`); grep/editors; and c2c's own
+ * `c2c doctor --relay` process. Counting those substring hits as connectors is
+ * B218 (c2c doctor --relay reporting phantom "N relay connector processes
+ * running" with ZERO real connectors). The canonical classifier below decides
+ * connector-ness from the ACTUAL executable + leading subcommand, never
+ * substring presence, and is the single source of truth consumed by both
+ * [scope_connector_lines] and [persistent_connector_pids]. Pure. *)
+
+(* basename of a path-ish token (handles absolute/relative exe paths). *)
+let basename_of tok =
+  match String.rindex_opt tok '/' with
+  | Some i -> String.sub tok (i + 1) (String.length tok - i - 1)
+  | None -> tok
+
+(* Split a raw `pgrep -af` line ("<pid> <cmdline>") into (pid, argv). pgrep -af
+   renders the process argv joined by spaces (NUL→space from /proc). We
+   whitespace-split: the first token is the pid, the rest approximate argv.
+   Args with embedded spaces are over-split, but classification only inspects
+   argv[0] and the leading positional subcommand — neither contains spaces.
+   Returns None when the leading token is not an integer pid. *)
+let split_pgrep_line line =
+  let toks =
+    String.map (fun c -> if c = '\t' then ' ' else c) (String.trim line)
+    |> String.split_on_char ' '
+    |> List.filter (fun s -> s <> "")
+  in
+  match toks with
+  | pid :: argv when int_of_string_opt pid <> None -> Some (pid, argv)
+  | _ -> None
+
+let is_shell_exe base =
+  List.mem base
+    [ "sh"; "bash"; "zsh"; "dash"; "fish"; "ksh"; "ash"; "csh"; "tcsh" ]
+
+let is_search_exe base =
+  List.mem base
+    [ "pgrep"; "pkill"; "grep"; "egrep"; "fgrep"; "rg"; "ag"; "ack" ]
+
+let is_python_exe base =
+  String.length base >= 6 && String.sub base 0 6 = "python"
+
+let is_connector_script base =
+  base = "c2c_relay_connector" || base = "c2c_relay_connector.py"
+
+(* True iff [line] denotes a genuine, persistent relay-connector process:
+   - OCaml: argv[0] basename is the c2c binary (`c2c`, `/abs/…/c2c`, or
+     `…/c2c.exe`) AND the leading positional subcommand is `relay connect` — the
+     managed supervisor's child (`c2c relay connect --all-brokers`) or a manual
+     `c2c relay connect [--relay-url …]`. `--once` transient syncs are excluded.
+   - Python: the c2c_relay_connector script is exec'd — either argv[0] is the
+     script (shebang) or a `python*` interpreter runs it as an argument.
+     `--once` excluded.
+   Shell wrappers (`sh -c …`), search tools (`pgrep`/`grep`), the doctor's own
+   `c2c doctor` process (subcommand ≠ `relay connect`), and lines where the
+   pattern appears only inside a quoted argument (argv[0] is not c2c/python, or
+   the leading subcommand differs) are all rejected. Pure — feed it raw pgrep
+   lines directly in tests, no process spawning. *)
+let is_real_connector_line line =
+  match split_pgrep_line line with
+  | None | Some (_, []) -> false
+  | Some (_pid, exe :: rest) ->
+      let base = basename_of exe in
+      let has_once = List.mem "--once" rest in
+      if is_shell_exe base || is_search_exe base then false
+      else if base = "c2c" || base = "c2c.exe" then
+        (* leading positional (non-flag) tokens must be `relay connect`. *)
+        let positionals =
+          List.filter (fun t -> String.length t = 0 || t.[0] <> '-') rest
+        in
+        (match positionals with
+         | "relay" :: "connect" :: _ -> not has_once
+         | _ -> false)
+      else if is_connector_script base then not has_once
+      else if is_python_exe base then
+        List.exists (fun t -> is_connector_script (basename_of t)) rest
+        && not has_once
+      else false
+
+(* A machine-global `pgrep` line is attributable to THIS broker only when it is
+   a REAL connector (B218 classifier) AND references this broker root path — the
+   unique per-broker discriminator. A connector for another repo/broker (or an
+   unrelated shell that merely mentions the string) is NOT this broker's
+   connector. This is the fix for the B093 false positive where unrelated
+   machine connectors promoted an isolated broker's capabilities to PASS. *)
 let scope_connector_lines ~broker_root lines =
   if broker_root = "" || broker_root = "<unresolved>" then []
-  else List.filter (fun l -> string_contains ~needle:broker_root l) lines
+  else
+    lines
+    |> List.filter is_real_connector_line
+    |> List.filter (fun l -> string_contains ~needle:broker_root l)
 
 (* B210: machine-wide duplicate-connector detection. Persistent connectors
-   (bare `c2c relay connect`, manual `--all-brokers`, or the managed
-   supervisor's child) beyond the first indicate an uncoordinated multi-connect
-   that storms the relay with 429s. [lines] are the raw machine-global pgrep
-   `PID cmdline` lines (NOT scoped to a broker); `--once` transient syncs are
-   excluded. Returns the distinct persistent-connector pids. Pure. *)
+   (manual `c2c relay connect`, `--all-brokers`, or the managed supervisor's
+   child) beyond the first indicate an uncoordinated multi-connect that storms
+   the relay with 429s. [lines] are the raw machine-global pgrep `PID cmdline`
+   lines (NOT scoped to a broker). B218: classify by actual executable +
+   subcommand ([is_real_connector_line]) so shell wrappers, grep, bug-report
+   shells, and the doctor's own process are never miscounted; `--once`
+   transient syncs are excluded by the classifier. Returns the distinct
+   persistent-connector pids. Pure. *)
 let persistent_connector_pids lines =
   lines
-  |> List.filter (fun l -> not (string_contains ~needle:"--once" l))
+  |> List.filter is_real_connector_line
   |> List.filter_map (fun l ->
-       match String.split_on_char ' ' (String.trim l) with
-       | pid :: _ -> int_of_string_opt pid
-       | [] -> None)
+       match split_pgrep_line l with
+       | Some (pid, _) -> int_of_string_opt pid
+       | None -> None)
   |> List.sort_uniq compare
 
 (* A single [relay.connector_singleton] check surfaced only when >1 persistent
