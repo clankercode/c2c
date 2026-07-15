@@ -243,13 +243,16 @@ let test_supervisor_restarts_child_on_binary_update () =
    config, falling back to $C2C_RELAY_URL when the config stored a null
    (env-driven start), and errors clearly when neither is available — so the
    restart path never crashes with the old uncaught Not_found. *)
-let with_relay_url_env value f =
-  let key = "C2C_RELAY_URL" in
+(* Set [key] to [value] for the duration of [f], restoring the prior value on
+   exit. There is no portable Unix.unsetenv, so an originally-unset var is
+   restored to "" — which instances_dir/restart_params treat as unset. *)
+let with_env key value f =
   let saved = Sys.getenv_opt key in
-  (match value with Some v -> Unix.putenv key v | None -> Unix.putenv key "");
-  Fun.protect
-    ~finally:(fun () -> match saved with Some v -> Unix.putenv key v | None -> Unix.putenv key "")
-    f
+  Unix.putenv key value;
+  Fun.protect ~finally:(fun () -> Unix.putenv key (Option.value saved ~default:"")) f
+
+let with_relay_url_env value f =
+  with_env "C2C_RELAY_URL" (Option.value value ~default:"") f
 
 let test_restart_params_uses_config_relay_url () =
   with_relay_url_env None @@ fun () ->
@@ -286,12 +289,88 @@ let test_restart_params_errors_without_url () =
                        (Str.regexp_string "c2c start relay-connect") msg 0); true
          with Not_found -> false)
 
+(* B212: the connector's supervisor-lifecycle paths (outer.pid, machine lock)
+   must honor $C2C_INSTANCES_DIR with the same resolution `c2c restart` uses to
+   find config.json. Otherwise restart reads config from the override dir but
+   signals the outer.pid under $HOME — killing the real machine supervisor. *)
+let test_instances_dir_honors_env () =
+  with_env "C2C_INSTANCES_DIR" "/tmp/c2c-b212-custom/instances" @@ fun () ->
+  check string "instances_dir honors C2C_INSTANCES_DIR"
+    "/tmp/c2c-b212-custom/instances" (C2c_relay_managed.instances_dir ());
+  check string "machine lock isolated under the override base"
+    "/tmp/c2c-b212-custom/relay-connect"
+    (C2c_relay_managed.machine_lock_resource ());
+  let home_default =
+    Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
+  in
+  check bool "connector pid path is NOT under the real HOME default" false
+    (String.starts_with ~prefix:home_default
+       (C2c_relay_managed.connector_pid_path ~name:"relay-connect"))
+
+let test_instances_dir_defaults_to_home_when_unset () =
+  with_env "HOME" "/tmp/c2c-b212-home" @@ fun () ->
+  with_env "C2C_INSTANCES_DIR" "" @@ fun () ->
+  check string "instances_dir falls back to HOME default (production unchanged)"
+    "/tmp/c2c-b212-home/.local/share/c2c/instances"
+    (C2c_relay_managed.instances_dir ());
+  check string "machine lock unchanged under HOME default"
+    "/tmp/c2c-b212-home/.local/share/c2c/relay-connect"
+    (C2c_relay_managed.machine_lock_resource ())
+
+(* Behavioral proof: restart's stop step signals ONLY the supervisor recorded
+   under $C2C_INSTANCES_DIR (via connector_pid_path) and never touches an
+   outer.pid under the HOME-based path. *)
+let test_restart_stop_targets_only_env_instances_dir () =
+  with_temp_dir @@ fun root ->
+  let home = root // "home" in
+  let custom_inst = root // "custom" // "instances" in
+  with_env "HOME" home @@ fun () ->
+  with_env "C2C_INSTANCES_DIR" custom_inst @@ fun () ->
+  let name = "relay-connect" in
+  let env_pid_path = C2c_relay_managed.connector_pid_path ~name in
+  let home_pid_path =
+    home // ".local" // "share" // "c2c" // "instances" // name // "outer.pid"
+  in
+  mkdir_p (Filename.dirname env_pid_path);
+  mkdir_p (Filename.dirname home_pid_path);
+  let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
+  let spawn () = Unix.create_process "sleep" [| "sleep"; "30" |] devnull devnull devnull in
+  let env_pid = spawn () in
+  let home_pid = spawn () in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.close devnull with _ -> ());
+      List.iter
+        (fun p ->
+          (try Unix.kill p Sys.sigkill with _ -> ());
+          (try ignore (Unix.waitpid [] p) with _ -> ()))
+        [ env_pid; home_pid ])
+    (fun () ->
+      C2c_relay_managed.write_pidfile env_pid_path env_pid;
+      C2c_relay_managed.write_pidfile home_pid_path home_pid;
+      (* stop resolves its pid path exactly as restart does *)
+      C2c_relay_managed.stop_supervisor ~name
+        ~pid_path:(C2c_relay_managed.connector_pid_path ~name) ~timeout_s:1.0;
+      let env_reaped, _ = Unix.waitpid [ Unix.WNOHANG ] env_pid in
+      check bool "env-instances-dir supervisor was stopped" true (env_reaped = env_pid);
+      let home_reaped, _ = Unix.waitpid [ Unix.WNOHANG ] home_pid in
+      check int "HOME-path supervisor untouched (still running)" 0 home_reaped;
+      check bool "connector pid path resolves under the override" true
+        (String.starts_with ~prefix:custom_inst env_pid_path);
+      check bool "connector pid path is NOT under HOME" false
+        (String.starts_with ~prefix:(home // ".local") env_pid_path))
+
 let () =
   run "c2c relay managed" [
     "B212 restart params", [
       test_case "relay url from config" `Quick test_restart_params_uses_config_relay_url;
       test_case "relay url falls back to env" `Quick test_restart_params_falls_back_to_env;
       test_case "clear error when no url" `Quick test_restart_params_errors_without_url;
+    ];
+    "B212 instances-dir isolation", [
+      test_case "instances_dir + lock honor C2C_INSTANCES_DIR" `Quick test_instances_dir_honors_env;
+      test_case "unset falls back to HOME default" `Quick test_instances_dir_defaults_to_home_when_unset;
+      test_case "restart stop targets only the env instances dir" `Slow test_restart_stop_targets_only_env_instances_dir;
     ];
     "machine singleton", [ test_case "resource ignores instance name" `Quick test_machine_lock_is_name_independent ];
     "machine brokers", [ test_case "captures root and enables discovery" `Quick test_managed_argv_captures_root_and_machine_mode ];

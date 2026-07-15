@@ -8,11 +8,25 @@
 
 let ( // ) = Filename.concat
 
+(* B212: honor $C2C_INSTANCES_DIR with the SAME semantics as
+   [C2c_start.instances_dir], so the connector's whole supervisor lifecycle
+   (outer.pid read by [restart], the machine lock, and the config/log/pidfile
+   written by [run_owner]) resolves under the same instances dir that
+   `c2c restart` used to find config.json. Before this, `c2c restart
+   relay-connect` with $C2C_INSTANCES_DIR set read config from the override dir
+   but signalled the outer.pid under $HOME — killing the real machine
+   supervisor. When the var is unset/blank the path is byte-for-byte the
+   historical $HOME default, so production is unchanged. *)
 let instances_dir () =
-  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
+  match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ -> Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c" // "instances")
 
-let machine_state_dir () =
-  Filename.concat (Sys.getenv "HOME") (".local" // "share" // "c2c")
+(* The machine-wide state dir (home of the singleton lock) is the parent of the
+   instances dir, so it tracks $C2C_INSTANCES_DIR in lockstep: an override
+   instances dir gets an isolated lock, while the unset default stays
+   $HOME/.local/share/c2c exactly as before. *)
+let machine_state_dir () = Filename.dirname (instances_dir ())
 
 let machine_lock_resource () = machine_state_dir () // "relay-connect"
 
@@ -305,42 +319,54 @@ let restart_params_of_config (fields : (string * Yojson.Safe.t) list) :
          --relay-url <URL>"
   | Some _ -> Ok (relay_url, interval)
 
+(** The connector supervisor's [outer.pid] path for [name]. Single source for
+    the pid location so [restart] and any test resolve it identically — and,
+    via [instances_dir], honor $C2C_INSTANCES_DIR (B212). *)
+let connector_pid_path ~name = instances_dir () // name // "outer.pid"
+
+(** Stop the current machine-connector supervisor recorded at [pid_path], if
+    any: SIGTERM, wait up to [timeout_s] for it to exit (releasing the machine
+    singleton lock), then SIGKILL. Best-effort; touches only the pid named by
+    [pid_path] — never scans other locations. *)
+let stop_supervisor ~name ~pid_path ~timeout_s : unit =
+  match read_pidfile pid_path with
+  | Some pid when pid_alive pid ->
+      Printf.eprintf
+        "[c2c restart] stopping relay connector supervisor pid %d for '%s'...\n%!"
+        pid name;
+      (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+      let deadline = Unix.gettimeofday () +. timeout_s in
+      let rec wait () =
+        if pid_alive pid && Unix.gettimeofday () < deadline then
+          (Unix.sleepf 0.1; wait ())
+      in
+      wait ();
+      if pid_alive pid then begin
+        Printf.eprintf
+          "[c2c restart] supervisor pid %d did not exit within %.0fs; sending SIGKILL\n%!"
+          pid timeout_s;
+        (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
+      end
+  | _ ->
+      Printf.eprintf
+        "[c2c restart] no live relay connector supervisor for '%s'; starting a fresh one\n%!"
+        name
+
 (** B212: restart the one machine-wide relay connector.  `c2c restart
     relay-connect` previously fell through to the harness-client restart path,
     whose [load_config_opt] raised an uncaught [Not_found] on the connector's
-    minimal supervisor [config.json].  Stop the current supervisor (SIGTERM its
-    outer pid, wait up to [timeout_s], then SIGKILL) so the machine singleton
-    lock is released, then start a fresh supervisor reusing the persisted relay
-    URL + interval.  [start] is [@noreturn]: it daemonizes and exits, so this
-    only returns (with an int status) on the no-URL error path. *)
+    minimal supervisor [config.json].  Stop the current supervisor (so the
+    machine singleton lock is released), then start a fresh supervisor reusing
+    the persisted relay URL + interval.  All paths (outer.pid, lock, and the
+    fresh supervisor's state) resolve under the same instances dir as the
+    caller's config lookup via [instances_dir] (B212 consistency).  [start] is
+    [@noreturn]: it daemonizes and exits, so this only returns (with an int
+    status) on the no-URL error path. *)
 let restart ~name ~fields ~broker_root ~timeout_s : int =
   match restart_params_of_config fields with
   | Error msg ->
       Printf.eprintf "error: cannot restart relay connector '%s': %s\n%!" name msg;
       1
   | Ok (relay_url, interval) ->
-      let inst_dir = instances_dir () // name in
-      let pid_path = inst_dir // "outer.pid" in
-      (match read_pidfile pid_path with
-       | Some pid when pid_alive pid ->
-           Printf.eprintf
-             "[c2c restart] stopping relay connector supervisor pid %d for '%s'...\n%!"
-             pid name;
-           (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
-           let deadline = Unix.gettimeofday () +. timeout_s in
-           let rec wait () =
-             if pid_alive pid && Unix.gettimeofday () < deadline then
-               (Unix.sleepf 0.1; wait ())
-           in
-           wait ();
-           if pid_alive pid then begin
-             Printf.eprintf
-               "[c2c restart] supervisor pid %d did not exit within %.0fs; sending SIGKILL\n%!"
-               pid timeout_s;
-             (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ())
-           end
-       | _ ->
-           Printf.eprintf
-             "[c2c restart] no live relay connector supervisor for '%s'; starting a fresh one\n%!"
-             name);
+      stop_supervisor ~name ~pid_path:(connector_pid_path ~name) ~timeout_s;
       start ~name ~daemon:true ~relay_url ~broker_root ~interval ~extra_args:[] ()
