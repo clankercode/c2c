@@ -1,0 +1,21 @@
+{"type": "file-history-snapshot", "messageId": "x", "snapshot": {}}
+{"type": "mode", "mode": "default", "uuid": "m1"}
+{"type": "user", "message": {"role": "user", "content": "please fix the login bug"}, "uuid": "u1", "timestamp": "2026-07-15T00:00:01Z"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "hmm secret reasoning", "signature": "sig"}]}, "uuid": "a1"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "/x"}}]}, "uuid": "a2"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "file contents"}]}, "toolUseResult": {"stdout": "file contents"}, "uuid": "u2"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "I found the bug in auth.ml \u2014 the token check was inverted."}]}, "uuid": "a3"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": "thanks, also add a test please"}]}, "uuid": "u3"}
+{"type": "user", "isMeta": true, "message": {"role": "user", "content": "Caveat: injected by harness"}, "uuid": "u4"}
+{"type": "user", "message": {"role": "user", "content": "<system-reminder>hook output noise</system-reminder>"}, "uuid": "u5"}
+{"type": "user", "message": {"role": "user", "content": "<c2c event=\"message\" from=\"peer\" to=\"me\">relayed mail body</c2c>"}, "uuid": "u6"}
+{"type": "user", "message": {"role": "user", "content": "<local-command-stdout>ls output</local-command-stdout>"}, "uuid": "u7"}
+{"type": "user", "message": {"role": "user", "content": "[Request interrupted by user]"}, "uuid": "u8"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Running the tests now."}, {"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "dune test"}}]}, "uuid": "a4"}
+{"type": "assistant", "isSidechain": true, "message": {"role": "assistant", "content": [{"type": "text", "text": "subagent chatter"}]}, "uuid": "a5"}
+{"type": "system", "subtype": "stop", "uuid": "s1"}
+{"type": "summary", "summary": "Fix login bug", "leafUuid": "a4"}
+{"type":"user","message":{
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "   "}]}, "uuid": "a6"}
+{"type": "user", "message": {"role": "user", "content": "<command-message>pirfl</command-message>\n<command-name>/pirfl</command-name>"}, "uuid": "u9"}
+{"type":"user","message":{"role":"user","content":"PARTIAL
