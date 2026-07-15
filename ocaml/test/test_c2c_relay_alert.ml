@@ -7,9 +7,11 @@
 module A = C2c_relay_alert
 
 let obs ?(difficulty = None) ?(rate_limited = false)
+        ?(rate_limited_senders = [])
         ?(pow_retry_failed = false) ?(pow_retry_sender = None) ?(dlqs = []) () =
   { A.obs_difficulty = difficulty;
     obs_rate_limited = rate_limited;
+    obs_rate_limited_senders = rate_limited_senders;
     obs_pow_retry_failed = pow_retry_failed;
     obs_pow_retry_sender = pow_retry_sender;
     obs_dlqs = dlqs }
@@ -29,7 +31,7 @@ let test_difficulty_increase_emits_warn () =
   let ems, st = A.step A.initial_state (obs ~difficulty:(Some 4) ()) in
   Alcotest.(check (list string)) "one difficulty_increase" ["difficulty_increase"] (kinds ems);
   Alcotest.(check (list string)) "warn severity" ["WARN"] (sevs ems);
-  Alcotest.(check (list string)) "broadcast" ["broadcast"] (targets ems);
+  Alcotest.(check (list string)) "connector log only" ["connector-log"] (targets ems);
   Alcotest.(check int) "last_difficulty advanced" 4 st.A.last_difficulty;
   Alcotest.(check bool) "body mentions difficulty 4" true
     (contains ~needle:"to 4" (List.hd ems).A.body)
@@ -65,7 +67,8 @@ let test_difficulty_none_is_noop () =
 let test_rate_limit_edge_then_plateau_then_recover () =
   let ems1, st1 = A.step A.initial_state (obs ~rate_limited:true ()) in
   Alcotest.(check (list string)) "first rejection warns" ["rate_limited"] (kinds ems1);
-  Alcotest.(check (list string)) "broadcast" ["broadcast"] (targets ems1);
+  Alcotest.(check (list string)) "connector-wide limit is log-only"
+    ["connector-log"] (targets ems1);
   Alcotest.(check bool) "state marks rate_limited" true st1.A.rate_limited;
   let ems2, st2 = A.step st1 (obs ~rate_limited:true ()) in
   Alcotest.(check (list string)) "sustained does not re-alert" [] (kinds ems2);
@@ -73,6 +76,49 @@ let test_rate_limit_edge_then_plateau_then_recover () =
   let ems3, st3 = A.step st2 (obs ~rate_limited:false ()) in
   Alcotest.(check (list string)) "recovery clears silently" [] (kinds ems3);
   Alcotest.(check bool) "rate_limited cleared" false st3.A.rate_limited
+
+let test_rate_limit_from_outbox_dms_sender () =
+  let ems, _ = A.step A.initial_state
+    (obs ~rate_limited_senders:["alice"] ()) in
+  Alcotest.(check (list string)) "DM only the responsible sender"
+    ["dm:alice"] (targets ems)
+
+let test_connector_rate_limit_does_not_suppress_sender () =
+  let connector_ems, st =
+    A.step A.initial_state (obs ~rate_limited:true ())
+  in
+  Alcotest.(check (list string)) "connector edge is logged"
+    ["connector-log"] (targets connector_ems);
+  let sender_ems, _ = A.step st (obs ~rate_limited_senders:["alice"] ()) in
+  Alcotest.(check (list string)) "later sender gets independent edge"
+    ["dm:alice"] (targets sender_ems)
+
+let test_sender_plateaus_are_deduped_independently () =
+  let _, st = A.step A.initial_state
+    (obs ~rate_limited_senders:["alice"] ())
+  in
+  let ems, _ = A.step st
+    (obs ~rate_limited_senders:["alice"; "bob"] ())
+  in
+  Alcotest.(check (list string)) "alice plateau suppressed; bob emitted"
+    ["dm:bob"] (targets ems)
+
+let test_multiple_senders_in_one_sync_are_preserved () =
+  let ems, _ = A.step A.initial_state
+    (obs ~rate_limited_senders:["alice"; "bob"; "ALICE"] ())
+  in
+  Alcotest.(check (list string)) "each distinct sender gets one emission"
+    ["dm:alice"; "dm:bob"] (targets ems)
+
+let test_sender_rate_limit_recovery_resets_edge () =
+  let _, st1 = A.step A.initial_state
+    (obs ~rate_limited_senders:["alice"] ())
+  in
+  let recovery_ems, st2 = A.step st1 (obs ()) in
+  Alcotest.(check (list string)) "recovery is silent" [] (kinds recovery_ems);
+  let ems, _ = A.step st2 (obs ~rate_limited_senders:["alice"] ()) in
+  Alcotest.(check (list string)) "sender re-alerts after recovery"
+    ["dm:alice"] (targets ems)
 
 (* --- pow_retry_failed edge + routing --- *)
 
@@ -127,7 +173,7 @@ let test_combined_emissions () =
 let () =
   Alcotest.run "c2c_relay_alert" [
     "difficulty", [
-      Alcotest.test_case "increase emits warn (broadcast)" `Quick test_difficulty_increase_emits_warn;
+      Alcotest.test_case "increase emits warn (connector log)" `Quick test_difficulty_increase_emits_warn;
       Alcotest.test_case "plateau does not re-emit" `Quick test_difficulty_plateau_no_reemit;
       Alcotest.test_case "further increase re-emits" `Quick test_difficulty_further_increase_emits;
       Alcotest.test_case "decrease emits info" `Quick test_difficulty_decrease_emits_info;
@@ -135,6 +181,15 @@ let () =
     ];
     "rate-limit", [
       Alcotest.test_case "edge → plateau → recover" `Quick test_rate_limit_edge_then_plateau_then_recover;
+      Alcotest.test_case "outbox rejection DMs sender" `Quick test_rate_limit_from_outbox_dms_sender;
+      Alcotest.test_case "connector then sender emit independently" `Quick
+        test_connector_rate_limit_does_not_suppress_sender;
+      Alcotest.test_case "Alice plateau does not suppress Bob" `Quick
+        test_sender_plateaus_are_deduped_independently;
+      Alcotest.test_case "multiple senders in one sync" `Quick
+        test_multiple_senders_in_one_sync_are_preserved;
+      Alcotest.test_case "sender recovery resets edge" `Quick
+        test_sender_rate_limit_recovery_resets_edge;
     ];
     "pow_retry_failed", [
       Alcotest.test_case "DM sender when known" `Quick test_pow_retry_failed_dm_sender;

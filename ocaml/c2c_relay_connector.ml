@@ -1755,10 +1755,9 @@ let maintain_ws_connections (t : t) : unit =
  * events" — it owns the HTTP exchange and so sees difficulty challenges,
  * rate-limit rejections, PoW-retry failures, and dead-letter decisions. We
  * funnel those observations through the pure C2c_relay_alert module (severity
- * + edge-triggered dedup + routing) and inject the resulting messages from the
- * reserved [c2c-system] alias into local inboxes — the same files this module
- * already writes relay-pulled inbound messages to, so the alerts ride every
- * existing delivery surface for free.
+ * + edge-triggered dedup + routing). Sender-actionable events are injected as
+ * messages from the reserved [c2c-system] alias; connector-wide difficulty
+ * changes stay in the connector log so they cannot wake idle agents.
  * --------------------------------------------------------------------------- *)
 
 let system_alias = "c2c-system"
@@ -1823,13 +1822,16 @@ let system_message_json ~to_alias ~content =
        (Unix.getpid ()) (int_of_float (Unix.gettimeofday ())) (Random.bits ())));
   ]
 
-(* Deliver alert emissions into the relevant local inboxes.
+(* Deliver alert emissions to the connector log or relevant local inboxes.
    [regs] is the (session_id, alias, client_type) list for this broker.
    Returns the count of system messages written. *)
 let deliver_alert_emissions broker_root regs (emissions : C2c_relay_alert.emission list) : int =
   List.fold_left (fun delivered (em : C2c_relay_alert.emission) ->
     let targets =
       match em.C2c_relay_alert.target with
+      | C2c_relay_alert.Connector_log ->
+          Printf.eprintf "[relay-connector] %s\n%!" em.C2c_relay_alert.body;
+          []
       | C2c_relay_alert.Broadcast ->
           List.map (fun (sid, al, _) -> (sid, al)) regs
       | C2c_relay_alert.Dm alias ->
@@ -1857,7 +1859,12 @@ let sync (t : t) : sync_result Lwt.t =
 
   (* B010: accumulate relay-event observations across this sync pass. *)
   let obs_difficulty = ref None in
+  (* [obs_rate_limited] covers any 429 for sync/backoff accounting. Alert
+     routing additionally distinguishes connector-wide operations from every
+     affected outbox sender. *)
   let obs_rate_limited = ref false in
+  let obs_connector_rate_limited = ref false in
+  let obs_rate_senders = ref [] in
   let obs_pow_failed = ref false in
   let obs_pow_sender = ref None in
   let obs_dlqs = ref [] in
@@ -1867,7 +1874,14 @@ let sync (t : t) : sync_result Lwt.t =
   in
   let note_observation ~(sender : string option) json =
     (match response_difficulty json with Some d -> note_difficulty d | None -> ());
-    if response_is_rate_limited json then obs_rate_limited := true;
+    if response_is_rate_limited json then begin
+      obs_rate_limited := true;
+      match sender with
+      | None -> obs_connector_rate_limited := true
+      | Some sender ->
+          if not (C2c_relay_alert.alias_mem sender !obs_rate_senders) then
+            obs_rate_senders := sender :: !obs_rate_senders
+    end;
     if response_is_pow_retry_failed json then begin
       obs_pow_failed := true;
       (* keep the first known sender for routing *)
@@ -2015,13 +2029,14 @@ let sync (t : t) : sync_result Lwt.t =
         Some { err_op = op; err_detail = detail; err_ts = Unix.gettimeofday () }
   in
 
-  (* B010: turn this sync's observations into severity-tagged emissions
-     (edge-triggered against t.alert_state) and inject them as c2c-system
-     messages into the appropriate local inboxes. Pure decision, side-effecting
-     delivery — same inbox-write path used for relay-pulled messages. *)
+  (* B010/B222: turn this sync's observations into severity-tagged emissions
+     (edge-triggered against t.alert_state). Difficulty changes are logged;
+     sender-actionable emissions are injected as c2c-system messages into the
+     appropriate local inboxes. *)
   let observation = {
     C2c_relay_alert.obs_difficulty = !obs_difficulty;
-    obs_rate_limited = !obs_rate_limited;
+    obs_rate_limited = !obs_connector_rate_limited;
+    obs_rate_limited_senders = List.rev !obs_rate_senders;
     obs_pow_retry_failed = !obs_pow_failed;
     obs_pow_retry_sender = !obs_pow_sender;
     obs_dlqs = List.rev !obs_dlqs;
