@@ -24,6 +24,11 @@
  (libraries c2c_mcp alcotest str))
 
 (test
+ (name test_relay_instrumentation)
+ (modules test_relay_instrumentation)
+ (libraries c2c_mcp alcotest))
+
+(test
  (name test_relay_landing_auth_contract)
  (modules test_relay_landing_auth_contract)
  (libraries c2c_mcp alcotest))

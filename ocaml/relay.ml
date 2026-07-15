@@ -3187,6 +3187,67 @@ end
 (* Instantiate rate limiter once at module level — avoids fresh-type-in-functor issue. *)
 module Rate_limiter_inst = Relay_ratelimit.Make()
 
+(* B216: resolve the git hash reported by /health. Pure given its inputs so
+   the precedence (RAILWAY_GIT_COMMIT_SHA truncated to 7 chars > git fallback >
+   "unknown") is unit-testable. Preserves the exact behaviour that
+   handle_health used to inline per-request. *)
+let resolve_git_hash ~railway_sha ~git_fallback =
+  match railway_sha with
+  | Some sha when String.length sha >= 7 -> String.sub sha 0 7
+  | _ ->
+    (match git_fallback () with
+     | Some s -> s
+     | None -> "unknown")
+
+(* B216: memoize the git hash ONCE at boot instead of forking
+   `git rev-parse` on every /health request. The value cannot change over
+   the life of the process (env is fixed; .git is absent in the Docker
+   image), so a single lazy force is safe and preserves the prior value. *)
+let git_hash_memo = lazy (
+  resolve_git_hash
+    ~railway_sha:(Sys.getenv_opt "RAILWAY_GIT_COMMIT_SHA")
+    ~git_fallback:(fun () ->
+      try
+        let ic = Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null" in
+        let line = input_line ic in
+        ignore (Unix.close_process_in ic);
+        Some (String.trim line)
+      with _ -> None))
+
+(* --- B219: relay serve-path instrumentation (diagnostics only) --- *)
+
+(* Heartbeat cadence: one concise line every 60s so a death is preceded by a
+   resource trend (memory / connection count) in the logs. *)
+let heartbeat_interval_s = 60.
+
+(* Default ON; set C2C_RELAY_HEARTBEAT_LOG to 0/false/no/off to silence. *)
+let heartbeat_enabled () =
+  match Sys.getenv_opt "C2C_RELAY_HEARTBEAT_LOG" with
+  | Some ("0" | "false" | "no" | "off" | "FALSE" | "No" | "Off" | "OFF") -> false
+  | _ -> true
+
+(* Coarse resident-set size in KiB from /proc/self/statm (field 2 = resident
+   pages). Linux-only; returns None off Linux or on any read error. *)
+let heartbeat_rss_kb () =
+  try
+    let ic = open_in "/proc/self/statm" in
+    let line = input_line ic in
+    close_in ic;
+    match String.split_on_char ' ' line with
+    | _size :: resident :: _ ->
+      (match int_of_string_opt resident with
+       | Some pages -> Some (pages * 4) (* coarse: assume 4 KiB pages *)
+       | None -> None)
+    | _ -> None
+  with _ -> None
+
+(* Pure heartbeat-line formatter (B219) so its shape is unit-testable. *)
+let format_heartbeat_line ~uptime_s ~peer_count ~heap_words ~rss_kb =
+  let rss_str = match rss_kb with Some kb -> string_of_int kb | None -> "?" in
+  Printf.sprintf
+    "[relay] heartbeat uptime=%.0fs peers=%d gc_heap_words=%d gc_heap_kb=%d rss_kb=%s"
+    uptime_s peer_count heap_words (heap_words * (Sys.word_size / 8) / 1024) rss_str
+
 module Relay_server(R : RELAY) : sig
   val make_callback :
     R.t ->
@@ -3303,20 +3364,10 @@ end = struct
 
 
   let handle_health ~auth_mode () =
-    let git_hash =
-      (* Railway injects RAILWAY_GIT_COMMIT_SHA at runtime; prefer it over a
-         git subprocess (which fails in Docker where .git is absent). *)
-      match Sys.getenv_opt "RAILWAY_GIT_COMMIT_SHA" with
-      | Some sha when String.length sha >= 7 ->
-        String.sub sha 0 7
-      | _ ->
-        (try
-          let ic = Unix.open_process_in "git rev-parse --short HEAD 2>/dev/null" in
-          let line = input_line ic in
-          ignore (Unix.close_process_in ic);
-          String.trim line
-        with _ -> "unknown")
-    in
+    (* B216: read the once-memoized git hash instead of forking
+       `git rev-parse` per request. Precedence unchanged: RAILWAY_GIT_COMMIT_SHA
+       (7-char prefix) > `git rev-parse --short HEAD` > "unknown". *)
+    let git_hash = Lazy.force git_hash_memo in
     let pow_enabled = relay_pow_enabled () in
     let pow_header =
       issue_pow_header ~route:"health" ~actor_id:"" ~difficulty:0
@@ -5793,9 +5844,44 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     (try R.record_stats_snapshot relay ~now:(Unix.gettimeofday ()) with _ -> ());
     stats_snapshot_loop relay
 
+  (* B219: periodic heartbeat so the logs carry a resource trend (memory /
+     lease count / uptime) before a silent death. Best-effort — a failure to
+     read counts must never kill the loop. Mirrors the gc/stats loop style. *)
+  let rec heartbeat_loop relay ~start_time =
+    Lwt_unix.sleep heartbeat_interval_s >>= fun () ->
+    (try
+       let uptime_s = Unix.gettimeofday () -. start_time in
+       let peer_count =
+         try List.length (R.list_peers relay ~include_dead:true) with _ -> -1
+       in
+       let gc = Gc.quick_stat () in
+       let rss_kb = heartbeat_rss_kb () in
+       Printf.eprintf "%s\n%!"
+         (format_heartbeat_line ~uptime_s ~peer_count
+            ~heap_words:gc.Gc.heap_words ~rss_kb)
+     with _ -> ());
+    heartbeat_loop relay ~start_time
+
   (* --- Server startup --- *)
 
   let start_server ~host ~port ~relay ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) ?broker_root () =
+    (* B219: make exceptions carry backtraces so the top-level serve guard can
+       log them (relay deaths were previously silent — no exn, no backtrace). *)
+    Printexc.record_backtrace true;
+    (* B219: leave a log trace when the platform kills us. OCaml runs
+       Sys.set_signal handlers at safe points (not raw async context), so a
+       log line + exit here is safe and non-blocking. SIGKILL is uncatchable
+       and deliberately not trapped. *)
+    let install_signal_log signum ~name ~code =
+      try
+        Sys.set_signal signum (Sys.Signal_handle (fun _n ->
+          Printf.eprintf "[relay] received signal %s, shutting down\n%!" name;
+          exit code))
+      with _ -> ()
+    in
+    install_signal_log Sys.sigterm ~name:"SIGTERM" ~code:143;
+    install_signal_log Sys.sigint ~name:"SIGINT" ~code:130;
+    let start_time = Unix.gettimeofday () in
     List.iter (fun (alias, identity_pk_b64) ->
       R.set_allowed_identity relay ~alias ~identity_pk_b64)
       allowlist;
@@ -5842,6 +5928,9 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     let _ = gc_thread in
     (try R.record_stats_snapshot relay ~now:(Unix.gettimeofday ()) with _ -> ());
     Lwt.async (fun () -> stats_snapshot_loop relay);
+    (* B219: heartbeat loop (default ON; C2C_RELAY_HEARTBEAT_LOG=0 silences). *)
+    if heartbeat_enabled () then
+      Lwt.async (fun () -> heartbeat_loop relay ~start_time);
     let scheme = match tls with Some _ -> "https" | None -> "http" in
     let verbose_str = if verbose then " (verbose)" else "" in
     Printf.printf "c2c relay serving on %s://%s:%d%s\n%!" scheme host port verbose_str;
@@ -5870,16 +5959,30 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     else
       Printf.printf "gc: disabled\n%!";
     let spec = Cohttp_lwt_unix.Server.make_response_action ~callback () in
-    match tls with
-    | None ->
-        Cohttp_lwt_unix.Server.create ~mode:(`TCP (`Port port)) spec
-    | Some (`Cert_key (cert_path, key_path)) ->
-        Mirage_crypto_rng_unix.use_default ();
-        Cohttp_lwt_unix.Server.create
-          ~mode:(`TLS (`Crt_file_path cert_path,
-                       `Key_file_path key_path,
-                       `No_password,
-                       `Port port))
-          spec
+    let server_promise =
+      match tls with
+      | None ->
+          Cohttp_lwt_unix.Server.create ~mode:(`TCP (`Port port)) spec
+      | Some (`Cert_key (cert_path, key_path)) ->
+          Mirage_crypto_rng_unix.use_default ();
+          Cohttp_lwt_unix.Server.create
+            ~mode:(`TLS (`Crt_file_path cert_path,
+                         `Key_file_path key_path,
+                         `No_password,
+                         `Port port))
+            spec
+    in
+    (* B219: top-level serve-loop guard. Previously an uncaught exception out
+       of the serve loop terminated the process silently. Log the exception +
+       backtrace to stderr, then re-raise so exit behaviour is unchanged (this
+       does NOT swallow or continue past the failure). *)
+    Lwt.catch
+      (fun () -> server_promise)
+      (fun exn ->
+         let bt = Printexc.get_backtrace () in
+         Printf.eprintf
+           "[relay] FATAL: serve loop terminated by uncaught exception: %s\n%s%!"
+           (Printexc.to_string exn) bt;
+         Lwt.fail exn)
 
 end
