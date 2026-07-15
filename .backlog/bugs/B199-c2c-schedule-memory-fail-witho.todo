@@ -1,0 +1,32 @@
+---
+complexity: medium
+created_at: "2026-07-15T04:26:19Z"
+depends_on: []
+estimate_hours: 1
+id: B199
+priority: high
+status: pending
+tags: []
+title: c2c schedule/memory fail without C2C_MCP_AUTO_REGISTER_ALIAS
+updated_at: "2026-07-15T04:26:19Z"
+---
+
+# c2c schedule/memory fail without C2C_MCP_AUTO_REGISTER_ALIAS
+
+## Steps to Reproduce
+
+1. Clear `C2C_MCP_AUTO_REGISTER_ALIAS` environment variable:
+   `unset C2C_MCP_AUTO_REGISTER_ALIAS`
+2. Run a `c2c schedule` or `c2c memory` command, e.g.:
+   `c2c schedule list`
+   `c2c memory list`
+
+## Expected Behavior
+
+The commands should resolve the alias using `resolve_alias` from the session ID / registry / statefile (e.g. `agy-parsec-sorrel-n67a`) just like `c2c whoami` does, rather than erroring immediately.
+
+## Actual Behavior
+
+The command fails with:
+`error: set C2C_MCP_AUTO_REGISTER_ALIAS to identify the current agent`
+

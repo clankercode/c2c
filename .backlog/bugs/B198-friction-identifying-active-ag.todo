@@ -15,12 +15,14 @@ updated_at: "2026-07-15T04:15:12Z"
 
 ## Steps to Reproduce
 
-1. TODO: Add steps
+1. Start multiple `agy` (Antigravity) client instances on the same machine.
+2. Run `c2c list` or `c2c list --alive`.
+3. Try to determine which active `agy` session corresponds to which process/window/workspace ID, and check the delivery watch status or configured Language Server addresses without inspecting internal process state.
 
 ## Expected Behavior
 
-TODO: Describe expected behavior
+A user/agent should be able to run a query (e.g. `c2c status` or `c2c dev instances`) that shows the details of all active `agy` sessions (such as `ANTIGRAVITY_LS_ADDRESS`, `ANTIGRAVITY_CONVERSATION_ID`, whether `c2c deliver watch` is running for that session, etc.) without having to resort to checking `/proc/<pid>/environ` or searching raw process trees.
 
 ## Actual Behavior
 
-TODO: Describe actual behavior
+Only Codex is listed in `c2c dev instances`, and no `agy` session details (like LS address or active deliver-watch daemon status) are directly queryable or visible. Identifying active sessions requires manually dumping process environments or listing `.gemini/antigravity-cli/brain/` session IDs.
