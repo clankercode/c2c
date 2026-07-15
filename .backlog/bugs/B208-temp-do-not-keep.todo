@@ -1,14 +1,17 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T09:04:51Z"
 depends_on: []
 estimate_hours: 1
 id: B208
 priority: high
-status: pending
+reason: Accidental temporary intake created while validating the bug command
+started_at: null
+status: cancelled
 tags: []
 title: TEMP do not keep
-updated_at: "2026-07-15T09:04:51Z"
+updated_at: "2026-07-15T09:05:38Z"
 ---
 
 TEMP do not keep
