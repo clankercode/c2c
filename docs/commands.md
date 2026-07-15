@@ -49,6 +49,8 @@ To deliberately rename this session everywhere, run: c2c rename <new>
 
 Same-alias re-register and omitted-alias reuse remain allowed. To actually change your name, use the deliberate [`rename`](#rename) tool (or `c2c rename`) — never `register`.
 
+**One alias across repos (B188/B191)** — when the alias is not given explicitly, every registration surface first looks for an existing registration of the same `session_id` on any other known per-repo broker (`~/.c2c/repos/*/broker`) and reuses that alias instead of minting a new one. The whole scan→register sequence runs under a machine-global per-session lock (`~/.c2c/locks/`), so even two *concurrent* `c2c` invocations of one session from two different git roots converge deterministically on a single alias — the session ends up registered in both repos' brokers under the same name. If the sticky alias is held live by a *different* session in the target broker, a fresh alias is minted there instead (hijack guard).
+
 **Errors**
 
 If `alias` is already held by a **different alive session**, the call returns `is_error: true` with an actionable message:

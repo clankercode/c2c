@@ -112,28 +112,24 @@ let maybe_auto_register_sender broker ~from_override =
                 failwith "fixture: send auto-registration failure";
               let client = infer_send_auto_register_client ~session_id in
               let broker_root = C2c_mcp.Broker.root broker in
-              (* B188: before minting a fresh alias, reuse sticky alias for
-                 this session_id from any other known broker fingerprint
-                 (path→remote.origin.url switch, etc.). *)
+              (* B188 sticky reuse + B191 per-session registration lock:
+                 resolve alias + register atomically so a concurrent
+                 registration of this session in another repo cannot race
+                 this one into a second alias. *)
               let alias, _from_auto_gen, prior_hit =
-                C2c_mcp.resolve_auto_register_alias ~session_id ~broker_root
+                C2c_mcp.locked_sticky_auto_register ~session_id ~broker_root
                   ~mint:(fun () ->
                     (C2c_setup.default_alias_for_client client, true))
+                  ~register:(fun ~alias ~from_auto_gen:_ ->
+                    let pid = resolve_registration_pid ~session_id () in
+                    let pid_start_time =
+                      C2c_mcp.Broker.capture_pid_start_time pid
+                    in
+                    C2c_mcp.Broker.register broker ~session_id ~alias ~pid
+                      ~pid_start_time ~client_type:(Some client)
+                      ~from_auto_gen:true ())
                   ()
               in
-              (match prior_hit with
-               | Some hit ->
-                   ignore
-                     (C2c_mcp.migrate_alias_ed25519_keys
-                        ~from_root:hit.broker_root ~to_root:broker_root ~alias)
-               | None -> ());
-              let pid = resolve_registration_pid ~session_id () in
-              let pid_start_time =
-                C2c_mcp.Broker.capture_pid_start_time pid
-              in
-              C2c_mcp.Broker.register broker ~session_id ~alias ~pid
-                ~pid_start_time ~client_type:(Some client)
-                ~from_auto_gen:true ();
               (match prior_hit with
                | Some hit ->
                    Printf.eprintf

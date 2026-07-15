@@ -930,6 +930,47 @@ val resolve_auto_register_alias :
     foreign session; otherwise calls [mint] which returns
     [(alias, from_auto_gen)]. *)
 
+(** {1 B191: global per-session registration lock}
+
+    Serializes the [cross-broker sticky scan -> alias choice -> register]
+    critical section per session id, machine-wide, so two concurrent [c2c]
+    registrations of the same session under different broker roots cannot
+    both scan-empty and mint distinct aliases. Lock file:
+    [$HOME/.c2c/locks/session-reg-<sha256(sid)[0:16]>.lock] (follows the
+    [C2C_STATE_HOME] chain). Best-effort: acquisition failure degrades to
+    unlocked registration. NON-REENTRANT — [Unix.lockf] locks do not
+    conflict within a process and an inner unlock drops the outer lock;
+    never nest locked sections for one session id in one process. *)
+
+val session_registration_lock_path : session_id:string -> string
+(** Deterministic lock-file path for [session_id] (hashed, filename-safe). *)
+
+val acquire_session_registration_lock :
+  session_id:string -> unit -> Unix.file_descr option
+(** Blocking acquire; [None] when the lock cannot be taken (proceed
+    unlocked). The fd is [O_CLOEXEC]. Released by
+    [release_session_registration_lock] or process exit. *)
+
+val release_session_registration_lock : Unix.file_descr option -> unit
+
+val with_session_registration_lock : session_id:string -> (unit -> 'a) -> 'a
+(** Closure form of the acquire/release pair. [Stdlib.exit] inside the
+    closure skips the finalizer; the kernel then releases the lock at
+    process exit. *)
+
+val locked_sticky_auto_register :
+  session_id:string ->
+  broker_root:string ->
+  mint:(unit -> string * bool) ->
+  register:(alias:string -> from_auto_gen:bool -> unit) ->
+  unit ->
+  string * bool * prior_session_hit option
+(** [resolve_auto_register_alias] -> Ed25519 key migration from the prior
+    broker -> the caller's [register], executed atomically under the
+    per-session registration lock. [register] performs the actual
+    [Broker.register] with surface-specific metadata and may [exit] on
+    failure. Returns [(alias, from_auto_gen, prior_hit)]. *)
+
 val auto_register_impl :
   broker_root:string -> ?session_id_override:string -> unit -> unit
 (** MCP/server auto-register implementation (also used by tests). Adopts

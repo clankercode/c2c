@@ -269,6 +269,20 @@ Key behaviours:
   `allowed_signers`, instance config, schedules/memory — with rollback on
   partial failure. The `peer_renamed` room-history event is emitted by
   this rename flow so room members see the identity change.
+- **One alias across repos (B188/B191)** — brokers are per-repo, but a
+  session's alias is global: auto-register surfaces (`c2c init`,
+  `c2c register`, MCP startup auto-register, the SessionStart hooks,
+  `c2c send` auto-register) scan the other known broker roots under
+  `~/.c2c/repos/*/broker` for the same `session_id` and reuse its sticky
+  alias before minting (B188), and the whole scan→register sequence is
+  serialized by a machine-global per-session lock at
+  `~/.c2c/locks/session-reg-<sha256(sid)[0:16]>.lock` (B191), so two
+  concurrent `c2c` invocations of one session from two different git
+  roots cannot mint two aliases. A session working in several repos is
+  registered in each repo's broker under the same name; if that alias is
+  live under a different session in the target broker, a fresh alias is
+  minted there instead (hijack guard). Ed25519 key material migrates
+  (copy, never overwrite) alongside the adopted alias.
 - **Auto-join** — `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` (written by
   `c2c install <client>`) makes every agent auto-join the social room
   on startup without calling `join_room` manually.
