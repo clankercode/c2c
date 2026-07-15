@@ -120,7 +120,12 @@ let classify_claude_line (line : string) : (role * string) option =
   match Yojson.Safe.from_string line with
   | exception _ -> None
   | j ->
-      if bool_field "isMeta" j || bool_field "isSidechain" j then None
+      (* isCompactSummary: the post-compaction context-restore blob arrives
+         as a huge plain-string user turn — machinery, not typed input. *)
+      if
+        bool_field "isMeta" j || bool_field "isSidechain" j
+        || bool_field "isCompactSummary" j
+      then None
       else
         let content = member "content" (member "message" j) in
         (match member "type" j with
@@ -412,6 +417,170 @@ let detect_format ~(is_dir : bool) ~(head : string list) (path : string) :
   | Some f -> Some f
   | None -> List.find_map sniff_format_from_line head
 
+(* ------------------------------------------------------------------ *)
+(* Event timestamps + time-range filtering                             *)
+(* ------------------------------------------------------------------ *)
+
+(* Days since 1970-01-01 for a proleptic-Gregorian civil date (Howard
+   Hinnant's civil_from_days inverse). *)
+let days_from_civil ~(y : int) ~(m : int) ~(d : int) : int =
+  let y = if m <= 2 then y - 1 else y in
+  let era = (if y >= 0 then y else y - 399) / 400 in
+  let yoe = y - (era * 400) in
+  let mp = (m + 9) mod 12 in
+  let doy = (((153 * mp) + 2) / 5) + d - 1 in
+  let doe = (yoe * 365) + (yoe / 4) - (yoe / 100) + doy in
+  (era * 146097) + doe - 719468
+
+(* Parse a user- or transcript-supplied time into UTC epoch seconds:
+   "2026-07-15", "2026-07-15T13:50", "2026-07-15 13:50:07",
+   "2026-07-15T13:50:07.123Z", "2026-07-15T13:50:07+10:00", or bare epoch
+   seconds. No timezone suffix means UTC. Fractional seconds are ignored. *)
+let parse_time_spec (s : string) : float option =
+  let s = String.trim s in
+  let is_digit c = '0' <= c && c <= '9' in
+  if s <> "" && String.for_all is_digit s then float_of_string_opt s
+  else
+    let zone_offset (z : string) : int option =
+      if z = "" || z = "Z" || z = "z" then Some 0
+      else if String.length z = 6 && (z.[0] = '+' || z.[0] = '-') then (
+        try
+          Scanf.sscanf (String.sub z 1 5) "%2d:%2d%!" (fun h m ->
+              let off = (h * 3600) + (m * 60) in
+              Some (if z.[0] = '-' then -off else off))
+        with _ -> None)
+      else None
+    in
+    let mk y mo d h mi sec rest =
+      (* [rest] is "[.frac][Z|±HH:MM]" *)
+      let zone =
+        if String.length rest > 0 && rest.[0] = '.' then begin
+          let i = ref 1 in
+          while !i < String.length rest && is_digit rest.[!i] do incr i done;
+          String.sub rest !i (String.length rest - !i)
+        end
+        else rest
+      in
+      match zone_offset zone with
+      | None -> None
+      | Some off ->
+          if
+            mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59
+            || sec > 60
+          then None
+          else
+            Some
+              (float_of_int
+                 ((days_from_civil ~y ~m:mo ~d * 86400)
+                 + (h * 3600) + (mi * 60) + sec - off))
+    in
+    let attempts =
+      [ (fun () ->
+          Scanf.sscanf s "%4d-%2d-%2dT%2d:%2d:%2d%s" (fun y mo d h mi sec r ->
+              mk y mo d h mi sec r))
+      ; (fun () ->
+          Scanf.sscanf s "%4d-%2d-%2d %2d:%2d:%2d%s" (fun y mo d h mi sec r ->
+              mk y mo d h mi sec r))
+      ; (fun () ->
+          Scanf.sscanf s "%4d-%2d-%2dT%2d:%2d%s" (fun y mo d h mi r ->
+              mk y mo d h mi 0 r))
+      ; (fun () ->
+          Scanf.sscanf s "%4d-%2d-%2d %2d:%2d%s" (fun y mo d h mi r ->
+              mk y mo d h mi 0 r))
+      ; (fun () ->
+          Scanf.sscanf s "%4d-%2d-%2d%!" (fun y mo d -> mk y mo d 0 0 0 ""))
+      ]
+    in
+    List.fold_left
+      (fun acc attempt ->
+        match acc with Some _ -> acc | None -> ( try attempt () with _ -> None))
+      None attempts
+
+(* claude / codex / agy lines all carry a top-level ISO-8601 "timestamp". *)
+let line_time_of_timestamp_field (line : string) : float option =
+  match Yojson.Safe.from_string line with
+  | exception _ -> None
+  | j -> (
+      match member "timestamp" j with
+      | `String ts -> parse_time_spec ts
+      | _ -> None)
+
+(* Formats with per-event timestamps we can range-filter on. kimi
+   (context.jsonl) and grok (chat_history.jsonl) carry none. opencode is
+   handled by the directory source (message "time.created"). *)
+let line_time_for_format (fmt : string) : (string -> float option) option =
+  match String.lowercase_ascii (String.trim fmt) with
+  | "claude" | "codex" | "agy" | "gemini" -> Some line_time_of_timestamp_field
+  | _ -> None
+
+let in_time_range ~(since : float option) ~(until_ : float option)
+    (t : float option) : bool =
+  match t with
+  | None -> true (* no reliable event time: fail open *)
+  | Some t -> (
+      (match since with Some s -> t >= s | None -> true)
+      && match until_ with Some u -> t <= u | None -> true)
+
+(* ------------------------------------------------------------------ *)
+(* Compaction boundaries                                               *)
+(* ------------------------------------------------------------------ *)
+
+(* Long-lived sessions compact their context; replaying the whole
+   transcript would resend enormous pre-compaction history. Markers
+   (observed live, 2026-07):
+   - claude: {"type":"system","subtype":"compact_boundary",
+     "compactMetadata":{...}} (the follow-up isCompactSummary user line is
+     dropped by the classifier).
+   - codex: {"type":"compacted","payload":{...}} rollout items, and
+     {"type":"event_msg","payload":{"type":"context_compacted"}} events.
+   kimi / grok / agy have no known in-transcript marker; opencode's dir
+   source has no transcript to replay-trim. *)
+
+let is_claude_compaction (line : string) : bool =
+  match Yojson.Safe.from_string line with
+  | exception _ -> false
+  | j -> member "subtype" j = `String "compact_boundary"
+
+let is_codex_compaction (line : string) : bool =
+  match Yojson.Safe.from_string line with
+  | exception _ -> false
+  | j -> (
+      match member "type" j with
+      | `String "compacted" -> true
+      | `String "event_msg" ->
+          member "type" (member "payload" j) = `String "context_compacted"
+      | _ -> false)
+
+let compaction_detector_for_format (fmt : string) : (string -> bool) option =
+  match String.lowercase_ascii (String.trim fmt) with
+  | "claude" -> Some is_claude_compaction
+  | "codex" -> Some is_codex_compaction
+  | _ -> None
+
+(* Byte offset just past the last compaction marker among the complete
+   lines currently in [path] (0 when none): replaying from this offset
+   skips everything the session itself has already folded away. *)
+let replay_start_offset ~(is_compaction : string -> bool) (path : string) :
+    int =
+  match open_in_bin path with
+  | exception _ -> 0
+  | ic ->
+      Fun.protect
+        ~finally:(fun () -> close_in_noerr ic)
+        (fun () ->
+          let len = in_channel_length ic in
+          let content = really_input_string ic len in
+          let best = ref 0 in
+          let start = ref 0 in
+          for i = 0 to len - 1 do
+            if content.[i] = '\n' then begin
+              if is_compaction (String.sub content !start (i - !start)) then
+                best := i + 1;
+              start := i + 1
+            end
+          done;
+          !best)
+
 (* First (up to) [limit] newline-complete lines of [path], for sniffing. *)
 let read_head_lines ?(limit = 50) (path : string) : string list =
   match open_in_bin path with
@@ -552,11 +721,19 @@ let step ~(path : string) ~(classify : string -> (role * string) option)
   (st, stats)
 
 (* Follow [path] and forward filtered events until the process is killed
-   (or, with [once], drain what is currently readable and return). *)
-let run ~(path : string) ~(classify : string -> (role * string) option)
-    ~(max_bytes : int) ~(interval : float) ~(from_start : bool)
-    ~(once : bool) ~(send : string -> (unit, string) result) : run_stats =
+   (or, with [once], drain what is currently readable and return).
+   [start_offset] (only meaningful when replaying) begins the replay at a
+   byte offset instead of 0 — see [replay_start_offset]. *)
+let run ?(start_offset : int option) ~(path : string)
+    ~(classify : string -> (role * string) option) ~(max_bytes : int)
+    ~(interval : float) ~(from_start : bool) ~(once : bool)
+    ~(send : string -> (unit, string) result) () : run_stats =
   let st = initial_tail_state ~from_start:(from_start || once) path in
+  let st =
+    match start_offset with
+    | Some o when from_start || once -> { st with offset = o }
+    | _ -> st
+  in
   let stats = { forwarded = 0; send_failures = 0 } in
   if once then
     let _st, stats = step ~path ~classify ~max_bytes ~send st stats in
@@ -644,8 +821,17 @@ let opencode_message_text ~(part_root : string) ~(msg_id : string)
                    | _ -> None))
       |> String.concat "\n\n"
 
+(* opencode message times are millisecond epochs under "time". *)
+let opencode_message_time (j : Yojson.Safe.t) : float option =
+  match member "created" (member "time" j) with
+  | `Int ms -> Some (float_of_int ms /. 1000.)
+  | `Float ms -> Some (ms /. 1000.)
+  | `Intlit s -> Option.map (fun ms -> ms /. 1000.) (float_of_string_opt s)
+  | _ -> None
+
 (* One poll pass over the message directory. Mutates [st.done_ids]. *)
-let opencode_step ~(message_dir : string) ~(max_bytes : int)
+let opencode_step ?(since : float option) ?(until_ : float option)
+    ~(message_dir : string) ~(max_bytes : int)
     ~(send : string -> (unit, string) result) (st : opencode_state)
     (stats : run_stats) : run_stats =
   let part_root = opencode_part_root ~message_dir in
@@ -660,8 +846,11 @@ let opencode_step ~(message_dir : string) ~(max_bytes : int)
             let forward role =
               Hashtbl.replace st.done_ids msg_id ();
               let text =
-                opencode_message_text ~part_root ~msg_id
-                  ~for_user:(role = User)
+                if in_time_range ~since ~until_ (opencode_message_time j)
+                then
+                  opencode_message_text ~part_root ~msg_id
+                    ~for_user:(role = User)
+                else ""
               in
               if text = "" then stats
               else
@@ -697,17 +886,20 @@ let opencode_initial_state ?(from_start = false) (message_dir : string) :
       (opencode_message_files message_dir);
   st
 
-let run_opencode ~(message_dir : string) ~(max_bytes : int)
-    ~(interval : float) ~(from_start : bool) ~(once : bool)
-    ~(send : string -> (unit, string) result) : run_stats =
+let run_opencode ?(since : float option) ?(until_ : float option)
+    ~(message_dir : string) ~(max_bytes : int) ~(interval : float)
+    ~(from_start : bool) ~(once : bool)
+    ~(send : string -> (unit, string) result) () : run_stats =
   let st =
     opencode_initial_state ~from_start:(from_start || once) message_dir
   in
   let stats = { forwarded = 0; send_failures = 0 } in
-  if once then opencode_step ~message_dir ~max_bytes ~send st stats
+  if once then opencode_step ?since ?until_ ~message_dir ~max_bytes ~send st stats
   else begin
     let rec loop stats =
-      let stats = opencode_step ~message_dir ~max_bytes ~send st stats in
+      let stats =
+        opencode_step ?since ?until_ ~message_dir ~max_bytes ~send st stats
+      in
       ignore (Unix.select [] [] [] interval);
       loop stats
     in

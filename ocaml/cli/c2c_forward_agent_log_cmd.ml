@@ -83,6 +83,42 @@ let forward_agent_log_term =
              events (attaching to a long-running session does not flood the \
              recipient with its whole history).")
   in
+  let since_arg =
+    Cmdliner.Arg.(
+      value
+      & opt (some string) None
+      & info [ "since" ] ~docv:"TIME"
+          ~doc:
+            "Only forward events at or after TIME — ISO-8601 UTC \
+             ($(b,2026-07-15), $(b,2026-07-15T13:50:00Z), \
+             $(b,2026-07-15T13:50:00+10:00)) or epoch seconds. Implies \
+             $(b,--from-start). Needs per-event timestamps: claude, codex, \
+             agy, opencode (kimi and grok transcripts carry none).")
+  in
+  let until_arg =
+    Cmdliner.Arg.(
+      value
+      & opt (some string) None
+      & info [ "until" ] ~docv:"TIME"
+          ~doc:
+            "Only forward events at or before TIME (same syntax and format \
+             support as $(b,--since)). Implies $(b,--from-start); usually \
+             combined with $(b,--once) to send a bounded slice of history \
+             and exit.")
+  in
+  let full_history_flag =
+    Cmdliner.Arg.(
+      value
+      & flag
+      & info [ "full-history" ]
+          ~doc:
+            "When replaying ($(b,--from-start) / $(b,--once)), include \
+             history from before the transcript's most recent compaction \
+             event. Default: the replay starts just after the last \
+             compaction boundary (claude, codex), so a long-lived session \
+             does not flood the recipient with context the session itself \
+             has already folded away.")
+  in
   let once_flag =
     Cmdliner.Arg.(
       value
@@ -110,6 +146,9 @@ let forward_agent_log_term =
   and+ interval = interval_arg
   and+ max_bytes = max_bytes_arg
   and+ from_start = from_start_flag
+  and+ since_raw = since_arg
+  and+ until_raw = until_arg
+  and+ full_history = full_history_flag
   and+ once = once_flag
   and+ dry_run = dry_run_flag in
   if max_bytes < 64 then begin
@@ -171,6 +210,68 @@ let forward_agent_log_term =
           exit 2
     end
   in
+  let parse_time_flag name v =
+    match v with
+    | None -> None
+    | Some raw -> (
+        match F.parse_time_spec raw with
+        | Some t -> Some t
+        | None ->
+            Printf.eprintf
+              "error: cannot parse --%s %S (expected ISO-8601 UTC like \
+               2026-07-15T13:50:00Z, or epoch seconds)\n%!"
+              name raw;
+            exit 2)
+  in
+  let since = parse_time_flag "since" since_raw in
+  let until_ = parse_time_flag "until" until_raw in
+  if
+    (since <> None || until_ <> None)
+    && format <> "opencode"
+    && F.line_time_for_format format = None
+  then begin
+    Printf.eprintf
+      "error: --since/--until need per-event timestamps, and '%s' \
+       transcripts carry none (supported: claude, codex, agy, opencode)\n%!"
+      format;
+    exit 2
+  end;
+  (* A time range is a replay request: attach-at-EOF would filter nothing. *)
+  let from_start = from_start || since <> None || until_ <> None in
+  let classify =
+    match classify with
+    | None -> None
+    | Some c -> (
+        match (since, until_) with
+        | None, None -> Some c
+        | _ ->
+            let line_time =
+              match F.line_time_for_format format with
+              | Some f -> f
+              | None -> fun _ -> None (* unreachable: validated above *)
+            in
+            Some
+              (fun line ->
+                if F.in_time_range ~since ~until_ (line_time line) then
+                  c line
+                else None))
+  in
+  (* Compaction-aware replay: the session already folded pre-compaction
+     history away — resending it floods the observer. *)
+  let start_offset =
+    if (from_start || once) && not full_history then
+      match F.compaction_detector_for_format format with
+      | Some is_compaction ->
+          let o = F.replay_start_offset ~is_compaction file in
+          if o > 0 then
+            Printf.eprintf
+              "[c2c-forward-agent-log] replaying from the transcript's last \
+               compaction boundary; pass --full-history to include earlier \
+               history\n%!";
+          Some o
+      | None -> None
+    else None
+  in
   let dry_run = dry_run || F.send_fixture_mode () in
   let send =
     if dry_run then fun body ->
@@ -189,19 +290,30 @@ let forward_agent_log_term =
         F.deliver_via_broker ~broker ~from_alias ~to_alias body
     end
   in
-  if not once then
+  if not once then begin
     Printf.eprintf
       "[c2c-forward-agent-log] following %s (format=%s) -> %s; user input \
        and agent text only\n%!"
       file format to_alias;
+    (* An agent that runs the follow mode in the foreground blocks its own
+       turn until the process is killed. Warn (stderr, non-fatal) so it can
+       re-launch backgrounded; --once stays warning-free. *)
+    if C2c_commands.is_agent_session () then
+      Printf.eprintf
+        "[c2c-forward-agent-log] warning: agent session detected — this \
+         command streams until killed and will BLOCK your current turn if \
+         run in the foreground. Re-run it as a background task (e.g. your \
+         harness's run-in-background option, or append '&'), or use --once \
+         for a one-shot drain of the current transcript.\n%!"
+  end;
   let stats =
     match classify with
     | Some classify ->
-        F.run ~path:file ~classify ~max_bytes ~interval ~from_start ~once
-          ~send
+        F.run ?start_offset ~path:file ~classify ~max_bytes ~interval
+          ~from_start ~once ~send ()
     | None ->
-        F.run_opencode ~message_dir:file ~max_bytes ~interval ~from_start
-          ~once ~send
+        F.run_opencode ?since ?until_ ~message_dir:file ~max_bytes ~interval
+          ~from_start ~once ~send ()
   in
   if once then begin
     Printf.printf
@@ -239,6 +351,15 @@ let forward_agent_log =
          polled: user messages forward on appearance, assistant messages \
          once their turn completes. --format defaults to $(b,auto), \
          resolved from the path or the first transcript line."
+    ; `P
+        "Follow mode (the default) streams until the process is killed — \
+         run it as a background task; agents get a stderr warning when a \
+         foreground follow is detected. $(b,--once) sends the current \
+         history and exits. $(b,--since) / $(b,--until) bound the replay \
+         to a time range. When replaying, transcripts that contain \
+         compaction events (claude, codex) restart from the most recent \
+         compaction boundary by default — $(b,--full-history) includes \
+         everything."
     ; `P
         "Intended for observation/monitoring — e.g. mirroring a local \
          session to a colleague's agent on another machine via \

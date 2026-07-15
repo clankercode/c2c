@@ -364,7 +364,7 @@ let test_opencode_once_forwards_conversation () =
       let send b = sent := b :: !sent; Ok () in
       let stats =
         F.run_opencode ~message_dir:msg_dir ~max_bytes:2000 ~interval:0.01
-          ~from_start:false ~once:true ~send
+          ~from_start:false ~once:true ~send ()
       in
       check (list string) "user + completed assistant forwarded, noise dropped"
         [ "[user] build the app"; "[agent] starting now" ]
@@ -424,6 +424,133 @@ let test_opencode_attach_skips_existing () =
       in
       check (list string) "only post-attach messages forwarded"
         [ "[user] new message" ]
+        (List.rev !sent);
+      check int "forwarded count" 1 stats.F.forwarded)
+
+(* --- 1e. time parsing / range filters / compaction (B194 follow-up) ------- *)
+
+let test_parse_time_spec () =
+  let t = option (float 0.0001) in
+  check t "date only = midnight UTC" (Some 1784160000.)
+    (F.parse_time_spec "2026-07-16");
+  check t "datetime Z" (Some 1784173800.)
+    (F.parse_time_spec "2026-07-16T03:50:00Z");
+  check t "fractional seconds ignored" (Some 1784173800.)
+    (F.parse_time_spec "2026-07-16T03:50:00.123Z");
+  check t "minutes precision" (Some 1784173800.)
+    (F.parse_time_spec "2026-07-16T03:50");
+  check t "+10:00 offset converts to UTC" (Some 1784173800.)
+    (F.parse_time_spec "2026-07-16T13:50:00+10:00");
+  check t "space separator" (Some 1784173800.)
+    (F.parse_time_spec "2026-07-16 03:50:00");
+  check t "bare epoch seconds" (Some 1784173800.)
+    (F.parse_time_spec "1784173800");
+  check t "garbage" None (F.parse_time_spec "next tuesday");
+  check t "month out of range" None (F.parse_time_spec "2026-13-01")
+
+let test_line_time_and_range () =
+  let t = option (float 0.0001) in
+  check t "claude/codex timestamp field" (Some 1784173800.)
+    (F.line_time_of_timestamp_field
+       {|{"timestamp":"2026-07-16T03:50:00.000Z","type":"user","message":{}}|});
+  check t "line without timestamp" None
+    (F.line_time_of_timestamp_field {|{"role":"user","content":"hi"}|});
+  let range = F.in_time_range ~since:(Some 100.) ~until_:(Some 200.) in
+  check bool "inside range" true (range (Some 150.));
+  check bool "before since" false (range (Some 99.));
+  check bool "after until" false (range (Some 201.));
+  check bool "unknown time fails open" true (range None);
+  check bool "kimi has no line time" true
+    (F.line_time_for_format "kimi" = None);
+  check bool "grok has no line time" true
+    (F.line_time_for_format "grok" = None);
+  check bool "codex has line time" true
+    (F.line_time_for_format "codex" <> None)
+
+let claude_compact_boundary_line =
+  {|{"parentUuid":null,"type":"system","subtype":"compact_boundary","content":"Conversation compacted","isMeta":false,"timestamp":"2026-07-15T00:00:05Z","compactMetadata":{"trigger":"auto","preTokens":30000}}|}
+
+let test_compaction_markers () =
+  check bool "claude compact_boundary" true
+    (F.is_claude_compaction claude_compact_boundary_line);
+  check bool "claude ordinary line" false
+    (F.is_claude_compaction
+       {|{"type":"user","message":{"role":"user","content":"hi"}}|});
+  check bool "codex compacted rollout item" true
+    (F.is_codex_compaction
+       {|{"timestamp":"t","type":"compacted","payload":{"message":"","replacement_history":[]}}|});
+  check bool "codex context_compacted event" true
+    (F.is_codex_compaction
+       {|{"timestamp":"t","type":"event_msg","payload":{"type":"context_compacted"}}|});
+  check bool "codex ordinary event" false
+    (F.is_codex_compaction
+       {|{"type":"event_msg","payload":{"type":"agent_message","message":"hi"}}|});
+  check bool "no detector for kimi" true
+    (F.compaction_detector_for_format "kimi" = None)
+
+let test_claude_compact_summary_dropped () =
+  check (option event) "isCompactSummary user line dropped" None
+    (F.classify_claude_line
+       {|{"type":"user","isCompactSummary":true,"message":{"role":"user","content":"This session is being continued from a previous conversation..."}}|})
+
+let test_replay_start_offset_and_run () =
+  with_temp_dir (fun dir ->
+      let path = dir // "session.jsonl" in
+      let pre =
+        {|{"type":"user","message":{"role":"user","content":"ancient history"},"timestamp":"2026-07-15T00:00:01Z"}|}
+      in
+      let post =
+        {|{"type":"user","message":{"role":"user","content":"fresh question"},"timestamp":"2026-07-15T00:00:09Z"}|}
+      in
+      append_file path
+        (pre ^ "\n" ^ claude_compact_boundary_line ^ "\n" ^ post ^ "\n");
+      let off =
+        F.replay_start_offset ~is_compaction:F.is_claude_compaction path
+      in
+      check bool "offset past the boundary line" true (off > 0);
+      let sent = ref [] in
+      let send b = sent := b :: !sent; Ok () in
+      let stats =
+        F.run ~start_offset:off ~path ~classify:F.classify_claude_line
+          ~max_bytes:2000 ~interval:0.01 ~from_start:true ~once:true ~send ()
+      in
+      check (list string) "only post-compaction history replayed"
+        [ "[user] fresh question" ]
+        (List.rev !sent);
+      check int "forwarded count" 1 stats.F.forwarded;
+      check int "no compaction -> offset 0" 0
+        (let clean = dir // "clean.jsonl" in
+         append_file clean (post ^ "\n");
+         F.replay_start_offset ~is_compaction:F.is_claude_compaction clean))
+
+let test_opencode_since_until () =
+  with_temp_dir (fun root ->
+      let msg_dir, part_root = mk_opencode_session root in
+      (* time.created is embedded via add_opencode_message's fixed
+         {"created":1,...}; write custom messages with distinct times *)
+      let add id role created text =
+        write_file (msg_dir // (id ^ ".json"))
+          (Printf.sprintf
+             {|{"id":"%s","sessionID":"ses_test","role":"%s","time":{"created":%d,"completed":%d}}|}
+             id role created (created + 1));
+        let pdir = part_root // id in
+        ignore
+          (Sys.command (Printf.sprintf "mkdir -p %s" (Filename.quote pdir)));
+        write_file (pdir // "prt_00.json")
+          (Printf.sprintf {|{"id":"p","type":"text","text":"%s"}|} text)
+      in
+      (* created is in MILLISECONDS *)
+      add "msg_01" "user" 100_000 "too early";
+      add "msg_02" "user" 150_000 "in range";
+      add "msg_03" "user" 250_000 "too late";
+      let sent = ref [] in
+      let send b = sent := b :: !sent; Ok () in
+      let stats =
+        F.run_opencode ~since:120. ~until_:200. ~message_dir:msg_dir
+          ~max_bytes:2000 ~interval:0.01 ~from_start:true ~once:true ~send ()
+      in
+      check (list string) "only in-range messages forwarded"
+        [ "[user] in range" ]
         (List.rev !sent);
       check int "forwarded count" 1 stats.F.forwarded)
 
@@ -521,7 +648,7 @@ let test_run_once_fixture () =
   let send body = sent := body :: !sent; Ok () in
   let stats =
     F.run ~path:fixture_path ~classify:F.classify_claude_line ~max_bytes:2000
-      ~interval:0.01 ~from_start:true ~once:true ~send
+      ~interval:0.01 ~from_start:true ~once:true ~send ()
   in
   check (list string) "fixture forwards exactly the conversation, in order"
     expected_fixture_bodies (List.rev !sent);
@@ -540,7 +667,7 @@ let test_run_once_counts_send_failures () =
   let send _ = Error "broker says no" in
   let stats =
     F.run ~path:fixture_path ~classify:F.classify_claude_line ~max_bytes:2000
-      ~interval:0.01 ~from_start:true ~once:true ~send
+      ~interval:0.01 ~from_start:true ~once:true ~send ()
   in
   check int "all sends failed" (List.length expected_fixture_bodies)
     stats.F.send_failures;
@@ -751,6 +878,117 @@ let test_binary_rejects_dir_for_jsonl_format () =
       check bool "mentions directory" true
         (contains ~needle:"is a directory" (read_file out)))
 
+(* Agent-session detection (C2C_MCP_SESSION_ID) in follow mode must warn to
+   run backgrounded; --once must not. timeout(1) kills the follower. *)
+let test_binary_agent_warning_on_follow () =
+  with_temp_dir (fun dir ->
+      let out = dir // "out.txt" in
+      let cmd =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 \
+           C2C_MCP_SESSION_ID=zztfwd-agent-sid timeout 2 %s \
+           forward-agent-log --file %s --dry-run --interval 0.2 \
+           zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary)
+          (Filename.quote fixture_path)
+          (Filename.quote out)
+      in
+      let rc = Sys.command cmd in
+      check int "streaming mode runs until killed (timeout rc)" 124 rc;
+      let content = read_file out in
+      check bool "warns agent to background the follow" true
+        (contains ~needle:"BLOCK your current turn" content))
+
+let test_binary_no_agent_warning_with_once () =
+  with_temp_dir (fun dir ->
+      let out = dir // "out.txt" in
+      let cmd =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 \
+           C2C_MCP_SESSION_ID=zztfwd-agent-sid %s forward-agent-log \
+           --file %s --once zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary)
+          (Filename.quote fixture_path)
+          (Filename.quote out)
+      in
+      let rc = Sys.command cmd in
+      let content = read_file out in
+      check int (Printf.sprintf "exit 0 (output: %s)" content) 0 rc;
+      check bool "no background warning for --once" false
+        (contains ~needle:"BLOCK your current turn" content))
+
+let test_binary_since_until_slice () =
+  with_temp_dir (fun dir ->
+      let transcript = dir // "rollout-zztest.jsonl" in
+      let user_at ts text =
+        Printf.sprintf
+          {|{"timestamp":"%s","type":"event_msg","payload":{"type":"user_message","message":"%s"}}|}
+          ts text
+      in
+      write_file transcript
+        (String.concat "\n"
+           [ user_at "2026-07-15T01:00:00Z" "too early"
+           ; user_at "2026-07-15T02:00:00Z" "in range"
+           ; user_at "2026-07-15T03:00:00Z" "too late"
+           ]
+        ^ "\n");
+      let out = dir // "out.txt" in
+      let cmd =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 %s forward-agent-log \
+           --file %s --once --since 2026-07-15T01:30:00Z \
+           --until 2026-07-15T02:30:00Z zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary)
+          (Filename.quote transcript)
+          (Filename.quote out)
+      in
+      let rc = Sys.command cmd in
+      let content = read_file out in
+      check int (Printf.sprintf "exit 0 (output: %s)" content) 0 rc;
+      check bool "in-range event forwarded" true
+        (contains ~needle:"[user] in range" content);
+      check bool "pre-since event filtered" false
+        (contains ~needle:"too early" content);
+      check bool "post-until event filtered" false
+        (contains ~needle:"too late" content))
+
+let test_binary_compaction_trim_and_full_history () =
+  with_temp_dir (fun dir ->
+      let transcript = dir // "zztest-claude-session.jsonl" in
+      write_file transcript
+        (String.concat "\n"
+           [ {|{"type":"user","message":{"role":"user","content":"ancient history"},"timestamp":"2026-07-15T00:00:01Z","uuid":"u1"}|}
+           ; claude_compact_boundary_line
+           ; {|{"type":"user","message":{"role":"user","content":"fresh question"},"timestamp":"2026-07-15T00:00:09Z","uuid":"u2"}|}
+           ]
+        ^ "\n");
+      let run_cmd extra out =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 %s forward-agent-log \
+           --file %s --once %s zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary)
+          (Filename.quote transcript)
+          extra (Filename.quote out)
+      in
+      let out1 = dir // "trimmed.txt" in
+      let rc = Sys.command (run_cmd "" out1) in
+      let content = read_file out1 in
+      check int (Printf.sprintf "exit 0 (output: %s)" content) 0 rc;
+      check bool "post-compaction event forwarded" true
+        (contains ~needle:"fresh question" content);
+      check bool "pre-compaction history trimmed by default" false
+        (contains ~needle:"ancient history" content);
+      check bool "trim announced" true
+        (contains ~needle:"last compaction boundary" content);
+      let out2 = dir // "full.txt" in
+      let rc = Sys.command (run_cmd "--full-history" out2) in
+      let content = read_file out2 in
+      check int (Printf.sprintf "exit 0 (output: %s)" content) 0 rc;
+      check bool "--full-history includes pre-compaction history" true
+        (contains ~needle:"ancient history" content);
+      check bool "--full-history still forwards the rest" true
+        (contains ~needle:"fresh question" content))
+
 (* --------------------------------------------------------------------------- *)
 
 let () =
@@ -788,6 +1026,16 @@ let () =
             test_opencode_assistant_waits_for_completion
         ; test_case "attach skips existing" `Quick
             test_opencode_attach_skips_existing
+        ; test_case "since/until range" `Quick test_opencode_since_until
+        ] )
+    ; ( "time-and-compaction"
+      , [ test_case "parse_time_spec" `Quick test_parse_time_spec
+        ; test_case "line time + range" `Quick test_line_time_and_range
+        ; test_case "compaction markers" `Quick test_compaction_markers
+        ; test_case "claude compact summary dropped" `Quick
+            test_claude_compact_summary_dropped
+        ; test_case "replay start offset + run" `Quick
+            test_replay_start_offset_and_run
         ] )
     ; ( "tail"
       , [ test_case "split_complete_lines" `Quick test_split_complete_lines
@@ -823,5 +1071,12 @@ let () =
             test_binary_auto_detects_opencode_dir
         ; test_case "dir rejected for jsonl format" `Quick
             test_binary_rejects_dir_for_jsonl_format
+        ; test_case "agent warning on follow" `Quick
+            test_binary_agent_warning_on_follow
+        ; test_case "no agent warning with --once" `Quick
+            test_binary_no_agent_warning_with_once
+        ; test_case "since/until slice" `Quick test_binary_since_until_slice
+        ; test_case "compaction trim + --full-history" `Quick
+            test_binary_compaction_trim_and_full_history
         ] )
     ]
