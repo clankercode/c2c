@@ -59,6 +59,13 @@ let env_with overrides =
   in
   Array.of_list (List.map (fun (k, v) -> k ^ "=" ^ v) overrides @ inherited)
 
+let with_env key value f =
+  let saved = Sys.getenv_opt key in
+  Unix.putenv key value;
+  Fun.protect
+    ~finally:(fun () -> Unix.putenv key (Option.value saved ~default:""))
+    f
+
 let spawn_to_log ~env binary args log =
   let fd = Unix.openfile log [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o600 in
   let pid = Unix.create_process_env binary (Array.of_list (binary :: args)) env
@@ -177,14 +184,11 @@ let test_binary_skips_historical_registrations () =
        (read_file connector_log) 0); true with Not_found -> false)
 
 let test_machine_lock_is_name_independent () =
-  let old_home = Sys.getenv_opt "HOME" in
-  Fun.protect
-    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
-    (fun () ->
-      Unix.putenv "HOME" "/tmp/c2c-b200-home";
-      check string "one machine resource"
-        "/tmp/c2c-b200-home/.local/share/c2c/relay-connect"
-        (C2c_relay_managed.machine_lock_resource ()))
+  with_env "HOME" "/tmp/c2c-b200-home" @@ fun () ->
+  with_env "C2C_INSTANCES_DIR" "" @@ fun () ->
+  check string "one machine resource"
+    "/tmp/c2c-b200-home/.local/share/c2c/relay-connect"
+    (C2c_relay_managed.machine_lock_resource ())
 
 (* B210: the connector singleton is enforced at the bare `c2c relay connect`
    CLI too (not only the supervisor), so stray connectors cannot storm the
@@ -192,14 +196,20 @@ let test_machine_lock_is_name_independent () =
    acquisition, second-acquire refusal, and release-on-close. *)
 let with_home dir f =
   let old_home = Sys.getenv_opt "HOME" in
+  let old_instances_dir = Sys.getenv_opt "C2C_INSTANCES_DIR" in
   let old_env = Sys.getenv_opt C2c_relay_managed.supervised_child_env in
   Fun.protect
     ~finally:(fun () ->
       (match old_home with Some h -> Unix.putenv "HOME" h | None -> ());
+      Unix.putenv "C2C_INSTANCES_DIR"
+        (Option.value old_instances_dir ~default:"");
       match old_env with
       | Some v -> Unix.putenv C2c_relay_managed.supervised_child_env v
       | None -> (try Unix.putenv C2c_relay_managed.supervised_child_env "" with _ -> ()))
-    (fun () -> Unix.putenv "HOME" dir; f ())
+    (fun () ->
+      Unix.putenv "HOME" dir;
+      Unix.putenv "C2C_INSTANCES_DIR" "";
+      f ())
 
 let test_singleton_supervised_child_is_exempt () =
   with_temp_dir @@ fun dir ->
@@ -342,6 +352,7 @@ let test_parse_managed_config_rejects_harness_client () =
 
 let test_read_managed_config_roundtrip () =
   with_temp_dir @@ fun home ->
+  with_env "C2C_INSTANCES_DIR" "" @@ fun () ->
   let old_home = Sys.getenv_opt "HOME" in
   Fun.protect
     ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
@@ -364,6 +375,7 @@ let test_read_managed_config_roundtrip () =
 
 let test_stop_supervisor_noop_when_absent () =
   with_temp_dir @@ fun home ->
+  with_env "C2C_INSTANCES_DIR" "" @@ fun () ->
   let old_home = Sys.getenv_opt "HOME" in
   Fun.protect
     ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
@@ -372,6 +384,56 @@ let test_stop_supervisor_noop_when_absent () =
       (* No outer.pid recorded → nothing to stop → true, no exception. *)
       check bool "stop with no supervisor returns true" true
         (C2c_relay_managed.stop_supervisor ~name:"relay-connect" ~timeout_s:0.5))
+
+(* B214: all relay connector lifecycle paths must resolve through the same
+   C2C_INSTANCES_DIR override as C2c_start.  The singleton lock lives beside
+   the instances directory so an isolated connector cannot contend with or
+   signal the real HOME-based connector. *)
+let test_instances_dir_honors_override () =
+  with_env "HOME" "/tmp/c2c-b214-home" @@ fun () ->
+  with_env "C2C_INSTANCES_DIR" "  /tmp/c2c-b214-custom/instances  " @@ fun () ->
+  check string "instances dir uses trimmed override"
+    "/tmp/c2c-b214-custom/instances"
+    (C2c_relay_managed.instances_dir ());
+  check string "machine lock follows override base"
+    "/tmp/c2c-b214-custom/relay-connect"
+    (C2c_relay_managed.machine_lock_resource ())
+
+let test_instances_dir_blank_falls_back_to_home () =
+  with_env "HOME" "/tmp/c2c-b214-home" @@ fun () ->
+  with_env "C2C_INSTANCES_DIR" " \t " @@ fun () ->
+  check string "blank override uses historical HOME default"
+    "/tmp/c2c-b214-home/.local/share/c2c/instances"
+    (C2c_relay_managed.instances_dir ());
+  check string "default machine lock is unchanged"
+    "/tmp/c2c-b214-home/.local/share/c2c/relay-connect"
+    (C2c_relay_managed.machine_lock_resource ())
+
+let test_read_managed_config_uses_override () =
+  with_temp_dir @@ fun root ->
+  let home = root // "home" in
+  let custom_instances = root // "custom" // "instances" in
+  with_env "HOME" home @@ fun () ->
+  with_env "C2C_INSTANCES_DIR" custom_instances @@ fun () ->
+  let name = "relay-connect" in
+  let custom_instance = custom_instances // name in
+  let home_instance =
+    home // ".local" // "share" // "c2c" // "instances" // name
+  in
+  mkdir_p custom_instance;
+  mkdir_p home_instance;
+  C2c_relay_managed.write_config
+    ~config_path:(custom_instance // "config.json")
+    ~relay_url:(Some "https://custom.example") ~interval:17;
+  C2c_relay_managed.write_config
+    ~config_path:(home_instance // "config.json")
+    ~relay_url:(Some "https://home.example") ~interval:99;
+  match C2c_relay_managed.read_managed_config ~name with
+  | Some mc ->
+      check (option string) "config comes from override"
+        (Some "https://custom.example") mc.C2c_relay_managed.mc_relay_url;
+      check int "override interval" 17 mc.C2c_relay_managed.mc_interval
+  | None -> fail "expected config from C2C_INSTANCES_DIR override"
 
 (* Defence-in-depth: the harness config loader must degrade a foreign/managed
    config to None rather than raising Not_found (the original crash site). *)
@@ -402,6 +464,14 @@ let () =
         test_stop_supervisor_noop_when_absent;
       test_case "load_config_opt degrades, no Not_found" `Quick
         test_load_config_opt_degrades_on_relay_connect_shape;
+    ];
+    "B214 instances-dir consistency", [
+      test_case "override controls instances and lock paths" `Quick
+        test_instances_dir_honors_override;
+      test_case "blank override preserves HOME default" `Quick
+        test_instances_dir_blank_falls_back_to_home;
+      test_case "config lookup uses override" `Quick
+        test_read_managed_config_uses_override;
     ];
     "machine singleton", [
       test_case "resource ignores instance name" `Quick test_machine_lock_is_name_independent;
