@@ -3,12 +3,11 @@
 
     The relay can raise PoW difficulty under load, rate-limit a connector,
     fail to satisfy a PoW challenge, or permanently dead-letter an outbound
-    message. Historically those conditions were invisible to the agent — the
-    connector logged them to stdout and moved on. This module turns observed
-    relay conditions into severity-tagged {b emissions} that the connector
-    enqueues as messages from the reserved [c2c-system] alias, so they flow
-    through every existing delivery surface for free (MCP poll/peek, the
-    channel push, the deliver-inbox daemon).
+    message. This module turns observed relay conditions into severity-tagged
+    {b emissions}. Sender-actionable failures are enqueued as messages from
+    the reserved [c2c-system] alias; connector-wide difficulty changes are
+    written only to the connector log so routine load changes cannot wake an
+    otherwise-idle agent.
 
     {b Design constraints (locked, B010):}
     - Surface only {e degrading} events: difficulty INCREASE (warn),
@@ -19,9 +18,9 @@
       high-difficulty plateau, or a connector that stays rate-limited across
       many syncs, must NOT re-alert every sync. Last-state lives in {!state}
       and is threaded by the connector across sync passes.
-    - {b Routing}: sender-specific events (a dead-lettered outbox entry) DM
-      the originating sender alias; global events (difficulty change,
-      rate-limit) broadcast to all locally-registered sessions.
+    - {b Routing}: sender-specific events (a dead-lettered outbox entry or
+      outbound-send rate limit) DM the originating sender alias. Connector-wide
+      rate limits and difficulty changes are connector-log-only.
 
     This module is intentionally {b pure} — no IO, no network, no clock. The
     connector observes relay responses, aggregates them into an
@@ -43,10 +42,12 @@ let severity_to_string = function
 type target =
   | Broadcast        (** every locally-registered session *)
   | Dm of string     (** a specific alias (its live sessions) *)
+  | Connector_log    (** connector log only; never a local inbox *)
 
 let target_to_string = function
   | Broadcast -> "broadcast"
   | Dm alias -> "dm:" ^ alias
+  | Connector_log -> "connector-log"
 
 type emission = {
   severity : severity;
@@ -59,13 +60,16 @@ type emission = {
 (** Edge-trigger state persisted by the connector across sync passes. *)
 type state = {
   last_difficulty : int;  (** highest PoW difficulty last surfaced; 0 = none *)
-  rate_limited : bool;    (** currently inside a rate-limited plateau *)
+  rate_limited : bool;    (** currently inside a connector-wide plateau *)
+  rate_limited_senders : string list;
+    (** sender aliases currently inside sender-attributable plateaus *)
   pow_failing : bool;     (** currently inside a pow_retry_failed plateau *)
 }
 
 let initial_state = {
   last_difficulty = 0;
   rate_limited = false;
+  rate_limited_senders = [];
   pow_failing = false;
 }
 
@@ -87,7 +91,11 @@ type observation = {
         any. [None] means "no difficulty observed" — NOT "difficulty is 0"
         (an empty outbox surfaces nothing). A [None] therefore never triggers
         a recovery edge; recovery only fires on an explicit lower value. *)
-  obs_rate_limited : bool;        (** any rate_limit_exceeded this sync *)
+  obs_rate_limited : bool;
+    (** any connector-wide register/heartbeat/poll rate limit this sync *)
+  obs_rate_limited_senders : string list;
+    (** every originating sender alias whose outbox send was rate-limited this
+        sync, in observation order *)
   obs_pow_retry_failed : bool;    (** any pow_retry_failed this sync *)
   obs_pow_retry_sender : string option;
     (** originating sender alias for the pow_retry_failed, if it occurred on a
@@ -98,6 +106,7 @@ type observation = {
 let empty_observation = {
   obs_difficulty = None;
   obs_rate_limited = false;
+  obs_rate_limited_senders = [];
   obs_pow_retry_failed = false;
   obs_pow_retry_sender = None;
   obs_dlqs = [];
@@ -108,8 +117,8 @@ let format_body sev s =
 
 (* --- per-concern deciders ------------------------------------------------ *)
 
-(** Difficulty edge: increase → warn (broadcast), decrease → light info
-    (broadcast), plateau → nothing. Only an explicitly observed value moves
+(** Difficulty edge: increase → warn (connector log), decrease → light info
+    (connector log), plateau → nothing. Only an explicitly observed value moves
     [last_difficulty]; a [None] observation is a no-op. *)
 let difficulty_emissions state = function
   | None -> ([], state)
@@ -121,7 +130,7 @@ let difficulty_emissions state = function
            slower or rejected while the relay is under load."
           d state.last_difficulty)
         in
-        ([ { severity = Warn; target = Broadcast;
+        ([ { severity = Warn; target = Connector_log;
              kind = "difficulty_increase"; body } ],
          { state with last_difficulty = d })
       else if d < state.last_difficulty then
@@ -129,27 +138,52 @@ let difficulty_emissions state = function
           "Relay PoW difficulty decreased to %d (was %d). Relay load has eased."
           d state.last_difficulty)
         in
-        ([ { severity = Info; target = Broadcast;
+        ([ { severity = Info; target = Connector_log;
              kind = "difficulty_decrease"; body } ],
          { state with last_difficulty = d })
       else
         ([], state)  (* plateau — no re-alert *)
 
-(** Rate-limit edge: first rejection → warn (broadcast); sustained → nothing;
-    clears silently when no rejection is observed. *)
-let rate_limited_emissions state observed =
-  if observed && not state.rate_limited then
-    let body = format_body Warn
-      "Relay rate-limited this connector (rate_limit_exceeded). Outbound \
-       messages to remote peers may be delayed; the connector will keep \
-       retrying."
-    in
-    ([ { severity = Warn; target = Broadcast; kind = "rate_limited"; body } ],
-     { state with rate_limited = true })
-  else if (not observed) && state.rate_limited then
-    ([], { state with rate_limited = false })  (* recovered — clear quietly *)
-  else
-    ([], state)
+(** Alias comparison follows the registry's case-insensitive contract. *)
+let alias_mem alias aliases =
+  let alias = String.lowercase_ascii alias in
+  List.exists
+    (fun candidate -> String.lowercase_ascii candidate = alias)
+    aliases
+
+let dedupe_aliases aliases =
+  List.fold_left
+    (fun unique alias ->
+      if alias_mem alias unique then unique else unique @ [alias])
+    [] aliases
+
+(** Rate-limit edges are independent for connector-wide operations and each
+    originating sender. Sustained plateaus emit nothing; an absent connector
+    or sender clears only that plateau, allowing a later rejection to emit. *)
+let rate_limited_emissions state ~connector_observed ~senders =
+  let body = format_body Warn
+    "Relay rate-limited this connector (rate_limit_exceeded). Outbound \
+     messages to remote peers may be delayed; the connector will keep \
+     retrying."
+  in
+  let connector_emissions =
+    if connector_observed && not state.rate_limited then
+      [ { severity = Warn; target = Connector_log;
+          kind = "rate_limited"; body } ]
+    else []
+  in
+  let senders = dedupe_aliases senders in
+  let sender_emissions =
+    List.filter_map
+      (fun sender ->
+        if alias_mem sender state.rate_limited_senders then None
+        else Some { severity = Warn; target = Dm sender;
+                    kind = "rate_limited"; body })
+      senders
+  in
+  (connector_emissions @ sender_emissions,
+   { state with rate_limited = connector_observed;
+                rate_limited_senders = senders })
 
 (** pow_retry_failed edge: first failure → err; sustained → nothing; clears
     when no failure is observed. Routed to the originating sender if known,
@@ -187,7 +221,10 @@ let dlq_emission (d : dlq_event) =
     Pure: same [(state, observation)] always yields the same result. *)
 let step state obs =
   let diff_em, state = difficulty_emissions state obs.obs_difficulty in
-  let rl_em, state = rate_limited_emissions state obs.obs_rate_limited in
+  let rl_em, state =
+    rate_limited_emissions state ~connector_observed:obs.obs_rate_limited
+      ~senders:obs.obs_rate_limited_senders
+  in
   let prf_em, state =
     pow_retry_failed_emissions state
       ~observed:obs.obs_pow_retry_failed ~sender:obs.obs_pow_retry_sender

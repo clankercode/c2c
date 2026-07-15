@@ -458,12 +458,18 @@ summary, cross-client DM matrix, per-client detailed breakdowns, and known footg
 
 ## Relay degrading-event passthrough (B010)
 
-Relay difficulty increases, PoW retry failures, dead-letter events, and
-rate-limit rejections are now surfaced to local agents as messages from the
+PoW retry failures, dead-letter events, and sender-attributable rate-limit
+rejections are surfaced to the affected local agent as messages from the
 reserved `c2c-system` alias. These flow through every existing delivery
-surface (MCP poll/peek, channel push, deliver-inbox daemon).
+surface (MCP poll/peek, channel push, deliver-inbox daemon). Connector-wide
+rate limits and relay difficulty changes are written to the managed relay
+connector's `log` file instead; they do not enter agent inboxes or wake idle
+sessions.
 
-Severity levels: `INFO` (difficulty decrease / recovery), `WARN` (difficulty
-increase, rate-limit rejection), `ERR` (PoW retry failure, dead-letter /
-undeliverable). Events are edge-triggered — a sustained high-difficulty
-plateau does not re-alert every sync.
+Severity levels: `INFO` (difficulty decrease / recovery, log only), `WARN`
+(difficulty increase and connector-wide rate limiting, log only;
+sender-attributable rate-limit rejection, affected agent only), `ERR` (PoW
+retry failure, dead-letter / undeliverable). Events are edge-triggered — a
+sustained high-difficulty plateau does not re-alert every sync, and each
+affected sender's rate-limit plateau is deduplicated independently from
+connector-wide and other-sender plateaus.

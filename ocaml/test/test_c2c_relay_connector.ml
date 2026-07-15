@@ -846,6 +846,7 @@ let test_dlq_injects_system_dm_to_sender () =
     let emissions, _ =
       C2c_relay_alert.step C2c_relay_alert.initial_state
         { C2c_relay_alert.obs_difficulty = None; obs_rate_limited = false;
+          obs_rate_limited_senders = [];
           obs_pow_retry_failed = false; obs_pow_retry_sender = None;
           obs_dlqs = dlqs } in
     let delivered = Conn.deliver_alert_emissions dir regs emissions in
@@ -866,20 +867,50 @@ let test_dlq_injects_system_dm_to_sender () =
       (List.length (read_inbox_messages dir "sess-bob"))
   )
 
-(* A broadcast emission (e.g. difficulty increase) must reach every session. *)
-let test_broadcast_reaches_all_sessions () =
+(* A connector-wide difficulty change is operational state, not an actionable
+   agent message. It must be logged without touching any local inbox. *)
+let test_difficulty_alert_does_not_reach_sessions () =
   let dir = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
     let regs = [ ("sess-a", "alice", "claude"); ("sess-b", "bob", "codex") ] in
     let emissions, _ =
       C2c_relay_alert.step C2c_relay_alert.initial_state
         { C2c_relay_alert.obs_difficulty = Some 4; obs_rate_limited = false;
+          obs_rate_limited_senders = [];
           obs_pow_retry_failed = false; obs_pow_retry_sender = None;
           obs_dlqs = [] } in
     let delivered = Conn.deliver_alert_emissions dir regs emissions in
-    Alcotest.(check int) "delivered to both sessions" 2 delivered;
-    Alcotest.(check int) "alice got it" 1 (List.length (read_inbox_messages dir "sess-a"));
-    Alcotest.(check int) "bob got it" 1 (List.length (read_inbox_messages dir "sess-b"))
+    Alcotest.(check int) "no system messages delivered" 0 delivered;
+    Alcotest.(check int) "alice inbox untouched" 0
+      (List.length (read_inbox_messages dir "sess-a"));
+    Alcotest.(check int) "bob inbox untouched" 0
+      (List.length (read_inbox_messages dir "sess-b"))
+  )
+
+let test_rate_limit_dms_only_affected_senders () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let regs = [
+      ("sess-alice", "alice", "claude");
+      ("sess-bob", "bob", "codex");
+      ("sess-carol", "carol", "opencode");
+    ] in
+    let emissions, _ =
+      C2c_relay_alert.step C2c_relay_alert.initial_state
+        { C2c_relay_alert.obs_difficulty = None;
+          obs_rate_limited = true;
+          obs_rate_limited_senders = ["alice"; "bob"];
+          obs_pow_retry_failed = false; obs_pow_retry_sender = None;
+          obs_dlqs = [] }
+    in
+    let delivered = Conn.deliver_alert_emissions dir regs emissions in
+    Alcotest.(check int) "one DM per affected sender" 2 delivered;
+    Alcotest.(check int) "alice gets one DM" 1
+      (List.length (read_inbox_messages dir "sess-alice"));
+    Alcotest.(check int) "bob gets one DM" 1
+      (List.length (read_inbox_messages dir "sess-bob"));
+    Alcotest.(check int) "unrelated carol inbox untouched" 0
+      (List.length (read_inbox_messages dir "sess-carol"))
   )
 
 (* --- B087: response_difficulty must not crash on any input shape ---
@@ -1233,7 +1264,9 @@ let () =
     ];
     "B010 alert delivery", [
       Alcotest.test_case "DLQ injects c2c-system DM to sender" `Quick test_dlq_injects_system_dm_to_sender;
-      Alcotest.test_case "broadcast reaches all sessions" `Quick test_broadcast_reaches_all_sessions;
+      Alcotest.test_case "difficulty alert stays out of inboxes" `Quick test_difficulty_alert_does_not_reach_sessions;
+      Alcotest.test_case "rate limit DMs only affected senders" `Quick
+        test_rate_limit_dms_only_affected_senders;
     ];
     "B087 response_difficulty", [
       Alcotest.test_case "no crash on null/missing/wrong-type/valid" `Quick test_response_difficulty_no_crash;
