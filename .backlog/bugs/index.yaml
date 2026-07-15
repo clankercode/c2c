@@ -203,3 +203,4 @@ bugs:
     - file: B204-harden-forward-agent-log-trans.todo
     - file: B205-make-forward-agent-log-deliver.todo
     - file: B206-c2c-monitor-relay-watch-dies-w.todo
+    - file: B207-trust-model-same-repo-same-hos.todo

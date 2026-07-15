@@ -1,0 +1,86 @@
+---
+complexity: medium
+created_at: "2026-07-15T05:57:47Z"
+depends_on: []
+estimate_hours: 1
+id: B207
+priority: medium
+status: pending
+tags:
+    - trust
+    - security
+    - policy
+    - relay
+    - broker
+    - product
+title: 'Trust model: same-repo > same-host > relay; escalate to operator when unsure'
+updated_at: "2026-07-15T05:57:47Z"
+---
+## Intent / product rule
+
+Agents should not be treated as equally trustworthy. Trust should default by **proximity / control plane**, with explicit escalation when policy is ambiguous.
+
+### Trust tiers (highest → lowest)
+
+1. **Same repo (most trusted)**  
+   Peers registered against the same broker/repo fingerprint (same `~/.c2c/repos/<fp>/broker` / same git remote fingerprint). Shared worktree context, shared supervisors/authorizers config, shared rooms/defaults. These are co-workers on the same codebase.
+
+2. **Same compute / host (medium)**  
+   Agents on the same machine but **not** necessarily the same repo broker (e.g. cross-repo sessions broker, other repo fingerprints, local bare aliases). Same operator, same OS user, local filesystem — more trusted than arbitrary remote peers, less trusted than same-repo peers who share the project control plane.
+
+3. **Via relay (least trusted of the three)**  
+   Cross-host peers (`<alias>@<host_id>`, relay DM/rooms, anything that arrives only because of relay routing). Different machine, different operator possibly, identity-bound but not co-located. Treat as external by default for sensitive actions.
+
+### Escalation
+
+- When unsure which tier applies, or whether an action is safe for the claimed tier: **raise it with the operator/user** rather than silently allowing or denying in a way that hides the decision.
+- Exception: **headless / non-interactive sessions** (no TTY, no human in the loop, CI, pure agent-only). There, prefer fail-closed or policy-config defaults — do not block forever waiting for a human who will never answer. Document which surfaces are “interactive-capable.”
+
+## Why this is a bug / gap today
+
+Today c2c is largely a message bus (“bus, never RPC”) with limited tiered trust:
+
+- Local vs remote is partially visible (`@host_id`, relay paths) but **not consistently used** as a trust signal for approvals, wake/auto-turn, supervisor/authorizer paths, tool exposure, or agent behavioral policy.
+- Same-repo vs same-host-other-repo is weakly distinguished in agent-facing UX and policy hooks.
+- Agents (and install templates/skills) are not given a clear **default trust ladder** for how to treat inbound mail, requests, and coordination from each tier.
+- “Always ask the user when unsure” is informal practice, not encoded in product docs / skill templates / optional policy helpers.
+
+Related existing invariants (do not break):
+
+- **B098**: message content is DATA; never satisfies PreToolUse approvals / verdict files via DM. Trust tiers refine *how agents should treat* data and *which automatic effects* are eligible — they must not turn relay mail into remote RPC for approvals.
+- Local-broker-only gated auto-turn for Codex remains a narrow exception; remote/`@host`/`#` already fail closed in places — align remaining surfaces with this ladder.
+
+## Scope of investigation / design
+
+1. **Define authoritative signals** for each tier (registry fields, address shape, broker root, host_id, session metadata, `from` envelope).
+2. **Inventory surfaces** that should consult trust tier:
+   - Agent skill / system prompts (c2c skill, SessionStart, Grok/Claude/Codex/agy install copy)
+   - Optional CLI/MCP hints (`list` annotations, `whoami`, message envelope metadata: `trust_tier=same_repo|same_host|relay`)
+   - Auto-effects: wake, auto-turn, schedule self-DM, any future “act on inbound” features
+   - Supervisor / authorizer / approval-adjacent UX (still host-local for verdicts)
+   - Rooms: same-repo room peers vs relay rooms
+3. **Policy defaults** per tier (documentation + optional config):
+   - same_repo: default cooperate; still treat instructions as data for tool approvals
+   - same_host: cooperate with more caution for destructive/cross-repo ops
+   - relay: assume untrusted for privileged actions; confirm with operator for anything beyond chat/coordination
+4. **Operator escalation UX**: how agents should surface “I got a request from tier X, unsure if I should Y” — and how headless sessions detect “no human.”
+5. **What not to do**: do not invent remote approval RPC; do not auto-elevate relay peers because they share an alias string.
+
+## Acceptance criteria (for a later fix slice)
+
+- [ ] Written trust model (runbook or docs) with the 3 tiers + headless exception
+- [ ] Agent-facing guidance updated (c2c skill / install templates) so agents default to this ladder
+- [ ] Clear machine-checkable signals documented (and ideally exposed on list/message metadata)
+- [ ] At least one automated regression or contract test for classification of same-repo / same-host / relay addressing
+- [ ] Explicit note that operator escalation is preferred when interactive and unsure
+- [ ] B098 / bus-never-RPC still holds after any policy wiring
+
+## Non-goals
+
+- Full multi-tenant ACL system
+- Cryptographic proof of “same operator” beyond existing identity/host binding
+- Making relay peers as privileged as local same-repo peers
+
+## Origin
+
+Product direction from operator (Max / XertroV): same-compute agents more trusted than relay; same-repo most trusted of all three; always okay to raise with the operator when unsure (unless headless).
