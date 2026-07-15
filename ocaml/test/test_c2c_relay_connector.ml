@@ -123,10 +123,10 @@ let test_json_list_member () =
 
 (* --- B196: local relay ingress controls --- *)
 
-let inbound_message ~sender content =
+let inbound_message ?(recipient = "local-agent") ~sender content =
   `Assoc [
     ("from_alias", `String sender);
-    ("to_alias", `String "local-agent");
+    ("to_alias", `String recipient);
     ("content", `String content);
   ]
 
@@ -140,6 +140,8 @@ let test_inbound_policy_defaults () =
           policy.Conn.default_max_bytes;
         Alcotest.(check int) "default sender messages" 60
           policy.Conn.default_sender_rate.rate_messages;
+        Alcotest.(check int) "default recipient messages" 120
+          policy.Conn.default_recipient_rate.rate_messages;
         Alcotest.(check int) "default machine messages" 600
           policy.Conn.machine_rate.rate_messages)
 
@@ -160,6 +162,8 @@ let test_inbound_policy_parses_sender_override () =
   | Error e -> Alcotest.fail e
   | Ok policy ->
       let alice = Conn.inbound_sender_policy policy "ALICE@REMOTE" in
+      Alcotest.(check bool) "override defaults to allow" true
+        (alice.Conn.sender_action = Conn.Inbound_allow);
       Alcotest.(check int) "override max" 512 alice.Conn.sender_max_bytes;
       Alcotest.(check int) "override rate" 2
         alice.Conn.sender_rate.rate_messages;
@@ -168,6 +172,40 @@ let test_inbound_policy_parses_sender_override () =
         other.Conn.sender_max_bytes;
       Alcotest.(check int) "other gets default rate" 12
         other.Conn.sender_rate.rate_messages
+
+let test_inbound_policy_parses_admission_and_recipient_controls () =
+  let json = `Assoc [
+    ("default_sender_action", `String "deny");
+    ("default_recipient_rate", `Assoc [
+      ("messages", `Int 5); ("window_seconds", `Int 30) ]);
+    ("senders", `Assoc [
+      ("trusted@remote", `Assoc [ ("action", `String "allow") ]);
+      ("blocked@remote", `Assoc [ ("action", `String "deny") ]);
+    ]);
+    ("recipients", `Assoc [
+      ("Quiet-Agent", `Assoc [
+        ("enabled", `Bool false);
+        ("max_bytes", `Int 1024);
+        ("rate", `Assoc [
+          ("messages", `Int 2); ("window_seconds", `Int 60) ]);
+      ]);
+    ]);
+  ] in
+  match Conn.parse_inbound_policy json with
+  | Error e -> Alcotest.fail e
+  | Ok policy ->
+      Alcotest.(check bool) "unknown sender denied by default" true
+        ((Conn.inbound_sender_policy policy "unknown@remote").Conn.sender_action
+          = Conn.Inbound_deny);
+      Alcotest.(check bool) "trusted sender allowed" true
+        ((Conn.inbound_sender_policy policy "TRUSTED@REMOTE").Conn.sender_action
+          = Conn.Inbound_allow);
+      let quiet = Conn.inbound_recipient_policy policy "quiet-agent" in
+      Alcotest.(check bool) "recipient disabled" false
+        quiet.Conn.recipient_enabled;
+      Alcotest.(check int) "recipient max" 1024 quiet.Conn.recipient_max_bytes;
+      Alcotest.(check int) "recipient rate" 2
+        quiet.Conn.recipient_rate.rate_messages
 
 let test_inbound_policy_invalid_fails () =
   let invalid = `Assoc [ ("machine_rate", `Assoc [ ("messages", `Int 0) ]) ] in
@@ -204,12 +242,16 @@ let test_inbound_policy_rejects_unknown_and_duplicate_keys () =
       ("Alice@Remote", `Assoc []); ("alice@remote", `Assoc []) ]) ])
 
 let policy ~max_bytes ~sender_messages ~machine_messages = {
+  Conn.default_sender_action = Conn.Inbound_allow;
   Conn.default_max_bytes = max_bytes;
   default_sender_rate = {
     Conn.rate_messages = sender_messages; rate_window_s = 60.0 };
+  default_recipient_rate = {
+    Conn.rate_messages = 100_000; rate_window_s = 60.0 };
   machine_rate = {
     Conn.rate_messages = machine_messages; rate_window_s = 60.0 };
   sender_overrides = [];
+  recipient_overrides = [];
 }
 
 let rejection_names reasons = List.map Conn.inbound_rejection_name reasons
@@ -271,6 +313,151 @@ let test_inbound_machine_rate_across_senders () =
   Alcotest.(check int) "aggregate machine cap" 3 (List.length accepted);
   Alcotest.(check (list string)) "machine rejection"
     [ "machine_rate" ] (rejection_names rejected)
+
+let test_inbound_admission_and_recipient_controls () =
+  let state = Conn.create_inbound_rate_state () in
+  let base = policy ~max_bytes:1000 ~sender_messages:10 ~machine_messages:20 in
+  let policy = {
+    base with
+    Conn.sender_overrides = [
+      ("blocked@remote", {
+        Conn.sender_action = Conn.Inbound_deny;
+        sender_max_bytes = 1000;
+        sender_rate = base.Conn.default_sender_rate;
+      });
+    ];
+    recipient_overrides = [
+      ("off-agent", {
+        Conn.recipient_enabled = false;
+        recipient_max_bytes = 1000;
+        recipient_rate = base.Conn.default_recipient_rate;
+      });
+      ("quiet-agent", {
+        Conn.recipient_enabled = true;
+        recipient_max_bytes = 1000;
+        recipient_rate = { Conn.rate_messages = 1; rate_window_s = 60.0 };
+      });
+    ];
+  } in
+  let accepted, rejected =
+    Conn.filter_inbound_messages ~now:100.0 policy state [
+      inbound_message ~sender:"blocked@remote" "denied";
+      inbound_message ~recipient:"off-agent" ~sender:"ok@remote" "disabled";
+      inbound_message ~recipient:"quiet-agent" ~sender:"a@remote" "one";
+      inbound_message ~recipient:"quiet-agent" ~sender:"b@remote" "two";
+    ]
+  in
+  Alcotest.(check int) "one recipient message accepted" 1
+    (List.length accepted);
+  Alcotest.(check (list string)) "admission and recipient reasons"
+    [ "sender_denied"; "recipient_disabled"; "recipient_rate" ]
+    (rejection_names rejected)
+
+let test_inbound_rate_state_backward_compatible_without_recipients () =
+  let json = `Assoc [
+    ("machine", `List [ `Float 100.0 ]);
+    ("senders", `Assoc [ ("alice@remote", `List [ `Float 100.0 ]) ]);
+  ] in
+  match Conn.inbound_rate_state_of_json json with
+  | Error e -> Alcotest.fail e
+  | Ok state ->
+      Alcotest.(check int) "legacy sender restored" 1
+        (Hashtbl.length state.Conn.sender_events);
+      Alcotest.(check int) "missing recipients becomes empty" 0
+        (Hashtbl.length state.Conn.recipient_events)
+
+let test_inbound_expected_recipient_binding () =
+  let state = Conn.create_inbound_rate_state () in
+  let policy = policy ~max_bytes:1000 ~sender_messages:10 ~machine_messages:20 in
+  let accepted, rejected =
+    Conn.filter_inbound_messages ~expected_recipient:"sensitive-agent"
+      ~now:100.0 policy state [
+        inbound_message ~recipient:"other-agent" ~sender:"a@remote" "relabelled";
+        inbound_message ~recipient:"SENSITIVE-AGENT" ~sender:"a@remote" "valid";
+      ]
+  in
+  Alcotest.(check int) "case-insensitive intended recipient accepted" 1
+    (List.length accepted);
+  Alcotest.(check (list string)) "relabelling rejected"
+    [ "recipient_mismatch" ] (rejection_names rejected)
+
+let test_inbound_qualified_recipient_binding_and_policy () =
+  let expected = "local-agent" in
+  let base = policy ~max_bytes:1000 ~sender_messages:10 ~machine_messages:20 in
+  let binding_state = Conn.create_inbound_rate_state () in
+  let accepted, rejected =
+    Conn.filter_inbound_messages ~expected_recipient:expected ~now:100.0
+      base binding_state [
+        inbound_message ~recipient:expected ~sender:"bare@remote" "bare";
+        inbound_message ~recipient:"LOCAL-AGENT@0123456789ab" ~sender:"dm@remote"
+          "qualified dm";
+        inbound_message ~recipient:"local-agent#team-room" ~sender:"room@remote"
+          "room fanout";
+        inbound_message ~recipient:"local-agent#team-room@relay"
+          ~sender:"roster@remote" "canonical room address";
+        inbound_message ~recipient:"other-agent@0123456789ab" ~sender:"bad-dm@remote"
+          "mismatched dm";
+        inbound_message ~recipient:"other-agent#team-room" ~sender:"bad-room@remote"
+          "mismatched room";
+        inbound_message ~recipient:"local-agent@host#room"
+          ~sender:"malformed@remote" "malformed delimiter order";
+        inbound_message ~recipient:"local-agent@bad host"
+          ~sender:"bad-host@remote" "malformed host";
+        inbound_message ~recipient:"local-agent#../../fake"
+          ~sender:"bad-room-id@remote" "malformed room id";
+      ]
+  in
+  Alcotest.(check int) "bare, qualified, fanout, and roster forms bind" 4
+    (List.length accepted);
+  Alcotest.(check (list string)) "mismatched and malformed forms reject"
+    [ "recipient_mismatch"; "recipient_mismatch"; "recipient_mismatch";
+      "recipient_mismatch"; "recipient_mismatch" ]
+    (rejection_names rejected);
+  let disabled_policy = {
+    base with
+    Conn.recipient_overrides = [
+      (expected, {
+        Conn.recipient_enabled = false;
+        recipient_max_bytes = 1000;
+        recipient_rate = base.Conn.default_recipient_rate;
+      });
+    ];
+  } in
+  let _, disabled =
+    Conn.filter_inbound_messages ~expected_recipient:expected ~now:100.0
+      disabled_policy (Conn.create_inbound_rate_state ())
+      [ inbound_message ~recipient:"local-agent@0123456789ab" ~sender:"ok@remote"
+          "disabled by trusted recipient policy" ]
+  in
+  Alcotest.(check (list string)) "qualified form uses local enable policy"
+    [ "recipient_disabled" ] (rejection_names disabled);
+  let rate_policy = {
+    base with
+    Conn.recipient_overrides = [
+      (expected, {
+        Conn.recipient_enabled = true;
+        recipient_max_bytes = 1000;
+        recipient_rate = { Conn.rate_messages = 1; rate_window_s = 60.0 };
+      });
+    ];
+  } in
+  let rate_state = Conn.create_inbound_rate_state () in
+  let accepted, rejected =
+    Conn.filter_inbound_messages ~expected_recipient:expected ~now:100.0
+      rate_policy rate_state [
+        inbound_message ~recipient:"local-agent@0123456789ab" ~sender:"one@remote"
+          "first";
+        inbound_message ~recipient:"local-agent#team-room" ~sender:"two@remote"
+          "same trusted recipient";
+      ]
+  in
+  Alcotest.(check int) "first qualified row accepted" 1 (List.length accepted);
+  Alcotest.(check (list string)) "fanout shares trusted recipient rate slot"
+    [ "recipient_rate" ] (rejection_names rejected);
+  Alcotest.(check int) "rate state has one trusted local recipient key" 1
+    (Hashtbl.length rate_state.Conn.recipient_events);
+  Alcotest.(check bool) "rate state key is the polled alias" true
+    (Hashtbl.mem rate_state.Conn.recipient_events expected)
 
 let test_inbound_machine_rate_persists_across_instances () =
   let dir = make_tmpdir () in
@@ -675,6 +862,18 @@ let () =
         test_inbound_machine_rate_persists_across_instances;
       Alcotest.test_case "machine rate serializes concurrent processes" `Quick
         test_inbound_machine_rate_serializes_concurrent_processes;
+    ];
+    "B197 relay inbound admission", [
+      Alcotest.test_case "admission + recipient config parse" `Quick
+        test_inbound_policy_parses_admission_and_recipient_controls;
+      Alcotest.test_case "sender deny + recipient safeguards" `Quick
+        test_inbound_admission_and_recipient_controls;
+      Alcotest.test_case "B196 rate state remains readable" `Quick
+        test_inbound_rate_state_backward_compatible_without_recipients;
+      Alcotest.test_case "row recipient binds to polled local agent" `Quick
+        test_inbound_expected_recipient_binding;
+      Alcotest.test_case "qualified destinations bind and use local policy" `Quick
+        test_inbound_qualified_recipient_binding_and_policy;
     ];
     "outbox", [
       Alcotest.test_case "round-trip + append + clear" `Quick test_outbox_roundtrip;
