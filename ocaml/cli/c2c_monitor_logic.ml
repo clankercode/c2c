@@ -373,7 +373,14 @@ let decide_relay_watch
    data) for backward compatibility. *)
 type relay_peek_outcome =
   | Peek_ok of Yojson.Safe.t list  (* ok:true / legacy: pending messages *)
-  | Peek_transient of string       (* retry, may recover (network/5xx/rate-limit) *)
+  | Peek_transient of string       (* retry, may recover (network/timeout/5xx) *)
+  | Peek_rate_limited of string
+    (* B213: relay throttling (HTTP 429 / rate_limit_exceeded). A DISTINCT
+       transient: retry with backoff, recovers on its own — but it is neither an
+       identity/signature failure (never a [Peek_terminal]) nor a wedged bridge
+       (never routed through the "restart the connector" transient escalation,
+       whose advice is actively harmful under throttling — extra reconnects
+       worsen the 429 storm, B210). [detail] carries the code/message. *)
   | Peek_terminal of { code : string; detail : string }
     (* auth/identity — terminal policy applies; [code] drives soft vs hard severity *)
 
@@ -392,6 +399,23 @@ let is_terminal_error_code = function
   | "unknown_node"
   | "not_registered"
   | "bad_request" -> true
+  | _ -> false
+
+(* B213: rate-limit (HTTP 429) rejection codes. These are transient — a
+   throttled monitor recovers by backing off — but they MUST be surfaced
+   distinctly from both identity/signature terminal failures (so a throttled
+   monitor is never told to re-register) and from the generic wedged-bridge
+   transient escalation (whose "c2c restart relay-connect" advice is wrong under
+   throttling: extra reconnects worsen the 429 storm, B210). The relay emits
+   [rate_limit_exceeded]; [reconcile_status] synthesizes [http_error_429] when a
+   429 body is not honestly ok:false; [rate_limit]/[rate_limited] are accepted as
+   aliases. Note: none of these are in [is_terminal_error_code] — a rate-limit
+   can never become a terminal/identity failure. *)
+let is_rate_limit_error_code = function
+  | "rate_limit_exceeded"
+  | "rate_limit"
+  | "rate_limited"
+  | "http_error_429" -> true
   | _ -> false
 
 let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
@@ -415,6 +439,8 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
            in
            if is_terminal_error_code code then
              Peek_terminal { code; detail }
+           else if is_rate_limit_error_code code then
+             Peek_rate_limited detail
            else Peek_transient detail
        | Some true | None ->
            (* ok:true, or a legacy relay with no `ok` field — messages are
@@ -564,6 +590,20 @@ let transient_wedge_remediation =
    (check first with: c2c doctor --relay). The monitor keeps retrying and \
    local inbox receive is unaffected."
 
+(* B213: escalation text for a SUSTAINED rate-limit (429) streak. Deliberately
+   the OPPOSITE advice to [transient_wedge_remediation]: throttling is not a
+   wedged bridge, and restarting the connector while throttled worsens the 429
+   storm (B210). It is also explicitly NOT an identity/signature failure, so the
+   operator is never nudged toward re-register. The monitor recovers on its own
+   by backing off. *)
+let rate_limit_wedge_remediation =
+  "relay is rate-limiting this monitor (HTTP 429). This is throttling, NOT an \
+   identity/signature problem — the monitor is backing off and will recover on \
+   its own. Do NOT re-register or restart the connector (c2c restart \
+   relay-connect) while throttled; extra reconnects worsen the 429 storm \
+   (B210). Check first with: c2c doctor --relay. Local inbox receive is \
+   unaffected."
+
 type transient_streak = {
   ts_consecutive : int;
   ts_first_at : float option;
@@ -581,11 +621,17 @@ type transient_action =
   | Transient_quiet of int
       (** already escalated and not a periodic re-log — suppress the line *)
 
-(* Advance the transient streak by one peek at [now] and decide what to log. *)
+(* Advance the transient streak by one peek at [now] and decide what to log.
+   [remediation] is the escalation text emitted on the one-time [Transient_wedged]
+   crossing; it defaults to the wedged-bridge advice but callers pass
+   [rate_limit_wedge_remediation] (B213) so a sustained 429 streak escalates with
+   throttling-appropriate advice instead of the (harmful) "restart the connector"
+   line. *)
 let note_transient
     ?(threshold = default_transient_wedge_threshold)
     ?(min_span_s = default_transient_wedge_min_span_s)
     ?(log_every = transient_log_every_after_wedge)
+    ?(remediation = transient_wedge_remediation)
     ~now
     ~streak
     () : transient_action * transient_streak =
@@ -601,7 +647,7 @@ let note_transient
     else (Transient_quiet consecutive, streak')
   else if consecutive >= threshold && elapsed >= min_span_s then
     ( Transient_wedged
-        { attempt = consecutive; remediation = transient_wedge_remediation },
+        { attempt = consecutive; remediation },
       { ts_consecutive = consecutive; ts_first_at = Some first;
         ts_escalated = true } )
   else
