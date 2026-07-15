@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-15T03:02:58Z"
+depends_on: []
+estimate_hours: 1
+id: B192
+priority: high
+status: pending
+tags: []
+title: c2c-session skill; where is it referenced and do we need it? grok likes to call it. not sure if it's a real skill or how it's injected into the client.
+updated_at: "2026-07-15T03:02:58Z"
+---
+
+c2c-session skill; where is it referenced and do we need it? grok likes to call it. not sure if it's a real skill or how it's injected into the client.
