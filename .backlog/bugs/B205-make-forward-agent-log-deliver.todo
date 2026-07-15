@@ -1,17 +1,18 @@
 ---
 claimed_at: "2026-07-15T05:27:29Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T06:17:55Z"
 complexity: medium
 created_at: "2026-07-15T05:20:33Z"
 depends_on: []
+duration_minutes: 50.44315627465
 estimate_hours: 2
 id: B205
 priority: high
 started_at: "2026-07-15T05:27:29Z"
-status: in_progress
+status: done
 tags: []
 title: Make forward-agent-log delivery failures retryable and bound live transcript input
-updated_at: "2026-07-15T05:27:29Z"
+updated_at: "2026-07-15T06:17:55Z"
 ---
 Prevent forward-agent-log from silently losing classified events after broker delivery reports an error. Acceptance: JSONL and OpenCode paths retain/retry unsent events with bounded retry/backoff and surface a terminal/actionable failure; no line/message is marked consumed until successful delivery or an explicit documented loss policy; bound raw line/pending-buffer and complete-message sizes to avoid memory exhaustion from malformed live transcripts; add regression tests for failed then successful delivery and oversized partial input.

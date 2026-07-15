@@ -427,6 +427,25 @@ let test_opencode_attach_skips_existing () =
         (List.rev !sent);
       check int "forwarded count" 1 stats.F.forwarded)
 
+let test_opencode_retries_failed_delivery () =
+  with_temp_dir (fun root ->
+      let msg_dir, part_root = mk_opencode_session root in
+      add_opencode_message ~msg_dir ~part_root ~id:"msg_retry" ~role:"user"
+        ~completed:false
+        [ {|{"id":"p1","type":"text","text":"retry me"}|} ];
+      let attempts = ref 0 in
+      let send _ =
+        incr attempts;
+        if !attempts = 1 then Error "temporary broker outage" else Ok ()
+      in
+      let stats =
+        F.run_opencode ~message_dir:msg_dir ~max_bytes:2000 ~interval:0.01
+          ~from_start:true ~once:true ~send ()
+      in
+      check int "failed delivery retried" 2 !attempts;
+      check int "event eventually forwarded" 1 stats.F.forwarded;
+      check int "no terminal failure" 0 stats.F.send_failures)
+
 (* --- 1e. time parsing / range filters / compaction (B194 follow-up) ------- *)
 
 let test_parse_time_spec () =
@@ -612,6 +631,55 @@ let test_tail_read_missing_file () =
   check (list string) "missing file yields nothing" [] lines;
   check bool "state unchanged" true (st = st')
 
+let test_tail_read_bounds_oversized_partial () =
+  with_temp_dir (fun dir ->
+      let path = dir // "oversized.jsonl" in
+      write_file path (String.make (F.max_raw_line_bytes + 100) 'x');
+      let st = F.initial_tail_state ~from_start:true path in
+      let lines, st = F.tail_read ~path st in
+      check (list string) "partial oversized input yields no line" [] lines;
+      check bool "pending buffer is bounded" true
+        (String.length st.F.pending <= F.max_raw_line_bytes);
+      let lines, st = F.tail_read ~path st in
+      check (list string) "oversize remainder yields no line" [] lines;
+      check int "oversize is recorded before newline" 1 st.F.oversize_lines;
+      append_file path "\n";
+      let lines, st = F.tail_read ~path st in
+      check (list string) "oversized completed line is not exposed" [] lines;
+      check int "one oversized line dropped explicitly" 1 st.F.oversize_lines;
+      check int "pending buffer cleared at newline" 0
+        (String.length st.F.pending))
+
+let test_run_once_drains_across_read_batches () =
+  with_temp_dir (fun dir ->
+      let path = dir // "many.jsonl" in
+      let oc = open_out_bin path in
+      for i = 1 to F.max_lines_per_step + 44 do
+        Printf.fprintf oc
+          {|{"type":"user","message":{"role":"user","content":"line %d"}}|}
+          i;
+        output_char oc '\n'
+      done;
+      close_out oc;
+      let sent = ref 0 in
+      let send _ =
+        incr sent;
+        if !sent = 1 then begin
+          append_file path
+            {|{"type":"user","message":{"role":"user","content":"post snapshot"}}|};
+          append_file path "\n"
+        end;
+        Ok ()
+      in
+      let stats =
+        F.run ~path ~classify:F.classify_claude_line ~max_bytes:2000
+          ~interval:0.01 ~from_start:true ~once:true ~send ()
+      in
+      check int "all batches forwarded" (F.max_lines_per_step + 44) !sent;
+      check int "forwarded count spans batches" !sent stats.F.forwarded;
+      check int "post-snapshot append not forwarded"
+        (F.max_lines_per_step + 44) stats.F.forwarded)
+
 (* --- 3. formatting --------------------------------------------------------- *)
 
 let contains ~needle haystack =
@@ -763,6 +831,25 @@ let test_run_once_counts_send_failures () =
   check int "all sends failed" (List.length expected_fixture_bodies)
     stats.F.send_failures;
   check int "none forwarded" 0 stats.F.forwarded
+
+let test_run_once_retries_failed_delivery () =
+  with_temp_dir (fun dir ->
+      let path = dir // "retry.jsonl" in
+      write_file path
+        {|{"type":"user","message":{"role":"user","content":"retry me"}}|};
+      append_file path "\n";
+      let attempts = ref 0 in
+      let send _ =
+        incr attempts;
+        if !attempts = 1 then Error "temporary broker outage" else Ok ()
+      in
+      let stats =
+        F.run ~path ~classify:F.classify_claude_line ~max_bytes:2000
+          ~interval:0.01 ~from_start:true ~once:true ~send ()
+      in
+      check int "failed delivery retried" 2 !attempts;
+      check int "event eventually forwarded" 1 stats.F.forwarded;
+      check int "no terminal failure" 0 stats.F.send_failures)
 
 (* --- 5. real-broker delivery ----------------------------------------------- *)
 
@@ -1155,6 +1242,8 @@ let () =
         ; test_case "attach skips existing" `Quick
             test_opencode_attach_skips_existing
         ; test_case "since/until range" `Quick test_opencode_since_until
+        ; test_case "failed delivery retried" `Quick
+            test_opencode_retries_failed_delivery
         ] )
     ; ( "time-and-compaction"
       , [ test_case "parse_time_spec" `Quick test_parse_time_spec
@@ -1170,6 +1259,10 @@ let () =
         ; test_case "incremental reads" `Quick test_tail_read_incremental
         ; test_case "truncation reset" `Quick test_tail_read_truncation_reset
         ; test_case "missing file" `Quick test_tail_read_missing_file
+        ; test_case "oversized partial bounded" `Quick
+            test_tail_read_bounds_oversized_partial
+        ; test_case "once drains bounded batches" `Quick
+            test_run_once_drains_across_read_batches
         ] )
     ; ( "format"
       , [ test_case "labels" `Quick test_format_labels
@@ -1186,6 +1279,8 @@ let () =
       , [ test_case "fixture transcript" `Quick test_run_once_fixture
         ; test_case "send failures counted" `Quick
             test_run_once_counts_send_failures
+        ; test_case "failed delivery retried" `Quick
+            test_run_once_retries_failed_delivery
         ] )
     ; ( "broker"
       , [ test_case "delivers to inbox" `Quick

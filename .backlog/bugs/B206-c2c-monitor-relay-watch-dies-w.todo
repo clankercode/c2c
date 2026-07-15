@@ -102,3 +102,29 @@ Hint path is correct: `c2c relay register --alias <alias>`.
 - Do not silently weaken relay auth.
 - Do not auto-register without a clear security story (binding an alias to a host key is intentional).
 - Local inbox must remain independent of relay failures (current behavior is good).
+
+
+## Additional repro (2026-07-15 ~16:14, Grok session grok-melody-colony-3hnv)
+
+Same terminal relay-watch failure on a **new** Grok session alias — confirms B206 is not fixed / still repros for CLI-first Grok install path.
+
+- Session: `grok-melody-colony-3hnv` (`019f6469-3534-7dc1-b219-39c07ba21f01`)
+- Host: `3d08761ae3f3`
+- Identity fingerprint: `SHA256:NEstCw_c5DCM3pJ3CGtl1bN02rPPPd18IVERVF3ciUU` (same machine identity as prior B206 evidence)
+- Relay: `https://relay.c2c.im` configured; `whoami` state `configured_unverified`; connector: none
+- Armed: `c2c monitor` (persistent inbox watcher from Grok SessionStart / c2c-session skill)
+
+```
+[16:14:10] monitoring as grok-melody-colony-3hnv (session 019f6469-3534-7dc1-b219-39c07ba21f01)
+[16:14:10] watching live inbox (peek)
+[16:14:10] relay watch: peek cli-grok-melody-colony-3hnv/cli-grok-melody-colony-3hnv every 5.0s
+[16:14:10] relay watch: TERMINAL failure peeking cli-grok-melody-colony-3hnv/cli-grok-melody-colony-3hnv: unauthorized: alias "grok-melody-colony-3hnv" has no identity binding
+[16:14:10] relay watch: recovery budget exhausted (or hard auth/config break — code=unauthorized). Relay watch will not self-heal without operator action.
+[16:14:10] relay watch: remediation: No valid relay identity binding for this alias. Run `c2c relay register --alias <alias>` (or fix the key), then restart the monitor.
+[16:14:10] relay watch: disabled — local inbox watch continues (relay failure does not stop local receive)
+```
+
+Notes:
+- Local inbox watch stayed up (matches existing B206 observation).
+- No `relay register` run in this session — SessionStart / skill only arms monitor; still no auto-bind for freshly minted Grok alias.
+- Pattern: every new Grok session alias hits the same missing identity binding on first monitor arm.
