@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-15T05:11:49Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T05:04:22Z"
 depends_on: []
 estimate_hours: 1
 id: B201
 priority: high
-status: pending
+started_at: "2026-07-15T05:11:49Z"
+status: in_progress
 tags: []
 title: c2c relay connect attempts to register all historical registrations, triggering HTTP 429 rate limit
-updated_at: "2026-07-15T05:04:22Z"
+updated_at: "2026-07-15T05:11:49Z"
 ---
 
 # c2c relay connect attempts to register all historical registrations, triggering HTTP 429 rate limit
