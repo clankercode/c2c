@@ -103,7 +103,7 @@ let registry_prune_cmd =
 
 let force_flag =
   Cmdliner.Arg.(value & flag & info [ "force"; "f" ]
-    ~doc:"Skip the alive-registration safety check and run sweep anyway.\
+    ~doc:"Skip the active/recent-registration safety check and run sweep anyway.\
           Use this only when you have verified no live sessions are present.")
 
 let sweep_cmd =
@@ -122,20 +122,23 @@ let sweep_cmd =
   end;
   let c2c_start_sids = c2c_start_session_ids () in
   let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
-  (* Safety guard: refuse to sweep if any alive non-managed registrations exist. *)
-  let alive_nonmanaged_regs =
+  (* Use the same bounded predicate as Broker.sweep.  The general delivery
+     liveness predicate intentionally treats pidless registrations as alive,
+     but doing so here made old CLI registrations block sweep forever even
+     after Broker.sweep classified them as reappable. *)
+  let protected_nonmanaged_regs =
     let all_regs = C2c_mcp.Broker.list_registrations broker in
     List.filter (fun (r : C2c_mcp.registration) ->
       not (List.mem r.session_id c2c_start_sids)
-      && C2c_mcp.Broker.registration_is_alive r
+      && C2c_mcp.Broker.is_sweep_keepable r
     ) all_regs
   in
-  if alive_nonmanaged_regs <> [] && not force then begin
-    Printf.eprintf "error: %d alive registration(s) would be dropped by sweep.\n"
-      (List.length alive_nonmanaged_regs);
+  if protected_nonmanaged_regs <> [] && not force then begin
+    Printf.eprintf "error: refusing sweep while %d active/recent registration(s) are present.\n"
+      (List.length protected_nonmanaged_regs);
     List.iter (fun (r : C2c_mcp.registration) ->
-      Printf.eprintf "  alive: %s (%s)\n" r.alias r.session_id
-    ) alive_nonmanaged_regs;
+      Printf.eprintf "  protected: %s (%s)\n" r.alias r.session_id
+    ) protected_nonmanaged_regs;
     Printf.eprintf "  Use --force to override this safety check.\n%!";
     exit 1
   end;
@@ -177,6 +180,7 @@ let sweep_dryrun_run json =
   let root = resolve_broker_root () in
   let broker = C2c_mcp.Broker.create ~root in
   let regs = C2c_mcp.Broker.list_registrations broker in
+  let preview = C2c_mcp.Broker.sweep_preview broker in
   let reg_by_sid = Hashtbl.create 16 in
   let alias_rows = Hashtbl.create 16 in
   let live_regs = ref [] in
@@ -229,17 +233,12 @@ let sweep_dryrun_run json =
       (pid, aliases) :: acc
     else acc
   ) pid_map [] in
-  let nonempty_dead = List.filter_map (fun (r : C2c_mcp.registration) ->
-    match inbox_count r.session_id with
-    | Some n when n > 0 -> Some (r.session_id, r.alias, n)
-    | _ -> None
-  ) !dead_regs in
-  let nonempty_orphans = List.filter_map (fun (sid, count) ->
-    match count with
+  let nonempty_at_risk = List.filter_map (fun sid ->
+    match inbox_count sid with
     | Some n when n > 0 -> Some (sid, n)
     | _ -> None
-  ) !orphan_inboxes in
-  let risk = List.length nonempty_dead + List.length nonempty_orphans in
+  ) preview.deleted_inboxes in
+  let risk = List.length nonempty_at_risk in
   let output_mode = if json then Json else Human in
   match output_mode with
   | Json ->
@@ -260,12 +259,13 @@ let sweep_dryrun_run json =
             ; ("dead", `Int (List.length !dead_regs))
             ; ("inbox_files_on_disk", `Int !inbox_file_count)
             ; ("orphan_inboxes", `Int (List.length !orphan_inboxes))
-            ; ("would_drop_if_swept", `Int (List.length !dead_regs + List.length !orphan_inboxes))
+            ; ("would_drop_if_swept", `Int (List.length preview.dropped_regs + List.length preview.deleted_inboxes))
             ; ("nonempty_content_at_risk", `Int risk)
             ])
         ; ("live_regs", `List (List.map json_reg !live_regs))
         ; ("legacy_pidless_regs", `List (List.map json_reg !legacy_regs))
         ; ("dead_regs", `List (List.map json_reg !dead_regs))
+        ; ("would_drop_regs", `List (List.map json_reg preview.dropped_regs))
         ; ("orphan_inboxes", `List (List.map (fun (sid, count) ->
               `Assoc [ ("session_id", `String sid); ("messages", match count with None -> `Null | Some n -> `Int n) ]
             ) !orphan_inboxes))
@@ -285,7 +285,8 @@ let sweep_dryrun_run json =
       Printf.printf "    dead                 %d\n" (List.length !dead_regs);
       Printf.printf "  inbox files on disk    %d\n" !inbox_file_count;
       Printf.printf "  orphan inboxes         %d\n" (List.length !orphan_inboxes);
-      Printf.printf "  would drop if swept    %d\n" (List.length !dead_regs + List.length !orphan_inboxes);
+      Printf.printf "  would drop if swept    %d\n"
+        (List.length preview.dropped_regs + List.length preview.deleted_inboxes);
       if risk > 0 then
         Printf.printf "  NON-EMPTY content risk %d\n" risk;
       if duplicate_aliases <> [] then begin
@@ -300,8 +301,8 @@ let sweep_dryrun_run json =
           Printf.printf "  pid=%d: %s\n" pid (String.concat ", " aliases)
         ) duplicate_pids
       end;
-      if !dead_regs <> [] then begin
-        Printf.printf "\ndead registrations (would be dropped):\n";
+      if preview.dropped_regs <> [] then begin
+        Printf.printf "\nregistrations sweep would drop:\n";
         List.iter (fun (r : C2c_mcp.registration) ->
           let suffix = match inbox_count r.session_id with
             | Some n when n > 0 -> Printf.sprintf "  [%d pending msgs]" n
@@ -310,16 +311,13 @@ let sweep_dryrun_run json =
           Printf.printf "  %-20s %s  pid=%s%s\n" r.alias r.session_id
             (match r.pid with None -> "None" | Some p -> string_of_int p)
             suffix
-        ) !dead_regs
+        ) preview.dropped_regs
       end;
-      if nonempty_dead <> [] || nonempty_orphans <> [] then begin
+      if nonempty_at_risk <> [] then begin
         Printf.printf "\nNON-EMPTY content that sweep would delete:\n";
-        List.iter (fun (sid, alias, n) ->
-          Printf.printf "  %s (%s)  (%d msgs)\n" sid alias n
-        ) nonempty_dead;
         List.iter (fun (sid, n) ->
           Printf.printf "  %s  (%d msgs)\n" sid n
-        ) nonempty_orphans;
+        ) nonempty_at_risk;
         Printf.printf "  -> consider draining these before running sweep.\n"
       end
 

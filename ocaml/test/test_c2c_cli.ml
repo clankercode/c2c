@@ -2404,10 +2404,10 @@ let test_sweep_force_removes_dead_reg () =
           check bool "inbox file removed" false
             (Sys.file_exists inbox_path)))
 
-let test_sweep_without_force_refuses_when_alive_reg_exists () =
+let test_sweep_without_force_refuses_when_recent_reg_exists () =
   with_temp_dir (fun dir ->
-      (* Set up a temp broker with one LIVE (non-managed) registration.
-         registration_is_alive returns true for pid=None or our own pid. *)
+      (* A fresh pidless registration is protected during its bounded handoff
+         window even though it has no inspectable process. *)
       let broker = C2c_mcp.Broker.create ~root:dir in
       C2c_mcp.Broker.register broker
         ~session_id:"session-alive" ~alias:"alive-alias"
@@ -2422,12 +2422,52 @@ let test_sweep_without_force_refuses_when_alive_reg_exists () =
             (Filename.quote dir) c2c_exe outfile errfile
           in
           let rc = Sys.command cmd in
-          check int "sweep without --force exits 1 when alive reg present" 1 rc;
+          check int "sweep without --force exits 1 when recent reg present" 1 rc;
           let err = read_file errfile in
-          check bool "stderr mentions alive registration" true
-            (string_contains err "alive");
+          check bool "stderr mentions active/recent registration" true
+            (string_contains err "active/recent");
           check bool "stderr mentions --force hint" true
             (string_contains err "--force")))
+
+let test_sweep_without_force_drops_aged_pidless_cli_reg () =
+  with_temp_dir (fun dir ->
+      (* A CLI row with no discoverable stable process is initially protected,
+         then becomes reappable after the bounded pidless handoff window.
+         Delivery remains lenient for compatibility. *)
+      write_file (Filename.concat dir "registry.json")
+        {|[{"session_id":"aged-cli-session","alias":"aged-cli-alias","pid":null,"client_type":"agy","registered_at":1.0,"confirmed_at":2.0}]|};
+      let preview_path = Filename.temp_file "sweep-aged-pidless-preview" ".json" in
+      let outfile = Filename.temp_file "sweep-legacy-pidless" ".out" in
+      let errfile = Filename.temp_file "sweep-legacy-pidless" ".err" in
+      Fun.protect
+        ~finally:(fun () ->
+          Sys.remove preview_path |> ignore;
+          Sys.remove outfile |> ignore;
+          Sys.remove errfile |> ignore)
+        (fun () ->
+          let preview_cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s sweep-dryrun --json > %s 2> %s"
+            (Filename.quote dir) c2c_exe
+            (Filename.quote preview_path) (Filename.quote errfile)
+          in
+          check int "sweep dry-run exits 0 for aged pidless CLI reg" 0
+            (Sys.command preview_cmd);
+          let preview = read_file preview_path |> Yojson.Safe.from_string in
+          let open Yojson.Safe.Util in
+          check int "dry-run predicts one registration and no inbox" 1
+            (preview |> member "totals" |> member "would_drop_if_swept" |> to_int);
+          check string "dry-run names aged pidless alias" "aged-cli-alias"
+            (preview |> member "would_drop_regs" |> index 0
+             |> member "alias" |> to_string);
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s sweep > %s 2> %s"
+            (Filename.quote dir) c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "sweep without --force exits 0 for aged pidless CLI reg" 0 rc;
+          let out = read_file outfile in
+          check bool "aged pidless CLI registration dropped" true
+            (string_contains out "Dropped 1 registrations")))
 
 let test_sweep_force_bypasses_alive_guard () =
   with_temp_dir (fun dir ->
@@ -4553,7 +4593,8 @@ let () =
         ] )
     ; ( "sweep",
         [ ( "sweep --force removes dead registrations", `Quick, test_sweep_force_removes_dead_reg )
-        ; ( "sweep refuses when alive non-managed registrations exist", `Quick, test_sweep_without_force_refuses_when_alive_reg_exists )
+        ; ( "sweep refuses when recent non-managed registrations exist", `Quick, test_sweep_without_force_refuses_when_recent_reg_exists )
+        ; ( "sweep drops aged pidless CLI registration without force", `Quick, test_sweep_without_force_drops_aged_pidless_cli_reg )
         ; ( "sweep --force bypasses alive guard", `Quick, test_sweep_force_bypasses_alive_guard )
         ] )
     ; ( "registry_prune",
