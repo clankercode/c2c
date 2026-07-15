@@ -38,6 +38,10 @@ path.
 
 ## Required follow-up
 
+Tracked as **B204** (export sanitisation/provenance) and **B205** (delivery
+integrity/resource bounds).  Consent policy needs resolution while B204 is
+designed, rather than an automatic copy of the draft's terminal prompt.
+
 1. Make transcript content safe to render as a c2c data message before the
    existing byte truncation: strip terminal controls, ANSI/OSC escapes, bidi
    controls, and NUL; frame every continuation line so body text cannot forge
