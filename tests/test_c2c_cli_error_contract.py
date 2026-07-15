@@ -344,6 +344,7 @@ class CustomArgValidationTests(_ContractBase):
                              exit_code=2, label="c2c wait-inbox --timeout notaduration")
 
     def test_schedule_set_bad_interval_exits_1_naming_flag(self):
+        self._register("q1zx-alias", "sess-q1-send")
         result = self._run(
             ["schedule", "set", "q1-sched", "--interval", "bogus", "--message", "m"],
             session="sess-q1-send", alias="q1zx-alias")
@@ -408,7 +409,8 @@ class HappyPathParseTests(_ContractBase):
         self._ok(["rooms", "leave", "q1zx-room"], session="sess-q1-a")
 
     def test_schedule_and_memory_surfaces(self):
-        # schedule/memory resolve identity via C2C_MCP_AUTO_REGISTER_ALIAS.
+        # Explicit alias remains supported; session-only resolution is covered
+        # separately below.
         kw = dict(session="sess-q1-c", alias="q1zx-sched")
         self._register("q1zx-sched", "sess-q1-c")
 
@@ -494,15 +496,37 @@ class OpErrorAndStderrSnapshotTests(_ContractBase):
         self.assert_op_error(result, "timeout",
                              label="c2c wait-inbox --timeout 1 (empty inbox)")
 
-    def test_schedule_and_memory_without_alias_env_exit_1(self):
-        for cmd in (["schedule", "list"], ["memory", "list"]):
-            with self.subTest(cmd=" ".join(cmd)):
-                result = self._run(cmd, session="sess-q1-noalias")
-                self.assert_op_error(result, "C2C_MCP_AUTO_REGISTER_ALIAS",
-                                     label=f"c2c {' '.join(cmd)} (no alias env)")
+    def test_schedule_and_memory_resolve_registered_session_without_alias_env(self):
+        session = "sess-q1-noalias"
+        alias = "q1zx-noalias"
+        self._register(alias, session)
+        roots = {
+            "C2C_SCHEDULE_ROOT_OVERRIDE": str(Path(self._tmp.name) / "schedules"),
+            "C2C_MEMORY_ROOT_OVERRIDE": str(Path(self._tmp.name) / "memory"),
+        }
+
+        schedule = self._run(
+            ["schedule", "set", "q1-noalias", "--interval", "4m"],
+            session=session, **roots)
+        self.assertEqual(schedule.returncode, 0, schedule.stderr)
+        self.assertIn("saved: q1-noalias", schedule.stdout)
+
+        memory = self._run(
+            ["memory", "write", "q1-noalias", "resolved from session"],
+            session=session, **roots)
+        self.assertEqual(memory.returncode, 0, memory.stderr)
+        self.assertIn("saved: q1-noalias", memory.stdout)
+
+        self.assertTrue(
+            (Path(roots["C2C_SCHEDULE_ROOT_OVERRIDE"]) / alias
+             / "q1-noalias.toml").exists())
+        self.assertTrue(
+            (Path(roots["C2C_MEMORY_ROOT_OVERRIDE"]) / alias
+             / "q1-noalias.md").exists())
 
     def test_missing_entities_exit_1_and_name_the_entity(self):
         kw = dict(session="sess-q1-d", alias="q1zx-misc")
+        self._register("q1zx-misc", "sess-q1-d")
         result = self._run(["schedule", "rm", "no-such-sched"], **kw)
         self.assert_op_error(result, "schedule 'no-such-sched' not found",
                              label="c2c schedule rm <missing>")

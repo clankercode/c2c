@@ -146,11 +146,10 @@ let revoke_aliases ?(all_targeted=false) aliases existing =
       existing
 
 let current_alias_or_die () =
-  match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
-  | Some a when String.trim a <> "" -> String.trim a
-  | _ ->
-      Printf.eprintf "error: set C2C_MCP_AUTO_REGISTER_ALIAS to identify the current agent\n%!";
-      exit 1
+  let broker =
+    C2c_mcp.Broker.create ~root:(C2c_cli_helpers.resolve_broker_root ())
+  in
+  C2c_cli_helpers.resolve_alias ~override:None broker
 
 let resolve_alias_arg = function
   | Some a when String.trim a <> "" -> String.trim a
