@@ -33,7 +33,7 @@ path.
 | Secret redaction | None | Default redaction of common credential shapes | Missing and worth adopting |
 | Control/provenance handling | Raw transcript body is appended after `[user]` / `[agent]` | strips ANSI/control/bidi; continuation lines are framed | Missing and worth adopting |
 | Consent before exporting | None | interactive source/recipient/data-class confirmation; `--yes` for automation | Missing policy choice; worth tracking |
-| Failed-delivery behaviour | Counts the failure but continues and consumes the line/message | Does not checkpoint a batch until it is delivered | Missing reliability behaviour |
+| Failed-delivery behaviour | Counts the failure but continues and consumes the line/message | Attempts delivery-gated checkpointing for pending/coalesced batches, but its default non-coalesced path can still checkpoint a failed event on the next loop | Both need reliability work; OCaml needs a designed retry policy |
 | Resource limits | Per-forward body cap only | raw-line cap, complete-message cap, send timeout, throttle | Raw-line/rate bounds are missing |
 
 ## Required follow-up
@@ -50,9 +50,12 @@ designed, rather than an automatic copy of the draft's terminal prompt.
 
 2. Do not silently discard a classified event after `send` reports an error.
    Current JSONL and OpenCode paths advance their in-memory offsets / done IDs
-   before knowing the message arrived.  Add bounded retry/backoff and make a
-   follow-mode failure visible and actionable.  Bound raw line and pending
-   buffer sizes so a malformed live transcript cannot exhaust memory.
+   before knowing the message arrived.  The draft's pending/coalesced batch
+   design is a useful direction, but its default non-coalesced path also has a
+   failed-event checkpoint bug, so it must not be copied verbatim.  Add a
+   bounded retry/backoff policy and make a follow-mode failure visible and
+   actionable.  Bound raw line and pending buffer sizes so a malformed live
+   transcript cannot exhaust memory.
 
 3. Decide the consent contract separately.  A mandatory prompt is good for a
    human terminal but incompatible with unattended agent use unless a clearly
