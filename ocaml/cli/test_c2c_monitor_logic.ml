@@ -774,6 +774,104 @@ let test_relay_peek_key_after_rebind_keeps_connector () =
   Alcotest.(check string) "connector node kept" "host-xyz" k.L.node_id;
   Alcotest.(check string) "connector session kept" "sess-9" k.L.session_id
 
+(* ---------- B211: bounded transient (wedged-bridge) escalation ---------- *)
+
+let is_transient_log = function L.Transient_log _ -> true | _ -> false
+let is_transient_wedged = function L.Transient_wedged _ -> true | _ -> false
+let is_transient_quiet = function L.Transient_quiet _ -> true | _ -> false
+
+let test_transient_below_threshold_logs () =
+  (* Every peek below the threshold logs normally (recoverable blip). *)
+  let rec burn i streak =
+    if i >= 3 then ()
+    else begin
+      let action, streak' =
+        L.note_transient ~threshold:6 ~min_span_s:0.0
+          ~now:(1000.0 +. float_of_int i) ~streak ()
+      in
+      Alcotest.(check bool)
+        (Printf.sprintf "attempt %d logs" i) true (is_transient_log action);
+      burn (i + 1) streak'
+    end
+  in
+  burn 0 L.empty_transient_streak
+
+let test_transient_escalates_once_then_quiets () =
+  (* A sustained streak (>= threshold spanning >= min_span) escalates EXACTLY
+     once, then suppresses per-attempt lines (bounded spam) while still
+     tracking the streak — the wedged-bridge remediation must appear. *)
+  let rec run i streak ~escalations =
+    if i >= 40 then escalations
+    else begin
+      let action, streak' =
+        L.note_transient ~threshold:6 ~min_span_s:60.0 ~log_every:12
+          ~now:(1000.0 +. (float_of_int i *. 20.0))  (* 20s/attempt *)
+          ~streak ()
+      in
+      let escalations =
+        match action with
+        | L.Transient_wedged { remediation; _ } ->
+            Alcotest.(check bool) "remediation names restart cmd" true
+              (let needle = "c2c restart relay-connect" in
+               let rec find k =
+                 k + String.length needle <= String.length remediation
+                 && (String.sub remediation k (String.length needle) = needle
+                     || find (k + 1))
+               in find 0);
+            escalations + 1
+        | _ -> escalations
+      in
+      run (i + 1) streak' ~escalations
+    end
+  in
+  let escalations = run 0 L.empty_transient_streak ~escalations:0 in
+  Alcotest.(check int) "escalates exactly once" 1 escalations
+
+let test_transient_fast_burst_does_not_escalate () =
+  (* Many attempts within a tiny wall-clock span must NOT escalate — a fast
+     retry burst is not proof of a wedged bridge. *)
+  let rec burn i streak =
+    if i >= 20 then ()
+    else begin
+      let action, streak' =
+        L.note_transient ~threshold:6 ~min_span_s:60.0
+          ~now:(1000.0 +. (float_of_int i *. 0.5))  (* only ~10s total *)
+          ~streak ()
+      in
+      Alcotest.(check bool)
+        (Printf.sprintf "fast attempt %d never wedged" i) false
+        (is_transient_wedged action);
+      burn (i + 1) streak'
+    end
+  in
+  burn 0 L.empty_transient_streak
+
+let test_transient_reset_starts_fresh_window () =
+  (* After escalation, resetting to empty (caller does this on Peek_ok /
+     Peek_terminal / rebind) starts a fresh window: next transient logs. *)
+  let action, _ =
+    L.note_transient ~threshold:6 ~min_span_s:0.0
+      ~now:2000.0 ~streak:L.empty_transient_streak ()
+  in
+  Alcotest.(check bool) "post-reset first attempt logs" true
+    (is_transient_log action)
+
+let test_transient_quiet_periodic_relog () =
+  (* Once escalated, a periodic re-log fires every [log_every] attempts so a
+     long wedge still leaves a heartbeat without per-attempt spam. *)
+  let escalated = { L.ts_consecutive = 6; ts_first_at = Some 0.0;
+                    ts_escalated = true } in
+  let action_mid, _ =
+    L.note_transient ~log_every:12 ~now:1.0 ~streak:escalated ()
+  in
+  Alcotest.(check bool) "attempt 7 is quiet" true (is_transient_quiet action_mid);
+  let at11 = { L.ts_consecutive = 11; ts_first_at = Some 0.0;
+               ts_escalated = true } in
+  let action_relog, _ =
+    L.note_transient ~log_every:12 ~now:1.0 ~streak:at11 ()
+  in
+  Alcotest.(check bool) "attempt 12 re-logs" true (is_transient_log action_relog)
+
 let () =
   Alcotest.run "c2c_monitor_logic"
     [ ( "alias-resolution-order",
@@ -853,6 +951,18 @@ let () =
             test_soft_terminal_requires_min_span
         ; Alcotest.test_case "soft streak resets after empty budget" `Quick
             test_soft_terminal_recovery_resets_via_empty_budget
+        ] )
+    ; ( "b211-transient-wedge-escalation",
+        [ Alcotest.test_case "below threshold logs each attempt" `Quick
+            test_transient_below_threshold_logs
+        ; Alcotest.test_case "sustained streak escalates once then quiets" `Quick
+            test_transient_escalates_once_then_quiets
+        ; Alcotest.test_case "fast burst does not escalate" `Quick
+            test_transient_fast_burst_does_not_escalate
+        ; Alcotest.test_case "reset starts a fresh window" `Quick
+            test_transient_reset_starts_fresh_window
+        ; Alcotest.test_case "periodic re-log after escalation" `Quick
+            test_transient_quiet_periodic_relog
         ] )
     ; ( "identity-rebind-b180",
         [ Alcotest.test_case "rebind when session alias changes" `Quick

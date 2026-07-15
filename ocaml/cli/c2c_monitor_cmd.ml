@@ -885,6 +885,8 @@ let monitor_cmd =
                signing alias are refs so rename rebinds without restarting. *)
             let err_streak = ref 0 in
             let soft_budget = ref C2c_monitor_logic.empty_soft_budget in
+            (* B211: bound transient (wedged-bridge) log spam + escalate once. *)
+            let transient_streak = ref C2c_monitor_logic.empty_transient_streak in
             (* B142: log the permanent-disable message ONCE. B180: reset when
                identity rebinds (peek target changes) so post-rename recovery
                is re-attempted honestly. *)
@@ -955,6 +957,7 @@ let monitor_cmd =
                   let target = node_id ^ "/" ^ session_id in
                   if !last_terminal_target <> "" && !last_terminal_target <> target then begin
                     soft_budget := C2c_monitor_logic.empty_soft_budget;
+                    transient_streak := C2c_monitor_logic.empty_transient_streak;
                     terminal_logged := false;
                     err_streak := 0
                   end;
@@ -969,6 +972,8 @@ let monitor_cmd =
                          err_streak := 0
                        end;
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
+                       transient_streak :=
+                         C2c_monitor_logic.empty_transient_streak;
                        ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
                    | C2c_monitor_logic.Peek_transient detail ->
                        (* Transient (incl. nonce_replay) never permanently
@@ -976,11 +981,32 @@ let monitor_cmd =
                           starts a fresh recovery window. *)
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
                        incr err_streak;
-                       Printf.eprintf
-                         "%s relay watch: transient error peeking %s/%s: %s \
-                          (attempt %d; backing off, will retry)\n%!"
-                         (now_hms ()) node_id session_id detail !err_streak
+                       (* B211: bound the spam. A wedged bridge fails every peek
+                          transiently forever; after a sustained streak emit ONE
+                          actionable escalation, then log only periodically. *)
+                       let action, streak' =
+                         C2c_monitor_logic.note_transient
+                           ~now ~streak:!transient_streak ()
+                       in
+                       transient_streak := streak';
+                       (match action with
+                        | C2c_monitor_logic.Transient_log attempt ->
+                            Printf.eprintf
+                              "%s relay watch: transient error peeking %s/%s: \
+                               %s (attempt %d; backing off, will retry)\n%!"
+                              (now_hms ()) node_id session_id detail attempt
+                        | C2c_monitor_logic.Transient_wedged
+                            { attempt; remediation } ->
+                            Printf.eprintf
+                              "%s relay watch: transient error peeking %s/%s: \
+                               %s (attempt %d; backing off, will retry)\n\
+                               %s relay watch: %s\n%!"
+                              (now_hms ()) node_id session_id detail attempt
+                              (now_hms ()) remediation
+                        | C2c_monitor_logic.Transient_quiet _ -> ())
                    | C2c_monitor_logic.Peek_terminal { code; detail } ->
+                       transient_streak :=
+                         C2c_monitor_logic.empty_transient_streak;
                        let action, budget' =
                          C2c_monitor_logic.decide_on_terminal
                            ~now ~code ~budget:!soft_budget ()
