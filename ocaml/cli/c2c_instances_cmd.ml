@@ -32,6 +32,137 @@ let list_instance_dirs () =
     ) [] dirs
   end
 
+type agy_instance_details =
+  { ai_session_id : string
+  ; ai_ls_address : string option
+  ; ai_conversation_id : string option
+  ; ai_deliver_watch_status : string
+  ; ai_deliver_watch_pid : int option
+  }
+
+(* ANTIGRAVITY_LS_ADDRESS is normally a loopback host/port, but treat the
+   persisted value as potentially sensitive input. Fail closed: operators
+   only need a scheme plus host:port (or host:port alone), never a partially
+   stripped malformed URL that might retain a credential. *)
+let sanitize_agy_ls_address raw =
+  let value = String.trim raw in
+  let all_chars predicate string =
+    try
+      String.iter (fun ch -> if not (predicate ch) then raise Exit) string;
+      true
+    with Exit -> false
+  in
+  let is_alnum = function
+    | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' -> true
+    | _ -> false
+  in
+  let safe_scheme scheme =
+    String.length scheme > 0
+    && is_alnum scheme.[0]
+    && all_chars (function
+        | 'a' .. 'z' | 'A' .. 'Z' | '0' .. '9' | '+' | '-' | '.' -> true
+        | _ -> false) scheme
+  in
+  let safe_host host =
+    let safe_label label =
+      let length = String.length label in
+      length > 0
+      && is_alnum label.[0]
+      && is_alnum label.[length - 1]
+      && all_chars (fun ch -> is_alnum ch || ch = '-') label
+    in
+    host <> "" && List.for_all safe_label (String.split_on_char '.' host)
+  in
+  let safe_port port =
+    String.length port > 0
+    && all_chars (function '0' .. '9' -> true | _ -> false) port
+    && match int_of_string_opt port with
+       | Some number -> number > 0 && number <= 65535
+       | None -> false
+  in
+  let safe_authority authority =
+    let length = String.length authority in
+    match String.rindex_opt authority ':' with
+    | None -> false
+    | Some colon when colon = 0 || colon + 1 >= length -> false
+    | Some colon ->
+        let host = String.sub authority 0 colon in
+        let port = String.sub authority (colon + 1) (length - colon - 1) in
+        safe_host host && safe_port port
+  in
+  let has_forbidden_char =
+    not (all_chars (fun ch -> Char.code ch >= 0x20 && Char.code ch <> 0x7f
+                             && ch <> '\\') raw)
+  in
+  if has_forbidden_char || value = "" then None
+  else
+    match String.index_opt value ':' with
+    | Some colon
+      when colon + 2 < String.length value
+           && String.sub value colon 3 = "://" ->
+        let scheme = String.sub value 0 colon in
+        let authority =
+          String.sub value (colon + 3) (String.length value - colon - 3)
+        in
+        if safe_scheme scheme && safe_authority authority then Some value else None
+    | _ -> if safe_authority value then Some value else None
+
+let read_pid_file path =
+  if not (Sys.file_exists path) then None
+  else
+    try
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        int_of_string_opt (String.trim (input_line ic)))
+    with _ -> None
+
+let agy_instance_details name =
+  let env = C2c_agy_deliver.read_agy_env name in
+  (* Unix.kill 0 and negative PIDs target process groups. A pidfile is an
+     individual-process record, so discard those values before liveness is
+     checked. *)
+  let deliver_watch_pid =
+    match read_pid_file (C2c_start.deliver_pid_path name) with
+    | Some pid when pid > 0 -> Some pid
+    | Some _ | None -> None
+  in
+  let deliver_watch_status =
+    match deliver_watch_pid with
+    | Some pid when C2c_start.pid_alive pid -> "running"
+    | Some _ -> "stopped"
+    | None -> "not-found"
+  in
+  { ai_session_id = name
+  ; ai_ls_address =
+      (match env with
+       | Some (env : C2c_agy_deliver.agy_env) ->
+           sanitize_agy_ls_address env.ls_address
+       | None -> None)
+  ; ai_conversation_id =
+      (match env with
+       | Some (env : C2c_agy_deliver.agy_env) -> Some env.conversation_id
+       | None -> None)
+  ; ai_deliver_watch_status = deliver_watch_status
+  ; ai_deliver_watch_pid = deliver_watch_pid
+  }
+
+let agy_details_to_json details =
+  `Assoc
+    [ ("session_id", `String details.ai_session_id)
+    ; ("ls_address",
+       match details.ai_ls_address with Some s -> `String s | None -> `Null)
+    ; ("conversation_id",
+       match details.ai_conversation_id with Some s -> `String s | None -> `Null)
+    ; ("deliver_watch",
+       `Assoc
+         [ ("status", `String details.ai_deliver_watch_status)
+         ; ("pid",
+            match details.ai_deliver_watch_pid with
+            | Some pid -> `Int pid
+            | None -> `Null)
+         ])
+    ]
+
 let instances_cmd =
   let prune_older_than =
     Cmdliner.Arg.(
@@ -107,6 +238,11 @@ let instances_cmd =
       | Some r -> fields @ [ ("role", `String r) ]
       | None -> fields
     in
+    let fields =
+      if inst.mi_client = "agy" then
+        fields @ [ ("agy", agy_details_to_json (agy_instance_details inst.mi_name)) ]
+      else fields
+    in
     (* T006: app-server-backed codex sessions expose a lifecycle status
        (starting / online-attached / offline / failed-startup) alongside the
        outer-loop status. Shared terminology with help/completions/resume.
@@ -171,8 +307,30 @@ let instances_cmd =
               | Some st -> " app-server=" ^ C2c_codex_session.status_to_string st
               | None -> ""
             in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s%s\n"
-              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode pid_str tmux_str cwd_str created_str role_str app_server_str
+            let agy_str =
+              if inst.mi_client <> "agy" then ""
+              else
+                let details = agy_instance_details inst.mi_name in
+                let optional label = function
+                  | Some value -> " " ^ label ^ "=" ^ value
+                  | None -> ""
+                in
+                let watch =
+                  match details.ai_deliver_watch_pid with
+                  | Some pid ->
+                      Printf.sprintf " deliver-watch=%s(pid=%d)"
+                        details.ai_deliver_watch_status pid
+                  | None ->
+                      " deliver-watch=" ^ details.ai_deliver_watch_status
+                in
+                " session=" ^ details.ai_session_id
+                ^ optional "conversation" details.ai_conversation_id
+                ^ optional "ls" details.ai_ls_address
+                ^ watch
+            in
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s%s%s\n"
+              inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode
+              pid_str tmux_str cwd_str created_str role_str app_server_str agy_str
           ) displayed
       end
 
