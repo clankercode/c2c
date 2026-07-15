@@ -368,14 +368,8 @@ let load_or_create_client_identity ~alias_hint =
    direct-registration shape: cli-<alias>/cli-<alias>, signed by the local
    machine identity. *)
 let register_alias_signed ~url ?token ~alias ~identity () =
-  let client = Relay.Relay_client.make ?token url in
-  let node_id = Printf.sprintf "cli-%s" alias in
-  let p = Relay_signed_ops.sign_register identity ~alias ~relay_url:url in
-  Relay.Relay_client.register_signed client
-    ~node_id ~session_id:node_id ~alias ~client_type:"cli"
-    ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
-    ~sig_b64:p.Relay_signed_ops.sig_b64
-    ~nonce:p.Relay_signed_ops.nonce ~ts:p.Relay_signed_ops.ts ()
+  C2c_monitor_relay_preflight.register_alias_signed
+    ~url ?token ~alias ~identity ()
 
 (* --- shared result rendering -----------------------------------------------
 
