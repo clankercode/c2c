@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-15T09:05:38Z"
+depends_on: []
+estimate_hours: 1
+id: B209
+priority: high
+status: pending
+tags: []
+title: Grok relay monitor uses mismatched connector session key and gets signature_invalid
+updated_at: "2026-07-15T09:05:38Z"
+---
+Dogfood report from grok-powder-kelo-6z5j: on host 3d08761ae3f3, session 019f64e1-04be-73c0-83e3-c71a3b40d406, c2c monitor relay watch reports signature_invalid because the verified signer grok-powder-kelo-6z5j does not own the session key; the reported key shape is cli-grok-powder-kelo-6z5j / cli-.... Soft retries 1-2/6. Re-registering the alias in the same session did not clear the mismatch; CLI register node_id and monitor cli session path still differ. Relay PoW also rose 0 to 12, but the identity mismatch reproduces independently and is the primary bug. Preliminary code trace: ocaml/cli/c2c_monitor_logic.ml lines 266-294 resolves connector-managed node_id and session_id only when connector_key is supplied; otherwise it falls back to cli-<alias> for both. ocaml/cli/c2c_monitor_cmd.ml documents connector-state.json as the default source, while ocaml/c2c_relay_connector.ml lines 1145-1151 persists node_id. Investigate the production path that loads connector-state.json and derives the local session-id, especially after relay register or re-register, and add a regression test covering Grok cli session identity versus connector-managed registration. Acceptance: monitor peeks and signs with the exact relay binding established by register/connect; re-register refreshes the same key; no signature_invalid retry loop for a healthy session.
