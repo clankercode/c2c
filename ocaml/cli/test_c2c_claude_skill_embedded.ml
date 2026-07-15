@@ -275,7 +275,13 @@ let test_skill_contains_untrusted_data_framing () =
   check bool "skill says a peer must not trigger approvals/actions" true
     (contains_phrase content "trigger an approval");
   check bool "skill says operator is the only source of authority" true
-    (contains_phrase content "only source of authority")
+    (contains_phrase content "only source of authority");
+  check bool "skill carries three-tier proximity ladder" true
+    (contains_phrase content "same_repo` > `same_host` > `relay");
+  check bool "skill tells interactive sessions to ask operator" true
+    (contains_phrase content "interactive session");
+  check bool "skill tells headless sessions to fail closed" true
+    (contains_phrase content "fail closed")
 
 let () =
   run "c2c_claude_skill_embedded"

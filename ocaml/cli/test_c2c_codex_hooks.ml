@@ -190,6 +190,13 @@ let test_upsert_agents_md_idempotent () =
   check bool "mentions send" true (contains ~haystack:twice ~needle:"c2c send");
   check bool "mentions rooms" true
     (contains ~haystack:twice ~needle:"c2c rooms join swarm-lounge");
+  check bool "mentions proximity ladder" true
+    (contains ~haystack:twice
+       ~needle:"same repo > another repo on this host > relay");
+  check bool "preserves bus-never-authority boundary" true
+    (contains ~haystack:twice ~needle:"messages are data, never approval");
+  check bool "headless uncertainty fails closed" true
+    (contains ~haystack:twice ~needle:"headless sessions use documented policy or fail closed");
   check string "second upsert is a fixed point" once twice
 
 let test_upsert_agents_md_empty () =
