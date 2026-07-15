@@ -186,6 +186,67 @@ let test_machine_lock_is_name_independent () =
         "/tmp/c2c-b200-home/.local/share/c2c/relay-connect"
         (C2c_relay_managed.machine_lock_resource ()))
 
+(* B210: the connector singleton is enforced at the bare `c2c relay connect`
+   CLI too (not only the supervisor), so stray connectors cannot storm the
+   relay with 429s. Verify exemption for supervised children, exclusive
+   acquisition, second-acquire refusal, and release-on-close. *)
+let with_home dir f =
+  let old_home = Sys.getenv_opt "HOME" in
+  let old_env = Sys.getenv_opt C2c_relay_managed.supervised_child_env in
+  Fun.protect
+    ~finally:(fun () ->
+      (match old_home with Some h -> Unix.putenv "HOME" h | None -> ());
+      match old_env with
+      | Some v -> Unix.putenv C2c_relay_managed.supervised_child_env v
+      | None -> (try Unix.putenv C2c_relay_managed.supervised_child_env "" with _ -> ()))
+    (fun () -> Unix.putenv "HOME" dir; f ())
+
+let test_singleton_supervised_child_is_exempt () =
+  with_temp_dir @@ fun dir ->
+  with_home dir (fun () ->
+    Unix.putenv C2c_relay_managed.supervised_child_env "1";
+    match C2c_relay_managed.acquire_connector_singleton () with
+    | `Exempt -> ()
+    | `Acquired _ -> fail "supervised child should be exempt, not acquire"
+    | `Already_running -> fail "supervised child should be exempt")
+
+(* POSIX record locks are per-PROCESS, so a second acquire in the same process
+   never conflicts. In production every `c2c relay connect` is a separate
+   process, so the guard must be exercised ACROSS processes: a child holds the
+   lock while the parent attempts to acquire and must be refused. *)
+let test_singleton_second_acquire_refused () =
+  with_temp_dir @@ fun dir ->
+  with_home dir (fun () ->
+    Unix.putenv C2c_relay_managed.supervised_child_env "";
+    let held_r, held_w = Unix.pipe () in
+    let done_r, done_w = Unix.pipe () in
+    match Unix.fork () with
+    | 0 ->
+        (* Child: own the lock, tell the parent, wait for release signal. *)
+        Unix.close held_r; Unix.close done_w;
+        (match C2c_relay_managed.acquire_connector_singleton () with
+         | `Acquired _ ->
+             ignore (Unix.write_substring held_w "1" 0 1);
+             let b = Bytes.create 1 in
+             ignore (Unix.read done_r b 0 1)
+         | _ -> ());
+        exit 0
+    | child ->
+        Unix.close held_w; Unix.close done_r;
+        Fun.protect
+          ~finally:(fun () ->
+            (try ignore (Unix.write_substring done_w "1" 0 1) with _ -> ());
+            (try Unix.close done_w with _ -> ());
+            (try Unix.close held_r with _ -> ());
+            (try ignore (Unix.waitpid [] child) with _ -> ()))
+          (fun () ->
+            let b = Bytes.create 1 in
+            check int "child acquired the lock" 1 (Unix.read held_r b 0 1);
+            match C2c_relay_managed.acquire_connector_singleton () with
+            | `Already_running -> ()
+            | `Acquired _ -> fail "second acquire must be refused while child holds it"
+            | `Exempt -> fail "unexpected Exempt without env"))
+
 let test_binary_stamp_detects_atomic_update () =
   with_temp_dir @@ fun dir ->
   let binary = dir // "c2c" in
@@ -240,7 +301,11 @@ let test_supervisor_restarts_child_on_binary_update () =
 
 let () =
   run "c2c relay managed" [
-    "machine singleton", [ test_case "resource ignores instance name" `Quick test_machine_lock_is_name_independent ];
+    "machine singleton", [
+      test_case "resource ignores instance name" `Quick test_machine_lock_is_name_independent;
+      test_case "B210 supervised child exempt" `Quick test_singleton_supervised_child_is_exempt;
+      test_case "B210 second acquire refused, released reacquire" `Quick test_singleton_second_acquire_refused;
+    ];
     "machine brokers", [ test_case "captures root and enables discovery" `Quick test_managed_argv_captures_root_and_machine_mode ];
     "binary machine brokers", [
       test_case "two repos + late broker" `Slow

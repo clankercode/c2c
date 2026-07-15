@@ -601,8 +601,14 @@ let run_checks () =
      presence alone never marks the connector live. Both the connector check
      and the capabilities matrix consume connector_running. *)
   let now = Unix.gettimeofday () in
+  let all_connector_procs = detect_connector_processes () in
+  (* B210: machine-wide duplicate-connector surfacing (not broker-scoped). *)
+  let duplicate_check =
+    Relay_doctor.duplicate_connector_check
+      ~pids:(Relay_doctor.persistent_connector_pids all_connector_procs)
+  in
   let scoped_procs =
-    Relay_doctor.scope_connector_lines ~broker_root (detect_connector_processes ())
+    Relay_doctor.scope_connector_lines ~broker_root all_connector_procs
   in
   let state = C2c_relay_connector.read_connector_state broker_root in
   (* B181: treat a live PID recorded in connector-state as process evidence
@@ -631,6 +637,7 @@ let run_checks () =
     ; check_outbox ~broker_root
     ; check_capabilities ~probe ~connector_running
     ]
+    @ (match duplicate_check with Some c -> [ of_rd c ] | None -> [])
   in
   (broker_root, probe, checks)
 

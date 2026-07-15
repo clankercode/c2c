@@ -61,6 +61,11 @@ type sync_result = {
   inbound_delivered : int;
   inbound_rejected : int;  (* schema- or B196 policy-rejected rows this sync *)
   alerts_emitted : int;  (* B010: c2c-system alert messages injected this sync *)
+  rate_limited : bool;
+  (* B210: this sync pass observed a relay rate-limit rejection (HTTP 429 /
+     error_code=rate_limit_exceeded). The run loops use this to grow a bounded,
+     jittered backoff so N concurrent connectors on a shared host do not
+     resynchronise into a machine-wide 429 storm. *)
   last_error : sync_error option;
 }
 
@@ -2046,12 +2051,33 @@ let sync (t : t) : sync_result Lwt.t =
     alerts_emitted;
     inbound_delivered;
     inbound_rejected;
+    rate_limited = !obs_rate_limited;
     last_error;
   }
 
 (* ---------------------------------------------------------------------------
  * Run loop with graceful signal handling
  * --------------------------------------------------------------------------- *)
+
+(* B210: bounded, jittered exponential backoff for relay rate-limit (429)
+   rejections. A connector that keeps polling at a fixed interval while the
+   relay is returning 429 both wastes requests and — when several connectors
+   share a host and a wall-clock-aligned interval — resynchronises into a
+   machine-wide receive storm. On each consecutive rate-limited pass the delay
+   grows 2^strikes from the base interval, capped at [rate_limit_backoff_cap_s];
+   additive jitter in [0, base) desynchronises concurrent connectors so they do
+   not all wake together. [strikes]=0 (a clean pass) returns the base interval.
+   Pure so it is unit-testable. *)
+let rate_limit_backoff_cap_s = 300.0
+
+let rate_limit_backoff ~base ~strikes =
+  if strikes <= 0 then base
+  else begin
+    let grown = base *. (2.0 ** float_of_int (min strikes 20)) in
+    let capped = Float.min grown rate_limit_backoff_cap_s in
+    let jitter = Random.float (Float.max 0.0 base) in
+    capped +. jitter
+  end
 
 (* B181: wall-clock cap for one sync pass so a hung HTTP path cannot leave
    a multi-hour PID with stale last_sync. Defaults to max(90s, 4 * interval).
@@ -2089,8 +2115,14 @@ let run_sync_once (t : t) :
       | exn -> Error (`Exn exn))
 
 let run (t : t) : unit =
+  (* B210: seed per-process so the backoff jitter actually desynchronises
+     concurrent connectors (without a seed every process draws the same
+     sequence, re-aligning them into a storm). *)
+  Random.self_init ();
   let shutdown = ref false in
   let watchdog_strikes = ref 0 in
+  (* B210: consecutive rate-limited passes drive the bounded backoff below. *)
+  let rl_strikes = ref 0 in
   let install_signal sig_name =
     Sys.signal sig_name (Sys.Signal_handle (fun _ ->
       if not !shutdown then begin
@@ -2108,6 +2140,7 @@ let run (t : t) : unit =
       (match run_sync_once t with
        | Ok result ->
            watchdog_strikes := 0;
+           if result.rate_limited then incr rl_strikes else rl_strikes := 0;
            write_connector_state ~node_id:t.node_id t.broker_root result;
            let err_str = match result.last_error with
              | None -> ""
@@ -2147,7 +2180,12 @@ let run (t : t) : unit =
            Printf.eprintf "[relay-connector] sync exception: %s\n%!"
              (Printexc.to_string exn));
       if not !shutdown then begin
-        Unix.sleepf t.interval;
+        let delay = rate_limit_backoff ~base:t.interval ~strikes:!rl_strikes in
+        if !rl_strikes > 0 then
+          Printf.eprintf
+            "[relay-connector] relay rate-limited (429); backing off %.0fs \
+             (strike %d)\n%!" delay !rl_strikes;
+        Unix.sleepf delay;
         loop ()
       end
     )
@@ -2215,11 +2253,15 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
           Hashtbl.add states root t;
           t
     in
+    (* B210: any root observing a 429 this pass drives the shared machine-loop
+       backoff (the loop sleeps once per pass across all roots). *)
+    let rl_seen = ref false in
     let sync_root root =
       let t = state_for root in
       match run_sync_once t with
       | Ok result ->
           Hashtbl.replace strikes root 0;
+          if result.rate_limited then rl_seen := true;
           write_connector_state ~node_id t.broker_root result;
           print_sync_result ~broker_root:root result;
           (match result.last_error with None -> true | Some _ -> false)
@@ -2246,15 +2288,27 @@ let start_machine ~relay_url ~token ~identity ~primary_broker_root ~node_id
       let roots = discover_machine_broker_roots ~primary:primary_broker_root in
       if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2
     end else begin
+      (* B210: seed jitter per-process (see [run]). *)
+      Random.self_init ();
       let shutdown = ref false in
+      let rl_strikes = ref 0 in
       let handle_signal _ = shutdown := true in
       Sys.set_signal Sys.sigterm (Sys.Signal_handle handle_signal);
       Sys.set_signal Sys.sigint (Sys.Signal_handle handle_signal);
       let rec loop () =
         if not !shutdown then begin
+          rl_seen := false;
           discover_machine_broker_roots ~primary:primary_broker_root
           |> List.iter (fun root -> ignore (sync_root root));
-          if not !shutdown then (Unix.sleepf interval; loop ())
+          if !rl_seen then incr rl_strikes else rl_strikes := 0;
+          if not !shutdown then begin
+            let delay = rate_limit_backoff ~base:interval ~strikes:!rl_strikes in
+            if !rl_strikes > 0 then
+              Printf.eprintf
+                "[relay-connector] relay rate-limited (429); backing off %.0fs \
+                 (strike %d)\n%!" delay !rl_strikes;
+            Unix.sleepf delay; loop ()
+          end
         end
       in
       loop ();

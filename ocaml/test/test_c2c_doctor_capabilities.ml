@@ -413,9 +413,43 @@ let test_public_smoke () =
       Alcotest.(check bool) "offline stand-in: subscribe=YES over TLS (B189)" true c.subscribe;
       Alcotest.(check bool) "offline stand-in: poll=yes" true c.poll
 
+(* B210: machine-wide duplicate-connector detection. *)
+let test_persistent_pids_dedup_and_once_excluded () =
+  let lines =
+    [ "111 c2c relay connect --all-brokers --broker-root /a/broker"
+    ; "111 c2c relay connect --all-brokers --broker-root /a/broker"  (* dup pid *)
+    ; "222 c2c relay connect --relay-url https://relay.c2c.im"
+    ; "333 c2c relay connect --once --broker-root /b/broker"          (* transient *)
+    ]
+  in
+  let pids = Relay_doctor.persistent_connector_pids lines in
+  Alcotest.(check (list int)) "distinct persistent pids, --once excluded"
+    [ 111; 222 ] pids
+
+let test_duplicate_check_none_when_singleton () =
+  Alcotest.(check bool) "0 pids -> None" true
+    (Relay_doctor.duplicate_connector_check ~pids:[] = None);
+  Alcotest.(check bool) "1 pid -> None" true
+    (Relay_doctor.duplicate_connector_check ~pids:[ 42 ] = None)
+
+let test_duplicate_check_fail_when_multiple () =
+  match Relay_doctor.duplicate_connector_check ~pids:[ 111; 222; 333 ] with
+  | Some c ->
+      Alcotest.(check string) "check id" "relay.connector_singleton" c.Relay_doctor.check_id;
+      Alcotest.(check bool) "status is FAIL" true (c.Relay_doctor.status = Relay_doctor.Fail);
+      Alcotest.(check bool) "has fix command" true (c.Relay_doctor.fix_command <> None)
+  | None -> Alcotest.fail "expected duplicate-connector FAIL for 3 pids"
+
 let () =
   Alcotest.run "c2c_doctor_capabilities"
-    [ ( "capabilities-scheme",
+    [ ( "B210 duplicate-connector",
+        [ Alcotest.test_case "persistent pids dedup + --once excluded" `Quick
+            test_persistent_pids_dedup_and_once_excluded;
+          Alcotest.test_case "None when 0/1 connector" `Quick
+            test_duplicate_check_none_when_singleton;
+          Alcotest.test_case ">1 connector → FAIL+fix" `Quick
+            test_duplicate_check_fail_when_multiple ] );
+      ( "capabilities-scheme",
         [ Alcotest.test_case "https subscribe=yes poll=yes" `Quick test_https_subscribe_yes_poll_yes;
           Alcotest.test_case "wss subscribe=yes" `Quick test_wss_subscribe_yes;
           Alcotest.test_case "http subscribe=yes" `Quick test_http_subscribe_yes;
