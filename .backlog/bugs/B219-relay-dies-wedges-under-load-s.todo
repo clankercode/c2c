@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-15T20:57:25Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T20:57:25Z"
 complexity: medium
 created_at: "2026-07-15T16:00:57Z"
 depends_on: []
+duration_minutes: 0.010608167883333334
 estimate_hours: 1
 id: B219
 priority: high
 started_at: "2026-07-15T20:57:25Z"
-status: in_progress
+status: done
 tags: []
 title: Relay dies/wedges under load (silent death, no app error) - OOM vs deadlock vs serverless-sleep
 updated_at: "2026-07-15T20:57:25Z"
