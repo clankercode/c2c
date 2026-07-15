@@ -887,6 +887,10 @@ let monitor_cmd =
             let soft_budget = ref C2c_monitor_logic.empty_soft_budget in
             (* B211: bound transient (wedged-bridge) log spam + escalate once. *)
             let transient_streak = ref C2c_monitor_logic.empty_transient_streak in
+            (* B213: separate streak for rate-limit (429) so a throttled monitor
+               is bounded + escalated with throttling-appropriate advice, never
+               conflated with the wedged-bridge transient escalation. *)
+            let rl_streak = ref C2c_monitor_logic.empty_transient_streak in
             (* B142: log the permanent-disable message ONCE. B180: reset when
                identity rebinds (peek target changes) so post-rename recovery
                is re-attempted honestly. *)
@@ -958,6 +962,7 @@ let monitor_cmd =
                   if !last_terminal_target <> "" && !last_terminal_target <> target then begin
                     soft_budget := C2c_monitor_logic.empty_soft_budget;
                     transient_streak := C2c_monitor_logic.empty_transient_streak;
+                    rl_streak := C2c_monitor_logic.empty_transient_streak;
                     terminal_logged := false;
                     err_streak := 0
                   end;
@@ -974,12 +979,15 @@ let monitor_cmd =
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
                        transient_streak :=
                          C2c_monitor_logic.empty_transient_streak;
+                       rl_streak := C2c_monitor_logic.empty_transient_streak;
                        ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
                    | C2c_monitor_logic.Peek_transient detail ->
                        (* Transient (incl. nonce_replay) never permanently
                           disables; reset soft budget so a later soft code
-                          starts a fresh recovery window. *)
+                          starts a fresh recovery window. A generic transient
+                          also breaks a rate-limit streak (different cause). *)
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
+                       rl_streak := C2c_monitor_logic.empty_transient_streak;
                        incr err_streak;
                        (* B211: bound the spam. A wedged bridge fails every peek
                           transiently forever; after a sustained streak emit ONE
@@ -1004,9 +1012,43 @@ let monitor_cmd =
                               (now_hms ()) node_id session_id detail attempt
                               (now_hms ()) remediation
                         | C2c_monitor_logic.Transient_quiet _ -> ())
+                   | C2c_monitor_logic.Peek_rate_limited detail ->
+                       (* B213: relay throttling (HTTP 429). A distinct transient:
+                          back off + retry, recovers on its own. Reported clearly
+                          as throttling (not identity, not a wedged bridge) and
+                          bounded via its own streak with throttling-appropriate
+                          escalation — never the "restart the connector" advice
+                          that would worsen the storm. *)
+                       soft_budget := C2c_monitor_logic.empty_soft_budget;
+                       transient_streak :=
+                         C2c_monitor_logic.empty_transient_streak;
+                       incr err_streak;
+                       let action, streak' =
+                         C2c_monitor_logic.note_transient
+                           ~remediation:C2c_monitor_logic.rate_limit_wedge_remediation
+                           ~now ~streak:!rl_streak ()
+                       in
+                       rl_streak := streak';
+                       (match action with
+                        | C2c_monitor_logic.Transient_log attempt ->
+                            Printf.eprintf
+                              "%s relay watch: rate-limited (HTTP 429) peeking \
+                               %s/%s: %s (attempt %d; backing off, will retry — \
+                               throttling, not an identity problem)\n%!"
+                              (now_hms ()) node_id session_id detail attempt
+                        | C2c_monitor_logic.Transient_wedged
+                            { attempt; remediation } ->
+                            Printf.eprintf
+                              "%s relay watch: rate-limited (HTTP 429) peeking \
+                               %s/%s: %s (attempt %d; backing off, will retry)\n\
+                               %s relay watch: %s\n%!"
+                              (now_hms ()) node_id session_id detail attempt
+                              (now_hms ()) remediation
+                        | C2c_monitor_logic.Transient_quiet _ -> ())
                    | C2c_monitor_logic.Peek_terminal { code; detail } ->
                        transient_streak :=
                          C2c_monitor_logic.empty_transient_streak;
+                       rl_streak := C2c_monitor_logic.empty_transient_streak;
                        let action, budget' =
                          C2c_monitor_logic.decide_on_terminal
                            ~now ~code ~budget:!soft_budget ()

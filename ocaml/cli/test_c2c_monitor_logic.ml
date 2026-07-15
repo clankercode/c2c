@@ -504,11 +504,94 @@ let test_classify_nonce_replay_is_transient () =
 
 let test_classify_unknown_code_defaults_transient () =
   (* An unrecognized error_code must NOT kill the monitor — default transient. *)
-  let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "rate_limited")
-                    ; ("error", `String "429") ] in
+  let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "weird_unknown_code_xyz")
+                    ; ("error", `String "boom") ] in
   (match L.classify_relay_response resp with
    | L.Peek_transient _ -> ()
    | _ -> Alcotest.fail "expected Peek_transient for unknown code")
+
+(* ---------- B213: rate-limit (429) is a DISTINCT transient ---------- *)
+
+let outcome_label = function
+  | L.Peek_ok _ -> "ok"
+  | L.Peek_transient _ -> "transient"
+  | L.Peek_rate_limited _ -> "rate_limited"
+  | L.Peek_terminal _ -> "terminal"
+
+let test_classify_rate_limit_exceeded () =
+  (* The relay's honest 429 body: { ok:false, error_code:"rate_limit_exceeded" }.
+     Must classify as Peek_rate_limited — NOT terminal, NOT generic transient. *)
+  let resp = `Assoc [ ("ok", `Bool false)
+                    ; ("error_code", `String "rate_limit_exceeded")
+                    ; ("error", `String "too many requests")
+                    ; ("http_status", `Int 429) ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_rate_limited detail ->
+       Alcotest.(check bool) "detail names the rate-limit code" true
+         (str_contains detail "rate_limit_exceeded")
+   | other ->
+       Alcotest.failf "expected Peek_rate_limited, got %s" (outcome_label other))
+
+let test_classify_http_error_429_alias () =
+  (* reconcile_status synthesizes http_error_429 when a 429 body is not honestly
+     ok:false — that must also read as rate-limited, not a generic transient. *)
+  let resp = `Assoc [ ("ok", `Bool false)
+                    ; ("error_code", `String "http_error_429")
+                    ; ("http_status", `Int 429) ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_rate_limited _ -> ()
+   | other ->
+       Alcotest.failf "expected Peek_rate_limited, got %s" (outcome_label other))
+
+let test_rate_limit_distinct_from_signature_invalid () =
+  (* Acceptance B213(1): throttling and identity failure must never collapse
+     into the same bucket, in either direction. *)
+  let rl = `Assoc [ ("ok", `Bool false)
+                  ; ("error_code", `String "rate_limit_exceeded") ] in
+  let sig_ = `Assoc [ ("ok", `Bool false)
+                    ; ("error_code", `String "signature_invalid") ] in
+  (match L.classify_relay_response rl with
+   | L.Peek_rate_limited _ -> ()
+   | other -> Alcotest.failf "429 must be rate_limited, got %s" (outcome_label other));
+  (match L.classify_relay_response sig_ with
+   | L.Peek_terminal { code; _ } ->
+       Alcotest.(check string) "sig code" "signature_invalid" code
+   | other ->
+       Alcotest.failf "signature_invalid must be terminal, got %s"
+         (outcome_label other));
+  (* And rate-limit codes are never terminal. *)
+  Alcotest.(check bool) "rate_limit_exceeded not terminal" false
+    (L.is_terminal_error_code "rate_limit_exceeded");
+  Alcotest.(check bool) "signature_invalid not rate-limit" false
+    (L.is_rate_limit_error_code "signature_invalid")
+
+let test_rate_limit_escalation_uses_throttle_remediation () =
+  (* A sustained 429 streak must escalate with throttling advice that does NOT
+     tell the operator to restart the connector (that worsens the storm, B210)
+     — the opposite of the wedged-bridge remediation. *)
+  let rec run i streak ~escalations =
+    if i >= 20 then escalations
+    else begin
+      let action, streak' =
+        L.note_transient ~threshold:6 ~min_span_s:60.0 ~log_every:12
+          ~remediation:L.rate_limit_wedge_remediation
+          ~now:(1000.0 +. (float_of_int i *. 20.0)) ~streak ()
+      in
+      let escalations =
+        match action with
+        | L.Transient_wedged { remediation; _ } ->
+            Alcotest.(check bool) "throttle remediation names HTTP 429" true
+              (str_contains remediation "429");
+            Alcotest.(check bool) "throttle remediation says do NOT restart" true
+              (str_contains remediation "Do NOT re-register or restart");
+            escalations + 1
+        | _ -> escalations
+      in
+      run (i + 1) streak' ~escalations
+    end
+  in
+  Alcotest.(check int) "escalates exactly once"
+    1 (run 0 L.empty_transient_streak ~escalations:0)
 
 let test_classify_malformed_is_transient () =
   (match L.classify_relay_response (`String "garbage") with
@@ -931,6 +1014,16 @@ let () =
         ; Alcotest.test_case "terminal error code taxonomy" `Quick test_is_terminal_error_code_taxonomy
         ; Alcotest.test_case "real public-relay json strings" `Quick test_classify_real_relay_json_strings
         ; Alcotest.test_case "relay terminal exit code distinct" `Quick test_exit_code_distinct
+        ] )
+    ; ( "b213-rate-limit-distinct",
+        [ Alcotest.test_case "429 rate_limit_exceeded is rate-limited" `Quick
+            test_classify_rate_limit_exceeded
+        ; Alcotest.test_case "http_error_429 alias is rate-limited" `Quick
+            test_classify_http_error_429_alias
+        ; Alcotest.test_case "rate-limit distinct from signature_invalid" `Quick
+            test_rate_limit_distinct_from_signature_invalid
+        ; Alcotest.test_case "rate-limit escalation uses throttle remediation" `Quick
+            test_rate_limit_escalation_uses_throttle_remediation
         ] )
     ; ( "relay-terminal-teardown",
         [ Alcotest.test_case "terminal + local watch active -> no exit" `Quick
