@@ -399,6 +399,43 @@ let test_decide_relay_watch_uses_connector_key () =
       Alcotest.(check string) "watch session_id = connector session" "sess-9" session_id
   | L.Relay_watch_off r -> Alcotest.failf "expected on, got off: %s" r
 
+let registration_allowed = function
+  | L.Register_allowed -> true
+  | L.Register_refused _ -> false
+
+let test_direct_register_requires_authoritative_alias () =
+  List.iter
+    (fun source ->
+      Alcotest.(check bool) "authoritative alias allowed" true
+        (registration_allowed
+           (L.direct_register_eligibility ~alias_source:source
+              ~connector_managed:false ~has_explicit_key:false
+              ~identity_available:true)))
+    [ L.Flag; L.Auto_env; L.Session_reg "sid" ];
+  List.iter
+    (fun source ->
+      Alcotest.(check bool) "fallback alias refused" false
+        (registration_allowed
+           (L.direct_register_eligibility ~alias_source:source
+              ~connector_managed:false ~has_explicit_key:false
+              ~identity_available:true)))
+    [ L.Default_alias_file; L.Session_id_env; L.Single_alive; L.Unresolved ]
+
+let test_direct_register_refuses_non_direct_ownership () =
+  let check_refused label ~connector_managed ~has_explicit_key
+      ~identity_available =
+    Alcotest.(check bool) label false
+      (registration_allowed
+         (L.direct_register_eligibility ~alias_source:L.Flag
+            ~connector_managed ~has_explicit_key ~identity_available))
+  in
+  check_refused "connector owns registration" ~connector_managed:true
+    ~has_explicit_key:false ~identity_available:true;
+  check_refused "custom key has different registration contract"
+    ~connector_managed:false ~has_explicit_key:true ~identity_available:true;
+  check_refused "identity required" ~connector_managed:false
+    ~has_explicit_key:false ~identity_available:false
+
 (* ---------- H3: relay /peek_inbox response classification ---------- *)
 
 let outcome_msgs = function L.Peek_ok m -> contents m | _ -> [ "<not-ok>" ]
@@ -779,6 +816,10 @@ let () =
         ; Alcotest.test_case "no connector falls back to cli-alias" `Quick test_no_connector_falls_back_to_cli_alias
         ; Alcotest.test_case "explicit override beats connector key" `Quick test_explicit_override_beats_connector_key
         ; Alcotest.test_case "decide_relay_watch uses connector key" `Quick test_decide_relay_watch_uses_connector_key
+        ; Alcotest.test_case "direct register requires authoritative alias" `Quick
+            test_direct_register_requires_authoritative_alias
+        ; Alcotest.test_case "direct register refuses non-direct ownership" `Quick
+            test_direct_register_refuses_non_direct_ownership
         ] )
     ; ( "relay-response-classification",
         [ Alcotest.test_case "ok:true yields messages" `Quick test_classify_ok_true_yields_messages

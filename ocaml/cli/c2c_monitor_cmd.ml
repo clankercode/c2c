@@ -244,7 +244,17 @@ let monitor_cmd =
            ~doc:"Relay session-id whose inbox to peek (default: same as \
                  --relay-node-id). Override or set C2C_RELAY_SESSION_ID.")
   in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id ->
+  let register_relay_alias =
+    Arg.(value & flag & info ["register-relay-alias"]
+           ~doc:"Explicitly establish a missing direct relay binding for the \
+                 resolved alias before watching. This signs the canonical \
+                 cli-<alias>/cli-<alias> registration with the local Ed25519 \
+                 machine identity. Refused for fallback-resolved aliases, \
+                 connector-managed aliases, and custom relay keys. Without \
+                 this flag, a missing binding is reported once and relay watch \
+                 stays off while local inbox monitoring continues.")
+  in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id register_relay_alias ->
     (* Resolve effective flags: --archive and --full-body are now defaults.
        --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
     let full_body = full_body || not snippet in  (* full_body unless --snippet *)
@@ -703,7 +713,11 @@ let monitor_cmd =
     in
     let relay_url_resolved = C2c_relay_cmd.resolve_relay_url None in
     let relay_token_resolved = C2c_relay_cmd.resolve_relay_token None in
-    let identity = match Relay_identity.load () with Ok id -> Some id | Error _ -> None in
+    let identity =
+      match C2c_relay_cmd.load_client_identity () with
+      | Ok id -> Some id
+      | Error _ -> None
+    in
     (* H3: resolve the connector-managed relay peek key. When the relay CONNECTOR
        (`c2c relay connect`) manages this broker it registers each local session
        under the machine node-id with the session's OWN session-id — NOT the
@@ -736,10 +750,61 @@ let monitor_cmd =
     let connector_key0 =
       match !my_alias_r with Some a -> resolve_connector_key a | None -> None
     in
+    (* B206: one preflight for both startup and B180 live identity rebind.
+       Keeping this decision in one closure prevents a newly discovered alias
+       from bypassing the binding probe and recreating the startup failure. *)
+    let preflight_relay_alias ~alias ~connector_key =
+      let has_explicit_key =
+        node_id_override <> None || session_id_override <> None
+      in
+      let eligibility =
+        C2c_monitor_logic.direct_register_eligibility
+          ~alias_source:!alias_source_r
+          ~connector_managed:(connector_key <> None)
+          ~has_explicit_key ~identity_available:(identity <> None)
+      in
+      let registration_policy =
+        if not register_relay_alias then
+          C2c_monitor_relay_preflight.Registration_disabled
+        else
+          match eligibility with
+          | C2c_monitor_logic.Register_allowed ->
+              C2c_monitor_relay_preflight.Registration_allowed
+          | C2c_monitor_logic.Register_refused reason ->
+              C2c_monitor_relay_preflight.Registration_refused reason
+      in
+      let context =
+        if connector_key <> None then
+          C2c_monitor_relay_preflight.Connector_managed
+        else if has_explicit_key then C2c_monitor_relay_preflight.Custom_key
+        else C2c_monitor_relay_preflight.Direct_cli
+      in
+      match identity, relay_url_resolved with
+      | Some id, Some url ->
+          Lwt_main.run
+            (C2c_monitor_relay_preflight.check_lwt ~url
+               ?token:relay_token_resolved ~alias ~identity:id ~context
+               ~registration_policy ())
+      | None, _ ->
+          (match registration_policy with
+           | C2c_monitor_relay_preflight.Registration_refused reason ->
+               C2c_monitor_relay_preflight.Off
+                 ("relay alias registration refused: " ^ reason)
+           | Registration_disabled | Registration_allowed ->
+               C2c_monitor_relay_preflight.Ready { registered = false })
+      | Some _, None ->
+          C2c_monitor_relay_preflight.Ready { registered = false }
+    in
     (* B180: live relay peek target. Updated in place on identity rebind so the
        background peek thread adopts cli-<new> (or connector key) without a
        process restart. None = relay watcher not armed. *)
-    let relay_peek_r : C2c_monitor_logic.relay_key option ref = ref None in
+    (* B206: key + signing alias are one immutable atomic snapshot. A live
+       rename must never let the relay loop combine the old inbox key with
+       the new alias (or vice versa). None pauses the loop without stopping
+       local receive or consuming the terminal-error budget. *)
+    let relay_target_r : (C2c_monitor_logic.relay_key * string) option Atomic.t =
+      Atomic.make None
+    in
     let relay_status_label, _relay_thread =
       if no_relay || relay_interval <= 0.0 then
         ("off (--no-relay / --relay-interval 0)", None)
@@ -761,23 +826,39 @@ let monitor_cmd =
         | C2c_monitor_logic.Relay_watch_off reason ->
             (Printf.sprintf "off (%s)" reason, None)
         | C2c_monitor_logic.Relay_watch { node_id; session_id } ->
-            relay_peek_r := Some C2c_monitor_logic.{ node_id; session_id };
-            let url = Option.get relay_url_resolved in
-            let client = Relay.Relay_client.make ?token:relay_token_resolved url in
-            let peek_once () =
-              (* Non-draining peek. B180: read node/session/alias from refs so a
-                 mid-run rename rebinds the peek key + signing alias without
-                 restarting this thread. *)
-              match !relay_peek_r with
+            let preflight =
+              match !my_alias_r with
+              | Some alias -> preflight_relay_alias ~alias ~connector_key:connector_key0
               | None ->
-                  `Assoc [ ("ok", `Bool false)
-                         ; ("error_code", `String "not_registered")
-                         ; ("error", `String "relay peek target cleared") ]
-              | Some { node_id; session_id } ->
+                  C2c_monitor_relay_preflight.Off
+                    "alias has no relay identity binding and no alias is resolved"
+            in
+            (match preflight with
+             | C2c_monitor_relay_preflight.Off reason ->
+                 (Printf.sprintf "off (%s; local inbox watch continues)" reason,
+                  None)
+             | C2c_monitor_relay_preflight.Ready { registered } ->
+            if registered then
+              Printf.eprintf
+                "%s relay watch: registered alias %s with the local machine identity (--register-relay-alias)\n%!"
+                (now_hms ()) (Option.get !my_alias_r);
+            let url = Option.get relay_url_resolved in
+            let signing_alias = Option.get !my_alias_r in
+            Atomic.set relay_target_r
+              (Some (C2c_monitor_logic.{ node_id; session_id }, signing_alias));
+            let client = Relay.Relay_client.make ?token:relay_token_resolved url in
+            let peek_once target =
+              (* Non-draining peek. B206: [target] is one atomic key+alias
+                 snapshot, so rename cannot produce mixed credentials. *)
+              match target with
+              | None ->
+                  `Assoc [ ("ok", `Bool true); ("messages", `List []) ]
+              | Some
+                  (({ node_id; session_id } : C2c_monitor_logic.relay_key),
+                   alias_str) ->
                   let body_str = Yojson.Safe.to_string (`Assoc [
                     ("node_id", `String node_id);
                     ("session_id", `String session_id)]) in
-                  let alias_str = Option.value !my_alias_r ~default:"" in
                   match identity with
                   | Some id ->
                       let auth =
@@ -852,14 +933,15 @@ let monitor_cmd =
                   else Float.min 60.0 (relay_interval *. float_of_int (!err_streak + 1))
                 in
                 if now -. last_tick >= effective_interval then begin
-                  let peek_target = !relay_peek_r in
+                  let peek_target = Atomic.get relay_target_r in
                   let outcome =
-                    try C2c_monitor_logic.classify_relay_response (peek_once ())
+                    try C2c_monitor_logic.classify_relay_response
+                          (peek_once peek_target)
                     with e -> C2c_monitor_logic.Peek_transient (Printexc.to_string e)
                   in
                   let node_id, session_id =
                     match peek_target with
-                    | Some k -> k.node_id, k.session_id
+                    | Some (k, _) -> k.node_id, k.session_id
                     | None -> "?", "?"
                   in
                   (* B180: when rename rebinds the peek key mid-loop, clear soft
@@ -933,7 +1015,7 @@ let monitor_cmd =
             let id_tag = if identity = None then " (unsigned)" else "" in
             (Printf.sprintf "peek %s/%s every %.1fs%s"
                node_id session_id relay_interval id_tag,
-             Some th)
+             Some th))
     in
     (* B180: rebind identity after rename without process restart.
        Triggers: registry change, archive alias_renamed marker, periodic poll.
@@ -1002,8 +1084,8 @@ let monitor_cmd =
     in
     let rearm_relay_for_alias new_alias =
       if no_relay || relay_interval <= 0.0 || not archive then
-        match !relay_peek_r with
-        | Some k ->
+        match Atomic.get relay_target_r with
+        | Some (k, _) ->
             Printf.sprintf "peek %s/%s every %.1fs (unchanged; relay re-arm gated)"
               k.node_id k.session_id relay_interval
         | None -> relay_status_label
@@ -1015,27 +1097,38 @@ let monitor_cmd =
             ~node_id_override ~session_id_override ~connector_key:ck ()
         with
         | C2c_monitor_logic.Relay_watch_off reason ->
-            relay_peek_r := None;
+            Atomic.set relay_target_r None;
             Printf.sprintf "off (%s)" reason
         | C2c_monitor_logic.Relay_watch { node_id; session_id } ->
-            let prev = !relay_peek_r in
-            relay_peek_r := Some C2c_monitor_logic.{ node_id; session_id };
-            (* If the relay thread was previously stopped on a terminal error
-               under the OLD key, do not auto-restart it here — B142 stop is
-               sticky for the process. Only swap the peek target when the
-               loop is still running. *)
-            let id_tag = if identity = None then " (unsigned)" else "" in
-            let label =
-              Printf.sprintf "peek %s/%s every %.1fs%s"
-                node_id session_id relay_interval id_tag
-            in
-            (match prev with
-             | Some p when p.node_id = node_id && p.session_id = session_id -> ()
-             | _ when not (Atomic.get relay_stop) ->
-                 Printf.eprintf
-                   "%s relay watch re-armed: %s\n%!" (now_hms ()) label
-             | _ -> ());
-            label
+            (match preflight_relay_alias ~alias:new_alias ~connector_key:ck with
+             | C2c_monitor_relay_preflight.Off reason ->
+                 Atomic.set relay_target_r None;
+                 Printf.sprintf "off (%s; local inbox watch continues)" reason
+             | C2c_monitor_relay_preflight.Ready { registered } ->
+                 if registered then
+                   Printf.eprintf
+                     "%s relay watch: registered alias %s with the local machine identity (--register-relay-alias)\n%!"
+                     (now_hms ()) new_alias;
+                 let prev = Atomic.get relay_target_r in
+                 Atomic.set relay_target_r
+                   (Some (C2c_monitor_logic.{ node_id; session_id }, new_alias));
+                 (* If the relay thread was previously stopped on a terminal
+                    error under the OLD key, do not auto-restart it here — B142
+                    stop is sticky for the process. Only swap the peek target
+                    when the loop is still running. *)
+                 let id_tag = if identity = None then " (unsigned)" else "" in
+                 let label =
+                   Printf.sprintf "peek %s/%s every %.1fs%s"
+                     node_id session_id relay_interval id_tag
+                 in
+                 (match prev with
+                  | Some (p, _) when
+                      p.node_id = node_id && p.session_id = session_id -> ()
+                  | _ when not (Atomic.get relay_stop) ->
+                      Printf.eprintf
+                        "%s relay watch re-armed: %s\n%!" (now_hms ()) label
+                  | _ -> ());
+                 label)
     in
     let try_rebind_identity ?hint () =
       if flag_bound then ()
@@ -1066,11 +1159,14 @@ let monitor_cmd =
               (* Migrate lock BEFORE swapping the alias ref so the expected
                  old lock name still matches the held lock path. *)
               migrate_lock ~new_alias;
-              my_alias_r := Some new_alias;
               (match resolved_sid with
                | Some sid -> alias_source_r := C2c_monitor_logic.Session_reg sid
                | None -> ());
               let relay_label = rearm_relay_for_alias new_alias in
+              (* Publish the local/filter identity only after relay preflight
+                 has atomically published the matching key+signing alias (or
+                 paused relay watch). *)
+              my_alias_r := Some new_alias;
               emit_identity_changed ~old_alias ~new_alias ~reason ~relay_label ())
       end
     in
@@ -1515,6 +1611,7 @@ let monitor_cmd =
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
     $ force_flag $ drain_flag $ cross_repo $ no_relay $ relay_interval $ relay_node_id $ relay_session_id
+    $ register_relay_alias
 
 (* --- monitor Cmd ---------------------------------------------------------- *)
 
@@ -1559,6 +1656,15 @@ let monitor =
                   polled, so a separate consumer (relay connector / $(b,c2c relay dm poll)) \
                   still receives every message. Relay-sourced lines are tagged 🌐 (and \
                   carry \"source\":\"relay\" in --json). $(b,--no-relay) disables."
+            ; `P "Relay alias preflight (B206): before advertising a direct \
+                  cli-<alias> relay watch, monitor makes a short signed probe. \
+                  A missing alias-to-identity binding keeps relay watch OFF and \
+                  prints the exact $(b,c2c relay register --alias) fix once; the \
+                  local inbox watch remains active. Nothing is auto-bound. \
+                  $(b,--register-relay-alias) is the explicit bootstrap: it signs \
+                  the canonical direct registration with the local machine key, \
+                  and is refused for fallback-resolved aliases, connector-owned \
+                  registrations, or custom relay keys."
             ; `P "Peek-key resolution (H3): the default relay inbox to peek is resolved \
                   automatically. When the relay CONNECTOR ($(b,c2c relay connect)) manages \
                   this broker it registers your alias under the machine node-id with your \
@@ -1598,6 +1704,7 @@ let monitor =
             ; `P "$(b,c2c monitor --drain)  — monitor is the inbox consumer (drains live inbox)"
             ; `P "$(b,c2c monitor --snippet)  — 80-char subject preview (legacy)"
             ; `P "$(b,c2c monitor --no-relay)  — local broker only (disable relay watcher)"
+            ; `P "$(b,c2c monitor --alias me --register-relay-alias)  — explicitly bind me to this machine key, then watch relay"
             ; `P "$(b,c2c monitor --relay-node-id machine-42)  — peek a relay inbox keyed machine-42/machine-42"
             ; `P "$(b,c2c monitor --relay-node-id host-1 --relay-session-id <sid>)  — connector-managed inbox (needs both)"
             ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"

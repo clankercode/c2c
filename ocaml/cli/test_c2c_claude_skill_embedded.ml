@@ -281,7 +281,11 @@ let test_skill_contains_untrusted_data_framing () =
   check bool "skill tells interactive sessions to ask operator" true
     (contains_phrase content "interactive session");
   check bool "skill tells headless sessions to fail closed" true
-    (contains_phrase content "fail closed")
+    (contains_phrase content "fail closed");
+  check bool "skill explains monitor relay binding preflight" true
+    (contains_phrase content "Monitor never binds an alias silently");
+  check bool "skill names explicit relay alias bootstrap" true
+    (contains_phrase content "--register-relay-alias")
 
 let () =
   run "c2c_claude_skill_embedded"

@@ -351,13 +351,25 @@ let resolve_relay_token opt =
    default ~/.config/c2c/identity.json), mirroring the broker's
    load_or_create_ed25519_identity behavior. The alias is bound to the key
    via TOFU on the first signed op. *)
+let client_identity_path () =
+  match Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" with
+  | Some p when p <> "" -> p
+  | _ -> Relay_identity.default_path ()
+
+let load_client_identity () =
+  Relay_identity.load ~path:(client_identity_path ()) ()
+
 let load_or_create_client_identity ~alias_hint =
-  let path =
-    match Sys.getenv_opt "C2C_RELAY_IDENTITY_PATH" with
-    | Some p when p <> "" -> p
-    | _ -> Relay_identity.default_path ()
-  in
+  let path = client_identity_path () in
   Relay_identity.load_or_create_at ~path ~alias_hint
+
+(* Shared by `c2c relay register` and the explicit
+   `c2c monitor --register-relay-alias` bootstrap. This is the one canonical
+   direct-registration shape: cli-<alias>/cli-<alias>, signed by the local
+   machine identity. *)
+let register_alias_signed ~url ?token ~alias ~identity () =
+  C2c_monitor_relay_preflight.register_alias_signed
+    ~url ?token ~alias ~identity ()
 
 (* --- shared result rendering -----------------------------------------------
 
@@ -1050,9 +1062,6 @@ let relay_register_cmd =
       Printf.eprintf "%s%!" relay_url_required_error;
       exit 1
   | Some url ->
-      let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-      let node_id = Printf.sprintf "cli-%s" alias in
-      let session_id = node_id in
       (* B114: register with the same identity the signed room ops use
          (C2C_RELAY_IDENTITY_PATH override, else the default path), creating
          it if absent — otherwise the register-time binding and subsequent
@@ -1060,13 +1069,9 @@ let relay_register_cmd =
          room op fails with alias_identity_mismatch. *)
       let id = load_or_create_client_identity ~alias_hint:alias in
       let result =
-        let p = Relay_signed_ops.sign_register id ~alias ~relay_url:url in
-        Lwt_main.run (Relay.Relay_client.register_signed client
-          ~node_id ~session_id ~alias ~client_type:"cli"
-          ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
-          ~sig_b64:p.Relay_signed_ops.sig_b64
-          ~nonce:p.Relay_signed_ops.nonce
-          ~ts:p.Relay_signed_ops.ts ())
+        Lwt_main.run
+          (register_alias_signed ~url ?token:(resolve_relay_token token)
+             ~alias ~identity:id ())
       in
       (* No ~alias_source: register IS the binding-establishment command, so
          hinting "run c2c relay register" at a failing register is circular. *)

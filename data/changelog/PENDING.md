@@ -11,6 +11,14 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
+  CLI-first aliases.** A short signed startup preflight reports an unbound alias
+  once and leaves relay watch off while local inbox monitoring continues.
+  Operators can run `c2c relay register --alias A` or explicitly opt into
+  `c2c monitor --alias A --register-relay-alias`; the bootstrap is refused for
+  ambiguous fallback aliases, connector-owned registration, and custom relay
+  keys. Relay auth remains unchanged.
+
 - **B207: agent guidance now distinguishes peer proximity without granting
   authority.** Installed c2c skills describe `same_repo` > `same_host` >
   `relay`, interactive operator escalation, and the headless fail-closed

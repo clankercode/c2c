@@ -53,6 +53,8 @@ let test_install_writes_skill_and_hooks_no_mcp () =
     check bool "hooks exist" true (Sys.file_exists hooks);
     check bool "skill is assembled grok blob" true
       (read_file skill = C2c_grok_skill_embedded.content);
+    check bool "CLI-first skill explains explicit relay registration" true
+      (contains ~haystack:(read_file skill) ~needle:"--register-relay-alias");
     let hooks_body = read_file hooks in
     check bool "SessionStart hook" true
       (contains ~haystack:hooks_body ~needle:"SessionStart");
