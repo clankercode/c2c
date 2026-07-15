@@ -200,3 +200,4 @@ bugs:
     - file: B201-c2c-relay-connect-attempts-to.todo
     - file: B202-cli-registrations-lack-pid-fie.todo
     - file: B203-compare-forward-agent-log-beha.todo
+    - file: B204-harden-forward-agent-log-trans.todo

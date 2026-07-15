@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-15T05:20:33Z"
+depends_on: []
+estimate_hours: 2
+id: B204
+priority: high
+status: pending
+tags: []
+title: Harden forward-agent-log transcript export against secrets and record forgery
+updated_at: "2026-07-15T05:20:33Z"
+---
+Implement a central outbound sanitisation boundary for forward-agent-log before formatting and delivery. Acceptance: strip NUL/C0/C1, ANSI/OSC, and bidi/spoofing controls; default-redact common secret-bearing material (authorization/bearer values, API-key shapes, JWTs, PEM private keys, credential assignments, URL userinfo/query secrets); frame every continuation line so transcript text cannot forge a new [user] or [agent] record; preserve UTF-8-safe max-bytes behaviour; add focused unit and binary fixture tests. Document that redaction is defence in depth and forwarded transcript text remains untrusted DATA.
