@@ -22,7 +22,7 @@ UPDATE 2026-07-15T21:xx (master 107d6081, DEPLOYED): mitigation shipped, root ca
 - B219 instrumentation DEPLOYED + confirmed live: `[relay] heartbeat uptime=..s peers=.. gc_heap_words=.. gc_heap_kb=.. rss_kb=..` every 60s (baseline: peers=1001 incl-dead, rss_kb=64268 @ 60s), + Printexc backtraces, top-level Lwt exception guard (logs+re-raises), SIGTERM/SIGINT logging. Acceptance clause "diagnosable from logs" MET.
 - REMAINING: the relay still dies silently every ~30min-2h under load (root cause NOT fixed). NEXT STEP: when it next dies, read railway logs for the FATAL/backtrace/signal line and the heartbeat trend (watch peers/rss climb) to identify the trigger, then fix. A death-signature log watcher is running. Note peers=1001 (incl dead) is high — investigate whether per-op lease iteration / dead-lease accumulation is a CPU/latency factor.
 
-UPDATE 2026-07-15T23:xxZ (evidence-only investigation; root cause still open):
+UPDATE 2026-07-15T23:31Z (evidence-only investigation; root cause still open):
 - Same deployment f75bd297 restarted: final heartbeat 22:08:50Z at uptime=4382s, peers=1047, heap~8MB, RSS=64.6MB; Railway remounted volume 22:09:24Z and relaunched at 22:09:30Z. No FATAL/backtrace or handled SIGTERM/SIGINT. Replacement exceeded prior lifetime (4922s) with /health 200, heap~8MB, RSS~44MB.
 - OOM remains ruled out: cgroup oom=0, oom_kill=0, max=0, 8GB limit; current CPU/memory/IO pressure negligible.
 - GC mismatch confirmed but not causal: production says gc disabled although CLI help advertises 300s. Live DB had 1131 leases, 1099 inside 24h TTL and 0 beyond the 12-month alias-release window that GC deletes, so enabling GC would not reduce current peer count.
