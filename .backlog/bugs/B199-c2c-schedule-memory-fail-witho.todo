@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-15T05:11:46Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T04:26:19Z"
 depends_on: []
 estimate_hours: 1
 id: B199
 priority: high
-status: pending
+started_at: "2026-07-15T05:11:46Z"
+status: in_progress
 tags: []
 title: c2c schedule/memory fail without C2C_MCP_AUTO_REGISTER_ALIAS
-updated_at: "2026-07-15T04:26:19Z"
+updated_at: "2026-07-15T05:11:46Z"
 ---
 
 # c2c schedule/memory fail without C2C_MCP_AUTO_REGISTER_ALIAS
