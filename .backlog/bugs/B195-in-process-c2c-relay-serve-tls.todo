@@ -1,0 +1,39 @@
+---
+complexity: medium
+created_at: "2026-07-15T03:54:36Z"
+depends_on: []
+estimate_hours: 1
+id: B195
+priority: medium
+status: pending
+tags:
+    - relay
+    - tls
+    - websocket
+title: in-process c2c relay serve --tls-cert may still break WebSocket subscribe
+updated_at: "2026-07-15T03:54:36Z"
+---
+## Symptom
+`c2c relay serve --tls-cert …` (in-process native TLS on the cohttp/fd-dup upgrade path) may not correctly end-to-end WebSocket-subscribe clients. Production edge TLS (Railway/Cloudflare terminating TLS in front of plain `relay serve`) works; the residual is the **in-process** TLS mode only.
+
+## Context
+B189 fixed the **client** side: `c2c relay subscribe` / `subscribe-daemon` now support `wss://` / `https://` via `ocaml/relay_ws_client.ml`, and live against `https://relay.c2c.im` succeeds (`WebSocket connected` on wss:443).
+
+B189 RESULT residual (not in scope for that fix):
+
+- Edge-TLS (Railway/Cloudflare) is the production path and works.
+- In-process `c2c relay serve --tls-cert` still uses fd-dup upgrade on the raw cohttp flow; end-to-end native-TLS WS on that mode may still be wrong.
+- Poll remains a valid non-WS receive path.
+
+## Expected
+- `c2c relay serve --tls-cert <cert> --tls-key <key>` accepts WebSocket subscribe over TLS the same way plain `ws://` / edge-terminated TLS does.
+- Or: document explicit non-support + doctor capability matrix marks in-process TLS subscribe unsupported, and clients fail closed with a clear hint (poll fallback).
+
+## Investigate
+1. Reproduce: local `c2c relay serve --tls-cert …`, then `c2c relay subscribe --relay-url https://127.0.0.1:…` (or wss) with a registered identity.
+2. Trace server upgrade path for TLS listeners (fd-dup / cohttp) vs plain HTTP.
+3. Fix handshake/frame path or gate + document.
+
+## Related
+- B189 (done): client wss subscribe for public/edge TLS relay
+- `ocaml/relay_ws_client.ml`, `ocaml/cli/c2c_relay_cmd.ml`, relay serve TLS wiring
