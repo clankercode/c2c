@@ -55,6 +55,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) () :
     (* H3 added cs_node_id to connector_state; this H5 fixture predates it.
        None = no node-id recorded, the pre-H3 behaviour. *)
     cs_node_id = None;
+    cs_sessions = [];
     cs_pid = None;
     cs_registered = [];
     cs_outbox_forwarded = 0;
