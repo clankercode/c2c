@@ -481,6 +481,27 @@ let relay_connect_cmd =
     | None -> None
   in
   let effective_relay_url = Option.value (resolve_relay_url relay_url) ~default:"http://localhost:7331" in
+  (* B210: a persistent connector (not --once) must be the sole one on the
+     host. Acquire the machine-wide singleton so a bare `c2c relay connect` or
+     a manual `--all-brokers` cannot pile up alongside the managed supervisor's
+     connector and storm the relay with 429s. The supervisor's own child is
+     exempt (it inherits C2C_RELAY_CONNECT_SUPERVISED=1). One-shot syncs
+     (--once, used by smoke tests / manual pulls) are transient and exempt.
+     The held fd is intentionally never released: the OS drops the POSIX lock
+     when this process exits. *)
+  if not use_python && not once then begin
+    match C2c_relay_managed.acquire_connector_singleton () with
+    | `Already_running ->
+        Printf.eprintf
+          "error: a machine-wide relay connector is already running on this \
+           host.\n\
+           Only one connector is needed; a second would cause relay 429 \
+           storms (B210).\n\
+           Inspect it with 'c2c doctor --relay' or 'c2c instances'; stop a \
+           managed one with 'c2c stop relay-connect'.\n%!";
+        exit 0
+    | `Exempt | `Acquired _ -> ()
+  end;
   if not use_python then
     if all_brokers then
       exit (C2c_relay_connector.start_machine

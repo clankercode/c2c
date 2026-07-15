@@ -144,6 +144,53 @@ let scope_connector_lines ~broker_root lines =
   if broker_root = "" || broker_root = "<unresolved>" then []
   else List.filter (fun l -> string_contains ~needle:broker_root l) lines
 
+(* B210: machine-wide duplicate-connector detection. Persistent connectors
+   (bare `c2c relay connect`, manual `--all-brokers`, or the managed
+   supervisor's child) beyond the first indicate an uncoordinated multi-connect
+   that storms the relay with 429s. [lines] are the raw machine-global pgrep
+   `PID cmdline` lines (NOT scoped to a broker); `--once` transient syncs are
+   excluded. Returns the distinct persistent-connector pids. Pure. *)
+let persistent_connector_pids lines =
+  lines
+  |> List.filter (fun l -> not (string_contains ~needle:"--once" l))
+  |> List.filter_map (fun l ->
+       match String.split_on_char ' ' (String.trim l) with
+       | pid :: _ -> int_of_string_opt pid
+       | [] -> None)
+  |> List.sort_uniq compare
+
+(* A single [relay.connector_singleton] check surfaced only when >1 persistent
+   connector is live on the host (B210 acceptance: duplicates prevented OR
+   clearly surfaced). Returns None when 0 or 1 — the singleton invariant holds
+   and there is nothing to warn about. *)
+let duplicate_connector_check ~pids =
+  match pids with
+  | _ :: _ :: _ ->
+      let n = List.length pids in
+      Some {
+        check_id = "relay.connector_singleton";
+        status = Fail;
+        message =
+          Printf.sprintf
+            "%d relay connector processes running on this host (expected 1) — \
+             duplicates cause relay 429 storms (B210)"
+            n;
+        detail =
+          Some
+            (Printf.sprintf
+               "pids: %s. A bare `c2c relay connect` or manual `--all-brokers` \
+                started alongside the managed connector. Newer c2c refuses a \
+                second persistent connector; stop the extras and keep exactly \
+                one."
+               (String.concat ", " (List.map string_of_int pids)));
+        fix_command =
+          Some
+            "c2c stop relay-connect; pkill -f 'c2c relay connect'; \
+             c2c start relay-connect";
+        docs_url = Some docs_url;
+      }
+  | _ -> None
+
 let connector_stale_threshold_s = 120.0
 
 let connector_state_is_fresh ~now (st : C2c_relay_connector.connector_state) =

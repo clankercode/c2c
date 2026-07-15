@@ -959,6 +959,7 @@ let sync_result_with_sessions sessions : Conn.sync_result =
     inbound_delivered = 0;
     inbound_rejected = 0;
     alerts_emitted = 0;
+    rate_limited = false;
     last_error = None }
 
 (* Round-trip: write_connector_state persists [sessions]; read_connector_state
@@ -1066,9 +1067,38 @@ let test_connector_peek_key_backward_compat_fallback () =
            ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"" = None)
   | None -> Alcotest.fail "backward-compat fallback returned None"
 
+(* B210: bounded, jittered 429 backoff. *)
+let test_backoff_zero_strikes_is_base () =
+  Alcotest.(check (float 1e-9)) "strikes=0 -> base" 30.0
+    (Conn.rate_limit_backoff ~base:30.0 ~strikes:0)
+
+let test_backoff_grows_then_caps () =
+  let base = 30.0 in
+  (* Jitter is in [0, base); assert on the lower bound (2^strikes * base) and
+     the cap+jitter upper bound so the test is deterministic without seeding. *)
+  let d1 = Conn.rate_limit_backoff ~base ~strikes:1 in
+  let d2 = Conn.rate_limit_backoff ~base ~strikes:2 in
+  Alcotest.(check bool) "strike 1 >= 2*base" true (d1 >= 2.0 *. base);
+  Alcotest.(check bool) "strike 1 < 2*base + base (jitter)" true
+    (d1 < 2.0 *. base +. base);
+  Alcotest.(check bool) "strike 2 >= 4*base" true (d2 >= 4.0 *. base);
+  (* Large strike count is capped at the cap (plus at most base of jitter),
+     never runaway. *)
+  let big = Conn.rate_limit_backoff ~base ~strikes:1000 in
+  Alcotest.(check bool) "huge strike capped" true
+    (big <= Conn.rate_limit_backoff_cap_s +. base);
+  Alcotest.(check bool) "huge strike >= cap" true
+    (big >= Conn.rate_limit_backoff_cap_s)
+
 let () =
   Random.self_init ();
   Alcotest.run "c2c_relay_connector" [
+    "B210 rate-limit backoff", [
+      Alcotest.test_case "strikes=0 is base interval" `Quick
+        test_backoff_zero_strikes_is_base;
+      Alcotest.test_case "grows exponentially then caps" `Quick
+        test_backoff_grows_then_caps;
+    ];
     "paths", [
       Alcotest.test_case "local_inbox_path" `Quick test_local_inbox_path;
       Alcotest.test_case "outbox_path" `Quick test_outbox_path;

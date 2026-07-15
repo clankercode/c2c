@@ -16,12 +16,39 @@ let machine_state_dir () =
 
 let machine_lock_resource () = machine_state_dir () // "relay-connect"
 
+(* B210: the machine-wide connector singleton is enforced at BOTH the managed
+   supervisor ([run_owner]) and the bare `c2c relay connect` CLI, so stray
+   connectors (bare, or manual `--all-brokers`) cannot pile up and storm the
+   relay with 429s. The two cannot share one POSIX lock — the supervisor holds
+   the lock and forks+execs its connector child, and a POSIX record lock is
+   owned per-process, so the child re-acquiring the same lockfile would see
+   EAGAIN. The child is therefore EXEMPTED from the CLI-side check via this env
+   var, which the supervisor sets before exec; the supervisor's own lock still
+   guards against a second supervisor and against any bare connector. *)
+let supervised_child_env = "C2C_RELAY_CONNECT_SUPERVISED"
+
 let rec mkdir_p path =
   if path = "" || path = "." || path = "/" || Sys.file_exists path then ()
   else begin
     mkdir_p (Filename.dirname path);
     try Unix.mkdir path 0o700
     with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
+  end
+
+(* B210: acquire the machine-wide connector singleton for a bare/unsupervised
+   `c2c relay connect`. Supervised children are exempt (their supervisor owns
+   the lock). Returns [`Exempt] for the supervised child, [`Acquired fd] for
+   the sole owner (keep the fd for the process lifetime — closing or process
+   exit releases it), or [`Already_running] when another connector already
+   owns the host. Callers should refuse to start a duplicate persistent
+   connector on [`Already_running]. *)
+let acquire_connector_singleton () =
+  if Sys.getenv_opt supervised_child_env = Some "1" then `Exempt
+  else begin
+    mkdir_p (machine_state_dir ());
+    match C2c_singleton_lock.try_acquire ~path:(machine_lock_resource ()) with
+    | C2c_singleton_lock.Already_running -> `Already_running
+    | C2c_singleton_lock.Acquired fd -> `Acquired fd
   end
 
 let json_to_file path json =
@@ -130,6 +157,9 @@ let spawn_connector ~self ~argv ~log_path ~foreground =
            Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd
          with _ -> ())
       end;
+      (* B210: mark the child exempt from the CLI-side connector singleton —
+         this supervisor already holds the machine lock. *)
+      (try Unix.putenv supervised_child_env "1" with _ -> ());
       (try Unix.execv self (Array.of_list argv)
        with exn ->
          Printf.eprintf "relay-connect: exec %s failed: %s\n%!" self
