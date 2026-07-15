@@ -38,11 +38,17 @@ let rec mkdir_p path =
 
 let write_registry broker ~session_id ~alias ~client_type =
   mkdir_p broker;
+  let pid = Unix.getpid () in
+  let pid_start_time =
+    match C2c_broker.read_pid_start_time pid with
+    | Some n -> n
+    | None -> failwith "cannot read fixture process start time"
+  in
   let oc = open_out (broker // "registry.json") in
   Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
     Printf.fprintf oc
-      "[{\"session_id\":%S,\"alias\":%S,\"client_type\":%S}]\n"
-      session_id alias client_type)
+      "[{\"session_id\":%S,\"alias\":%S,\"client_type\":%S,\"pid\":%d,\"pid_start_time\":%d}]\n"
+      session_id alias client_type pid pid_start_time)
 
 let env_with overrides =
   let keys = List.map fst overrides in
@@ -63,6 +69,12 @@ let spawn_to_log ~env binary args log =
 let stop_and_wait pid =
   (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
   try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ()
+
+let wait_status pid =
+  let _, status = Unix.waitpid [] pid in
+  match status with
+  | Unix.WEXITED n -> n
+  | Unix.WSIGNALED n | Unix.WSTOPPED n -> 128 + n
 
 let test_binary_discovers_two_repos_and_late_broker () =
   with_temp_dir @@ fun home ->
@@ -106,6 +118,63 @@ let test_binary_discovers_two_repos_and_late_broker () =
     ~client_type:"claude";
   check bool "later broker alias dynamically registered" true
     (wait_until ~timeout:8.0 (fun () -> fetch_peers "b200-beta"))
+
+let test_binary_skips_historical_registrations () =
+  with_temp_dir @@ fun home ->
+  let binary = Filename.dirname Sys.executable_name // "c2c.exe" |> Unix.realpath in
+  let port = 20_000 + Random.int 10_000 in
+  let url = Printf.sprintf "http://127.0.0.1:%d" port in
+  let broker = home // ".c2c" // "repos" // "cccc" // "broker" in
+  mkdir_p broker;
+  let pid = Unix.getpid () in
+  let pid_start_time = Option.get (C2c_broker.read_pid_start_time pid) in
+  let live = `Assoc [
+    "session_id", `String "b201-live-session";
+    "alias", `String "b201-live-alias";
+    "client_type", `String "codex";
+    "pid", `Int pid; "pid_start_time", `Int pid_start_time;
+  ] in
+  let history = List.init 64 (fun i -> `Assoc [
+    "session_id", `String (Printf.sprintf "b201-dead-%d" i);
+    "alias", `String (Printf.sprintf "b201-dead-alias-%d" i);
+    "pid", `Int (900_000 + i); "pid_start_time", `Int 1;
+  ]) in
+  let oc = open_out (broker // "registry.json") in
+  Yojson.Safe.to_channel oc (`List (live :: history)); close_out oc;
+  let relay_log = home // "relay-b201.log" in
+  let connector_log = home // "connector-b201.log" in
+  let server = spawn_to_log ~env:(Unix.environment ()) binary
+      [ "relay"; "serve"; "--listen"; Printf.sprintf "127.0.0.1:%d" port;
+        "--storage"; "memory" ] relay_log in
+  Fun.protect ~finally:(fun () -> stop_and_wait server) @@ fun () ->
+  check bool "relay ready" true (wait_until (fun () ->
+    Sys.command (Printf.sprintf "curl -sf %s/health >/dev/null"
+      (Filename.quote url)) = 0));
+  let child_env = env_with [
+    "HOME", home; "C2C_STATE_HOME", home // "state";
+    "XDG_STATE_HOME", home // "xdg";
+  ] in
+  let connector = spawn_to_log ~env:child_env binary
+      [ "relay"; "connect"; "--all-brokers"; "--broker-root"; broker;
+        "--relay-url"; url; "--once"; "--verbose" ] connector_log in
+  (* Unsigned polling is rejected by design, so --once reports a partial
+     failure after successful registration. The relay peer list is the
+     authoritative proof of which local rows generated registration calls. *)
+  check int "connector partial unsigned-poll result" 2 (wait_status connector);
+  let peers = home // "b201-peers.json" in
+  check int "peer list fetched" 0 (Sys.command (Printf.sprintf
+    "curl -sf %s/list > %s" (Filename.quote url) (Filename.quote peers)));
+  let body = read_file peers in
+  check bool "live row registered" true
+    (try ignore (Str.search_forward (Str.regexp_string "b201-live-alias") body 0); true
+     with Not_found -> false);
+  check bool "no historical row registered" false
+    (try ignore (Str.search_forward (Str.regexp_string "b201-dead-alias-") body 0); true
+     with Not_found -> false);
+  check bool "skip diagnostic counts all history" true
+    (try ignore (Str.search_forward
+       (Str.regexp_string "skipped 64 dead/unverified historical")
+       (read_file connector_log) 0); true with Not_found -> false)
 
 let test_machine_lock_is_name_independent () =
   let old_home = Sys.getenv_opt "HOME" in
@@ -176,6 +245,10 @@ let () =
     "binary machine brokers", [
       test_case "two repos + late broker" `Slow
         test_binary_discovers_two_repos_and_late_broker;
+    ];
+    "B201 binary relay eligibility", [
+      test_case "64 historical rows never reach relay" `Slow
+        test_binary_skips_historical_registrations;
     ];
     "binary updates", [
       test_case "atomic replacement changes stamp" `Quick test_binary_stamp_detects_atomic_update;
