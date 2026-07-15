@@ -1,16 +1,28 @@
 ---
 complexity: medium
 depends_on: []
-estimate_hours: 10
+estimate_hours: 4
 id: I005
-priority: high
+priority: low
 status: pending
 tags:
     - idea
     - test
     - testing
-    - do-now
+    - residual
     - friction-report-cn
-title: fake relay fixture + regression-test-per-bug (highest-leverage test asset; doubles as executable spec)
+title: '[RESIDUAL] shared relay fixture parity gaps and optional nightly real-relay coverage'
 ---
-Ship an in-process fake relay implementing register/PoW, DM send/poll, list, status, rooms — PLUS adverse-response fixtures: null/malformed PoW (the exact difficulty-off-null case from B087), 401/429/5xx, slow/timeout, truncated JSON, schema mismatch. Enables hermetic CI integration and failure-mode tests without the public relay. Turn each P0 bug into a named regression test: test_relay_connect_null_pow_challenge_exits_nonzero (B087), test_send_remote_no_connector_reports_queued (B088), test_remote_message_cannot_reach_approval_path (B098), test_subscribe_https_hint_points_to_working_path (B090). CI hermetic vs nightly real-relay. DO NOW — pairs with the P0 fixes. Not over-engineering.
+Most of this idea shipped through the shared relay test-support work.
+
+`Relay_test_support` is the single scripted loopback HTTP fault harness. It supports arbitrary 401/429/5xx responses, sequenced responses, slow/timeouts, truncated bodies, malformed JSON, connection refusal, close-without-response, request capture, and schema mismatch. It deliberately contains no registration, inbox, room, or PoW semantics.
+
+`Relay_test_support_real` mounts the production `Relay_server(InMemoryRelay)` handler for real register/PoW, DM send/poll, list/status, room, auth, and persistence-independent semantics. Do not replace this split with a second stateful fake relay.
+
+Existing regressions cover B087 null/missing/wrong-type PoW parsing, B088 queued remote-send reporting, B098 inert-message and process-level relay-to-inbox approval isolation, B090's now-obsolete HTTPS rejection path, and broad 401/429/5xx, timeout, truncation, malformed-JSON, and schema-mismatch matrices.
+
+Residual work, if still valuable, is narrow:
+
+1. Add relay-room operations to the scripted/real equality vector; it currently covers register, send, poll, health, and list.
+2. Add one exact process-level `required:null` PoW response -> `relay connect --once` nonzero regression; exact-null coverage currently stops at the connector parser.
+3. Decide whether a scheduled public-relay smoke workflow belongs in CI. Hermetic fixtures exist; no nightly public-relay workflow was found.

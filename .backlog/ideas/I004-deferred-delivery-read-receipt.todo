@@ -10,6 +10,12 @@ tags:
     - deferred
     - relay
     - friction-report-cn
-title: '[DEFERRED] delivery/read receipts + send --wait[=accepted|delivered|read] (privacy-preserving, opt-in both sides)'
+title: '[DEFERRED] end-to-end delivery/read receipts + send --wait[=accepted|delivered|read] (privacy-preserving, opt-in both sides)'
 ---
-Track delivery state advance queued -> accepted -> delivered -> read. Add c2c send --wait[=state] --timeout. Read receipts via a signed consume-ack event. Load-bearing privacy rule: declining to emit a read MUST be indistinguishable from not-yet-read; opt-in both sides; default off; unknown/blocked peers never receive reads. DEFERRED: depends on a push transport plus server-side cursors that do not exist yet (polling is canonical for now). Max confirmed defer impl, 2026-07-07. Privacy model is designed; save for later.
+Track sender-visible delivery state `queued -> accepted -> delivered -> read` and add `c2c send --wait[=state] --timeout`.
+
+Current transport state (2026-07-15): relay HTTP send can report `accepted`; poll/peek surfaces receiver-side `delivered`/`queued`; and WebSocket push exists over ws/wss via `relay subscribe` and the multi-alias subscribe daemon. The old statement that no push transport exists is obsolete.
+
+The remaining prerequisites are still real: WebSocket push is a live advisory stream, not a durable resumable delivery log; its DM frame has no `message_id`; the relay exposes no server-side cursor/replay contract; and there is no signed consume/read acknowledgement that a sender can observe. Poll remains the durable drain path.
+
+Read receipts require a signed consume-ack event. Load-bearing privacy rule: declining to emit a read MUST be indistinguishable from not-yet-read; opt-in on both sides; default off; unknown or blocked peers never receive reads. Keep deferred until durable cursor/correlation and acknowledgement semantics are designed.

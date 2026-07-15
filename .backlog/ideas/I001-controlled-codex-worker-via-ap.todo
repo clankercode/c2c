@@ -4,34 +4,16 @@ depends_on: []
 estimate_hours: 10
 id: I001
 priority: medium
-status: pending
+status: done
 tags:
     - codex
     - c2c
     - app-server
     - wrapper
-title: Controlled Codex worker via app-server wrapper
+title: Managed Codex app-server delivery + gated auto-turn (shipped B131)
 ---
-Build a c2c-managed Codex worker mode using Codex app-server/SDK instead of plain terminal polling. The immediate vanilla-Codex fix should remain c2c wait-inbox / poll-inbox --wait; this ticket tracks the richer implementation.
+SHIPPED in B131 (2026-07-12). On supported Codex versions, `c2c start codex` / `c2c new codex` use an authenticated loopback app-server transport by default, with automatic fallback to hooks when unavailable.
 
-Problem:
-- Vanilla Codex can send/poll with c2c CLI, but it is not continuously controllable unless the user manually polls or c2c wraps Codex.
-- Recent Codex exposes app-server JSON-RPC over stdio/WebSocket/Unix socket and generated schemas with thread/start, thread/resume, turn/start, turn/steer, streamed notifications, and thread state flags.
-- c2c could use that as a wrapper/control plane to keep a Codex worker reachable via c2c.
+Managed supervision injects inbound c2c mail into model-visible history on arrival and starts one gated turn for eligible local-broker mail when the thread is explicitly idle and DND is off. Active or unknown-status arrivals remain queued and batch into one follow-up turn after completion; turns are intentionally never steered or interrupted. Relay/remote mail is inject-only and cannot start a turn, preserving the B098 bus-not-RPC invariant.
 
-Sketch:
-- Add a c2c managed Codex app-server worker mode, separate from simple CLI wait-inbox.
-- Start or connect to codex app-server.
-- Subscribe to the worker c2c inbox.
-- On inbound c2c messages, call turn/start for idle threads or turn/steer when a steerable turn is active.
-- Watch turn/started, agentMessageDelta, turn/completed, approval/user-input state, and activeTurnNotSteerable errors.
-- Relay final/interim responses back via c2c where appropriate.
-- Persist enough thread/session metadata for resume/restart.
-
-Acceptance criteria:
-- A c2c-managed Codex worker can receive a c2c DM and run a Codex turn without manual polling.
-- The wrapper handles idle, running/steerable, and non-steerable active-turn states predictably.
-- The worker reports status/errors through c2c and is restart/resume friendly.
-- Docs explain when to use simple wait-inbox vs managed app-server worker mode.
-
-Research notes: /tmp/c2c-codex-handoff.md and /tmp/c2c-codex-friction-points.md.
+Thread/session lifecycle, restart/resume, truthful delivery-mode diagnostics, and operator documentation are shipped. Vanilla Codex retains `poll-inbox` / `wait-inbox` as the portable fallback. Any future automatic response-forwarding enhancement should be tracked separately rather than reopening this worker-mode idea.

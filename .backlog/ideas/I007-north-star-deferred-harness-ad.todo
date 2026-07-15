@@ -11,6 +11,16 @@ tags:
     - deferred
     - adapters
     - friction-report-cn
-title: '[NORTH-STAR/DEFERRED] harness adapter unification — one contract, N thin shims (env --json + schema-generated tools + shared safety fragment + one hook contract + conformance)'
+title: '[NORTH-STAR/DEFERRED] finish harness adapter unification around shared contracts and conformance'
 ---
-Today there are N bespoke bridges over the same core (mcp__c2c__send for Claude, c2c_pi_send for pi, Codex hooks, opencode plugin, kimi PreToolUse) and they are drifting. Unify into N thin shims binding ONE contract: (1) c2c env --json resolved identity/config with documented env precedence; (2) schema-generated tools so the MCP and pi surfaces are the same tool; (3) one shared safety prompt fragment served from c2c (also B099); (4) one push/schedule hook contract (Claude PostToolUse, kimi PreToolUse, wake.toml as instances); (5) c2c conformance self-check. This is NOT making harnesses natively c2c-aware (impossible for closed binaries like Claude) — it is a thin adapter per harness extension surface. DEFERRED north-star: build last, after canonical JSON (I002) and identity attestation land, else rework. Max confirmed defer, 2026-07-07.
+This north-star is partially shipped, so the original “N wholly bespoke drifting bridges” premise is too broad. I002/J1-J5 now provides the canonical v1 message schema and aggregate conformance gate. Shared generated skill fragments carry the B098/B099 safety invariant and B207 advisory trust guidance across supported clients. Runtime-generated `agent-help` also derives MCP-facing capability help from one registry.
+
+The remaining goal is N thin shims binding shared contracts where host extension surfaces allow it:
+
+1. Add a canonical machine-readable resolved identity/config surface (the proposed `c2c env --json`) with documented precedence.
+2. Reduce tool-definition drift between MCP, pi, plugins, and CLI without pretending closed harnesses expose identical APIs.
+3. Treat the shared safety fragment as canonical prompt policy and add conformance checks proving every generated/installed harness contains it.
+4. Define a shared lifecycle/delivery contract across distinct hook, Monitor, app-server, plugin, and wake surfaces. Host-specific extension points remain thin shims, not falsely identical APIs.
+5. Add a cross-client conformance self-check for install, identity, schema-v1 output, hook non-interference, delivery, generated-artifact freshness, and uninstall ownership.
+
+This is adapter unification, not making closed harnesses natively c2c-aware. I002 is complete and no longer a dependency. Initial adapter convergence does not depend on I008; future identity/trust fields remain additive schema-v2 work. Keep deferred until current host integrations are stable, then split these residuals into independently deliverable tasks.

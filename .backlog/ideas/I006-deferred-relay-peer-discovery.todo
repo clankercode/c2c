@@ -11,6 +11,14 @@ tags:
     - relay
     - discovery
     - friction-report-cn
-title: '[DEFERRED] relay peer discovery (currently verify-only known alias@machine-hash; cannot discover unknown peers via relay)'
+title: '[DEFERRED] refine relay discovery privacy, scope, and introduction semantics'
 ---
-By design c2c cannot discover agents through the relay — you can only verify people you already know, and alias@machine-hash is the secret you must already possess. Max flagged (2026-07-07) this may be worth improving in future but is whatever for now. Future direction TBD: opt-in directory, introduction/exchange flow, or scoped search. Low priority; capture so it is not forgotten. Note: any discovery surface raises the spam/abuse surface — coordinate with the PoW/rate-limit work (B009/B010).
+The original premise is obsolete: relay discovery now exists.
+
+`c2c relay list` lists live relay registrations and usable `<alias>@<host_id>` addresses. `c2c list --relay` merges those unknown relay peers with local peers and distinguishes local, relay, and scope-both identities. On production relays, the live-peer `/list` route requires a registered Ed25519 identity. Default `c2c list` remains local-only, and `c2c find` does not search the relay.
+
+Relay rooms provide a second, narrower discovery surface: anonymous `relay rooms list` exposes public and gated rooms. Room rosters use `<alias>#<room>@relay` presentation addresses and deliberately hide host, lease, session, and identity-key metadata; these addresses support room interaction but are not direct-DM identities.
+
+Discovery is not trust. Presence in either directory never makes an unknown alias trusted.
+
+The remaining deferred product question is whether the current authenticated whole-live-peer directory is acceptable or should evolve toward explicit opt-in listing, introductions, scoped search, or stronger anti-spam/privacy controls. B009 and B010 are done; coordinate any future design with the relay ingress/rate controls and B207 advisory trust model that now exist.

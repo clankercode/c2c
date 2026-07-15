@@ -1,6 +1,7 @@
 ---
 complexity: medium
-depends_on: []
+depends_on:
+    - I008
 estimate_hours: 10
 id: I003
 priority: low
@@ -10,6 +11,10 @@ tags:
     - safety
     - deferred
     - friction-report-cn
-title: '[DEFERRED] trust tiers + TOFU pinning + priority/interrupt gating by trust — build when opening to untrusted peers'
+title: '[DEFERRED] cryptographic trust tiers + priority/interrupt gating — build when opening to untrusted peers'
 ---
-Bind trust to the pinned machine key (and the optional per-agent attestation key once landed). Tiers: blocked / unknown / allowlisted / trusted. TOFU on first contact; warn loudly on key change. Enforcement: unknown peers capped at FYI, never interrupt, never --blocking; only allowlisted/trusted may set interrupt / --urgent / --blocking. DEFERRED per trusted-swarm-first decision (Max + colleagues, 2026-07-07). The current injection defense is B098 (approval lockdown) + B099 (untrusted-data framing), not a full tier system. Depends on the identity-attestation idea.
+DEFERRED per the trusted-swarm-first decision (Max + colleagues, 2026-07-07). Build cryptographic policy tiers on the I008 machine-identity design: the relay-registered machine key is the trust anchor, with optional machine-signed per-agent attestations. Do not use TOFU; I008 rejected first-contact pinning because it defers spoof risk to the moment trust is established.
+
+Proposed enforcement tiers remain blocked / unknown / allowlisted / trusted. Unknown peers are capped at FYI and may never request interrupt, urgent, or blocking behavior; only allowlisted/trusted peers may request those effects, subject to the invariant that c2c messages remain DATA and never approvals.
+
+B207 shipped an advisory proximity model (`same_repo` / `same_host` / `relay` / `unknown`) plus a pure provenance classifier and headless fail-closed guidance. That model is not cryptographic identity, an ACL, an allowlist, TOFU/pinning, or authority, and therefore does not satisfy this idea. Current defenses remain B098 approval lockdown, B099 untrusted-data framing, and B207 advisory proximity. Implementation depends on I008.

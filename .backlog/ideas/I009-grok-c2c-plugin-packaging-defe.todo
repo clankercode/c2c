@@ -9,32 +9,42 @@ tags:
     - grok
     - plugin
     - install
-title: Grok c2c plugin packaging (defer from CLI-first install)
+title: Grok c2c plugin packaging (deferred; CLI-first delivery is complete)
 ---
 ## Context
 
-`c2c install grok` ships CLI-first: skill + SessionStart/SessionEnd hooks + no MCP by default.
-Preferred inbound is Monitor + `c2c monitor`. Plugin packaging was explicitly deferred.
+`c2c install grok` is the supported CLI-first path. It installs the generated assembled Grok `/c2c` skill, a dynamic `c2c-session` identity skill, and SessionStart/SessionEnd hooks invoking `c2c hook grok`. It installs no MCP configuration. Preferred inbound remains a persistent Grok Monitor running `c2c monitor`.
+
+B206 made that Monitor path truthful and usable for aliases without relay identity binding: a signed preflight disables only relay watch while local monitoring continues, and `--register-relay-alias` provides explicit bootstrap when wanted. B207's shared advisory trust guidance is included in the assembled Grok skill. These improve CLI-first delivery; they do not create a plugin package.
 
 ## Desired later
 
-A Grok plugin (`~/.grok/plugins/c2c` or marketplace) that bundles:
-- assembled grok /c2c skill
-- SessionStart/SessionEnd hooks (`c2c hook grok`)
-- optional slash command `/c2c`
-- optional MCP entry (opt-in only; not default)
+A thin Grok plugin package, once Grok's supported plugin/marketplace format is stable, that reuses rather than forks:
+
+- the generated assembled Grok skill;
+- the existing `c2c hook grok` SessionStart/SessionEnd contract;
+- the dynamic session-identity skill behavior;
+- an optional `/c2c` command;
+- optional MCP configuration only through explicit opt-in.
+
+The plugin must not maintain independent copies of safety guidance, CLI recipes, hook logic, or relay setup.
 
 ## Why defer
 
 CLI + global hooks + skill already cover vanilla Grok without trust/marketplace friction.
 Plugin is packaging polish + one-step trust model, not delivery quality.
 
+Local `c2c monitor` receive must work regardless of relay registration. For cross-host relay watch, preserve B206 preflight semantics: a missing alias-to-machine-identity binding leaves relay watch off while local monitoring continues. Packaging must never silently bind an alias; it may surface explicit `c2c relay register --alias <alias>` or `c2c monitor --alias <alias> --register-relay-alias` actions.
+
 ## Depends on
 
-Landed (or landing): skill snippet assembly, `c2c install grok`, `c2c hook grok`, GROK_SESSION_ID.
+Landed: skill snippet assembly, `c2c install grok`, `c2c hook grok`, `GROK_SESSION_ID`, B206 relay-watch preflight/bootstrap, and B207 shared trust guidance.
 
 ## Acceptance (when picked up)
 
-- `grok plugin install <c2c-plugin> --trust` enables same surfaces as `c2c install grok`
-- `c2c uninstall grok` / plugin uninstall leaves no owned files
-- No MCP by default unless opt-in flag
+- Plugin installation exposes the same supported Grok surfaces as `c2c install grok`, using generated/shared sources.
+- Installation is idempotent and defines ownership/coexistence when `c2c install grok` was already run.
+- Plugin uninstall and `c2c uninstall grok` remove only artifacts they own and leave no stale duplicate hook or skill entries.
+- No MCP configuration is installed unless explicitly opted in.
+- Generated-skill drift, hook behavior, Monitor-local fallback, relay-preflight behavior, and install/uninstall coexistence have conformance tests.
+- Validate Grok's actual supported plugin command and marketplace layout when implementation begins; do not freeze a speculative command now.
