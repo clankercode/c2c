@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-15T05:58:42Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-15T07:06:07Z"
 complexity: medium
 created_at: "2026-07-15T05:48:10Z"
 depends_on: []
+duration_minutes: 67.42950604518333
 estimate_hours: 1
 id: B206
 priority: high
 started_at: "2026-07-15T05:58:42Z"
-status: in_progress
+status: done
 tags: []
 title: c2c monitor relay watch dies with 'alias has no identity binding' on Grok (and possibly CLI-first clients)
-updated_at: "2026-07-15T05:58:42Z"
+updated_at: "2026-07-15T07:06:07Z"
 ---
 ## Symptom
 
