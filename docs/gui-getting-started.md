@@ -116,6 +116,7 @@ The GUI will:
 | Implicit `any` types on `el` and `virtualRow` params in EventFeed.tsx | ✅ FIXED (2026-05-03) — resolved by `bun install` installing `@tanstack/react-virtual` types |
 | Dark/light theme toggle | Not implemented |
 | Message search | ✅ Wired — full message body + aliases (not only 120-char preview); Esc clears |
+| Welcome skip → stuck observer | ✅ Fixed — empty default alias, observer banner + “join as peer” reopens wizard |
 | File/paste attachments | Not implemented |
 | Multi-account | Single alias per installation |
 

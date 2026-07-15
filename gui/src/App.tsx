@@ -58,9 +58,10 @@ export function App() {
   const selectedPeerRef = useRef<string | null>(null);
   const myAliasRef = useRef<string>("");
   const mySessionIdRef = useRef<string>("");
-  const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "human");
+  // Empty until registered — "human" default falsely hid observer mode after Skip
+  const [myAlias, setMyAlias] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [mySessionId, setMySessionId] = useState<string>(() => localStorage.getItem(SESSION_ID_KEY) ?? "");
-  const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "human");
+  const [aliasInput, setAliasInput] = useState(() => localStorage.getItem(ALIAS_KEY) ?? "");
   const [showWizard, setShowWizard] = useState(() => !localStorage.getItem(ALIAS_KEY));
   const [aliasStatus, setAliasStatus] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -328,10 +329,8 @@ export function App() {
     localStorage.setItem(ALIAS_KEY, alias);
     localStorage.setItem(SESSION_ID_KEY, sessionId);
     setShowWizard(false);
-    // Auto-join the default social room on first registration
-    joinRoom("swarm-lounge", alias).then(res => {
-      if (res.ok) setRooms(prev => new Set([...prev, "swarm-lounge"]));
-    });
+    // WelcomeWizard already best-effort joins the default room; reflect it in the sidebar.
+    setRooms(prev => new Set([...prev, "swarm-lounge"]));
   }
 
   return (
@@ -451,7 +450,25 @@ export function App() {
             <span style={{ fontSize: 11, color: "#89dceb" }}>you: {myAlias}</span>
           )}
           {!myAlias && !aliasStatus && (
-            <span style={{ fontSize: 11, color: "#45475a" }}>observer mode</span>
+            <>
+              <span style={{ fontSize: 11, color: "#45475a" }}>observer mode</span>
+              <button
+                type="button"
+                onClick={() => setShowWizard(true)}
+                title="Register an alias to send DMs and join rooms as a peer"
+                style={{
+                  background: "transparent",
+                  border: "1px solid #89b4fa",
+                  borderRadius: 4,
+                  color: "#89b4fa",
+                  padding: "2px 6px",
+                  fontSize: 11,
+                  cursor: "pointer",
+                }}
+              >
+                join as peer
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -490,6 +507,40 @@ export function App() {
           }}
         />
         <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {!myAlias && (
+            <div
+              role="status"
+              style={{
+                padding: "6px 12px",
+                background: "#181825",
+                borderBottom: "1px solid #313244",
+                fontSize: 12,
+                color: "#a6adc8",
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <span>Read-only observer — register to send messages and appear as a peer.</span>
+              <button
+                type="button"
+                onClick={() => setShowWizard(true)}
+                style={{
+                  marginLeft: "auto",
+                  background: "#89b4fa",
+                  border: "none",
+                  borderRadius: 4,
+                  color: "#1e1e2e",
+                  padding: "2px 8px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  cursor: "pointer",
+                }}
+              >
+                join as peer
+              </button>
+            </div>
+          )}
           {events.length === 0 ? (
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#585b70" }}>
               Waiting for events…

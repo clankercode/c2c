@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CheckCircle2, Radio } from "lucide-react";
 import {
   Dialog,
@@ -33,6 +33,16 @@ export function WelcomeWizard({ open, preGeneratedSessionId, onComplete, onSkip 
   const [error, setError] = useState<string | null>(null);
   const [registeredAlias, setRegisteredAlias] = useState("");
   const [registeredSessionId, setRegisteredSessionId] = useState("");
+
+  // Re-open after Skip (or later "join as peer") should start clean at the name step.
+  useEffect(() => {
+    if (open) {
+      setStep("name");
+      setError(null);
+      setRegisteredAlias("");
+      setRegisteredSessionId("");
+    }
+  }, [open]);
 
   async function handleRegister() {
     const a = alias.trim();
