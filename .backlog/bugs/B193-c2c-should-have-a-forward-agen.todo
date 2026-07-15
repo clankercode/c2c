@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-15T03:16:33Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-15T03:05:54Z"
 depends_on: []
 estimate_hours: 1
 id: B193
 priority: high
-status: pending
+started_at: "2026-07-15T03:16:33Z"
+status: in_progress
 tags: []
 title: c2c should have a forward-agent-log subcommand that will monitor a given session (the jsonl file) and filter out all the noise (tool calls, thinking, etc) and forward user input and agent plaintext chat output to anoter c2c address. The idea is to allow monitoring or observation, esp to remote sessions like on a colleagues PC.
-updated_at: "2026-07-15T03:05:54Z"
+updated_at: "2026-07-15T03:16:33Z"
 ---
 
 c2c should have a forward-agent-log subcommand that will monitor a given session (the jsonl file) and filter out all the noise (tool calls, thinking, etc) and forward user input and agent plaintext chat output to anoter c2c address. The idea is to allow monitoring or observation, esp to remote sessions like on a colleagues PC.
