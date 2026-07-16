@@ -142,7 +142,9 @@ After an unexplained restart or health failure, retrieve the durable evidence:
 
 ```sh
 railway ssh --service c2c --environment production \
-  sh -lc 'ls -lt /data/relay-diagnostics; tail -n 50 /data/relay-diagnostics/lifecycle.jsonl'
+  ls -lt /data/relay-diagnostics
+railway ssh --service c2c --environment production \
+  tail -n 50 /data/relay-diagnostics/lifecycle.jsonl
 ```
 
 Inspect the newest `health-failure-*.txt` or `cores/core*` file named by the
