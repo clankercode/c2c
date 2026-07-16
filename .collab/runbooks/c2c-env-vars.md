@@ -304,6 +304,43 @@ Seconds the hook will block on `c2c await-reply` before falling closed
 
 ## E2E / Relay
 
+### Relay supervisor diagnostics (B219)
+
+The Railway/OCI image runs `c2c relay serve` under the process-external
+`c2c-relay-supervisor`. Its durable lifecycle ledger and hang captures default
+to `<C2C_RELAY_PERSIST_DIR>/relay-diagnostics/` (or
+`/data/relay-diagnostics/` when the persist-dir env is unset). The supervisor
+never records its child argv, environment, or health URL in its text snapshots
+because those may contain a relay token. The container enables bounded core
+capture under its `cores/` subdirectory; only the newest two `core*` files and
+ten health-failure captures are retained. Lifecycle/reaper metadata is
+root-owned, while only `cores/` is writable by the de-privileged relay. Core
+files contain raw process memory and must be handled as secrets.
+
+The image owns `/data` as `root:c2c` with mode `1770`. Sticky group-write lets
+the relay create and rename its own SQLite files but prevents it from replacing
+the root-owned diagnostics directory entry.
+
+The following operator overrides are read by `scripts/relay-supervisor.sh`:
+
+- `C2C_RELAY_DIAG_DIR`: diagnostic directory override.
+- `C2C_RELAY_HEALTH_URL`: loopback health endpoint; default
+  `http://127.0.0.1:$PORT/health`.
+- `C2C_RELAY_HEALTH_INTERVAL`: seconds between probes; default `10`.
+- `C2C_RELAY_HEALTH_TIMEOUT`: per-probe curl timeout in seconds; default `5`.
+- `C2C_RELAY_HEALTH_FAILURE_THRESHOLD`: consecutive failures before one
+  process/cgroup snapshot is persisted; default `3`.
+- `C2C_RELAY_DIAG_KEEP`: number of health-failure snapshots retained; default
+  `10`.
+- `C2C_RELAY_CORE_CAPTURE`: set to `1` by the container image. The relay child
+  runs from the diagnostic directory with a bounded core-file limit.
+- `C2C_RELAY_CORE_OWNER`: owner/group for the core-only subdirectory. The
+  container image sets `c2c:c2c`; generic callers default to the persistence
+  root owner.
+- `C2C_RELAY_CHILD_REAPER`: internal path override for the image's tiny
+  wait-status helper. The helper preserves the kernel distinction between a
+  numeric exit such as 139 and termination by signal 11.
+
 ### `C2C_RELAY_INBOUND_POLICY_FILE` (B196)
 
 Local path to the native relay connector's inbound-policy JSON. When unset or

@@ -328,6 +328,13 @@ codex-deliver-e2e:
 # Run all tests (Python + OCaml + TS + npm packaging). Always rebuilds OCaml first to avoid stale binary.
 test: build test-ocaml test-py test-ts npm-test
 
+# B219: exercise the process-external relay lifecycle/hang recorder without
+# Docker or network access beyond a deliberately failing loopback probe.
+test-relay-supervisor:
+    bash -n scripts/relay-supervisor.sh scripts/test-relay-supervisor.sh
+    cc -std=c11 -O2 -Wall -Wextra -Werror -fsyntax-only scripts/relay-child-reaper.c
+    ./scripts/test-relay-supervisor.sh
+
 # Run a specific Python test file or pattern
 # Usage: just test-one tests/test_c2c_history.py
 #        just test-one -k "test_send"
@@ -387,6 +394,7 @@ test-slice *SLICES:
 
 check:
     git diff --check
+    just test-relay-supervisor
     just sync-skills
     just codegen-claude-skill
     just sync-skills-check
