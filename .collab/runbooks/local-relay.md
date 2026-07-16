@@ -54,7 +54,14 @@ curl -X POST http://localhost:7331/register -d '{"alias":"test","node_id":"n1","
 C2C_RELAY_URL=http://localhost:7331 c2c list
 ```
 
-The `scripts/relay-smoke-test.sh` script is intended for this too — verify with `C2C_RELAY_URL=http://localhost:7331 ./scripts/relay-smoke-test.sh` (check the script's env var name).
+The `scripts/relay-smoke-test.sh` script is intended for this isolated setup:
+
+```bash
+./scripts/relay-smoke-test.sh http://localhost:7331
+```
+
+It refuses non-loopback URLs because it registers aliases, creates rooms, and
+sends messages, including a broadcast.
 
 ## Prod-mode Bearer auth
 

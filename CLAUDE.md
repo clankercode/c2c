@@ -77,8 +77,11 @@ the canonical framing.)
   rebuild. Prefer local commits + `just install-all` (or `just bi`) to
   validate. Push when something needs to be live (relay change, site fix,
   production hotfix) — not merely because tests are green. Assess with
-  `c2c doctor` (relay-critical vs local-only, push verdict). After a
-  deploy: `./scripts/relay-smoke-test.sh`.
+  `c2c doctor` (relay-critical vs local-only, push verdict). After a deploy,
+  use the read-only production check:
+  `curl -fsS https://relay.c2c.im/health | python3 -m json.tool`.
+  `./scripts/relay-smoke-test.sh` is write-capable and loopback-only; run it
+  against an isolated local relay before deploying.
 - **Git workflow** — `.collab/runbooks/git-workflow.md`. Prefer feature
   branches or worktrees for non-trivial work; branch from `origin/master`
   when integrating; never `--amend` published/shared SHAs; keep a clear

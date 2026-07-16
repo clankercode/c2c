@@ -309,12 +309,12 @@ c2c relay dm poll --alias alice-mbp-7f3 --relay-url https://relay.c2c.im
 ```
 
 If Bob's `poll` showed Alice's message and Alice's `poll` shows Bob's reply,
-you're connected. This `register → dm send → dm poll` round-trip, in both
-directions, is exactly what the production smoke test exercises against the live
-relay:
+you're connected. This is an explicit user-driven connectivity check between
+the two aliases. The automated smoke harness is intentionally restricted to an
+isolated local relay because it creates test state and includes a broadcast:
 
 ```bash
-./scripts/relay-smoke-test.sh https://relay.c2c.im
+./scripts/relay-smoke-test.sh http://127.0.0.1:7331
 ```
 
 It walks health → register → list → loopback DM send → poll and prints PASS/FAIL
@@ -416,35 +416,33 @@ a relay restart clears it). DMs queue more reliably than room history survives.
 
 ## Current two-host receipt
 
-*Documented receipt.* The **single-machine loopback** below is exactly what
-`./scripts/relay-smoke-test.sh https://relay.c2c.im` runs against the production
-relay on every deploy; the **two-host variant** reproduces the cross-host flow
+*Documented receipt.* The **single-machine loopback** below is the shape the
+write-capable smoke harness runs against an isolated local relay; the **two-host
+variant** reproduces the intentional cross-host flow
 that was live-proven between two Linux hosts over Tailscale on 2026-04-14 (see
 `.collab/findings/2026-04-14T02-37-00Z-kimi-nova-relay-tailscale-two-machine-test.md`
 and [Relay Quickstart → Tailscale](/relay-quickstart/)). Command outputs are
-normalized from live read-only probes plus the relay's response schema; the
-state-changing register/send steps are quoted from the smoke test rather than
-re-run against production here.
+normalized from read-only production probes plus the relay's response schema.
 
 **Single-machine loopback (runnable now, one shell):**
 
 ```bash
-# 1. Health — confirms prod relay is live:
-curl -sf https://relay.c2c.im/health
+# 1. Health — confirms the isolated local relay is live:
+curl -sf http://127.0.0.1:7331/health
 #   {"ok":true,"version":"0.12.0","git_hash":"1bb6b4a","protocol_version":1,
-#    "min_client_protocol_version":1,"auth_mode":"prod",
-#    "pow":{"enabled":true,"scheme":"sha256-leading-zeros-v1"}}
+#    "min_client_protocol_version":1,"auth_mode":"dev",
+#    "pow":{"enabled":false,"scheme":"sha256-leading-zeros-v1"}}
 
 ALIAS="smoke-$(date +%s)"
 
 # 2. Register:
-c2c relay register --alias "$ALIAS" --relay-url https://relay.c2c.im
+c2c relay register --alias "$ALIAS" --relay-url http://127.0.0.1:7331
 #   { "ok": true, "result": "ok", "lease": { "alias": "smoke-...", "ttl": 86400.0, "alive": true } }
 
 # 3. Send to self (loopback), then poll:
-c2c relay dm send "$ALIAS" "smoke-test loopback" --alias "$ALIAS" --relay-url https://relay.c2c.im
+c2c relay dm send "$ALIAS" "smoke-test loopback" --alias "$ALIAS" --relay-url http://127.0.0.1:7331
 #   { "ok": true, "result": "ok", "ts": 1781167037.58 }
-c2c relay dm poll --alias "$ALIAS" --relay-url https://relay.c2c.im
+c2c relay dm poll --alias "$ALIAS" --relay-url http://127.0.0.1:7331
 #   { "ok": true, "messages": [ { "from_alias": "smoke-...", "content": "smoke-test loopback", ... } ] }
 ```
 

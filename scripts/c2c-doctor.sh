@@ -671,7 +671,7 @@ if [[ ${#RELAY_CRITICAL[@]} -gt 0 && $RELAY_STALE -eq 1 ]]; then
   echo ""
   echo "  When ready:"
   echo "    git push                              # triggers Railway rebuild (~15min)"
-  echo "    ./scripts/relay-smoke-test.sh         # validate after deploy"
+  echo "    curl -fsS https://relay.c2c.im/health # read-only production check"
 elif [[ ${#RELAY_CRITICAL[@]} -gt 0 ]]; then
   yellow "  ⚡ Relay-critical commits queued (relay already up-to-date)"
   echo ""
@@ -699,5 +699,6 @@ fi
 
 echo ""
 echo "  To run tests: just test   (Python + OCaml)"
-echo "  To smoke-test relay: ./scripts/relay-smoke-test.sh"
+echo "  To check production: curl -fsS https://relay.c2c.im/health"
+echo "  To smoke-test an isolated local relay: ./scripts/relay-smoke-test.sh"
 echo ""

@@ -1,14 +1,24 @@
 #!/bin/bash
-# relay-smoke-test.sh — Comprehensive relay verification after prod deploy
-# Run after Railway rebuild completes (check git_hash in /health first)
+# relay-smoke-test.sh — Comprehensive write-capable relay verification
+# LOCAL/ISOLATED RELAYS ONLY. Production verification must stay read-only.
 #
 # Usage: ./scripts/relay-smoke-test.sh [relay-url]
-# Default relay-url: https://relay.c2c.im
+# Default relay-url: http://127.0.0.1:7331
 
 set -euo pipefail
 
-RELAY="${1:-https://relay.c2c.im}"
+RELAY="${1:-http://127.0.0.1:7331}"
 C2C_BIN="${C2C_BIN:-c2c}"
+
+# This harness registers aliases, creates rooms, sends DMs, and broadcasts.
+# Never point it at a shared or production relay. Keep the guard before every
+# network-capable command so a typo cannot create another production incident.
+if [[ ! "$RELAY" =~ ^https?://(127\.0\.0\.1|localhost|\[::1\])(:[0-9]+)?/?$ ]]; then
+  printf 'refusing to run write-capable relay smoke against non-loopback URL: %s\n' "$RELAY" >&2
+  printf 'production verification is read-only: curl -fsS https://relay.c2c.im/health\n' >&2
+  exit 2
+fi
+
 ALIAS="smoke-$(date +%s)"
 PASS=0
 FAIL=0
@@ -46,12 +56,13 @@ echo ""
 echo "--- 1. Health ---"
 health=$(curl -sf "$RELAY/health" 2>/dev/null) || { red "health endpoint unreachable"; exit 1; }
 echo "$health" | python3 -m json.tool 2>/dev/null || echo "$health"
+health_ok=$(echo "$health" | python3 -c "import json,sys; print('true' if json.load(sys.stdin).get('ok') is True else 'false')" 2>/dev/null)
 auth_mode=$(echo "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('auth_mode','unknown'))" 2>/dev/null)
 git_hash=$(echo "$health" | python3 -c "import json,sys; print(json.load(sys.stdin).get('git_hash','?'))" 2>/dev/null)
-if [ "$auth_mode" = "prod" ]; then
-  green "auth_mode=prod (relay is in production mode)"
+if [ "$health_ok" = "true" ]; then
+  green "health ok (auth_mode=$auth_mode)"
 else
-  red "expected auth_mode=prod, got: $auth_mode"
+  red "health response did not report ok=true"
 fi
 info "git_hash: $git_hash"
 echo ""
@@ -84,7 +95,7 @@ echo ""
 
 # 4. Send DM to self (loopback)
 echo "--- 4. Loopback DM ---"
-dm_out=$(retry 3 1 "$C2C_BIN" relay dm send "$ALIAS" "smoke-test loopback" --alias "$ALIAS" --relay-url "$RELAY") || true
+dm_out=$("$C2C_BIN" relay dm send "$ALIAS" "smoke-test loopback" --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
 echo "$dm_out"
 if echo "$dm_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "loopback DM send succeeded"
@@ -108,7 +119,7 @@ echo ""
 ROOM="smoke-room-$(date +%s)"
 echo "--- 6. Room operations (room: $ROOM) ---"
 
-join_out=$(retry 3 1 "$C2C_BIN" relay rooms join --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY") || true
+join_out=$("$C2C_BIN" relay rooms join --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
 echo "$join_out"
 if echo "$join_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room join succeeded"
@@ -125,7 +136,7 @@ else
   red "room list failed"
 fi
 
-send_room_out=$(retry 3 1 "$C2C_BIN" relay rooms send --alias "$ALIAS" --room "$ROOM" "smoke test message" --relay-url "$RELAY") || true
+send_room_out=$("$C2C_BIN" relay rooms send --alias "$ALIAS" --room "$ROOM" "smoke test message" --relay-url "$RELAY" 2>&1) || true
 echo "$send_room_out"
 if echo "$send_room_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room send succeeded"
@@ -133,9 +144,9 @@ else
   red "room send failed"
 fi
 
-# NOTE: room leave was non-fatal on older prod relays that lacked /leave_room.
+# NOTE: room leave was non-fatal on older relays that lacked /leave_room.
 # join+send+history are the critical room ops; leave is best-effort.
-leave_out=$(retry 3 1 "$C2C_BIN" relay rooms leave --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY") || true
+leave_out=$("$C2C_BIN" relay rooms leave --alias "$ALIAS" --room "$ROOM" --relay-url "$RELAY" 2>&1) || true
 echo "$leave_out"
 if echo "$leave_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "room leave succeeded"
@@ -182,8 +193,8 @@ echo ""
 # section's expectations need to flip.
 echo "--- 8. Cross-host rejection + dead-letter ---"
 CROSS_HOST_TARGET="$ALIAS@unknown-relay-host.invalid"
-ch_out=$(retry 3 1 "$C2C_BIN" relay dm send "$CROSS_HOST_TARGET" "smoke cross-host probe" \
-           --alias "$ALIAS" --relay-url "$RELAY") || true
+ch_out=$("$C2C_BIN" relay dm send "$CROSS_HOST_TARGET" "smoke cross-host probe" \
+           --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
 echo "$ch_out"
 if echo "$ch_out" | python3 -c "import json,sys
 try:
@@ -229,15 +240,9 @@ echo ""
 # 9. Heartbeat (peer-route auth classification)
 # Per smoke-coverage audit (cairn 2026-04-29), gap A: /heartbeat regression
 # would silently break nudge cadence + /list freshness with no PASS/FAIL signal.
-# In prod, /heartbeat is a peer route requiring Ed25519 (relay.ml:2596-2602).
-# Bash can't replicate Ed25519 signing without reimplementing crypto, so this
-# section asserts the route is correctly classified as a peer route by hitting
-# it unsigned and expecting HTTP 401 with the spec-§5.1 error message.
-# Coverage: catches reclassification to admin (would say "Bearer token") or
-# self-auth (would 200/400) and catches auth-spec error-message drift. Does
-# NOT catch route-deletion alone (auth runs before routing — unknown paths
-# also 401). A signed-call PASS is a follow-up gated on `c2c relay heartbeat`
-# CLI (audit Proposal A note).
+# In dev mode the isolated relay accepts the unsigned heartbeat and returns
+# 200. A locally configured prod-mode relay still requires Ed25519 and returns
+# the spec-§5.1 401. This keeps the local harness useful in both auth modes.
 echo "--- 9. Heartbeat (route presence + auth classification) ---"
 hb_node="cli-$ALIAS"
 hb_session="cli-$ALIAS"
@@ -247,7 +252,13 @@ hb_resp=$(curl -s -o /tmp/hb_body.$$ -w "%{http_code}" -X POST "$RELAY/heartbeat
 hb_body=$(cat /tmp/hb_body.$$ 2>/dev/null || echo "")
 rm -f /tmp/hb_body.$$
 echo "  HTTP $hb_resp: $hb_body"
-if [ "$hb_resp" = "401" ] && echo "$hb_body" | python3 -c "
+if [ "$auth_mode" = "dev" ] && [ "$hb_resp" = "200" ] && echo "$hb_body" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+sys.exit(0 if d.get('ok') is True else 1)
+" 2>/dev/null; then
+  green "heartbeat accepted by isolated dev relay (HTTP 200)"
+elif [ "$auth_mode" != "dev" ] && [ "$hb_resp" = "401" ] && echo "$hb_body" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 err = d.get('error') or ''
@@ -261,15 +272,16 @@ sys.exit(0 if (
     and 'peer route' in err
 ) else 1)
 " 2>/dev/null; then
-  green "heartbeat is a peer route (HTTP 401, Ed25519-required, spec §5.1)"
+  green "heartbeat is a signed peer route (HTTP 401, Ed25519-required, spec §5.1)"
 else
-  red "heartbeat auth classification regressed (got HTTP $hb_resp; expected 401 + peer-route message)"
+  red "heartbeat response unexpected for auth_mode=$auth_mode (HTTP $hb_resp)"
 fi
 echo ""
 
 # 10. send_all broadcast loopback (gap D from cairn audit)
 #
-# With one registered alias, /send_all should ack `ok` and (per current
+# On an isolated relay with one registered alias, /send_all should ack `ok`
+# and (per current
 # relay semantics) the broadcast lands in our own inbox as a
 # self-loopback — this guards the 1:N broadcast fan-out path. A
 # regression here would silently break broadcast/room-adjacent semantics
@@ -277,7 +289,9 @@ echo ""
 # .collab/research/2026-04-29-smoke-coverage-audit-cairn.md proposal D.
 echo "--- 10. send_all broadcast loopback ---"
 SA_PROBE="smoke send_all probe $(date +%s)"
-sa_out=$(retry 3 1 "$C2C_BIN" relay dm send-all "$SA_PROBE" --alias "$ALIAS" --relay-url "$RELAY") || true
+# Broadcast is non-idempotent: never retry after an ambiguous timeout. Each
+# request without an explicit message_id creates a new broadcast.
+sa_out=$("$C2C_BIN" relay dm send-all "$SA_PROBE" --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
 echo "$sa_out"
 if echo "$sa_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
   green "send_all ack ok"
