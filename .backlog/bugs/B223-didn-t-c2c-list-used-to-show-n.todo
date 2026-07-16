@@ -16,3 +16,11 @@ updated_at: "2026-07-16T02:23:14Z"
 ---
 
 didn't c2c list used to show nodes grouped by repo? We should have a way to list all c2c nodes on the machine
+
+Resolution (2026-07-16): already supported by `c2c list --global` (`-g`).
+The command scans every known per-repository broker root on the machine and
+groups human output into current/other repository sections. Live dogfood
+confirmed grouped output, the CLI help and `docs/commands.md` document the
+flag, and the focused `test_c2c_find` suite covers filtering, `--all`, JSON,
+and repository grouping (15 tests passed). The repo-local default is retained
+to avoid changing established output and high-frequency agent workflows.
