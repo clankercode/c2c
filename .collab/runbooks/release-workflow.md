@@ -217,11 +217,13 @@ decides the change needs to be live.
 After a deploy, verify:
 
 ```bash
-./scripts/relay-smoke-test.sh
+curl -fsS https://relay.c2c.im/health | python3 -m json.tool
 ```
 
 Also compare the live relay `/health` fields (`version`, `git_hash`,
 `auth_mode`) to the released artifact and expected production mode.
+The write-capable `scripts/relay-smoke-test.sh` is only for isolated local
+relays and refuses non-loopback URLs.
 
 ## Failure Modes
 

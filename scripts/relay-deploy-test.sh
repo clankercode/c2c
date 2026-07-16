@@ -13,8 +13,8 @@
 #   1  any step failed (build / run / health / diagnostic fallback)
 #
 # Deferred items (NOT covered by this script):
-#   - Dead-letter path: needs C2C_RELAY_ADMIN_TOKEN + live relay; covered by
-#     relay-smoke-test.sh step 8 when run against production.
+#   - Dead-letter path: needs C2C_RELAY_ADMIN_TOKEN; covered by
+#     relay-smoke-test.sh step 8 against an isolated local relay.
 #   - Multi-container relay mesh: not testable in single-host docker without
 #     compose orchestrator; Railway's own infra tests this.
 #   - Token-auth validation: needs a valid C2C_RELAY_TOKEN and would require

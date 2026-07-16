@@ -1,6 +1,7 @@
 """Tests for scripts/relay-smoke-test.sh structure and syntax."""
 import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -65,24 +66,56 @@ class RelaySmokeSectionTests(unittest.TestCase):
         self.assertIn("Ed25519 identity", self.content)
 
     def test_uses_c2c_relay_register(self):
-        self.assertIn("c2c relay register", self.content)
+        self.assertIn('"$C2C_BIN" relay register', self.content)
 
     def test_uses_c2c_relay_dm_poll(self):
-        self.assertIn("c2c relay dm poll", self.content)
+        self.assertIn('"$C2C_BIN" relay dm poll', self.content)
 
     def test_uses_c2c_relay_rooms_join(self):
-        self.assertIn("c2c relay rooms join", self.content)
+        self.assertIn('"$C2C_BIN" relay rooms join', self.content)
 
     def test_uses_c2c_relay_rooms_leave(self):
-        self.assertIn("c2c relay rooms leave", self.content)
+        self.assertIn('"$C2C_BIN" relay rooms leave', self.content)
 
-    def test_checks_auth_mode_prod(self):
+    def test_checks_health_ok_and_auth_mode(self):
+        self.assertIn("health_ok", self.content)
         self.assertIn("auth_mode", self.content)
-        self.assertIn("prod", self.content)
 
     def test_reports_pass_fail_summary(self):
         self.assertIn("PASS", self.content)
         self.assertIn("FAIL", self.content)
 
     def test_default_relay_url(self):
-        self.assertIn("relay.c2c.im", self.content)
+        self.assertIn('RELAY="${1:-http://127.0.0.1:7331}"', self.content)
+
+    def test_refuses_non_loopback_relay_before_running_commands(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            marker = tmp / "called"
+            for command in ("curl", "c2c"):
+                stub = tmp / command
+                stub.write_text(
+                    "#!/bin/sh\n"
+                    f"touch {marker}\n"
+                    "exit 99\n"
+                )
+                stub.chmod(0o755)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp}:{env['PATH']}"
+            env["C2C_BIN"] = str(tmp / "c2c")
+            result = subprocess.run(
+                [str(SMOKE_SCRIPT), "https://relay.example.invalid"],
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn("loopback", result.stderr.lower())
+            self.assertFalse(marker.exists(), "remote guard ran after a network-capable command")
+
+    def test_write_operations_are_not_retried(self):
+        for assignment in ("dm_out", "join_out", "send_room_out", "leave_out", "ch_out", "sa_out"):
+            with self.subTest(assignment=assignment):
+                self.assertNotIn(f'{assignment}=$(retry', self.content)

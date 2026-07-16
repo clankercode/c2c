@@ -72,7 +72,9 @@ GitHub Pages. Prefer local commits + install to validate.
 - Push when something needs to be **live** (relay, site, production hotfix).
 - "Feature finished + tests green" alone is not a reason to push.
 - Assess with `c2c doctor` (relay-critical vs local-only).
-- After deploy: `./scripts/relay-smoke-test.sh`.
+- After deploy: `curl -fsS https://relay.c2c.im/health | python3 -m json.tool`.
+- Run `./scripts/relay-smoke-test.sh` only against an isolated local relay;
+  it is write-capable and refuses non-loopback URLs.
 
 ---
 
