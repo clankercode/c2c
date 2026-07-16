@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-16T02:23:14Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-16T02:05:58Z"
 depends_on: []
 estimate_hours: 1
 id: B223
 priority: high
-status: pending
+started_at: "2026-07-16T02:23:14Z"
+status: in_progress
 tags: []
 title: didn't c2c list used to show nodes grouped by repo? We should have a way to list all c2c nodes on the machine
-updated_at: "2026-07-16T02:05:58Z"
+updated_at: "2026-07-16T02:23:14Z"
 ---
 
 didn't c2c list used to show nodes grouped by repo? We should have a way to list all c2c nodes on the machine
