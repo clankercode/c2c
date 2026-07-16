@@ -15,6 +15,8 @@ not shipped into the container — the image is minimal on purpose.
 |---|---|
 | `Dockerfile` | Two-stage OCaml build → debian:12-slim runtime |
 | `railway.json` | Railway service config (builder=Dockerfile, healthcheck) |
+| `scripts/relay-supervisor.sh` | Persistent lifecycle, native-exit, core, and hang diagnostics |
+| `scripts/relay-child-reaper.c` | Exact waitpid exit/signal classification and signal forwarding |
 | `.dockerignore` | Keeps build context small; excludes `.git`, tests, docs, Python |
 
 Local smoke test:
@@ -85,6 +87,13 @@ returns `{"ok": true, ...}` regardless of token state so Railway can
 verify the process is live without leaking the token into the
 platform.
 
+The container also probes the same loopback endpoint from the separate
+`c2c-relay-supervisor` process every 10 seconds. After three consecutive
+failures it writes a bounded snapshot under `/data/relay-diagnostics/`,
+including relay thread status, wait channels, kernel stacks, file descriptors,
+and cgroup memory/CPU/I/O pressure. It does not kill the relay; its purpose is
+to preserve the state that explains a wedge before the platform intervenes.
+
 If the healthcheck flaps:
 - Check `railway logs` for `c2c relay serving on http://0.0.0.0:...`
 - Verify `$PORT` is being expanded (Dockerfile CMD uses `sh -c`; if
@@ -94,21 +103,29 @@ If the healthcheck flaps:
 
 ---
 
-## 5. Persistence (follow-up)
+## 5. Persistence
 
-v1 Railway deploy runs in-memory. Each redeploy wipes peer registry
-and inboxes — acceptable for early validation where peers re-register
-on reconnect anyway.
+Production uses SQLite with a Railway volume mounted at `/data`. The image
+defaults `C2C_RELAY_PERSIST_DIR=/data`, and Railway intentionally does not
+override the Docker command, so the locally tested chown, privilege drop,
+supervisor, token selection, and persistence path are the production path too.
+Leases, inboxes, relay identity, lifecycle diagnostics, and hang captures
+survive container replacement. When the container runtime permits native core
+dumps, those are persisted there too.
 
-To persist:
+After migrating existing relay-storage files (explicitly excluding
+`relay-diagnostics/`) to `c2c`, startup restores `/data` itself to `root:c2c`
+mode `1770`. The sticky group-writable parent permits SQLite to manage
+relay-owned files while preventing the relay from renaming or replacing the
+root-owned diagnostics directory.
 
-1. Add a Railway Volume mounted at `/var/lib/c2c`.
-2. Switch the start command to use SQLite storage:
-   `c2c relay serve --listen 0.0.0.0:${PORT} --storage sqlite --db-path /var/lib/c2c/relay.sqlite --token-file /run/secrets/relay_token`
-3. Update the healthcheck to tolerate a longer cold-start if the DB
-   grows large.
+The supervisor writes `/data/relay-diagnostics/active-run` at child startup and
+removes it only after recording the real wait status. On the next boot:
 
-Not blocking v1; track separately.
+- `child_exit` or `child_signaled` identifies an application/native child exit;
+- `previous_run_unclean` with no preceding child-exit record identifies loss of
+  the supervisor itself, such as whole-container termination or SIGKILL;
+- `health_failure_capture` points to a pre-restart process/cgroup snapshot.
 
 ---
 
@@ -120,6 +137,21 @@ Not blocking v1; track separately.
   up from env (currently flag-only).
 - Eyeball `/health` externally: `curl https://<subdomain>.up.railway.app/health`
 - For peer-count visibility: `c2c relay status --relay-url https://<subdomain>.up.railway.app --token "$TOKEN"`
+
+After an unexplained restart or health failure, retrieve the durable evidence:
+
+```sh
+railway ssh --service c2c --environment production \
+  sh -lc 'ls -lt /data/relay-diagnostics; tail -n 50 /data/relay-diagnostics/lifecycle.jsonl'
+```
+
+Inspect the newest `health-failure-*.txt` or `cores/core*` file named by the
+ledger. Lifecycle and reaper metadata is root-owned; only the `cores/`
+subdirectory is writable by the de-privileged relay process.
+The supervisor deliberately omits child command lines, environment variables,
+and health URLs from its text artifacts. A core file contains raw process
+memory and can contain relay tokens, so copy, inspect, and delete it as secret
+material.
 
 ---
 
@@ -144,9 +176,7 @@ doc describes the cert-management paths.
 - [x] `Dockerfile` (multi-stage OCaml → debian:12-slim).
 - [x] `railway.json` (builder=Dockerfile, healthcheck=/health).
 - [x] `.dockerignore` (small context).
-- [ ] Local `docker build` + `curl /health` verified (pending — no
-      docker daemon in the agent environment; swarm operator or Max
-      to confirm).
-- [ ] First `railway up` deploy (Max/operator action).
-- [ ] Domain assigned + first cross-peer send over Railway
-      (integration test once live).
+- [x] Persistent SQLite volume mounted at `/data`.
+- [x] Restart policy is `ALWAYS`.
+- [x] Process-external lifecycle/hang diagnostics included in the image.
+- [x] Domain assigned and cross-peer relay live at `relay.c2c.im`.
