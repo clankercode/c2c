@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-16T02:05:58Z"
+depends_on: []
+estimate_hours: 1
+id: B223
+priority: high
+status: pending
+tags: []
+title: didn't c2c list used to show nodes grouped by repo? We should have a way to list all c2c nodes on the machine
+updated_at: "2026-07-16T02:05:58Z"
+---
+
+didn't c2c list used to show nodes grouped by repo? We should have a way to list all c2c nodes on the machine
