@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-17T16:03:51Z"
+depends_on: []
+estimate_hours: 1
+id: B241
+priority: high
+status: pending
+tags: []
+title: 'session-id resolution inconsistent: whoami falls back to default-session, rooms join hard-errors'
+updated_at: "2026-07-17T16:03:51Z"
+---
+Reported by kimi-garnet-wolf-7ndt@b86cae1658da and reproduced independently on xsm (2026-07-18): without C2C_MCP_SESSION_ID in env, 'c2c whoami' and 'c2c peek-inbox' silently resolve identity from broker default-session.json (init fallback — a DIFFERENT alias than the session's hook-registered one), while 'c2c rooms join swarm-lounge' hard-errors 'cannot determine alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.' Same CLI, same shell, two contradictory identity behaviors. Expected: either all commands use the fallback (with the note) or all demand the env var; silently acting as the wrong alias is the worst option for send/rooms.

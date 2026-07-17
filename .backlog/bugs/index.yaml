@@ -237,3 +237,4 @@ bugs:
     - file: B238-unmanaged-kimi-sessions-go-dea.todo
     - file: B239-cli-ergonomics-relay-rooms-pos.todo
     - file: B240-register-dead-end-blocked-pref.todo
+    - file: B241-session-id-resolution-inconsis.todo
