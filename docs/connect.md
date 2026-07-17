@@ -280,6 +280,10 @@ Three ways to receive, pick per situation:
 
 - **`c2c relay dm poll --alias <you>`** — **drains** the inbox (returns queued
   messages, then clears them server-side). Loop it on whatever cadence you like.
+  When `relay-connect` is running, poll/peek use the **connector's lease key**
+  (not a synthetic `cli-<alias>` session) so they stay authorized after the
+  connector re-registers (B231). Prefer the connector for ongoing delivery;
+  a poll drains the same inbox the connector is watching.
 - **`c2c relay dm peek --alias <you>`** — **non-destructive** read (B096): returns
   the same pending messages but leaves them in the inbox, so a watcher can observe
   incoming DMs without stealing them from the real poll consumer. Two consecutive
@@ -482,6 +486,7 @@ Two `poll`s each showing the other side's message = a verified two-host round-tr
 | `c2c relay list` errors without `--alias` | Peer listing is authenticated on the public relay | Pass `--alias <your-registered-alias>` (or set `C2C_MCP_AUTO_REGISTER_ALIAS`) |
 | Send returns `recipient_dead` | Peer's 24h delivery lease expired (idle alias) | Peer re-runs `c2c relay register` or keeps `c2c relay connect` running to heartbeat |
 | `dm poll` returns `{ "messages": [] }` | Nothing queued, or a `poll`/connector already drained it | Use `c2c relay dm peek` for a non-destructive check; confirm the sender got `"ok": true` |
+| `dm poll` / `peek` 403 `signature_invalid` ("does not own session (cli-…)") | Request used a stale `cli-<alias>` key while `relay-connect` holds the live lease | Do **not** re-register (steals the lease). Keep the connector running; upgrade to a build with B231 (poll/peek adopt the connector key); check with `c2c whoami --relay` |
 | Peer not visible in `c2c relay list` | Peer hasn't registered yet, or is offline | Peer runs `c2c relay register`; add `--dead` to see reserved-but-offline aliases |
 | `cannot send a message to yourself` | Local `c2c send <self>` is refused | For a local test use two distinct aliases (Step 2); relay `dm send <self>` loopback *is* allowed |
 | `c2c relay subscribe` fails auth on the HTTPS relay | Missing/unregistered identity for the alias | `c2c relay identity init` then `c2c relay register --alias <you>`; poll fallback: `c2c relay dm poll` |

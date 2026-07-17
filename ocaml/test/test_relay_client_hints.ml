@@ -140,13 +140,59 @@ let test_signature_invalid_hint () =
       Alcotest.(check bool) "hint mentions whoami --relay" true
         (contains ~needle:"c2c whoami --relay" hint)
 
+(* B231: session-ownership signature_invalid must NOT recommend re-register
+   (that steals the lease from a live relay-connect). *)
+let session_ownership_response alias node_id session_id : Yojson.Safe.t =
+  `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "signature_invalid");
+    ("error", `String (Printf.sprintf
+      "verified signer %S does not own session (%s, %s)"
+      alias node_id session_id));
+  ]
+
+let test_session_ownership_hint () =
+  let resp =
+    session_ownership_response "kimi-suvi-lumo-9cr1"
+      "cli-kimi-suvi-lumo-9cr1" "cli-kimi-suvi-lumo-9cr1"
+  in
+  Alcotest.(check bool) "session ownership is signature_invalid" true
+    (Relay_client_hints.is_signature_invalid resp);
+  Alcotest.(check bool) "session ownership detector matches" true
+    (Relay_client_hints.is_session_ownership_failure resp);
+  Alcotest.(check bool) "generic bad-sig is not session ownership" false
+    (Relay_client_hints.is_session_ownership_failure
+       (signature_invalid_response "lyra-quill"));
+  match
+    Relay_client_hints.hint_for_response
+      ~alias_source:(Relay_client_hints.Explicit "kimi-suvi-lumo-9cr1")
+      resp
+  with
+  | None -> Alcotest.fail "expected a session-ownership hint"
+  | Some hint ->
+      Alcotest.(check bool) "must NOT recommend re-register" false
+        (contains ~needle:"c2c relay register --alias" hint);
+      Alcotest.(check bool) "explains connector holds the lease" true
+        (contains ~needle:"relay-connect" hint);
+      Alcotest.(check bool) "mentions Do NOT run register" true
+        (contains ~needle:"Do NOT run" hint);
+      Alcotest.(check bool) "suggests peek with alias" true
+        (contains ~needle:"c2c relay dm peek --alias kimi-suvi-lumo-9cr1" hint)
+
 (* Guard against drift: the substring the client keys on must stay in sync
    with the server-side format string (relay.ml / relay_ws_server.ml:
    "alias %S has no identity binding"). *)
 let test_server_format_string_in_sync () =
   let server_msg = Printf.sprintf "alias %S has no identity binding" "some-alias" in
   Alcotest.(check bool) "client needle matches server format output" true
-    (contains ~needle:"has no identity binding" server_msg)
+    (contains ~needle:"has no identity binding" server_msg);
+  (* B231: session-ownership needle matches relay.ml reject_session_mismatch. *)
+  let own_msg =
+    Printf.sprintf "verified signer %S does not own session (%s, %s)"
+      "a" "cli-a" "cli-a"
+  in
+  Alcotest.(check bool) "session-ownership needle matches server format" true
+    (contains ~needle:"does not own session" own_msg)
 
 let () =
   Alcotest.run "relay_client_hints"
@@ -164,6 +210,7 @@ let () =
           Alcotest.test_case "anon fallback hint" `Quick test_anon_fallback_hint_explains_missing_alias;
           Alcotest.test_case "no hint otherwise" `Quick test_no_hint_on_success_or_unrelated_error;
           Alcotest.test_case "signature_invalid hint" `Quick test_signature_invalid_hint;
+          Alcotest.test_case "session ownership hint (B231)" `Quick test_session_ownership_hint;
           Alcotest.test_case "server format in sync" `Quick test_server_format_string_in_sync;
         ] );
     ]

@@ -102,6 +102,44 @@ let is_signature_invalid (json : Yojson.Safe.t) =
       (not ok) && code_matches
   | _ -> false
 
+(* B231: signature_invalid for a session-scoped route (poll/peek/heartbeat)
+   when the verified alias is bound but does not own the body (node_id,
+   session_id). Server format (relay.ml reject_session_mismatch):
+     verified signer %S does not own session (%s, %s)
+   Distinct from a bad Ed25519 proof — re-registering steals the lease from
+   a live relay-connect and makes the two fight over the alias. *)
+let is_session_ownership_failure (json : Yojson.Safe.t) =
+  if not (is_signature_invalid json) then false
+  else
+    match json with
+    | `Assoc fields ->
+        (match List.assoc_opt "error" fields with
+         | Some (`String msg) ->
+             contains_substring ~needle:"does not own session" msg
+         | _ -> false)
+    | _ -> false
+
+let session_ownership_hint = function
+  | Explicit alias ->
+      Printf.sprintf
+        "hint: alias %S is bound, but this request targeted a session key it\n\
+        \  does not currently own (often cli-%s while relay-connect holds the\n\
+        \  live lease under the connector node/session).\n\
+        \  Do NOT run `c2c relay register` — that steals the lease from the\n\
+        \  connector; the two then fight and delivery wedges.\n\
+        \  Fix:\n\
+        \    - Keep `c2c start relay-connect` (or `c2c relay connect`) running;\n\
+        \      inbound DMs land in the local broker inbox.\n\
+        \    - For relay inspection: `c2c relay dm peek --alias %s` (uses the\n\
+        \      connector lease when connector-state.json is present).\n\
+        \    - Check: c2c whoami --relay  /  c2c status --relay\n"
+        alias alias alias
+  | Anon_fallback ->
+      "hint: signed as \"anon\" and the session key is not owned by that alias.\n\
+      \  Fix: pass --alias <your-alias> (or set C2C_MCP_AUTO_REGISTER_ALIAS).\n\
+      \  Do NOT re-register just to force a cli-<alias> lease if relay-connect\n\
+      \  is already managing the alias — keep the connector and use local inbox.\n"
+
 let signature_invalid_hint = function
   | Explicit alias ->
       Printf.sprintf
@@ -110,7 +148,9 @@ let signature_invalid_hint = function
         \    1. Local identity differs from the key bound on the relay\n\
         \       (check: c2c relay identity show — then re-register)\n\
         \    2. Stale lease under the old alias (register the new alias)\n\
-        \  Fix:  c2c relay register --alias %s\n\
+        \  If the error says \"does not own session\", a live connector already\n\
+        \  holds the lease — do NOT re-register (see session-ownership hint).\n\
+        \  Fix (true signature mismatch only):  c2c relay register --alias %s\n\
         \  Then: c2c whoami --relay\n\
         \  If it still fails, the error detail names bound_pk / path / body_sha256.\n"
         alias alias
@@ -120,11 +160,14 @@ let signature_invalid_hint = function
       \  then: c2c relay register --alias <your-alias>\n"
 
 (* [hint_for_response ~alias_source json] returns the hint to print on
-   stderr when [json] is a missing-identity-binding auth error or a
+   stderr when [json] is a missing-identity-binding auth error, a
+   session-ownership signature_invalid (B231), or a generic
    signature_invalid error (B184), or None for every other response
-   (including success). Missing-binding takes precedence if both ever
-   matched (they use different error_codes today). *)
+   (including success). Precedence: missing-binding > session-ownership >
+   generic signature_invalid. *)
 let hint_for_response ~alias_source (json : Yojson.Safe.t) =
   if is_missing_identity_binding json then Some (missing_binding_hint alias_source)
+  else if is_session_ownership_failure json then
+    Some (session_ownership_hint alias_source)
   else if is_signature_invalid json then Some (signature_invalid_hint alias_source)
   else None
