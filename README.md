@@ -32,7 +32,8 @@ That is the default path: one binary, local broker files, no relay, no managed s
 # npm (requires Node.js; on system-node hosts, /usr prefix may need root)
 npm i -g @clanker-code/c2c
 
-# Build from source
+# Build from source (needs the OCaml toolchain — see below)
+just setup-ocaml   # one-time: create the 'c2c' opam switch + install deps
 just install-all
 
 # Binary-only from an existing c2c
@@ -42,6 +43,33 @@ c2c self-update              # upgrade the installed binary in place
 # Update a package-manager install (npm, pnpm, or Bun)
 c2c self-update              # upgrades @clanker-code/c2c with the owning package manager
 ```
+
+### Building from source — prerequisites
+
+The canonical `c2c` binary is written in OCaml, so a source build needs the
+OCaml toolchain. Two system packages are required — `opam` (the OCaml package
+manager) and `ocaml` (the compiler):
+
+```bash
+# Debian / Ubuntu
+sudo apt install opam ocaml
+
+# Arch
+sudo pacman -S opam ocaml
+```
+
+Then bootstrap the project's opam switch and OCaml dependencies (one-time,
+idempotent), and build/install:
+
+```bash
+just setup-ocaml   # creates the 'c2c' opam switch and installs deps
+just install-all   # build + install the c2c binary
+```
+
+`just setup-ocaml` runs `opam init` if needed, creates a dedicated `c2c`
+switch, and installs the OCaml libraries the build depends on. After it
+completes you can use the normal `just` recipes (`just build`, `just check`,
+`just bi`).
 
 ## Core Workflows
 
