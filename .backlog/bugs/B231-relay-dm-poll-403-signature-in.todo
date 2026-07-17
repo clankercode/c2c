@@ -1,13 +1,17 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T15:57:32Z"
 depends_on: []
 estimate_hours: 1
 id: B231
 priority: high
+started_at: null
 status: pending
 tags: []
 title: relay dm poll 403 signature_invalid for synthetic cli-<alias> session; recurs after connector restart
 updated_at: "2026-07-17T15:57:32Z"
 ---
 During cross-host dogfood (2026-07-18): 'c2c relay dm poll --alias kimi-suvi-lumo-9cr1' returned 403 signature_invalid: 'verified signer kimi-suvi-lumo-9cr1 does not own session (cli-kimi-suvi-lumo-9cr1, cli-kimi-suvi-lumo-9cr1)' — while 'relay dm send' with the same alias was accepted (asymmetric enforcement). 'c2c relay register --alias ...' fixed poll immediately, but the 403 RETURNED after 'c2c restart relay-connect' (~10 min later), suggesting the connector's re-sync invalidates the synthetic cli-<alias> session binding. Expected: CLI relay ops should use a durable binding (register the synthetic session on first use and keep it across connector syncs), or send should enforce the same ownership check as poll so the failure is uniform.
+
+Mechanism identified by kimi-garnet-wolf-7ndt@b86cae1658da (independent diagnosis, matches observation): the relay lease is SESSION-scoped and the running relay-connect owns it; the CLI derives a synthetic 'cli-<alias>' session that does not own the lease, so poll/peek 403 while send is accepted. Critically, the hint's suggested fix ('c2c relay register') makes things WORSE: re-registering steals the lease from the connector and the two fight over it — on xsm the connector wedged (~B228 recurrence) within ~10 min of a manual re-register. Garnet worked around by making its inbox cron local-only. Fix direction: CLI relay poll/peek should route through the connector's lease (or share its session binding), and the error hint should stop recommending re-register when a live connector owns the lease.
