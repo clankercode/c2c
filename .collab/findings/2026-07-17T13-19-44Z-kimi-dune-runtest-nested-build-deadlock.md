@@ -2,7 +2,7 @@
 
 **Severity:** Medium-high (full OCaml suite cannot complete in a worktree; two
 45-min watchdog burns before diagnosis)
-**Status:** documented; workaround below; root fix not scheduled
+**Status:** fixed (this commit)
 
 ## Symptom
 
@@ -25,26 +25,53 @@ dune runtest (holds flock _build/.c2c-build.lock via scripts/dune-build-locked.s
 
 ## Root cause
 
-`ocaml/cli/test_c2c_claude_skill_embedded.ml` (`c2c_exe_path`, ~line 40)
-**always** shells out to `opam exec -- dune build --root <repo_root> -j 2
-./ocaml/cli/c2c.exe` so the binary can't lag the test module. Under
-`dune runtest` via `scripts/dune-build-locked.sh`, the outer wrapper holds
-`flock _build/.c2c-build.lock` for the whole run; the opam `dune` shim takes
-the same lock; the nested build therefore blocks forever — classic
-self-deadlock: outer waits on test, test waits on nested build, nested build
-waits on outer's lock.
+`ocaml/cli/test_c2c_claude_skill_embedded.ml` (`c2c_exe_path`, previously
+~line 40) **always** shelled out to `opam exec -- dune build --root
+<repo_root> -j 2 ./ocaml/cli/c2c.exe` so the binary couldn't lag the test
+module (made unconditional by 4cc6b82b, 2026-07-01; before that it only
+built when the exe was missing). The nested build deadlocks on two layers:
+
+1. **Dune's own `_build/.lock` (fundamental).** The outer `dune runtest`
+   holds the build-directory lock `<root>/_build/.lock` for its entire
+   lifetime. Any nested dune invocation against the same root blocks
+   silently and indefinitely waiting for that lock — known upstream
+   behavior, ocaml/dune#12685. Classic self-deadlock: outer dune waits on
+   the test, the test waits on the nested build, the nested build waits on
+   the outer dune's lock. This layer exists with or without
+   `scripts/dune-build-locked.sh`; the earlier version of this note blamed
+   `_build/.c2c-build.lock`, which the wrapper does hold, but dune's own
+   `_build/.lock` alone is sufficient to hang the nested build.
+
+2. **Dune-throttle shim slot starvation (machine-specific aggravator).**
+   The opam `dune` shim on this machine is a throttle wrapper that must
+   acquire a concurrency slot before delegating. Long-lived daemons can
+   inherit an already-acquired slot fd across `fork`/`exec` (the shim did
+   not use close-on-exec), leaking the slot; with slots starved the nested
+   build can stall even in contexts where layer 1 would not apply.
+   Operator-side follow-up: the throttle shim should open slot files with
+   `flock -o` / O_CLOEXEC so daemons stop inheriting slot fds.
 
 Compounding factor: in a worktree the nested root resolution can escape to
 `<worktree>/_build/default` or the main checkout (see
 `2026-07-15T03-55-00Z-dune-nested-worktree-root-escape.md`), so the nested
-build is also building the wrong tree when it does run.
+build was also building the wrong tree when it did run.
 
-The same hazard presumably applies to any `test_c2c_*_skill_embedded` test
-with the always-rebuild pattern. This is pre-existing on master, unrelated to
-any single branch; it also means the stale-branch suite can never be gated
-from a worktree.
+## Fix (this commit)
 
-## Workaround
+The nested build was redundant all along: the test's dune stanza in
+`ocaml/cli/dune` already declared `(deps %{exe:c2c.exe} (file
+../../.collab/skills/c2c.md))`, so dune builds `c2c.exe` before running the
+test and the binary cannot lag under `runtest`. `c2c_exe_path` now locates
+the binary via `Filename.dirname Sys.executable_name // "c2c.exe"` (test
+exe and `c2c.exe` live in the same `_build/default/ocaml/cli/` directory —
+the pattern the `test_c2c_hook_{kimi,grok,claude,codex}` suites already
+use) and `Alcotest.failf`s with run-`dune build`-first guidance if the file
+is missing. No `Sys.command`, no nested dune. Verified: `just build` clean,
+the fixed test plus the setup/hook sibling suites pass directly, and
+`just test-ocaml` now runs to completion (remaining failures are the
+pre-existing environment-dependent set tracked as B226).
+
+## Workaround (for old commits before this fix)
 
 Run the binaries directly (no outer lock — nested build then succeeds):
 
@@ -58,13 +85,3 @@ done
 
 or `just test-slice .worktrees/<name>` from the main repo (covers
 `ocaml/test` only; `ocaml/cli` exes need the loop above).
-
-## Fix status / ideas
-
-- Not fixed. Candidate fixes: make the embedded-skill tests skip the nested
-  rebuild when `C2C_INSIDE_DUNE`/the lock is held (env guard), declare
-  `c2c.exe` as a dune `(deps ...)` instead of shelling out (preferred — dune
-  then orders it correctly), or have `dune-build-locked.sh` release the flock
-  before the runtest phase.
-- Until fixed: do not run `just test-ocaml` / `just check` from a worktree
-  expecting completion; use the direct-binary loop.

@@ -37,17 +37,14 @@ let c2c_exe_path =
     match !cached with
     | Some exe -> exe
     | None ->
-        let root = repo_root () in
-        let exe = root // "_build" // "default" // "ocaml" // "cli" // "c2c.exe" in
-        (* The install/init assertions execute the compiled c2c binary, not just
-           this test module. Always build it once so the embedded skill blob in
-           the executable cannot lag behind the freshly-compiled test module. *)
-        let cmd =
-          Printf.sprintf "opam exec -- dune build --root %s -j 2 ./ocaml/cli/c2c.exe"
-            (Filename.quote root)
-        in
-        let rc = Sys.command cmd in
-        check int "build c2c.exe prerequisite" 0 rc;
+        (* c2c.exe lives next to this test executable under _build (same dir),
+           and the dune stanza already declares %{exe:c2c.exe} as a dep, so the
+           binary cannot lag the test module. Never shell out to a nested
+           `dune build` here: under `dune runtest` the outer dune holds
+           _build/.lock and the nested build deadlocks (ocaml/dune#12685). *)
+        let exe = Filename.dirname Sys.executable_name // "c2c.exe" in
+        if not (Sys.file_exists exe) then
+          failf "expected built CLI at %s — run `dune build` first" exe;
         cached := Some exe;
         exe
 
