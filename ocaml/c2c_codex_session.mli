@@ -127,6 +127,40 @@ val codex_mcp_preflight_diagnostic : string -> string
     the preflight found a stale c2c MCP block. *)
 val codex_mcp_preflight_exit_code : int
 
+(* ---------------- B227: resume-thread persistence preflight --------------- *)
+
+(** Whether Codex holds a persisted (resumable) session for a thread id. *)
+type thread_persistence = Thread_persisted | Thread_unpersisted | Thread_unknown
+
+(** Directory Codex persists session rollouts under: [C2C_CODEX_SESSIONS_DIR]
+    override (test seam) → [$CODEX_HOME/sessions] → [~/.codex/sessions]. *)
+val codex_sessions_dir : unit -> string
+
+(** [thread_rollout_exists ~sessions_dir ~thread_id] scans [sessions_dir] for a
+    regular rollout file named [rollout-<ts>-<thread-id>.jsonl] (Codex writes
+    […/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl] once a thread has run).
+    The ROOT is resolved through symlinks first (profile-share setups symlink
+    ~/.codex / ~/.codex/sessions). [Thread_unknown] when [sessions_dir] is
+    missing/unresolvable/unreadable, the scan encounters a symlink INSIDE the
+    resolved tree, or [thread_id] is blank — callers must not treat scanner
+    uncertainty as absence. *)
+val thread_rollout_exists :
+  sessions_dir:string -> thread_id:string -> thread_persistence
+
+(** Whether this launch should run the B227 persistence scan.  Real launches
+    always scan unless the explicit skip escape is set; injected scripted
+    backends scan only when the sessions-dir test seam is explicitly set. *)
+val should_preflight_resume_thread : backend_is_injected:bool -> bool
+
+(** [effective_resume_thread ~persistence thread] is the pure B227 fallback
+    decision: a known-[Thread_unpersisted] resume target is dropped (the launch
+    proceeds with a FRESH thread on the same alias) and an operator log body is
+    returned; persisted/unknown threads pass through unchanged. *)
+val effective_resume_thread :
+  persistence:(string -> thread_persistence) ->
+  string option ->
+  string option * string option
+
 (* ------------------------- positional splitting --------------------------- *)
 
 (** Drop one leading [--] separator (cmdliner sometimes surfaces it as the first

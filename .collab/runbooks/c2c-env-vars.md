@@ -201,6 +201,32 @@ Overrides the codex config path the B224 preflight reads (default
 `~/.codex/config.toml`). Test seam / non-standard `CODEX_HOME`; does not affect
 where `codex` itself reads its config. Empty/unset uses the default.
 
+### `C2C_CODEX_SKIP_THREAD_PREFLIGHT`
+
+Operator escape for the B227 resume-thread persistence preflight. A managed
+Codex launch/resume with a saved thread id checks that Codex actually persisted
+that thread (a rollout `…/rollout-<ts>-<thread-id>.jsonl` under the sessions
+dir) before handing the frontend `codex resume <id>` — a zero-turn thread is
+never saved, so resuming it hard-fails (`No saved session found`) and strands
+the alias in a degraded relaunch. A known-unpersisted thread is dropped (fresh
+thread, same alias) with an operator log line. The sessions root is resolved
+through symlinks first (profile-share setups symlink `~/.codex` /
+`~/.codex/sessions`); a missing/unresolvable root, an unreadable or otherwise
+ambiguous scan, or a symlink inside the resolved tree keeps the thread
+(uncertainty never discards resume context). When the thread is dropped, c2c
+also clears that exact target from its managed config and mapping before any
+hook-backed fallback can reload it. The scan also runs before the emergency
+`C2C_CODEX_FORCE_HOOKS=1` fallback when it targets an existing alias. Setting
+`C2C_CODEX_SKIP_THREAD_PREFLIGHT=1` (exact value `1`) forces the resume attempt.
+Scripted-`backend` tests skip the scan unless `C2C_CODEX_SESSIONS_DIR` is set.
+
+### `C2C_CODEX_SESSIONS_DIR`
+
+Overrides the Codex sessions (rollout) directory the B227 thread preflight scans
+(default `$CODEX_HOME/sessions`, else `~/.codex/sessions`). Test seam /
+non-standard layout; does not affect where `codex` itself stores sessions.
+Empty/unset uses the default.
+
 ### `C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S`
 
 Positive finite float (seconds) for how long the managed launcher waits for

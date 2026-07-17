@@ -533,6 +533,121 @@ let codex_mcp_preflight_diagnostic (reason : string) : string =
      (Set C2C_CODEX_SKIP_MCP_PREFLIGHT=1 to launch anyway.)\n"
     reason
 
+(* ---------------- B227: resume-thread persistence preflight ---------------- *)
+
+(* Codex persists a resumable session as a rollout file
+   ($CODEX_HOME/sessions/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl) only once
+   the thread has actually run. A zero-turn thread — e.g. a managed session
+   restarted (restart-stale) before its first message — has NO rollout, so
+   `codex resume <id>` hard-fails ("No saved session found") and the relaunched
+   supervisor runs degraded with the alias stranded (B227). *)
+
+type thread_persistence = Thread_persisted | Thread_unpersisted | Thread_unknown
+
+let codex_sessions_dir () : string =
+  match Sys.getenv_opt "C2C_CODEX_SESSIONS_DIR" with
+  | Some p when String.trim p <> "" -> p
+  | _ ->
+      (match Sys.getenv_opt "CODEX_HOME" with
+       | Some h when String.trim h <> "" -> h // "sessions"
+       (* An unavailable home directory is scanner uncertainty, not evidence
+          that a saved thread is absent.  The empty path below therefore
+          classifies as [Thread_unknown] in [thread_rollout_exists]. *)
+       | _ ->
+           (match Sys.getenv_opt "HOME" with
+            | Some h when String.trim h <> "" -> h // ".codex" // "sessions"
+            | _ -> ""))
+
+let thread_rollout_exists ~(sessions_dir : string) ~(thread_id : string)
+    : thread_persistence =
+  (* Rollout filenames end with the thread id: rollout-<ts>-<thread-id>.jsonl.
+     Only a completed, readable scan may prove absence.  Any unreadable entry,
+     symlink, or depth overflow is uncertainty: it must preserve the resume
+     target rather than turn a filesystem problem into a fresh thread. *)
+  let suffix = thread_id ^ ".jsonl" in
+  let is_rollout_file entry =
+    String.starts_with ~prefix:"rollout-" entry
+    && String.ends_with ~suffix entry
+  in
+  let rec scan depth dir =
+    if depth > 6 then `Unknown
+    else
+      match (try Some (Sys.readdir dir) with _ -> None) with
+      | None -> `Unknown
+      | Some entries ->
+          Array.fold_left
+            (fun result entry ->
+              match result with
+              | `Found | `Unknown -> result
+              | `Absent ->
+                  let path = dir // entry in
+                  (match (try Some (Unix.lstat path) with _ -> None) with
+                   | None -> `Unknown
+                   | Some { Unix.st_kind = Unix.S_REG; _ } ->
+                       if is_rollout_file entry then `Found else `Absent
+                   | Some { Unix.st_kind = Unix.S_DIR; _ } ->
+                       if depth = 6 then `Unknown else scan (depth + 1) path
+                   (* Do not follow symlinks: a sessions layout must be fully
+                      observable before it can prove a thread absent, and this
+                      also makes symlink cycles bounded without traversal. *)
+                   | Some { Unix.st_kind = Unix.S_LNK; _ } -> `Unknown
+                   | Some _ -> `Absent))
+            `Absent entries
+  in
+  try
+    if String.trim thread_id = "" || String.trim sessions_dir = "" then
+      Thread_unknown
+    else
+      (* Resolve the ROOT through symlinks before classifying: profile-share
+         setups routinely symlink ~/.codex and ~/.codex/sessions (that is the
+         layout the B227 incident machine runs), and an inert preflight there
+         would silently reintroduce the bug. Resolution failure (missing path,
+         cycle) is uncertainty. Entries INSIDE the resolved tree keep the
+         strict no-symlink rule below. *)
+      match (try Some (Unix.realpath sessions_dir) with _ -> None) with
+      | None -> Thread_unknown
+      | Some resolved ->
+          (match (try Some (Unix.lstat resolved) with _ -> None) with
+           | Some { Unix.st_kind = Unix.S_DIR; _ } ->
+               (match scan 0 resolved with
+                | `Found -> Thread_persisted
+                | `Absent -> Thread_unpersisted
+                | `Unknown -> Thread_unknown)
+           | _ -> Thread_unknown)
+  with _ -> Thread_unknown
+
+let should_preflight_resume_thread ~(backend_is_injected : bool) : bool =
+  let explicit_sessions_dir =
+    match Sys.getenv_opt "C2C_CODEX_SESSIONS_DIR" with
+    | Some p -> String.trim p <> ""
+    | None -> false
+  in
+  Sys.getenv_opt "C2C_CODEX_SKIP_THREAD_PREFLIGHT" <> Some "1"
+  && (not backend_is_injected || explicit_sessions_dir)
+
+(* Pure fallback decision (B227): a resume target that is KNOWN-unpersisted is
+   dropped so the relaunch starts a FRESH thread on the same alias instead of
+   handing `codex resume` a session it never saved. [Thread_unknown] keeps the
+   thread — scanner uncertainty (missing/unreadable sessions dir, e.g. a future
+   Codex layout change) must never discard genuine resume context. Returns the
+   effective thread plus an optional operator log body. *)
+let effective_resume_thread
+    ~(persistence : string -> thread_persistence)
+    (thread : string option) : string option * string option =
+  match thread with
+  | Some t when String.trim t <> "" ->
+      (match persistence t with
+       | Thread_unpersisted ->
+           ( None,
+             Some
+               (Printf.sprintf
+                  "saved thread %s has no persisted Codex session (a zero-turn \
+                   thread is never saved); starting a fresh thread on the same \
+                   alias. Set C2C_CODEX_SKIP_THREAD_PREFLIGHT=1 to force the \
+                   resume." t) )
+       | Thread_persisted | Thread_unknown -> (thread, None))
+  | _ -> (thread, None)
+
 (* Resolve the UPGRADE target at request-decision time, not launcher startup:
    `c2c install` may have replaced the PATH binary while this owner kept the old
    executable mapped. Return an absolute, already-validated path so the caller
@@ -601,6 +716,32 @@ let load_mapping ~instance_dir : mapping option =
                   created_at = f "created_at"; updated_at = f "updated_at" }
        | _ -> None)
   | Some _ -> None
+
+(* A B227 fallback can reach the hook-backed launcher before this app-server
+   path has written its fresh config/mapping.  Remove the exact dead target from
+   the previous managed state first, so that fallback cannot reload it and issue
+   the same failing [codex resume].  Both writes are best-effort: failure to
+   clear persistence is uncertainty, never a reason to abort the fresh launch. *)
+let clear_unpersisted_resume_target ~(name : string) ~(instance_dir : string)
+    ~(thread_id : string) : unit =
+  (try
+     match C2c_start.load_config_opt name with
+     | Some cfg when cfg.C2c_start.codex_resume_target = Some thread_id ->
+         let resume_session_id =
+           if cfg.C2c_start.resume_session_id = thread_id then cfg.session_id
+           else cfg.resume_session_id
+         in
+         C2c_start.write_config
+           { cfg with resume_session_id; codex_resume_target = None }
+     | _ -> ()
+   with _ -> ());
+  try
+    match load_mapping ~instance_dir with
+    | Some mapping when mapping.thread_id = Some thread_id ->
+        write_mapping ~instance_dir
+          { mapping with thread_id = None; updated_at = Unix.gettimeofday () }
+    | _ -> ()
+  with _ -> ()
 
 let persist_discovered_thread ~instance_dir ~name ~thread_id : unit =
   (match load_mapping ~instance_dir with
@@ -1033,8 +1174,41 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     | Ok r -> (r.r_name, r.r_session_id, r.r_alias, r.r_thread_id)
     | Error msg -> Printf.eprintf "%serror:%s %s\n%!" (red ()) (reset ()) msg; exit 1
   in
+  (* B227: a thread id survives in mappings/configs/restart requests even when
+     Codex never persisted that thread (a zero-turn session writes no rollout).
+     Resuming it hard-fails the frontend ("No saved session found") and strands
+     the alias in a degraded relaunch — so preflight persistence and fall back
+     to a fresh thread on the same alias. Scripted tests (injected [backend])
+     skip the scan to stay hermetic UNLESS they opt in via the
+     C2C_CODEX_SESSIONS_DIR seam; C2C_CODEX_SKIP_THREAD_PREFLIGHT=1 is the
+     operator escape (mirrors the B224 preflight gates). *)
+  let thread, discarded_thread =
+    if not (should_preflight_resume_thread
+              ~backend_is_injected:(Option.is_some backend)) then
+      (thread, None)
+    else begin
+      let effective, log_body =
+        effective_resume_thread
+          ~persistence:(fun t ->
+            thread_rollout_exists ~sessions_dir:(codex_sessions_dir ())
+              ~thread_id:t)
+          thread
+      in
+      (match log_body with Some body -> emit_app_server_log body | None -> ());
+      let discarded =
+        match thread, effective with
+        | Some original, None when String.trim original <> "" -> Some original
+        | _ -> None
+      in
+      (effective, discarded)
+    end
+  in
   let instance_dir = C2c_start.instance_dir name in
   (try C2c_io.mkdir_p instance_dir with _ -> ());
+  (match discarded_thread with
+   | Some dead_thread ->
+       clear_unpersisted_resume_target ~name ~instance_dir ~thread_id:dead_thread
+   | None -> ());
   if yolo then Printf.eprintf "%s%s%s\n%!" (yellow ()) yolo_warning (reset ());
   let model_args =
     match model_override with
@@ -1185,6 +1359,46 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
            1
        | _ -> 0)
 
+(* The emergency hook-backed route bypasses [run_app_server], but it is still a
+   real Codex launch.  For the two modes that can reuse an existing managed
+   alias, give its saved target the same B227 preflight before the fallback
+   reloads it through [C2c_start.cmd_start].  [New] always asks that fallback
+   for a fresh session, while [Start] without an explicit alias has no saved
+   instance selected. *)
+let preflight_hook_fallback_resume_target ~(mode : launch_mode)
+    ~(alias_override : string option) : unit =
+  if not (should_preflight_resume_thread ~backend_is_injected:false) then ()
+  else
+    let name =
+      match mode with
+      | Resume alias -> Some alias
+      | Start -> alias_override
+      | New -> None
+    in
+    match name with
+    | None -> ()
+    | Some name ->
+        (match C2c_start.load_config_opt name with
+         | Some cfg ->
+             (match cfg.C2c_start.codex_resume_target with
+              | Some thread_id when String.trim thread_id <> "" ->
+                  let effective, log_body =
+                    effective_resume_thread
+                      ~persistence:(fun t ->
+                        thread_rollout_exists ~sessions_dir:(codex_sessions_dir ())
+                          ~thread_id:t)
+                      (Some thread_id)
+                  in
+                  (match effective, log_body with
+                   | None, Some body ->
+                       emit_app_server_log body;
+                       clear_unpersisted_resume_target
+                         ~name ~instance_dir:(C2c_start.instance_dir name)
+                         ~thread_id
+                   | _ -> ())
+              | _ -> ())
+         | None -> ())
+
 let run ~(mode : launch_mode) ?(alias_override : string option)
     ?(thread_id : string option) ~(yolo : bool)
     ~(extra_args : string list) ?(model_override : string option)
@@ -1228,8 +1442,11 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     let force_hooks =
       match Sys.getenv_opt "C2C_CODEX_FORCE_HOOKS" with Some "1" -> true | _ -> false
     in
-    if force_hooks then
+    if force_hooks then begin
+      if backend = None then
+        preflight_hook_fallback_resume_target ~mode ~alias_override;
       fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
+    end
     else
       run_app_server ~mode ~alias_override ~thread_id ~yolo ~extra_args
         ?model_override ?backend ~fallback ()
