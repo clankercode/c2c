@@ -2182,12 +2182,13 @@ let test_session_id_from_env_uses_client_specific_opencode_fallback () =
       check (option string) "session id from env" (Some "ses-opencode-123")
         (C2c_mcp.session_id_from_env ~client_type:"opencode" ()))
 
-(* B134/B173: native client-type inference — Grok + unofficial Cursor labeling. *)
+(* B134/B173/B233: native client-type inference — Grok + unofficial Cursor + Kimi. *)
 let with_scrubbed_client_env f =
   let keys =
     [ "C2C_MCP_SESSION_ID"; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"
     ; "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_OPENCODE_SESSION_ID"
     ; "GROK_SESSION_ID"; "GROK_AGENT"; "C2C_GROK_ACTIVE_SESSIONS"
+    ; "KIMI_SESSION_ID"; "KIMI_CODE_HOME"
     ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"
     ; "ANTIGRAVITY_CONVERSATION_ID"; "ANTIGRAVITY_HOOK_EVENT"; "ANTIGRAVITY_LS_ADDRESS"
     ]
@@ -2231,6 +2232,71 @@ let test_session_id_from_grok_active_sessions () =
             (C2c_mcp.inferred_client_type_from_env ());
           check (option string) "session from active_sessions" (Some sid)
             (C2c_mcp.session_id_from_env ())))
+
+let test_session_id_from_env_uses_kimi_session_id () =
+  (* B233: managed / wrapper paths export KIMI_SESSION_ID. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "KIMI_SESSION_ID" "kimi-managed-sid-b233";
+      check (option string) "KIMI_SESSION_ID via explicit client_type"
+        (Some "kimi-managed-sid-b233")
+        (C2c_mcp.session_id_from_env ~client_type:"kimi" ());
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+      check (option string) "KIMI_SESSION_ID via C2C_MCP_CLIENT_TYPE=kimi"
+        (Some "kimi-managed-sid-b233")
+        (C2c_mcp.session_id_from_env ()))
+
+let test_session_id_from_env_kimi_session_index () =
+  (* B233: unmanaged Kimi MCP has no C2C_MCP_SESSION_ID in the global
+     mcp.json. Resolve the live Kimi session id from session_index.jsonl
+     for this process cwd (same discovery path as the notifier). *)
+  with_temp_dir (fun dir ->
+      with_scrubbed_client_env (fun () ->
+          let kimi_home = Filename.concat dir "kimi-code" in
+          Unix.mkdir kimi_home 0o700;
+          let index_path = Filename.concat kimi_home "session_index.jsonl" in
+          let cwd = Sys.getcwd () in
+          let sid_old = "session_aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in
+          let sid_new = "session_11111111-2222-3333-4444-555555555555" in
+          let oc = open_out index_path in
+          Printf.fprintf oc
+            {|{"sessionId":"%s","sessionDir":"%s/sessions/%s","workDir":"%s","updated_at":"2026-07-01T00:00:00.000Z"}|}
+            sid_old kimi_home sid_old cwd;
+          output_char oc '\n';
+          Printf.fprintf oc
+            {|{"sessionId":"%s","sessionDir":"%s/sessions/%s","workDir":"%s","updated_at":"2026-07-18T12:00:00.000Z"}|}
+            sid_new kimi_home sid_new cwd;
+          output_char oc '\n';
+          (* Unrelated workdir must not win. *)
+          Printf.fprintf oc
+            {|{"sessionId":"session_other-wd","sessionDir":"%s/sessions/other","workDir":"/tmp/other-wd","updated_at":"2099-01-01T00:00:00.000Z"}|}
+            kimi_home;
+          output_char oc '\n';
+          close_out oc;
+          Unix.putenv "KIMI_CODE_HOME" kimi_home;
+          Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+          check (option string) "newest session_index row for cwd" (Some sid_new)
+            (C2c_mcp.session_id_from_env ());
+          check (option string) "explicit client_type path"
+            (Some sid_new)
+            (C2c_mcp.session_id_from_env ~client_type:"kimi" ());
+          (* Direct helper with override workdir. *)
+          check (option string) "workdir override hits other row"
+            (Some "session_other-wd")
+            (C2c_mcp.session_id_from_kimi_session_index ~workdir:"/tmp/other-wd" ())))
+
+let test_resolve_session_id_derives_from_auto_register_alias () =
+  (* B233: when no session env is present but install left
+     C2C_MCP_AUTO_REGISTER_ALIAS, MCP tools must not hard-fail with
+     "missing session_id" — auto_register already uses the derived id. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-anchor-pickle-b233";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+      Fun.protect
+        ~finally:(fun () -> Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "")
+        (fun () ->
+          let sid = C2c_mcp.resolve_session_id (`Assoc []) in
+          check string "derived from auto-register alias"
+            "kimi-anchor-pickle-b233" sid))
 
 let test_inferred_client_type_from_env_agy () =
   (* B187: Antigravity markers must label client=agy so whoami/send can refuse
@@ -4088,6 +4154,42 @@ let test_auto_register_startup_adopts_codex_hook_alias () =
           check int "one registration" 1 (List.length regs);
           let reg = List.hd regs in
           check string "hook alias adopted" "codex-hookid-b119" reg.alias))
+
+let test_auto_register_startup_adopts_kimi_hook_alias () =
+  (* B233: Kimi SessionStart registers with registered_by=kimi-hook under the
+     real Kimi session_<uuid>. MCP auto-register (static install alias) must
+     adopt that hook identity — otherwise whoami/send split from the hook. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let sid = "session_b233aaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in
+      C2c_mcp.Broker.register broker
+        ~session_id:sid ~alias:"kimi-suvi-lumo-b233"
+        ~pid:None ~pid_start_time:None
+        ~client_type:(Some "kimi")
+        ~registered_by:(Some "kimi-hook")
+        ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" sid;
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "kimi-anchor-pickle-b233";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_CLIENT_TYPE" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check int "one registration (hook adopted, not forked)" 1
+            (List.length regs);
+          let reg = List.hd regs in
+          check string "hook alias adopted" "kimi-suvi-lumo-b233" reg.alias;
+          check string "session preserved" sid reg.session_id;
+          check bool "MCP upgraded the row with a live pid" true
+            (reg.pid <> None);
+          check (option string) "kimi-hook ownership marker preserved"
+            (Some "kimi-hook") reg.registered_by))
 
 let test_auto_register_startup_client_type_conflict_skips_hook_row () =
   (* B119 hardening: a child process (e.g. `kimi -p` inheriting
@@ -16282,6 +16384,12 @@ let () =
              test_inferred_client_type_from_env_agy
          ; test_case "session_id_from_env: GROK_AGENT + active_sessions (B173)" `Quick
              test_session_id_from_grok_active_sessions
+         ; test_case "session_id_from_env uses KIMI_SESSION_ID (B233)" `Quick
+             test_session_id_from_env_uses_kimi_session_id
+         ; test_case "session_id_from_env kimi session_index for cwd (B233)" `Quick
+             test_session_id_from_env_kimi_session_index
+         ; test_case "resolve_session_id derives from AUTO_REGISTER_ALIAS (B233)" `Quick
+             test_resolve_session_id_derives_from_auto_register_alias
          ; test_case "inferred_client_type_from_env: CURSOR_AGENT=1 → cursor (B134)" `Quick
              test_inferred_client_type_from_env_cursor_agent_flag
          ; test_case "inferred_client_type_from_env: CURSOR_INVOKED_AS → cursor (B134)" `Quick
@@ -16416,6 +16524,8 @@ let () =
              test_auto_register_startup_adopts_claude_hook_alias
          ; test_case "auto_register_startup adopts codex-hook alias for same session (B119)" `Quick
              test_auto_register_startup_adopts_codex_hook_alias
+         ; test_case "auto_register_startup adopts kimi-hook alias for same session (B233)" `Quick
+             test_auto_register_startup_adopts_kimi_hook_alias
          ; test_case "auto_register_startup client-type conflict skips hook row (B119)" `Quick
              test_auto_register_startup_client_type_conflict_skips_hook_row
          ; test_case "auto_register_startup same-alias client-type conflict skips (B119)" `Quick

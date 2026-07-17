@@ -202,7 +202,7 @@ need verification by an agent running inside pi. Please update and PR.
 
 ### Kimi
 
-**MCP attachment**: `~/.kimi-code/mcp.json` with `mcpServers.c2c` stdio entry. Session ID and alias passed via env vars.
+**MCP attachment**: `~/.kimi-code/mcp.json` with `mcpServers.c2c` stdio entry. Install writes `C2C_MCP_CLIENT_TYPE=kimi` + a static `C2C_MCP_AUTO_REGISTER_ALIAS` (not a static `C2C_MCP_SESSION_ID` — one global mcp.json serves every Kimi session). MCP resolves the live session id via `KIMI_SESSION_ID` (managed/`c2c start`) or `~/.kimi-code/session_index.jsonl` for the process cwd (B233), then adopts the SessionStart hook registration (`registered_by=kimi-hook`) when present.
 
 **Auto-delivery mechanism**: REST prompt injection (`C2c_kimi_notifier`). The notifier discovers the live Kimi Code session id (`session_<uuid>`, minted by Kimi Code itself) from `~/.kimi-code/session_index.jsonl`, ensures the local Kimi server (`kimi server run`) is listening, and POSTs each inbound message as a user prompt to `http://127.0.0.1:<port>/api/v1/sessions/{id}/prompts` (bearer token from `~/.kimi-code/server.token`). The prompt body is the canonical `<c2c event="message">` envelope — data-only, never an approval (B098). A tmux wake-prompt fires when the pane is idle. No PTY injection. The legacy file-based notification-store path is deprecated; `c2c monitor` is the fallback for unmanaged/serverless setups.
 

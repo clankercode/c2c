@@ -18,36 +18,12 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
   "— not a relay registration" note appears only for
   `configured_not_registered` (positive absence). Operators should read
   `state:` / `lease:` for relay registration, not the alias note.
-||||||| 4cf0f90f
-- **B232: `c2c send --deferrable` works (CLI/MCP parity).** The low-priority
-  push-suppress flag was MCP-only; CLI-first clients (kimi) could not send
-  deferrable DMs. `c2c send` now accepts `--deferrable` and stamps the same
-  inbox flag as MCP `deferrable:true` (local 1:1; relay outbox does not yet
-  preserve it, same caveat as `--ephemeral`).
-- **B236: `c2c rooms invite` / `create --invite` refuse cross-host
-  `alias@host`.** Broker-local rooms are per-broker and are not federated;
-  inviting a remote peer previously succeeded and wrote the address into
-  `invited_members` while the remote could never join. Both CLI and MCP now
-  reject with an actionable pointer to `c2c relay rooms`.
-- **B241: rooms CLI shares session-id resolution with whoami/send/peek.**
-  `c2c rooms join` (and other rooms commands) no longer hard-error with
-  "cannot determine alias / C2C_MCP_SESSION_ID is required" while the same
-  shell's `c2c whoami` succeeds via the init `default-session.json` fallback.
-  Rooms now use the shared CLI helpers (`env_session_id` + statefile note +
-  B187 guards) so identity is consistent across the CLI surface.
-- **B231: `c2c relay dm poll` / `peek` use the connector lease when
-  relay-connect owns the alias.** Previously both hard-coded
-  `cli-<alias>/cli-<alias>`, which 403'd with signature_invalid once the
-  connector re-registered under its session key. The error hint also no
-  longer recommends `c2c relay register` for session-ownership failures
-  (re-register steals the lease from the connector).
-- **B235: unmanaged `c2c relay connect` no longer dies silently without a
-  recovery path.** Bare persistent connect prints a loud unsupervised warning
-  and points operators at `c2c start relay-connect`. `c2c restart relay-connect`
-  bootstraps a supervised machine-wide connector when no managed config exists
-  (using saved/`C2C_RELAY_URL` resolution) instead of failing with
-  "no config found for instance". Doctor/whoami already flag stale bridges;
-  remediations that call restart now work for the ad-hoc death case.
+- **B233: Kimi MCP whoami/send no longer fail with `missing session_id`.**
+  Global `~/.kimi-code/mcp.json` correctly omits a static `C2C_MCP_SESSION_ID`
+  (one config serves every session). The MCP server now resolves the live Kimi
+  id via `KIMI_SESSION_ID` or `~/.kimi-code/session_index.jsonl` for the process
+  cwd, adopts `registered_by=kimi-hook` SessionStart identities, and falls back
+  to the install-time auto-register alias only when no session key is available.
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.
