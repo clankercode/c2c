@@ -137,12 +137,18 @@ type thread_persistence = Thread_persisted | Thread_unpersisted | Thread_unknown
 val codex_sessions_dir : unit -> string
 
 (** [thread_rollout_exists ~sessions_dir ~thread_id] scans [sessions_dir] for a
-    rollout file ending in [<thread-id>.jsonl] (Codex writes
+    regular rollout file named [rollout-<ts>-<thread-id>.jsonl] (Codex writes
     […/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl] once a thread has run).
-    [Thread_unknown] when [sessions_dir] is missing/unreadable or [thread_id]
-    is blank — callers must not treat scanner uncertainty as absence. *)
+    [Thread_unknown] when [sessions_dir] is missing/unreadable/ambiguous, the
+    scan encounters a symlink, or [thread_id] is blank — callers must not treat
+    scanner uncertainty as absence. *)
 val thread_rollout_exists :
   sessions_dir:string -> thread_id:string -> thread_persistence
+
+(** Whether this launch should run the B227 persistence scan.  Real launches
+    always scan unless the explicit skip escape is set; injected scripted
+    backends scan only when the sessions-dir test seam is explicitly set. *)
+val should_preflight_resume_thread : backend_is_injected:bool -> bool
 
 (** [effective_resume_thread ~persistence thread] is the pure B227 fallback
     decision: a known-[Thread_unpersisted] resume target is dropped (the launch

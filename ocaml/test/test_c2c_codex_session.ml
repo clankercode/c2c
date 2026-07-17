@@ -862,6 +862,17 @@ let persistence_str = function
   | S.Thread_unpersisted -> "unpersisted"
   | S.Thread_unknown -> "unknown"
 
+let with_b227_env bindings f =
+  let saved =
+    List.map (fun (key, _) -> (key, Sys.getenv_opt key)) bindings in
+  List.iter (fun (key, value) -> Unix.putenv key value) bindings;
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (key, value) -> Unix.putenv key (Option.value value ~default:""))
+        saved)
+    f
+
 (* Codex rollout layout: sessions/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl *)
 let write_rollout ~sessions_dir ~thread_id =
   let day =
@@ -872,7 +883,7 @@ let write_rollout ~sessions_dir ~thread_id =
       (Printf.sprintf "rollout-2026-07-17T20-36-06-%s.jsonl" thread_id) in
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc)
-    (fun () -> output_string oc "{}\n")
+    (fun () -> output_string oc "{}\n"; path)
 
 let test_rollout_scan_states () =
   with_tmp_dir (fun dir ->
@@ -886,7 +897,17 @@ let test_rollout_scan_states () =
       Alcotest.(check string) "no rollout → unpersisted" "unpersisted"
         (persistence_str
            (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1"));
-      write_rollout ~sessions_dir:sessions ~thread_id:"t-1";
+      (* An unrelated jsonl is not a Codex rollout and must not vouch for a
+         thread that Codex never persisted. *)
+      let decoy = Filename.concat sessions "not-a-rollout-t-1.jsonl" in
+      let decoy_oc = open_out decoy in
+      output_string decoy_oc "{}\n";
+      close_out decoy_oc;
+      Alcotest.(check string) "non-rollout jsonl → unpersisted" "unpersisted"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1"));
+      Sys.remove decoy;
+      ignore (write_rollout ~sessions_dir:sessions ~thread_id:"t-1");
       Alcotest.(check string) "date-partitioned rollout → persisted" "persisted"
         (persistence_str
            (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1"));
@@ -898,6 +919,56 @@ let test_rollout_scan_states () =
       Alcotest.(check string) "blank id → unknown" "unknown"
         (persistence_str
            (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"  ")))
+
+let test_rollout_scan_uncertainty () =
+  with_tmp_dir (fun dir ->
+      let real_sessions = Filename.concat dir "real-sessions" in
+      let sessions_link = Filename.concat dir "sessions-link" in
+      C2c_io.mkdir_p real_sessions;
+      Unix.symlink real_sessions sessions_link;
+      Alcotest.(check string) "symlinked sessions root → unknown" "unknown"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions_link ~thread_id:"t-1")));
+  with_tmp_dir (fun dir ->
+      let sessions = Filename.concat dir "sessions" in
+      C2c_io.mkdir_p sessions;
+      (* Never follow a directory symlink: this is a bounded answer for cycles
+         and preserves the resume target rather than claiming an absence. *)
+      Unix.symlink sessions (Filename.concat sessions "cycle");
+      Alcotest.(check string) "symlink cycle → unknown" "unknown"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1")));
+  with_tmp_dir (fun dir ->
+      let sessions = Filename.concat dir "sessions" in
+      let unreadable = Filename.concat sessions "2026" in
+      C2c_io.mkdir_p unreadable;
+      Unix.chmod unreadable 0o000;
+      Fun.protect
+        ~finally:(fun () -> Unix.chmod unreadable 0o755)
+        (fun () ->
+          Alcotest.(check string) "unreadable nested dir → unknown" "unknown"
+            (persistence_str
+               (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1"))))
+
+let test_thread_preflight_gate_decision () =
+  with_b227_env
+    [ ("C2C_CODEX_SESSIONS_DIR", "");
+      ("C2C_CODEX_SKIP_THREAD_PREFLIGHT", "") ]
+    (fun () ->
+      Alcotest.(check bool) "real launch scans by default" true
+        (S.should_preflight_resume_thread ~backend_is_injected:false);
+      Alcotest.(check bool) "scripted backend skips without seam" false
+        (S.should_preflight_resume_thread ~backend_is_injected:true);
+      with_tmp_dir (fun dir ->
+          with_b227_env [ ("C2C_CODEX_SESSIONS_DIR", dir) ] (fun () ->
+              Alcotest.(check bool) "scripted backend scans with seam" true
+                (S.should_preflight_resume_thread ~backend_is_injected:true);
+              with_b227_env [ ("C2C_CODEX_SKIP_THREAD_PREFLIGHT", "1") ]
+                (fun () ->
+                  Alcotest.(check bool) "skip forces real resume" false
+                    (S.should_preflight_resume_thread ~backend_is_injected:false);
+                  Alcotest.(check bool) "skip forces scripted resume" false
+                    (S.should_preflight_resume_thread ~backend_is_injected:true)))))
 
 let test_effective_resume_thread_decision () =
   let const v _ = v in
@@ -931,20 +1002,25 @@ let test_effective_resume_thread_decision () =
    seam opts the hermetic test into the preflight. [rollout] controls whether
    the requested thread has a persisted rollout; returns the frontend argv and
    the persisted codex_resume_target. *)
-let run_with_thread_preflight ~rollout =
+let run_with_thread_preflight ~skip_thread_preflight ~rollout =
   let sid = unique_sid () in
   let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
   Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
       with_tmp_dir (fun dir ->
           let sessions = Filename.concat dir "sessions" in
           C2c_io.mkdir_p sessions;
-          if rollout then write_rollout ~sessions_dir:sessions ~thread_id:sid;
+          if rollout then ignore (write_rollout ~sessions_dir:sessions ~thread_id:sid);
           let saved = Sys.getenv_opt "C2C_CODEX_SESSIONS_DIR" in
+          let saved_skip = Sys.getenv_opt "C2C_CODEX_SKIP_THREAD_PREFLIGHT" in
           Unix.putenv "C2C_CODEX_SESSIONS_DIR" sessions;
+          Unix.putenv "C2C_CODEX_SKIP_THREAD_PREFLIGHT"
+            (if skip_thread_preflight then "1" else "");
           Fun.protect
             ~finally:(fun () ->
               Unix.putenv "C2C_CODEX_SESSIONS_DIR"
-                (Option.value saved ~default:""))
+                (Option.value saved ~default:"");
+              Unix.putenv "C2C_CODEX_SKIP_THREAD_PREFLIGHT"
+                (Option.value saved_skip ~default:""))
             (fun () ->
               let clock = ref 0.0 in
               let server = { status = Running_ } in
@@ -967,17 +1043,134 @@ let run_with_thread_preflight ~rollout =
               (!frontend_argv, target, sid))))
 
 let test_run_drops_unpersisted_thread_b227 () =
-  let argv, target, _sid = run_with_thread_preflight ~rollout:false in
+  let argv, target, _sid =
+    run_with_thread_preflight ~skip_thread_preflight:false ~rollout:false in
   Alcotest.(check bool) "frontend launched FRESH (no `codex resume`)" false
     (Array.exists (fun a -> a = "resume") argv);
   Alcotest.(check (option string)) "dead thread not re-persisted" None target
 
 let test_run_keeps_persisted_thread_b227 () =
-  let argv, target, sid = run_with_thread_preflight ~rollout:true in
+  let argv, target, sid =
+    run_with_thread_preflight ~skip_thread_preflight:false ~rollout:true in
   Alcotest.(check bool) "frontend resumes the persisted thread" true
     (Array.exists (fun a -> a = "resume") argv
      && Array.exists (fun a -> a = sid) argv);
   Alcotest.(check (option string)) "resume target persisted" (Some sid) target
+
+let test_skip_thread_preflight_forces_resume_b227 () =
+  let argv, target, sid =
+    run_with_thread_preflight ~skip_thread_preflight:true ~rollout:false in
+  Alcotest.(check bool) "skip launches `codex resume`" true
+    (Array.exists (fun a -> a = "resume") argv
+     && Array.exists (fun a -> a = sid) argv);
+  Alcotest.(check (option string)) "skip preserves resume target" (Some sid) target
+
+let test_unpersisted_thread_cleared_before_hook_fallback_b227 () =
+  let session_id = unique_sid () in
+  let thread_id = "thread-" ^ session_id in
+  let alias = S.derive_alias ~session_id ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      with_tmp_dir (fun dir ->
+          let instance_dir = C2c_start.instance_dir alias in
+          C2c_io.mkdir_p instance_dir;
+          S.write_mapping ~instance_dir
+            { S.session_id; alias; thread_id = Some thread_id;
+              created_at = 0.; updated_at = 0. };
+          let sessions = Filename.concat dir "sessions" in
+          C2c_io.mkdir_p sessions;
+          let rollout = write_rollout ~sessions_dir:sessions ~thread_id in
+          with_b227_env
+            [ ("C2C_CODEX_SESSIONS_DIR", sessions);
+              ("C2C_CODEX_SKIP_THREAD_PREFLIGHT", "") ]
+            (fun () ->
+              let clock = ref 0.0 in
+              let server = { status = Running_ } in
+              let frontend = { status = Exited 0 } in
+              let good_backend = scripted ~clock
+                  ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+                    Ok (mk_fake ~id:111 server))
+                  ~spawn_frontend:(fun ~argv:_ ~env:_ ->
+                    Ok (mk_fake ~id:222 frontend)) () in
+              let first_rc = S.run ~mode:(S.Resume alias) ~yolo:false ~extra_args:[]
+                  ~backend:good_backend
+                  ~fallback:(fun ~extra_args:_ () -> 99) () in
+              Alcotest.(check int) "persisted setup launch" 0 first_rc;
+              Sys.remove rollout;
+              let failed_backend =
+                scripted ~clock ~codex_version:(Error "forced app-server failure") () in
+              let fallback_called = ref false in
+              let rc = S.run ~mode:(S.Resume alias) ~yolo:false ~extra_args:[]
+                  ~backend:failed_backend
+                  ~fallback:(fun ~extra_args:_ () ->
+                    fallback_called := true;
+                    (match C2c_start.load_config_opt alias with
+                     | Some cfg ->
+                         Alcotest.(check (option string))
+                           "fallback config has no dead resume target" None
+                           cfg.C2c_start.codex_resume_target;
+                         Alcotest.(check string)
+                           "fallback config restores launcher session id" session_id
+                           cfg.C2c_start.resume_session_id
+                     | None -> Alcotest.fail "fallback config must remain available");
+                    (match S.load_mapping ~instance_dir:(C2c_start.instance_dir alias) with
+                     | Some mapping ->
+                         Alcotest.(check (option string))
+                           "fallback mapping has no dead thread" None mapping.thread_id
+                     | None -> Alcotest.fail "fallback mapping must remain available");
+                    0) () in
+              Alcotest.(check bool) "hook fallback ran after app-server failure" true
+                !fallback_called;
+              Alcotest.(check int) "fallback rc" 0 rc)))
+
+let test_force_hooks_preflights_existing_alias_b227 () =
+  let session_id = unique_sid () in
+  let thread_id = "thread-" ^ session_id in
+  let alias = S.derive_alias ~session_id ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      with_tmp_dir (fun dir ->
+          let instance_dir = C2c_start.instance_dir alias in
+          C2c_io.mkdir_p instance_dir;
+          S.write_mapping ~instance_dir
+            { S.session_id; alias; thread_id = Some thread_id;
+              created_at = 0.; updated_at = 0. };
+          let sessions = Filename.concat dir "sessions" in
+          C2c_io.mkdir_p sessions;
+          let rollout = write_rollout ~sessions_dir:sessions ~thread_id in
+          with_b227_env
+            [ ("C2C_CODEX_SESSIONS_DIR", sessions);
+              ("C2C_CODEX_SKIP_THREAD_PREFLIGHT", "");
+              ("C2C_CODEX_FORCE_HOOKS", "");
+              ("C2C_CODEX_SKIP_MCP_PREFLIGHT", "1") ]
+            (fun () ->
+              let clock = ref 0.0 in
+              let server = { status = Running_ } in
+              let frontend = { status = Exited 0 } in
+              let backend = scripted ~clock
+                  ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+                    Ok (mk_fake ~id:111 server))
+                  ~spawn_frontend:(fun ~argv:_ ~env:_ ->
+                    Ok (mk_fake ~id:222 frontend)) () in
+              let first_rc = S.run ~mode:(S.Resume alias) ~yolo:false ~extra_args:[]
+                  ~backend ~fallback:(fun ~extra_args:_ () -> 99) () in
+              Alcotest.(check int) "persisted setup launch" 0 first_rc;
+              Sys.remove rollout;
+              Unix.putenv "C2C_CODEX_FORCE_HOOKS" "1";
+              let fallback_called = ref false in
+              let rc = S.run ~mode:(S.Resume alias) ~yolo:false ~extra_args:[]
+                  ~fallback:(fun ~extra_args:_ () ->
+                    fallback_called := true;
+                    (match C2c_start.load_config_opt alias with
+                     | Some cfg -> Alcotest.(check (option string))
+                         "forced hook config has no dead resume target" None
+                         cfg.C2c_start.codex_resume_target
+                     | None -> Alcotest.fail "forced hook config must remain available");
+                    (match S.load_mapping ~instance_dir with
+                     | Some mapping -> Alcotest.(check (option string))
+                         "forced hook mapping has no dead thread" None mapping.thread_id
+                     | None -> Alcotest.fail "forced hook mapping must remain available");
+                    0) () in
+              Alcotest.(check bool) "forced hook fallback ran" true !fallback_called;
+              Alcotest.(check int) "forced hook rc" 0 rc)))
 
 (* ------------------------------------------------------------------ *)
 (* Identity resolution: ambiguous client/alias/thread combos rejected  *)
@@ -1174,9 +1367,18 @@ let () =
         ; test_case "skip env bypasses preflight" `Quick test_skip_env_bypasses_preflight ] )
     ; ( "thread-preflight-B227",
         [ test_case "rollout scan states" `Quick test_rollout_scan_states
+        ; test_case "rollout scan uncertainty is fail-closed" `Quick
+            test_rollout_scan_uncertainty
+        ; test_case "run gate decision table" `Quick test_thread_preflight_gate_decision
         ; test_case "fallback decision table" `Quick test_effective_resume_thread_decision
         ; test_case "run drops unpersisted resume thread (fresh thread, same alias)"
             `Quick test_run_drops_unpersisted_thread_b227
         ; test_case "run keeps persisted resume thread" `Quick
-            test_run_keeps_persisted_thread_b227 ] )
+            test_run_keeps_persisted_thread_b227
+        ; test_case "skip escape forces resume" `Quick
+            test_skip_thread_preflight_forces_resume_b227
+        ; test_case "fallback clears stale resume persistence" `Quick
+            test_unpersisted_thread_cleared_before_hook_fallback_b227
+        ; test_case "forced hook fallback preflights existing alias" `Quick
+            test_force_hooks_preflights_existing_alias_b227 ] )
     ]

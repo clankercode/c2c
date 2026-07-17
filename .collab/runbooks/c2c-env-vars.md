@@ -209,8 +209,12 @@ that thread (a rollout `…/rollout-<ts>-<thread-id>.jsonl` under the sessions
 dir) before handing the frontend `codex resume <id>` — a zero-turn thread is
 never saved, so resuming it hard-fails (`No saved session found`) and strands
 the alias in a degraded relaunch. A known-unpersisted thread is dropped (fresh
-thread, same alias) with an operator log line; an unreadable/missing sessions
-dir keeps the thread (uncertainty never discards resume context). Setting
+thread, same alias) with an operator log line; a missing, unreadable, or
+otherwise ambiguous sessions scan (including a symlink) keeps the thread
+(uncertainty never discards resume context). When the thread is dropped, c2c
+also clears that exact target from its managed config and mapping before any
+hook-backed fallback can reload it. The scan also runs before the emergency
+`C2C_CODEX_FORCE_HOOKS=1` fallback when it targets an existing alias. Setting
 `C2C_CODEX_SKIP_THREAD_PREFLIGHT=1` (exact value `1`) forces the resume attempt.
 Scripted-`backend` tests skip the scan unless `C2C_CODEX_SESSIONS_DIR` is set.
 
