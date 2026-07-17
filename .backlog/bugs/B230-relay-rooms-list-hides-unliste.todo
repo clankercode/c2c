@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-17T15:57:10Z"
+depends_on: []
+estimate_hours: 1
+id: B230
+priority: high
+status: pending
+tags: []
+title: relay rooms list hides unlisted rooms from non-creator members
+updated_at: "2026-07-17T15:57:10Z"
+---
+During cross-host dogfood (2026-07-18): probe alias joined unlisted room df-unl-x7k2 (join returned ok:true; subsequent send to the room succeeded and was delivered, so membership is real). But 'c2c relay rooms list --alias kimi-df-probe-x7k2' does NOT show df-unl-x7k2. The room creator (kimi-suvi-lumo-9cr1) DOES see it in list. Members other than the creator cannot see their own unlisted rooms — they must track room ids out-of-band. Either list should show unlisted rooms to members, or join should return the caveat.
