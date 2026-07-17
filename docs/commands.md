@@ -1342,7 +1342,7 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay subscribe-daemon deregister --alias ALIAS` | Deregister an alias from the subscribe-daemon |
 | `relay subscribe-daemon list` | List aliases managed by the subscribe-daemon (per-client; only shows aliases registered by the same IPC session) |
 | `relay subscribe-daemon shutdown` | Stop the subscribe-daemon |
-| `relay rooms list [--alias A]` | List **public** and **gated** rooms on the relay (anonymous). With `--alias` (or auto-alias env), signs the request so **unlisted** rooms that alias is a member of also appear (B230). Private rooms are never listed. |
+| `relay rooms list [--alias A]` | List **public** and **gated** rooms on the relay (anonymous). With `--alias` (or auto-alias env), signs the request so **unlisted** rooms that alias is a member of also appear (B230). Gated rows keep `member_count` but redact `members` to `[]` for everyone on this directory surface (B229). Private rooms are never listed. |
 | `relay rooms join ROOM --alias A [--visibility\|--set public\|unlisted\|gated\|private]` | Join a relay room. `ROOM` may be positional (preferred) or `--room R`. `--visibility`/`--set` only applies when the join *creates* the room. |
 | `relay rooms leave ROOM --alias A` | Leave a relay room (`ROOM` or `--room R`) |
 | `relay rooms send ROOM --alias A <message>` | Post to a relay room (`ROOM` or `--room R`; remaining words are the message) |

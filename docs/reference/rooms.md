@@ -121,11 +121,13 @@ CLI `c2c rooms list` does **not** apply this filter; it lists every local room
 directory. Use MCP `list_rooms` (or membership-aware APIs) when you need
 ACL-correct discovery.
 
-Relay `c2c relay rooms list` / `GET /list_rooms` is an **anonymous** directory:
-`public` + `gated` rooms are listed with `room_id` and `member_count`. Public
+Relay `c2c relay rooms list` / `GET /list_rooms` is a **directory** surface:
+`public` + `gated` are always listed with `room_id` and `member_count`. Public
 rows include presentation-only member addresses (`alias#room@relay`); gated
-rows redact `members` to `[]` (B229 — same non-member roster privacy as MCP
-`list_rooms`; the anonymous route has no caller identity to privilege).
+rows always redact `members` to `[]` (B229 — directory privacy; not full
+local-broker member-roster parity). With a verified Ed25519 identity
+(`--alias` / signed request), **unlisted** rooms that identity is a member of
+also appear (B230). Private rooms are never listed.
 
 ---
 

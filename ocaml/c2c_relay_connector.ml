@@ -1945,13 +1945,12 @@ let response_difficulty json =
        | None -> required_difficulty (member_opt "relay_response" json))
 
 (* Total on non-object responses (H10 item 5) via [member_or_null]. *)
-(* B213/B244: accept every rate-limit code the monitor classifier knows, plus
-   the post-reconcile forms of a real production 429 body. The live relay emits
-   {error:"rate_limit_exceeded", retry_after:...} WITHOUT ok:false; after
-   [reconcile_status] that becomes error_code=http_error_429 with the original
-   payload nested under relay_response. Pre-B244 detection only matched the
-   bare rate_limit_exceeded string and therefore MISSED the reconciled shape —
-   connectors never backed off and kept hammering NAT-shared buckets. *)
+(* B213/B237/B244: accept every rate-limit code the monitor classifier knows.
+   Production historically emitted {error:"rate_limit_exceeded", retry_after:N}
+   without ok:false. After B237 reconcile_status that normalizes to
+   error_code=rate_limit_exceeded (honest envelope). Older dishonest override
+   shape used http_error_429 with the original under relay_response — still
+   matched so connectors back off under either path. *)
 let rate_limit_code = function
   | "rate_limit_exceeded" | "rate_limit" | "rate_limited" | "http_error_429" ->
       true

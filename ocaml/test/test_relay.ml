@@ -542,7 +542,14 @@ let test_relay_list_rooms_unlisted_visible_to_members () =
     fail_fmt "non-creator member must see unlisted room they joined";
   let as_stranger = room_ids (Relay.InMemoryRelay.list_rooms ~for_alias:"stranger" t) in
   if List.mem "unl-b230" as_stranger then
-    fail_fmt "non-member must not see unlisted room"
+    fail_fmt "non-member must not see unlisted room";
+  (* Integration polish: alias comparisons are casefold elsewhere; for_alias
+     membership must match mixed-case signed aliases. *)
+  let as_member_cf =
+    room_ids (Relay.InMemoryRelay.list_rooms ~for_alias:"MEMBER" t)
+  in
+  if not (List.mem "unl-b230" as_member_cf) then
+    fail_fmt "for_alias membership must be case-insensitive"
 
 (* New cell coverage (InMemory): gated is listed + join invite-gated; unlisted
    is open-join but not listed; private is invite-gated + not listed. *)

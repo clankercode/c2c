@@ -1348,7 +1348,11 @@ module InMemoryRelay : RELAY = struct
           | "public" | "gated" -> true
           | "unlisted" ->
               (match for_alias with
-               | Some a -> List.mem a members
+               | Some a ->
+                   let a_cf = String.lowercase_ascii a in
+                   List.exists
+                     (fun m -> String.lowercase_ascii m = a_cf)
+                     members
                | None -> false)
           | _ -> false
         in
@@ -1361,11 +1365,12 @@ module InMemoryRelay : RELAY = struct
         if not include_room then acc
         else if not (valid_relay_room_id room_id) then acc
         else
-          (* B229: /list_rooms is anonymous (no caller identity). Align with
-             local-broker 4-level list_rooms: public rooms expose presentation
-             roster addresses; gated rooms stay discoverable (room_id +
-             member_count) but roster is redacted so non-members cannot
-             enumerate membership. Stored membership stays raw for checks. *)
+          (* B229/B230: optional verified identity expands the directory with
+             unlisted rooms that identity is a member of. Public (and
+             member-visible unlisted) rows expose presentation rosters; gated
+             rows stay discoverable (room_id + member_count) but members is
+             always [] on this surface (directory privacy — not local-broker
+             member-full-roster parity). Stored membership stays raw. *)
           let members_json =
             if visibility = "gated" then `List []
             else
@@ -2799,8 +2804,13 @@ module SqliteRelay : RELAY = struct
             Sqlite3.prepare conn
               "SELECT room_id, visibility FROM rooms WHERE visibility IN ('public','gated')"
         | Some _ ->
+            (* Alias compare is case-insensitive (c2c aliases are casefold);
+               COLLATE NOCASE matches in-memory list_rooms membership. *)
             Sqlite3.prepare conn
-              "SELECT room_id, visibility FROM rooms WHERE visibility IN ('public','gated')                OR (visibility = 'unlisted' AND EXISTS (                  SELECT 1 FROM room_members m                  WHERE m.room_id = rooms.room_id AND m.alias = ?))"
+              "SELECT room_id, visibility FROM rooms WHERE visibility IN ('public','gated') \
+               OR (visibility = 'unlisted' AND EXISTS ( \
+                 SELECT 1 FROM room_members m \
+                 WHERE m.room_id = rooms.room_id AND m.alias = ? COLLATE NOCASE))"
       in
       (match for_alias with
        | Some alias -> Sqlite3.bind_text stmt 1 alias |> ignore
