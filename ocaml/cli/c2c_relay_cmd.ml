@@ -1171,20 +1171,32 @@ let relay_dm_cmd =
                  Printf.eprintf "error: --alias required for dm poll\n%!";
                  exit 1
            in
-           let node_id = Printf.sprintf "cli-%s" from_alias in
+           (* B231: when relay-connect owns the alias lease, poll that
+              (node_id, session_id) — not cli-<alias>. Hard-coding cli-
+              triggers signature_invalid and the old re-register hint
+              steals the lease from the connector. *)
+           let node_id, session_id =
+             let env_s k =
+               match Sys.getenv_opt k with Some s when s <> "" -> Some s | _ -> None
+             in
+             C2c_relay_connector.resolve_cli_dm_inbox_key_at
+               ~broker_root:(resolve_broker_root ()) ~alias:from_alias
+               ~env_node_id:(env_s "C2C_RELAY_NODE_ID")
+               ~env_session_id:(env_s "C2C_RELAY_SESSION_ID")
+           in
            let body_str = Yojson.Safe.to_string (`Assoc [
              ("node_id", `String node_id);
-             ("session_id", `String node_id);
+             ("session_id", `String session_id);
            ]) in
            let result = (match Relay_identity.load () with
              | Ok id ->
                  let auth = Relay_signed_ops.sign_request id ~alias:from_alias
                    ~meth:"POST" ~path:"/poll_inbox" ~body_str () in
                  Lwt_main.run (Relay.Relay_client.poll_inbox_signed client
-                   ~node_id ~session_id:node_id ~auth_header:auth)
+                   ~node_id ~session_id ~auth_header:auth)
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.poll_inbox client
-                   ~node_id ~session_id:node_id)) in
+                   ~node_id ~session_id)) in
            (* J2: drained relay rows were delivered to this caller —
               schema-v1 rows (delivery.state "delivered", source "relay")
               with legacy row keys preserved; empty batches keep the
@@ -1205,27 +1217,36 @@ let relay_dm_cmd =
               by default even on tokenless relays; this signed path
               satisfies that. The unsigned fallback below only works
               against a tokenless dev relay that also sets the explicit
-              C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 gate. *)
+              C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 gate.
+              B231: same connector-lease resolution as poll (see above). *)
            let from_alias = match alias with
              | Some a -> a
              | None ->
                  Printf.eprintf "error: --alias required for dm peek\n%!";
                  exit 1
            in
-           let node_id = Printf.sprintf "cli-%s" from_alias in
+           let node_id, session_id =
+             let env_s k =
+               match Sys.getenv_opt k with Some s when s <> "" -> Some s | _ -> None
+             in
+             C2c_relay_connector.resolve_cli_dm_inbox_key_at
+               ~broker_root:(resolve_broker_root ()) ~alias:from_alias
+               ~env_node_id:(env_s "C2C_RELAY_NODE_ID")
+               ~env_session_id:(env_s "C2C_RELAY_SESSION_ID")
+           in
            let body_str = Yojson.Safe.to_string (`Assoc [
              ("node_id", `String node_id);
-             ("session_id", `String node_id);
+             ("session_id", `String session_id);
            ]) in
            let result = (match Relay_identity.load () with
              | Ok id ->
                  let auth = Relay_signed_ops.sign_request id ~alias:from_alias
                    ~meth:"POST" ~path:"/peek_inbox" ~body_str () in
                  Lwt_main.run (Relay.Relay_client.peek_inbox_signed client
-                   ~node_id ~session_id:node_id ~auth_header:auth)
+                   ~node_id ~session_id ~auth_header:auth)
              | Error _ ->
                  Lwt_main.run (Relay.Relay_client.peek_inbox client
-                   ~node_id ~session_id:node_id)) in
+                   ~node_id ~session_id)) in
            (* J2: peeked relay rows are NOT drained — schema-v1 rows with
               delivery.state "queued", source "relay"; legacy row keys
               preserved. *)

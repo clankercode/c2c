@@ -1284,6 +1284,62 @@ let connector_peek_key (cs : connector_state) ~alias
       in
       if session_id = "" then None else Some (node_id, session_id)
 
+(** Historical CLI-only inbox key used by `c2c relay register` and by
+    poll/peek when no connector owns the alias. *)
+let cli_inbox_key alias : string * string =
+  let k = Printf.sprintf "cli-%s" alias in
+  (k, k)
+
+(** B231: resolve the (node_id, session_id) for CLI `relay dm poll` / `peek`.
+
+    The relay lease is one-row-per-alias and SESSION-scoped. When
+    `relay-connect` is running it re-registers under (connector node_id,
+    local session_id), so a hard-coded [cli-<alias>/cli-<alias>] poll/peek
+    gets signature_invalid ("verified signer does not own session"). Prefer
+    the connector's recorded binding (same as monitor B209); fall back to
+    the CLI convention only when the alias is not connector-managed.
+
+    [env_node_id] / [env_session_id] (from C2C_RELAY_NODE_ID /
+    C2C_RELAY_SESSION_ID) both-set win as an explicit operator override;
+    a lone override is used only as connector_peek_key fallback. *)
+let resolve_cli_dm_inbox_key ~alias
+    ~(connector_state : connector_state option)
+    ~fallback_node_id
+    ~(env_node_id : string option)
+    ~(env_session_id : string option)
+    : string * string =
+  match env_node_id, env_session_id with
+  | Some n, Some s when n <> "" && s <> "" -> (n, s)
+  | _ ->
+      let fb_node =
+        match env_node_id with Some n when n <> "" -> n | _ -> fallback_node_id
+      in
+      let fb_sid =
+        match env_session_id with Some s when s <> "" -> s | _ -> ""
+      in
+      (match connector_state with
+       | Some cs ->
+           (match
+              connector_peek_key cs ~alias
+                ~fallback_node_id:fb_node ~fallback_session_id:fb_sid
+            with
+            | Some key -> key
+            | None -> cli_inbox_key alias)
+       | None -> cli_inbox_key alias)
+
+(** Convenience wrapper: read connector-state from [broker_root] and resolve
+    the B231 inbox key. Safe when the state file is missing or unreadable. *)
+let resolve_cli_dm_inbox_key_at ~broker_root ~alias
+    ~(env_node_id : string option)
+    ~(env_session_id : string option)
+    : string * string =
+  let connector_state = read_connector_state broker_root in
+  let fallback_node_id =
+    try Host_id.compute_host_hash () with _ -> ""
+  in
+  resolve_cli_dm_inbox_key ~alias ~connector_state ~fallback_node_id
+    ~env_node_id ~env_session_id
+
 (** True when [connector-state.json] records a PID that still exists.
     Broker-owned process evidence that does not require argv --broker-root
     scoping (B181). Best-effort: missing pid field or unreadable /proc → false. *)

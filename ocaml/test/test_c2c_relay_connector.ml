@@ -1098,6 +1098,47 @@ let test_connector_peek_key_backward_compat_fallback () =
            ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"" = None)
   | None -> Alcotest.fail "backward-compat fallback returned None"
 
+(* B231: CLI poll/peek must prefer the connector lease over cli-<alias>. *)
+let test_resolve_cli_dm_inbox_key_prefers_connector () =
+  let cs =
+    { Conn.cs_last_sync_ts = 0.0; cs_last_ok_ts = 0.0;
+      cs_last_error_op = None; cs_last_error_detail = None;
+      cs_last_error_ts = None;
+      cs_registered = [ "kimi-suvi-lumo-9cr1" ];
+      cs_node_id = Some "host-hash-xyz";
+      cs_sessions =
+        [ ("kimi-suvi-lumo-9cr1", "sess-connector-owned-1") ];
+      cs_pid = Some 4242;
+      cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
+      cs_inbound_delivered = 0; cs_inbound_rejected = 0 }
+  in
+  let node_id, session_id =
+    Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
+      ~connector_state:(Some cs) ~fallback_node_id:"host-hash-xyz"
+      ~env_node_id:None ~env_session_id:None
+  in
+  Alcotest.(check string) "node_id = connector node" "host-hash-xyz" node_id;
+  Alcotest.(check string) "session_id = connector session (NOT cli-*)"
+    "sess-connector-owned-1" session_id;
+  (* Unmanaged / no state → historical CLI key. *)
+  let n2, s2 =
+    Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
+      ~connector_state:None ~fallback_node_id:"host-hash-xyz"
+      ~env_node_id:None ~env_session_id:None
+  in
+  Alcotest.(check string) "no connector -> cli node"
+    "cli-kimi-suvi-lumo-9cr1" n2;
+  Alcotest.(check string) "no connector -> cli session"
+    "cli-kimi-suvi-lumo-9cr1" s2;
+  (* Explicit env pair wins over connector (operator override). *)
+  let n3, s3 =
+    Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
+      ~connector_state:(Some cs) ~fallback_node_id:"host-hash-xyz"
+      ~env_node_id:(Some "override-node") ~env_session_id:(Some "override-sid")
+  in
+  Alcotest.(check string) "env override node" "override-node" n3;
+  Alcotest.(check string) "env override session" "override-sid" s3
+
 (* B210: bounded, jittered 429 backoff. *)
 let test_backoff_zero_strikes_is_base () =
   Alcotest.(check (float 1e-9)) "strikes=0 -> base" 30.0
@@ -1543,5 +1584,9 @@ let () =
         test_connector_peek_key_uses_recorded_session_when_local_unresolved;
       Alcotest.test_case "backward-compat fallback to local session-id" `Quick
         test_connector_peek_key_backward_compat_fallback;
+    ];
+    "B231 CLI dm inbox key", [
+      Alcotest.test_case "prefers connector lease over cli-<alias>" `Quick
+        test_resolve_cli_dm_inbox_key_prefers_connector;
     ];
   ]

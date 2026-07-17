@@ -35,6 +35,12 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
   shell's `c2c whoami` succeeds via the init `default-session.json` fallback.
   Rooms now use the shared CLI helpers (`env_session_id` + statefile note +
   B187 guards) so identity is consistent across the CLI surface.
+- **B231: `c2c relay dm poll` / `peek` use the connector lease when
+  relay-connect owns the alias.** Previously both hard-coded
+  `cli-<alias>/cli-<alias>`, which 403'd with signature_invalid once the
+  connector re-registered under its session key. The error hint also no
+  longer recommends `c2c relay register` for session-ownership failures
+  (re-register steals the lease from the connector).
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.
