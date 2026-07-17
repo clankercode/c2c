@@ -11,6 +11,14 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B244: client-side relief for relay 429 storms on NAT-shared fleets.**
+  Monitor relay-watch paces peeks to observed `retry_after` (not fixed
+  cadence). Connector detects post-reconcile 429 bodies, aborts remaining
+  heartbeat/poll/send ops mid-sync once throttled, honors `retry_after` in
+  backoff, and surfaces `RATE_LIMITED` on the sync summary + stderr +
+  connector-state. Soft-deps B243 (per-endpoint server buckets). Server
+  keying unchanged.
+
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

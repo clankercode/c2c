@@ -891,6 +891,9 @@ let monitor_cmd =
                is bounded + escalated with throttling-appropriate advice, never
                conflated with the wedged-bridge transient escalation. *)
             let rl_streak = ref C2c_monitor_logic.empty_transient_streak in
+            (* B244: last observed retry_after (seconds) from a 429 body; drives
+               rate_limit_pace until a non-rate-limit outcome clears it. *)
+            let last_rl_retry_after = ref (None : float option) in
             (* B142: log the permanent-disable message ONCE. B180: reset when
                identity rebinds (peek target changes) so post-rename recovery
                is re-attempted honestly. *)
@@ -938,10 +941,17 @@ let monitor_cmd =
                 let now = Unix.gettimeofday () in
                 (* Backoff: after consecutive transient/soft errors wait longer
                    before the next peek, capped at 60s. Zero streak == normal
-                   interval. *)
+                   interval. B244: while rate-limited, pace to max(expo,
+                   observed retry_after) so NAT-shared buckets can refill. *)
                 let effective_interval =
-                  if !err_streak = 0 then relay_interval
-                  else Float.min 60.0 (relay_interval *. float_of_int (!err_streak + 1))
+                  if !rl_streak.C2c_monitor_logic.ts_consecutive > 0 then
+                    C2c_monitor_logic.rate_limit_pace
+                      ~base_interval:relay_interval
+                      ~err_streak:!err_streak
+                      ~retry_after:!last_rl_retry_after
+                  else if !err_streak = 0 then relay_interval
+                  else Float.min 60.0
+                         (relay_interval *. float_of_int (!err_streak + 1))
                 in
                 if now -. last_tick >= effective_interval then begin
                   let peek_target = Atomic.get relay_target_r in
@@ -963,6 +973,7 @@ let monitor_cmd =
                     soft_budget := C2c_monitor_logic.empty_soft_budget;
                     transient_streak := C2c_monitor_logic.empty_transient_streak;
                     rl_streak := C2c_monitor_logic.empty_transient_streak;
+                    last_rl_retry_after := None;
                     terminal_logged := false;
                     err_streak := 0
                   end;
@@ -980,6 +991,7 @@ let monitor_cmd =
                        transient_streak :=
                          C2c_monitor_logic.empty_transient_streak;
                        rl_streak := C2c_monitor_logic.empty_transient_streak;
+                       last_rl_retry_after := None;
                        ignore (emit_filtered ~is_mine:true ~source:"relay" msgs)
                    | C2c_monitor_logic.Peek_transient detail ->
                        (* Transient (incl. nonce_replay) never permanently
@@ -988,6 +1000,7 @@ let monitor_cmd =
                           also breaks a rate-limit streak (different cause). *)
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
                        rl_streak := C2c_monitor_logic.empty_transient_streak;
+                       last_rl_retry_after := None;
                        incr err_streak;
                        (* B211: bound the spam. A wedged bridge fails every peek
                           transiently forever; after a sustained streak emit ONE
@@ -1012,43 +1025,55 @@ let monitor_cmd =
                               (now_hms ()) node_id session_id detail attempt
                               (now_hms ()) remediation
                         | C2c_monitor_logic.Transient_quiet _ -> ())
-                   | C2c_monitor_logic.Peek_rate_limited detail ->
-                       (* B213: relay throttling (HTTP 429). A distinct transient:
-                          back off + retry, recovers on its own. Reported clearly
-                          as throttling (not identity, not a wedged bridge) and
-                          bounded via its own streak with throttling-appropriate
-                          escalation — never the "restart the connector" advice
-                          that would worsen the storm. *)
+                   | C2c_monitor_logic.Peek_rate_limited { detail; retry_after } ->
+                       (* B213/B244: relay throttling (HTTP 429). Distinct
+                          transient: back off (honoring retry_after) + retry.
+                          Reported as throttling, not identity / wedged bridge. *)
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
                        transient_streak :=
                          C2c_monitor_logic.empty_transient_streak;
+                       last_rl_retry_after := retry_after;
                        incr err_streak;
+                       let pace =
+                         C2c_monitor_logic.rate_limit_pace
+                           ~base_interval:relay_interval
+                           ~err_streak:!err_streak
+                           ~retry_after
+                       in
                        let action, streak' =
                          C2c_monitor_logic.note_transient
                            ~remediation:C2c_monitor_logic.rate_limit_wedge_remediation
                            ~now ~streak:!rl_streak ()
                        in
                        rl_streak := streak';
+                       let ra_note =
+                         match retry_after with
+                         | Some ra -> Printf.sprintf " retry_after=%.1fs" ra
+                         | None -> ""
+                       in
                        (match action with
                         | C2c_monitor_logic.Transient_log attempt ->
                             Printf.eprintf
                               "%s relay watch: rate-limited (HTTP 429) peeking \
-                               %s/%s: %s (attempt %d; backing off, will retry — \
+                               %s/%s: %s (attempt %d;%s next_wait=%.1fs — \
                                throttling, not an identity problem)\n%!"
                               (now_hms ()) node_id session_id detail attempt
+                              ra_note pace
                         | C2c_monitor_logic.Transient_wedged
                             { attempt; remediation } ->
                             Printf.eprintf
                               "%s relay watch: rate-limited (HTTP 429) peeking \
-                               %s/%s: %s (attempt %d; backing off, will retry)\n\
+                               %s/%s: %s (attempt %d;%s next_wait=%.1fs)\n\
                                %s relay watch: %s\n%!"
                               (now_hms ()) node_id session_id detail attempt
+                              ra_note pace
                               (now_hms ()) remediation
                         | C2c_monitor_logic.Transient_quiet _ -> ())
                    | C2c_monitor_logic.Peek_terminal { code; detail } ->
                        transient_streak :=
                          C2c_monitor_logic.empty_transient_streak;
                        rl_streak := C2c_monitor_logic.empty_transient_streak;
+                       last_rl_retry_after := None;
                        let action, budget' =
                          C2c_monitor_logic.decide_on_terminal
                            ~now ~code ~budget:!soft_budget ()

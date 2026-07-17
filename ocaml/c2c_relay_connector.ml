@@ -66,6 +66,10 @@ type sync_result = {
      error_code=rate_limit_exceeded). The run loops use this to grow a bounded,
      jittered backoff so N concurrent connectors on a shared host do not
      resynchronise into a machine-wide 429 storm. *)
+  (* B244: max retry_after (seconds) observed on any 429 this pass, when the
+     relay advertised one. Drives backoff pacing so NAT-shared IP buckets can
+     refill instead of being re-hit every base interval. *)
+  retry_after_s : float option;
   last_error : sync_error option;
 }
 
@@ -1178,6 +1182,14 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
         [ ("sessions",
            `Assoc (List.map (fun (alias, sid) -> (alias, `String sid)) pairs)) ]
   in
+  (* B244: persist rate_limited + retry_after so doctor/whoami can surface
+     chronic 429s without grepping connector logs. *)
+  let rl_assoc =
+    ("rate_limited", `Bool result.rate_limited)
+    :: (match result.retry_after_s with
+        | Some ra -> [ ("retry_after_s", `Float ra) ]
+        | None -> [ ("retry_after_s", `Null) ])
+  in
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float last_ok_ts)
@@ -1188,7 +1200,7 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
     ; ("outbox_dlqed", `Int result.outbox_dlqed)
     ; ("inbound_delivered", `Int result.inbound_delivered)
     ; ("inbound_rejected", `Int result.inbound_rejected)
-    ] @ node_id_assoc @ sessions_assoc @ err_assoc) in
+    ] @ rl_assoc @ node_id_assoc @ sessions_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
@@ -1833,9 +1845,55 @@ let response_difficulty json =
        | None -> required_difficulty (member_opt "relay_response" json))
 
 (* Total on non-object responses (H10 item 5) via [member_or_null]. *)
+(* B213/B244: accept every rate-limit code the monitor classifier knows, plus
+   the post-reconcile forms of a real production 429 body. The live relay emits
+   {error:"rate_limit_exceeded", retry_after:...} WITHOUT ok:false; after
+   [reconcile_status] that becomes error_code=http_error_429 with the original
+   payload nested under relay_response. Pre-B244 detection only matched the
+   bare rate_limit_exceeded string and therefore MISSED the reconciled shape —
+   connectors never backed off and kept hammering NAT-shared buckets. *)
+let rate_limit_code = function
+  | "rate_limit_exceeded" | "rate_limit" | "rate_limited" | "http_error_429" ->
+      true
+  | _ -> false
+
 let response_is_rate_limited json =
-  let is_rl = function `String "rate_limit_exceeded" -> true | _ -> false in
-  is_rl (member_or_null "error" json) || is_rl (member_or_null "error_code" json)
+  let code_match = function
+    | `String s -> rate_limit_code s
+    | _ -> false
+  in
+  if code_match (member_or_null "error_code" json) then true
+  else if code_match (member_or_null "error" json) then true
+  else
+    match member_or_null "http_status" json with
+    | `Int 429 -> true
+    | _ ->
+        (match member_or_null "relay_response" json with
+         | `Assoc _ as nested ->
+             code_match (member_or_null "error" nested)
+             || code_match (member_or_null "error_code" nested)
+         | _ -> false)
+
+(* B244: positive retry_after seconds from a 429 body (top-level or nested
+   under relay_response after reconcile). Pure. *)
+let extract_retry_after json : float option =
+  let positive = function
+    | `Float f when Float.is_finite f && f > 0. -> Some f
+    | `Int n when n > 0 -> Some (float_of_int n)
+    | _ -> None
+  in
+  let from = function
+    | `Assoc fields ->
+        (match List.assoc_opt "retry_after" fields with
+         | Some v -> positive v
+         | None -> None)
+    | _ -> None
+  in
+  match from json with
+  | Some f -> Some f
+  | None ->
+      (match member_or_null "relay_response" json with
+       | nested -> from nested)
 
 let response_is_pow_retry_failed json =
   match member_or_null "error_code" json with
@@ -1897,6 +1955,11 @@ let sync (t : t) : sync_result Lwt.t =
   let obs_rate_limited = ref false in
   let obs_connector_rate_limited = ref false in
   let obs_rate_senders = ref [] in
+  let obs_retry_after = ref (None : float option) in
+  (* B244: once any op this pass is rate-limited, skip remaining
+     heartbeat/register/send/poll calls. Extra requests only deepen a
+     NAT-shared IP bucket deficit and cannot succeed until refill. *)
+  let abort_on_rate_limit = ref false in
   let obs_pow_failed = ref false in
   let obs_pow_sender = ref None in
   let obs_dlqs = ref [] in
@@ -1904,10 +1967,21 @@ let sync (t : t) : sync_result Lwt.t =
     obs_difficulty :=
       Some (max d (Option.value ~default:0 !obs_difficulty))
   in
+  let note_retry_after json =
+    match extract_retry_after json with
+    | None -> ()
+    | Some ra ->
+        obs_retry_after :=
+          (match !obs_retry_after with
+           | None -> Some ra
+           | Some prev -> Some (Float.max prev ra))
+  in
   let note_observation ~(sender : string option) json =
     (match response_difficulty json with Some d -> note_difficulty d | None -> ());
     if response_is_rate_limited json then begin
       obs_rate_limited := true;
+      abort_on_rate_limit := true;
+      note_retry_after json;
       match sender with
       | None -> obs_connector_rate_limited := true
       | Some sender ->
@@ -1933,7 +2007,9 @@ let sync (t : t) : sync_result Lwt.t =
   t.registered <- retain_eligible_registered regs t.registered;
   let registered, heartbeated, new_registered, reg_errors =
     List.fold_left (fun (registered, heartbeated, reg_list, errs) (session_id, alias, client_type) ->
-      if List.mem session_id t.registered then
+      if !abort_on_rate_limit then
+        (registered, heartbeated, reg_list, errs)
+      else if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.heartbeat client ~node_id:t.node_id ~session_id ~alias ()) in
         note_observation ~sender:None json;
         if json_bool_member ~key:"ok" json then
@@ -1963,6 +2039,10 @@ let sync (t : t) : sync_result Lwt.t =
     with_outbox_lock t.broker_root (fun () ->
       let outbox = read_outbox t.broker_root in
       List.fold_left (fun (fwd, failed, remaining, dlqed, errs) entry ->
+        if !abort_on_rate_limit then
+          (* Keep the entry for the next pass; do not burn attempts on 429. *)
+          (fwd, failed, entry :: remaining, dlqed, errs)
+        else begin
         let json = Lwt_main.run (Relay_client.send client
           ~from_alias:entry.ob_from
           ~to_alias:entry.ob_to
@@ -1971,6 +2051,11 @@ let sync (t : t) : sync_result Lwt.t =
         note_observation ~sender:(Some entry.ob_from) json;
         if json_bool_member ~key:"ok" json then
           (fwd + 1, failed, remaining, dlqed, errs)
+        else if response_is_rate_limited json then
+          (* B244: rate-limit is not a permanent/attempt failure — keep the
+             entry unchanged so we do not burn attempt budget while throttled. *)
+          (fwd, failed, entry :: remaining, dlqed,
+           ("send", "rate_limit_exceeded: " ^ Yojson.Safe.to_string json) :: errs)
         else
           let err_class = classify_error json in
           let now = Unix.gettimeofday () in
@@ -1997,6 +2082,7 @@ let sync (t : t) : sync_result Lwt.t =
             (* Retry: increment attempts, update last_error, keep in outbox *)
             let updated = { entry with ob_attempts = entry.ob_attempts + 1; ob_last_error = Some err_class } in
             (fwd, failed + 1, updated :: remaining, dlqed, ("send", err_class ^ ": " ^ detail) :: errs)
+        end
       ) (0, 0, [], 0, []) outbox
     )
   in
@@ -2007,7 +2093,8 @@ let sync (t : t) : sync_result Lwt.t =
      file; drop-and-log invalid rows (see [inbound_row_is_deliverable]) so a
      misbehaving relay can neither inflate [inbound_delivered] nor poison
      the local inbox. Partial-batch delivery: valid rows in a batch with
-     invalid siblings still deliver. *)
+     invalid siblings still deliver. B244: skip remaining polls once the
+     pass is already rate-limited. *)
   let initial_poll_errors =
     match inbound_policy with
     | Ok _ -> []
@@ -2015,7 +2102,9 @@ let sync (t : t) : sync_result Lwt.t =
   in
   let inbound_delivered, inbound_rejected, poll_errors =
     List.fold_left (fun (delivered, rejected, errs) (session_id, alias, _) ->
-      if List.mem session_id t.registered then
+      if !abort_on_rate_limit then
+        delivered, rejected, errs
+      else if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
         note_observation ~sender:None json;
         let msgs = json_list_member ~key:"messages" json in
@@ -2099,6 +2188,7 @@ let sync (t : t) : sync_result Lwt.t =
     inbound_delivered;
     inbound_rejected;
     rate_limited = !obs_rate_limited;
+    retry_after_s = !obs_retry_after;
     last_error;
   }
 
@@ -2106,24 +2196,37 @@ let sync (t : t) : sync_result Lwt.t =
  * Run loop with graceful signal handling
  * --------------------------------------------------------------------------- *)
 
-(* B210: bounded, jittered exponential backoff for relay rate-limit (429)
+(* B210/B244: bounded, jittered exponential backoff for relay rate-limit (429)
    rejections. A connector that keeps polling at a fixed interval while the
    relay is returning 429 both wastes requests and — when several connectors
    share a host and a wall-clock-aligned interval — resynchronises into a
    machine-wide receive storm. On each consecutive rate-limited pass the delay
    grows 2^strikes from the base interval, capped at [rate_limit_backoff_cap_s];
    additive jitter in [0, base) desynchronises concurrent connectors so they do
-   not all wake together. [strikes]=0 (a clean pass) returns the base interval.
+   not all wake together. [strikes]=0 (a clean pass) returns the base interval
+   unless [retry_after] is set (B244: honor the relay's advertised recovery
+   wait even on the first strike). When both expo and retry_after are present,
+   take the max so NAT-shared buckets get a real refill window.
    Pure so it is unit-testable. *)
 let rate_limit_backoff_cap_s = 300.0
 
-let rate_limit_backoff ~base ~strikes =
-  if strikes <= 0 then base
+let rate_limit_backoff ~base ~strikes ?(retry_after = 0.) () =
+  let expo =
+    if strikes <= 0 then base
+    else begin
+      let grown = base *. (2.0 ** float_of_int (min strikes 20)) in
+      Float.min grown rate_limit_backoff_cap_s
+    end
+  in
+  let ra =
+    if Float.is_finite retry_after && retry_after > 0. then retry_after else 0.
+  in
+  if strikes <= 0 && ra <= 0. then base
   else begin
-    let grown = base *. (2.0 ** float_of_int (min strikes 20)) in
-    let capped = Float.min grown rate_limit_backoff_cap_s in
+    let core = Float.max expo ra in
+    let core = Float.min core rate_limit_backoff_cap_s in
     let jitter = Random.float (Float.max 0.0 base) in
-    capped +. jitter
+    core +. jitter
   end
 
 (* B211/B228: staleness-exit watchdog for the *completes-but-erroring* wedge.
@@ -2283,6 +2386,8 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
   let watchdog_strikes = ref 0 in
   (* B210: consecutive rate-limited passes drive the bounded backoff below. *)
   let rl_strikes = ref 0 in
+  (* B244: last observed retry_after (seconds) for pacing; 0. means absent. *)
+  let last_retry_after = ref 0. in
   (* B211: wall-clock epoch of the last pass that made forward progress (ok or
      rate-limited). Seeded to process start so a connector that NEVER succeeds
      still exits after the staleness threshold. *)
@@ -2306,7 +2411,14 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
       (match sync_once shutdown t with
        | Ok result ->
            watchdog_strikes := 0;
-           if result.rate_limited then incr rl_strikes else rl_strikes := 0;
+           if result.rate_limited then incr rl_strikes
+           else begin
+             rl_strikes := 0;
+             last_retry_after := 0.
+           end;
+           (match result.retry_after_s with
+            | Some ra when result.rate_limited -> last_retry_after := ra
+            | _ -> ());
            if sync_made_progress result then
              last_progress := Unix.gettimeofday ();
            write_connector_state ~node_id:t.node_id t.broker_root result;
@@ -2318,7 +2430,16 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
                      String.sub e.err_detail 0 80 ^ "..."
                    else e.err_detail)
            in
-           Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
+           let rl_tag =
+             if result.rate_limited then
+               match result.retry_after_s with
+               | Some ra -> Printf.sprintf " RATE_LIMITED(retry_after=%.1fs)" ra
+               | None -> " RATE_LIMITED"
+             else ""
+           in
+           (* B244: rate-limits are operator-visible on stdout summary AND
+              stderr so log scrapers / `c2c doctor` greps cannot miss them. *)
+           Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s%s\n%!"
              (List.length result.registered)
              (List.length result.heartbeated)
              result.outbox_forwarded
@@ -2328,6 +2449,15 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              result.inbound_rejected
              result.alerts_emitted
              err_str
+             rl_tag;
+           if result.rate_limited then
+             Printf.eprintf
+               "[relay-connector] RATE_LIMITED (HTTP 429) this sync — remaining \
+                heartbeat/poll/send ops aborted for this pass; next delay will \
+                honor retry_after when present (B210/B244)%s\n%!"
+               (match result.retry_after_s with
+                | Some ra -> Printf.sprintf " retry_after=%.1fs" ra
+                | None -> "")
        | Error (`Watchdog detail) ->
            incr watchdog_strikes;
            write_connector_state_error t.broker_root ~op:"sync_watchdog"
@@ -2351,11 +2481,18 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
          terminate once it has been wedged past the threshold. *)
       check_stale_exit ();
       if not !shutdown then begin
-        let delay = rate_limit_backoff ~base:t.interval ~strikes:!rl_strikes in
+        let delay =
+          rate_limit_backoff ~base:t.interval ~strikes:!rl_strikes
+            ~retry_after:!last_retry_after ()
+        in
         if !rl_strikes > 0 then
           Printf.eprintf
             "[relay-connector] relay rate-limited (429); backing off %.0fs \
-             (strike %d)\n%!" delay !rl_strikes;
+             (strike %d%s)\n%!"
+            delay !rl_strikes
+            (if !last_retry_after > 0. then
+               Printf.sprintf ", retry_after=%.1fs" !last_retry_after
+             else "");
         sleep_interruptibly_until ~slice_s:5.0
           ~should_stop:(fun () ->
             check_stale_exit ();
@@ -2407,12 +2544,27 @@ let print_sync_result ?broker_root result =
              String.sub e.err_detail 0 80 ^ "..."
            else e.err_detail)
   in
+  let rl_tag =
+    if result.rate_limited then
+      match result.retry_after_s with
+      | Some ra -> Printf.sprintf " RATE_LIMITED(retry_after=%.1fs)" ra
+      | None -> " RATE_LIMITED"
+    else ""
+  in
   Printf.printf
-    "%s sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
+    "%s sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s%s\n%!"
     prefix (List.length result.registered) (List.length result.heartbeated)
     result.outbox_forwarded result.outbox_failed result.outbox_dlqed
     result.inbound_delivered result.inbound_rejected result.alerts_emitted
-    err_str
+    err_str rl_tag;
+  if result.rate_limited then
+    Printf.eprintf
+      "%s RATE_LIMITED (HTTP 429) this sync — remaining heartbeat/poll/send \
+       ops aborted for this pass (B210/B244)%s\n%!"
+      prefix
+      (match result.retry_after_s with
+       | Some ra -> Printf.sprintf " retry_after=%.1fs" ra
+       | None -> "")
 
 let start_machine_impl ~sync_once ~discover_roots
     ~relay_url ~token ~identity ~primary_broker_root ~node_id
@@ -2471,16 +2623,23 @@ let start_machine_impl ~sync_once ~discover_roots
           Hashtbl.add states root t;
           t
     in
-    (* B210: any root observing a 429 this pass drives the shared machine-loop
-       backoff (the loop sleeps once per pass across all roots). *)
+    (* B210/B244: any root observing a 429 this pass drives the shared
+       machine-loop backoff (the loop sleeps once per pass across all roots).
+       Track the max retry_after observed so the shared delay honors it. *)
     let rl_seen = ref false in
+    let rl_retry_after = ref 0. in
     let sync_root root =
       let t = state_for root in
       let outcome =
         match sync_once shutdown t with
         | Ok result ->
             Hashtbl.replace strikes root 0;
-            if result.rate_limited then rl_seen := true;
+            if result.rate_limited then begin
+              rl_seen := true;
+              (match result.retry_after_s with
+               | Some ra -> rl_retry_after := Float.max !rl_retry_after ra
+               | None -> ())
+            end;
             if sync_made_progress result then
               Hashtbl.replace progress root (Unix.gettimeofday ());
             write_connector_state ~node_id t.broker_root result;
@@ -2519,17 +2678,29 @@ let start_machine_impl ~sync_once ~discover_roots
       let rec loop () =
         if not !shutdown then begin
           rl_seen := false;
+          rl_retry_after := 0.;
           discover_roots ~primary:primary_broker_root
           |> List.iter (fun root ->
                if not !shutdown then ignore (sync_root root));
           check_all_known_roots_stale ();
-          if !rl_seen then incr rl_strikes else rl_strikes := 0;
+          if !rl_seen then incr rl_strikes
+          else begin
+            rl_strikes := 0;
+            rl_retry_after := 0.
+          end;
           if not !shutdown then begin
-            let delay = rate_limit_backoff ~base:interval ~strikes:!rl_strikes in
+            let delay =
+              rate_limit_backoff ~base:interval ~strikes:!rl_strikes
+                ~retry_after:!rl_retry_after ()
+            in
             if !rl_strikes > 0 then
               Printf.eprintf
                 "[relay-connector] relay rate-limited (429); backing off %.0fs \
-                 (strike %d)\n%!" delay !rl_strikes;
+                 (strike %d%s)\n%!"
+                delay !rl_strikes
+                (if !rl_retry_after > 0. then
+                   Printf.sprintf ", retry_after=%.1fs" !rl_retry_after
+                 else "");
             sleep_interruptibly_until ~slice_s:5.0
               ~should_stop:(fun () ->
                 check_all_known_roots_stale ();
@@ -2582,20 +2753,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       match Lwt_main.run (sync t) with
       | result ->
           write_connector_state ~node_id:t.node_id t.broker_root result;
-          let err_str = match result.last_error with
-            | None -> ""
-            | Some e -> Printf.sprintf " [%s: %s]" e.err_op e.err_detail
-          in
-          Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s\n%!"
-            (List.length result.registered)
-            (List.length result.heartbeated)
-            result.outbox_forwarded
-            result.outbox_failed
-            result.outbox_dlqed
-            result.inbound_delivered
-            result.inbound_rejected
-            result.alerts_emitted
-            err_str;
+          print_sync_result result;
           (* B087: never exit 0 when the sync pass recorded a relay-level
              failure (register/heartbeat/send/poll returned ok:false). The
              exception branch below already exits 1; this covers the

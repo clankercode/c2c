@@ -991,6 +991,7 @@ let sync_result_with_sessions sessions : Conn.sync_result =
     inbound_rejected = 0;
     alerts_emitted = 0;
     rate_limited = false;
+    retry_after_s = None;
     last_error = None }
 
 (* Round-trip: write_connector_state persists [sessions]; read_connector_state
@@ -1101,32 +1102,83 @@ let test_connector_peek_key_backward_compat_fallback () =
 (* B210: bounded, jittered 429 backoff. *)
 let test_backoff_zero_strikes_is_base () =
   Alcotest.(check (float 1e-9)) "strikes=0 -> base" 30.0
-    (Conn.rate_limit_backoff ~base:30.0 ~strikes:0)
+    (Conn.rate_limit_backoff ~base:30.0 ~strikes:0 ())
 
 let test_backoff_grows_then_caps () =
   let base = 30.0 in
   (* Jitter is in [0, base); assert on the lower bound (2^strikes * base) and
      the cap+jitter upper bound so the test is deterministic without seeding. *)
-  let d1 = Conn.rate_limit_backoff ~base ~strikes:1 in
-  let d2 = Conn.rate_limit_backoff ~base ~strikes:2 in
+  let d1 = Conn.rate_limit_backoff ~base ~strikes:1 () in
+  let d2 = Conn.rate_limit_backoff ~base ~strikes:2 () in
   Alcotest.(check bool) "strike 1 >= 2*base" true (d1 >= 2.0 *. base);
   Alcotest.(check bool) "strike 1 < 2*base + base (jitter)" true
     (d1 < 2.0 *. base +. base);
   Alcotest.(check bool) "strike 2 >= 4*base" true (d2 >= 4.0 *. base);
   (* Large strike count is capped at the cap (plus at most base of jitter),
      never runaway. *)
-  let big = Conn.rate_limit_backoff ~base ~strikes:1000 in
+  let big = Conn.rate_limit_backoff ~base ~strikes:1000 () in
   Alcotest.(check bool) "huge strike capped" true
     (big <= Conn.rate_limit_backoff_cap_s +. base);
   Alcotest.(check bool) "huge strike >= cap" true
     (big >= Conn.rate_limit_backoff_cap_s)
 
+(* B244: retry_after raises the delay above pure expo when larger. *)
+let test_backoff_honors_retry_after () =
+  let base = 30.0 in
+  let d =
+    Conn.rate_limit_backoff ~base ~strikes:1 ~retry_after:120.0 ()
+  in
+  Alcotest.(check bool) "retry_after 120 dominates expo(60)" true
+    (d >= 120.0);
+  Alcotest.(check bool) "still has jitter room under cap+base" true
+    (d < Conn.rate_limit_backoff_cap_s +. base);
+  (* Even strikes=0 with retry_after paces to the relay advice. *)
+  let d0 =
+    Conn.rate_limit_backoff ~base ~strikes:0 ~retry_after:45.0 ()
+  in
+  Alcotest.(check bool) "strikes=0 + retry_after uses retry_after" true
+    (d0 >= 45.0)
+
+(* B244: detect reconciled production 429 body shapes. *)
+let test_response_is_rate_limited_shapes () =
+  let honest =
+    `Assoc [ ("ok", `Bool false)
+           ; ("error_code", `String "rate_limit_exceeded")
+           ; ("error", `String "rate_limit_exceeded")
+           ; ("retry_after", `Float 1.5)
+           ; ("http_status", `Int 429) ]
+  in
+  Alcotest.(check bool) "honest rate_limit_exceeded" true
+    (Conn.response_is_rate_limited honest);
+  Alcotest.(check (option (float 1e-9))) "extract retry_after top-level"
+    (Some 1.5) (Conn.extract_retry_after honest);
+  (* Live relay body after reconcile_status (no ok:false on wire). *)
+  let reconciled =
+    `Assoc [ ("ok", `Bool false)
+           ; ("error_code", `String "http_error_429")
+           ; ("error", `String
+               "relay answered HTTP 429 but the body did not report ok:false")
+           ; ("http_status", `Int 429)
+           ; ("relay_response",
+              `Assoc [ ("error", `String "rate_limit_exceeded")
+                     ; ("retry_after", `Float 2.25) ]) ]
+  in
+  Alcotest.(check bool) "reconciled http_error_429" true
+    (Conn.response_is_rate_limited reconciled);
+  Alcotest.(check (option (float 1e-9))) "extract nested retry_after"
+    (Some 2.25) (Conn.extract_retry_after reconciled);
+  Alcotest.(check bool) "plain connection_error is not rate-limited" false
+    (Conn.response_is_rate_limited
+       (`Assoc [ ("ok", `Bool false)
+               ; ("error_code", `String "connection_error") ]))
+
 (* B211: staleness-exit watchdog for the alive-but-erroring wedge. *)
-let mk_result ?(rate_limited = false) ?last_error () : Conn.sync_result =
+let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error ()
+  : Conn.sync_result =
   { registered = []; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
     inbound_delivered = 0; inbound_rejected = 0; alerts_emitted = 0;
-    rate_limited; last_error }
+    rate_limited; retry_after_s; last_error }
 
 let test_stale_exit_default_threshold () =
   (* B228: default = max(180, interval*6); 30s interval -> 180s, 60s -> 360s. *)
@@ -1328,7 +1380,7 @@ let test_touch_connector_last_sync_preserves_last_ok () =
     { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
       outbox_forwarded = 1; outbox_failed = 0; outbox_dlqed = 0;
       inbound_delivered = 2; inbound_rejected = 0; alerts_emitted = 0;
-      rate_limited = false; last_error = None }
+      rate_limited = false; retry_after_s = None; last_error = None }
   in
   Conn.write_connector_state ~node_id:"n1" tmp ok_result;
   let before =
@@ -1416,6 +1468,12 @@ let () =
         test_backoff_zero_strikes_is_base;
       Alcotest.test_case "grows exponentially then caps" `Quick
         test_backoff_grows_then_caps;
+    ];
+    "B244 rate-limit NAT fleet pacing", [
+      Alcotest.test_case "backoff honors retry_after" `Quick
+        test_backoff_honors_retry_after;
+      Alcotest.test_case "detect reconciled 429 body shapes" `Quick
+        test_response_is_rate_limited_shapes;
     ];
     "B211/B228 staleness-exit watchdog", [
       Alcotest.test_case "default threshold = max(180, 6x interval)" `Quick

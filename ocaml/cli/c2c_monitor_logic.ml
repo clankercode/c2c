@@ -371,16 +371,25 @@ let decide_relay_watch
    invalid-JSON to `{ ok:false, error_code:"connection_error", error }`. A
    legacy relay that omits `ok` entirely is treated as success (messages are
    data) for backward compatibility. *)
+(* B244: optional seconds the relay asked us to wait before the next request.
+   Present on honest rate-limit bodies and nested under [relay_response] after
+   [reconcile_status] rewrites a dishonest 429 body (error + retry_after only). *)
+type rate_limit_info = {
+  detail : string;
+  retry_after : float option;
+}
+
 type relay_peek_outcome =
   | Peek_ok of Yojson.Safe.t list  (* ok:true / legacy: pending messages *)
   | Peek_transient of string       (* retry, may recover (network/timeout/5xx) *)
-  | Peek_rate_limited of string
-    (* B213: relay throttling (HTTP 429 / rate_limit_exceeded). A DISTINCT
+  | Peek_rate_limited of rate_limit_info
+    (* B213/B244: relay throttling (HTTP 429 / rate_limit_exceeded). A DISTINCT
        transient: retry with backoff, recovers on its own — but it is neither an
        identity/signature failure (never a [Peek_terminal]) nor a wedged bridge
        (never routed through the "restart the connector" transient escalation,
        whose advice is actively harmful under throttling — extra reconnects
-       worsen the 429 storm, B210). [detail] carries the code/message. *)
+       worsen the 429 storm, B210). [detail] carries the code/message;
+       [retry_after] is the relay-advertised recovery wait when present. *)
   | Peek_terminal of { code : string; detail : string }
     (* auth/identity — terminal policy applies; [code] drives soft vs hard severity *)
 
@@ -418,6 +427,52 @@ let is_rate_limit_error_code = function
   | "http_error_429" -> true
   | _ -> false
 
+(* B244: pull a positive [retry_after] (seconds) from a rate-limit body.
+   Accepts top-level float/int and the nested [relay_response] form produced
+   when [reconcile_status] rewrites a dishonest 429 body that only had
+   {error, retry_after}. Pure so monitor/connector pacing is unit-testable. *)
+let json_positive_float = function
+  | `Float f when Float.is_finite f && f > 0. -> Some f
+  | `Int n when n > 0 -> Some (float_of_int n)
+  | _ -> None
+
+let extract_retry_after (resp : Yojson.Safe.t) : float option =
+  let from_fields fields =
+    match List.assoc_opt "retry_after" fields with
+    | Some v -> json_positive_float v
+    | None -> None
+  in
+  match resp with
+  | `Assoc fields ->
+      (match from_fields fields with
+       | Some f -> Some f
+       | None ->
+           (match List.assoc_opt "relay_response" fields with
+            | Some (`Assoc nested) -> from_fields nested
+            | _ -> None))
+  | _ -> None
+
+(* B244: interval before the next peek while rate-limited. Wait at least the
+   streak-based exponential (same shape as generic transient backoff) AND the
+   relay's advertised [retry_after] when present, so NAT-shared buckets get a
+   chance to refill instead of flapping every base interval. Cap matches the
+   connector's rate-limit backoff ceiling so a single monitor cannot sleep
+   forever on a pathological retry_after. *)
+let rate_limit_pace_cap_s = 300.0
+
+let rate_limit_pace ~base_interval ~err_streak ~retry_after =
+  let base = Float.max 0.1 base_interval in
+  let expo =
+    if err_streak <= 0 then base
+    else base *. float_of_int (err_streak + 1)
+  in
+  let from_ra =
+    match retry_after with
+    | Some ra when Float.is_finite ra && ra > 0. -> ra
+    | _ -> 0.
+  in
+  Float.min rate_limit_pace_cap_s (Float.max expo from_ra)
+
 let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
   match resp with
   | `Assoc fields ->
@@ -440,12 +495,42 @@ let classify_relay_response (resp : Yojson.Safe.t) : relay_peek_outcome =
            if is_terminal_error_code code then
              Peek_terminal { code; detail }
            else if is_rate_limit_error_code code then
-             Peek_rate_limited detail
+             Peek_rate_limited
+               { detail; retry_after = extract_retry_after resp }
+           else if
+             (* Dishonest/legacy body path: only error=rate_limit_exceeded,
+                or http_status=429, may still reach us after reconcile. *)
+             is_rate_limit_error_code emsg
+             || (match List.assoc_opt "http_status" fields with
+                 | Some (`Int 429) -> true
+                 | _ -> false)
+           then
+             Peek_rate_limited
+               { detail =
+                   (if detail = "" || detail = emsg then
+                      "rate_limit_exceeded"
+                    else detail);
+                 retry_after = extract_retry_after resp }
            else Peek_transient detail
        | Some true | None ->
            (* ok:true, or a legacy relay with no `ok` field — messages are
-              data. Absent `messages` yields [] (nothing new this cycle). *)
-           Peek_ok (extract_relay_messages resp))
+              data. Absent `messages` yields [] (nothing new this cycle).
+              Exception: a raw 429 body without ok (pre-reconcile wire shape
+              {error, retry_after}) must still classify as rate-limited. *)
+           let emsg = jstr fields "error" "" in
+           let code = jstr fields "error_code" "" in
+           if is_rate_limit_error_code code || is_rate_limit_error_code emsg then
+             let detail =
+               match code, emsg with
+               | "", "" -> "rate_limit_exceeded"
+               | "", m -> m
+               | c, "" -> c
+               | c, m -> Printf.sprintf "%s: %s" c m
+             in
+             Peek_rate_limited
+               { detail; retry_after = extract_retry_after resp }
+           else
+             Peek_ok (extract_relay_messages resp))
   | _ -> Peek_transient "malformed relay response (non-object)"
 
 (* Exit codes for `c2c monitor` terminal conditions. Distinct from the generic
@@ -598,11 +683,12 @@ let transient_wedge_remediation =
    by backing off. *)
 let rate_limit_wedge_remediation =
   "relay is rate-limiting this monitor (HTTP 429). This is throttling, NOT an \
-   identity/signature problem — the monitor is backing off and will recover on \
-   its own. Do NOT re-register or restart the connector (c2c restart \
-   relay-connect) while throttled; extra reconnects worsen the 429 storm \
-   (B210). Check first with: c2c doctor --relay. Local inbox receive is \
-   unaffected."
+   identity/signature problem — the monitor is backing off (honoring \
+   retry_after when present) and will recover on its own. Do NOT re-register \
+   or restart the connector (c2c restart relay-connect) while throttled; \
+   extra reconnects worsen the 429 storm (B210/B244). Shared NAT egress can \
+   exhaust a per-IP bucket across hosts — check first with: c2c doctor \
+   --relay. Local inbox receive is unaffected."
 
 type transient_streak = {
   ts_consecutive : int;

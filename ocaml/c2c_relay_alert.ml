@@ -162,9 +162,11 @@ let dedupe_aliases aliases =
     or sender clears only that plateau, allowing a later rejection to emit. *)
 let rate_limited_emissions state ~connector_observed ~senders =
   let body = format_body Warn
-    "Relay rate-limited this connector (rate_limit_exceeded). Outbound \
-     messages to remote peers may be delayed; the connector will keep \
-     retrying."
+    "Relay rate-limited this connector (HTTP 429 / rate_limit_exceeded). \
+     Outbound messages to remote peers may be delayed. The connector aborts \
+     remaining heartbeat/poll/send ops for the pass and backs off (honoring \
+     retry_after when present). Shared NAT egress can exhaust a per-IP bucket \
+     across hosts — do NOT restart relay-connect while throttled (B210/B244)."
   in
   let connector_emissions =
     if connector_observed && not state.rate_limited then
