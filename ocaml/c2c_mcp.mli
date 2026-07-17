@@ -542,7 +542,7 @@ module Broker : sig
   (** Unit-returning wrapper around [enqueue_message_with_result] for call sites
       that only need the write side-effect. *)
 
-  val enqueue_session_message : t -> from_alias:string -> session_id:string -> content:string -> ?ephemeral:bool -> unit -> unit
+  val enqueue_session_message : t -> from_alias:string -> session_id:string -> content:string -> ?deferrable:bool -> ?ephemeral:bool -> unit -> unit
   (** Enqueue a new locally-sent message directly to [session_id], applying
       sender validation and local message-id stamping. *)
   val enqueue_by_session_id : t -> session_id:string -> messages:message list -> unit

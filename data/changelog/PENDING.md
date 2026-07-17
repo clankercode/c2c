@@ -18,7 +18,12 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
   "— not a relay registration" note appears only for
   `configured_not_registered` (positive absence). Operators should read
   `state:` / `lease:` for relay registration, not the alias note.
-
+||||||| 4cf0f90f
+- **B232: `c2c send --deferrable` works (CLI/MCP parity).** The low-priority
+  push-suppress flag was MCP-only; CLI-first clients (kimi) could not send
+  deferrable DMs. `c2c send` now accepts `--deferrable` and stamps the same
+  inbox flag as MCP `deferrable:true` (local 1:1; relay outbox does not yet
+  preserve it, same caveat as `--ephemeral`).
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

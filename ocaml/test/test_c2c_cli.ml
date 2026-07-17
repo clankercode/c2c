@@ -1078,6 +1078,88 @@ let test_send_local_target_still_reports_delivered () =
           check bool "local send is not queued" false
             (string_contains content "\"state\": \"queued\"")))
 
+(* B232: CLI/MCP parity — `c2c send --deferrable` must be accepted (not
+   unknown-option) and must stamp deferrable=true on the queued inbox row.
+   Before the fix, CLI-first clients (kimi) could not send deferrable mail
+   at all because the flag existed only on MCP send. *)
+let test_send_deferrable_flag_accepted_and_queued () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b232-sender-sid" ~alias:"b232-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"b232-rcpt-sid" ~alias:"b232-rcpt"
+        ~pid:None ~pid_start_time:None ();
+      let outfile = Filename.temp_file "c2c-send-b232-defer" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+        (fun () ->
+          let cmd = Printf.sprintf
+            "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b232-sender-sid \
+             %s send --json --deferrable b232-rcpt 'low-priority note' > %s 2>&1"
+            (Filename.quote dir) c2c_binary (Filename.quote outfile)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file outfile in
+          check int
+            (Printf.sprintf
+               "--deferrable send exits 0 (not unknown-option; output: %s)"
+               content)
+            0 rc;
+          check bool "help/error never mentions unknown option deferrable" false
+            (string_contains (String.lowercase_ascii content) "unknown option");
+          check bool "receipt surfaces deferrable:true" true
+            (string_contains content "\"deferrable\": true"
+             || string_contains content "\"deferrable\":true");
+          let inbox =
+            C2c_mcp.Broker.read_inbox broker ~session_id:"b232-rcpt-sid"
+          in
+          check int "one message queued" 1 (List.length inbox);
+          let msg = List.hd inbox in
+          check bool "queued row is deferrable" true msg.C2c_mcp.deferrable;
+          check string "body preserved" "low-priority note" msg.C2c_mcp.content))
+
+(* B232: plain send (no flag) must still default deferrable=false so we do
+   not silently demote every CLI DM to low-priority. *)
+let test_send_without_deferrable_defaults_false () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker
+        ~session_id:"b232-plain-sender-sid" ~alias:"b232-plain-sender"
+        ~pid:(Some (Unix.getpid ())) ~pid_start_time:None ();
+      C2c_mcp.Broker.register broker
+        ~session_id:"b232-plain-rcpt-sid" ~alias:"b232-plain-rcpt"
+        ~pid:None ~pid_start_time:None ();
+      let rc = Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=b232-plain-sender-sid \
+         %s send b232-plain-rcpt 'normal priority' > /dev/null 2>&1"
+        (Filename.quote dir) c2c_binary)
+      in
+      check int "plain send exits 0" 0 rc;
+      let inbox =
+        C2c_mcp.Broker.read_inbox broker ~session_id:"b232-plain-rcpt-sid"
+      in
+      check int "one message queued" 1 (List.length inbox);
+      check bool "plain send is not deferrable" false
+        (List.hd inbox).C2c_mcp.deferrable)
+
+(* B232: `c2c send --help` documents --deferrable so CLI-first agents can
+   discover the flag without reading MCP docs. *)
+let test_send_help_documents_deferrable () =
+  let outfile = Filename.temp_file "c2c-send-help-b232" ".out" in
+  Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+    (fun () ->
+      let rc = Sys.command (Printf.sprintf
+        "C2C_CLI_FORCE=1 %s send --help > %s 2>&1"
+        c2c_binary (Filename.quote outfile))
+      in
+      let content = read_file outfile in
+      check int
+        (Printf.sprintf "send --help exits 0 (output: %s)" content) 0 rc;
+      check bool "help lists --deferrable" true
+        (string_contains content "--deferrable"
+         || string_contains content "deferrable"))
+
 (* B071 regression: a zero-env `c2c register` (no C2C_MCP_CLIENT_PID) must
    produce a ROUTABLE registration. The old getppid() fallback pinned the
    transient test/tool shell — born-dead and unroutable. With the fix the
@@ -4495,6 +4577,9 @@ let () =
         ; ( "send to remote @host --json surfaces delivery.state queued (B088)", `Quick, test_send_remote_target_json_delivery_state_queued )
         ; ( "send to remote @host --fail-if-queued exits non-zero (B088)", `Quick, test_send_remote_target_fail_if_queued_exits_nonzero )
         ; ( "send to local target still reports delivered (B088)", `Quick, test_send_local_target_still_reports_delivered )
+        ; ( "send --deferrable accepted and queued (B232)", `Quick, test_send_deferrable_flag_accepted_and_queued )
+        ; ( "send without --deferrable defaults false (B232)", `Quick, test_send_without_deferrable_defaults_false )
+        ; ( "send --help documents --deferrable (B232)", `Quick, test_send_help_documents_deferrable )
         ; ( "zero-env register is routable (B071)", `Quick, test_register_zero_env_is_routable )
         ] )
     ; ( "whoami",
