@@ -227,3 +227,4 @@ bugs:
     - file: B228-relay-connector-wedges-again-b.todo
     - file: B229-relay-rooms-list-leaks-gated-r.todo
     - file: B230-relay-rooms-list-hides-unliste.todo
+    - file: B231-relay-dm-poll-403-signature-in.todo
