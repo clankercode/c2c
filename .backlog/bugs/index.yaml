@@ -235,3 +235,4 @@ bugs:
     - file: B236-rooms-invite-accepts-cross-hos.todo
     - file: B237-relay-429-error-body-mishandle.todo
     - file: B238-unmanaged-kimi-sessions-go-dea.todo
+    - file: B239-cli-ergonomics-relay-rooms-pos.todo
