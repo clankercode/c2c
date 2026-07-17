@@ -224,3 +224,4 @@ bugs:
     - file: B225-forward-agent-log-kimi-classif.todo
     - file: B226-ci-build-and-test-red-on-maste.todo
     - file: B227-codex-restart-in-place-execs-r.todo
+    - file: B228-relay-connector-wedges-again-b.todo
