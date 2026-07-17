@@ -11,6 +11,14 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B234: `whoami`/`status` alias line no longer claims "not a relay
+  registration" for aliases that are (or may be) registered.** The human
+  `alias:` parenthetical is neutral (`local session alias`) whenever composite
+  state shows registration evidence or is unverified; the old always-on
+  "— not a relay registration" note appears only for
+  `configured_not_registered` (positive absence). Operators should read
+  `state:` / `lease:` for relay registration, not the alias note.
+
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

@@ -333,11 +333,14 @@ let print_relay_section (s : snapshot) (lease : lease_result option) ~now () =
    | Some url -> Printf.printf "  url:        %s  (configured)\n" url
    | None ->
        Printf.printf "  url:        (not configured — run 'c2c relay setup --url <URL>')\n");
-  (* H5: the local broker alias is session identity, NOT relay registration —
-     the old label here was "registered:", which conflated the two (A020/A027).
-     Registration and connector state get their own lines below. *)
+  (* H5: the local broker alias is session identity; registration and
+     connector state get their own lines below (A020/A027). B234: the
+     parenthetical must not claim "not a relay registration" when composite
+     state shows registration evidence — see Relay_state.alias_line_note. *)
   (match s.alias with
-   | Some a -> Printf.printf "  alias:      %s  (local session alias — not a relay registration)\n" a
+   | Some a ->
+       Printf.printf "  alias:      %s%s\n" a
+         (Relay_state.alias_line_note classification)
    | None -> Printf.printf "  alias:      (no current session alias)\n");
   Printf.printf "  state:      %s\n"
     (Relay_state.classification_human classification);
