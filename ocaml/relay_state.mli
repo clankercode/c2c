@@ -94,6 +94,17 @@ val classification_json : classification -> Yojson.Safe.t
 (** ["<state_to_string> — <reason>"] — the human "state:" line body. *)
 val classification_human : classification -> string
 
+(** Parenthetical after the human [alias:] value in status/whoami (B234).
+
+    Only [Configured_not_registered] appends "— not a relay registration"
+    (positive absence: relay said no lease, or no identity/alias to
+    register). States with registration evidence
+    ([Registered_live]/[Registered_expired]/[Registered_unreachable])
+    and honest-unknown ([Configured_unverified]/[Unconfigured]) use the
+    neutral "local session alias" note so operators are not told they are
+    unregistered when they are (or when we simply have not checked). *)
+val alias_line_note : classification -> string
+
 (** Map a relay /list lease object (Relay_registration_lease JSON shape:
     "alive" and "alias_reserved" booleans) to registration evidence. Missing
     or malformed fields read as [false]. *)

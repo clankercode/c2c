@@ -17,7 +17,9 @@
      embedded verbatim in classification_human, connector_json.live agrees
      with connector_human's leading word;
    - end-to-end: `c2c whoami --json` vs human output in an isolated env
-     (unconfigured relay) carry the same composite state. *)
+     (unconfigured relay) carry the same composite state;
+   - B234: alias_line_note claims "not a relay registration" only for
+     Configured_not_registered — never when lease/local evidence exists. *)
 
 open Alcotest
 open Relay_state
@@ -377,6 +379,59 @@ let test_connector_human_json_parity () =
           | _ -> false))
     cases
 
+(* --- B234: alias line parenthetical must match composite registration ------ *)
+
+let test_alias_line_note_accurate () =
+  let note_of ?registration ?connector_live ?local_reg_evidence
+      ?(relay_configured = true) ?(has_identity = true) ?(has_alias = true) () =
+    let c =
+      classify_with ~relay_configured ~has_identity ~has_alias
+        ?registration ?connector_live ?local_reg_evidence ()
+    in
+    alias_line_note c
+  in
+  let claims_unregistered note =
+    string_contains ~needle:"not a relay registration" note
+  in
+  (* Positive registration evidence: never claim unregistered (the dogfood
+     footgun — whoami --relay showed "not a relay registration" while lease
+     was alive on the relay). *)
+  check bool "registered_live: no unregistered claim" false
+    (claims_unregistered
+       (note_of
+          ~registration:(Reg_lease { alive = true; reserved = true })
+          ~connector_live:true ()));
+  check bool "registered_live note is neutral local-session" true
+    (string_contains ~needle:"local session alias"
+       (note_of
+          ~registration:(Reg_lease { alive = true; reserved = true })
+          ~connector_live:true ()));
+  check bool "registered_expired: no unregistered claim" false
+    (claims_unregistered
+       (note_of
+          ~registration:(Reg_lease { alive = false; reserved = true }) ()));
+  check bool "registered_unreachable (lease alive, bridge down): no claim"
+    false
+    (claims_unregistered
+       (note_of
+          ~registration:(Reg_lease { alive = true; reserved = true })
+          ~connector_live:false ()));
+  check bool "registered_unreachable (stale local evidence): no claim" false
+    (claims_unregistered
+       (note_of ~local_reg_evidence:true ()));
+  (* Honest unknown / unconfigured: also neutral — absence not proven. *)
+  check bool "configured_unverified: no unregistered claim" false
+    (claims_unregistered (note_of ()));
+  check bool "unconfigured: no unregistered claim" false
+    (claims_unregistered (note_of ~relay_configured:false ()));
+  (* Positive absence only. *)
+  check bool "relay said absent: claims not a relay registration" true
+    (claims_unregistered (note_of ~registration:Reg_absent ()));
+  check bool "no identity: claims not a relay registration" true
+    (claims_unregistered (note_of ~has_identity:false ()));
+  check bool "no alias: claims not a relay registration" true
+    (claims_unregistered (note_of ~has_alias:false ()))
+
 (* --- end-to-end: c2c whoami human/JSON parity (isolated env) ---------------- *)
 
 let c2c_bin =
@@ -424,6 +479,16 @@ let run_c2c ~tmp args =
 
 let test_whoami_json_human_parity_unconfigured () =
   let tmp = mkdtemp () in
+  (* B187: whoami refuses unregistered session_ids. Seed a local broker
+     registration so identity resolves; leave relay unconfigured. *)
+  let broker_root = Filename.concat tmp "broker" in
+  Unix.mkdir broker_root 0o700;
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let sid = "relay-state-h5-test" in
+  let alias = "zzh5-relay-state-self" in
+  C2c_mcp.Broker.register broker ~session_id:sid ~alias
+    ~pid:(Some (Unix.getpid ())) ~pid_start_time:None
+    ~client_type:(Some "test") ();
   let code_j, out_j = run_c2c ~tmp [ "whoami"; "--json" ] in
   check int "whoami --json exit 0" 0 code_j;
   let j = Yojson.Safe.from_string out_j in
@@ -449,13 +514,20 @@ let test_whoami_json_human_parity_unconfigured () =
     (string_contains ~needle:"state:" out_h);
   check bool "human output has a connector: line" true
     (string_contains ~needle:"connector:" out_h);
-  (* No session alias resolves in this isolated env; the relay section's
-     alias line must say so — and the old conflated "  registered:" label
-     (A020/A027: local alias presented as relay registration) must be gone. *)
-  check bool "human output has the alias: line" true
-    (string_contains ~needle:"alias:      (no current session alias)" out_h);
+  (* Local broker alias is present; the old conflated "  registered:" label
+     (A020/A027) must stay gone. *)
+  check bool "human relay section shows the local alias" true
+    (string_contains ~needle:("alias:      " ^ alias) out_h);
   check bool "old conflated 'registered:' label is gone" false
-    (string_contains ~needle:"  registered:" out_h)
+    (string_contains ~needle:"  registered:" out_h);
+  (* B234: unconfigured is not positive absence — do not claim
+     "not a relay registration" (that note is only for
+     configured_not_registered). Neutral local-session note is fine. *)
+  check bool "unconfigured whoami does not claim 'not a relay registration'"
+    false
+    (string_contains ~needle:"not a relay registration" out_h);
+  check bool "unconfigured whoami keeps neutral local-session note" true
+    (string_contains ~needle:"local session alias" out_h)
 
 (* --- runner ------------------------------------------------------------------ *)
 
@@ -506,6 +578,9 @@ let () =
           test_case "classification parity" `Quick
             test_classification_human_json_parity;
           test_case "connector parity" `Quick test_connector_human_json_parity ] );
+      ( "alias line note (B234)",
+        [ test_case "note only when positively not registered" `Quick
+            test_alias_line_note_accurate ] );
       ( "whoami end-to-end",
         [ test_case "json/human parity (unconfigured)" `Quick
             test_whoami_json_human_parity_unconfigured ] );

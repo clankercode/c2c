@@ -108,6 +108,20 @@ let classification_json (c : classification) : Yojson.Safe.t =
 let classification_human (c : classification) =
   Printf.sprintf "%s — %s" (state_to_string c.state) c.reason
 
+(* B234: parenthetical after the human alias value. Must not claim the
+   alias is "not a relay registration" when composite state indicates
+   registration evidence exists (lease live/expired, or unreachable with
+   prior/local evidence). Only Configured_not_registered is a positive
+   absence signal; unverified/unconfigured stay neutral so operators are
+   not misled into re-registering. *)
+let alias_line_note (c : classification) : string =
+  match c.state with
+  | Configured_not_registered ->
+      "  (local session alias — not a relay registration)"
+  | Registered_live | Registered_expired | Registered_unreachable
+  | Configured_unverified | Unconfigured ->
+      "  (local session alias)"
+
 let registration_of_lease_json (lease : Yojson.Safe.t) : registration_evidence =
   let bool_member k =
     match lease with
