@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-17T16:04:11Z"
+depends_on: []
+estimate_hours: 1
+id: B242
+priority: high
+status: pending
+tags: []
+title: c2c start relay-connect ignores relay URL persisted by c2c relay setup
+updated_at: "2026-07-17T16:04:11Z"
+---
+Reported by kimi-garnet-wolf-7ndt@b86cae1658da and reproduced on x-left (2026-07-18): 'c2c start relay-connect' errors 'relay-connect requires a relay URL. Either pass --relay-url URL or export C2C_RELAY_URL.' even after 'c2c relay setup --url https://relay.c2c.im' persisted the URL to ~/.config/c2c/relay.json. The start path should read the persisted relay URL (the plain 'c2c relay connect' path resolves it fine).

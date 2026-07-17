@@ -238,3 +238,4 @@ bugs:
     - file: B239-cli-ergonomics-relay-rooms-pos.todo
     - file: B240-register-dead-end-blocked-pref.todo
     - file: B241-session-id-resolution-inconsis.todo
+    - file: B242-c2c-start-relay-connect-ignore.todo
