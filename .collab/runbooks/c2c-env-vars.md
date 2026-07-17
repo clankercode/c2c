@@ -180,6 +180,27 @@ entirely and fall back to the hook delivery path
 intended for operator testing of the hook fallback. Any other value (or unset)
 leaves app-server as the default.
 
+### `C2C_CODEX_SKIP_MCP_PREFLIGHT`
+
+Operator escape for the B224 preflight. Every managed Codex launch
+(`C2c_codex_session.run`, `ocaml/c2c_codex_session.ml`) validates the
+machine-wide `[mcp_servers.c2c]` block in `~/.codex/config.toml` before
+launching, because a stale block (a dev `opam exec -- <server_path>` whose build
+path was removed, or a `c2c-mcp-server` no longer on PATH) would otherwise drop
+the operator into a session whose c2c MCP handshake fails
+(`MCP startup incomplete (failed: c2c)`). A **stale** block aborts the launch up
+front with a repair message (`c2c install codex`) and the distinct exit code
+`78` (`codex_mcp_preflight_exit_code`); a **missing** block is not the failure
+mode (codex simply launches without c2c tools) and proceeds. Setting
+`C2C_CODEX_SKIP_MCP_PREFLIGHT=1` (exact value `1`) launches anyway. The preflight
+only runs on a real launch — a test that injects a scripted `backend` skips it.
+
+### `C2C_CODEX_CONFIG_PATH`
+
+Overrides the codex config path the B224 preflight reads (default
+`~/.codex/config.toml`). Test seam / non-standard `CODEX_HOME`; does not affect
+where `codex` itself reads its config. Empty/unset uses the default.
+
 ### `C2C_CODEX_APP_SERVER_READINESS_TIMEOUT_S`
 
 Positive finite float (seconds) for how long the managed launcher waits for

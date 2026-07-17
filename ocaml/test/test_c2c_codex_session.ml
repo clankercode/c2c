@@ -664,8 +664,18 @@ let test_force_hooks_env_uses_fallback () =
      the bypass flag through the effective extra_args. *)
   let seen = ref [] in
   Unix.putenv "C2C_CODEX_FORCE_HOOKS" "1";
+  (* B224: this is a backend=None launch, so the MCP preflight would otherwise
+     read the host's real ~/.codex/config.toml and could short-circuit to exit 78
+     on a machine with a stale c2c block. Bypass it — this test is about the
+     force-hooks escape, not the preflight (which has its own hermetic tests). *)
+  let saved_skip = Sys.getenv_opt "C2C_CODEX_SKIP_MCP_PREFLIGHT" in
+  Unix.putenv "C2C_CODEX_SKIP_MCP_PREFLIGHT" "1";
   let rc =
-    Fun.protect ~finally:(fun () -> Unix.putenv "C2C_CODEX_FORCE_HOOKS" "0")
+    Fun.protect
+      ~finally:(fun () ->
+        Unix.putenv "C2C_CODEX_FORCE_HOOKS" "0";
+        Unix.putenv "C2C_CODEX_SKIP_MCP_PREFLIGHT"
+          (match saved_skip with Some v -> v | None -> ""))
       (fun () ->
         S.run ~mode:S.Start ~yolo:true ~extra_args:[ "--model"; "x" ]
           ~fallback:(fun ~extra_args () -> seen := extra_args; 0) ())
@@ -674,6 +684,174 @@ let test_force_hooks_env_uses_fallback () =
   Alcotest.(check bool) "yolo bypass forwarded to hook path" true
     (List.mem "--dangerously-bypass-approvals-and-sandbox" !seen);
   Alcotest.(check bool) "passthrough preserved" true (List.mem "--model" !seen)
+
+(* ------------------------------------------------------------------ *)
+(* B224: stale codex MCP-block preflight                               *)
+(* ------------------------------------------------------------------ *)
+
+(* The block `c2c install codex` writes when it finds a real `c2c-mcp-server`. *)
+let mcp_block_bare ~server =
+  Printf.sprintf
+    "\n[mcp_servers.c2c]\ncommand = \"%s\"\nargs = []\n\n\
+     [mcp_servers.c2c.env]\nC2C_MCP_CLIENT_TYPE = \"codex\"\n\n\
+     [mcp_servers.c2c.tools.send]\napproval_mode = \"auto\"\n"
+    server
+
+(* The block written for a dev build: `opam exec -- <server_path>` — the shape
+   whose <server_path> going stale (removed _build/tmp path) is B224. *)
+let mcp_block_opam ~server_path =
+  Printf.sprintf
+    "\n[mcp_servers.c2c]\ncommand = \"opam\"\nargs = [\"exec\", \"--\", \"%s\"]\n\n\
+     [mcp_servers.c2c.env]\nC2C_MCP_CLIENT_TYPE = \"codex\"\n"
+    server_path
+
+let test_preflight_parse_bare () =
+  match S.parse_codex_mcp_command (mcp_block_bare ~server:"c2c-mcp-server") with
+  | Some (Some cmd, args) ->
+      Alcotest.(check string) "command" "c2c-mcp-server" cmd;
+      Alcotest.(check (list string)) "no args" [] args
+  | _ -> Alcotest.fail "expected a parsed command"
+
+let test_preflight_parse_opam () =
+  match S.parse_codex_mcp_command (mcp_block_opam ~server_path:"/tmp/x/c2c-mcp-server") with
+  | Some (Some cmd, args) ->
+      Alcotest.(check string) "command" "opam" cmd;
+      (* the nested [.env] header stops the scan: only exec/--/<path> captured *)
+      Alcotest.(check (list string)) "opam exec args"
+        [ "exec"; "--"; "/tmp/x/c2c-mcp-server" ] args
+  | _ -> Alcotest.fail "expected a parsed command"
+
+let test_preflight_parse_absent () =
+  Alcotest.(check bool) "no c2c section => None" true
+    (S.parse_codex_mcp_command "[mcp_servers.other]\ncommand = \"x\"\n" = None)
+
+(* Classifier (pure) — the core of the regression. A stale opam server_path or a
+   bare command that no longer resolves must be flagged; a resolvable one must
+   not; an absent block reads as Missing (not the failure mode). *)
+let never_resolves _ = false
+let always_resolves _ = true
+
+let test_preflight_stale_opam_path () =
+  (* `c2c new codex` with the reported stale block: opam exec -- <gone path>. *)
+  let content = Some (mcp_block_opam ~server_path:"/tmp/gone/c2c-mcp-server") in
+  match S.classify_codex_mcp_block ~content ~resolves:never_resolves with
+  | S.Mcp_stale reason ->
+      Alcotest.(check bool) "reason names the unresolvable target" true
+        (string_mem "/tmp/gone/c2c-mcp-server" reason)
+  | _ -> Alcotest.fail "a removed opam server_path must classify as stale"
+
+let test_preflight_ok_opam_path () =
+  let content = Some (mcp_block_opam ~server_path:"/opt/c2c/c2c-mcp-server") in
+  Alcotest.(check bool) "resolvable opam server_path is ok" true
+    (S.classify_codex_mcp_block ~content ~resolves:always_resolves = S.Mcp_ok)
+
+let test_preflight_stale_bare_off_path () =
+  let content = Some (mcp_block_bare ~server:"c2c-mcp-server") in
+  match S.classify_codex_mcp_block ~content ~resolves:never_resolves with
+  | S.Mcp_stale reason ->
+      Alcotest.(check bool) "reason names the command" true
+        (string_mem "c2c-mcp-server" reason)
+  | _ -> Alcotest.fail "a c2c-mcp-server off PATH must classify as stale"
+
+let test_preflight_ok_bare_on_path () =
+  let content = Some (mcp_block_bare ~server:"c2c-mcp-server") in
+  Alcotest.(check bool) "c2c-mcp-server on PATH is ok" true
+    (S.classify_codex_mcp_block ~content ~resolves:always_resolves = S.Mcp_ok)
+
+let test_preflight_missing_block () =
+  Alcotest.(check bool) "no block => missing (proceed, not the failure mode)" true
+    (S.classify_codex_mcp_block
+       ~content:(Some "[mcp_servers.other]\ncommand = \"x\"\n")
+       ~resolves:always_resolves = S.Mcp_missing);
+  Alcotest.(check bool) "absent file => missing" true
+    (S.classify_codex_mcp_block ~content:None ~resolves:always_resolves = S.Mcp_missing)
+
+(* Impure preflight over a real config file with an injected resolver: exercises
+   the file read + C2C_CODEX_CONFIG_PATH-style override that `c2c new codex`
+   drives (via the default ~/.codex/config.toml path). *)
+let test_preflight_reads_config_file () =
+  with_tmp_dir (fun dir ->
+      let cfg = Filename.concat dir "config.toml" in
+      let oc = open_out cfg in
+      output_string oc (mcp_block_opam ~server_path:"/tmp/gone/c2c-mcp-server");
+      close_out oc;
+      (match S.preflight_codex_mcp_block ~config_path:cfg ~resolves:never_resolves () with
+       | S.Mcp_stale _ -> ()
+       | _ -> Alcotest.fail "stale on-disk block should classify as stale");
+      Alcotest.(check bool) "same block resolves => ok" true
+        (S.preflight_codex_mcp_block ~config_path:cfg ~resolves:always_resolves ()
+         = S.Mcp_ok);
+      (* absent file => missing *)
+      Alcotest.(check bool) "absent config file => missing" true
+        (S.preflight_codex_mcp_block
+           ~config_path:(Filename.concat dir "nope.toml")
+           ~resolves:always_resolves () = S.Mcp_missing))
+
+let test_preflight_diagnostic_is_actionable () =
+  let d = S.codex_mcp_preflight_diagnostic "the c2c MCP command `x` is not runnable" in
+  Alcotest.(check bool) "names the repair command" true (string_mem "c2c install codex" d);
+  Alcotest.(check bool) "names the skip escape" true
+    (string_mem "C2C_CODEX_SKIP_MCP_PREFLIGHT" d)
+
+(* End-to-end gate: `c2c new codex` (mode=New) aborts BEFORE any launch when the
+   preflight (over a C2C_CODEX_CONFIG_PATH-pointed stale block) trips. No backend
+   is injected — this is the real launch path — but the stale block short-circuits
+   run before it ever reaches the app-server/hook dispatch, so the fallback is
+   never called and the distinguished exit code is returned. *)
+let test_new_codex_aborts_on_stale_block () =
+  with_tmp_dir (fun dir ->
+      let cfg = Filename.concat dir "config.toml" in
+      let oc = open_out cfg in
+      output_string oc (mcp_block_opam ~server_path:"/tmp/definitely-gone/c2c-mcp-server");
+      close_out oc;
+      let saved = Sys.getenv_opt "C2C_CODEX_CONFIG_PATH" in
+      Unix.putenv "C2C_CODEX_CONFIG_PATH" cfg;
+      Fun.protect
+        ~finally:(fun () ->
+          match saved with
+          | Some v -> Unix.putenv "C2C_CODEX_CONFIG_PATH" v
+          | None -> Unix.putenv "C2C_CODEX_CONFIG_PATH" "")
+        (fun () ->
+          let fallback_called = ref false in
+          let rc =
+            S.run ~mode:S.New ~yolo:false ~extra_args:[]
+              ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 0) ()
+          in
+          Alcotest.(check bool) "stale block => launch aborted, fallback NOT called"
+            false !fallback_called;
+          Alcotest.(check int) "distinguished preflight exit code"
+            S.codex_mcp_preflight_exit_code rc))
+
+(* The C2C_CODEX_SKIP_MCP_PREFLIGHT=1 escape lets a launch through even with a
+   stale block (operator override). With no backend and force-hooks on, the
+   fallback runs instead of aborting. *)
+let test_skip_env_bypasses_preflight () =
+  with_tmp_dir (fun dir ->
+      let cfg = Filename.concat dir "config.toml" in
+      let oc = open_out cfg in
+      output_string oc (mcp_block_opam ~server_path:"/tmp/definitely-gone/c2c-mcp-server");
+      close_out oc;
+      let saved_cfg = Sys.getenv_opt "C2C_CODEX_CONFIG_PATH" in
+      let saved_skip = Sys.getenv_opt "C2C_CODEX_SKIP_MCP_PREFLIGHT" in
+      let saved_hooks = Sys.getenv_opt "C2C_CODEX_FORCE_HOOKS" in
+      Unix.putenv "C2C_CODEX_CONFIG_PATH" cfg;
+      Unix.putenv "C2C_CODEX_SKIP_MCP_PREFLIGHT" "1";
+      Unix.putenv "C2C_CODEX_FORCE_HOOKS" "1";
+      let restore key = function Some v -> Unix.putenv key v | None -> Unix.putenv key "" in
+      Fun.protect
+        ~finally:(fun () ->
+          restore "C2C_CODEX_CONFIG_PATH" saved_cfg;
+          restore "C2C_CODEX_SKIP_MCP_PREFLIGHT" saved_skip;
+          restore "C2C_CODEX_FORCE_HOOKS" saved_hooks)
+        (fun () ->
+          let fallback_called = ref false in
+          let rc =
+            S.run ~mode:S.New ~yolo:false ~extra_args:[]
+              ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 0) ()
+          in
+          Alcotest.(check bool) "skip env => preflight bypassed, fallback runs"
+            true !fallback_called;
+          Alcotest.(check int) "fallback rc propagated" 0 rc))
 
 (* ------------------------------------------------------------------ *)
 (* Identity resolution: ambiguous client/alias/thread combos rejected  *)
@@ -854,4 +1032,18 @@ let () =
         ; test_case "force-hooks env uses fallback" `Quick test_force_hooks_env_uses_fallback
         ; test_case "diagnostic followup upgrade only for version issues (B175)"
             `Quick test_diagnostic_followup_upgrade_only_when_version_issue ] )
+    ; ( "mcp-preflight-B224",
+        [ test_case "parse bare command" `Quick test_preflight_parse_bare
+        ; test_case "parse opam exec args, stop at sub-table" `Quick test_preflight_parse_opam
+        ; test_case "absent section parses to None" `Quick test_preflight_parse_absent
+        ; test_case "stale opam server_path => stale" `Quick test_preflight_stale_opam_path
+        ; test_case "resolvable opam server_path => ok" `Quick test_preflight_ok_opam_path
+        ; test_case "c2c-mcp-server off PATH => stale" `Quick test_preflight_stale_bare_off_path
+        ; test_case "c2c-mcp-server on PATH => ok" `Quick test_preflight_ok_bare_on_path
+        ; test_case "no block => missing" `Quick test_preflight_missing_block
+        ; test_case "reads config file + override" `Quick test_preflight_reads_config_file
+        ; test_case "diagnostic is actionable" `Quick test_preflight_diagnostic_is_actionable
+        ; test_case "new codex aborts before launch on stale block" `Quick
+            test_new_codex_aborts_on_stale_block
+        ; test_case "skip env bypasses preflight" `Quick test_skip_env_bypasses_preflight ] )
     ]

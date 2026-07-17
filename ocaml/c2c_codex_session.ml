@@ -370,6 +370,169 @@ let executable_file path =
     else (Unix.access path [ Unix.X_OK ]; true)
   with _ -> false
 
+(* --- B224: codex MCP-block preflight -------------------------------------- *)
+(* Managed Codex launches (all four command forms funnel through {!run}) rely
+   ENTIRELY on the machine-wide [mcp_servers.c2c] block that `c2c install codex`
+   writes into ~/.codex/config.toml — [CodexAdapter.refresh_identity] is a
+   no-op, so nothing revalidates it per launch (contrast KimiAdapter, which
+   rewrites a fresh per-instance MCP config every start). When that block is
+   stale (an `opam exec -- <server_path>` whose build path was removed, or a
+   bare `c2c-mcp-server` no longer on PATH) Codex fails the MCP handshake and
+   the operator lands in a silently-broken managed session:
+
+     MCP client for `c2c` failed to start: ... connection closed
+     MCP startup incomplete (failed: c2c)
+
+   The preflight below classifies that block up front so [run] can stop with an
+   actionable repair message instead of launching into the broken state. *)
+
+type mcp_block_status =
+  | Mcp_ok                (* block present and its launch command resolves *)
+  | Mcp_missing           (* no [mcp_servers.c2c] block at all *)
+  | Mcp_stale of string   (* block present but the launch command is unresolvable *)
+
+(* All double-quoted substrings on one line, in order (TOML string tokens). The
+   setup writer emits [command]/[args] on single lines with simple quoting, so a
+   naive scan is sufficient and avoids a TOML dependency here. *)
+let quoted_tokens (line : string) : string list =
+  let n = String.length line in
+  let rec go i acc =
+    if i >= n then List.rev acc
+    else if line.[i] = '"' then begin
+      match String.index_from_opt line (i + 1) '"' with
+      | Some j -> go (j + 1) (String.sub line (i + 1) (j - i - 1) :: acc)
+      | None -> List.rev acc
+    end
+    else go (i + 1) acc
+  in
+  go 0 []
+
+(* Parse the [command] and [args] of the [mcp_servers.c2c] section from raw
+   config.toml content. Scanning stops at the first following section header so
+   the nested [mcp_servers.c2c.env] / [.tools.*] sub-tables are never mistaken
+   for the launch command. Returns [None] when the section header is absent. *)
+let parse_codex_mcp_command (content : string) : (string option * string list) option =
+  let lines = String.split_on_char '\n' content in
+  let rec find_section = function
+    | [] -> None
+    | line :: rest ->
+        if String.trim line = "[mcp_servers.c2c]" then Some rest
+        else find_section rest
+  in
+  match find_section lines with
+  | None -> None
+  | Some body ->
+      let command = ref None and args = ref [] in
+      let rec scan = function
+        | [] -> ()
+        | line :: rest ->
+            let t = String.trim line in
+            if String.length t > 0 && t.[0] = '[' then ()  (* next section: stop *)
+            else begin
+              (match quoted_tokens line with
+               | first :: _ when
+                   (let key = String.trim (List.hd (String.split_on_char '=' line)) in
+                    key = "command") -> command := Some first
+               | _ -> ());
+              (let key = String.trim (List.hd (String.split_on_char '=' line)) in
+               if key = "args" then args := quoted_tokens line);
+              scan rest
+            end
+      in
+      scan body;
+      Some (!command, !args)
+
+(* [classify_codex_mcp_block ~content ~resolves] is the pure classifier. [content]
+   is [None] when the config file is absent; [resolves cmd] reports whether a
+   launch command (bare name searched on PATH, or a path) is runnable. For the
+   `opam exec -- <server>` shape the meaningful target is the wrapped server
+   (the reported staleness), so that argument is validated rather than `opam`. *)
+let classify_codex_mcp_block ~(content : string option)
+    ~(resolves : string -> bool) : mcp_block_status =
+  match content with
+  | None -> Mcp_missing
+  | Some content ->
+      (match parse_codex_mcp_command content with
+       | None -> Mcp_missing
+       | Some (None, _) ->
+           Mcp_stale "[mcp_servers.c2c] has no `command`"
+       | Some (Some cmd, args) ->
+           (* opam exec -- <server_path>: the server after `--` is the real
+              MCP target; a removed build path is the classic stale case. *)
+           let target =
+             if cmd = "opam" then
+               let rec after_sep = function
+                 | "--" :: p :: _ -> Some p
+                 | _ :: rest -> after_sep rest
+                 | [] -> None
+               in
+               (match after_sep args with Some p -> p | None -> cmd)
+             else cmd
+           in
+           if resolves target then Mcp_ok
+           else
+             Mcp_stale
+               (Printf.sprintf "the c2c MCP command `%s` is not runnable \
+                                (missing build path or not on PATH)" target))
+
+(* Resolve a launch command: a path (contains '/') must be an executable regular
+   file; a bare name is searched on PATH. Mirrors [resolve_restart_executable]'s
+   PATH walk. *)
+let command_resolves ?(path = Sys.getenv_opt "PATH") (cmd : string) : bool =
+  if String.contains cmd '/' then
+    executable_file (if Filename.is_relative cmd then Sys.getcwd () // cmd else cmd)
+  else
+    match path with
+    | None -> false
+    | Some value ->
+        List.exists
+          (fun dir ->
+            let dir = if dir = "" then Sys.getcwd () else dir in
+            executable_file (dir // cmd))
+          (String.split_on_char ':' value)
+
+(* ~/.codex/config.toml, or the C2C_CODEX_CONFIG_PATH override (test seam /
+   non-standard CODEX_HOME). *)
+let codex_config_path () : string =
+  match Sys.getenv_opt "C2C_CODEX_CONFIG_PATH" with
+  | Some p when String.trim p <> "" -> p
+  | _ -> (Sys.getenv "HOME") // ".codex" // "config.toml"
+
+(* Impure preflight: read the (override-able) codex config and classify its
+   [mcp_servers.c2c] block against the real PATH / filesystem. [resolves] is an
+   injectable seam for tests. *)
+let preflight_codex_mcp_block ?config_path
+    ?(resolves = command_resolves ?path:None) () : mcp_block_status =
+  let path = match config_path with Some p -> p | None -> codex_config_path () in
+  let content =
+    if Sys.file_exists path then
+      try
+        let ic = open_in path in
+        Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+            Some (really_input_string ic (in_channel_length ic)))
+      with _ -> None
+    else None
+  in
+  classify_codex_mcp_block ~content ~resolves
+
+(* Distinct exit code so a launch aborted by the stale-config preflight is
+   distinguishable from a downstream Codex/app-server failure. *)
+let codex_mcp_preflight_exit_code = 78
+
+(* Actionable operator repair text for a stale c2c MCP block. Plain text: the
+   ANSI color helpers live below this point and are not in scope here. *)
+let codex_mcp_preflight_diagnostic (reason : string) : string =
+  Printf.sprintf
+    "[c2c codex] stale c2c MCP configuration: %s.\n\
+     The managed Codex session would launch with a broken c2c MCP server \
+     (handshake failure).\n\
+     Repair the machine-wide install, then relaunch:\n\
+     \n\
+    \    c2c install codex\n\
+     \n\
+     (Set C2C_CODEX_SKIP_MCP_PREFLIGHT=1 to launch anyway.)\n"
+    reason
+
 (* Resolve the UPGRADE target at request-decision time, not launcher startup:
    `c2c install` may have replaced the PATH binary while this owner kept the old
    executable mapped. Return an absolute, already-validated path so the caller
@@ -1031,18 +1194,42 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
      hooks suppress the vanilla app-server tip.  The app-server path uses the
      frontend-only environment assembled above, avoiding a launcher-env leak. *)
   (try Unix.putenv "C2C_CODEX_MANAGED" "1" with _ -> ());
-  (* B131 / coordinator directive: the app-server transport is the DEFAULT and
-     ONLY managed codex path for a supported codex. Unsupported codex (<0.144) or
-     a genuine app-server startup failure returns a structured diagnostic from
-     [run_app_server], which then falls back to the hook-backed launch
-     automatically — hooks are the fallback, never a user-selectable mode. The
-     hidden [C2C_CODEX_FORCE_HOOKS=1] escape skips the app-server path entirely
-     (operator testing / emergency only; not a user-facing option). *)
-  let force_hooks =
-    match Sys.getenv_opt "C2C_CODEX_FORCE_HOOKS" with Some "1" -> true | _ -> false
+  (* B224: preflight the machine-wide [mcp_servers.c2c] block before launching a
+     real Codex. A stale block (removed opam build path / c2c-mcp-server off
+     PATH) would otherwise drop the operator into a broken managed session with
+     a failed MCP handshake. Only gate genuine launches: an injected [backend]
+     means a scripted test with no real Codex reading the real config, so the
+     check would be non-hermetic (it would read the host's live config) and is
+     skipped. C2C_CODEX_SKIP_MCP_PREFLIGHT=1 is the operator escape. A MISSING
+     block is not the failure mode (Codex simply launches without c2c tools), so
+     only [Mcp_stale] blocks the launch. *)
+  let skip_preflight =
+    match Sys.getenv_opt "C2C_CODEX_SKIP_MCP_PREFLIGHT" with Some "1" -> true | _ -> false
   in
-  if force_hooks then
-    fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
-  else
-    run_app_server ~mode ~alias_override ~thread_id ~yolo ~extra_args
-      ?model_override ?backend ~fallback ()
+  let preflight_block =
+    if backend = None && not skip_preflight then
+      match preflight_codex_mcp_block () with
+      | Mcp_stale reason ->
+          Printf.eprintf "%s%!" (codex_mcp_preflight_diagnostic reason);
+          Some codex_mcp_preflight_exit_code
+      | Mcp_ok | Mcp_missing -> None
+    else None
+  in
+  match preflight_block with
+  | Some rc -> rc
+  | None ->
+    (* B131 / coordinator directive: the app-server transport is the DEFAULT and
+       ONLY managed codex path for a supported codex. Unsupported codex (<0.144)
+       or a genuine app-server startup failure returns a structured diagnostic
+       from [run_app_server], which then falls back to the hook-backed launch
+       automatically — hooks are the fallback, never a user-selectable mode. The
+       hidden [C2C_CODEX_FORCE_HOOKS=1] escape skips the app-server path entirely
+       (operator testing / emergency only; not a user-facing option). *)
+    let force_hooks =
+      match Sys.getenv_opt "C2C_CODEX_FORCE_HOOKS" with Some "1" -> true | _ -> false
+    in
+    if force_hooks then
+      fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
+    else
+      run_app_server ~mode ~alias_override ~thread_id ~yolo ~extra_args
+        ?model_override ?backend ~fallback ()

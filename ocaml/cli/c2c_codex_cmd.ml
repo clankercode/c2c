@@ -136,7 +136,12 @@ let codex : unit Cmd.t =
                       automatically if Codex is too old or the app-server fails to \
                       start. Exposes a reduced flag surface — pass codex options after \
                       $(b,--), e.g. $(b,c2c codex -- --model MODEL); use \
-                      $(b,c2c start codex) for the full managed flags." ])
+                      $(b,c2c start codex) for the full managed flags."
+                ; `P "Requires $(b,c2c install codex): the session inherits the \
+                      machine-wide $(b,[mcp_servers.c2c]) block in \
+                      $(b,~/.codex/config.toml). A stale block is refused up front \
+                      with a repair message — run $(b,c2c install codex) to fix, or \
+                      $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass." ])
     codex_term
 
 (* --------------------------------- new ------------------------------------ *)
@@ -164,7 +169,17 @@ let new_cmd : unit Cmd.t =
                       never silently resumes. Forward codex options after $(b,--). \
                       Aliases ending in $(b,--) can set the managed name with \
                       $(b,--c2c:name NAME), e.g. $(b,c2c new codex -- --model MODEL \
-                      --c2c:name my-codex)." ])
+                      --c2c:name my-codex)."
+                ; `S "PREREQUISITE"
+                ; `P "$(b,c2c install codex) must have run on this machine: the \
+                      managed session inherits the machine-wide \
+                      $(b,[mcp_servers.c2c]) block in $(b,~/.codex/config.toml) for \
+                      its c2c tools. If that block is stale (an install whose build \
+                      path was removed, or a $(b,c2c-mcp-server) no longer on PATH), \
+                      the launch is refused up front with a repair message rather \
+                      than dropping you into a session whose c2c MCP handshake \
+                      fails. Repair with $(b,c2c install codex); \
+                      $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) bypasses the check." ])
     new_term
 
 (* ------------------------------- resume ----------------------------------- *)
@@ -201,7 +216,12 @@ let resume_cmd : unit Cmd.t =
            ~man:[ `S "DESCRIPTION"
                 ; `P "Resumes the Codex thread saved for the given c2c alias. Use \
                       $(b,--thread-id ID) to select an exact thread; conflicts are \
-                      rejected rather than guessed." ])
+                      rejected rather than guessed."
+                ; `P "Like $(b,c2c new codex), a resume inherits the machine-wide \
+                      $(b,[mcp_servers.c2c]) block from $(b,~/.codex/config.toml); a \
+                      stale block is refused up front with a repair message — run \
+                      $(b,c2c install codex) to fix, or \
+                      $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass." ])
     resume_term
 
 (* Re-exported for c2c_managed_cmd so `c2c start codex` routes to the same path. *)

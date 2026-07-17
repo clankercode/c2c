@@ -79,6 +79,54 @@ val lifecycle_tui_handoff_body : alias:string -> endpoint:string -> string
     [C2C_MCP_AUTO_REGISTER_ALIAS] carries the banner alias for whoami fallback. *)
 val app_server_frontend_env : session_id:string -> alias:string -> string list
 
+(* ----------------------- B224: MCP-block preflight ------------------------ *)
+
+(** Classification of the machine-wide [mcp_servers.c2c] block that
+    `c2c install codex` writes into ~/.codex/config.toml and that every managed
+    Codex launch depends on. *)
+type mcp_block_status =
+  | Mcp_ok               (** block present and its launch command resolves *)
+  | Mcp_missing          (** no [mcp_servers.c2c] block at all *)
+  | Mcp_stale of string  (** block present but its launch command is unresolvable *)
+
+(** [quoted_tokens line] returns every double-quoted substring on [line], in
+    order. Pure. *)
+val quoted_tokens : string -> string list
+
+(** [parse_codex_mcp_command content] extracts the [command] and [args] of the
+    [mcp_servers.c2c] section from raw config.toml [content], stopping at the
+    next section header so the nested [.env] / [.tools.*] sub-tables are never
+    mistaken for the launch command. [None] when the section is absent. Pure. *)
+val parse_codex_mcp_command : string -> (string option * string list) option
+
+(** [classify_codex_mcp_block ~content ~resolves] is the pure classifier.
+    [content] is [None] when the config file is absent; [resolves cmd] reports
+    whether a launch command is runnable. For the `opam exec -- <server>` shape
+    the wrapped server (not `opam`) is validated — a removed build path is the
+    canonical stale case (B224). *)
+val classify_codex_mcp_block :
+  content:string option -> resolves:(string -> bool) -> mcp_block_status
+
+(** [command_resolves ?path cmd] resolves a launch command: a path (contains
+    '/') must be an executable regular file; a bare name is searched on [path]
+    (defaults to the process [PATH]). *)
+val command_resolves : ?path:string option -> string -> bool
+
+(** [preflight_codex_mcp_block ?config_path ?resolves ()] reads the codex config
+    ([config_path], else the [C2C_CODEX_CONFIG_PATH] override, else
+    ~/.codex/config.toml) and classifies its [mcp_servers.c2c] block. [resolves]
+    is an injectable seam for tests. *)
+val preflight_codex_mcp_block :
+  ?config_path:string -> ?resolves:(string -> bool) -> unit -> mcp_block_status
+
+(** Actionable operator repair text for a stale c2c MCP block (names
+    `c2c install codex` and the [C2C_CODEX_SKIP_MCP_PREFLIGHT] escape). *)
+val codex_mcp_preflight_diagnostic : string -> string
+
+(** Distinct process exit code {!run} returns when it aborts a launch because
+    the preflight found a stale c2c MCP block. *)
+val codex_mcp_preflight_exit_code : int
+
 (* ------------------------- positional splitting --------------------------- *)
 
 (** Drop one leading [--] separator (cmdliner sometimes surfaces it as the first
