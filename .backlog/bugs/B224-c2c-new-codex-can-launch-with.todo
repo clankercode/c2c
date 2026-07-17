@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-17T11:30:21Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-17T11:49:59Z"
 complexity: medium
 created_at: "2026-07-17T10:35:59Z"
 depends_on: []
+duration_minutes: 19.64513786535
 estimate_hours: 1
 id: B224
 priority: high
 started_at: "2026-07-17T11:30:21Z"
-status: in_progress
+status: done
 tags: []
 title: c2c new codex can launch with stale global MCP configuration and fail handshake
-updated_at: "2026-07-17T11:30:21Z"
+updated_at: "2026-07-17T11:49:59Z"
 ---
 ## Summary
 
