@@ -15,85 +15,18 @@ let print_json json =
 
 let resolve_broker_root () = C2c_utils.resolve_broker_root ()
 
-let resolve_alias_with_broker ?(override : string option) broker =
-  let open C2c_mcp in
-  let env_or_error () =
-    match C2c_utils.alias_from_env_only () with
-    | Some a -> a
-    | None ->
-        Printf.eprintf
-          "error: cannot determine alias. Set C2C_MCP_AUTO_REGISTER_ALIAS or C2C_MCP_SESSION_ID.\n%!";
-        exit 1
-  in
-  match override with
-  | Some a when String.trim a <> "" ->
-      let r = String.trim a in
-      let caller_session_id = C2c_mcp.session_id_from_env () in
-      let is_coordinator = Sys.getenv_opt "C2C_COORDINATOR" = Some "1" in
-      (* Spoofing guard: keep in sync with C2c_cli_auth.validate_from_override
-         in c2c.ml (same logic, inlined here because c2c_rooms.ml does not
-         depend on c2c.ml). *)
-      if not is_coordinator then begin
-        let regs = Broker.list_registrations broker in
-        let from_cf = Broker.alias_casefold r in
-        let caller_owns_from =
-          match caller_session_id with
-          | Some sid ->
-              List.exists
-                (fun (reg : C2c_mcp.registration) ->
-                   Broker.alias_casefold reg.alias = from_cf && reg.session_id = sid)
-                regs
-          | None -> false
-        in
-        if not caller_owns_from then begin
-          let from_registered_to_other =
-            List.exists
-              (fun (reg : C2c_mcp.registration) ->
-                 Broker.alias_casefold reg.alias = from_cf
-                 && (match caller_session_id with
-                     | Some sid -> reg.session_id <> sid
-                     | None -> true))
-              regs
-          in
-          if from_registered_to_other then begin
-            Printf.eprintf
-              "refusing to send as '%s': that alias is registered to a different session \
-               (not your identity). Set C2C_COORDINATOR=1 to relay on behalf of another agent, \
-               or send as your own alias.\n%!"
-              r;
-            exit 1
-          end else begin
-            Printf.eprintf
-              "refusing to send as '%s': alias is not registered. \
-               Only your own alias or C2C_COORDINATOR=1 is permitted.\n%!"
-              r;
-            exit 1
-          end
-        end
-      end;
-      r
-  | _ ->
-      (* Priority: session_id (broker lookup) > env alias.
-         Mirrors c2c.ml::resolve_alias. When C2C_MCP_SESSION_ID is unset,
-         skip Broker.list_registrations entirely — pure env path is enough
-         (#422 follow-up F1: avoid unnecessary broker IO on the env-only
-         hot path). *)
-      (match C2c_mcp.session_id_from_env () with
-       | None -> env_or_error ()
-       | Some sid ->
-           (match Broker.list_registrations broker
-                  |> List.find_opt (fun r -> r.session_id = sid) with
-            | Some r -> r.alias
-            | None ->
-                (* Session not registered — fall back to env alias. *)
-                env_or_error ()))
+(* B241: rooms must share whoami/send/peek identity resolution.
+   The previous private path used only [C2c_mcp.session_id_from_env] (no
+   default-session.json fallback) while whoami/peek/send used
+   [C2c_cli_helpers.env_session_id] — so the same shell could succeed on
+   whoami (wrong or init-fallback alias, with note) and hard-error on
+   [rooms join]. Delegate to the shared helpers for one consistent,
+   note-emitting, B187-guarded identity surface. *)
+let resolve_alias_with_broker ?(override : string option) ?(json = false) broker =
+  C2c_cli_helpers.resolve_alias ~override ~json broker
 
-let resolve_session_id_for_inbox _broker =
-  match C2c_mcp.session_id_from_env () with
-  | Some s -> s
-  | None ->
-      Printf.eprintf "error: C2C_MCP_SESSION_ID is required\n%!";
-      exit 1
+let resolve_session_id_for_inbox ?alias broker =
+  C2c_cli_helpers.resolve_session_id_for_inbox ?alias broker
 
 let rooms_send_cmd =
   let room_id =
@@ -146,7 +79,9 @@ let rooms_send_cmd =
         exit 124
   in
   let broker = Broker.create ~root:(resolve_broker_root ()) in
-  let from_alias = resolve_alias_with_broker ?override:from_override broker in
+  let from_alias =
+    resolve_alias_with_broker ?override:from_override ~json broker
+  in
   let content = String.concat " " message in
   (* B045: Stderr-only informational hint for human operators.
      Body is data, never shell-eval'd — this never blocks or fails a send. *)
@@ -198,15 +133,21 @@ let rooms_join_cmd =
   in
   let alias_flag =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias"; "a" ] ~docv:"ALIAS"
-      ~doc:"Your alias (overrides registry lookup). Required when C2C_MCP_SESSION_ID is unset.")
+      ~doc:"Your alias (overrides registry lookup). When omitted, uses the same \
+            session resolution as whoami/send (env + init default-session fallback).")
   in
   let+ json = json_flag
   and+ room_id = room_id
   and+ history_limit = history_limit
   and+ alias_opt = alias_flag in
   let broker = Broker.create ~root:(resolve_broker_root ()) in
-  let alias = Option.value alias_opt ~default:(resolve_alias_with_broker broker) in
-  let session_id = resolve_session_id_for_inbox broker in
+  let alias =
+    Option.value alias_opt
+      ~default:(resolve_alias_with_broker ~json broker)
+  in
+  (* Prefer explicit --alias for session_id lookup; otherwise same env /
+     statefile path as whoami (B241). *)
+  let session_id = resolve_session_id_for_inbox ?alias:alias_opt broker in
   let output_mode = if json then Json else Human in
   (try
      let members =
