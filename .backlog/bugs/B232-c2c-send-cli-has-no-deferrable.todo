@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T16:50:02Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T15:57:32Z"
 depends_on: []
 estimate_hours: 1
 id: B232
 priority: high
-status: pending
+started_at: "2026-07-17T16:50:02Z"
+status: in_progress
 tags: []
 title: c2c send CLI has no --deferrable flag (MCP-only) — CLI/MCP parity gap
-updated_at: "2026-07-17T15:57:32Z"
+updated_at: "2026-07-17T16:50:02Z"
 ---
 During cross-host dogfood (2026-07-18): 'c2c send <alias> --deferrable <msg>' → 'unknown option --deferrable'. The deferrable flag exists only on the MCP send tool (documented docs/commands.md:139) and 'c2c relay dm send' has no deferrable/ephemeral/tag flags either. CLI-first clients (kimi's default path!) cannot send deferrable messages at all. Add --deferrable to 'c2c send' (and consider flag parity on 'c2c relay dm send').

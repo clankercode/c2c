@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T16:50:02Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T15:57:10Z"
 depends_on: []
 estimate_hours: 1
 id: B229
 priority: high
-status: pending
+started_at: "2026-07-17T16:50:02Z"
+status: in_progress
 tags: []
 title: relay rooms list leaks gated room member roster to non-members
-updated_at: "2026-07-17T15:57:10Z"
+updated_at: "2026-07-17T16:50:02Z"
 ---
 During cross-host dogfood (2026-07-18): probe alias kimi-df-probe-x7k2 (non-member) ran 'c2c relay rooms list --alias kimi-df-probe-x7k2' and saw gated room df-gate-x7k2 WITH full member list ['kimi-suvi-lumo-9cr1#df-gate-x7k2@relay']. Local broker list_rooms semantics (4-level visibility) redact a gated room's roster (members/details/invited) for non-members — relay rooms list does not. Privacy leak: anyone can enumerate gated-room membership. Repro: create gated relay room with member A; list as non-member B; roster visible.

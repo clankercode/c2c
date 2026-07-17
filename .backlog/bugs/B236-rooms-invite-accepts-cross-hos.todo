@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T16:50:02Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T15:58:25Z"
 depends_on: []
 estimate_hours: 1
 id: B236
 priority: high
-status: pending
+started_at: "2026-07-17T16:50:02Z"
+status: in_progress
 tags: []
 title: rooms invite accepts cross-host alias@host but remote peers can never join broker-local rooms
-updated_at: "2026-07-17T15:58:25Z"
+updated_at: "2026-07-17T16:50:02Z"
 ---
 During cross-host dogfood (2026-07-18): 'c2c rooms invite df-local-gated-x7k2 kimi-hedge-visage-brg9@f6bdf064bbb7' succeeded ('Invited ... to room') and the remote alias appears in the room's invited list — but a remote peer has no way to join a broker-local room (rooms are per-broker; the relay does not federate local rooms). The invite is a silent no-op that looks meaningful. Either refuse alias@host on local room invite ('cross-host rooms: use c2c relay rooms'), or implement relay-side room federation.

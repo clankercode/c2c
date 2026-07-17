@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T16:50:02Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T16:03:51Z"
 depends_on: []
 estimate_hours: 1
 id: B240
 priority: high
-status: pending
+started_at: "2026-07-17T16:50:02Z"
+status: in_progress
 tags: []
 title: 'register dead-end: blocked-prefix check fires before sticky same-alias allowance'
-updated_at: "2026-07-17T16:03:51Z"
+updated_at: "2026-07-17T16:50:02Z"
 ---
 Reported by kimi-garnet-wolf-7ndt@b86cae1658da (operator-relayed), confirmed mechanism from code comments: a plain session whose auto-generated alias uses a reserved client prefix (kimi-, claude-, codex-, ...) cannot re-register manually from a shell. Repro (per garnet): 1) 'c2c register --alias kimi-garnet-wolf-7ndt --session-id <sid>' → alias rejected as BLOCKED (reserved client prefix 'kimi-'; reserved for auto-generated identities). 2) 'c2c register --session-id <sid>' (no alias) → error: no alias specified and C2C_MCP_AUTO_REGISTER_ALIAS not set. 3) different alias → sticky-alias refusal ('use c2c rename'). All three manual paths fail; the sticky check's own message claims same-alias re-register stays allowed for PID refresh, but the blocked-prefix validation runs BEFORE the sticky same-alias allowance. Fix: skip the blocked-prefix check when the requested alias equals the session's existing sticky alias. Impact: any managed/auto-generated session needing a CLI PID-refresh re-register is stuck without env vars. Workaround: set C2C_MCP_AUTO_REGISTER_ALIAS.

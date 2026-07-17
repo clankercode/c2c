@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T16:50:02Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T13:51:26Z"
 depends_on: []
 estimate_hours: 1
 id: B226
 priority: high
-status: pending
+started_at: "2026-07-17T16:50:02Z"
+status: in_progress
 tags: []
 title: 'CI build-and-test red on master: env-dependent tests (whoami, inbox alias, B201, relay smoke)'
-updated_at: "2026-07-17T13:51:26Z"
+updated_at: "2026-07-17T16:50:02Z"
 ---
 The OCaml tests step of CI build-and-test has failed on the last 4 master pushes (runs 29584998466, 29513786417, 29464896366, 29464672655). Failure set on run 29584998466 (2026-07-17, post kimi-merge): B201 binary relay eligibility, production loopback relay 'unbound live rebind', list 'inbox alias exits 0 (B183)', whoami 0+1, relay_dead_letter 'relay subscribe https'. The whoami/inbox-alias cases also fail locally when test binaries are run directly outside dune runtest (identical on master and feature branches), i.e. environment-dependent. Previous push 'merge: keep relay smoke tests off production' (29513786417) attempted to fix the relay-smoke subset but CI remains red. Related: B219 (relay instability, in_progress). No kimi test failures in the 29584998466 run; kimi re-enable merge is not the cause. Needs: make these tests hermetic in CI (isolate HOME/broker, stop hitting the production relay) or quarantine them.
