@@ -123,17 +123,20 @@ type room_knock = {
 (* Room visibility — four levels (relay-canonical wire values), a 2x2 of
    listed-ness x join-gating:
      "public"   — listed in /list_rooms, open join, open read.
-     "unlisted" — NOT listed, but anyone who knows the room id may join + read.
+     "unlisted" — not in the anonymous directory; members with a verified
+                  Ed25519 identity see it on authenticated /list_rooms
+                  (B230). Anyone who knows the room id may join + read.
      "gated"    — listed in /list_rooms, but join requires the caller's
                   identity_pk to be on the room's invite list (ACL-gated);
                   read requires membership.
-     "private"  — NOT listed, and join requires the caller's identity_pk to
-                  be on the room's invite list (ACL-gated); read requires
-                  membership.
+     "private"  — NOT listed (even for members on this surface), and join
+                  requires the caller's identity_pk to be on the room's
+                  invite list (ACL-gated); read requires membership.
    [canonical_visibility] normalizes operator/CLI input to one of these.
-   Returns [None] for unrecognized input so callers can reject it. Only
-   "public" and "gated" rooms are returned by list_rooms; "gated" and
-   "private" rooms are join-gated. *)
+   Returns [None] for unrecognized input so callers can reject it.
+   Anonymous list_rooms returns "public" and "gated"; with a verified
+   caller alias it also returns unlisted rooms where that alias is a
+   member. "gated" and "private" rooms are join-gated. *)
 let canonical_visibility v =
   match String.lowercase_ascii (String.trim v) with
   | "public" -> Some "public"

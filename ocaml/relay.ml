@@ -1329,21 +1329,32 @@ module InMemoryRelay : RELAY = struct
           List.rev (drop (len - limit) hist)
     )
 
-  let list_rooms t =
+  let list_rooms ?for_alias t =
     with_lock t (fun () ->
       Hashtbl.fold (fun room_id members acc ->
-        (* Only public and gated rooms appear in the directory; unlisted and
-           private rooms are reachable by id but never listed. Absent
-           visibility (legacy in-memory rooms) defaults to public. *)
+        (* Directory policy (B230):
+           - public / gated: always listed (anonymous directory).
+           - unlisted: listed only when [for_alias] is a current member.
+           - private: never listed on this surface (reachable by id only).
+           Absent visibility (legacy in-memory rooms) defaults to public. *)
         let visibility = match Hashtbl.find_opt t.room_visibility room_id with
           | Some v -> v | None -> "public" in
+        let include_room =
+          match visibility with
+          | "public" | "gated" -> true
+          | "unlisted" ->
+              (match for_alias with
+               | Some a -> List.mem a members
+               | None -> false)
+          | _ -> false
+        in
         (* B118: defensive directory-boundary guard. handle_join_room rejects
            out-of-grammar room ids, but a backend-direct caller or a legacy
            persisted row could still carry a room id containing `#`/`@`, which
            would make its alias#room@relay directory address ambiguous. Omit
-           such rooms from the anonymous directory entirely — better unlisted
-           than emitting an address the recipient parser cannot round-trip. *)
-        if not (visibility = "public" || visibility = "gated") then acc
+           such rooms from the directory entirely — better unlisted than
+           emitting an address the recipient parser cannot round-trip. *)
+        if not include_room then acc
         else if not (valid_relay_room_id room_id) then acc
         else
           `Assoc [
@@ -2761,13 +2772,29 @@ module SqliteRelay : RELAY = struct
       ignore (Sqlite3.step stmt)
     )
 
-  let list_rooms t =
+  let list_rooms ?for_alias t =
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let rooms = ref [] in
-      (* Only public and gated rooms are listed; unlisted/private rooms stay
-         reachable by id but are omitted from the directory. *)
-      let stmt = Sqlite3.prepare conn "SELECT room_id FROM rooms WHERE visibility IN ('public','gated')" in
+      (* Directory policy (B230):
+         - anonymous: public + gated only.
+         - with for_alias: also unlisted rooms where that alias is a member.
+         private rooms stay omitted (reachable by id only). *)
+      let stmt =
+        match for_alias with
+        | None ->
+            Sqlite3.prepare conn
+              "SELECT room_id FROM rooms WHERE visibility IN ('public','gated')"
+        | Some _ ->
+            Sqlite3.prepare conn
+              "SELECT room_id FROM rooms WHERE visibility IN ('public','gated') \
+               OR (visibility = 'unlisted' AND EXISTS ( \
+                 SELECT 1 FROM room_members m \
+                 WHERE m.room_id = rooms.room_id AND m.alias = ?))"
+      in
+      (match for_alias with
+       | Some alias -> Sqlite3.bind_text stmt 1 alias |> ignore
+       | None -> ());
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
@@ -3426,8 +3453,16 @@ end = struct
     let dl = R.dead_letter relay in
     respond_ok (json_ok [ ("dead_letter", `List dl) ])
 
-  let handle_list_rooms relay =
-    let rooms = R.list_rooms relay in
+  (* B230: when the request carries a verified Ed25519 identity, pass that
+     alias so unlisted rooms the caller is a member of appear in the
+     directory. Anonymous callers still only see public + gated. Invalid
+     signatures on this anonymous-read route degrade to anonymous listing
+     (same soft-auth posture as /room_history). *)
+  let handle_list_rooms relay ~verified_alias =
+    let rooms = match verified_alias with
+      | Some alias -> R.list_rooms ~for_alias:alias relay
+      | None -> R.list_rooms relay
+    in
     respond_ok (json_ok [ ("rooms", `List rooms) ])
 
   let handle_admin_unbind relay body =
@@ -5626,7 +5661,7 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
         respond_html device_login_html
 
       | `GET, "/list_rooms" ->
-        handle_list_rooms relay
+        handle_list_rooms relay ~verified_alias
 
       | `POST, "/gc" ->
         handle_gc relay

@@ -777,7 +777,7 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit" ] ~docv:"N" ~doc:"Max messages for history (default 50).")
   in
   let alias =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send/invite/uninvite; optional for history, required there for gated/private rooms).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias (required for join/leave/send/invite/uninvite; optional for history, required there for gated/private rooms; optional for list — when provided, signs the request so unlisted rooms you are a member of appear).")
   in
   let invitee_pk =
     Cmdliner.Arg.(value & opt (some string) None & info [ "invitee-pk" ] ~docv:"PK" ~doc:"Base64url invitee identity public key (required for invite/uninvite).")
@@ -953,8 +953,31 @@ let relay_rooms_cmd =
            exit 1
        | Some url ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
-           let result = Lwt_main.run (Relay.Relay_client.list_rooms client) in
-           print_result_and_exit result)
+           (* B230: sign when we have an alias so the relay can include
+              unlisted rooms the caller is a member of. Prefer explicit
+              --alias, then C2C_MCP_AUTO_REGISTER_ALIAS (same as relay list).
+              Anonymous list remains public + gated only. *)
+           let signing_alias = match alias, env_auto_alias () with
+             | Some a, _ -> Some a
+             | None, Some a -> Some a
+             | None, None -> None
+           in
+           let result, alias_source =
+             match signing_alias, Relay_identity.load () with
+             | Some a, Ok id ->
+                 let auth =
+                   Relay_signed_ops.sign_request id ~alias:a
+                     ~meth:"GET" ~path:"/list_rooms" ~body_str:"" ()
+                 in
+                 ( Lwt_main.run
+                     (Relay.Relay_client.list_rooms_signed client
+                        ~auth_header:auth)
+                 , Some (Relay_client_hints.Explicit a) )
+             | _ ->
+                 ( Lwt_main.run (Relay.Relay_client.list_rooms client)
+                 , Option.map (fun a -> Relay_client_hints.Explicit a) alias )
+           in
+           print_result_and_exit ?alias_source result)
   | "invite" | "uninvite" ->
       (match resolve_relay_url relay_url, room, alias, invitee_pk with
        | None, _, _, _ ->

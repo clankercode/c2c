@@ -502,6 +502,48 @@ let test_relay_list_rooms_omits_nonpublic () =
   if Relay.InMemoryRelay.room_visibility_of t ~room_id:"priv-room" <> "private" then
     fail_fmt "private should be stored as canonical private"
 
+(* B230: authenticated list_rooms shows unlisted rooms to members (creator
+   and non-creator members alike); non-members and anonymous callers still
+   must not see them. Private stays hidden on this surface. *)
+let test_relay_list_rooms_unlisted_visible_to_members () =
+  let t = make_test_relay () in
+  let (_s, _l) =
+    Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+  in
+  let (_s2, _l2) =
+    Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"member" ()
+  in
+  let (_s3, _l3) =
+    Relay.InMemoryRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"stranger" ()
+  in
+  let _ =
+    Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"creator"
+      ~room_id:"unl-b230" ()
+  in
+  let _ =
+    Relay.InMemoryRelay.join_room t ~alias:"member" ~room_id:"unl-b230" ()
+  in
+  let _ =
+    Relay.InMemoryRelay.join_room t ~visibility:"private" ~alias:"creator"
+      ~room_id:"priv-b230" ()
+  in
+  let anon = room_ids (Relay.InMemoryRelay.list_rooms t) in
+  if List.mem "unl-b230" anon then
+    fail_fmt "anonymous list must not show unlisted room";
+  if List.mem "priv-b230" anon then
+    fail_fmt "anonymous list must not show private room";
+  let as_creator = room_ids (Relay.InMemoryRelay.list_rooms ~for_alias:"creator" t) in
+  if not (List.mem "unl-b230" as_creator) then
+    fail_fmt "creator must see unlisted room they created";
+  if List.mem "priv-b230" as_creator then
+    fail_fmt "private room must stay hidden even for creator on list_rooms";
+  let as_member = room_ids (Relay.InMemoryRelay.list_rooms ~for_alias:"member" t) in
+  if not (List.mem "unl-b230" as_member) then
+    fail_fmt "non-creator member must see unlisted room they joined";
+  let as_stranger = room_ids (Relay.InMemoryRelay.list_rooms ~for_alias:"stranger" t) in
+  if List.mem "unl-b230" as_stranger then
+    fail_fmt "non-member must not see unlisted room"
+
 (* New cell coverage (InMemory): gated is listed + join invite-gated; unlisted
    is open-join but not listed; private is invite-gated + not listed. *)
 let test_relay_join_gating_inmemory () =
@@ -828,6 +870,46 @@ let test_relay_sqlite_list_rooms_omits_nonpublic () =
     if Relay.SqliteRelay.room_visibility_of t ~room_id:"priv-room" <> "private" then
       fail_fmt "sqlite: private should be stored as canonical private")
 
+(* B230 sqlite twin of test_relay_list_rooms_unlisted_visible_to_members. *)
+let test_relay_sqlite_list_rooms_unlisted_visible_to_members () =
+  with_sqlite_relay_tempdir (fun t ->
+    let (_s, _l) =
+      Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+    in
+    let (_s2, _l2) =
+      Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"member" ()
+    in
+    let (_s3, _l3) =
+      Relay.SqliteRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"stranger" ()
+    in
+    let _ =
+      Relay.SqliteRelay.join_room t ~visibility:"unlisted" ~alias:"creator"
+        ~room_id:"unl-b230" ()
+    in
+    let _ =
+      Relay.SqliteRelay.join_room t ~alias:"member" ~room_id:"unl-b230" ()
+    in
+    let _ =
+      Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"creator"
+        ~room_id:"priv-b230" ()
+    in
+    let anon = room_ids (Relay.SqliteRelay.list_rooms t) in
+    if List.mem "unl-b230" anon then
+      fail_fmt "sqlite: anonymous list must not show unlisted room";
+    if List.mem "priv-b230" anon then
+      fail_fmt "sqlite: anonymous list must not show private room";
+    let as_creator = room_ids (Relay.SqliteRelay.list_rooms ~for_alias:"creator" t) in
+    if not (List.mem "unl-b230" as_creator) then
+      fail_fmt "sqlite: creator must see unlisted room they created";
+    if List.mem "priv-b230" as_creator then
+      fail_fmt "sqlite: private room must stay hidden even for creator";
+    let as_member = room_ids (Relay.SqliteRelay.list_rooms ~for_alias:"member" t) in
+    if not (List.mem "unl-b230" as_member) then
+      fail_fmt "sqlite: non-creator member must see unlisted room they joined";
+    let as_stranger = room_ids (Relay.SqliteRelay.list_rooms ~for_alias:"stranger" t) in
+    if List.mem "unl-b230" as_stranger then
+      fail_fmt "sqlite: non-member must not see unlisted room")
+
 (* New cell coverage (Sqlite): gated listed + invite-gated; unlisted open-join
    not listed; private invite-gated not listed. *)
 let test_relay_join_gating_sqlite () =
@@ -1122,6 +1204,7 @@ let tests = [
   (* room visibility: public / unlisted / gated / private (4-level) *)
   "relay canonical_visibility normalizes", test_relay_canonical_visibility_normalizes;
   "relay list_rooms omits non-public", test_relay_list_rooms_omits_nonpublic;
+  "relay list_rooms unlisted visible to members (B230)", test_relay_list_rooms_unlisted_visible_to_members;
   "relay join gating (inmemory)", test_relay_join_gating_inmemory;
   "relay knock storage (inmemory)", test_relay_knock_storage_inmemory;
   "relay knock eligibility (inmemory)", test_relay_knock_eligibility_inmemory;
@@ -1129,6 +1212,7 @@ let tests = [
   "relay join visibility not overridden after create", test_relay_join_visibility_not_overridden_after_create;
   "relay set_room_visibility unlists/relists", test_relay_set_visibility_unlists_and_relists;
   "relay sqlite list_rooms omits non-public", test_relay_sqlite_list_rooms_omits_nonpublic;
+  "relay sqlite list_rooms unlisted visible to members (B230)", test_relay_sqlite_list_rooms_unlisted_visible_to_members;
   "relay sqlite join gating", test_relay_join_gating_sqlite;
   "relay sqlite join visibility + set", test_relay_sqlite_join_visibility_and_set;
   "relay sqlite knock storage persists", test_relay_sqlite_knock_storage_persists;

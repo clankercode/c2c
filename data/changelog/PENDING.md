@@ -11,6 +11,13 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B230: `c2c relay rooms list` shows unlisted rooms to members.** Anonymous
+  `/list_rooms` still returns only public + gated. With a verified Ed25519
+  identity (`--alias` or auto-alias env), the directory also includes unlisted
+  rooms that identity has joined. Non-members still cannot discover unlisted
+  rooms; private rooms remain unlisted. Creator and non-creator members are
+  treated equally.
+
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

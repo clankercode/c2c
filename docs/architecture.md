@@ -119,7 +119,7 @@ and [Cross-Machine Broker](/cross-machine-broker/) for the design.
 | `send_room`         | Broadcast to all room members; appends to room history                                   |
 | `room_history`      | Fetch the last N messages from a room's history                                          |
 | `my_rooms`          | List rooms this session belongs to                                                      |
-| `list_rooms`        | List discoverable rooms: `public`/`gated` listed for everyone (gated roster redacted to non-members); `unlisted`/`private` are never listed and stay reachable only by room id |
+| `list_rooms`        | List discoverable rooms: `public`/`gated` listed for everyone (gated roster redacted to non-members on the local broker); `unlisted` listed to members only; `private` never listed (reachable by room id) |
 | `prune_rooms`       | Evict dead members from all room member lists (safe while outer loops are running)        |
 | `send_room_invite`  | Invite an alias to a room (required for `gated`/`private` rooms)                          |
 | `knock_room`        | Request to join a `gated` room                                                           |
