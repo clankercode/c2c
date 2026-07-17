@@ -1332,13 +1332,17 @@ module InMemoryRelay : RELAY = struct
   let list_rooms ?for_alias t =
     with_lock t (fun () ->
       Hashtbl.fold (fun room_id members acc ->
-        (* Directory policy (B230):
+        (* Directory policy (B230 + B229):
            - public / gated: always listed (anonymous directory).
-           - unlisted: listed only when [for_alias] is a current member.
+           - unlisted: listed only when [for_alias] is a current member (B230).
            - private: never listed on this surface (reachable by id only).
+           - gated roster redacted on this directory surface (B229).
            Absent visibility (legacy in-memory rooms) defaults to public. *)
-        let visibility = match Hashtbl.find_opt t.room_visibility room_id with
-          | Some v -> v | None -> "public" in
+        let visibility =
+          match Hashtbl.find_opt t.room_visibility room_id with
+          | Some v -> canonical_visibility_or_raw v
+          | None -> "public"
+        in
         let include_room =
           match visibility with
           | "public" | "gated" -> true
@@ -1357,15 +1361,24 @@ module InMemoryRelay : RELAY = struct
         if not include_room then acc
         else if not (valid_relay_room_id room_id) then acc
         else
+          (* B229: /list_rooms is anonymous (no caller identity). Align with
+             local-broker 4-level list_rooms: public rooms expose presentation
+             roster addresses; gated rooms stay discoverable (room_id +
+             member_count) but roster is redacted so non-members cannot
+             enumerate membership. Stored membership stays raw for checks. *)
+          let members_json =
+            if visibility = "gated" then `List []
+            else
+              `List
+                (List.map
+                   (fun a ->
+                     `String (format_room_roster_address ~alias:a ~room_id))
+                   members)
+          in
           `Assoc [
             ("room_id", `String room_id);
             ("member_count", `Int (List.length members));
-            (* B118: directory boundary — expose members as presentation-only
-               alias#room@relay recipient addresses, never bare aliases or
-               lease/host metadata. Stored membership ([members]) stays raw
-               for membership checks and delivery. *)
-            ("members", `List (List.map (fun a ->
-               `String (format_room_roster_address ~alias:a ~room_id)) members));
+            ("members", members_json);
           ] :: acc
       ) t.rooms []
     )
@@ -2776,21 +2789,18 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = Sqlite3.db_open t.db_path in
       let rooms = ref [] in
-      (* Directory policy (B230):
+      (* Directory policy (B230 + B229):
          - anonymous: public + gated only.
          - with for_alias: also unlisted rooms where that alias is a member.
-         private rooms stay omitted (reachable by id only). *)
+         private rooms stay omitted. Gated roster redacted (B229). *)
       let stmt =
         match for_alias with
         | None ->
             Sqlite3.prepare conn
-              "SELECT room_id FROM rooms WHERE visibility IN ('public','gated')"
+              "SELECT room_id, visibility FROM rooms WHERE visibility IN ('public','gated')"
         | Some _ ->
             Sqlite3.prepare conn
-              "SELECT room_id FROM rooms WHERE visibility IN ('public','gated') \
-               OR (visibility = 'unlisted' AND EXISTS ( \
-                 SELECT 1 FROM room_members m \
-                 WHERE m.room_id = rooms.room_id AND m.alias = ?))"
+              "SELECT room_id, visibility FROM rooms WHERE visibility IN ('public','gated')                OR (visibility = 'unlisted' AND EXISTS (                  SELECT 1 FROM room_members m                  WHERE m.room_id = rooms.room_id AND m.alias = ?))"
       in
       (match for_alias with
        | Some alias -> Sqlite3.bind_text stmt 1 alias |> ignore
@@ -2799,6 +2809,10 @@ module SqliteRelay : RELAY = struct
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
           let room_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+          let visibility =
+            canonical_visibility_or_raw
+              (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1))
+          in
           (* B118: defensive directory-boundary guard — omit any room whose id
              is out-of-grammar (contains `#`/`@` etc.) so its alias#room@relay
              directory address can never be ambiguous. Covers legacy persisted
@@ -2819,24 +2833,46 @@ module SqliteRelay : RELAY = struct
                | d -> (try int_of_string (Sqlite3.Data.to_string_exn d) with _ -> 0))
             else 0
           in
-          let alias_stmt = Sqlite3.prepare conn "SELECT alias FROM room_members WHERE room_id = ?" in
-          Sqlite3.bind_text alias_stmt 1 room_id |> ignore;
-          let aliases = ref [] in
-          let rec collect_aliases () =
-            let rc3 = Sqlite3.step alias_stmt in
-            if rc3 = Rc.ROW then
-              let alias = Sqlite3.Data.to_string_exn (Sqlite3.column alias_stmt 0) in
-              aliases := alias :: !aliases;
-              collect_aliases ()
-            else if rc3 <> Rc.DONE then
-              failwith ("list_rooms aliases step failed: " ^ Rc.to_string rc3)
+          (* B229: anonymous directory — public rooms expose presentation
+             roster addresses; gated rooms keep room_id + member_count for
+             discovery but redact members (local-broker 4-level parity).
+             room_members rows stay raw for membership checks and delivery. *)
+          let members_json =
+            if visibility = "gated" then `List []
+            else begin
+              let alias_stmt =
+                Sqlite3.prepare conn
+                  "SELECT alias FROM room_members WHERE room_id = ?"
+              in
+              Sqlite3.bind_text alias_stmt 1 room_id |> ignore;
+              let aliases = ref [] in
+              let rec collect_aliases () =
+                let rc3 = Sqlite3.step alias_stmt in
+                if rc3 = Rc.ROW then
+                  let alias =
+                    Sqlite3.Data.to_string_exn (Sqlite3.column alias_stmt 0)
+                  in
+                  aliases := alias :: !aliases;
+                  collect_aliases ()
+                else if rc3 <> Rc.DONE then
+                  failwith
+                    ("list_rooms aliases step failed: " ^ Rc.to_string rc3)
+              in
+              collect_aliases ();
+              `List
+                (List.map
+                   (fun a ->
+                     `String (format_room_roster_address ~alias:a ~room_id))
+                   !aliases)
+            end
           in
-          collect_aliases ();
-          (* B118: directory boundary — expose members as presentation-only
-             alias#room@relay recipient addresses, never bare aliases or
-             lease/host metadata. The room_members rows stay raw for
-             membership checks and delivery. *)
-          rooms := `Assoc [("room_id", `String room_id); ("member_count", `Int member_count); ("members", `List (List.map (fun a -> `String (format_room_roster_address ~alias:a ~room_id)) !aliases))] :: !rooms;
+          rooms :=
+            `Assoc
+              [ ("room_id", `String room_id)
+              ; ("member_count", `Int member_count)
+              ; ("members", members_json)
+              ]
+            :: !rooms;
           loop ()
         else if rc <> Rc.DONE then
           failwith ("list_rooms step failed: " ^ Rc.to_string rc)

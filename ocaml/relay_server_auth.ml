@@ -45,11 +45,12 @@ type route_class =
 
 (* /list_rooms is a read-only directory: anonymous callers see public + gated
    rooms; an optional verified Ed25519 identity expands the directory with
-   unlisted rooms that identity is a member of (B230). The route stays
-   anonymous-read so missing credentials still return the public directory.
-   /room_history is allowed through here because the handler applies per-room
-   visibility: public and unlisted rooms remain open-read, while gated/private
-   rooms require a verified Ed25519 member alias. *)
+   unlisted rooms that identity is a member of (B230). Public rows include
+   presentation rosters; gated rows keep room_id + member_count but redact
+   members (B229). The route stays anonymous-read so missing credentials still
+   return the public directory. /room_history is allowed through here because
+   the handler applies per-room visibility: public and unlisted rooms remain
+   open-read, while gated/private rooms require a verified Ed25519 member alias. *)
 let anonymous_read_routes =
   ["/"; "/health"; "/stats"; "/list_rooms"; "/room_history"; "/device-login"]
 

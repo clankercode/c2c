@@ -42,6 +42,11 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
   `--room`. `set-visibility` accepts `--set`/`-s` as aliases for
   `--visibility`, and local `rooms visibility` accepts `--visibility` as an
   alias for `--set`.
+- **B229: relay `/list_rooms` no longer leaks gated-room member rosters.** The
+  anonymous directory still lists `public` + `gated` rooms with `room_id` and
+  `member_count`, but gated rows redact `members` to `[]` (local-broker 4-level
+  non-member parity). Public room presentation rosters (`alias#room@relay`) are
+  unchanged.
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

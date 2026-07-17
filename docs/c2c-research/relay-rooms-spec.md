@@ -210,8 +210,11 @@ below and rejects anything else with
 - Relay `list_rooms` is anonymously readable for the public directory
   (`public` + `gated`). When the request carries a verified Ed25519 identity,
   the directory also includes `unlisted` rooms that identity is a current
-  member of (B230). It still has no full caller context for gated roster
-  redaction (see B229).
+  member of (B230). Each row includes `room_id` and `member_count`. **Public**
+  (and member-visible unlisted) rooms include a presentation-only `members`
+  list (`alias#room@relay`). **Gated** rooms redact `members` to `[]` on this
+  surface (B229 — same non-member roster redaction as local-broker 4-level
+  `list_rooms`).
 - **Read-gate (`/room_history`):** `public` and `unlisted` rooms are
   **open-read** — any caller may read history. `gated` and `private` rooms
   are **member-gated** — the relay requires a verified member alias before
