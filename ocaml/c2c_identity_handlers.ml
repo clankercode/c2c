@@ -39,10 +39,22 @@ let register ~broker ~session_id_override ~arguments =
          that differs from the existing registration is refused (sticky
          alias) — start a fresh session for a new name.
          When reusing an existing alias we skip the blocklist, because the
-         alias was already validated at first registration. *)
+         alias was already validated at first registration.
+         B240: explicit same-alias re-register (PID refresh) may restate a
+         reserved client-prefix name this session already holds — also skip
+         the blocklist so sticky same-alias refresh is not a dead-end. *)
       let alias, alias_from_auto_gen =
         match explicit_alias with
-        | Some a -> (a, false)  (* explicit request — sticky check below; enforce blocklist *)
+        | Some a ->
+            let already_holds =
+              List.exists
+                (fun reg ->
+                  reg.session_id = session_id
+                  && Broker.alias_casefold reg.alias = Broker.alias_casefold a)
+                (Broker.list_registrations broker)
+            in
+            (* already_holds → skip blocklist; otherwise enforce it. *)
+            (a, already_holds)
         | None ->
             let existing =
               List.find_opt

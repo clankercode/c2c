@@ -2286,8 +2286,22 @@ open C2c_mcp_helpers
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
-    if (not from_auto_gen) && is_banned_alias alias then
-      invalid_arg (C2c_blocklist.blocked_alias_error alias);
+    (* User-supplied blocked-prefix check. Auto-gen names (codex-…, kimi-…)
+       bypass via [~from_auto_gen:true]. B240: same-alias re-register (PID
+       refresh) may restate a reserved client-prefix alias this session
+       already holds — skip the blocklist then so sticky same-alias refresh
+       is not a dead-end after auto-registration. *)
+    if (not from_auto_gen) && is_banned_alias alias then begin
+      let already_holds =
+        List.exists
+          (fun reg ->
+            reg.session_id = session_id
+            && alias_casefold reg.alias = alias_casefold alias)
+          (list_registrations t)
+      in
+      if not already_holds then
+        invalid_arg (C2c_blocklist.blocked_alias_error alias)
+    end;
     if not (C2c_name.is_valid alias) then
       invalid_arg (Printf.sprintf "register rejected: %s"
         (C2c_name.error_message "alias" alias));
