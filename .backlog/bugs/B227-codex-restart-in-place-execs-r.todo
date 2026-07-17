@@ -1,16 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T14:36:39Z"
 depends_on: []
 estimate_hours: 1
 id: B227
 priority: high
+started_at: null
 status: pending
-tags:
-    - codex
-    - app-server
-    - restart
-    - delivery
+tags: []
 title: 'codex restart-in-place execs resume on an unpersisted thread id: ''No saved session found'', then DEGRADED delivery loop (no frontend thread)'
 updated_at: "2026-07-17T14:36:39Z"
 ---
@@ -36,3 +34,5 @@ restart-in-place (c2c_codex_session.ml, restart_executable/thread_id branch) tru
 - Re-verify B224 preflight coverage: handshake still failed at launch in both panes.
 
 Screenshot of both panes captured in session 5d699ec4 (image cache 1.png). Repro likely: launch managed codex, let MCP handshake fail / run zero turns, then trigger restart-in-place.
+
+UPDATE 2026-07-18 (Max): the ~00:33 restart-in-place was triggered by the restart offer from 'just bi' — install-all runs scripts/c2c-post-install-restart-prompt.sh, which on yes runs 'c2c restart-stale' (I010). Max accepted the prompt deliberately to see what happens; he does not normally take the restart. So the open question about the trigger is resolved: restart-stale drove each managed app-server instance through the restart-in-place path, which then exec'd resume on the unpersisted (zero-turn) thread id and hard-failed. Implication: restart-stale must be safe on idle zero-turn sessions — this repro is exactly the rolling-restart path I010/I011 need to survive. Also means the relaunched binary WAS current, so the recurring MCP handshake failure at 20:36 launch happened on the pre-install binary; check whether the B224 preflight covers a server crashing during initialize.
