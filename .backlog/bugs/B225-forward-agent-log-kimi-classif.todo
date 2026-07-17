@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-17T13:29:38Z"
+depends_on: []
+estimate_hours: 1
+id: B225
+priority: high
+status: pending
+tags: []
+title: 'forward-agent-log: kimi classifier only knows legacy ~/.kimi transcript layout'
+updated_at: "2026-07-17T13:29:38Z"
+---
+c2c forward-agent-log's kimi path detection and classifier assume the legacy kimi-cli layout (~/.kimi/sessions/<project>/<uuid>/context.jsonl; see ocaml/cli/c2c_forward_agent_log.ml:193,368 and help text in c2c_forward_agent_log_cmd.ml:351). After the B146 re-enable (merge 6dd8c107), Kimi Code 0.23+ state lives under ~/.kimi-code/ with session_<uuid> ids. Verify where Kimi Code writes session transcripts (wire files / session dirs) and teach the kimi classifier the new layout, or document that forward-agent-log kimi only supports legacy kimi-cli. Help text must match whatever the code supports.
