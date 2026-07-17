@@ -714,7 +714,10 @@ let native_session_id_env_keys = function
   | "grok" -> [ "GROK_SESSION_ID" ]
   (* Antigravity (agy): conversation id is the stable session key hooks use. *)
   | "agy" -> [ "ANTIGRAVITY_CONVERSATION_ID" ]
-  | "kimi" | "crush" | "codex-headless" -> []
+  (* Kimi Code: managed `c2c start kimi` exports KIMI_SESSION_ID; unmanaged
+     sessions usually lack it and resolve via session_index (B233). *)
+  | "kimi" -> [ "KIMI_SESSION_ID" ]
+  | "crush" | "codex-headless" -> []
   | _ -> []
 
 let truthy_env_flag = function
@@ -832,6 +835,97 @@ let session_id_from_grok_active_sessions () =
          | [] -> None)
     | _ -> None
 
+(* B233: Kimi Code does not inject a per-session id into mcp.json env (one
+   global ~/.kimi-code/mcp.json serves every session). SessionStart hooks
+   register the real Kimi session id (`session_<uuid>`) from the hook payload;
+   MCP must resolve the same id so whoami/send land on the hook identity.
+
+   Discovery mirrors C2c_kimi_deliver.session_id_for_workdir (kept local to
+   avoid a module cycle with post_broker ↔ c2c_mcp ↔ kimi_deliver):
+   read ~/.kimi-code/session_index.jsonl and pick the most recent entry whose
+   workDir matches this process cwd. Override home via KIMI_CODE_HOME. *)
+let kimi_code_home_for_session_index () =
+  match Sys.getenv_opt "KIMI_CODE_HOME" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+      let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+      Filename.concat home ".kimi-code"
+
+let kimi_session_index_path () =
+  Filename.concat (kimi_code_home_for_session_index ()) "session_index.jsonl"
+
+let session_id_from_kimi_session_index ?workdir () =
+  let workdir =
+    match workdir with
+    | Some w ->
+        let w = String.trim w in
+        if w <> "" then w else (try Sys.getcwd () with Sys_error _ -> "")
+    | None -> (try Sys.getcwd () with Sys_error _ -> "")
+  in
+  if workdir = "" then None
+  else
+    let path = kimi_session_index_path () in
+    if not (Sys.file_exists path) then None
+    else
+      let entries =
+        try
+          let ic = open_in path in
+          Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+            let rec loop acc =
+              match input_line ic with
+              | line ->
+                  let parsed =
+                    try
+                      match Yojson.Safe.from_string line with
+                      | `Assoc fields ->
+                          let sid =
+                            match List.assoc_opt "sessionId" fields with
+                            | Some (`String s) when String.trim s <> "" ->
+                                Some (String.trim s)
+                            | _ -> None
+                          in
+                          let wd =
+                            match List.assoc_opt "workDir" fields with
+                            | Some (`String s) -> String.trim s
+                            | _ -> ""
+                          in
+                          let updated =
+                            match List.assoc_opt "updated_at" fields with
+                            | Some (`String s) -> String.trim s
+                            | _ -> ""
+                          in
+                          (match sid with
+                           | Some sid when wd = workdir -> Some (sid, updated)
+                           | _ -> None)
+                      | _ -> None
+                    with _ -> None
+                  in
+                  (match parsed with
+                   | Some row -> loop (row :: acc)
+                   | None -> loop acc)
+              | exception End_of_file -> acc
+            in
+            loop [])
+        with _ -> []
+      in
+      match entries with
+      | [] -> None
+      | _ ->
+          (* Prefer non-empty updated_at (newest first); else last append for
+             this workdir — session_index.jsonl is append-only. *)
+          let with_ts, without_ts =
+            List.partition (fun (_, ts) -> ts <> "") entries
+          in
+          let sorted =
+            List.sort (fun (_, a) (_, b) -> String.compare b a) with_ts
+          in
+          (match sorted with
+           | (sid, _) :: _ -> Some sid
+           | [] ->
+               (match without_ts with
+                | (sid, _) :: _ -> Some sid
+                | [] -> None))
+
 let session_id_from_env ?client_type () =
   match first_nonempty_env [ "C2C_MCP_SESSION_ID" ] with
   | Some session_id ->
@@ -857,7 +951,16 @@ let session_id_from_env ?client_type () =
              | Some "grok" -> true
              | _ -> grok_agent_env_present ()
            in
-           if want_grok then session_id_from_grok_active_sessions () else None)
+           if want_grok then session_id_from_grok_active_sessions ()
+           else
+             (* B233: Kimi MCP has no per-session C2C_MCP_SESSION_ID in the
+                global mcp.json; resolve via session_index for this cwd. *)
+             let want_kimi =
+               match resolved_client_type with
+               | Some "kimi" -> true
+               | _ -> false
+             in
+             if want_kimi then session_id_from_kimi_session_index () else None)
 
 let current_session_id () =
   session_id_from_env ()
@@ -1307,8 +1410,8 @@ let pop_channel_test_code () =
   value
 
 (* B119: any same-session hook auto-registration (pid=None,
-   registered_by="claude-hook"/"codex-hook"), alias-agnostic. Shared by
-   [auto_register_impl] (adopt-or-skip) and [auto_join_rooms_impl]
+   registered_by="claude-hook"/"codex-hook"/"kimi-hook"), alias-agnostic.
+   Shared by [auto_register_impl] (adopt-or-skip) and [auto_join_rooms_impl]
    (conflict → no room joins as the hook identity). *)
 let same_session_hook_identity_row ~existing ~session_id =
   List.find_opt
@@ -1372,10 +1475,10 @@ let auto_register_impl ~broker_root ?session_id_override () =
          CLAUDE_SESSION_ID from a running Claude Code session but has a
          different C2C_MCP_AUTO_REGISTER_ALIAS configured. *)
       let existing = Broker.list_registrations broker in
-      (* B119: hook auto-registrations are the identity authority for their
-         session_id. The SessionStart hooks (`c2c hook claude` / `c2c hook
-         codex`) register a fresh per-session alias (pid=None,
-         registered_by="claude-hook"/"codex-hook") and bake it into the
+      (* B119 / B233: hook auto-registrations are the identity authority for
+         their session_id. The SessionStart hooks (`c2c hook claude` /
+         `c2c hook codex` / `c2c hook kimi`) register a fresh per-session
+         alias (pid=None, registered_by="*-hook") and bake it into the
          injected onboarding context BEFORE the MCP server connects. The MCP
          env alias (C2C_MCP_AUTO_REGISTER_ALIAS) is static — picked once at
          `c2c install` time — so registering it here would clobber the alias
@@ -1383,6 +1486,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
          alias bounce). Guards 1–4 all deliberately exclude pid=None rows
          (#345 post-OOM semantics), so without this adoption the hook row
          protects nothing and last-writer-wins.
+
 
          Resolution: ADOPT the hook row's alias (the register below then
          updates that row in place, upgrading it with our live pid, keys and
@@ -1702,7 +1806,17 @@ let resolve_session_id ?session_id_override arguments =
        | None ->
            (match current_session_id () with
             | Some session_id -> session_id
-            | None -> invalid_arg "missing session_id"))
+            | None ->
+                (* Align with auto_register_impl / auto_join_rooms_impl: when
+                   C2C_MCP_SESSION_ID (and client-native fallbacks) are absent
+                   but install left C2C_MCP_AUTO_REGISTER_ALIAS, derive the
+                   session id from the alias. Without this, MCP whoami/send
+                   hard-fail with "missing session_id" while auto-register
+                   still succeeds under the derived id (B233). Prefer real
+                   client session keys above; this is last-resort only. *)
+                (match auto_register_alias () with
+                 | Some alias -> derived_session_id_from_alias alias
+                 | None -> invalid_arg "missing session_id")))
 
 (* [#432 §3] [with_session] — kills the 14× resolve+touch boilerplate.
    Resolves the session id (honoring the `session_id` argument > override

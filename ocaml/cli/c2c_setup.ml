@@ -769,9 +769,11 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen exi
               inside kimi. Without this, a `kimi` launched from a Claude Code
               shell inherits CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID, infers
               "claude", and hijacks the parent Claude session's identity/inbox
-              (storm-beacon kimi-session-hijack finding). kimi has no native
-              session-id key, so pinning yields the safe derived-from-alias
-              session id. *)
+              (storm-beacon kimi-session-hijack finding). Do NOT write a static
+              C2C_MCP_SESSION_ID here — one global mcp.json serves every Kimi
+              session. MCP resolves the live id via KIMI_SESSION_ID (managed)
+              or ~/.kimi-code/session_index.jsonl for this cwd (B233), then
+              adopts the kimi-hook SessionStart registration. *)
            ; ("C2C_MCP_CLIENT_TYPE", `String "kimi")
            ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
            ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))

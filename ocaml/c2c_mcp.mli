@@ -853,8 +853,10 @@ val resolve_session_id :
   ?session_id_override:string -> Yojson.Safe.t -> string
 (** [resolve_session_id ?session_id_override arguments] returns the session
     id from (in order) the [session_id] string field of [arguments], the
-    [session_id_override] (typically the per-RPC env-derived id), or
-    [current_session_id ()]. Raises [Invalid_argument "missing session_id"]
+    [session_id_override] (typically the per-RPC env-derived id),
+    [current_session_id ()], or — last resort — the install-time
+    [C2C_MCP_AUTO_REGISTER_ALIAS] derived as a session id (aligned with
+    [auto_register_impl]; B233). Raises [Invalid_argument "missing session_id"]
     when no source resolves. Exposed for [#432 §3] — keeps the resolution
     contract testable. *)
 
@@ -890,7 +892,17 @@ val inferred_client_type_from_env : unit -> string option
 
 val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers
-    explicit c2c-managed ids and falls back to harness-native ids when safe. *)
+    explicit c2c-managed ids and falls back to harness-native ids when safe.
+    For [client_type=kimi] without [KIMI_SESSION_ID], falls back to the most
+    recent [~/.kimi-code/session_index.jsonl] entry for this process cwd (B233). *)
+
+val session_id_from_kimi_session_index :
+  ?workdir:string -> unit -> string option
+(** [session_id_from_kimi_session_index ?workdir ()] returns the most recent
+    Kimi Code session id for [workdir] (default: [Sys.getcwd ()]) from
+    [~/.kimi-code/session_index.jsonl] (or [$KIMI_CODE_HOME]). Exposed for
+    B233 tests; production callers use [session_id_from_env]. *)
+
 val auto_register_startup : broker_root:string -> unit
 val auto_join_rooms_startup : broker_root:string -> unit
 val pop_channel_test_code : unit -> string option

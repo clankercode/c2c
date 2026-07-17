@@ -11,6 +11,13 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B233: Kimi MCP whoami/send no longer fail with `missing session_id`.**
+  Global `~/.kimi-code/mcp.json` correctly omits a static `C2C_MCP_SESSION_ID`
+  (one config serves every session). The MCP server now resolves the live Kimi
+  id via `KIMI_SESSION_ID` or `~/.kimi-code/session_index.jsonl` for the process
+  cwd, adopts `registered_by=kimi-hook` SessionStart identities, and falls back
+  to the install-time auto-register alias only when no session key is available.
+
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.
