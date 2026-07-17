@@ -47,6 +47,12 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
   `member_count`, but gated rows redact `members` to `[]` (local-broker 4-level
   non-member parity). Public room presentation rosters (`alias#room@relay`) are
   unchanged.
+- **B237: relay HTTP 429 no longer surfaces a schema double-error.** Clients
+  now treat error-shaped non-2xx bodies that omit `ok:false` (historical
+  production rate-limit shape `{"error":"rate_limit_exceeded","retry_after":N}`)
+  as a single clean `rate_limit_exceeded` with `retry_after` preserved, instead
+  of `http_error_429` + "body did not report ok:false". The relay server also
+  emits the standard `ok:false` / `error_code` envelope for rate limits.
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

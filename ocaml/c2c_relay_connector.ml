@@ -1483,17 +1483,59 @@ module Relay_client = struct
       ("error", `String msg);
     ]
 
-  (* H10 (Q1-DEFECT-1): reconcile the parsed body with the HTTP status
-     line — port of the H7 contract from relay_client.ml. A non-2xx status
-     can NEVER yield ok:true (pre-fix, an HTTP 500 with a dishonest
-     {"ok":true} body made `relay connect --once` report success/exit 0).
-     An honest ok:false object body passes through — its own error_code
-     wins, which is what keeps the PoW/rate-limit helpers working: an
-     honest 429 pow_required / rate_limit_exceeded body reaches
+  (* H10 (Q1-DEFECT-1) + B237: reconcile the parsed body with the HTTP
+     status line — port of the H7/B237 contract from relay_client.ml. A
+     non-2xx status can NEVER yield ok:true (pre-fix, an HTTP 500 with a
+     dishonest {"ok":true} body made `relay connect --once` report
+     success/exit 0). An honest ok:false object body passes through — its
+     own error_code wins, which is what keeps the PoW/rate-limit helpers
+     working: an honest 429 pow_required / rate_limit_exceeded body reaches
      Pow_client.is_pow_required and response_is_rate_limited unchanged
-     apart from the appended http_status annotation. Anything else on a
-     non-2xx is overridden with http_error_<code>, preserving the
-     offending body under relay_response. 2xx bodies are untouched. *)
+     apart from the appended http_status annotation. Error-shaped bodies
+     that omit ok:false (B237 historical rate-limit shape) are normalized
+     to ok:false with promoted error_code rather than schema-complaint
+     double-errors. Anything else on a non-2xx is overridden with
+     http_error_<code>, preserving the offending body under relay_response.
+     2xx bodies are untouched. *)
+  let error_shaped_fields fields =
+    if List.assoc_opt "ok" fields = Some (`Bool true) then false
+    else
+      match List.assoc_opt "error_code" fields, List.assoc_opt "error" fields with
+      | Some (`String _), _ | _, Some (`String _) -> true
+      | _ -> false
+
+  let normalize_error_shaped ~status fields =
+    let fields =
+      List.filter (fun (k, _) -> k <> "ok" && k <> "http_status") fields
+    in
+    let error_code =
+      match List.assoc_opt "error_code" fields with
+      | Some (`String c) -> Some c
+      | _ ->
+          (match List.assoc_opt "error" fields with
+           | Some (`String c) -> Some c
+           | _ -> None)
+    in
+    let error_msg =
+      match List.assoc_opt "error" fields with
+      | Some (`String e) -> Some e
+      | _ -> error_code
+    in
+    let fields =
+      List.filter (fun (k, _) -> k <> "error_code" && k <> "error") fields
+    in
+    let fields =
+      (match error_code with
+       | Some c -> ("error_code", `String c) :: fields
+       | None -> fields)
+    in
+    let fields =
+      (match error_msg with
+       | Some e -> ("error", `String e) :: fields
+       | None -> fields)
+    in
+    `Assoc (("ok", `Bool false) :: fields @ [ ("http_status", `Int status) ])
+
   let reconcile_status ~status body =
     if status >= 200 && status < 300 then body
     else
@@ -1501,6 +1543,8 @@ module Relay_client = struct
       | `Assoc fields when List.assoc_opt "ok" fields = Some (`Bool false) ->
           let fields = List.filter (fun (k, _) -> k <> "http_status") fields in
           `Assoc (fields @ [ ("http_status", `Int status) ])
+      | `Assoc fields when error_shaped_fields fields ->
+          normalize_error_shaped ~status fields
       | dishonest ->
           `Assoc [
             ("ok", `Bool false);

@@ -27,8 +27,14 @@ module Relay_client : sig
       - non-2xx with an honest ["ok": false] object body: the body passes
         through (its own [error_code]/[error] win) annotated with
         ["http_status": <code>].
-      - non-2xx whose body does NOT report ["ok": false] (claims success,
-        lacks [ok], or is not an object): overridden with ["ok": false,
+      - non-2xx with an error-shaped object that omitted ["ok": false]
+        (B237 — e.g. production rate-limit
+        [{"error":"rate_limit_exceeded","retry_after":N}]): normalized to
+        ["ok": false] with [error_code]/[error] promoted from the body;
+        extra fields (e.g. [retry_after]) are preserved. Not wrapped in a
+        schema-complaint [http_error_<code>] double-error.
+      - non-2xx whose body claims success, lacks any error name, or is not
+        an object: overridden with ["ok": false,
         "error_code": "http_error_<code>", "http_status": <code>] and the
         offending body preserved under ["relay_response"] — the status
         line always wins over a dishonest body.
@@ -361,11 +367,58 @@ end = struct
         incompatible_error ~url:t.base_url ~compat ()
     | Compatible | Unknown -> health_json
 
-  (* Reconcile the parsed body with the HTTP status line (H7): a non-2xx
-     status can NEVER yield ok:true. An honest ok:false object body passes
-     through (its own error_code wins — the fault matrix pins 401/429/500
-     cells on the body's code) annotated with http_status; anything else on
-     a non-2xx is overridden, preserving the body under relay_response. *)
+  (* B237: non-2xx object already names an error via [error]/[error_code]
+     strings but omitted ["ok": false] (historical production rate-limit body
+     was [{"error":"rate_limit_exceeded","retry_after":N}]). Treat as error-
+     shaped, not schema-dishonest — normalize to the honest envelope so
+     callers see a single clean code (and preserve retry_after etc.). Bodies
+     that claim ["ok": true] stay dishonest and hit the override path. *)
+  let error_shaped_fields fields =
+    if List.assoc_opt "ok" fields = Some (`Bool true) then false
+    else
+      match List.assoc_opt "error_code" fields, List.assoc_opt "error" fields with
+      | Some (`String _), _ | _, Some (`String _) -> true
+      | _ -> false
+
+  let normalize_error_shaped ~status fields =
+    let fields =
+      List.filter (fun (k, _) -> k <> "ok" && k <> "http_status") fields
+    in
+    let error_code =
+      match List.assoc_opt "error_code" fields with
+      | Some (`String c) -> Some c
+      | _ ->
+          (match List.assoc_opt "error" fields with
+           | Some (`String c) -> Some c
+           | _ -> None)
+    in
+    let error_msg =
+      match List.assoc_opt "error" fields with
+      | Some (`String e) -> Some e
+      | _ -> error_code
+    in
+    let fields =
+      List.filter (fun (k, _) -> k <> "error_code" && k <> "error") fields
+    in
+    let fields =
+      (match error_code with
+       | Some c -> ("error_code", `String c) :: fields
+       | None -> fields)
+    in
+    let fields =
+      (match error_msg with
+       | Some e -> ("error", `String e) :: fields
+       | None -> fields)
+    in
+    `Assoc (("ok", `Bool false) :: fields @ [ ("http_status", `Int status) ])
+
+  (* Reconcile the parsed body with the HTTP status line (H7 + B237): a
+     non-2xx status can NEVER yield ok:true.
+     - Honest ok:false object: pass through (own error_code wins — the fault
+       matrix pins 401/429/500 cells on the body's code) + http_status.
+     - Error-shaped object missing ok:false (B237): normalize to ok:false
+       with promoted error_code/error; preserve other fields (retry_after).
+     - Anything else on a non-2xx: override, body under relay_response. *)
   let reconcile_status ~status body =
     if status >= 200 && status < 300 then body
     else
@@ -373,6 +426,8 @@ end = struct
       | `Assoc fields when List.assoc_opt "ok" fields = Some (`Bool false) ->
           let fields = List.filter (fun (k, _) -> k <> "http_status") fields in
           `Assoc (fields @ [ ("http_status", `Int status) ])
+      | `Assoc fields when error_shaped_fields fields ->
+          normalize_error_shaped ~status fields
       | dishonest ->
           `Assoc [
             ("ok", `Bool false);

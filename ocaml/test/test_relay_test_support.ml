@@ -331,7 +331,17 @@ let write_file path s =
 let sm_session = "sess-f5c-sm"
 let sm_alias = "f5c-sm-probe"
 
+(* Connector sync only acts on eligible registrations (live PID + matching
+   start-time, or recent hook activity). Bare session_id/alias rows are
+   skipped as historical (7a04496f) — without pid evidence the H10/B237
+   connector cases would no-op with last_error=None. *)
 let write_registry broker_root =
+  let pid = Unix.getpid () in
+  let pid_start =
+    match C2c_relay_connector.read_pid_start_time_local pid with
+    | Some n -> n
+    | None -> 0
+  in
   write_file
     (Filename.concat broker_root "registry.json")
     (Yojson.Safe.to_string
@@ -340,6 +350,8 @@ let write_registry broker_root =
              [ ("session_id", `String sm_session);
                ("alias", `String sm_alias);
                ("client_type", `String "test");
+               ("pid", `Int pid);
+               ("pid_start_time", `Int pid_start);
              ];
          ]))
 
@@ -818,7 +830,8 @@ let test_connector_pow_and_rate_limit_flows_preserved () =
          as pow_actor_id_missing — proof the challenge was RECOGNIZED
          (a broken passthrough would surface raw pow_required instead).
      (b) An honest 429 rate_limit_exceeded still trips
-         response_is_rate_limited -> a Broadcast alert is emitted. *)
+         response_is_rate_limited -> sync_result.rate_limited (B222:
+         connector-wide rate-limit is Connector_log, not inbox Broadcast). *)
   let pow_challenge =
     {|{"ok":false,"error_code":"pow_required","error":"pow required",|}
     ^ {|"required":{"difficulty":8,"epoch":1,"server_nonce":"sn","ctx":"c2c-relay-pow-v1"}}|}
@@ -848,11 +861,38 @@ let test_connector_pow_and_rate_limit_flows_preserved () =
           let t = make_connector ~relay_url:(S.url srv) ~broker_root in
           let (r : C2c_relay_connector.sync_result) = run_sync t in
           check (list string) "nothing registered" [] r.registered;
-          check bool "honest 429 still detected as rate-limited (alert)" true
-            (r.alerts_emitted >= 1);
+          check bool "honest 429 still detected as rate-limited" true
+            r.C2c_relay_connector.rate_limited;
           let detail = last_error_detail r in
           check bool "own error_code wins (rate_limit_exceeded)" true
-            (contains_substr ~sub:"rate_limit_exceeded" detail)))
+            (contains_substr ~sub:"rate_limit_exceeded" detail)));
+  (* B237: production-shaped body without ok:false must normalize, trip
+     response_is_rate_limited, preserve retry_after, and never emit the
+     schema-complaint double-error text. *)
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response ~status:429
+            {|{"error":"rate_limit_exceeded","retry_after":1.25}|} ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check (list string) "nothing registered on production 429" []
+            r.registered;
+          check bool "production 429 trips rate_limited flag" true
+            r.C2c_relay_connector.rate_limited;
+          let detail = last_error_detail r in
+          check bool "promoted error_code rate_limit_exceeded" true
+            (contains_substr ~sub:"rate_limit_exceeded" detail);
+          check bool "retry_after preserved in detail" true
+            (contains_substr ~sub:"retry_after" detail);
+          check bool "no schema-complaint double-error" false
+            (contains_substr ~sub:"body did not report ok:false" detail);
+          check bool "not http_error_429 for error-shaped body" false
+            (contains_substr ~sub:"http_error_429" detail)))
 
 (* --- pure classifier/hint surfaces vs schema-wrong inputs --- *)
 

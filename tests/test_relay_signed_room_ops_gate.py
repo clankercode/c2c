@@ -67,9 +67,10 @@ class RelayClient:
         data = json.dumps(body or {}).encode() if body is not None else b""
         # The relay applies a per-IP token-bucket rate limit (e.g. /room_history
         # burst 20, refill 1/s). A tight test loop from 127.0.0.1 can exhaust it
-        # and get {"error":"rate_limit_exceeded","retry_after":N} — a harness
-        # artifact, not the behaviour under test. Retry a bounded number of
-        # times, honouring retry_after, so the assertions see the real response.
+        # and get a rate_limit_exceeded body with retry_after (B237: honest
+        # ok:false envelope; older relays omitted ok). A harness artifact, not
+        # the behaviour under test. Retry a bounded number of times, honouring
+        # retry_after, so the assertions see the real response.
         for _attempt in range(8):
             req = urllib.request.Request(url, data=data or None, method=method)
             req.add_header("Content-Type", "application/json")
