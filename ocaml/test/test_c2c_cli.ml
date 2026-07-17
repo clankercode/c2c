@@ -1617,10 +1617,9 @@ let test_install_dry_run_kimi () =
       let content = Fun.protect ~finally:(fun () -> close_in ch)
         (fun () -> really_input_string ch (in_channel_length ch))
       in
-      (* B146: kimi is temporarily disabled — `c2c install kimi` (even
-         --dry-run) refuses with exit 1 before any dry-run output. Assert the
-         refusal while disabled; restore the dry-run mechanics assertions when
-         the flag is flipped back on. *)
+      (* B146 reverted: kimi is re-enabled. The assertions stay flag-aware so
+         the soft-disable toggle (C2c_start.kimi_disabled_for_release) can be
+         flipped again for a future release without rewriting this test. *)
       if C2c_start.kimi_disabled_for_release then begin
         check bool "install kimi --dry-run refuses (disabled)" true (rc <> 0);
         check bool "refusal mentions disabled" true
@@ -2124,9 +2123,9 @@ let test_install_all_dry_run_skips_all_clients_by_default () =
       check bool "opencode is not newly configured" true
         (string_contains content "opencode: [skipped; MCP opt-in"
          || string_contains content "opencode: [configured");
-      (* B146: kimi is dropped from known_clients while disabled, so `install
-         all` neither lists nor configures it. Assert the status line only when
-         re-enabled; while disabled assert kimi is simply absent from the plan. *)
+      (* B146 reverted: kimi is back in known_clients and `install all`
+         configures it. Flag-aware: if the soft-disable toggle is flipped again,
+         kimi is dropped and must be absent from the plan. *)
       if C2c_start.kimi_disabled_for_release then
         check bool "kimi not configured while disabled" false
           (string_contains content "Configuring kimi")
@@ -2207,9 +2206,9 @@ let test_interactive_install_default_skips_all_clients () =
         (string_contains content "[ ] configure codex");
       check bool "OpenCode is unchecked in the default plan" true
         (string_contains content "[ ] configure opencode");
-      (* B146: kimi is dropped from known_clients while disabled, so the
-         interactive plan does not offer it at all. Assert it is unchecked only
-         when re-enabled; while disabled assert it is not offered. *)
+      (* B146 reverted: kimi is back in known_clients, so the interactive
+         plan offers it (unchecked by default). Flag-aware: if the soft-disable
+         toggle is flipped again, kimi must not be offered at all. *)
       if C2c_start.kimi_disabled_for_release then
         check bool "Kimi not offered in the plan while disabled" false
           (string_contains content "configure kimi")
