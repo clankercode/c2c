@@ -222,3 +222,4 @@ bugs:
     - file: B223-didn-t-c2c-list-used-to-show-n.todo
     - file: B224-c2c-new-codex-can-launch-with.todo
     - file: B225-forward-agent-log-kimi-classif.todo
+    - file: B226-ci-build-and-test-red-on-maste.todo
