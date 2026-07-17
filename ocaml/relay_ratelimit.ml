@@ -1,6 +1,12 @@
 (* Rate limiter for M1 relay endpoints.
-   Token-bucket algorithm: each key has a bucket that refills at a constant rate.
-   Allows bursts up to [capacity] but enforces average [refill_rate].
+   Token-bucket algorithm: each (client-key, endpoint-class) pair has a bucket
+   that refills at a constant rate. Allows bursts up to [capacity] but enforces
+   average [refill_rate].
+
+   B243: buckets are keyed by (key, endpoint-class), not key alone. Policy is
+   still frozen at first touch of that class, but different endpoints no longer
+   share one IP-wide bucket or inherit a sibling endpoint's capacity/refill.
+
    Emits structured JSON logs for pair/unpair/handshake events per spec S4b. *)
 
 module TokenBucket : sig
@@ -10,6 +16,8 @@ module TokenBucket : sig
   val touch : t -> unit
   val tokens : t -> float
   val last_seen : t -> float
+  val capacity : t -> float
+  val refill_rate : t -> float
 end = struct
   type t = {
     mutable tokens : float;
@@ -47,45 +55,69 @@ end = struct
 
   let tokens t = t.tokens
   let last_seen t = t.last_seen
+  let capacity t = t.capacity
+  let refill_rate t = t.refill_rate
 end
 
 (* 8-char prefix helper — safe on strings shorter than 8 chars. *)
 let prefix8 s =
   if String.length s >= 8 then String.sub s 0 8 else s
 
-(* Per-endpoint policies. Values are (capacity, refill_rate per second). *)
-let policy_of_endpoint path =
-  let starts_with prefix s =
-    String.length s >= String.length prefix
-    && String.sub s 0 (String.length prefix) = prefix
-  in
+(* Unit separator — not valid in IP addresses or our endpoint-class names. *)
+let bucket_key_sep = "\x1f"
+
+let starts_with prefix s =
+  String.length s >= String.length prefix
+  && String.sub s 0 (String.length prefix) = prefix
+
+(* Per-endpoint classification. Values are (class, capacity, refill_rate/s).
+   Class isolates buckets so first-touch policy of one path cannot poison
+   another. Order matters: longer prefixes (e.g. /send_all) before shorter
+   (/send). *)
+let classify_endpoint path =
   if starts_with "/pubkey" path then
-    Some (100.0, 10.0)  (* generous: burst 100, refill 10/s *)
+    Some ("pubkey", 100.0, 10.0)  (* generous: burst 100, refill 10/s *)
   else if starts_with "/mobile-pair" path then
-    Some (10.0, 0.167)   (* strict: 10/min ≈ 0.167/s *)
+    Some ("mobile-pair", 10.0, 0.167)   (* strict: 10/min ≈ 0.167/s *)
   else if starts_with "/device-pair" path then
-    Some (5.0, 0.083)   (* strict: 5/min ≈ 0.083/s *)
+    Some ("device-pair", 5.0, 0.083)   (* strict: 5/min ≈ 0.083/s *)
   else if starts_with "/observer" path then
-    Some (20.0, 0.333)  (* strict: 20/min ≈ 0.333/s *)
+    Some ("observer", 20.0, 0.333)  (* strict: 20/min ≈ 0.333/s *)
   else if starts_with "/register" path then
-    Some (10.0, 0.5)    (* moderate: 10 burst, 30/min ≈ 0.5/s *)
+    Some ("register", 10.0, 0.5)    (* moderate: 10 burst, 30/min ≈ 0.5/s *)
   else if starts_with "/send_all" path then
-    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
+    Some ("send_all", 20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
   else if starts_with "/send_room" path then
-    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
+    Some ("send_room", 20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
   else if starts_with "/send" path then
-    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
+    Some ("send", 20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
   else if starts_with "/heartbeat" path then
-    Some (30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
+    Some ("heartbeat", 30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
   else if starts_with "/poll_inbox" path then
-    Some (30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
+    Some ("poll_inbox", 30.0, 2.0)     (* frequent: 30 burst, 120/min = 2/s *)
   else if starts_with "/peek_inbox" path then
-    Some (30.0, 2.0)     (* B096: same cadence as poll — a peek-loop watcher
+    Some ("peek_inbox", 30.0, 2.0)     (* B096: same cadence as poll — a peek-loop watcher
                             (B089) must not be able to DoS the relay *)
   else if starts_with "/room_history" path then
-    Some (20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
+    Some ("room_history", 20.0, 1.0)     (* moderate: 20 burst, 60/min = 1/s *)
   else
     None
+
+(* Per-endpoint policies. Values are (capacity, refill_rate per second). *)
+let policy_of_endpoint path =
+  match classify_endpoint path with
+  | Some (_cls, capacity, refill_rate) -> Some (capacity, refill_rate)
+  | None -> None
+
+(** Stable endpoint-class label for [path], or [None] if unmetered. *)
+let endpoint_class_of_path path =
+  match classify_endpoint path with
+  | Some (cls, _, _) -> Some cls
+  | None -> None
+
+(** Compose the hashtbl key for a client key + endpoint class. *)
+let make_bucket_key ~key ~endpoint_class =
+  key ^ bucket_key_sep ^ endpoint_class
 
 (* Structured log emitter for S4b pair/handshake events.
    All identifiers are 8-char prefixes to correlate without leaking full IDs. *)
@@ -120,11 +152,12 @@ module Make () = struct
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
 
   let check t ~(key:string) ~(cost:int) ~(path:string) : [> `Allow | `Deny of float ] =
-    match policy_of_endpoint path with
+    match classify_endpoint path with
     | None -> `Allow
-    | Some (capacity, refill_rate) ->
+    | Some (endpoint_class, capacity, refill_rate) ->
+        let bucket_key = make_bucket_key ~key ~endpoint_class in
         with_lock t (fun () ->
-          match Hashtbl.find_opt t.buckets key with
+          match Hashtbl.find_opt t.buckets bucket_key with
           | Some bucket ->
               let result = TokenBucket.allow bucket ~cost in
               (match result with
@@ -133,9 +166,17 @@ module Make () = struct
               result
           | None ->
               let bucket = TokenBucket.create ~capacity ~refill_rate in
-              Hashtbl.add t.buckets key bucket;
+              Hashtbl.add t.buckets bucket_key bucket;
               TokenBucket.allow bucket ~cost
         )
+
+  (** Test/introspection: look up a bucket by client key + path class. *)
+  let find_bucket t ~key ~path =
+    match endpoint_class_of_path path with
+    | None -> None
+    | Some endpoint_class ->
+        let bucket_key = make_bucket_key ~key ~endpoint_class in
+        with_lock t (fun () -> Hashtbl.find_opt t.buckets bucket_key)
 
   let cleanup t ~older_than =
     with_lock t (fun () ->
@@ -148,4 +189,7 @@ module Make () = struct
       List.iter (fun k -> Hashtbl.remove t.buckets k) !to_remove;
       List.length !to_remove
     )
+
+  let bucket_count t =
+    with_lock t (fun () -> Hashtbl.length t.buckets)
 end
