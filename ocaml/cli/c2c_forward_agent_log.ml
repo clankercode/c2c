@@ -190,35 +190,105 @@ let classify_codex_line (line : string) : (role * string) option =
 (* Kimi transcript classification                                      *)
 (* ------------------------------------------------------------------ *)
 
-(* Kimi Code CLI (~/.kimi/sessions/<project-hash>/<uuid>/context.jsonl,
-   observed live 2026-07): one context entry per line, keyed by "role".
-   - {"role":"user","content":"..."} — human input (string, or text blocks).
-   - {"role":"assistant","content":<string|blocks>,"tool_calls":[...]} —
-     content is the chat text; block lists carry {"type":"think",...}
-     reasoning (NOISE) alongside {"type":"text",...} output.
-   - roles "_system_prompt" / "_checkpoint" / "_usage" / "tool" are
-     machinery. NOISE. *)
+(* Two on-disk layouts (observed live 2026-07):
+
+   1. Legacy kimi-cli context.jsonl
+      (~/.kimi/sessions/<project-hash>/<uuid>/context.jsonl):
+      one context entry per line, keyed by top-level "role".
+      - {"role":"user","content":"..."} — human input (string, or text blocks).
+      - {"role":"assistant","content":<string|blocks>,"tool_calls":[...]} —
+        content is the chat text; block lists carry {"type":"think",...}
+        reasoning (NOISE) alongside {"type":"text",...} output.
+      - roles "_system_prompt" / "_checkpoint" / "_usage" / "tool" are
+        machinery. NOISE.
+
+   2. Kimi Code 0.23+ wire.jsonl
+      (~/.kimi-code/sessions/wd_*/session_<uuid>/agents/<agent>/wire.jsonl):
+      one wire event per line, keyed by top-level "type".
+      - {"type":"context.append_message","message":{"role":"user",
+        "content":[...],"origin":{"kind":"user"}}} — typed human input.
+        origin.kind values other than "user" (injection, skill_activation,
+        background_task, shell_command, cron_job, system_trigger, ...) are
+        harness noise. NOISE.
+      - {"type":"context.append_loop_event","event":{"type":"content.part",
+        "part":{"type":"text","text":"..."}}} — assistant chat text.
+        part.type "think" is reasoning. NOISE. tool.call / tool.result /
+        step.begin / step.end are machinery. NOISE.
+      - turn.prompt duplicates append_message for the same user turn — we
+        only take append_message to avoid double-forwarding.
+      - metadata / config.update / llm.request / usage.record / etc. NOISE.
+
+   Both layouts share the "kimi" format id; auto-detect picks by path
+   (context.jsonl / wire.jsonl / .kimi/ / .kimi-code/) or by sniff. *)
+
+(* Legacy kimi-cli context.jsonl: top-level "role". *)
+let classify_kimi_context_line (j : Yojson.Safe.t) : (role * string) option =
+  let content = member "content" j in
+  match member "role" j with
+  | `String "user" -> (
+      match text_of_content ~drop_noise_blocks:true content with
+      | None -> None
+      | Some text ->
+          let trimmed = String.trim text in
+          if trimmed = "" || is_user_noise_text trimmed then None
+          else Some (User, trimmed))
+  | `String "assistant" -> (
+      match text_of_content content with
+      | None -> None
+      | Some text ->
+          let trimmed = String.trim text in
+          if trimmed = "" then None else Some (Agent, trimmed))
+  | _ -> None
+
+(* Kimi Code wire.jsonl: top-level "type". *)
+let classify_kimi_wire_line (j : Yojson.Safe.t) : (role * string) option =
+  match member "type" j with
+  | `String "context.append_message" -> (
+      let message = member "message" j in
+      match (member "role" message, member "origin" message) with
+      | `String "user", origin -> (
+          (* Only typed human input: origin.kind = "user". Missing origin
+             is treated as user so a stripped export still forwards. *)
+          let kind =
+            match member "kind" origin with
+            | `String k -> k
+            | `Null -> "user"
+            | _ -> ""
+          in
+          if kind <> "user" then None
+          else
+            match
+              text_of_content ~drop_noise_blocks:true (member "content" message)
+            with
+            | None -> None
+            | Some text ->
+                let trimmed = String.trim text in
+                if trimmed = "" || is_user_noise_text trimmed then None
+                else Some (User, trimmed))
+      | _ -> None)
+  | `String "context.append_loop_event" -> (
+      let event = member "event" j in
+      match member "type" event with
+      | `String "content.part" -> (
+          let part = member "part" event in
+          match (member "type" part, member "text" part) with
+          | `String "text", `String text ->
+              let trimmed = String.trim text in
+              if trimmed = "" then None else Some (Agent, trimmed)
+          | _ -> None)
+      | _ -> None)
+  | _ -> None
 
 let classify_kimi_line (line : string) : (role * string) option =
   match Yojson.Safe.from_string line with
   | exception _ -> None
   | j -> (
-      let content = member "content" j in
+      (* Prefer the layout the line actually carries: top-level "role" is
+         legacy context.jsonl; top-level wire "type" is Kimi Code. A line
+         with neither is noise / unknown. *)
       match member "role" j with
-      | `String "user" -> (
-          match text_of_content ~drop_noise_blocks:true content with
-          | None -> None
-          | Some text ->
-              let trimmed = String.trim text in
-              if trimmed = "" || is_user_noise_text trimmed then None
-              else Some (User, trimmed))
-      | `String "assistant" -> (
-          match text_of_content content with
-          | None -> None
-          | Some text ->
-              let trimmed = String.trim text in
-              if trimmed = "" then None else Some (Agent, trimmed))
-      | _ -> None)
+      | `String _ -> classify_kimi_context_line j
+      | _ -> classify_kimi_wire_line j)
 
 (* ------------------------------------------------------------------ *)
 (* Grok transcript classification                                      *)
@@ -359,13 +429,19 @@ let supported_formats =
 let contains_sub (s : string) (sub : string) : bool =
   find_sub s sub 0 <> None
 
-(* Path heuristics over the clients' standard session-store locations. *)
+(* Path heuristics over the clients' standard session-store locations.
+   Note: "/.kimi/" must not be confused with "/.kimi-code/" — the trailing
+   slash after "kimi" keeps the legacy path from matching the Kimi Code
+   state dir, so both branches are listed explicitly. *)
 let detect_format_by_path ~(is_dir : bool) (path : string) : string option =
   let base = Filename.basename path in
   let has = contains_sub path in
   if is_dir || has "/storage/message/" then Some "opencode"
   else if base = "chat_history.jsonl" || has "/.grok/" then Some "grok"
-  else if base = "context.jsonl" || has "/.kimi/" then Some "kimi"
+  else if
+    base = "context.jsonl" || base = "wire.jsonl" || has "/.kimi-code/"
+    || has "/.kimi/"
+  then Some "kimi"
   else if String.starts_with ~prefix:"rollout-" base || has "/.codex/" then
     Some "codex"
   else if
@@ -380,8 +456,10 @@ let detect_format_by_path ~(is_dir : bool) (path : string) : string option =
    copied out of their standard location. Every client's first line is
    distinctive: codex wraps in {"type":"session_meta"|...,"payload":...};
    gemini opens with a {"sessionId","projectHash"} header (and uses "$set"
-   ops); kimi keys entries by top-level "role"; claude nests the turn under
-   "message"; grok puts "content" at top level next to "type". *)
+   ops); legacy kimi keys entries by top-level "role"; Kimi Code wire opens
+   with {"type":"metadata","protocol_version":...} or other wire events;
+   claude nests the turn under "message"; grok puts "content" at top level
+   next to "type". *)
 let sniff_format_from_line (line : string) : string option =
   match Yojson.Safe.from_string line with
   | exception _ -> None
@@ -391,6 +469,13 @@ let sniff_format_from_line (line : string) : string option =
       | `String ("session_meta" | "event_msg" | "response_item"
                 | "turn_context" | "compacted") ->
           if has "payload" || has "timestamp" then Some "codex" else None
+      | `String
+          ( "metadata" | "context.append_message" | "context.append_loop_event"
+          | "turn.prompt" | "turn.steer" | "config.update"
+          | "tools.set_active_tools" | "llm.request" | "usage.record" ) ->
+          (* Kimi Code wire.jsonl event names (protocol_version on metadata
+             is the strongest signal; the other types are wire-only). *)
+          Some "kimi"
       | _ ->
           if has "projectHash" && has "sessionId" then Some "agy"
           else if has "$set" then Some "agy"
@@ -506,12 +591,29 @@ let line_time_of_timestamp_field (line : string) : float option =
       | `String ts -> parse_time_spec ts
       | _ -> None)
 
-(* Formats with per-event timestamps we can range-filter on. kimi
-   (context.jsonl) and grok (chat_history.jsonl) carry none. opencode is
-   handled by the directory source (message "time.created"). *)
+(* Kimi Code wire.jsonl events carry top-level "time" as unix-ms int;
+   legacy context.jsonl has no per-event time. Fail open when absent. *)
+let line_time_of_kimi (line : string) : float option =
+  match Yojson.Safe.from_string line with
+  | exception _ -> None
+  | j -> (
+      match member "time" j with
+      | `Int ms -> Some (float_of_int ms /. 1000.0)
+      | `Intlit s -> (
+          match int_of_string_opt s with
+          | Some ms -> Some (float_of_int ms /. 1000.0)
+          | None -> None)
+      | `Float ms -> Some (ms /. 1000.0)
+      | _ -> None)
+
+(* Formats with per-event timestamps we can range-filter on. legacy kimi
+   context.jsonl and grok (chat_history.jsonl) carry none; Kimi Code wire
+   uses top-level "time" (ms). opencode is handled by the directory source
+   (message "time.created"). *)
 let line_time_for_format (fmt : string) : (string -> float option) option =
   match String.lowercase_ascii (String.trim fmt) with
   | "claude" | "codex" | "agy" | "gemini" -> Some line_time_of_timestamp_field
+  | "kimi" -> Some line_time_of_kimi
   | _ -> None
 
 let in_time_range ~(since : float option) ~(until_ : float option)
@@ -534,8 +636,10 @@ let in_time_range ~(since : float option) ~(until_ : float option)
      dropped by the classifier).
    - codex: {"type":"compacted","payload":{...}} rollout items, and
      {"type":"event_msg","payload":{"type":"context_compacted"}} events.
-   kimi / grok / agy have no known in-transcript marker; opencode's dir
-   source has no transcript to replay-trim. *)
+   kimi wire has full_compaction.begin / context.apply_compaction but
+   those are not used as replay boundaries yet; grok / agy have no known
+   in-transcript marker; opencode's dir source has no transcript to
+   replay-trim. *)
 
 let is_claude_compaction (line : string) : bool =
   match Yojson.Safe.from_string line with

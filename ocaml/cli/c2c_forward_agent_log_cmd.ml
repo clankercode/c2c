@@ -93,7 +93,8 @@ let forward_agent_log_term =
              ($(b,2026-07-15), $(b,2026-07-15T13:50:00Z), \
              $(b,2026-07-15T13:50:00+10:00)) or epoch seconds. Implies \
              $(b,--from-start). Needs per-event timestamps: claude, codex, \
-             agy, opencode (kimi and grok transcripts carry none).")
+             agy, opencode, and Kimi Code wire.jsonl (legacy kimi-cli \
+             context.jsonl and grok transcripts carry none).")
   in
   let until_arg =
     Cmdliner.Arg.(
@@ -348,7 +349,10 @@ let forward_agent_log =
         "All supported clients work. Session jsonl transcripts are tailed: \
          $(b,claude) (~/.claude*/projects/<slug>/<session-id>.jsonl), \
          $(b,codex) (~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl), \
-         $(b,kimi) (~/.kimi/sessions/<project>/<uuid>/context.jsonl), \
+         $(b,kimi) (Kimi Code wire \
+         ~/.kimi-code/sessions/wd_*/session_<uuid>/agents/<agent>/wire.jsonl, \
+         or legacy kimi-cli \
+         ~/.kimi/sessions/<project>/<uuid>/context.jsonl), \
          $(b,grok) (~/.grok/sessions/<cwd>/<uuid>/chat_history.jsonl), \
          $(b,agy) (~/.gemini/tmp/<project>/chats/session-*.jsonl). \
          $(b,opencode) keeps per-message files instead of one transcript, \
