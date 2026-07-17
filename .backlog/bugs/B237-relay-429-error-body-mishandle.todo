@@ -1,17 +1,18 @@
 ---
 claimed_at: "2026-07-17T16:50:02Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-17T17:26:16Z"
 complexity: medium
 created_at: "2026-07-17T15:58:51Z"
 depends_on: []
+duration_minutes: 36.23467888795
 estimate_hours: 1
 id: B237
 priority: high
 started_at: "2026-07-17T16:50:02Z"
-status: in_progress
+status: done
 tags: []
 title: 'relay 429 error body mishandled: ''body did not report ok:false'' double-error'
-updated_at: "2026-07-17T16:50:02Z"
+updated_at: "2026-07-17T17:26:16Z"
 ---
 During cross-host dogfood (2026-07-18), hammering the relay with room ops: 'c2c relay rooms send' failed with TWO error lines: 'relay answered HTTP 429 but the body did not report ok:false' + 'rate_limit_exceeded'. The first line indicates the 429 response body didn't match the expected error schema — the client should handle that gracefully (surface the retry_after if present, or a single clean rate-limit error) instead of a schema complaint plus a second error. Seen while relay PoW difficulty was 12 and rate limiting active.
