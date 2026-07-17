@@ -4,9 +4,9 @@
    1. classify_claude_line — keep user text + assistant text; drop thinking,
       tool_use, tool_result, meta/sidechain/system/summary lines, hook and
       c2c-envelope injections, malformed JSON.
-   1b. per-client classifiers (B194): codex event_msg stream, kimi context
-      roles, grok <user_query> extraction + synthetic turns, agy message /
-      $set journal lines.
+   1b. per-client classifiers (B194): codex event_msg stream, kimi legacy
+      context roles + Kimi Code wire events (B225), grok <user_query>
+      extraction + synthetic turns, agy message / $set journal lines.
    1c. detect_format — path heuristics over the standard session stores and
       first-lines content sniffing.
    1d. opencode directory source — user forwards on appearance, assistant
@@ -210,6 +210,7 @@ let test_classify_codex () =
 
 let test_classify_kimi () =
   let c = F.classify_kimi_line in
+  (* --- legacy kimi-cli context.jsonl (top-level role) --- *)
   check (option event) "user string kept" (Some (F.User, "fix it"))
     (c {|{"role":"user","content":"fix it"}|});
   check (option event) "assistant string kept" (Some (F.Agent, "done"))
@@ -228,6 +229,48 @@ let test_classify_kimi () =
     ; ( "injected system-reminder"
       , {|{"role":"user","content":"<system-reminder>hook</system-reminder>"}|} )
     ; ("malformed", "]")
+    ];
+  (* --- Kimi Code wire.jsonl (top-level type; B225) --- *)
+  check (option event) "wire user origin=user kept"
+    (Some (F.User, "fix the bug"))
+    (c
+       {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"fix the bug"}],"toolCalls":[],"origin":{"kind":"user"}},"time":1782747977644}|});
+  check (option event) "wire user missing origin kept (stripped export)"
+    (Some (F.User, "hi"))
+    (c
+       {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"time":1}|});
+  check (option event) "wire assistant content.part text kept"
+    (Some (F.Agent, "on it"))
+    (c
+       {|{"type":"context.append_loop_event","event":{"type":"content.part","uuid":"u","turnId":"0","step":1,"part":{"type":"text","text":"on it"}},"time":2}|});
+  List.iter
+    (fun (name, l) ->
+      check (option event) ("wire noise dropped: " ^ name) None (c l))
+    [ ( "injection origin"
+      , {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>x</system-reminder>"}],"origin":{"kind":"injection"}},"time":1}|}
+      )
+    ; ( "skill_activation origin"
+      , {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"User activated skill"}],"origin":{"kind":"skill_activation"}},"time":1}|}
+      )
+    ; ( "background_task origin"
+      , {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"<notification>done</notification>"}],"origin":{"kind":"background_task"}},"time":1}|}
+      )
+    ; ( "shell_command origin"
+      , {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"<bash-input>\nls\n</bash-input>"}],"origin":{"kind":"shell_command"}},"time":1}|}
+      )
+    ; ( "think content.part"
+      , {|{"type":"context.append_loop_event","event":{"type":"content.part","part":{"type":"think","think":"private"}},"time":1}|}
+      )
+    ; ( "tool.call loop event"
+      , {|{"type":"context.append_loop_event","event":{"type":"tool.call","name":"Bash","args":{}},"time":1}|}
+      )
+    ; ( "turn.prompt (duplicate of append_message)"
+      , {|{"type":"turn.prompt","input":[{"type":"text","text":"hi"}],"origin":{"kind":"user"},"time":1}|}
+      )
+    ; ( "metadata"
+      , {|{"type":"metadata","protocol_version":"1.4","created_at":1}|} )
+    ; ( "llm.request"
+      , {|{"type":"llm.request","kind":"loop","model":"kimi","time":1}|} )
     ]
 
 let test_classify_grok () =
@@ -283,8 +326,13 @@ let test_detect_format_by_path () =
     (d "/tmp/copies/rollout-foo.jsonl");
   check (option string) "grok chat_history" (Some "grok")
     (d "/home/u/.grok/sessions/%2Fhome/019f-uuid/chat_history.jsonl");
-  check (option string) "kimi context" (Some "kimi")
+  check (option string) "kimi legacy context" (Some "kimi")
     (d "/home/u/.kimi/sessions/hash/uuid/context.jsonl");
+  check (option string) "kimi-code wire path" (Some "kimi")
+    (d
+       "/home/u/.kimi-code/sessions/wd_proj_abc/session_019f-uuid/agents/main/wire.jsonl");
+  check (option string) "wire.jsonl basename anywhere" (Some "kimi")
+    (d "/tmp/copies/wire.jsonl");
   check (option string) "agy chats" (Some "agy")
     (d "/home/u/.gemini/tmp/proj/chats/session-2026-05-30T16-08-x.jsonl");
   check (option string) "claude projects" (Some "claude")
@@ -305,8 +353,13 @@ let test_detect_format_by_sniff () =
     (d {|{"timestamp":"t","type":"session_meta","payload":{"id":"s"}}|});
   check (option string) "agy header" (Some "agy")
     (d {|{"sessionId":"s","projectHash":"p","startTime":"t"}|});
-  check (option string) "kimi role line" (Some "kimi")
+  check (option string) "kimi legacy role line" (Some "kimi")
     (d {|{"role":"_system_prompt","content":"You are Kimi"}|});
+  check (option string) "kimi-code wire metadata" (Some "kimi")
+    (d {|{"type":"metadata","protocol_version":"1.4","created_at":1}|});
+  check (option string) "kimi-code wire append_message" (Some "kimi")
+    (d
+       {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"time":1}|});
   check (option string) "claude line" (Some "claude")
     (d {|{"type":"summary","summary":"s","message":null,"leafUuid":"x"}|});
   check (option string) "claude user line" (Some "claude")
@@ -479,8 +532,18 @@ let test_line_time_and_range () =
   check bool "before since" false (range (Some 99.));
   check bool "after until" false (range (Some 201.));
   check bool "unknown time fails open" true (range None);
-  check bool "kimi has no line time" true
-    (F.line_time_for_format "kimi" = None);
+  check bool "kimi has line time (wire ms)" true
+    (F.line_time_for_format "kimi" <> None);
+  check t "kimi wire time ms -> seconds" (Some 1782747977.644)
+    ( match F.line_time_for_format "kimi" with
+    | Some f ->
+        f
+          {|{"type":"context.append_message","message":{"role":"user","content":"x"},"time":1782747977644}|}
+    | None -> None );
+  check t "kimi legacy context has no time" None
+    ( match F.line_time_for_format "kimi" with
+    | Some f -> f {|{"role":"user","content":"hi"}|}
+    | None -> Some (-1.) );
   check bool "grok has no line time" true
     (F.line_time_for_format "grok" = None);
   check bool "codex has line time" true
