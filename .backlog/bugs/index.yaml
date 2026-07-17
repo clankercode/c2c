@@ -232,3 +232,4 @@ bugs:
     - file: B233-kimi-mcp-json-lacks-c2c-mcp-se.todo
     - file: B234-whoami-prints-local-session-al.todo
     - file: B235-unmanaged-c2c-relay-connect-di.todo
+    - file: B236-rooms-invite-accepts-cross-hos.todo
