@@ -158,12 +158,16 @@ let test_upgrade_shows_once () =
   (match out with
    | None -> fail "expected changelog block on upgrade"
    | Some block ->
-       check bool "block mentions a v0.10.0 title" true
-         (contains block "Agent-facing changelog");
-       check bool "block carries the setup command verbatim" true
-         (contains block "[setup: `c2c changelog`]");
+       (* B226: do not pin a single historical feature title — the embedded
+          changelog grows, and render_changelog_for_agent caps at 8 bullets
+          newest-first, so a fixed 0.10.0 title can fall out of the window.
+          Pin the upgrade envelope + contract strings instead. *)
        check bool "block names the from->to versions" true
          (contains block "from=\"0.9.0\" to=\"0.10.0\"");
+       check bool "block states the version bump" true
+         (contains block "0.9.0 -> 0.10.0");
+       check bool "block has at least one feature bullet" true
+         (contains block "\n- ");
        check bool "block is marked informational, not a work trigger" true
          (contains block "not a work trigger");
        check bool "block ends with the --since escape hatch" true

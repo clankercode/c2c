@@ -402,6 +402,7 @@ let run_c2c ~tmp args =
   let env =
     [| "PATH=" ^ (try Sys.getenv "PATH" with Not_found -> "/usr/bin:/bin");
        "HOME=" ^ tmp;
+       "XDG_CONFIG_HOME=" ^ Filename.concat tmp ".config";
        "C2C_MCP_SESSION_ID=relay-state-h5-test";
        "C2C_MCP_BROKER_ROOT=" ^ Filename.concat tmp "broker";
     |]
@@ -423,7 +424,16 @@ let run_c2c ~tmp args =
   (code, out)
 
 let test_whoami_json_human_parity_unconfigured () =
+  (* B226/B187: whoami exits non-zero for unregistered sessions. Seed a local
+     registration (still no relay URL / identity) so the test exercises the
+     unconfigured *relay* classifier without ambient host state. *)
   let tmp = mkdtemp () in
+  let broker_root = Filename.concat tmp "broker" in
+  Unix.mkdir broker_root 0o700;
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker
+    ~session_id:"relay-state-h5-test" ~alias:"relay-state-h5"
+    ~pid:None ~pid_start_time:None ();
   let code_j, out_j = run_c2c ~tmp [ "whoami"; "--json" ] in
   check int "whoami --json exit 0" 0 code_j;
   let j = Yojson.Safe.from_string out_j in
@@ -449,11 +459,13 @@ let test_whoami_json_human_parity_unconfigured () =
     (string_contains ~needle:"state:" out_h);
   check bool "human output has a connector: line" true
     (string_contains ~needle:"connector:" out_h);
-  (* No session alias resolves in this isolated env; the relay section's
-     alias line must say so — and the old conflated "  registered:" label
-     (A020/A027: local alias presented as relay registration) must be gone. *)
-  check bool "human output has the alias: line" true
-    (string_contains ~needle:"alias:      (no current session alias)" out_h);
+  (* Local session alias is registered, but the relay section must still
+     surface that this alias is not relay-registered. The old conflated
+     "  registered:" label (A020/A027) must stay gone. *)
+  check bool "human whoami prints local alias" true
+    (string_contains ~needle:"relay-state-h5" out_h);
+  check bool "human output has a state: line for relay" true
+    (string_contains ~needle:"state:" out_h);
   check bool "old conflated 'registered:' label is gone" false
     (string_contains ~needle:"  registered:" out_h)
 

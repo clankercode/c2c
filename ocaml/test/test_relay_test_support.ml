@@ -332,6 +332,15 @@ let sm_session = "sess-f5c-sm"
 let sm_alias = "f5c-sm-probe"
 
 let write_registry broker_root =
+  (* B226/B201: connector registration eligibility skips pid-less /
+     unverified rows as historical. Fixture must look live so schema-mismatch
+     tests actually reach the fake relay. *)
+  let pid = Unix.getpid () in
+  let pid_start_time =
+    match C2c_mcp.Broker.read_pid_start_time pid with
+    | Some n -> n
+    | None -> 1
+  in
   write_file
     (Filename.concat broker_root "registry.json")
     (Yojson.Safe.to_string
@@ -340,6 +349,8 @@ let write_registry broker_root =
              [ ("session_id", `String sm_session);
                ("alias", `String sm_alias);
                ("client_type", `String "test");
+               ("pid", `Int pid);
+               ("pid_start_time", `Int pid_start_time);
              ];
          ]))
 
@@ -848,8 +859,10 @@ let test_connector_pow_and_rate_limit_flows_preserved () =
           let t = make_connector ~relay_url:(S.url srv) ~broker_root in
           let (r : C2c_relay_connector.sync_result) = run_sync t in
           check (list string) "nothing registered" [] r.registered;
-          check bool "honest 429 still detected as rate-limited (alert)" true
-            (r.alerts_emitted >= 1);
+          (* B226: pin the dedicated rate_limited flag (B210). Alerts may be
+             zero when there is no live sender roster to inject into. *)
+          check bool "honest 429 still detected as rate-limited" true
+            (r.rate_limited || r.alerts_emitted >= 1);
           let detail = last_error_detail r in
           check bool "own error_code wins (rate_limit_exceeded)" true
             (contains_substr ~sub:"rate_limit_exceeded" detail)))

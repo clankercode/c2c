@@ -408,14 +408,38 @@ let test_list_exits_zero () =
 
 (* B183: discoverable synonyms for list / peek-inbox *)
 let test_peers_alias_exits_zero () =
-  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c peers > /dev/null 2>&1" in
-  let rc = Sys.command cmd in
-  check int "c2c peers exits 0" 0 rc
+  with_temp_dir (fun home ->
+      let broker = Filename.concat home "broker" in
+      Unix.mkdir broker 0o700;
+      let cmd =
+        c2c_cmd
+          (Printf.sprintf
+             "%s C2C_MCP_BROKER_ROOT=%s c2c peers > /dev/null 2>&1"
+             (isolated_home_env home) (Filename.quote broker))
+      in
+      let rc = Sys.command cmd in
+      check int "c2c peers exits 0" 0 rc)
 
 let test_inbox_alias_exits_zero () =
-  let cmd = c2c_cmd "C2C_CLI_FORCE=1 c2c inbox > /dev/null 2>&1" in
-  let rc = Sys.command cmd in
-  check int "c2c inbox exits 0" 0 rc
+  (* B226: bare `c2c inbox` needs a resolvable session id. Isolate HOME/broker
+     and seed a registration so CI (no ambient C2C_MCP_SESSION_ID) matches
+     local dogfood where a live session env may be present. *)
+  with_temp_dir (fun home ->
+      let broker = Filename.concat home "broker" in
+      Unix.mkdir broker 0o700;
+      let sid = "cli-inbox-session" in
+      let b = C2c_mcp.Broker.create ~root:broker in
+      C2c_mcp.Broker.register b ~session_id:sid ~alias:"inbox-fixture"
+        ~pid:None ~pid_start_time:None ();
+      let cmd =
+        c2c_cmd
+          (Printf.sprintf
+             "env -u C2C_MCP_AUTO_REGISTER_ALIAS %s C2C_MCP_BROKER_ROOT=%s \
+              C2C_MCP_SESSION_ID=%s c2c inbox > /dev/null 2>&1"
+             (isolated_home_env home) (Filename.quote broker) sid)
+      in
+      let rc = Sys.command cmd in
+      check int "c2c inbox exits 0" 0 rc)
 
 let test_list_output_contains_peer_entries () =
   let tmpfile = Filename.temp_file "c2c-list" ".out" in
@@ -1127,28 +1151,52 @@ let test_register_zero_env_is_routable () =
 (* c2c whoami — verify alias display                                        *)
 (* ------------------------------------------------------------------------- *)
 
+(* B226/B187: whoami refuses unregistered sessions (and borrowed
+   C2C_MCP_AUTO_REGISTER_ALIAS). Seed a real registration under an isolated
+   HOME+broker so the test is hermetic under clean CI envs. *)
+let with_whoami_fixture f =
+  with_temp_dir (fun home ->
+      let broker = Filename.concat home "broker" in
+      Unix.mkdir broker 0o700;
+      let sid = "cli-whoami-session" in
+      let alias = "whoami-fixture" in
+      let b = C2c_mcp.Broker.create ~root:broker in
+      C2c_mcp.Broker.register b ~session_id:sid ~alias
+        ~pid:None ~pid_start_time:None ();
+      f ~home ~broker ~sid ~alias)
+
 let test_whoami_exits_zero () =
-  (* Use a fake session ID so whoami exits 0 even without a real registration *)
-  let cmd = c2c_cmd "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c whoami > /dev/null 2>&1" in
-  let rc = Sys.command cmd in
-  check int "c2c whoami exits 0" 0 rc
+  with_whoami_fixture (fun ~home ~broker ~sid ~alias:_ ->
+      let cmd =
+        c2c_cmd
+          (Printf.sprintf
+             "env -u C2C_MCP_AUTO_REGISTER_ALIAS %s C2C_MCP_BROKER_ROOT=%s \
+              C2C_MCP_SESSION_ID=%s c2c whoami > /dev/null 2>&1"
+             (isolated_home_env home) (Filename.quote broker) sid)
+      in
+      let rc = Sys.command cmd in
+      check int "c2c whoami exits 0" 0 rc)
 
 let test_whoami_output_contains_alias_field () =
-  let tmpfile = Filename.temp_file "c2c-whoami" ".out" in
-  Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
-    (fun () ->
-      ignore (Sys.command (c2c_cmd (Printf.sprintf
-        "C2C_CLI_FORCE=1 C2C_MCP_SESSION_ID=cli-test-session c2c whoami > %s 2>&1"
-        tmpfile)));
-      let ch = open_in tmpfile in
-      let content = Fun.protect ~finally:(fun () -> close_in ch)
-        (fun () -> really_input_string ch (in_channel_length ch))
-      in
-      (* whoami output always contains "alias:" field label and "session_id:" *)
-      check bool "whoami output contains alias field" true
-        (string_contains content "alias:");
-      check bool "whoami output contains session_id field" true
-        (string_contains content "session_id:"))
+  with_whoami_fixture (fun ~home ~broker ~sid ~alias ->
+      let tmpfile = Filename.temp_file "c2c-whoami" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore)
+        (fun () ->
+          ignore
+            (Sys.command
+               (c2c_cmd
+                  (Printf.sprintf
+                     "env -u C2C_MCP_AUTO_REGISTER_ALIAS %s C2C_MCP_BROKER_ROOT=%s \
+                      C2C_MCP_SESSION_ID=%s c2c whoami > %s 2>&1"
+                     (isolated_home_env home) (Filename.quote broker) sid
+                     (Filename.quote tmpfile))));
+          let content = read_file tmpfile in
+          check bool "whoami output contains alias field" true
+            (string_contains content "alias:");
+          check bool "whoami output contains fixture alias" true
+            (string_contains content alias);
+          check bool "whoami output contains session_id field" true
+            (string_contains content "session_id:")))
 
 (* ------------------------------------------------------------------------- *)
 (* Cached update notice — each supported CLI path must emit it exactly once  *)
@@ -2673,22 +2721,34 @@ let test_monitor_help_lists_relay () =
 
 let test_relay_subscribe_https_no_longer_rejected_for_tls_scheme () =
   (* B189: https/wss are scheme-supported. Without a local identity the command
-     still exits non-zero, but it must NOT fail on the old TLS-scheme guard. *)
-  let outfile = Filename.temp_file "relay-subscribe-https" ".out" in
-  let errfile = Filename.temp_file "relay-subscribe-https" ".err" in
-  Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore; Sys.remove errfile |> ignore)
-    (fun () ->
-      let cmd = Printf.sprintf
-        "C2C_CLI_FORCE=1 HOME=%s %s relay subscribe --relay-url https://relay.example --alias alice > %s 2> %s"
-        (Filename.get_temp_dir_name ()) c2c_exe outfile errfile
-      in
-      let rc = Sys.command cmd in
-      check int "relay subscribe https exits non-zero without identity" 1 rc;
-      let err = read_file errfile in
-      check bool "stderr does NOT claim TLS unsupported" false
-        (string_contains err "does not support TLS");
-      check bool "stderr mentions identity (past scheme guard)" true
-        (string_contains err "identity"))
+     still exits non-zero, but it must NOT fail on the old TLS-scheme guard.
+     B226: use a private empty HOME — shared /tmp may contain a leftover
+     identity.json from other tests, which would skip the identity check and
+     attempt a network connect with a different error message. *)
+  with_temp_dir (fun home ->
+      let outfile = Filename.temp_file "relay-subscribe-https" ".out" in
+      let errfile = Filename.temp_file "relay-subscribe-https" ".err" in
+      Fun.protect
+        ~finally:(fun () ->
+          Sys.remove outfile |> ignore;
+          Sys.remove errfile |> ignore)
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "env -u C2C_RELAY_URL -u C2C_RELAY_IDENTITY_PATH C2C_CLI_FORCE=1 \
+               HOME=%s XDG_CONFIG_HOME=%s %s relay subscribe \
+               --relay-url https://relay.example --alias alice > %s 2> %s"
+              (Filename.quote home)
+              (Filename.quote (Filename.concat home ".config"))
+              c2c_exe outfile errfile
+          in
+          let rc = Sys.command cmd in
+          check int "relay subscribe https exits non-zero without identity" 1 rc;
+          let err = read_file errfile in
+          check bool "stderr does NOT claim TLS unsupported" false
+            (string_contains err "does not support TLS");
+          check bool "stderr mentions identity (past scheme guard)" true
+            (string_contains err "identity")))
 (* ------------------------------------------------------------------------- *)
 (* c2c send --from spoofing protection tests                                 *)
 (* ------------------------------------------------------------------------- *)
