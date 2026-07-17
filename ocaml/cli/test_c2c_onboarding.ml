@@ -398,6 +398,71 @@ let test_env_session_id_wins_over_statefile () =
   check bool "no fallback note when env wins" false
     (string_contains err "init fallback")
 
+(* B241: whoami and rooms join must share session resolution. Without
+   C2C_MCP_SESSION_ID, both use the init default-session.json fallback
+   (with the same stderr note) — rooms must not hard-error while whoami
+   succeeds as a different identity. *)
+let test_b241_rooms_join_uses_statefile_like_whoami () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-b241-%d" (Unix.getpid ()) in
+  let room = Printf.sprintf "b241-room-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--alias"; alias; "--room"; ""]
+  in
+  check int "init exits 0" 0 rc;
+  let statefile = tmp // "broker" // "default-session.json" in
+  check bool "default-session.json present" true (file_exists statefile);
+  (* whoami succeeds via statefile fallback *)
+  let rc, who_out, who_err =
+    run_c2c_status_split ~home:tmp ~broker:tmp ["whoami"]
+  in
+  check int "whoami exits 0 with zero session env" 0 rc;
+  check bool "whoami resolves init alias" true (string_contains who_out alias);
+  check bool "whoami notes init fallback" true
+    (string_contains who_err "init fallback");
+  (* peek-inbox also uses the shared path (may be empty) *)
+  let rc, _, peek_err =
+    run_c2c_status_split ~home:tmp ~broker:tmp ["peek-inbox"]
+  in
+  check int "peek-inbox exits 0 with statefile session" 0 rc;
+  (* rooms join must NOT hard-error on missing C2C_MCP_SESSION_ID *)
+  let rc, join_out, join_err =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["rooms"; "join"; room; "--history-limit"; "0"]
+  in
+  check int "rooms join exits 0 with statefile session" 0 rc;
+  check bool "rooms join mentions room" true (string_contains join_out room);
+  check bool "rooms join does not demand C2C_MCP_SESSION_ID only"
+    false
+    (string_contains join_err "cannot determine alias"
+     || string_contains join_err "C2C_MCP_SESSION_ID is required");
+  (* Same session identity: join as the whoami alias *)
+  check bool "joined as whoami alias" true
+    (string_contains join_out alias
+     || string_contains join_out "Joined room");
+  (* Explicit env still wins for rooms (parity with whoami) *)
+  let env_alias = Printf.sprintf "test-b241-env-%d" (Unix.getpid ()) in
+  let env_sid = Printf.sprintf "b241-env-session-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["register"; "--alias"; env_alias; "--session-id"; env_sid]
+  in
+  check int "register env peer exits 0" 0 rc;
+  let room2 = Printf.sprintf "b241-room2-%d" (Unix.getpid ()) in
+  let rc, join2_out, join2_err =
+    run_c2c_status_split
+      ~env:["C2C_MCP_SESSION_ID", env_sid]
+      ~home:tmp ~broker:tmp
+      ["rooms"; "join"; room2; "--history-limit"; "0"]
+  in
+  check int "rooms join with env session exits 0" 0 rc;
+  check bool "no statefile note when env wins for rooms" false
+    (string_contains join2_err "init fallback");
+  check bool "env session joins as env alias" true
+    (string_contains join2_out env_alias
+     || string_contains join2_out "Joined room")
+
 let test_stale_session_statefile_ignored () =
   with_temp_env @@ fun tmp ->
   let alias = Printf.sprintf "test-idn-stale-%d" (Unix.getpid ()) in
@@ -965,6 +1030,8 @@ let () =
     ; ( "session_identity",
         [ test_case "init→whoami round-trip with zero session env (#10)" `Quick test_init_whoami_roundtrip_no_env
         ; test_case "env-derived session id shadows the statefile" `Quick test_env_session_id_wins_over_statefile
+        ; test_case "B241 rooms join shares statefile fallback with whoami" `Quick
+            test_b241_rooms_join_uses_statefile_like_whoami
         ; test_case "stale statefile (unregistered session) is ignored" `Quick test_stale_session_statefile_ignored
         ; test_case "B172 whoami maps CODEX_THREAD_ID → managed banner alias" `Quick
             test_whoami_maps_codex_thread_to_managed_alias
