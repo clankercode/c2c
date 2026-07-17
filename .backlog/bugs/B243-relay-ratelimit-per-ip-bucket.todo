@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T16:57:01Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T16:52:42Z"
 depends_on: []
 estimate_hours: 1
 id: B243
 priority: high
-status: pending
+started_at: "2026-07-17T16:57:01Z"
+status: in_progress
 tags: []
 title: 'relay ratelimit: per-IP bucket policy frozen at first touch, shared across all endpoints'
-updated_at: "2026-07-17T16:52:42Z"
+updated_at: "2026-07-17T16:57:01Z"
 ---
 Diagnosed 2026-07-18 (probe evidence + code): ocaml/relay.ml:5318 rate_key = client_ip; ocaml/relay_ratelimit.ml Make.check looks the bucket up by that key only and only applies policy_of_endpoint when CREATING the bucket. Consequences: (1) one bucket per IP shared across ALL endpoints — /pubkey (10/s), /peek_inbox (2/s), /send (1/s) all draw from the same bucket; (2) the bucket's capacity/refill freeze at whatever endpoint the IP happened to hit first (until 300s idle GC). Measured on prod: /pubkey probes 429'd with retry_after consistent with a ~1/s refill — the bucket had been created by a /send-family endpoint, so the nominally generous /pubkey policy never applied. Fix: key buckets by (ip, endpoint-class) — or at minimum re-check/update bucket params when the path's policy differs — so per-endpoint policies actually hold.

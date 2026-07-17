@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T16:57:01Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T16:53:05Z"
 depends_on: []
 estimate_hours: 1
 id: B244
 priority: high
-status: pending
+started_at: "2026-07-17T16:57:01Z"
+status: in_progress
 tags: []
 title: 'relay ratelimit vs NAT''d fleets: steady-state connector+monitor load exceeds bucket refill → chronic 429s'
-updated_at: "2026-07-17T16:53:05Z"
+updated_at: "2026-07-17T16:57:01Z"
 ---
 Diagnosed 2026-07-18 with the 429 storm on xsm's monitor relay watch (flapping every ~10s for 5+ min). All three of my machines (xsm/x-game/x-left) NAT to one public IP (203.87.13.242), so the per-IP bucket is shared. Sustained load arithmetic: each relay connector heartbeats + polls EVERY live alias each 30s sync (c2c_relay_connector.ml:1934/2019) — xsm alone has ~15 live relay leases → ~1/s baseline from ONE connector; +2 monitors' relay-watch peeks; +2 more connectors (x-game, x-left); + interactive CLI. Base ≈1.5–2/s vs bucket refill ≈1/s (frozen /send-family policy, see B243). The bucket never recovers, so any extra op (a dogfood burst, a monitor peek) 429s — and PoW-12 mode made everything slower to recover. Contributors: alias accumulation on the host (many stale-looking codex-suvi/hedge leases — are they all genuinely alive?), no op batching in the connector sync, no rate-limit-aware backoff pacing in the monitor watch (it recovers, but flaps). Fix directions: (a) batch heartbeat/poll ops per sync (one call for N aliases), (b) per-alias or per-(ip,endpoint) buckets (B243), (c) monitor watch should pace itself to the bucket's observed retry_after instead of fixed-cadence retry, (d) connector should surface its own 429s prominently (it currently just notes obs_connector_rate_limited) — and cross-ref B219: fleets like this one behind NATs are a plausible chunk of the production relay's load.
