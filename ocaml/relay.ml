@@ -5331,10 +5331,12 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
           ~result:"rate_limit_denied"
           ~reason:(path ^ " retry_after=" ^ string_of_float retry_after)
           ();
-        respond_too_many_requests (`Assoc [
-          "error", `String "rate_limit_exceeded";
-          "retry_after", `Float retry_after
-        ])
+        (* B237: emit the standard ok:false / error_code envelope so clients
+           do not hit the schema-dishonest path ("body did not report
+           ok:false") on rate limits. retry_after stays a peer field. *)
+        respond_too_many_requests
+          (json_error "rate_limit_exceeded" "rate_limit_exceeded"
+             [ ("retry_after", `Float retry_after) ])
     | `Allow ->
       begin
         let auth_header = Header.get (Request.headers req) "Authorization" in

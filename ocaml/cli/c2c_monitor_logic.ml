@@ -407,10 +407,12 @@ let is_terminal_error_code = function
    monitor is never told to re-register) and from the generic wedged-bridge
    transient escalation (whose "c2c restart relay-connect" advice is wrong under
    throttling: extra reconnects worsen the 429 storm, B210). The relay emits
-   [rate_limit_exceeded]; [reconcile_status] synthesizes [http_error_429] when a
-   429 body is not honestly ok:false; [rate_limit]/[rate_limited] are accepted as
-   aliases. Note: none of these are in [is_terminal_error_code] — a rate-limit
-   can never become a terminal/identity failure. *)
+   [rate_limit_exceeded]. Error-shaped 429 bodies that omit ok:false (B237
+   historical shape) are normalized to rate_limit_exceeded; [reconcile_status]
+   only synthesizes [http_error_429] when a 429 body is neither honest nor
+   error-shaped; [rate_limit]/[rate_limited] are accepted as aliases. Note:
+   none of these are in [is_terminal_error_code] — a rate-limit can never
+   become a terminal/identity failure. *)
 let is_rate_limit_error_code = function
   | "rate_limit_exceeded"
   | "rate_limit"

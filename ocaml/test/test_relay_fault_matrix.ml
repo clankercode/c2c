@@ -239,6 +239,87 @@ let reg_429 () =
   check_status_fault ~what:"register vs 429" ~args_of_url:register_args
     ~path:"/register" ~status:429 ~error_code:"rate_limited" ()
 
+(* B237: historical / pre-fix production rate-limit body omitted ok:false:
+   {"error":"rate_limit_exceeded","retry_after":N}. Client must normalize to
+   a single clean rate_limit_exceeded (with retry_after preserved), NOT
+   http_error_429 + "body did not report ok:false" double-error. *)
+let reg_429_production_body_shape () =
+  let tmp = mkdtemp () in
+  let body =
+    `Assoc
+      [ ("error", `String "rate_limit_exceeded");
+        ("retry_after", `Float 1.5);
+      ]
+  in
+  with_fault ~meth:"POST" ~path:"/register"
+    [ json_response ~status:429 body ]
+    (fun srv url ->
+      let ((_, out, _) as res) = run_c2c ~tmp (register_args ~url) in
+      assert_honest_failure ~what:"register vs production 429 body"
+        ~needle:"rate_limit_exceeded" res;
+      let json = Yojson.Safe.from_string out in
+      (match member "ok" json with
+       | `Bool false -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "ok must be false, got %s"
+                (Yojson.Safe.to_string other)));
+      (match str_member "error_code" json with
+       | Some "rate_limit_exceeded" -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "error_code must be rate_limit_exceeded, got %s"
+                (match other with Some s -> s | None -> "<missing>")));
+      (match member "retry_after" json with
+       | `Float f when abs_float (f -. 1.5) < 1e-9 -> ()
+       | `Int 1 -> () (* tolerate int coercion of 1.0-ish; production uses float *)
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "retry_after must be preserved as 1.5, got %s"
+                (Yojson.Safe.to_string other)));
+      (match member "http_status" json with
+       | `Int 429 -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "http_status must be 429, got %s"
+                (Yojson.Safe.to_string other)));
+      Alcotest.(check bool) "no schema-complaint double-error text" false
+        (contains ~needle:"body did not report ok:false" out);
+      Alcotest.(check bool) "not rewritten to http_error_429" false
+        (contains ~needle:"http_error_429" out);
+      Alcotest.(check bool) "no nested relay_response for error-shaped body" false
+        (contains ~needle:"relay_response" out);
+      Alcotest.(check int) "exactly one request (single-shot)" 1
+        (List.length (requests_for ~path:"/register" srv)))
+
+(* B237: post-fix server envelope (ok:false + error_code + retry_after)
+   still wins cleanly — passthrough with http_status annotation. *)
+let reg_429_honest_with_retry_after () =
+  let tmp = mkdtemp () in
+  let body =
+    `Assoc
+      [ ("ok", `Bool false);
+        ("error_code", `String "rate_limit_exceeded");
+        ("error", `String "rate_limit_exceeded");
+        ("retry_after", `Float 2.0);
+      ]
+  in
+  with_fault ~meth:"POST" ~path:"/register"
+    [ json_response ~status:429 body ]
+    (fun _srv url ->
+      let ((_, out, _) as res) = run_c2c ~tmp (register_args ~url) in
+      assert_honest_failure ~what:"register vs honest 429 + retry_after"
+        ~needle:"rate_limit_exceeded" res;
+      let json = Yojson.Safe.from_string out in
+      (match member "retry_after" json with
+       | `Float f when abs_float (f -. 2.0) < 1e-9 -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "retry_after must be 2.0, got %s"
+                (Yojson.Safe.to_string other)));
+      Alcotest.(check bool) "no schema complaint on honest body" false
+        (contains ~needle:"body did not report ok:false" out))
+
 let reg_500 () =
   check_status_fault ~what:"register vs 500" ~args_of_url:register_args
     ~path:"/register" ~status:500 ~error_code:"internal_error" ()
@@ -318,6 +399,35 @@ let dm_401 () =
 let dm_429 () =
   check_status_fault ~what:"dm send vs 429" ~args_of_url:dm_send_args
     ~path:"/send" ~status:429 ~error_code:"rate_limited" ()
+
+(* B237: production 429 shape on the DM send path (same reconcile as rooms). *)
+let dm_429_production_body_shape () =
+  let tmp = mkdtemp () in
+  let body =
+    `Assoc
+      [ ("error", `String "rate_limit_exceeded");
+        ("retry_after", `Float 0.75);
+      ]
+  in
+  with_fault ~meth:"POST" ~path:"/send"
+    [ json_response ~status:429 body ]
+    (fun srv url ->
+      let ((_, out, _) as res) = run_c2c ~tmp (dm_send_args ~url) in
+      assert_honest_failure ~what:"dm send vs production 429 body"
+        ~needle:"rate_limit_exceeded" res;
+      Alcotest.(check bool) "no schema-complaint double-error" false
+        (contains ~needle:"body did not report ok:false" out);
+      Alcotest.(check bool) "not http_error_429" false
+        (contains ~needle:"http_error_429" out);
+      let json = Yojson.Safe.from_string out in
+      (match member "retry_after" json with
+       | `Float f when abs_float (f -. 0.75) < 1e-9 -> ()
+       | other ->
+           Alcotest.fail
+             (Printf.sprintf "retry_after must be 0.75, got %s"
+                (Yojson.Safe.to_string other)));
+      Alcotest.(check int) "exactly one request" 1
+        (List.length (requests_for ~path:"/send" srv)))
 
 let dm_500 () =
   check_status_fault ~what:"dm send vs 500" ~args_of_url:dm_send_args
@@ -823,6 +933,12 @@ let () =
         [ Alcotest.test_case "B094 401 register fails honestly" `Quick reg_401;
           Alcotest.test_case "B080 429 register single-shot honest failure"
             `Quick reg_429;
+          Alcotest.test_case
+            "B237 production 429 body (no ok:false) is single clean rate-limit"
+            `Quick reg_429_production_body_shape;
+          Alcotest.test_case
+            "B237 honest 429 with retry_after passthrough" `Quick
+            reg_429_honest_with_retry_after;
           Alcotest.test_case "B090 500 JSON register fails honestly" `Quick
             reg_500;
           Alcotest.test_case "B087 503 non-JSON register fails honestly" `Quick
@@ -843,6 +959,9 @@ let () =
         [ Alcotest.test_case "B094 401 dm send fails honestly" `Quick dm_401;
           Alcotest.test_case "B080 429 dm send single-shot honest failure"
             `Quick dm_429;
+          Alcotest.test_case
+            "B237 production 429 body on dm send is single clean rate-limit"
+            `Quick dm_429_production_body_shape;
           Alcotest.test_case "B090 500 dm send fails honestly" `Quick dm_500;
           Alcotest.test_case "B091 truncated dm send is not success" `Quick
             dm_truncated;
