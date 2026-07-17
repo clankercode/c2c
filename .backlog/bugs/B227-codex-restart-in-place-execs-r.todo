@@ -1,0 +1,38 @@
+---
+complexity: medium
+created_at: "2026-07-17T14:36:39Z"
+depends_on: []
+estimate_hours: 1
+id: B227
+priority: high
+status: pending
+tags:
+    - codex
+    - app-server
+    - restart
+    - delivery
+title: 'codex restart-in-place execs resume on an unpersisted thread id: ''No saved session found'', then DEGRADED delivery loop (no frontend thread)'
+updated_at: "2026-07-17T14:36:39Z"
+---
+Observed 2026-07-17 in ~/src/codename-thin, two managed Codex sessions side by side (aliases codex-ribbon-tarot-ef62 and codex-mound-tine-356d), Codex v0.144.5, model gpt-5.6-sol, launched via cx (c2c new/start codex).
+
+## Symptom chain (identical in both sessions)
+
+1. Launch ~20:36: app-server ready, but Codex TUI reports 'MCP client for c2c failed to start: MCP startup failed: handshaking with MCP server failed: connection closed: initialize response' + 'MCP startup incomplete (failed: c2c)'. NOTE: B224 (marked done) added a preflight for stale [mcp_servers.c2c] config — either the preflight missed this failure mode (server crashed during initialize rather than binary-missing), or the installed binary predates the fix. Needs checking; may warrant its own bug.
+2. Session sat idle with '0 in / 0 out' (no turns ever ran — MCP failure meant the operator prompt never produced a turn, or the prompt was submitted right as restart fired).
+3. ~00:33 launcher execs restart-in-place: 'restarting in place on thread <id>' → 'c2c resume codex <alias> --thread-id <exact_thread>' (c2c_codex_session.ml ~1163-1181).
+4. Codex errors: 'ERROR: No saved session found with ID 019f6fa5-... Run codex resume without an ID to choose from existing sessions.' — the thread id captured by the delivery loop was never persisted by Codex (plausibly because zero turns ran, so no rollout file was written).
+5. Resumed session then logs 'delivery loop ran DEGRADED: no frontend thread was ever loaded, so c2c mail was not auto-delivered this session (session was still supervised).' Operator lands back at the shell with a dead managed session and no delivered mail.
+
+## Suspected root cause
+
+restart-in-place (c2c_codex_session.ml, restart_executable/thread_id branch) trusts the delivery loop's thread_id unconditionally and execs 'resume codex <alias> --thread-id <id>' without verifying Codex actually persisted that thread (rollout file exists / codex knows the id). A thread with zero completed turns is never saved, so resume-by-id hard-fails, and the relaunched supervisor then runs degraded because no thread can load.
+
+## Fix ideas
+
+- Before exec-ing resume with --thread-id, verify the thread is resumable (rollout/session file exists under CODEX_HOME); if not, resume without --thread-id or start a fresh thread instead of propagating a dead id.
+- Treat Codex 'No saved session found' on managed resume as a recoverable condition: fall back to fresh-thread launch (keeping alias/registration) rather than ending in DEGRADED supervision.
+- Also investigate why restart-in-place fired at ~00:33 on idle sessions (scheduled restart? restart-stale? peer-triggered c2c restart?) and whether the trigger should skip sessions with zero turns.
+- Re-verify B224 preflight coverage: handshake still failed at launch in both panes.
+
+Screenshot of both panes captured in session 5d699ec4 (image cache 1.png). Repro likely: launch managed codex, let MCP handshake fail / run zero turns, then trigger restart-in-place.
