@@ -457,6 +457,7 @@ let run_c2c ~tmp args =
   let env =
     [| "PATH=" ^ (try Sys.getenv "PATH" with Not_found -> "/usr/bin:/bin");
        "HOME=" ^ tmp;
+       "XDG_CONFIG_HOME=" ^ Filename.concat tmp ".config";
        "C2C_MCP_SESSION_ID=relay-state-h5-test";
        "C2C_MCP_BROKER_ROOT=" ^ Filename.concat tmp "broker";
     |]
@@ -478,9 +479,13 @@ let run_c2c ~tmp args =
   (code, out)
 
 let test_whoami_json_human_parity_unconfigured () =
+  (* B226/B187: whoami exits non-zero for unregistered sessions. Seed a local
+     registration (still no relay URL / identity) so the test exercises the
+     unconfigured *relay* classifier without ambient host state. *)
   let tmp = mkdtemp () in
-  (* B187: whoami refuses unregistered session_ids. Seed a local broker
-     registration so identity resolves; leave relay unconfigured. *)
+  (* B187/B226: whoami refuses unregistered session_ids. Seed a local broker
+     registration so identity resolves; leave relay unconfigured. Hermetic
+     HOME/broker isolation so CI has no ambient session. *)
   let broker_root = Filename.concat tmp "broker" in
   Unix.mkdir broker_root 0o700;
   let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -515,9 +520,12 @@ let test_whoami_json_human_parity_unconfigured () =
   check bool "human output has a connector: line" true
     (string_contains ~needle:"connector:" out_h);
   (* Local broker alias is present; the old conflated "  registered:" label
-     (A020/A027) must stay gone. *)
+     (A020/A027) must stay gone. B234: unconfigured is not positive absence —
+     do not require "not a relay registration" on the alias line. *)
   check bool "human relay section shows the local alias" true
     (string_contains ~needle:("alias:      " ^ alias) out_h);
+  check bool "human output has a state: line for relay" true
+    (string_contains ~needle:"state:" out_h);
   check bool "old conflated 'registered:' label is gone" false
     (string_contains ~needle:"  registered:" out_h);
   (* B234: unconfigured is not positive absence — do not claim

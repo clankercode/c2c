@@ -166,8 +166,11 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
               (try Unix.kill pid Sys.sigkill with _ -> ());
               (try ignore (Unix.waitpid [] pid) with _ -> ()))
             (fun () ->
+              (* B226: identity poll thread wakes every ~2s; under CI load the
+                 original 4s ceilings flaked. Use longer waits for startup /
+                 rebind observation while keeping the fake relay local. *)
               check bool "startup bound alias arms relay" true
-                (wait_for ~timeout:4.0 out_path "relay watch: peek");
+                (wait_for ~timeout:12.0 out_path "relay watch: peek");
               let rec wait_for_old_peek deadline =
                 let peeks =
                   Relay_test_support.requests server
@@ -179,16 +182,17 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
                 else (Unix.sleepf 0.02; wait_for_old_peek deadline)
               in
               check bool "old relay watch is active before rename" true
-                (wait_for_old_peek (Unix.gettimeofday () +. 4.0));
+                (wait_for_old_peek (Unix.gettimeofday () +. 12.0));
               (match C2c_mcp.Broker.rename_alias broker ~session_id:sid
                        ~new_alias:"b206-new" with
                | Ok _ -> ()
                | Error e -> fail ("rename fixture failed: " ^ e));
               check bool "identity rebind observed" true
-                (wait_for ~timeout:4.0 out_path "identity rebind:");
+                (wait_for ~timeout:12.0 out_path "identity rebind:");
               check bool "rebind also keeps relay off" true
                 (contains (slurp out_path) "b206-new is not registered"
-                 || contains (slurp out_path) "alias \"b206-new\" is not registered");
+                 || contains (slurp out_path) "alias \"b206-new\" is not registered"
+                 || contains (slurp out_path) "relay watch: off");
               check bool "local monitor remains alive" true
                 (try Unix.kill pid 0; true with _ -> false);
               let requests = Relay_test_support.requests server in

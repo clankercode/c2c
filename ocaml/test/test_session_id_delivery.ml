@@ -83,12 +83,21 @@ let test_send_session_writes_global_inbox () =
     Fun.protect
       ~finally:(fun () -> try Sys.remove out with _ -> ())
       (fun () ->
+        (* B226: under a clean env (CI), bare send has no honest sender
+           identity (B187). Provide an explicit auto-register alias so the
+           --session delivery path is exercised hermetically without ambient
+           host session env. *)
         let cmd =
           Printf.sprintf
-            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
-             C2C_CLI_FORCE=1 C2C_SESSIONS_BROKER_ROOT=%s %s \
+            "env -u CLAUDE_CODE_CHILD_SESSION -u C2C_NO_AUTO_REGISTER \
+             -u C2C_MCP_SESSION_ID -u C2C_MCP_BROKER_ROOT \
+             -u CLAUDE_CODE_SESSION_ID -u CLAUDE_SESSION_ID \
+             -u CODEX_THREAD_ID -u GROK_SESSION_ID -u GROK_AGENT \
+             C2C_CLI_FORCE=1 C2C_MCP_AUTO_REGISTER_ALIAS=cli-send-session \
+             C2C_SESSIONS_BROKER_ROOT=%s HOME=%s %s \
              send --session %s 'hello world' > %s 2>&1"
-            (Filename.quote dir) (Filename.quote built_c2c)
+            (Filename.quote dir) (Filename.quote dir)
+            (Filename.quote built_c2c)
             (Filename.quote sid) (Filename.quote out)
         in
         let rc = Sys.command cmd in
