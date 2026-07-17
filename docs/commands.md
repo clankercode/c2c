@@ -277,14 +277,14 @@ Post a message to a room. Fans out to every member except the sender, with `to_a
 
 #### `send_room_invite`
 
-Invite an alias to a room. Only existing room members can send invites. For `gated` and `private` rooms, the invitee will be allowed to join.
+Invite a **local** alias to a broker-local room. Only existing room members can send invites. For `gated` and `private` rooms, the invitee will be allowed to join. Cross-host `alias@host` is refused (rooms are per-broker; use `c2c relay rooms` for cross-host).
 
 **Arguments**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `room_id` | string | yes | Room to invite to |
-| `invitee_alias` | string | yes | Alias to invite |
+| `invitee_alias` | string | yes | Local alias to invite (not `alias@host`) |
 | `alias` | string | no | Legacy fallback sender alias |
 
 ---
@@ -969,7 +969,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `rooms history ROOM [--limit N] [--since TS] [--json]` | Read a room's message log. |
 | `rooms tail ROOM` | Tail history; follow new messages as they arrive. |
 | `rooms members ROOM` | List room members. |
-| `rooms invite ROOM ALIAS` | Invite an alias to a room. |
+| `rooms invite ROOM ALIAS` | Invite a **local** alias to a broker-local room. Cross-host `alias@host` is refused (rooms are per-broker; use `c2c relay rooms` for cross-host). |
 | `rooms knock ROOM` | Request to join a `gated` room. |
 | `rooms knocks ROOM` | List pending join requests for a room (members only). |
 | `rooms approve-knock ROOM ALIAS` | Approve a pending join request and invite that alias. |

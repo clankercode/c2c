@@ -54,8 +54,13 @@ For `gated` and `private` rooms, joining requires the caller's `identity_pk`
 invite list. Membership is granted via signed invites:
 
 ```
-c2c rooms invite <room> <alias>     # add <alias>'s identity_pk to the ACL
+c2c rooms invite <room> <alias>     # add local <alias> to the invite ACL
 ```
+
+`<alias>` must be a **local** broker alias. Cross-host `alias@host` is refused:
+broker-local rooms are not federated over the relay, so a remote invite would
+be a silent no-op. For cross-host rooms use `c2c relay rooms` (and
+`c2c relay rooms invite --invitee-pk …`).
 
 There is **no local** `c2c rooms uninvite` (and no MCP uninvite tool) on the
 local broker today — invite is one-way on the local surface. Revoking an invite

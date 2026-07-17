@@ -491,7 +491,8 @@ let rooms_invite_cmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
   in
   let invitee =
-    Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ALIAS" ~doc:"Alias to invite.")
+    Cmdliner.Arg.(required & pos 1 (some string) None & info [] ~docv:"ALIAS"
+      ~doc:"Local alias to invite. Cross-host alias@host is refused (use c2c relay rooms).")
   in
   let+ json = json_flag
   and+ room_id = room_id
@@ -846,7 +847,7 @@ let rooms_create_cmd =
   in
   let invite =
     Cmdliner.Arg.(value & opt_all string [] & info [ "invite" ] ~docv:"ALIAS"
-      ~doc:"For gated and private rooms, pre-populate invited_members. Repeatable.")
+      ~doc:"For gated and private rooms, pre-populate invited_members with local aliases. Repeatable. Cross-host alias@host is refused (use c2c relay rooms).")
   in
   let no_join =
     Cmdliner.Arg.(value & flag & info [ "no-join" ]

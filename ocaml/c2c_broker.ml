@@ -4361,6 +4361,18 @@ open C2c_mcp_helpers
     let is_member = List.exists (fun m -> m.rm_alias = from_alias) members in
     if not is_member then
       invalid_arg ("send_room_invite rejected: only room members can invite");
+    (* B236: broker-local rooms are not federated. An alias@host invite
+       would append to invited_members and look successful, but the remote
+       peer has no path to join this broker's room. Refuse with a pointer
+       to relay rooms rather than a silent no-op. Membership is checked
+       first so non-members still see the existing ACL error. *)
+    if is_remote_alias invitee_alias then
+      invalid_arg
+        (Printf.sprintf
+           "send_room_invite rejected: cannot invite cross-host alias '%s' to a \
+            broker-local room (rooms are per-broker; cross-host rooms: use c2c \
+            relay rooms)"
+           invitee_alias);
     let meta = load_room_meta t ~room_id in
     let was_already_invited = List.mem invitee_alias meta.invited_members in
     if not was_already_invited then
@@ -4554,6 +4566,18 @@ open C2c_mcp_helpers
         ~invited_members ~auto_join =
     if not (valid_room_id room_id) then
       invalid_arg ("invalid room_id: " ^ room_id);
+    (* B236: same footgun as send_room_invite — pre-populating
+       invited_members with alias@host cannot grant remote peers access
+       to a broker-local room. *)
+    (match List.find_opt is_remote_alias invited_members with
+     | Some remote ->
+         invalid_arg
+           (Printf.sprintf
+              "create_room rejected: cannot invite cross-host alias '%s' to a \
+               broker-local room (rooms are per-broker; cross-host rooms: use \
+               c2c relay rooms)"
+              remote)
+     | None -> ());
     let dir = room_dir t ~room_id in
     (* #403: rely solely on mkdir(2)'s atomic EEXIST. The previous
        Sys.file_exists pre-check was a real TOCTOU window — two creators

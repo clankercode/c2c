@@ -9967,6 +9967,57 @@ let test_send_room_invite_only_member_can_invite () =
            C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
              ~from_alias:"bob" ~invitee_alias:"carol"))
 
+(* B236: broker-local rooms are not federated. alias@host invites must
+   refuse rather than silently populate invited_members. *)
+let test_send_room_invite_rejects_cross_host_alias () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"session-a"
+        ~alias:"alice" ~pid:None ~pid_start_time:None ();
+      ignore (C2c_mcp.Broker.join_room broker ~room_id:"secret-club"
+                ~alias:"alice" ~session_id:"session-a");
+      let remote = "bob@f6bdf064bbb7" in
+      (match
+         try
+           C2c_mcp.Broker.send_room_invite broker ~room_id:"secret-club"
+             ~from_alias:"alice" ~invitee_alias:remote;
+           None
+         with Invalid_argument msg -> Some msg
+       with
+       | None -> fail "expected Invalid_argument for cross-host invite"
+       | Some msg ->
+           check bool "mentions cross-host / relay rooms" true
+             (string_contains msg "cross-host"
+              && string_contains msg "relay rooms");
+           check bool "mentions the remote alias" true
+             (string_contains msg remote));
+      let meta = C2c_mcp.Broker.load_room_meta broker ~room_id:"secret-club" in
+      check (list string) "invited_members unchanged" [] meta.invited_members)
+
+let test_create_room_rejects_cross_host_invite () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let remote = "carol@a1b2c3d4e5f6" in
+      (match
+         try
+           ignore
+             (C2c_mcp.Broker.create_room broker ~room_id:"gated-x"
+                ~caller_alias:"alice" ~caller_session_id:"session-a"
+                ~visibility:C2c_mcp.Gated
+                ~invited_members:[ "bob"; remote ] ~auto_join:true);
+           None
+         with Invalid_argument msg -> Some msg
+       with
+       | None -> fail "expected Invalid_argument for cross-host create --invite"
+       | Some msg ->
+           check bool "mentions cross-host / relay rooms" true
+             (string_contains msg "cross-host"
+              && string_contains msg "relay rooms");
+           check bool "mentions the remote alias" true
+             (string_contains msg remote));
+      check bool "room not created on refuse" false
+        (Sys.file_exists (Filename.concat dir "rooms/gated-x")))
+
 let test_room_meta_pending_knocks_defaults_empty () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -16686,6 +16737,10 @@ let () =
              test_send_room_invite_auto_dms_invitee
            ; test_case "send_room_invite only member can invite" `Quick
              test_send_room_invite_only_member_can_invite
+         ; test_case "send_room_invite rejects cross-host alias@host (B236)" `Quick
+             test_send_room_invite_rejects_cross_host_alias
+         ; test_case "create_room rejects cross-host invite (B236)" `Quick
+             test_create_room_rejects_cross_host_invite
          ; test_case "room meta pending_knocks defaults empty" `Quick
              test_room_meta_pending_knocks_defaults_empty
          ; test_case "knock_room gated duplicate idempotent and notifies members" `Quick
