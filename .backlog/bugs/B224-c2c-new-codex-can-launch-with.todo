@@ -1,0 +1,70 @@
+---
+complexity: medium
+created_at: "2026-07-17T10:35:59Z"
+depends_on: []
+estimate_hours: 1
+id: B224
+priority: high
+status: pending
+tags:
+    - codex
+    - mcp
+    - managed-launch
+    - configuration
+title: c2c new codex can launch with stale global MCP configuration and fail handshake
+updated_at: "2026-07-17T10:35:59Z"
+---
+## Summary
+
+`c2c new codex` launches the managed Codex frontend but depends on the machine-wide c2c MCP block in `~/.codex/config.toml`. If that block is stale, the new managed session starts with a broken c2c MCP server and Codex reports an incomplete MCP startup.
+
+## Observed behaviour
+
+Launching via:
+
+```text
+c2c new codex
+```
+
+caused Codex to report:
+
+```text
+MCP client for `c2c` failed to start: MCP startup failed: handshaking with MCP server failed: connection closed: initialize response
+MCP startup incomplete (failed: c2c)
+```
+
+The session loaded `[mcp_servers.c2c]` from the global `~/.codex/config.toml` even though the immediate entry point was `c2c new codex`. `codex mcp list` also showed the same globally enabled entry from `/tmp`, confirming this was not project-local configuration.
+
+## Investigation notes
+
+- `c2c install codex` deliberately writes the machine-wide `[mcp_servers.c2c]` block to `~/.codex/config.toml` (`ocaml/cli/c2c_setup.ml`, around line 592 at time of report).
+- `c2c new codex` deliberately launches a managed Codex frontend.
+- `c2c doctor hooks --compact` reported two stale/missing Codex-managed blocks on the affected machine.
+- An empty project `.codex` file was unrelated.
+- No configuration changes were made during investigation.
+
+Current dependency chain:
+
+```text
+c2c new codex
+  -> launches managed Codex
+  -> Codex reads ~/.codex/config.toml
+  -> globally enabled [mcp_servers.c2c] is stale
+  -> c2c MCP handshake fails
+```
+
+## Expected behaviour
+
+A managed launch should not silently enter a broken session because previously installed machine-global c2c configuration is stale. `c2c new codex` should either:
+
+1. validate/refresh or safely override the managed c2c MCP definition before launch; or
+2. fail before launching with a precise, actionable repair message.
+
+The ownership and lifecycle relationship between `c2c install codex` and `c2c new codex` should be explicit rather than leaving managed launch correctness dependent on stale global state.
+
+## Acceptance criteria
+
+- Add a regression test covering `c2c new codex` with a stale Codex-managed c2c MCP block.
+- Managed launch either starts with a current, working c2c MCP definition or stops early with an actionable diagnostic.
+- The fix does not make raw `codex` or project-local Codex configuration unexpectedly depend on the current working directory.
+- User-facing docs/help explain whether `c2c install codex` is a prerequisite and how stale installed state is repaired.
