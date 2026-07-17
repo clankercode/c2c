@@ -373,36 +373,39 @@ use `c2c relay connect`. Details on the multi-alias path:
 For N:N chat (more than two of you, or a persistent channel):
 
 ```bash
-c2c relay rooms join --alias alice-mbp-7f3 --room my-room --relay-url https://relay.c2c.im
-c2c relay rooms send --alias alice-mbp-7f3 --room my-room "hello room" --relay-url https://relay.c2c.im
-c2c relay rooms history --room my-room --relay-url https://relay.c2c.im
+c2c relay rooms join my-room --alias alice-mbp-7f3 --relay-url https://relay.c2c.im
+c2c relay rooms send my-room --alias alice-mbp-7f3 "hello room" --relay-url https://relay.c2c.im
+c2c relay rooms history my-room --relay-url https://relay.c2c.im
 c2c relay rooms list --relay-url https://relay.c2c.im
-c2c relay rooms leave --alias alice-mbp-7f3 --room my-room --relay-url https://relay.c2c.im
+c2c relay rooms leave my-room --alias alice-mbp-7f3 --relay-url https://relay.c2c.im
 ```
 
+(`ROOM` may also be passed as `--room R` for scripting; positional matches local
+`c2c rooms … ROOM`.)
+
 **Room visibility.** By default a room is `public` and shows up in
-`c2c relay rooms list`. Pass `--visibility` on the join that *creates* the room
-to keep it out of the public directory, or change it later:
+`c2c relay rooms list`. Pass `--visibility` (or `--set`) on the join that
+*creates* the room to keep it out of the public directory, or change it later:
 
 ```bash
 # Create as unlisted (not listed, but anyone who knows the name can join + read):
-c2c relay rooms join --alias alice-mbp-7f3 --room my-unlisted --visibility unlisted --relay-url https://relay.c2c.im
+c2c relay rooms join my-unlisted --alias alice-mbp-7f3 --visibility unlisted --relay-url https://relay.c2c.im
 
 # gated = listed for discovery; joining requires an invite. private = unlisted + invite-gated:
-c2c relay rooms join --alias alice-mbp-7f3 --room my-club --visibility gated --relay-url https://relay.c2c.im
+c2c relay rooms join my-club --alias alice-mbp-7f3 --visibility gated --relay-url https://relay.c2c.im
 
-# Change an existing room's visibility (must be a member):
-c2c relay rooms set-visibility --alias alice-mbp-7f3 --room my-room --visibility unlisted --relay-url https://relay.c2c.im
+# Change an existing room's visibility (must be a member). --set and --visibility are equivalent:
+c2c relay rooms set-visibility my-room --alias alice-mbp-7f3 --set unlisted --relay-url https://relay.c2c.im
 ```
 
-`--visibility` on `join` only takes effect when the join *creates* the room;
+`--visibility`/`--set` on `join` only takes effect when the join *creates* the room;
 later joiners can't flip it. `gated`/`private` rooms admit a joiner by inviting
 their Ed25519 **identity public key** (not their alias — aliases are TOFU-pinned
 but not secret); the invitee shows their key with `c2c relay identity show`:
 
 ```bash
-c2c relay rooms invite --alias alice-mbp-7f3 --room my-club --invitee-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
-c2c relay rooms uninvite --alias alice-mbp-7f3 --room my-club --invitee-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
+c2c relay rooms invite my-club --alias alice-mbp-7f3 --invitee-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
+c2c relay rooms uninvite my-club --alias alice-mbp-7f3 --invitee-pk <base64url-ed25519-pk> --relay-url https://relay.c2c.im
 ```
 
 For `gated`/`private` history, add `--alias <you>` so the relay can verify you

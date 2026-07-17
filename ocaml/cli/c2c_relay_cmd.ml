@@ -771,6 +771,30 @@ let fetch_relay_peers_for_list ~timeout ?relay_url ?token ?alias () =
       | e ->
           Relay_error (Printf.sprintf "%s (%s)" url (Printexc.to_string e))
 
+(* B239: resolve room id from --room and/or a leading positional WORD so
+   relay rooms matches local `c2c rooms … ROOM` ergonomics.
+   - Non-send: ROOM may be positional or --room (both accepted; conflict errors).
+   - Send: ROOM may be positional or --room; remaining WORDS are the message. *)
+let resolve_relay_room_arg ~room_flag ~words ~for_send =
+  match room_flag with
+  | Some r ->
+      (match words with
+       | w0 :: _ when (not for_send) && not (String.equal w0 r) ->
+           Error
+             (Printf.sprintf
+                "conflicting room: --room %s vs positional %s" r w0)
+       | _ :: _ :: _ when not for_send ->
+           Error "unexpected extra arguments after room id"
+       | _ when not for_send -> Ok (r, [])
+       | _ -> Ok (r, words))
+  | None ->
+      (match words with
+       | [] ->
+           Error "room required (pass ROOM positionally or --room ROOM)"
+       | r :: rest when for_send -> Ok (r, rest)
+       | [ r ] -> Ok (r, [])
+       | _ :: _ -> Error "unexpected extra arguments after room id")
+
 let relay_rooms_cmd =
   let subcmd =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"list|join|leave|send|history|invite|uninvite|set-visibility|set-history-public" ~doc:"Rooms subcommand.")
@@ -782,7 +806,8 @@ let relay_rooms_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN" ~doc:relay_token_resolution_doc)
   in
   let room =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "room" ] ~docv:"ROOM" ~doc:"Room id (required for history).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "room" ] ~docv:"ROOM"
+      ~doc:"Room id. Preferred form is the positional ROOM (like local c2c rooms); --room remains accepted.")
   in
   let limit =
     Cmdliner.Arg.(value & opt int 50 & info [ "limit" ] ~docv:"N" ~doc:"Max messages for history (default 50).")
@@ -793,19 +818,32 @@ let relay_rooms_cmd =
   let invitee_pk =
     Cmdliner.Arg.(value & opt (some string) None & info [ "invitee-pk" ] ~docv:"PK" ~doc:"Base64url invitee identity public key (required for invite/uninvite).")
   in
+  (* B239: accept --set / -s as aliases for --visibility so local
+     `rooms visibility ROOM --set …` and relay `set-visibility --visibility …`
+     share the same flag names for the same concept. *)
   let visibility =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "visibility" ] ~docv:"public|unlisted|gated|private" ~doc:"Room visibility: 'public' (listed + open join), 'unlisted' (unlisted + open join), 'gated' (listed + invite-gated join), or 'private' (unlisted + invite-gated join). Required for set-visibility; optional for join, where it applies only when the join creates the room.")
+    Cmdliner.Arg.(value & opt (some string) None
+      & info [ "visibility"; "set"; "s" ] ~docv:"public|unlisted|gated|private"
+      ~doc:"Room visibility: 'public' (listed + open join), 'unlisted' (unlisted + open join), 'gated' (listed + invite-gated join), or 'private' (unlisted + invite-gated join). Required for set-visibility (--visibility and --set/-s are equivalent); optional for join, where it applies only when the join creates the room.")
   in
   let history_public =
     Cmdliner.Arg.(value & opt (some string) None & info [ "history-public" ] ~docv:"true|false" ~doc:"History readability policy for 'set-history-public': 'true' allows anonymous room-history reads on a public/unlisted room, 'false' makes it member-only. Rejected for gated/private rooms (always member-only).")
   in
   let words =
-    Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"Message body for 'send' (joined with spaces).")
+    Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"ROOM|MSG…"
+      ~doc:"Positional ROOM for join/leave/history/invite/uninvite/set-visibility/set-history-public (or use --room). For send: ROOM MSG… when --room is omitted, else MSG… only.")
   in
   let canonical_visibility_for_sig v =
     match Relay.canonical_visibility v with
     | Some v -> v
     | None -> v
+  in
+  let room_or_exit ~subcmd ~room_flag ~words ~for_send =
+    match resolve_relay_room_arg ~room_flag ~words ~for_send with
+    | Ok pair -> pair
+    | Error msg ->
+        Printf.eprintf "error: %s for 'rooms %s'.\n%!" msg subcmd;
+        exit 1
   in
   let+ subcmd = subcmd
   and+ relay_url = relay_url
@@ -821,17 +859,17 @@ let relay_rooms_cmd =
   | "join" | "leave" ->
       let sign_ctx = if subcmd = "join" then Relay.room_join_sign_ctx
                      else Relay.room_leave_sign_ctx in
-      (match resolve_relay_url relay_url, room, alias with
-       | None, _, _ ->
+      let room_id, _leftover =
+        room_or_exit ~subcmd ~room_flag:room ~words ~for_send:false
+      in
+      (match resolve_relay_url relay_url, alias with
+       | None, _ ->
            Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
-       | _, None, _ ->
-           Printf.eprintf "error: --room required for 'rooms %s'.\n%!" subcmd;
-           exit 1
-       | _, _, None ->
+       | _, None ->
            Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
            exit 1
-       | Some url, Some room_id, Some alias ->
+       | Some url, Some alias ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            (* --visibility is only meaningful for 'join', where it applies if
               the join creates the room. 'leave' ignores it. *)
@@ -863,20 +901,20 @@ let relay_rooms_cmd =
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | "send" ->
-      (match resolve_relay_url relay_url, room, alias, words with
-       | None, _, _, _ ->
+      let room_id, msg_words =
+        room_or_exit ~subcmd:"send" ~room_flag:room ~words ~for_send:true
+      in
+      (match resolve_relay_url relay_url, alias, msg_words with
+       | None, _, _ ->
            Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
-       | _, None, _, _ ->
-           Printf.eprintf "error: --room required for 'rooms send'.\n%!";
-           exit 1
-       | _, _, None, _ ->
+       | _, None, _ ->
            Printf.eprintf "error: --alias required for 'rooms send'.\n%!";
            exit 1
-       | _, _, _, [] ->
+       | _, _, [] ->
            Printf.eprintf "error: message body required for 'rooms send'.\n%!";
            exit 1
-       | Some url, Some room_id, Some from_alias, ws ->
+       | Some url, Some from_alias, ws ->
            let content = String.concat " " ws in
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            (* B114: always send a signed envelope — the relay rejects
@@ -893,14 +931,14 @@ let relay_rooms_cmd =
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "history" ->
-      (match resolve_relay_url relay_url, room with
-       | None, _ ->
+      let room_id, _ =
+        room_or_exit ~subcmd:"history" ~room_flag:room ~words ~for_send:false
+      in
+      (match resolve_relay_url relay_url with
+       | None ->
            Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
-       | _, None ->
-           Printf.eprintf "error: --room required for 'rooms history'.\n%!";
-           exit 1
-       | Some url, Some room_id ->
+       | Some url ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            let result =
              match Relay_identity.load (), alias with
@@ -990,20 +1028,20 @@ let relay_rooms_cmd =
            in
            print_result_and_exit ?alias_source result)
   | "invite" | "uninvite" ->
-      (match resolve_relay_url relay_url, room, alias, invitee_pk with
-       | None, _, _, _ ->
+      let room_id, _ =
+        room_or_exit ~subcmd ~room_flag:room ~words ~for_send:false
+      in
+      (match resolve_relay_url relay_url, alias, invitee_pk with
+       | None, _, _ ->
            Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
-       | _, None, _, _ ->
-           Printf.eprintf "error: --room required for 'rooms %s'.\n%!" subcmd;
-           exit 1
-       | _, _, None, _ ->
+       | _, None, _ ->
            Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
            exit 1
-       | _, _, _, None ->
+       | _, _, None ->
            Printf.eprintf "error: --invitee-pk required for 'rooms %s'.\n%!" subcmd;
            exit 1
-       | Some url, Some room_id, Some from_alias, Some invitee_pk_val ->
+       | Some url, Some from_alias, Some invitee_pk_val ->
            let sign_ctx = if subcmd = "invite" then Relay.room_invite_sign_ctx
                           else Relay.room_uninvite_sign_ctx in
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -1026,20 +1064,22 @@ let relay_rooms_cmd =
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit from_alias) result)
   | "set-visibility" ->
-      (match resolve_relay_url relay_url, room, alias, visibility with
-       | None, _, _, _ ->
+      let room_id, _ =
+        room_or_exit ~subcmd:"set-visibility" ~room_flag:room ~words
+          ~for_send:false
+      in
+      (match resolve_relay_url relay_url, alias, visibility with
+       | None, _, _ ->
            Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
-       | _, None, _, _ ->
-           Printf.eprintf "error: --room required for 'rooms set-visibility'.\n%!";
-           exit 1
-       | _, _, None, _ ->
+       | _, None, _ ->
            Printf.eprintf "error: --alias required for 'rooms set-visibility'.\n%!";
            exit 1
-       | _, _, _, None ->
-           Printf.eprintf "error: --visibility required for 'rooms set-visibility'.\n%!";
+       | _, _, None ->
+           Printf.eprintf
+             "error: --visibility/--set required for 'rooms set-visibility'.\n%!";
            exit 1
-       | Some url, Some room_id, Some alias, Some visibility_val ->
+       | Some url, Some alias, Some visibility_val ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            (* B114: the relay requires the caller be a room member AND a
               signed proof — always sign. *)
@@ -1056,6 +1096,10 @@ let relay_rooms_cmd =
            in
            print_result_and_exit ~alias_source:(Relay_client_hints.Explicit alias) result)
   | "set-history-public" ->
+      let room_id, _ =
+        room_or_exit ~subcmd:"set-history-public" ~room_flag:room ~words
+          ~for_send:false
+      in
       let parsed_hp = match history_public with
         | Some v ->
             (match String.lowercase_ascii (String.trim v) with
@@ -1064,23 +1108,20 @@ let relay_rooms_cmd =
              | _ -> None)
         | None -> None
       in
-      (match resolve_relay_url relay_url, room, alias, history_public, parsed_hp with
-       | None, _, _, _, _ ->
+      (match resolve_relay_url relay_url, alias, history_public, parsed_hp with
+       | None, _, _, _ ->
            Printf.eprintf "%s%!" relay_url_required_error;
            exit 1
-       | _, None, _, _, _ ->
-           Printf.eprintf "error: --room required for 'rooms set-history-public'.\n%!";
-           exit 1
-       | _, _, None, _, _ ->
+       | _, None, _, _ ->
            Printf.eprintf "error: --alias required for 'rooms set-history-public'.\n%!";
            exit 1
-       | _, _, _, None, _ ->
+       | _, _, None, _ ->
            Printf.eprintf "error: --history-public true|false required for 'rooms set-history-public'.\n%!";
            exit 1
-       | _, _, _, Some _, None ->
+       | _, _, Some _, None ->
            Printf.eprintf "error: --history-public must be 'true' or 'false'.\n%!";
            exit 1
-       | Some url, Some room_id, Some alias, Some _, Some hp ->
+       | Some url, Some alias, Some _, Some hp ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
            (* The relay requires the caller be a room member AND a signed proof
               whose signature covers the boolean — always sign. *)

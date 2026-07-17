@@ -3592,6 +3592,117 @@ let run_capture command =
       let rc = Sys.command (Printf.sprintf "%s > %s 2>&1" command (Filename.quote tmpfile)) in
       (rc, read_file tmpfile))
 
+(* ------------------------------------------------------------------------- *)
+(* B239: relay rooms CLI ergonomics — positional ROOM + visibility flags     *)
+(* ------------------------------------------------------------------------- *)
+
+let test_relay_rooms_join_missing_room_errors () =
+  (* No room positional and no --room → usage error before any network I/O. *)
+  let rc, out =
+    run_capture
+      (c2c_cmd
+         "C2C_CLI_FORCE=1 c2c relay rooms join --alias probe \
+          --relay-url http://127.0.0.1:1")
+  in
+  check bool "missing room exits non-zero" true (rc <> 0);
+  check bool "mentions room required" true (string_contains out "room required")
+
+let test_relay_rooms_join_positional_room_not_room_required () =
+  (* Dogfood footgun: `join ROOM --alias …` used to say '--room required'. *)
+  with_temp_dir (fun home ->
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "HOME=%s C2C_CLI_FORCE=1 c2c relay rooms join df-pub-x7k2 \
+                 --alias probe --relay-url http://127.0.0.1:1"
+                (Filename.quote home)))
+      in
+      check bool "positional room path exits non-zero without live relay" true
+        (rc <> 0);
+      check bool "does not reject positional room as missing --room" true
+        (not (string_contains out "room required")))
+
+let test_relay_rooms_join_flag_room_still_accepted () =
+  with_temp_dir (fun home ->
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "HOME=%s C2C_CLI_FORCE=1 c2c relay rooms join --room df-pub-x7k2 \
+                 --alias probe --relay-url http://127.0.0.1:1"
+                (Filename.quote home)))
+      in
+      check bool "--room form exits non-zero without live relay" true (rc <> 0);
+      check bool "--room form not rejected as missing room" true
+        (not (string_contains out "room required")))
+
+let test_relay_rooms_send_positional_room_not_room_required () =
+  with_temp_dir (fun home ->
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "HOME=%s C2C_CLI_FORCE=1 c2c relay rooms send my-room hello \
+                 --alias probe --relay-url http://127.0.0.1:1"
+                (Filename.quote home)))
+      in
+      check bool "send with positional room exits non-zero without live relay"
+        true (rc <> 0);
+      check bool "send does not demand --room when ROOM is positional" true
+        (not (string_contains out "room required"));
+      check bool "send does not claim message body missing" true
+        (not (string_contains out "message body required")))
+
+let test_relay_rooms_set_visibility_accepts_set_flag () =
+  (* Local uses --set; relay historically used only --visibility. Both ok. *)
+  with_temp_dir (fun home ->
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "HOME=%s C2C_CLI_FORCE=1 c2c relay rooms set-visibility my-room \
+                 --alias probe --set gated --relay-url http://127.0.0.1:1"
+                (Filename.quote home)))
+      in
+      check bool "set-visibility --set exits non-zero without live relay" true
+        (rc <> 0);
+      check bool "does not demand --visibility when --set given" true
+        (not (string_contains out "--visibility"));
+      check bool "does not demand room when positional given" true
+        (not (string_contains out "room required")))
+
+let test_relay_rooms_set_visibility_missing_vis_errors () =
+  let rc, out =
+    run_capture
+      (c2c_cmd
+         "C2C_CLI_FORCE=1 c2c relay rooms set-visibility my-room --alias probe \
+          --relay-url http://127.0.0.1:1")
+  in
+  check bool "missing visibility exits non-zero" true (rc <> 0);
+  check bool "mentions --visibility/--set" true
+    (string_contains out "--visibility" || string_contains out "--set")
+
+let test_rooms_visibility_accepts_visibility_flag () =
+  (* Local historically used only --set; --visibility is now an alias (B239). *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"vis-sid"
+        ~alias:"vis-alias" ~pid:None ~pid_start_time:None ();
+      ignore
+        (C2c_mcp.Broker.join_room broker ~room_id:"vis-room"
+           ~alias:"vis-alias" ~session_id:"vis-sid");
+      let rc, out =
+        run_capture
+          (c2c_cmd
+             (Printf.sprintf
+                "C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=vis-sid \
+                 c2c rooms visibility vis-room --visibility gated"
+                (Filename.quote dir)))
+      in
+      check int ("rooms visibility --visibility exits 0: " ^ out) 0 rc;
+      check bool "reports gated" true (string_contains out "gated"))
+
 let test_rooms_knock_approve_then_join_flow () =
   with_temp_dir (fun broker_root ->
       let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -4635,6 +4746,15 @@ let () =
         [ ( "rooms join missing room exits non-zero", `Quick, test_rooms_join_missing_room_exits_nonzero )
         ; ( "rooms join --help exits 0", `Quick, test_rooms_join_help_exits_zero )
         ; ( "rooms knock approve then join flow", `Quick, test_rooms_knock_approve_then_join_flow )
+        ] )
+    ; ( "relay_rooms_ergonomics_b239",
+        [ ( "relay rooms join missing room errors", `Quick, test_relay_rooms_join_missing_room_errors )
+        ; ( "relay rooms join positional room accepted", `Quick, test_relay_rooms_join_positional_room_not_room_required )
+        ; ( "relay rooms join --room still accepted", `Quick, test_relay_rooms_join_flag_room_still_accepted )
+        ; ( "relay rooms send positional room accepted", `Quick, test_relay_rooms_send_positional_room_not_room_required )
+        ; ( "relay rooms set-visibility accepts --set", `Quick, test_relay_rooms_set_visibility_accepts_set_flag )
+        ; ( "relay rooms set-visibility missing vis errors", `Quick, test_relay_rooms_set_visibility_missing_vis_errors )
+        ; ( "rooms visibility accepts --visibility", `Quick, test_rooms_visibility_accepts_visibility_flag )
         ] )
     ; ( "rooms_my_rooms",
         [ ( "rooms my-rooms exits 0", `Quick, test_rooms_my_rooms_exits_zero )
