@@ -1371,8 +1371,13 @@ let hook_kimi_cmd =
                  && List.exists (fun sid -> r.session_id = sid) candidates)
               (C2c_mcp.Broker.list_registrations broker)
           with
-          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | Some r ->
+              (* B238: stop hook-started notifier only for kimi-hook sessions —
+                 never tear down a managed `c2c start kimi` notifier. *)
+              (try C2c_kimi_notifier.stop_daemon ~alias:r.alias with _ -> ());
+              ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
           | None -> ());
+         C2c_setup.remove_kimi_session_identity_skill ();
          exit 0
        end;
        (* SessionStart: refresh skill, then ensure session is registered. *)
@@ -1416,8 +1421,60 @@ let hook_kimi_cmd =
               C2c_cli_helpers.write_session_statefile ~broker_root
                 ~session_id ~alias ~client:(Some "kimi"))
        end;
-       (* Kimi receives via REST prompt injection; no additionalContext or
-          identity skill is needed here. *)
+       (* Resolve live alias after register (or existing registration). *)
+       let regs = C2c_mcp.Broker.list_registrations broker in
+       let alias =
+         match
+           List.find_map
+             (fun (r : C2c_mcp.registration) ->
+                if r.session_id = session_id then Some r.alias else None)
+             regs
+         with
+         | Some a -> a
+         | None -> "unknown"
+       in
+       (* Prefer project cwd so the notifier's REST delivery can resolve the
+          Kimi session_index workdir after fork+setsid. *)
+       (match payload_string_field payload "cwd" with
+        | Some c when String.trim c <> "" ->
+            (try Unix.chdir (String.trim c) with _ -> ())
+        | _ ->
+            (match payload_string_field payload "workspaceRoot" with
+             | Some c when String.trim c <> "" ->
+                 (try Unix.chdir (String.trim c) with _ -> ())
+             | _ -> ()));
+       (* B238: arm a per-alias notifier for unmanaged sessions so DMs do not
+          sit forever in inbox.json. Managed `c2c start kimi` already runs
+          ensure_daemon; calling it again is upgrade-aware and no-ops when
+          current. Tests set C2C_KIMI_HOOK_SKIP_NOTIFIER=1 to avoid forking. *)
+       let skip_notifier =
+         match Sys.getenv_opt "C2C_KIMI_HOOK_SKIP_NOTIFIER" with
+         | Some v ->
+             let t = String.lowercase_ascii (String.trim v) in
+             t = "1" || t = "true" || t = "yes"
+         | None -> false
+       in
+       let notifier_armed =
+         if skip_notifier then false
+         else
+           (try
+              match
+                C2c_kimi_notifier.ensure_daemon
+                  ~alias ~broker_root ~session_id ~tmux_pane:None ()
+              with
+              | Some _ -> true
+              | None -> C2c_kimi_notifier.already_running alias
+            with e ->
+              (try
+                 prerr_endline
+                   ("c2c hook kimi: ensure_daemon failed: " ^ Printexc.to_string e)
+               with _ -> ());
+              C2c_kimi_notifier.already_running alias)
+       in
+       (* Identity skill: Kimi has no additionalContext inject; surface alias
+          + receive-path nudge the same way Grok does. *)
+       C2c_setup.write_kimi_session_identity_skill
+         ~alias ~session_id ~notifier_armed;
        exit 0
      with e ->
        (try prerr_endline ("c2c hook kimi: " ^ Printexc.to_string e) with _ -> ());
@@ -1426,7 +1483,7 @@ let hook_kimi_cmd =
 let hook_kimi : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "kimi"
-       ~doc:"Kimi Code SessionStart/SessionEnd hook: auto-registers the session (registered_by=kimi-hook) and refreshes the /c2c skill. Installed by `c2c install kimi`. Never fails the host turn.")
+       ~doc:"Kimi Code SessionStart/SessionEnd hook: auto-registers the session (registered_by=kimi-hook), refreshes the /c2c skill, arms a per-alias notifier when possible, and writes a c2c-session identity skill with a receive-path nudge (B238). Installed by `c2c install kimi`. Never fails the host turn.")
     hook_kimi_cmd
 
 let hook_agy_cmd =

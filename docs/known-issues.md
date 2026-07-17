@@ -51,7 +51,7 @@ Official **Linux** release assets (`c2c-*-linux-x64.tar.gz`, `linux-arm64`, and 
 
 When a Kimi Code TUI session is sitting idle at its prompt, PTY-based wake daemons are unreliable and **deprecated** (wrong PTY side, timing sensitivity).
 
-**Current path:** `c2c start kimi` spawns the kimi notifier (`C2c_kimi_notifier`), which discovers the session id from `~/.kimi-code/session_index.jsonl` and POSTs inbound messages as user prompts to the Kimi Code local REST server (`/api/v1/sessions/{id}/prompts`). A tmux wake-prompt fires when the pane is idle. No PTY injection, no wire bridge. The legacy file-based notification-store is deprecated; unmanaged/serverless setups fall back to `c2c monitor`.
+**Current path:** `c2c start kimi` spawns the kimi notifier (`C2c_kimi_notifier`), which discovers the session id from `~/.kimi-code/session_index.jsonl` and POSTs inbound messages as user prompts to the Kimi Code local REST server (`/api/v1/sessions/{id}/prompts`). A tmux wake-prompt fires when the pane is idle. No PTY injection, no wire bridge. The legacy file-based notification-store is deprecated. Unmanaged plain `kimi` sessions: SessionStart (`c2c hook kimi`) best-effort arms a per-alias notifier and writes a `c2c-session` skill nudge; if no notifier is running, fall back to `c2c monitor` / `c2c poll-inbox`. `c2c doctor hooks` flags DEAF sessions (undelivered inbox + no notifier — B238).
 
 ---
 

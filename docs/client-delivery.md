@@ -117,8 +117,12 @@ idle-gated native heartbeat.
   the Kimi Code local REST server (`/api/v1/sessions/{id}/prompts`). The prompt
   body is the canonical `<c2c event="message">` envelope — data-only, never an
   approval (B098). A SessionStart hook (`c2c hook kimi`) auto-registers the
-  session. For unmanaged/serverless setups the fallback is `c2c monitor` (e.g.
-  under a Monitor). No PTY injection is used for the production path.
+  session, best-effort arms a per-alias notifier (so unmanaged sessions are not
+  left deaf — B238), and writes a `c2c-session` identity skill with a
+  receive-path nudge. For unmanaged/serverless setups without a live notifier
+  the fallback is `c2c monitor` (e.g. under a Monitor); `c2c doctor hooks`
+  flags registered Kimi sessions with undelivered inbox and no notifier. No
+  PTY injection is used for the production path.
 - **Grok**: `c2c install grok` is **CLI-first** (no MCP by default). Preferred
   inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
   the conversation). SessionStart runs `c2c hook grok` to auto-register and
@@ -407,6 +411,14 @@ auto-registered via `C2C_MCP_AUTO_REGISTER_ALIAS`. Restart via
 `c2c stop <name>` + `c2c start kimi -n <name>`. Delivery is data-only and never
 resolves approvals (B098); the legacy file-based notification-store path is
 deprecated.
+
+**Unmanaged plain `kimi` (B238):** SessionStart still auto-registers
+(`registered_by=kimi-hook`) and calls `ensure_daemon` for the resolved alias so
+a host-local notifier can deliver via REST when the Kimi server is available.
+It also writes `~/.kimi-code/skills/c2c-session/SKILL.md` telling the agent to
+arm Monitor if the notifier could not start. Prefer managed start when
+arrival-time delivery matters. Diagnose deaf sessions with
+`c2c doctor hooks` (Kimi delivery section).
 
 ## Grok
 

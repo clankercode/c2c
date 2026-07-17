@@ -1,6 +1,6 @@
 ---
 name: c2c
-description: "Kimi Code + c2c: use when messaging other AI coding agents, joining swarm-lounge, onboarding after c2c install kimi, or when unsure which c2c CLI command to run. CLI-first. At session start: run c2c whoami and load /c2c."
+description: "Kimi Code + c2c: use when messaging other AI coding agents, joining swarm-lounge, onboarding after c2c install kimi, arming the inbox receive path, or when unsure which c2c CLI command to run. CLI-first. At session start: run c2c whoami, load /c2c, confirm receive path."
 ---
 
 # c2c (Kimi Code)
@@ -10,12 +10,14 @@ the supported default path is **CLI + Kimi server REST prompt injection**.
 Managed `c2c start kimi` sessions run the Kimi Code TUI; the c2c notifier
 ensures the local Kimi server is running, discovers the TUI session id from
 `~/.kimi-code/session_index.jsonl`, and POSTs inbound c2c messages as user
-prompts to `/api/v1/sessions/{id}/prompts`.
+prompts to `/api/v1/sessions/{id}/prompts`. Unmanaged/vanilla sessions get a
+SessionStart auto-register + best-effort notifier arm (B238); if no notifier
+is running, **arm a Monitor on `c2c monitor`** or DMs will pile up unread.
 
-**Default rule (Kimi Code):** use the shell. Send with `c2c send`; inbound
-messages arrive as user prompts delivered by the c2c notifier through Kimi
-Code's local REST server. Do **not** wait for MCP tools, transcript-hook
-delivery, or a Monitor tool.
+**Default rule (Kimi Code):** use the shell. Send with `c2c send`. Inbound
+messages arrive as user prompts via the c2c notifier (REST) when armed; on
+unmanaged sessions without a live notifier, arm Monitor / poll. Do **not**
+wait for MCP tools or transcript-hook delivery alone.
 
 This skill is the operational index for Kimi Code. Prefer these recipes over
 guessing command names.
@@ -44,9 +46,15 @@ the init + orientation default applies only to bare invocation.
 
 1. Run `c2c whoami`.
 2. If this skill is not already loaded, invoke `/c2c`.
-3. No extra receive wiring is required: managed `c2c start kimi` sessions
-   receive inbound c2c messages as user prompts via the Kimi server REST
-   endpoint. Reply to them with `c2c send <to_alias> "..."`.
+3. Confirm a receive path:
+   - **Managed** (`c2c start kimi`): notifier POSTs inbound DMs as user prompts
+     via the Kimi server REST endpoint — no extra wiring.
+   - **Unmanaged / plain `kimi`**: SessionStart tries to arm a per-alias
+     notifier. If the `c2c-session` skill says no notifier is running, arm:
+     `Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })`
+     or poll with `c2c poll-inbox`. `c2c doctor hooks` flags DEAF sessions
+     (undelivered inbox + no notifier).
+4. Reply with `c2c send <to_alias> "..."`.
 
 ## First moves
 
@@ -68,9 +76,15 @@ No client restart is required for CLI messaging after install.
   `~/.kimi-code/session_index.jsonl`, ensures `kimi server run --keep-alive`
   is running, and POSTs the message body as a user prompt to
   `/api/v1/sessions/{id}/prompts`. This starts or queues a model turn.
+- **Unmanaged sessions (B238):** `c2c install kimi` installs a SessionStart
+  hook that auto-registers, best-effort `ensure_daemon`s a per-alias notifier,
+  and writes `~/.kimi-code/skills/c2c-session/SKILL.md` with a receive-path
+  nudge. Without a live notifier, DMs sit in the broker inbox forever —
+  arm Monitor or prefer managed start.
 - **Why not `--session`:** Kimi Code 0.23.6 does not accept c2c-generated
   `session_<uuid>` IDs passed via `kimi --session <sid>` ("Session not
   found").  `c2c start kimi` therefore launches `kimi` without `--session`
   and discovers the real session id after Kimi mints it.
-- **Fallback:** `c2c poll-inbox` / `c2c peek-inbox` on wake ticks if the
-  server/session is unreachable.
+- **Fallback:** `c2c monitor` (preferred unmanaged awareness), or
+  `c2c poll-inbox` / `c2c peek-inbox` on wake ticks if the server/session
+  is unreachable. Diagnose with `c2c doctor hooks` (Kimi delivery section).

@@ -44,6 +44,7 @@ type result = {
   total_skipped : int;
   codex : codex_result;
   agy : agy_result;
+  kimi : kimi_delivery_result;
 }
 
 and block_diff = {
@@ -73,6 +74,22 @@ and codex_result = {
   agents_md : managed_block_result;
   total_issues : int;
   trust_index_drift : bool;
+}
+
+(* B238: unmanaged Kimi sessions with mail but no notifier go deaf. *)
+and kimi_session_issue = {
+  ksi_alias : string;
+  ksi_session_id : string;
+  ksi_inbox_count : int;
+  ksi_notifier_running : bool;
+  ksi_registered_by : string option;
+  ksi_fix_command : string;
+}
+
+and kimi_delivery_result = {
+  kd_sessions_checked : int;
+  kd_deaf : kimi_session_issue list; (* inbox>0 and no notifier *)
+  kd_no_notifier : kimi_session_issue list; (* registered kimi, no notifier (may be empty inbox) *)
 }
 
 (* --- Codex delivery-mode classification (P1.M1.E1.T005) -------------------- *)
@@ -657,6 +674,86 @@ let check_agy_status ?home () =
   in
   { installed; skill_exists; hooks_exists; has_c2c_hooks; alias_prefix_ok; alias_prefix_reason }
 
+(* B238 pure classifier: given a registration snapshot + inbox depth +
+   notifier liveness, decide whether the session is "deaf" (mail waiting,
+   no delivery daemon). Exposed for unit tests. *)
+let is_kimi_registration (r : C2c_mcp.registration) =
+  (match r.client_type with Some "kimi" -> true | _ -> false)
+  || (match r.registered_by with Some "kimi-hook" -> true | _ -> false)
+  || (let a = String.lowercase_ascii r.alias in
+      String.length a >= 5 && String.sub a 0 5 = "kimi-")
+
+let classify_kimi_session
+    ~(alias : string)
+    ~(session_id : string)
+    ~(inbox_count : int)
+    ~(notifier_running : bool)
+    ~(registered_by : string option)
+  : kimi_session_issue option * bool (* issue-if-no-notifier, is_deaf *)
+  =
+  let fix =
+    Printf.sprintf
+      "c2c start kimi -n %s   # preferred: managed notifier + REST delivery\n\
+       # or arm a receive path inside the session:\n\
+       #   Monitor({ description: \"c2c inbox watcher\", command: \"c2c monitor\", persistent: true })\n\
+       # or drain once: C2C_MCP_SESSION_ID=%s c2c poll-inbox"
+      (Filename.quote alias) (Filename.quote session_id)
+  in
+  let issue =
+    { ksi_alias = alias
+    ; ksi_session_id = session_id
+    ; ksi_inbox_count = inbox_count
+    ; ksi_notifier_running = notifier_running
+    ; ksi_registered_by = registered_by
+    ; ksi_fix_command = fix
+    }
+  in
+  if notifier_running then
+    (None, false)
+  else
+    let deaf = inbox_count > 0 in
+    (Some issue, deaf)
+
+let check_kimi_delivery ?broker_root () : kimi_delivery_result =
+  let broker_root =
+    match broker_root with
+    | Some r -> r
+    | None -> C2c_utils.resolve_broker_root ()
+  in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let regs =
+    try C2c_mcp.Broker.list_registrations broker with _ -> []
+  in
+  let kimi_regs = List.filter is_kimi_registration regs in
+  let deaf = ref [] in
+  let no_notifier = ref [] in
+  List.iter
+    (fun (r : C2c_mcp.registration) ->
+      let inbox_count =
+        try List.length (C2c_mcp.Broker.read_inbox broker ~session_id:r.session_id)
+        with _ -> 0
+      in
+      let notifier_running =
+        try C2c_kimi_notifier.already_running r.alias with _ -> false
+      in
+      match
+        classify_kimi_session
+          ~alias:r.alias
+          ~session_id:r.session_id
+          ~inbox_count
+          ~notifier_running
+          ~registered_by:r.registered_by
+      with
+      | None, _ -> ()
+      | Some issue, is_deaf ->
+          no_notifier := issue :: !no_notifier;
+          if is_deaf then deaf := issue :: !deaf)
+    kimi_regs;
+  { kd_sessions_checked = List.length kimi_regs
+  ; kd_deaf = List.rev !deaf
+  ; kd_no_notifier = List.rev !no_notifier
+  }
+
 let check ?(dirs = claude_dirs ()) () =
   let dirs = List.filter (fun d -> Sys.file_exists d && Sys.is_directory d) dirs in
   let dir_results = List.map scan_dir dirs in
@@ -665,7 +762,8 @@ let check ?(dirs = claude_dirs ()) () =
   let total_skipped = List.fold_left (fun acc d -> acc + d.skipped) 0 dir_results in
   let codex = check_codex_managed_blocks () in
   let agy = check_agy_status () in
-  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy }
+  let kimi = check_kimi_delivery () in
+  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy; kimi }
 
 (* --- output formatters ---------------------------------------------------- *)
 
@@ -733,6 +831,46 @@ let pp_human r =
     (match r.agy.alias_prefix_reason with
      | Some reason -> Printf.printf "  ⚠ %s\n" reason
      | None -> Printf.printf "  alias prefix constraints: OK (all live agy sessions are agy-*)\n")
+  end;
+  Printf.printf "\n=== Kimi delivery (B238) ===\n\n";
+  if r.kimi.kd_sessions_checked = 0 then
+    Printf.printf "No registered Kimi sessions on this broker.\n"
+  else begin
+    Printf.printf "  registered kimi sessions: %d\n" r.kimi.kd_sessions_checked;
+    if r.kimi.kd_deaf = [] && r.kimi.kd_no_notifier = [] then
+      Printf.printf "  all have a live c2c kimi-notifier (or empty+armed).\n"
+    else begin
+      if r.kimi.kd_deaf <> [] then begin
+        Printf.printf "  DEAF (undelivered inbox + no notifier):\n";
+        List.iter
+          (fun (i : kimi_session_issue) ->
+            Printf.printf "    ✗ %s session=%s inbox=%d registered_by=%s\n"
+              i.ksi_alias i.ksi_session_id i.ksi_inbox_count
+              (match i.ksi_registered_by with Some s -> s | None -> "?");
+            Printf.printf "      → fix:\n";
+            List.iter
+              (fun line -> Printf.printf "        %s\n" line)
+              (String.split_on_char '\n' i.ksi_fix_command))
+          r.kimi.kd_deaf
+      end;
+      let warn_only =
+        List.filter
+          (fun (i : kimi_session_issue) ->
+             not (List.exists
+                    (fun (d : kimi_session_issue) -> d.ksi_alias = i.ksi_alias)
+                    r.kimi.kd_deaf))
+          r.kimi.kd_no_notifier
+      in
+      if warn_only <> [] then begin
+        Printf.printf "  no notifier (inbox empty — will go deaf on first DM):\n";
+        List.iter
+          (fun (i : kimi_session_issue) ->
+            Printf.printf "    ⚠ %s session=%s registered_by=%s\n"
+              i.ksi_alias i.ksi_session_id
+              (match i.ksi_registered_by with Some s -> s | None -> "?"))
+          warn_only
+      end
+    end
   end
 
 let to_json r =
@@ -789,6 +927,26 @@ let to_json r =
       ("alias_prefix_reason", match a.alias_prefix_reason with Some s -> `String s | None -> `Null)
     ]
   in
+  let kimi_issue_to_json (i : kimi_session_issue) =
+    `Assoc [
+      ("alias", `String i.ksi_alias);
+      ("session_id", `String i.ksi_session_id);
+      ("inbox_count", `Int i.ksi_inbox_count);
+      ("notifier_running", `Bool i.ksi_notifier_running);
+      ("registered_by",
+       match i.ksi_registered_by with Some s -> `String s | None -> `Null);
+      ("fix_command", `String i.ksi_fix_command)
+    ]
+  in
+  let kimi_to_json (k : kimi_delivery_result) =
+    `Assoc [
+      ("sessions_checked", `Int k.kd_sessions_checked);
+      ("deaf", `List (List.map kimi_issue_to_json k.kd_deaf));
+      ("no_notifier", `List (List.map kimi_issue_to_json k.kd_no_notifier));
+      ("deaf_count", `Int (List.length k.kd_deaf));
+      ("no_notifier_count", `Int (List.length k.kd_no_notifier))
+    ]
+  in
   `Assoc [
     ("dirs", `List (List.map dir_to_json r.dirs));
     ("total_referenced", `Int r.total_referenced);
@@ -796,7 +954,8 @@ let to_json r =
     ("total_skipped", `Int r.total_skipped);
     ("codex_managed_blocks", codex_to_json r.codex);
     ("total_codex_issues", `Int r.codex.total_issues);
-    ("agy", agy_to_json r.agy)
+    ("agy", agy_to_json r.agy);
+    ("kimi_delivery", kimi_to_json r.kimi)
   ]
 
 let pp_json r = print_endline (Yojson.Safe.to_string (to_json r))
@@ -885,7 +1044,22 @@ let pp_compact r =
   else
     Printf.printf
       "Codex managed blocks: %d stale/missing — run 'c2c install codex'\n"
-      r.codex.total_issues
+      r.codex.total_issues;
+  let n_deaf = List.length r.kimi.kd_deaf in
+  let n_none = List.length r.kimi.kd_no_notifier in
+  if r.kimi.kd_sessions_checked = 0 then
+    Printf.printf "Kimi delivery: no registered kimi sessions\n"
+  else if n_deaf > 0 then
+    Printf.printf
+      "Kimi delivery: %d DEAF (undelivered+no notifier) — run 'c2c doctor hooks'\n"
+      n_deaf
+  else if n_none > 0 then
+    Printf.printf
+      "Kimi delivery: %d session(s) without notifier — prefer 'c2c start kimi'\n"
+      n_none
+  else
+    Printf.printf "Kimi delivery: %d session(s) armed\n"
+      r.kimi.kd_sessions_checked
 
 (* --- CLI ------------------------------------------------------------------ *)
 
@@ -921,12 +1095,16 @@ let c2c_doctor_hooks_cmd =
       pp_human r;
       pp_codex_delivery_human delivery
     end;
-    if r.total_dangling > 0 || r.codex.total_issues > 0 then exit 1
+    if r.total_dangling > 0
+       || r.codex.total_issues > 0
+       || r.kimi.kd_deaf <> []
+    then exit 1
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "hooks"
        ~doc:"Check Claude Code settings.json hook entries for dangling c2c \
-             scripts, Codex managed-block drift, and the live Codex delivery \
+             scripts, Codex managed-block drift, the live Codex delivery \
              mode (app-server / app-server-unavailable / hooks+wake / hooks / \
-             unavailable) with a remediation per degraded state.")
+             unavailable), and Kimi sessions that are DEAF (undelivered inbox \
+             + no notifier — B238).")
     cmd

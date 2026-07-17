@@ -1,8 +1,9 @@
 (* test_c2c_hook_kimi — SessionStart/SessionEnd for Kimi Code.
 
-   Kimi receives inbound messages via REST prompt injection, so the hook
-   only needs to auto-register the session on SessionStart and deregister on
-   SessionEnd. *)
+   Kimi receives inbound messages via REST prompt injection. The hook
+   auto-registers on SessionStart, writes a c2c-session identity skill with a
+   receive-path nudge (B238), and deregisters on SessionEnd. Tests set
+   C2C_KIMI_HOOK_SKIP_NOTIFIER=1 so we never fork a real notifier daemon. *)
 
 open Alcotest
 
@@ -67,6 +68,10 @@ let run_hook ?(extra_env = []) ctx ~payload =
   let out_path = dir // "hook.out" in
   let err_path = dir // "hook.err" in
   write_file payload_path payload;
+  (* Always skip real notifier fork in hermetic tests (B238). *)
+  let extra_env =
+    ("C2C_KIMI_HOOK_SKIP_NOTIFIER", "1") :: extra_env
+  in
   let extra =
     String.concat " "
       (List.map (fun (k, v) -> Printf.sprintf "%s=%s" k (Filename.quote v))
@@ -86,6 +91,9 @@ let run_hook ?(extra_env = []) ctx ~payload =
   in
   let rc = Sys.command cmd in
   (rc, read_file out_path, read_file err_path)
+
+let identity_skill_path ctx =
+  ctx.home // ".kimi-code" // "skills" // "c2c-session" // "SKILL.md"
 
 let session_id = "019f4fb9-3c7a-7720-96c2-5cacb719d951"
 
@@ -157,7 +165,16 @@ let test_session_start_auto_registers_from_env_alias () =
     check string "session id matches" session_id sid;
     check string "alias from env" "kimi-env-alias" alias;
     if String.trim stderr <> "" && contains ~haystack:stderr ~needle:"failed"
-    then failf "unexpected stderr: %s" stderr)
+    then failf "unexpected stderr: %s" stderr;
+    (* B238: identity skill with receive-path nudge *)
+    let skill = read_file (identity_skill_path ctx) in
+    check bool "identity skill written" true (String.length skill > 0);
+    check bool "skill names alias" true
+      (contains ~haystack:skill ~needle:"kimi-env-alias");
+    check bool "skill mentions receive path" true
+      (contains ~haystack:skill ~needle:"Monitor"
+       || contains ~haystack:skill ~needle:"poll-inbox"
+       || contains ~haystack:skill ~needle:"notifier"))
 
 let test_session_start_auto_registers_with_auto_gen_alias () =
   with_ctx (fun ctx ->
@@ -186,13 +203,17 @@ let test_session_end_deregisters () =
     check int "start exit 0" 0 rc1;
     check bool "registered before end" true
       (List.mem "kimi-end-test" (list_aliases ctx.broker_root));
+    check bool "identity skill present before end" true
+      (Sys.file_exists (identity_skill_path ctx));
     let rc2, _, _ =
       run_hook ctx ~payload:session_end_payload
         ~extra_env:[ ("C2C_MCP_SESSION_ID", session_id) ]
     in
     check int "end exit 0" 0 rc2;
     check bool "deregistered after end" false
-      (List.mem "kimi-end-test" (list_aliases ctx.broker_root)))
+      (List.mem "kimi-end-test" (list_aliases ctx.broker_root));
+    check bool "identity skill removed on end" false
+      (Sys.file_exists (identity_skill_path ctx)))
 
 let test_malformed_payload_exits_0 () =
   with_ctx (fun ctx ->
