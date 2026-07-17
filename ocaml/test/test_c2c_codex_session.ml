@@ -854,6 +854,132 @@ let test_skip_env_bypasses_preflight () =
           Alcotest.(check int) "fallback rc propagated" 0 rc))
 
 (* ------------------------------------------------------------------ *)
+(* B227: resume-thread persistence preflight                           *)
+(* ------------------------------------------------------------------ *)
+
+let persistence_str = function
+  | S.Thread_persisted -> "persisted"
+  | S.Thread_unpersisted -> "unpersisted"
+  | S.Thread_unknown -> "unknown"
+
+(* Codex rollout layout: sessions/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl *)
+let write_rollout ~sessions_dir ~thread_id =
+  let day =
+    List.fold_left Filename.concat sessions_dir [ "2026"; "07"; "17" ] in
+  C2c_io.mkdir_p day;
+  let path =
+    Filename.concat day
+      (Printf.sprintf "rollout-2026-07-17T20-36-06-%s.jsonl" thread_id) in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "{}\n")
+
+let test_rollout_scan_states () =
+  with_tmp_dir (fun dir ->
+      let sessions = Filename.concat dir "sessions" in
+      (* missing sessions dir → Unknown (never treat as absence) *)
+      Alcotest.(check string) "missing dir → unknown" "unknown"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1"));
+      C2c_io.mkdir_p sessions;
+      (* dir exists, no rollout → Unpersisted (the B227 zero-turn case) *)
+      Alcotest.(check string) "no rollout → unpersisted" "unpersisted"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1"));
+      write_rollout ~sessions_dir:sessions ~thread_id:"t-1";
+      Alcotest.(check string) "date-partitioned rollout → persisted" "persisted"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-1"));
+      (* a DIFFERENT thread's rollout does not vouch for this one *)
+      Alcotest.(check string) "other thread's rollout → unpersisted" "unpersisted"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"t-2"));
+      (* blank id → Unknown *)
+      Alcotest.(check string) "blank id → unknown" "unknown"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions ~thread_id:"  ")))
+
+let test_effective_resume_thread_decision () =
+  let const v _ = v in
+  (* persisted → thread kept, no log *)
+  Alcotest.(check (pair (option string) (option string)))
+    "persisted kept" (Some "T", None)
+    (S.effective_resume_thread ~persistence:(const S.Thread_persisted) (Some "T"));
+  (* unknown → thread kept (scanner uncertainty must not discard context) *)
+  Alcotest.(check (pair (option string) (option string)))
+    "unknown kept" (Some "T", None)
+    (S.effective_resume_thread ~persistence:(const S.Thread_unknown) (Some "T"));
+  (* unpersisted → dropped, operator log names the thread + the escape *)
+  (match S.effective_resume_thread
+           ~persistence:(const S.Thread_unpersisted) (Some "T-dead") with
+   | None, Some body ->
+       Alcotest.(check bool) "log names the thread" true
+         (string_mem "T-dead" body);
+       Alcotest.(check bool) "log names the escape env" true
+         (string_mem "C2C_CODEX_SKIP_THREAD_PREFLIGHT" body)
+   | eff, _ ->
+       Alcotest.failf "unpersisted thread must be dropped with a log (got %s)"
+         (Option.value eff ~default:"<none>"));
+  (* no thread → nothing to decide, and the persistence seam is never called *)
+  Alcotest.(check (pair (option string) (option string)))
+    "no thread untouched" (None, None)
+    (S.effective_resume_thread
+       ~persistence:(fun _ -> Alcotest.fail "persistence must not be probed")
+       None)
+
+(* End-to-end through S.run with a scripted backend: the C2C_CODEX_SESSIONS_DIR
+   seam opts the hermetic test into the preflight. [rollout] controls whether
+   the requested thread has a persisted rollout; returns the frontend argv and
+   the persisted codex_resume_target. *)
+let run_with_thread_preflight ~rollout =
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      with_tmp_dir (fun dir ->
+          let sessions = Filename.concat dir "sessions" in
+          C2c_io.mkdir_p sessions;
+          if rollout then write_rollout ~sessions_dir:sessions ~thread_id:sid;
+          let saved = Sys.getenv_opt "C2C_CODEX_SESSIONS_DIR" in
+          Unix.putenv "C2C_CODEX_SESSIONS_DIR" sessions;
+          Fun.protect
+            ~finally:(fun () ->
+              Unix.putenv "C2C_CODEX_SESSIONS_DIR"
+                (Option.value saved ~default:""))
+            (fun () ->
+              let clock = ref 0.0 in
+              let server = { status = Running_ } in
+              let frontend = { status = Exited 0 } in
+              let frontend_argv = ref [||] in
+              let bk = scripted ~clock
+                  ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+                    Ok (mk_fake ~id:111 server))
+                  ~spawn_frontend:(fun ~argv ~env:_ ->
+                    frontend_argv := argv; Ok (mk_fake ~id:222 frontend)) () in
+              let rc = S.run ~mode:S.Start ~yolo:false ~extra_args:[]
+                  ~thread_id:sid ~backend:bk
+                  ~fallback:(fun ~extra_args:_ () -> 99) () in
+              Alcotest.(check int) "clean exit" 0 rc;
+              let target =
+                match C2c_start.load_config_opt alias with
+                | Some cfg -> cfg.C2c_start.codex_resume_target
+                | None -> Alcotest.fail "managed config must load"
+              in
+              (!frontend_argv, target, sid))))
+
+let test_run_drops_unpersisted_thread_b227 () =
+  let argv, target, _sid = run_with_thread_preflight ~rollout:false in
+  Alcotest.(check bool) "frontend launched FRESH (no `codex resume`)" false
+    (Array.exists (fun a -> a = "resume") argv);
+  Alcotest.(check (option string)) "dead thread not re-persisted" None target
+
+let test_run_keeps_persisted_thread_b227 () =
+  let argv, target, sid = run_with_thread_preflight ~rollout:true in
+  Alcotest.(check bool) "frontend resumes the persisted thread" true
+    (Array.exists (fun a -> a = "resume") argv
+     && Array.exists (fun a -> a = sid) argv);
+  Alcotest.(check (option string)) "resume target persisted" (Some sid) target
+
+(* ------------------------------------------------------------------ *)
 (* Identity resolution: ambiguous client/alias/thread combos rejected  *)
 (* ------------------------------------------------------------------ *)
 
@@ -1046,4 +1172,11 @@ let () =
         ; test_case "new codex aborts before launch on stale block" `Quick
             test_new_codex_aborts_on_stale_block
         ; test_case "skip env bypasses preflight" `Quick test_skip_env_bypasses_preflight ] )
+    ; ( "thread-preflight-B227",
+        [ test_case "rollout scan states" `Quick test_rollout_scan_states
+        ; test_case "fallback decision table" `Quick test_effective_resume_thread_decision
+        ; test_case "run drops unpersisted resume thread (fresh thread, same alias)"
+            `Quick test_run_drops_unpersisted_thread_b227
+        ; test_case "run keeps persisted resume thread" `Quick
+            test_run_keeps_persisted_thread_b227 ] )
     ]
