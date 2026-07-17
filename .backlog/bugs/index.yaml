@@ -233,3 +233,4 @@ bugs:
     - file: B234-whoami-prints-local-session-al.todo
     - file: B235-unmanaged-c2c-relay-connect-di.todo
     - file: B236-rooms-invite-accepts-cross-hos.todo
+    - file: B237-relay-429-error-body-mishandle.todo
