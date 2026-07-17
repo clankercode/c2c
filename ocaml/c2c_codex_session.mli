@@ -139,9 +139,11 @@ val codex_sessions_dir : unit -> string
 (** [thread_rollout_exists ~sessions_dir ~thread_id] scans [sessions_dir] for a
     regular rollout file named [rollout-<ts>-<thread-id>.jsonl] (Codex writes
     […/YYYY/MM/DD/rollout-<ts>-<thread-id>.jsonl] once a thread has run).
-    [Thread_unknown] when [sessions_dir] is missing/unreadable/ambiguous, the
-    scan encounters a symlink, or [thread_id] is blank — callers must not treat
-    scanner uncertainty as absence. *)
+    The ROOT is resolved through symlinks first (profile-share setups symlink
+    ~/.codex / ~/.codex/sessions). [Thread_unknown] when [sessions_dir] is
+    missing/unresolvable/unreadable, the scan encounters a symlink INSIDE the
+    resolved tree, or [thread_id] is blank — callers must not treat scanner
+    uncertainty as absence. *)
 val thread_rollout_exists :
   sessions_dir:string -> thread_id:string -> thread_persistence
 

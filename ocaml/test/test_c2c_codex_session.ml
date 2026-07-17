@@ -922,13 +922,28 @@ let test_rollout_scan_states () =
 
 let test_rollout_scan_uncertainty () =
   with_tmp_dir (fun dir ->
+      (* The ROOT is resolved through symlinks before classifying: profile-share
+         setups symlink ~/.codex and ~/.codex/sessions (the B227 incident
+         machine's layout), and treating that as uncertainty would leave the
+         preflight inert exactly where the bug happens. The resolved tree then
+         answers authoritatively. *)
       let real_sessions = Filename.concat dir "real-sessions" in
       let sessions_link = Filename.concat dir "sessions-link" in
       C2c_io.mkdir_p real_sessions;
       Unix.symlink real_sessions sessions_link;
-      Alcotest.(check string) "symlinked sessions root → unknown" "unknown"
+      Alcotest.(check string) "symlinked empty root resolves → unpersisted"
+        "unpersisted"
         (persistence_str
-           (S.thread_rollout_exists ~sessions_dir:sessions_link ~thread_id:"t-1")));
+           (S.thread_rollout_exists ~sessions_dir:sessions_link ~thread_id:"t-1"));
+      write_rollout ~sessions_dir:real_sessions ~thread_id:"t-1";
+      Alcotest.(check string) "symlinked root resolves → persisted" "persisted"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:sessions_link ~thread_id:"t-1"));
+      let dangling = Filename.concat dir "dangling-link" in
+      Unix.symlink (Filename.concat dir "no-such-target") dangling;
+      Alcotest.(check string) "dangling root symlink → unknown" "unknown"
+        (persistence_str
+           (S.thread_rollout_exists ~sessions_dir:dangling ~thread_id:"t-1")));
   with_tmp_dir (fun dir ->
       let sessions = Filename.concat dir "sessions" in
       C2c_io.mkdir_p sessions;

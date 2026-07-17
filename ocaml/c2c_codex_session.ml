@@ -598,13 +598,22 @@ let thread_rollout_exists ~(sessions_dir : string) ~(thread_id : string)
     if String.trim thread_id = "" || String.trim sessions_dir = "" then
       Thread_unknown
     else
-      match (try Some (Unix.lstat sessions_dir) with _ -> None) with
-      | Some { Unix.st_kind = Unix.S_DIR; _ } ->
-          (match scan 0 sessions_dir with
-           | `Found -> Thread_persisted
-           | `Absent -> Thread_unpersisted
-           | `Unknown -> Thread_unknown)
-      | _ -> Thread_unknown
+      (* Resolve the ROOT through symlinks before classifying: profile-share
+         setups routinely symlink ~/.codex and ~/.codex/sessions (that is the
+         layout the B227 incident machine runs), and an inert preflight there
+         would silently reintroduce the bug. Resolution failure (missing path,
+         cycle) is uncertainty. Entries INSIDE the resolved tree keep the
+         strict no-symlink rule below. *)
+      match (try Some (Unix.realpath sessions_dir) with _ -> None) with
+      | None -> Thread_unknown
+      | Some resolved ->
+          (match (try Some (Unix.lstat resolved) with _ -> None) with
+           | Some { Unix.st_kind = Unix.S_DIR; _ } ->
+               (match scan 0 resolved with
+                | `Found -> Thread_persisted
+                | `Absent -> Thread_unpersisted
+                | `Unknown -> Thread_unknown)
+           | _ -> Thread_unknown)
   with _ -> Thread_unknown
 
 let should_preflight_resume_thread ~(backend_is_injected : bool) : bool =
