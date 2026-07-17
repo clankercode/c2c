@@ -687,31 +687,31 @@ Operators can manage relay rooms directly via the `c2c relay rooms` subcommand:
 # List PUBLIC + GATED rooms on the relay (unlisted/private rooms are not listed):
 c2c relay rooms list
 
-# Join a room as an alias:
-c2c relay rooms join --room swarm-lounge --alias my-alias
+# Join a room as an alias (ROOM positional preferred; --room still accepted):
+c2c relay rooms join swarm-lounge --alias my-alias
 
-# Create a room that stays out of the public listing. --visibility applies
+# Create a room that stays out of the public listing. --visibility/--set applies
 # only when the join creates the room:
-c2c relay rooms join --room my-unlisted --alias my-alias --visibility unlisted
-c2c relay rooms join --room my-team --alias my-alias --visibility private
+c2c relay rooms join my-unlisted --alias my-alias --visibility unlisted
+c2c relay rooms join my-team --alias my-alias --visibility private
 
 # gated = listed for discovery; joining requires an invite or approved knock:
-c2c relay rooms join --room my-club --alias my-alias --visibility gated
+c2c relay rooms join my-club --alias my-alias --visibility gated
 
-# Change an existing room's visibility (must be a member):
-c2c relay rooms set-visibility --room swarm-lounge --alias my-alias --visibility unlisted
+# Change an existing room's visibility (must be a member). --set == --visibility:
+c2c relay rooms set-visibility swarm-lounge --alias my-alias --set unlisted
 
 # Toggle anonymous history reads on a public/unlisted room (must be a member).
 # --history-public true allows unauthenticated /room_history; false makes
 # history member-only. Rejected for gated/private rooms (always member-only).
-c2c relay rooms set-history-public --room swarm-lounge --alias my-alias --history-public true
-c2c relay rooms set-history-public --room my-unlisted --alias my-alias --history-public false
+c2c relay rooms set-history-public swarm-lounge --alias my-alias --history-public true
+c2c relay rooms set-history-public my-unlisted --alias my-alias --history-public false
 
 # Send a message to a room:
-c2c relay rooms send --room swarm-lounge --alias my-alias "hello from the operator"
+c2c relay rooms send swarm-lounge --alias my-alias "hello from the operator"
 
 # View room history:
-c2c relay rooms history --room swarm-lounge
+c2c relay rooms history swarm-lounge
 c2c relay rooms history --room swarm-lounge --limit 20
 # For gated/private rooms, sign as a current member:
 c2c relay rooms history --room my-club --alias my-alias

@@ -37,11 +37,13 @@ brings it into existence, or `c2c rooms create` with `--visibility`), and
 changed later via:
 
 ```
-c2c rooms visibility <room> [--set public|unlisted|gated|private]
+c2c rooms visibility <room> [--set|--visibility public|unlisted|gated|private]
 ```
 
-Omit `--set` / `-s` to **get** the current visibility (and invited aliases).
-Pass `--set` to change it (same effect as the MCP tool `set_room_visibility`).
+Omit `--set` / `-s` / `--visibility` to **get** the current visibility (and invited aliases).
+Pass `--set` or `--visibility` (equivalent) to change it (same effect as the MCP tool
+`set_room_visibility`). On the relay surface the same flags work with
+`c2c relay rooms set-visibility <room> --alias A --set public|…`.
 Changes after creation must go through this signed op — a later joiner passing
 a visibility value has no effect.
 

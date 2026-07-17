@@ -714,8 +714,12 @@ let rooms_visibility_cmd =
   let room_id =
     Cmdliner.Arg.(required & pos 0 (some string) None & info [] ~docv:"ROOM" ~doc:"Room ID.")
   in
+  (* B239: --visibility is an alias for --set so local and relay rooms share
+     the same flag names for the same concept. *)
   let visibility =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "set"; "s" ] ~docv:"VIS" ~doc:"Visibility: public (listed + open join), unlisted (unlisted + open join), gated (listed + invite-gated join), or private (unlisted + invite-gated join).")
+    Cmdliner.Arg.(value & opt (some string) None
+      & info [ "set"; "s"; "visibility" ] ~docv:"VIS"
+      ~doc:"Visibility: public (listed + open join), unlisted (unlisted + open join), gated (listed + invite-gated join), or private (unlisted + invite-gated join). --visibility is equivalent to --set.")
   in
   let+ json = json_flag
   and+ room_id = room_id

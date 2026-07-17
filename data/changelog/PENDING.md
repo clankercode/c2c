@@ -11,6 +11,13 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B239: relay rooms CLI accepts positional ROOM and shared visibility
+  flags.** `c2c relay rooms join ROOM --alias …` no longer errors with
+  `--room required`; ROOM may be positional (like local `c2c rooms`) or
+  `--room`. `set-visibility` accepts `--set`/`-s` as aliases for
+  `--visibility`, and local `rooms visibility` accepts `--visibility` as an
+  alias for `--set`.
+
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

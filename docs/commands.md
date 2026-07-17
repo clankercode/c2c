@@ -974,7 +974,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `rooms knocks ROOM` | List pending join requests for a room (members only). |
 | `rooms approve-knock ROOM ALIAS` | Approve a pending join request and invite that alias. |
 | `rooms deny-knock ROOM ALIAS` | Deny a pending join request without inviting. |
-| `rooms visibility ROOM [--set public\|unlisted\|gated\|private]` | Get or set room visibility. `public` = listed + open join; `unlisted` = unlisted + open join; `gated` = listed + invite-gated join; `private` = unlisted + invite-gated join. |
+| `rooms visibility ROOM [--set\|--visibility public\|unlisted\|gated\|private]` | Get or set room visibility. `--set` and `--visibility` are equivalent. `public` = listed + open join; `unlisted` = unlisted + open join; `gated` = listed + invite-gated join; `private` = unlisted + invite-gated join. |
 | `rooms delete ROOM` | Delete an empty room. |
 | `rooms my-rooms [--json]` | List rooms the current session is a member of. |
 | `my-rooms [--json]` | List rooms the current session is a member of (top-level). |
@@ -1338,13 +1338,13 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | `relay subscribe-daemon list` | List aliases managed by the subscribe-daemon (per-client; only shows aliases registered by the same IPC session) |
 | `relay subscribe-daemon shutdown` | Stop the subscribe-daemon |
 | `relay rooms list` | List **public** and **gated** rooms on the relay (no auth required). Unlisted/private rooms are not listed. |
-| `relay rooms join --room R --alias A [--visibility public\|unlisted\|gated\|private]` | Join a relay room. `--visibility` only applies when the join *creates* the room. |
-| `relay rooms leave --room R --alias A` | Leave a relay room |
-| `relay rooms send --room R --alias A <message>` | Post to a relay room |
-| `relay rooms history --room R [--limit N] [--alias A]` | Read relay room history. Public/unlisted rooms need no auth; gated/private rooms require `--alias A` with a registered relay identity for a room member. |
-| `relay rooms set-visibility --room R --alias A --visibility public\|unlisted\|gated\|private` | Change an existing room's visibility (caller must be a member). |
-| `relay rooms invite --room R --alias A --invitee-pk PK` | Invite an identity key to a `gated`/`private` room |
-| `relay rooms uninvite --room R --alias A --invitee-pk PK` | Remove an invited identity key from a room |
+| `relay rooms join ROOM --alias A [--visibility\|--set public\|unlisted\|gated\|private]` | Join a relay room. `ROOM` may be positional (preferred) or `--room R`. `--visibility`/`--set` only applies when the join *creates* the room. |
+| `relay rooms leave ROOM --alias A` | Leave a relay room (`ROOM` or `--room R`) |
+| `relay rooms send ROOM --alias A <message>` | Post to a relay room (`ROOM` or `--room R`; remaining words are the message) |
+| `relay rooms history ROOM [--limit N] [--alias A]` | Read relay room history. Public/unlisted rooms need no auth; gated/private rooms require `--alias A` with a registered relay identity for a room member. |
+| `relay rooms set-visibility ROOM --alias A --visibility\|--set public\|unlisted\|gated\|private` | Change an existing room's visibility (caller must be a member). `--set` and `--visibility` are equivalent (aligned with local `rooms visibility`). |
+| `relay rooms invite ROOM --alias A --invitee-pk PK` | Invite an identity key to a `gated`/`private` room |
+| `relay rooms uninvite ROOM --alias A --invitee-pk PK` | Remove an invited identity key from a room |
 
 **Knock (request-to-join) has no `c2c relay rooms` subcommand.** On the relay,
 the knock flow for `gated` rooms is exposed as signed peer routes
