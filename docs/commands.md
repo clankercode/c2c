@@ -926,7 +926,7 @@ Relay:
   url:        https://relay.c2c.im  (configured)
   alias:      (no current session alias)
   state:      configured_not_registered — no current session alias to register
-  connector:  none (no connector sync state — start with 'c2c relay connect')
+  connector:  none (no connector sync state — start with 'c2c start relay-connect')
 ```
 
 and the matching `--json` fields under `relay`:
@@ -989,7 +989,7 @@ Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
 | `new codex [--alias A] [--yolo] [-- codex-options… [--c2c:name NAME]]` | Start a **new** Codex thread + c2c identity — never resumes. |
 | `resume codex ALIAS [--yolo] [--thread-id ID] [-- codex-options…]` | Resume the Codex thread saved for `ALIAS`; `--c2c:name` is rejected because `ALIAS` is authoritative. |
 | `stop NAME [--json]` | Stop a managed instance (SIGTERM the outer loop). |
-| `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
+| `restart NAME [--timeout SECS]` | Stop then start a managed instance. For `NAME=relay-connect`, drives the machine-wide connector lifecycle (B212); if no managed config exists, bootstraps a supervised connector when a relay URL is known via `C2C_RELAY_URL` / `c2c relay setup` (B235) instead of "no config found". |
 | `reset-thread NAME THREAD` | For `codex` / `codex-headless`, persist an exact resume target and restart onto that thread. |
 | `restart-stale [--dry-run] [--exclude-coordinator] [--force] [--timeout SECS] [--json]` | Version-aware rolling restart of managed instances running an outdated `c2c` binary (I010). App-server sessions restart in place (idle-gated; `--force` overrides the gate and treats every instance as stale); TUI clients are reported for a manual in-pane `c2c restart <name>`. The coordinator is restarted last unless `--exclude-coordinator`. |
 | `dev instances [--json] [--prune-older-than DAYS]` | List managed instances with alive/dead status. agy rows include the managed session ID, conversation ID, credential-stripped LS endpoint, and deliver-watch status/PID; `--json` exposes these under the row's `agy` object. **Canonical.** Top-level `c2c instances` is a deprecated compatibility alias that prints a deprecation notice and forwards here. |
@@ -1199,7 +1199,7 @@ app-server) with an actionable remediation per degraded state. Full contract
 |---------|-------------|
 | `start CLIENT [ARG…] [--name NAME] [--alias A] [--auto-join ROOMS] [--bin PATH] [-m MODEL] [--worktree] [-- client-options…]` | Launch a managed client session (deliver daemon + poker). Clients: `claude`, `codex`, `codex-headless`, `opencode`, `kimi`, `agy`, `tmux`, `pty`, `relay-connect`. `relay-connect` is one supervised machine-wide service, dynamically covers all repository brokers, and automatically reloads an updated c2c binary. `agy` runs a managed start via `AgyAdapter`, launching the Antigravity CLI behind the deliver sidecar. Post-`--` args forward verbatim to agent clients' argv (see **Argument passthrough**). `crush` is deprecated — `c2c start crush` prints a deprecation notice and refuses to launch (exit 1). |
 | `stop NAME [--json]` | Stop a managed instance. |
-| `restart NAME [--timeout SECS]` | Stop then start a managed instance. |
+| `restart NAME [--timeout SECS]` | Stop then start a managed instance. `relay-connect` uses the machine lifecycle and B235-bootstraps when no config exists and a relay URL is known. |
 | `reset-thread NAME THREAD` | Restart a managed codex/codex-headless onto a specific thread. |
 | `restart-stale [--dry-run] [--exclude-coordinator] [--force] [--timeout SECS] [--json]` | Version-aware rolling restart of managed instances on an outdated `c2c` binary (I010). App-server sessions restart in place (idle-gated; `--force` overrides); TUI clients are reported for manual in-pane restart. Coordinator restarted last unless `--exclude-coordinator`. |
 | `statefile [--instance NAME] [--tail] [--json]` | Read or watch the OpenCode plugin state snapshot. |
@@ -1320,7 +1320,7 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 | Subcommand | Description |
 |------------|-------------|
 | `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH] [--gc-interval N]` | Start an HTTP relay server |
-| `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. |
+| `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. Bare persistent connect is **unsupervised** (B235): it prints a loud warning and is not auto-restarted if it dies — prefer `c2c start relay-connect` for the machine-wide supervised connector; recover with `c2c restart relay-connect` (bootstraps a managed instance when no config exists and a relay URL is known). `--once` is a one-shot sync (no warning). |
 | `relay setup [--url URL] [--token T] [--token-file PATH] [--show]` | Save relay config to disk |
 | `relay status` | Show relay server health and peer count |
 | `relay list [--alias A] [--dead] [--json]` | List peers registered on the relay, including host ids used in `<alias>@<host_id>` addresses. `--alias` picks the alias to sign the request as (default: `C2C_MCP_AUTO_REGISTER_ALIAS`, else `anon`); if the relay has no identity binding for it, the CLI prints a fix-it hint naming the exact `relay register` command. With `--dead`, includes reserved offline aliases plus `alias_release_warning` / `alias_release_at` metadata. |

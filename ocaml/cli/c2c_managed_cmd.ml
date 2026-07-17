@@ -808,10 +808,20 @@ let restart_cmd =
      harness-client restart path cannot parse (no session_id/alias/resume),
      which used to escape as an uncaught Not_found. Recognise it up front and
      drive the machine lifecycle (stop supervisor + relaunch daemon) instead.
+     B235: also bootstrap when name is the conventional `relay-connect` and no
+     managed config exists (ad-hoc connector died unsupervised) — restart then
+     starts a supervised instance instead of falling through to
+     "no config found for instance".
      [restart] does not return on success and exits cleanly on error. *)
   (match C2c_relay_managed.read_managed_config ~name with
    | Some _ ->
-       C2c_relay_managed.restart ~name
+       C2c_relay_managed.restart
+         ?relay_url_override:(C2c_relay_cmd.resolve_relay_url None) ~name
+         ~broker_root:(resolve_broker_root ()) ~timeout_s ()
+         [@ocaml.warning "-21"]
+   | None when C2c_relay_managed.is_default_relay_connect_name name ->
+       C2c_relay_managed.restart
+         ?relay_url_override:(C2c_relay_cmd.resolve_relay_url None) ~name
          ~broker_root:(resolve_broker_root ()) ~timeout_s ()
          [@ocaml.warning "-21"]
    | None -> ());

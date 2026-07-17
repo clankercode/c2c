@@ -488,7 +488,11 @@ let relay_connect_cmd =
      exempt (it inherits C2C_RELAY_CONNECT_SUPERVISED=1). One-shot syncs
      (--once, used by smoke tests / manual pulls) are transient and exempt.
      The held fd is intentionally never released: the OS drops the POSIX lock
-     when this process exits. *)
+     when this process exits.
+
+     B235: bare (unsupervised) persistent connectors print a loud warning —
+     nothing restarts them if they die, and remote DMs go undelivered until an
+     operator notices. Prefer `c2c start relay-connect`. *)
   if not use_python && not once then begin
     match C2c_relay_managed.acquire_connector_singleton () with
     | `Already_running ->
@@ -500,7 +504,14 @@ let relay_connect_cmd =
            Inspect it with 'c2c doctor --relay' or 'c2c instances'; stop a \
            managed one with 'c2c stop relay-connect'.\n%!";
         exit 0
-    | `Exempt | `Acquired _ -> ()
+    | `Exempt -> ()
+    | `Acquired _ ->
+        (match
+           C2c_relay_managed.unsupervised_warning
+             ~supervised:false ~once:false ~relay_url:effective_relay_url
+         with
+         | Some msg -> Printf.eprintf "%s%!" msg
+         | None -> ())
   end;
   if not use_python then
     if all_brokers then

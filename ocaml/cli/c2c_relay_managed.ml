@@ -34,6 +34,33 @@ let machine_lock_resource () = machine_state_dir () // "relay-connect"
    guards against a second supervisor and against any bare connector. *)
 let supervised_child_env = "C2C_RELAY_CONNECT_SUPERVISED"
 
+(* Conventional instance name for the machine-wide supervised connector
+   (`c2c start relay-connect` with no -n). B235 restart bootstrap uses this. *)
+let default_instance_name = "relay-connect"
+
+let is_default_relay_connect_name name =
+  String.equal (String.trim name) default_instance_name
+
+(* B235: bare `c2c relay connect` (not --once, not a supervised child) has no
+   outer supervisor. If the process dies, remote DMs stop until an operator
+   restarts it. Return a multi-line stderr warning; None when supervised or
+   one-shot (no warning needed). Pure for unit tests. *)
+let unsupervised_warning ~supervised ~once ~relay_url =
+  if supervised || once then None
+  else
+    Some
+      (Printf.sprintf
+         "WARNING: unsupervised relay connector (B235).\n\
+          This process is NOT supervised — if it exits, remote DMs stop\n\
+          delivering with nothing restarting it.\n\
+          Prefer:  c2c start relay-connect --relay-url %s\n\
+          Recover: c2c restart relay-connect\n\
+          Check:   c2c doctor --relay\n"
+         relay_url)
+
+let is_supervised_child () =
+  Sys.getenv_opt supervised_child_env = Some "1"
+
 let rec mkdir_p path =
   if path = "" || path = "." || path = "/" || Sys.file_exists path then ()
   else begin
@@ -50,13 +77,22 @@ let rec mkdir_p path =
    owns the host. Callers should refuse to start a duplicate persistent
    connector on [`Already_running]. *)
 let acquire_connector_singleton () =
-  if Sys.getenv_opt supervised_child_env = Some "1" then `Exempt
+  if is_supervised_child () then `Exempt
   else begin
     mkdir_p (machine_state_dir ());
     match C2c_singleton_lock.try_acquire ~path:(machine_lock_resource ()) with
     | C2c_singleton_lock.Already_running -> `Already_running
     | C2c_singleton_lock.Acquired fd -> `Acquired fd
   end
+
+(* First non-empty candidate among [candidates]. Pure helper for URL
+   resolution in restart/bootstrap (env, saved config, override). *)
+let first_nonempty_url candidates =
+  List.find_map
+    (function
+      | Some s when String.trim s <> "" -> Some (String.trim s)
+      | _ -> None)
+    candidates
 
 let json_to_file path json =
   let oc = open_out path in
@@ -380,24 +416,66 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
   end
 
 (** Restart the machine-wide relay connector [name]: stop the running
-    supervisor, resolve its relay URL (saved config → [C2C_RELAY_URL]), then
-    relaunch the daemon. Returns a clean nonzero exit with an actionable
-    message (never an uncaught exception) when the config is not a managed
-    relay connector or no relay URL can be resolved. Does not return on
-    success (relaunches via the [@noreturn] [start]). *)
-let restart ~name ~broker_root ~timeout_s () =
+    supervisor, resolve its relay URL (saved config → override →
+    [C2C_RELAY_URL]), then relaunch the daemon.
+
+    B235: when [name] is the conventional [default_instance_name] and no
+    managed config exists (typical after an ad-hoc `c2c relay connect` died),
+    bootstrap a supervised instance instead of failing with "no config found".
+    [relay_url_override] lets the CLI pass the same URL resolution as
+    `relay setup` / `C2C_RELAY_URL` without coupling this module to the
+    full CLI config loader.
+
+    Returns a clean nonzero exit with an actionable message (never an uncaught
+    exception) when the name is not a managed relay connector and cannot be
+    bootstrapped, or no relay URL can be resolved. Does not return on success
+    (relaunches via the [@noreturn] [start]). *)
+let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
+    () =
+  let env_url =
+    match Sys.getenv_opt "C2C_RELAY_URL" with
+    | Some v when String.trim v <> "" -> Some (String.trim v)
+    | _ -> None
+  in
   match read_managed_config ~name with
-  | None ->
+  | None when not (is_default_relay_connect_name name) ->
       Printf.eprintf
         "error: '%s' is not a managed relay connector.\n\
-        \  Use 'c2c instances' to find managed sessions and 'c2c restart NAME' for one.\n%!"
+        \  Use 'c2c instances' to find managed sessions and 'c2c restart NAME' for one.\n\
+        \  For the machine-wide bridge: c2c start relay-connect --relay-url <URL>\n\
+        \  or c2c restart relay-connect (bootstraps when URL is known).\n%!"
         name;
       exit 1
+  | None ->
+      (* B235 bootstrap: ad-hoc connector left no supervised config. *)
+      let relay_url =
+        first_nonempty_url [ relay_url_override; env_url ]
+      in
+      (match relay_url with
+       | None ->
+           Printf.eprintf
+             "error: no managed config for '%s' and no relay URL known.\n\
+             \  Ad-hoc `c2c relay connect` is unsupervised (B235).\n\
+             \  Start the supervised connector:\n\
+             \    c2c start relay-connect --relay-url <URL>\n\
+             \  Or set C2C_RELAY_URL / run `c2c relay setup --url <URL>`, then:\n\
+             \    c2c restart relay-connect\n%!"
+             name;
+           exit 1
+       | Some url ->
+           (* Best-effort: stop a prior supervised pid if any (usually none). *)
+           ignore (stop_supervisor ~name ~timeout_s);
+           Printf.printf
+             "[c2c restart] no managed config for '%s'; starting supervised \
+              connector (B235)\n\
+              [c2c restart] prefer `c2c start relay-connect` over bare \
+              `c2c relay connect` so crashes auto-restart\n%!"
+             name;
+           start ~name ~daemon:true ~relay_url:(Some url) ~broker_root
+             ~interval:30 ~extra_args:[] ())
   | Some mc ->
       let relay_url =
-        match mc.mc_relay_url with
-        | Some _ as u -> u
-        | None -> Sys.getenv_opt "C2C_RELAY_URL"
+        first_nonempty_url [ mc.mc_relay_url; relay_url_override; env_url ]
       in
       (match relay_url with
        | None ->

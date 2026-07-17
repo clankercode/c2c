@@ -451,6 +451,77 @@ let test_load_config_opt_degrades_on_relay_connect_shape () =
       check bool "relay-connect config yields None from harness loader" true
         (C2c_start.load_config_opt name = None))
 
+(* B235: unsupervised bare `c2c relay connect` must warn loudly; supervised
+   children and --once must stay quiet. Restart must bootstrap the default
+   machine-wide name when no managed config exists (instead of harness
+   "no config found for instance"). *)
+let test_unsupervised_warning_only_for_bare_persistent () =
+  (match
+     C2c_relay_managed.unsupervised_warning ~supervised:false ~once:false
+       ~relay_url:"https://relay.example"
+   with
+   | None -> fail "bare persistent connector must warn"
+   | Some msg ->
+       check bool "mentions unsupervised" true
+         (try ignore (Str.search_forward (Str.regexp_string "unsupervised") msg 0); true
+          with Not_found -> false);
+       check bool "mentions start relay-connect" true
+         (try ignore (Str.search_forward (Str.regexp_string "c2c start relay-connect") msg 0); true
+          with Not_found -> false);
+       check bool "mentions restart" true
+         (try ignore (Str.search_forward (Str.regexp_string "c2c restart relay-connect") msg 0); true
+          with Not_found -> false);
+       check bool "includes relay url" true
+         (try ignore (Str.search_forward (Str.regexp_string "https://relay.example") msg 0); true
+          with Not_found -> false));
+  check bool "supervised child silent" true
+    (C2c_relay_managed.unsupervised_warning ~supervised:true ~once:false
+       ~relay_url:"https://relay.example" = None);
+  check bool "--once silent" true
+    (C2c_relay_managed.unsupervised_warning ~supervised:false ~once:true
+       ~relay_url:"https://relay.example" = None)
+
+let test_default_relay_connect_name () =
+  check bool "canonical name" true
+    (C2c_relay_managed.is_default_relay_connect_name
+       C2c_relay_managed.default_instance_name);
+  check bool "trims whitespace" true
+    (C2c_relay_managed.is_default_relay_connect_name "  relay-connect  ");
+  check bool "custom name is not default" false
+    (C2c_relay_managed.is_default_relay_connect_name "my-relay");
+  check bool "empty is not default" false
+    (C2c_relay_managed.is_default_relay_connect_name "")
+
+let test_first_nonempty_url_prefers_override_order () =
+  check (option string) "first wins"
+    (Some "https://a.example")
+    (C2c_relay_managed.first_nonempty_url
+       [ Some "https://a.example"; Some "https://b.example" ]);
+  check (option string) "skips empty/whitespace"
+    (Some "https://b.example")
+    (C2c_relay_managed.first_nonempty_url
+       [ None; Some "  "; Some ""; Some "https://b.example" ]);
+  check (option string) "all empty → None" None
+    (C2c_relay_managed.first_nonempty_url [ None; Some ""; Some "\t" ])
+
+let test_read_managed_config_absent_for_bootstrap_path () =
+  (* Documents the B235 precondition: after an ad-hoc connector dies there is
+     no instances/relay-connect/config.json. Restart must still be able to
+     route via is_default_relay_connect_name without a harness config. *)
+  with_temp_dir @@ fun home ->
+  with_env "C2C_INSTANCES_DIR" "" @@ fun () ->
+  let old_home = Sys.getenv_opt "HOME" in
+  Fun.protect
+    ~finally:(fun () -> match old_home with Some h -> Unix.putenv "HOME" h | None -> ())
+    (fun () ->
+      Unix.putenv "HOME" home;
+      check bool "no managed config after ad-hoc death" true
+        (C2c_relay_managed.read_managed_config
+           ~name:C2c_relay_managed.default_instance_name = None);
+      check bool "bootstrap name still recognised" true
+        (C2c_relay_managed.is_default_relay_connect_name
+           C2c_relay_managed.default_instance_name))
+
 let () =
   run "c2c relay managed" [
     "B212 relay-connect restart routing", [
@@ -465,6 +536,17 @@ let () =
       test_case "load_config_opt degrades, no Not_found" `Quick
         test_load_config_opt_degrades_on_relay_connect_shape;
     ];
+    "B235 unsupervised + restart bootstrap", [
+      test_case "unsupervised warning only for bare persistent" `Quick
+        test_unsupervised_warning_only_for_bare_persistent;
+      test_case "default relay-connect name classifier" `Quick
+        test_default_relay_connect_name;
+      test_case "first_nonempty_url resolution order" `Quick
+        test_first_nonempty_url_prefers_override_order;
+      test_case "absent managed config is bootstrap precondition" `Quick
+        test_read_managed_config_absent_for_bootstrap_path;
+    ];
+
     "B214 instances-dir consistency", [
       test_case "override controls instances and lock paths" `Quick
         test_instances_dir_honors_override;
