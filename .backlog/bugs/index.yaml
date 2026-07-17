@@ -234,3 +234,4 @@ bugs:
     - file: B235-unmanaged-c2c-relay-connect-di.todo
     - file: B236-rooms-invite-accepts-cross-hos.todo
     - file: B237-relay-429-error-body-mishandle.todo
+    - file: B238-unmanaged-kimi-sessions-go-dea.todo

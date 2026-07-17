@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-17T15:58:51Z"
+depends_on: []
+estimate_hours: 1
+id: B238
+priority: high
+status: pending
+tags: []
+title: 'unmanaged kimi sessions go deaf: no notifier, no delivery, messages pile up in broker'
+updated_at: "2026-07-17T15:58:51Z"
+---
+During cross-host dogfood (2026-07-18): on BOTH remote machines (x-left: tulip/hedge; x-game: garnet) the kimi sessions were plain unmanaged processes — no c2c notifier daemon, no 'kimi server run', no tmux for managed start (x-left has no tmux installed). Cross-host DMs were accepted by the relay, pulled into the brokers by the connectors, and then sat in inbox.json indefinitely with zero delivery path into the sessions. The documented fallback (agent arms a Monitor on 'c2c monitor', or operator polls) requires the agent to already know it should — which needs either the /c2c skill to be loaded each session (SessionStart hook only registers; it does not inject the skill or a wake) or a running notifier. Suggest: (a) 'c2c install kimi' could install/start a per-user notifier daemon that covers unmanaged sessions on the host (session_index discovery already supports arbitrary sessions); (b) or the SessionStart hook should nudge the agent to arm its receive path; (c) doctor should flag 'registered kimi session with undelivered inbox and no notifier'.
