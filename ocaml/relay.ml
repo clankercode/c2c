@@ -5386,6 +5386,8 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     let path = Uri.path uri in
     let meth = Request.meth req in
     let client_ip = get_client_ip conn in
+    (* B243: client identity only — Relay_ratelimit.check composites
+       (key, endpoint-class) so /send and /pubkey do not share a bucket. *)
     let rate_key = client_ip in
     let rate_limit_event, rate_limit_binding_prefix =
       if String.length path > 10 && String.sub path 0 10 = "/observer/" then
