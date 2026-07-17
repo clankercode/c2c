@@ -122,9 +122,9 @@ let base_tool_definitions =
       ~required:[]
       ~properties:[]
   ; tool_definition ~name:"send_room_invite"
-      ~description:"Invite an alias to a room. Only existing room members can send invites. For gated and private rooms, the invitee will be allowed to join."
+      ~description:"Invite a local alias to a broker-local room. Only existing room members can send invites. For gated and private rooms, the invitee will be allowed to join. Cross-host alias@host targets are refused (rooms are per-broker; use c2c relay rooms for cross-host)."
       ~required:["room_id"; "invitee_alias"]
-      ~properties:[ prop "room_id" "Room to invite to."; prop "invitee_alias" "Alias to invite."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
+      ~properties:[ prop "room_id" "Room to invite to."; prop "invitee_alias" "Local alias to invite (not alias@host)."; prop "alias" "Legacy fallback sender alias (deprecated)." ]
   ; tool_definition ~name:"knock_room"
       ~description:"Request to join a gated room. Only works for discoverable gated rooms when the requester is not already a member or invited. Duplicate knocks are idempotent."
       ~required:["room_id"]

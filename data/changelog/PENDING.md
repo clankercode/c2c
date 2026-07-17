@@ -24,6 +24,11 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
   deferrable DMs. `c2c send` now accepts `--deferrable` and stamps the same
   inbox flag as MCP `deferrable:true` (local 1:1; relay outbox does not yet
   preserve it, same caveat as `--ephemeral`).
+- **B236: `c2c rooms invite` / `create --invite` refuse cross-host
+  `alias@host`.** Broker-local rooms are per-broker and are not federated;
+  inviting a remote peer previously succeeded and wrote the address into
+  `invited_members` while the remote could never join. Both CLI and MCP now
+  reject with an actionable pointer to `c2c relay rooms`.
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.

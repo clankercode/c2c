@@ -379,16 +379,19 @@ let send_room_invite ~broker ~session_id_override ~arguments =
                  ~is_error:true)
         | None ->
             with_session_lwt ~session_id_override broker arguments (fun ~session_id:_ ->
-            Broker.send_room_invite broker ~room_id ~from_alias ~invitee_alias;
-            let content =
-              `Assoc
-                [ ("ok", `Bool true)
-                ; ("room_id", `String room_id)
-                ; ("invitee_alias", `String invitee_alias)
-                ]
-              |> Yojson.Safe.to_string
-            in
-            Lwt.return (tool_ok content))))
+            try
+              Broker.send_room_invite broker ~room_id ~from_alias ~invitee_alias;
+              let content =
+                `Assoc
+                  [ ("ok", `Bool true)
+                  ; ("room_id", `String room_id)
+                  ; ("invitee_alias", `String invitee_alias)
+                  ]
+                |> Yojson.Safe.to_string
+              in
+              Lwt.return (tool_ok content)
+            with Invalid_argument msg ->
+              Lwt.return (tool_err msg))))
 
 let room_knock_json (k : room_knock) =
   `Assoc
