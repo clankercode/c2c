@@ -229,3 +229,4 @@ bugs:
     - file: B230-relay-rooms-list-hides-unliste.todo
     - file: B231-relay-dm-poll-403-signature-in.todo
     - file: B232-c2c-send-cli-has-no-deferrable.todo
+    - file: B233-kimi-mcp-json-lacks-c2c-mcp-se.todo
