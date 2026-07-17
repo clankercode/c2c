@@ -1,0 +1,13 @@
+---
+complexity: medium
+created_at: "2026-07-17T15:58:25Z"
+depends_on: []
+estimate_hours: 1
+id: B235
+priority: high
+status: pending
+tags: []
+title: unmanaged 'c2c relay connect' dies silently with no supervision; restart refuses ad-hoc connectors
+updated_at: "2026-07-17T15:58:25Z"
+---
+During cross-host dogfood (2026-07-18) on x-left: the ad-hoc 'c2c relay connect' process was dead (last_sync 972s stale, inbound_delivered=0) with nothing restarting it; remote agents' DMs sat on the relay undelivered. 'c2c restart relay-connect' errors 'no config found for instance relay-connect' for connectors not started via 'c2c start relay-connect'. Gaps: (1) ad-hoc connectors have zero supervision/healthcheck — a dead one is invisible except via whoami --relay state; (2) restart only works for managed instances. Suggest: 'c2c relay connect' should either always register itself under the machine-wide supervisor or print a loud warning that it is unsupervised; doctor/health should flag a stale connector (whoami does, doctor should too); restart could fall back to starting a managed instance when no config exists.
