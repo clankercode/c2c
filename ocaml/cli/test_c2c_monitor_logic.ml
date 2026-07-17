@@ -524,11 +524,14 @@ let test_classify_rate_limit_exceeded () =
   let resp = `Assoc [ ("ok", `Bool false)
                     ; ("error_code", `String "rate_limit_exceeded")
                     ; ("error", `String "too many requests")
+                    ; ("retry_after", `Float 3.5)
                     ; ("http_status", `Int 429) ] in
   (match L.classify_relay_response resp with
-   | L.Peek_rate_limited detail ->
+   | L.Peek_rate_limited { detail; retry_after } ->
        Alcotest.(check bool) "detail names the rate-limit code" true
-         (str_contains detail "rate_limit_exceeded")
+         (str_contains detail "rate_limit_exceeded");
+       Alcotest.(check (option (float 1e-9))) "captures retry_after"
+         (Some 3.5) retry_after
    | other ->
        Alcotest.failf "expected Peek_rate_limited, got %s" (outcome_label other))
 
@@ -537,11 +540,49 @@ let test_classify_http_error_429_alias () =
      ok:false — that must also read as rate-limited, not a generic transient. *)
   let resp = `Assoc [ ("ok", `Bool false)
                     ; ("error_code", `String "http_error_429")
-                    ; ("http_status", `Int 429) ] in
+                    ; ("http_status", `Int 429)
+                    ; ("relay_response",
+                       `Assoc [ ("error", `String "rate_limit_exceeded")
+                              ; ("retry_after", `Float 2.0) ]) ] in
   (match L.classify_relay_response resp with
-   | L.Peek_rate_limited _ -> ()
+   | L.Peek_rate_limited { retry_after; _ } ->
+       Alcotest.(check (option (float 1e-9))) "nested retry_after"
+         (Some 2.0) retry_after
    | other ->
        Alcotest.failf "expected Peek_rate_limited, got %s" (outcome_label other))
+
+let test_classify_raw_wire_429_without_ok () =
+  (* Production relay body before/without ok:false — {error, retry_after}. *)
+  let resp = `Assoc [ ("error", `String "rate_limit_exceeded")
+                    ; ("retry_after", `Float 1.25) ] in
+  (match L.classify_relay_response resp with
+   | L.Peek_rate_limited { detail; retry_after } ->
+       Alcotest.(check bool) "detail names rate_limit" true
+         (str_contains detail "rate_limit_exceeded");
+       Alcotest.(check (option (float 1e-9))) "wire retry_after"
+         (Some 1.25) retry_after
+   | other ->
+       Alcotest.failf "expected Peek_rate_limited, got %s" (outcome_label other))
+
+let test_rate_limit_pace_honors_retry_after () =
+  (* B244: pace = max(expo, retry_after), capped. *)
+  let p =
+    L.rate_limit_pace ~base_interval:5.0 ~err_streak:1 ~retry_after:(Some 40.0)
+  in
+  Alcotest.(check (float 1e-9)) "retry_after wins over expo(10)" 40.0 p;
+  let p2 =
+    L.rate_limit_pace ~base_interval:5.0 ~err_streak:3 ~retry_after:(Some 1.0)
+  in
+  Alcotest.(check (float 1e-9)) "expo wins when larger than ra" 20.0 p2;
+  let p3 =
+    L.rate_limit_pace ~base_interval:5.0 ~err_streak:1 ~retry_after:None
+  in
+  Alcotest.(check (float 1e-9)) "no ra falls back to expo" 10.0 p3;
+  let p4 =
+    L.rate_limit_pace ~base_interval:5.0 ~err_streak:100
+      ~retry_after:(Some 9999.0)
+  in
+  Alcotest.(check (float 1e-9)) "capped" L.rate_limit_pace_cap_s p4
 
 let test_rate_limit_distinct_from_signature_invalid () =
   (* Acceptance B213(1): throttling and identity failure must never collapse
@@ -1020,10 +1061,14 @@ let () =
             test_classify_rate_limit_exceeded
         ; Alcotest.test_case "http_error_429 alias is rate-limited" `Quick
             test_classify_http_error_429_alias
+        ; Alcotest.test_case "raw wire 429 without ok field" `Quick
+            test_classify_raw_wire_429_without_ok
         ; Alcotest.test_case "rate-limit distinct from signature_invalid" `Quick
             test_rate_limit_distinct_from_signature_invalid
         ; Alcotest.test_case "rate-limit escalation uses throttle remediation" `Quick
             test_rate_limit_escalation_uses_throttle_remediation
+        ; Alcotest.test_case "B244 rate_limit_pace honors retry_after" `Quick
+            test_rate_limit_pace_honors_retry_after
         ] )
     ; ( "relay-terminal-teardown",
         [ Alcotest.test_case "terminal + local watch active -> no exit" `Quick
