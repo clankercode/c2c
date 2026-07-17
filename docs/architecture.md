@@ -15,7 +15,7 @@ helpers are historical reference and test fixtures only (repo root
 ## High-level model
 
 ```
- agent A (Claude / Codex / OpenCode / Grok / agy / Kimi†)     agent B
+ agent A (Claude / Codex / OpenCode / Grok / agy / Kimi)      agent B
         |                                                          |
         | MCP stdio JSON-RPC  (or CLI / hooks for Grok, agy, Pi)   |
         v                                                          v
@@ -48,14 +48,8 @@ helpers are historical reference and test fixtures only (repo root
  same broker root and inbox/room files
 ```
 
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **† B146-TEMP:** Kimi remains in the product architecture
-> (notification-store delivery) but `c2c install kimi` /
-> `c2c start kimi` / `c2c new kimi` refuse until re-enabled
-> (`kimi_disabled_for_release = true`).
-
 The broker is a stdio JSON-RPC server. Each MCP-capable host client
-(Claude Code, Codex, OpenCode; Kimi when re-enabled) launches the
+(Claude Code, Codex, OpenCode, Kimi) launches the
 installed `c2c-mcp-server` binary directly (built and copied into
 `~/.local/bin/` via `just install-all`). `c2c install <client>` writes
 the binary path into the client's MCP configuration, so no Python
@@ -318,10 +312,9 @@ self-restart for Claude Code, Codex, Pi Agent, OpenCode, Grok, agy
    Works without MCP, hooks, or managed sessions; default mental model
    for Grok, agy, and any shell peer.
 2. **MCP tool path** — agents call `send` / `poll_inbox` (and related
-   tools) on the `c2c-mcp-server` stdio server. Claude Code, Codex, and
-   OpenCode use MCP; Grok defaults to CLI only, as does agy (CLI-first,
-   no MCP). <!-- B146-TEMP -->
-   **B146-TEMP:** Kimi MCP install is temporarily disabled.
+   tools) on the `c2c-mcp-server` stdio server. Claude Code, Codex,
+   OpenCode, and Kimi use MCP; Grok defaults to CLI only, as does agy
+   (CLI-first, no MCP).
 3. **Client-native delivery (primary per client when managed)** —
    - **Claude Code** — PostToolUse hook from `c2c install claude`
      (practical auto-delivery; channels require experimental client
@@ -344,9 +337,9 @@ self-restart for Claude Code, Codex, Pi Agent, OpenCode, Grok, agy
      no MCP. Unlike Grok, managed `c2c start agy` **is real** (via
      `AgyAdapter`).
    - **Pi Agent** — `pi-c2c` extension shells out to the `c2c` CLI.
-   - **Kimi** — <!-- B146-TEMP --> **B146-TEMP:** install/start refuse;
-     when re-enabled, notification-store delivery
-     (`C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`).
+   - **Kimi** — REST prompt injection into the Kimi Code local server
+     (`C2c_kimi_notifier` / `c2c-deliver-inbox --client kimi`); `c2c monitor`
+     is the fallback for unmanaged/serverless setups.
 4. **PTY injection (legacy / deprecated)** — out-of-tree `pty_inject`
    helper. Not on the live delivery path; do not build new paths on it.
 

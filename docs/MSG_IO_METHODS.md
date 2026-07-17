@@ -10,12 +10,7 @@ A single reference tracking every delivery method in c2c: how messages
 get from one agent to another, which clients support each method, what
 implements it, and where the sharp edges are.
 
-Last updated: 2026-07-13
-
-> **B146-TEMP:** Kimi is temporarily disabled for this release
-> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
-> until re-enabled. Kimi method rows and §9 remain for when it returns.
-> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+Last updated: 2026-07-17 (kimi re-enabled: B146 reverted; REST delivery)
 
 ---
 
@@ -26,13 +21,13 @@ Last updated: 2026-07-13
 | 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No MCP | No | No | No | Experimental / gated behind dev flag |
 | 2 | [PostToolUse Hook](#2-posttooluse-hook) | Host hooks drain inboxes into `additionalContext` at tool/turn boundaries | Yes | Yes (vanilla + managed fallback) | No | No | No | No | Working (primary for Claude Code; Codex vanilla/fallback only) |
 | 2b | [Codex app-server inject + gated auto-turn](#2b-codex-app-server-inject--gated-auto-turn) | Managed Codex: arrival-time inject + idle auto-turn over authenticated app-server | No | Yes (managed ≥0.144) | No | No | No | No | **Primary for managed Codex** (B131); hooks fall back |
-| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Deprecated sentinel | No | Fallback | No | No | Legacy/fallback only; Kimi uses notification-store |
+| 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Deprecated sentinel | No | Fallback | No | No | Legacy/fallback only; Kimi uses REST prompt injection |
 | 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | No | No | Experimental; not real-time |
 | 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP/CLI tool that drains and returns pending messages | Yes | Yes | Yes (CLI) | Yes | Yes | Yes (CLI) | Working (universal baseline) |
 | 6 | [Wake Daemon](#6-wake-daemon) | inotify watches inbox and wakes/delivers to idle agents | Yes | Legacy / hook-wake | Yes (`pi-c2c`) | Yes | Yes | Monitor | Working for Pi/OpenCode; Grok uses Monitor+`c2c monitor`; legacy for Codex PTY sentinel |
-| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | No | Deprecated | No | Deprecated; notification-store is preferred |
+| 7 | [Kimi Wire Bridge](#7-kimi-wire-bridge) | Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method | No | No | No | No | Deprecated | No | Deprecated; REST prompt injection is preferred |
 | 8 | [OpenCode Native Plugin](#8-opencode-native-plugin) | TypeScript plugin + alias-scoped `c2c monitor`, delivers via `promptAsync` | No | No | No | Yes | No | No | Proven; preferred for OpenCode |
-| 9 | [Kimi Notification-Store](#9-kimi-notification-store) | File-based notification push to Kimi's native notification subsystem | No | No | No | No | Yes (B146-TEMP) | No | Preferred for Kimi when re-enabled |
+| 9 | [Kimi REST Prompt Injection](#9-kimi-rest-prompt-injection) | POSTs each DM as a user prompt to the Kimi Code local REST server | No | No | No | No | Yes | No | Primary for Kimi |
 
 > **agy (Google Antigravity)** — new client, 2026-07-14; not in the 0.12.0
 > release. Not broken out as its own column above to keep these matrices
@@ -206,7 +201,7 @@ hook boundary still need an idle-session bridge or manual polling.
 | Codex | Yes | **Vanilla primary / managed fallback.** `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — hook-boundary, not arrival-time. Managed sessions on a supported Codex get [app-server delivery](#2b-codex-app-server-inject--gated-auto-turn) instead (arrival-time, draft-safe; shipped, B131); older Codex or app-server startup failure falls back here automatically. Explicit polling remains the portable fallback. |
 | Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than host hooks. |
 | OpenCode | No | OpenCode uses its native TypeScript plugin instead. |
-| Kimi | No | Kimi uses notification-store delivery instead. |
+| Kimi | No | Kimi uses REST prompt injection instead. |
 
 #### Key files
 
@@ -225,7 +220,7 @@ hook boundary still need an idle-session bridge or manual polling.
   session may not receive messages until it resumes tool use, receives user
   input, or polls explicitly.
 - Claude Code and Codex hook schemas are host-specific. Other clients use their
-  own delivery integrations (`pi-c2c`, OpenCode plugin, Kimi notification-store).
+  own delivery integrations (`pi-c2c`, OpenCode plugin, Kimi REST prompt injection).
 - The Claude Code hook bounds stdin scanning to the prefix needed to find
   `session_id`; malformed or oversized trailing hook payload data does not force
   a full JSON parse before delivery.
@@ -302,7 +297,7 @@ full-delivery mode (legacy), the message content itself is injected.
 
 Kimi historically required master-side injection with a longer submit delay
 because direct `/dev/pts/<N>` slave-side writes display text without submitting
-it as keyboard input. Current Kimi delivery uses notification-store files
+it as keyboard input. Current Kimi delivery uses REST prompt injection
 instead of PTY injection.
 
 #### Client support
@@ -313,7 +308,7 @@ instead of PTY injection.
 | Codex | Deprecated | Sentinel | Superseded by Codex hooks installed by `c2c install codex`. Older managed-session/watch paths used a sentinel that triggered `poll_inbox`. |
 | Pi Agent | No | — | Uses `pi-c2c` (`fs.watch` + CLI drain + `pi.sendMessage`), not PTY injection. |
 | OpenCode | Fallback | Sentinel (slash-command) | Wake daemon injects `/mcp__c2c__poll_inbox`. Superseded by native TypeScript plugin. |
-| Kimi | No | — | Superseded by notification-store (`C2c_kimi_notifier`). |
+| Kimi | No | — | Superseded by REST prompt injection (`C2c_kimi_notifier`). |
 
 #### Key files
 
@@ -469,7 +464,7 @@ injection text and PTY coordination:
 | `c2c-deliver-inbox --notify-only` (legacy OCaml path) | Codex | `<c2c event="message_pending">poll mcp__c2c__poll_inbox</c2c>` sentinel; superseded by Codex hooks |
 | `pi-c2c` extension | Pi Agent | `fs.watch` inbox watcher drains via `c2c poll-inbox` and injects with `pi.sendMessage` |
 | `c2c_opencode_wake_daemon.py` (**deprecated**) | OpenCode | Superseded by TypeScript plugin + `c2c monitor` subprocess |
-| `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by notification-store (C2c_kimi_notifier, file-based push) |
+| `c2c_kimi_wake_daemon.py` (**deprecated**) | Kimi | Superseded by `C2c_kimi_notifier` (REST prompt injection) |
 | `c2c_crush_wake_daemon.py` (**deprecated**) | Crush | Unreliable; Crush not a first-class peer |
 
 #### Client support
@@ -480,7 +475,7 @@ injection text and PTY coordination:
 | Codex | Hook-fallback only | PTY sentinel deprecated. Managed supported Codex uses app-server (no wake inject). Hook-mode managed/vanilla may use tmux/herdr wake inject (`hooks+wake`). |
 | Pi Agent | Yes ✓ | `pi-c2c` watches inbox changes with `fs.watch`, with a 60s safety-net poll. |
 | OpenCode | Yes ✓ | TypeScript plugin (`c2c.ts`) delivers via alias-scoped `c2c monitor --alias <session>` → `promptAsync`. No PTY; not `--all`. |
-| Kimi | Yes ✓ (B146-TEMP) | Notification-store (C2c_kimi_notifier, file-based push). Preferred over deprecated PTY wake when re-enabled. |
+| Kimi | Yes ✓ | REST prompt injection (`C2c_kimi_notifier`). Preferred over deprecated PTY wake. |
 | Grok | Monitor | Prefer persistent Monitor on `c2c monitor` (CLI-first; no managed `c2c start grok`). |
 | Crush | Deprecated | Unreliable; Crush lacks context compaction. |
 
@@ -491,7 +486,7 @@ injection text and PTY coordination:
 | `c2c_claude_wake_daemon.py` | Claude Code PTY wake — **deprecated** |
 | `c2c-deliver-inbox` (OCaml binary) | Legacy Codex PTY sentinel watcher (with `--notify-only --loop`); Python `c2c_deliver_inbox.py` is a fallback |
 | `c2c_opencode_wake_daemon.py` | OpenCode PTY wake — **deprecated**; use TypeScript plugin |
-| `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use notification-store (C2c_kimi_notifier) |
+| `c2c_kimi_wake_daemon.py` | Kimi PTY wake — **deprecated**; use `C2c_kimi_notifier` (REST prompt injection) |
 | `c2c_crush_wake_daemon.py` | Crush PTY wake — **deprecated** |
 | `ocaml/c2c_poker.ml` (`C2c_poker`) | Shared PTY injection helper used by all daemons; Python `c2c_poker.py` is a fallback |
 
@@ -510,7 +505,7 @@ injection text and PTY coordination:
 
 ### 7. Kimi Wire Bridge
 
-> **Deprecated for Kimi (2026-04-29).** The [Kimi notification-store delivery](#9-kimi-notification-store) (Section 9) is the preferred path. The wire-bridge code (`c2c_wire_bridge.ml`) is retained for opencode/codex and future clients that set `needs_wire_daemon=true`.
+> **Deprecated for Kimi (2026-04-29).** The [Kimi REST prompt injection](#9-kimi-rest-prompt-injection) (Section 9) is the preferred path. The wire-bridge code (`c2c_wire_bridge.ml`) is retained for opencode/codex and future clients that set `needs_wire_daemon=true`.
 
 **Delivers broker messages through Kimi's Wire JSON-RPC `prompt` method** --
 A native delivery path that avoids all PTY hacking by using Kimi's built-in
@@ -520,11 +515,10 @@ Wire protocol.
 
 The Kimi wire-bridge path was deprecated and removed in the
 kimi-wire-bridge-cleanup slice. It was replaced by `C2c_kimi_notifier`
-(file-based notification-store push) which avoids the dual-agent
-registration bug that plagued the wire-bridge approach.
+(REST prompt injection into the Kimi Code local server) which avoids the
+dual-agent registration bug that plagued the wire-bridge approach.
 
-See `.collab/runbooks/kimi-notification-store-delivery.md` for the
-replacement mechanism.
+See [Section 9](#9-kimi-rest-prompt-injection) for the replacement mechanism.
 
 #### Historical key files (removed)
 
@@ -539,7 +533,7 @@ replacement mechanism.
   (loop mode only launches Wire when there is work).
 - Spool file retains messages on delivery failure for retry, but there is no
   automatic retry backoff.
-- **For Kimi: use Section 9 (notification-store) instead.**
+- **For Kimi: use Section 9 (REST prompt injection) instead.**
 
 ---
 
@@ -596,37 +590,39 @@ until the plugin drains them and injects them through the official plugin API.
 
 ---
 
-### 9. Kimi Notification-Store
+### 9. Kimi REST Prompt Injection
 
-> **B146-TEMP:** Kimi is temporarily disabled for this release
-> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
-> until re-enabled. Mechanics below remain for when it returns.
-> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-
-**File-based notification push to Kimi's native notification subsystem** --
-The canonical delivery path for Kimi since 2026-04-29, replacing the
-deprecated wire-bridge path.
+**REST prompt POST to the Kimi Code local server** -- The canonical delivery
+path for managed Kimi sessions, replacing the deprecated wire-bridge path (and
+the legacy file-based notification-store, which Kimi Code no longer reads).
 
 #### How it works
 
-When re-enabled, `c2c start kimi` forks a **kimi-notifier daemon** alongside
-the kimi TUI process. The notifier:
+`c2c start kimi` forks a **kimi-notifier daemon** (`C2c_kimi_notifier`)
+alongside the kimi TUI process. The notifier:
 
 1. Polls the c2c broker inbox every 2 seconds.
 2. Drains messages for the Kimi alias.
-3. Resolves the active kimi session-id by parsing `~/.kimi/logs/kimi.log`.
-4. Writes a notification JSON file to
-   `~/.kimi/sessions/<workspace-hash>/<session-id>/notifications/<id>/event.json`.
-5. Optionally sends a tmux `send-keys` wake-prompt when the kimi pane appears idle.
+3. Discovers the active Kimi Code session id (`session_<uuid>`, minted by Kimi
+   Code itself) from `~/.kimi-code/session_index.jsonl`.
+4. Ensures the local Kimi server (`kimi server run`) is listening.
+5. POSTs each message as a user prompt to
+   `http://127.0.0.1:<port>/api/v1/sessions/{id}/prompts` (bearer token from
+   `~/.kimi-code/server.token`). The prompt body is the canonical c2c XML
+   envelope `<c2c event="message" from="..." to="...">...</c2c>` — data-only,
+   never an approval (B098).
+6. Optionally sends a tmux `send-keys` wake-prompt when the kimi pane appears idle.
 
-Kimi-cli's built-in notification subsystem handles toast display (shell-sink) and
-agent-context injection (llm-sink, drained at turn boundaries).
+Managed `c2c start kimi` launches Kimi Code without `--session` (Kimi Code
+0.23+ does not resume arbitrary passed ids). For unmanaged or serverless
+setups, `c2c monitor` (e.g. under a Monitor) is the fallback. A SessionStart
+hook (`c2c hook kimi`) auto-registers the session with the broker.
 
 #### Client support
 
 | Client | Supported | Notes |
 |--------|-----------|-------|
-| Kimi | **Yes — Preferred** (B146-TEMP: start/install refuse) | File-based push to notification store. Replaces wire-bridge. |
+| Kimi | **Yes — Primary** | REST prompt POST to the local Kimi Code server. Replaces wire-bridge; legacy notification-store deprecated. |
 | Claude Code | No | — |
 | Codex | No | — |
 | Pi Agent | No | Uses `pi-c2c` extension delivery instead. |
@@ -638,19 +634,22 @@ agent-context injection (llm-sink, drained at turn boundaries).
 | File | Role |
 |------|------|
 | `ocaml/c2c_kimi_notifier.ml` / `.mli` | Notifier daemon implementation |
+| `ocaml/c2c_kimi_deliver.ml` / `.mli` | REST server discovery + prompt POST (`submit_prompt`) |
 | `ocaml/c2c_start.ml` (`start_kimi_notifier`) | Spawning logic in `run_outer_loop` |
 | `deprecated/c2c_kimi_wire_bridge.py` | **Deprecated** wire-bridge (retained for reference) |
 
 #### Limitations
 
-- **B146-TEMP:** `c2c start kimi` / `c2c install kimi` refuse until re-enabled.
-- Requires kimi session to be active and a session-id resolvable from `kimi.log`.
-- LLM-sink injection only at agent turn boundaries (not immediate).
+- Requires the local Kimi server (`kimi server run`) to accept the prompt POST;
+  the notifier ensures it is running, but serverless setups fall back to
+  `c2c monitor`.
+- Requires a live Kimi Code session resolvable from
+  `~/.kimi-code/session_index.jsonl`.
 - tmux send-keys wake-prompt may not fire if pane is in copy-mode.
-- Notifier daemon must be running (`c2c start kimi` starts it automatically when re-enabled).
+- Notifier daemon must be running (`c2c start kimi` starts it automatically).
 
-See `.collab/runbooks/kimi-notification-store-delivery.md` (internal) for the
-full troubleshooting guide.
+See `.collab/runbooks/kimi-notification-store-delivery.md` (internal,
+deprecated) for the legacy file-based mechanism.
 
 ---
 
@@ -667,9 +666,9 @@ Which methods are primary, fallback, or unavailable for each client:
 | History.jsonl Injection | Experimental | -- | -- | -- | -- | -- |
 | poll_inbox Tool | Baseline | Baseline | CLI baseline | Baseline | Baseline | **Baseline** (CLI) |
 | Wake Daemon | Idle bridge | Hook-mode wake inject | **Primary** (`pi-c2c`) | Fallback | Fallback | -- |
-| Monitor + `c2c monitor` | Idle awareness | -- | -- | (plugin-internal) | -- | **Primary** |
+| Monitor + `c2c monitor` | Idle awareness | -- | -- | (plugin-internal) | Fallback (unmanaged) | **Primary** |
 | Kimi Wire Bridge | -- | -- | -- | -- | Deprecated | -- |
-| Kimi Notification-Store | -- | -- | -- | -- | **Primary** (B146-TEMP) | -- |
+| Kimi REST Prompt Injection | -- | -- | -- | -- | **Primary** | -- |
 | OpenCode Native Plugin | -- | -- | -- | **Primary** | -- | -- |
 
 **Primary** = recommended path for that client; for MCP clients this is installed
@@ -707,7 +706,7 @@ Recipient's inbox file
     |  +-- Host hook fires (Claude Code PostToolUse; Codex UserPromptSubmit/PostToolUse)
     |  +-- Codex app-server inject + gated auto-turn (managed supported Codex)
     |  +-- Native plugin + alias-scoped c2c monitor (OpenCode)
-    |  +-- Notification-store delivers via C2c_kimi_notifier (Kimi; B146-TEMP)
+    |  +-- REST prompt injection via C2c_kimi_notifier (Kimi)
     |  +-- Monitor on c2c monitor (Grok preferred)
     |  +-- agentapi inject via deliver-watch sidecar (agy, managed c2c start agy)
     |  +-- Wake daemon PTY-injects sentinel (legacy)

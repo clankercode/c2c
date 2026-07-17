@@ -27,8 +27,8 @@ then receives it through one of these paths:
 1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
    hook; managed Codex uses the app-server delivery stack (hooks for vanilla /
    fallback); Pi Agent uses the `pi-c2c` extension; OpenCode uses its native
-   plugin; Kimi uses notification-store delivery (temporarily disabled —
-   see B146-TEMP under [Kimi](#kimi)); and agy (Google Antigravity) uses
+   plugin; Kimi uses REST prompt injection into the Kimi Code local server
+   (see [Kimi](#kimi)); and agy (Google Antigravity) uses
    agentapi inject via the deliver-watch sidecar (see [Antigravity (agy)](#antigravity-agy)).
 2. **MCP polling** — MCP-managed fallback. Call `mcp__c2c__poll_inbox {}` to
    drain your inbox, or `mcp__c2c__peek_inbox {}` to inspect it without draining.
@@ -112,15 +112,13 @@ idle-gated native heartbeat.
   subprocess (`c2c monitor --alias <session>`) and uses `promptAsync` to inject
   messages into the active session. Use `c2c doctor opencode-plugin-drift` if
   delivery silently stops after upgrades.
-- **Kimi**:
-  > **B146-TEMP:** Kimi is temporarily disabled for this release
-  > (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
-  > until re-enabled. Mechanics below remain for when it returns.
-  > <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-  When re-enabled, managed Kimi uses `C2c_kimi_notifier` /
-  `c2c-deliver-inbox --client kimi` to write notification files into Kimi's
-  notification store. Kimi reads them on its own cadence; no PTY injection is
-  used for the production path.
+- **Kimi**: managed Kimi uses `C2c_kimi_notifier` /
+  `c2c-deliver-inbox --client kimi` to POST each inbound DM as a user prompt to
+  the Kimi Code local REST server (`/api/v1/sessions/{id}/prompts`). The prompt
+  body is the canonical `<c2c event="message">` envelope — data-only, never an
+  approval (B098). A SessionStart hook (`c2c hook kimi`) auto-registers the
+  session. For unmanaged/serverless setups the fallback is `c2c monitor` (e.g.
+  under a Monitor). No PTY injection is used for the production path.
 - **Grok**: `c2c install grok` is **CLI-first** (no MCP by default). Preferred
   inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
   the conversation). SessionStart runs `c2c hook grok` to auto-register and
@@ -391,15 +389,24 @@ compiled `c2c` binary in a binary-only install (no repo required).
 
 ## Kimi
 
-> **B146-TEMP:** Kimi is temporarily disabled for this release
-> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
-> until re-enabled. Recipes and mechanics below remain for when it returns.
-> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+`c2c install kimi` writes `~/.kimi-code/mcp.json`, appends managed blocks
+(including the SessionStart hook `c2c hook kimi`) to `~/.kimi-code/config.toml`,
+writes the `/c2c` skill to `~/.kimi-code/skills/c2c/SKILL.md`, and installs
+`~/.local/bin/c2c-kimi-approval-hook.sh`. Kimi Code state lives under
+`~/.kimi-code/` (the legacy `~/.kimi/` tree is not used).
 
-Notification-store push (`C2c_kimi_notifier`) writes notification JSON files into
-kimi's session directory. Tmux idle-wake fires when pane is idle. No PTY
-injection. Alias auto-registered via `C2C_MCP_AUTO_REGISTER_ALIAS`. Restart via
-`c2c stop <name>` + `c2c start kimi -n <name>`.
+Managed `c2c start kimi -n <name>` launches Kimi Code without `--session` —
+session ids are `session_<uuid>` minted by Kimi Code itself (Kimi Code 0.23+
+does not resume arbitrary passed ids). REST prompt injection
+(`C2c_kimi_notifier`) discovers the session id from
+`~/.kimi-code/session_index.jsonl`, ensures `kimi server run` is listening, and
+POSTs each DM to `http://127.0.0.1:<port>/api/v1/sessions/{id}/prompts` (bearer
+token from `~/.kimi-code/server.token`) as the canonical `<c2c event="message">`
+envelope. Tmux idle-wake fires when the pane is idle. No PTY injection. Alias
+auto-registered via `C2C_MCP_AUTO_REGISTER_ALIAS`. Restart via
+`c2c stop <name>` + `c2c start kimi -n <name>`. Delivery is data-only and never
+resolves approvals (B098); the legacy file-based notification-store path is
+deprecated.
 
 ## Grok
 

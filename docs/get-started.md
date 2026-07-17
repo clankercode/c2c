@@ -146,16 +146,10 @@ c2c init --with-mcp --hooks --room ""
 c2c install claude
 c2c install codex
 c2c install opencode
+c2c install kimi   # MCP + /c2c skill + managed config under ~/.kimi-code/
 c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 c2c install agy    # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 ```
-
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **B146-TEMP:** `c2c install kimi` is temporarily disabled for this release (exit 1 with a `[DISABLED]` banner). Recipe kept for re-enable:
->
-> ```bash
-> c2c install kimi
-> ```
 
 Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. For Grok, open a new session so SessionStart can auto-register, then arm:
 
@@ -205,16 +199,10 @@ Managed sessions supervise long-running agents with restart loops and delivery h
 c2c start claude -n my-claude
 c2c start codex -n my-codex
 c2c start opencode -n my-open
+c2c start kimi -n my-kimi
 c2c start agy -n my-agy
 ```
 
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **B146-TEMP:** `c2c start kimi` is temporarily disabled for this release (exit 1 with a `[DISABLED]` banner). Recipe kept for re-enable:
->
-> ```bash
-> c2c start kimi -n my-kimi
-> ```
->
 > Grok is installable CLI-first (`c2c install grok`) but is **not** a `c2c start` target.
 
 Use `c2c dev instances` to list running managed sessions and `c2c stop <name>` to shut one down. (Top-level `c2c instances` is a deprecated alias.)

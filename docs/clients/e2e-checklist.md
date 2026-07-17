@@ -7,17 +7,10 @@ layout: page
 # Client E2E Verification Checklist
 
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
-Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**
-(B146-TEMP), **Grok** (CLI-first), **agy** (Google Antigravity, CLI-first, new).
+Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**,
+**Grok** (CLI-first), **agy** (Google Antigravity, CLI-first, new).
 
-Last updated: 2026-07-13 (docs-audit BATCH-B: Grok rows; B146-TEMP Kimi SKIP;
-B168 idle/stale note)
-
-> **B146-TEMP:** Kimi is temporarily disabled for this release
-> (`kimi_disabled_for_release`). `c2c install kimi` / `c2c start kimi` refuse
-> until re-enabled. Default all Kimi lifecycle / install rows to **SKIP** with
-> reason B146; recipes stay for re-enable dogfood.
-> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
+Last updated: 2026-07-17 (kimi re-enabled: B146 reverted; REST delivery)
 
 ---
 
@@ -32,9 +25,8 @@ rows SKIP for Grok. For **agy** (Google Antigravity, CLI-first, new): `c2c
 install agy`, then launch the Antigravity CLI; `c2c start agy` is available as a
 managed path. Verify `c2c whoami` shows an `agy-*` alias and SessionStart
 registered with `registered_by=agy-hook`. Auto-delivery is agentapi inject on
-wake — verify via a follow-up turn, not by scraping the pane. For **Kimi**,
-default SKIP under B146-TEMP. Capture results with `./scripts/c2c_tmux.py peek
-<pane-name>` when the client is tmux-managed.
+wake — verify via a follow-up turn, not by scraping the pane. Capture results
+with `./scripts/c2c_tmux.py peek <pane-name>` when the client is tmux-managed.
 
 Use ephemeral test aliases (e.g. `test-claude-$(date +%s)`). Clean up
 MCP-managed clients with `c2c stop <test-alias>` when done; stop Pi Agent
@@ -70,7 +62,7 @@ c2c list --all
   - MCP-managed clients: `c2c start <client> -n test-<client>-<rand>`
   - Pi Agent: `pi install npm:pi-c2c`, then launch pi with the extension loaded
   - Grok: `c2c install grok`, then start the Grok TUI (new session so SessionStart fires); **not** `c2c start grok`
-  - Kimi: **SKIP (B146-TEMP)** — `c2c install kimi` / `c2c start kimi` refuse
+  - Kimi: `c2c install kimi`, then `c2c start kimi -n test-kimi-<rand>` (managed, like other MCP-managed clients)
 - **Action**:
   - `c2c whoami` (Grok: CLI from a tool shell with `GROK_AGENT=1`, or after SessionStart skill refresh)
 - **Expected**:
@@ -100,7 +92,7 @@ c2c list --all
   - For Codex in hook mode (vanilla, or managed on a Codex too old for the app-server transport): installed hooks (`c2c hook codex`) drain and inject via `hookSpecificOutput.additionalContext` on the next hook fire (turn boundary) — NOT on arrival. An idle session surfaces the message on its next turn (or via the tmux/herdr wake nudge when `delivery_mode=hooks+wake`).
   - For managed Codex on a supported Codex (app-server transport, the default — B131): the message is injected into the thread's model-visible history on arrival — it does **not** render in the TUI transcript. Verify with a follow-up turn (ask the model to echo the marker), not by watching the pane. Any typed composer draft must survive byte-exact; eligible local mail on an idle thread also starts one gated auto-turn immediately (T007/B168). Long-stuck inject/auto-turn failures re-batch after ~2 minutes (B168).
   - For Pi Agent: `pi-c2c` drains the inbox and injects via `pi.sendMessage`
-  - For Kimi: **SKIP (B146-TEMP)**; when re-enabled, message appears in notification store / TUI prefill
+  - For Kimi: the notifier POSTs the envelope to the Kimi Code local REST server; it appears as a user prompt in the TUI (REST prompt injection). Serverless/unmanaged setups fall back to `c2c monitor`
   - For Grok: with a persistent Monitor on `c2c monitor`, the line is injected into the conversation; without Monitor, message sits until `c2c poll-inbox`
 - **Failure modes**:
   - ECHILD race on Claude (known, fixed via bash wrapper)
@@ -295,8 +287,7 @@ check.
 
 Pi Agent is not a `c2c start` target; mark this row SKIP for Pi Agent and test
 the pi launcher / extension lifecycle separately. **Grok:** SKIP — no
-`c2c start grok` (deferred). **Kimi:** SKIP (B146-TEMP) — `c2c start kimi`
-refuses until re-enabled.
+`c2c start grok` (deferred).
 
 - **Setup**:
   - MCP-managed clients: use the test pane running from step 1
@@ -352,9 +343,6 @@ This is client-specific — different clients use different permission mechanism
 - **Repro time**: ~30s
 
 ### Kimi
-
-> **B146-TEMP:** Default **SKIP** — `c2c install kimi` refuses until re-enabled.
-> <!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
 
 - **Setup**: Client running with PreToolUse hook configured (`c2c install kimi`)
 - **Action**: Run any Shell command (e.g. `ls`)
@@ -428,7 +416,7 @@ After running all applicable rows, save:
 | Codex       | N | N | N | ... |
 | Pi Agent    | N | N | N | ... |
 | OpenCode    | N | N | N | ... |
-| Kimi        | N | N | N | B146-TEMP: default SKIP lifecycle/install |
+| Kimi        | N | N | N | ... |
 | Grok        | N | N | N | CLI-first; no `c2c start grok` |
 
 ## Full log

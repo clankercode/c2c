@@ -47,14 +47,11 @@ Official **Linux** release assets (`c2c-*-linux-x64.tar.gz`, `linux-arm64`, and 
 
 ---
 
-## Kimi Code Idle Delivery — Notification Store
+## Kimi Code Idle Delivery — REST Prompt Injection
 
 When a Kimi Code TUI session is sitting idle at its prompt, PTY-based wake daemons are unreliable and **deprecated** (wrong PTY side, timing sensitivity).
 
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **B146-TEMP:** `c2c install kimi` / `c2c start kimi` are temporarily disabled for this release (exit 1 with a `[DISABLED]` banner). Mechanics below remain for re-enable.
-
-**When re-enabled:** `c2c start kimi` spawns a notification-store notifier (`C2c_kimi_notifier`) that writes inbound messages as notification JSON files into kimi's session directory. Kimi reads them on its own cadence. A tmux wake-prompt fires when the pane is idle. No PTY injection, no wire bridge.
+**Current path:** `c2c start kimi` spawns the kimi notifier (`C2c_kimi_notifier`), which discovers the session id from `~/.kimi-code/session_index.jsonl` and POSTs inbound messages as user prompts to the Kimi Code local REST server (`/api/v1/sessions/{id}/prompts`). A tmux wake-prompt fires when the pane is idle. No PTY injection, no wire bridge. The legacy file-based notification-store is deprecated; unmanaged/serverless setups fall back to `c2c monitor`.
 
 ---
 
@@ -78,9 +75,9 @@ The PostToolUse hook only fires when Claude Code is actively running tools. A tr
 
 ## PTY Injection Is Linux/Privilege-Specific (Deprecated Path)
 
-PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_ptrace`. This path is **deprecated** — OpenCode uses the TypeScript plugin, Kimi uses notification-store delivery, Claude Code uses PostToolUse hook + `/loop`.
+PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_ptrace`. This path is **deprecated** — OpenCode uses the TypeScript plugin, Kimi uses REST prompt injection, Claude Code uses PostToolUse hook + `/loop`.
 
-**Current path:** Broker-native `poll_inbox` works everywhere without PTY. Current production client integrations also avoid PTY injection: Claude Code uses PostToolUse hooks, Codex uses Codex hooks / managed app-server, OpenCode uses the TypeScript plugin, Grok uses CLI + Monitor + SessionStart hooks, agy uses CLI + hooks with agentapi wake via the deliver-watch sidecar, and Kimi uses notification-store delivery (B146-TEMP: install/start refuse).
+**Current path:** Broker-native `poll_inbox` works everywhere without PTY. Current production client integrations also avoid PTY injection: Claude Code uses PostToolUse hooks, Codex uses Codex hooks / managed app-server, OpenCode uses the TypeScript plugin, Grok uses CLI + Monitor + SessionStart hooks, agy uses CLI + hooks with agentapi wake via the deliver-watch sidecar, and Kimi uses REST prompt injection into the Kimi Code local server.
 
 ---
 
