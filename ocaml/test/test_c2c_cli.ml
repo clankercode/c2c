@@ -3348,6 +3348,55 @@ let test_register_cmd_same_alias_refresh_allowed () =
           let regs = C2c_mcp.Broker.list_registrations broker in
           check string "alias unchanged" "keep-me" (List.hd regs).alias))
 
+(* B240: same-alias re-register of a reserved client-prefix sticky alias
+   (e.g. kimi-… auto-gen) must succeed for PID refresh. Blocked-prefix must
+   not fire before sticky same-alias allowance. First-time claim of the
+   prefix without from_auto_gen remains rejected. *)
+let test_register_cmd_same_alias_reserved_prefix_refresh_allowed () =
+  with_temp_dir (fun dir ->
+      let session_id = "test-sess-b240-kimi-prefix" in
+      let sticky = "kimi-ember-frost-a1b2" in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (* Simulate prior auto-registration under reserved client prefix. *)
+      C2c_mcp.Broker.register broker ~session_id ~alias:sticky
+        ~pid:None ~pid_start_time:None ~from_auto_gen:true ();
+      let out = Filename.temp_file "c2c-b240-same" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out with _ -> ())
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > %s 2>&1"
+              (Filename.quote dir) (Filename.quote session_id)
+              (c2c_cmd (Printf.sprintf "c2c register --alias %s" sticky))
+              (Filename.quote out)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file out in
+          check int "same-alias reserved-prefix register exits 0" 0 rc;
+          check bool "not blocked-prefix error" false
+            (string_contains content "blocked" || string_contains content "reserved");
+          let regs = C2c_mcp.Broker.list_registrations broker in
+          check string "alias unchanged" sticky (List.hd regs).alias);
+      (* Different session still cannot claim the reserved prefix via CLI. *)
+      let out2 = Filename.temp_file "c2c-b240-fresh" ".out" in
+      Fun.protect
+        ~finally:(fun () -> try Sys.remove out2 with _ -> ())
+        (fun () ->
+          let cmd =
+            Printf.sprintf
+              "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=session-fresh-b240 %s > %s 2>&1"
+              (Filename.quote dir)
+              (c2c_cmd "c2c register --alias kimi-should-block-zz99")
+              (Filename.quote out2)
+          in
+          let rc = Sys.command cmd in
+          let content = read_file out2 in
+          check bool "fresh reserved-prefix claim exits non-zero" true (rc <> 0);
+          check bool "fresh claim mentions blocked/reserved" true
+            (string_contains content "blocked"
+             || string_contains content "reserved")))
+
 (* B135: env-only C2C_MCP_AUTO_REGISTER_ALIAS rename is also refused. *)
 let test_register_cmd_env_alias_rename_refused_sticky_alias () =
   with_temp_dir (fun dir ->
@@ -4649,6 +4698,7 @@ let () =
         ; ( "init explicit rename refused sticky alias", `Quick, test_init_explicit_rename_refused_sticky_alias )
         ; ( "register cmd explicit rename refused sticky alias", `Quick, test_register_cmd_explicit_rename_refused_sticky_alias )
         ; ( "register cmd same-alias refresh allowed", `Quick, test_register_cmd_same_alias_refresh_allowed )
+        ; ( "register cmd same-alias reserved-prefix refresh allowed (B240)", `Quick, test_register_cmd_same_alias_reserved_prefix_refresh_allowed )
         ; ( "register cmd env-alias rename refused sticky alias", `Quick, test_register_cmd_env_alias_rename_refused_sticky_alias )
         ; ( "cli rename happy path (B140)", `Quick, test_cli_rename_happy_path )
         ; ( "sticky alias error advertises c2c rename (B140)", `Quick, test_sticky_alias_error_advertises_rename )

@@ -367,6 +367,28 @@ let test_register_env_origin_without_marker_rejects_auto_gen_prefix () =
            check bool "error mentions blocked" true
              (string_contains (get_text_content result) "blocked")))
 
+(* B240: explicit same-alias re-register of a reserved client-prefix sticky
+   alias (auto-gen first registration) must succeed for PID refresh. *)
+let test_register_same_alias_reserved_prefix_refresh_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      let session_id = "session-b240-sticky-prefix" in
+      let sticky = "claude-wagon-chapel-l9nq" in
+      C2c_broker.register broker ~session_id ~alias:sticky
+        ~pid:None ~pid_start_time:None ~from_auto_gen:true ();
+      Unix.putenv "C2C_MCP_SESSION_ID" session_id;
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let args = `Assoc [("alias", `String sticky)] in
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:args)
+           in
+           check bool "isError=false for same-alias reserved-prefix refresh" false
+             (get_is_error result);
+           let regs = C2c_broker.list_registrations broker in
+           check int "still one registration" 1 (List.length regs);
+           check string "alias unchanged" sticky (List.hd regs).alias))
+
 (* ------------------------------------------------------------------------- *)
 (* Test suite                                                               *)
 (* ------------------------------------------------------------------------- *)
@@ -387,6 +409,7 @@ let test_set = [
   "register accepts lyra-quill", `Quick, test_register_accepts_lyra_quill;
   "register env origin accepts auto-gen prefix", `Quick, test_register_env_origin_accepts_auto_gen_prefix;
   "register env origin without marker rejects auto-gen prefix", `Quick, test_register_env_origin_without_marker_rejects_auto_gen_prefix;
+  "register same-alias reserved-prefix refresh allowed (B240)", `Quick, test_register_same_alias_reserved_prefix_refresh_allowed;
   "debug unknown action", `Quick, test_debug_unknown_action;
   "debug get_env", `Quick, test_debug_get_env;
   "debug disabled returns unknown tool", `Quick, test_debug_disabled_returns_unknown_tool;
