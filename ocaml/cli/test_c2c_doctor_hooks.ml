@@ -480,6 +480,95 @@ let test_delivery_report_structure () =
         (C2c_doctor_hooks.contains json forbidden))
     [ "ws://"; "token"; "127.0.0.1" ]
 
+(* --- B238: Kimi deaf-session classifier ---------------------------------- *)
+
+let test_kimi_classify_deaf_when_inbox_and_no_notifier () =
+  match
+    C2c_doctor_hooks.classify_kimi_session
+      ~alias:"kimi-tulip"
+      ~session_id:"session_abc"
+      ~inbox_count:3
+      ~notifier_running:false
+      ~registered_by:(Some "kimi-hook")
+  with
+  | Some issue, true ->
+      check string "alias" "kimi-tulip" issue.C2c_doctor_hooks.ksi_alias;
+      check int "inbox" 3 issue.C2c_doctor_hooks.ksi_inbox_count;
+      check bool "fix mentions start kimi" true
+        (C2c_doctor_hooks.contains issue.C2c_doctor_hooks.ksi_fix_command
+           "c2c start kimi")
+  | _ -> fail "expected deaf issue"
+
+let test_kimi_classify_no_issue_when_notifier_running () =
+  match
+    C2c_doctor_hooks.classify_kimi_session
+      ~alias:"kimi-ok"
+      ~session_id:"session_ok"
+      ~inbox_count:5
+      ~notifier_running:true
+      ~registered_by:None
+  with
+  | None, false -> ()
+  | _ -> fail "notifier running must not be flagged"
+
+let test_kimi_classify_warn_only_empty_inbox () =
+  match
+    C2c_doctor_hooks.classify_kimi_session
+      ~alias:"kimi-idle"
+      ~session_id:"session_idle"
+      ~inbox_count:0
+      ~notifier_running:false
+      ~registered_by:(Some "kimi-hook")
+  with
+  | Some _, false -> () (* issue for no-notifier list, not deaf *)
+  | None, _ -> fail "empty inbox without notifier should still yield a soft issue"
+  | Some _, true -> fail "empty inbox must not be classified as deaf"
+
+let test_kimi_registration_detector () =
+  let mk ~alias ~client_type ~registered_by : C2c_mcp.registration =
+    { session_id = "sid"
+    ; alias
+    ; pid = None
+    ; pid_start_time = None
+    ; registered_at = None
+    ; canonical_alias = None
+    ; dnd = false
+    ; dnd_since = None
+    ; dnd_until = None
+    ; client_type
+    ; plugin_version = None
+    ; confirmed_at = None
+    ; enc_pubkey = None
+    ; ed25519_pubkey = None
+    ; pubkey_signed_at = None
+    ; pubkey_sig = None
+    ; compacting = None
+    ; last_activity_ts = None
+    ; role = None
+    ; compaction_count = 0
+    ; automated_delivery = None
+    ; tmux_location = None
+    ; herdr_pane = None
+    ; herdr_socket = None
+    ; cwd = None
+    ; metadata_opt_out = false
+    ; registered_by
+    ; opaque_host_id = None
+    }
+  in
+  check bool "client_type=kimi" true
+    (C2c_doctor_hooks.is_kimi_registration
+       (mk ~alias:"x" ~client_type:(Some "kimi") ~registered_by:None));
+  check bool "registered_by=kimi-hook" true
+    (C2c_doctor_hooks.is_kimi_registration
+       (mk ~alias:"x" ~client_type:None ~registered_by:(Some "kimi-hook")));
+  check bool "alias prefix kimi-" true
+    (C2c_doctor_hooks.is_kimi_registration
+       (mk ~alias:"kimi-garnet" ~client_type:None ~registered_by:None));
+  check bool "claude not kimi" false
+    (C2c_doctor_hooks.is_kimi_registration
+       (mk ~alias:"claude-x" ~client_type:(Some "claude") ~registered_by:None))
+
 let () =
   run "c2c_doctor_hooks"
     [ ( "dangling_detection"
@@ -510,5 +599,11 @@ let () =
         ; test_case "offline record falls back to hooks" `Quick test_delivery_offline_record_falls_back_to_hooks
         ; test_case "never claims instant delivery" `Quick test_delivery_never_claims_instant
         ; test_case "report structure + json hygiene" `Quick test_delivery_report_structure
+        ] )
+    ; ( "kimi-delivery-b238"
+      , [ test_case "deaf when inbox + no notifier" `Quick test_kimi_classify_deaf_when_inbox_and_no_notifier
+        ; test_case "no issue when notifier running" `Quick test_kimi_classify_no_issue_when_notifier_running
+        ; test_case "empty inbox soft-warn only" `Quick test_kimi_classify_warn_only_empty_inbox
+        ; test_case "registration detector" `Quick test_kimi_registration_detector
         ] )
     ]

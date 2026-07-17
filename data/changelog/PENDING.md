@@ -11,6 +11,13 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
 ### Fixed
 
+- **B238: unmanaged Kimi sessions no longer go silently deaf.** SessionStart
+  (`c2c hook kimi`) best-effort arms a per-alias notifier, writes a
+  `c2c-session` identity skill with a receive-path nudge (Monitor / poll), and
+  `c2c doctor hooks` flags registered Kimi sessions that have undelivered inbox
+  mail with no live notifier (DEAF). Prefer managed `c2c start kimi` for
+  arrival-time REST delivery.
+
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.
