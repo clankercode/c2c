@@ -128,10 +128,10 @@ the canonical framing.)
   confirmed dead with no restart, or the operator asks. See
   `.collab/findings/2026-04-13T22-00-00Z-storm-ember-sweep-drops-managed-sessions.md`.
 - **Launch managed sessions via `c2c start <client>`** (claude / codex /
-  opencode; grok install path exists, managed start deferred). **B146-TEMP:**
-  kimi install/start/new temporarily disabled. `crush` is deprecated
-  (`c2c start crush` refuses). Pair with `c2c dev instances`, `c2c stop`,
-  `c2c restart`. Does not loop when the client exits.
+  opencode / kimi; grok install path exists, managed start deferred).
+  `crush` is deprecated (`c2c start crush` refuses). Pair with
+  `c2c dev instances`, `c2c stop`, `c2c restart`. Does not loop when the
+  client exits.
 - **`c2c rename <new-alias>`** (B140): atomic rename across registry, rooms,
   relay keys, pins, signers, instance config, schedules, and memory — with
   rollback on partial failure. Implicit renames via register/init stay
@@ -147,8 +147,11 @@ the canonical framing.)
   WebSocket; hooks as fallback). See
   `.collab/runbooks/agent-wake-setup.md` and related research under
   `.collab/research/` for auto-turn / draft-preservation receipts.
-- **Kimi** (machinery retained; install/start disabled for release): file-based
-  notification-store delivery — `.collab/runbooks/kimi-notification-store-delivery.md`.
+- **Kimi**: REST prompt-injection delivery — the notifier discovers the
+  session id from `~/.kimi-code/session_index.jsonl` and POSTs to the local
+  Kimi server's `/api/v1/sessions/{id}/prompts`; `c2c monitor` is the
+  fallback. Legacy notification-store runbook:
+  `.collab/runbooks/kimi-notification-store-delivery.md` (deprecated).
 - **OpenCode**: SIGUSR1 to the *inner* OpenCode pid (not the outer wrapper)
   can recover a stuck MCP session. Sibling outer-loop SIGUSR1 can cascade
   failure.
