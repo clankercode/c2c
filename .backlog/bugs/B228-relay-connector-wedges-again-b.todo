@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-07-17T15:02:16Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-17T14:43:40Z"
 depends_on: []
 estimate_hours: 1
 id: B228
 priority: high
-status: pending
+started_at: "2026-07-17T15:02:16Z"
+status: in_progress
 tags: []
 title: 'relay connector wedges again (B181 recurrence): process alive, sync ticking, bridge not live → registered_unreachable'
-updated_at: "2026-07-17T14:43:40Z"
+updated_at: "2026-07-17T15:02:16Z"
 ---
 Observed 2026-07-17 ~23:55 local via 'c2c whoami' on host xsm: relay state registered_unreachable — 'prior connector sync state exists but the connector is down (stale last_sync — restart connect; do not assume a live PID is a live bridge)'; connector: wedged (last sync 2m ago, last ok 2m ago; process present but bridge not live — process≠bridge health). Notably the sync timestamp was FRESH (2m) yet the bridge was not live — sync attempts occurring without establishing a live bridge (handshake/lease failure?), the B181 failure signature. B181 ('relay connector: process alive but last-sync stale / no live bridge despite lease') is marked done, so this is a recurrence of that symptom class on the current binary (post kimi-merge, relay server v0.12.0 git=6ee7cdb healthy at the time; server NOT the problem). Connector was then manually restarted (new pid 1421281, 'c2c relay connect --all-brokers --interval 30') and recovered. Expected: the connector detects its own dead bridge and re-establishes it (reconnect/backoff) or escalates to a supervised restart — a live process with a dead bridge should self-heal, not wait for 'c2c restart relay-connect'. Cross-refs: B181 (done, same symptom), B219 (in_progress, server-side silent death — distinct), B210 (multiconnect singleton), B226 (CI red, unrelated). Repro path: unknown; connector had been running for days before wedging. Next step if it recurs: capture connector-state.json + 'c2c relay status' + connector stderr before restarting, to see whether the bridge died on lease expiry, auth (B184-style signature failure), or the multiconnect singleton stealing the lease.
