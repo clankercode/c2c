@@ -1,9 +1,8 @@
 (* c2c_kimi_notifier.ml — push c2c broker DMs into a managed kimi instance via
-   kimi-cli's file-based notification store. Replaces c2c-kimi-wire-bridge.
+   Kimi Code's local REST prompt endpoint. Replaces both the legacy file-based
+   notification store and c2c-kimi-wire-bridge.
 
-   See c2c_kimi_notifier.mli for the architecture overview, and
-   .collab/research/2026-04-29T10-27-00Z-stanza-coder-kimi-notification-store-
-   push-validated.md for the probe that grounds this design. *)
+   See c2c_kimi_notifier.mli for the architecture overview. *)
 
 let home () =
   match Sys.getenv_opt "HOME" with
@@ -12,17 +11,18 @@ let home () =
 
 let ( // ) = Filename.concat
 
+open Lwt.Infix
+
 (* ─── Constants + path helpers ───────────────────────────────────────────── *)
 
-(* Kimi-cli's share-dir resolution mirrors share.py:
-     get_share_dir = $KIMI_SHARE_DIR or ~/.kimi *)
+(* Kimi Code's share-dir resolution mirrors share.py:
+     get_share_dir = $KIMI_SHARE_DIR or ~/.kimi-code *)
 let kimi_share_dir () =
   match Sys.getenv_opt "KIMI_SHARE_DIR" with
   | Some d when d <> "" -> d
-  | _ -> home () // ".kimi"
+  | _ -> home () // ".kimi-code"
 
 let kimi_log_path () = kimi_share_dir () // "logs" // "kimi.log"
-let kimi_sessions_root () = kimi_share_dir () // "sessions"
 
 let pidfile_path alias =
   home () // ".local" // "share" // "c2c" // "kimi-notifiers" // (alias ^ ".pid")
@@ -67,10 +67,13 @@ let read_session_id_from_config alias =
       | _ -> None
     with _ -> None
 
-(* Resolve the session-dir for a given session-id, anchored to cwd. *)
+(* Resolve the session-dir for a given session-id by looking it up in
+   ~/.kimi-code/session_index.jsonl.  This is more reliable than recomputing
+   Kimi Code's workspace-hash scheme, which uses a `wd_<name>_<hash>` prefix
+   rather than the raw md5 of the path. *)
 let session_dir_for ~cwd ~session_id =
-  let wh = workspace_hash_for_path cwd in
-  kimi_sessions_root () // wh // session_id
+  ignore cwd;
+  C2c_kimi_deliver.session_dir_for_session_id ~session_id
 
 (* ─── Notification ID + writer ───────────────────────────────────────────── *)
 
@@ -220,6 +223,70 @@ let write_notification
   in
   atomic_write_string event_path event_json;
   atomic_write_string delivery_path delivery_json
+
+(* Check whether the Kimi server is reachable on its discovered base URL. *)
+let kimi_server_is_responding () =
+  match C2c_kimi_deliver.server_base_url () with
+  | None -> false
+  | Some base ->
+      let url = base ^ "/api/v1/healthz" in
+      let uri = Uri.of_string url in
+      (match C2c_kimi_deliver.read_server_token () with
+       | None -> false
+       | Some token ->
+           let headers =
+             Cohttp.Header.of_list [ "Authorization", "Bearer " ^ token ]
+           in
+           try
+             Lwt_main.run (
+               Cohttp_lwt_unix.Client.get ~headers uri
+               >>= fun (resp, _body) ->
+               let code =
+                 Cohttp.Code.code_of_status (Cohttp.Response.status resp)
+               in
+               Lwt.return (code = 200))
+           with _ -> false)
+
+(* Start the Kimi server if it is not already running.  The command is
+   idempotent: if a server is already bound it prints the existing URL and
+   exits.  We only start a real server outside of fixture/test mode. *)
+let ensure_kimi_server_running () =
+  if C2c_kimi_deliver.fixture_enabled () then ()
+  else if not (kimi_server_is_responding ()) then begin
+    Printf.eprintf
+      "[kimi-notifier] Kimi server not responding; starting it...\n%!";
+    let cmd = "kimi server run --keep-alive >/dev/null 2>&1" in
+    ignore (Unix.system cmd);
+    let deadline = Unix.gettimeofday () +. 10.0 in
+    let rec wait () =
+      if Unix.gettimeofday () > deadline then
+        Printf.eprintf
+          "[kimi-notifier] timed out waiting for Kimi server\n%!"
+      else if kimi_server_is_responding () then ()
+      else (
+        Unix.sleepf 0.2;
+        wait ())
+    in
+    wait ()
+  end
+
+(* Resolve the Kimi session id for the current working directory by reading
+   ~/.kimi-code/session_index.jsonl.  Managed [c2c start kimi] sessions launch
+   without --session, so Kimi mints the id; we discover it afterwards. *)
+let resolve_kimi_session_id ~cwd =
+  C2c_kimi_deliver.session_id_for_workdir ~workdir:cwd
+
+(* REST prompt delivery seam.  Discovers the Kimi session id for the current
+   workdir, ensures the local server is running, and POSTs the message as a
+   user prompt.  Messages stay in the broker inbox if delivery fails so the
+   next poll can retry. *)
+let deliver_via_rest ~alias ~msg =
+  let cwd = Sys.getcwd () in
+  ensure_kimi_server_running ();
+  match resolve_kimi_session_id ~cwd with
+  | None ->
+      Error (Printf.sprintf "no Kimi session for workdir %s" cwd)
+  | Some session_id -> C2c_kimi_deliver.deliver_message ~session_id ~msg
 
 (* ─── Tmux idle detection + wake ─────────────────────────────────────────── *)
 
@@ -375,7 +442,8 @@ let write_inbox_file ~broker_root ~session_id messages =
    peer messages are advisory data. Flow:
    1. read_inbox (peek, no side effects)
    2. Partition: to_deliver (non-system), to_skip (system events)
-   3. Deliver to_deliver to kimi; track which deliveries succeeded
+   3. Deliver to_deliver to kimi via REST prompt injection; track which
+      deliveries succeeded.
    4. write_inbox_file: write back to_skip + any to_deliver that failed delivery
       This means undelivered advisory messages stay in the broker inbox if kimi
       delivery failed or the session dir is missing.
@@ -392,8 +460,8 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
     (* Resolve the kimi session-dir. *)
     let cwd = Sys.getcwd () in
     let session_dir_opt =
-      match read_session_id_from_config alias with
-      | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
+      match resolve_kimi_session_id ~cwd with
+      | Some sid -> session_dir_for ~cwd ~session_id:sid
       | None -> None
     in
     (* Partition: to_deliver = non-system (deliver to kimi), to_skip = system events. *)
@@ -419,36 +487,37 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
       (fun (msg : C2c_mcp.message) ->
         let from_alias = msg.from_alias in
         let body = msg.content in
-        let ts = msg.ts in
-        let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
-        match session_dir_opt with
-        | Some sdir ->
-          (* Sidecar chat-log for all messages. *)
-          (try write_chat_log ~session_dir:sdir ~from_alias ~body
-           with exn ->
-             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
-               (Printexc.to_string exn));
-          (* JSON notification store: skip system events (#475 identity-confusion guard). *)
-          (try write_notification ~session_dir:sdir ~notification_id:nid
-                 ~from_alias ~to_alias:msg.to_alias ~body;
-           delivered := msg :: !delivered
-           with exn ->
-             Printf.eprintf "[kimi-notifier] write failed: %s\n%!"
-               (Printexc.to_string exn);
-           undelivered := msg :: !undelivered)
-        | None ->
-          undelivered := msg :: !undelivered;
-          Printf.eprintf
-            "[kimi-notifier] no kimi session-id resolved; message archived but undelivered\n%!")
+        (* Sidecar chat-log for all messages. *)
+        (try
+           match session_dir_opt with
+           | Some sdir -> write_chat_log ~session_dir:sdir ~from_alias ~body
+           | None -> ()
+         with exn ->
+           Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+             (Printexc.to_string exn));
+        (* REST prompt injection. System events are already partitioned out. *)
+        try
+          match deliver_via_rest ~alias ~msg with
+          | Ok () -> delivered := msg :: !delivered
+          | Error reason ->
+              Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
+              undelivered := msg :: !undelivered
+        with exn ->
+          Printf.eprintf "[kimi-notifier] delivery exception: %s\n%!"
+            (Printexc.to_string exn);
+          undelivered := msg :: !undelivered)
       to_deliver;
     (* Write back to_skip (system events) + any undelivered non-system messages
        so delivery can retry. await-reply never reads this inbox. *)
     let to_keep = to_skip @ !undelivered in
     write_inbox_file ~broker_root ~session_id:drain_sid to_keep;
     let n = List.length !delivered in
-    (* Wake pane if idle and something was delivered. *)
+    (* Wake pane if idle and something was delivered.  The wake fires even
+       when we have no session_dir (managed Kimi sessions have no predictable
+       session id) because tmux_pane_is_idle falls back to the captured-pane
+       heuristic when session_dir is absent. *)
     (match tmux_pane with
-     | Some pane when session_dir_opt <> None && n > 0 ->
+     | Some pane when n > 0 ->
        if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
          tmux_wake ~pane
      | _ -> ());
@@ -461,7 +530,7 @@ let global_inbox_exists ~root ~session_id =
   Sys.file_exists (Filename.concat root (session_id ^ ".inbox.json"))
 
 (* [#P4] Drain messages from the global sessions broker (C2C_SESSIONS_BROKER_ROOT)
-   and deliver them via the kimi notification store. This enables cross-client
+   and deliver them via the Kimi REST prompt endpoint. This enables cross-client
    delivery: `c2c send --session <kimi-session-id>` reaches kimi sessions.
 
    Uses drain_inbox (destructive) since the global broker is separate from the
@@ -483,8 +552,8 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
       (* Resolve the kimi session-dir for notification delivery. *)
       let cwd = Sys.getcwd () in
       let session_dir_opt =
-        match read_session_id_from_config alias with
-        | Some sid -> Some (session_dir_for ~cwd ~session_id:sid)
+        match resolve_kimi_session_id ~cwd with
+        | Some sid -> session_dir_for ~cwd ~session_id:sid
         | None -> None
       in
       (* Partition: to_deliver = non-system, to_skip = system events. *)
@@ -510,32 +579,32 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
         (fun (msg : C2c_mcp.message) ->
           let from_alias = msg.from_alias in
           let body = msg.content in
-          let ts = msg.ts in
-          let nid = notification_id_for_msg ~from_alias ~ts ~content:body in
-          match session_dir_opt with
-          | Some sdir ->
-            (try write_chat_log ~session_dir:sdir ~from_alias ~body
-             with exn ->
-               Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
-                 (Printexc.to_string exn));
-            (try write_notification ~session_dir:sdir ~notification_id:nid
-                   ~from_alias ~to_alias:msg.to_alias ~body;
-             delivered := msg :: !delivered
-             with exn ->
-               Printf.eprintf "[kimi-notifier] global write failed: %s\n%!"
-                 (Printexc.to_string exn);
-               undelivered := msg :: !undelivered)
-          | None ->
-            undelivered := msg :: !undelivered;
-            Printf.eprintf
-              "[kimi-notifier] no kimi session-id resolved for global msg; dropping\n%!")
+          (* Sidecar chat-log for all messages. *)
+          (try
+             match session_dir_opt with
+             | Some sdir -> write_chat_log ~session_dir:sdir ~from_alias ~body
+             | None -> ()
+           with exn ->
+             Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
+               (Printexc.to_string exn));
+          (* REST prompt injection. System events are already partitioned out. *)
+          try
+            match deliver_via_rest ~alias ~msg with
+            | Ok () -> delivered := msg :: !delivered
+            | Error reason ->
+                Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
+                undelivered := msg :: !undelivered
+          with exn ->
+            Printf.eprintf "[kimi-notifier] delivery exception: %s\n%!"
+              (Printexc.to_string exn);
+            undelivered := msg :: !undelivered)
         to_deliver;
       (* Global broker drain is destructive — no write-back since the global broker
          is separate from the per-repo broker. Undleivered messages are logged but
          not recoverable without sender re-send. *)
       let n = List.length !delivered in
       (match tmux_pane with
-       | Some pane when session_dir_opt <> None && n > 0 ->
+       | Some pane when n > 0 ->
          if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
            tmux_wake ~pane
        | _ -> ());

@@ -6,6 +6,16 @@
 
 **Architecture:** A new `C2c_kimi_deliver` module talks to the Kimi Code local server (`POST /api/v1/sessions/{sid}/prompts`) using the bearer token in `~/.kimi-code/server.token`. `C2c_kimi_notifier` keeps its daemon lifecycle but delegates delivery to that module. `C2c_setup` writes a Kimi-specific `/c2c` skill into `~/.kimi-code/skills/c2c/SKILL.md` and updates hook/MCP paths to `~/.kimi-code`.
 
+**2026-07-13 integration note:** Kimi Code 0.23+ mints its own
+`session_<uuid>` IDs for CLI/TUI sessions and does not resume arbitrary IDs
+passed via `kimi --session <sid>`.  Managed `c2c start kimi` therefore launches
+`kimi` without `--session`.  The c2c notifier discovers the real session id
+from `~/.kimi-code/session_index.jsonl`, ensures the local Kimi server is
+running, and POSTs inbound c2c messages as user prompts to
+`/api/v1/sessions/{id}/prompts`.  REST prompt injection is the primary delivery
+path for managed TUI sessions; `c2c monitor` remains a fallback for
+unmanaged/serverless setups.
+
 **Tech Stack:** OCaml 5.x, Dune, Cohttp (existing HTTP client in repo), Yojson, Cmdliner, Alcotest.
 
 ## Global Constraints
@@ -170,6 +180,12 @@ val submit_prompt : session_id:string -> body:string -> (int, string) result
 val deliver_message : session_id:string -> msg:C2c_mcp.message -> (unit, string) result
 (** [deliver_message ~session_id ~msg] serialises a c2c message into a Kimi
     text prompt and submits it. Returns [Ok ()] only on HTTP 200. *)
+
+val message_envelope : msg:C2c_mcp.message -> string
+(** [message_envelope ~msg] returns the raw XML envelope string that
+    [deliver_message] would POST as the prompt body. Exported for tests and
+    diagnostics; the output is not escaped beyond the canonical xml_escape
+    rendering of alias and content fields. *)
 ```
 
 - [ ] **Step 2: Implement server discovery**
@@ -189,23 +205,33 @@ let kimi_code_home () =
 
 let server_token_path () = kimi_code_home () // "server.token"
 
-let read_server_token () =
-  let path = server_token_path () in
-  if not (Sys.file_exists path) then None
-  else
-    try
-      let ic = open_in path in
-      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-        Some (String.trim (input_line ic)))
-    with _ -> None
+let fixture_enabled () =
+  match Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE" with
+  | Some "1" -> true
+  | _ -> false
 
-let default_port =
+let read_server_token () =
+  match fixture_enabled (), Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_TOKEN" with
+  | true, Some t when String.trim t <> "" -> Some (String.trim t)
+  | _ ->
+      let path = server_token_path () in
+      if not (Sys.file_exists path) then None
+      else
+        try
+          let ic = open_in path in
+          Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+            Some (String.trim (input_line ic)))
+        with _ -> None
+
+let default_port () =
   match Sys.getenv_opt "C2C_KIMI_SERVER_PORT" with
   | Some p when p <> "" -> p
   | _ -> "58627"
 
 let server_base_url () =
-  Some (Printf.sprintf "http://127.0.0.1:%s" default_port)
+  match fixture_enabled (), Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" with
+  | true, Some u when String.trim u <> "" -> Some (String.trim u)
+  | _ -> Some (Printf.sprintf "http://127.0.0.1:%s" (default_port ()))
 ```
 
 - [ ] **Step 3: Implement prompt submission with Cohttp**
@@ -244,15 +270,19 @@ let submit_prompt ~session_id ~body =
 
 - [ ] **Step 4: Implement message envelope formatting**
 
+The envelope XML-escapes the `from_alias`, `to_alias`, and `content` fields
+so the prompt body is well-formed XML even when the original message
+contains `&`, `<`, `>`, or quotes.
+
 ```ocaml
+let message_envelope ~msg =
+  Printf.sprintf "<c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c>"
+    (C2c_mcp.xml_escape msg.C2c_mcp.from_alias)
+    (C2c_mcp.xml_escape msg.C2c_mcp.to_alias)
+    (C2c_mcp.xml_escape msg.C2c_mcp.content)
+
 let deliver_message ~session_id ~msg =
-  let body =
-    Printf.sprintf "<c2c event=\"message\" from=\"%s\" to=\"%s\">%s</c2c>"
-      (C2c_mcp.xml_escape msg.C2c_mcp.from_alias)
-      (C2c_mcp.xml_escape msg.C2c_mcp.to_alias)
-      msg.C2c_mcp.content
-  in
-  match submit_prompt ~session_id ~body with
+  match submit_prompt ~session_id ~body:(message_envelope ~msg) with
   | Ok 200 -> Ok ()
   | Ok code -> Error (Printf.sprintf "unexpected HTTP %d" code)
   | Error e -> Error e

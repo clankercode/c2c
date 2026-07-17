@@ -147,9 +147,10 @@ Full policy and machine signals: `docs/security/trust-model.md`.
 | Rename yourself everywhere (atomic, B140) | `c2c rename <new-alias>` |
 | Read your message archive (or a peer's with `--alias`) | `c2c history [--alias <alias>]` |
 
-**Primary receive path (CLI / non-MCP):** start a persistent Monitor that runs
-`c2c monitor`. It watches the broker with inotify and wakes you on incoming
-mail without manual polling:
+**Primary receive path (CLI / non-MCP):** for clients without native receive
+wiring (Kimi Code uses REST prompt injection via the c2c notifier; see the
+Kimi harness), start a persistent Monitor that runs `c2c monitor`. It watches
+the broker with inotify and wakes you on incoming mail without manual polling:
 
 ```
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
@@ -231,7 +232,7 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 
 | Goal | CLI |
 |------|-----|
-| Launch a managed client | `c2c start <claude\|codex\|opencode\|agy>` (B146-TEMP: `kimi` temporarily disabled; `grok` start deferred) |
+| Launch a managed client | `c2c start <claude\|codex\|opencode\|kimi\|agy>` (`grok` start deferred) |
 | List running instances | `c2c dev instances` (top-level `c2c instances` is a deprecated alias) |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |

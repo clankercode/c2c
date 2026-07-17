@@ -1,26 +1,23 @@
 (** C2c_kimi_notifier — push c2c broker DMs into a managed kimi instance via
-    kimi-cli's file-based notification store. Replaces c2c-kimi-wire-bridge.
+    Kimi Code's local REST prompt endpoint. Replaces c2c-kimi-wire-bridge.
 
     Architecture: per-tick, drain broker inbox for [alias], resolve the
     active kimi TUI session-id by reading the pinned UUID from c2c instance
-    config (pre-minted before exec by [#158]), write [event.json] +
-    [delivery.json] to
-    [<KIMI_SHARE_DIR>/sessions/<md5(work_dir_path)>/<session-id>/notifications/<id>/],
-    and optionally [tmux send-keys]-wake the kimi pane if it's at idle.
+    config (pre-minted before exec by [#158]), POST the message as a text
+    prompt to [http://127.0.0.1:<port>/api/v1/sessions/<session-id>/prompts],
+    and optionally [tmux send-keys]-wake the kimi pane if it's at idle. The
+    legacy file-based notification writer is retained for tests and
+    diagnostics but is no longer the live delivery path.
 
     Background: the prior wire-bridge architecture spawned a fully-agentic
     [kimi --wire --yolo] subprocess per delivery batch. That subprocess
     registered as the same alias as the FG TUI, drained the inbox
     independently, and processed prompts agentically — two live agents
-    sharing one alias. See finding [b6455d8e] (c2c-start-kimi-spawns-double-process)
-    and the validated probe research at
-    [.collab/research/2026-04-29T10-27-00Z-stanza-coder-kimi-notification-store-push-validated.md].
+    sharing one alias. See finding [b6455d8e] (c2c-start-kimi-spawns-double-process).
 
-    The [shell] sink toast appears in the kimi TUI within ~3s of writing
-    (continuous async watcher, idle-capable). The [llm] sink injects
-    [<notification>...</notification>] as a synthetic user-turn message into
-    the agent's context, but only drains at agent turn boundaries — which is
-    why we send a tmux wake-prompt when the pane is idle. *)
+    The REST prompt is injected as a synthetic user-turn message into the
+    agent's context; the tmux wake ensures the TUI surface refreshes promptly
+    when the pane is idle. *)
 
 (** [start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?interval ()]
     forks a session-leader child that polls the broker every [interval]

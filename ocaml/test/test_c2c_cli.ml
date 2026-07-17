@@ -2975,7 +2975,7 @@ let test_connect_detects_kimi () =
   with_temp_dir (fun dir ->
     let home = Filename.concat dir "fakehome" in
     Unix.mkdir home 0o755;
-    let kimi_dir = Filename.concat home ".kimi" in
+    let kimi_dir = Filename.concat home ".kimi-code" in
     Unix.mkdir kimi_dir 0o755;
     let config_path = Filename.concat kimi_dir "mcp.json" in
     write_file config_path {|{"mcpServers":{"c2c":{"type":"stdio"}}}|};
@@ -3066,8 +3066,8 @@ let test_connect_dashboard_next_action_all_installed_no_session () =
     Unix.mkdir oc_plugins 0o755;
     let plugin_content = String.make 1100 ' ' in
     write_file (Filename.concat oc_plugins "c2c.ts") plugin_content;
-    (* Kimi: ~/.kimi/mcp.json with mcpServers.c2c *)
-    let kimi_dir = Filename.concat home ".kimi" in
+    (* Kimi: ~/.kimi-code/mcp.json with mcpServers.c2c *)
+    let kimi_dir = Filename.concat home ".kimi-code" in
     Unix.mkdir kimi_dir 0o755;
     write_file (Filename.concat kimi_dir "mcp.json")
       {|{"mcpServers":{"c2c":{"type":"stdio"}}}|};

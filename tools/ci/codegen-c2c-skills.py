@@ -10,6 +10,7 @@ Outputs:
   .collab/skills/c2c.md                 (copy of assembled/default.md)
   ocaml/cli/c2c_claude_skill_embedded.ml  (default harness; claude/codex install)
   ocaml/cli/c2c_grok_skill_embedded.ml    (grok harness)
+  ocaml/cli/c2c_kimi_skill_embedded.ml    (kimi harness)
 """
 from __future__ import annotations
 
@@ -41,6 +42,11 @@ EMBEDS = {
         "c2c_agy_skill_embedded.ml",
         "agy_skill_src",
         "assembled agy harness",
+    ),
+    "kimi": (
+        "c2c_kimi_skill_embedded.ml",
+        "kimi_skill_src",
+        "assembled kimi harness",
     ),
 }
 

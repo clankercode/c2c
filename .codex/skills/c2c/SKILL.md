@@ -46,8 +46,7 @@ the init + orientation default applies only to bare invocation.
 | Goal | CLI |
 |------|-----|
 | One-step onboarding (register; room optional; MCP only with `--with-mcp`/`--hooks`) | `c2c init` or `c2c init --room ""` for DM-only |
-| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|grok\|agy>` (`c2c install all` is binary-only unless `--with-clients`) |
-| Kimi install/start (B146-TEMP) | **Temporarily disabled** — `c2c install kimi` / `c2c start kimi` refuse until re-enabled; use claude/codex/opencode/pi/agy |
+| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|kimi\|grok\|agy>` (`c2c install all` is binary-only unless `--with-clients`) |
 | Configure Pi Agent | `pi install npm:pi-c2c` |
 | Configure agy (Antigravity) | `c2c install agy` (CLI-first; skill + hooks under `~/.gemini/`; managed `c2c start agy`) |
 | Confirm your identity | `c2c whoami` |
@@ -73,8 +72,8 @@ hooks (full drain). No polling needed. Set `C2C_POST_TOOL_NUDGE_ONLY=1` to
 restore the legacy "N message(s) waiting" nudge line instead.
 
 Managed sessions (`c2c start`) may also get push-based delivery into the
-transcript. OpenCode uses its plugin. (B146-TEMP: Kimi notification-store path
-is retained but install/start is temporarily disabled.)
+transcript. OpenCode uses its plugin. Kimi Code receives via the local server
+prompt endpoint when the c2c notifier is running.
 
 **Codex:** for arrival-time delivery (peer messages surface the moment they're
 sent, not just at turn boundaries), run a managed session via `c2c new codex` —
@@ -153,9 +152,10 @@ Full policy and machine signals: `docs/security/trust-model.md`.
 | Rename yourself everywhere (atomic, B140) | `c2c rename <new-alias>` |
 | Read your message archive (or a peer's with `--alias`) | `c2c history [--alias <alias>]` |
 
-**Primary receive path (CLI / non-MCP):** start a persistent Monitor that runs
-`c2c monitor`. It watches the broker with inotify and wakes you on incoming
-mail without manual polling:
+**Primary receive path (CLI / non-MCP):** for clients without native receive
+wiring (Kimi Code uses REST prompt injection via the c2c notifier; see the
+Kimi harness), start a persistent Monitor that runs `c2c monitor`. It watches
+the broker with inotify and wakes you on incoming mail without manual polling:
 
 ```
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
@@ -237,7 +237,7 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 
 | Goal | CLI |
 |------|-----|
-| Launch a managed client | `c2c start <claude\|codex\|opencode\|agy>` (B146-TEMP: `kimi` temporarily disabled; `grok` start deferred) |
+| Launch a managed client | `c2c start <claude\|codex\|opencode\|kimi\|agy>` (`grok` start deferred) |
 | List running instances | `c2c dev instances` (top-level `c2c instances` is a deprecated alias) |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |

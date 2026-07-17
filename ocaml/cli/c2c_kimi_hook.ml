@@ -1,6 +1,6 @@
-(* c2c_kimi_hook.ml — slice 2 of #142 (kimi PreToolUse permission forwarding).
+(* c2c_kimi_hook.ml — Kimi Code install-time hook blocks.
 
-   This module bundles two artifacts that ship with `c2c install`:
+   This module bundles three artifacts that ship with `c2c install`:
 
    1. The PreToolUse hook script ([approval_hook_script_content]) — the
       bash that kimi-cli will exec when a hook block fires. Embedded
@@ -10,15 +10,21 @@
       ~/.local/bin/c2c-kimi-approval-hook.sh.
 
    2. The fully-commented [[hooks]] block ([toml_block_template]) —
-      appended to ~/.kimi/config.toml by `c2c install kimi`. The block
+      appended to ~/.kimi-code/config.toml by `c2c install kimi`. The block
       is COMMENTED by default per Cairn 2026-04-30: discoverability-
       by-comment-block over cleverness of negative-lookahead matchers.
       Operator opts in by uncommenting + picking a matcher.
 
-   Idempotency: [append_toml_block] looks for the literal sentinel
-   marker [toml_block_marker] before appending, so running
-   `c2c install kimi` twice yields a single block. The marker is
-   intentionally short + load-bearing — DO NOT change it without
+   3. The SessionStart [[hooks]] block ([session_start_toml_block_template])
+      — also appended to ~/.kimi-code/config.toml. This block is ACTIVE by
+      default: it auto-registers the Kimi Code session on the c2c broker at
+      session start so inbound messages can be delivered via the REST prompt
+      injection path.
+
+   Idempotency: [append_toml_block] / [append_session_start_toml_block] look
+   for their literal BEGIN markers before appending, so running
+   `c2c install kimi` twice yields a single block of each kind. The markers
+   are intentionally short + load-bearing — DO NOT change them without
    migrating existing installs (or accept double-blocks).
 
    Slice 1 of #142 landed the script + `c2c await-reply` CLI on master
@@ -401,7 +407,7 @@ case "$SUPERVISOR_STRATEGY" in
 esac
 |bash}
 
-(* Fully-commented [[hooks]] block appended to ~/.kimi/config.toml.
+(* Fully-commented [[hooks]] block appended to ~/.kimi-code/config.toml.
 
    Default-no-forwarding posture: kimi-cli's HookDef.matcher is a regex
    that defaults to "" (empty), and engine.py:196-198 treats empty as
@@ -447,7 +453,7 @@ let toml_block_template = {toml|
 # only: `Bash` or `^(Bash|Edit)$`. There is no `:argRegex` half.
 # Operators porting hook configs between the two CLIs must rewrite
 # the matcher accordingly — a Claude-style `Bash` matcher in
-# ~/.kimi/config.toml will match every tool whose name+args contains
+# ~/.kimi-code/config.toml will match every tool whose name+args contains
 # the substring `Bash` (probably way too broad).
 #
 # An empty matcher (`""`) is match-all in kimi-cli (engine.py:196-198),
@@ -563,6 +569,64 @@ let append_toml_block ?(block_id = approval_hook_block_id) ~config_path ~hook_pa
       Printf.printf "[DRY-RUN] would %s %d bytes to %s (id=%s)\n%!"
         (if existed then "append" else "write")
         (String.length block) config_path block_id;
+      if existed then `Appended else `Created
+    end else begin
+      let dir = Filename.dirname config_path in
+      (try C2c_mcp.mkdir_p dir with _ -> ());
+      let flags = [Open_append; Open_creat; Open_wronly] in
+      let oc = open_out_gen flags 0o644 config_path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+        output_string oc block);
+      if existed then `Appended else `Created
+    end
+  end
+
+(* --------------------------------------------------------------------------
+   SessionStart auto-register hook block
+   -------------------------------------------------------------------------- *)
+
+let session_start_hook_block_id = "session-start-hook-kimi"
+
+(* Active-by-default SessionStart hook. Auto-registers this Kimi Code session
+   on the c2c broker so the REST prompt-injection delivery path can target it.
+   Unlike the PreToolUse approval block above, this ships uncommented: it is
+   the default receive surface for managed and vanilla Kimi Code sessions. *)
+let session_start_toml_block_template = {toml|
+# c2c-managed SessionStart hook for Kimi Code.
+# Auto-registers this Kimi Code session on the c2c broker at session start.
+# Installed by `c2c install kimi`.
+
+[[hooks]]
+event = "SessionStart"
+command = "c2c hook kimi"
+|toml}
+
+let render_session_start_toml_block () = session_start_toml_block_template
+
+(* Append the SessionStart [[hooks]] block to [config_path]. Idempotent —
+   no-op if the session-start block marker is already present.
+
+   Returns one of:
+     `Already_present  — block was already there, no write
+     `Appended         — block was appended successfully
+     `Created          — file did not exist; created with the block
+
+   When [dry_run], prints a summary and returns the corresponding
+   verdict without touching the file. *)
+let append_session_start_toml_block ~config_path ~dry_run () =
+  if toml_block_already_present ~block_id:session_start_hook_block_id ~config_path () then begin
+    if dry_run then
+      Printf.printf "[DRY-RUN] %s already contains c2c SessionStart hook block (id=%s, no-op)\n%!"
+        config_path session_start_hook_block_id;
+    `Already_present
+  end else begin
+    let body = render_session_start_toml_block () in
+    let block = envelope_block ~block_id:session_start_hook_block_id body in
+    let existed = Sys.file_exists config_path in
+    if dry_run then begin
+      Printf.printf "[DRY-RUN] would %s %d bytes to %s (id=%s)\n%!"
+        (if existed then "append" else "write")
+        (String.length block) config_path session_start_hook_block_id;
       if existed then `Appended else `Created
     end else begin
       let dir = Filename.dirname config_path in

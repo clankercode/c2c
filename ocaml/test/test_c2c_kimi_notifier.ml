@@ -387,13 +387,26 @@ let () =
   | None -> ()
   | Some _ -> ()
 
-(* Build a minimal broker root with a pre-seeded inbox. *)
+(* Build a minimal broker root with a pre-seeded inbox.  We also isolate
+   Kimi Code state into a temp dir and enable the delivery fixture so the
+   notifier does not try to spawn a real Kimi server or touch the user's
+   ~/.kimi-code during tests. *)
 let with_broker_root_and_inbox messages f =
   let tmp = Filename.temp_file "c2c-notifier-fixture-" "" in
   Sys.remove tmp;
   Unix.mkdir tmp 0o755;
+  let old_kimi_home = Sys.getenv_opt "KIMI_CODE_HOME" in
+  let old_fixture = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE" in
+  Unix.putenv "KIMI_CODE_HOME" tmp;
+  Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "1";
   Fun.protect
     ~finally:(fun () ->
+      (match old_kimi_home with
+       | Some v -> Unix.putenv "KIMI_CODE_HOME" v
+       | None -> Unix.putenv "KIMI_CODE_HOME" "");
+      (match old_fixture with
+       | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" v
+       | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "");
       let rec rmrf p =
         if Sys.is_directory p then begin
           Array.iter (fun c -> rmrf (Filename.concat p c)) (Sys.readdir p);
@@ -447,31 +460,26 @@ let read_inbox_messages broker_root session_id =
       | _ -> []
     with _ -> []
 
-(* [#484 S1] Undelivered peer data remains retryable. A token-shaped message
-   is still advisory data; await-reply never reads it. *)
-let test_token_shaped_advisory_kept_in_inbox_after_run_once () =
+(* [#484 S1] When no Kimi session can be discovered for the current workdir,
+   REST delivery fails closed and the message stays in the broker inbox so it
+   can retry on the next poll.  A token-shaped message remains advisory data;
+   await-reply never reads it. *)
+let test_no_kimi_session_leaves_advisory_in_inbox () =
   with_broker_root_and_inbox
     [ ("reviewer", "ka_call_42 allow — looks fine") ]
     (fun broker_root ->
-       (* No kimi session dir → 0 deliveries, advisory message stays. *)
        let n = C2c_kimi_notifier.run_once
          ~broker_root
          ~alias:"kimi-test"
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
        in
-       Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+       Alcotest.(check int) "0 deliveries (no Kimi session)" 0 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
-       Alcotest.(check int) "advisory message kept in broker inbox" 1 (List.length remaining);
-       match remaining with
-       | [from_alias, content] ->
-           Alcotest.(check string) "from_alias preserved" "reviewer" from_alias;
-           Alcotest.(check bool) "token-shaped data still present" true (contains content "ka_call_42")
-       | _ -> Alcotest.fail "expected exactly 1 message")
+       Alcotest.(check int) "advisory message stays in broker inbox" 1 (List.length remaining))
 
-(* System events: before the fix they were drained (removed). After the fix they
-   stay in the inbox (written back as to_skip). This is a semantic change but not
-   a regression — system events in the inbox are harmless advisory data. *)
+(* System events are never delivered to Kimi.  They stay in the inbox as
+   harmless advisory data. *)
 let test_system_event_remains_in_inbox_after_run_once () =
   with_broker_root_and_inbox
     [ ("c2c-system", "some-alias registered") ]
@@ -482,7 +490,7 @@ let test_system_event_remains_in_inbox_after_run_once () =
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
        in
-        Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+        Alcotest.(check int) "0 deliveries (system event)" 0 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
        Alcotest.(check int) "system event still in inbox" 1 (List.length remaining);
        match remaining with
@@ -491,8 +499,9 @@ let test_system_event_remains_in_inbox_after_run_once () =
        | _ -> Alcotest.fail "expected exactly 1 message")
 
 (* Mixed inbox: system event + token-shaped advisory + regular DM.
-   After run_once all three remain retryable; none can resolve approval. *)
-let test_mixed_advisory_messages_kept () =
+   With no discoverable Kimi session, all messages stay in the inbox so retry
+   can succeed once the session exists; none can resolve approval. *)
+let test_no_kimi_session_leaves_non_system_messages_in_inbox () =
   with_broker_root_and_inbox
     [ ("c2c-system", "some-alias registered")
     ; ("reviewer", "ka_call_99 deny — looks dangerous")
@@ -505,12 +514,12 @@ let test_mixed_advisory_messages_kept () =
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
        in
-        Alcotest.(check int) "0 deliveries (no session dir)" 0 n;
+       Alcotest.(check int) "0 deliveries (no Kimi session)" 0 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
-       Alcotest.(check int) "all 3 messages remain in inbox" 3 (List.length remaining);
-       let contents = List.map snd remaining in
-       Alcotest.(check bool) "token-shaped advisory still present" true
-          (List.exists (fun c -> contains c "ka_call_99") contents))
+       Alcotest.(check int) "all messages remain in inbox" 3 (List.length remaining);
+       let from_aliases = List.map fst remaining in
+       Alcotest.(check bool) "system event still present" true
+          (List.mem "c2c-system" from_aliases))
 
 (* ─── P4: global sessions broker drain ──────────────────────────────────────── *)
 
@@ -559,8 +568,10 @@ let with_global_broker_and_inbox ?(session_id="kimi-global-test-sid") messages f
        in
        output_string inbox json_list;
        close_out inbox;
-       (* Also create the kimi instance config so session-dir resolution works. *)
+       (* Also create the kimi instance config and a fake session_index.jsonl so
+          REST session-id discovery finds a session for the current workdir. *)
        let old_home = Sys.getenv_opt "HOME" in
+       let old_kimi_home = Sys.getenv_opt "KIMI_CODE_HOME" in
        (try
           let local_dir = Filename.concat tmp ".local" in
           Unix.mkdir local_dir 0o755;
@@ -576,12 +587,23 @@ let with_global_broker_and_inbox ?(session_id="kimi-global-test-sid") messages f
           let oc = open_out config_path in
           Printf.fprintf oc "{\"resume_session_id\":\"%s\"}\n" session_id;
           close_out oc;
+          let kimi_dir = Filename.concat tmp ".kimi-code" in
+          Unix.mkdir kimi_dir 0o700;
+          let index_path = Filename.concat kimi_dir "session_index.jsonl" in
+          let oc_index = open_out index_path in
+          Printf.fprintf oc_index
+            "{\"sessionId\":\"%s\",\"sessionDir\":\"/tmp/%s\",\"workDir\":\"%s\",\"created_at\":\"2026-07-13T10:00:00.000Z\",\"updated_at\":\"2026-07-13T12:00:00.000Z\"}\n"
+            session_id session_id (Sys.getcwd ());
+          close_out oc_index;
           Unix.putenv "HOME" tmp;
+          Unix.putenv "KIMI_CODE_HOME" kimi_dir;
           f tmp session_id
         with exn ->
           (match old_home with Some v -> Unix.putenv "HOME" v | None -> ());
+          (match old_kimi_home with Some v -> Unix.putenv "KIMI_CODE_HOME" v | None -> ());
           raise exn);
-       (match old_home with Some v -> Unix.putenv "HOME" v | None -> ()))
+       (match old_home with Some v -> Unix.putenv "HOME" v | None -> ());
+       (match old_kimi_home with Some v -> Unix.putenv "KIMI_CODE_HOME" v | None -> ()))
 
 (* Read messages from a global broker root for a given session_id. *)
 let read_global_inbox_messages global_root session_id =
@@ -601,8 +623,12 @@ let read_global_inbox_messages global_root session_id =
     with _ -> []
 
 (* [#P4] Core invariant: poll_once_global drains messages from the global
-   sessions broker and delivers them via the kimi notification store.
-   After delivery, the global inbox is empty (destructive drain). *)
+   sessions broker and delivers them via the Kimi REST prompt endpoint.
+   After delivery, the global inbox is empty (destructive drain).
+
+   We stand up a local mock Kimi server (Relay_test_support) and point the
+   delivery module at it via the fixture env vars so no real Kimi process is
+   needed. *)
 let test_poll_once_global_drains_global_broker () =
   let session_id = "kimi-global-test-sid" in
   with_global_broker_and_inbox ~session_id
@@ -610,20 +636,59 @@ let test_poll_once_global_drains_global_broker () =
     (fun global_root sid ->
        Alcotest.(check int) "inbox has 1 message before drain" 1
          (List.length (read_global_inbox_messages global_root sid));
-       (* Set C2C_SESSIONS_BROKER_ROOT so poll_once_global uses our temp broker. *)
-       let old_sessions_root = Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" in
-       Unix.putenv "C2C_SESSIONS_BROKER_ROOT" global_root;
-       let n = C2c_kimi_notifier.poll_once_global
-         ~session_id:sid
-         ~alias:"kimi-global-test"
-         ~tmux_pane:None
+       let prompt_path = "/api/v1/sessions/" ^ sid ^ "/prompts" in
+       let routes =
+         [ Relay_test_support.route ~meth:"POST" ~path:prompt_path
+             [ Relay_test_support.response ~status:200 {|{"code":0,"msg":"success"}|} ]
+         ]
        in
-       (match old_sessions_root with
-        | Some v -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" v
-        | None -> ());
-       Alcotest.(check int) "1 delivery" 1 n;
-       Alcotest.(check int) "global inbox drained after delivery" 0
-         (List.length (read_global_inbox_messages global_root sid)))
+       Relay_test_support.with_server ~routes (fun server ->
+         let base_url = Printf.sprintf "http://127.0.0.1:%d" server.Relay_test_support.port in
+         (* Save and set fixture env vars so C2c_kimi_deliver talks to the mock. *)
+         let old_gate = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE" in
+         let old_token = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_TOKEN" in
+         let old_url = Sys.getenv_opt "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" in
+         let old_sessions_root = Sys.getenv_opt "C2C_SESSIONS_BROKER_ROOT" in
+         Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "1";
+         Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "fixture-token";
+         Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" base_url;
+         Unix.putenv "C2C_SESSIONS_BROKER_ROOT" global_root;
+         Fun.protect
+           ~finally:(fun () ->
+             (match old_gate with
+              | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" v
+              | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "");
+             (match old_token with
+              | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" v
+              | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "");
+             (match old_url with
+              | Some v -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" v
+              | None -> Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" "");
+             (match old_sessions_root with
+              | Some v -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" v
+              | None -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" ""))
+           (fun () ->
+              let n = C2c_kimi_notifier.poll_once_global
+                ~session_id:sid
+                ~alias:"kimi-global-test"
+                ~tmux_pane:None
+              in
+              Alcotest.(check int) "1 delivery" 1 n;
+              Alcotest.(check int) "global inbox drained after delivery" 0
+                (List.length (read_global_inbox_messages global_root sid));
+              let reqs = Relay_test_support.requests server in
+              Alcotest.(check int) "exactly one POST to prompts endpoint" 1
+                (List.length reqs);
+              match reqs with
+              | [ req ] ->
+                 Alcotest.(check string) "POST method" "POST" req.Relay_test_support.meth_;
+                 Alcotest.(check string) "prompts path" prompt_path req.Relay_test_support.path;
+                 Alcotest.(check (option string)) "bearer token"
+                   (Some "Bearer fixture-token")
+                   (Relay_test_support.header req "authorization");
+                 Alcotest.(check bool) "body contains escaped message content" true
+                   (contains req.Relay_test_support.body "hello from global broker")
+              | _ -> Alcotest.fail "expected exactly one request")))
 
 (* [#P4] Cross-session isolation: a message for session A must NOT be drained
    when polling session B. *)
@@ -1002,9 +1067,9 @@ let () =
       ; Alcotest.test_case "threshold boundary" `Quick test_kimi_session_is_idle_threshold_boundary
       ]
     ; "delivery_retry_484",
-      [ Alcotest.test_case "token-shaped advisory kept in inbox" `Quick test_token_shaped_advisory_kept_in_inbox_after_run_once
+      [ Alcotest.test_case "no Kimi session leaves advisory in inbox" `Quick test_no_kimi_session_leaves_advisory_in_inbox
       ; Alcotest.test_case "system event kept in inbox" `Quick test_system_event_remains_in_inbox_after_run_once
-      ; Alcotest.test_case "mixed advisory messages preserved" `Quick test_mixed_advisory_messages_kept
+      ; Alcotest.test_case "no Kimi session leaves non-system messages in inbox" `Quick test_no_kimi_session_leaves_non_system_messages_in_inbox
       ]
     ; "global_broker_p4",
       [ Alcotest.test_case "poll_once_global drains global broker" `Quick test_poll_once_global_drains_global_broker

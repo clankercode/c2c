@@ -1,14 +1,8 @@
 # Kimi Notification-Store Delivery
 
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **B146-TEMP:** Kimi install/start is **temporarily disabled** for this
-> release window (`kimi_disabled_for_release = true` in `ocaml/c2c_start.ml`).
-> `c2c start kimi` / `c2c install kimi` refuse with a friendly banner. The
-> notifier machinery below is retained intact so re-enable is a one-flag flip;
-> do not treat this page as a live operator path until that flag is false.
-> Search `B146-TEMP` when undoing.
+> **Deprecated:** Kimi Code (the current `kimi` binary) no longer reads the legacy file-based notification store. Delivery now uses the Kimi Code local REST server. This runbook is kept for reference on legacy kimi-cli only.
 
-> **Canonical mechanism for delivering c2c DMs to managed `c2c start kimi` sessions.**
+> **Legacy mechanism for delivering c2c DMs to managed `c2c start kimi` sessions (kimi-cli only).**
 > Replaces the now-removed kimi wire-bridge (which spawned a fully-agentic
 > `kimi --wire --yolo` subprocess per delivery — see finding `b6455d8e`).
 > The wire-bridge code (`c2c_wire_daemon.ml`, kimi-specific parts of

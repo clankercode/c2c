@@ -410,8 +410,8 @@ let recompute_codex_artifacts () =
 
 let recompute_kimi_artifacts () =
   let home = home_dir () in
-  let config = home // ".kimi" // "mcp.json" in
-  let toml = home // ".kimi" // "config.toml" in
+  let config = home // ".kimi-code" // "mcp.json" in
+  let toml = home // ".kimi-code" // "config.toml" in
   let hook = home // ".local" // "bin" // "c2c-kimi-approval-hook.sh" in
   let begin_marker =
     C2c_kimi_hook.toml_block_begin_marker ~block_id:C2c_kimi_hook.approval_hook_block_id

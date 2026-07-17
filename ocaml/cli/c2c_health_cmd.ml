@@ -197,8 +197,8 @@ let check_plugin_installs () =
      with _ -> add (`Gray, "codex: could not read config.toml")
    else add (`Gray, "codex: config.toml not found (not installed or not configured)"));
 
-  (* Kimi: check ~/.kimi/mcp.json for c2c entry *)
-  let kimi_config = home // ".kimi" // "mcp.json" in
+  (* Kimi: check ~/.kimi-code/mcp.json for c2c entry *)
+  let kimi_config = home // ".kimi-code" // "mcp.json" in
   (if Sys.file_exists kimi_config then
      try
        let ic = open_in kimi_config in

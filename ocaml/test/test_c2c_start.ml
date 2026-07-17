@@ -120,6 +120,28 @@ let test_read_json_capped_missing_file_returns_default () =
   check bool "returns default for missing file" true
     (match result with `Assoc [("missing", `Bool true)] -> true | _ -> false)
 
+(* Task 2 (kimi re-enable): session ID shape for `kimi --session`. *)
+let test_is_kimi_session_id_like_accepts_session_uuid () =
+  check bool "session_<uuid> is valid" true
+    (C2c_start.is_kimi_session_id_like "session_550e8400-e29b-41d4-a716-446655440000")
+
+let test_is_kimi_session_id_like_accepts_bare_uuid () =
+  check bool "bare uuid is valid" true
+    (C2c_start.is_kimi_session_id_like "550e8400-e29b-41d4-a716-446655440000")
+
+let test_is_kimi_session_id_like_rejects_garbage () =
+  check bool "random string is invalid" false
+    (C2c_start.is_kimi_session_id_like "not-a-session-id");
+  check bool "session_ prefix without uuid is invalid" false
+    (C2c_start.is_kimi_session_id_like "session_foo")
+
+let test_fresh_kimi_session_id_shape () =
+  let sid = C2c_start.fresh_kimi_session_id () in
+  check bool "fresh id passes is_kimi_session_id_like" true
+    (C2c_start.is_kimi_session_id_like sid);
+  check bool "fresh id has session_ prefix" true
+    (String.starts_with ~prefix:"session_" sid)
+
 let test_prepare_launch_args_claude_uses_development_channel_flag () =
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
@@ -1476,18 +1498,16 @@ let test_probed_capabilities_for_kimi () =
   check (list string) "kimi capability set (empty — notifier-based delivery)"
     [] caps
 
-(* #153: kimi-cli's default --max-steps-per-turn is 1000, too low for
-   long-running agentic swarm work. Managed kimi sessions should default
-   to 9999 to match the opencode posture. Assert the flag and value are
-   adjacent in the assembled argv. *)
-let test_prepare_launch_args_kimi_sets_max_steps_per_turn () =
+(* Kimi Code 0.23.6 does not accept --max-steps-per-turn or
+   --mcp-config-file; verify they are absent from the managed launch argv. *)
+let test_prepare_launch_args_kimi_omits_unsupported_flags () =
   let tmp = Filename.temp_dir "c2c-test-kimi-153-" "" in
   let args =
     C2c_start.prepare_launch_args ~name:"kimi-153-proof" ~client:"kimi"
       ~extra_args:[] ~broker_root:tmp ()
   in
-  check bool "adds --max-steps-per-turn 9999" true
-    (has_adjacent_pair "--max-steps-per-turn" "9999" args)
+  check bool "no --max-steps-per-turn" false (List.mem "--max-steps-per-turn" args);
+  check bool "no --mcp-config-file" false (List.mem "--mcp-config-file" args)
 
 let test_check_pty_inject_capability_ok_when_yama_zero () =
   let result =
@@ -2038,8 +2058,7 @@ let test_prepare_launch_args_extra_args_preserves_flags_around_extra () =
    code=0.  Resumed sessions must NOT be re-kickoffed; prompt_args must be [] on
    resume even when kickoff_prompt is Some non-empty string. *)
 let test_kimi_resume_omits_prompt_flag () =
-  (* Use a temp dir for the MCP config that KimiAdapter writes at launch-arg
-     construction time.  broker_root is a directory that must exist. *)
+  (* broker_root is a directory that must exist. *)
   with_temp_dir @@ fun tmp ->
   let args =
     C2c_start.prepare_launch_args
@@ -2051,13 +2070,13 @@ let test_kimi_resume_omits_prompt_flag () =
       ~kickoff_prompt:"poll inbox; list peers; post hello"
       ()
   in
-  check bool "resume: --prompt must NOT appear in args" false
+  check bool "resume: --prompt must NOT appear in args (Kimi Code TUI incompatible)" false
     (List.mem "--prompt" args)
 
-(* #156: on a fresh spawn (resume_session_id = None), kimi-cli accepts
-   --prompt as the initial instruction set and the session persists normally.
-   Verify that kickoff_prompt IS forwarded as --prompt on fresh launches. *)
-let test_kimi_fresh_includes_prompt_flag () =
+(* Kimi Code 0.23.6 rejects --prompt when combined with --yolo, and --yolo
+   is required for managed auto-approve sessions.  Verify that kickoff_prompt
+   is NOT forwarded as --prompt; onboarding is via the /c2c skill + Monitor. *)
+let test_kimi_fresh_omits_prompt_flag () =
   with_temp_dir @@ fun tmp ->
   let args =
     C2c_start.prepare_launch_args
@@ -2068,7 +2087,7 @@ let test_kimi_fresh_includes_prompt_flag () =
       ~kickoff_prompt:"poll inbox; list peers; post hello"
       ()
   in
-  check bool "fresh: --prompt must appear in args" true
+  check bool "fresh: --prompt must NOT appear in args (incompatible with --yolo)" false
     (List.mem "--prompt" args)
 
 (* #471: a plain re-launch (cli_extra_args = []) MUST clear the persisted
@@ -3583,10 +3602,11 @@ let test_prepare_launch_args_codex_headless_model_flag () =
   check bool "model flag present for codex-headless" true
     (has_adjacent_pair "--model" "codex-gpt-4" args)
 
-(* #139: KimiAdapter --session resume — wires kimi-cli's native --session flag
-   from c2c instance state's resume_session_id, enabling restart-with-context. *)
+(* Kimi Code 0.23+ does not resume c2c-generated session IDs, so
+   KimiAdapter never emits --session.  An explicit resume_session_id only
+   suppresses re-kickoff; the argv must stay free of --session. *)
 
-let test_prepare_launch_args_kimi_resume_passes_session_flag () =
+let test_prepare_launch_args_kimi_never_passes_session_flag () =
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
   let args =
@@ -3594,8 +3614,8 @@ let test_prepare_launch_args_kimi_resume_passes_session_flag () =
       ~extra_args:[] ~broker_root:"/tmp/broker"
       ~resume_session_id:"abc-123" ()
   in
-  check bool "resume_session_id Some: --session <uuid> appears" true
-    (has_adjacent_pair "--session" "abc-123" args)
+  check bool "resume_session_id Some: --session flag must NOT appear" false
+    (List.mem "--session" args)
 
 let test_prepare_launch_args_kimi_fresh_omits_session_flag () =
   with_temp_dir @@ fun dir ->
@@ -3610,7 +3630,10 @@ let test_prepare_launch_args_kimi_fresh_omits_session_flag () =
 (* #146-prime: --agent-file path uses role name, not instance name, so that
    the file written by c2c roles compile (role-scoped) matches the path
    passed to kimi-cli. *)
-let test_prepare_launch_args_kimi_agent_file_uses_role_name () =
+(* Kimi Code 0.23.6 does not accept --agent-file; verify it is omitted
+   regardless of agent_name.  Agent onboarding is delivered via the /c2c
+   skill + Monitor. *)
+let test_prepare_launch_args_kimi_omits_agent_file () =
   with_temp_dir @@ fun dir ->
   with_cwd dir @@ fun () ->
   let args =
@@ -3618,25 +3641,11 @@ let test_prepare_launch_args_kimi_agent_file_uses_role_name () =
       ~extra_args:[] ~broker_root:"/tmp/broker"
       ~agent_name:"coordinator1" ()
   in
-  (* --agent-file should point to .kimi/agents/coordinator1/agent.yaml *)
-  let idx =
-    try List.find_index (fun a -> a = "--agent-file") args
-    with Not_found -> None
-  in
-  (match idx with
-   | Some _ -> ()
-   | None -> Alcotest.fail "--agent-file flag missing");
-  (match idx with
-   | Some i when i + 1 < List.length args ->
-       let path = List.nth args (i + 1) in
-       check string "agent-file path uses role name"
-         (".kimi/agents/coordinator1/agent.yaml")
-         path
-   | _ ->
-        Alcotest.fail "--agent-file missing or has no value")
+  check bool "--agent-file must NOT appear in args" false
+    (List.mem "--agent-file" args)
 
 (* #489 regression: verify kimi_agent_yaml_path returns a path under
-   .kimi/agents/<name>/agent.yaml (yaml dir), NOT .kimi/agents/<name>.md.
+   .kimi-code/agents/<name>/agent.yaml (yaml dir), NOT .kimi-code/agents/<name>.md.
    This is the contract that write_agent_file (c2c.ml) and
    C2c_commands.agent_file_path both depend on. The bug: c2c.ml's local
    agent_file_path shadowed C2c_commands.agent_file_path and hardcoded .md. *)
@@ -3645,11 +3654,11 @@ let test_kimi_write_agent_file_uses_yaml_path () =
   check string "kimi_agent_yaml_path ends with agent.yaml"
     "agent.yaml" (Filename.basename path);
   check string "kimi_agent_yaml_path uses directory per agent"
-    ".kimi/agents/test-agent" (Filename.dirname path);
-  (* Ensure it's NOT the old wrong path (which was .kimi/agents/<name>.md) *)
+    ".kimi-code/agents/test-agent" (Filename.dirname path);
+  (* Ensure it's NOT the old wrong path (which was .kimi-code/agents/<name>.md) *)
   let wrong_path = Filename.concat (C2c_role.client_agent_dir ~client:"kimi") "test-agent.md" in
   check string "kimi_agent_yaml_path is NOT .md extension"
-    ".kimi/agents/test-agent.md" wrong_path;
+    ".kimi-code/agents/test-agent.md" wrong_path;
   (* The correct path must differ from the .md wrong path *)
   check bool "correct path differs from wrong .md path"
     true (path <> wrong_path)
@@ -4128,12 +4137,12 @@ let () =
             `Quick, test_format_c2c_envelope_reply_hint_room_uses_room_tool )
         ] )
     ; ( "kimi_adapter",
-        [ ( "resume_passes_session_flag",
-            `Quick, test_prepare_launch_args_kimi_resume_passes_session_flag )
+        [ ( "never_passes_session_flag",
+            `Quick, test_prepare_launch_args_kimi_never_passes_session_flag )
         ; ( "fresh_omits_session_flag",
             `Quick, test_prepare_launch_args_kimi_fresh_omits_session_flag )
-        ; ( "agent_file_uses_role_name",
-            `Quick, test_prepare_launch_args_kimi_agent_file_uses_role_name )
+        ; ( "omits_agent_file",
+            `Quick, test_prepare_launch_args_kimi_omits_agent_file )
         ; ( "write_agent_file_kimi_uses_yaml_path",
             `Quick, test_kimi_write_agent_file_uses_yaml_path )
         ] )
@@ -4196,8 +4205,8 @@ let () =
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
         ; ( "prepare_launch_args_codex_headless_model_flag",
             `Quick, test_prepare_launch_args_codex_headless_model_flag )
-        ; ( "prepare_launch_args_kimi_sets_max_steps_per_turn",
-            `Quick, test_prepare_launch_args_kimi_sets_max_steps_per_turn )
+        ; ( "prepare_launch_args_kimi_omits_unsupported_flags",
+            `Quick, test_prepare_launch_args_kimi_omits_unsupported_flags )
         ; ( "tmux_shell_command_quotes_argv",
             `Quick, test_tmux_shell_command_quotes_argv )
         ; ( "tmux_message_payload_uses_c2c_envelope",
@@ -4390,8 +4399,8 @@ let () =
             `Quick, test_resolve_effective_extra_args_replaces_when_cli_provided )
         ; ( "kimi_resume_omits_prompt_flag_156",
             `Quick, test_kimi_resume_omits_prompt_flag )
-        ; ( "kimi_fresh_includes_prompt_flag_156",
-            `Quick, test_kimi_fresh_includes_prompt_flag )
+        ; ( "kimi_fresh_omits_prompt_flag_156",
+            `Quick, test_kimi_fresh_omits_prompt_flag )
         ] )
     ; ( "pmodel",
         [ ("parse_pmodel_plain", `Quick, test_parse_pmodel_plain)
@@ -4648,5 +4657,15 @@ let () =
             `Quick, test_claude_onboarding_preamble_has_no_heartbeat_monitor )
         ; ( "intro_on_no_role_excludes_raw_clients",
             `Quick, test_intro_on_no_role_excludes_raw_clients )
+        ] )
+    ; ( "kimi_session_id_shape",
+        [ ( "session_<uuid> accepted",
+            `Quick, test_is_kimi_session_id_like_accepts_session_uuid )
+        ; ( "bare uuid accepted",
+            `Quick, test_is_kimi_session_id_like_accepts_bare_uuid )
+        ; ( "garbage rejected",
+            `Quick, test_is_kimi_session_id_like_rejects_garbage )
+        ; ( "fresh id has expected shape",
+            `Quick, test_fresh_kimi_session_id_shape )
         ] )
     ]

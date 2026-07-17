@@ -558,7 +558,7 @@ let client_agent_dir ~(client : string) : string =
   | "opencode" -> ".opencode" // "agents"
   | "claude" -> ".claude" // "agents"
   | "codex" -> ".codex" // "agents"
-  | "kimi" -> ".kimi" // "agents"
+  | "kimi" -> ".kimi-code" // "agents"
   | _ -> ".c2c" // "agents"
 
 let kimi_agent_dir ~(name : string) : string =

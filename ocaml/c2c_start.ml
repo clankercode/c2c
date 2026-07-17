@@ -1622,7 +1622,7 @@ let supported_clients = Stdlib.Hashtbl.fold (fun k _ acc -> k :: acc) clients []
    revert: kimi's machinery is kept intact (notifier, hooks, adapters) so
    re-enabling is just this flag. Unlike crush this is NOT a permanent
    deprecation. Tracked in backlog B146. *)
-let kimi_disabled_for_release = true
+let kimi_disabled_for_release = false
 
 let kimi_disabled_notice =
   "kimi support is temporarily disabled for this release. It will return in a \
@@ -1802,6 +1802,24 @@ let () = Stdlib.Hashtbl.add client_adapters "opencode" (module OpenCodeAdapter)
 
 let home_dir () =
   try Sys.getenv "HOME" with Not_found -> "/home/" ^ Sys.getenv "USER"
+
+(* Kimi Code CLI uses `session_<uuid>` session IDs (e.g. session_550e8400-…).
+   Accept either that form or a bare UUID for backwards compatibility with
+   persisted legacy ids. *)
+let is_kimi_session_id_like sid =
+  let prefix = "session_" in
+  let plen = String.length prefix in
+  if String.length sid > plen && String.sub sid 0 plen = prefix then
+    match Uuidm.of_string (String.sub sid plen (String.length sid - plen)) with
+    | Some _ -> true
+    | None -> false
+  else
+    match Uuidm.of_string sid with
+    | Some _ -> true
+    | None -> false
+
+let fresh_kimi_session_id () =
+  "session_" ^ Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
 
 let opencode_log_dir () = home_dir () // ".local" // "share" // "opencode" // "log"
 
@@ -3321,33 +3339,18 @@ let prepare_launch_args ~(name : string) ~(client : string)
           ?resume_session_id:eff_resume ~alias_from_auto_gen ()
         @ prompt_args
     | "kimi" ->
-        (* KimiAdapter writes the per-instance MCP config and prepends the flag.
-           Pass extra_args so the adapter can detect an already-present --mcp-config-file;
-           extra_args are NOT consumed by the adapter (prepare_launch_args appends them
-           uniformly at the end, so they won't be doubled).
-
-           kickoff_prompt is for fresh spawns only; resumes pick up the existing session
-           without re-injection.  On resume (resume_session_id = Some _), kimi-cli
-           interprets --prompt as a finite work cycle — it processes the kickoff items,
-           completes them, then exits code=0, killing the managed session.  Suppress the
-           flag entirely on resume. *)
+        (* Kimi Code 0.23.6 accepts only a small subset of flags for its TUI
+           launch path: --yolo, --model, and a few others.  It rejects
+           --session, --mcp-config-file, --max-steps-per-turn, --agent-file,
+           and --prompt (when combined with --yolo).  We therefore launch with
+           just --yolo (+ optional --model) and append extra_args verbatim at
+           the tail.  The kickoff / agent-file paths are intentionally omitted
+           for this Kimi Code version; onboarding is delivered via the
+           installed /c2c skill + Monitor. *)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
-        let prompt_args =
-          match resume_session_id with
-          | Some _ -> []  (* resuming — don't re-kickoff; session already has instructions *)
-          | None ->
-            match kickoff_prompt with
-            | Some p when p <> "" -> [ "--prompt"; p ]
-            | _ -> []
-        in
-        let agent_file_args =
-          match agent_name with
-          | Some n -> [ "--agent-file"; C2c_role.kimi_agent_yaml_path ~name:n ]
-          | None -> []
-        in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ~alias_from_auto_gen ()
-        @ prompt_args @ agent_file_args
+        @ extra_args
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -3675,7 +3678,7 @@ end
 
 module KimiAdapter : CLIENT_ADAPTER = struct
   let name = "kimi"
-  let config_dir = ".kimi"
+  let config_dir = ".kimi-code"
   let agent_dir = ""   (* kimi has no agent-dir concept *)
   let instances_subdir = "kimi"
 
@@ -3690,18 +3693,22 @@ module KimiAdapter : CLIENT_ADAPTER = struct
   let extra_env = []
   let session_id_env = Some "KIMI_SESSION_ID"
 
-  let build_start_args ~name ?alias_override ?model_override ?resume_session_id
+  let build_start_args ~name ?alias_override ?model_override ?resume_session_id:_
       ?(extra_args = []) ?(alias_from_auto_gen = false) () =
-    (* #139: --session is now passed when resume_session_id is Some, enabling
-       restart-with-context. Used by `c2c restart kimi -n <alias>` to preserve
-       agent state across restarts. kimi-cli supports
-       `--session/-S/--resume/-r <UUID>` natively; we use --session to match
-       the c2c instance-state field name. When resume_session_id is None or
-       empty, kimi creates a fresh session as before.
+    (* Kimi Code 0.23+ manages its own session IDs and does not resume
+       c2c-generated `session_<uuid>` IDs, so we launch without `--session`
+       for now.  This lets `kimi` create a fresh CLI/TUI session that
+       actually starts.  REST prompt injection to a CLI session is not
+       supported by Kimi Code's local server, so managed Kimi delivery
+       relies on the `/c2c` skill + Monitor; C2c_kimi_deliver is retained
+       for future API/web session support.
 
-       Write the per-instance MCP config to the instance dir and prepend the flag.
-       extra_args are inspected for an existing --mcp-config-file flag but are NOT
-       included in the return — prepare_launch_args appends them uniformly after.
+       Kimi Code 0.23.6 also does not accept `--mcp-config-file` or
+       `--max-steps-per-turn`; MCP servers are configured via
+       `~/.kimi-code/config.toml` by `c2c install kimi` and max-steps is
+       managed by Kimi Code itself.  We therefore only pass `--yolo` and
+       optional `--model`; onboarding is delivered via the installed /c2c
+       skill + Monitor.
 
         --yolo: managed sessions are agent-driven, no human at the keyboard for this
         pane. `--yolo` makes kimi auto-approve all tool calls
@@ -3721,38 +3728,16 @@ module KimiAdapter : CLIENT_ADAPTER = struct
 
        Research: kimi-permissions audit 2026-04-29 (Option A).
 
-       Max-steps-per-turn raised from kimi-cli default (1000) to 9999 for
-       long-running agentic swarm work; matches opencode posture (#153).
-
        Persistence gotcha: kimi saves `yolo=true` (or `afk=true` on older sessions)
        to its session state on disk. If an operator later runs `kimi -C` against the
        same session-id outside c2c management, the session stays in yolo/afk mode
-       until explicitly toggled off. The same persistence applies to `state.json`
-       seeds written by `c2c start` (#158). *)
-    let br = broker_root () in
-    let session_args =
-      match resume_session_id with
-      | Some sid when String.trim sid <> "" -> [ "--session"; sid ]
-      | _ -> []
-    in
-    let base =
-      "--yolo" ::
-      "--max-steps-per-turn" :: "9999" ::
-      session_args
-      @ (match model_override with
-         | Some m when String.trim m <> "" -> [ "--model"; m ]
-         | _ -> [])
-    in
-    if not (has_explicit_kimi_mcp_config extra_args) then begin
-      let cfg_path = kimi_mcp_config_path name in
-      mkdir_p (Filename.dirname cfg_path);
-      let oc = open_out cfg_path in
-      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-        Yojson.Safe.pretty_to_channel oc (build_kimi_mcp_config ~alias_from_auto_gen name br alias_override);
-        output_string oc "\n");
-      "--mcp-config-file" :: cfg_path :: base
-    end else
-      base
+       until explicitly toggled off. *)
+    ignore extra_args;
+    ignore alias_from_auto_gen;
+    "--yolo" ::
+    (match model_override with
+     | Some m when String.trim m <> "" -> [ "--model"; m ]
+     | _ -> [])
 
   let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_
       ~agent_name:_ =
@@ -4667,36 +4652,6 @@ let run_outer_loop ~(name : string) ~(client : string)
         | _ -> env
       in
 
-      (* #158: Pre-create kimi session dir + empty context.jsonl so
-         Session.find() succeeds and loads our seeded state.json.
-         Empty context.jsonl is the gatekeeper that switches kimi from
-         "create" to "find" mode.  wire.jsonl is left untouched so
-         resumed=False (new-session behaviour).  Only seed state.json
-         when it does not already exist (respect resume). *)
-      (if client = "kimi" then
-         match resume_session_id with
-         | Some sid when String.trim sid <> "" ->
-             let wh = Digest.to_hex (Digest.string (Sys.getcwd ())) in
-             let kimi_share =
-               match Sys.getenv_opt "KIMI_SHARE_DIR" with
-               | Some d when d <> "" -> d
-               | _ -> (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".kimi"
-             in
-             let sdir = kimi_share // "sessions" // wh // sid in
-             mkdir_p sdir;
-             let ctx = sdir // "context.jsonl" in
-             if not (Sys.file_exists ctx) then
-               (let oc = open_out ctx in close_out oc);
-             let state_path = sdir // "state.json" in
-             if not (Sys.file_exists state_path) then
-               (let oc = open_out state_path in
-                Fun.protect ~finally:(fun () -> close_out oc)
-                  (fun () ->
-                     output_string oc
-                       ({|{"version":1,"approval":{"yolo":true,"afk":false,"auto_approve_actions":["run command","edit file outside of working directory"]},"additional_dirs":[],"custom_title":null,"title_generated":false,"title_generate_attempts":0,"plan_mode":false,"plan_session_id":null,"plan_slug":null,"wire_mtime":null,"archived":false,"archived_at":null,"auto_archive_exempt":false,"todos":[]}|}
-                        ^ "\n")))
-         | _ -> ());
-
       (* Launch args *)
       (* cc- wrappers (cc-mm, cc-w, etc.) are profile launchers designed to be called
          directly without extra args. They handle their own session/profile management.
@@ -5124,7 +5079,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                ())
            );
           (* Start kimi-notifier (file-based notification-store push).
-             File-based notification push to ~/.kimi/sessions/<wh>/<sid>/notifications/.
+             File-based notification push to ~/.kimi-code/sessions/<wh>/<sid>/notifications/.
              Optionally tmux send-keys-wakes the kimi pane when idle. See
              c2c_kimi_notifier.mli + .collab/research/2026-04-29T10-27-00Z-stanza-
              coder-kimi-notification-store-push-validated.md. *)
@@ -5409,18 +5364,6 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?no_prompt
     ?(opencode_plugin_embedded : string = "")
     () : int =
-  (* B146: temporary-disable guard — refuse kimi before the unknown-client path.
-     Also reap any kimi notifier still alive from a pre-disable session (upgrade
-     path): with kimi disabled no new session will cycle it, so sweep it here so
-     a lingering daemon does not keep running against a now-unsupported client. *)
-  (if client = "kimi" && kimi_disabled_for_release then begin
-     let use_color = Unix.isatty Unix.stderr in
-     let yellow = if use_color then "\027[1;33m" else "" in
-     let reset = if use_color then "\027[0m" else "" in
-     Printf.eprintf "%s[DISABLED]%s %s\n%!" yellow reset kimi_disabled_notice;
-     (try ignore (C2c_kimi_notifier.stop_all_daemons ()) with _ -> ());
-     exit 1
-   end);
   (* Deprecation guard: reject crush early with banner, before unknown-client path *)
   (if client = "crush" then
      let use_color = Unix.isatty Unix.stderr in
@@ -5648,9 +5591,12 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           else None
         in
         (* codex-headless stores the Codex bridge thread id here. It is opaque and
-           intentionally not UUID-validated like Claude/Codex TUI resume ids. *)
+           intentionally not UUID-validated like Claude/Codex TUI resume ids.
+           Kimi Code uses `session_<uuid>` ids, so accept that shape too. *)
         let rs_valid =
           if client = "codex-headless" then
+            Some ex.resume_session_id
+          else if client = "kimi" && is_kimi_session_id_like ex.resume_session_id then
             Some ex.resume_session_id
           else
             match Uuidm.of_string ex.resume_session_id with
@@ -5665,11 +5611,16 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
               let ses_file = instance_dir name // "opencode-session.txt" in
               (try Sys.remove ses_file with _ -> ())
             end;
-            Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
+            if client = "kimi" then
+              Some (fresh_kimi_session_id ())
+            else
+              Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
           end else
-          match session_id_override with
-          | Some s -> Some s
-          | None ->
+          match client, session_id_override with
+          | "kimi", None -> Some ""
+          | "kimi", Some s -> Some s
+          | _, Some s -> Some s
+          | _, None ->
               (match ses_id_from_file with
                | Some v -> Some v   (* OpenCode ses_* wins over stored UUID *)
                | None ->
@@ -5694,6 +5645,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           match client, session_id_override with
           | "codex-headless", None -> ""
           | "codex-headless", Some sid -> sid
+          | "kimi", None -> ""
+          | "kimi", Some s -> s
           | _, Some s -> s
           | _, None ->
             if client = "claude" then
@@ -5764,10 +5717,13 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   else
 
   (* The persisted empty string sentinel means "no thread id yet" for a fresh
-     headless launch and must not become `--thread-id ""` on argv. *)
+     headless launch and must not become `--thread-id ""` on argv.
+     For Kimi we now also use the empty sentinel: managed Kimi sessions launch
+     without `--session` and let Kimi Code mint its own CLI/TUI session id. *)
   let launch_resume_session_id =
     match client, cfg.resume_session_id with
     | "codex-headless", sid when String.trim sid = "" -> None
+    | "kimi", sid when String.trim sid = "" -> None
     | _, sid -> Some sid
   in
 

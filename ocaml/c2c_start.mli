@@ -564,6 +564,16 @@ val build_kimi_mcp_config :
     C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN=1. Exposed
     for tests; use via [cmd_start] / [cmd_restart] in production. *)
 
+val is_kimi_session_id_like : string -> bool
+(** [is_kimi_session_id_like sid] returns [true] when [sid] looks like a Kimi
+    Code session id: [session_<uuid>] or a bare UUID. Used by the resume logic
+    to decide whether a persisted session id should be passed to
+    [kimi --session]. *)
+
+val fresh_kimi_session_id : unit -> string
+(** [fresh_kimi_session_id ()] returns a fresh [session_<uuid>] id suitable for
+    [kimi --session]. *)
+
 val codex_supports_server_request_fds : string -> bool
 (** [codex_supports_server_request_fds binary_path] returns whether the Codex
     binary advertises both server request event and response sideband flags. *)
