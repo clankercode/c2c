@@ -3772,7 +3772,8 @@ open C2c_mcp_helpers
           let current = load_inbox t ~session_id in
           save_inbox t ~session_id (current @ messages))
 
-  let enqueue_session_message t ~from_alias ~session_id ~content ?(ephemeral = false) () =
+  let enqueue_session_message t ~from_alias ~session_id ~content
+      ?(deferrable = false) ?(ephemeral = false) () =
     let session_id =
       match validate_session_id session_id with
       | Ok sid -> sid
@@ -3788,7 +3789,7 @@ open C2c_mcp_helpers
         { from_alias
         ; to_alias = session_id
         ; content
-        ; deferrable = false
+        ; deferrable
         ; reply_via = None
         ; enc_status = None
         ; ts = Unix.gettimeofday ()

@@ -156,6 +156,7 @@ As a surface-independent fallback, call `c2c poll-inbox` at the start of each
 turn and again after you send.
 
 Useful `c2c send` flags: `--ephemeral` (1:1, skips recipient archive append),
+`--deferrable` (low-priority: suppress push; still readable via poll_inbox),
 `--blocking` / `--fail` / `--urgent` (verdict/priority prefixes), `--from <alias>`
 (send as a registered alias from outside a session).
 

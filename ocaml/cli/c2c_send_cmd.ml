@@ -209,6 +209,14 @@ let send_cmd =
     Cmdliner.Arg.(value & flag & info [ "ephemeral" ]
       ~doc:"Mark the message as ephemeral. Local 1:1 only: the recipient's broker delivers normally but skips the archive append, so post-delivery the only persistent trace is the recipient's transcript / channel notification (per-session-local, gets compacted). For remote recipients ($(b,alias@host)), the relay outbox path persists by design and this flag is silently ignored on the relay side in v1; cross-host ephemeral is a follow-up. Receipt confirmation is impossible by design.")
   in
+  (* B232: CLI/MCP parity for the low-priority push-suppress flag. Same
+     semantics as MCP send's [deferrable:true] — mid-turn push drains
+     (PostToolUse / channel notification) skip the row; explicit
+     poll_inbox and turn-boundary drains still surface it. *)
+  let deferrable_flag =
+    Cmdliner.Arg.(value & flag & info [ "deferrable" ]
+      ~doc:"Mark the message as low-priority (deferrable). Push delivery is suppressed — channel notifications and mid-turn PostToolUse drains skip it; the recipient still reads it on next explicit poll_inbox or turn-boundary/idle flush. Local 1:1 only in v1: for remote recipients ($(b,alias@host)), the relay outbox path does not yet preserve this flag (same caveat as --ephemeral). Matches MCP send's $(b,deferrable:true).")
+  in
   (* #392: visual-marker tags. Mutually exclusive flags that prepend a
      body prefix (🔴 FAIL: / ⛔ BLOCKING: / ⚠️ URGENT:) so the recipient
      spots the tag inline in the agent's transcript. *)
@@ -244,6 +252,7 @@ let send_cmd =
   and+ from_override = from_override
   and+ no_warn_substitution = no_warn_substitution
   and+ ephemeral = ephemeral_flag
+  and+ deferrable = deferrable_flag
   and+ fail = fail_flag
   and+ blocking = blocking_flag
   and+ urgent = urgent_flag
@@ -356,7 +365,7 @@ let send_cmd =
            (try
               let result =
                 C2c_mcp.Broker.enqueue_message_with_result broker ~from_alias
-                  ~to_alias ~content ~ephemeral ()
+                  ~to_alias ~content ~deferrable ~ephemeral ()
               in
               enqueue_status := Some result;
               if debug_enabled then Printf.eprintf "[DEBUG send_cmd] enqueue_message returned\n%!";
@@ -391,7 +400,7 @@ let send_cmd =
                   let alt_broker = C2c_mcp.Broker.create ~root:alt_root in
                   let result =
                     C2c_mcp.Broker.enqueue_message_with_result alt_broker
-                      ~from_alias ~to_alias ~content ~ephemeral ()
+                      ~from_alias ~to_alias ~content ~deferrable ~ephemeral ()
                   in
                   enqueue_status := Some result;
                   if debug_enabled then Printf.eprintf "[DEBUG send_cmd] cross-broker enqueue_message returned\n%!"
@@ -405,7 +414,7 @@ let send_cmd =
                        let alt_broker = C2c_mcp.Broker.create ~root:alt_root in
                        let result =
                          C2c_mcp.Broker.enqueue_message_with_result alt_broker
-                           ~from_alias ~to_alias ~content ~ephemeral ()
+                           ~from_alias ~to_alias ~content ~deferrable ~ephemeral ()
                        in
                        enqueue_status := Some result
                    | [] ->
@@ -439,8 +448,12 @@ let send_cmd =
                   | None -> None)
              | None -> None
            in
+           let target_fields =
+             let base = [ ("to_alias", `String to_alias) ] in
+             if deferrable then base @ [ ("deferrable", `Bool true) ] else base
+           in
            ( compacting_warning
-           , [ ("to_alias", `String to_alias) ]
+           , target_fields
            , to_alias )
        | `Session session_id ->
            let sessions_broker =
@@ -448,10 +461,14 @@ let send_cmd =
                ~root:(Repo_fp.resolve_sessions_broker_root ())
            in
            C2c_mcp.Broker.enqueue_session_message sessions_broker
-             ~from_alias ~session_id ~content ~ephemeral ();
+             ~from_alias ~session_id ~content ~deferrable ~ephemeral ();
            enqueue_status := Some (C2c_mcp.Broker.Local_live { session_id });
+           let session_fields =
+             let base = [ ("target_session_id", `String session_id) ] in
+             if deferrable then base @ [ ("deferrable", `Bool true) ] else base
+           in
            ( None
-           , [ ("target_session_id", `String session_id) ]
+           , session_fields
            , "session " ^ session_id )
      in
      (* B088/B127: classify delivery.
