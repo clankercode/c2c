@@ -77,7 +77,10 @@ module type RELAY = sig
   val gc : t -> [> `Ok of string list * int]
   val dead_letter : t -> Yojson.Safe.t list
   val add_dead_letter : t -> Yojson.Safe.t -> unit
-  val list_rooms : t -> Yojson.Safe.t list
+  (** Directory listing. Anonymous ([for_alias] absent): public + gated only.
+      With [for_alias], also include unlisted rooms where that alias is a
+      current member (B230). Private rooms stay omitted from this surface. *)
+  val list_rooms : ?for_alias:string -> t -> Yojson.Safe.t list
   val room_exists : t -> room_id:string -> bool
   val room_visibility_of : t -> room_id:string -> string
   val room_invites_of : t -> room_id:string -> string list

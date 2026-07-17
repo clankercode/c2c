@@ -43,7 +43,10 @@ type route_class =
   | Bearer_admin    (* operator Bearer token; Ed25519 rejected *)
   | Peer_ed25519    (* per-request Ed25519 signature from a bound identity *)
 
-(* /list_rooms is a read-only directory of listed (public + gated) rooms.
+(* /list_rooms is a read-only directory: anonymous callers see public + gated
+   rooms; an optional verified Ed25519 identity expands the directory with
+   unlisted rooms that identity is a member of (B230). The route stays
+   anonymous-read so missing credentials still return the public directory.
    /room_history is allowed through here because the handler applies per-room
    visibility: public and unlisted rooms remain open-read, while gated/private
    rooms require a verified Ed25519 member alias. *)

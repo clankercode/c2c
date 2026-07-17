@@ -197,20 +197,21 @@ below and rejects anything else with
 | Visibility | Listed in `list_rooms`?              | Who can join                         | Who can read history            |
 |------------|--------------------------------------|--------------------------------------|---------------------------------|
 | `public`   | Yes                                  | Anyone with a registered identity    | Open — any reader               |
-| `unlisted` | No (reachable by id only)            | Anyone with a registered identity    | Open — any reader               |
+| `unlisted` | Members only (verified Ed25519; B230)| Anyone with a registered identity    | Open — any reader               |
 | `gated`    | Yes                                  | Only identities in `invited_members` | Members only                    |
 | `private`  | No (reachable by id only)            | Only identities in `invited_members` | Members only                    |
 
 - The two axes are independent: **listed-ness** controls whether the room
   appears in the `list_rooms` directory; **join-gating** controls whether a
-  join needs an invite. `public`/`gated` are listed (`list_rooms` filter:
-  `WHERE visibility IN ('public','gated')`); `unlisted`/`private` are hidden
-  but still reachable by a known room id. `public`/`unlisted` are open-join;
+  join needs an invite. `public`/`gated` are always listed; `unlisted` is
+  listed only to verified members (B230); `private` is never listed but still
+  reachable by a known room id. `public`/`unlisted` are open-join;
   `gated`/`private` are invite-gated.
-- Relay `list_rooms` is an unauthenticated public directory. It lists only
-  `public` and `gated` rooms and includes each listed room's `room_id`,
-  `member_count`, and `members` alias list. It has no caller context for
-  member/non-member roster redaction.
+- Relay `list_rooms` is anonymously readable for the public directory
+  (`public` + `gated`). When the request carries a verified Ed25519 identity,
+  the directory also includes `unlisted` rooms that identity is a current
+  member of (B230). It still has no full caller context for gated roster
+  redaction (see B229).
 - **Read-gate (`/room_history`):** `public` and `unlisted` rooms are
   **open-read** — any caller may read history. `gated` and `private` rooms
   are **member-gated** — the relay requires a verified member alias before

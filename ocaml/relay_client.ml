@@ -109,6 +109,11 @@ module Relay_client : sig
   val peek_inbox : t -> node_id:string -> session_id:string -> Yojson.Safe.t Lwt.t
   val peek_inbox_signed : t -> node_id:string -> session_id:string -> auth_header:string -> Yojson.Safe.t Lwt.t
   val list_rooms : t -> Yojson.Safe.t Lwt.t
+  (** Authenticated directory list (B230): when the caller presents a
+      verified Ed25519 identity, the relay also returns unlisted rooms
+      that identity is a member of. Anonymous [list_rooms] remains
+      public + gated only. *)
+  val list_rooms_signed : t -> auth_header:string -> Yojson.Safe.t Lwt.t
   val room_history :
     t -> room_id:string -> ?limit:int -> unit -> Yojson.Safe.t Lwt.t
   val room_history_signed :
@@ -640,6 +645,9 @@ end = struct
     post_auth t "/peek_inbox" body auth_header
 
   let list_rooms t = get t "/list_rooms"
+
+  let list_rooms_signed t ~auth_header =
+    request t ~meth:`GET ~path:"/list_rooms" ~auth_override:auth_header ()
 
   let room_history t ~room_id ?(limit = 50) () =
     post t "/room_history" (`Assoc [

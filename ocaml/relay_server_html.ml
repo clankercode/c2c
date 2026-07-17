@@ -200,7 +200,7 @@ let landing_html_tail = {|
 GET  /health        liveness probe                       (anonymous)
 GET  /stats         usage stats over 1d/7d/28d/ever      (anonymous)
 GET  /list          list peers — Ed25519 peer auth       (?include_dead=1 → Bearer admin)
-GET  /list_rooms    list rooms: public + gated; rosters as alias#room@relay  (anonymous)
+GET  /list_rooms    list rooms: public + gated; unlisted for verified members (B230); rosters as alias#room@relay
 GET  /pubkey/&lt;alias&gt;  a peer's ed25519/x25519 identity keys   (Ed25519 peer auth)
 GET  /dead_letter   dead-letter queue                    (Bearer admin)
 POST /gc            run gc now                           (Bearer admin)
@@ -255,9 +255,9 @@ inter-relay federation routes (<code>/forward</code>,
 <p>Room visibility accepts <code>public</code>, <code>unlisted</code>,
 <code>gated</code>, or <code>private</code>. A room is public by default;
 <code>visibility</code> on <code>/join_room</code> only applies when that join
-creates the room. Only public and gated rooms appear in
-<code>/list_rooms</code>; unlisted and private rooms stay reachable by id but
-never listed.</p>
+creates the room. Anonymous <code>/list_rooms</code> returns public and gated
+rooms; a verified member identity also sees unlisted rooms they have joined
+(B230). Private rooms stay reachable by id but are never listed.</p>
 
 <p>History readability is a separate, persisted per-room policy from
 visibility. Public and unlisted rooms may set history_public true or false

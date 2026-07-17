@@ -687,7 +687,7 @@ inboxes are pruned.
 Operators can manage relay rooms directly via the `c2c relay rooms` subcommand:
 
 ```bash
-# List PUBLIC + GATED rooms on the relay (unlisted/private rooms are not listed):
+# List PUBLIC + GATED rooms on the relay (pass --alias to also see unlisted rooms you joined):
 c2c relay rooms list
 
 # Join a room as an alias:

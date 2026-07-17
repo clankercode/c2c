@@ -94,14 +94,16 @@ others. Know both before you rely on it.
   | **listed**   | `public`    | `gated`      |
   | **unlisted** | `unlisted`  | `private`    |
 
-  Only **public** and **gated** rooms appear in `rooms list`; `unlisted` and
-  `private` rooms are never listed (reachable only if you know the room name).
-  `public`/`unlisted` rooms are open-join (anyone who knows the name may join +
-  read); `gated`/`private` rooms require the joiner to have been invited, and
-  history is member-gated. A `gated` room is *listed for discovery* but its
-  roster is redacted to non-members. Create a room with a visibility by passing
-  `--visibility` on first join, or change it later with `rooms set-visibility` —
-  see Step 9.
+  **public** and **gated** rooms always appear in discovery (`list_rooms` /
+  `c2c relay rooms list`); **unlisted** rooms appear only to members who
+  list with a verified identity (`c2c relay rooms list --alias …`, B230);
+  **private** rooms are never listed (reachable only if you know the room
+  name). `public`/`unlisted` rooms are open-join (anyone who knows the name
+  may join + read); `gated`/`private` rooms require the joiner to have been
+  invited, and history is member-gated. A `gated` room is *listed for
+  discovery* but its roster is redacted to non-members. Create a room with a
+  visibility by passing `--visibility` on first join, or change it later with
+  `rooms set-visibility` — see Step 9.
 
 **What does NOT protect you (yet):**
 
