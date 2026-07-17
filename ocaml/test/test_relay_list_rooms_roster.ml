@@ -1,13 +1,17 @@
-(* test_relay_list_rooms_roster.ml — B118.
+(* test_relay_list_rooms_roster.ml — B118 + B229.
 
-   The anonymous /list_rooms directory must expose room members as
+   The anonymous /list_rooms directory must expose public-room members as
    presentation-only recipient addresses `alias#room@relay`, never bare
    aliases and never any lease/host machine metadata (opaque_host_id,
    node_id, session_id, identity key).
 
+   B229: gated rooms remain listable for discovery but their members array
+   is redacted (empty) while member_count stays accurate — same non-member
+   roster redaction as local-broker 4-level list_rooms.
+
    Coverage:
-   1. InMemoryRelay.list_rooms: members are `alias#room@relay` (actual room
-      id), bare aliases absent.
+   1. InMemoryRelay.list_rooms: public members are `alias#room@relay` (actual
+      room id), bare aliases absent.
    2. SqliteRelay.list_rooms: identical response shape to InMemoryRelay.
    3. No-leak: a member registered with distinctive opaque_host_id / node_id
       / session_id / identity_pk sentinels — none of those sentinel values
@@ -18,7 +22,9 @@
    5. Visibility: public and gated rooms remain listable; unlisted and
       private rooms remain omitted (both backends).
    6. HTTP: an anonymous GET /list_rooms against the production relay
-      callback returns the formatted members and no metadata leak. *)
+      callback returns the formatted public members and no metadata leak.
+   7. B229 gated roster redaction: listed gated room keeps member_count but
+      members=[] (InMemory + Sqlite + HTTP). *)
 
 open Alcotest
 
@@ -46,6 +52,13 @@ let members_of = function
        List.map (function `String s -> s
                         | _ -> failwith "member not a string") ms
      | _ -> failwith "room entry missing members")
+  | _ -> failwith "room entry not an object"
+
+let member_count_of = function
+  | `Assoc fields ->
+    (match List.assoc_opt "member_count" fields with
+     | Some (`Int n) -> n
+     | _ -> failwith "room entry missing member_count")
   | _ -> failwith "room entry not an object"
 
 let find_room rooms room_id =
@@ -262,6 +275,61 @@ let test_sqlite_visibility_filter () =
     check bool "unlisted omitted" false (listed "b118-unlisted");
     check bool "private omitted" false (listed "b118-private"))
 
+(* --- 5b. B229: gated roster redacted; public roster intact --- *)
+
+let assert_gated_roster_redacted rooms ~gated_id ~public_id ~public_member =
+  (match find_room rooms gated_id with
+   | None -> fail (Printf.sprintf "gated room %s must be listed" gated_id)
+   | Some gated ->
+     check int "gated member_count preserved for discovery" 1
+       (member_count_of gated);
+     check (list string) "gated members redacted for anonymous directory" []
+       (members_of gated);
+     check bool "gated member address absent from directory JSON" false
+       (json_contains_substr rooms (public_member ^ "#" ^ gated_id ^ "@relay")));
+  (match find_room rooms public_id with
+   | None -> fail (Printf.sprintf "public room %s must be listed" public_id)
+   | Some pub ->
+     check int "public member_count intact" 1 (member_count_of pub);
+     check (list string) "public members still presentation addresses"
+       [ public_member ^ "#" ^ public_id ^ "@relay" ]
+       (List.sort compare (members_of pub)))
+
+let test_inmemory_gated_roster_redacted () =
+  let t = Relay.InMemoryRelay.create () in
+  let _ =
+    Relay.InMemoryRelay.register t ~node_id:"n-a" ~session_id:"s-a"
+      ~alias:"alice" ()
+  in
+  let _ =
+    Relay.InMemoryRelay.join_room t ~visibility:"gated" ~alias:"alice"
+      ~room_id:"b229-gated" ()
+  in
+  let _ =
+    Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"b229-public" ()
+  in
+  assert_gated_roster_redacted
+    (Relay.InMemoryRelay.list_rooms t)
+    ~gated_id:"b229-gated" ~public_id:"b229-public" ~public_member:"alice"
+
+let test_sqlite_gated_roster_redacted () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let _ =
+      Relay.SqliteRelay.register t ~node_id:"n-a" ~session_id:"s-a"
+        ~alias:"alice" ()
+    in
+    let _ =
+      Relay.SqliteRelay.join_room t ~visibility:"gated" ~alias:"alice"
+        ~room_id:"b229-gated" ()
+    in
+    let _ =
+      Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"b229-public" ()
+    in
+    assert_gated_roster_redacted
+      (Relay.SqliteRelay.list_rooms t)
+      ~gated_id:"b229-gated" ~public_id:"b229-public" ~public_member:"alice")
+
 (* --- 6. HTTP: anonymous GET /list_rooms --- *)
 
 let test_http_anonymous_list_rooms () =
@@ -272,6 +340,10 @@ let test_http_anonymous_list_rooms () =
         ~identity_pk:sentinel_pk ~opaque_host_id:(Some sentinel_ohid) () in
     let _ = Relay.InMemoryRelay.join_room relay
         ~alias:"carol" ~room_id:"b118-http" () in
+    (* B229: gated room with a real member must not expose the roster on
+       anonymous GET /list_rooms. *)
+    let _ = Relay.InMemoryRelay.join_room relay
+        ~visibility:"gated" ~alias:"carol" ~room_id:"b229-http-gated" () in
     RTSR.call ~base_url ~meth:`GET ~path:"/list_rooms" () >|= fun r ->
     check int "GET /list_rooms is 200" 200 (RTSR.status_code r);
     let body = r.RTSR.body_text in
@@ -279,14 +351,28 @@ let test_http_anonymous_list_rooms () =
       let re = Str.regexp_string needle in
       try ignore (Str.search_forward re body 0); true with Not_found -> false
     in
-    check bool "body carries formatted address" true
+    check bool "body carries formatted public address" true
       (contains "carol#b118-http@relay");
+    check bool "gated member address redacted from body" false
+      (contains "carol#b229-http-gated@relay");
+    check bool "gated room still discoverable by id" true
+      (contains "b229-http-gated");
     check bool "no bare alias field \"carol\" outside address" true
       (not (contains "\"carol\""));
     check bool "opaque_host_id sentinel absent" false (contains sentinel_ohid);
     check bool "node_id sentinel absent" false (contains sentinel_node);
     check bool "session_id sentinel absent" false (contains sentinel_sess);
-    check bool "identity_pk sentinel absent" false (contains sentinel_pk))
+    check bool "identity_pk sentinel absent" false (contains sentinel_pk);
+    (* Parse rooms array from ok envelope and assert gated redaction shape. *)
+    match Yojson.Safe.from_string body with
+    | `Assoc fields ->
+      (match List.assoc_opt "rooms" fields with
+       | Some (`List rooms) ->
+         assert_gated_roster_redacted rooms
+           ~gated_id:"b229-http-gated" ~public_id:"b118-http"
+           ~public_member:"carol"
+       | _ -> fail "HTTP /list_rooms missing rooms array")
+    | _ -> fail "HTTP /list_rooms body not an object")
 
 (* --- 6b. Defensive directory-boundary filter: even when an out-of-grammar
    room id is created DIRECTLY via the backend join_room (bypassing the HTTP
@@ -391,5 +477,11 @@ let () =
           `Quick test_inmemory_visibility_filter;
         test_case "Sqlite public/gated listed, unlisted/private omitted"
           `Quick test_sqlite_visibility_filter;
+      ];
+      "B229 gated roster redaction", [
+        test_case "InMemory gated members redacted, public intact" `Quick
+          test_inmemory_gated_roster_redacted;
+        test_case "Sqlite gated members redacted, public intact" `Quick
+          test_sqlite_gated_roster_redacted;
       ];
     ]

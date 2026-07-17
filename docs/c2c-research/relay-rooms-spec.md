@@ -208,9 +208,12 @@ below and rejects anything else with
   but still reachable by a known room id. `public`/`unlisted` are open-join;
   `gated`/`private` are invite-gated.
 - Relay `list_rooms` is an unauthenticated public directory. It lists only
-  `public` and `gated` rooms and includes each listed room's `room_id`,
-  `member_count`, and `members` alias list. It has no caller context for
-  member/non-member roster redaction.
+  `public` and `gated` rooms. Each row includes `room_id` and
+  `member_count`. **Public** rooms also include a presentation-only
+  `members` list (`alias#room@relay`). **Gated** rooms redact `members` to
+  `[]` for this anonymous directory (B229 — same non-member roster redaction
+  as local-broker 4-level `list_rooms`). There is no caller identity on the
+  route, so gated redaction is unconditional.
 - **Read-gate (`/room_history`):** `public` and `unlisted` rooms are
   **open-read** — any caller may read history. `gated` and `private` rooms
   are **member-gated** — the relay requires a verified member alias before

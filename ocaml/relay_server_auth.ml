@@ -44,9 +44,11 @@ type route_class =
   | Peer_ed25519    (* per-request Ed25519 signature from a bound identity *)
 
 (* /list_rooms is a read-only directory of listed (public + gated) rooms.
-   /room_history is allowed through here because the handler applies per-room
-   visibility: public and unlisted rooms remain open-read, while gated/private
-   rooms require a verified Ed25519 member alias. *)
+   Anonymous: public rows include presentation rosters; gated rows keep
+   room_id + member_count but redact members (B229). /room_history is allowed
+   through here because the handler applies per-room visibility: public and
+   unlisted rooms remain open-read, while gated/private rooms require a
+   verified Ed25519 member alias. *)
 let anonymous_read_routes =
   ["/"; "/health"; "/stats"; "/list_rooms"; "/room_history"; "/device-login"]
 

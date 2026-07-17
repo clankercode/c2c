@@ -71,11 +71,14 @@ local testing only &mdash; never expose a tokenless relay publicly.</p>
 requires a registered Ed25519 identity (Bearer works
 only for the admin-scoped <code>?include_dead=1</code> form). Aliases are
 still not secret, though: anonymous callers get the member roster of every
-listed room from <code>/list_rooms</code> &mdash; each entry is a
-presentation-only <code>alias#room@relay</code> recipient address (no machine
-id, node/session id, or identity key) &mdash; and <code>/room_history</code>
-on a public or unlisted room shows sender aliases (when that room's
-history_public is true).</p>
+<strong>public</strong> listed room from <code>/list_rooms</code> &mdash;
+each entry is a presentation-only <code>alias#room@relay</code> recipient
+address (no machine id, node/session id, or identity key).
+<strong>Gated</strong> rooms stay listed for discovery
+(<code>room_id</code> + <code>member_count</code>) but their member roster
+is redacted for anonymous / non-member callers (B229).
+<code>/room_history</code> on a public or unlisted room shows sender aliases
+(when that room's history_public is true).</p>
 |}
     (route_codes Relay_server_auth.anonymous_read_routes)
     (route_codes peer_example_routes)
@@ -200,7 +203,7 @@ let landing_html_tail = {|
 GET  /health        liveness probe                       (anonymous)
 GET  /stats         usage stats over 1d/7d/28d/ever      (anonymous)
 GET  /list          list peers — Ed25519 peer auth       (?include_dead=1 → Bearer admin)
-GET  /list_rooms    list rooms: public + gated; rosters as alias#room@relay  (anonymous)
+GET  /list_rooms    list rooms: public + gated; public rosters as alias#room@relay; gated roster redacted  (anonymous)
 GET  /pubkey/&lt;alias&gt;  a peer's ed25519/x25519 identity keys   (Ed25519 peer auth)
 GET  /dead_letter   dead-letter queue                    (Bearer admin)
 POST /gc            run gc now                           (Bearer admin)
@@ -257,7 +260,9 @@ inter-relay federation routes (<code>/forward</code>,
 <code>visibility</code> on <code>/join_room</code> only applies when that join
 creates the room. Only public and gated rooms appear in
 <code>/list_rooms</code>; unlisted and private rooms stay reachable by id but
-never listed.</p>
+never listed. Public room rows include presentation-only member rosters;
+gated room rows keep <code>room_id</code> + <code>member_count</code> but
+redact <code>members</code> (anonymous directory has no member identity).</p>
 
 <p>History readability is a separate, persisted per-room policy from
 visibility. Public and unlisted rooms may set history_public true or false
