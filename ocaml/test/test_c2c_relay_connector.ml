@@ -1129,15 +1129,17 @@ let mk_result ?(rate_limited = false) ?last_error () : Conn.sync_result =
     rate_limited; last_error }
 
 let test_stale_exit_default_threshold () =
-  (* default = max(600, interval*20); 30s interval -> 600s, 60s -> 1200s. *)
-  Alcotest.(check (float 1e-9)) "30s interval -> 600s floor" 600.0
+  (* B228: default = max(180, interval*6); 30s interval -> 180s, 60s -> 360s. *)
+  Alcotest.(check (float 1e-9)) "30s interval -> 180s floor" 180.0
     (Conn.stale_exit_threshold_s ~interval:30.0);
-  Alcotest.(check (float 1e-9)) "60s interval -> 20x" 1200.0
-    (Conn.stale_exit_threshold_s ~interval:60.0)
+  Alcotest.(check (float 1e-9)) "60s interval -> 6x" 360.0
+    (Conn.stale_exit_threshold_s ~interval:60.0);
+  Alcotest.(check (float 1e-9)) "10s interval still floors at 180s" 180.0
+    (Conn.stale_exit_threshold_s ~interval:10.0)
 
 let test_should_exit_stale_predicate () =
   let now = 10_000.0 in
-  let threshold = 600.0 in
+  let threshold = 180.0 in
   (* fresh progress -> keep running *)
   Alcotest.(check bool) "recent progress -> no exit" false
     (Conn.should_exit_stale ~now ~last_progress:(now -. 60.0) ~threshold);
@@ -1146,7 +1148,10 @@ let test_should_exit_stale_predicate () =
     (Conn.should_exit_stale ~now ~last_progress:(now -. 7200.0) ~threshold);
   (* exactly at threshold -> exit (>=) *)
   Alcotest.(check bool) "exactly at threshold -> exit" true
-    (Conn.should_exit_stale ~now ~last_progress:(now -. 600.0) ~threshold)
+    (Conn.should_exit_stale ~now ~last_progress:(now -. 180.0) ~threshold);
+  (* just under threshold -> keep running *)
+  Alcotest.(check bool) "just under threshold -> no exit" false
+    (Conn.should_exit_stale ~now ~last_progress:(now -. 179.9) ~threshold)
 
 let test_sync_made_progress () =
   (* ok pass (no error) is progress; rate-limited pass is progress (relay up,
@@ -1238,27 +1243,111 @@ let test_signal_bounds_blocked_sync ~machine ~signal_name signal () =
           Alcotest.failf "connector remained blocked more than 3s after %s"
             signal_name
 
-let test_b181_alarm_stays_watchdog () =
+let test_b181_alarm_force_exits () =
+  (* B228: SIGALRM during a hung sync force-exits 3 (raise was unreliable under
+     nested Lwt/Cohttp and left live PIDs wedged). Run in a child so the
+     parent test process survives. *)
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
-  let t =
-    Conn.make_state ~relay_url:"http://unreachable.invalid"
-      ~token:None ~identity:None ~broker_root:tmp ~node_id:"b181-test"
-      ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false
+  match Unix.fork () with
+  | 0 ->
+      let t =
+        Conn.make_state ~relay_url:"http://unreachable.invalid"
+          ~token:None ~identity:None ~broker_root:tmp ~node_id:"b181-test"
+          ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false
+      in
+      let trigger_alarm _t =
+        Unix.kill (Unix.getpid ()) Sys.sigalrm;
+        let promise, _resolver = Lwt.wait () in
+        promise
+      in
+      (* If force-exit fails, fall through — parent will fail the wait. *)
+      ignore (Conn.run_sync_once ~shutdown:(ref false) ~sync_fn:trigger_alarm t);
+      Unix._exit 42
+  | pid ->
+      (match waitpid_until ~timeout_s:3.0 pid with
+       | Some (Unix.WEXITED 3) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "expected force-exit 3, got exit %d" code
+       | Some status ->
+           Alcotest.failf "expected force-exit 3, got %s"
+             (match status with
+              | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+              | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+              | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "child did not exit within 3s after SIGALRM");
+      (* B228: pass-start touch should have stamped last_sync before the hang. *)
+      match Conn.read_connector_state tmp with
+      | None -> Alcotest.fail "expected connector-state after pass-start touch"
+      | Some st ->
+          Alcotest.(check bool) "pid recorded" true (st.Conn.cs_pid <> None);
+          Alcotest.(check bool) "last_sync stamped" true
+            (st.Conn.cs_last_sync_ts > 0.0)
+
+let test_run_loop_stale_exit_force_exits () =
+  (* B228: always-erroring sync_once must exit 3 under a short stale-exit
+     threshold — the completes-but-erroring wedge, end-to-end through [run]. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      Unix.putenv "C2C_RELAY_CONNECTOR_STALE_EXIT_S" "0.4";
+      let t =
+        Conn.make_state ~relay_url:"http://unreachable.invalid"
+          ~token:None ~identity:None ~broker_root:tmp ~node_id:"b228-stale"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false
+      in
+      let err =
+        { Conn.err_op = "poll_inbox"; err_detail = "request_timeout";
+          err_ts = 0.0 }
+      in
+      let sync_once _shutdown _t =
+        Ok (mk_result ~last_error:err ())
+      in
+      (try Conn.run ~sync_once t with _ -> ());
+      Unix._exit 42
+  | pid ->
+      (match waitpid_until ~timeout_s:5.0 pid with
+       | Some (Unix.WEXITED 3) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "expected stale-exit 3, got exit %d" code
+       | Some status ->
+           Alcotest.failf "expected stale-exit 3, got non-exit status"
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "stale-exit child did not exit within 5s")
+
+let test_touch_connector_last_sync_preserves_last_ok () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let ok_result : Conn.sync_result =
+    { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
+      outbox_forwarded = 1; outbox_failed = 0; outbox_dlqed = 0;
+      inbound_delivered = 2; inbound_rejected = 0; alerts_emitted = 0;
+      rate_limited = false; last_error = None }
   in
-  let trigger_alarm _t =
-    Unix.kill (Unix.getpid ()) Sys.sigalrm;
-    let promise, _resolver = Lwt.wait () in
-    promise
+  Conn.write_connector_state ~node_id:"n1" tmp ok_result;
+  let before =
+    match Conn.read_connector_state tmp with
+    | Some st -> st
+    | None -> Alcotest.fail "missing state after write"
   in
-  match Conn.run_sync_once ~shutdown:(ref false) ~sync_fn:trigger_alarm t with
-  | Error (`Watchdog detail) ->
-      Alcotest.(check bool) "B181 detail retained" true
-        (contains_sub ~needle:"B181 watchdog" detail)
-  | Ok _ -> Alcotest.fail "ordinary SIGALRM unexpectedly completed sync"
-  | Error (`Exn exn) ->
-      Alcotest.failf "ordinary SIGALRM became generic exception: %s"
-        (Printexc.to_string exn)
+  Unix.sleepf 0.05;
+  Conn.touch_connector_last_sync tmp;
+  let after =
+    match Conn.read_connector_state tmp with
+    | Some st -> st
+    | None -> Alcotest.fail "missing state after touch"
+  in
+  Alcotest.(check (float 1e-9)) "last_ok preserved" before.Conn.cs_last_ok_ts
+    after.Conn.cs_last_ok_ts;
+  Alcotest.(check bool) "last_sync advanced" true
+    (after.Conn.cs_last_sync_ts > before.Conn.cs_last_sync_ts);
+  Alcotest.(check int) "fwd count preserved" 1 after.Conn.cs_outbox_forwarded
 
 let test_machine_graceful_completion_stops_remaining_roots () =
   let tmp = make_tmpdir () in
@@ -1328,13 +1417,17 @@ let () =
       Alcotest.test_case "grows exponentially then caps" `Quick
         test_backoff_grows_then_caps;
     ];
-    "B211 staleness-exit watchdog", [
-      Alcotest.test_case "default threshold = max(600, 20x interval)" `Quick
+    "B211/B228 staleness-exit watchdog", [
+      Alcotest.test_case "default threshold = max(180, 6x interval)" `Quick
         test_stale_exit_default_threshold;
       Alcotest.test_case "exit predicate fires past threshold" `Quick
         test_should_exit_stale_predicate;
       Alcotest.test_case "ok/rate-limited count as progress, errors do not"
         `Quick test_sync_made_progress;
+      Alcotest.test_case "touch last_sync preserves last_ok (B228)" `Quick
+        test_touch_connector_last_sync_preserves_last_ok;
+      Alcotest.test_case "run loop stale-exits on always-error (B228)" `Quick
+        test_run_loop_stale_exit_force_exits;
     ];
     "B217 bounded SIGTERM shutdown", [
       Alcotest.test_case "bare connector SIGTERM" `Quick
@@ -1349,8 +1442,8 @@ let () =
       Alcotest.test_case "machine connector SIGINT" `Quick
         (test_signal_bounds_blocked_sync ~machine:true ~signal_name:"SIGINT"
            Sys.sigint);
-      Alcotest.test_case "ordinary alarm remains B181 watchdog" `Quick
-        test_b181_alarm_stays_watchdog;
+      Alcotest.test_case "ordinary alarm force-exits (B181/B228)" `Quick
+        test_b181_alarm_force_exits;
       Alcotest.test_case "machine sync completes during grace" `Quick
         test_machine_graceful_completion_stops_remaining_roots;
     ];

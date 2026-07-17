@@ -1338,6 +1338,38 @@ let write_connector_state_error broker_root ~op ~detail =
       close_out oc;
       Unix.rename tmp path)
 
+(* B228: stamp last_sync (not last_ok) at the start of a pass so a hung sync
+   is visible as erroring (fresh last_sync, stale last_ok) rather than a silent
+   full wedge where both timestamps freeze. Preserves prior last_ok, pid,
+   counts, and last_error fields. Best-effort — never raises. *)
+let touch_connector_last_sync broker_root =
+  try
+    let now = Unix.gettimeofday () in
+    let path = connector_state_path broker_root in
+    let base =
+      match C2c_io.read_json_opt path with
+      | Some (`Assoc fs) -> fs
+      | _ -> []
+    in
+    let drop_keys = [ "last_sync_ts"; "pid" ] in
+    let kept =
+      List.filter (fun (k, _) -> not (List.mem k drop_keys)) base
+    in
+    let json =
+      `Assoc
+        (("last_sync_ts", `Float now)
+         :: ("pid", `Int (Unix.getpid ()))
+         :: kept)
+    in
+    let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+    let oc = open_out tmp in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () ->
+         Yojson.Safe.to_channel oc json ~std:false;
+         close_out oc;
+         Unix.rename tmp path)
+  with _ -> ()
+
 (** Append a single outbox entry to remote-outbox.jsonl (append-only, not rewrite).
     Used by enqueue_message when the target alias is remote (contains '@'). *)
 let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id () =
@@ -2094,15 +2126,16 @@ let rate_limit_backoff ~base ~strikes =
     capped +. jitter
   end
 
-(* B211: staleness-exit watchdog for the *completes-but-erroring* wedge.
+(* B211/B228: staleness-exit watchdog for the *completes-but-erroring* wedge.
    The B181 SIGALRM watchdog only catches a sync pass that HANGS past the
    wall-clock deadline. A different wedge is just as fatal: each pass returns
    [Ok result] promptly but with [last_error = Some _] (e.g. every HTTP call
    fails fast with request_timeout / connection_error), so [watchdog_strikes]
    resets to 0 every pass, the process stays alive indefinitely, and
-   [last_ok_ts] never advances — a live PID with an hours-stale bridge
-   (exactly the B211 report). Neither the strike counter nor the 429 backoff
-   ever terminates it.
+   [last_ok_ts] never advances — a live PID with a stale bridge (B211, and the
+   B228 recurrence where whoami already reported wedged at ~2m while the
+   process kept running until a manual restart). Neither the strike counter
+   nor the 429 backoff ever terminates it.
 
    Fix: track wall-clock time since the last pass that made progress — either
    a fully successful sync ([last_error = None]) or a rate-limited pass (the
@@ -2110,6 +2143,8 @@ let rate_limit_backoff ~base ~strikes =
    would just re-hit the 429). When no progress has been made for
    [stale_exit_threshold_s], the connector is wedged: log an actionable line
    and exit 3 so a supervisor (managed `c2c start relay-connect`) restarts it.
+   Default threshold (B228) is max(180, interval×6) so self-heal trails the
+   doctor 120s liveness window by a small margin, not by ~10 minutes.
    Unsupervised, the exit makes whoami/doctor report `absent`/`stale` with the
    documented `c2c restart relay-connect` remediation instead of a silently
    wedged live PID. Both predicates are pure so they are unit-testable. *)
@@ -2117,7 +2152,10 @@ let stale_exit_threshold_s ~interval =
   match Option.bind (Sys.getenv_opt "C2C_RELAY_CONNECTOR_STALE_EXIT_S")
           float_of_string_opt with
   | Some v when v > 0.0 -> v
-  | _ -> Float.max 600.0 (interval *. 20.0)
+  | _ ->
+      (* B228: self-heal soon after doctor marks the bridge dead (120s
+         freshness). Floor 180s / 6×interval → 3 min at the default 30s poll. *)
+      Float.max 180.0 (interval *. 6.0)
 
 (* [true] when the connector has made no forward progress for at least
    [threshold] wall-clock seconds and should exit so a supervisor restarts it.
@@ -2131,12 +2169,17 @@ let should_exit_stale ~now ~last_progress ~threshold =
 let sync_made_progress (result : sync_result) =
   result.last_error = None || result.rate_limited
 
-(* B181: wall-clock cap for one sync pass so a hung HTTP path cannot leave
+(* B181/B228: wall-clock cap for one sync pass so a hung HTTP path cannot leave
    a multi-hour PID with stale last_sync. Defaults to max(90s, 4 * interval).
    Implemented with SIGALRM because [sync] drives work via nested
-   Lwt_main.run (a Lwt.pick sibling never races those calls). On timeout we
-   write an error state and count consecutive strikes; after 3 the process
-   exits 3 so managed `c2c start relay-connect` / supervisors can restart. *)
+   Lwt_main.run (a Lwt.pick sibling never races those calls).
+
+   B228: raising an exception from the SIGALRM handler is unreliable under
+   nested Lwt_main.run / Cohttp — the exception can be swallowed and leave a
+   live PID with a dead bridge (the observed B228 wedge). On timeout we
+   force-exit 3 so a supervisor restarts (first hang; no multi-strike wait).
+   The [Error `Watchdog] path remains only for injected/mock sync_once
+   failures that return that variant without going through the real alarm. *)
 let sync_watchdog_s (t : t) =
   max 90.0 (t.interval *. 4.0)
 
@@ -2148,6 +2191,9 @@ let run_sync_once ?shutdown ?(sync_fn = sync) (t : t) :
   let deadline_i =
     int_of_float (Float.ceil deadline) |> max 1
   in
+  (* B228: advance last_sync at pass start so a hung HTTP path is visible as
+     erroring (fresh last_sync, stale last_ok) instead of a full freeze. *)
+  touch_connector_last_sync t.broker_root;
   let prev_alrm = Sys.signal Sys.sigalrm Sys.Signal_ignore in
   let finally () =
     ignore (Unix.alarm 0);
@@ -2160,11 +2206,13 @@ let run_sync_once ?shutdown ?(sync_fn = sync) (t : t) :
               match shutdown with
               | Some requested when !requested -> Unix._exit 0
               | _ ->
-                  raise
-                    (Sync_watchdog
-                       (Printf.sprintf
-                          "sync wall-clock exceeded %ds (B181 watchdog)"
-                          deadline_i))));
+                  (try
+                     Printf.eprintf
+                       "[relay-connector] wedged: sync wall-clock exceeded %ds \
+                        — force-exit so a supervisor can restart (B181/B228)\n%!"
+                       deadline_i
+                   with _ -> ());
+                  Unix._exit 3));
       ignore (Unix.alarm deadline_i);
       try Ok (Lwt_main.run (sync_fn t)) with
       | Sync_watchdog detail -> Error (`Watchdog detail)
@@ -2207,6 +2255,24 @@ let sleep_interruptibly delay =
   try Unix.sleepf delay with
   | Unix.Unix_error (Unix.EINTR, _, _) -> ()
 
+(* B228: sleep in short chunks so a long rate-limit backoff cannot delay the
+   stale-exit check for the full backoff window. [should_stop] is polled each
+   chunk (typically shutdown || stale-exit side effects). *)
+let sleep_interruptibly_until ~slice_s ~should_stop delay =
+  let deadline = Unix.gettimeofday () +. Float.max 0.0 delay in
+  let slice = Float.max 0.05 slice_s in
+  let rec loop () =
+    if should_stop () then ()
+    else
+      let remaining = deadline -. Unix.gettimeofday () in
+      if remaining <= 0.0 then ()
+      else begin
+        sleep_interruptibly (Float.min slice remaining);
+        loop ()
+      end
+  in
+  loop ()
+
 let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
     (t : t) : unit =
   (* B210: seed per-process so the backoff jitter actually desynchronises
@@ -2230,7 +2296,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
       Printf.eprintf
         "[relay-connector] wedged: no successful sync for %.0fs (>= %.0fs \
          threshold) though the process is alive — exiting so a supervisor can \
-         restart (B211). Recover manually with: c2c restart relay-connect\n%!"
+         restart (B211/B228). Recover manually with: c2c restart relay-connect\n%!"
         (Unix.gettimeofday () -. !last_progress) stale_threshold;
       exit 3
     end
@@ -2281,7 +2347,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              ~detail:(Printexc.to_string exn);
            Printf.eprintf "[relay-connector] sync exception: %s\n%!"
              (Printexc.to_string exn));
-      (* B211: an alive-but-erroring connector never advances last_progress;
+      (* B211/B228: an alive-but-erroring connector never advances last_progress;
          terminate once it has been wedged past the threshold. *)
       check_stale_exit ();
       if not !shutdown then begin
@@ -2290,7 +2356,11 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
           Printf.eprintf
             "[relay-connector] relay rate-limited (429); backing off %.0fs \
              (strike %d)\n%!" delay !rl_strikes;
-        sleep_interruptibly delay;
+        sleep_interruptibly_until ~slice_s:5.0
+          ~should_stop:(fun () ->
+            check_stale_exit ();
+            !shutdown)
+          delay;
         loop ()
       end
     )
@@ -2380,11 +2450,17 @@ let start_machine_impl ~sync_once ~discover_roots
         Printf.eprintf
           "[relay-connector %s] wedged: no successful sync for %.0fs (>= %.0fs \
            threshold) though the process is alive — exiting so a supervisor \
-           can restart (B211). Recover manually with: c2c restart \
+           can restart (B211/B228). Recover manually with: c2c restart \
            relay-connect\n%!"
           root (Unix.gettimeofday () -. last_progress_for root) stale_threshold;
         exit 3
       end
+    in
+    (* B228: also re-check every root we have ever synced (progress table), not
+       only the roots discovered this pass — a root that drops out of discovery
+       must still self-exit rather than leave a wedged state file forever. *)
+    let check_all_known_roots_stale () =
+      Hashtbl.iter (fun root _ -> check_root_stale_exit root) progress
     in
     let state_for root =
       match Hashtbl.find_opt states root with
@@ -2425,7 +2501,7 @@ let start_machine_impl ~sync_once ~discover_roots
               root (Printexc.to_string exn);
             false
       in
-      (* B211: terminate a persistently-wedged (alive-but-erroring) root. *)
+      (* B211/B228: terminate a persistently-wedged (alive-but-erroring) root. *)
       check_root_stale_exit root;
       outcome
     in
@@ -2446,6 +2522,7 @@ let start_machine_impl ~sync_once ~discover_roots
           discover_roots ~primary:primary_broker_root
           |> List.iter (fun root ->
                if not !shutdown then ignore (sync_root root));
+          check_all_known_roots_stale ();
           if !rl_seen then incr rl_strikes else rl_strikes := 0;
           if not !shutdown then begin
             let delay = rate_limit_backoff ~base:interval ~strikes:!rl_strikes in
@@ -2453,7 +2530,12 @@ let start_machine_impl ~sync_once ~discover_roots
               Printf.eprintf
                 "[relay-connector] relay rate-limited (429); backing off %.0fs \
                  (strike %d)\n%!" delay !rl_strikes;
-            sleep_interruptibly delay; loop ()
+            sleep_interruptibly_until ~slice_s:5.0
+              ~should_stop:(fun () ->
+                check_all_known_roots_stale ();
+                !shutdown)
+              delay;
+            loop ()
           end
         end
       in

@@ -378,25 +378,32 @@ outbound sync continue. See
 `.collab/runbooks/cross-machine-relay-proof.md` under "Local inbound controls"
 for the schema and override examples.
 
-### `C2C_RELAY_CONNECTOR_STALE_EXIT_S` (B211)
+### `C2C_RELAY_CONNECTOR_STALE_EXIT_S` (B211, tightened B228)
 
 Wall-clock seconds the native relay connector may go without a *progress-making*
 sync pass before it declares itself wedged and exits 3 so a supervisor
 (`c2c start relay-connect`) restarts it. A pass counts as progress if it fully
 succeeded (`last_error = None`) or was merely rate-limited (relay reachable and
 throttling — B210 backs off; restarting would not help). This is the companion
-to the B181 SIGALRM watchdog: the SIGALRM watchdog catches a sync pass that
-*hangs* past its deadline, whereas this timer catches the
+to the B181/B228 SIGALRM watchdog: the SIGALRM watchdog catches a sync pass that
+*hangs* past its deadline (force-exit 3 — raising from the handler left live
+PIDs wedged under nested Lwt/Cohttp), whereas this timer catches the
 *completes-but-always-errors* wedge (each pass returns quickly with
 `request_timeout` / `connection_error`, so the strike counter keeps resetting
-and the process would otherwise stay alive indefinitely with an hours-stale
-bridge). Unset/invalid/non-positive uses the default `max(600, interval × 20)`
-seconds (10 min at the default 30s poll interval). Unsupervised, the exit turns
-a silently wedged live PID into an honest `absent`/`stale` status that
-`c2c whoami` / `c2c doctor --relay` report with the `c2c restart relay-connect`
-remediation. Applies to both single-broker (`run`) and machine (`start_machine`)
-connector loops. Pure predicates covered by `test_c2c_relay_connector.ml`
-("B211 staleness-exit watchdog").
+and the process would otherwise stay alive indefinitely with a stale bridge).
+Unset/invalid/non-positive uses the default `max(180, interval × 6)` seconds
+(3 min at the default 30s poll interval) — intentionally close to the doctor
+120s liveness window so a whoami `wedged` is not an 8-minute operator wait
+before self-heal (B228). Unsupervised, the exit turns a silently wedged live
+PID into an honest `absent`/`stale` status that `c2c whoami` /
+`c2c doctor --relay` report with the `c2c restart relay-connect` remediation.
+Applies to both single-broker (`run`) and machine (`start_machine`) connector
+loops. On the machine service, **any** broker root that stays past the
+threshold exits the whole process (supervisor restarts all roots together) —
+a permanently broken secondary root can flap healthy peers every ~threshold;
+prefer fixing that root or isolating it rather than lengthening the default.
+Pure predicates + a forked run-loop exit covered by `test_c2c_relay_connector.ml`
+("B211/B228 staleness-exit watchdog").
 
 ### `C2C_REQUIRE_SIGNED_ROOM_OPS` (B114 — dev-only downgrade gate)
 
