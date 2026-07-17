@@ -41,6 +41,13 @@ _(empty after 0.12.0 — add new `###` entries below for the next release)_
   connector re-registered under its session key. The error hint also no
   longer recommends `c2c relay register` for session-ownership failures
   (re-register steals the lease from the connector).
+- **B235: unmanaged `c2c relay connect` no longer dies silently without a
+  recovery path.** Bare persistent connect prints a loud unsupervised warning
+  and points operators at `c2c start relay-connect`. `c2c restart relay-connect`
+  bootstraps a supervised machine-wide connector when no managed config exists
+  (using saved/`C2C_RELAY_URL` resolution) instead of failing with
+  "no config found for instance". Doctor/whoami already flag stale bridges;
+  remediations that call restart now work for the ad-hoc death case.
 - **B206: `c2c monitor` no longer advertises a doomed relay watch for fresh
   CLI-first aliases.** A short signed startup preflight reports an unbound alias
   once and leaves relay watch off while local inbox monitoring continues.
