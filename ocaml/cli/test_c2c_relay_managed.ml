@@ -451,6 +451,171 @@ let test_load_config_opt_degrades_on_relay_connect_shape () =
       check bool "relay-connect config yields None from harness loader" true
         (C2c_start.load_config_opt name = None))
 
+(* B242: `c2c start relay-connect` must resolve the relay URL the same way as
+   plain `c2c relay connect` — flag → C2C_RELAY_URL → c2c relay setup /
+   relay.json — not only flag/env. Without that, a prior
+   `c2c relay setup --url …` still fails with "requires a relay URL". *)
+
+let write_relay_json path ~url =
+  mkdir_p (Filename.dirname path);
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+    Printf.fprintf oc "{\"url\":%S}\n" url)
+
+let b242_start_env ~home ~instances ~broker ~extra =
+  (* [extra] is prepended so callers can override the empty-string clears
+     (env_with keeps the first occurrence of a key when building the array). *)
+  env_with (extra @ [
+    "HOME", home;
+    "C2C_INSTANCES_DIR", instances;
+    "C2C_MCP_BROKER_ROOT", broker;
+    "C2C_STATE_HOME", home // "state";
+    "XDG_STATE_HOME", home // "xdg";
+    (* Clear ambient developer exports so the fixture alone drives resolution. *)
+    "C2C_RELAY_URL", "";
+    "C2C_RELAY_TOKEN", "";
+    "C2C_RELAY_CONFIG", "";
+  ])
+
+let test_b242_start_reads_fixture_relay_json_via_config_env () =
+  with_temp_dir @@ fun root ->
+  let binary = Filename.dirname Sys.executable_name // "c2c.exe" |> Unix.realpath in
+  let home = root // "home" in
+  let instances = root // "instances" in
+  let broker = root // "broker" in
+  let fixture = root // "relay.json" in
+  let expected_url = "https://relay.b242.example" in
+  mkdir_p home; mkdir_p instances; mkdir_p broker;
+  write_relay_json fixture ~url:expected_url;
+  let log = root // "start.log" in
+  let env = b242_start_env ~home ~instances ~broker
+      ~extra:[ "C2C_RELAY_CONFIG", fixture ] in
+  let pid = spawn_to_log ~env binary
+      [ "start"; "relay-connect"; "--interval"; "60" ] log in
+  let rc = wait_status pid in
+  let out = read_file log in
+  check int ("start exits 0: " ^ out) 0 rc;
+  check bool "must not demand --relay-url / env only" false
+    (try ignore (Str.search_forward (Str.regexp_string "requires a relay URL") out 0); true
+     with Not_found -> false);
+  check bool "supervisor started" true
+    (try ignore (Str.search_forward (Str.regexp_string "machine-wide supervisor") out 0); true
+     with Not_found -> false);
+  let cfg_path = instances // "relay-connect" // "config.json" in
+  check bool "managed config written" true (Sys.file_exists cfg_path);
+  let url =
+    match Yojson.Safe.from_file cfg_path with
+    | `Assoc a ->
+        (match List.assoc_opt "relay_url" a with
+         | Some (`String u) -> u
+         | _ -> "")
+    | _ -> ""
+  in
+  check string "resolved URL persisted into managed config" expected_url url;
+  let stop_log = root // "stop.log" in
+  let stop_pid = spawn_to_log ~env binary [ "stop"; "relay-connect" ] stop_log in
+  ignore (wait_status stop_pid)
+
+let test_b242_start_reads_user_config_relay_json () =
+  (* Bug report path: setup wrote ~/.config/c2c/relay.json; no flag, no env.
+     relay_config_path prefers C2C_RELAY_CONFIG → broker-root/relay.json →
+     ~/.config/c2c/relay.json, so clear broker-root override here. *)
+  with_temp_dir @@ fun root ->
+  let binary = Filename.dirname Sys.executable_name // "c2c.exe" |> Unix.realpath in
+  let home = root // "home" in
+  let instances = root // "instances" in
+  let expected_url = "https://relay.c2c.im" in
+  mkdir_p home; mkdir_p instances;
+  write_relay_json (home // ".config" // "c2c" // "relay.json") ~url:expected_url;
+  let log = root // "start-user.log" in
+  let env = env_with [
+    "HOME", home;
+    "C2C_INSTANCES_DIR", instances;
+    "C2C_STATE_HOME", home // "state";
+    "XDG_STATE_HOME", home // "xdg";
+    "C2C_RELAY_URL", "";
+    "C2C_RELAY_TOKEN", "";
+    "C2C_RELAY_CONFIG", "";
+    "C2C_MCP_BROKER_ROOT", "";
+  ] in
+  let pid = spawn_to_log ~env binary
+      [ "start"; "relay-connect"; "--interval"; "60" ] log in
+  let rc = wait_status pid in
+  let out = read_file log in
+  check int ("start from ~/.config/c2c/relay.json exits 0: " ^ out) 0 rc;
+  check bool "must not require flag/env" false
+    (try ignore (Str.search_forward (Str.regexp_string "requires a relay URL") out 0); true
+     with Not_found -> false);
+  let cfg_path = instances // "relay-connect" // "config.json" in
+  let url =
+    match Yojson.Safe.from_file cfg_path with
+    | `Assoc a ->
+        (match List.assoc_opt "relay_url" a with
+         | Some (`String u) -> u
+         | _ -> "")
+    | _ -> ""
+  in
+  check string "user-config URL persisted" expected_url url;
+  let stop_log = root // "stop-user.log" in
+  let stop_pid = spawn_to_log ~env binary [ "stop"; "relay-connect" ] stop_log in
+  ignore (wait_status stop_pid)
+
+let test_b242_start_reads_broker_root_relay_json () =
+  (* When C2C_MCP_BROKER_ROOT is set, setup writes <broker>/relay.json — start
+     must resolve that path too (same relay_config_path chain). *)
+  with_temp_dir @@ fun root ->
+  let binary = Filename.dirname Sys.executable_name // "c2c.exe" |> Unix.realpath in
+  let home = root // "home" in
+  let instances = root // "instances" in
+  let broker = root // "broker" in
+  let expected_url = "https://broker-root.b242.example" in
+  mkdir_p home; mkdir_p instances; mkdir_p broker;
+  write_relay_json (broker // "relay.json") ~url:expected_url;
+  let log = root // "start-broker.log" in
+  let env = b242_start_env ~home ~instances ~broker ~extra:[] in
+  let pid = spawn_to_log ~env binary
+      [ "start"; "relay-connect"; "--interval"; "60" ] log in
+  let rc = wait_status pid in
+  let out = read_file log in
+  check int ("start from broker/relay.json exits 0: " ^ out) 0 rc;
+  let cfg_path = instances // "relay-connect" // "config.json" in
+  let url =
+    match Yojson.Safe.from_file cfg_path with
+    | `Assoc a ->
+        (match List.assoc_opt "relay_url" a with
+         | Some (`String u) -> u
+         | _ -> "")
+    | _ -> ""
+  in
+  check string "broker-root URL persisted" expected_url url;
+  let stop_log = root // "stop-broker.log" in
+  let stop_pid = spawn_to_log ~env binary [ "stop"; "relay-connect" ] stop_log in
+  ignore (wait_status stop_pid)
+
+let test_b242_start_still_errors_without_any_url_source () =
+  with_temp_dir @@ fun root ->
+  let binary = Filename.dirname Sys.executable_name // "c2c.exe" |> Unix.realpath in
+  let home = root // "home" in
+  let instances = root // "instances" in
+  let broker = root // "broker" in
+  mkdir_p home; mkdir_p instances; mkdir_p broker;
+  (* Point C2C_RELAY_CONFIG at a missing file so ambient developer config
+     cannot leak in; HOME has no ~/.config/c2c/relay.json either. *)
+  let log = root // "start-fail.log" in
+  let env = b242_start_env ~home ~instances ~broker
+      ~extra:[ "C2C_RELAY_CONFIG", root // "does-not-exist-relay.json" ] in
+  let pid = spawn_to_log ~env binary
+      [ "start"; "relay-connect" ] log in
+  let rc = wait_status pid in
+  let out = read_file log in
+  check bool ("exits nonzero without URL: " ^ out) true (rc <> 0);
+  check bool "error mentions requires a relay URL" true
+    (try ignore (Str.search_forward (Str.regexp_string "requires a relay URL") out 0); true
+     with Not_found -> false);
+  check bool "error mentions relay setup" true
+    (try ignore (Str.search_forward (Str.regexp_string "relay setup") out 0); true
+     with Not_found -> false)
+
 let () =
   run "c2c relay managed" [
     "B212 relay-connect restart routing", [
@@ -472,6 +637,16 @@ let () =
         test_instances_dir_blank_falls_back_to_home;
       test_case "config lookup uses override" `Quick
         test_read_managed_config_uses_override;
+    ];
+    "B242 start relay-connect URL resolution", [
+      test_case "reads C2C_RELAY_CONFIG fixture relay.json" `Quick
+        test_b242_start_reads_fixture_relay_json_via_config_env;
+      test_case "reads ~/.config/c2c/relay.json under HOME" `Quick
+        test_b242_start_reads_user_config_relay_json;
+      test_case "reads broker-root relay.json" `Quick
+        test_b242_start_reads_broker_root_relay_json;
+      test_case "errors when no URL source exists" `Quick
+        test_b242_start_still_errors_without_any_url_source;
     ];
     "machine singleton", [
       test_case "resource ignores instance name" `Quick test_machine_lock_is_name_independent;

@@ -292,8 +292,10 @@ let start_cmd =
   in
   let relay_url_opt =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL"
-      ~doc:"For CLIENT=relay-connect: relay URL to connect to. Falls back to \
-            \\$C2C_RELAY_URL when omitted. Ignored for other clients.")
+      ~doc:"For CLIENT=relay-connect: relay URL to connect to. Same resolution \
+            as $(b,c2c relay connect): $(b,--relay-url), then \
+            \\$C2C_RELAY_URL, then the URL persisted by $(b,c2c relay setup) \
+            (relay.json). Ignored for other clients.")
   in
   let interval_opt =
     Cmdliner.Arg.(value & opt int 30 & info [ "interval" ] ~docv:"SECS"
@@ -397,15 +399,17 @@ let start_cmd =
       | Some n -> n
       | None -> "relay-connect"
     in
-    let resolved_url =
-      match relay_url_opt with
-      | Some _ as some -> some
-      | None -> Sys.getenv_opt "C2C_RELAY_URL"
-    in
+    (* B242: use the same URL resolution as plain `c2c relay connect` —
+       flag → C2C_RELAY_URL → c2c relay setup / relay.json — so a prior
+       `c2c relay setup --url …` is enough to start the managed connector. *)
+    let resolved_url = C2c_relay_cmd.resolve_relay_url relay_url_opt in
     if resolved_url = None then begin
       Printf.eprintf
         "error: relay-connect requires a relay URL.\n\
-        \  Either pass --relay-url URL or export C2C_RELAY_URL.\n%!";
+        \  Pass --relay-url URL, export C2C_RELAY_URL, or run \
+           c2c relay setup --url <URL>.\n\
+        \  (Default public relay is %s.)\n%!"
+        C2c_relay_cmd.default_public_relay_url;
       exit 1
     end;
     C2c_relay_managed.start

@@ -159,12 +159,15 @@ reconnect. It dynamically discovers repository brokers under the machine's
 c2c state roots on every pass; aliases, inboxes, outboxes, ingress policy and
 connector status remain isolated in their originating broker. Repositories
 first used after the service starts are picked up automatically. A relay URL
-is required (`--relay-url` or `C2C_RELAY_URL` — the managed path does not fall
-back to localhost alone):
+is required — same resolution order as plain `c2c relay connect`
+(`--relay-url` → `C2C_RELAY_URL` → URL saved by `c2c relay setup` /
+`relay.json`). The managed path does not invent a localhost default:
 
 ```bash
 # Preferred managed path (daemonizes by default; default name: relay-connect):
-c2c start relay-connect --relay-url http://RELAY_HOST:7331
+c2c relay setup --url http://RELAY_HOST:7331   # once; persists to relay.json
+c2c start relay-connect                          # reads the saved URL
+# Or pass explicitly: c2c start relay-connect --relay-url http://RELAY_HOST:7331
 # Optional: --interval SECONDS (default 30)  --foreground / --fg  (no daemonize)
 # Stop with: c2c stop relay-connect
 ```
