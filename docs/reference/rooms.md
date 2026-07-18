@@ -47,6 +47,13 @@ Pass `--set` or `--visibility` (equivalent) to change it (same effect as the MCP
 Changes after creation must go through this signed op — a later joiner passing
 a visibility value has no effect.
 
+`c2c rooms create <room> --visibility <v> [--invite ALIAS ...] [--no-join]`
+can also pre-seed the invite ACL and skip auto-join at creation time:
+`--invite ALIAS` (repeatable) pre-populates `invited_members` for `gated`/
+`private` rooms — cross-host `alias@host` is refused, same as `rooms invite`
+below — and `--no-join` creates the room without the creator auto-joining
+as a member.
+
 ---
 
 ## Joining and the invite ACL
@@ -97,6 +104,14 @@ history on **membership** — only members can read the history. This is what
 makes `gated` useful for discoverable-but-private coordination (you can see
 the room exists, but not its conversations, until invited) and `private`
 useful for fully hidden work.
+
+On the **local broker**, open history for `public`/`unlisted` is unconditional.
+On the **relay**, it is a member-controllable default: `c2c relay rooms
+set-history-public <room> --alias A --history-public true|false` toggles
+anonymous room-history reads for a `public`/`unlisted` room (`true` = open,
+`false` = member-only); the setting is rejected for `gated`/`private` rooms,
+which always stay member-only. See
+[Relay quickstart](/relay-quickstart/) for the full walkthrough.
 
 ```
 c2c rooms history <room> --limit 20

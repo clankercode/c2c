@@ -76,7 +76,7 @@ Tmux target for managed sessions (set by `c2c start`). Used by the inner MCP ser
 
 ### `C2C_MCP_AUTO_JOIN_ROOMS`
 
-Comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c install <client>` for all 5 client types. Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
+Comma-separated room IDs the broker joins on startup (e.g. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`). Written by `c2c install <client>` for all MCP-managed client installs (grok/agy are CLI-first — no MCP config — so this var does not apply to them). Do NOT need to call `join_room` manually if this is set. To join additional rooms on top of the default, append: `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge,my-room`.
 
 ### `C2C_MCP_AUTO_DRAIN_CHANNEL`
 
@@ -133,7 +133,7 @@ Legacy opt-in for full PostToolUse injection, from when the debounced nudge was 
 
 ### `deferrable` (MCP send flag)
 
-`deferrable=true` means no push (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff. **Visibility tool (#307a)**: `c2c doctor delivery-mode --alias <a> [--since 1h] [--last N]` prints a histogram of recent archived inbound messages by deferrable flag, broken down by sender. Counts measure sender INTENT (the flag at write time), not delivery actuals — see the doctor subcommand's NOTE footer.
+`deferrable=true` means no push (#303): the MCP `send` tool's `deferrable` flag (and the equivalent `~deferrable:true` on `Broker.enqueue_message`) marks a message as low-priority. CLI parity (B232): `c2c send --deferrable` sets the same flag from the CLI, not MCP-only. `drain_inbox_push` filters deferrable messages out, so neither the watcher nor the PostToolUse hook will surface them. The recipient only sees them on their next explicit `poll_inbox` (or the deliver daemon's idle flush). Rooms NEVER use `deferrable` (`fan_out_room_message` hardcodes `false`), which is why room broadcasts always push. Production opter-in: `relay_nudge.ml` (intentionally — its job is "nudge a poll-late agent without pushing again"). User opt-in: `mcp__c2c__send` with `deferrable: true`. If you actually want a DM to surface promptly, omit the flag. See `.collab/design/2026-04-26T09-42-29Z-stanza-coder-303-channel-push-dm-ordering.md` for full investigation + probe data; #307b dropped `deferrable` from the send-memory handoff. **Visibility tool (#307a)**: `c2c doctor delivery-mode --alias <a> [--since 1h] [--last N]` prints a histogram of recent archived inbound messages by deferrable flag, broken down by sender. Counts measure sender INTENT (the flag at write time), not delivery actuals — see the doctor subcommand's NOTE footer.
 
 ---
 
@@ -430,6 +430,17 @@ a permanently broken secondary root can flap healthy peers every ~threshold;
 prefer fixing that root or isolating it rather than lengthening the default.
 Pure predicates + a forked run-loop exit covered by `test_c2c_relay_connector.ml`
 ("B211/B228 staleness-exit watchdog").
+
+### `C2C_RELAY_CONNECTOR_BACKEND` (B235/B242)
+
+Selects the relay-connect backend: `python` (legacy) vs the native OCaml
+connector (`ocaml/c2c_relay_connector.ml`). Operator-facing knob for
+`c2c relay connect` / `c2c start relay-connect` (`c2c_relay_cmd.ml`).
+
+### `C2C_SUPERVISOR_STALE_THRESHOLD_S`
+
+Supervisor stale threshold in seconds; default 300
+(`ocaml/cli/c2c_opencode_plugin_embedded.ml`). Operator-tunable.
 
 ### `C2C_REQUIRE_SIGNED_ROOM_OPS` (B114 — dev-only downgrade gate)
 
