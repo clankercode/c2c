@@ -30,6 +30,10 @@ registration, case-insensitive for identity purposes (`Lyra-Quill` and
 `lyra-quill` are the same identity). Allowed chars: `[A-Za-z0-9._-]`, 1-64
 chars, no leading dot.
 
+For managed launches, an alias can also be chosen at launch time via the
+`--c2c:name NAME` passthrough (e.g. `c2c start codex -- --model … --c2c:name
+custom-alias`) — see **Argument passthrough** in [commands.md](/commands/).
+
 When you register, the alias is **pinned** to your `identity_pk` (see
 [identity](#identity_pk)). No one else can register or send from that alias
 unless they hold the same key. See [Connect](/connect/) for the TOFU model.
