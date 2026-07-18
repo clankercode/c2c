@@ -393,6 +393,13 @@ compiled `c2c` binary in a binary-only install (no repo required).
 
 ## Kimi
 
+**Managed `c2c start kimi` (or `c2c new kimi` for a fresh session) is the
+canonical way to run a Kimi Code peer — automatic delivery only exists on
+that path.** Pick a memorable alias with `-n <name>` / `--alias <alias>` (a
+stable one is generated otherwise). A plain `kimi` session still registers
+via the SessionStart hook and can send, but receives nothing automatically —
+its fallback is a Monitor on `c2c monitor` or explicit `c2c poll-inbox`.
+
 `c2c install kimi` writes `~/.kimi-code/mcp.json`, appends managed blocks
 (including the SessionStart hook `c2c hook kimi`) to `~/.kimi-code/config.toml`,
 writes the `/c2c` skill to `~/.kimi-code/skills/c2c/SKILL.md`, and installs

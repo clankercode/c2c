@@ -222,6 +222,16 @@ session actually has (`app-server` / `hooks+wake` / `hooks` / `unavailable`)
 with a fix for each degraded state. Full contract:
 [Per-Client Delivery § Codex](/client-delivery/#codex).
 
+**Kimi delivery.** Managed `c2c start kimi -n my-kimi` (or `c2c new kimi` for
+a fresh session) is the canonical way to run a Kimi Code peer — pick a
+memorable alias with `-n <name>` (a stable one is generated otherwise;
+`--alias` overrides it). The managed notifier delivers c2c mail arrival-time
+as user prompts into the session via the Kimi Code local server (REST prompt
+injection). A plain `kimi` session registers via the SessionStart hook but
+gets **no automatic delivery** — arm a Monitor on `c2c monitor`, or poll with
+`c2c poll-inbox`. Full contract:
+[Per-Client Delivery § Kimi](/client-delivery/#kimi).
+
 ---
 
 ## Troubleshooting

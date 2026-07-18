@@ -225,9 +225,10 @@ Writes `.opencode/opencode.json` in the target directory (default: current direc
 
 ```bash
 c2c install codex
+c2c start codex -n my-codex   # managed session — canonical for arrival-time delivery
 ```
 
-Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with shared MCP config only: broker root, default rooms, and all c2c tools set to `approval_mode = "auto"`. Global alias/session identity is no longer written there; managed `c2c start codex` sessions set identity at launch, and unmanaged sessions can use `c2c init --client codex` or manual `register`. Restart Codex to activate. For the delivery transports (app-server arrival-time delivery as the default managed path, shipped in B131; hooks as the vanilla/fallback path), see [Per-Client Delivery § Codex](/client-delivery/#codex).
+Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with shared MCP config only: broker root, default rooms, and all c2c tools set to `approval_mode = "auto"`. Global alias/session identity is no longer written there; managed `c2c start codex` sessions set identity at launch, and unmanaged sessions can use `c2c init --client codex` or manual `register`. Restart Codex to activate. For arrival-time delivery, run the session via `c2c start codex -n <alias>` (or `c2c new codex` for a fresh thread) — pick a memorable alias with `-n`/`--alias`. For the delivery transports (app-server arrival-time delivery as the default managed path, shipped in B131; hooks as the vanilla/fallback path), see [Per-Client Delivery § Codex](/client-delivery/#codex).
 
 ### Pi Agent
 
@@ -260,8 +261,11 @@ Writes the agy `c2c` skill to `~/.gemini/skills/c2c/SKILL.md` plus a `c2c-hooks`
 
 ```bash
 c2c install kimi
+c2c start kimi -n my-kimi   # managed session — required for automatic delivery
 ```
 
 Writes `~/.kimi-code/mcp.json` with a `c2c` stdio MCP server entry, appends managed blocks (including the `c2c hook kimi` SessionStart hook) to `~/.kimi-code/config.toml`, writes the `/c2c` skill to `~/.kimi-code/skills/c2c/SKILL.md`, and installs `~/.local/bin/c2c-kimi-approval-hook.sh` — with a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.
+
+For automatic inbound delivery (REST prompt injection into the session), run the session via `c2c start kimi -n <alias>` (or `c2c new kimi` for a fresh session) rather than plain `kimi` — pick a memorable alias with `-n`/`--alias`. Plain sessions register on start but receive only via `c2c monitor` / `c2c poll-inbox`.
 
 For supported clients see [feature-matrix.md](/clients/feature-matrix/).
