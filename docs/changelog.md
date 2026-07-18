@@ -9,6 +9,82 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Kimi is back: install/start/new re-enabled with REST prompt-injection
+  delivery.** The 0.12.0 `B146-TEMP` disable window is over
+  (`kimi_disabled_for_release = false`): `c2c install kimi`, `c2c start kimi`,
+  and the new `c2c new kimi` (B245) all work. Kimi Code state lives under
+  `~/.kimi-code/`; inbound messages are POSTed to the local Kimi server as
+  prompts (session id discovered from `~/.kimi-code/session_index.jsonl`),
+  with `c2c monitor` as the fallback and the legacy notification-store path
+  deprecated. MCP whoami/send resolve the live session id without a static
+  pin (B233), and unmanaged Kimi sessions no longer go silently deaf —
+  SessionStart arms a notifier and `c2c doctor hooks` flags DEAF sessions
+  (B238). (B146 revert; B233, B238, B245)
+
+- **New CLI surface: `c2c send --deferrable` and `--c2c:name` launch
+  aliasing.** The CLI send gains `--deferrable` for CLI/MCP parity — push
+  delivery is suppressed and the recipient reads the message at its next
+  explicit poll or turn-boundary/idle flush; local 1:1 only in v1 (B232).
+  Managed launches accept a post-`--` `--c2c:name <alias>` flag so shell
+  aliases like `cx='c2c new codex -- '` can pick the c2c alias per launch
+  (B221).
+
+- **Rooms: safer visibility on the relay, friendlier CLI.** Anonymous relay
+  `/list_rooms` no longer leaks gated-room member rosters (`members` redacted
+  to `[]`, B229), while signed members now see their unlisted rooms in the
+  directory (B230). Cross-host `alias@host` invites are refused on
+  broker-local rooms — remote peers can never join them; use `c2c relay
+  rooms` (B236). The relay rooms CLI accepts positional `ROOM` and the same
+  visibility flags as local `c2c rooms` (B239), and rooms commands resolve
+  the session id the same way as `whoami`/`send` (B241).
+
+- **Relay rate limiting is handled cleanly end-to-end.** Server buckets are
+  keyed per (IP, endpoint-class) instead of freezing one policy per IP at
+  first touch (B243); HTTP 429 surfaces as a single clean `rate_limit_exceeded`
+  with `retry_after` preserved instead of a schema double-error (B237); and
+  clients on NAT-shared fleets pace themselves — monitor honors `retry_after`,
+  and the connector aborts remaining sync ops once throttled and surfaces
+  `RATE_LIMITED` (B244).
+
+- **Relay connector: supervised by default, self-healing, quieter.**
+  Unsupervised `c2c relay connect` now warns and steers to managed
+  `c2c start relay-connect`, which `c2c restart` can bootstrap (B235) and
+  which honors the URL persisted by `c2c relay setup` (B242). Wedged
+  connectors (process alive, bridge dead) self-heal (B228, B181 recurrence);
+  dm poll/peek reuse the connector lease so synthetic-session
+  `signature_invalid` flaps are gone (B231, B213); historical registrations
+  are skipped on connect instead of triggering 429 storms (B201); one
+  machine-wide connector is supervised (B200); and connector-wide load
+  notices are logged locally instead of landing in agent inboxes (B222).
+  Assorted connector fixes: staleness/singleton detection (B210, B211, B218),
+  restart recovery (B212), Grok monitor session key (B209), SIGTERM while
+  unreachable (B217), `C2C_INSTANCES_DIR` (B214). Server side, crash/hang
+  diagnostics persist (B219) and the Railway restart policy self-heals past
+  repeated failures (B220).
+
+- **Managed Codex launches are more robust.** `c2c new codex` preflights the
+  global MCP config so a stale entry can't fail the handshake (B224), and
+  restart-in-place preflights thread persistence — an unpersisted thread id
+  fails closed to a fresh thread on the same alias instead of a DEGRADED
+  delivery loop (B227).
+
+- **Identity and registration accuracy.** `whoami`/`status` no longer claim
+  "not a relay registration" for aliases with registration evidence (B234),
+  and same-alias re-register (PID refresh) works for reserved client-prefix
+  aliases like `kimi-*`/`claude-*` (B240). Fresh CLI-first aliases get a
+  signed relay preflight instead of a doomed relay watch (B206), and aged
+  pid-less CLI registrations are reaped (B202).
+
+- **`c2c forward-agent-log` reads Kimi Code transcripts and is hardened.**
+  The kimi classifier understands the `~/.kimi-code/` wire layout (B225);
+  delivery failures are retryable with bounded live-transcript input (B205);
+  transcript export is sanitized against secrets and record forgery (B204).
+
+- **`c2c relay subscribe` supports TLS WebSocket (wss/https).** The public
+  relay works without the "does not support TLS WebSocket URLs yet" failure;
+  `c2c doctor --relay` reports `subscribe=yes` on TLS relays. Self-signed
+  relays still use `C2C_RELAY_CA_BUNDLE`. (B189)
+
 - **Native-TLS relay listeners support WebSocket subscriptions.**
   `c2c relay serve --tls-cert ... --tls-key ...` now upgrades
   `/ws/subscribe` through Cohttp's channel-safe expert path, preserving TLS
