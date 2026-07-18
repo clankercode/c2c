@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-18T04:30:15Z"
+claimed_by: cli-user
 completed_at: null
 complexity: medium
 created_at: "2026-07-18T03:19:43Z"
@@ -6,11 +8,11 @@ depends_on: []
 estimate_hours: 1
 id: B246
 priority: high
-started_at: null
-status: pending
+started_at: "2026-07-18T04:30:15Z"
+status: in_progress
 tags: []
 title: 'CI red on master: test_c2c_monitor_relay_preflight ''unbound live rebind keeps local monitor alive'' fails deterministically in CI (B226 recurrence)'
-updated_at: "2026-07-18T03:19:43Z"
+updated_at: "2026-07-18T04:30:15Z"
 ---
 
 # CI red on master: test_c2c_monitor_relay_preflight 'unbound live rebind keeps local monitor alive' fails deterministically in CI (B226 recurrence)
