@@ -1094,6 +1094,15 @@ let monitor_cmd =
                         | C2c_monitor_logic.Disable { remediation; severity = _ } ->
                             handle_disable ~node_id ~session_id ~code detail
                               remediation));
+                  (* B246: unconditional inter-peek yield. When a peek takes
+                     longer than the configured interval (slow relay, loaded
+                     host, tiny --relay-interval), the loop otherwise re-peeks
+                     immediately and never sleeps — a hard spin that can hold
+                     the OCaml runtime lock and starve sibling threads (the
+                     identity-rebind poll thread most visibly; the master lock
+                     has no fairness handoff). A short bounded sleep caps the
+                     peek rate and guarantees the scheduler a real yield. *)
+                  Thread.delay 0.05;
                   relay_loop now
                 end else begin
                   (* Short sleep so the stop flag / parent-death is noticed
