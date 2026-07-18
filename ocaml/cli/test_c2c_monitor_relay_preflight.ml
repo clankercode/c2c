@@ -187,8 +187,23 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
                        ~new_alias:"b206-new" with
                | Ok _ -> ()
                | Error e -> fail ("rename fixture failed: " ^ e));
-              check bool "identity rebind observed" true
-                (wait_for ~timeout:12.0 out_path "identity rebind:");
+              let rebind_seen = wait_for ~timeout:12.0 out_path "identity rebind:" in
+              (* B246 CI diagnostic: dump the monitor's world before failing so
+                 the CI log shows WHY the rebind was never observed. *)
+              if not rebind_seen then begin
+                Printf.printf "B246-DIAG monitor alive: %b\n"
+                  (try Unix.kill pid 0; true with _ -> false);
+                Printf.printf "B246-DIAG which inotifywait rc: %d\n"
+                  (Sys.command "command -v inotifywait; true");
+                Printf.printf "B246-DIAG monitor.out >>>\n%s\n<<< end monitor.out\n"
+                  (slurp out_path);
+                Printf.printf "B246-DIAG monitor.err >>>\n%s\n<<< end monitor.err\n"
+                  (slurp err_path);
+                let reg = Filename.concat broker_root "registry.json" in
+                Printf.printf "B246-DIAG registry (%s) >>>\n%s\n<<< end registry\n%!"
+                  reg (try slurp reg with _ -> "(unreadable)")
+              end;
+              check bool "identity rebind observed" true rebind_seen;
               check bool "rebind also keeps relay off" true
                 (contains (slurp out_path) "b206-new is not registered"
                  || contains (slurp out_path) "alias \"b206-new\" is not registered"
