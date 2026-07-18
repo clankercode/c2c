@@ -28,3 +28,11 @@ TODO: Describe expected behavior
 TODO: Describe actual behavior
 
 2026-07-18 coordinator update: local repro on xsm — case 4 PASSES in 0.477s (`./_build/default/ocaml/cli/test_c2c_monitor_relay_preflight.exe test 'production loopback relay' 4`, exit 0, master 16d8bb2f + local build). Test spawns the freshly built sibling `c2c.exe` (test file line 109), so the local pass is the same code path as CI. Conclusion: deterministic FAIL on GitHub runners, instant PASS locally → CI-environment-specific. Locally the rebind is observed in <0.5s while CI never sees it within 12s — suggests the monitor's identity-poll/rebind detection depends on something absent or different on runners (registry mtime granularity / fs semantics / env), not on load timing. Next step for whoever claims this: capture the monitor.out/err artifacts from the CI test sandbox (test already writes them under the temp HOME) or add a CI-only diagnostic dump on failure.
+
+ROOT CAUSE (confirmed via 4 instrumented CI runs on branch b246-ci-diag): ubuntu-latest GitHub runners do NOT ship inotify-tools. `c2c monitor` spawns inotifywait via /bin/sh, gets "inotifywait: not found", hits EOF on the watch stream, and exits silently (by-design End_of_file -> () in the main loop) — the process was a zombie ("alive: true" via kill 0 was misleading). Startup asserts passed only because the first relay peek + first identity-poll tick fire before the death. The inotifywait error was invisible because the stderr-drain thread only grepped for "watches established" and swallowed everything else. Locally inotify-tools exists → green (0.48s via inotify path; 2.4s via 2s poll with a stubbed event-less inotifywait).
+
+FIX (validated: CI run 29630505499 = SUCCESS, first green since 2026-07-15):
+- ci.yml: install inotify-tools (documented `c2c monitor` runtime dep).
+- monitor: forward inotifywait stderr lines instead of swallowing them; print an explicit "inotify watch stream ended ... monitor exiting" notice on EOF.
+- monitor: unconditional 50ms inter-peek yield in the relay loop (hardening found en route — a peek slower than --relay-interval previously re-peeked with no sleep, a busy-spin hazard).
+- test: failure-time B246-DIAG dump kept (exit status, thread states, env probes) for future CI-only failures.
