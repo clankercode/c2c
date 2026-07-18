@@ -242,3 +242,4 @@ bugs:
     - file: B243-relay-ratelimit-per-ip-bucket.todo
     - file: B244-relay-ratelimit-vs-nat-d-fleet.todo
     - file: B245-add-c2c-new-support-for-kimi.todo
+    - file: B246-ci-red-on-master-test-c2c-moni.todo
