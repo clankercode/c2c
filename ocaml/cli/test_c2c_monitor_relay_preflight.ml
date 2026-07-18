@@ -187,8 +187,57 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
                        ~new_alias:"b206-new" with
                | Ok _ -> ()
                | Error e -> fail ("rename fixture failed: " ^ e));
-              check bool "identity rebind observed" true
-                (wait_for ~timeout:12.0 out_path "identity rebind:");
+              let rebind_seen = wait_for ~timeout:12.0 out_path "identity rebind:" in
+              (* B246 CI diagnostic: dump the monitor's world before failing so
+                 the CI log shows WHY the rebind was never observed. *)
+              if not rebind_seen then begin
+                Printf.printf "B246-DIAG monitor alive: %b\n"
+                  (try Unix.kill pid 0; true with _ -> false);
+                Printf.printf "B246-DIAG monitor threads (wchan):\n%!";
+                ignore (Sys.command
+                  (Printf.sprintf
+                     "for t in /proc/%d/task/*; do echo \"$t $(cat $t/comm \
+                      2>/dev/null) state=$(awk '{print $3}' $t/stat \
+                      2>/dev/null) wchan=$(cat $t/wchan 2>/dev/null)\"; done"
+                     pid));
+                (match Unix.waitpid [ Unix.WNOHANG ] pid with
+                 | 0, _ -> Printf.printf "B246-DIAG waitpid: still running\n%!"
+                 | _, Unix.WEXITED c ->
+                     Printf.printf "B246-DIAG waitpid: exited %d\n%!" c
+                 | _, Unix.WSIGNALED s ->
+                     Printf.printf "B246-DIAG waitpid: signaled %d\n%!" s
+                 | _, Unix.WSTOPPED s ->
+                     Printf.printf "B246-DIAG waitpid: stopped %d\n%!" s
+                 | exception e ->
+                     Printf.printf "B246-DIAG waitpid exn: %s\n%!"
+                       (Printexc.to_string e));
+                let archive_dir = Filename.concat broker_root "archive" in
+                Printf.printf "B246-DIAG manual inotifywait on same dirs:\n%!";
+                ignore (Sys.command
+                  (Printf.sprintf
+                     "timeout 2 inotifywait -m -e \
+                      close_write,modify,delete,moved_to --format '%%e\\t%%w%%f' \
+                      %s %s 2>&1 | head -6; echo \"manual-inotify rc=$?\""
+                     (Filename.quote archive_dir) (Filename.quote broker_root)));
+                Printf.printf "B246-DIAG inotify limits/instances:\n%!";
+                ignore (Sys.command
+                  "cat /proc/sys/fs/inotify/max_user_instances \
+                   /proc/sys/fs/inotify/max_user_watches 2>/dev/null; \
+                   find /proc/[0-9]*/fd -lname 'anon_inode:inotify' 2>/dev/null | wc -l");
+                ignore (Sys.command
+                  (Printf.sprintf "ls -la %s %s 2>&1 | head -12"
+                     (Filename.quote broker_root) (Filename.quote (Filename.dirname broker_root))));
+                Printf.printf "B246-DIAG which inotifywait rc: %d\n"
+                  (Sys.command "command -v inotifywait || echo 'inotifywait: MISSING from PATH'");
+                Printf.printf "B246-DIAG monitor.out >>>\n%s\n<<< end monitor.out\n"
+                  (slurp out_path);
+                Printf.printf "B246-DIAG monitor.err >>>\n%s\n<<< end monitor.err\n"
+                  (slurp err_path);
+                let reg = Filename.concat broker_root "registry.json" in
+                Printf.printf "B246-DIAG registry (%s) >>>\n%s\n<<< end registry\n%!"
+                  reg (try slurp reg with _ -> "(unreadable)")
+              end;
+              check bool "identity rebind observed" true rebind_seen;
               check bool "rebind also keeps relay off" true
                 (contains (slurp out_path) "b206-new is not registered"
                  || contains (slurp out_path) "alias \"b206-new\" is not registered"

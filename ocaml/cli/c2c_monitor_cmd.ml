@@ -1094,6 +1094,15 @@ let monitor_cmd =
                         | C2c_monitor_logic.Disable { remediation; severity = _ } ->
                             handle_disable ~node_id ~session_id ~code detail
                               remediation));
+                  (* B246: unconditional inter-peek yield. When a peek takes
+                     longer than the configured interval (slow relay, loaded
+                     host, tiny --relay-interval), the loop otherwise re-peeks
+                     immediately and never sleeps — a hard spin that can hold
+                     the OCaml runtime lock and starve sibling threads (the
+                     identity-rebind poll thread most visibly; the master lock
+                     has no fairness handoff). A short bounded sleep caps the
+                     peek rate and guarantees the scheduler a real yield. *)
+                  Thread.delay 0.05;
                   relay_loop now
                 end else begin
                   (* Short sleep so the stop flag / parent-death is noticed
@@ -1334,9 +1343,16 @@ let monitor_cmd =
     in
     let _err_thread = Thread.create (fun () ->
       (try while true do
-        let line = String.lowercase_ascii (input_line err_ic) in
+        let raw = input_line err_ic in
+        let line = String.lowercase_ascii raw in
         if str_contains line "watches established" then
           Atomic.set ready_flag true
+        else if not (str_contains line "setting up watches")
+             && String.trim raw <> "" then
+          (* B246: never swallow inotifywait diagnostics — a spawn/watch
+             failure here silently kills the whole monitor (EOF on its stdout
+             ends the main loop), so the reason must reach our stderr. *)
+          Printf.eprintf "%s inotifywait: %s\n%!" (now_hms ()) raw
       done with End_of_file | Sys_error _ -> ());
       (* Signal on EOF too so main thread never waits forever. *)
       Atomic.set ready_flag true
@@ -1705,7 +1721,13 @@ let monitor_cmd =
              end
          | _ -> ()
         )
-      done with End_of_file -> ())
+      done with End_of_file ->
+        (* B246: EOF here means inotifywait exited (or was never spawnable —
+           e.g. inotify-tools not installed). Exiting silently looked like a
+           healthy idle monitor; say why we are stopping. *)
+        Printf.eprintf
+          "%s inotify watch stream ended (inotifywait exited or is not \
+           installed); monitor exiting\n%!" (now_hms ()))
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
     $ force_flag $ drain_flag $ cross_repo $ no_relay $ relay_interval $ relay_node_id $ relay_session_id
