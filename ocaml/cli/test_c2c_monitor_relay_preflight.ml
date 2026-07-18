@@ -228,7 +228,7 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
                   (Printf.sprintf "ls -la %s %s 2>&1 | head -12"
                      (Filename.quote broker_root) (Filename.quote (Filename.dirname broker_root))));
                 Printf.printf "B246-DIAG which inotifywait rc: %d\n"
-                  (Sys.command "command -v inotifywait; true");
+                  (Sys.command "command -v inotifywait || echo 'inotifywait: MISSING from PATH'");
                 Printf.printf "B246-DIAG monitor.out >>>\n%s\n<<< end monitor.out\n"
                   (slurp out_path);
                 Printf.printf "B246-DIAG monitor.err >>>\n%s\n<<< end monitor.err\n"

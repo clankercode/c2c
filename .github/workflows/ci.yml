@@ -26,6 +26,12 @@ jobs:
       - name: Install just
         uses: taiki-e/install-action@just
 
+      - name: Install runtime tools (inotify-tools)
+        # `c2c monitor` and deliver-watch shell out to inotifywait; the hosted
+        # runner image does not include it. Without this the monitor exits at
+        # watch setup and inotify-dependent tests fail (B246).
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends inotify-tools
+
       - name: Restore Python pip cache
         uses: actions/cache@v4
         with:

@@ -1721,7 +1721,13 @@ let monitor_cmd =
              end
          | _ -> ()
         )
-      done with End_of_file -> ())
+      done with End_of_file ->
+        (* B246: EOF here means inotifywait exited (or was never spawnable —
+           e.g. inotify-tools not installed). Exiting silently looked like a
+           healthy idle monitor; say why we are stopping. *)
+        Printf.eprintf
+          "%s inotify watch stream ended (inotifywait exited or is not \
+           installed); monitor exiting\n%!" (now_hms ()))
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
     $ force_flag $ drain_flag $ cross_repo $ no_relay $ relay_interval $ relay_node_id $ relay_session_id
