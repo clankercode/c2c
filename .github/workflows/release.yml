@@ -136,9 +136,14 @@ jobs:
           path: |
             _opam
             ~/.opam/download-cache
-          key: ocaml-deps-${{ runner.os }}-${{ runner.arch }}-5.3.0-${{ hashFiles('justfile', 'dune-project', 'ocaml/**/dune') }}
+          # Key by the concrete runner image (matrix.os), NOT runner.os: the
+          # generic Linux/X64 key collides with ci.yml's ubuntu-latest cache,
+          # and a 24.04-built _opam (dune linked against GLIBC_2.38) restored
+          # on this 22.04 builder fails with "GLIBC_2.38 not found" (v0.13.0
+          # release, run 29630787011).
+          key: ocaml-deps-${{ matrix.os }}-${{ runner.arch }}-5.3.0-${{ hashFiles('justfile', 'dune-project', 'ocaml/**/dune') }}
           restore-keys: |
-            ocaml-deps-${{ runner.os }}-${{ runner.arch }}-5.3.0-
+            ocaml-deps-${{ matrix.os }}-${{ runner.arch }}-5.3.0-
 
       - name: Install OCaml dependencies
         run: just install-deps
