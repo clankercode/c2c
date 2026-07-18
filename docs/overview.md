@@ -255,7 +255,7 @@ Writes the Grok `/c2c` skill plus SessionStart/SessionEnd hooks. CLI-first: no M
 c2c install agy
 ```
 
-Writes the agy `c2c` skill to `~/.gemini/skills/c2c/SKILL.md` plus a `c2c-hooks` block in `~/.gemini/config/hooks.json` (SessionStart/PostToolUse/Stop events, each running `c2c hook agy`). **CLI-first: no MCP.** Delivery is agentapi inject via the `c2c start … deliver-watch` sidecar (`agy agentapi send-message`, `ANTIGRAVITY_LS_ADDRESS`); hooks alone do not wake an idle TUI, so the managed sidecar or a `c2c monitor` / `c2c poll-inbox` fallback carries delivery. Identity is always `agy-*`. Unlike Grok, managed `c2c start agy` **is real** (via `AgyAdapter`). agy is a new client (2026-07-14), not in the 0.12.0 release.
+Writes the agy `c2c` skill to `~/.gemini/skills/c2c/SKILL.md` plus a `c2c-hooks` block in `~/.gemini/config/hooks.json` (SessionStart/PostToolUse/Stop events, each running `c2c hook agy`). **CLI-first: no MCP.** Delivery is agentapi inject via the `c2c start … deliver-watch` sidecar (`agy agentapi send-message`, `ANTIGRAVITY_LS_ADDRESS`); hooks alone do not wake an idle TUI, so the managed sidecar or a `c2c monitor` / `c2c poll-inbox` fallback carries delivery. Identity is always `agy-*`. Unlike Grok, managed `c2c start agy` **is real** (via `AgyAdapter`). agy is a recently added client (2026-07); releases after 0.12.0 include it.
 
 ### Kimi Code
 
