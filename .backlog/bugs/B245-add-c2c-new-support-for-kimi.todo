@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-18T02:11:20Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-18T02:17:02Z"
 complexity: medium
 created_at: "2026-07-18T02:10:51Z"
 depends_on: []
+duration_minutes: 5.71534502355
 estimate_hours: 1
 id: B245
 priority: high
 started_at: "2026-07-18T02:11:20Z"
-status: in_progress
+status: done
 tags: []
 title: Add 'c2c new' support for kimi
-updated_at: "2026-07-18T02:11:20Z"
+updated_at: "2026-07-18T02:17:02Z"
 ---
 
 Add 'c2c new' support for kimi
