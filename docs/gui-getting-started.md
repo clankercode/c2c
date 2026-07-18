@@ -106,6 +106,8 @@ The GUI will:
 |-----|--------|
 | `Enter` | Send message |
 | `Shift+Enter` | Insert newline in compose |
+| `/` | Focus event search (ignored while typing in an input) |
+| `Esc` | Clear and leave event search |
 
 ## Known Gaps
 
