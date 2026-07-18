@@ -13,7 +13,8 @@ order). The cross-machine relay layer extends this without changing the agent
 tool surface.
 
 **Status: live-proven alpha.** The relay was tested end-to-end on 2026-04-14:
-Docker cross-machine test (separate Python runtime and filesystem over TCP) and
+Docker cross-machine test (separate process/filesystem namespace over TCP —
+the container mounts the OCaml `c2c` binary; no Python is required) and
 a true two-machine Tailscale test (`x-game` ↔ `xsm`, ~6–21 ms RTT). DM in both
 directions, room join, and room fan-out all passed. It is useful today, but
 operator docs should still treat cross-host delivery as alpha: transparent
