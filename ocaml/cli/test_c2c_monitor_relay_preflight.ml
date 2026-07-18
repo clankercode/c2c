@@ -193,6 +193,13 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
               if not rebind_seen then begin
                 Printf.printf "B246-DIAG monitor alive: %b\n"
                   (try Unix.kill pid 0; true with _ -> false);
+                Printf.printf "B246-DIAG monitor threads (wchan):\n%!";
+                ignore (Sys.command
+                  (Printf.sprintf
+                     "for t in /proc/%d/task/*; do echo \"$t $(cat $t/comm \
+                      2>/dev/null) state=$(awk '{print $3}' $t/stat \
+                      2>/dev/null) wchan=$(cat $t/wchan 2>/dev/null)\"; done"
+                     pid));
                 Printf.printf "B246-DIAG which inotifywait rc: %d\n"
                   (Sys.command "command -v inotifywait; true");
                 Printf.printf "B246-DIAG monitor.out >>>\n%s\n<<< end monitor.out\n"
