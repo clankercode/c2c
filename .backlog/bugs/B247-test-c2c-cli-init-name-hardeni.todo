@@ -1,0 +1,26 @@
+---
+complexity: medium
+created_at: "2026-07-18T04:34:41Z"
+depends_on: []
+estimate_hours: 1
+id: B247
+priority: low
+status: pending
+tags: []
+title: 'test_c2c_cli init_name_hardening leaks host session env: fails inside a live Claude/c2c session (B226 residue)'
+updated_at: "2026-07-18T04:34:41Z"
+---
+
+# test_c2c_cli init_name_hardening leaks host session env: fails inside a live Claude/c2c session (B226 residue)
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
