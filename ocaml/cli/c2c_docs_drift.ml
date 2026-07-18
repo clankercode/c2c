@@ -3,7 +3,7 @@
    Audits CLAUDE.md (and optionally other docs) for stale claims:
    - repo paths in code spans that no longer exist
    - `c2c <subcommand>` references for commands not registered at top level
-   - GitHub URLs pointing at the wrong org (canonical: XertroV/c2c-msg)
+   - GitHub URLs pointing at the wrong org (canonical: clankercode/c2c)
    - bare deprecated Python script references shown without a "DEPRECATED"
      qualifier nearby
 
@@ -249,7 +249,7 @@ let extract_c2c_commands claim =
    with Not_found -> ());
   List.rev !acc
 
-(* GitHub org check: `github.com/<org>/<repo>`. Canonical org is XertroV. *)
+(* GitHub org check: `github.com/<org>/<repo>`. Canonical org is clankercode. *)
 let github_re = Str.regexp "github\\.com/\\([A-Za-z0-9._-]+\\)/\\([A-Za-z0-9._-]+\\)"
 
 let check_github_url claim =
@@ -261,7 +261,7 @@ let check_github_url claim =
        let i = Str.search_forward github_re claim !pos in
        let org = Str.matched_group 1 claim in
        let repo = Str.matched_group 2 claim in
-       if String.lowercase_ascii org <> "xertrov" then
+       if String.lowercase_ascii org <> "clankercode" then
          acc := Printf.sprintf "github.com/%s/%s" org repo :: !acc;
        pos := i + String.length (Str.matched_string claim)
      done
@@ -347,7 +347,7 @@ let audit ~repo ~docs =
             check_github_url claim
             |> List.iter (fun url ->
                 push { kind = "url"; source = rel; line; claim = url;
-                       message = "github org is not the canonical XertroV/c2c-msg" });
+                       message = "github org is not the canonical clankercode/c2c" });
             (* Deprecated Python script checks: only flag in non-deprecated
                context. `.collab/runbooks/python-scripts-deprecated.md`
                (link-out target from CLAUDE.md as of #320) legitimately
