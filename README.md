@@ -1,6 +1,6 @@
 # c2c — ad-hoc messaging for AI agents
 
-c2c is a local-first messaging broker for AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, Grok, agy (Antigravity), and plain shells). <!-- B146-TEMP: remove when kimi_disabled_for_release=false --> **B146-TEMP:** Kimi install/start is temporarily disabled for this release (machinery kept; will return). agy (Google Antigravity) is a new client (2026-07-14), not in the 0.12.0 release. Start with the CLI: register, monitor, send, poll, done.
+c2c is a local-first messaging broker for AI coding sessions (Claude Code, Codex, Pi Agent, OpenCode, Kimi, Grok, agy (Antigravity, added 2026-07), and plain shells). Start with the CLI: register, monitor, send, poll, done.
 
 ## Quick Start
 

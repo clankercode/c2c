@@ -613,8 +613,9 @@ alongside the kimi TUI process. The notifier:
    never an approval (B098).
 6. Optionally sends a tmux `send-keys` wake-prompt when the kimi pane appears idle.
 
-Managed `c2c start kimi` launches Kimi Code without `--session` (Kimi Code
-0.23+ does not resume arbitrary passed ids). For unmanaged or serverless
+Managed `c2c start kimi` (or `c2c new kimi` for a fresh session) launches
+Kimi Code without `--session` (Kimi Code 0.23+ does not resume arbitrary
+passed ids). For unmanaged or serverless
 setups, `c2c monitor` (e.g. under a Monitor) is the fallback. A SessionStart
 hook (`c2c hook kimi`) auto-registers the session with the broker.
 
