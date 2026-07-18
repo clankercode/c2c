@@ -200,6 +200,33 @@ let test_unbound_rebind_keeps_local_monitor_alive () =
                       2>/dev/null) state=$(awk '{print $3}' $t/stat \
                       2>/dev/null) wchan=$(cat $t/wchan 2>/dev/null)\"; done"
                      pid));
+                (match Unix.waitpid [ Unix.WNOHANG ] pid with
+                 | 0, _ -> Printf.printf "B246-DIAG waitpid: still running\n%!"
+                 | _, Unix.WEXITED c ->
+                     Printf.printf "B246-DIAG waitpid: exited %d\n%!" c
+                 | _, Unix.WSIGNALED s ->
+                     Printf.printf "B246-DIAG waitpid: signaled %d\n%!" s
+                 | _, Unix.WSTOPPED s ->
+                     Printf.printf "B246-DIAG waitpid: stopped %d\n%!" s
+                 | exception e ->
+                     Printf.printf "B246-DIAG waitpid exn: %s\n%!"
+                       (Printexc.to_string e));
+                let archive_dir = Filename.concat broker_root "archive" in
+                Printf.printf "B246-DIAG manual inotifywait on same dirs:\n%!";
+                ignore (Sys.command
+                  (Printf.sprintf
+                     "timeout 2 inotifywait -m -e \
+                      close_write,modify,delete,moved_to --format '%%e\\t%%w%%f' \
+                      %s %s 2>&1 | head -6; echo \"manual-inotify rc=$?\""
+                     (Filename.quote archive_dir) (Filename.quote broker_root)));
+                Printf.printf "B246-DIAG inotify limits/instances:\n%!";
+                ignore (Sys.command
+                  "cat /proc/sys/fs/inotify/max_user_instances \
+                   /proc/sys/fs/inotify/max_user_watches 2>/dev/null; \
+                   find /proc/[0-9]*/fd -lname 'anon_inode:inotify' 2>/dev/null | wc -l");
+                ignore (Sys.command
+                  (Printf.sprintf "ls -la %s %s 2>&1 | head -12"
+                     (Filename.quote broker_root) (Filename.quote (Filename.dirname broker_root))));
                 Printf.printf "B246-DIAG which inotifywait rc: %d\n"
                   (Sys.command "command -v inotifywait; true");
                 Printf.printf "B246-DIAG monitor.out >>>\n%s\n<<< end monitor.out\n"

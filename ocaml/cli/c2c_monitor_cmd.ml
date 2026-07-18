@@ -1351,9 +1351,16 @@ let monitor_cmd =
     in
     let _err_thread = Thread.create (fun () ->
       (try while true do
-        let line = String.lowercase_ascii (input_line err_ic) in
+        let raw = input_line err_ic in
+        let line = String.lowercase_ascii raw in
         if str_contains line "watches established" then
           Atomic.set ready_flag true
+        else if not (str_contains line "setting up watches")
+             && String.trim raw <> "" then
+          (* B246: never swallow inotifywait diagnostics — a spawn/watch
+             failure here silently kills the whole monitor (EOF on its stdout
+             ends the main loop), so the reason must reach our stderr. *)
+          Printf.eprintf "%s inotifywait: %s\n%!" (now_hms ()) raw
       done with End_of_file | Sys_error _ -> ());
       (* Signal on EOF too so main thread never waits forever. *)
       Atomic.set ready_flag true
