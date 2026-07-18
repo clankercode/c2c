@@ -1278,7 +1278,15 @@ let monitor_cmd =
           let rec loop () =
             if Unix.getppid () = 1 then ()
             else begin
-              (try try_rebind_identity () with _ -> ());
+              (* B246-DIAG: temporary poll-path tracing (diag branch only). *)
+              Printf.eprintf "B246-DIAG poll tick sid=%s reg_alias=%s cur=%s\n%!"
+                (match resolved_sid with Some s -> s | None -> "-")
+                (match session_reg_alias_now () with Some a -> a | None -> "-")
+                (match !my_alias_r with Some a -> a | None -> "-");
+              (try try_rebind_identity ()
+               with e ->
+                 Printf.eprintf "B246-DIAG poll exn: %s\n%!"
+                   (Printexc.to_string e));
               Thread.delay 2.0;
               loop ()
             end
