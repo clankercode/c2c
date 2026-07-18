@@ -1573,8 +1573,9 @@ let () =
     { binary = "opencode"; deliver_client = "opencode";
       needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
-  (* kimi: delivery via C2c_kimi_notifier — file-based notification-store push.
-     The deprecated wire-bridge path was removed in the kimi-wire-bridge-cleanup
+  (* kimi: delivery via C2c_kimi_notifier — REST prompt injection into the
+     local Kimi Code server (legacy notification-store path deprecated). The
+     deprecated wire-bridge path was removed in the kimi-wire-bridge-cleanup
      slice. *)
   Stdlib.Hashtbl.add clients "kimi"
     { binary = "kimi"; deliver_client = "kimi";
