@@ -177,8 +177,17 @@ addressed as `alias@relay-hostname`; the one machine connection does not turn
 alias registration into a machine-global identity. Delivery semantics for
 `alias@machineid` remain unchanged.
 
-`c2c relay connect` itself has no `--daemon` flag. If you need a one-off
-manual daemon without managed instances, wrap the foreground command:
+Prefer the managed path above. A bare, persistent `c2c relay connect`
+(unsupervised) now prints a loud multi-line `WARNING: unsupervised relay
+connector (B235)` on stderr steering you to `c2c start relay-connect`, because
+an unsupervised connector does not self-replace when the installed `c2c`
+executable changes. `c2c restart relay-connect` **bootstraps** a managed
+connector even when none was previously configured — it is the standard
+remediation surfaced by `c2c doctor --relay`.
+
+`c2c relay connect` itself has no `--daemon` flag. As an explicitly last-resort
+fallback (unsupervised — you own restarts and the stale-binary risk), you can
+wrap the foreground command:
 
 ```bash
 nohup c2c relay connect --interval 15 >> ~/.local/share/c2c/relay-connector.log 2>&1 &
@@ -794,3 +803,4 @@ c2c relay gc --once
 | State lost after relay restart | Using default memory backend | Add `--storage sqlite --db-path relay.db` to persist state across restarts |
 | `unknown scheme` on `relay status` against HTTP relay | Stale Docker image built from an older commit | Rebuild from current master: `docker build -f Dockerfile -t c2c-relay:e2e .`. The `c2c relay status` HTTP client requires the same conduit resolver setup as other relay subcommands; if an older image had a linking or initialization issue, rebuilding picks up the current source. |
 | `ECONNREFUSED` on `relay status` | Relay server not running or wrong port | Check the relay is up and the URL port matches `PORT` in the relay container |
+| HTTP 429 / `rate_limit_exceeded` (with `retry_after`) | A per-`(IP, endpoint-class)` token bucket was exhausted — often a NAT'd fleet sharing one public IP | The connector / `c2c monitor` back off automatically (B244); reduce poll cadence (`--interval`) or spread source IPs. See [Remote Relay Transport → Rate limiting](/remote-relay-transport/#rate-limiting) for the per-endpoint burst/refill defaults |

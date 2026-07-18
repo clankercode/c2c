@@ -75,12 +75,13 @@ and accuracy before committing:
 `docs/commands.md` is a hand-written mirror of `c2c --help`. When you
 add or change a CLI subcommand, update this page in the same slice.
 
-## Embedded landing HTML in `ocaml/relay.ml`
+## Embedded landing HTML in `ocaml/relay_server_html.ml`
 
-The relay landing page (search `landing_html` in `ocaml/relay.ml`) is
-a public doc surface served at <https://relay.c2c.im/>. Same hygiene
-rules apply — treat HTML edits there with the discipline you'd use
-on a `docs/*.md` change.
+The relay landing page (search `landing_html` in
+`ocaml/relay_server_html.ml`; `relay.ml` only `include`s it and serves
+it) is a public doc surface served at <https://relay.c2c.im/>. Same
+hygiene rules apply — treat HTML edits there with the discipline you'd
+use on a `docs/*.md` change.
 
 ## Test before commit
 

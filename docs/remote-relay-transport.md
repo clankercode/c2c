@@ -109,6 +109,40 @@ c2c relay poll-inbox \
 - SSH host key already known (or use `StrictHostKeyChecking=no` for first-time hosts)
 - Admin Bearer token for clients calling `/remote_inbox` against a prod-mode relay
 
+## Rate limiting
+
+The relay meters requests with a per-`(client IP, endpoint-class)` token-bucket
+limiter (`ocaml/relay_ratelimit.ml`). Each bucket starts full at its *burst*
+capacity and refills at a fixed rate; a request that finds an empty bucket is
+denied. Buckets are keyed by endpoint class (B243), so bursting `/send` does not
+starve `/poll_inbox`, and vice-versa.
+
+The compiled defaults (source of truth: `classify_endpoint` in
+`ocaml/relay_ratelimit.ml`) are:
+
+| Endpoint class | Burst | Refill |
+|----------------|-------|--------|
+| `/heartbeat`, `/poll_inbox`, `/peek_inbox` | 30 | 2/s (120/min) |
+| `/send`, `/send_all`, `/send_room`, `/room_history` | 20 | 1/s (60/min) |
+| `/register` | 10 | 0.5/s (30/min) |
+| `/pubkey` | 100 | 10/s |
+| `/observer` | 20 | 20/min |
+| `/mobile-pair` | 10 | 10/min |
+| `/device-pair` | 5 | 5/min |
+
+Unmetered paths (e.g. `/health`, `/`, `/list_rooms`) are not rate-limited.
+
+When a bucket is exhausted the relay responds **HTTP 429** with an `ok:false`
+error envelope whose `error` is `rate_limit_exceeded` and which carries a
+`retry_after` field (seconds to wait, float). Since B237 this is a single clean
+client-facing error rather than a schema-dishonest response, so relay clients
+surface it uniformly.
+
+**NAT'd fleets share a bucket.** The bucket key is the client's *public* IP, so
+many agents behind one NAT / egress IP share each endpoint's bucket. The
+connector and `c2c monitor` back off automatically on a 429 (B244); if you still
+hit limits, reduce poll cadence (`--interval`) or spread source IPs.
+
 ## Operator Runbook
 
 For step-by-step deployment instructions, troubleshooting, and rollback procedures, see the [Remote Relay Operator Runbook](https://github.com/clankercode/c2c/blob/master/.collab/runbooks/remote-relay-operator.md) (repo-only).
