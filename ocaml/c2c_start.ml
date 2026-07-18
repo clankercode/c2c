@@ -3343,14 +3343,16 @@ let prepare_launch_args ~(name : string) ~(client : string)
            launch path: --yolo, --model, and a few others.  It rejects
            --session, --mcp-config-file, --max-steps-per-turn, --agent-file,
            and --prompt (when combined with --yolo).  We therefore launch with
-           just --yolo (+ optional --model) and append extra_args verbatim at
-           the tail.  The kickoff / agent-file paths are intentionally omitted
-           for this Kimi Code version; onboarding is delivered via the
-           installed /c2c skill + Monitor. *)
+           just --yolo (+ optional --model via model_override).  Operator
+           passthrough (e.g. `c2c new kimi -- --model X`) is appended once by
+           the shared `args @ extra_args` tail below — do NOT also append
+           extra_args here (that double-appended --model and friends).
+           Kickoff / agent-file paths are intentionally omitted for this Kimi
+           Code version; onboarding is delivered via the installed /c2c skill
+           + Monitor. *)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ~alias_from_auto_gen ()
-        @ extra_args
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";

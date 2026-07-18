@@ -329,9 +329,18 @@ let test_prepare_launch_args_forwards_extra_args_for_kimi () =
       ~extra_args:extra ~broker_root:"/tmp/broker" ()
   in
   (* The whole extra_args block is the verbatim tail of the argv — no
-     reorder/insert/truncate, commas preserved. *)
+     reorder/insert/truncate, commas preserved. B245: must appear exactly
+     once (a prior kimi branch also appended extra_args before the shared
+     tail, so `--model X` became `--model X --model X`). *)
   check bool "kimi: full extra_args forwarded verbatim as the argv tail" true
-    (is_suffix extra args)
+    (is_suffix extra args);
+  let count_token t =
+    List.fold_left (fun n x -> if x = t then n + 1 else n) 0 args
+  in
+  check int "kimi: --mcp-config-file appears once" 1
+    (count_token "--mcp-config-file");
+  check int "kimi: --custom-flag appears once" 1 (count_token "--custom-flag");
+  check int "kimi: --yolo still present from adapter" 1 (count_token "--yolo")
 
 (* B128/B221: the `--` boundary is explicit and tested. Ordinary post-`--`
    tokens remain client args even when identical to real c2c flags (`--model`,

@@ -1050,6 +1050,23 @@ Codex additionally exposes the `--` boundary and `--c2c:name` on its own `c2c co
 grammar below); resume rejects `--c2c:name` because its positional ALIAS is
 already authoritative.
 
+### `c2c new` (fresh managed session)
+
+| Form | Meaning |
+|------|---------|
+| `c2c new codex …` | Always a new Codex thread + a new c2c identity — never silently resumes. Uses the app-server path when available (see Codex grammar below). |
+| `c2c new kimi …` | Always a fresh managed Kimi session + identity — shortcut for `c2c start kimi --new-session` with the reduced `c2c new` flag surface (`--alias`, `--c2c:name` after `--`). Requires `c2c install kimi`. |
+
+Shell-alias convention is the same as codex:
+
+```sh
+alias km='c2c new kimi --'
+km --model <model>
+km --model <model> --c2c:name my-kimi
+```
+
+`--yolo` and `--thread-id` are codex-only on `c2c new` (managed kimi already launches with `--yolo`). Other clients: use `c2c start <client> --new-session`.
+
 ### Codex session grammar (app-server-backed)
 
 Four command forms share one implementation path for managed Codex sessions:

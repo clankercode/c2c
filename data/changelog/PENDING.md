@@ -9,6 +9,14 @@ changelog feeds `update_available`, so a version heading newer than
 
 _(empty after 0.12.0 — add new `###` entries below for the next release)_
 
+### Added
+
+- **B245: `c2c new kimi`.** `c2c new` now accepts `kimi` as well as `codex`.
+  `c2c new kimi` is a reduced-surface shortcut for `c2c start kimi --new-session`
+  (fresh managed identity + session; never silently resumes). Supports
+  `--alias` and `--c2c:name` after `--` (same shell-alias convention as
+  `c2c new codex`). `--yolo` / `--thread-id` remain codex-only on this command.
+
 ### Fixed
 
 - **B234: `whoami`/`status` alias line no longer claims "not a relay

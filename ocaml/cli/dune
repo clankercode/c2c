@@ -245,6 +245,13 @@
  (modules test_c2c_setup_kimi c2c_setup c2c_grok_skill_embedded c2c_kimi_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_claude_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
+; B245: `c2c new` accepts codex | kimi (routing + codex-only flag guards).
+(test
+ (name test_c2c_new_cmd)
+ (modules test_c2c_new_cmd)
+ (libraries alcotest unix)
+ (deps c2c.exe))
+
 ; #5 vanilla-codex: trust-hash scheme + hooks-block rendering + AGENTS.md upsert.
 (test
  (name test_c2c_codex_hooks)
