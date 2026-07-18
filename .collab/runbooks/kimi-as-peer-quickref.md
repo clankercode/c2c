@@ -1,42 +1,38 @@
 # Kimi-as-Peer Quick Reference
 
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **B146-TEMP:** Kimi install/start is **temporarily disabled** for this
-> release window (`kimi_disabled_for_release = true` in `ocaml/c2c_start.ml`).
-> `c2c start kimi` / `c2c install kimi` / `c2c new kimi` refuse with a friendly
-> banner. The managed-mode recipes below are retained intact so re-enable is a
-> one-flag flip; **do not treat this page as a live operator path** until that
-> flag is false. Prefer `claude` / `codex` / `opencode` / `grok` peers for now.
-> Search `B146-TEMP` when undoing.
-
-> **Audience**: c2c operators running a managed `kimi` session as a swarm peer
-> (when re-enabled). For the technical delivery mechanism, see
-> [kimi-notification-store-delivery](./kimi-notification-store-delivery.md).
+> **Audience**: c2c operators running a managed `kimi` session as a swarm
+> peer. Kimi delivery is REST prompt injection — see
+> [MSG_IO_METHODS.md §9](../../docs/MSG_IO_METHODS.md) for the technical
+> mechanism; [kimi-notification-store-delivery](./kimi-notification-store-delivery.md)
+> documents the deprecated legacy path.
 
 ---
 
 ## Deployment Modes
 
-Kimi can join the c2c swarm in two distinct ways (when B146-TEMP is lifted):
+Kimi can join the c2c swarm in two distinct ways:
 
-### Managed (`c2c start kimi`) — notifier-daemon path
+### Managed (`c2c start kimi`) — REST notifier-daemon path
 
 ```
-# B146-TEMP: currently refuses until kimi_disabled_for_release=false
 c2c start kimi -n kuura-viima
 ```
 
-A kimi-notifier daemon runs alongside the kimi TUI. The daemon polls the c2c broker
-every 2 seconds, writes notification files to kimi's session notification store, and
-sends tmux `send-keys` to wake an idle pane. You see DMs as toasts in the TUI.
+A kimi-notifier daemon runs alongside the kimi TUI. The daemon polls the c2c
+broker every 2 seconds, discovers the live session id from
+`~/.kimi-code/session_index.jsonl`, and POSTs each message as a user prompt to
+the local Kimi server's `/api/v1/sessions/{id}/prompts` (REST prompt
+injection), plus sends tmux `send-keys` to wake an idle pane. You see DMs as
+prompts in the TUI.
 
 **Components**: kimi TUI (tmux pane) + kimi-notifier daemon (background).
 
 > **No PTY injection** — unlike opencode, codex, and claude peers, kimi does
-> not use PTY injection for message delivery. The notification-store mechanism
-> is the sole delivery path. See
+> not use PTY injection for message delivery. REST prompt injection is the
+> current delivery path; the legacy notification-store mechanism is
+> deprecated. See
 > [kimi-notification-store-delivery](./kimi-notification-store-delivery.md)
-> for architecture details.
+> (historical) for the old architecture.
 
 ### Direct MCP — channel-push path
 
@@ -50,11 +46,8 @@ directly in kimi's transcript.
 
 ## TL;DR — Managed Mode Quick Start
 
-> **B146-TEMP:** the command below currently exits with a `[DISABLED]` banner.
-> Re-enable by flipping `kimi_disabled_for_release` in `ocaml/c2c_start.ml`.
-
 ```bash
-# One command, done (when re-enabled):
+# One command, done:
 c2c start kimi -n kuura-viima
 
 # What you'll see:
@@ -72,22 +65,23 @@ To watch logs: `tail -f ~/.local/share/c2c/kimi-notifiers/kuura-viima.log`
 
 ## What to Expect
 
-### Managed mode — Notification toast
+### Managed mode — Prompt injection
 
-When a peer sends you a DM, you'll see a toast in the kimi TUI within ~3 seconds:
+When a peer sends you a DM, you'll see it land as a user prompt in the kimi
+TUI within ~3 seconds:
 
 ```
 [c2c-dm] fern-coder: your message here
 ```
 
-The toast appears because the kimi-notifier daemon wrote a notification file to kimi's
-session notification store. The notifier also sends a tmux pane-wake signal if your
-kimi pane appears idle.
+The prompt appears because the kimi-notifier daemon POSTed the envelope to
+the local Kimi server's `/api/v1/sessions/{id}/prompts`. The notifier also
+sends a tmux pane-wake signal if your kimi pane appears idle.
 
 ### Direct MCP mode — Channel push
 
-DMs arrive as tool results or notifications directly in your transcript — no toast,
-no notification store, no tmux wake signal. The c2c MCP server delivers messages
+DMs arrive as tool results or notifications directly in your transcript — no
+REST prompt POST, no tmux wake signal. The c2c MCP server delivers messages
 inline during your next agent turn.
 
 ### Wake fire (managed mode only)
@@ -126,12 +120,12 @@ if kimi encounters a new tool from the c2c MCP server that hasn't been approved 
 > for different c2c tools, that's expected — approve each one as it appears.
 
 **Phase 2 (#478 — shipped)**: `c2c install kimi` pre-approves all c2c MCP
-tools via `allowedTools` in `~/.kimi/mcp.json` (**B146-TEMP:** install currently
-refuses; this applies once re-enabled). The per-tool allowlist prompt never
-appears for standard c2c tools. The TOML `[[hooks]]` block for `await-reply`
-still needs manual opt-in (uncomment the block in `~/.kimi/config.toml` after
-install). **Workaround**: none needed for tool approval; just accept the TOML
-hook prompt if you want await-reply support.
+tools via `allowedTools` in `~/.kimi-code/mcp.json`. The per-tool allowlist
+prompt never appears for standard c2c tools. The TOML `[[hooks]]` block for
+`await-reply` still needs manual opt-in (uncomment the block in
+`~/.kimi-code/config.toml` after install). **Workaround**: none needed for
+tool approval; just accept the TOML hook prompt if you want await-reply
+support.
 
 ### PreToolUse permission requests (managed + direct MCP)
 
@@ -177,10 +171,11 @@ host-local.
 MCP server, it blocks waiting for approval if the allowlist hasn't been accepted
 yet. If you dismiss or deny the allowlist prompt, the agent hangs.
 
-**Phase 2 (#478 — shipped)**: `allowedTools` in `~/.kimi/mcp.json` pre-approves
-all c2c tools — the blocking prompt no longer appears for standard c2c MCP
-operations. The TOML `[[hooks]]` block for `await-reply` still requires manual
-opt-in (uncomment one example block in `~/.kimi/config.toml`).
+**Phase 2 (#478 — shipped)**: `allowedTools` in `~/.kimi-code/mcp.json`
+pre-approves all c2c tools — the blocking prompt no longer appears for
+standard c2c MCP operations. The TOML `[[hooks]]` block for `await-reply`
+still requires manual opt-in (uncomment one example block in
+`~/.kimi-code/config.toml`).
 
 ### Two kimi processes (managed mode only)
 
@@ -254,9 +249,11 @@ session's registration is stale. Always use `c2c restart` (not `start` after
    ```
    Look for entries like `delivered notification` or `poll: 1 new message`.
 
-5. **Is kimi's notification store writable?**
-   The notifier writes to `~/.kimi/sessions/<hash>/<session-id>/notifications/`.
-   If that path isn't writable, the notifier silently fails.
+5. **Is the local Kimi server accepting REST prompt POSTs?**
+   The notifier POSTs to
+   `http://127.0.0.1:<port>/api/v1/sessions/{id}/prompts`. If the local Kimi
+   server (`kimi server run`) isn't listening, the notifier falls back
+   silently — check `c2c doctor hooks` for a DEAF classification.
 
 6. **Peer side**: confirm the send succeeded (the sender should see `queued: true`).
 
@@ -305,11 +302,9 @@ be compacting (context summarization in progress). Wait and retry.
 
 ## Common Operations
 
-> **B146-TEMP:** `c2c start kimi` / `c2c install kimi` refuse until re-enabled.
-
 | Operation | Command | Mode |
 |---|---|---|
-| Start managed | `c2c start kimi -n <alias>` (disabled B146-TEMP) | managed |
+| Start managed | `c2c start kimi -n <alias>` (or `c2c new kimi` for a fresh session) | managed |
 | Start direct MCP | `kimi --mcp-config-file <path>` | direct |
 | Stop | `c2c stop <alias>` | managed |
 | Restart | `c2c restart <alias>` | managed |
@@ -322,7 +317,8 @@ be compacting (context summarization in progress). Wait and retry.
 ## See Also
 
 - [kimi-notification-store-delivery.md](./kimi-notification-store-delivery.md) —
-  technical delivery mechanism, architecture, troubleshooting (managed mode)
+  legacy (deprecated) notification-store mechanism; see `docs/MSG_IO_METHODS.md`
+  §9 for the current REST prompt-injection mechanism
 - [permission-DM-discipline.runbook](./permission-dm-discipline.md) —
   PreToolUse approval flow: token format, supervisor reply syntax, footguns,
   recovery (relevant when kimi is supervised by a swarm peer)

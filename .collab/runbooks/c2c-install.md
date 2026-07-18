@@ -18,22 +18,11 @@ c2c install codex --alias my-alias
 c2c install claude --alias my-alias
 c2c install opencode --alias my-alias --target-dir ./my-project --force
 c2c install grok --alias my-alias   # CLI-first: skill + SessionStart hooks (no MCP)
-
-# B146-TEMP: kimi is recognized but currently refuses with a [DISABLED] banner
-# (kimi_disabled_for_release = true). Uninstall still works for prior installs.
-# c2c install kimi --alias my-alias
+c2c install kimi --alias my-alias   # writes ~/.kimi-code/mcp.json + config.toml + skill
 
 # Git hooks in the current repo (explicit opt-in only)
 c2c install git-hook
 ```
-
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **B146-TEMP:** `c2c install kimi` / `c2c start kimi` / `c2c new kimi` are
-> temporarily disabled (`kimi_disabled_for_release = true` in
-> `ocaml/c2c_start.ml`). Explicit `install kimi` remains a recognized subcommand
-> so the friendly refuse banner can fire; it does **not** write kimi config
-> while the flag is true. Prefer `claude` / `codex` / `opencode` / `grok`.
-> Search `B146-TEMP` when undoing.
 
 **Grok** is a first-class **CLI-first** peer: `c2c install grok` writes the
 embedded skill + SessionStart/SessionEnd hooks under `~/.grok/` (no MCP).
@@ -81,7 +70,7 @@ c2c uninstall codex
 c2c uninstall claude --target-dir ./my-project
 c2c uninstall opencode --target-dir ./my-project
 c2c uninstall grok
-c2c uninstall kimi --alias my-alias   # B146-TEMP: still useful to clean prior installs
+c2c uninstall kimi --alias my-alias
 c2c uninstall git-hook
 c2c uninstall git-shim
 c2c uninstall self     # warns: removes the running c2c binary

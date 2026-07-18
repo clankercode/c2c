@@ -26,7 +26,7 @@ Last updated: 2026-07-17 (kimi re-enabled: B146 reverted; REST delivery)
 | Sandbox restrictions | ⚠️ PostToolUse hook bypasses exec gating | ⚠️ exec gating on MCP binary | ⚠️ extension runs in pi's Node runtime and shells to `c2c` | ⚠️ plugin runs in-process | ⚠️ Notifier as separate process; no exec gating on notifier itself | ⚠️ SessionStart hook runs `c2c hook grok` as a command | ⚠️ hooks run `c2c hook agy <Event>`; deliver sidecar shells to `agy agentapi` |
 | Auto-register | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ on session start (`C2C_PI_ALIAS` for a preferred alias) | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ `C2C_MCP_AUTO_REGISTER_ALIAS` | ✅ SessionStart (`registered_by=grok-hook`); always mints `grok-*` via `default_alias_for_client` (B173 — ignores machine-global `default-alias`) | ✅ SessionStart (`registered_by=agy-hook`, `client_type=agy`); always mints `agy-*` |
 | Auto-join rooms | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ? | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ✅ `C2C_MCP_AUTO_JOIN_ROOMS` | ⚠️ skill/CLI (`c2c rooms join swarm-lounge`); no MCP env auto-join | ⚠️ skill/CLI (`c2c rooms join swarm-lounge`); no MCP env auto-join |
-| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ✅ `c2c start kimi` | ❌ not yet (`c2c start grok` deferred) | ✅ `c2c start agy` (`AgyAdapter`, `agentapi_wake=true`) |
+| Managed-instance outer loop | ✅ `c2c start claude` | ✅ `c2c start codex` / `c2c new codex` | n/a (`c2c start` has no `pi` target; pi runs its own loop) | ✅ `c2c start opencode` | ✅ `c2c start kimi` / `c2c new kimi` | ❌ not yet (`c2c start grok` deferred) | ✅ `c2c start agy` (`AgyAdapter`, `agentapi_wake=true`) |
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi-code/mcp.json` + `~/.kimi-code/config.toml` + `~/.kimi-code/skills/c2c/SKILL.md` | `~/.grok/skills/c2c/SKILL.md` + `~/.grok/hooks/c2c-session.json` | `~/.gemini/skills/c2c/SKILL.md` + `~/.gemini/config/hooks.json` |
 | deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ app-server deliver loop (managed default) + pre-trusted Codex hooks (vanilla/fallback); hook-mode sidecar runs the wake-inject watcher (`C2c_wake_inject`, never drains); vanilla: `c2c deliver wake-watch` | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` alias-scoped `c2c monitor` subprocess | ✅ `C2c_kimi_notifier` REST prompt POST + tmux idle-wake | Agent-armed **Monitor** on `c2c monitor` (peek, full bodies) | ✅ agentapi deliver-watch sidecar (`c2c start … deliver-watch`, `c2c_agy_deliver.ml`) |
 | Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Hook block / trust-hash drift (run `c2c doctor hooks`, refresh with `c2c install codex`); codex < 0.144 → `app-server-unavailable` (upgrade codex); never run a bare (unauthenticated) app-server listener | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | Unmanaged sessions go deaf without notifier/Monitor (B238: SessionStart arms notifier + skill nudge; `c2c doctor hooks` flags DEAF); `C2C_MCP_SESSION_ID` inheritance from parent; Kimi Code 0.23+ does not resume arbitrary `--session` ids (managed start launches without one) | No hook transcript inject; Claude-compat may load a **stale** MCP `c2c` from `~/.claude.json` — prefer CLI | Alias-prefix hijack — alias must stay `agy-*` (skill aborts sends otherwise; `c2c doctor` flags a live agy session whose alias lacks the `agy-` prefix); no MCP |
@@ -218,7 +218,7 @@ need verification by an agent running inside pi. Please update and PR.
 
 **Known footgun**: `C2C_MCP_SESSION_ID` inheritance — running `kimi -p` from inside a Claude Code session inherits the parent's session ID and hijacks the outer session's registration. Use `C2C_MCP_SESSION_ID=kimi-smoke-$(date +%s)` env override when launching one-shot probes.
 
-**Outer loop**: `c2c start kimi -n <name>` is the canonical managed-instance launcher (per CLAUDE.md). It launches Kimi Code without `--session` — Kimi Code 0.23+ does not resume arbitrary passed ids, so the notifier resolves the live `session_<uuid>` from the session index instead.
+**Outer loop**: `c2c start kimi -n <name>` (or `c2c new kimi` for a fresh session) is the canonical managed-instance launcher (per CLAUDE.md). It launches Kimi Code without `--session` — Kimi Code 0.23+ does not resume arbitrary passed ids, so the notifier resolves the live `session_<uuid>` from the session index instead.
 
 ### Grok (Build TUI)
 
@@ -321,17 +321,18 @@ agy` does this) or fall back to `c2c poll-inbox` / `c2c monitor`.
 
 | From ↓ / To → | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | agy |
 |---------------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|:---:|
-| Claude Code | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
-| Codex | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
+| Claude Code | ✓ | ✓ | ? | ✓ | ✓* | ? | ? |
+| Codex | ✓ | ✓ | ? | ✓ | ✓* | ? | ? |
 | Pi Agent | ? | ? | ? | ? | ? | ? | ? |
-| OpenCode | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
-| Kimi | ✓ | ✓ | ? | ✓ | ✓ | ? | ? |
+| OpenCode | ✓ | ✓ | ? | ✓ | ✓* | ? | ? |
+| Kimi | ✓* | ✓* | ? | ✓* | ✓* | ? | ? |
 | Grok | ? | ? | ? | ? | ? | ? | ? |
 | agy | ? | ? | ? | ? | ? | ? | ? |
 
 **✓** = proven end-to-end for live active-session DMs
+**✓\*** = proven 2026-04-29 under the legacy notification-store path; REST prompt-injection re-verification pending
 
-*(All Claude↔Codex↔OpenCode↔Kimi pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi notification-store proven 2026-04-29. Pi Agent and Grok pairs need live verification. Grok install + SessionStart auto-register smoke-tested 2026-07-11. agy is new (2026-07-14); agy↔peer DM parity not yet verified live.)*
+*(All Claude↔Codex↔OpenCode pairs proven 2026-04-13/14. OpenCode native plugin promptAsync proven 2026-04-14. Kimi pairs proven 2026-04-29 under the legacy notification-store path; re-verify on the current REST path. Pi Agent and Grok pairs need live verification. Grok install + SessionStart auto-register smoke-tested 2026-07-11. agy is new (2026-07-14); agy↔peer DM parity not yet verified live.)*
 
 See `.collab/dm-matrix.md` for the live tracking record.
 

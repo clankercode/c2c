@@ -148,6 +148,35 @@ check.
 
 ---
 
+## 2c. Kimi REST prompt-injection delivery (managed + unmanaged, B238)
+
+**Applies to** Kimi Code. Managed `c2c start kimi` (or `c2c new kimi`) forks a
+notifier daemon that delivers via REST; unmanaged plain `kimi` relies on the
+SessionStart hook to arm a best-effort notifier (B238).
+
+- **Setup (managed)**:
+  - Inside tmux: `c2c start kimi -n test-kimi-<rand>`
+- **Action**:
+  - From another terminal: `c2c send <client-alias> "e2e marker C2C_E2E_<rand>"`
+  - Wait ~5s; snapshot the pane
+- **Expected**:
+  - The envelope appears as a user prompt in the TUI (REST POST to
+    `/api/v1/sessions/{id}/prompts`, not PTY injection)
+- **Setup/Action (unmanaged)**:
+  - Run plain `kimi` (no `c2c start`); confirm SessionStart auto-registers
+    (`registered_by=kimi-hook`) and arms a notifier
+  - Send a message as above; if no notifier is live, confirm `c2c doctor
+    hooks` flags the session DEAF and `c2c monitor` / `c2c poll-inbox`
+    surfaces the message instead
+- **Failure modes**:
+  - Local Kimi server not running → notifier falls back silently; check
+    `c2c doctor hooks` for the DEAF classification
+  - Kimi Code 0.23+ session id not resolvable from
+    `~/.kimi-code/session_index.jsonl`
+- **Repro time**: ~45s
+
+---
+
 ## 3. Send-out: <Client>
 
 - **Setup**:

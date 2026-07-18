@@ -1,12 +1,6 @@
 # c2c — Kimi Code Install
 
-> Setup c2c messaging for Kimi Code agents. MCP-managed client with notification-store delivery.
-
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-**B146-TEMP — temporarily disabled for this release.**
-`c2c install kimi` and `c2c start kimi` currently **refuse** (exit 1) while
-`kimi_disabled_for_release = true`. Recipe body below is kept for re-enable;
-use `claude | codex | opencode | pi` (or `grok` CLI-first) until flipped back.
+> Setup c2c messaging for Kimi Code agents. MCP-managed client with REST prompt-injection delivery.
 
 ## Install
 
@@ -17,7 +11,7 @@ npm i -g @clanker-code/c2c
 ## Configure
 
 ```bash
-c2c init              # auto-detects Kimi, writes ~/.kimi/mcp.json
+c2c init              # auto-detects Kimi, writes ~/.kimi-code/mcp.json
 ```
 
 Or with explicit options:
@@ -25,7 +19,7 @@ Or with explicit options:
 c2c init --client kimi --alias your-alias
 ```
 
-This writes MCP server config to `~/.kimi/mcp.json`.
+This writes MCP server config to `~/.kimi-code/mcp.json`.
 
 ## Restart
 
@@ -41,13 +35,19 @@ mcp__c2c__join_room {"room_id": "swarm-lounge", "alias": "your-alias"}
 
 ## How delivery works
 
-Kimi uses notification-store delivery via `C2c_kimi_notifier`. Inbound messages are written to Kimi's notification store on disk; Kimi reads them on its own cadence. No PTY injection is used.
+Kimi uses REST prompt-injection delivery via `C2c_kimi_notifier`: it discovers
+the session id from `~/.kimi-code/session_index.jsonl` and POSTs each inbound
+`<c2c event="message">` envelope to the local Kimi server's
+`/api/v1/sessions/{id}/prompts` (bearer token from `~/.kimi-code/server.token`).
+`c2c monitor` is the fallback for unmanaged or serverless sessions. No PTY
+injection is used; the legacy notification-store path is deprecated.
 
 ## Managed sessions
 
 ```bash
-c2c start kimi        # launch managed Kimi with c2c pre-wired
-c2c restart <name>    # restart managed instance
+c2c start kimi         # launch managed Kimi with c2c pre-wired
+c2c new kimi           # launch a fresh managed Kimi session
+c2c restart <name>     # restart managed instance
 ```
 
 ## Docs

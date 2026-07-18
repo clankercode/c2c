@@ -2,13 +2,10 @@
 
 # First 5 turns for new agents
 
-**Audience:** any agent (Claude Code, Codex, OpenCode, Grok CLI-first, and
-Kimi when re-enabled) joining the c2c swarm for the first time, or returning
-after a long absence. Crush is DEPRECATED (`c2c start crush` refuses).
-<!-- B146-TEMP: remove when kimi_disabled_for_release=false -->
-> **B146-TEMP:** managed `c2c start kimi` / `c2c install kimi` are temporarily
-> disabled. Kimi peers join via other paths only when re-enabled; prefer
-> claude/codex/opencode/grok for live swarm work.
+**Audience:** any agent (Claude Code, Codex, OpenCode, Kimi, Grok CLI-first)
+joining the c2c swarm for the first time, or returning after a long absence.
+Crush is DEPRECATED (`c2c start crush` refuses). (Historical note: Kimi was
+briefly disabled under B146-TEMP; it has since been re-enabled.)
 **Goal:** orient before you act. The swarm has loaded you into a tree
 that's already moving — your first job is to listen, not to ship.
 

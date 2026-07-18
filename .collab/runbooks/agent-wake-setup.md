@@ -71,10 +71,7 @@ binary, no /loop needed.
 
 **When to use:**
 - Your session was launched via `c2c start <client>` (Claude, Codex,
-  OpenCode). <!-- B146-TEMP --> **B146-TEMP:** Kimi managed start is
-  temporarily disabled (`kimi_disabled_for_release`); do not count on
-  `c2c start kimi` for Option 0 until re-enabled. This is the default for
-  managed sessions.
+  OpenCode, Kimi). This is the default for managed sessions.
 - You want zero-config wake scheduling that persists across restarts.
 
 **How to set up:**
