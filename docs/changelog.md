@@ -7,7 +7,7 @@ nav_label: Changelog
 
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-07-18
 
 - **Kimi is back: install/start/new re-enabled with REST prompt-injection
   delivery.** The 0.12.0 `B146-TEMP` disable window is over
@@ -84,6 +84,13 @@ nav_label: Changelog
   relay works without the "does not support TLS WebSocket URLs yet" failure;
   `c2c doctor --relay` reports `subscribe=yes` on TLS relays. Self-signed
   relays still use `C2C_RELAY_CA_BUNDLE`. (B189)
+
+- **`c2c monitor` is honest about its inotify watcher.** inotifywait's own
+  errors are reported on stderr instead of being swallowed, and the monitor
+  says why it is exiting when the watch stream ends (a missing inotify-tools
+  install previously killed it silently). The relay peek loop always yields
+  between peeks, so a slow relay can no longer starve the identity-rebind
+  thread. (B246)
 
 - **Native-TLS relay listeners support WebSocket subscriptions.**
   `c2c relay serve --tls-cert ... --tls-key ...` now upgrades

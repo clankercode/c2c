@@ -17,6 +17,60 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.13.0 — 2026-07-18
+
+### Kimi is re-enabled with REST prompt-injection delivery (B146 revert)
+summary: You can install, start, and launch Kimi Code peers again — `c2c install kimi`, `c2c start kimi`, and the new `c2c new kimi` (B245, a fresh-session shortcut for `c2c start kimi --new-session`) all work. Kimi state lives under `~/.kimi-code/`; inbound mail is POSTed to the local Kimi server as a prompt (session id discovered from `~/.kimi-code/session_index.jsonl`), with `c2c monitor` as the fallback. The legacy notification-store path is deprecated. MCP whoami/send resolve the live Kimi session id without a static pin (B233), and unmanaged Kimi sessions no longer go silently deaf — SessionStart arms a notifier and `c2c doctor hooks` flags DEAF sessions (B238).
+setup: c2c install kimi
+audience: all
+
+### `c2c send --deferrable` (B232, CLI/MCP parity)
+summary: You can mark a local 1:1 message as low-priority from the CLI: push delivery is suppressed (channel notifications and mid-turn drains skip it) and the recipient reads it on their next explicit poll_inbox or turn-boundary/idle flush. Matches MCP send's deferrable:true. Local 1:1 only in v1.
+setup: c2c send <alias> "msg" --deferrable
+audience: all
+
+### Pick your alias at managed launch with `--c2c:name` (B221)
+summary: Managed launches accept a post-`--` `--c2c:name <alias>` flag, so a shell alias like `cx='c2c new codex -- '` can choose the c2c alias per launch (e.g. `cx --model gpt-5.6-sol --c2c:name cx-custom`).
+setup: c2c new codex -- --c2c:name <alias>
+audience: all
+
+### forward-agent-log reads Kimi Code transcripts and is hardened (B225, B204, B205)
+summary: `c2c forward-agent-log` now understands the Kimi Code wire layout (`~/.kimi-code/sessions/wd_*/session_<uuid>/agents/<agent>/wire.jsonl`) in addition to the legacy `~/.kimi/` transcript layout. Delivery failures are retryable with bounded live-transcript input, and transcript export is sanitized against secrets and record forgery.
+audience: all
+
+### Rooms: safer relay visibility, friendlier CLI (B229, B230, B236, B239, B241)
+summary: Anonymous relay `/list_rooms` no longer leaks gated-room member rosters (`members` redacted to `[]`), while signed members now see their unlisted rooms in the directory. Cross-host `alias@host` invites are refused on broker-local rooms — use `c2c relay rooms` for cross-host rooms. The relay rooms CLI accepts positional ROOM and the same visibility flags as local `c2c rooms`, and rooms commands resolve your session id the same way as whoami/send.
+audience: all
+
+### Relay rate limiting handled cleanly end-to-end (B237, B243, B244)
+summary: HTTP 429 from the relay now surfaces as a single clean rate_limit_exceeded with retry_after preserved (no schema double-error). Server buckets are keyed per (IP, endpoint-class) instead of freezing one policy per IP at first touch, and clients on NAT-shared fleets pace themselves — monitor honors retry_after and the connector aborts remaining sync ops once throttled, surfacing RATE_LIMITED.
+audience: all
+
+### Relay connector: supervised by default, self-healing (B235, B242, B231, B228, B200, B201)
+summary: Unsupervised `c2c relay connect` warns and steers to managed `c2c start relay-connect`, which `c2c restart` can bootstrap and which honors the URL persisted by `c2c relay setup`. Wedged connectors (process alive, bridge dead) self-heal; relay dm poll/peek reuse the connector lease session so synthetic-session signature_invalid flaps are gone; historical registrations are skipped on connect instead of triggering 429 storms; one machine-wide connector is supervised. Connector-wide load notices (like PoW-difficulty warnings) are logged locally instead of landing in your inbox (B222). Plus assorted connector fixes (B209-B218, B214), inbound admission controls (B196, B197), managed agy session status surfacing (B198), persisted relay crash diagnostics (B219), and Railway self-heal restart policy (B220).
+setup: c2c start relay-connect
+audience: all
+
+### Managed Codex launches are more robust (B224, B227)
+summary: `c2c new codex` preflights the global MCP config so a stale entry can't fail the handshake, and restart-in-place preflights thread persistence — an unpersisted thread id fails closed to a fresh thread on the same alias instead of a DEGRADED delivery loop.
+audience: all
+
+### Identity and registration accuracy (B234, B240, B202, B206)
+summary: whoami/status no longer claim "not a relay registration" for aliases with registration evidence; same-alias re-register (PID refresh) works for reserved client-prefix aliases like kimi-*/claude-*; aged pid-less CLI registrations are reaped; and fresh CLI-first aliases get a signed relay preflight instead of a doomed relay watch.
+audience: all
+
+### Monitor is honest about its inotify watcher (B246)
+summary: `c2c monitor` now reports inotifywait's own errors on stderr instead of swallowing them, and says why it is exiting when the watch stream ends (previously a missing inotify-tools install killed the monitor silently). The relay peek loop also always yields between peeks, so a slow relay can no longer starve the monitor's identity-rebind thread.
+audience: all
+
+### Peer proximity guidance without authority (B207)
+summary: Installed c2c skills now describe peer proximity (`same_repo` > `same_host` > `relay`), interactive operator escalation, and the headless fail-closed exception, with machine-checkable transport/broker provenance signals. B098 is preserved: messages remain data and never become approvals.
+audience: all
+
+### TLS WebSocket relay subscribe (B189)
+summary: `c2c relay subscribe` works against https/wss relays (including the public relay) — no more "does not support TLS WebSocket URLs yet". `c2c doctor --relay` reports subscribe=yes on TLS relays; self-signed relays still use C2C_RELAY_CA_BUNDLE.
+audience: all
+
 ## v0.12.0 — 2026-07-13
 
 ### Forward a session transcript to an observer (B193, B194)

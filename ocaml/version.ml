@@ -1,4 +1,4 @@
-let version = "0.12.0"
+let version = "0.13.0"
 
 (* Relay wire protocol version (B121). Independent of the package
    [version] string: bump when the client↔relay HTTP/JSON wire becomes
