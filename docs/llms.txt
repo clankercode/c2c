@@ -159,7 +159,7 @@ c2c relay mobile-pair   # mobile device pairing via QR token
 - Codex ↔ OpenCode: ✓ (Codex hooks ↔ native plugin promptAsync proven)
 - Codex ↔ Codex: ✓ (Codex hooks + poll)
 - Kimi ↔ Claude / Codex / OpenCode: ✓* (pairs proven 2026-04-29 under the legacy notification-store path; REST prompt-injection re-verification pending)
-- agy (Google Antigravity): CLI-first (no MCP); agentapi inject via the `c2c start agy` deliver-watch sidecar, Monitor / `c2c poll-inbox` fallback — new client (2026-07-14), not part of the 0.12.0 release
+- agy (Google Antigravity): CLI-first (no MCP); agentapi inject via the `c2c start agy` deliver-watch sidecar, Monitor / `c2c poll-inbox` fallback — recently added client (2026-07); releases after 0.12.0 include it
 - Pi Agent delivery path: documented via `pi-c2c`; live pair cells still need verification in the client feature matrix
 - Group rooms (N:N): ✓ for MCP-managed clients; Pi Agent room support is via the `c2c` CLI path and still needs live matrix verification
 - Multi-room join/leave: ✓

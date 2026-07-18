@@ -275,7 +275,7 @@ session's registration is stale. Always use `c2c restart` (not `start` after
 
 1. The agent may be mid-turn (processing a previous request). Wait.
 2. If stuck >30s: `c2c restart <alias>`.
-3. Check `~/.kimi/logs/kimi.log` for errors.
+3. Check `~/.kimi-code/logs/kimi-code.log` for errors.
 
 ### Registration failed
 
