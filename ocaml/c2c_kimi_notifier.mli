@@ -236,6 +236,13 @@ val resolve_kimi_session_id :
     SessionStart hook payload. Keyed by workspace (not alias) because REST
     delivery is workdir-keyed (#36). Best-effort; never raises.
 
+    [workdir] is canonicalised (realpath + trailing-slash strip) before it is
+    hashed into the record filename, and {!read_kimi_session_record} /
+    {!clear_kimi_session_record} apply the SAME canonicalisation — we own both
+    ends of this key, so a trailing slash or a symlinked cwd in kimi's payload
+    must not silently produce an unfindable record. (This does not alter
+    {!workspace_hash_for_path}, which reproduces kimi-cli's own convention.)
+
     This is NOT the [<alias>.sid] notifier binding: that names the BROKER
     INBOX the daemon drains (since #40, the instance name), while this names
     the real kimi session used as the REST path component. *)
@@ -256,12 +263,26 @@ val read_kimi_session_record : workdir:string -> string option
     cannot delete the live session's binding. *)
 val clear_kimi_session_record : workdir:string -> session_id:string -> unit
 
-(** [decide_kimi_session_id ~recorded ~index_matches] is the pure resolution
-    rule behind {!resolve_kimi_session_id}. [index_matches] is
+(** [decide_kimi_session_id ~recorded ~index_matches ~all_index_matches] is the
+    pure resolution rule behind {!resolve_kimi_session_id}. Both lists are
     {!C2c_kimi_deliver.session_ids_for_workdir} output (file-append order, so
-    the last element is newest). Exposed for unit tests. *)
+    the last element is newest); [index_matches] is freshness-filtered and
+    [all_index_matches] is not.
+
+    The split is load-bearing, not cosmetic. "Which candidate is newest" is
+    answered from the FILTERED list so a stale entry cannot win; "has the
+    record been superseded" is answered from the UNFILTERED list, because a
+    stale recorded sid is old by construction and the freshness filter exists
+    precisely to drop old entries — checking membership against the filtered
+    list makes the anti-stale-record safeguard disarm itself in the one
+    configuration the notifier daemon always runs in (it sets a floor
+    unconditionally). Required rather than optional-with-default for the same
+    reason. Exposed for unit tests. *)
 val decide_kimi_session_id :
-  recorded:string option -> index_matches:string list -> string option
+  recorded:string option ->
+  index_matches:string list ->
+  all_index_matches:string list ->
+  string option
 
 (** [workspace_hash_for_path path] computes [md5(path)] as kimi-cli does
     (see [kimi_cli/metadata.py:WorkDirMeta.sessions_dir]). *)

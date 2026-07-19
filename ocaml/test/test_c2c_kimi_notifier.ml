@@ -1798,7 +1798,60 @@ let test_i41_superseded_record_yields_to_the_index () =
     ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_b" ~workdir ~age_s:1.0);
     Alcotest.(check (option string))
       "stale record superseded by a newer index entry" (Some "session_b")
-      (C2c_kimi_notifier.resolve_kimi_session_id ~cwd:workdir ()))
+      (C2c_kimi_notifier.resolve_kimi_session_id ~cwd:workdir ());
+    (* The daemon ALWAYS runs with a freshness floor (start_daemon calls
+       set_session_freshness_floor), so the no-floor call above is the one
+       configuration the per-alias notifier never uses. Assert the same
+       supersession under a floor that eliminates the stale entry — which is
+       exactly where a stale record lives. *)
+    Alcotest.(check (option string))
+      "supersession still detected under the daemon's freshness floor"
+      (Some "session_b")
+      (C2c_kimi_notifier.resolve_kimi_session_id
+         ~not_before:(Unix.gettimeofday () -. 60.0) ~cwd:workdir ()))
+
+(* REGRESSION (blocking defect in the first #41 cut): the freshness filter and
+   the anti-stale-record safeguard were reading the SAME list. The filter's job
+   is to drop entries older than session start — precisely where a stale
+   recorded sid lives — so whenever the filter was active and non-empty, the
+   stale sid was absent from the list the supersession check consulted, which
+   [decide] read as "the hook told us the sid before kimi appended its line"
+   and therefore TRUSTED. Result: mail POSTed to a dead session id forever,
+   and the index catching up is what made it permanent.
+
+   The daemon's floor is set unconditionally, so this is the daemon's normal
+   configuration, not an edge case. Supersession must be judged against the
+   UNFILTERED index; only the "which candidate is newest" question is
+   filtered. *)
+let test_i41_superseded_record_yields_under_the_daemon_freshness_floor () =
+  i41_with_home (fun ~tmp ~kimi_home ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    (* Prior session, ended without SessionEnd: still in the index, still in
+       the record, and old enough that the daemon's floor rejects it. *)
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_a" ~workdir ~age_s:600.0);
+    C2c_kimi_notifier.record_kimi_session_id ~workdir ~session_id:"session_a";
+    (* The live session kimi has since recorded. *)
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_b" ~workdir ~age_s:1.0);
+    let floor = Unix.gettimeofday () -. 60.0 in
+    Alcotest.(check (list string))
+      "precondition: the floor hides the stale sid from the index view"
+      [ "session_b" ]
+      (C2c_kimi_deliver.session_ids_for_workdir ~workdir ~not_before:floor ());
+    Alcotest.(check (option string))
+      "explicit ~not_before must not disable the supersession check"
+      (Some "session_b")
+      (C2c_kimi_notifier.resolve_kimi_session_id ~not_before:floor ~cwd:workdir ());
+    (* Same again through the PROCESS floor, which is how the daemon actually
+       reaches this code path (start_daemon -> set_session_freshness_floor). *)
+    Fun.protect
+      ~finally:(fun () -> C2c_kimi_notifier.set_session_freshness_floor 0.0)
+      (fun () ->
+        C2c_kimi_notifier.set_session_freshness_floor floor;
+        Alcotest.(check (option string))
+          "the daemon's process-wide floor must not disable it either"
+          (Some "session_b")
+          (C2c_kimi_notifier.resolve_kimi_session_id ~cwd:workdir ())))
 
 (* SessionEnd for an OLD session must not delete the LIVE session's record. *)
 let test_i41_clear_record_only_matches_its_own_session () =
@@ -1826,23 +1879,74 @@ let test_i41_record_is_per_workspace () =
     Alcotest.(check (option string)) "workspace b" (Some "session_b")
       (C2c_kimi_notifier.read_kimi_session_record ~workdir:b))
 
+(* #41 nit 2: we own BOTH ends of the record key, so the workspace path must be
+   canonicalised identically on write and on read. A trailing slash or a
+   symlinked cwd in kimi's SessionStart payload would otherwise md5 to a
+   different filename, the record would never be found, and #41 would silently
+   revert to lagging-index resolution. *)
+let test_i41_record_key_is_normalized_symmetrically () =
+  i41_with_home (fun ~tmp ~kimi_home:_ ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    (* Written with a trailing slash, read back without one. *)
+    C2c_kimi_notifier.record_kimi_session_id ~workdir:(workdir ^ "/")
+      ~session_id:"session_slash";
+    Alcotest.(check (option string))
+      "trailing-slash write is found by a plain read" (Some "session_slash")
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir);
+    (* And the reverse direction. *)
+    Alcotest.(check (option string))
+      "plain write is found by a trailing-slash read" (Some "session_slash")
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir:(workdir ^ "/"));
+    (* Symlinked path: realpath collapses it to the same key. *)
+    let link = Filename.concat tmp "link-to-proj" in
+    Unix.symlink workdir link;
+    Alcotest.(check (option string))
+      "a symlinked workdir resolves to the same record" (Some "session_slash")
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir:link);
+    (* Clearing through the symlink must clear the real record, not orphan it. *)
+    C2c_kimi_notifier.clear_kimi_session_record ~workdir:link
+      ~session_id:"session_slash";
+    Alcotest.(check (option string)) "cleared through the symlink" None
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir))
+
 let test_i41_decision_table () =
   let d = C2c_kimi_notifier.decide_kimi_session_id in
+  (* Rows where no freshness filter is in play: both lists are the same. *)
   Alcotest.(check (option string)) "no record, empty index" None
-    (d ~recorded:None ~index_matches:[]);
+    (d ~recorded:None ~index_matches:[] ~all_index_matches:[]);
   Alcotest.(check (option string)) "no record → newest index entry" (Some "c")
-    (d ~recorded:None ~index_matches:[ "a"; "b"; "c" ]);
+    (d ~recorded:None ~index_matches:[ "a"; "b"; "c" ]
+       ~all_index_matches:[ "a"; "b"; "c" ]);
   Alcotest.(check (option string)) "record absent from index → trust it (#41)"
     (Some "new")
-    (d ~recorded:(Some "new") ~index_matches:[ "old" ]);
+    (d ~recorded:(Some "new") ~index_matches:[ "old" ]
+       ~all_index_matches:[ "old" ]);
   Alcotest.(check (option string)) "record is newest → trust it" (Some "c")
-    (d ~recorded:(Some "c") ~index_matches:[ "a"; "b"; "c" ]);
+    (d ~recorded:(Some "c") ~index_matches:[ "a"; "b"; "c" ]
+       ~all_index_matches:[ "a"; "b"; "c" ]);
   Alcotest.(check (option string)) "record superseded → follow the index"
     (Some "c")
-    (d ~recorded:(Some "a") ~index_matches:[ "a"; "b"; "c" ]);
+    (d ~recorded:(Some "a") ~index_matches:[ "a"; "b"; "c" ]
+       ~all_index_matches:[ "a"; "b"; "c" ]);
   Alcotest.(check (option string)) "record with empty index → trust it"
     (Some "only")
-    (d ~recorded:(Some "only") ~index_matches:[])
+    (d ~recorded:(Some "only") ~index_matches:[] ~all_index_matches:[]);
+  (* THE DAEMON ROW. The floor has hidden the stale recorded sid from the
+     filtered view; supersession must still be seen in the unfiltered one. *)
+  Alcotest.(check (option string))
+    "record filtered out of the fresh view but present in the full index → \
+     superseded"
+    (Some "b")
+    (d ~recorded:(Some "a") ~index_matches:[ "b" ]
+       ~all_index_matches:[ "a"; "b" ]);
+  (* Contrast: genuinely absent from the FULL index → still the #41 case, the
+     hook is simply ahead of kimi's append. Trust the record. *)
+  Alcotest.(check (option string))
+    "record absent from the full index → still trusted under a filter"
+    (Some "new")
+    (d ~recorded:(Some "new") ~index_matches:[ "b" ]
+       ~all_index_matches:[ "a"; "b" ])
 
 let () =
   Alcotest.run "c2c_kimi_notifier"
@@ -1933,10 +2037,14 @@ let () =
             test_i41_freshness_floor_never_wedges_delivery
         ; Alcotest.test_case "superseded record yields to the index" `Quick
             test_i41_superseded_record_yields_to_the_index
+        ; Alcotest.test_case "superseded record yields under the daemon freshness floor" `Quick
+            test_i41_superseded_record_yields_under_the_daemon_freshness_floor
         ; Alcotest.test_case "clear_record only matches its own session" `Quick
             test_i41_clear_record_only_matches_its_own_session
         ; Alcotest.test_case "record is per-workspace" `Quick
             test_i41_record_is_per_workspace
+        ; Alcotest.test_case "record key is normalized symmetrically" `Quick
+            test_i41_record_key_is_normalized_symmetrically
         ; Alcotest.test_case "resolution decision table" `Quick
             test_i41_decision_table
         ] )

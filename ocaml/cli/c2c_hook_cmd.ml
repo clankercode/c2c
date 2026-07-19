@@ -1406,7 +1406,25 @@ let live_managed_kimi_registrations ~(cwd : string)
    cannot distinguish a crashed instance from one about to be reaped. Those
    keep failing closed to minting (see
    [test_i40_hook_ignores_dead_managed_registration]) so a foreign row is never
-   resurrected on the strength of a stale claim. Pure over [regs]. *)
+   resurrected on the strength of a stale claim.
+
+   CAVEAT — "only c2c writes [pid = None], and only on teardown" is true today
+   but holds BY ACCIDENT, not by construction. [c2c_health_cmd.ml]'s
+   connect-verify probe calls [Broker.register ... ~pid:None ~pid_start_time:None],
+   and [Broker.register] ([c2c_broker.ml]) writes [pid] / [cwd] /
+   [registered_by] VERBATIM with no preserve-on-[None] semantics. That row is
+   excluded here only because the same call nulls [cwd] too, so
+   [is_managed_kimi_row_for_cwd] rejects it. If [Broker.register] ever gains
+   preserve-on-[None] for [cwd] — a plausible, well-intentioned change — that
+   probe would start producing pid-less rows that DO carry a workspace cwd, and
+   this predicate would reclaim a LIVE row's identity. Any change to
+   [Broker.register]'s [None] handling must revisit this filter.
+
+   SCOPE — reclaim is unbounded in time: a managed row torn down months ago
+   still captures every future kimi SessionStart in that directory, including a
+   deliberate plain `kimi` run after `c2c stop`. Accepted as sticky-workspace-
+   alias semantics (see the #40/#47 known-limits note in CLAUDE.md), not an
+   oversight. Pure over [regs]. *)
 let reclaimable_managed_kimi_registrations ~(cwd : string)
     (regs : C2c_mcp.registration list) : C2c_mcp.registration list =
   let want = normalize_hook_cwd cwd in
@@ -1547,11 +1565,17 @@ let hook_kimi_cmd =
           session start (kimi appends its line only after hooks run), and it is
           what the notifier's REST delivery reads. Independent of the broker
           identity resolved below. *)
+       (* Normalized, matching the registration-side key: kimi's payload cwd is
+          whatever the client passes, so a trailing slash or a symlinked path
+          would md5 to a different record filename than the notifier's lookup
+          and the record would silently never be found (#41 nit 2). The
+          notifier canonicalises internally too — this is belt-and-braces and
+          keeps the call site honest about which key space it is writing. *)
        (match payload_sid with
         | Some sid when hook_cwd <> "" ->
             (try
-               C2c_kimi_notifier.record_kimi_session_id ~workdir:hook_cwd
-                 ~session_id:sid
+               C2c_kimi_notifier.record_kimi_session_id
+                 ~workdir:(normalize_hook_cwd hook_cwd) ~session_id:sid
              with _ -> ())
         | _ -> ());
        let adopt (m : C2c_mcp.registration) ~why =

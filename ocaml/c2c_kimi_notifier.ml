@@ -364,9 +364,30 @@ let ensure_kimi_server_running () =
    records which BROKER INBOX the daemon drains (since #40 the instance name),
    whereas this records the REAL kimi session id used as the REST path
    component. Conflating them is what #40's notes warn against. *)
+(* WE own both ends of this key: [c2c hook kimi] writes the record and the
+   notifier reads it back. So the workspace path must be canonicalised
+   IDENTICALLY on both sides — a trailing slash or a symlinked payload cwd
+   would otherwise md5 to a different filename, the record would silently
+   never be found, and #41 resolution would revert to the lagging-index status
+   quo. Fail-safe, but silent, which is the worst kind of silent.
+
+   Doing it here rather than at the call sites makes the symmetry structural:
+   every reader and writer goes through [kimi_session_record_path].
+
+   Deliberately NOT folded into [workspace_hash_for_path], which must keep
+   reproducing kimi-cli's own md5(path) convention verbatim for the paths KIMI
+   chooses — that convention is not ours to change. *)
+let normalize_workspace_path p =
+  let p = String.trim p in
+  let stripped =
+    let n = String.length p in
+    if n > 1 && p.[n - 1] = '/' then String.sub p 0 (n - 1) else p
+  in
+  try Unix.realpath stripped with _ -> stripped
+
 let kimi_session_record_path ~workdir =
   home () // ".local" // "share" // "c2c" // "kimi-sessions"
-  // (workspace_hash_for_path workdir ^ ".json")
+  // (workspace_hash_for_path (normalize_workspace_path workdir) ^ ".json")
 
 let ensure_kimi_session_record_dir () =
   let d = home () // ".local" // "share" // "c2c" // "kimi-sessions" in
@@ -380,6 +401,7 @@ let ensure_kimi_session_record_dir () =
 let record_kimi_session_id ~workdir ~session_id =
   if String.trim workdir = "" || String.trim session_id = "" then ()
   else
+    let workdir = normalize_workspace_path workdir in
     try
       ignore (ensure_kimi_session_record_dir ());
       let json =
@@ -394,6 +416,11 @@ let record_kimi_session_id ~workdir ~session_id =
 
 let read_kimi_session_record ~workdir =
   let path = kimi_session_record_path ~workdir in
+  (* Same normalisation as the write side, so the [wd = workdir] cross-check
+     below compares like with like. A record written by a pre-normalisation
+     binary simply reads as [None] and we fall back to the index until the next
+     SessionStart rewrites it — fail-safe and self-healing. *)
+  let workdir = normalize_workspace_path workdir in
   if not (Sys.file_exists path) then None
   else
     try
@@ -420,20 +447,41 @@ let clear_kimi_session_record ~workdir ~session_id =
    [index_matches] is [session_ids_for_workdir] output: file-append order, so
    the last element is the newest session kimi has recorded for the workspace.
 
-   - No record → the index's newest match (pre-#41 behaviour).
-   - Record present and ABSENT from the index → trust it. This is the #41 case:
-     the hook has told us the sid before kimi appended its line.
-   - Record present and IS the newest index match → trust it (same answer).
-   - Record present but SUPERSEDED (present in the index with a newer sibling
-     after it) → the record is stale, e.g. a session that ended without its
-     SessionEnd hook firing. The index has moved on; follow it. This is what
-     stops the fix from turning a lagging binding into a sticky wrong one. *)
-let decide_kimi_session_id ~recorded ~index_matches =
+   [all_index_matches] is the SAME query with no freshness filter applied. The
+   two lists answer two different questions and MUST NOT be conflated:
+
+   - "which candidate is newest?" is asked of [index_matches] (filtered), so a
+     stale entry cannot win the election;
+   - "has the record been superseded?" is asked of [all_index_matches]
+     (unfiltered), because a stale recorded sid is by construction OLD, and the
+     freshness filter's whole job is to drop old entries. Asking the filtered
+     list would mean the safeguard silently disarms itself in exactly the
+     situation it exists for. That was a real defect in the first #41 cut: the
+     daemon always sets a floor, so with a stale record + a live newer session
+     the recorded sid was absent from the filtered view, read as "the hook told
+     us the sid before kimi appended its line", and TRUSTED — POSTing mail to a
+     dead session id permanently. Regression test:
+     [test_i41_superseded_record_yields_under_the_daemon_freshness_floor].
+
+   - No record → the newest fresh match (pre-#41 behaviour).
+   - Record present and ABSENT from the index entirely → trust it. This is the
+     #41 case: the hook has told us the sid before kimi appended its line.
+   - Record present and IS the newest fresh match → trust it (same answer).
+   - Record present but SUPERSEDED (it appears somewhere in the index, yet the
+     newest fresh match is a different session) → the record is stale, e.g. a
+     session that ended without its SessionEnd hook firing. The index has moved
+     on; follow it. This is what stops the fix from turning a lagging binding
+     into a sticky wrong one.
+
+   [all_index_matches] is a required argument, not an optional one defaulting
+   to [index_matches]: a default would silently reinstate the defect at any
+   call site that forgot it. *)
+let decide_kimi_session_id ~recorded ~index_matches ~all_index_matches =
   let newest = match List.rev index_matches with x :: _ -> Some x | [] -> None in
   match recorded with
   | None -> newest
   | Some sid ->
-      if List.mem sid index_matches && newest <> Some sid then newest
+      if List.mem sid all_index_matches && newest <> Some sid then newest
       else Some sid
 
 (* #41 direction 3, process-wide. The per-alias notifier daemon arms at (or
@@ -469,17 +517,21 @@ let resolve_kimi_session_id ?not_before ~cwd () =
     | Some _ as t -> t
     | None -> if !session_freshness_floor > 0.0 then Some !session_freshness_floor else None
   in
+  (* Read the unfiltered view unconditionally: it is both the fallback when the
+     floor eliminates everything AND the list the supersession check must be
+     judged against (see [decide_kimi_session_id]). *)
+  let all_index_matches = C2c_kimi_deliver.session_ids_for_workdir ~workdir:cwd () in
   let index_matches =
     match not_before with
-    | None -> C2c_kimi_deliver.session_ids_for_workdir ~workdir:cwd ()
+    | None -> all_index_matches
     | Some t -> (
         match C2c_kimi_deliver.session_ids_for_workdir ~workdir:cwd ~not_before:t () with
-        | [] -> C2c_kimi_deliver.session_ids_for_workdir ~workdir:cwd ()
+        | [] -> all_index_matches
         | fresh -> fresh)
   in
   decide_kimi_session_id
     ~recorded:(read_kimi_session_record ~workdir:cwd)
-    ~index_matches
+    ~index_matches ~all_index_matches
 
 (* REST prompt delivery seam.  Discovers the Kimi session id for [workdir],
    ensures the local server is running, and POSTs the message as a user

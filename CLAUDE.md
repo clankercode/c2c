@@ -206,7 +206,13 @@ app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
   *co-located vanilla* kimi TUI in a managed directory is adopted too — it
   never registers its own alias and its identity skill names the managed alias.
   Delivery is unaffected (the REST layer is workdir-keyed); nothing in the hook
-  payload can distinguish these cases.
+  payload can distinguish these cases. **The adoption is unbounded in time**:
+  since #47 the hook also reclaims a *torn-down* managed row (`pid = None`), and
+  nothing expires it — a managed row from months ago still captures every future
+  kimi SessionStart in that directory, including a deliberate plain `kimi` after
+  `c2c stop`. That is intended sticky-workspace-alias semantics, not a bug; to
+  get a fresh identity in such a directory, remove the row (`c2c sweep` on a
+  confirmed-dead session) or run from a different cwd.
   **`session_index.jsonl` is a LAGGING log — never resolve identity from it
   alone (#41).** kimi appends the new session's line only *after* its
   SessionStart hooks run, so "newest entry for this workdir" names the
