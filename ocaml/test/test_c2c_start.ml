@@ -935,6 +935,88 @@ let test_i67_self_pid_no_start_guard_agrees_with_register () =
             "register ACCEPTED a self-pid holder with no start time while the \
              guard refused it — guard and register disagree (#67)"))
 
+(* #77. The pre-launch guard is NAME-scoped: it matches on the instance [name],
+   while [Broker.register] refuses on the FINAL alias the launch publishes. For
+   `c2c start codex` with an auto-picked name and no --alias, that alias is a
+   [C2c_codex_session.derive_alias]-minted `codex-<word>-<word>-<hex>` computed
+   AFTER the guard runs, so the guard cannot know it (issue #77 direction 2 —
+   best-effort guard + clean late refusal, not direction 1's duplicate-the-
+   derivation coupling). This pins the backstop the decision leans on: a live
+   DIFFERENT-session row already holding the derived alias is INVISIBLE to the
+   guard (which only knows [name]), yet [register] still refuses it cleanly with
+   [Invalid_argument] rather than admitting a colliding second holder. If this
+   ever stops raising, the name-scoped guard degrades to a silent false accept
+   with no authority behind it. *)
+let test_i77_derived_alias_collision_register_backstops_namescoped_guard () =
+  let dir = Filename.temp_file "c2c-i77-derived" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      (* The alias the launch would actually publish, derived exactly as the
+         codex app-server derives it. No collision is probed here ([taken]
+         always false), so this is the un-extended base — the common case. *)
+      let derived_sid = "sid-i77-codex-derived-holder" in
+      let derived_alias =
+        C2c_codex_session.derive_alias ~session_id:derived_sid
+          ~taken:(fun _ -> false)
+      in
+      (* The auto-picked instance NAME the guard is handed — deliberately not
+         the derived alias, which is the whole point: the two disagree. *)
+      let auto_name = "i77autoname" in
+      check bool
+        "fixture: the derived alias differs from the auto-picked name the \
+         guard sees"
+        true
+        (C2c_mcp.Broker.alias_casefold derived_alias
+         <> C2c_mcp.Broker.alias_casefold auto_name);
+      (* A LIVE row owned by a DIFFERENT session that already holds the derived
+         alias. Alive and not self (parent pid + its real start time), so
+         neither the liveness path nor #34's self-owned carve-out accounts for
+         the verdict, and a different session_id means [already_owns_alias]
+         cannot be what saves register. *)
+      let live = Unix.getppid () in
+      Yojson.Safe.to_file (Filename.concat dir "registry.json")
+        (`List
+          [ `Assoc
+              ([ ("session_id", `String "sid-i77-other-holder")
+               ; ("alias", `String derived_alias)
+               ; ("pid", `Int live) ]
+               @
+               match C2c_mcp.Broker.read_pid_start_time live with
+               | Some s -> [ ("pid_start_time", `Int s) ]
+               | None -> []) ]);
+      (* Guard side: BLIND. Handed only the auto-picked name, it does not see
+         the collision on the derived alias — this is the name-scoped
+         best-effort limit #77 documents, not a bug to fix here. *)
+      check (option (pair string int))
+        "guard is blind to a collision on the derived alias (name-scoped)"
+        None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:auto_name);
+      (* Authority side: the backstop. [register] publishing the derived alias
+         against the live different-session holder must REFUSE cleanly with
+         [Invalid_argument], the late-refusal path #34 made safe (try-wrapper +
+         managed_registration_failed record + no half-started frontend). *)
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (match
+         (try
+            C2c_mcp.Broker.register broker ~session_id:"sid-i77-newcomer"
+              ~alias:derived_alias ~pid:(Some (Unix.getpid ()))
+              ~pid_start_time:
+                (C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+              ();
+            None
+          with Invalid_argument m -> Some m)
+       with
+      | Some _ -> ()
+      | None ->
+          fail
+            "register ACCEPTED the derived alias over a live different-session \
+             holder — the name-scoped guard is a silent false accept with no \
+             authority behind it (#77)"))
+
 (* #56 nit 3. [register] compares aliases with [alias_casefold]; the guard
    compared them byte-exactly, so `-n foo` against a live `Foo` row sailed
    past the pre-launch check and was refused late by [register] — the exact
@@ -4749,6 +4831,10 @@ let () =
             `Quick, test_i56_pidless_row_guard_agrees_with_register )
         ; ( "i67_self_pid_no_start_guard_agrees_with_register",
             `Quick, test_i67_self_pid_no_start_guard_agrees_with_register )
+        ; ( "i77_derived_alias_collision_register_backstops_namescoped_guard",
+            `Quick,
+            test_i77_derived_alias_collision_register_backstops_namescoped_guard
+          )
         ; ( "i56_registry_alive_conflict_alias_match_is_case_insensitive",
             `Quick,
             test_i56_registry_alive_conflict_alias_match_is_case_insensitive )

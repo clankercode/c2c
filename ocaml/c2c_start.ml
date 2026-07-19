@@ -2960,7 +2960,33 @@ let remove_pidfile (path : string) =
 (** Registry precheck: if the alias/session-id is already alive in the broker
     registry, print a human-readable FATAL message and exit 1.  Called before
     the flock so the common-case error says "alias foo is alive" rather than
-    the more opaque "lock held". *)
+    the more opaque "lock held".
+
+    #77: this guard is intentionally NAME-scoped and therefore best-effort. It
+    matches rows on the instance [name] (its [session_id] or its [alias]), but
+    the authority it front-runs — [Broker.register] — refuses on the FINAL
+    [alias] the launch publishes, and for one client that alias is not knowable
+    here. When `c2c start codex` is given an auto-picked name and no
+    `--alias`/`-n`, the app-server publishes a `codex-<word>-<word>-<hex>` alias
+    minted by [C2c_codex_session.derive_alias] AFTER this guard has run — and
+    the derivation collision-probes the LIVE registry at derive time, so the
+    guard cannot reproduce it without duplicating that logic and coupling to it
+    (issue #77 direction 1, deliberately declined). Two residual, narrow shapes
+    follow, both #34's late-refusal / orphaned-TUI shape:
+      - false refusal: a live row on the auto-picked [name] makes this guard
+        refuse, though the launch would register the derived alias and never
+        collide with [name]; and
+      - false accept: a live row on the DERIVED alias is invisible here (the
+        guard only knows [name]), so a genuine collision on the published alias
+        is refused LATE rather than early.
+    The late [Broker.register] refusal is the backstop, and since #34 it is
+    clean: it is called inside a try-wrapper that records a
+    `managed_registration_failed` broker.log entry and never lets the
+    [Invalid_argument] escape to strand a half-started frontend
+    (`register_managed_app_server_identity` call site in c2c_codex_session.ml).
+    [test_i77_derived_alias_collision_register_backstops_namescoped_guard] pins
+    that the authority still refuses the derived-alias collision even though
+    this guard is blind to it. *)
 let registry_alive_conflict ~(broker_root : string) ~(name : string)
     : (string * int) option =
   let reg_path = broker_root // "registry.json" in
