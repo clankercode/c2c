@@ -67,5 +67,10 @@ tasks:
       id: T004
       priority: medium
       status: pending
-      tags: []
+      tags:
+        - i010
+        - i011
+        - c2c
+        - docs
+        - closeout
       title: 'Final closeout: consolidate decisions, canonical docs/generated surfaces, reconcile+close I010/I011 by criteria met'
