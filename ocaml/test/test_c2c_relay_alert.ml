@@ -8,13 +8,15 @@ module A = C2c_relay_alert
 
 let obs ?(difficulty = None) ?(rate_limited = false)
         ?(rate_limited_senders = [])
-        ?(pow_retry_failed = false) ?(pow_retry_sender = None) ?(dlqs = []) () =
+        ?(pow_retry_failed = false) ?(pow_retry_sender = None) ?(dlqs = [])
+        ?(inbound_contract_aliases = []) () =
   { A.obs_difficulty = difficulty;
     obs_rate_limited = rate_limited;
     obs_rate_limited_senders = rate_limited_senders;
     obs_pow_retry_failed = pow_retry_failed;
     obs_pow_retry_sender = pow_retry_sender;
-    obs_dlqs = dlqs }
+    obs_dlqs = dlqs;
+    obs_inbound_contract_aliases = inbound_contract_aliases }
 
 let kinds ems = List.map (fun e -> e.A.kind) ems
 let sevs ems = List.map (fun e -> A.severity_to_string e.A.severity) ems
@@ -160,6 +162,69 @@ let test_dlq_dm_sender_per_entry () =
     (contains ~needle:"bob@host" (List.hd ems).A.body
      && contains ~needle:"recipient_dead" (List.hd ems).A.body)
 
+(* --- #62: relay-served undeliverable inbound rows --- *)
+
+(* This is the ONLY agent-visible signal for the class. The connector
+   deliberately keeps these drops out of [last_error]/health (a restart cannot
+   fix a relay serving malformed rows), and polling the relay is destructive,
+   so the mail is already gone by the time we notice. If these emissions stop
+   firing, a relay can drain and destroy 100% of a host's inbound mail while
+   `c2c whoami` reports the connector healthy. *)
+
+let test_inbound_contract_dms_affected_alias () =
+  let ems, st =
+    A.step A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  Alcotest.(check (list string)) "one inbound_contract" [ "inbound_contract" ]
+    (kinds ems);
+  Alcotest.(check (list string)) "err severity" [ "ERR" ] (sevs ems);
+  Alcotest.(check (list string)) "DM the recipient whose mail was destroyed"
+    [ "dm:alpha" ] (targets ems);
+  Alcotest.(check bool) "body says the rows were dropped and not retried" true
+    (contains ~needle:"DROPPED" (List.hd ems).A.body
+     && contains ~needle:"NOT be retried" (List.hd ems).A.body);
+  Alcotest.(check bool) "body names the alias" true
+    (contains ~needle:"alpha" (List.hd ems).A.body);
+  Alcotest.(check (list string)) "plateau recorded" [ "alpha" ]
+    st.A.inbound_contract_aliases
+
+let test_inbound_contract_plateau_does_not_spam () =
+  (* A relay serving garbage on every 30s sync must alert once, not 120
+     times an hour into the agent's inbox. *)
+  let _, st1 =
+    A.step A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  let ems2, st2 = A.step st1 (obs ~inbound_contract_aliases:[ "alpha" ] ()) in
+  Alcotest.(check (list string)) "sustained failure does not re-alert" []
+    (kinds ems2);
+  let ems3, st3 = A.step st2 (obs ~inbound_contract_aliases:[ "alpha" ] ()) in
+  Alcotest.(check (list string)) "still quiet on the third sync" []
+    (kinds ems3);
+  (* Recovery clears the edge so a LATER recurrence is reported again — the
+     dedup must not become a permanent mute. *)
+  let ems4, st4 = A.step st3 (obs ()) in
+  Alcotest.(check (list string)) "recovery is silent" [] (kinds ems4);
+  Alcotest.(check (list string)) "plateau cleared" []
+    st4.A.inbound_contract_aliases;
+  let ems5, _ = A.step st4 (obs ~inbound_contract_aliases:[ "alpha" ] ()) in
+  Alcotest.(check (list string)) "a fresh recurrence re-alerts"
+    [ "inbound_contract" ] (kinds ems5)
+
+let test_inbound_contract_aliases_dedupe_independently () =
+  let _, st1 =
+    A.step A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  let ems, _ =
+    A.step st1 (obs ~inbound_contract_aliases:[ "alpha"; "beta"; "beta" ] ())
+  in
+  Alcotest.(check (list string)) "only the new alias alerts, once"
+    [ "dm:beta" ] (targets ems)
+
+let test_no_inbound_contract_drops_is_silent () =
+  let ems, st = A.step A.initial_state (obs ()) in
+  Alcotest.(check (list string)) "nothing emitted" [] (kinds ems);
+  Alcotest.(check (list string)) "no plateau" [] st.A.inbound_contract_aliases
+
 (* --- combined: independent edges in one sync --- *)
 
 let test_combined_emissions () =
@@ -198,6 +263,16 @@ let () =
     ];
     "dlq", [
       Alcotest.test_case "DM sender per entry" `Quick test_dlq_dm_sender_per_entry;
+    ];
+    "inbound_contract", [
+      Alcotest.test_case "DMs the alias whose mail was destroyed" `Quick
+        test_inbound_contract_dms_affected_alias;
+      Alcotest.test_case "plateau does not spam, recovery re-arms" `Quick
+        test_inbound_contract_plateau_does_not_spam;
+      Alcotest.test_case "aliases dedupe independently" `Quick
+        test_inbound_contract_aliases_dedupe_independently;
+      Alcotest.test_case "no drops is silent" `Quick
+        test_no_inbound_contract_drops_is_silent;
     ];
     "combined", [
       Alcotest.test_case "independent edges in one sync" `Quick test_combined_emissions;

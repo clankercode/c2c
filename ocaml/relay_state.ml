@@ -251,6 +251,16 @@ type connector_info = {
      cause; None on older state files and on paths that record no detail. *)
   conn_last_error_op : string option;
   conn_last_error_detail : string option;
+  (* #62: inbound rows the last sync dropped, and why. These are deliberately
+     NOT faults — they never move [conn_health] — but they are how mail goes
+     missing on an otherwise healthy connector, so they have to be visible
+     somewhere a human or agent actually looks. Before this, the counter was
+     parsed off connector-state.json and read by nothing at all: a relay
+     serving undeliverable rows every sync reported `ok` while every inbound
+     message was drained and destroyed. Per-sync values, so they describe the
+     LAST sync, not a running total. *)
+  conn_inbound_rejected : int;
+  conn_inbound_rejected_note : string option;
 }
 
 let default_remediation_start =
@@ -299,8 +309,10 @@ let derive_health ~live ~process_present ~state ~now : connector_health =
    exist — `("sync", Printexc.to_string exn)` is opaque. (The other example
    this comment used to cite,
    `("poll_inbox", "dropped N policy-rejected inbound row(s)…")`, is gone:
-   #62 moved inbound-policy accounting out of `last_error` entirely, so it
-   no longer drives `erroring`. See
+   #62 moved inbound drop accounting out of `last_error` entirely, so it no
+   longer drives `erroring`. Those drops surface as [conn_inbound_rejected] /
+   [conn_inbound_rejected_note] instead — they are reported, not diagnosed,
+   because no remediation on THIS host clears them. See
    [C2c_relay_connector.classify_poll_outcome].)
    The checklist is a `#` shell comment on a runnable command: it costs
    nothing and never breaks copy-paste, so render it alongside the error.
@@ -355,6 +367,14 @@ let connector_info ?(process_present = false)
     conn_remediation = remediation_for health;
     conn_last_error_op = last_error_op;
     conn_last_error_detail = last_error;
+    conn_inbound_rejected =
+      (match state with
+       | Some st -> st.C2c_relay_connector.cs_inbound_rejected
+       | None -> 0);
+    conn_inbound_rejected_note =
+      (match state with
+       | Some st -> st.C2c_relay_connector.cs_inbound_rejected_note
+       | None -> None);
   }
 
 let connector_json (c : connector_info) : Yojson.Safe.t =
@@ -380,6 +400,13 @@ let connector_json (c : connector_info) : Yojson.Safe.t =
         match c.conn_last_error_op with Some s -> `String s | None -> `Null )
     ; ( "last_error_detail",
         match c.conn_last_error_detail with
+        | Some s -> `String s
+        | None -> `Null )
+      (* #62: not health, but the only machine-readable trace of mail the last
+         sync dropped. Full note here; the human line clips it. *)
+    ; ("inbound_rejected", `Int c.conn_inbound_rejected)
+    ; ( "inbound_rejected_note",
+        match c.conn_inbound_rejected_note with
         | Some s -> `String s
         | None -> `Null )
     ]
@@ -439,22 +466,39 @@ let connector_human (c : connector_info) =
      include Yojson.Safe.to_string of a whole relay response, i.e. unbounded
      in principle; the connector's own log renderers truncate this same field,
      so truncate here too. --json keeps the full detail. *)
+  let clip s =
+    if String.length s > err_detail_max_chars then
+      String.sub s 0 (utf8_safe_cut s err_detail_max_chars) ^ "..."
+    else s
+  in
   let err_bit =
-    let clip s =
-      if String.length s > err_detail_max_chars then
-        String.sub s 0 (utf8_safe_cut s err_detail_max_chars) ^ "..."
-      else s
-    in
     match (c.conn_last_error_op, c.conn_last_error_detail) with
     | _, None -> ""
     | None, Some detail -> Printf.sprintf "; last error: %s" (clip detail)
     | Some op, Some detail ->
         Printf.sprintf "; last error: %s: %s" op (clip detail)
   in
+  (* #62 parity: dropped inbound rows are reported in --json, so they must be
+     reported here too — the whole failure mode this guards against is a
+     connector that reads `live` while the relay's rows are being dropped.
+     Rendered inside the same parenthesised evidence group and clipped like
+     err_bit, so it cannot displace the remediation command. Silent at 0, so
+     the ordinary line is unchanged. *)
+  let drops_bit =
+    if c.conn_inbound_rejected <= 0 then ""
+    else
+      match c.conn_inbound_rejected_note with
+      | Some note -> Printf.sprintf "; last sync dropped %d inbound row(s): %s"
+                       c.conn_inbound_rejected (clip note)
+      | None ->
+          Printf.sprintf "; last sync dropped %d inbound row(s)"
+            c.conn_inbound_rejected
+  in
   match c.conn_health with
   | Health_ok ->
-      Printf.sprintf "live (%s%s%s)" age_bit ok_bit
+      Printf.sprintf "live (%s%s%s%s)" age_bit ok_bit
         (if c.conn_process_present then "; process present" else "")
+        drops_bit
   | Health_absent ->
       Printf.sprintf
         "none (no connector sync state — start with 'c2c relay connect')%s"
@@ -472,8 +516,8 @@ let connector_human (c : connector_info) =
       Printf.sprintf "down (%s%s; no attributable process)%s" age_bit ok_bit
         rem_bit
   | Health_erroring ->
-      Printf.sprintf "erroring (%s%s%s%s)%s" age_bit ok_bit proc_bit err_bit
-        rem_bit
+      Printf.sprintf "erroring (%s%s%s%s%s)%s" age_bit ok_bit proc_bit err_bit
+        drops_bit rem_bit
 
 (* The rendered `connector:` line: health plus its scope marker. *)
 let connector_line (c : connector_info) =

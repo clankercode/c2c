@@ -662,16 +662,40 @@ let summarize_inbound_rejections reasons =
          |> Option.map (fun count -> Printf.sprintf "%s=%d" name count))
   |> String.concat ", "
 
-(* #62: what one session's inbound poll produced, split by whether it belongs
-   in [last_error]. [pa_errors] are faults — [write_connector_state] derives
-   [ok] from [last_error], so anything landing here freezes [last_ok_ts] and,
-   once that stamp ages past the freshness window while last_sync stays fresh,
-   pins [Relay_state.derive_health] to [Health_erroring]. [pa_note] is
-   accounting: it is reported, but it never touches health. *)
+(* #62: a rejected inbound row is one of THREE things, and conflating them is
+   what the original defect and its first fix each got wrong in opposite
+   directions.
+
+   1. [pa_errors] — faults. [write_connector_state] derives [ok] from
+      [last_error], so anything landing here freezes [last_ok_ts] and, once
+      that stamp ages past the freshness window while last_sync stays fresh,
+      pins [Relay_state.derive_health] to [Health_erroring] with a restart
+      remediation. Only conditions a local restart/repair can actually clear
+      belong here.
+   2. [pa_note] — local-policy accounting. B196 denied the row because THIS
+      host is configured to deny it. Reported, never health-affecting.
+   3. [pa_contract_note] — the relay served us a row we cannot deliver
+      ([Inbound_schema]) or somebody else's mail ([Inbound_recipient_mismatch]).
+      Also not a local fault (a restart cannot fix a bad relay), so it stays
+      out of health — but it is NOT routine either, and [poll_inbox] is
+      destructive, so the row is already permanently gone. It is routed to
+      the affected alias through the edge-triggered alert machinery
+      ([C2c_relay_alert.obs_inbound_contract_aliases]), which is agent-visible
+      without touching [last_error]. *)
 type poll_accounting = {
   pa_errors : (string * string) list;
   pa_note : string option;
+  pa_contract_note : string option;
+  pa_contract_dropped : int;
 }
+
+(* Class (3) above: rejections attributable to what the RELAY served, not to
+   local policy. Everything else in the variant is a B196 policy verdict. *)
+let inbound_rejection_is_relay_contract = function
+  | Inbound_schema | Inbound_recipient_mismatch -> true
+  | Inbound_policy | Inbound_sender_denied | Inbound_recipient_disabled
+  | Inbound_oversize | Inbound_sender_rate | Inbound_recipient_rate
+  | Inbound_machine_rate -> false
 
 (* A poll that rejected policy-violating rows SUCCEEDED — B196 enforcement is
    the point of the filter, not a symptom of a broken bridge. Recording it as
@@ -685,22 +709,32 @@ type poll_accounting = {
    the local inbound-rate state, and [filter_inbound_messages_persisted]
    responds by rejecting EVERY row in the batch. Mail is being denied by a
    broken host-local file, that is actionable, and it must keep suppressing
-   [ok] so it stays visible. *)
+   [ok] so it stays visible.
+
+   Relay-contract rejections are split out into their own note and count so
+   that (a) the durable record says which class was dropped instead of
+   labelling a schema failure "policy-rejected", and (b) the caller can raise
+   the agent-visible alert for exactly the class that warrants one. *)
 let classify_poll_outcome ~alias ~polled ~rate_state_error rejection_reasons =
-  let pa_note =
-    if rejection_reasons = [] then None
+  let contract, policy =
+    List.partition inbound_rejection_is_relay_contract rejection_reasons
+  in
+  let note kind reasons =
+    if reasons = [] then None
     else
       Some
-        (Printf.sprintf
-           "dropped %d policy-rejected inbound row(s) of %d for %s (%s)"
-           (List.length rejection_reasons) polled alias
-           (summarize_inbound_rejections rejection_reasons))
+        (Printf.sprintf "dropped %d %s inbound row(s) of %d for %s (%s)"
+           (List.length reasons) kind polled alias
+           (summarize_inbound_rejections reasons))
   in
   let pa_errors = match rate_state_error with
     | None -> []
     | Some detail -> [ ("inbound_rate_state", detail) ]
   in
-  { pa_errors; pa_note }
+  { pa_errors;
+    pa_note = note "policy-rejected" policy;
+    pa_contract_note = note "relay-contract-violating" contract;
+    pa_contract_dropped = List.length contract }
 
 type t = {
   relay_url : string;
@@ -1812,9 +1846,17 @@ let json_list_member ~key json =
    [append_to_local_inbox] — pre-H9 one such row wedged EVERY broker-side
    read of that session's inbox.
 
-   Design note (drop-and-log vs dead-letter): rejected rows are dropped
-   with a recorded [poll_inbox] sync error + [inbound_rejected] counter in
-   connector-state, NOT dead-lettered. The connector's existing DLQ
+   Design note (drop-and-log vs dead-letter): rejected rows are dropped, NOT
+   dead-lettered. Since #62 the drop is recorded as ACCOUNTING rather than as
+   a [poll_inbox] sync error — a local restart cannot fix a relay that keeps
+   serving the same malformed row, so it does not belong in [last_error] /
+   health. A schema failure here is a relay-contract drop
+   ([inbound_rejection_is_relay_contract]), so it is recorded in the
+   [inbound_rejected] counter and [inbound_rejected_note] in connector-state,
+   in a durable `relay_inbound_contract_drops` broker.log event, and — because
+   [poll_inbox] is destructive and the row is therefore already gone — as an
+   edge-triggered [c2c-system] DM to the affected alias
+   ([C2c_relay_alert.inbound_contract_emissions]). The connector's existing DLQ
    ([append_dlq_entry] / remote-outbox-dlq.jsonl) is typed for OUTBOUND
    outbox entries (ob_from/ob_to/ob_content) and doesn't fit arbitrary
    inbound JSON; a schema-invalid row also carries no trustworthy fields
@@ -2117,6 +2159,13 @@ let sync (t : t) : sync_result Lwt.t =
      heartbeat/register/send/poll calls. Extra requests only deepen a
      NAT-shared IP bucket deficit and cannot succeed until refill. *)
   let abort_on_rate_limit = ref false in
+  (* #62: recipient aliases for which the relay served at least one row that
+     failed the broker-inbox contract or was addressed elsewhere. Health is
+     deliberately not involved, so the edge-triggered alert is the only thing
+     that makes this reach an agent. *)
+  let obs_inbound_contract_aliases = ref [] in
+  let inbound_contract_notes = ref [] in
+  let inbound_contract_dropped = ref 0 in
   let obs_pow_failed = ref false in
   let obs_pow_sender = ref None in
   let obs_dlqs = ref [] in
@@ -2280,6 +2329,18 @@ let sync (t : t) : sync_result Lwt.t =
             | None -> notes
             | Some note -> note :: notes
           in
+          (* Contract drops are kept in their own accumulator: they are folded
+             back into the single [inbound_rejected_note] summary (which must
+             cover every drop) but need to stay separable for the per-class
+             durable event and for the alert edge. *)
+          (match acc.pa_contract_note with
+           | None -> ()
+           | Some note ->
+               inbound_contract_notes := note :: !inbound_contract_notes;
+               inbound_contract_dropped :=
+                 !inbound_contract_dropped + acc.pa_contract_dropped;
+               obs_inbound_contract_aliases :=
+                 alias :: !obs_inbound_contract_aliases);
           let delivered =
             if deliverable = [] then delivered
             else delivered + append_to_local_inbox t.broker_root session_id deliverable
@@ -2302,25 +2363,45 @@ let sync (t : t) : sync_result Lwt.t =
         Some { err_op = op; err_detail = detail; err_ts = Unix.gettimeofday () }
   in
 
-  (* #62: keeping policy drops out of [last_error] must not lose them. They
-     stay reported three ways: the [inbound_rejected] counter and this note in
-     connector-state.json, the sync summary line, and a durable timestamped
-     broker.log event — which is the only one that survives the next sync
-     overwriting the state file. *)
-  let inbound_rejected_note = match List.rev inbound_notes with
+  (* #62: keeping drops out of [last_error] must not lose them. They stay
+     reported four ways: the [inbound_rejected] counter and this note in
+     connector-state.json — now also surfaced on the relay `connector` block
+     and human connector line via [Relay_state.connector_json] /
+     [Relay_state.connector_human], without which the counter was parsed and
+     then read by nothing — the sync summary line, a durable
+     timestamped broker.log event — the only one that survives the next sync
+     overwriting the state file — and, for relay-contract drops only, an
+     edge-triggered c2c-system DM to the affected alias (below).
+
+     The durable event is emitted PER CLASS. A single
+     `relay_inbound_policy_drops` line covering a schema failure was a
+     mislabel of the one record that outlives the state file, and made the
+     class impossible to grep for. *)
+  let inbound_contract_notes = List.rev !inbound_contract_notes in
+  let inbound_contract_dropped = !inbound_contract_dropped in
+  let inbound_policy_notes = List.rev inbound_notes in
+  let inbound_rejected_note =
+    match inbound_policy_notes @ inbound_contract_notes with
     | [] -> None
     | notes -> Some (String.concat "; " notes)
   in
-  (match inbound_rejected_note with
-   | None -> ()
-   | Some note ->
-       Broker_log.append_json ~broker_root:t.broker_root
-         ~json:(`Assoc
-            [ ("event", `String "relay_inbound_policy_drops")
-            ; ("ts", `Float (Unix.gettimeofday ()))
-            ; ("node_id", `String t.node_id)
-            ; ("dropped", `Int inbound_rejected)
-            ; ("detail", `String note) ]));
+  let log_inbound_drops ~event ~dropped notes =
+    match notes with
+    | [] -> ()
+    | notes ->
+        Broker_log.append_json ~broker_root:t.broker_root
+          ~json:(`Assoc
+             [ ("event", `String event)
+             ; ("ts", `Float (Unix.gettimeofday ()))
+             ; ("node_id", `String t.node_id)
+             ; ("dropped", `Int dropped)
+             ; ("detail", `String (String.concat "; " notes)) ])
+  in
+  log_inbound_drops ~event:"relay_inbound_policy_drops"
+    ~dropped:(inbound_rejected - inbound_contract_dropped)
+    inbound_policy_notes;
+  log_inbound_drops ~event:"relay_inbound_contract_drops"
+    ~dropped:inbound_contract_dropped inbound_contract_notes;
 
   (* B010/B222: turn this sync's observations into severity-tagged emissions
      (edge-triggered against t.alert_state). Difficulty changes are logged;
@@ -2333,6 +2414,7 @@ let sync (t : t) : sync_result Lwt.t =
     obs_pow_retry_failed = !obs_pow_failed;
     obs_pow_retry_sender = !obs_pow_sender;
     obs_dlqs = List.rev !obs_dlqs;
+    obs_inbound_contract_aliases = List.rev !obs_inbound_contract_aliases;
   } in
   let emissions, new_alert_state = C2c_relay_alert.step t.alert_state observation in
   t.alert_state <- new_alert_state;

@@ -14,6 +14,9 @@
       [pow_retry_failed] (err), DLQ/undeliverable (err), rate-limit
       rejection (warn). Difficulty {e decrease}/recovery is a light [info]
       edge. Routine connect/heartbeat/lease noise is never surfaced.
+      #62 adds [inbound_contract] (err): relay-served inbound rows this host
+      could not deliver. Local-policy drops are NOT surfaced — those are our
+      own configured filtering working as intended.
     - {b Edge-triggered dedup}: emit ONLY on a state transition. A sustained
       high-difficulty plateau, or a connector that stays rate-limited across
       many syncs, must NOT re-alert every sync. Last-state lives in {!state}
@@ -64,6 +67,8 @@ type state = {
   rate_limited_senders : string list;
     (** sender aliases currently inside sender-attributable plateaus *)
   pow_failing : bool;     (** currently inside a pow_retry_failed plateau *)
+  inbound_contract_aliases : string list;
+    (** #62: recipient aliases currently inside a relay-contract-drop plateau *)
 }
 
 let initial_state = {
@@ -71,6 +76,7 @@ let initial_state = {
   rate_limited = false;
   rate_limited_senders = [];
   pow_failing = false;
+  inbound_contract_aliases = [];
 }
 
 (** A single permanently-failed outbound message. Discrete (one per
@@ -101,6 +107,10 @@ type observation = {
     (** originating sender alias for the pow_retry_failed, if it occurred on a
         specific outbox send; [None] for connector-wide (register) failures *)
   obs_dlqs : dlq_event list;      (** discrete DLQ events this sync *)
+  obs_inbound_contract_aliases : string list;
+    (** #62: every recipient alias for which the relay served at least one
+        inbound row that failed the broker-inbox contract, or that was
+        addressed to a different recipient, in observation order *)
 }
 
 let empty_observation = {
@@ -110,6 +120,7 @@ let empty_observation = {
   obs_pow_retry_failed = false;
   obs_pow_retry_sender = None;
   obs_dlqs = [];
+  obs_inbound_contract_aliases = [];
 }
 
 let format_body sev s =
@@ -210,6 +221,51 @@ let pow_retry_failed_emissions state ~observed ~sender =
   else
     ([], { state with pow_failing = false })
 
+(** #62: the relay served inbound rows this connector could not deliver —
+    either they failed the broker-inbox contract ([Inbound_schema]) or they
+    were addressed to somebody else ([Inbound_recipient_mismatch]). That is
+    NOT a local-policy verdict: either the relay serialized a row that cannot
+    be delivered, or it routed another alias's mail here / our identity
+    desynced from the address it serves.
+
+    This has to reach the agent, because nothing else will. [poll_inbox] is
+    destructive — the relay drains the row on serve and never re-offers it —
+    so each dropped row is mail that is already permanently gone, and the
+    connector is otherwise HEALTHY: after #62 these drops are accounting, they
+    do not touch [last_error] or [last_ok_ts], so [c2c whoami] reads `ok`
+    while every inbound row is being destroyed. Keeping them out of health is
+    right (a restart cannot fix a bad relay); the alert is what replaces it.
+
+    Edge-triggered per recipient alias, exactly like the rate-limit plateaus:
+    a relay serving garbage on every 30s sync alerts ONCE, and can re-alert
+    only after a sync in which that alias saw no contract drops. *)
+let inbound_contract_emissions state ~aliases =
+  let aliases = dedupe_aliases aliases in
+  let emissions =
+    List.filter_map
+      (fun alias ->
+        if alias_mem alias state.inbound_contract_aliases then None
+        else
+          let body = format_body Err (Printf.sprintf
+            "Relay served inbound rows for %s that could not be delivered, \
+             and they were DROPPED: they failed the broker-inbox contract \
+             (malformed row) or were addressed to a different recipient. \
+             Polling the relay is destructive, so those messages are gone \
+             from the relay and will NOT be retried. This is a relay-side or \
+             identity fault, not a local one — restarting the connector \
+             cannot clear it. Check that your alias matches what the relay \
+             routes to this host (c2c whoami, c2c init); see \
+             inbound_rejected_note in connector-state.json and the \
+             relay_inbound_contract_drops events in broker.log for the \
+             per-reason breakdown."
+            alias)
+          in
+          Some { severity = Err; target = Dm alias;
+                 kind = "inbound_contract"; body })
+      aliases
+  in
+  (emissions, { state with inbound_contract_aliases = aliases })
+
 (** DLQ: discrete, one err DM per dead-lettered entry, to the sender. *)
 let dlq_emission (d : dlq_event) =
   let body = format_body Err (Printf.sprintf
@@ -231,5 +287,8 @@ let step state obs =
     pow_retry_failed_emissions state
       ~observed:obs.obs_pow_retry_failed ~sender:obs.obs_pow_retry_sender
   in
+  let ic_em, state =
+    inbound_contract_emissions state ~aliases:obs.obs_inbound_contract_aliases
+  in
   let dlq_em = List.map dlq_emission obs.obs_dlqs in
-  (diff_em @ rl_em @ prf_em @ dlq_em, state)
+  (diff_em @ rl_em @ prf_em @ ic_em @ dlq_em, state)

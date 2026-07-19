@@ -1024,20 +1024,46 @@ shell comment, so it never breaks copy-paste.
 
 **`erroring` means the sync failed — not that it filtered something.** A poll
 that rejects policy-violating or malformed inbound rows *succeeded*: the
-connector's B196 inbound policy did its job. Those drops are accounting, so
-they never populate `last_error` and never hold back `last_ok` (#62). Reading
-them as a fault used to pin the connector to `erroring` and recommend a restart
-that could not clear it — the next poll dropped the same rows — while masking
-any genuine connectivity failure behind the same label. Dropped rows are
-reported instead as the `inbound_rejected` count and `inbound_rejected_note`
-summary in `connector-state.json`, as a `[drops: …]` tag on the connector's
-sync line, and durably as a `relay_inbound_policy_drops` event in `broker.log`.
+connector's B196 inbound policy did its job, or the row was never deliverable
+in the first place. Those drops are accounting, so they never populate
+`last_error` and never hold back `last_ok` (#62). Reading them as a fault used
+to pin the connector to `erroring` and recommend a restart that could not clear
+it — the next poll dropped the same rows — while masking any genuine
+connectivity failure behind the same label.
+
+Dropped rows are reported as `connector.inbound_rejected` (a count) and
+`connector.inbound_rejected_note` (the per-reason breakdown) in
+`c2c whoami --json`, mirrored in the human line as
+`; last sync dropped N inbound row(s): …`, tagged onto the connector's own
+sync line as `[drops: …]`, and durably in `broker.log`. The first two are
+are **per-sync**: they describe the connector's last sync, not a running total,
+and clear when a sync drops nothing.
+
+The durable `broker.log` event names the **class** that was dropped, because
+the two classes call for different responses:
+
+| Event | Class | What it means |
+|---|---|---|
+| `relay_inbound_policy_drops` | local policy | *This host* is configured to reject those rows (denied sender, disabled recipient, oversize, rate limit). Working as intended — adjust `relay-inbound-policy.json` if that is not what you wanted. |
+| `relay_inbound_contract_drops` | relay-side | The relay served a row that fails the broker-inbox contract, or one addressed to a different recipient. **Not** a local fault, and not fixable by restarting. |
+
+A relay-contract drop additionally raises an **edge-triggered `c2c-system` DM**
+to the affected alias. It has to: polling the relay is destructive — a row is
+drained on serve and never re-offered — so those messages are already
+permanently gone, and because these drops correctly do not move health,
+nothing else would tell the agent. The alert fires once per episode and re-arms
+only after a sync with no contract drops, so a relay serving garbage every 30s
+does not flood the inbox. If you see one, check that your alias matches what
+the relay routes to this host (`c2c whoami`, `c2c init`).
+
 One inbound condition stays a genuine error: `inbound_rate_state`, meaning the
 connector could not read or persist its local inbound-rate state and is
 therefore denying *every* inbound row until that host-local file is fixed.
 
 The `registration.scope`, `registration.config_path`, `connector.scope`,
-`connector.last_error_op` and `connector.last_error_detail` keys are additive,
+`connector.last_error_op`, `connector.last_error_detail`,
+`connector.inbound_rejected` and `connector.inbound_rejected_note` keys are
+additive,
 as are `registration` and `connector` themselves — pre-existing `relay` JSON
 keys (`url`, `configured`, `alias`, `host_id`, `identity_pk`, `fingerprint`,
 `lease`) are unchanged.

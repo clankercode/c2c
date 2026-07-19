@@ -848,7 +848,7 @@ let test_dlq_injects_system_dm_to_sender () =
         { C2c_relay_alert.obs_difficulty = None; obs_rate_limited = false;
           obs_rate_limited_senders = [];
           obs_pow_retry_failed = false; obs_pow_retry_sender = None;
-          obs_dlqs = dlqs } in
+          obs_dlqs = dlqs; obs_inbound_contract_aliases = [] } in
     let delivered = Conn.deliver_alert_emissions dir regs emissions in
     Alcotest.(check int) "one system message delivered" 1 delivered;
     (* alice's inbox got exactly one c2c-system message about the DLQ *)
@@ -878,7 +878,7 @@ let test_difficulty_alert_does_not_reach_sessions () =
         { C2c_relay_alert.obs_difficulty = Some 4; obs_rate_limited = false;
           obs_rate_limited_senders = [];
           obs_pow_retry_failed = false; obs_pow_retry_sender = None;
-          obs_dlqs = [] } in
+          obs_dlqs = []; obs_inbound_contract_aliases = [] } in
     let delivered = Conn.deliver_alert_emissions dir regs emissions in
     Alcotest.(check int) "no system messages delivered" 0 delivered;
     Alcotest.(check int) "alice inbox untouched" 0
@@ -901,7 +901,7 @@ let test_rate_limit_dms_only_affected_senders () =
           obs_rate_limited = true;
           obs_rate_limited_senders = ["alice"; "bob"];
           obs_pow_retry_failed = false; obs_pow_retry_sender = None;
-          obs_dlqs = [] }
+          obs_dlqs = []; obs_inbound_contract_aliases = [] }
     in
     let delivered = Conn.deliver_alert_emissions dir regs emissions in
     Alcotest.(check int) "one DM per affected sender" 2 delivered;
@@ -1580,7 +1580,12 @@ let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
   { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
     inbound_delivered = 2; inbound_rejected = 3;
-    inbound_rejected_note = acc.Conn.pa_note; alerts_emitted = 0;
+    inbound_rejected_note =
+      (match List.filter_map Fun.id
+               [ acc.Conn.pa_note; acc.Conn.pa_contract_note ] with
+       | [] -> None
+       | notes -> Some (String.concat "; " notes));
+    alerts_emitted = 0;
     rate_limited = false; retry_after_s = None; last_error }
 
 let health_of_result result =
@@ -1617,12 +1622,92 @@ let test_failed_poll_still_errors () =
       (result_of_poll_accounting
          { Conn.pa_errors =
              [ ("poll_inbox", {|{"ok":false,"error":"signature_invalid"}|}) ];
-           pa_note = None })
+           pa_note = None; pa_contract_note = None; pa_contract_dropped = 0 })
   in
   Alcotest.(check (float 1e-9)) "failed poll does not advance last_ok" 0.0
     last_ok;
   Alcotest.(check bool) "failed poll reports erroring" true
     (health = Relay_state.Health_erroring)
+
+(* #62 blocking follow-up: [Inbound_schema] and [Inbound_recipient_mismatch]
+   are NOT local-policy verdicts. The relay served a row that fails the
+   broker-inbox contract, or it routed somebody else's mail here. Keeping them
+   out of health is still right — restarting a local connector cannot fix a
+   bad relay — but they must not be filed, or labelled, as B196 policy. *)
+let test_relay_contract_drops_are_split_from_policy () =
+  let acc =
+    Conn.classify_poll_outcome ~alias:"alpha" ~polled:4 ~rate_state_error:None
+      [ Conn.Inbound_schema; Conn.Inbound_recipient_mismatch;
+        Conn.Inbound_oversize ]
+  in
+  Alcotest.(check int) "still not a fault" 0 (List.length acc.Conn.pa_errors);
+  Alcotest.(check int) "both contract rows counted" 2
+    acc.Conn.pa_contract_dropped;
+  (match acc.Conn.pa_contract_note with
+   | None -> Alcotest.fail "contract drops must be recorded under their class"
+   | Some note ->
+       Alcotest.(check bool) "labelled as a relay-contract drop" true
+         (contains_sub
+            ~needle:"dropped 2 relay-contract-violating inbound row(s) of 4"
+            note);
+       Alcotest.(check bool) "breakdown keeps both reasons" true
+         (contains_sub ~needle:"schema=1" note
+          && contains_sub ~needle:"recipient_mismatch=1" note);
+       Alcotest.(check bool) "and does NOT claim local policy rejected them"
+         false (contains_sub ~needle:"policy-rejected" note));
+  match acc.Conn.pa_note with
+  | None -> Alcotest.fail "the co-occurring policy drop must still be recorded"
+  | Some note ->
+      Alcotest.(check bool) "policy note counts only the policy row" true
+        (contains_sub ~needle:"dropped 1 policy-rejected inbound row(s) of 4"
+           note);
+      Alcotest.(check bool) "and carries no contract reason" false
+        (contains_sub ~needle:"schema=" note)
+
+let test_policy_only_drops_raise_no_contract_class () =
+  let acc =
+    Conn.classify_poll_outcome ~alias:"alpha" ~polled:3 ~rate_state_error:None
+      [ Conn.Inbound_sender_denied; Conn.Inbound_machine_rate ]
+  in
+  Alcotest.(check int) "no contract drops" 0 acc.Conn.pa_contract_dropped;
+  Alcotest.(check bool) "no contract note" true
+    (acc.Conn.pa_contract_note = None);
+  Alcotest.(check bool) "policy note present" true (acc.Conn.pa_note <> None)
+
+(* The counter existed before #62's follow-up but was parsed and then read by
+   NOTHING: no field in [Relay_state.connector_info]/[connector_json], so
+   `c2c whoami`, `c2c doctor` and the relay JSON were all silent about mail
+   the connector had dropped. With drops no longer moving health, that
+   silence was the whole exposure. *)
+let test_connector_json_exposes_inbound_drops () =
+  let acc =
+    Conn.classify_poll_outcome ~alias:"alpha" ~polled:3 ~rate_state_error:None
+      [ Conn.Inbound_schema; Conn.Inbound_schema ]
+  in
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  Conn.write_connector_state ~node_id:"n1" tmp (result_of_poll_accounting acc);
+  let state = Conn.read_connector_state tmp in
+  let now = Unix.gettimeofday () in
+  let info = Relay_state.connector_info ~process_present:true ~state ~now () in
+  Alcotest.(check bool) "health is deliberately unaffected" true
+    (info.Relay_state.conn_health = Relay_state.Health_ok);
+  let json = Relay_state.connector_json info in
+  (match json with
+   | `Assoc kvs ->
+       Alcotest.(check bool) "connector JSON reports the drop count" true
+         (List.assoc_opt "inbound_rejected" kvs = Some (`Int 3));
+       (match List.assoc_opt "inbound_rejected_note" kvs with
+        | Some (`String note) ->
+            Alcotest.(check bool) "and the reason, by class" true
+              (contains_sub ~needle:"relay-contract-violating" note)
+        | _ -> Alcotest.fail "connector JSON must carry inbound_rejected_note")
+   | _ -> Alcotest.fail "connector_json must be an object");
+  (* Parity: a human reading `c2c whoami` must not be told strictly less than
+     --json tells a script. *)
+  Alcotest.(check bool) "human line reports the drops too" true
+    (contains_sub ~needle:"dropped 3 inbound row(s)"
+       (Relay_state.connector_human info))
 
 (* B228: [touch_connector_last_sync] refreshes last_sync while preserving
    last_ok and last_error, so a pass that hangs after a successful predecessor
@@ -1807,6 +1892,12 @@ let () =
         test_clean_poll_has_neither;
       Alcotest.test_case "inbound rate-state failure stays fatal" `Quick
         test_rate_state_failure_stays_a_fault;
+      Alcotest.test_case "relay-contract drops split out from policy" `Quick
+        test_relay_contract_drops_are_split_from_policy;
+      Alcotest.test_case "policy-only drops raise no contract class" `Quick
+        test_policy_only_drops_raise_no_contract_class;
+      Alcotest.test_case "connector JSON + human surface the drops" `Quick
+        test_connector_json_exposes_inbound_drops;
       Alcotest.test_case "drop-only sync advances last_ok and stays ok" `Quick
         test_policy_drop_sync_stays_healthy;
       Alcotest.test_case "genuinely failed poll still errors" `Quick

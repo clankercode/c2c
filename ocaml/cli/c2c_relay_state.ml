@@ -271,7 +271,13 @@ let lease_result_json = function
    H5 + B181 additions (additive): "registration" ({state, reason}) and
    "connector" ({live, state_file, last_sync_age_s, last_ok_age_s,
    process_present, health, remediation}). Same facts as the human
-   "state:" / "connector:" lines in [print_relay_section]. *)
+   "state:" / "connector:" lines in [print_relay_section].
+
+   #62 adds "connector".{inbound_rejected, inbound_rejected_note}: inbound
+   rows the last sync dropped. Deliberately NOT part of health — the drops
+   are accounting, not a connectivity fault — but they are how mail goes
+   missing on a connector reporting `ok`, so they are reported here and on
+   the human line rather than only in connector-state.json. *)
 let relay_json ?now (s : snapshot) (lease : lease_result option) : Yojson.Safe.t =
   let now = match now with Some n -> n | None -> Unix.gettimeofday () in
   let classification, conn = composite s lease ~now in
