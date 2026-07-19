@@ -7,6 +7,7 @@ depends_on:
     - P2.M3.E1.T001
     - P2.M3.E1.T002
     - P2.M3.E1.T003
+    - P2.M1.E1.T003
 estimate_hours: 2
 id: P2.M3.E1.T004
 priority: medium

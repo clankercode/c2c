@@ -62,6 +62,7 @@ tasks:
         - P2.M3.E1.T001
         - P2.M3.E1.T002
         - P2.M3.E1.T003
+        - P2.M1.E1.T003
       estimate_hours: 2
       file: T004-final-closeout-consolidate-dec.todo
       id: T004
