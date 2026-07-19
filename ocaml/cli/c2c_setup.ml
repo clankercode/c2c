@@ -853,7 +853,7 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen exi
               @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
   | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
 
-let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ?(force=false) () =
+let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_auto_gen ?(force=false) () =
   let home = Sys.getenv "HOME" in
   let config_path = Filename.concat home (".kimi-code" // "mcp.json") in
   let toml_config_path = Filename.concat home (".kimi-code" // "config.toml") in
@@ -911,18 +911,22 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watc
   let skill_artifact, skill_path = write_kimi_skill ~output_mode ~dry_run () in
   let client_dir = home // ".c2c" // "clients" // "kimi" in
   mkdir_or_dryrun dry_run client_dir;
+  (* #10: Kimi delivery is exclusively the REST notifier (`C2c_kimi_notifier`);
+     the deliver-watch.sh sidecar is never started for kimi (its SessionStart
+     hook arms the notifier, not deliver-watch). A written deliver-watch.sh is
+     therefore inert AND staleness-prone — it baked the install-time broker_root
+     and was never regenerated, so a reinstall in another repo left it pinned to
+     the previous broker root. So kimi never gets one, and any legacy script
+     from an older install is removed on (re)install. `c2c uninstall kimi` still
+     cleans these paths via recompute_kimi_artifacts. *)
   let deliver_watch_artifacts =
     let supervisor = client_dir // "deliver-watch.sh" in
     let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
-    if deliver_watch then begin
-      write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root:root ~client_name:"kimi";
-      [ C2c_install_manifest.owned_file supervisor
-      ; C2c_install_manifest.owned_file pre_deliver ]
-    end else if not dry_run then begin
+    if not dry_run then begin
       (try Unix.unlink supervisor with Unix.Unix_error _ -> ());
-      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ());
-      []
-    end else []
+      (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ())
+    end;
+    []
   in
   { artifacts =
       [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcpServers.c2c" ~format:"json"
@@ -1954,7 +1958,10 @@ let start_client_list = String.concat ", " start_clients
 (* codex is no longer here: its delivery is via config.toml hooks
    (`c2c hook codex`), and setup_codex ignores deliver_watch entirely
    (it removes any stale supervisor scripts on re-install). *)
-let deliver_watch_clients = [ "opencode"; "kimi"; "agy" ]
+(* #10: kimi is NOT a deliver-watch client — its delivery is the REST notifier
+   (`C2c_kimi_notifier`), and setup_kimi actively removes any legacy
+   deliver-watch.sh. *)
+let deliver_watch_clients = [ "opencode"; "agy" ]
 let is_deliver_watch_client client = List.mem client deliver_watch_clients
 
 (* B186: do NOT auto-create .c2c/schedules/<alias>/wake.toml on install/init.
@@ -2125,7 +2132,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
     match client with
     | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen ~skip_hooks
     | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~alias_from_auto_gen
-    | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen ~force ()
+    | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_auto_gen ~force ()
     | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
     | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
     | "grok" -> setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
@@ -2456,7 +2463,7 @@ let install_client_subcmd client =
   let no_deliver_watch =
     let doc =
       if is_deliver_watch_client client then
-        "Disable auto-deliver-watch for this client (enabled by default for opencode and kimi; codex uses config.toml hooks instead)."
+        "Disable auto-deliver-watch for this client (enabled by default for opencode; kimi uses the REST notifier and codex uses config.toml hooks instead)."
       else
         "Has no effect for this client."
     in
