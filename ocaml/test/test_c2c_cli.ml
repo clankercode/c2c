@@ -3276,9 +3276,24 @@ let test_connect_deprecated_alias_verify_works () =
 
 let run_c2c_init ~broker_root ~args =
   let tmpfile = Filename.temp_file "c2c-init" ".out" in
+  (* B247 (B226 residue): pin a synthetic C2C_MCP_SESSION_ID so the host's
+     ambient session keys (CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID / …)
+     cannot leak in when these tests run inside a live Claude/c2c session.
+     Without this, init resolves the host session id and the B188 cross-broker
+     sticky scan (find_prior_session_across_brokers over ~/.c2c/repos/*/broker)
+     reuses the host's real alias instead of minting a fresh client-word-word-
+     nonce alias — breaking the nonce/format/explicit-alias assertions below.
+     The id is derived from the unique per-test broker_root basename and is
+     never registered in any real broker, so the scan finds nothing. An
+     explicit C2C_MCP_SESSION_ID wins over native keys in session resolution,
+     so it also overrides an inherited ambient C2C_MCP_SESSION_ID. *)
+  let hermetic_session_id =
+    Printf.sprintf "c2c-init-b247-%s" (Filename.basename broker_root)
+  in
   let cmd =
-    Printf.sprintf "C2C_MCP_BROKER_ROOT=%s %s > %s 2>&1"
+    Printf.sprintf "C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s > %s 2>&1"
       (Filename.quote broker_root)
+      (Filename.quote hermetic_session_id)
       (c2c_cmd (Printf.sprintf "c2c init --no-setup %s" args))
       (Filename.quote tmpfile)
   in
