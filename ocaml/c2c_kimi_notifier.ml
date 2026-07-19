@@ -343,11 +343,143 @@ let ensure_kimi_server_running () =
     end
   end
 
-(* Resolve the Kimi session id for the current working directory by reading
-   ~/.kimi-code/session_index.jsonl.  Managed [c2c start kimi] sessions launch
-   without --session, so Kimi mints the id; we discover it afterwards. *)
-let resolve_kimi_session_id ~cwd =
-  C2c_kimi_deliver.session_id_for_workdir ~workdir:cwd
+(* ─── #41: authoritative kimi-session record ─────────────────────────────── *)
+
+(* THE #41 BUG. [session_id_for_workdir] answers "newest entry in
+   ~/.kimi-code/session_index.jsonl for this workdir". kimi-code appends the
+   NEW session's line only AFTER its SessionStart hooks have run, so every
+   resolver that fires at or near session start reads an index in which the
+   newest entry is the PREVIOUS session. Measured live (#41): TUI session
+   275f8dcb resolved to f4fac83d; TUI 0baa88d1 resolved to 275f8dcb. The
+   notifier then POSTs the session's mail into a DEAD sibling session.
+
+   The index cannot be made to answer this — it is a lagging log. But kimi
+   itself names the session in the SessionStart hook payload, which is
+   authoritative and arrives at exactly the moment the index is still stale.
+   So the kimi SessionStart hook records it here, keyed by WORKSPACE (not
+   alias) because REST delivery is workdir-keyed (#36): one machine-wide
+   watcher serves many sessions and must look the sid up per workdir.
+
+   Deliberately NOT the same thing as [session_file_path] (<alias>.sid): that
+   records which BROKER INBOX the daemon drains (since #40 the instance name),
+   whereas this records the REAL kimi session id used as the REST path
+   component. Conflating them is what #40's notes warn against. *)
+let kimi_session_record_path ~workdir =
+  home () // ".local" // "share" // "c2c" // "kimi-sessions"
+  // (workspace_hash_for_path workdir ^ ".json")
+
+let ensure_kimi_session_record_dir () =
+  let d = home () // ".local" // "share" // "c2c" // "kimi-sessions" in
+  (try Unix.mkdir (home () // ".local") 0o755 with Unix.Unix_error _ -> ());
+  (try Unix.mkdir (home () // ".local" // "share") 0o755 with Unix.Unix_error _ -> ());
+  (try Unix.mkdir (home () // ".local" // "share" // "c2c") 0o755 with Unix.Unix_error _ -> ());
+  (try Unix.mkdir d 0o755 with Unix.Unix_error _ -> ());
+  d
+
+(* Best-effort: a failed record simply falls back to index resolution. *)
+let record_kimi_session_id ~workdir ~session_id =
+  if String.trim workdir = "" || String.trim session_id = "" then ()
+  else
+    try
+      ignore (ensure_kimi_session_record_dir ());
+      let json =
+        `Assoc
+          [ ("session_id", `String session_id)
+          ; ("workdir", `String workdir)
+          ; ("ts", `Float (Unix.gettimeofday ())) ]
+      in
+      atomic_write_string (kimi_session_record_path ~workdir)
+        (Yojson.Safe.to_string json)
+    with _ -> ()
+
+let read_kimi_session_record ~workdir =
+  let path = kimi_session_record_path ~workdir in
+  if not (Sys.file_exists path) then None
+  else
+    try
+      let json = Yojson.Safe.from_file path in
+      let open Yojson.Safe.Util in
+      match
+        (json |> member "session_id" |> to_string_option,
+         json |> member "workdir" |> to_string_option)
+      with
+      | Some sid, Some wd when String.trim sid <> "" && wd = workdir -> Some sid
+      | _ -> None
+    with _ -> None
+
+(* Only clear the record if it still names [session_id] — a SessionEnd for an
+   older session must never delete the live session's binding. *)
+let clear_kimi_session_record ~workdir ~session_id =
+  match read_kimi_session_record ~workdir with
+  | Some sid when sid = session_id ->
+      (try Sys.remove (kimi_session_record_path ~workdir) with _ -> ())
+  | _ -> ()
+
+(* Pure decision, exposed for unit tests.
+
+   [index_matches] is [session_ids_for_workdir] output: file-append order, so
+   the last element is the newest session kimi has recorded for the workspace.
+
+   - No record → the index's newest match (pre-#41 behaviour).
+   - Record present and ABSENT from the index → trust it. This is the #41 case:
+     the hook has told us the sid before kimi appended its line.
+   - Record present and IS the newest index match → trust it (same answer).
+   - Record present but SUPERSEDED (present in the index with a newer sibling
+     after it) → the record is stale, e.g. a session that ended without its
+     SessionEnd hook firing. The index has moved on; follow it. This is what
+     stops the fix from turning a lagging binding into a sticky wrong one. *)
+let decide_kimi_session_id ~recorded ~index_matches =
+  let newest = match List.rev index_matches with x :: _ -> Some x | [] -> None in
+  match recorded with
+  | None -> newest
+  | Some sid ->
+      if List.mem sid index_matches && newest <> Some sid then newest
+      else Some sid
+
+(* #41 direction 3, process-wide. The per-alias notifier daemon arms at (or
+   just before) its session's start, so its own start time is the best
+   available "this session began no earlier than" bound — anything already in
+   session_index.jsonl with an older sessionDir belongs to a PREVIOUS session.
+
+   A ref rather than a parameter because the value belongs to the PROCESS, not
+   the call: the only thing that can name it is the daemon's own entry point,
+   and it would otherwise have to be threaded through run_once /
+   poll_once_global / deliver_via_rest purely as pass-through. 0.0 = unset,
+   which is correct for every other caller — notably the machine-wide watcher
+   (c2c-deliver-inbox), which serves many sessions of many ages and has no
+   single session start to speak of. *)
+let session_freshness_floor = ref 0.0
+
+let set_session_freshness_floor t = session_freshness_floor := t
+
+(* Resolve the Kimi session id for [cwd]. Prefers the sid kimi itself reported
+   through its SessionStart hook (#41 direction 1); falls back to the
+   session_index.
+
+   [?not_before] applies the index freshness guard (#41 direction 3) as a
+   PREFERENCE, not a hard reject: if it eliminates every candidate we retry
+   unfiltered. Failing closed here would park mail indefinitely for any session
+   whose sessionDir mtime cannot be corroborated (a `--rearm` onto a
+   long-running session, an exotic KIMI_SHARE_DIR layout), and a wedged inbox
+   is a worse failure than the wrong-session delivery the authoritative record
+   already prevents. *)
+let resolve_kimi_session_id ?not_before ~cwd () =
+  let not_before =
+    match not_before with
+    | Some _ as t -> t
+    | None -> if !session_freshness_floor > 0.0 then Some !session_freshness_floor else None
+  in
+  let index_matches =
+    match not_before with
+    | None -> C2c_kimi_deliver.session_ids_for_workdir ~workdir:cwd ()
+    | Some t -> (
+        match C2c_kimi_deliver.session_ids_for_workdir ~workdir:cwd ~not_before:t () with
+        | [] -> C2c_kimi_deliver.session_ids_for_workdir ~workdir:cwd ()
+        | fresh -> fresh)
+  in
+  decide_kimi_session_id
+    ~recorded:(read_kimi_session_record ~workdir:cwd)
+    ~index_matches
 
 (* REST prompt delivery seam.  Discovers the Kimi session id for [workdir],
    ensures the local server is running, and POSTs the message as a user
@@ -359,9 +491,9 @@ let resolve_kimi_session_id ~cwd =
    an explicit parameter (never [Sys.getcwd ()] read from inside, #36) so a
    single machine-wide watcher process, which has exactly one cwd and may
    [chdir "/"], can deliver to many sessions. *)
-let deliver_via_rest ~alias ~msg ~workdir =
+let deliver_via_rest ~alias ~msg ~workdir () =
   ensure_kimi_server_running ();
-  match resolve_kimi_session_id ~cwd:workdir with
+  match resolve_kimi_session_id ~cwd:workdir () with
   | None ->
       Error (Printf.sprintf "no Kimi session for workdir %s" workdir)
   | Some session_id -> C2c_kimi_deliver.deliver_message ~session_id ~msg
@@ -538,7 +670,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir =
     (* Resolve the kimi session-dir from the caller-supplied workdir (#36) —
        never from the process cwd, so a shared watcher can serve many sessions. *)
     let session_dir_opt =
-      match resolve_kimi_session_id ~cwd:workdir with
+      match resolve_kimi_session_id ~cwd:workdir () with
       | Some sid -> session_dir_for ~cwd:workdir ~session_id:sid
       | None -> None
     in
@@ -575,7 +707,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir =
              (Printexc.to_string exn));
         (* REST prompt injection. System events are already partitioned out. *)
         try
-          match deliver_via_rest ~alias ~msg ~workdir with
+          match deliver_via_rest ~alias ~msg ~workdir () with
           | Ok () -> delivered := msg :: !delivered
           | Error reason ->
               Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
@@ -630,7 +762,7 @@ let poll_once_global ~session_id ~alias ~tmux_pane ~workdir =
       (* Resolve the kimi session-dir for notification delivery, from the
          caller-supplied workdir (#36) rather than the process cwd. *)
       let session_dir_opt =
-        match resolve_kimi_session_id ~cwd:workdir with
+        match resolve_kimi_session_id ~cwd:workdir () with
         | Some sid -> session_dir_for ~cwd:workdir ~session_id:sid
         | None -> None
       in
@@ -667,7 +799,7 @@ let poll_once_global ~session_id ~alias ~tmux_pane ~workdir =
                (Printexc.to_string exn));
           (* REST prompt injection. System events are already partitioned out. *)
           try
-            match deliver_via_rest ~alias ~msg ~workdir with
+            match deliver_via_rest ~alias ~msg ~workdir () with
             | Ok () -> delivered := msg :: !delivered
             | Error reason ->
                 Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
@@ -778,6 +910,10 @@ let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
       let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
       Printf.printf "[kimi-notifier] starting alias=%s session_id=%s broker_root=%s inbox=%s\n%!"
         alias session_id broker_root inbox_path;
+      (* #41: the daemon arms at (or just before) session start, so its own
+         start time is the best available "this session began no earlier than"
+         bound for rejecting a PREVIOUS session's session_index entry. *)
+      set_session_freshness_floor (Unix.gettimeofday ());
       while true do
         (try
            let n = run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir in

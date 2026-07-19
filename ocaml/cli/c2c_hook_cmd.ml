@@ -1337,21 +1337,29 @@ let kimi_session_events = [ "SessionStart"; "SessionEnd" ]
    legitimately run for days and a time bound would stop the hook adopting a
    perfectly live instance. Liveness here comes from the pid pair, which does
    not decay. Pure over [regs] so it is unit-testable without a broker. *)
+(* #40 F7: normalize both sides. The launcher writes [Sys.getcwd ()] (already
+   canonical) but kimi's payload cwd is whatever the client passes, so a
+   trailing slash or a symlinked path would silently defeat the match and
+   resurrect the competing-alias bug. realpath is best-effort: on failure
+   fall back to a trailing-slash strip rather than dropping the match. *)
+let normalize_hook_cwd p =
+  let p = String.trim p in
+  let stripped =
+    let n = String.length p in
+    if n > 1 && p.[n - 1] = '/' then String.sub p 0 (n - 1) else p
+  in
+  try Unix.realpath stripped with _ -> stripped
+
+(* The identity half of the match: a managed (launcher-written, not
+   hook-written) kimi row owning [cwd]. Says nothing about liveness. *)
+let is_managed_kimi_row_for_cwd ~(want : string) (r : C2c_mcp.registration) =
+  r.client_type = Some "kimi"
+  && r.registered_by <> Some "kimi-hook"
+  && (match r.cwd with Some c -> normalize_hook_cwd c = want | None -> false)
+
 let live_managed_kimi_registrations ~(cwd : string)
     (regs : C2c_mcp.registration list) : C2c_mcp.registration list =
-  (* #40 F7: normalize both sides. The launcher writes [Sys.getcwd ()] (already
-     canonical) but kimi's payload cwd is whatever the client passes, so a
-     trailing slash or a symlinked path would silently defeat the match and
-     resurrect the competing-alias bug. realpath is best-effort: on failure
-     fall back to a trailing-slash strip rather than dropping the match. *)
-  let normalize p =
-    let p = String.trim p in
-    let stripped =
-      let n = String.length p in
-      if n > 1 && p.[n - 1] = '/' then String.sub p 0 (n - 1) else p
-    in
-    try Unix.realpath stripped with _ -> stripped
-  in
+  let normalize = normalize_hook_cwd in
   let want = normalize cwd in
   let pid_is_live p start_time =
     p > 0
@@ -1366,12 +1374,45 @@ let live_managed_kimi_registrations ~(cwd : string)
   in
   List.filter
     (fun (r : C2c_mcp.registration) ->
-       r.client_type = Some "kimi"
-       && r.registered_by <> Some "kimi-hook"
-       && (match r.cwd with Some c -> normalize c = want | None -> false)
+       is_managed_kimi_row_for_cwd ~want r
        && (match r.pid with
            | Some p -> pid_is_live p r.pid_start_time
            | None -> false))
+    regs
+
+(* #47: managed kimi rows for [cwd] whose liveness fields were STRIPPED.
+
+   The stripping is deliberate, not a leak: [C2c_start.clear_registration_pid]
+   runs on the managed teardown path and removes [pid] + [pid_start_time] so a
+   later PID reuse cannot make a dead row read as ghost-alive. The row itself
+   survives on purpose — it is the workspace's sticky alias (B135/B140), the
+   anchor `c2c start`/`c2c rename` reuse across runs.
+
+   But [live_managed_kimi_registrations] requires [Some pid], so such a row is
+   neither live nor evaluable: the hook fell through to MINTING A COMPETING
+   ALIAS, which is exactly the #40 bug returning after any managed exit. Rather
+   than change teardown (option (a)/(b) in #47 — both would either destroy the
+   sticky alias or re-introduce the ghost-alive read this stripping exists to
+   prevent), the adoption predicate handles the state explicitly.
+
+   [pid = None] is treated as a positive RECLAIM signal because only c2c writes
+   it, and only on teardown of a row it owns: it means "this managed identity
+   was shut down; the alias is retained for this workspace". Adopting it gives
+   the new session the alias peers already address, and the launcher overwrites
+   the row with a live pid on the next `c2c start`.
+
+   Deliberately NOT extended to a row with [pid = Some p] where p is dead: that
+   is an unclean exit whose row still ASSERTS liveness that is false, and we
+   cannot distinguish a crashed instance from one about to be reaped. Those
+   keep failing closed to minting (see
+   [test_i40_hook_ignores_dead_managed_registration]) so a foreign row is never
+   resurrected on the strength of a stale claim. Pure over [regs]. *)
+let reclaimable_managed_kimi_registrations ~(cwd : string)
+    (regs : C2c_mcp.registration list) : C2c_mcp.registration list =
+  let want = normalize_hook_cwd cwd in
+  List.filter
+    (fun (r : C2c_mcp.registration) ->
+       is_managed_kimi_row_for_cwd ~want r && r.pid = None)
     regs
 
 let hook_kimi_cmd =
@@ -1447,7 +1488,25 @@ let hook_kimi_cmd =
               with _ -> ());
              exit 0
        in
+       (* #41: kimi's own reported session id, and the workspace it belongs to.
+          [payload_sid] specifically — NOT [session_id], which prefers
+          C2C_MCP_SESSION_ID and is later overwritten by the adopted managed
+          row's broker key. Only kimi's payload names the REST session. *)
+       let hook_cwd_raw =
+         match payload_string_field payload "cwd" with
+         | Some c when String.trim c <> "" -> String.trim c
+         | _ ->
+             (match payload_string_field payload "workspaceRoot" with
+              | Some c when String.trim c <> "" -> String.trim c
+              | _ -> "")
+       in
        if event = "SessionEnd" then begin
+         (match payload_sid, hook_cwd_raw with
+          | Some sid, wd when wd <> "" ->
+              (try C2c_kimi_notifier.clear_kimi_session_record ~workdir:wd
+                     ~session_id:sid
+               with _ -> ())
+          | _ -> ());
          let candidates = List.filter_map (fun x -> x) [ env_sid; payload_sid ] in
          (match
             List.find_opt
@@ -1481,40 +1540,56 @@ let hook_kimi_cmd =
           rather than guess and hijack the wrong instance's identity. The
           managed sessions are already registered by their launchers, so a bail
           costs nothing. *)
-       let hook_cwd =
-         match payload_string_field payload "cwd" with
-         | Some c when String.trim c <> "" -> String.trim c
-         | _ ->
-             (match payload_string_field payload "workspaceRoot" with
-              | Some c when String.trim c <> "" -> String.trim c
-              | _ -> "")
+       let hook_cwd = hook_cwd_raw in
+       (* #41: record kimi's OWN session id for this workspace before anything
+          else can fail. This is the authoritative answer to "which kimi
+          session owns this workdir" that session_index.jsonl cannot give at
+          session start (kimi appends its line only after hooks run), and it is
+          what the notifier's REST delivery reads. Independent of the broker
+          identity resolved below. *)
+       (match payload_sid with
+        | Some sid when hook_cwd <> "" ->
+            (try
+               C2c_kimi_notifier.record_kimi_session_id ~workdir:hook_cwd
+                 ~session_id:sid
+             with _ -> ())
+        | _ -> ());
+       let adopt (m : C2c_mcp.registration) ~why =
+         (try
+            Printf.eprintf
+              "c2c hook kimi: adopting managed session '%s' (alias '%s') for \
+               %s (%s) — not minting a new alias.\n%!"
+              m.session_id m.alias hook_cwd why
+          with _ -> ());
+         m.session_id
+       in
+       let bail_ambiguous ~kind (many : C2c_mcp.registration list) =
+         (try
+            Printf.eprintf
+              "c2c hook kimi: %d %s managed kimi instances share cwd %s (%s) — \
+               cannot tell which one this SessionStart belongs to, so no \
+               registration is made here. Those instances are already \
+               registered by `c2c start`; to remove the ambiguity run at most \
+               one managed kimi per directory.\n%!"
+              (List.length many) kind hook_cwd
+              (String.concat ", "
+                 (List.map (fun (r : C2c_mcp.registration) -> r.alias) many))
+          with _ -> ());
+         exit 0
        in
        let session_id =
          if hook_cwd = "" then session_id
          else
            match live_managed_kimi_registrations ~cwd:hook_cwd regs with
-           | [ m ] ->
-               (try
-                  Printf.eprintf
-                    "c2c hook kimi: adopting managed session '%s' (alias '%s') \
-                     for %s — not minting a new alias.\n%!"
-                    m.session_id m.alias hook_cwd
-                with _ -> ());
-               m.session_id
-           | _ :: _ as many ->
-               (try
-                  Printf.eprintf
-                    "c2c hook kimi: %d live managed kimi instances share cwd \
-                     %s (%s) — cannot tell which one this SessionStart belongs \
-                     to, so no registration is made here. Those instances are \
-                     already registered by `c2c start`; to remove the \
-                     ambiguity run at most one managed kimi per directory.\n%!"
-                    (List.length many) hook_cwd
-                    (String.concat ", "
-                       (List.map (fun (r : C2c_mcp.registration) -> r.alias) many))
-                with _ -> ());
-               exit 0
-           | [] -> session_id
+           | [ m ] -> adopt m ~why:"live pid"
+           | _ :: _ as many -> bail_ambiguous ~kind:"live" many
+           | [] -> (
+               (* #47: no LIVE managed row. Before minting — which is the #40
+                  bug — check for a torn-down one. *)
+               match reclaimable_managed_kimi_registrations ~cwd:hook_cwd regs with
+               | [ m ] -> adopt m ~why:"reclaiming torn-down managed row"
+               | _ :: _ as many -> bail_ambiguous ~kind:"torn-down" many
+               | [] -> session_id)
        in
        (* #40 F6: on adoption this is necessarily true (we adopted an existing
           row's session_id), so the whole block below — including

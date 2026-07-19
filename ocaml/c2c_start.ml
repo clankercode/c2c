@@ -1891,7 +1891,7 @@ let resolve_kimi_notifier_session_id ?now ~broker_root ~alias ~cwd ~fallback () 
   | Some sid -> sid
   | None ->
       (match
-         (try C2c_kimi_notifier.resolve_kimi_session_id ~cwd with _ -> None)
+         (try C2c_kimi_notifier.resolve_kimi_session_id ~cwd () with _ -> None)
        with
        | Some sid -> sid
        | None -> fallback)

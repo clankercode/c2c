@@ -207,6 +207,28 @@ app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
   never registers its own alias and its identity skill names the managed alias.
   Delivery is unaffected (the REST layer is workdir-keyed); nothing in the hook
   payload can distinguish these cases.
+  **`session_index.jsonl` is a LAGGING log — never resolve identity from it
+  alone (#41).** kimi appends the new session's line only *after* its
+  SessionStart hooks run, so "newest entry for this workdir" names the
+  *previous* session at arm time (measured: live `275f8dcb` → bound
+  `f4fac83d`). The authority is the sid in kimi's own SessionStart payload:
+  `c2c hook kimi` writes it to
+  `~/.local/share/c2c/kimi-sessions/<md5(workdir)>.json` and
+  `resolve_kimi_session_id` prefers it unless the index has since recorded a
+  *newer* session for that workspace (which means the record is stale).
+  Workspace-keyed, not alias-keyed, because REST delivery is workdir-keyed
+  (#36). Distinct from `<alias>.sid`, which names the **broker inbox** the
+  daemon drains — do not conflate the two ids. Note this means hermetic tests
+  must model the entry appearing **later**; seeding the index first inverts
+  production ordering and hides the bug.
+  **Managed teardown strips `pid`/`pid_start_time` on purpose** (`c2c_start.ml`
+  `clear_registration_pid`) so a reused PID cannot make a dead row read as
+  ghost-alive; the row itself survives as the workspace's sticky alias. Since
+  #47 the hook treats such a pid-less managed row as **reclaimable** and adopts
+  it, because failing closed to minting was #40 returning after every managed
+  exit. A row with `pid = Some p` where p is dead still fails closed to minting
+  — it asserts a liveness that is false, and reclaiming on a stale claim could
+  resurrect a foreign identity.
   Legacy notification-store runbook:
   `.collab/runbooks/kimi-notification-store-delivery.md` (deprecated).
 - **OpenCode**: SIGUSR1 to the *inner* OpenCode pid (not the outer wrapper)

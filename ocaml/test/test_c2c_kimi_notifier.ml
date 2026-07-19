@@ -1632,6 +1632,218 @@ let test_i40_registration_failure_is_loud_and_actionable () =
             Alcotest.(check bool) "names the broker root" true
               (has broker_root)))
 
+(* ---------------------------------------------------------------------------
+ * #41 — the notifier must not bind to the PREVIOUS kimi session
+ *
+ * [session_id_for_workdir] answers "newest entry in session_index.jsonl for
+ * this workdir". kimi-code appends the NEW session's line only AFTER its
+ * SessionStart hooks run, so an arm-time resolution reads an index whose
+ * newest entry is the session BEFORE this one. Measured live: TUI 275f8dcb
+ * resolved to f4fac83d, TUI 0baa88d1 resolved to 275f8dcb.
+ *
+ * CRITICAL TEST-SHAPE NOTE: the #9 tests seed session_index.jsonl BEFORE
+ * resolving, which inverts production ordering and is precisely why hermetic
+ * tests could not see this bug. Everything below models the real ordering —
+ * the entry for the session under test appears LATER, or not at all.
+ * --------------------------------------------------------------------------- *)
+
+let i41_saved_env = ref []
+
+let i41_with_home f =
+  let tmp =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-i41-%d-%d" (Unix.getpid ()) (Random.bits ()))
+  in
+  let rec rmrf p =
+    if Sys.file_exists p then
+      if Sys.is_directory p then begin
+        Array.iter (fun c -> rmrf (Filename.concat p c)) (Sys.readdir p);
+        (try Unix.rmdir p with _ -> ())
+      end else (try Sys.remove p with _ -> ())
+  in
+  let getenv k = Sys.getenv_opt k in
+  i41_saved_env := [ ("HOME", getenv "HOME"); ("KIMI_CODE_HOME", getenv "KIMI_CODE_HOME") ];
+  Unix.mkdir tmp 0o755;
+  let kimi_home = Filename.concat tmp ".kimi-code" in
+  Unix.mkdir kimi_home 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (k, v) ->
+          match v with Some x -> Unix.putenv k x | None -> Unix.putenv k "")
+        !i41_saved_env;
+      rmrf tmp)
+    (fun () ->
+      Unix.putenv "HOME" tmp;
+      Unix.putenv "KIMI_CODE_HOME" kimi_home;
+      f ~tmp ~kimi_home)
+
+(* Append one session_index.jsonl line for [sid], creating its sessionDir.
+   [~age_s] backdates the sessionDir mtime, which is the ONLY per-entry
+   timestamp real kimi entries carry (they have no updated_at field). *)
+let i41_append_index ~tmp ~kimi_home ~sid ~workdir ~age_s =
+  let sessions = Filename.concat tmp "sessions" in
+  (try Unix.mkdir sessions 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let session_dir = Filename.concat sessions sid in
+  (try Unix.mkdir session_dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let mtime = Unix.gettimeofday () -. age_s in
+  (try Unix.utimes session_dir mtime mtime with _ -> ());
+  let oc =
+    open_out_gen [ Open_append; Open_creat; Open_text ] 0o600
+      (Filename.concat kimi_home "session_index.jsonl")
+  in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    Printf.fprintf oc
+      "{\"sessionId\":\"%s\",\"sessionDir\":\"%s\",\"workDir\":\"%s\"}\n"
+      sid session_dir workdir);
+  session_dir
+
+(* THE #41 RED TEST. Production ordering: at the moment the session's identity
+   is resolved, session_index.jsonl contains ONLY the previous session's entry.
+   The new session's entry lands afterwards. Resolution must name the NEW
+   session both before and after that append.
+
+   Against master this fails on the first assertion with the PREVIOUS sid — the
+   exact off-by-one measured live. *)
+let test_i41_binds_to_new_session_when_index_entry_appears_later () =
+  i41_with_home (fun ~tmp ~kimi_home ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    let previous = "session_f4fac83d-1111-4111-8111-111111111111" in
+    let current = "session_275f8dcb-2222-4222-8222-222222222222" in
+    (* Only the PREVIOUS session is in the index (it started 10 min ago). *)
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:previous ~workdir ~age_s:600.0);
+    (* kimi fires SessionStart for the NEW session; its payload names the sid
+       even though nothing on disk does yet. *)
+    C2c_kimi_notifier.record_kimi_session_id ~workdir ~session_id:current;
+    Alcotest.(check (option string))
+      "resolves the LIVE session, not the previous one"
+      (Some current)
+      (C2c_kimi_notifier.resolve_kimi_session_id ~cwd:workdir ());
+    (* kimi now appends the new session's line. Answer must not change. *)
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:current ~workdir ~age_s:0.0);
+    Alcotest.(check (option string))
+      "still the live session once the index catches up"
+      (Some current)
+      (C2c_kimi_notifier.resolve_kimi_session_id ~cwd:workdir ()))
+
+(* Without a record we must still behave as before: newest index entry wins. *)
+let test_i41_no_record_falls_back_to_newest_index_entry () =
+  i41_with_home (fun ~tmp ~kimi_home ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_old" ~workdir ~age_s:600.0);
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_new" ~workdir ~age_s:1.0);
+    Alcotest.(check (option string)) "newest index entry" (Some "session_new")
+      (C2c_kimi_notifier.resolve_kimi_session_id ~cwd:workdir ()))
+
+(* #41 direction 3: an index entry whose sessionDir predates the session start
+   it is asked to bind is not eligible. This is the guard that makes "which
+   entry is mine" answerable rather than a guess at "newest". *)
+let test_i41_index_entry_older_than_session_start_is_rejected () =
+  i41_with_home (fun ~tmp ~kimi_home ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_stale" ~workdir ~age_s:600.0);
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_fresh" ~workdir ~age_s:0.0);
+    let now = Unix.gettimeofday () in
+    Alcotest.(check (list string))
+      "both entries are eligible with no floor"
+      [ "session_stale"; "session_fresh" ]
+      (C2c_kimi_deliver.session_ids_for_workdir ~workdir ());
+    Alcotest.(check (list string))
+      "the 10-minute-old entry is rejected against a just-now session start"
+      [ "session_fresh" ]
+      (C2c_kimi_deliver.session_ids_for_workdir ~workdir ~not_before:(now -. 60.0) ());
+    (* Fail closed: an entry we cannot date is not eligible either. *)
+    let oc =
+      open_out_gen [ Open_append; Open_creat; Open_text ] 0o600
+        (Filename.concat kimi_home "session_index.jsonl")
+    in
+    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      Printf.fprintf oc
+        "{\"sessionId\":\"session_nodir\",\"sessionDir\":\"%s/gone\",\"workDir\":\"%s\"}\n"
+        tmp workdir);
+    Alcotest.(check bool)
+      "an entry with an unstattable sessionDir is not eligible" false
+      (List.mem "session_nodir"
+         (C2c_kimi_deliver.session_ids_for_workdir ~workdir
+            ~not_before:(now -. 60.0) ())))
+
+(* The freshness floor must never park mail: if it eliminates everything, we
+   fall back to the unfiltered answer rather than resolving to None. *)
+let test_i41_freshness_floor_never_wedges_delivery () =
+  i41_with_home (fun ~tmp ~kimi_home ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_only" ~workdir ~age_s:86400.0);
+    Alcotest.(check (list string)) "floor rejects the only candidate" []
+      (C2c_kimi_deliver.session_ids_for_workdir ~workdir
+         ~not_before:(Unix.gettimeofday ()) ());
+    Alcotest.(check (option string))
+      "resolution still answers rather than parking mail"
+      (Some "session_only")
+      (C2c_kimi_notifier.resolve_kimi_session_id
+         ~not_before:(Unix.gettimeofday ()) ~cwd:workdir ()))
+
+(* A record left behind by a session that ended without SessionEnd firing must
+   not become a STICKY wrong binding: once the index records a newer session
+   for the workspace, the index wins. *)
+let test_i41_superseded_record_yields_to_the_index () =
+  i41_with_home (fun ~tmp ~kimi_home ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_a" ~workdir ~age_s:600.0);
+    C2c_kimi_notifier.record_kimi_session_id ~workdir ~session_id:"session_a";
+    ignore (i41_append_index ~tmp ~kimi_home ~sid:"session_b" ~workdir ~age_s:1.0);
+    Alcotest.(check (option string))
+      "stale record superseded by a newer index entry" (Some "session_b")
+      (C2c_kimi_notifier.resolve_kimi_session_id ~cwd:workdir ()))
+
+(* SessionEnd for an OLD session must not delete the LIVE session's record. *)
+let test_i41_clear_record_only_matches_its_own_session () =
+  i41_with_home (fun ~tmp ~kimi_home:_ ->
+    let workdir = Filename.concat tmp "proj" in
+    Unix.mkdir workdir 0o755;
+    C2c_kimi_notifier.record_kimi_session_id ~workdir ~session_id:"session_live";
+    C2c_kimi_notifier.clear_kimi_session_record ~workdir ~session_id:"session_old";
+    Alcotest.(check (option string)) "live record survives a foreign SessionEnd"
+      (Some "session_live")
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir);
+    C2c_kimi_notifier.clear_kimi_session_record ~workdir ~session_id:"session_live";
+    Alcotest.(check (option string)) "its own SessionEnd clears it" None
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir))
+
+(* The record is workspace-keyed (#36): two workspaces must not share one. *)
+let test_i41_record_is_per_workspace () =
+  i41_with_home (fun ~tmp ~kimi_home:_ ->
+    let a = Filename.concat tmp "proj-a" and b = Filename.concat tmp "proj-b" in
+    Unix.mkdir a 0o755; Unix.mkdir b 0o755;
+    C2c_kimi_notifier.record_kimi_session_id ~workdir:a ~session_id:"session_a";
+    C2c_kimi_notifier.record_kimi_session_id ~workdir:b ~session_id:"session_b";
+    Alcotest.(check (option string)) "workspace a" (Some "session_a")
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir:a);
+    Alcotest.(check (option string)) "workspace b" (Some "session_b")
+      (C2c_kimi_notifier.read_kimi_session_record ~workdir:b))
+
+let test_i41_decision_table () =
+  let d = C2c_kimi_notifier.decide_kimi_session_id in
+  Alcotest.(check (option string)) "no record, empty index" None
+    (d ~recorded:None ~index_matches:[]);
+  Alcotest.(check (option string)) "no record → newest index entry" (Some "c")
+    (d ~recorded:None ~index_matches:[ "a"; "b"; "c" ]);
+  Alcotest.(check (option string)) "record absent from index → trust it (#41)"
+    (Some "new")
+    (d ~recorded:(Some "new") ~index_matches:[ "old" ]);
+  Alcotest.(check (option string)) "record is newest → trust it" (Some "c")
+    (d ~recorded:(Some "c") ~index_matches:[ "a"; "b"; "c" ]);
+  Alcotest.(check (option string)) "record superseded → follow the index"
+    (Some "c")
+    (d ~recorded:(Some "a") ~index_matches:[ "a"; "b"; "c" ]);
+  Alcotest.(check (option string)) "record with empty index → trust it"
+    (Some "only")
+    (d ~recorded:(Some "only") ~index_matches:[])
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -1709,5 +1921,23 @@ let () =
         ; Alcotest.test_case "--alias override wins over instance name" `Quick test_i40_alias_override_wins_over_instance_name
         ; Alcotest.test_case "registration failure is loud and actionable" `Quick test_i40_registration_failure_is_loud_and_actionable
         ; Alcotest.test_case "authoritative claim is narrow" `Quick test_i40_authoritative_claim_is_narrow
+        ] )
+    ; ( "i41-authoritative-session-id"
+      , [ Alcotest.test_case "index entry appearing LATER still binds the new session" `Quick
+            test_i41_binds_to_new_session_when_index_entry_appears_later
+        ; Alcotest.test_case "no record -> newest index entry" `Quick
+            test_i41_no_record_falls_back_to_newest_index_entry
+        ; Alcotest.test_case "index entry older than session start is rejected" `Quick
+            test_i41_index_entry_older_than_session_start_is_rejected
+        ; Alcotest.test_case "freshness floor never wedges delivery" `Quick
+            test_i41_freshness_floor_never_wedges_delivery
+        ; Alcotest.test_case "superseded record yields to the index" `Quick
+            test_i41_superseded_record_yields_to_the_index
+        ; Alcotest.test_case "clear_record only matches its own session" `Quick
+            test_i41_clear_record_only_matches_its_own_session
+        ; Alcotest.test_case "record is per-workspace" `Quick
+            test_i41_record_is_per_workspace
+        ; Alcotest.test_case "resolution decision table" `Quick
+            test_i41_decision_table
         ] )
     ]

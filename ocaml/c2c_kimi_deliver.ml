@@ -282,6 +282,77 @@ let parse_session_index_line line =
     Some (sid, workdir, updated_at)
   with _ -> None
 
+(* #41: the full record, including [sessionDir]. Real kimi-code entries carry
+   NO [updated_at] field (verified against a live ~/.kimi-code/session_index.jsonl,
+   2026-07-19) — every entry parses with [updated_at = ""], so the "most recently
+   updated" ordering used by [session_id_for_workdir] is in practice pure
+   file-append order. The only per-entry timestamp actually available is the
+   mtime of [sessionDir], which is why the [?not_before] freshness guard below
+   is stat-based rather than string-based. *)
+let parse_session_index_line_full line =
+  try
+    let json = Yojson.Safe.from_string line in
+    let open Yojson.Safe.Util in
+    let sid = json |> member "sessionId" |> to_string in
+    let workdir = json |> member "workDir" |> to_string in
+    let session_dir = json |> member "sessionDir" |> to_string_option in
+    Some (sid, workdir, session_dir)
+  with _ -> None
+
+(* File order (oldest appended first). *)
+let read_session_index_full () =
+  let path = session_index_path () in
+  if not (Sys.file_exists path) then []
+  else
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () ->
+         let rec loop acc =
+           match input_line ic with
+           | line ->
+               (match parse_session_index_line_full line with
+                | Some triple -> loop (triple :: acc)
+                | None -> loop acc)
+           | exception End_of_file -> List.rev acc
+         in
+         loop [])
+
+(* Slack applied to the [?not_before] comparison. The caller's reference time
+   (e.g. a notifier arm timestamp) and kimi's sessionDir creation are two
+   independent clocks on the same host with no ordering guarantee finer than
+   "about the same instant", so a hard [>=] would reject the session we are
+   trying to bind on a fast start. *)
+let session_freshness_slack_s = 5.0
+
+let session_dir_is_fresh ~not_before session_dir =
+  match session_dir with
+  | None -> false (* cannot corroborate → fail closed when the caller opted in *)
+  | Some d -> (
+      match (try Some (Unix.stat d).Unix.st_mtime with _ -> None) with
+      | None -> false
+      | Some mtime -> mtime >= not_before -. session_freshness_slack_s)
+
+(* #41: every session id recorded for [workdir], in file-append order (oldest
+   first, so the LAST element is the most recently created session for that
+   workspace).
+
+   [?not_before] rejects entries whose [sessionDir] mtime predates the caller's
+   reference instant — i.e. sessions that already existed before the one the
+   caller is asking about started. This is the "reject an entry whose timestamp
+   predates the session start" guard from #41: without it, a resolver that runs
+   before kimi has appended the NEW session's line happily returns the PREVIOUS
+   session's id. Entries with no [sessionDir], or whose [sessionDir] cannot be
+   stat'ed, are rejected when [?not_before] is supplied — an entry we cannot
+   date cannot be shown to be ours. *)
+let session_ids_for_workdir ~workdir ?not_before () =
+  read_session_index_full ()
+  |> List.filter (fun (_, wd, sdir) ->
+         wd = workdir
+         && match not_before with
+            | None -> true
+            | Some t -> session_dir_is_fresh ~not_before:t sdir)
+  |> List.map (fun (sid, _, _) -> sid)
+
 let read_session_index () =
   let path = session_index_path () in
   if not (Sys.file_exists path) then []
