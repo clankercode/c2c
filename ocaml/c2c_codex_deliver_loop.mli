@@ -54,8 +54,13 @@ type deps = {
   deregister : unit -> unit;       (** tear the registration down (idempotent) *)
   on_pass : C2c_codex_autoturn.pass_outcome -> unit;
       (** structured metrics/log sink — contains NO body/credential/composer *)
-  on_degraded : bool -> unit;
-      (** best-effort persisted-health sink for the degraded signal. Fired
+  on_degraded : degraded:bool -> binding_refused:bool -> unit;
+      (** best-effort persisted-health sink for the degraded signal.
+          [binding_refused] (#31) discriminates the two degraded shapes so the
+          caller can persist a REASON and operator surfaces can give the right
+          remediation: [false] = no thread loaded (open one), [true] = a thread
+          loaded but the #24 guard refused its durable binding (resolve the
+          owning sibling). Always [false] while not degraded. Fired
           [true] at loop start (registered but no frontend thread discovered
           yet, so nothing actually delivers), then re-stamped with the LATCHED
           degraded state (#31) on thread discovery and on each #27 heartbeat:
@@ -111,6 +116,10 @@ type outcome = {
       (** true iff no thread was ever discovered, OR (#31) the discovered
           thread's durable binding was refused by [on_thread_discovered] — the
           latched degraded state, matching the last [on_degraded] stamp. *)
+  binding_refused : bool;
+      (** #31: true iff a thread WAS discovered but its durable binding was
+          refused (#24). Distinguishes "nothing ever loaded" from "loaded but
+          unbound" for the caller's exit log. *)
   restart_executable : string option;
       (** validated executable path when launcher should stop and re-exec *)
 }

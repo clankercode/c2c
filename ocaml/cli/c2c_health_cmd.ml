@@ -782,8 +782,16 @@ let read_managed_instances () =
                             ~instance_dir ()
                       with _ -> true)
                   then
+                    (* #31: name the REASON. A binding-refused unit has a loaded
+                       thread and is delivering; labelling it "no thread loaded"
+                       sends the operator after the wrong fix. *)
                     C2c_doctor_hooks.codex_delivery_mode_label
-                      C2c_doctor_hooks.Cd_app_server_degraded
+                      (if (try C2c_codex_session
+                                 .online_attached_delivery_binding_refused
+                                 ~instance_dir ()
+                           with _ -> false)
+                       then C2c_doctor_hooks.Cd_app_server_unbound
+                       else C2c_doctor_hooks.Cd_app_server_degraded)
                   else "app-server"
               | Some (C2c_codex_session.Starting | C2c_codex_session.Offline
                      | C2c_codex_session.Failed_startup)

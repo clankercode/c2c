@@ -226,12 +226,34 @@ let status_of_instance ~(instance_dir : string) : status option =
    (B138 review). *)
 let delivery_status_path ~instance_dir = instance_dir // "codex-delivery-status.json"
 
+(* #31: WHY a deliver loop is degraded. [degraded] alone conflates two
+   operationally different states, and the remediation for each is the opposite
+   of the other's:
+   - [Dr_no_thread]: no frontend thread ever loaded, so there is nothing to
+     inject into. Fix: open/focus a thread in the remote TUI.
+   - [Dr_binding_refused]: a thread DID load and mail IS being injected into it,
+     but the #24 guard refused to record the durable thread binding because a
+     live managed sibling already owns that thread. Telling the operator to open
+     a thread here is unfollowable (one is already open); the real action is to
+     resolve the sibling. *)
+type degraded_reason = Dr_no_thread | Dr_binding_refused
+
+let degraded_reason_to_string = function
+  | Dr_no_thread -> "no-thread"
+  | Dr_binding_refused -> "binding-refused"
+
+let degraded_reason_of_string = function
+  | "no-thread" -> Some Dr_no_thread
+  | "binding-refused" -> Some Dr_binding_refused
+  | _ -> None
+
 (* Best-effort persist of the deliver-loop degraded signal, stamped with the
    attached unit's [unit_id]. [degraded] = true means the app-server unit is
    supervised but no thread was discovered to inject into. Written fail-closed
    (true) at session start + loop start, flipped to false once a thread loads.
    Never raises (delivery health must never wedge the session). *)
-let write_delivery_degraded ?now ~instance_dir ~(unit_id : string) (degraded : bool) : unit =
+let write_delivery_degraded ?now ?(reason = Dr_no_thread) ~instance_dir
+    ~(unit_id : string) (degraded : bool) : unit =
   try
     (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
      with _ -> ());
@@ -240,11 +262,19 @@ let write_delivery_degraded ?now ~instance_dir ~(unit_id : string) (degraded : b
        loop re-stamps it on a throttle while alive, so a stale value means the
        loop died. [?now] is a test seam; production uses the wall clock. *)
     let ts = match now with Some t -> t | None -> Unix.gettimeofday () in
+    (* #31 (nit 3): [thread_loaded] is the narrow "a frontend thread exists"
+       fact, decoupled from [degraded] — a binding-refused unit HAS a loaded
+       thread while being degraded. [reason] is only meaningful when
+       [degraded]; a healthy record carries none. *)
+    let thread_loaded = (not degraded) || reason = Dr_binding_refused in
     let j =
-      `Assoc [ ("unit_id", `String unit_id);
-               ("degraded", `Bool degraded);
-               ("thread_loaded", `Bool (not degraded));
-               ("updated_at", `Float ts) ]
+      `Assoc
+        ([ ("unit_id", `String unit_id);
+           ("degraded", `Bool degraded);
+           ("thread_loaded", `Bool thread_loaded) ]
+         @ (if degraded then [ ("reason", `String (degraded_reason_to_string reason)) ]
+            else [])
+         @ [ ("updated_at", `Float ts) ])
     in
     let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
     let oc = open_out tmp in
@@ -300,6 +330,33 @@ let delivery_degraded_of_instance ?now ?(stale_window_s = default_stale_window_s
         | _ -> None)
   | _ -> None
 
+(* #31: WHY the persisted record is degraded, for the operator-facing surfaces.
+   [None] = healthy / untrusted / unreadable — callers must not invent a reason
+   for a record they would not trust. Only ever consulted alongside a degraded
+   verdict; a record with no (or an unknown) [reason] field — e.g. one written
+   by a pre-#31 binary — reads as [Dr_no_thread], the historical meaning. *)
+let delivery_degraded_reason_of_instance ~(instance_dir : string)
+    ~(unit_id : string) () : degraded_reason option =
+  match C2c_io.read_json_opt (delivery_status_path ~instance_dir) with
+  | Some (`Assoc a) ->
+      let unit_matches =
+        match List.assoc_opt "unit_id" a with
+        | Some (`String u) -> u = unit_id
+        | _ -> false
+      in
+      if not unit_matches then None
+      else (
+        match List.assoc_opt "degraded" a with
+        | Some (`Bool true) ->
+            (match List.assoc_opt "reason" a with
+             | Some (`String s) ->
+                 (match degraded_reason_of_string s with
+                  | Some r -> Some r
+                  | None -> Some Dr_no_thread)
+             | _ -> Some Dr_no_thread)
+        | _ -> None)
+  | _ -> None
+
 (* Decide, fail-closed, whether an ONLINE-ATTACHED managed codex session's
    delivery loop is degraded (B138). Loads the live unit_id from the app-server
    record and trusts the persisted degraded signal only when its stamp matches.
@@ -320,6 +377,22 @@ let online_attached_delivery_degraded ?now ?(stale_window_s = default_stale_wind
        | Some b -> b
        | None -> true)
   | None -> true
+
+(* #31: companion to {!online_attached_delivery_degraded} — [true] only when the
+   trusted, unit-stamped record attributes the degradation to the #24 refusal (a
+   live managed sibling already owns this thread). Never fails toward [true]:
+   every uncertain case (no record, wrong unit, healthy, absent reason) is the
+   historical [Dr_no_thread] shape, so an unknown record can only produce the
+   generic remediation, never a specific-but-wrong one. Total. *)
+let online_attached_delivery_binding_refused ~(instance_dir : string) () : bool =
+  match C2c_codex_app_server.load_persisted ~instance_dir with
+  | Some p ->
+      (try
+         delivery_degraded_reason_of_instance ~instance_dir
+           ~unit_id:p.C2c_codex_app_server.unit_id ()
+         = Some Dr_binding_refused
+       with _ -> false)
+  | None -> false
 
 (* --------------------------- identity mapping ----------------------------- *)
 
@@ -833,6 +906,14 @@ let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool
                      codex_resume_target = Some thread_id }
     | _ -> ()
   in
+  (* #31 (nit 2): config.json repair is a SIDE REPAIR, not part of the binding
+     verdict. It goes through C2c_start.write_config (mkdir_p + open_out), which
+     can raise on ENOSPC/EACCES/EROFS; letting that escape would make the
+     deliver loop's fail-closed latch mark a unit permanently degraded even
+     though its binding was written correctly. Swallow it here so only genuine
+     binding-state uncertainty fails closed. (live_sibling_owns_thread raising
+     is deliberately NOT swallowed — that IS binding-state uncertainty.) *)
+  let repair_config () = try repair_config () with _ -> () in
   if already_ours then begin
     (* We already own T — repair config.json's restart target if it drifted, but
        there is no new binding to guard. *)
@@ -1142,8 +1223,13 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
         (* B138: persist the deliver-loop degraded signal (stamped with the
            attached unit_id) so `c2c doctor`/`c2c health` can read it. Fired true
            at loop start, false once a frontend thread loads. Best-effort —
-           write_delivery_degraded never raises. *)
-        (fun degraded -> write_delivery_degraded ~instance_dir ~unit_id degraded);
+           write_delivery_degraded never raises.
+           #31: [binding_refused] discriminates the two degraded shapes so
+           doctor/health can give the right remediation — a refused binding
+           HAS a loaded thread, so "open a thread" would be unfollowable. *)
+        (fun ~degraded ~binding_refused ->
+          let reason = if binding_refused then Dr_binding_refused else Dr_no_thread in
+          write_delivery_degraded ~reason ~instance_dir ~unit_id degraded);
       on_thread_discovered =
         (fun thread_id ->
           (* Independent from mapping freshness: an earlier launch can already
@@ -1159,7 +1245,8 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
             persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id
           in
           if not persisted then
-            write_delivery_degraded ~instance_dir ~unit_id true;
+            write_delivery_degraded ~reason:Dr_binding_refused ~instance_dir
+              ~unit_id true;
           persisted);
       restart_requested =
         (fun ~thread_id ->
@@ -1257,13 +1344,27 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   in
   Fun.protect ~finally:restore (fun () ->
       let o = C2c_codex_deliver_loop.run deps in
+      (* #31: the two degraded shapes are operationally different — say which
+         one happened. Claiming "no frontend thread was ever loaded" for a
+         binding-refused run is simply false: a thread loaded and mail WAS
+         injected into it; what failed is the durable binding. *)
       if o.C2c_codex_deliver_loop.degraded then
         emit_app_server_log
-          (Printf.sprintf
-             "delivery loop ran DEGRADED: no frontend thread was ever loaded, so \
-              c2c mail was not auto-delivered this session (session was still \
-              supervised). c2c-alias=%s"
-             alias);
+          (if o.C2c_codex_deliver_loop.binding_refused then
+             Printf.sprintf
+               "delivery loop ran DEGRADED: a live managed sibling already owns \
+                the discovered thread, so this unit's durable thread binding was \
+                REFUSED (#24 split-brain guard). Mail was injected into the \
+                discovered thread this session, but the binding is not recorded \
+                and will not survive a restart — resolve the sibling instance \
+                (`c2c dev instances`). c2c-alias=%s"
+               alias
+           else
+             Printf.sprintf
+               "delivery loop ran DEGRADED: no frontend thread was ever loaded, \
+                so c2c mail was not auto-delivered this session (session was \
+                still supervised). c2c-alias=%s"
+               alias);
       o)
 
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)

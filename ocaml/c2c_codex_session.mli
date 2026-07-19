@@ -212,16 +212,32 @@ val status_of_instance : instance_dir:string -> status option
     persists its degraded (no-thread-loaded) signal into (B138). *)
 val delivery_status_path : instance_dir:string -> string
 
-(** [write_delivery_degraded ?now ~instance_dir ~unit_id degraded] persists the
-    deliver-loop degraded signal, STAMPED with the attached app-server unit's
-    generation [unit_id] (best-effort; never raises). [true] = the app-server
-    unit is supervised but no frontend thread has loaded, so nothing is actually
-    delivered; [false] = a thread loaded and delivery is live. The stamped
-    [updated_at] doubles as the deliver loop's liveness HEARTBEAT (re-stamped on
-    a throttle while the loop is alive, #27). [?now] overrides the wall clock
-    stamp (test seam). *)
+(** #31: WHY a deliver loop is degraded. The two shapes need OPPOSITE operator
+    actions, so the surfaces must not conflate them:
+    - [Dr_no_thread]: no frontend thread ever loaded — nothing to inject into.
+      Action: open/focus a thread in the remote TUI.
+    - [Dr_binding_refused]: a thread loaded and mail IS injected into it, but the
+      #24 guard refused the durable binding because a live managed sibling owns
+      that thread. Action: resolve the sibling ([c2c dev instances]); telling the
+      operator to open a thread here is unfollowable. *)
+type degraded_reason = Dr_no_thread | Dr_binding_refused
+
+val degraded_reason_to_string : degraded_reason -> string
+val degraded_reason_of_string : string -> degraded_reason option
+
+(** [write_delivery_degraded ?now ?reason ~instance_dir ~unit_id degraded]
+    persists the deliver-loop degraded signal, STAMPED with the attached
+    app-server unit's generation [unit_id] (best-effort; never raises). [true] =
+    delivery is not healthy for [reason] (default {!Dr_no_thread}); [false] = a
+    thread loaded, its binding is recorded, and delivery is live. [reason] is
+    written only when [degraded]. The record's [thread_loaded] field carries the
+    narrow "a thread exists" fact and is therefore [true] for a
+    [Dr_binding_refused] record (#31). The stamped [updated_at] doubles as the
+    deliver loop's liveness HEARTBEAT (re-stamped on a throttle while the loop is
+    alive, #27). [?now] overrides the wall clock stamp (test seam). *)
 val write_delivery_degraded :
-  ?now:float -> instance_dir:string -> unit_id:string -> bool -> unit
+  ?now:float -> ?reason:degraded_reason ->
+  instance_dir:string -> unit_id:string -> bool -> unit
 
 (** [delivery_degraded_of_instance ?now ?stale_window_s ~instance_dir ~unit_id]
     reads the persisted signal, trusting it ONLY when its stamped unit_id matches
@@ -249,6 +265,22 @@ val default_stale_window_s : float
     Total. *)
 val online_attached_delivery_degraded :
   ?now:float -> ?stale_window_s:float -> instance_dir:string -> unit -> bool
+
+(** [delivery_degraded_reason_of_instance ~instance_dir ~unit_id] reads WHY the
+    persisted record is degraded, trusting it only on a unit_id stamp match.
+    [None] = healthy / untrusted / unreadable. A degraded record with a missing
+    or unknown [reason] (e.g. written by a pre-#31 binary) reads as
+    {!Dr_no_thread}, the historical meaning. Total. *)
+val delivery_degraded_reason_of_instance :
+  instance_dir:string -> unit_id:string -> unit -> degraded_reason option
+
+(** [online_attached_delivery_binding_refused ~instance_dir] is [true] only when
+    the trusted, unit-stamped record attributes the degradation to the #24
+    refusal. Never fails toward [true]: every uncertain case reads [false], so an
+    unknown record can only yield the generic remediation, never a
+    specific-but-wrong one. Total (#31). *)
+val online_attached_delivery_binding_refused :
+  instance_dir:string -> unit -> bool
 
 (* --------------------------- identity mapping ----------------------------- *)
 
