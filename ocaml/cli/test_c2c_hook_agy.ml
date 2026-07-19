@@ -371,17 +371,47 @@ let fingerprints_holding ctx ~session_id =
              (fun row -> field row "session_id" = Some (`String session_id))
              (rows_at (dir // fp // "broker")))
 
-let agy_payload ?(workspace_paths = []) event =
+let agy_payload ?(workspace_paths = []) ?(session_id = sid) event =
   let ws =
     `List (List.map (fun p -> `String p) workspace_paths)
   in
   Yojson.Safe.to_string
     (`Assoc
        [ ("hook_event_name", `String event)
-       ; ("session_id", `String sid)
-       ; ("conversationId", `String sid)
+       ; ("session_id", `String session_id)
+       ; ("conversationId", `String session_id)
        ; ("workspacePaths", ws)
        ])
+
+(* A plain directory that is NOT a git repo — the *common* vanilla case (an
+   agent launched outside a repo), not an edge case: of the 215 rows sitting in
+   the real `default` broker, 209 have a populated cwd and those are ordinary
+   non-repo directories. Distinct from [make_workspace], which builds a repo. *)
+let make_plain_dir ctx ~name =
+  let d = ctx.dir // name in
+  mkdir_p d;
+  d
+
+let broker_log_at ctx ~fingerprint =
+  read_file (repos_dir ctx // fingerprint // "broker" // "broker.log")
+
+let contains haystack needle =
+  let nl = String.length needle and hl = String.length haystack in
+  let rec loop i =
+    if i + nl > hl then false
+    else if String.sub haystack i nl = needle then true
+    else loop (i + 1)
+  in
+  loop 0
+
+let anchor_for ctx ~fingerprint ~session_id =
+  match
+    List.find_opt
+      (fun row -> field row "session_id" = Some (`String session_id))
+      (rows_at (repos_dir ctx // fingerprint // "broker"))
+  with
+  | Some row -> anchor_of row
+  | None -> None
 
 (* THE #69 REGRESSION. The row must land in the WORKSPACE's broker, never in
    `default`, when the payload names a workspace. *)
@@ -487,6 +517,167 @@ let test_absent_workspace_is_recorded_not_silent () =
       true
       (mentions "agy_workspace_unresolved"))
 
+(* Fingerprint of a workspace as the binary computes it, so a test can name the
+   broker a given workspace SHOULD own. Runs the same resolution the hook does
+   (git remote.origin.url -> sha256 -> first 12 hex) by asking the binary. *)
+let fingerprint_of ctx ~ws =
+  let out = ctx.dir // "fp.out" in
+  let cmd =
+    Printf.sprintf
+      "printf %%s \"$(git -C %s config --get remote.origin.url)\" | sha256sum | \
+       cut -c1-12 > %s 2>/dev/null"
+      (Filename.quote ws) (Filename.quote out)
+  in
+  ignore (Sys.command cmd);
+  String.trim (read_file out)
+
+(* B1. `workspacePaths` is a Go map-ordered SET serialized to JSON, not an
+   ordered list: measured across 36 fires of ONE conversation, the order
+   flipped on 3 (~8%). Taking element 0 is therefore a coin toss, and a
+   multi-root agy session lands in a different repo's broker run to run.
+
+   Two sessions, one pair of workspaces, the payload orders reversed. The
+   chosen broker must be the same both times. *)
+let test_multi_workspace_choice_is_deterministic () =
+  with_ctx (fun ctx ->
+    let ws_alpha = make_workspace ctx ~name:"ws-alpha" in
+    let ws_zulu = make_workspace ctx ~name:"ws-zulu" in
+    let hook_cwd = make_hook_cwd ctx in
+    let sid_a = "019f4fb9-3c7a-7720-96c2-aaaaaaaaaaaa" in
+    let sid_b = "019f4fb9-3c7a-7720-96c2-bbbbbbbbbbbb" in
+    let fire_with ~session_id ~order =
+      let rc, _, err =
+        fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+          ~stdin_payload:
+            (agy_payload ~workspace_paths:order ~session_id "SessionStart")
+      in
+      check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+      fingerprints_holding ctx ~session_id
+    in
+    let fps_a = fire_with ~session_id:sid_a ~order:[ ws_zulu; ws_alpha ] in
+    let fps_b = fire_with ~session_id:sid_b ~order:[ ws_alpha; ws_zulu ] in
+    check int
+      (Printf.sprintf "session A registered into exactly one broker (got: [%s])"
+         (String.concat "; " fps_a))
+      1 (List.length fps_a);
+    check (list string)
+      "#69 B1: workspacePaths order must not change which broker is chosen"
+      fps_a fps_b)
+
+(* B1, the worse half. The naive pick is not merely a wrong FIRST choice — it
+   can flip MID-SESSION. A session registers into ws1's broker on SessionStart;
+   a later PostToolUse arrives with a second workspace sorting ahead of it
+   (agy --add-dir, or a reordered set) and the hook chdirs elsewhere. Then
+   [deliver_loop] drains an empty inbox while mail sits in ws1, AND
+   [touch_hook_activity] anchors the wrong broker, so the live ws1 row stops
+   being refreshed and decays at #51's 24h TTL.
+
+   The anchor is the observable: it must keep advancing on the broker that
+   actually holds the row. *)
+let test_mid_session_workspace_flip_keeps_broker () =
+  with_ctx (fun ctx ->
+    let ws_zulu = make_workspace ctx ~name:"ws-zulu" in
+    let ws_alpha = make_workspace ctx ~name:"ws-alpha" in
+    let hook_cwd = make_hook_cwd ctx in
+    let fp_zulu = fingerprint_of ctx ~ws:ws_zulu in
+    check bool "workspace fingerprint resolved" true (fp_zulu <> "" && fp_zulu <> "default");
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+        ~stdin_payload:(agy_payload ~workspace_paths:[ ws_zulu ] "SessionStart")
+    in
+    check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    check (list string) "registered into the ws-zulu broker" [ fp_zulu ]
+      (fingerprints_holding ctx ~session_id:sid);
+    let before = anchor_for ctx ~fingerprint:fp_zulu ~session_id:sid in
+    check bool "SessionStart set an activity anchor" true (before <> None);
+    (* ws-alpha sorts BEFORE ws-zulu, so a sort-only tie-break flips here too;
+       only session affinity holds the session on the broker that owns it. *)
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy PostToolUse"
+        ~stdin_payload:
+          (agy_payload ~workspace_paths:[ ws_alpha; ws_zulu ] "PostToolUse")
+    in
+    check int ("PostToolUse exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    let after = anchor_for ctx ~fingerprint:fp_zulu ~session_id:sid in
+    check bool
+      (Printf.sprintf
+         "#69 B1: the anchor must advance on the session's OWN broker (before: \
+          %s, after: %s)"
+         (match before with Some f -> string_of_float f | None -> "<none>")
+         (match after with Some f -> string_of_float f | None -> "<none>"))
+      true
+      (match (before, after) with Some b, Some a -> a > b | _ -> false);
+    check (list string) "the row stayed in exactly one broker" [ fp_zulu ]
+      (fingerprints_holding ctx ~session_id:sid))
+
+(* B1 visibility. Deterministic is not the same as unambiguous: a multi-root
+   session still has a workspace we picked rather than one agy named. Record it
+   so the choice is inspectable via `c2c dev tail-log` instead of silent. *)
+let test_multi_workspace_is_recorded () =
+  with_ctx (fun ctx ->
+    let ws_alpha = make_workspace ctx ~name:"ws-alpha" in
+    let ws_zulu = make_workspace ctx ~name:"ws-zulu" in
+    let hook_cwd = make_hook_cwd ctx in
+    let fp_alpha = fingerprint_of ctx ~ws:ws_alpha in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+        ~stdin_payload:
+          (agy_payload ~workspace_paths:[ ws_zulu; ws_alpha ] "SessionStart")
+    in
+    check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    let log = broker_log_at ctx ~fingerprint:fp_alpha in
+    check bool "#69 B1: multi-workspace ambiguity is recorded in broker.log"
+      true
+      (contains log "agy_multi_workspace"))
+
+(* B2, the case that matters most: a REAL directory that is not a git repo.
+   Keying the guard on "the payload named no workspace" missed it entirely, yet
+   this is the ordinary vanilla shape — 209 of the 215 rows in the live
+   `default` broker are exactly this. The record must therefore SAY so rather
+   than imply a fault. *)
+let test_non_repo_workspace_is_recorded_with_reason () =
+  with_ctx (fun ctx ->
+    let ws = make_plain_dir ctx ~name:"not-a-repo" in
+    let hook_cwd = make_hook_cwd ctx in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+        ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] "SessionStart")
+    in
+    check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    let log = broker_log_at ctx ~fingerprint:"default" in
+    check bool
+      "#69 B2: a non-repo workspace landing in `default` is recorded" true
+      (contains log "agy_workspace_unresolved");
+    check bool
+      "#69 B2: the record names the reason (workspace is not a git repository)"
+      true
+      (contains log "not a git repository");
+    check bool "#69 B2: the record names the workspace it examined" true
+      (contains log ws))
+
+(* B2, the silently-swallowed case: [Sys.is_directory] passes and the chdir
+   then fails (mode 000, or a TOCTOU race). `try … with _ -> ()` discarded the
+   exception, so a genuine misfile of a REAL repo left no trace anywhere. *)
+let test_chdir_failure_is_recorded_with_reason () =
+  with_ctx (fun ctx ->
+    let ws = make_workspace ctx ~name:"unenterable" in
+    let hook_cwd = make_hook_cwd ctx in
+    Unix.chmod ws 0o000;
+    Fun.protect
+      ~finally:(fun () -> try Unix.chmod ws 0o755 with _ -> ())
+      (fun () ->
+        let rc, _, err =
+          fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+            ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] "SessionStart")
+        in
+        check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+        let log = broker_log_at ctx ~fingerprint:"default" in
+        check bool "#69 B2: a failed chdir into the workspace is recorded" true
+          (contains log "agy_workspace_unresolved");
+        check bool "#69 B2: the record says the workspace could not be entered"
+          true
+          (contains log "could not be entered")))
+
 let () =
   Random.self_init ();
   run "c2c_hook_agy"
@@ -499,6 +690,20 @@ let () =
             test_managed_broker_root_env_still_wins
         ; test_case "#69 absent workspace is recorded, not silent" `Quick
             test_absent_workspace_is_recorded_not_silent
+        ] )
+    ; ( "hook_agy_multi_workspace"
+      , [ test_case "#69 B1 workspacePaths order does not pick the broker"
+            `Quick test_multi_workspace_choice_is_deterministic
+        ; test_case "#69 B1 a mid-session order flip cannot move the broker"
+            `Quick test_mid_session_workspace_flip_keeps_broker
+        ; test_case "#69 B1 multi-workspace ambiguity is recorded" `Quick
+            test_multi_workspace_is_recorded
+        ] )
+    ; ( "hook_agy_default_landing"
+      , [ test_case "#69 B2 non-repo workspace is recorded with its reason"
+            `Quick test_non_repo_workspace_is_recorded_with_reason
+        ; test_case "#69 B2 chdir failure is recorded with its reason" `Quick
+            test_chdir_failure_is_recorded_with_reason
         ] )
     ; ( "hook_agy_turn_end"
       , [ test_case "#61 Stop keeps vanilla row addressable" `Quick

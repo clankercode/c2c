@@ -2033,55 +2033,236 @@ let hook_agy_cmd =
           somewhere plausible and is silently lost rather than obviously
           misfiled. So when the payload names nothing, we change nothing —
           see the [agy_workspace_unresolved] record below. *)
-       let workspace_path =
+       let workspace_candidates =
          match payload with
          | `Assoc fields -> (
              match List.assoc_opt "workspacePaths" fields with
-             | Some (`List (`String p :: _)) when String.trim p <> "" ->
-                 let p = String.trim p in
-                 if (try Sys.is_directory p with _ -> false) then Some p
-                 else None
-             | _ -> None)
-         | _ -> None
+             | Some (`List items) ->
+                 List.filter_map
+                   (function
+                     | `String p when String.trim p <> "" ->
+                         let p = String.trim p in
+                         if (try Sys.is_directory p with _ -> false) then Some p
+                         else None
+                     | _ -> None)
+                   items
+             (* Sorted so the choice below cannot depend on payload order, and
+                de-duplicated because a set can serialize the same path twice. *)
+             |> List.sort_uniq String.compare
+             | _ -> [])
+         | _ -> []
+       in
+       (* #69 B1: `workspacePaths` is a Go map-ordered SET serialized to JSON,
+          NOT an ordered list. Measured over 36 fires of a single conversation,
+          the order flipped on 3 (~8%), so `workspacePaths[0]` is a coin toss.
+          Two distinct harms, and the second is the worse one:
+
+            - ~8% of multi-root sessions register into the wrong repo outright;
+            - a session that registered into ws1 on SessionStart can see a
+              LATER PostToolUse arrive with ws2 first, chdir to ws2, and then
+              [deliver_loop] drains ws2's empty inbox while mail sits in ws1
+              AND [touch_hook_activity] anchors the wrong broker — so the live
+              ws1 row stops being refreshed and decays at #51's 24h TTL.
+
+          We do NOT take the kimi #40 F2 "bail loudly rather than guess" route
+          here, and the difference is worth stating. Kimi bails because two
+          managed instances in one directory are an ambiguity with no
+          principled tie-break AND with an identity consequence: guessing binds
+          a session to another session's alias. Multi-root agy is neither. It
+          is a SUPPORTED, ordinary configuration (`--add-dir`), not a malformed
+          state, so refusing it would break working setups; the alternative to
+          choosing is registering nowhere, which is strictly worse than #69's
+          status quo of registering somewhere visible; and there IS a
+          principled tie-break, below. So: choose deterministically, and record
+          the ambiguity so the choice is inspectable.
+
+          The tie-break is session affinity first, sorted-first second. Sorting
+          alone would make the choice STABLE for a fixed set, but a fixed set
+          is not what agy guarantees — `--add-dir` mid-session can introduce a
+          path that sorts ahead of the one we already registered into, and the
+          mid-session flip above returns. Preferring a workspace whose broker
+          already holds a row for this session makes the flip impossible rather
+          than merely unlikely, and falls back to sorted-first when nothing
+          owns the session yet (the first fire, by construction). *)
+       let workspace_path =
+         match workspace_candidates with
+         | [] -> None
+         | [ only ] -> Some only
+         | first :: _ ->
+             let owned_by_session =
+               try
+                 (* Every root holding this sid, unranked — the globally-"best"
+                    hit from [find_prior_session_across_brokers] could name
+                    `default` or an unrelated repo and mask a real candidate. *)
+                 let hits =
+                   C2c_mcp.find_session_hits_across_brokers ~session_id:sid ()
+                 in
+                 if hits = [] then None
+                 else
+                   (* [repo_fingerprint_uncached] deliberately, NOT the memoized
+                      [repo_fingerprint]: probing candidates means chdir-ing
+                      across repos, and priming the memo here would pin the
+                      whole process to whichever candidate we looked at first. *)
+                   let fp_of ws =
+                     let saved = try Some (Sys.getcwd ()) with _ -> None in
+                     Fun.protect
+                       ~finally:(fun () ->
+                         match saved with
+                         | Some d -> (try Unix.chdir d with _ -> ())
+                         | None -> ())
+                       (fun () ->
+                         Unix.chdir ws;
+                         C2c_repo_fp.repo_fingerprint_uncached ())
+                   in
+                   List.find_opt
+                     (fun ws ->
+                       match (try Some (fp_of ws) with _ -> None) with
+                       | Some fp ->
+                           List.exists
+                             (fun (h : C2c_mcp.prior_session_hit) ->
+                               h.fingerprint = fp)
+                             hits
+                       | None -> false)
+                     workspace_candidates
+               with _ -> None
+             in
+             (match owned_by_session with Some ws -> Some ws | None -> Some first)
        in
        (* chdir rather than passing a root down: the fingerprint is computed
           from git in the process cwd, and every downstream broker/delivery
-          call in this hook resolves through the same path. Same idiom as the
-          kimi hook. C2C_MCP_BROKER_ROOT still wins inside
-          [resolve_broker_root], so this cannot relocate a managed session. *)
+          call in this hook resolves through the same path.
+
+          NOT the same idiom as the kimi hook, despite the surface similarity —
+          kimi chdirs AFTER resolving its broker root (see the `cwd` /
+          `workspaceRoot` chdir further up this file), agy chdirs BEFORE, and
+          the order is load-bearing. DO NOT RESOLVE A BROKER ROOT ABOVE THIS
+          POINT: [C2c_repo_fp.repo_fingerprint] is memoized per process, so any
+          such call would cache the fingerprint of agy's hook cwd
+          (`~/.gemini/config` -> "default") and silently revert this entire fix
+          while every test that pins C2C_MCP_BROKER_ROOT still passed. The
+          explicit reset below is belt-and-braces against exactly that, but the
+          rule stands on its own: nothing above this line resolves a root.
+
+          C2C_MCP_BROKER_ROOT still wins inside [resolve_broker_root], so this
+          cannot relocate a managed session.
+
+          #69 B2: the chdir exception is CAPTURED, not discarded. `try … with _
+          -> ()` swallowed a real misfile — [Sys.is_directory] can pass and the
+          chdir still fail (mode 000, or a TOCTOU race between the two), and the
+          session then silently resolves its broker from agy's hook cwd. *)
+       let unresolved_detail = ref None in
        (match workspace_path with
-        | Some ws -> (try Unix.chdir ws with _ -> ())
-        | None -> ());
+        | None ->
+            unresolved_detail :=
+              Some
+                "the agy hook payload carried no usable `workspacePaths` \
+                 entry, so the broker root was resolved from agy's own hook \
+                 cwd. `agy -p` without --add-dir genuinely has no workspace; \
+                 an interactive session should have one. See #69."
+        | Some ws -> (
+            try Unix.chdir ws
+            with e ->
+              unresolved_detail :=
+                Some
+                  (Printf.sprintf
+                     "the agy workspace %s could not be entered (%s), so the \
+                      broker root was resolved from agy's own hook cwd \
+                      instead — this session is very likely registered in the \
+                      wrong broker. See #69."
+                     ws (Printexc.to_string e))));
+       C2c_repo_fp.reset_repo_fingerprint_cache ();
        let broker_root = C2c_utils.resolve_broker_root () in
        let broker = C2c_mcp.Broker.create ~root:broker_root in
-       (* #69: registering into `default` is a real state (an agy session with
-          no workspace), but a SILENT one — the row is unaddressable from the
-          repo the operator believes they are in, with nothing anywhere saying
-          so. Record it durably where `c2c dev tail-log` / doctor can find it,
-          mirroring the `managed_registration_failed` treatment in `c2c start
-          kimi` (#40 F5). Only on SessionStart: the condition is per-session,
-          and PostToolUse/Stop fire every turn. *)
+       (* #69 B2: key this on the OUTCOME — did we land in `default`? — not on
+          "the payload named no workspace". The original guard tested the
+          latter and so missed both cases that actually matter: a workspace
+          that is a real directory but not a git repo (the COMMON vanilla
+          shape), and a chdir that failed after [Sys.is_directory] passed.
+
+          Tone matters here. Landing in `default` is usually CORRECT: of the
+          215 rows in the live `default` broker, 209 carry a populated cwd and
+          those are ordinary non-repo directories (`~/src`, a served-html dir),
+          i.e. agents legitimately launched outside a repo. So this record
+          explains WHICH of the three reasons applied rather than asserting a
+          fault — a log line that cries wolf on normal operation is worse than
+          no log line at all. The one genuinely wrong case, a failed chdir, is
+          recorded even when it does not land in `default`, because misfiling a
+          real repo into a DIFFERENT real repo is the version of this bug with
+          no visible symptom at all.
+
+          SessionStart only: the condition is per-session and PostToolUse/Stop
+          fire every turn, so recording there would flood broker.log. *)
+       let landed_in_default =
+         Filename.basename (Filename.dirname broker_root) = "default"
+       in
+       let chdir_failed = !unresolved_detail <> None && workspace_path <> None in
        if
-         event = "SessionStart" && workspace_path = None
+         event = "SessionStart"
          && Sys.getenv_opt "C2C_MCP_BROKER_ROOT" = None
-         && Filename.basename (Filename.dirname broker_root) = "default"
-       then
+         && (landed_in_default || chdir_failed)
+       then begin
+         let detail =
+           match !unresolved_detail with
+           | Some d -> d
+           | None -> (
+               match workspace_path with
+               | Some ws ->
+                   Printf.sprintf
+                     "the agy workspace %s is not a git repository, so this \
+                      session registered into the shared `default` broker. \
+                      That is expected for an agent working outside a repo and \
+                      is not in itself a fault — it only means peers address \
+                      it from `default` rather than from a repo. See #69."
+                     ws
+               | None -> "agy session registered into the `default` broker (#69)."
+             )
+         in
+         try
+           Broker_log.append_json ~broker_root
+             ~json:
+               (`Assoc
+                  [ ("event", `String "agy_workspace_unresolved")
+                  ; ("ts", `Float (Unix.gettimeofday ()))
+                  ; ("client", `String "agy")
+                  ; ("session_id", `String sid)
+                  ; ("broker_root", `String broker_root)
+                  ; ( "workspace"
+                    , match workspace_path with
+                      | Some ws -> `String ws
+                      | None -> `Null )
+                  ; ("detail", `String detail) ])
+         with _ -> ()
+       end;
+       (* #69 B1: deterministic is not unambiguous. A multi-root session got a
+          workspace WE picked, not one agy named, so make the pick inspectable
+          via `c2c dev tail-log` rather than resolving it silently. *)
+       if event = "SessionStart" && List.length workspace_candidates > 1 then
          (try
             Broker_log.append_json ~broker_root
               ~json:
                 (`Assoc
-                   [ ("event", `String "agy_workspace_unresolved")
+                   [ ("event", `String "agy_multi_workspace")
                    ; ("ts", `Float (Unix.gettimeofday ()))
                    ; ("client", `String "agy")
                    ; ("session_id", `String sid)
                    ; ("broker_root", `String broker_root)
+                   ; ( "candidates"
+                     , `List
+                         (List.map
+                            (fun p -> `String p)
+                            workspace_candidates) )
+                   ; ( "chosen"
+                     , match workspace_path with
+                       | Some ws -> `String ws
+                       | None -> `Null )
                    ; ( "detail"
                      , `String
-                         "agy hook payload carried no workspacePaths, so the \
-                          session registered into the `default` broker and is \
-                          not addressable from any repo. `agy --print` without \
-                          --add-dir has no workspace; an interactive session \
-                          should. See #69." ) ])
+                         "agy named more than one workspace; c2c chose one \
+                          (session affinity, else lexicographically first) \
+                          because `workspacePaths` is an unordered set and \
+                          taking element 0 is not reproducible. Only the \
+                          chosen workspace's broker holds this session. See \
+                          #69." ) ])
           with _ -> ());
 
        let ls_address =
@@ -2116,7 +2297,19 @@ let hook_agy_cmd =
                         this was always None and the worktree-mismatch guard
                         was inert for agy. `workspacePaths` is the field agy
                         actually populates; the two ahead of it are kept for
-                        any agy build that grows them. *)
+                        any agy build that grows them.
+
+                        KNOWN LIMIT (multi-root): [cwd] is a single string, so
+                        only the CHOSEN workspace is recorded. A multi-root agy
+                        session legitimately working in one of the others will
+                        therefore trip the worktree-mismatch guard's warning.
+                        That is the correct failure direction — the guard warns,
+                        it does not refuse — and the alternative (recording no
+                        cwd) is #68 unfixed, which disables the guard entirely.
+                        Widening [Broker.register] to a cwd LIST would touch the
+                        registry schema and every client, so it is deliberately
+                        out of scope here; the `agy_multi_workspace` broker.log
+                        record above is what makes such a warning diagnosable. *)
                      ~cwd:
                        (match payload_string_field payload "cwd" with
                         | Some c -> Some c

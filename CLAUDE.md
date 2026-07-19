@@ -249,12 +249,39 @@ artifact.** #69/#68 recorded it as always empty; that came from plain
 `agy --print`, which registers no workspace at all. Measured on agy 1.1.4:
 interactive `agy` in a repo → `["<repo>"]` on *every* event; `agy -p --add-dir
 <ws>` → `["<ws>"]`; `agy -p` alone → `[]`. Do not re-derive the workspace from
-the hook process's own cwd or ancestry (the #40 lesson) — when the payload names
-nothing, the hook changes nothing and appends `agy_workspace_unresolved` to
-`broker.log`, so a `default`-broker landing is visible rather than silent.
+the hook process's own cwd or ancestry (the #40 lesson).
 `transcriptPath` / `artifactDirectoryPath` are NOT usable substitutes: agy's
 docs show them under the workspace, but the CLI puts them in a global
 `~/.gemini/antigravity-cli/brain/<conversation-id>/` tree.
+
+**`workspacePaths` is an unordered SET, so never index it.** It is a Go map
+serialized to JSON: over 36 fires of one `conversationId` the order flipped on
+3 (~8%). `workspacePaths[0]` therefore misfiles ~8% of multi-root sessions and,
+worse, can flip *mid-session* — the hook then drains the wrong (empty) inbox
+while mail sits in the original broker, and `touch_hook_activity` anchors the
+wrong broker so the live row decays at #51's 24h TTL. The hook sorts the
+candidates and prefers the one whose broker already holds a row for this
+`session_id`, falling back to sorted-first; multi-root is recorded as
+`agy_multi_workspace` (candidates + chosen). This is deliberately *not* kimi's
+#40 F2 "bail loudly" treatment: multi-root agy is a supported configuration
+(`--add-dir`), not a malformed state, and a principled tie-break exists.
+
+**The `default`-landing record is keyed on the OUTCOME, not on a missing
+field.** `agy_workspace_unresolved` is appended when the resolved broker root
+is `.../default/broker`, with the detail naming which of three reasons applied:
+no usable `workspacePaths`, `chdir` into the workspace failed, or the workspace
+is not a git repo. A failed `chdir` is recorded even when it does *not* land in
+`default` — misfiling a real repo into a *different* real repo is the symptomless
+version. **Landing in `default` is usually correct** (209 of the 215 rows there
+have a populated cwd and are ordinary non-repo directories), so the record
+explains rather than accuses; keep it that way.
+
+**`c2c hook agy` chdirs BEFORE resolving its broker root** (kimi chdirs after),
+and `C2c_repo_fp.repo_fingerprint` is memoized per process — so resolving any
+broker root above that chdir would cache `~/.gemini/config` → `"default"` and
+silently revert the whole fix. The hook calls
+`C2c_repo_fp.reset_repo_fingerprint_cache ()` immediately before resolving.
+Any code that relocates a process across repos must do the same.
 
 The general lesson, since it recurred all day: a wake path can be documented,
 installed, and inert. Verify a client's hooks actually **fire** before
