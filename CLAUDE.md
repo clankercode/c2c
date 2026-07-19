@@ -104,10 +104,10 @@ the canonical framing.)
   `.collab/runbooks/git-workflow.md` §`just`-recipes. If you edit
   `data/opencode-plugin/c2c.ts`, run `just codegen-opencode-plugin` and
   commit both the TS source and `ocaml/cli/c2c_opencode_plugin_embedded.ml`.
-- **Test results can be wrong in BOTH directions. Seven known ways (2026-07-19).**
+- **Test results can be wrong in BOTH directions. Eight known ways (2026-07-19).**
   Any of these will make you report a branch green that isn't, or condemn one
   that is. When a count or a verdict is load-bearing (a review, a merge
-  decision), guard against all seven:
+  decision), guard against all eight:
   1. **Stale binary.** `dune exec` can run a previously-built `.exe` and pass.
      Always `dune build <targets>` explicitly first. Suites that shell out to
      `c2c.exe` must declare it in `(deps ...)` — several already do; a stanza
@@ -148,6 +148,11 @@ the canonical framing.)
      from it reads clean against a 139/3066 baseline while most tests never
      ran. Quote repo-wide `@runtest` (or say explicitly which subtree you
      measured, and compare against a baseline measured the same way).
+  8. **Alcotest prints `1 test run` (singular).** A summing regex of
+     `[0-9]+ tests run` silently drops every such suite — two of them here, so
+     every count taken that way this session was low by 2. Match
+     `[0-9]+ tests? run`. This is the subtlest of the eight: the number looks
+     right, moves correctly with your changes, and is simply wrong.
   Known-flaky: `test_c2c_relay_managed.ml` `"relay ready"` binds a random port;
   re-run in isolation before blaming a branch. A worktree placed **outside**
   the repo tree fails ~148 tests environmentally — keep them in `.worktrees/`.
