@@ -285,7 +285,7 @@ let run_setup_kimi ~alias_from_auto_gen ~alias_val ~home ~server_path () =
       C2c_setup.setup_kimi
         ~output_mode:C2c_types.Human ~dry_run:false
         ~root:"/fake/broker/root" ~alias_val
-        ~server_path ~deliver_watch:false
+        ~server_path
         ~alias_from_auto_gen
         ())
 
@@ -336,6 +336,42 @@ let test_setup_kimi_writes_mcp_config_and_skill () =
             a.kind = "shared-block"
             && Option.value ~default:"" a.begin_marker
                = "# c2c-managed:BEGIN session-start-hook-kimi")
+         result.C2c_setup.artifacts))
+
+(* #10: kimi delivery is the REST notifier, so setup_kimi must not leave a
+   deliver-watch.sh behind — and a (re)install must remove any legacy script
+   from an older install (which baked a now-stale broker root). *)
+let test_setup_kimi_removes_legacy_deliver_watch () =
+  with_temp_dir (fun dir ->
+    let home = dir // "home" in
+    Unix.mkdir home 0o700;
+    let client_dir = home // ".c2c" // "clients" // "kimi" in
+    List.iter
+      (fun d ->
+        try Unix.mkdir d 0o755
+        with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+      [ home // ".c2c"; home // ".c2c" // "clients"; client_dir;
+        client_dir // "start-hooks" ];
+    let supervisor = client_dir // "deliver-watch.sh" in
+    let pre_deliver = client_dir // "start-hooks" // "pre-deliver.sh" in
+    write_file supervisor
+      "#!/usr/bin/env bash\n# STALE: baked broker_root=/old/repo/broker\n";
+    write_file pre_deliver "#!/usr/bin/env bash\n# stale pre-deliver\n";
+    Alcotest.(check bool) "legacy deliver-watch.sh present before install" true
+      (Sys.file_exists supervisor);
+    let result =
+      run_setup_kimi ~alias_from_auto_gen:false ~alias_val:"lyra-quill"
+        ~home ~server_path:"/fake/bin/c2c_mcp_server.exe" ()
+    in
+    Alcotest.(check bool) "legacy deliver-watch.sh removed after install" false
+      (Sys.file_exists supervisor);
+    Alcotest.(check bool) "legacy pre-deliver.sh removed after install" false
+      (Sys.file_exists pre_deliver);
+    (* The install manifest must not claim any deliver-watch owned file. *)
+    Alcotest.(check bool) "manifest omits deliver-watch owned files" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            contains_substring ~haystack:a.path ~needle:"deliver-watch.sh")
          result.C2c_setup.artifacts))
 
 (* ------------------------------------------------------------------ *)
@@ -814,6 +850,8 @@ let () =
     ; ("setup-kimi",
         [ Alcotest.test_case "setup_kimi writes ~/.kimi-code/mcp.json and skill" `Quick
             test_setup_kimi_writes_mcp_config_and_skill
+        ; Alcotest.test_case "setup_kimi removes legacy deliver-watch.sh (#10)" `Quick
+            test_setup_kimi_removes_legacy_deliver_watch
         ] )
     ; ("setup-codex-env-marker",
         [ Alcotest.test_case "setup_codex writes FROM_AUTO_GEN marker when alias auto-picked" `Quick
