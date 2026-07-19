@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-19T04:42:28Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-18T04:34:41Z"
 depends_on: []
 estimate_hours: 1
 id: B247
 priority: low
-status: pending
+started_at: "2026-07-19T04:42:28Z"
+status: in_progress
 tags: []
 title: 'test_c2c_cli init_name_hardening leaks host session env: fails inside a live Claude/c2c session (B226 residue)'
-updated_at: "2026-07-18T04:34:41Z"
+updated_at: "2026-07-19T04:42:28Z"
 ---
 
 # test_c2c_cli init_name_hardening leaks host session env: fails inside a live Claude/c2c session (B226 residue)
