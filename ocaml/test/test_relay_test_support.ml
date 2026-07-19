@@ -493,11 +493,17 @@ let test_connector_poll_messages_wrong_type () =
             (Sys.file_exists
                (Filename.concat broker_root (sm_session ^ ".inbox.json")))))
 
+let contains_substr ~sub s =
+  let n = String.length sub and m = String.length s in
+  let rec go i = i + n <= m && (String.sub s i n = sub || go (i + 1)) in
+  n = 0 || go 0
+
 (* H9 fix (rows B095/B238; closes the F5c dishonest cell): poll_inbox rows
    that fail the minimum broker-inbox contract — string from_alias /
    to_alias / content, exactly what C2c_broker.message_of_json REQUIRES —
-   are dropped BEFORE append_to_local_inbox, with the drop recorded as a
-   poll_inbox sync error. Valid rows in the same batch still deliver
+   are dropped BEFORE append_to_local_inbox, with the drop recorded — as
+   accounting rather than as a sync error since #62; see the assertion below.
+   Valid rows in the same batch still deliver
    (partial-batch delivery); dropped rows never count in
    inbound_delivered; and the local inbox file stays parseable by the
    broker layer. Pre-fix (verified dishonest 2026-07-10 on fbb16453),
@@ -542,36 +548,137 @@ let test_connector_poll_garbage_rows_dropped () =
           check int "only the valid row delivered" 1 r.inbound_delivered;
           check int "both garbage rows counted as rejected" 2
             r.inbound_rejected;
-          (match r.last_error with
-           | Some e ->
-               check string "dropped rows recorded as poll_inbox error"
-                 "poll_inbox" e.C2c_relay_connector.err_op
-           | None -> fail "dropped rows must record a sync error");
+          (* #62 replaced one assertion here with three. This is not a
+             strictly-stronger rewrite — it swaps the mechanism the invariant
+             rides on, and the old mechanism is deliberately gone.
+
+             H9's invariant is that a drop is never SILENT. [last_error] was
+             the mechanism originally chosen to carry it, and that mechanism
+             was wrong for this class: it made a SUCCESSFUL poll suppress
+             [ok], freeze [last_ok_ts] and pin the connector to
+             Health_erroring behind a restart remediation that cannot clear
+             it — a local connector cannot fix a relay that keeps serving the
+             same malformed row. What it must NOT become is silent: these rows
+             failed the broker-inbox contract, i.e. the RELAY served something
+             undeliverable, and [poll_inbox] is destructive, so the mail is
+             already permanently gone. So the invariant now rides on three
+             things asserted below — the accounting note, a durable per-class
+             broker.log event, and an agent-visible [c2c-system] DM. Losing
+             any one of them is a regression even though health stays ok. *)
+          check bool "a poll that only dropped rows is not a fault" true
+            (r.last_error = None);
+          (match r.C2c_relay_connector.inbound_rejected_note with
+           | Some note ->
+               (* Labelled by CLASS: these are schema failures, so calling
+                  them "policy-rejected" would name the wrong culprit. *)
+               check bool "note counts the dropped rows" true
+                 (contains_substr
+                    ~sub:"dropped 2 relay-contract-violating inbound row(s) of 3"
+                    note);
+               check bool "note names the rejection reason" true
+                 (contains_substr ~sub:"schema=2" note)
+           | None -> fail "dropped rows must still be recorded as accounting");
+          let broker_log = Filename.concat broker_root "broker.log" in
+          let broker_log_text =
+            if Sys.file_exists broker_log then
+              In_channel.with_open_bin broker_log In_channel.input_all
+            else ""
+          in
+          check bool "drop recorded durably under its own class" true
+            (contains_substr ~sub:"relay_inbound_contract_drops" broker_log_text);
+          check bool "and NOT mislabelled as a policy drop" false
+            (contains_substr ~sub:"relay_inbound_policy_drops" broker_log_text);
+          check int "the alert was delivered as a system message" 1
+            r.C2c_relay_connector.alerts_emitted;
           let inbox_path =
             Filename.concat broker_root (sm_session ^ ".inbox.json")
           in
           check bool "inbox file written for the valid row" true
             (Sys.file_exists inbox_path);
           (match Yojson.Safe.from_file inbox_path with
-           | `List [ row ] ->
-               check bool "inbox contains exactly the valid row verbatim"
-                 true (row = h9_good_row)
+           | `List [ row; _alert ] ->
+               check bool "inbox contains the valid row verbatim" true
+                 (row = h9_good_row)
            | other ->
                fail
-                 ("inbox file must hold only the valid row, got: "
+                 ("inbox must hold the valid row plus the alert, got: "
                   ^ Yojson.Safe.to_string other));
           (* End-to-end honesty: the file the connector wrote must be
              readable by the broker layer (the pre-fix poisoned file made
              this raise Yojson Type_error). *)
           let broker = C2c_mcp.Broker.create ~root:broker_root in
           match C2c_mcp.Broker.read_inbox broker ~session_id:sm_session with
-          | [ msg ] ->
+          | [ msg; alert ] ->
               check string "broker parses the delivered row" "valid-row"
-                msg.C2c_mcp.content
+                msg.C2c_mcp.content;
+              (* The whole point of routing this through the alert machinery:
+                 an agent reading its inbox learns the relay destroyed mail
+                 addressed to it, without having to poll a counter. *)
+              check bool "agent-visible alert names the destroyed mail" true
+                (contains_substr ~sub:"DROPPED" alert.C2c_mcp.content
+                 && contains_substr ~sub:"destructive" alert.C2c_mcp.content)
           | msgs ->
               fail
-                (Printf.sprintf "broker read %d messages, expected 1"
+                (Printf.sprintf "broker read %d messages, expected 2"
                    (List.length msgs))))
+
+(* #62: the other side of the split. A drop that local B196 policy caused is
+   pure accounting — this host is configured to reject that row, nothing is
+   wrong, and waking the agent for it every sync would be noise. It must be
+   recorded, must NOT be a fault, and must NOT raise an alert. Without this
+   case the fix could "pass" by simply alerting on every drop, which is the
+   spam failure mode. *)
+let test_connector_poll_local_policy_drop_is_silent_accounting () =
+  let oversize_row =
+    `Assoc
+      [ ("from_alias", `String "f5c-sm-peer");
+        ("to_alias", `String sm_alias);
+        ("content", `String (String.make 4096 'x'));
+        ("message_id", `String "m-62-oversize") ]
+  in
+  let poll_body =
+    Yojson.Safe.to_string
+      (`Assoc
+        [ ("ok", `Bool true); ("messages", `List [ h9_good_row; oversize_row ]) ])
+  in
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/register"
+        [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_body ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_temp_broker_root (fun broker_root ->
+          write_registry broker_root;
+          (* Tight per-message ceiling so the big row is a policy drop. *)
+          write_file
+            (Filename.concat broker_root "relay-inbound-policy.json")
+            {|{"default_max_bytes":512}|};
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root in
+          let (r : C2c_relay_connector.sync_result) = run_sync t in
+          check int "only the small row delivered" 1 r.inbound_delivered;
+          check int "the oversize row was rejected" 1 r.inbound_rejected;
+          check bool "a local-policy drop is not a fault" true
+            (r.last_error = None);
+          (match r.C2c_relay_connector.inbound_rejected_note with
+           | Some note ->
+               check bool "recorded, and labelled as OUR policy" true
+                 (contains_substr ~sub:"policy-rejected" note
+                  && contains_substr ~sub:"oversize=1" note)
+           | None -> fail "a policy drop must still be recorded");
+          check int "and raises no agent-visible alert" 0
+            r.C2c_relay_connector.alerts_emitted;
+          let broker_log = Filename.concat broker_root "broker.log" in
+          let broker_log_text =
+            if Sys.file_exists broker_log then
+              In_channel.with_open_bin broker_log In_channel.input_all
+            else ""
+          in
+          check bool "durable event uses the policy class" true
+            (contains_substr ~sub:"relay_inbound_policy_drops" broker_log_text);
+          check bool "and not the relay-contract class" false
+            (contains_substr ~sub:"relay_inbound_contract_drops"
+               broker_log_text)))
 
 let write_inbound_policy broker_root json =
   write_file
@@ -700,11 +807,6 @@ let test_connector_non_object_response_start_once () =
 (* per-op sync error (never counted registered/delivered) and --once        *)
 (* exits 2 via the existing B087 sync-with-errors path.                     *)
 (* ======================================================================== *)
-
-let contains_substr ~sub s =
-  let n = String.length sub and m = String.length s in
-  let rec go i = i + n <= m && (String.sub s i n = sub || go (i + 1)) in
-  n = 0 || go 0
 
 let last_error_detail (r : C2c_relay_connector.sync_result) =
   match r.C2c_relay_connector.last_error with
@@ -1268,6 +1370,9 @@ let () =
           test_case
             "connector: poll garbage rows dropped, valid rows delivered (H9)"
             `Quick test_connector_poll_garbage_rows_dropped;
+          test_case
+            "connector: local-policy drop is silent accounting, no alert (#62)"
+            `Quick test_connector_poll_local_policy_drop_is_silent_accounting;
           test_case
             "connector: invalid local policy denies inbound, keeps other sync"
             `Quick test_connector_invalid_policy_denies_inbound_but_keeps_sync;

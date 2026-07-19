@@ -218,6 +218,20 @@ type connector_info = {
   conn_last_error_detail : string option;
       (** Detail for that failure — reported to the operator instead of
           guessing at the cause. [None] when nothing was recorded. *)
+  conn_inbound_rejected : int;
+      (** #62: inbound rows the connector's LAST sync dropped (0 on older
+          state files). Deliberately NOT an input to [conn_health]: a poll
+          that rejects rows succeeded, and no local remediation clears it.
+          But dropped rows are how mail silently goes missing on a connector
+          reporting ok — relay polling is destructive, so a dropped row is
+          already gone — so they are reported here, in [connector_json] and
+          on the human line rather than only in connector-state.json, where
+          nothing read them. Per-sync, not cumulative. *)
+  conn_inbound_rejected_note : string option;
+      (** Per-reason breakdown for [conn_inbound_rejected], labelled by class
+          ("policy-rejected" = this host's own B196 filtering;
+          "relay-contract-violating" = the relay served an undeliverable or
+          misaddressed row). [None] when the last sync dropped nothing. *)
 }
 
 (** Derive connector info from the broker-owned connector-state file (already
