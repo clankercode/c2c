@@ -34,7 +34,11 @@ tasks:
       id: T002
       priority: high
       status: pending
-      tags: []
+      tags:
+        - i011
+        - c2c
+        - upgrade
+        - idle
       title: Per-client idle capability contract (fail-closed)
     - complexity: high
       depends_on:
