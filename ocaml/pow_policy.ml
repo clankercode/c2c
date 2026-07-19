@@ -12,7 +12,15 @@ let step = 4
    routine requests imperceptible. Must stay well under Pow.max_mint_iterations
    (2^17 since #71 — a 32x margin over 2^12) so a client can always mint at the
    maximum required difficulty. Raising d_max REQUIRES re-deriving that budget:
-   it is a security bound on hostile-relay CPU, not spare headroom. *)
+   it is a security bound on hostile-relay CPU, not spare headroom.
+
+   It also constrains ROLLOUT ORDER, which the code change alone does not make
+   obvious. Clients install independently of the relay deploy, so the larger
+   budget must ship to clients BEFORE the relay raises d_max — an old client
+   still on the old budget fails honest mints at the new ceiling (at d=16
+   against a 2^17 budget, ~13.5% of them). This is not hypothetical: the
+   2026-06-12 relay-pow-routine-cpu finding records d_max=24 against a 2^24
+   budget, i.e. a 1x margin, where minting failed outright at e^-1 ~= 37%. *)
 let d_max = 12
 let window_s = 600.0
 
