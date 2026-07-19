@@ -389,6 +389,20 @@ let codex_deaf_summary (rep : codex_delivery_report) : string option =
                      (codex_delivery_mode_label i.ci_delivery.cd_mode))
                  deaf)))
 
+(* Pure exit-status predicate for `c2c doctor hooks`: does the run represent an
+   actionable FAILURE (exit 1) rather than a clean check (exit 0)? Extracted so
+   the contract is pinned by tests instead of living only inside the cmdliner
+   closure. #27 added [codex_deaf] — a DEAF managed codex instance is exactly as
+   actionable as a DEAF kimi session or grok identity drift, and must fail the
+   check so scripts/CI can detect it. *)
+let doctor_hooks_exit_failure ~(total_dangling : int) ~(codex_issues : int)
+    ~(kimi_deaf : int) ~(grok_flagged : bool) ~(codex_deaf : int) : bool =
+  total_dangling > 0
+  || codex_issues > 0
+  || kimi_deaf > 0
+  || grok_flagged
+  || codex_deaf > 0
+
 (* #27: observability helper shared by `c2c send`. Given the live (or injected)
    codex instances, return a sender warning when [to_alias] names a managed codex
    instance whose delivery mode has NO live c2c path (degraded / unavailable).
@@ -1257,7 +1271,22 @@ let codex_delivery_report_to_json (rep : codex_delivery_report) : Yojson.Safe.t 
                | None -> `Null);
               ("delivery", codex_delivery_to_json i.ci_delivery)
             ])
-          rep.cdr_instances))
+          rep.cdr_instances));
+    (* #27: machine-readable DEAF rollup, mirroring the kimi deaf/deaf_count
+       fields so scripted consumers can detect a silently-deaf managed codex
+       without re-deriving the mode classification. *)
+    ("deaf",
+     `List
+       (List.map
+          (fun i ->
+            `Assoc [
+              ("name", `String i.ci_name);
+              ("mode", `String (codex_delivery_mode_label i.ci_delivery.cd_mode))
+            ])
+          (codex_deaf_instances rep)));
+    ("deaf_count", `Int (List.length (codex_deaf_instances rep)));
+    ("deaf_summary",
+     match codex_deaf_summary rep with Some s -> `String s | None -> `Null)
   ]
 
 let pp_codex_delivery_human (rep : codex_delivery_report) =
@@ -1483,10 +1512,15 @@ let c2c_doctor_hooks_cmd =
       pp_human r;
       pp_codex_delivery_human delivery
     end;
-    if r.total_dangling > 0
-       || r.codex.total_issues > 0
-       || r.kimi.kd_deaf <> []
-       || r.grok.gid_flagged
+    (* #27: codex DEAF now fails the check too (see [doctor_hooks_exit_failure])
+       — otherwise `c2c doctor hooks` printed the red DEAF block and still
+       exited 0, so no script/CI could detect the failure it exists to surface. *)
+    if doctor_hooks_exit_failure
+         ~total_dangling:r.total_dangling
+         ~codex_issues:r.codex.total_issues
+         ~kimi_deaf:(List.length r.kimi.kd_deaf)
+         ~grok_flagged:r.grok.gid_flagged
+         ~codex_deaf:(List.length (codex_deaf_instances delivery))
     then exit 1
   in
   Cmdliner.Cmd.v
