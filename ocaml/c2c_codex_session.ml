@@ -743,20 +743,79 @@ let clear_unpersisted_resume_target ~(name : string) ~(instance_dir : string)
     | _ -> ()
   with _ -> ()
 
-let persist_discovered_thread ~instance_dir ~name ~thread_id : unit =
-  (match load_mapping ~instance_dir with
-   | Some m when m.thread_id <> Some thread_id ->
-       write_mapping ~instance_dir
-         { m with thread_id = Some thread_id;
-                  updated_at = Unix.gettimeofday () }
-   | _ -> ());
-  (match C2c_start.load_config_opt name with
-   | Some cfg when cfg.codex_resume_target <> Some thread_id
-                   || cfg.resume_session_id <> thread_id ->
-       C2c_start.write_config
-         { cfg with resume_session_id = thread_id;
-                    codex_resume_target = Some thread_id }
-   | _ -> ())
+(* #24 write-side guard: does a DIFFERENT, still-alive managed instance already
+   own [thread_id]? Mirrors the [bound_other_thread] predicate shape used by the
+   adopt-existing path (c2c_cli_helpers.sole_alive_codex_app_server_session) plus
+   a liveness check. Pure read of sibling mappings + broker registry — no
+   mutation. A DEAD prior owner returns false (its identity is gone; reclaim it
+   freely). This is orthogonal to the "never steal a thread already registered
+   by vanilla codex" guard elsewhere: here we only stop two *managed* units from
+   both minting a binding for one thread. *)
+let live_sibling_owns_thread ~broker_root ~self_name ~thread_id : bool =
+  let instances_dir = C2c_mcp_helpers_post_broker.managed_instances_dir () in
+  if not (Sys.file_exists instances_dir && Sys.is_directory instances_dir) then false
+  else
+    let regs =
+      try C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:broker_root)
+      with _ -> []
+    in
+    let entries = try Array.to_list (Sys.readdir instances_dir) with _ -> [] in
+    List.exists
+      (fun entry ->
+        if entry = self_name then false
+        else
+          let dir = Filename.concat instances_dir entry in
+          if not (Sys.file_exists dir && Sys.is_directory dir) then false
+          else
+            match load_mapping ~instance_dir:dir with
+            | Some m when m.thread_id = Some thread_id ->
+                (match
+                   List.find_opt
+                     (fun (r : C2c_mcp.registration) -> r.session_id = m.session_id)
+                     regs
+                 with
+                 | Some r -> C2c_mcp.Broker.registration_is_alive r
+                 | None -> false)
+            | _ -> false)
+      entries
+
+(* Returns [true] when the thread is (or was already) bound to this unit, and
+   [false] when persistence was REFUSED because a live managed sibling already
+   owns [thread_id] (#24). On refusal this unit stays thread-less and the caller
+   records the degraded delivery signal — minting a second binding is exactly
+   the split-brain that strands DMs forever. *)
+let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool =
+  let mapping = load_mapping ~instance_dir in
+  let already_ours =
+    match mapping with Some m -> m.thread_id = Some thread_id | None -> false
+  in
+  let repair_config () =
+    match C2c_start.load_config_opt name with
+    | Some cfg when cfg.codex_resume_target <> Some thread_id
+                    || cfg.resume_session_id <> thread_id ->
+        C2c_start.write_config
+          { cfg with resume_session_id = thread_id;
+                     codex_resume_target = Some thread_id }
+    | _ -> ()
+  in
+  if already_ours then begin
+    (* We already own T — repair config.json's restart target if it drifted, but
+       there is no new binding to guard. *)
+    repair_config ();
+    true
+  end
+  else if live_sibling_owns_thread ~broker_root ~self_name:name ~thread_id then
+    false
+  else begin
+    (match mapping with
+     | Some m when m.thread_id <> Some thread_id ->
+         write_mapping ~instance_dir
+           { m with thread_id = Some thread_id;
+                    updated_at = Unix.gettimeofday () }
+     | _ -> ());
+    repair_config ();
+    true
+  end
 
 (* --------------------------------- run ------------------------------------ *)
 
@@ -1055,8 +1114,13 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
           (* Independent from mapping freshness: an earlier launch can already
              have persisted the thread in codex-session.json while config.json
              still lacks the restart target. Repair each durable surface on
-             its own predicate. *)
-          persist_discovered_thread ~instance_dir ~name ~thread_id);
+             its own predicate. #24: refuses (returns false) when a live managed
+             sibling already owns this thread — do not mint a second binding;
+             instead record the degraded delivery signal for doctor/health. *)
+          if not
+               (persist_discovered_thread ~instance_dir ~name ~broker_root
+                  ~thread_id)
+          then write_delivery_degraded ~instance_dir ~unit_id true);
       restart_requested =
         (fun ~thread_id ->
           match consume_restart_request ~instance_dir with
