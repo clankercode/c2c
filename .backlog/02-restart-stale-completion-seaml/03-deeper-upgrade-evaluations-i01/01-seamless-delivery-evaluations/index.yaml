@@ -50,7 +50,11 @@ tasks:
       id: T003
       priority: medium
       status: pending
-      tags: []
+      tags:
+        - i011
+        - c2c
+        - spike
+        - monitor
       title: 'SPIKE: monitor/heartbeat self-detect-stale -> self-exit + exact relaunch hint (go/no-go)'
     - complexity: medium
       depends_on:
