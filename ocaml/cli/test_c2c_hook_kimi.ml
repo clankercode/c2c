@@ -349,6 +349,42 @@ let test_i40_hook_ignores_dead_managed_registration () =
     check bool "the new row is not the dead managed one" true
       (List.exists (fun (sid, _) -> sid = session_id) regs))
 
+(* #40 F4: a row whose recorded pid_start_time no longer matches the live
+   process is a PID-REUSE hit, not our instance — it must not be adopted.
+   Uses a live pid (our own) with a deliberately wrong start-time, so a bare
+   `/proc/<pid>` existence check would wrongly match. *)
+let test_i40_hook_rejects_pid_reuse_row () =
+  with_ctx (fun ctx ->
+    let b = C2c_mcp.Broker.create ~root:ctx.broker_root in
+    C2c_mcp.Broker.register b ~session_id:"zz-i40-reused" ~alias:"zz-i40-reused"
+      ~pid:(Some (Unix.getpid ())) ~pid_start_time:(Some 1) (* never a real jiffy count *)
+      ~client_type:(Some "kimi") ~cwd:(Some "/tmp/proj") ~from_auto_gen:false ();
+    let rc, _, stderr = run_hook ctx ~payload:session_start_payload in
+    check int "exit 0" 0 rc;
+    check bool "no adoption of a pid-reuse row" false
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    let regs = list_registrations ctx.broker_root in
+    check int "session minted its own identity" 2 (List.length regs);
+    check bool "the new row is this session" true
+      (List.exists (fun (sid, _) -> sid = session_id) regs))
+
+(* #40 F7: the launcher writes a canonical cwd but kimi's payload cwd is
+   whatever the client passes. A trailing slash must not defeat the match and
+   resurrect the competing-alias bug. *)
+let test_i40_hook_adoption_normalizes_cwd () =
+  with_ctx (fun ctx ->
+    ignore (register_managed_session ctx ~alias:"zz-i40-slash" ~cwd:"/tmp/proj");
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:
+          {|{"hook_event_name":"SessionStart","session_id":"session_5f3a2591-0289-4bd3-b214-12c4d6939412","cwd":"/tmp/proj/"}|}
+    in
+    check int "exit 0" 0 rc;
+    check bool "trailing slash still matches the managed row" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check int "no second identity minted" 1
+      (List.length (list_registrations ctx.broker_root)))
+
 (* The bare `exit 0` on an unresolvable session id is what made #40 invisible.
    It must stay exit 0 (never fail the host turn) but say why. *)
 let test_i40_unresolvable_session_id_logs_reason_and_exits_0 () =
@@ -390,6 +426,10 @@ let () =
             test_i40_hook_bails_loudly_on_ambiguous_managed_cwd
         ; test_case "dead managed registration is ignored" `Quick
             test_i40_hook_ignores_dead_managed_registration
+        ; test_case "pid-reuse row is rejected (F4)" `Quick
+            test_i40_hook_rejects_pid_reuse_row
+        ; test_case "adoption normalizes cwd (F7)" `Quick
+            test_i40_hook_adoption_normalizes_cwd
         ; test_case "unresolvable session id logs reason, exits 0" `Quick
             test_i40_unresolvable_session_id_logs_reason_and_exits_0
         ] )

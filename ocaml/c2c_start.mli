@@ -110,6 +110,15 @@ val register_managed_kimi_session :
   cwd:string ->
   (unit, string) result
 
+(** [kimi_notifier_arm_is_authoritative ~registered_ok ~resolved_sid ~name] —
+    may the launcher mark its [ensure_daemon] arm AUTHORITATIVE (#40 F1)?
+    True only when {!register_managed_kimi_session} succeeded AND the notifier
+    resolver picked that row ([resolved_sid = name]); a sid from the kimi
+    session_index or the bare alias fallback is the placeholder case the #9
+    no-downgrade guard exists for. Pure; exposed for unit tests. *)
+val kimi_notifier_arm_is_authoritative :
+  registered_ok:bool -> resolved_sid:string -> name:string -> bool
+
 (** Operator-facing text for a failed managed-kimi registration: names the
     unreachable alias, the exact `c2c send` error peers will see, the broker
     root, and the recovery command. Pure; exposed so the wording is pinned by

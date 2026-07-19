@@ -2236,6 +2236,17 @@ let register_managed_kimi_session ~(broker_root : string) ~(name : string)
        | Ok true -> Ok ()
        | Ok false -> Error "registry write did not persist the alias")
 
+(* #40 F1: may the launcher tell [ensure_daemon] its sid is AUTHORITATIVE (a
+   real binding) rather than a t≈0 placeholder guess? Only when our own
+   registration landed AND the notifier resolver actually picked it — if
+   [resolved_sid] came from the kimi session_index or the bare alias fallback,
+   it is exactly the placeholder case the #9 no-downgrade guard exists for.
+   Pure so the condition is pinned by a test instead of living inline in the
+   launch path. *)
+let kimi_notifier_arm_is_authoritative ~(registered_ok : bool)
+    ~(resolved_sid : string) ~(name : string) : bool =
+  registered_ok && resolved_sid = name
+
 let instance_dir name = instances_dir // name
 let per_agent_managed_heartbeats ~(name : string) : managed_heartbeat list =
   managed_heartbeats_from_toml_path (instance_dir name // "heartbeat.toml")
@@ -5034,6 +5045,59 @@ let run_outer_loop ~(name : string) ~(client : string)
          SigIgn=0x11000 on the client process produced PostToolUse ECHILD
          on roughly every non-trivial tool call. Forking manually lets us
          reset the disposition in the child between fork and exec. *)
+      (* #40 F3: register the managed kimi alias BEFORE forking the client.
+         Kimi's SessionStart hook can fire as soon as the child is up, so
+         registering after the fork left a window where the hook saw no managed
+         row for this cwd, minted a competing alias and armed a second
+         notifier (a phantom row + duplicate daemon, not deafness — routing
+         recovers once our row lands). Registering first closes it.
+
+         The pid recorded is the OUTER wrapper's, not the inner client's. That
+         is deliberate and is the better liveness signal: the outer loop lives
+         for the whole managed instance and survives `c2c restart` cycling the
+         inner child, so the row stays adoptable across a restart, whereas an
+         inner pid would go dead mid-instance. Consumers only ever ask "is this
+         instance still alive" (hook adoption, pick_live_registration_sid). *)
+      let kimi_registration_authoritative = ref false in
+      (if client = "kimi" then begin
+         let alias = Option.value alias_override ~default:name in
+         let cwd = try Sys.getcwd () with _ -> "" in
+         (match
+            register_managed_kimi_session ~broker_root ~name ~alias
+              ~pid:(Unix.getpid ()) ~cwd
+          with
+          | Ok () -> kimi_registration_authoritative := true
+          | Error reason ->
+              let msg =
+                managed_kimi_registration_failure_message ~name ~alias
+                  ~broker_root ~reason
+              in
+              prerr_string msg;
+              flush stderr;
+              (* #40 F5: the outer loop's stderr is about to be painted over by
+                 the client's full-screen TUI, so a terminal-only message is
+                 effectively invisible. Also record it durably where
+                 `c2c dev tail-log` / doctor can find it after the fact. *)
+              (try
+                 Broker_log.append_json ~broker_root
+                   ~json:(`Assoc
+                      [ ("event", `String "managed_registration_failed")
+                      ; ("ts", `Float (Unix.gettimeofday ()))
+                      ; ("client", `String "kimi")
+                      ; ("instance", `String name)
+                      ; ("alias", `String alias)
+                      ; ("reason", `String reason)
+                      ; ("detail", `String (String.trim msg)) ])
+               with _ -> ()));
+         (* Name/alias distinction is explicit rather than silent: peers must
+            address the ALIAS, `c2c stop`/`restart` take the NAME. *)
+         if String.lowercase_ascii alias <> String.lowercase_ascii name then
+           Printf.eprintf
+             "note: c2c start kimi: instance name '%s' is not the broker \
+              alias — peers must address '%s' (`c2c send %s ...`); \
+              `c2c stop`/`c2c restart` still take '%s'.\n%!"
+             name alias alias name
+       end);
       let child_pid_opt =
         try
           (* S10 (#482): compute pre-deliver hook path for needs_deliver
@@ -5135,36 +5199,9 @@ let run_outer_loop ~(name : string) ~(client : string)
                   ~pid
                   ~client_type:"codex-headless" ()
               with _ -> ()));
-          (* #40: register the managed kimi alias from the LAUNCHER. The
-             SessionStart hook cannot do it — Kimi Code >= 0.27 spawns hooks
-             from the shared `kimi server` daemon, whose env has no
-             C2C_MCP_AUTO_REGISTER_ALIAS for this instance. See
-             [register_managed_kimi_session]. Registering here also makes
-             `-n <name>` the broker alias (unless --alias/role overrides it),
-             and must happen BEFORE the notifier is armed below so
-             [resolve_kimi_notifier_session_id] binds the daemon to
-             <name>.inbox.json — the inbox `c2c send <name>` writes to. *)
-          (if client = "kimi" then begin
-             let alias = Option.value alias_override ~default:name in
-             let cwd = try Sys.getcwd () with _ -> "" in
-             (match
-                register_managed_kimi_session ~broker_root ~name ~alias ~pid ~cwd
-              with
-              | Ok () -> ()
-              | Error reason ->
-                  prerr_string
-                    (managed_kimi_registration_failure_message ~name ~alias
-                       ~broker_root ~reason);
-                  flush stderr);
-             (* Name/alias distinction is explicit rather than silent: peers
-                must address the ALIAS, `c2c stop`/`restart` take the NAME. *)
-             if String.lowercase_ascii alias <> String.lowercase_ascii name then
-               Printf.eprintf
-                 "note: c2c start kimi: instance name '%s' is not the broker \
-                  alias — peers must address '%s' (`c2c send %s ...`); \
-                  `c2c stop`/`c2c restart` still take '%s'.\n%!"
-                 name alias alias name
-           end);
+          (* #40: the managed kimi alias is registered BEFORE the fork above
+             (F3) — the SessionStart hook can fire the moment the child is up.
+             See [register_managed_kimi_session]. *)
           (match thread_id_handoff_path_opt with
            | Some path ->
                (* In XML mode the bridge does not start/resume a thread until it sees the first
@@ -5280,17 +5317,41 @@ let run_outer_loop ~(name : string) ~(client : string)
                 role-provided c2c_alias) [name] <> [alias], so a [name]
                 placeholder would never be recognised and the no-downgrade
                 guard would go inert — letting a correctly-bound daemon be
-                flapped onto a <name>.inbox.json nothing lands in. *)
-             (* #40 UPDATE: the launcher now writes its own registration
-                (session_id = [name]) just above, so branch (1) normally
-                resolves to [name] and the notifier drains <name>.inbox.json —
-                which is where `c2c send <alias>` puts mail. The hook no longer
-                mints a competing real-sid identity for managed sessions (it
-                adopts this row instead), so the real-sid branch survives only
-                for pre-#40 rows and hook-registered vanilla sessions. *)
+                flapped onto a <name>.inbox.json nothing lands in.
+
+                #40 SUPERSEDES most of the above for the managed path. The
+                launcher now writes its OWN registration (session_id = [name])
+                before the fork, so branch (1) resolves to [name] and the
+                notifier drains <name>.inbox.json — exactly where
+                `c2c send <alias>` puts mail. The hook adopts that row instead
+                of minting a competing real-sid identity, so the real-sid
+                branch now only serves pre-#40 rows and hook-registered vanilla
+                sessions.
+
+                That makes the placeholder reasoning above ACTIVELY WRONG for
+                the default managed case: with no [alias_override],
+                [alias = name = session_id], so our authoritative sid is
+                byte-identical to what decide_notifier_rekey treats as a
+                placeholder. A leftover live notifier for this alias bound to
+                some other sid (SIGKILLed outer loop, failed `c2c restart`
+                teardown) would therefore never converge onto <name> — it would
+                fall through to the stale-binary branch and Skip_current on an
+                unchanged binary, leaving the session deaf while `c2c send`
+                reports success. [~authoritative] says "this sid is a real
+                binding, not a t≈0 guess", and we only claim it when our
+                registration actually landed. *)
              let real_session_id =
                resolve_kimi_notifier_session_id ~broker_root ~alias
                  ~cwd:(Sys.getcwd ()) ~fallback:alias ()
+             in
+             (* Only authoritative when our registration succeeded AND the
+                resolver actually picked it: otherwise [real_session_id] came
+                from the session_index or the bare fallback, which is exactly
+                the placeholder case the #9 guard exists for. *)
+             let authoritative =
+               kimi_notifier_arm_is_authoritative
+                 ~registered_ok:!kimi_registration_authoritative
+                 ~resolved_sid:real_session_id ~name
              in
              (* B145: ensure_daemon (not start_daemon) so a stale notifier left
                 over from a previous binary is cycled onto the new one even on a
@@ -5299,7 +5360,8 @@ let run_outer_loop ~(name : string) ~(client : string)
                 stop/restart. *)
              match
                C2c_kimi_notifier.ensure_daemon
-                 ~alias ~broker_root ~session_id:real_session_id ~tmux_pane ()
+                 ~alias ~broker_root ~session_id:real_session_id ~authoritative
+                 ~tmux_pane ()
              with
              | Some p ->
                  notifier_pid := Some p;

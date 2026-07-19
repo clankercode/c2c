@@ -192,10 +192,21 @@ app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
   environment, so `c2c hook kimi` cannot see a managed instance's
   `C2C_MCP_SESSION_ID` / `C2C_MCP_AUTO_REGISTER_ALIAS`. `c2c start kimi`
   therefore registers the alias itself (`register_managed_kimi_session`,
-  session_id = instance name, cwd + live pid recorded) and the hook *adopts*
-  that row by cwd + live pid instead of minting a competing alias. Two managed
-  kimi instances in one directory are indistinguishable to the hook — it bails
-  loudly rather than guess.
+  **before the fork** — the hook can fire the moment the child is up),
+  session_id = instance name, recording the launch cwd and the OUTER pid +
+  pid_start_time; the hook *adopts* that row by normalized cwd + live pid pair
+  instead of minting a competing alias. A failed registration is both printed
+  and appended to broker.log as `managed_registration_failed` — the TUI paints
+  over the terminal, so a terminal-only message is not "loud". Because the
+  launcher's sid IS the alias in the default case, it arms the notifier with
+  `~authoritative:true` so `decide_notifier_rekey` does not mistake the real
+  binding for a placeholder and strand a leftover daemon on the wrong inbox.
+  **Known limits:** two managed kimi instances in one directory are
+  indistinguishable to the hook (it bails loudly rather than guess), and a
+  *co-located vanilla* kimi TUI in a managed directory is adopted too — it
+  never registers its own alias and its identity skill names the managed alias.
+  Delivery is unaffected (the REST layer is workdir-keyed); nothing in the hook
+  payload can distinguish these cases.
   Legacy notification-store runbook:
   `.collab/runbooks/kimi-notification-store-delivery.md` (deprecated).
 - **OpenCode**: SIGUSR1 to the *inner* OpenCode pid (not the outer wrapper)
