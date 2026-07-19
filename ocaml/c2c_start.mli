@@ -632,8 +632,18 @@ val registry_alive_conflict :
     "LIVE" is decided by [C2c_mcp.Broker.registration_is_alive], the same
     predicate [Broker.register] applies, so this guard can never be stricter
     than the refusal it front-runs (#56): a row naming a recycled pid has a
-    stale [pid_start_time] and is not a conflict. Pid-less rows are likewise
-    not conflicts — they name no process to collide with. Exported for tests. *)
+    stale [pid_start_time] and is not a conflict.
+
+    Pid-less rows are likewise not conflicts, and that too is agreement rather
+    than an override: [register]'s conflict test is
+    [Option.is_some reg.pid && registration_is_alive reg && ...] — it excludes
+    pid-less rows with its own clause, whatever [registration_is_alive]'s #51
+    leniency answers for them. [i56_pidless_row_guard_agrees_with_register]
+    enforces that coupling; without the [Option.is_some reg.pid] clause on the
+    [register] side this guard would be a false ACCEPT.
+
+    Alias matching is case-insensitive, as [register]'s is; session ids are
+    compared byte-exactly, as [register]'s are. Exported for tests. *)
 
 val check_registry_alias_alive : broker_root:string -> name:string -> unit
 (** Registry precheck for launchers: print a FATAL message and [exit 1] when

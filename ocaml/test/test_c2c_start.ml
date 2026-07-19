@@ -767,6 +767,149 @@ let test_i56_registry_alive_conflict_honours_pid_start_time () =
       check (option (pair string int)) "pid-less row is not a conflict" None
         (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"pidless"))
 
+(* #56 nit 1. The guard excluding pid-less rows is NOT an override of
+   [registration_is_alive]'s #51 leniency — it is exact agreement with
+   [Broker.register], whose conflict test carries its own
+   [Option.is_some reg.pid] clause and so never sees a pid-less row either.
+   That coupling is load-bearing and invisible from [c2c_start.ml]: if the
+   clause is ever dropped from [register], the guard silently becomes wrong
+   in the false-ACCEPT direction (guard passes, register refuses late — the
+   #34 shape).  Assert the two agree rather than merely documenting it. *)
+let test_i56_pidless_row_guard_agrees_with_register () =
+  let dir = Filename.temp_file "c2c-i56-couple" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      let alias = "i56coupled" in
+      (* A pid-less row with no hook anchor: [registration_is_alive] answers
+         TRUE for it (#51 leniency), so any disagreement between guard and
+         register is attributable to the pid clause alone. *)
+      Yojson.Safe.to_file (Filename.concat dir "registry.json")
+        (`List
+          [ `Assoc
+              [ ("session_id", `String "sid-i56-pidless-holder")
+              ; ("alias", `String alias) ] ]);
+      let reg =
+        C2c_mcp.Broker.registration_of_json
+          (`Assoc
+            [ ("session_id", `String "sid-i56-pidless-holder")
+            ; ("alias", `String alias) ])
+      in
+      check bool "fixture precondition: registration_is_alive is lenient here"
+        true (C2c_mcp.Broker.registration_is_alive reg);
+      (* Guard side: not a conflict. *)
+      check (option (pair string int)) "guard: pid-less row is not a conflict"
+        None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:alias);
+      (* Authority side: [register] must also accept, for a DIFFERENT
+         session_id (so [already_owns_alias] cannot be what saves us). *)
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let self = Unix.getpid () in
+      (match
+         (try
+            C2c_mcp.Broker.register broker ~session_id:"sid-i56-newcomer"
+              ~alias ~pid:(Some self)
+              ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time self) ();
+            None
+          with Invalid_argument m -> Some m)
+       with
+      | None -> ()
+      | Some m ->
+          failf
+            "register refused a pid-less holder (%s) — its Option.is_some \
+             reg.pid clause is gone, so registry_alive_conflict's pid-less \
+             carve-out is now a false ACCEPT"
+            m))
+
+(* #56 nit 3. [register] compares aliases with [alias_casefold]; the guard
+   compared them byte-exactly, so `-n foo` against a live `Foo` row sailed
+   past the pre-launch check and was refused late by [register] — the exact
+   orphaned-TUI shape #34 added this guard to eliminate. *)
+let test_i56_registry_alive_conflict_alias_match_is_case_insensitive () =
+  let dir = Filename.temp_file "c2c-i56-fold" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      (* Alive and not self, so neither the liveness path nor #34's
+         self-owned carve-out can account for the verdict. *)
+      let live = Unix.getppid () in
+      Yojson.Safe.to_file (Filename.concat dir "registry.json")
+        (`List
+          [ `Assoc
+              ([ ("session_id", `String "sid-i56-fold")
+               ; ("alias", `String "I56FoldAlias")
+               ; ("pid", `Int live) ]
+               @
+               match C2c_mcp.Broker.read_pid_start_time live with
+               | Some s -> [ ("pid_start_time", `Int s) ]
+               | None -> []) ]);
+      check (option (pair string int))
+        "lowercased name matches a mixed-case live alias"
+        (Some ("I56FoldAlias", live))
+        (C2c_start.registry_alive_conflict ~broker_root:dir
+           ~name:"i56foldalias");
+      check (option (pair string int))
+        "uppercased name matches a mixed-case live alias"
+        (Some ("I56FoldAlias", live))
+        (C2c_start.registry_alive_conflict ~broker_root:dir
+           ~name:"I56FOLDALIAS");
+      (* Case-folding must not turn into substring/prefix matching. *)
+      check (option (pair string int)) "a different alias is still no conflict"
+        None
+        (C2c_start.registry_alive_conflict ~broker_root:dir
+           ~name:"i56foldalia"))
+
+(* #56 nit 5. The [| None -> pid_alive p] fallback for a row
+   [registration_of_json] cannot parse. [registration_of_json] uses [to_string]
+   on session_id, so a row carrying only an alias raises — and such a row can
+   still reach the guard, because the guard matches on alias OR session_id. *)
+let test_i56_unparseable_row_falls_back_to_pid_alive () =
+  let dir = Filename.temp_file "c2c-i56-parse" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      let reg_path = Filename.concat dir "registry.json" in
+      (* Precondition: this row really is unparseable, so the test exercises
+         the fallback rather than the ordinary delegation. *)
+      let bad =
+        `Assoc [ ("alias", `String "i56unparsed"); ("pid", `Int 1) ]
+      in
+      check bool "fixture precondition: row does not parse" true
+        (match C2c_mcp.Broker.registration_of_json bad with
+         | _ -> false
+         | exception _ -> true);
+      (* Live pid -> refuse.  Erring toward refusal is the safe direction for
+         a row we cannot interpret. *)
+      let live = Unix.getppid () in
+      Yojson.Safe.to_file reg_path
+        (`List
+          [ `Assoc
+              [ ("alias", `String "i56unparsed"); ("pid", `Int live) ] ]);
+      check (option (pair string int))
+        "unparseable row with a live pid is a conflict"
+        (Some ("i56unparsed", live))
+        (C2c_start.registry_alive_conflict ~broker_root:dir
+           ~name:"i56unparsed");
+      (* Dead pid -> still no conflict: the fallback is [pid_alive], not a
+         blanket refusal.  Above pid_max, so /proc/<pid> cannot exist. *)
+      Yojson.Safe.to_file reg_path
+        (`List
+          [ `Assoc
+              [ ("alias", `String "i56unparsed"); ("pid", `Int 2147483646) ] ]);
+      check (option (pair string int))
+        "unparseable row with a dead pid is not a conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir
+           ~name:"i56unparsed"))
+
 let test_namespaced_name_filtered_from_generic_tmux_command_b221 () =
   (* [c2c_managed_cmd] now passes this single filtered [client_args] value as
      both ordinary passthrough and [tmux_command].  This exercises the exact
@@ -4487,6 +4630,13 @@ let () =
             `Quick, test_i34r_registry_alive_conflict_sees_plain_rows )
         ; ( "i56_registry_alive_conflict_honours_pid_start_time",
             `Quick, test_i56_registry_alive_conflict_honours_pid_start_time )
+        ; ( "i56_pidless_row_guard_agrees_with_register",
+            `Quick, test_i56_pidless_row_guard_agrees_with_register )
+        ; ( "i56_registry_alive_conflict_alias_match_is_case_insensitive",
+            `Quick,
+            test_i56_registry_alive_conflict_alias_match_is_case_insensitive )
+        ; ( "i56_unparseable_row_falls_back_to_pid_alive",
+            `Quick, test_i56_unparseable_row_falls_back_to_pid_alive )
         ; ( "namespaced_name_filtered_from_generic_tmux_command_b221",
             `Quick, test_namespaced_name_filtered_from_generic_tmux_command_b221 )
         ; ( "generic_start_tmux_consumes_namespaced_control_b221",
