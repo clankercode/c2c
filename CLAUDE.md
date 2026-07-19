@@ -104,6 +104,24 @@ the canonical framing.)
   `.collab/runbooks/git-workflow.md` §`just`-recipes. If you edit
   `data/opencode-plugin/c2c.ts`, run `just codegen-opencode-plugin` and
   commit both the TS source and `ocaml/cli/c2c_opencode_plugin_embedded.ml`.
+- **Two build throttles exist; know which one wedged (#70).** Besides this
+  repo's `scripts/dune-build-locked.sh` (slots under `~/.cache/c2c/dune-global`,
+  bypass `C2C_DUNE_SKIP_GLOBAL_LOCK=1`), the host has a PATH shim
+  `~/.local/bin/dune` ("dune-throttle": slots under
+  `~/.cache/dune-throttle/slots`, bypass `DUNE_THROTTLE_BYPASS=1`) that
+  intercepts *every* `dune` call. The ~46h machine-wide deadlock in #70 was the
+  shim's — it blocks unboundedly on `slot.0` via a child `flock`, and orphaned
+  waiters (`flock 10` in `ps`, 0s CPU, reparented to `systemd --user`) never
+  exit. Reaping them frees the lock immediately. **`0 CPU over hours` is the
+  decisive staleness signal**; a real build accrues CPU at once. The repo
+  wrapper now reaps stale holders, bounds the queue wait
+  (`C2C_DUNE_QUEUE_TIMEOUT`, default 2x the watchdog) and warns on bypass; the
+  shim is unfixed and outside this repo. Also: `dune build` run *through the
+  shim* without `eval $(opam env)` falls back to `/usr/bin/dune` and yields
+  `Library "yojson" not found` across ~50 suites — a broken invocation, not a
+  broken branch. `scripts/dune-build-locked.sh` always uses `opam exec -- dune`
+  and is immune. Details:
+  `.collab/findings/2026-07-20T02-30-00Z-i70-throttle-deadlock-two-throttles.md`.
 - **Test results can be wrong in BOTH directions. Eight known ways (2026-07-19).**
   Any of these will make you report a branch green that isn't, or condemn one
   that is. When a count or a verdict is load-bearing (a review, a merge
