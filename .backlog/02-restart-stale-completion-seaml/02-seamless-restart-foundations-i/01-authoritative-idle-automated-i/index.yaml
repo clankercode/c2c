@@ -19,7 +19,12 @@ tasks:
       id: T001
       priority: high
       status: pending
-      tags: []
+      tags:
+        - i011
+        - c2c
+        - upgrade
+        - audit
+        - evidence
       title: Re-audit managed-client process model + measure restart disruption
     - complexity: high
       depends_on:

@@ -8,7 +8,12 @@ id: P2.M2.E1.T001
 priority: high
 started_at: null
 status: pending
-tags: []
+tags:
+    - i011
+    - c2c
+    - upgrade
+    - audit
+    - evidence
 title: Re-audit managed-client process model + measure restart disruption
 updated_at: "2026-07-19T23:48:00Z"
 ---
