@@ -2190,6 +2190,34 @@ let hook_agy_cmd =
        C2c_repo_fp.reset_repo_fingerprint_cache ();
        let broker_root = C2c_utils.resolve_broker_root () in
        let broker = C2c_mcp.Broker.create ~root:broker_root in
+       (* #73: registration is ensured on ANY live hook event, not only
+          SessionStart. agy 1.1.4 does NOT fire SessionStart on a RESUMED
+          conversation (`agy --conversation <id>`): measured 0 SessionStart
+          among 36 fires, while PreInvocation / PostToolUse / Stop fire
+          normally and carry `workspacePaths` correctly. SessionStart was the
+          ONLY writer of an agy-hook row, so a conversation resumed after its
+          row decayed (#51's 24h activity TTL retires pid-less hook rows) — or
+          resumed on a machine where it never registered — had NO row and NO
+          path to get one, and was unaddressable for its whole life while the
+          other hooks dutifully refreshed an anchor for a row that was not
+          there. Fix the class generally: register on the first live event that
+          finds no row, whichever event that is.
+
+          Idempotent by construction — the guard is a registry read. If a row
+          for this sid already exists we register nothing and only anchor, as
+          before, so a second event does not double-register or clobber. The
+          cost is one [list_registrations] read per hook fire, which the anchor
+          update below already pays. SessionEnd is the teardown event and must
+          never create a row, so it is excluded. C2C_MCP_BROKER_ROOT still wins
+          inside [resolve_broker_root] above, so ensuring on a PostToolUse for
+          a MANAGED session lands in the managed broker exactly as SessionStart
+          would — the ensure path adds no new relocation risk. *)
+       let session_has_row () =
+         List.exists
+           (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+           (C2c_mcp.Broker.list_registrations broker)
+       in
+       let will_register = event <> "SessionEnd" && not (session_has_row ()) in
        (* #69 B2: key this on the OUTCOME — did we land in `default`? — not on
           "the payload named no workspace". The original guard tested the
           latter and so missed both cases that actually matter: a workspace
@@ -2207,14 +2235,18 @@ let hook_agy_cmd =
           real repo into a DIFFERENT real repo is the version of this bug with
           no visible symptom at all.
 
-          SessionStart only: the condition is per-session and PostToolUse/Stop
-          fire every turn, so recording there would flood broker.log. *)
+          Recorded once per session, not per turn: gated on [will_register],
+          i.e. the fire that actually creates the row. PostToolUse / Stop fire
+          every turn, but only the FIRST of them (before a row exists) can pass
+          this guard, so it does not flood broker.log — and #73's resume case,
+          where that first fire is a PostToolUse rather than SessionStart, is
+          now recorded too instead of being silently absent. *)
        let landed_in_default =
          Filename.basename (Filename.dirname broker_root) = "default"
        in
        let chdir_failed = !unresolved_detail <> None && workspace_path <> None in
        if
-         event = "SessionStart"
+         will_register
          && Sys.getenv_opt "C2C_MCP_BROKER_ROOT" = None
          && (landed_in_default || chdir_failed)
        then begin
@@ -2253,7 +2285,7 @@ let hook_agy_cmd =
        (* #69 B1: deterministic is not unambiguous. A multi-root session got a
           workspace WE picked, not one agy named, so make the pick inspectable
           via `c2c dev tail-log` rather than resolving it silently. *)
-       if event = "SessionStart" && List.length workspace_candidates > 1 then
+       if will_register && List.length workspace_candidates > 1 then
          (try
             Broker_log.append_json ~broker_root
               ~json:
@@ -2292,13 +2324,10 @@ let hook_agy_cmd =
             C2c_agy_deliver.write_agy_env sid ~ls_address:ls ~conversation_id:conv
         | _ -> ());
 
-       if event = "SessionStart" then begin
-         let regs = C2c_mcp.Broker.list_registrations broker in
-         let registered = List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs in
-         if not registered then begin
-           (* B188: reuse sticky alias across broker fingerprints.
-              B191: resolve + register atomically under the global
-              per-session registration lock. *)
+       if will_register then begin
+         (* B188: reuse sticky alias across broker fingerprints.
+            B191: resolve + register atomically under the global
+            per-session registration lock. *)
            let alias, _from_auto_gen, _prior_hit =
              C2c_mcp.locked_sticky_auto_register ~session_id:sid ~broker_root
                ~mint:(fun () ->
@@ -2360,8 +2389,7 @@ let hook_agy_cmd =
             | _ ->
                 C2c_cli_helpers.write_session_statefile ~broker_root
                   ~session_id:sid ~alias ~client:(Some "agy"));
-           ()
-         end
+         ()
        end;
        touch_hook_activity ~broker ~session_id:sid;
 

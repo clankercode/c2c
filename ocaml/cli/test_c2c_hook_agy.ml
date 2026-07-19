@@ -678,6 +678,118 @@ let test_chdir_failure_is_recorded_with_reason () =
           true
           (contains log "could not be entered")))
 
+(* ------------------------------------------------------------------ *)
+(* #73: `agy --conversation <id>` (resume) does NOT fire SessionStart.
+   Measured on agy 1.1.4: 0 SessionStart among 36 fires of a resumed
+   conversation, while PostToolUse / Stop / PreInvocation fire normally and
+   carry `workspacePaths` correctly. SessionStart was the ONLY writer of an
+   agy-hook row, so a conversation resumed after its row decayed (#51's 24h
+   activity TTL) — or resumed on a machine where it never registered — had NO
+   row and NO path to one, and was unaddressable for its whole life while the
+   other hooks refreshed an anchor for a row that was not there. Registration
+   is now ensured on ANY live event that finds no row. *)
+
+let session_rows_at broker_root ~session_id =
+  List.filter
+    (fun row -> field row "session_id" = Some (`String session_id))
+    (rows_at broker_root)
+
+(* (a) THE #73 REGRESSION. A NON-SessionStart event with no prior row must
+   register, into the WORKSPACE broker, labelled agy-hook — exactly as
+   SessionStart would. This is the resume-without-SessionStart case fired
+   through the real binary from a non-repo hook cwd. *)
+let test_posttooluse_registers_without_sessionstart () =
+  with_ctx (fun ctx ->
+    let ws = make_workspace ctx ~name:"ws-resume" in
+    let hook_cwd = make_hook_cwd ctx in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy PostToolUse"
+        ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] "PostToolUse")
+    in
+    check int ("PostToolUse exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    let fps = fingerprints_holding ctx ~session_id:sid in
+    check int
+      (Printf.sprintf "registered into exactly one broker (got: [%s])"
+         (String.concat "; " fps))
+      1 (List.length fps);
+    check bool
+      (Printf.sprintf
+         "#73: a resume PostToolUse must not register into `default` (got: %s)"
+         (String.concat "; " fps))
+      false (List.mem "default" fps);
+    let fp = fingerprint_of ctx ~ws in
+    match session_rows_at (repos_dir ctx // fp // "broker") ~session_id:sid with
+    | [ row ] ->
+        check bool
+          "#73: the resume row is labelled agy-hook, same as a fresh start" true
+          (field row "registered_by" = Some (`String "agy-hook"))
+    | rows -> failf "expected exactly one row, got %d" (List.length rows))
+
+(* (b) IDEMPOTENT. Once a row exists, further live events must only anchor —
+   never create a second row or change the alias. The ensure guard is a
+   registry read, so repeated PostToolUse / Stop are no-ops for identity. *)
+let test_ensure_is_idempotent_across_events () =
+  with_ctx (fun ctx ->
+    let ws = make_workspace ctx ~name:"ws-idem" in
+    let hook_cwd = make_hook_cwd ctx in
+    let fp = fingerprint_of ctx ~ws in
+    let broker = repos_dir ctx // fp // "broker" in
+    let fire_ev ev =
+      let rc, _, err =
+        fire_vanilla ctx ~hook_cwd
+          ~args:(Printf.sprintf "hook agy %s" ev)
+          ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] ev)
+      in
+      check int (ev ^ " exit 0 (stderr: " ^ err ^ ")") 0 rc
+    in
+    fire_ev "PostToolUse";
+    let alias0 =
+      match session_rows_at broker ~session_id:sid with
+      | [ row ] -> alias_of row
+      | rows ->
+          failf "first PostToolUse: expected one row, got %d" (List.length rows)
+    in
+    fire_ev "PostToolUse";
+    fire_ev "Stop";
+    (match session_rows_at broker ~session_id:sid with
+     | [ row ] ->
+         check string "#73: alias unchanged across repeated ensures" alias0
+           (alias_of row)
+     | rows ->
+         failf "ensure duplicated the row: expected one, got %d"
+           (List.length rows));
+    check int "#73: still exactly one broker holds the session" 1
+      (List.length (fingerprints_holding ctx ~session_id:sid)))
+
+(* (c) MANAGED MUST NOT REGRESS on the ensure path. C2C_MCP_BROKER_ROOT wins in
+   [resolve_broker_root], so a resume PostToolUse for a managed session lands
+   in the exported broker — never in the payload workspace's broker — and, with
+   a real managed marker present, carries no hook label. *)
+let test_managed_broker_root_wins_on_posttooluse () =
+  with_ctx (fun ctx ->
+    let ws = make_workspace ctx ~name:"wsmanaged-resume" in
+    let hook_cwd = make_hook_cwd ctx in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy PostToolUse"
+        ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] "PostToolUse")
+        ~extra_env:
+          [ ("C2C_MCP_BROKER_ROOT", ctx.broker_root)
+          ; ("C2C_MCP_SESSION_ID", sid)
+          ]
+    in
+    check int ("PostToolUse exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    (match row_for ctx ~session_id:sid with
+     | None ->
+         fail
+           "#73: managed resume PostToolUse registered no row in the exported \
+            broker"
+     | Some row ->
+         check bool "managed resume row carries no hook label" true
+           (field row "registered_by" = None));
+    check int
+      "#73: managed resume wrote nothing to any workspace-fingerprinted broker" 0
+      (List.length (fingerprints_holding ctx ~session_id:sid)))
+
 let () =
   Random.self_init ();
   run "c2c_hook_agy"
@@ -704,6 +816,15 @@ let () =
             `Quick test_non_repo_workspace_is_recorded_with_reason
         ; test_case "#69 B2 chdir failure is recorded with its reason" `Quick
             test_chdir_failure_is_recorded_with_reason
+        ] )
+    ; ( "hook_agy_resume_i73"
+      , [ test_case
+            "#73 resume PostToolUse registers without SessionStart" `Quick
+            test_posttooluse_registers_without_sessionstart
+        ; test_case "#73 ensure is idempotent across repeated events" `Quick
+            test_ensure_is_idempotent_across_events
+        ; test_case "#73 managed C2C_MCP_BROKER_ROOT wins on PostToolUse"
+            `Quick test_managed_broker_root_wins_on_posttooluse
         ] )
     ; ( "hook_agy_turn_end"
       , [ test_case "#61 Stop keeps vanilla row addressable" `Quick
