@@ -1964,7 +1964,30 @@ let hook_agy_cmd =
        end;
        touch_hook_activity ~broker ~session_id:sid;
 
-       if event = "Stop" || event = "SessionEnd" then begin
+       (* #61: `Stop` is agy's TURN-END event, not a session-end event.
+          [C2c_setup.setup_agy] installs it alongside PostToolUse as an
+          ordinary mid-turn hook, so it fires after every turn. Tearing the
+          row down on it made a VANILLA agy session addressable for its first
+          turn only — turn 1 ends, the row is deregistered, and every later
+          send fails to resolve for the rest of the session. It also deleted
+          the agy-env delivery metadata and, via the early exit below,
+          skipped the drain that Stop is supposed to trigger. (#51 fixed the
+          MANAGED half by gating the "agy-hook" label on
+          [managed_launcher_marker_present]; the vanilla half is this.)
+
+          agy has no SessionEnd event to fall back on: agy 1.1.2's hook-args
+          union is exactly SessionStart / PreTool / PostTool / PreInvocation
+          / PostInvocation / Stop, and its hooks loader has no SessionEnd
+          key. Nothing therefore tears a vanilla agy row down any more, which
+          is the intended outcome — agy is on
+          [Broker.hook_anchor_is_activity_backed], so its rows are retired by
+          the #51 24h activity TTL, whose anchor the touch above keeps fresh
+          on every PostToolUse and Stop. The arm is kept for SessionEnd so a
+          hand-fired `c2c hook agy SessionEnd` (or a future agy that grows
+          the event) still tears down deterministically: deregistration is
+          PERMANENT, whereas TTL expiry only soft-hides a row that the next
+          hook fire resurrects. *)
+       if event = "SessionEnd" then begin
          let regs = C2c_mcp.Broker.list_registrations broker in
          (match
             List.find_opt
