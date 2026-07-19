@@ -275,9 +275,14 @@
  (modules test_relay_device_pair)
  (libraries c2c_mcp alcotest base64 mirage-crypto-ec unix))
 
+; #60: spawns ../cli/c2c.exe (see c2c_path in test_agent_refine.ml), so it must
+; depend on it. Without this, a cold _build with -j 2 can run the suite before
+; the binary exists and every spawning case fails — a spurious red that looks
+; like a real regression. Same convention as test_c2c_cli below.
 (test
  (name test_agent_refine)
  (modules test_agent_refine)
+ (deps ../cli/c2c.exe)
  (libraries c2c_mcp alcotest unix str))
 
 (test
