@@ -14,11 +14,27 @@
 name: E2E Docker Smoke
 
 on:
-  pull_request:
+  # Run on master pushes too so the GHA BuildKit layer cache is populated on
+  # the DEFAULT branch. PR runs read the base-branch cache; without a warm
+  # master cache, every new PR branch cold-builds the ~4min opam layer and
+  # risks the timeout (see #17). The paths filter is shared with pull_request.
+  push:
     branches: [master]
     paths:
       # Only run when Docker/OCaml/test infra changes — skip for
-      # docs-only or .collab-only PRs.
+      # docs-only or .collab-only changes. Keep in sync with pull_request below.
+      - 'Dockerfile'
+      - 'Dockerfile.test'
+      - 'docker-compose.e2e-multi-agent.yml'
+      - 'dune-project'
+      - 'ocaml/**'
+      - 'docker-tests/**'
+      - 'tests/e2e/**'
+      - '.github/workflows/e2e-docker.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      # Keep in sync with the push paths above.
       - 'Dockerfile'
       - 'Dockerfile.test'
       - 'docker-compose.e2e-multi-agent.yml'
@@ -46,7 +62,12 @@ permissions:
 jobs:
   e2e-smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Cache-hit runs finish in ~1-8min; a genuine cold build (opam layer ~4min
+    # + two images under runner contention) can exceed 15min. 15 left no
+    # headroom, so cold builds hard-failed as flaky timeouts even when the smoke
+    # itself passed (#17). 25 covers a cold build; the inner smoke step keeps its
+    # own 5min timeout so a real hang still fails fast.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
