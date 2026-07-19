@@ -1471,10 +1471,22 @@ let hook_kimi_cmd =
                with _ -> ());
               C2c_kimi_notifier.already_running alias)
        in
+       (* #12: peek (never drain) the session inbox so the identity skill can
+          surface any pre-startup backlog as an informational count. Read-only
+          DATA — no delivery, no turn, no approval ("bus, never RPC", B098).
+          System events (from "c2c-system") are excluded from the count. *)
+       let queued_count =
+         try
+           C2c_mcp.Broker.read_inbox broker ~session_id
+           |> List.filter (fun (m : C2c_mcp.message) ->
+                  m.C2c_mcp.from_alias <> "c2c-system")
+           |> List.length
+         with _ -> 0
+       in
        (* Identity skill: Kimi has no additionalContext inject; surface alias
-          + receive-path nudge the same way Grok does. *)
+          + receive-path nudge the same way Grok does, plus any queued backlog. *)
        C2c_setup.write_kimi_session_identity_skill
-         ~alias ~session_id ~notifier_armed;
+         ~alias ~session_id ~notifier_armed ~queued_count ();
        exit 0
      with e ->
        (try prerr_endline ("c2c hook kimi: " ^ Printexc.to_string e) with _ -> ());

@@ -177,11 +177,27 @@ let remove_grok_session_identity_skill () =
 let kimi_session_skill_dir () =
   Filename.concat (Sys.getenv "HOME") (".kimi-code" // "skills" // "c2c-session")
 
-let write_kimi_session_identity_skill ~alias ~session_id ~notifier_armed =
+let write_kimi_session_identity_skill ~alias ~session_id ~notifier_armed
+    ?(queued_count = 0) () =
   try
     let dir = kimi_session_skill_dir () in
     C2c_mcp.mkdir_p dir;
     let path = dir // "SKILL.md" in
+    (* #12: surface pre-startup backlog. The count is peeked non-destructively
+       by the hook (`read_inbox`, never drained) and rendered here as DATA — an
+       informational nudge to `c2c poll-inbox`. It never delivers content nor
+       triggers a turn/approval ("bus, never RPC", B098). *)
+    let queued_callout =
+      if queued_count > 0 then
+        Printf.sprintf
+          "> \xF0\x9F\x93\xAC You have **%d c2c message%s already queued** in your \
+           inbox from before this session started. Read %s now with \
+           `c2c poll-inbox`.\n\n"
+          queued_count
+          (if queued_count = 1 then "" else "s")
+          (if queued_count = 1 then "it" else "them")
+      else ""
+    in
     let delivery_line =
       if notifier_armed then
         "Inbound DMs: c2c notifier is arming REST prompt injection for this \
@@ -209,6 +225,7 @@ let write_kimi_session_identity_skill ~alias ~session_id ~notifier_armed =
         ; "`** on the local c2c broker (session ID: `"
         ; session_id
         ; "`).\n\n"
+        ; queued_callout
         ; "1. Invoke `/c2c` if you need the full CLI cookbook.\n"
         ; "2. "
         ; delivery_line

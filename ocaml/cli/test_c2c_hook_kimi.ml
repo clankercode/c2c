@@ -221,6 +221,57 @@ let test_malformed_payload_exits_0 () =
     check int "exit 0" 0 rc;
     check string "empty stdout" "" (String.trim stdout))
 
+(* Pre-register a session directly on the broker so we can seed its inbox
+   before SessionStart fires (models pre-startup backlog). Returns the broker
+   handle for enqueueing. *)
+let register_session ctx ~session_id ~alias =
+  let b = C2c_mcp.Broker.create ~root:ctx.broker_root in
+  C2c_mcp.Broker.register b ~session_id ~alias ~pid:None ~pid_start_time:None
+    ~client_type:(Some "kimi") ~registered_by:(Some "kimi-hook")
+    ~from_auto_gen:true ();
+  b
+
+(* #12: SessionStart must surface pre-startup backlog in the identity skill so
+   a fresh Kimi session sees mail that arrived before it started. *)
+let test_session_start_surfaces_queued_backlog () =
+  with_ctx (fun ctx ->
+    let b = register_session ctx ~session_id ~alias:"zz-kimi-backlog-sess" in
+    ignore (register_session ctx ~session_id:"zz-kimi-peer-sid"
+              ~alias:"zz-kimi-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-kimi-peer"
+      ~to_alias:"zz-kimi-backlog-sess" ~content:"backlog one" ();
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-kimi-peer"
+      ~to_alias:"zz-kimi-backlog-sess" ~content:"backlog two" ();
+    let rc, _, _ =
+      run_hook ctx ~payload:session_start_payload
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", session_id) ]
+    in
+    check int "exit 0" 0 rc;
+    let skill = read_file (identity_skill_path ctx) in
+    check bool "identity skill written" true (String.length skill > 0);
+    check bool "skill names session alias" true
+      (contains ~haystack:skill ~needle:"zz-kimi-backlog-sess");
+    check bool "skill reports queued count" true
+      (contains ~haystack:skill ~needle:"2 c2c message");
+    check bool "skill flags pre-startup backlog" true
+      (contains ~haystack:skill ~needle:"already queued");
+    check bool "skill nudges poll-inbox" true
+      (contains ~haystack:skill ~needle:"poll-inbox"))
+
+(* Zero backlog must not produce a false queued nudge. *)
+let test_session_start_no_backlog_no_false_nudge () =
+  with_ctx (fun ctx ->
+    ignore (register_session ctx ~session_id ~alias:"zz-kimi-empty-sess");
+    let rc, _, _ =
+      run_hook ctx ~payload:session_start_payload
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", session_id) ]
+    in
+    check int "exit 0" 0 rc;
+    let skill = read_file (identity_skill_path ctx) in
+    check bool "identity skill written" true (String.length skill > 0);
+    check bool "no false queued nudge" false
+      (contains ~haystack:skill ~needle:"already queued"))
+
 let () =
   Random.self_init ();
   run "c2c_hook_kimi"
@@ -233,5 +284,9 @@ let () =
             test_session_end_deregisters
         ; test_case "malformed payload exit 0" `Quick
             test_malformed_payload_exits_0
+        ; test_case "SessionStart surfaces queued backlog (#12)" `Quick
+            test_session_start_surfaces_queued_backlog
+        ; test_case "SessionStart no backlog no false nudge (#12)" `Quick
+            test_session_start_no_backlog_no_false_nudge
         ] )
     ]
