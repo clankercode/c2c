@@ -20,6 +20,12 @@
  (modules test_c2c_stale c2c_stale)
  (libraries alcotest digestif.ocaml unix))
 
+; #66: agy agentapi delivery — bounded wait + drain-failure handling.
+(test
+ (name test_c2c_agy_deliver)
+ (modules test_c2c_agy_deliver c2c_agy_deliver)
+ (libraries c2c_mcp alcotest yojson unix))
+
 ; B200: the relay connector is one supervised machine-wide service and the
 ; child is replaced when an install atomically replaces the c2c executable.
 (test
