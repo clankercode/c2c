@@ -1077,6 +1077,11 @@ let c2c_hook_script_content basename =
   | "c2c-session-hook.sh" -> Some C2c_claude_hook_scripts.claude_session_hook_script
   | _ -> None
 
+(* [path] comes from the operator's own settings.json (a dangling reference, so
+   no file is clobbered) and [content] is a fixed benign c2c script — anyone who
+   can edit settings.json already controls the hook command that runs, so writing
+   the canonical script to wherever they pointed it is not an added trust
+   boundary. *)
 let restore_hook_script path content =
   try
     let dir = Filename.dirname path in
@@ -1128,27 +1133,32 @@ let c2c_doctor_hooks_cmd =
             (c2c-inbox-check.sh, c2c-stop-deliver.sh, c2c-session-hook.sh) to \
             the paths referenced by settings.json, rewriting them from the same \
             source `c2c install claude` uses. Settings.json is not modified. \
-            Ignored with --json.")
+            With --json the repair still runs, silently, so the emitted report \
+            reflects the post-fix state.")
   in
   let cmd =
     let+ json = json
     and+ compact = compact
     and+ fix = fix in
-    (if fix && not json then begin
+    (if fix then begin
        let r0 = check () in
        let restored, unknown, failed = fix_dangling r0 in
-       List.iter (Printf.printf "restored hook script: %s\n") restored;
-       List.iter
-         (Printf.printf
-            "cannot auto-restore (not a c2c-owned hook script): %s\n")
-         unknown;
-       List.iter
-         (fun (p, m) -> Printf.printf "FAILED to restore %s: %s\n" p m)
-         failed;
-       if restored = [] && unknown = [] && failed = [] then
-         print_endline "no dangling c2c hook scripts to restore";
-       print_newline ();
-       flush stdout
+       (* Under --json, repair silently so we don't corrupt the JSON envelope;
+          the post-fix [check ()] below reflects the result. *)
+       if not json then begin
+         List.iter (Printf.printf "restored hook script: %s\n") restored;
+         List.iter
+           (Printf.printf
+              "cannot auto-restore (not a c2c-owned hook script): %s\n")
+           unknown;
+         List.iter
+           (fun (p, m) -> Printf.printf "FAILED to restore %s: %s\n" p m)
+           failed;
+         if restored = [] && unknown = [] && failed = [] then
+           print_endline "no dangling c2c hook scripts to restore";
+         print_newline ();
+         flush stdout
+       end
      end);
     let r = check () in
     let delivery = codex_delivery_report () in
