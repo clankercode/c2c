@@ -1004,12 +1004,14 @@ fingerprint-derived), so on a plain shell the file is **machine-wide** — and
 
 **The marker names a file, not the URL's origin.** `relay_configured` resolves
 `C2C_RELAY_URL` *first* and only then the config file, so when `C2C_RELAY_URL`
-is exported the URL came from the environment and the named file contributed
-nothing — it need not even exist. The marker is still accurate about what it
-says: it names the relay config file this context would read (the one that
-applies otherwise, and the one `c2c relay setup` writes) and how far that
-file's reach goes. Read it as "the config file in play here", not as "where
-this URL came from".
+is exported the URL came from the environment and the named file did not supply
+the URL — it need not even exist. It is still load-bearing, though: the token
+resolves independently by the same env-first rule, so unless `C2C_RELAY_TOKEN`
+is also set, that file remains the only source of the relay **token**. The
+marker is accurate about what it says: it names the relay config file this
+context would read (the one that applies otherwise, and the one
+`c2c relay setup` writes) and how far that file's reach goes. Read it as "the
+config file in play here", not as "where this URL came from".
 
 When the connector recorded why it failed, that error is reported instead of
 leaving you to guess: `last_error_op` / `last_error_detail` in `--json`, and
