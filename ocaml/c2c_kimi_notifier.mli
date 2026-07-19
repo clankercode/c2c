@@ -77,9 +77,25 @@ val running_session_id : string -> string option
     Re-keys iff [requested_sid] differs from what is running AND is not the
     alias placeholder — refusing to downgrade back to the placeholder is what
     prevents a later placeholder arm from flapping a correctly-bound daemon.
-    Pure; exposed for unit tests. *)
+    Pure; exposed for unit tests.
+
+    [authoritative] (#40) opts out of the placeholder guard. Since #40 the
+    managed launcher registers [session_id = <instance name>] and arms the
+    notifier on it, so in the default managed case
+    ([alias = name = session_id]) an AUTHORITATIVE binding is byte-identical to
+    a placeholder. Without this flag a leftover live notifier bound to a
+    different sid (SIGKILLed outer loop, failed `c2c restart` teardown) never
+    converges onto [<name>] — it reaches the stale-binary branch and
+    [Skip_current]s on an unchanged binary, leaving the session deaf while
+    `c2c send` reports success. Pass [true] only when the sid is a real
+    binding rather than a t≈0 guess. Defaults to [false]. *)
 val decide_notifier_rekey :
-  alias:string -> requested_sid:string -> running_sid:string option -> bool
+  alias:string ->
+  requested_sid:string ->
+  ?authoritative:bool ->
+  running_sid:string option ->
+  unit ->
+  bool
 
 (** [already_running alias] returns [true] iff the notifier pidfile for
     [alias] names a process that is alive AND whose comm matches the daemon's
@@ -125,11 +141,17 @@ val decide_notifier_start :
 
     SHA sources can be overridden for tests via
     [C2C_KIMI_NOTIFIER_FIXTURE_RUNNING_SHA] /
-    [C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA]. *)
+    [C2C_KIMI_NOTIFIER_FIXTURE_INSTALLED_SHA].
+
+    [authoritative] is forwarded to {!decide_notifier_rekey}: pass [true] when
+    [session_id] is a known-real binding (the managed launcher's own
+    registration) rather than a t≈0 placeholder guess, so a leftover daemon
+    bound elsewhere is re-keyed onto it (#40). *)
 val ensure_daemon :
   alias:string ->
   broker_root:string ->
   session_id:string ->
+  ?authoritative:bool ->
   tmux_pane:string option ->
   ?interval:float ->
   unit ->

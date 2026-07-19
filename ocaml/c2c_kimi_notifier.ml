@@ -927,18 +927,37 @@ let running_session_id alias =
    placeholder is what stops a later placeholder arm (e.g. a supervisor
    relaunch) from flapping a correctly-bound daemon back onto the alias.
    [running = None] is a pre-#9 daemon of unknown binding: bind it as soon as
-   we have a real sid to bind. Pure; exposed for unit tests. *)
-let decide_notifier_rekey ~alias ~requested_sid ~running_sid =
+   we have a real sid to bind. Pure; exposed for unit tests.
+
+   [authoritative] (#40) breaks the "sid == alias means placeholder" overload.
+   Since #40 the managed launcher registers session_id = the instance name and
+   arms the notifier on it, so in the DEFAULT managed case
+   (alias == name == session_id) the *authoritative* binding is byte-identical
+   to what this function used to treat as a placeholder. Without the flag a
+   leftover live notifier for the same alias bound to some other sid — after a
+   SIGKILLed outer loop or a failed `c2c restart` teardown — would never
+   converge onto <name>: it falls through to the stale-binary branch and
+   Skip_current's on an unchanged binary, leaving the session deaf while
+   `c2c send` reports success (i.e. #40's own symptom, re-introduced).
+   Callers that KNOW the sid is a real binding rather than a t≈0 guess pass
+   [~authoritative:true]; the placeholder guard is then skipped and only the
+   "differs from what is running" test applies. Default [false] preserves the
+   pre-#40 behaviour for every other caller. *)
+let decide_notifier_rekey ~alias ~requested_sid ?(authoritative = false)
+    ~running_sid () =
   (* Placeholder compare is case-insensitive, matching how aliases are
      compared everywhere else (alias comparisons are case-insensitive per
      B112, and pick_live_registration_sid matches the same way). *)
-  if String.lowercase_ascii requested_sid = String.lowercase_ascii alias then
-    false
+  if
+    (not authoritative)
+    && String.lowercase_ascii requested_sid = String.lowercase_ascii alias
+  then false
   else match running_sid with
     | None -> true
     | Some cur -> cur <> requested_sid
 
-let ensure_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval = 2.0) () =
+let ensure_daemon ~alias ~broker_root ~session_id ?(authoritative = false)
+    ~tmux_pane ?(interval = 2.0) () =
   let pidfile = pidfile_path alias in
   (* Identity gate FIRST (B145 PID-reuse guard). Treat the pidfile pid as the
      running notifier ONLY if it is alive AND comm-matches. A dead pid OR a
@@ -958,8 +977,8 @@ let ensure_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval = 2.0) (
     (* nothing of ours running (incl. a just-cleaned stale pidfile) → fresh *)
     start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ()
   | Some pid when
-      decide_notifier_rekey ~alias ~requested_sid:session_id
-        ~running_sid:(running_session_id alias) ->
+      decide_notifier_rekey ~alias ~requested_sid:session_id ~authoritative
+        ~running_sid:(running_session_id alias) () ->
     (* #9 B: live daemon of ours, but bound to the WRONG session_id — it is
        draining an inbox no mail lands in. Re-key by cycling it onto the
        requested sid. [pid] is a CONFIRMED-ours notifier (identity-gated

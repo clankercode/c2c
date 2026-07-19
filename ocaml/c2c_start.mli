@@ -85,6 +85,47 @@ val kimi_disabled_for_release : bool
 val kimi_disabled_notice : string
 (** List of supported client names. *)
 
+(** [register_managed_kimi_session ~broker_root ~name ~alias ~pid ~cwd]
+    registers a managed `c2c start kimi` instance on the broker under
+    [session_id = name] and [alias], recording [cwd] and [pid], then READS the
+    registry back to confirm the row persisted. [Error reason] on any failure —
+    the launcher turns that into a loud, actionable operator message
+    ({!managed_kimi_registration_failure_message}); it never raises.
+
+    Why the launcher and not the SessionStart hook (#40): Kimi Code >= 0.27
+    runs sessions inside a SHARED long-lived `kimi server` daemon and spawns
+    hook commands from that daemon's environment, so the per-instance
+    [C2C_MCP_SESSION_ID] / [C2C_MCP_AUTO_REGISTER_ALIAS] that {!build_env} puts
+    in the TUI's env are invisible to `c2c hook kimi`. Before this, every
+    managed kimi session was registered under a freshly-minted alias against
+    Kimi's real session id, and `c2c send <instance-name>` failed with
+    "alias '<name>' is not registered" — silently, from the operator's side.
+    One daemon serves many sessions, so its env can never identify any one of
+    them: the launcher is the only correct identity authority here. *)
+val register_managed_kimi_session :
+  broker_root:string ->
+  name:string ->
+  alias:string ->
+  pid:int ->
+  cwd:string ->
+  (unit, string) result
+
+(** [kimi_notifier_arm_is_authoritative ~registered_ok ~resolved_sid ~name] —
+    may the launcher mark its [ensure_daemon] arm AUTHORITATIVE (#40 F1)?
+    True only when {!register_managed_kimi_session} succeeded AND the notifier
+    resolver picked that row ([resolved_sid = name]); a sid from the kimi
+    session_index or the bare alias fallback is the placeholder case the #9
+    no-downgrade guard exists for. Pure; exposed for unit tests. *)
+val kimi_notifier_arm_is_authoritative :
+  registered_ok:bool -> resolved_sid:string -> name:string -> bool
+
+(** Operator-facing text for a failed managed-kimi registration: names the
+    unreachable alias, the exact `c2c send` error peers will see, the broker
+    root, and the recovery command. Pure; exposed so the wording is pinned by
+    a test rather than drifting. *)
+val managed_kimi_registration_failure_message :
+  name:string -> alias:string -> broker_root:string -> reason:string -> string
+
 (** [pick_live_registration_sid ~alias ~now regs] is the session_id of the
     MOST-RECENT registration for [alias] that can be corroborated as live
     (any explicit pid still exists, and a timestamp places it inside the
