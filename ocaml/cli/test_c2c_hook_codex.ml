@@ -1194,6 +1194,205 @@ let test_appserver_nudge_additive_to_messages () =
           (contains ~haystack:context ~needle:nudge_needle)
     | None -> failf "expected combined output, got: %S (stderr %S)" stdout stderr)
 
+(* --- #52: `codex exec` accrual ------------------------------------------
+
+   `codex exec` fires SessionStart but never SessionEnd (measured on
+   codex-cli 0.144.6), so every one-shot run used to mint a `codex-hook` row
+   that nothing retired — ~42 immortal rows per 35 minutes of ordinary use.
+   #51's 24h activity TTL cannot cover it: an exec row is FRESH, and
+   freshness is exactly what that TTL trusts, so steady-state resident count
+   is rate x TTL however the TTL is tuned.
+
+   The SessionStart payload and the hook's environment are byte-identical
+   between `codex exec` and an interactive session (same key set, same
+   source="startup"), so neither carries a usable signal. The only signal is
+   the hook's PARENT process argv: codex spawns hooks directly, so
+   /proc/<getppid>/cmdline is the codex invocation itself and its argv[1]
+   is the `exec` subcommand.
+
+   [C2C_CODEX_PARENT_CMDLINE_PATH] is the fixture gate for that read: a file
+   of NUL-separated argv standing in for /proc/<ppid>/cmdline, so these
+   tests never need a real codex. *)
+
+let write_parent_cmdline ctx argv =
+  let path = Filename.dirname ctx.home // "parent.cmdline" in
+  write_file path (String.concat "\x00" argv ^ "\x00");
+  path
+
+(* Realistic argv shapes, taken verbatim from a live probe on host xsm. *)
+let codex_bin =
+  "/home/user/.bun/install/global/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex"
+
+let exec_argv = [ codex_bin; "exec"; "--model"; "gpt-5.6-luna"; "say ok" ]
+let interactive_argv = [ codex_bin; "--model"; "gpt-5.6-luna" ]
+
+let codex_hook_rows ctx =
+  List.filter
+    (fun (r : C2c_mcp.registration) -> r.registered_by = Some "codex-hook")
+    (C2c_mcp.Broker.list_registrations (broker ctx))
+
+(* The accrual itself: many exec runs, each with its own thread id, must not
+   leave a growing pile of rows behind. Repeated rather than single so the
+   assertion is about ACCUMULATION, which is what #52 reports. *)
+let test_codex_exec_sessions_do_not_accumulate () =
+  with_ctx (fun ctx ->
+    let cmdline = write_parent_cmdline ctx exec_argv in
+    for i = 1 to 5 do
+      let sid = Printf.sprintf "codex-exec-thread-i52-%d" i in
+      let rc, stdout, stderr =
+        run_hook ctx
+          ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+          ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+      in
+      check int "exec SessionStart exits 0" 0 rc;
+      check string "exec SessionStart is quiet" "" (String.trim stdout);
+      ignore stderr
+    done;
+    check int "no codex-hook rows accrued from exec runs" 0
+      (List.length (codex_hook_rows ctx)))
+
+(* The other direction, and the one that must never regress: an interactive
+   session is the case the auto-registration exists for. If this fails, real
+   agents lose their inbox. *)
+let test_interactive_session_still_registers () =
+  with_ctx (fun ctx ->
+    let cmdline = write_parent_cmdline ctx interactive_argv in
+    let sid = "codex-interactive-thread-i52" in
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "interactive SessionStart exits 0" 0 rc;
+    match
+      List.find_opt
+        (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+        (codex_hook_rows ctx)
+    with
+    | None ->
+        failf "interactive session lost its registration (stdout %S stderr %S)"
+          stdout stderr
+    | Some r ->
+        check bool "interactive gets a generated alias" true
+          (alias_looks_generated_for_codex r.alias))
+
+(* Skipping the MINT must never turn into removing a row that already exists.
+   Deregistration is irreversible (an absent row vanishes from
+   list_registrations, so send_all drops it and a 1:1 DM raises), so the exec
+   path is scoped to the auto-register arm only. *)
+let test_codex_exec_preserves_existing_registration () =
+  with_ctx (fun ctx ->
+    let cmdline = write_parent_cmdline ctx exec_argv in
+    let sid = "codex-exec-preexisting-i52" in
+    ignore (register ctx ~session_id:sid ~alias:"exec-preexisting-i52");
+    let rc, _stdout, _stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "pre-existing registration survives" true
+      (List.exists
+         (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+         (C2c_mcp.Broker.list_registrations (broker ctx))))
+
+(* Fail-safe direction. No readable parent argv (non-Linux, a shell wrapper
+   between codex and the hook, a raced-away parent) means NO evidence of exec
+   mode, and absent evidence must land on the old behaviour — an extra ghost
+   row is recoverable, a missing registration on a live session is not. *)
+let test_unreadable_parent_cmdline_still_registers () =
+  with_ctx (fun ctx ->
+    let missing = Filename.dirname ctx.home // "no-such-cmdline" in
+    let sid = "codex-unknown-parent-i52" in
+    let rc, _stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", missing) ]
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    if not (List.exists
+              (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+              (codex_hook_rows ctx))
+    then failf "unknown parent must fall back to registering (stderr %S)" stderr)
+
+(* A MANAGED session is out of scope for the skip even when its parent really
+   is `codex exec`: managed identities are owned by the launcher, are addressed
+   by peers, and must survive regardless of how the thread was spawned. Pins
+   the [not is_managed] guard, which is otherwise only exercised implicitly. *)
+let test_managed_exec_parent_still_registers () =
+  with_ctx (fun ctx ->
+    let cmdline = write_parent_cmdline ctx exec_argv in
+    let managed_sid = "managed-codex-exec-i52" in
+    let thread_id = "codex-thread-managed-exec-i52" in
+    write_managed_codex_instance ctx ~name:"managed-exec-i52"
+      ~session_id:managed_sid ~thread_id;
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    if not (List.exists
+              (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid)
+              (C2c_mcp.Broker.list_registrations (broker ctx)))
+    then
+      failf "managed session must register even under `codex exec` \
+             (stdout %S stderr %S)" stdout stderr)
+
+(* KNOWN FALSE NEGATIVE, pinned deliberately so nobody "fixes" it.
+   `codex --model X exec ...` puts the subcommand past argv[1], so the check
+   misses it and the run registers as before. That is the SAFE direction, and
+   the obvious repair — walking ancestors, or scanning all of argv — is the
+   unsafe one: an ancestor walk matches the `node` wrapper that sits above a
+   real codex exec, and matches any INTERACTIVE codex nested inside an exec
+   run, which is the single direction that costs a live session its mail.
+   If this assertion ever fails, the check was widened; re-read #52 before
+   accepting the change. *)
+let test_exec_behind_flags_is_a_known_false_negative () =
+  with_ctx (fun ctx ->
+    let cmdline =
+      write_parent_cmdline ctx
+        [ codex_bin; "--model"; "gpt-5.6-luna"; "exec"; "say ok" ]
+    in
+    let sid = "codex-exec-behind-flags-i52" in
+    let rc, _stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    if not (List.exists
+              (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+              (codex_hook_rows ctx))
+    then
+      failf "`codex --flag ... exec` must still register — see #52 on why the \
+             check is deliberately narrow (stderr %S)" stderr)
+
+(* The argv0 check must be a BASENAME match, not a path-component match. A
+   non-codex program whose argv[1] is `exec` — including one that merely lives
+   under a directory called `codex` — is not a codex exec run, and skipping its
+   registration would lose mail for a session that has no other identity. *)
+let test_non_codex_parent_with_exec_argv_registers () =
+  with_ctx (fun ctx ->
+    let case ~label ~argv0 ~sid =
+      let cmdline = write_parent_cmdline ctx [ argv0; "exec"; "whatever" ] in
+      let rc, _stdout, stderr =
+        run_hook ctx
+          ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+          ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+      in
+      check int (label ^ ": exit 0") 0 rc;
+      if not (List.exists
+                (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+                (codex_hook_rows ctx))
+      then failf "%s: must register (argv0 %S, stderr %S)" label argv0 stderr
+    in
+    case ~label:"plain non-codex parent" ~argv0:"/usr/bin/git"
+      ~sid:"non-codex-parent-exec-i52";
+    (* Path component `codex`, basename is not. *)
+    case ~label:"codex-named directory" ~argv0:"/opt/codex/somehelper"
+      ~sid:"codex-dir-helper-exec-i52")
+
 let () =
   Random.self_init ();
   run "c2c_hook_codex"
@@ -1270,5 +1469,19 @@ let () =
             test_appserver_nudge_off_switch
         ; test_case "B136 nudge additive to messages" `Quick
             test_appserver_nudge_additive_to_messages
+        ; test_case "#52 codex exec runs do not accrue registrations" `Quick
+            test_codex_exec_sessions_do_not_accumulate
+        ; test_case "#52 interactive session still registers" `Quick
+            test_interactive_session_still_registers
+        ; test_case "#52 exec never removes an existing registration" `Quick
+            test_codex_exec_preserves_existing_registration
+        ; test_case "#52 unreadable parent cmdline still registers" `Quick
+            test_unreadable_parent_cmdline_still_registers
+        ; test_case "#52 managed session under exec parent still registers"
+            `Quick test_managed_exec_parent_still_registers
+        ; test_case "#52 exec behind flags is a known false negative" `Quick
+            test_exec_behind_flags_is_a_known_false_negative
+        ; test_case "#52 non-codex parent with exec argv registers" `Quick
+            test_non_codex_parent_with_exec_argv_registers
         ] )
     ]

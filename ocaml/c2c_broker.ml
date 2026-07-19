@@ -1619,9 +1619,11 @@ open C2c_mcp_helpers
                | None -> None))
     with Sys_error _ | End_of_file -> None
 
-  (** argv of /proc/<pid>/cmdline (NUL-separated). [] on any error. *)
-  let read_pid_cmdline ?(proc_root = "/proc") pid =
-    let path = Printf.sprintf "%s/%d/cmdline" proc_root pid in
+  (** argv from a NUL-separated cmdline file. [] on any error.
+      Split out of {!read_pid_cmdline} so callers that already hold a path
+      (or a test fixture standing in for one) can reuse the reader instead of
+      copying it — see [c2c_hook_cmd.ml]'s #52 codex-exec detection. *)
+  let read_cmdline_file ~path =
     try
       let ic = open_in_bin path in
       Fun.protect
@@ -1637,6 +1639,10 @@ open C2c_mcp_helpers
           |> String.split_on_char '\x00'
           |> List.filter (fun s -> s <> ""))
     with Sys_error _ | End_of_file -> []
+
+  (** argv of /proc/<pid>/cmdline (NUL-separated). [] on any error. *)
+  let read_pid_cmdline ?(proc_root = "/proc") pid =
+    read_cmdline_file ~path:(Printf.sprintf "%s/%d/cmdline" proc_root pid)
 
   let read_pid_comm ?(proc_root = "/proc") pid =
     let path = Printf.sprintf "%s/%d/comm" proc_root pid in
