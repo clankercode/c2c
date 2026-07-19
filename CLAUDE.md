@@ -127,6 +127,13 @@ the canonical framing.)
   4. **Quote suites AND tests**, and re-measure the baseline with the same
      method on both sides — counting methods differ, and three different
      "baselines" have been quoted for the same tree.
+  5. **A backgrounded shell resets cwd between calls**, so `cd <worktree> &&
+     dune test` can silently run against the **main checkout** (`Error:
+     ".worktrees/…" does not match any known test`), or lose the opam switch
+     (`Library "yojson" not found` across ~50 suites). Both exit non-zero, so
+     neither can fake a pass — but both read as a broken branch rather than a
+     broken invocation. Prefer `dune ... --root <abs-worktree-path>` with
+     `eval $(opam env)`, not reliance on cwd.
   Known-flaky: `test_c2c_relay_managed.ml` `"relay ready"` binds a random port;
   re-run in isolation before blaming a branch. A worktree placed **outside**
   the repo tree fails ~148 tests environmentally — keep them in `.worktrees/`.
