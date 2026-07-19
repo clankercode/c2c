@@ -85,6 +85,38 @@ val kimi_disabled_for_release : bool
 val kimi_disabled_notice : string
 (** List of supported client names. *)
 
+(** [pick_live_registration_sid ~alias ~now regs] is the session_id of the
+    MOST-RECENT registration for [alias] that can be corroborated as live
+    (any explicit pid still exists, and a timestamp places it inside the
+    freshness window). Aliases are reused across runs, so a registration left
+    behind by an unclean exit must never be adopted — it would point the
+    notifier at a dead session's inbox. Pure; exposed for unit tests. *)
+val pick_live_registration_sid :
+  alias:string -> now:float -> C2c_mcp.registration list -> string option
+
+(** [resolve_kimi_notifier_session_id ?now ~broker_root ~alias ~cwd ~fallback ()]
+    picks the session-id inbox a managed Kimi notifier should drain (#9 B).
+    Priority: (1) the most-recent LIVE broker registration for [alias],
+    (2) the Kimi session_index for [cwd], (3) [fallback] (the alias) as a
+    PLACEHOLDER.
+
+    At managed-spawn time (t≈0) sources (1) and (2) are both legitimately
+    empty — the alias→real-sid registration is written later by the
+    SessionStart hook inside the just-forked kimi process — so the placeholder
+    is the expected result there. Correctness does not depend on resolving
+    here: the hook's own [ensure_daemon] call re-keys the notifier onto the
+    real sid (see [C2c_kimi_notifier.decide_notifier_rekey]). This resolver
+    exists to do better when a live registration IS already present, and to
+    refuse stale ones. Read-only; never raises. Exposed for unit tests. *)
+val resolve_kimi_notifier_session_id :
+  ?now:float ->
+  broker_root:string ->
+  alias:string ->
+  cwd:string ->
+  fallback:string ->
+  unit ->
+  string
+
 val deliver_kickoff_for_client :
   client:string ->
   name:string ->

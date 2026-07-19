@@ -1371,8 +1371,12 @@ let hook_kimi_cmd =
          C2c_setup.remove_kimi_session_identity_skill ();
          exit 0
        end;
-       (* SessionStart: refresh skill, then ensure session is registered. *)
-       C2c_setup.refresh_kimi_skill_if_stale ();
+       (* SessionStart: ensure the session is registered FIRST (the durable,
+          essential step), then arm the notifier. The non-essential /c2c skill
+          refresh is deferred to AFTER arming (see below) so it can never eat
+          the 8s alarm budget before the notifier fork — a loaded host used to
+          leave the session registered-but-DEAF because the alarm guillotined
+          the hook before ensure_daemon ran (#9, A(1)). *)
        let regs = C2c_mcp.Broker.list_registrations broker in
        let already_registered =
          List.exists (fun (r : C2c_mcp.registration) -> r.session_id = session_id) regs
@@ -1434,6 +1438,16 @@ let hook_kimi_cmd =
              | Some c when String.trim c <> "" ->
                  (try Unix.chdir (String.trim c) with _ -> ())
              | _ -> ()));
+       (* #9 A(1): DISARM the 8s hook alarm immediately before arming the
+          notifier. The registration above is durable, so the session-start
+          budget guard has done its job; the critical registered→armed window
+          must NOT be interrupted. ensure_daemon forks+setsids a detached
+          child and returns fast, and the detached child is unaffected by the
+          parent's interval timer — but a still-armed SIGALRM landing between
+          register and the fork was exactly what left sessions DEAF. Keep the
+          outer `try … exit 0` so the hook still never fails the host turn. *)
+       (try Sys.set_signal Sys.sigalrm Sys.Signal_ignore with _ -> ());
+       (try ignore (Unix.alarm 0) with _ -> ());
        (* B238: arm a per-alias notifier for unmanaged sessions so DMs do not
           sit forever in inbox.json. Managed `c2c start kimi` already runs
           ensure_daemon; calling it again is upgrade-aware and no-ops when
@@ -1462,6 +1476,23 @@ let hook_kimi_cmd =
                with _ -> ());
               C2c_kimi_notifier.already_running alias)
        in
+       (* #9 A(1): RE-ARM a fresh alarm now that the fork is done. Disarming
+          protected the register→fork window, but everything below is
+          unbounded and takes a BLOCKING Unix.lockf F_LOCK on broker files
+          (skill refresh, the #12 read_inbox peek, the identity-skill write),
+          so a wedged lock-holder — precisely the loaded-host scenario this
+          fix targets — would otherwise hang SessionStart forever instead of
+          <=8s. ensure_daemon is itself bounded (~6s worst case) so it did not
+          need the alarm. Restores the same exit-0 handler: the hook must
+          still never fail the host turn. *)
+       (try
+          Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+          ignore (Unix.alarm 8)
+        with _ -> ());
+       (* #9 A(1): deferred /c2c skill refresh — non-essential cosmetic work,
+          now that the durable register + notifier arm are both done and the
+          alarm is disarmed. Best-effort; never blocks or fails the hook. *)
+       (try C2c_setup.refresh_kimi_skill_if_stale () with _ -> ());
        (* #12: peek (never drain) the session inbox so the identity skill can
           surface any pre-startup backlog as an informational count. Read-only
           DATA — no delivery, no turn, no approval ("bus, never RPC", B098).

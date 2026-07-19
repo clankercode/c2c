@@ -1822,6 +1822,80 @@ let is_kimi_session_id_like sid =
 let fresh_kimi_session_id () =
   "session_" ^ Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
 
+(* #9 B: resolve which session-id inbox the managed kimi notifier must drain.
+   The kimi SessionStart hook registers this session under Kimi's REAL session
+   id, so peer mail lands in <real-sid>.inbox.json — NOT <alias>.inbox.json.
+   Arming the notifier with the alias (the pre-#9 behaviour) made run_once
+   drain an empty <alias>.inbox.json → the managed session went DEAF. Resolve
+   in priority order: (1) the broker registration for [alias] (authoritative
+   for where mail lands — the hook writes the real sid there), (2) the Kimi
+   session_index for [cwd] (the same discovery the notifier's REST delivery
+   uses), (3) [fallback] (the alias / [name]) when neither is available yet.
+   The degenerate alias == session_id case is preserved: a registration whose
+   session_id equals the alias resolves back to the alias, so behaviour is
+   unchanged. Pure/read-only; never raises. Exposed for unit tests. *)
+(* Freshness bound for adopting a broker registration's session_id. Aliases
+   are reused across runs, so after an UNCLEAN exit (kill/crash — common) the
+   previous session's registration survives in the broker. Adopting it would
+   point the notifier at a DEAD session's inbox, draining stale backlog while
+   the live session's mail is never touched — strictly worse than the alias
+   placeholder. We therefore only adopt a registration we can corroborate as
+   live. This is belt-and-braces: the load-bearing guarantee is that the
+   SessionStart hook re-keys the notifier onto the real sid
+   ([C2c_kimi_notifier.decide_notifier_rekey]). *)
+let kimi_registration_max_age_s = 300.0
+
+let registration_pid_is_alive (r : C2c_mcp.registration) =
+  match r.pid with
+  | None -> true (* kimi-hook registers with pid:None — no signal either way *)
+  | Some p -> p > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" p)
+
+let registration_recency (r : C2c_mcp.registration) =
+  match r.last_activity_ts, r.registered_at with
+  | Some a, Some b -> Some (Stdlib.max a b)
+  | Some t, None | None, Some t -> Some t
+  | None, None -> None
+
+(* Live-enough to adopt: any explicit pid must still exist, and we must have a
+   timestamp placing it inside the freshness window. No timestamp at all and no
+   live pid means we cannot corroborate it — fail closed. *)
+let registration_is_adoptable ~now (r : C2c_mcp.registration) =
+  registration_pid_is_alive r
+  && (match registration_recency r with
+      | Some ts -> now -. ts <= kimi_registration_max_age_s
+      | None -> false)
+
+(* Most-recent adoptable registration for [alias], if any. Pure over [regs] so
+   it is unit-testable without a broker. *)
+let pick_live_registration_sid ~alias ~now (regs : C2c_mcp.registration list) =
+  regs
+  |> List.filter (fun (r : C2c_mcp.registration) ->
+         String.lowercase_ascii r.alias = String.lowercase_ascii alias
+         && registration_is_adoptable ~now r)
+  |> List.sort (fun a b ->
+         compare (registration_recency b) (registration_recency a))
+  |> function
+     | (r : C2c_mcp.registration) :: _ -> Some r.session_id
+     | [] -> None
+
+let resolve_kimi_notifier_session_id ?now ~broker_root ~alias ~cwd ~fallback () =
+  let now = match now with Some t -> t | None -> Unix.gettimeofday () in
+  let from_registration () =
+    try
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      pick_live_registration_sid ~alias ~now
+        (C2c_mcp.Broker.list_registrations broker)
+    with _ -> None
+  in
+  match from_registration () with
+  | Some sid -> sid
+  | None ->
+      (match
+         (try C2c_kimi_notifier.resolve_kimi_session_id ~cwd with _ -> None)
+       with
+       | Some sid -> sid
+       | None -> fallback)
+
 let opencode_log_dir () = home_dir () // ".local" // "share" // "opencode" // "log"
 
 let latest_opencode_log () : string option =
@@ -5089,6 +5163,33 @@ let run_outer_loop ~(name : string) ~(client : string)
           (if client = "kimi" then begin
              let alias = Option.value alias_override ~default:name in
              let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
+             (* #9 B: arm the notifier keyed by the REAL kimi session id, NOT
+                the alias. The kimi SessionStart hook registers this session
+                under Kimi's real session id, so peer mail lands in
+                <real-sid>.inbox.json. Passing the alias as ~session_id (the
+                old behaviour) made run_once drain an empty <alias>.inbox.json
+                → the managed session went DEAF. Resolve in priority order:
+                (1) the broker registration for this alias (authoritative for
+                where mail actually lands — the hook writes the real sid there),
+                (2) the kimi session_index for our cwd, (3) fall back to [name]
+                only when neither is available yet. run_once uses whatever we
+                pass as its drain_sid, so this makes it drain the registration's
+                real-session-id inbox. Degenerate case alias == session_id is
+                preserved (the registration's session_id == alias → same as
+                before, no regression).
+
+                The placeholder MUST be [alias], not [name]: notifier state is
+                alias-keyed, and decide_notifier_rekey recognises a placeholder
+                by comparing the requested sid against the ALIAS. With
+                [alias_override] set (`c2c start kimi -n foo --alias bar`, or a
+                role-provided c2c_alias) [name] <> [alias], so a [name]
+                placeholder would never be recognised and the no-downgrade
+                guard would go inert — letting a correctly-bound daemon be
+                flapped onto a <name>.inbox.json nothing lands in. *)
+             let real_session_id =
+               resolve_kimi_notifier_session_id ~broker_root ~alias
+                 ~cwd:(Sys.getcwd ()) ~fallback:alias ()
+             in
              (* B145: ensure_daemon (not start_daemon) so a stale notifier left
                 over from a previous binary is cycled onto the new one even on a
                 bare start with no clean stop. Capture the pid + pidfile so the
@@ -5096,7 +5197,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                 stop/restart. *)
              match
                C2c_kimi_notifier.ensure_daemon
-                 ~alias ~broker_root ~session_id:name ~tmux_pane ()
+                 ~alias ~broker_root ~session_id:real_session_id ~tmux_pane ()
              with
              | Some p ->
                  notifier_pid := Some p;
