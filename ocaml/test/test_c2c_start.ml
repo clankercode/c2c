@@ -744,10 +744,22 @@ let test_i34r_registry_alive_conflict_sees_plain_rows () =
       write [ row ~alias:"peer-alias" ~pid:0x7FFF_FFF0 ];
       check (option (pair string int)) "dead holder is not a conflict" None
         (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"peer-alias");
-      (* Our OWN pid is never a conflict: the app-server launcher restarts in
-         place with execve, which preserves the pid. *)
-      write [ row ~alias:"peer-alias" ~pid:(Unix.getpid ()) ];
-      check (option (pair string int)) "self-owned row is not a conflict" None
+      (* The genuine restart-in-place case is never a conflict: the app-server
+         launcher restarts with execve, which preserves BOTH the pid and its
+         [pid_start_time], so the row is provably the same process. #67: the
+         start time is load-bearing — a self-pid row WITHOUT it is the anomaly
+         [register] refuses, now agreed with here and covered by
+         [test_i67_self_pid_no_start_guard_agrees_with_register]. *)
+      let self = Unix.getpid () in
+      write
+        [ `Assoc
+            [ ("session_id", `String "sid-peer-alias")
+            ; ("alias", `String "peer-alias")
+            ; ("pid", `Int self)
+            ; ("pid_start_time",
+               `Int (match C2c_mcp.Broker.read_pid_start_time self with
+                     | Some s -> s | None -> 0)) ] ];
+      check (option (pair string int)) "self-owned restart-in-place row is not a conflict" None
         (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"peer-alias"))
 
 (* #56. The pre-launch guard must not be STRICTER than [Broker.register], the
@@ -870,6 +882,58 @@ let test_i56_pidless_row_guard_agrees_with_register () =
              reg.pid clause is gone, so registry_alive_conflict's pid-less \
              carve-out is now a false ACCEPT"
             m))
+
+(* #67 sub-issue 1. The guard's self-pid carve-out used to exempt ANY row whose
+   pid equals ours, unconditionally.  [Broker.register]'s [same_process] is
+   stricter: it exempts a same-pid row only when the stored [pid_start_time]
+   also matches, and returns false (→ a live conflict) when either start time is
+   absent.  So a self-pid row that never captured a start time passed the guard
+   and was refused LATE by register — after the launcher wrote config, the
+   pidfile, and spawned the frontend (the orphaned-TUI shape #34's guard exists
+   to prevent).  The guard now mirrors [same_process]; assert guard and register
+   agree on this shape rather than trusting the comment. *)
+let test_i67_self_pid_no_start_guard_agrees_with_register () =
+  let dir = Filename.temp_file "c2c-i67" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      let alias = "i67self" in
+      let self = Unix.getpid () in
+      (* A row owned by THIS live pid, but with NO pid_start_time. *)
+      Yojson.Safe.to_file (Filename.concat dir "registry.json")
+        (`List
+          [ `Assoc
+              [ ("session_id", `String "sid-i67-holder")
+              ; ("alias", `String alias)
+              ; ("pid", `Int self) ] ]);
+      (* Guard side: now a conflict (mirrors register), not the old false pass.
+         A self-pid row WITH a matching start time is still exempt — that is the
+         real execve restart-in-place, covered by
+         [test_i56_registry_alive_conflict_honours_pid_start_time]. *)
+      check (option (pair string int))
+        "guard: self-pid row without start time IS a conflict"
+        (Some (alias, self))
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:alias);
+      (* Authority side: register must ALSO refuse, for a DIFFERENT session_id
+         (so [already_owns_alias] cannot be what saves us). Disagreement here is
+         the late-refusal / orphaned-TUI regression #67 closes. *)
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (match
+         (try
+            C2c_mcp.Broker.register broker ~session_id:"sid-i67-newcomer"
+              ~alias ~pid:(Some self)
+              ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time self) ();
+            None
+          with Invalid_argument m -> Some m)
+       with
+      | Some _ -> ()
+      | None ->
+          fail
+            "register ACCEPTED a self-pid holder with no start time while the \
+             guard refused it — guard and register disagree (#67)"))
 
 (* #56 nit 3. [register] compares aliases with [alias_casefold]; the guard
    compared them byte-exactly, so `-n foo` against a live `Foo` row sailed
@@ -4683,6 +4747,8 @@ let () =
             `Quick, test_i56_registry_alive_conflict_honours_pid_start_time )
         ; ( "i56_pidless_row_guard_agrees_with_register",
             `Quick, test_i56_pidless_row_guard_agrees_with_register )
+        ; ( "i67_self_pid_no_start_guard_agrees_with_register",
+            `Quick, test_i67_self_pid_no_start_guard_agrees_with_register )
         ; ( "i56_registry_alive_conflict_alias_match_is_case_insensitive",
             `Quick,
             test_i56_registry_alive_conflict_alias_match_is_case_insensitive )
