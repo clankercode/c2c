@@ -352,18 +352,25 @@ let run_inotify_loop
 (* For kimi: use the kimi notifier which handles notification-store writes
    and tmux wake internally. The session_id IS the kimi alias in managed context.
    P4: also polls the global sessions broker for session-id addressed messages. *)
-let poll_once_kimi ~(broker_root : string) ~(session_id : string) : int =
+let poll_once_kimi ?workdir ~(broker_root : string) ~(session_id : string) () : int =
   let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
+  (* Legacy workdir default (#36): c2c-deliver-inbox runs in the watched
+     session's own directory, so its cwd is that session's Kimi workspace dir.
+     Callers that know the session's real workdir (e.g. a machine-wide watcher
+     reading the broker registration's [cwd]) should pass [?workdir]. *)
+  let workdir = match workdir with Some w -> w | None -> Sys.getcwd () in
   let count_repo = C2c_kimi_notifier.run_once
     ~broker_root
     ~alias:session_id
     ~session_id
     ~tmux_pane
+    ~workdir
   in
   let count_global = C2c_kimi_notifier.poll_once_global
     ~session_id
     ~alias:session_id
     ~tmux_pane
+    ~workdir
   in
   let count = count_repo + count_global in
   (* #562: log kimi notification result *)
@@ -701,7 +708,7 @@ and run_loop ~(args : cli_args) ~(watched_pid : int option) : unit =
                   incr iterations;
                   let delivered =
                     if is_kimi then
-                      poll_once_kimi ~broker_root:args.broker_root ~session_id
+                      poll_once_kimi ~broker_root:args.broker_root ~session_id ()
                     else
                       deliver_generic_once
                         ~emit_zero_summary:true
@@ -981,7 +988,7 @@ let () =
     else
       (* Single-shot: one poll + deliver for kimi, full render/drain for others. *)
       if args.client = "kimi" then
-        let delivered = poll_once_kimi ~broker_root ~session_id in
+        let delivered = poll_once_kimi ~broker_root ~session_id () in
         print_summary
           ~json:args.json
           ~session_id
