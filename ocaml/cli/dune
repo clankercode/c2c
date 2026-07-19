@@ -354,6 +354,14 @@
  (libraries c2c_mcp alcotest yojson unix)
  (deps c2c.exe))
 
+; #61: agy's `Stop` is a TURN end, not a session end — a vanilla agy row must
+; survive it and stay addressable, while SessionEnd still tears down.
+(test
+ (name test_c2c_hook_agy)
+ (modules test_c2c_hook_agy)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps c2c.exe))
+
 ; #51: does firing a hook actually advance the activity anchor the liveness
 ; TTL measures? Asserts decay <=> proven mid-session anchor, in both
 ; directions, end-to-end through the real binary.

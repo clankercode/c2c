@@ -181,10 +181,11 @@ let clients =
        before it can touch. Asserting the wrong command here would have been
        green while the real delivery path stayed unanchored. *)
   ; ("claude-hook", "claude", [ ("hook post-tool", ""); ("hook stop", "") ])
-    (* agy PostToolUse only: `c2c hook agy Stop` DEREGISTERS the agy-hook row
-       (it shares the SessionEnd teardown arm), so Stop is a teardown event
-       for agy, not an anchor. *)
-  ; ("agy-hook", "agy", [ ("hook agy PostToolUse", "") ])
+    (* Both of agy's mid-session events anchor. Stop used to be excluded here
+       because it shared the SessionEnd teardown arm and DEREGISTERED the row
+       (#61) — that was the bug, not the contract: agy installs Stop as an
+       ordinary turn-end hook, so it is the most frequent anchor agy has. *)
+  ; ("agy-hook", "agy", [ ("hook agy PostToolUse", ""); ("hook agy Stop", "") ])
   ; ("grok-hook", "grok", [])
   ; ("kimi-hook", "kimi", [])
   ]
