@@ -20,10 +20,11 @@
    B181: process presence ≠ bridge health. [connector_info] reports process
    evidence, health class, and remediation separately from [conn_live].
 
-   #11: (2) and (3) are different scopes — this repo's relay configuration vs
-   the machine-wide connector service's last sync of this repo's broker root —
-   and printed unlabelled they read as one contradictory statement. See
-   [state_line] / [connector_line] and the [scope_*] tokens. *)
+   #11: (2) and (3) answer different questions — is a relay URL visible to me
+   (and from which config file), vs did the machine-wide connector service's
+   last sync of this repo's broker root succeed — and printed unlabelled they
+   read as one contradictory statement. See [state_line] / [connector_line],
+   [relay_config_location], and the [scope_*] tokens. *)
 
 (** Evidence about this alias's registration on the configured relay. *)
 type registration_evidence =
@@ -93,25 +94,57 @@ val classify :
     "state:" line (guaranteeing human/JSON parity). *)
 val state_to_string : state -> string
 
-(** Stable --json scope tokens (#11). The [state:] line describes THIS repo's
-    relay configuration; the [connector:] line describes the machine-wide
-    connector service's last sync of this repo's broker root. They are
-    different questions and were read as one contradictory answer
-    ("erroring" beside "unconfigured"). *)
-val scope_repo_relay_config : string
+(** Which relay config file the [state:] line was derived from (#11).
 
+    [relay_configured] is [resolve_relay_url () <> None], which falls back to
+    the relay config file resolved by [C2c_relay_cmd.relay_config_path]:
+    [C2C_RELAY_CONFIG] → [<C2C_MCP_BROKER_ROOT>/relay.json] → else
+    [$HOME/.config/c2c/relay.json]. Nothing in broker-root resolution sets
+    [C2C_MCP_BROKER_ROOT], so the DEFAULT case (any plain shell) reads a
+    machine-wide file — labelling the line "this repo's relay config" would be
+    false exactly when no env var is set, and `c2c relay setup` would then
+    write the machine-wide file the label denied. So the line names the file
+    rather than guessing a scope; that is true in every branch and tells the
+    operator where to look. The payload is the display path. *)
+type relay_config_location =
+  | Relay_config_machine of string  (** [$HOME/.config/c2c/relay.json]. *)
+  | Relay_config_repo of string
+      (** [<C2C_MCP_BROKER_ROOT>/relay.json] — this repo's broker root. *)
+  | Relay_config_explicit of string
+      (** [C2C_RELAY_CONFIG] points somewhere explicit; scope unknowable. *)
+
+(** Stable --json scope tokens (#11). The [state:] line's token says which
+    relay config file backs it; the [connector:] line's says the reading comes
+    from the machine-wide connector service's last sync of this repo's broker
+    root. They are different questions and were read as one contradictory
+    answer ("erroring" beside "unconfigured"). *)
+val scope_relay_config_machine : string
+
+val scope_relay_config_repo : string
+val scope_relay_config_explicit : string
 val scope_connector_machine_service : string
 
+(** The [scope] token for a location: one of [scope_relay_config_machine] /
+    [scope_relay_config_repo] / [scope_relay_config_explicit]. *)
+val relay_config_scope_token : relay_config_location -> string
+
+(** The display path carried by a location. *)
+val relay_config_path_of : relay_config_location -> string
+
 (** [{"state": <state_to_string>, "reason": <reason>,
-     "scope": <scope_repo_relay_config>}] *)
-val classification_json : classification -> Yojson.Safe.t
+     "scope": <relay_config_scope_token config>,
+     "config_path": <relay_config_path_of config>}]. [config] is required so
+    no caller can silently drop the provenance the token asserts. *)
+val classification_json :
+  config:relay_config_location -> classification -> Yojson.Safe.t
 
 (** ["<state_to_string> — <reason>"] — the human "state:" line body. *)
 val classification_human : classification -> string
 
-(** The full human "state:" line: [classification_human] plus the scope
-    marker matching [scope_repo_relay_config]. *)
-val state_line : classification -> string
+(** The full human "state:" line: [classification_human] plus a
+    [\[relay config: <path> (<reach>)\]] marker naming the file behind it,
+    matching [relay_config_scope_token config]. *)
+val state_line : config:relay_config_location -> classification -> string
 
 (** Parenthetical after the human [alias:] value in status/whoami (B234).
 
@@ -155,8 +188,10 @@ type connector_info = {
   conn_health : connector_health;
   conn_remediation : string option;
       (** Copy-pasteable recovery command when not live. Always a runnable
-          command; for [Health_erroring] with no recorded error it also
-          carries a commented what-to-check tail (#11). *)
+          command; [Health_erroring] always also carries the commented
+          what-to-check tail (#11 — it is a [#] shell comment, so it never
+          breaks copy-paste, and the recorded error is reported alongside it
+          rather than in place of it). *)
   conn_last_error_op : string option;
       (** Failing op recorded by the connector's last sync of this root
           (#11), e.g. "poll"/"push". [None] on older state files. *)
@@ -180,12 +215,15 @@ val connector_info :
 
 (** [{"live", "state_file", "last_sync_age_s", "last_ok_age_s",
      "process_present", "health", "remediation", "scope", "last_error_op",
-     "last_error_detail"}] *)
+     "last_error_detail"}]. [last_error_detail] carries the FULL detail — only
+    the human line truncates it. *)
 val connector_json : connector_info -> Yojson.Safe.t
 
 (** Human connector line body. Leading word agrees with [conn_live] /
     [health]: live | down | wedged | erroring | starting | none. An erroring
-    bridge also reports the recorded [last error] (#11). *)
+    bridge also reports the recorded [last error] (#11), inside the
+    parenthesised evidence group and truncated, so an unbounded error detail
+    cannot displace the remediation command that follows it. *)
 val connector_human : connector_info -> string
 
 (** The full human "connector:" line: [connector_human] plus the scope marker

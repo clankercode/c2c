@@ -289,7 +289,10 @@ let relay_json ?now (s : snapshot) (lease : lease_result option) : Yojson.Safe.t
     ; ("identity_pk", opt_str s.identity_pk_b64)
     ; ("fingerprint", opt_str s.fingerprint)
     ; ("lease", lease_j)
-    ; ("registration", Relay_state.classification_json classification)
+    ; ( "registration",
+        Relay_state.classification_json
+          ~config:(C2c_relay_cmd.relay_config_location ())
+          classification )
     ; ("connector", Relay_state.connector_json conn)
     ]
 
@@ -342,11 +345,16 @@ let print_relay_section (s : snapshot) (lease : lease_result option) ~now () =
        Printf.printf "  alias:      %s%s\n" a
          (Relay_state.alias_line_note classification)
    | None -> Printf.printf "  alias:      (no current session alias)\n");
-  (* #11: these two lines have different scopes — this repo's relay config vs
-     the machine-wide connector service acting on this repo's broker root —
-     and without saying so they read as one contradictory statement
-     ("erroring" beside "unconfigured"). *)
-  Printf.printf "  state:      %s\n" (Relay_state.state_line classification);
+  (* #11: these two lines answer different questions — is a relay URL visible
+     to me (and from which config file) vs did the machine-wide connector
+     service's last sync of this repo's broker root succeed — and without
+     saying so they read as one contradictory statement ("erroring" beside
+     "unconfigured"). The state line names its config file rather than
+     claiming a scope: that file is machine-wide unless an env var moved it. *)
+  Printf.printf "  state:      %s\n"
+    (Relay_state.state_line
+       ~config:(C2c_relay_cmd.relay_config_location ())
+       classification);
   Printf.printf "  connector:  %s\n" (Relay_state.connector_line conn);
   (match s.host_id with
    | Some h -> Printf.printf "  host_id:    %s  (opaque; address peers as <alias>@<host_id>)\n" h

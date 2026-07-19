@@ -12,11 +12,13 @@
    B181: process presence is NOT bridge health. [connector_info] reports
    process evidence, health class, and remediation separately from [conn_live].
 
-   #11: the `state:` and `connector:` lines have different scopes (this repo's
-   relay config vs the machine-wide connector service acting on this repo's
-   broker root). [state_line] / [connector_line] label them so the pair stops
-   reading as a contradiction, and an erroring connector reports the error it
-   recorded rather than a guessed checklist. *)
+   #11: the `state:` and `connector:` lines answer different questions and
+   printed unlabelled read as one contradiction. [state_line] names the relay
+   config FILE it was derived from (machine-wide by default — see
+   [relay_config_location]) and [connector_line] labels the connector's
+   machine-service scope, so the pair stops reading as a contradiction. An
+   erroring connector additionally reports the error it recorded, alongside
+   (not instead of) the what-to-check checklist. *)
 
 type registration_evidence =
   | Reg_not_checked
@@ -107,30 +109,71 @@ let classify ~relay_configured ~has_identity ~has_alias ~registration
 
 (* #11(2): the `state:` and `connector:` lines answer different questions, and
    an operator reading "erroring" beside "unconfigured — no relay URL
-   configured" has no way to tell that. Both are true at once: `state:` is
-   THIS repo's relay configuration, while the connector line is the
-   machine-wide connector service reporting its last sync of this repo's
-   broker root (connector-state.json is per-root, so that failure is in scope
-   here even for a repo that configured no relay of its own — the service
-   syncs every discovered root with its shared url/token). Each line carries
-   its scope, in the human text and as a stable token in --json. *)
-let scope_repo_relay_config = "repo_relay_config"
+   configured" has no way to tell that. The connector line is the machine-wide
+   connector service reporting its last sync of THIS repo's broker root
+   (connector-state.json is per-root, so that failure is in scope here even
+   for a repo that configured no relay of its own — the service syncs every
+   discovered root with its shared url/token).
+
+   The `state:` line, however, must NOT be labelled "this repo's relay
+   config". [relay_configured] is `resolve_relay_url () <> None`, which falls
+   back to the relay config FILE, and [C2c_relay_cmd.relay_config_path]
+   resolves that file as C2C_RELAY_CONFIG → <C2C_MCP_BROKER_ROOT>/relay.json →
+   else $HOME/.config/c2c/relay.json. Nothing in broker-root resolution sets
+   C2C_MCP_BROKER_ROOT (it is fingerprint-derived), so in the ordinary case —
+   any plain shell — the predicate reads a MACHINE-WIDE file and a repo-scope
+   claim is simply false; `c2c relay setup` then writes that same machine-wide
+   file, contradicting the label. A claim whose truth value flips on an env
+   var is not a contract.
+
+   So name the file instead of guessing the scope. That is strictly true in
+   every branch, and it is more actionable: it tells the operator exactly
+   which file to look at (or which one `c2c relay setup` will write). *)
+type relay_config_location =
+  | Relay_config_machine of string
+  | Relay_config_repo of string
+  | Relay_config_explicit of string
+
+let scope_relay_config_machine = "relay_config_machine"
+let scope_relay_config_repo = "relay_config_repo"
+let scope_relay_config_explicit = "relay_config_explicit"
 let scope_connector_machine_service = "machine_connector_service"
 
-let classification_json (c : classification) : Yojson.Safe.t =
+let relay_config_scope_token = function
+  | Relay_config_machine _ -> scope_relay_config_machine
+  | Relay_config_repo _ -> scope_relay_config_repo
+  | Relay_config_explicit _ -> scope_relay_config_explicit
+
+let relay_config_path_of = function
+  | Relay_config_machine p | Relay_config_repo p | Relay_config_explicit p -> p
+
+(* The human tail for the `state:` line. Says where the relay URL/token this
+   line reports on lives, and how far that file's reach goes. *)
+let relay_config_note (loc : relay_config_location) =
+  match loc with
+  | Relay_config_machine p ->
+      Printf.sprintf "[relay config: %s (machine-wide)]" p
+  | Relay_config_repo p ->
+      Printf.sprintf "[relay config: %s (this repo's broker root)]" p
+  | Relay_config_explicit p ->
+      Printf.sprintf "[relay config: %s (C2C_RELAY_CONFIG)]" p
+
+let classification_json ~(config : relay_config_location)
+    (c : classification) : Yojson.Safe.t =
   `Assoc
     [ ("state", `String (state_to_string c.state))
     ; ("reason", `String c.reason)
-    ; ("scope", `String scope_repo_relay_config)
+    ; ("scope", `String (relay_config_scope_token config))
+    ; ("config_path", `String (relay_config_path_of config))
     ]
 
 let classification_human (c : classification) =
   Printf.sprintf "%s — %s" (state_to_string c.state) c.reason
 
-(* The rendered `state:` line: classification plus its scope marker. *)
-let state_line (c : classification) =
-  Printf.sprintf "%s  [scope: this repo's relay config]"
-    (classification_human c)
+(* The rendered `state:` line: classification plus the relay config file it
+   was derived from. *)
+let state_line ~(config : relay_config_location) (c : classification) =
+  Printf.sprintf "%s  %s" (classification_human c) (relay_config_note config)
 
 (* B234: parenthetical after the human alias value. Must not claim the
    alias is "not a relay registration" when composite state indicates
@@ -207,19 +250,28 @@ let derive_health ~live ~process_present ~state ~now : connector_health =
       else if process_present then Health_wedged
       else Health_stale
 
-(* [last_error] is the detail the connector recorded for the failing sync,
-   when it recorded one.
-
-   #11(2): Health_erroring means the connector synced THIS broker root inside
+(* #11(2): Health_erroring means the connector synced THIS broker root inside
    the freshness window and that sync failed — a live, in-scope failure whose
-   cause is already in the state file. When we have it, the human line reports
-   it (see [connector_human]) and the remediation stays a bare runnable
-   command. Only when nothing was recorded do we fall back to the guessed
-   checklist, which is then the best advice available. Health_wedged is
-   deliberately untouched: it is a property of the connector *process*,
-   independent of any repo's relay config, and "restart" is right for it
-   whatever the last error said. *)
-let remediation_for ?last_error health =
+   cause is already in the state file. [connector_human] reports that cause
+   instead of leaving the operator to guess.
+
+   The what-to-check checklist stays UNCONDITIONAL rather than being traded
+   for the recorded error. [write_connector_state] sets ok = (last_error =
+   None) and only advances last_ok_ts when ok, so Health_erroring (fresh sync
+   ∧ stale last_ok) IMPLIES last_error was Some: a "no recorded error"
+   fallback is unreachable outside hand-written/legacy state files, and
+   conditioning the checklist on it would delete the checklist in production
+   while appearing to preserve it. The recorded errors are also weak
+   substitutes — `("sync", Printexc.to_string exn)` is opaque, and
+   `("poll_inbox", "dropped N policy-rejected inbound row(s)…")` is inbound
+   accounting rather than a connectivity fault yet still drives `erroring`.
+   The checklist is a `#` shell comment on a runnable command: it costs
+   nothing and never breaks copy-paste, so render it alongside the error.
+
+   Health_wedged is deliberately untouched: it is a property of the connector
+   *process*, independent of any repo's relay config, and "restart" is right
+   for it whatever the last error said. *)
+let remediation_for health =
   match health with
   | Health_ok -> None
   | Health_absent -> Some default_remediation_start
@@ -227,13 +279,10 @@ let remediation_for ?last_error health =
   | Health_stale -> Some default_remediation_start
   | Health_wedged -> Some default_remediation_restart
   | Health_erroring ->
-      (match last_error with
-       | Some _ -> Some default_remediation_restart
-       | None ->
-           Some
-             (default_remediation_restart
-              ^ "  # also: check token (c2c relay setup), identity (c2c init), \
-                 relay reachability"))
+      Some
+        (default_remediation_restart
+         ^ "  # also: check token (c2c relay setup), identity (c2c init), \
+            relay reachability")
 
 let connector_info ?(process_present = false)
     ~(state : C2c_relay_connector.connector_state option) ~now () =
@@ -266,7 +315,7 @@ let connector_info ?(process_present = false)
        | None -> None);
     conn_process_present = process_present;
     conn_health = health;
-    conn_remediation = remediation_for ?last_error health;
+    conn_remediation = remediation_for health;
     conn_last_error_op = last_error_op;
     conn_last_error_detail = last_error;
   }
@@ -298,6 +347,11 @@ let connector_json (c : connector_info) : Yojson.Safe.t =
         | None -> `Null )
     ]
 
+(* Ceiling on the recorded error detail in the HUMAN line only (#11). The
+   connector's own renderers clip this field at 80; a slightly higher bound
+   keeps more of a useful message while still capping the line. *)
+let err_detail_max_chars = 120
+
 let fmt_age_s a =
   if a < 60.0 then Printf.sprintf "%.0fs" a
   else if a < 3600.0 then Printf.sprintf "%.0fm" (a /. 60.0)
@@ -325,12 +379,25 @@ let connector_human (c : connector_info) =
     | None -> ""
   in
   (* #11(2): report the failure the connector actually recorded. Same idiom as
-     Relay_doctor's connector check; the op prefix says which leg failed. *)
+     Relay_doctor's connector check; the op prefix says which leg failed.
+
+     Bounded, and rendered INSIDE the parenthesised evidence group (with the
+     "; " separator the other bits use) so it cannot displace the
+     copy-pasteable remediation command that follows. err_detail sources
+     include Yojson.Safe.to_string of a whole relay response, i.e. unbounded
+     in principle; the connector's own log renderers truncate this same field,
+     so truncate here too. --json keeps the full detail. *)
   let err_bit =
+    let clip s =
+      if String.length s > err_detail_max_chars then
+        String.sub s 0 err_detail_max_chars ^ "..."
+      else s
+    in
     match (c.conn_last_error_op, c.conn_last_error_detail) with
     | _, None -> ""
-    | None, Some detail -> Printf.sprintf " last error: %s" detail
-    | Some op, Some detail -> Printf.sprintf " last error: %s: %s" op detail
+    | None, Some detail -> Printf.sprintf "; last error: %s" (clip detail)
+    | Some op, Some detail ->
+        Printf.sprintf "; last error: %s: %s" op (clip detail)
   in
   match c.conn_health with
   | Health_ok ->
@@ -353,7 +420,7 @@ let connector_human (c : connector_info) =
       Printf.sprintf "down (%s%s; no attributable process)%s" age_bit ok_bit
         rem_bit
   | Health_erroring ->
-      Printf.sprintf "erroring (%s%s%s)%s%s" age_bit ok_bit proc_bit err_bit
+      Printf.sprintf "erroring (%s%s%s%s)%s" age_bit ok_bit proc_bit err_bit
         rem_bit
 
 (* The rendered `connector:` line: health plus its scope marker. *)
