@@ -207,14 +207,82 @@ val poll_once_global :
     by [#158]) and returns it, or [None] if not found / unreadable. *)
 val read_session_id_from_config : string -> string option
 
-(** [resolve_kimi_session_id ~cwd] discovers the real Kimi session id for
-    [cwd] by reading [~/.kimi-code/session_index.jsonl] (the same discovery
-    the notifier's REST delivery uses). Managed [c2c start kimi] sessions
-    launch without [--session], so Kimi mints the id and we resolve it
-    afterwards. [None] until Kimi has recorded the session for that workdir.
-    Exposed so the managed launcher can arm the notifier on the REAL
-    session-id inbox rather than the alias inbox (#9 B). *)
-val resolve_kimi_session_id : cwd:string -> string option
+(** [resolve_kimi_session_id ?not_before ~cwd ()] discovers the real Kimi
+    session id for [cwd]. Managed [c2c start kimi] sessions launch without
+    [--session], so Kimi mints the id and we resolve it afterwards. [None]
+    until we can name the session for that workdir. Exposed so the managed
+    launcher can arm the notifier on the REAL session-id inbox rather than
+    the alias inbox (#9 B).
+
+    #41: [~/.kimi-code/session_index.jsonl] alone CANNOT answer this at
+    session start — kimi appends the new session's line only after its
+    SessionStart hooks run, so the index's newest entry is the PREVIOUS
+    session and every arm-time resolution was one session behind. Resolution
+    is therefore: the sid kimi reported through its own SessionStart hook
+    ({!record_kimi_session_id}), unless the index has since recorded a NEWER
+    session for the workspace (a stale record from a session that ended
+    without SessionEnd firing); otherwise the index's newest match.
+
+    [?not_before] filters index entries by [sessionDir] mtime, defaulting to
+    {!set_session_freshness_floor}. It is a PREFERENCE, not a hard reject: if
+    it eliminates every candidate we retry unfiltered, because parking mail
+    forever is a worse failure than the wrong-session delivery the
+    authoritative record already prevents. *)
+val resolve_kimi_session_id :
+  ?not_before:float -> cwd:string -> unit -> string option
+
+(** [record_kimi_session_id ~workdir ~session_id] records the AUTHORITATIVE
+    kimi session id for a workspace — the id kimi itself put in its
+    SessionStart hook payload. Keyed by workspace (not alias) because REST
+    delivery is workdir-keyed (#36). Best-effort; never raises.
+
+    [workdir] is canonicalised (realpath + trailing-slash strip) before it is
+    hashed into the record filename, and {!read_kimi_session_record} /
+    {!clear_kimi_session_record} apply the SAME canonicalisation — we own both
+    ends of this key, so a trailing slash or a symlinked cwd in kimi's payload
+    must not silently produce an unfindable record. (This does not alter
+    {!workspace_hash_for_path}, which reproduces kimi-cli's own convention.)
+
+    This is NOT the [<alias>.sid] notifier binding: that names the BROKER
+    INBOX the daemon drains (since #40, the instance name), while this names
+    the real kimi session used as the REST path component. *)
+val record_kimi_session_id : workdir:string -> session_id:string -> unit
+
+(** [set_session_freshness_floor t] sets the process-wide default [not_before]
+    used by {!resolve_kimi_session_id} (#41). Called by the notifier daemon
+    with its own arm time; left unset (0.0) by the machine-wide watcher, which
+    serves many sessions and has no single session start. *)
+val set_session_freshness_floor : float -> unit
+
+(** [read_kimi_session_record ~workdir] reads back {!record_kimi_session_id}.
+    [None] when absent, malformed, or recorded against a different workdir. *)
+val read_kimi_session_record : workdir:string -> string option
+
+(** [clear_kimi_session_record ~workdir ~session_id] removes the record only
+    if it still names [session_id], so a late SessionEnd for an older session
+    cannot delete the live session's binding. *)
+val clear_kimi_session_record : workdir:string -> session_id:string -> unit
+
+(** [decide_kimi_session_id ~recorded ~index_matches ~all_index_matches] is the
+    pure resolution rule behind {!resolve_kimi_session_id}. Both lists are
+    {!C2c_kimi_deliver.session_ids_for_workdir} output (file-append order, so
+    the last element is newest); [index_matches] is freshness-filtered and
+    [all_index_matches] is not.
+
+    The split is load-bearing, not cosmetic. "Which candidate is newest" is
+    answered from the FILTERED list so a stale entry cannot win; "has the
+    record been superseded" is answered from the UNFILTERED list, because a
+    stale recorded sid is old by construction and the freshness filter exists
+    precisely to drop old entries — checking membership against the filtered
+    list makes the anti-stale-record safeguard disarm itself in the one
+    configuration the notifier daemon always runs in (it sets a floor
+    unconditionally). Required rather than optional-with-default for the same
+    reason. Exposed for unit tests. *)
+val decide_kimi_session_id :
+  recorded:string option ->
+  index_matches:string list ->
+  all_index_matches:string list ->
+  string option
 
 (** [workspace_hash_for_path path] computes [md5(path)] as kimi-cli does
     (see [kimi_cli/metadata.py:WorkDirMeta.sessions_dir]). *)

@@ -402,6 +402,98 @@ let test_i40_unresolvable_session_id_logs_reason_and_exits_0 () =
     check int "nothing registered" 0
       (List.length (list_registrations ctx.broker_root)))
 
+
+(* ---------------------------------------------------------------------------
+ * #47 — a torn-down managed row must not let #40 resurface
+ *
+ * [C2c_start.clear_registration_pid] runs on managed teardown and strips
+ * [pid] + [pid_start_time] so a later PID reuse cannot make the dead row read
+ * as ghost-alive. The row itself survives deliberately: it is the workspace's
+ * sticky alias. But #40's adoption predicate requires [Some pid], so the row
+ * became UNADOPTABLE and the next SessionStart minted a competing alias —
+ * #40, verbatim, after any managed exit.
+ * --------------------------------------------------------------------------- *)
+
+(* Mirrors the post-teardown row observed live (#47):
+     alias=i40test session_id=i40test cwd=<worktree>   # pid, pid_start_time absent
+   i.e. what [register_managed_kimi_session] wrote, after
+   [clear_registration_pid] stripped its liveness fields. *)
+let register_torn_down_managed_session ctx ~alias ~cwd =
+  let b = C2c_mcp.Broker.create ~root:ctx.broker_root in
+  C2c_mcp.Broker.register b ~session_id:alias ~alias ~pid:None
+    ~pid_start_time:None ~client_type:(Some "kimi") ~cwd:(Some cwd)
+    ~from_auto_gen:false ();
+  b
+
+(* THE #47 RED TEST. Against master this mints a second alias — #40 returning. *)
+let test_i47_torn_down_managed_row_is_reclaimed_not_shadowed () =
+  with_ctx (fun ctx ->
+    ignore (register_torn_down_managed_session ctx ~alias:"zz-i47-torn" ~cwd:"/tmp/proj");
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:
+          {|{"hook_event_name":"SessionStart","session_id":"session_0baa88d1-3c1f-4121-bfb6-676117f52203","cwd":"/tmp/proj"}|}
+    in
+    check int "exit 0" 0 rc;
+    let regs = list_registrations ctx.broker_root in
+    check int "no competing alias minted (#40 does not resurface)" 1
+      (List.length regs);
+    let sid, alias = List.hd regs in
+    check string "sticky managed alias preserved" "zz-i47-torn" alias;
+    check string "sticky managed session_id preserved" "zz-i47-torn" sid;
+    check bool "reclaim is logged, not silent" true
+      (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    let skill = read_file (identity_skill_path ctx) in
+    check bool "identity skill names the reclaimed alias" true
+      (contains ~haystack:skill ~needle:"zz-i47-torn"))
+
+(* A LIVE managed row must still win over a torn-down one — reclaim is the
+   fallback, never a competing candidate. *)
+let test_i47_live_row_wins_over_torn_down_row () =
+  with_ctx (fun ctx ->
+    ignore (register_torn_down_managed_session ctx ~alias:"zz-i47-dead-row" ~cwd:"/tmp/proj");
+    ignore (register_managed_session ctx ~alias:"zz-i47-live-row" ~cwd:"/tmp/proj");
+    let rc, _, stderr = run_hook ctx ~payload:session_start_payload in
+    check int "exit 0" 0 rc;
+    check bool "adopted the live instance" true
+      (contains ~haystack:stderr ~needle:"'zz-i47-live-row'");
+    check bool "did not reclaim the torn-down row" false
+      (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    check int "nothing minted" 2
+      (List.length (list_registrations ctx.broker_root)))
+
+(* Two torn-down managed rows for one cwd are as unresolvable as two live ones:
+   bail loudly rather than hijack an arbitrary identity. *)
+let test_i47_ambiguous_torn_down_rows_bail_loudly () =
+  with_ctx (fun ctx ->
+    ignore (register_torn_down_managed_session ctx ~alias:"zz-i47-torn-a" ~cwd:"/tmp/proj");
+    ignore (register_torn_down_managed_session ctx ~alias:"zz-i47-torn-b" ~cwd:"/tmp/proj");
+    let rc, _, stderr = run_hook ctx ~payload:session_start_payload in
+    check int "never fails the host turn" 0 rc;
+    check int "nothing minted" 2
+      (List.length (list_registrations ctx.broker_root));
+    check bool "ambiguity is explained" true
+      (contains ~haystack:stderr ~needle:"cannot tell which one");
+    check bool "names the candidates" true
+      (contains ~haystack:stderr ~needle:"zz-i47-torn-a"))
+
+(* Don't over-correct: reclaim applies to MANAGED rows only. A pid-less
+   HOOK-registered row belongs to some other vanilla session and must never be
+   adopted as this session's identity. *)
+let test_i47_pidless_hook_row_is_not_reclaimable () =
+  with_ctx (fun ctx ->
+    ignore (register_session ctx ~session_id:"zz-i47-other-sid" ~alias:"zz-i47-other");
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:
+          {|{"hook_event_name":"SessionStart","session_id":"session_0baa88d1-3c1f-4121-bfb6-676117f52203","cwd":"/tmp/proj"}|}
+    in
+    check int "exit 0" 0 rc;
+    check bool "no reclaim of a foreign hook row" false
+      (contains ~haystack:stderr ~needle:"reclaiming");
+    check int "this session minted its own identity" 2
+      (List.length (list_registrations ctx.broker_root)))
+
 let () =
   Random.self_init ();
   run "c2c_hook_kimi"
@@ -432,5 +524,15 @@ let () =
             test_i40_hook_adoption_normalizes_cwd
         ; test_case "unresolvable session id logs reason, exits 0" `Quick
             test_i40_unresolvable_session_id_logs_reason_and_exits_0
+        ] )
+    ; ( "hook_kimi_torn_down_47"
+      , [ test_case "torn-down managed row is reclaimed, not shadowed" `Quick
+            test_i47_torn_down_managed_row_is_reclaimed_not_shadowed
+        ; test_case "live row wins over torn-down row" `Quick
+            test_i47_live_row_wins_over_torn_down_row
+        ; test_case "ambiguous torn-down rows bail loudly" `Quick
+            test_i47_ambiguous_torn_down_rows_bail_loudly
+        ; test_case "pid-less hook row is not reclaimable" `Quick
+            test_i47_pidless_hook_row_is_not_reclaimable
         ] )
     ]

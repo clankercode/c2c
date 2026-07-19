@@ -22,6 +22,19 @@ val session_id_for_workdir : workdir:string -> string option
 (** [session_id_for_workdir ~workdir] returns the most recently updated Kimi
     session id whose [workDir] equals [workdir]. *)
 
+val session_ids_for_workdir :
+  workdir:string -> ?not_before:float -> unit -> string list
+(** [session_ids_for_workdir ~workdir ?not_before ()] returns every session id
+    recorded for [workdir] in session_index.jsonl file-append order — oldest
+    first, so the LAST element is the most recently created session for that
+    workspace.
+
+    [?not_before] (#41) rejects entries whose [sessionDir] mtime predates the
+    caller's reference instant, plus (fail-closed) any entry with a missing or
+    unstattable [sessionDir]. Real kimi entries carry no [updated_at] field, so
+    [sessionDir] mtime is the only per-entry timestamp available. Omitting
+    [?not_before] applies no freshness filter. *)
+
 val session_dir_for_session_id : session_id:string -> string option
 (** [session_dir_for_session_id ~session_id] returns the [sessionDir] path
     recorded in ~/.kimi-code/session_index.jsonl for [session_id], if present.
