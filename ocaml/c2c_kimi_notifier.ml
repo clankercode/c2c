@@ -286,16 +286,21 @@ let ensure_kimi_server_running () =
 let resolve_kimi_session_id ~cwd =
   C2c_kimi_deliver.session_id_for_workdir ~workdir:cwd
 
-(* REST prompt delivery seam.  Discovers the Kimi session id for the current
-   workdir, ensures the local server is running, and POSTs the message as a
-   user prompt.  Messages stay in the broker inbox if delivery fails so the
-   next poll can retry. *)
-let deliver_via_rest ~alias ~msg =
-  let cwd = Sys.getcwd () in
+(* REST prompt delivery seam.  Discovers the Kimi session id for [workdir],
+   ensures the local server is running, and POSTs the message as a user
+   prompt.  Messages stay in the broker inbox if delivery fails so the next
+   poll can retry.
+
+   [workdir] is the Kimi *workspace* directory of the target session — the key
+   used to resolve the session id from ~/.kimi-code/session_index.jsonl.  It is
+   an explicit parameter (never [Sys.getcwd ()] read from inside, #36) so a
+   single machine-wide watcher process, which has exactly one cwd and may
+   [chdir "/"], can deliver to many sessions. *)
+let deliver_via_rest ~alias ~msg ~workdir =
   ensure_kimi_server_running ();
-  match resolve_kimi_session_id ~cwd with
+  match resolve_kimi_session_id ~cwd:workdir with
   | None ->
-      Error (Printf.sprintf "no Kimi session for workdir %s" cwd)
+      Error (Printf.sprintf "no Kimi session for workdir %s" workdir)
   | Some session_id -> C2c_kimi_deliver.deliver_message ~session_id ~msg
 
 (* ─── Tmux idle detection + wake ─────────────────────────────────────────── *)
@@ -459,7 +464,7 @@ let write_inbox_file ~broker_root ~session_id messages =
       delivery failed or the session dir is missing.
    5. Return count of successful kimi deliveries (for logging). *)
 
-let run_once ~broker_root ~alias ~session_id ~tmux_pane =
+let run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   let drain_sid = if session_id = "" then alias else session_id in
   (* Peek: read messages without draining them from the broker inbox. *)
@@ -467,11 +472,11 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
   match all_messages with
   | [] -> 0
   | _ ->
-    (* Resolve the kimi session-dir. *)
-    let cwd = Sys.getcwd () in
+    (* Resolve the kimi session-dir from the caller-supplied workdir (#36) —
+       never from the process cwd, so a shared watcher can serve many sessions. *)
     let session_dir_opt =
-      match resolve_kimi_session_id ~cwd with
-      | Some sid -> session_dir_for ~cwd ~session_id:sid
+      match resolve_kimi_session_id ~cwd:workdir with
+      | Some sid -> session_dir_for ~cwd:workdir ~session_id:sid
       | None -> None
     in
     (* Partition: to_deliver = non-system (deliver to kimi), to_skip = system events. *)
@@ -507,7 +512,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane =
              (Printexc.to_string exn));
         (* REST prompt injection. System events are already partitioned out. *)
         try
-          match deliver_via_rest ~alias ~msg with
+          match deliver_via_rest ~alias ~msg ~workdir with
           | Ok () -> delivered := msg :: !delivered
           | Error reason ->
               Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
@@ -547,7 +552,7 @@ let global_inbox_exists ~root ~session_id =
    per-repo broker — no risk of double-delivery.
    System events are logged to chat-log but not delivered to kimi. *)
 
-let poll_once_global ~session_id ~alias ~tmux_pane =
+let poll_once_global ~session_id ~alias ~tmux_pane ~workdir =
   if not (C2c_name.is_valid session_id) then 0
   else
   let sessions_root = C2c_repo_fp.resolve_sessions_broker_root () in
@@ -559,11 +564,11 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
     match all_messages with
     | [] -> 0
     | _ ->
-      (* Resolve the kimi session-dir for notification delivery. *)
-      let cwd = Sys.getcwd () in
+      (* Resolve the kimi session-dir for notification delivery, from the
+         caller-supplied workdir (#36) rather than the process cwd. *)
       let session_dir_opt =
-        match resolve_kimi_session_id ~cwd with
-        | Some sid -> session_dir_for ~cwd ~session_id:sid
+        match resolve_kimi_session_id ~cwd:workdir with
+        | Some sid -> session_dir_for ~cwd:workdir ~session_id:sid
         | None -> None
       in
       (* Partition: to_deliver = non-system, to_skip = system events. *)
@@ -599,7 +604,7 @@ let poll_once_global ~session_id ~alias ~tmux_pane =
                (Printexc.to_string exn));
           (* REST prompt injection. System events are already partitioned out. *)
           try
-            match deliver_via_rest ~alias ~msg with
+            match deliver_via_rest ~alias ~msg ~workdir with
             | Ok () -> delivered := msg :: !delivered
             | Error reason ->
                 Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
@@ -672,6 +677,13 @@ let already_running alias =
 let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
   if already_running alias then None
   else begin
+    (* Legacy workdir default (#36): the per-alias daemon is forked from the
+       session's own process, so its inherited cwd IS that session's Kimi
+       workspace dir. Snapshot it in the PARENT, before the fork, and pass it
+       explicitly to [run_once] — the daemon then never re-reads the ambient
+       cwd. A future machine-wide watcher supplies a per-session workdir
+       instead of relying on inheritance. *)
+    let workdir = try Sys.getcwd () with _ -> "." in
     let _state_dir = ensure_state_dir () in
     let pidfile = pidfile_path alias in
     let logfile = logfile_path alias in
@@ -705,7 +717,7 @@ let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
         alias session_id broker_root inbox_path;
       while true do
         (try
-           let n = run_once ~broker_root ~alias ~session_id ~tmux_pane in
+           let n = run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir in
            if n > 0 then
              Printf.printf "[kimi-notifier] delivered %d message(s)\n%!" n
          with exn ->

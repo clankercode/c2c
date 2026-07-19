@@ -135,11 +135,19 @@ val ensure_daemon :
   unit ->
   int option
 
-(** [run_once ~broker_root ~alias ~session_id ~tmux_pane] performs one drain
-    cycle: read pending broker messages for [alias], emit each as a
+(** [run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir] performs one
+    drain cycle: read pending broker messages for [alias], emit each as a
     notification under the kimi session's notification store, and (if
     [tmux_pane] is set + pane is idle) send a wake-prompt. Returns the
     number of messages delivered.
+
+    [workdir] is the Kimi *workspace* directory of the target session — the key
+    used to resolve its session id from [~/.kimi-code/session_index.jsonl].
+    It is explicit rather than read from [Sys.getcwd ()] inside (#36): callers
+    MUST pass the session's own workdir (e.g. the broker registration's [cwd]),
+    not the process cwd, whenever they know it. Only legacy call sites that are
+    genuinely running inside the session's own directory may default it to
+    [Sys.getcwd ()].
 
     Exposed for unit tests + dogfood smokes. The daemon's inner loop is
     just [run_once] in a [while true] with [Unix.sleepf interval]. *)
@@ -148,6 +156,7 @@ val run_once :
   alias:string ->
   session_id:string ->
   tmux_pane:string option ->
+  workdir:string ->
   int
 
 (** [poll_once_global ~session_id ~alias ~tmux_pane] drains pending messages
@@ -159,11 +168,16 @@ val run_once :
     Uses drain_inbox (destructive) since the global broker is separate from the
     per-repo broker — no risk of double-delivery. await-reply never reads an
     inbox; approval resolution is host-local and file-only.
+
+    [workdir] carries the same contract as in {!run_once}: the target session's
+    Kimi workspace directory, supplied by the caller rather than read from the
+    process cwd (#36).
     Exposed for unit tests + dogfood smokes. *)
 val poll_once_global :
   session_id:string ->
   alias:string ->
   tmux_pane:string option ->
+  workdir:string ->
   int
 
 (** [read_session_id_from_config alias] reads the pinned session UUID from

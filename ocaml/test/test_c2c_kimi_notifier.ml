@@ -473,6 +473,7 @@ let test_no_kimi_session_leaves_advisory_in_inbox () =
          ~alias:"kimi-test"
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
+         ~workdir:(Sys.getcwd ())
        in
        Alcotest.(check int) "0 deliveries (no Kimi session)" 0 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
@@ -489,6 +490,7 @@ let test_system_event_remains_in_inbox_after_run_once () =
          ~alias:"kimi-test"
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
+         ~workdir:(Sys.getcwd ())
        in
         Alcotest.(check int) "0 deliveries (system event)" 0 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
@@ -513,6 +515,7 @@ let test_no_kimi_session_leaves_non_system_messages_in_inbox () =
          ~alias:"kimi-test"
          ~session_id:"kimi-test-session"
          ~tmux_pane:None
+         ~workdir:(Sys.getcwd ())
        in
        Alcotest.(check int) "0 deliveries (no Kimi session)" 0 n;
        let remaining = read_inbox_messages broker_root "kimi-test-session" in
@@ -672,6 +675,7 @@ let test_poll_once_global_drains_global_broker () =
                 ~session_id:sid
                 ~alias:"kimi-global-test"
                 ~tmux_pane:None
+                ~workdir:(Sys.getcwd ())
               in
               Alcotest.(check int) "1 delivery" 1 n;
               Alcotest.(check int) "global inbox drained after delivery" 0
@@ -705,6 +709,7 @@ let test_poll_once_global_no_cross_session_leak () =
          ~session_id:session_b
          ~alias:"kimi-session-b-alias"
          ~tmux_pane:None
+         ~workdir:(Sys.getcwd ())
        in
        (match old_sessions_root with
         | Some v -> Unix.putenv "C2C_SESSIONS_BROKER_ROOT" v
@@ -713,11 +718,189 @@ let test_poll_once_global_no_cross_session_leak () =
        Alcotest.(check int) "session A inbox still has 1 message" 1
          (List.length (read_global_inbox_messages global_root_a sid_a)))
 
+(* ─── #36: explicit ~workdir, no ambient Sys.getcwd () ─────────────────────── *)
+
+(* Stand up a fully isolated fixture for the workdir-threading tests:
+
+     <tmp>/broker/<broker_sid>.inbox.json   one pending DM
+     <tmp>/.kimi-code/session_index.jsonl   maps [index_workdir] -> [kimi_sid]
+     <tmp>/sessions/<kimi_sid>              the session dir
+
+   [index_workdir] is what the fixture session_index claims the Kimi workspace
+   is.  The tests vary it independently of the process cwd — that separation is
+   the whole point of #36.  Note the broker inbox key ([broker_sid]) is
+   deliberately NOT the Kimi session id, so a POST to
+   /api/v1/sessions/<kimi_sid>/prompts can only come from workdir resolution.
+
+   Hermetic: fixture gate short-circuits [ensure_kimi_server_running], the mock
+   server is in-process, and nothing forks a notifier daemon. *)
+let with_workdir_fixture ~index_workdir ~kimi_sid ~broker_sid messages f =
+  let tmp = Filename.temp_file "c2c-notifier-workdir-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o755;
+  let saved =
+    List.map (fun k -> (k, Sys.getenv_opt k))
+      [ "HOME"; "KIMI_CODE_HOME"; "C2C_KIMI_DELIVER_FIXTURE"
+      ; "C2C_KIMI_DELIVER_FIXTURE_TOKEN"; "C2C_KIMI_DELIVER_FIXTURE_BASE_URL" ]
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter
+        (fun (k, v) -> Unix.putenv k (match v with Some v -> v | None -> ""))
+        saved;
+      let rec rmrf p =
+        if Sys.is_directory p then begin
+          Array.iter (fun c -> rmrf (Filename.concat p c)) (Sys.readdir p);
+          try Unix.rmdir p with _ -> ()
+        end else try Sys.remove p with _ -> ()
+      in
+      rmrf tmp)
+    (fun () ->
+       let broker_root = Filename.concat tmp "broker" in
+       Unix.mkdir broker_root 0o755;
+       let reg = open_out (Filename.concat broker_root "registrations.yaml") in
+       output_string reg "registrations: []\n";
+       close_out reg;
+       let inbox = open_out (Filename.concat broker_root (broker_sid ^ ".inbox.json")) in
+       output_string inbox
+         (Yojson.Safe.to_string
+            (`List (List.map (fun (from_alias, content) ->
+               `Assoc [ ("from_alias", `String from_alias)
+                      ; ("to_alias", `String broker_sid)
+                      ; ("content", `String content)
+                      ; ("ts", `Float (Unix.gettimeofday ()))
+                      ; ("deferrable", `Bool false)
+                      ; ("ephemeral", `Bool false)
+                      ; ("reply_via", `Null)
+                      ; ("enc_status", `Null)
+                      ; ("message_id", `Null) ])
+               messages)));
+       close_out inbox;
+       let sessions_dir = Filename.concat tmp "sessions" in
+       Unix.mkdir sessions_dir 0o755;
+       let session_dir = Filename.concat sessions_dir kimi_sid in
+       Unix.mkdir session_dir 0o755;
+       let kimi_home = Filename.concat tmp ".kimi-code" in
+       Unix.mkdir kimi_home 0o700;
+       let idx = open_out (Filename.concat kimi_home "session_index.jsonl") in
+       Printf.fprintf idx
+         "{\"sessionId\":\"%s\",\"sessionDir\":\"%s\",\"workDir\":\"%s\",\"updated_at\":\"2026-07-19T00:00:00.000Z\"}\n"
+         kimi_sid session_dir index_workdir;
+       close_out idx;
+       Unix.putenv "HOME" tmp;
+       Unix.putenv "KIMI_CODE_HOME" kimi_home;
+       Unix.putenv "C2C_KIMI_DELIVER_FIXTURE" "1";
+       Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_TOKEN" "fixture-token";
+       let prompt_path = "/api/v1/sessions/" ^ kimi_sid ^ "/prompts" in
+       let routes =
+         [ Relay_test_support.route ~meth:"POST" ~path:prompt_path
+             [ Relay_test_support.response ~status:200 {|{"code":0,"msg":"success"}|} ]
+         ]
+       in
+       Relay_test_support.with_server ~routes (fun server ->
+         Unix.putenv "C2C_KIMI_DELIVER_FIXTURE_BASE_URL"
+           (Printf.sprintf "http://127.0.0.1:%d" server.Relay_test_support.port);
+         f ~broker_root ~server ~prompt_path))
+
+(* [#36] THE regression guard.  [run_once ~workdir:A] must resolve the Kimi
+   session registered for A even though the process cwd is B (an unrelated
+   directory that appears nowhere in session_index.jsonl).
+
+   Pre-#36 this FAILED: [run_once] called [resolve_kimi_session_id ~cwd:(Sys.getcwd ())],
+   found no entry for the test-runner's cwd, and returned 0 deliveries with the
+   message parked in the inbox.  It only ever worked because the per-alias
+   notifier is forked from the session's own process and inherits its cwd — an
+   accident the machine-wide wake service (#35, which chdirs to "/") breaks. *)
+let test_run_once_resolves_session_from_workdir_not_cwd () =
+  let index_workdir = Filename.concat (Filename.get_temp_dir_name ()) "c2c-i36-workspace-a" in
+  (try Unix.mkdir index_workdir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Alcotest.(check bool) "fixture workdir differs from process cwd" true
+    (index_workdir <> Sys.getcwd ());
+  with_workdir_fixture
+    ~index_workdir
+    ~kimi_sid:"kimi-sid-for-workspace-a"
+    ~broker_sid:"broker-key-not-a-kimi-sid"
+    [ ("peer-one", "delivered by workdir, not cwd") ]
+    (fun ~broker_root ~server ~prompt_path ->
+       let n = C2c_kimi_notifier.run_once
+         ~broker_root
+         ~alias:"kimi-workdir-test"
+         ~session_id:"broker-key-not-a-kimi-sid"
+         ~tmux_pane:None
+         ~workdir:index_workdir
+       in
+       Alcotest.(check int) "1 delivery resolved via ~workdir" 1 n;
+       Alcotest.(check int) "inbox drained after successful delivery" 0
+         (List.length (read_inbox_messages broker_root "broker-key-not-a-kimi-sid"));
+       match Relay_test_support.requests server with
+       | [ req ] ->
+           Alcotest.(check string) "POST to the workdir's session, not the cwd's"
+             prompt_path req.Relay_test_support.path;
+           Alcotest.(check bool) "body carries the message" true
+             (contains req.Relay_test_support.body "delivered by workdir, not cwd")
+       | reqs ->
+           Alcotest.failf "expected exactly one POST, got %d" (List.length reqs))
+
+(* [#36] Companion: the legacy default is safe.  Callers that genuinely run
+   inside the session's own directory (the forked per-alias notifier,
+   c2c-deliver-inbox) pass [~workdir:(Sys.getcwd ())] and must keep resolving
+   exactly as before. *)
+let test_run_once_legacy_cwd_default_still_resolves () =
+  with_workdir_fixture
+    ~index_workdir:(Sys.getcwd ())
+    ~kimi_sid:"kimi-sid-for-cwd"
+    ~broker_sid:"broker-key-legacy-default"
+    [ ("peer-two", "legacy cwd default") ]
+    (fun ~broker_root ~server ~prompt_path ->
+       let n = C2c_kimi_notifier.run_once
+         ~broker_root
+         ~alias:"kimi-legacy-test"
+         ~session_id:"broker-key-legacy-default"
+         ~tmux_pane:None
+         ~workdir:(Sys.getcwd ())
+       in
+       Alcotest.(check int) "1 delivery via legacy cwd default" 1 n;
+       Alcotest.(check int) "inbox drained" 0
+         (List.length (read_inbox_messages broker_root "broker-key-legacy-default"));
+       match Relay_test_support.requests server with
+       | [ req ] ->
+           Alcotest.(check string) "POST to the cwd's session" prompt_path
+             req.Relay_test_support.path
+       | reqs ->
+           Alcotest.failf "expected exactly one POST, got %d" (List.length reqs))
+
+(* [#36] The inverse leak guard: when the session_index maps only the process
+   cwd, a caller asking for a DIFFERENT workdir must resolve nothing and park
+   the message — never silently fall back to the ambient cwd's session.  This
+   is the failure mode that would send one agent's mail to another. *)
+let test_run_once_does_not_fall_back_to_cwd_session () =
+  let other_workdir = Filename.concat (Filename.get_temp_dir_name ()) "c2c-i36-workspace-b" in
+  (try Unix.mkdir other_workdir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  with_workdir_fixture
+    ~index_workdir:(Sys.getcwd ())
+    ~kimi_sid:"kimi-sid-for-cwd-only"
+    ~broker_sid:"broker-key-no-fallback"
+    [ ("peer-three", "must not reach the cwd session") ]
+    (fun ~broker_root ~server ~prompt_path:_ ->
+       let n = C2c_kimi_notifier.run_once
+         ~broker_root
+         ~alias:"kimi-nofallback-test"
+         ~session_id:"broker-key-no-fallback"
+         ~tmux_pane:None
+         ~workdir:other_workdir
+       in
+       Alcotest.(check int) "0 deliveries (workdir has no Kimi session)" 0 n;
+       Alcotest.(check int) "message parked for retry" 1
+         (List.length (read_inbox_messages broker_root "broker-key-no-fallback"));
+       Alcotest.(check int) "no POST to the cwd's session" 0
+         (List.length (Relay_test_support.requests server)))
+
 let test_poll_once_global_rejects_traversal_session_id () =
   let n = C2c_kimi_notifier.poll_once_global
     ~session_id:"../../../etc/passwd"
     ~alias:"traversal-test"
     ~tmux_pane:None
+    ~workdir:(Sys.getcwd ())
   in
   Alcotest.(check int) "traversal session_id rejected" 0 n
 
@@ -1332,6 +1515,11 @@ let () =
       [ Alcotest.test_case "no Kimi session leaves advisory in inbox" `Quick test_no_kimi_session_leaves_advisory_in_inbox
       ; Alcotest.test_case "system event kept in inbox" `Quick test_system_event_remains_in_inbox_after_run_once
       ; Alcotest.test_case "no Kimi session leaves non-system messages in inbox" `Quick test_no_kimi_session_leaves_non_system_messages_in_inbox
+      ]
+    ; "explicit_workdir_36",
+      [ Alcotest.test_case "run_once resolves session from ~workdir, not cwd" `Quick test_run_once_resolves_session_from_workdir_not_cwd
+      ; Alcotest.test_case "legacy cwd default still resolves" `Quick test_run_once_legacy_cwd_default_still_resolves
+      ; Alcotest.test_case "no silent fallback to the cwd's session" `Quick test_run_once_does_not_fall_back_to_cwd_session
       ]
     ; "global_broker_p4",
       [ Alcotest.test_case "poll_once_global drains global broker" `Quick test_poll_once_global_drains_global_broker
