@@ -1310,11 +1310,88 @@ let test_unreadable_parent_cmdline_still_registers () =
         ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
     in
     check int "exit 0" 0 rc;
-    check bool "unknown parent falls back to registering" true
-      (List.exists
-         (fun (r : C2c_mcp.registration) -> r.session_id = sid)
-         (codex_hook_rows ctx))
-    |> fun () -> ignore stderr)
+    if not (List.exists
+              (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+              (codex_hook_rows ctx))
+    then failf "unknown parent must fall back to registering (stderr %S)" stderr)
+
+(* A MANAGED session is out of scope for the skip even when its parent really
+   is `codex exec`: managed identities are owned by the launcher, are addressed
+   by peers, and must survive regardless of how the thread was spawned. Pins
+   the [not is_managed] guard, which is otherwise only exercised implicitly. *)
+let test_managed_exec_parent_still_registers () =
+  with_ctx (fun ctx ->
+    let cmdline = write_parent_cmdline ctx exec_argv in
+    let managed_sid = "managed-codex-exec-i52" in
+    let thread_id = "codex-thread-managed-exec-i52" in
+    write_managed_codex_instance ctx ~name:"managed-exec-i52"
+      ~session_id:managed_sid ~thread_id;
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+        ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "exit 0" 0 rc;
+    if not (List.exists
+              (fun (r : C2c_mcp.registration) -> r.session_id = managed_sid)
+              (C2c_mcp.Broker.list_registrations (broker ctx)))
+    then
+      failf "managed session must register even under `codex exec` \
+             (stdout %S stderr %S)" stdout stderr)
+
+(* KNOWN FALSE NEGATIVE, pinned deliberately so nobody "fixes" it.
+   `codex --model X exec ...` puts the subcommand past argv[1], so the check
+   misses it and the run registers as before. That is the SAFE direction, and
+   the obvious repair — walking ancestors, or scanning all of argv — is the
+   unsafe one: an ancestor walk matches the `node` wrapper that sits above a
+   real codex exec, and matches any INTERACTIVE codex nested inside an exec
+   run, which is the single direction that costs a live session its mail.
+   If this assertion ever fails, the check was widened; re-read #52 before
+   accepting the change. *)
+let test_exec_behind_flags_is_a_known_false_negative () =
+  with_ctx (fun ctx ->
+    let cmdline =
+      write_parent_cmdline ctx
+        [ codex_bin; "--model"; "gpt-5.6-luna"; "exec"; "say ok" ]
+    in
+    let sid = "codex-exec-behind-flags-i52" in
+    let rc, _stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+        ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    if not (List.exists
+              (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+              (codex_hook_rows ctx))
+    then
+      failf "`codex --flag ... exec` must still register — see #52 on why the \
+             check is deliberately narrow (stderr %S)" stderr)
+
+(* The argv0 check must be a BASENAME match, not a path-component match. A
+   non-codex program whose argv[1] is `exec` — including one that merely lives
+   under a directory called `codex` — is not a codex exec run, and skipping its
+   registration would lose mail for a session that has no other identity. *)
+let test_non_codex_parent_with_exec_argv_registers () =
+  with_ctx (fun ctx ->
+    let case ~label ~argv0 ~sid =
+      let cmdline = write_parent_cmdline ctx [ argv0; "exec"; "whatever" ] in
+      let rc, _stdout, stderr =
+        run_hook ctx
+          ~extra_env:[ ("C2C_CODEX_PARENT_CMDLINE_PATH", cmdline) ]
+          ~payload:(payload ~event:"SessionStart" ~session_id:sid ())
+      in
+      check int (label ^ ": exit 0") 0 rc;
+      if not (List.exists
+                (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+                (codex_hook_rows ctx))
+      then failf "%s: must register (argv0 %S, stderr %S)" label argv0 stderr
+    in
+    case ~label:"plain non-codex parent" ~argv0:"/usr/bin/git"
+      ~sid:"non-codex-parent-exec-i52";
+    (* Path component `codex`, basename is not. *)
+    case ~label:"codex-named directory" ~argv0:"/opt/codex/somehelper"
+      ~sid:"codex-dir-helper-exec-i52")
 
 let () =
   Random.self_init ();
@@ -1400,5 +1477,11 @@ let () =
             test_codex_exec_preserves_existing_registration
         ; test_case "#52 unreadable parent cmdline still registers" `Quick
             test_unreadable_parent_cmdline_still_registers
+        ; test_case "#52 managed session under exec parent still registers"
+            `Quick test_managed_exec_parent_still_registers
+        ; test_case "#52 exec behind flags is a known false negative" `Quick
+            test_exec_behind_flags_is_a_known_false_negative
+        ; test_case "#52 non-codex parent with exec argv registers" `Quick
+            test_non_codex_parent_with_exec_argv_registers
         ] )
     ]

@@ -290,9 +290,20 @@ mint a permanent `codex-hook` registration per invocation. The SessionStart
 payload and the hook environment are identical between the two modes, so the
 parent process argv is the only available signal; the hook declines to
 auto-register when — and only when — the parent is unambiguously `codex exec`.
-Every ambiguous case registers as before, because a spare ghost row is
-recoverable (it decays under #51's TTL) while a missing registration on a live
-session destroys mail.
+Every ambiguous case registers as before, because a spare ghost row is a
+bounded cost while a missing registration on a live session destroys mail. Be
+precise about *which* row when repeating that claim: the pid-less **hook** row
+this path would mint does decay under #51's activity TTL. The row `c2c send`
+mints on demand (`maybe_auto_register_sender`) does **not** — it sets
+`registered_by = None`, which fails `is_any_hook_registration`
+(`ocaml/c2c_broker.ml`), so #51's TTL never sees it. That row is bounded by pid
+liveness instead: it carries a real pid plus `pid_start_time`, so it reads Dead
+as soon as the run exits — *more* mortal than the hook row, not less.
+
+The skip has a real cost, recorded here so it is not rediscovered: an exec run
+that never calls `c2c send` is now unaddressable and is never told its identity
+(no onboarding text). Dispatching an exec agent and DMing it *before* it speaks
+does not work; the agent must send first.
 
 ---
 

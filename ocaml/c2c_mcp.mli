@@ -431,6 +431,12 @@ module Broker : sig
   val read_pid_start_time : int -> int option
   val capture_pid_start_time : int option -> int option
 
+  val read_cmdline_file : path:string -> string list
+  (** [read_cmdline_file ~path] splits a NUL-separated cmdline file (a
+      /proc/<pid>/cmdline entry, or a test fixture standing in for one) into
+      argv, dropping empty components. [] on any read error, so callers get
+      "no evidence" rather than an exception. *)
+
   val read_proc_environ : int -> (string * string) list option
   (** [read_proc_environ pid] parses /proc/<pid>/environ into a list of
       (key, value) pairs. Returns None on IO error (process gone,

@@ -474,36 +474,44 @@ let codex_parent_cmdline () =
     | Some p when String.trim p <> "" -> String.trim p
     | _ -> Printf.sprintf "/proc/%d/cmdline" (Unix.getppid ())
   in
-  try
-    let ic = open_in_bin path in
-    Fun.protect
-      ~finally:(fun () -> try close_in ic with _ -> ())
-      (fun () ->
-        let buf = Buffer.create 256 in
-        (try
-           while true do
-             Buffer.add_channel buf ic 256
-           done
-         with End_of_file -> ());
-        Buffer.contents buf
-        |> String.split_on_char '\x00'
-        |> List.filter (fun s -> s <> ""))
-  with _ -> []
+  (* The shared reader already returns [] on Sys_error / End_of_file; the
+     outer catch-all keeps this call site fail-safe against anything else a
+     future implementation could raise, since "no evidence" must always mean
+     "register as before". *)
+  try C2c_mcp.Broker.read_cmdline_file ~path with _ -> []
 
 (* True only for an unambiguous `codex exec ...`. Every other answer — a
    shell wrapper between codex and the hook, a platform without /proc, a
    parent that exited first, or codex's own `--flag ... exec` spelling where
    the subcommand is not argv[1] — is FALSE, i.e. register as before. That
-   asymmetry is the point: a spurious ghost row is recoverable and is what
-   #51's TTL already handles, whereas skipping a live interactive session's
-   registration destroys its mail. Matching argv[1] exactly (rather than
-   "exec appears somewhere in argv") also keeps an interactive session whose
-   initial prompt happens to be the word "exec" out of scope. *)
+   asymmetry is the point: a spurious ghost row is a bounded, recoverable
+   cost, whereas skipping a live interactive session's registration destroys
+   its mail.
+
+   On argv[1]: this is NOT a defence against an interactive session whose
+   initial PROMPT happens to be the word "exec". codex's own arg parsing
+   already rules that out — `codex --help` is `codex [OPTIONS] [PROMPT]` /
+   `codex [OPTIONS] <COMMAND>`, and clap binds a bare `exec` at argv[1] to
+   the SUBCOMMAND, so no interactive session can ever present that argv.
+   argv[1] is simply where codex puts the subcommand when it is spelled
+   without preceding flags. It is codex's parser that makes the match safe,
+   not the exactness of the position — do not "improve" this into a
+   scan-anywhere match on that premise, because scanning anywhere WOULD
+   start matching prompts and flag values.
+
+   On argv0: match the BASENAME, not any path component. codex's binary is
+   known to be named `codex` (unlike Claude's, which is a bare version
+   string — that is why [Broker.pid_is_known_agent] must use component
+   matching, and why its precedent does not transfer here). Component
+   matching would read `/opt/codex/somehelper exec ...` as codex exec and
+   skip a registration it should have made, i.e. it widens the check in the
+   mail-losing direction for no gain. An unusual install that spells argv0
+   some other way simply fails to match and registers as before, which is
+   the safe direction. *)
 let parent_is_codex_exec () =
   match codex_parent_cmdline () with
   | argv0 :: "exec" :: _ ->
-      String.split_on_char '/' argv0
-      |> List.exists (fun comp -> String.lowercase_ascii comp = "codex")
+      String.lowercase_ascii (Filename.basename argv0) = "codex"
   | _ -> false
 
 let hook_codex_cmd =
@@ -692,10 +700,28 @@ let hook_codex_cmd =
                   let sid = Option.value managed_sid ~default:payload_sid in
                   let is_managed = Option.is_some managed_sid in
                   (* #52: a vanilla `codex exec` thread is a one-shot batch
-                     run — it lives seconds, no peer can address the fresh
-                     random alias it would be given, and it has no wake path.
-                     Registering it is pure cost, and because exec never fires
-                     SessionEnd the cost is permanent. Skip the MINT.
+                     run that fires SessionStart and never SessionEnd, so the
+                     row it mints is permanent. Skip the MINT.
+
+                     WHAT THIS GIVES UP — stated plainly, because the row was
+                     NOT inert before this change:
+                       - it appeared in `c2c list --alive`, so the alias WAS
+                         discoverable by peers;
+                       - it was included in `send_all` fan-out;
+                       - PostToolUse DOES fire during an exec run, so its
+                         inbox was drained mid-run. Not wake-grade, but a
+                         working delivery path.
+                     The real, accepted loss: an exec run that never calls
+                     `c2c send` is now WHOLLY UNADDRESSABLE, and never gets
+                     [codex_onboarding_text], so it is never told it has an
+                     identity or what its alias is. In this repo that touches
+                     the ccc review path (ccc drives `codex exec`) — fine in
+                     practice only because those agents send first. A workflow
+                     that dispatches an exec agent and DMs it BEFORE it speaks
+                     now breaks. The trade is taken because the accrual is
+                     unbounded and permanent while that workflow does not yet
+                     exist here; if one appears it needs an explicit opt-in
+                     (env/config), not a silent revert of this skip.
 
                      Scoped to this arm on purpose. Everything above has
                      already resolved (step1 payload row, step2 managed
@@ -705,7 +731,7 @@ let hook_codex_cmd =
                      Skipping is therefore not the irreversible operation
                      deregistration would be.
 
-                     Nothing depends on the row existing: an exec run that
+                     Nothing else depends on the row existing: an exec run that
                      actually uses c2c auto-registers on demand through
                      [C2c_send_cmd]'s own sticky path, so the identity appears
                      if and only if it is used, and later hook fires in that
