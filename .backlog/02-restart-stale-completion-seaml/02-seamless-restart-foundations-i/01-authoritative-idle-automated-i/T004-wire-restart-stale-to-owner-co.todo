@@ -10,7 +10,11 @@ id: P2.M2.E1.T004
 priority: high
 started_at: null
 status: pending
-tags: []
+tags:
+    - i010
+    - i011
+    - c2c
+    - restart-stale
 title: Wire restart-stale to owner-control seam + per-client adapters (satisfies I010 literal AC)
 updated_at: "2026-07-19T23:48:25Z"
 ---
