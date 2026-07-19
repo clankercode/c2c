@@ -104,7 +104,7 @@ the canonical framing.)
   `.collab/runbooks/git-workflow.md` §`just`-recipes. If you edit
   `data/opencode-plugin/c2c.ts`, run `just codegen-opencode-plugin` and
   commit both the TS source and `ocaml/cli/c2c_opencode_plugin_embedded.ml`.
-- **Test results can be wrong in BOTH directions. Four known ways (2026-07-19).**
+- **Test results can be wrong in BOTH directions. Five known ways (2026-07-19).**
   Any of these will make you report a branch green that isn't, or condemn one
   that is. When a count or a verdict is load-bearing (a review, a merge
   decision), guard against all four:
