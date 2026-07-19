@@ -107,7 +107,7 @@ the canonical framing.)
 - **Test results can be wrong in BOTH directions. Five known ways (2026-07-19).**
   Any of these will make you report a branch green that isn't, or condemn one
   that is. When a count or a verdict is load-bearing (a review, a merge
-  decision), guard against all four:
+  decision), guard against all five:
   1. **Stale binary.** `dune exec` can run a previously-built `.exe` and pass.
      Always `dune build <targets>` explicitly first. Suites that shell out to
      `c2c.exe` must declare it in `(deps ...)` — several already do; a stanza
