@@ -124,6 +124,9 @@ the canonical framing.)
   3. **Piping masks the exit code.** `dune ... | tail` reports the pipe's
      status, not dune's. Write to a file and check `$?` separately, or read
      `${PIPESTATUS[0]}`. This has already produced a false "0 failures" claim.
+     **The default shell here is fish, where `PIPESTATUS` silently returns
+     empty** — so the usual workaround fails open, looking like success. Wrap
+     in `bash -c`, or write to a file and check `$?`, which works everywhere.
   4. **Quote suites AND tests**, and re-measure the baseline with the same
      method on both sides — counting methods differ, and three different
      "baselines" have been quoted for the same tree.
