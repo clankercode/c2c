@@ -496,7 +496,17 @@ let start_cmd =
             let role_pmodel = resolve_role_pmodel_for_launch role ~client in
             match render_role_for_client ?model_override role ~client ~name:agent_name with
             | Some rendered ->
-                let effective_alias = Option.value role.C2c_role.c2c_alias ~default:agent_name in
+                (* #34 review (fix 2): an explicit [--alias] outranks the role's
+                   [c2c_alias] — that is the precedence docs/commands.md states.
+                   This branch used to bind [alias_override] straight from the
+                   role and drop [alias_opt] on the floor, so
+                   `c2c start codex --agent R --alias BROKER -n NAME` silently
+                   published NAME (or the role alias) instead of BROKER. *)
+                let role_alias =
+                  C2c_start.managed_alias_override_for_role ~alias_opt
+                    ~role_alias:role.C2c_role.c2c_alias
+                in
+                let effective_alias = Option.value role_alias ~default:agent_name in
                 (* write_agent_file: opencode/claude write .md with YAML frontmatter.
                    Kimi writes AgentSpec YAML (agent.yaml) + system.md.
                    Codex has no user agent file surface.
@@ -511,7 +521,7 @@ let start_cmd =
                   if client = "claude" then Some (C2c_start.claude_onboarding_preamble ~name:agent_name)
                   else Some (default_kickoff_prompt ~name:agent_name ~alias:effective_alias ~role:role.C2c_role.body ())
                 in
-                let alias_override = role.C2c_role.c2c_alias in
+                let alias_override = role_alias in
                let auto_join_rooms =
                  if role.C2c_role.c2c_auto_join_rooms <> []
                  then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
@@ -565,7 +575,14 @@ let start_cmd =
                let role_pmodel = resolve_role_pmodel_for_launch role ~client in
                (match render_role_for_client ?model_override role ~client ~name with
                 | Some rendered ->
-                    let effective_alias = Option.value role.C2c_role.c2c_alias ~default:name in
+                    (* #34 review (fix 2): same explicit-[--alias]-wins
+                       precedence as the explicit [--agent] branch above; the
+                       auto-inferred-role path dropped [alias_opt] identically. *)
+                    let role_alias =
+                      C2c_start.managed_alias_override_for_role ~alias_opt
+                        ~role_alias:role.C2c_role.c2c_alias
+                    in
+                    let effective_alias = Option.value role_alias ~default:name in
                     (* write_agent_file: opencode/claude only — same rationale
                        as gate at line ~7488. See design doc for per-client
                        divergence details. *)
@@ -575,7 +592,7 @@ let start_cmd =
                       if client = "claude" then Some (C2c_start.claude_onboarding_preamble ~name)
                       else Some (default_kickoff_prompt ~name ~alias:effective_alias ~role:role.C2c_role.body ())
                     in
-                    let alias_override = role.C2c_role.c2c_alias in
+                    let alias_override = role_alias in
                     let auto_join_rooms =
                       if role.C2c_role.c2c_auto_join_rooms <> []
                       then Some (String.concat ", " role.C2c_role.c2c_auto_join_rooms)
@@ -718,27 +735,34 @@ let start_cmd =
     let codex_alias_override =
       C2c_start.codex_alias_override_for_managed_start
         ~alias_opt:alias_override
-        ~requested_name:(if name_from_auto_gen then None else Some name)
+        ~requested_name:
+          (C2c_start.codex_requested_name_for_managed_start ~name
+             ~name_from_auto_gen)
+    in
+    (* Fix 3: [alias_override] is either the explicit [--alias] or a role's
+       [c2c_alias] (fix 2 makes the flag win). Name the real source in the
+       notice — "--alias wins" is a lie when the operator never typed one. *)
+    let alias_source =
+      if alias_opt <> None then C2c_start.Alias_flag else C2c_start.Role_alias
     in
     (* When --alias legitimately outranks an explicit -n, say so — and record
        it durably: the codex TUI takes the terminal moments later, so a
        stderr-only note is not "loud" (#40 F5 learned this the hard way). *)
     (match codex_alias_override with
      | Some alias when not name_from_auto_gen ->
-         (match C2c_start.codex_managed_start_name_notice ~name ~alias with
+         (match
+            C2c_start.codex_managed_start_name_notice ~source:alias_source ~name
+              ~alias ()
+          with
           | None -> ()
           | Some msg ->
               prerr_string msg;
               flush stderr;
               (try
                  Broker_log.append_json ~broker_root:(resolve_broker_root ())
-                   ~json:(`Assoc
-                      [ ("event", `String "managed_name_not_alias")
-                      ; ("ts", `Float (Unix.gettimeofday ()))
-                      ; ("client", `String "codex")
-                      ; ("requested_name", `String name)
-                      ; ("alias", `String alias)
-                      ; ("detail", `String (String.trim msg)) ])
+                   ~json:
+                     (C2c_start.managed_name_not_alias_record ~name ~alias
+                        ~detail:msg ~ts:(Unix.gettimeofday ()))
                with _ -> ()))
      | _ -> ());
     exit (C2c_codex_cmd.start_delegate

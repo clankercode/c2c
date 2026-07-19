@@ -540,13 +540,13 @@ let test_start_codex_alias_precedence_i34 () =
 let test_start_codex_name_not_alias_notice_i34 () =
   check (option string) "no notice when name is the alias" None
     (C2c_start.codex_managed_start_name_notice ~name:"spikeq7"
-       ~alias:"spikeq7");
+       ~alias:"spikeq7" ());
   check (option string) "case-insensitive match is not a mismatch" None
     (C2c_start.codex_managed_start_name_notice ~name:"SpikeQ7"
-       ~alias:"spikeq7");
+       ~alias:"spikeq7" ());
   match
     C2c_start.codex_managed_start_name_notice ~name:"spikeq7"
-      ~alias:"broker-alias"
+      ~alias:"broker-alias" ()
   with
   | None -> fail "expected a notice when -n is not the published alias"
   | Some msg ->
@@ -556,6 +556,152 @@ let test_start_codex_name_not_alias_notice_i34 () =
         (string_contains msg "broker-alias");
       check bool "tells the operator how to address it" true
         (string_contains msg "c2c send broker-alias")
+
+(* ------------------------------------------------------------------ *)
+(* #34 review follow-ups                                               *)
+(* ------------------------------------------------------------------ *)
+
+(* Fix 2. `c2c start codex --agent ROLE --alias BROKER -n NAME` used to publish
+   NAME (or the role's alias) and drop --alias on the floor entirely — silently,
+   because name = alias so the #34 notice never fired. docs/commands.md says
+   --alias "outranks -n"; make the code hold that contract on the role paths
+   too. *)
+let test_i34r_alias_flag_outranks_role_alias () =
+  check (option string) "explicit --alias beats the role's c2c_alias"
+    (Some "broker")
+    (C2c_start.managed_alias_override_for_role ~alias_opt:(Some "broker")
+       ~role_alias:(Some "role-alias"));
+  check (option string) "explicit --alias wins even with no role alias"
+    (Some "broker")
+    (C2c_start.managed_alias_override_for_role ~alias_opt:(Some "broker")
+       ~role_alias:None);
+  check (option string) "role alias still applies with no --alias"
+    (Some "role-alias")
+    (C2c_start.managed_alias_override_for_role ~alias_opt:None
+       ~role_alias:(Some "role-alias"));
+  check (option string) "neither source leaves the alias derived" None
+    (C2c_start.managed_alias_override_for_role ~alias_opt:None ~role_alias:None)
+
+(* The #34 bug site itself. This expression lived inline at the call site, so
+   swapping [name] back for the pre-merge namespaced name would regress #34 with
+   a fully green suite. Assert the whole composed wiring. *)
+let test_i34r_requested_name_wiring () =
+  check (option string) "an explicit -n reaches the override" (Some "spikeq7")
+    (C2c_start.codex_requested_name_for_managed_start ~name:"spikeq7"
+       ~name_from_auto_gen:false);
+  check (option string) "an auto-picked name does not" None
+    (C2c_start.codex_requested_name_for_managed_start ~name:"codex-auto-1234"
+       ~name_from_auto_gen:true);
+  (* Composed exactly as c2c_managed_cmd composes it. *)
+  let wire ~name ~name_from_auto_gen ~alias_opt =
+    C2c_start.codex_alias_override_for_managed_start ~alias_opt
+      ~requested_name:
+        (C2c_start.codex_requested_name_for_managed_start ~name
+           ~name_from_auto_gen)
+  in
+  check (option string) "-n NAME publishes NAME as the alias" (Some "spikeq7")
+    (wire ~name:"spikeq7" ~name_from_auto_gen:false ~alias_opt:None);
+  check (option string) "--alias still outranks -n" (Some "broker")
+    (wire ~name:"spikeq7" ~name_from_auto_gen:false ~alias_opt:(Some "broker"));
+  check (option string) "auto-picked name stays derived" None
+    (wire ~name:"codex-auto-1234" ~name_from_auto_gen:true ~alias_opt:None)
+
+(* Fix 3. The notice fires for a role-derived alias too, where "--alias wins"
+   points the operator at a flag they never typed. *)
+let test_i34r_name_notice_names_its_source () =
+  (match
+     C2c_start.codex_managed_start_name_notice ~source:C2c_start.Alias_flag
+       ~name:"spikeq7" ~alias:"broker" ()
+   with
+   | None -> fail "expected a notice for the --alias case"
+   | Some msg ->
+       check bool "flag case still credits --alias" true
+         (string_contains msg "--alias wins"));
+  match
+    C2c_start.codex_managed_start_name_notice ~source:C2c_start.Role_alias
+      ~name:"spikeq7" ~alias:"role-alias" ()
+  with
+  | None -> fail "expected a notice for the role-alias case"
+  | Some msg ->
+      check bool "role case does NOT claim --alias won" false
+        (string_contains msg "--alias wins");
+      check bool "role case names c2c_alias as the source" true
+        (string_contains msg "c2c_alias");
+      check bool "still tells peers the address" true
+        (string_contains msg "c2c send role-alias")
+
+(* The durable half of the #34 notice. Only the notice string was covered; the
+   broker.log record shape (what a later session actually greps for) was not. *)
+let test_i34r_managed_name_not_alias_record () =
+  let json =
+    C2c_start.managed_name_not_alias_record ~name:"spikeq7" ~alias:"broker"
+      ~detail:"  note: ... \n" ~ts:1234.5
+  in
+  let field k =
+    match json with
+    | `Assoc fields -> List.assoc_opt k fields
+    | _ -> None
+  in
+  check (option string) "event name is stable"
+    (Some "managed_name_not_alias")
+    (match field "event" with Some (`String s) -> Some s | _ -> None);
+  check (option string) "client recorded" (Some "codex")
+    (match field "client" with Some (`String s) -> Some s | _ -> None);
+  check (option string) "requested name recorded" (Some "spikeq7")
+    (match field "requested_name" with Some (`String s) -> Some s | _ -> None);
+  check (option string) "published alias recorded" (Some "broker")
+    (match field "alias" with Some (`String s) -> Some s | _ -> None);
+  check (option string) "detail is trimmed" (Some "note: ...")
+    (match field "detail" with Some (`String s) -> Some s | _ -> None);
+  check bool "timestamp recorded" true
+    (match field "ts" with Some (`Float f) -> f = 1234.5 | _ -> false)
+
+(* Fix 1. The launcher's pre-flight must see a PLAIN broker registry row — the
+   common case (vanilla Claude Code / hook-codex / relay peers), which
+   [resolve_identity] is blind to because it only consults saved codex mappings
+   and managed-instance configs. *)
+let test_i34r_registry_alive_conflict_sees_plain_rows () =
+  let dir = Filename.temp_file "c2c-i34r" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      let reg = Filename.concat dir "registry.json" in
+      check (option (pair string int)) "no registry file, no conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"peer-alias");
+      let write rows = Yojson.Safe.to_file reg (`List rows) in
+      let row ~alias ~pid =
+        `Assoc
+          [ ("session_id", `String ("sid-" ^ alias))
+          ; ("alias", `String alias)
+          ; ("pid", `Int pid) ]
+      in
+      (* A live, signalable pid we own that is NOT our own pid: the test runner
+         that forked us. ([pid_alive] is kill(pid,0), so pid 1 reports EPERM
+         rather than "alive".) A plain MCP peer row — no codex mapping and no
+         managed instance config anywhere. *)
+      let live = Unix.getppid () in
+      write [ row ~alias:"peer-alias" ~pid:live ];
+      check (option (pair string int)) "live plain peer row is a conflict"
+        (Some ("peer-alias", live))
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"peer-alias");
+      check (option (pair string int)) "matches on session_id too"
+        (Some ("peer-alias", live))
+        (C2c_start.registry_alive_conflict ~broker_root:dir
+           ~name:"sid-peer-alias");
+      check (option (pair string int)) "unrelated alias is not a conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"someone-else");
+      (* A dead holder is exactly the resume case — must not refuse. *)
+      write [ row ~alias:"peer-alias" ~pid:0x7FFF_FFF0 ];
+      check (option (pair string int)) "dead holder is not a conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"peer-alias");
+      (* Our OWN pid is never a conflict: the app-server launcher restarts in
+         place with execve, which preserves the pid. *)
+      write [ row ~alias:"peer-alias" ~pid:(Unix.getpid ()) ];
+      check (option (pair string int)) "self-owned row is not a conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"peer-alias"))
 
 let test_namespaced_name_filtered_from_generic_tmux_command_b221 () =
   (* [c2c_managed_cmd] now passes this single filtered [client_args] value as
@@ -4265,6 +4411,16 @@ let () =
             `Quick, test_start_codex_alias_precedence_i34 )
         ; ( "start_codex_name_not_alias_notice_i34",
             `Quick, test_start_codex_name_not_alias_notice_i34 )
+        ; ( "i34r_alias_flag_outranks_role_alias",
+            `Quick, test_i34r_alias_flag_outranks_role_alias )
+        ; ( "i34r_requested_name_wiring",
+            `Quick, test_i34r_requested_name_wiring )
+        ; ( "i34r_name_notice_names_its_source",
+            `Quick, test_i34r_name_notice_names_its_source )
+        ; ( "i34r_managed_name_not_alias_record",
+            `Quick, test_i34r_managed_name_not_alias_record )
+        ; ( "i34r_registry_alive_conflict_sees_plain_rows",
+            `Quick, test_i34r_registry_alive_conflict_sees_plain_rows )
         ; ( "namespaced_name_filtered_from_generic_tmux_command_b221",
             `Quick, test_namespaced_name_filtered_from_generic_tmux_command_b221 )
         ; ( "generic_start_tmux_consumes_namespaced_control_b221",

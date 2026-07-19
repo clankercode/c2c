@@ -537,11 +537,39 @@ val codex_alias_override_for_managed_start :
     when the name was auto-picked, so the app-server keeps deriving a stable
     alias from its session id. *)
 
+val managed_alias_override_for_role :
+  alias_opt:string option -> role_alias:string option -> string option
+(** Resolve the broker alias for a role-backed managed start. An explicit
+    [--alias] outranks the role's [c2c_alias] — the precedence documented in
+    [docs/commands.md]. The [--agent] / auto-inferred-role branches used to bind
+    the role alias directly and discard [--alias] entirely, silently publishing
+    the wrong address (#34 review, fix 2). *)
+
+val codex_requested_name_for_managed_start :
+  name:string -> name_from_auto_gen:bool -> string option
+(** The [requested_name] fed to {!codex_alias_override_for_managed_start} from
+    generic [c2c start codex]: the operator's [-n NAME] / [--c2c:name], or [None]
+    when c2c auto-picked the instance name. Extracted so the #34 wiring itself is
+    assertable — an inline expression there could regress with a green suite. *)
+
+type managed_alias_source = Alias_flag | Role_alias
+
 val codex_managed_start_name_notice :
-  name:string -> alias:string -> string option
+  ?source:managed_alias_source ->
+  name:string -> alias:string -> unit -> string option
 (** Operator notice for [c2c start codex] when the instance name is not the
-    published broker alias ([--alias] beat an explicit [-n]). [None] when they
-    agree (case-insensitively). *)
+    published broker alias. [None] when they agree (case-insensitively).
+    [source] names where the winning alias actually came from — [Alias_flag]
+    (an explicit [--alias]) or [Role_alias] (a role's [c2c_alias]); saying
+    "--alias wins" for a role-derived alias sends the operator looking for a
+    flag they never typed. *)
+
+val managed_name_not_alias_record :
+  name:string -> alias:string -> detail:string -> ts:float -> Yojson.Safe.t
+(** The durable broker.log record emitted alongside
+    {!codex_managed_start_name_notice}. The codex TUI paints over the terminal
+    moments later, so the stderr note alone is not "loud" (#40 F5). Exported so
+    the record shape is testable, not only the notice string. *)
 
 val parse_pty_cmd_argv : string list -> string * string list
 (** Parse the command + argv for [c2c start pty] from the already-stripped
@@ -589,6 +617,25 @@ val refresh_opencode_identity :
 val broker_root : unit -> string
 (** Return the MCP broker root. Uses [C2C_MCP_BROKER_ROOT] env override when set,
     otherwise shells out to [git rev-parse --git-common-dir]. *)
+
+val registry_alive_conflict :
+  broker_root:string -> name:string -> (string * int) option
+(** [Some (alias, pid)] when a broker registry row whose [session_id] or [alias]
+    equals [name] is held by a LIVE process other than the caller. This is the
+    pure decision behind {!check_registry_alias_alive}: it sees every
+    MCP-registered peer (vanilla Claude Code, hook-codex, relay peers), not just
+    the saved codex mappings / managed-instance configs that
+    [C2c_codex_session.resolve_identity] consults. Rows owned by the calling pid
+    are deliberately not conflicts — the app-server launcher restarts in place
+    with [execve], which preserves the pid. Exported for tests. *)
+
+val check_registry_alias_alive : broker_root:string -> name:string -> unit
+(** Registry precheck for launchers: print a FATAL message and [exit 1] when
+    {!registry_alive_conflict} reports a live holder. Must be called BEFORE any
+    launch side effect (instance config, outer pidfile, app-server, TUI spawn):
+    the broker's own [register] refusal lands only after the TUI already owns the
+    terminal, which strands an orphaned frontend with no delivery loop (#34
+    review, fix 1). *)
 
 val clear_registration_pid : broker_root:string -> session_id:string -> unit
 (** Mark the registration for [session_id] as pid-cleared (offline) so peers stop
