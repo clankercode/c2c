@@ -206,6 +206,25 @@ Claude Code and Grok cannot be guaranteed from inside c2c: neither exposes a
 local endpoint accepting a synthetic user turn (Kimi has REST, Codex the
 app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
 
+**agy's CONDITIONAL was aspirational until 2026-07-19, and vanilla agy is
+still not there.** Two defects made the row false rather than optimistic:
+`c2c install agy` wrote a hooks.json agy could not parse, so **no** agy hook
+fired at all between 2026-07-14 and the #65 fix (and the rejection is
+per-file, so it disabled other tools' hooks in that file too); and the
+teardown arm treated `Stop` — an ordinary turn-end event for agy — as
+session-end, unconditionally deleting `agy-env.json` at every turn end, which
+is the file the agy-inject sidecar needs precisely during the idle window
+(#61). Both are fixed and merged. **Still open for vanilla agy: #69** — agy
+runs hooks with cwd `~/.gemini/config`, so an unmanaged session registers into
+the `default` broker and is invisible to peers in its own repo. Managed agy is
+unaffected (`c2c start` exports `C2C_MCP_BROKER_ROOT`, inherited by hooks).
+Treat this row as GUARANTEED-for-managed / broken-for-vanilla until #69 lands.
+
+The general lesson, since it recurred all day: a wake path can be documented,
+installed, and inert. Verify a client's hooks actually **fire** before
+believing its row here — see #50 for the umbrella (`doctor` is structurally
+blind to this whole class).
+
 - **Codex**: managed path prefers app-server transport (authenticated loopback
   WebSocket; hooks as fallback). Mid-turn `inject_items` is **visible at the
   model's next reasoning step** — measured 5-15s on a 91s multi-step turn,
