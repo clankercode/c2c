@@ -5175,11 +5175,20 @@ let run_outer_loop ~(name : string) ~(client : string)
                 only when neither is available yet. run_once uses whatever we
                 pass as its drain_sid, so this makes it drain the registration's
                 real-session-id inbox. Degenerate case alias == session_id is
-                preserved (the registration's session_id == name → same as
-                before, no regression). *)
+                preserved (the registration's session_id == alias → same as
+                before, no regression).
+
+                The placeholder MUST be [alias], not [name]: notifier state is
+                alias-keyed, and decide_notifier_rekey recognises a placeholder
+                by comparing the requested sid against the ALIAS. With
+                [alias_override] set (`c2c start kimi -n foo --alias bar`, or a
+                role-provided c2c_alias) [name] <> [alias], so a [name]
+                placeholder would never be recognised and the no-downgrade
+                guard would go inert — letting a correctly-bound daemon be
+                flapped onto a <name>.inbox.json nothing lands in. *)
              let real_session_id =
                resolve_kimi_notifier_session_id ~broker_root ~alias
-                 ~cwd:(Sys.getcwd ()) ~fallback:name ()
+                 ~cwd:(Sys.getcwd ()) ~fallback:alias ()
              in
              (* B145: ensure_daemon (not start_daemon) so a stale notifier left
                 over from a previous binary is cycled onto the new one even on a

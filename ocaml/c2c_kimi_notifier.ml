@@ -854,7 +854,11 @@ let running_session_id alias =
    [running = None] is a pre-#9 daemon of unknown binding: bind it as soon as
    we have a real sid to bind. Pure; exposed for unit tests. *)
 let decide_notifier_rekey ~alias ~requested_sid ~running_sid =
-  if requested_sid = alias then false
+  (* Placeholder compare is case-insensitive, matching how aliases are
+     compared everywhere else (alias comparisons are case-insensitive per
+     B112, and pick_live_registration_sid matches the same way). *)
+  if String.lowercase_ascii requested_sid = String.lowercase_ascii alias then
+    false
   else match running_sid with
     | None -> true
     | Some cur -> cur <> requested_sid

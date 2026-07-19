@@ -1215,6 +1215,31 @@ let test_b9_rekey_decision_table () =
   Alcotest.(check bool) "placeholder arm over unknown binding is a no-op" false
     (d ~requested_sid:"zz-kimi-a" ~running_sid:None)
 
+(* The no-downgrade guard recognises a placeholder by comparing the requested
+   sid against the ALIAS. With `c2c start kimi -n foo --alias bar` (or a
+   role-provided c2c_alias) the instance name and the alias differ, so the
+   managed arm must use the ALIAS as its placeholder — passing the name would
+   leave the guard inert and let a correctly-bound daemon be flapped onto a
+   <name>.inbox.json nothing lands in. Pins that, plus the case-insensitive
+   compare. *)
+let test_b9_placeholder_is_alias_not_instance_name () =
+  let name = "zz-kimi-instance" and alias = "zz-kimi-otheralias" in
+  Alcotest.(check bool)
+    "alias placeholder IS recognised (no downgrade)" false
+    (C2c_kimi_notifier.decide_notifier_rekey ~alias ~requested_sid:alias
+       ~running_sid:(Some "real-sid"));
+  Alcotest.(check bool)
+    "alias placeholder recognised case-insensitively" false
+    (C2c_kimi_notifier.decide_notifier_rekey ~alias
+       ~requested_sid:(String.uppercase_ascii alias)
+       ~running_sid:(Some "real-sid"));
+  (* Guard against the regression: were the instance NAME used as the
+     placeholder, it would not be recognised and would flap the daemon. *)
+  Alcotest.(check bool)
+    "instance name is NOT a placeholder — why fallback must be the alias" true
+    (C2c_kimi_notifier.decide_notifier_rekey ~alias ~requested_sid:name
+       ~running_sid:(Some "real-sid"))
+
 (* THE ORDERING TEST the fix actually has to pass: reproduce production
    sequencing rather than seeding the registration up front.
 
@@ -1334,5 +1359,6 @@ let () =
         ; Alcotest.test_case "dead pid registration not adopted" `Quick test_b9_dead_pid_registration_not_adopted
         ; Alcotest.test_case "prefers most-recent live registration" `Quick test_b9_prefers_most_recent_live_registration
         ; Alcotest.test_case "re-key decision table" `Quick test_b9_rekey_decision_table
+        ; Alcotest.test_case "placeholder is the alias, not the instance name" `Quick test_b9_placeholder_is_alias_not_instance_name
         ] )
     ]
