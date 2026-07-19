@@ -1834,14 +1834,56 @@ let fresh_kimi_session_id () =
    The degenerate alias == session_id case is preserved: a registration whose
    session_id equals the alias resolves back to the alias, so behaviour is
    unchanged. Pure/read-only; never raises. Exposed for unit tests. *)
-let resolve_kimi_notifier_session_id ~broker_root ~alias ~cwd ~fallback =
+(* Freshness bound for adopting a broker registration's session_id. Aliases
+   are reused across runs, so after an UNCLEAN exit (kill/crash — common) the
+   previous session's registration survives in the broker. Adopting it would
+   point the notifier at a DEAD session's inbox, draining stale backlog while
+   the live session's mail is never touched — strictly worse than the alias
+   placeholder. We therefore only adopt a registration we can corroborate as
+   live. This is belt-and-braces: the load-bearing guarantee is that the
+   SessionStart hook re-keys the notifier onto the real sid
+   ([C2c_kimi_notifier.decide_notifier_rekey]). *)
+let kimi_registration_max_age_s = 300.0
+
+let registration_pid_is_alive (r : C2c_mcp.registration) =
+  match r.pid with
+  | None -> true (* kimi-hook registers with pid:None — no signal either way *)
+  | Some p -> p > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" p)
+
+let registration_recency (r : C2c_mcp.registration) =
+  match r.last_activity_ts, r.registered_at with
+  | Some a, Some b -> Some (Stdlib.max a b)
+  | Some t, None | None, Some t -> Some t
+  | None, None -> None
+
+(* Live-enough to adopt: any explicit pid must still exist, and we must have a
+   timestamp placing it inside the freshness window. No timestamp at all and no
+   live pid means we cannot corroborate it — fail closed. *)
+let registration_is_adoptable ~now (r : C2c_mcp.registration) =
+  registration_pid_is_alive r
+  && (match registration_recency r with
+      | Some ts -> now -. ts <= kimi_registration_max_age_s
+      | None -> false)
+
+(* Most-recent adoptable registration for [alias], if any. Pure over [regs] so
+   it is unit-testable without a broker. *)
+let pick_live_registration_sid ~alias ~now (regs : C2c_mcp.registration list) =
+  regs
+  |> List.filter (fun (r : C2c_mcp.registration) ->
+         String.lowercase_ascii r.alias = String.lowercase_ascii alias
+         && registration_is_adoptable ~now r)
+  |> List.sort (fun a b ->
+         compare (registration_recency b) (registration_recency a))
+  |> function
+     | (r : C2c_mcp.registration) :: _ -> Some r.session_id
+     | [] -> None
+
+let resolve_kimi_notifier_session_id ?now ~broker_root ~alias ~cwd ~fallback () =
+  let now = match now with Some t -> t | None -> Unix.gettimeofday () in
   let from_registration () =
     try
       let broker = C2c_mcp.Broker.create ~root:broker_root in
-      List.find_map
-        (fun (r : C2c_mcp.registration) ->
-           if String.lowercase_ascii r.alias = String.lowercase_ascii alias
-           then Some r.session_id else None)
+      pick_live_registration_sid ~alias ~now
         (C2c_mcp.Broker.list_registrations broker)
     with _ -> None
   in
@@ -5137,7 +5179,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                 before, no regression). *)
              let real_session_id =
                resolve_kimi_notifier_session_id ~broker_root ~alias
-                 ~cwd:(Sys.getcwd ()) ~fallback:name
+                 ~cwd:(Sys.getcwd ()) ~fallback:name ()
              in
              (* B145: ensure_daemon (not start_daemon) so a stale notifier left
                 over from a previous binary is cycled onto the new one even on a

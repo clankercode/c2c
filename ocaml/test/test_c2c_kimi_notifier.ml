@@ -1071,7 +1071,7 @@ let test_b9_resolve_prefers_registration_real_sid () =
     let got =
       C2c_start.resolve_kimi_notifier_session_id ~broker_root
         ~alias:"zz-kimi-managed" ~cwd:"/nonexistent-workdir"
-        ~fallback:"zz-kimi-managed"
+        ~fallback:"zz-kimi-managed" ()
     in
     Alcotest.(check string)
       "arms on the registration's REAL session_id, not the alias"
@@ -1088,7 +1088,7 @@ let test_b9_resolve_degenerate_alias_equals_sid () =
     let got =
       C2c_start.resolve_kimi_notifier_session_id ~broker_root
         ~alias:"zz-kimi-degen" ~cwd:"/nonexistent-workdir"
-        ~fallback:"zz-kimi-degen"
+        ~fallback:"zz-kimi-degen" ()
     in
     Alcotest.(check string) "degenerate alias == session_id preserved"
       "zz-kimi-degen" got)
@@ -1116,7 +1116,7 @@ let test_b9_resolve_uses_session_index_when_no_registration () =
       (fun () ->
         let got =
           C2c_start.resolve_kimi_notifier_session_id ~broker_root
-            ~alias:"zz-kimi-noreg" ~cwd:workdir ~fallback:"zz-kimi-noreg"
+            ~alias:"zz-kimi-noreg" ~cwd:workdir ~fallback:"zz-kimi-noreg" ()
         in
         Alcotest.(check string)
           "no registration → resolves via kimi session_index"
@@ -1140,10 +1140,135 @@ let test_b9_resolve_falls_back_to_alias_when_unknown () =
         let got =
           C2c_start.resolve_kimi_notifier_session_id ~broker_root
             ~alias:"zz-kimi-unknown" ~cwd:"/nonexistent-workdir"
-            ~fallback:"zz-kimi-unknown"
+            ~fallback:"zz-kimi-unknown" ()
         in
         Alcotest.(check string) "unresolvable → fallback (alias)"
           "zz-kimi-unknown" got))
+
+(* Hand-built registrations so adoption rules can be exercised without a
+   broker (and without forging timestamps on disk). *)
+let mk_reg ~alias ~session_id ?pid ?registered_at ?last_activity_ts ()
+  : C2c_mcp.registration =
+  { session_id; alias; pid; pid_start_time = None; registered_at
+  ; canonical_alias = None; dnd = false; dnd_since = None; dnd_until = None
+  ; client_type = Some "kimi"; plugin_version = None; confirmed_at = None
+  ; enc_pubkey = None; ed25519_pubkey = None; pubkey_signed_at = None
+  ; pubkey_sig = None; compacting = None; last_activity_ts; role = None
+  ; compaction_count = 0; automated_delivery = None; tmux_location = None
+  ; herdr_pane = None; herdr_socket = None; cwd = None
+  ; metadata_opt_out = false; registered_by = Some "kimi-hook"
+  ; opaque_host_id = None }
+
+let now0 = 1_800_000_000.0
+
+(* ALIAS REUSE AFTER UNCLEAN EXIT: the previous session's registration
+   survives in the broker under the same alias. Adopting it would bind the
+   notifier to a DEAD session's inbox — draining stale backlog while the live
+   session's mail is never touched. It must be refused. *)
+let test_b9_stale_registration_not_adopted () =
+  let regs =
+    [ mk_reg ~alias:"zz-kimi-reused" ~session_id:"dead-previous-sid"
+        ~registered_at:(now0 -. 3600.0) () ]
+  in
+  Alcotest.(check (option string))
+    "dead previous session's registration is NOT adopted"
+    None
+    (C2c_start.pick_live_registration_sid ~alias:"zz-kimi-reused" ~now:now0 regs)
+
+let test_b9_dead_pid_registration_not_adopted () =
+  let regs =
+    [ mk_reg ~alias:"zz-kimi-deadpid" ~session_id:"sid-of-dead-proc"
+        ~pid:2_147_483_646 ~registered_at:(now0 -. 1.0) () ]
+  in
+  Alcotest.(check (option string))
+    "registration whose pid is gone is NOT adopted"
+    None
+    (C2c_start.pick_live_registration_sid ~alias:"zz-kimi-deadpid" ~now:now0 regs)
+
+let test_b9_prefers_most_recent_live_registration () =
+  let regs =
+    [ mk_reg ~alias:"zz-kimi-multi" ~session_id:"older-sid"
+        ~registered_at:(now0 -. 200.0) ()
+    ; mk_reg ~alias:"zz-kimi-multi" ~session_id:"newer-sid"
+        ~registered_at:(now0 -. 5.0) () ]
+  in
+  Alcotest.(check (option string))
+    "most-recent live registration wins (not List.find_map's first hit)"
+    (Some "newer-sid")
+    (C2c_start.pick_live_registration_sid ~alias:"zz-kimi-multi" ~now:now0 regs)
+
+(* Re-key decision truth table (#9 B). This is what makes the hook's
+   correctly-keyed ensure_daemon call effective instead of a no-op. *)
+let test_b9_rekey_decision_table () =
+  let d = C2c_kimi_notifier.decide_notifier_rekey ~alias:"zz-kimi-a" in
+  Alcotest.(check bool) "placeholder -> real sid re-keys" true
+    (d ~requested_sid:"real-sid" ~running_sid:(Some "zz-kimi-a"));
+  Alcotest.(check bool) "unknown binding + real sid re-keys" true
+    (d ~requested_sid:"real-sid" ~running_sid:None);
+  Alcotest.(check bool) "real -> different real re-keys" true
+    (d ~requested_sid:"real-sid-2" ~running_sid:(Some "real-sid-1"));
+  Alcotest.(check bool) "same sid does not re-key" false
+    (d ~requested_sid:"real-sid" ~running_sid:(Some "real-sid"));
+  Alcotest.(check bool) "never downgrades a real sid to the alias placeholder"
+    false
+    (d ~requested_sid:"zz-kimi-a" ~running_sid:(Some "real-sid"));
+  Alcotest.(check bool) "placeholder arm over unknown binding is a no-op" false
+    (d ~requested_sid:"zz-kimi-a" ~running_sid:None)
+
+(* THE ORDERING TEST the fix actually has to pass: reproduce production
+   sequencing rather than seeding the registration up front.
+
+   t0 — managed launcher arms: the kimi child has just been forked, so NO
+        alias->real-sid registration exists and the session_index has no entry
+        for the cwd. The resolver must therefore yield the alias PLACEHOLDER.
+   t1 — the SessionStart hook (running inside that child) registers the real
+        sid and calls ensure_daemon with it. The re-key decision must fire, so
+        the notifier ends up bound to the REAL session-id inbox.
+
+   Fork-free: asserts the resolver output and the re-key decision, never
+   spawning a daemon. *)
+let test_b9_resolves_at_spawn_then_rekeys_to_real_sid () =
+  with_b9_tmp_dir (fun tmp ->
+    let broker_root = b9_broker_root tmp in
+    let kimi_home = Filename.concat tmp "kimi-code" in
+    Unix.mkdir kimi_home 0o755;
+    let prev = Sys.getenv_opt "KIMI_CODE_HOME" in
+    Unix.putenv "KIMI_CODE_HOME" kimi_home;
+    Fun.protect
+      ~finally:(fun () ->
+        match prev with
+        | Some v -> Unix.putenv "KIMI_CODE_HOME" v
+        | None -> Unix.putenv "KIMI_CODE_HOME" "")
+      (fun () ->
+        let alias = "zz-kimi-spawnorder" in
+        let cwd = "/proj/spawn-order" in
+        (* t0: nothing knows the real sid yet. *)
+        let armed_sid =
+          C2c_start.resolve_kimi_notifier_session_id ~broker_root ~alias
+            ~cwd ~fallback:alias ()
+        in
+        Alcotest.(check string)
+          "t0: no registration + no session_index -> alias placeholder"
+          alias armed_sid;
+        (* t1: the hook registers the real sid inside the forked child. *)
+        let real_sid = "019f-hook-written-real-sid" in
+        let broker = C2c_mcp.Broker.create ~root:broker_root in
+        C2c_mcp.Broker.register broker ~session_id:real_sid ~alias
+          ~pid:None ~pid_start_time:None ~client_type:(Some "kimi")
+          ~registered_by:(Some "kimi-hook") ~from_auto_gen:true ();
+        (* The hook's ensure_daemon call must re-key the placeholder daemon. *)
+        Alcotest.(check bool)
+          "t1: hook's real sid re-keys the placeholder-bound notifier" true
+          (C2c_kimi_notifier.decide_notifier_rekey ~alias
+             ~requested_sid:real_sid ~running_sid:(Some armed_sid));
+        (* End state: the notifier drains the REAL session-id inbox. *)
+        let resolved_now =
+          C2c_start.resolve_kimi_notifier_session_id ~broker_root ~alias
+            ~cwd ~fallback:alias ()
+        in
+        Alcotest.(check string)
+          "end state: bound to the real session-id inbox, not the alias"
+          real_sid resolved_now))
 
 let () =
   Alcotest.run "c2c_kimi_notifier"
@@ -1204,5 +1329,10 @@ let () =
         ; Alcotest.test_case "degenerate alias == session_id preserved" `Quick test_b9_resolve_degenerate_alias_equals_sid
         ; Alcotest.test_case "no registration → session_index" `Quick test_b9_resolve_uses_session_index_when_no_registration
         ; Alcotest.test_case "unresolvable → fallback alias" `Quick test_b9_resolve_falls_back_to_alias_when_unknown
+        ; Alcotest.test_case "spawn-time ordering → re-keys to real sid" `Quick test_b9_resolves_at_spawn_then_rekeys_to_real_sid
+        ; Alcotest.test_case "alias reuse: stale registration not adopted" `Quick test_b9_stale_registration_not_adopted
+        ; Alcotest.test_case "dead pid registration not adopted" `Quick test_b9_dead_pid_registration_not_adopted
+        ; Alcotest.test_case "prefers most-recent live registration" `Quick test_b9_prefers_most_recent_live_registration
+        ; Alcotest.test_case "re-key decision table" `Quick test_b9_rekey_decision_table
         ] )
     ]

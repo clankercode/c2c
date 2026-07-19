@@ -1476,6 +1476,19 @@ let hook_kimi_cmd =
                with _ -> ());
               C2c_kimi_notifier.already_running alias)
        in
+       (* #9 A(1): RE-ARM a fresh alarm now that the fork is done. Disarming
+          protected the register→fork window, but everything below is
+          unbounded and takes a BLOCKING Unix.lockf F_LOCK on broker files
+          (skill refresh, the #12 read_inbox peek, the identity-skill write),
+          so a wedged lock-holder — precisely the loaded-host scenario this
+          fix targets — would otherwise hang SessionStart forever instead of
+          <=8s. ensure_daemon is itself bounded (~6s worst case) so it did not
+          need the alarm. Restores the same exit-0 handler: the hook must
+          still never fail the host turn. *)
+       (try
+          Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+          ignore (Unix.alarm 8)
+        with _ -> ());
        (* #9 A(1): deferred /c2c skill refresh — non-essential cosmetic work,
           now that the durable register + notifier arm are both done and the
           alarm is disarmed. Best-effort; never blocks or fails the hook. *)

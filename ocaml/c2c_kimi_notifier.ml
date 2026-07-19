@@ -30,6 +30,16 @@ let pidfile_path alias =
 let logfile_path alias =
   home () // ".local" // "share" // "c2c" // "kimi-notifiers" // (alias ^ ".log")
 
+(* #9 B: the session_id a running notifier is BOUND to. Notifier state is
+   alias-keyed (every lifecycle caller — SessionEnd, `c2c stop`, the managed
+   supervisor — knows only the alias) while broker inboxes are session-id
+   keyed. That asymmetry is why a daemon could sit on the wrong inbox: the
+   alias-keyed pidfile made ensure_daemon dedup a mis-keyed daemon as "ours".
+   Recording the binding next to the pidfile makes the mismatch detectable so
+   ensure_daemon can re-key it, rather than fragmenting the state key. *)
+let session_file_path alias =
+  home () // ".local" // "share" // "c2c" // "kimi-notifiers" // (alias ^ ".sid")
+
 let ensure_state_dir () =
   let d = home () // ".local" // "share" // "c2c" // "kimi-notifiers" in
   (try Unix.mkdir (home () // ".local") 0o755 with Unix.Unix_error _ -> ());
@@ -681,6 +691,13 @@ let start_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval=2.0) () =
       Unix.dup2 log_fd Unix.stderr;
       Unix.close log_fd;
       let pid = Unix.getpid () in
+      (* #9 B: record the session binding BEFORE the pidfile, so any reader
+         that observes a pidfile also observes the sid it is bound to. *)
+      (try
+         let soc = open_out (session_file_path alias) in
+         Fun.protect ~finally:(fun () -> close_out soc)
+           (fun () -> output_string soc (session_id ^ "\n"))
+       with _ -> ());
       let oc = open_out pidfile in
       Printf.fprintf oc "%d\n" pid; close_out oc;
       let inbox_path = Filename.concat broker_root (session_id ^ ".inbox.json") in
@@ -730,7 +747,10 @@ let stop_daemon ~alias =
        in
        wait ()
      end);
-  (try Sys.remove (pidfile_path alias) with _ -> ())
+  (try Sys.remove (pidfile_path alias) with _ -> ());
+  (* #9 B: drop the session binding with the pidfile so a later ensure_daemon
+     never compares against a dead daemon's sid. *)
+  (try Sys.remove (session_file_path alias) with _ -> ())
 
 (* ─── B145: upgrade-correctness (stale-binary detect + ensure_daemon) ──────
 
@@ -800,6 +820,45 @@ let fixture_sha which =
   | Some s when String.trim s <> "" -> Some (String.trim s)
   | _ -> None
 
+(* #9 B: the session_id the running notifier for [alias] is bound to, or
+   [None] when unrecorded (a daemon started by a pre-#9 binary). *)
+let running_session_id alias =
+  let path = session_file_path alias in
+  if not (Sys.file_exists path) then None
+  else
+    try
+      let ic = open_in path in
+      Fun.protect ~finally:(fun () -> try close_in ic with _ -> ())
+        (fun () ->
+          match String.trim (input_line ic) with
+          | "" -> None
+          | s -> Some s)
+    with _ -> None
+
+(* #9 B: should ensure_daemon respawn a live notifier purely to re-key it onto
+   a different session_id?
+
+   The managed launcher (`c2c start kimi`) arms at t≈0, when NOTHING can yet
+   name the real Kimi session id: the alias→real-sid broker registration is
+   written later by the SessionStart hook running INSIDE the just-forked kimi
+   process, and the session_index entry for the cwd does not exist yet. So it
+   necessarily arms with the alias as a PLACEHOLDER sid. The hook then calls
+   ensure_daemon with the REAL sid — which used to be a no-op (alias-keyed
+   pidfile + matching binary SHA → Skip_current), stranding the daemon on an
+   empty <alias>.inbox.json while mail piled up in <real-sid>.inbox.json.
+
+   Rule: re-key iff the request names a sid that differs from what is running
+   AND is not the alias placeholder. Refusing to "downgrade" back to the
+   placeholder is what stops a later placeholder arm (e.g. a supervisor
+   relaunch) from flapping a correctly-bound daemon back onto the alias.
+   [running = None] is a pre-#9 daemon of unknown binding: bind it as soon as
+   we have a real sid to bind. Pure; exposed for unit tests. *)
+let decide_notifier_rekey ~alias ~requested_sid ~running_sid =
+  if requested_sid = alias then false
+  else match running_sid with
+    | None -> true
+    | Some cur -> cur <> requested_sid
+
 let ensure_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval = 2.0) () =
   let pidfile = pidfile_path alias in
   (* Identity gate FIRST (B145 PID-reuse guard). Treat the pidfile pid as the
@@ -818,6 +877,21 @@ let ensure_daemon ~alias ~broker_root ~session_id ~tmux_pane ?(interval = 2.0) (
   match ours with
   | None ->
     (* nothing of ours running (incl. a just-cleaned stale pidfile) → fresh *)
+    start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ()
+  | Some pid when
+      decide_notifier_rekey ~alias ~requested_sid:session_id
+        ~running_sid:(running_session_id alias) ->
+    (* #9 B: live daemon of ours, but bound to the WRONG session_id — it is
+       draining an inbox no mail lands in. Re-key by cycling it onto the
+       requested sid. [pid] is a CONFIRMED-ours notifier (identity-gated
+       above), so stop_daemon can never signal an unrelated process. *)
+    Printf.eprintf
+      "[kimi-notifier] running daemon (pid %d) is bound to session %s; \
+       re-keying onto %s\n%!"
+      pid
+      (match running_session_id alias with Some s -> s | None -> "<unknown>")
+      session_id;
+    stop_daemon ~alias;
     start_daemon ~alias ~broker_root ~session_id ~tmux_pane ~interval ()
   | Some pid ->
     let running_sha =

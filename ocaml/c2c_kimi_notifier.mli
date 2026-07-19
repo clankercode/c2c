@@ -54,6 +54,33 @@ val stop_all_daemons : unit -> int
     supervisor teardown wiring + tests. *)
 val pidfile_path : string -> string
 
+(** Path of the file recording which session_id the notifier for an alias is
+    bound to (written beside the pidfile by [start_daemon], removed by
+    [stop_daemon]). Notifier state is alias-keyed while broker inboxes are
+    session-id keyed; this records the binding so a mis-keyed daemon is
+    detectable (#9 B). *)
+val session_file_path : string -> string
+
+(** [running_session_id alias] is the session_id the live notifier for [alias]
+    is bound to, or [None] when unrecorded (daemon from a pre-#9 binary). *)
+val running_session_id : string -> string option
+
+(** [decide_notifier_rekey ~alias ~requested_sid ~running_sid] decides whether
+    a live notifier must be respawned purely to bind it to a different
+    session_id (#9 B).
+
+    The managed launcher arms at t≈0, before anything can name the real Kimi
+    session id, so it arms with the alias as a PLACEHOLDER. The SessionStart
+    hook later calls [ensure_daemon] with the REAL sid; without this check
+    that call was a no-op and the daemon stayed on an empty [<alias>] inbox.
+
+    Re-keys iff [requested_sid] differs from what is running AND is not the
+    alias placeholder — refusing to downgrade back to the placeholder is what
+    prevents a later placeholder arm from flapping a correctly-bound daemon.
+    Pure; exposed for unit tests. *)
+val decide_notifier_rekey :
+  alias:string -> requested_sid:string -> running_sid:string option -> bool
+
 (** [already_running alias] returns [true] iff the notifier pidfile for
     [alias] names a process that is alive AND whose comm matches the daemon's
     ([notifier_comm]) — i.e. *our* notifier, not merely some live pid (guards
