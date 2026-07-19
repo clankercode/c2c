@@ -916,6 +916,29 @@ val session_id_from_kimi_session_index :
 
 val auto_register_startup : broker_root:string -> unit
 val auto_join_rooms_startup : broker_root:string -> unit
+
+(** {1 #40 / #47 / #48: managed [c2c start kimi] identity predicates}
+
+    Shared by the SessionStart hook ([c2c hook kimi]) and the in-session MCP
+    server's startup auto-register: both must recognise a launcher-owned
+    managed kimi row so neither mints a competing alias (#48 — one global
+    [~/.kimi-code/mcp.json] bakes a single install alias with no
+    [C2C_MCP_SESSION_ID]). Pure over the given registration list. *)
+
+val normalize_hook_cwd : string -> string
+(** Canonicalise a cwd for matching: realpath (best-effort), else trailing-
+    slash strip. Both sides of a managed-row cwd comparison pass through this. *)
+
+val live_managed_kimi_registrations :
+  cwd:string -> registration list -> registration list
+(** Managed (launcher-written, [registered_by <> "kimi-hook"]) kimi rows owning
+    [cwd] whose pid + pid_start_time prove liveness. *)
+
+val reclaimable_managed_kimi_registrations :
+  cwd:string -> registration list -> registration list
+(** #47: managed kimi rows owning [cwd] whose liveness fields were stripped on
+    teardown ([pid = None]) — a positive reclaim signal (sticky workspace
+    alias). *)
 val pop_channel_test_code : unit -> string option
 (** [pop_channel_test_code ()] returns and clears the pending channel-test code,
     if one was generated during registration. Returns [None] if no test is pending. *)
