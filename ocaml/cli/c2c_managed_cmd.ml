@@ -461,6 +461,28 @@ let start_cmd =
   in
   let effective_alias = Option.value alias_opt ~default:name in
   let alias_from_auto_gen = name_from_auto_gen && (alias_opt = None) in
+  (* #58: the {alias} a kickoff prompt shows must be the address that will
+     actually be published. For a codex auto-derive (auto-picked name, no
+     --alias / -n) the app-server mints a codex-<…> alias from its session id
+     AFTER launch (the production wiring below composes
+     [codex_alias_override_for_managed_start ~alias_opt ~requested_name]), so
+     [effective_alias] (= the instance name) is not that address and is not
+     knowable here. Tell the agent to self-verify rather than assert an alias it
+     will not hold (the #34 lesson). When authoritative, [effective_alias] IS
+     the published alias: it is [alias_opt] (explicit --alias) or, failing that,
+     [name] — which equals the -n requested name whenever that override
+     resolves. This covers the no-role launch paths; the role/agent branches
+     keep their own [effective_alias] (their published-alias relationship has a
+     separate [agent_name]-vs-[name] wrinkle tracked as a follow-up). *)
+  let kickoff_alias =
+    if
+      C2c_start.kickoff_alias_is_authoritative ~client ~alias_opt
+        ~requested_name:
+          (C2c_start.codex_requested_name_for_managed_start ~name
+             ~name_from_auto_gen)
+    then effective_alias
+    else "(auto-assigned at launch — run `c2c whoami` to see it)"
+  in
   (* Resolve agent file path: canonical .c2c/roles/<agent>.md first,
      falling back to client-native agent path if canonical doesn't exist. *)
   let agent_role_path agent_name =
@@ -611,14 +633,14 @@ let start_cmd =
                          let kickoff_prompt =
                            match kickoff_prompt_text with
                            | Some t -> Some t
-                           | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                           | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:kickoff_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                            | None ->
                                (match role_opt with
-                                | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                                | Some _ -> Some (default_kickoff_prompt ~name ~alias:kickoff_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                                  | None ->
                                      (* B011: a no-role start is never intro-less for agent clients. *)
                                      if C2c_start.intro_on_no_role client
-                                     then Some (default_kickoff_prompt ~name ~alias:effective_alias ())
+                                     then Some (default_kickoff_prompt ~name ~alias:kickoff_alias ())
                                      else None)
                           in
                           (kickoff_prompt, alias_opt, None, None, None))
@@ -632,14 +654,14 @@ let start_cmd =
               let kickoff_prompt =
                 match kickoff_prompt_text with
                 | Some t -> Some t
-                | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:kickoff_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                 | None ->
                     (match role_opt with
-                     | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                     | Some _ -> Some (default_kickoff_prompt ~name ~alias:kickoff_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                       | None ->
                           (* B011: a no-role start is never intro-less for agent clients. *)
                           if C2c_start.intro_on_no_role client
-                          then Some (default_kickoff_prompt ~name ~alias:effective_alias ())
+                          then Some (default_kickoff_prompt ~name ~alias:kickoff_alias ())
                           else None)
                  in
                  (kickoff_prompt, alias_opt, None, None, None))
@@ -659,14 +681,14 @@ let start_cmd =
           let kickoff_prompt =
             match kickoff_prompt_text with
             | Some t -> Some t
-            | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+            | None when auto_flag -> Some (default_kickoff_prompt ~name ~alias:kickoff_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
             | None ->
                 (match role_opt with
-                 | Some _ -> Some (default_kickoff_prompt ~name ~alias:effective_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
+                 | Some _ -> Some (default_kickoff_prompt ~name ~alias:kickoff_alias ?role:(Option.map (fun r -> r.C2c_role.body) role_opt) ())
                  | None ->
                      (* B011: a no-role start is never intro-less for agent clients. *)
                      if C2c_start.intro_on_no_role client
-                     then Some (default_kickoff_prompt ~name ~alias:effective_alias ())
+                     then Some (default_kickoff_prompt ~name ~alias:kickoff_alias ())
                      else None)
            in
            (kickoff_prompt, alias_opt, None, None, None)

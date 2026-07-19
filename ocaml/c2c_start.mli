@@ -552,6 +552,19 @@ val codex_requested_name_for_managed_start :
     when c2c auto-picked the instance name. Extracted so the #34 wiring itself is
     assertable — an inline expression there could regress with a green suite. *)
 
+val kickoff_alias_is_authoritative :
+  client:string -> alias_opt:string option -> requested_name:string option ->
+  bool
+(** #58: is the alias the launcher would interpolate into a kickoff prompt's
+    [{alias}] the address that will actually be published? [false] only for
+    codex when {!codex_alias_override_for_managed_start} resolves to [None] (an
+    auto-picked name with no [--alias] / [-n]) — the app-server then derives a
+    [codex-…] alias post-launch, so the kickoff cannot know it and must tell the
+    agent to self-verify via [c2c whoami] rather than assert the instance name.
+    [true] for every non-codex client and for codex with any override. A safe
+    over-approximation for the codex-role-alias-with-auto-name case (defers to
+    whoami rather than showing the role alias — never wrong). Pure. *)
+
 type managed_alias_source = Alias_flag | Role_alias
 
 val codex_managed_start_name_notice :

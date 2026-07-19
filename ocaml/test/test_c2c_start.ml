@@ -606,6 +606,39 @@ let test_i34r_requested_name_wiring () =
   check (option string) "auto-picked name stays derived" None
     (wire ~name:"codex-auto-1234" ~name_from_auto_gen:true ~alias_opt:None)
 
+(* #58: the kickoff {alias} must not assert an address the session will not hold.
+   [kickoff_alias_is_authoritative] is the gate: [true] means the launcher's
+   effective_alias IS the published alias (so show it), [false] means the
+   app-server will derive one post-launch (so defer to `c2c whoami`). It must be
+   [false] in exactly the bug case — codex with an auto-picked name and no
+   override — and [true] everywhere the address is knowable. Composed here
+   exactly as c2c_managed_cmd's no-role path composes it. *)
+let test_i58_kickoff_alias_is_authoritative () =
+  let auth ~client ~name ~name_from_auto_gen ~alias_opt =
+    C2c_start.kickoff_alias_is_authoritative ~client ~alias_opt
+      ~requested_name:
+        (C2c_start.codex_requested_name_for_managed_start ~name
+           ~name_from_auto_gen)
+  in
+  (* The bug case: bare `c2c start codex --auto` — auto name, no --alias/-n. *)
+  check bool "codex auto-derive is NOT authoritative (defer to whoami)" false
+    (auth ~client:"codex" ~name:"codex-auto-1234" ~name_from_auto_gen:true
+       ~alias_opt:None);
+  (* codex with a knowable address: explicit --alias, or an explicit -n name. *)
+  check bool "codex --alias is authoritative" true
+    (auth ~client:"codex" ~name:"whatever" ~name_from_auto_gen:true
+       ~alias_opt:(Some "broker"));
+  check bool "codex -n NAME is authoritative" true
+    (auth ~client:"codex" ~name:"spikeq7" ~name_from_auto_gen:false
+       ~alias_opt:None);
+  (* Non-codex clients publish the instance name, so the alias is always known. *)
+  check bool "non-codex auto name is authoritative" true
+    (auth ~client:"claude" ~name:"claude-auto-1" ~name_from_auto_gen:true
+       ~alias_opt:None);
+  check bool "non-codex with -n is authoritative" true
+    (auth ~client:"kimi" ~name:"myinstance" ~name_from_auto_gen:false
+       ~alias_opt:None)
+
 (* Fix 3. The notice fires for a role-derived alias too, where "--alias wins"
    points the operator at a flag they never typed. *)
 let test_i34r_name_notice_names_its_source () =
@@ -4622,6 +4655,8 @@ let () =
             `Quick, test_i34r_alias_flag_outranks_role_alias )
         ; ( "i34r_requested_name_wiring",
             `Quick, test_i34r_requested_name_wiring )
+        ; ( "i58_kickoff_alias_is_authoritative",
+            `Quick, test_i58_kickoff_alias_is_authoritative )
         ; ( "i34r_name_notice_names_its_source",
             `Quick, test_i34r_name_notice_names_its_source )
         ; ( "i34r_managed_name_not_alias_record",
