@@ -104,6 +104,32 @@ the canonical framing.)
   `.collab/runbooks/git-workflow.md` §`just`-recipes. If you edit
   `data/opencode-plugin/c2c.ts`, run `just codegen-opencode-plugin` and
   commit both the TS source and `ocaml/cli/c2c_opencode_plugin_embedded.ml`.
+- **Test results can be wrong in BOTH directions. Four known ways (2026-07-19).**
+  Any of these will make you report a branch green that isn't, or condemn one
+  that is. When a count or a verdict is load-bearing (a review, a merge
+  decision), guard against all four:
+  1. **Stale binary.** `dune exec` can run a previously-built `.exe` and pass.
+     Always `dune build <targets>` explicitly first. Suites that shell out to
+     `c2c.exe` must declare it in `(deps ...)` — several already do; a stanza
+     that forgets races the binary's build on a cold `_build` and fails ~163
+     tests spuriously (#60, fixed for `test_agent_refine`).
+  2. **`@runtest` without `--force` is a false green.** It reruns only
+     *uncached* suites and still exits 0 — seen as 27 suites / 768 tests where
+     the real figure was 137 / 3015. Use `--force` whenever you quote a count.
+  3. **Piping masks the exit code.** `dune ... | tail` reports the pipe's
+     status, not dune's. Write to a file and check `$?` separately, or read
+     `${PIPESTATUS[0]}`. This has already produced a false "0 failures" claim.
+  4. **Quote suites AND tests**, and re-measure the baseline with the same
+     method on both sides — counting methods differ, and three different
+     "baselines" have been quoted for the same tree.
+  Known-flaky: `test_c2c_relay_managed.ml` `"relay ready"` binds a random port;
+  re-run in isolation before blaming a branch. A worktree placed **outside**
+  the repo tree fails ~148 tests environmentally — keep them in `.worktrees/`.
+- **Commit messages: pass them by file, not by `-m`.** Backticks in a shell
+  string trigger command substitution and silently delete the quoted text from
+  the message (observed: "The old arm's `Sys.remove env_file` was
+  UNCONDITIONAL" committed as "The old arm's  was UNCONDITIONAL"). Use
+  `git commit -F <file>`.
 - **`c2c uninstall <component>`** removes what `c2c install` wrote.
   Components: `claude|codex|kimi|opencode|grok|agy|self|git-shim|all`.
   Uses the install manifest with known-path fallback; shared files are
