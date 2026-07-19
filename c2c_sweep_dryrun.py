@@ -43,11 +43,21 @@ def load_registry(root: Path) -> list[dict]:
 
 
 def pid_is_alive(pid: int | None, start_time: int | None) -> bool:
-    """Mirror OCaml `registration_is_alive` semantics.
+    """Approximate the PID arm of OCaml `registration_is_alive`.
 
     None pid -> legacy, treat as alive.
     pid but no /proc/<pid> -> dead.
     pid + start_time and they mismatch -> dead (pid reuse).
+
+    NOT a mirror of `registration_is_alive` (#51). Since #51 the OCaml
+    predicate also decays a pid-less hook auto-registration whose
+    `last_activity_ts` is older than the hook TTL, but only for clients on
+    the `hook_anchor_is_activity_backed` allowlist (codex/claude/agy) — see
+    `Broker.is_expired_hook_auto_registration`. This helper knows nothing
+    about `registered_by` or the anchor, so it over-reports pid-less rows as
+    alive. That is the safe direction for a DRY-RUN sweep preview (it never
+    proposes reaping a row the binary would keep), but do not treat its
+    output as authoritative liveness. Dev-only; the binary is canonical.
     """
     if pid is None:
         return True

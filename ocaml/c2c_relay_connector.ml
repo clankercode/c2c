@@ -711,8 +711,13 @@ let env_truthy name =
   | Some "1" | Some "true" | Some "yes" -> true
   | _ -> false
 
+(* Cosmetic divergence from [Broker.is_any_hook_registration], which requires
+   [n > m] and so rejects the degenerate [registered_by = "-hook"]. Inert —
+   no writer produces that string — but noted so the two are not mistaken for
+   one predicate. Kept as [ends_with] here because this path only needs the
+   "came from a hook" hint, not the broker's liveness classification. *)
 let is_hook_registration = function
-  | Some source -> String.ends_with ~suffix:"-hook" source
+  | Some source -> String.length source > 5 && String.ends_with ~suffix:"-hook" source
   | None -> false
 
 let relay_registration_is_eligible ~broker_root reg =

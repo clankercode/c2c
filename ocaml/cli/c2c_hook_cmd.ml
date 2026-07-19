@@ -11,6 +11,51 @@ let sleep_to_min_runtime start_time =
   let sleep_s = max 0.0 ((min_hook_runtime_ms -. elapsed_ms) /. 1000.0) in
   if sleep_s > 0.0 then Unix.sleepf sleep_s
 
+(* #51: refresh the hook row's activity anchor on every hook fire.
+
+   A hook auto-registration carries [pid = None] and is therefore judged live
+   by its [last_activity_ts] TTL (Broker.is_expired_hook_auto_registration).
+   Nothing on the vanilla hook path stamped that field — only the MCP surface
+   calls [touch_session] — so the anchor stayed pinned at [registered_at] and
+   the TTL measured session AGE rather than session ACTIVITY. That is what
+   makes a TTL safe to apply here at all: hooks fire on UserPromptSubmit /
+   PostToolUse, so a session doing work keeps its anchor fresh and cannot be
+   declared dead while alive, while an abandoned session stops refreshing and
+   decays on schedule.
+
+   Best-effort and never fatal: a hook must never fail its host turn, and a
+   missed touch only costs recency, not correctness. *)
+let touch_hook_activity ~broker ~session_id =
+  try C2c_mcp.Broker.touch_session broker ~session_id with _ -> ()
+
+(* #51 (blocker 2): is this hook fire coming from a MANAGED session?
+
+   A hook must not stamp [registered_by = "<client>-hook"] on a managed
+   session's row. That string is the liveness/decay classifier (a "-hook" row
+   is one that NEVER had a pid, see [Broker.is_any_hook_registration]) and the
+   deregister-on-SessionEnd selector. Mislabelling a managed row therefore
+   both subjects it to a TTL it cannot refresh while idle and makes an
+   ordinary Stop tear it down. Codex has gated this since B136/B168 via
+   [codex_session_is_managed]; agy and grok did not.
+
+   The signal is the launcher's env, exported into the client child before it
+   spawns (`C2c_start.build_env`), so every hook the client fires inherits it.
+   [C2C_MCP_SESSION_ID] is [session_id_env] for both AgyAdapter and the grok
+   adapter; [C2C_MCP_AUTO_REGISTER_ALIAS] is belt-and-braces for the window
+   before the sid is settled. ORed, so any one marker suppresses the hook
+   label — fail toward "treat as managed", because the cost of that error is a
+   ghost row and the cost of the reverse is a live agent losing mail.
+
+   Deliberately NOT reading grok's native [GROK_SESSION_ID]: that is set by
+   vanilla grok too and would mark every grok session managed. *)
+let managed_launcher_marker_present () =
+  let set name =
+    match Sys.getenv_opt name with
+    | Some s -> String.trim s <> ""
+    | None -> false
+  in
+  set "C2C_MCP_SESSION_ID" || set "C2C_MCP_AUTO_REGISTER_ALIAS"
+
 let hook_post_tool_cmd =
   (* Claude PostToolUse hook — CLI fallback for the standalone
      c2c-inbox-hook-ocaml binary (`~/.claude/hooks/c2c-inbox-check.sh` runs
@@ -652,6 +697,7 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       touch_hook_activity ~broker ~session_id;
        (* B137 / B168: is this an app-server-backed managed codex session?
           Detected by the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION
           — present even before the launcher's broker registration lands, so the
@@ -1025,6 +1071,7 @@ let hook_claude_cmd =
                          ~session_id:sid ~alias ~client:(Some "claude"));
                   (sid, Some alias))
        in
+       touch_hook_activity ~broker ~session_id;
        let alias_of sid =
          List.find_map
            (fun (r : C2c_mcp.registration) ->
@@ -1259,7 +1306,16 @@ let hook_grok_cmd =
                                | Some c -> Some c
                                | None ->
                                    payload_string_field payload "workspaceRoot")
-                            ~registered_by:(Some "grok-hook")
+                            (* #51 (blocker 2), pre-emptive: grok has the same
+                               shape as agy — no is_managed gate, and (unlike
+                               claude at the `Option.is_some env_sid` exit) no
+                               bail on a set-but-unregistered env sid. Managed
+                               grok is deferred so this is unreachable today;
+                               gate it now so `c2c start grok` cannot ship a
+                               managed session wearing a hook label. *)
+                            ~registered_by:
+                              (if managed_launcher_marker_present () then None
+                               else Some "grok-hook")
                             ~from_auto_gen ()
                         with e ->
                           (try
@@ -1277,6 +1333,7 @@ let hook_grok_cmd =
                        C2c_cli_helpers.write_session_statefile ~broker_root
                          ~session_id:sid ~alias ~client:(Some "grok"));
                   (sid, Some alias))       in
+       touch_hook_activity ~broker ~session_id;
        (* #22: the identity skill is now identity-agnostic (byte-stable across
           all sessions), so it no longer consumes the resolved alias/session_id.
           The big match above still runs for its registration side effects. *)
@@ -1663,6 +1720,7 @@ let hook_kimi_cmd =
               C2c_cli_helpers.write_session_statefile ~broker_root
                 ~session_id ~alias ~client:(Some "kimi"))
        end;
+       touch_hook_activity ~broker ~session_id;
        (* Resolve live alias after register (or existing registration). *)
        let regs = C2c_mcp.Broker.list_registrations broker in
        let alias =
@@ -1877,7 +1935,20 @@ let hook_agy_cmd =
                        (match payload_string_field payload "cwd" with
                         | Some c -> Some c
                         | None -> payload_string_field payload "workspaceRoot")
-                     ~registered_by:(Some "agy-hook")
+                     (* #51 (blocker 2): `c2c start agy` never calls
+                        [eager_register_managed_alias] (AgyAdapter is absent
+                        from every call site) and its deliver sidecar spawns
+                        without --register, so THIS is the only row a managed
+                        agy session ever gets. Labelling it "agy-hook" made it
+                        pid-less-and-decaying: idle past the TTL — exactly
+                        when its out-of-process agentapi wake still works — it
+                        flipped Dead and sends were refused. It also matched
+                        the Stop/SessionEnd deregister selector below, so an
+                        ordinary turn end tore the managed row down. Mirror
+                        codex: managed rows carry no hook label. *)
+                     ~registered_by:
+                       (if managed_launcher_marker_present () then None
+                        else Some "agy-hook")
                      ~from_auto_gen ()
                  with _ -> ())
                ()
@@ -1891,6 +1962,7 @@ let hook_agy_cmd =
            ()
          end
        end;
+       touch_hook_activity ~broker ~session_id:sid;
 
        if event = "Stop" || event = "SessionEnd" then begin
          let regs = C2c_mcp.Broker.list_registrations broker in

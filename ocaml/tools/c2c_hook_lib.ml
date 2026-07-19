@@ -317,11 +317,43 @@ let resolve_session_id () =
     | Ok sid -> Ok sid
     | Error msg -> Error msg
 
+(* #51 (blocker 1): stamp the registration's activity anchor.
+
+   A claude hook auto-registration carries [pid = None], so
+   [Broker.is_expired_hook_auto_registration] judges it live purely by
+   [last_activity_ts]. `c2c hook claude` only ever runs on SessionStart /
+   SessionEnd (it hard-exits on any other event), so the touch it performs
+   pins the anchor at session start and the TTL would measure session AGE.
+   Claude's REPEATEDLY-firing hooks are PostToolUse and Stop, and they land
+   here — in the shared library, not in the cmdliner subcommand — because
+   `~/.claude/hooks/c2c-inbox-check.sh` runs whichever of the standalone
+   `c2c_inbox_hook.exe` / `c2c_stop_hook.exe` binary or the `c2c hook
+   post-tool` CLI fallback it finds first. Both routes call [run_post_tool]
+   and [drain_all_messages], so anchoring here covers all four entry points;
+   anchoring in the subcommand alone would leave the standalone binaries —
+   the preferred path — silently unanchored.
+
+   [Broker.touch_session] is a no-op when no row matches the session_id, so
+   this never mints or resurrects a registration. Best-effort and never
+   fatal: a hook must not fail its host turn, and a missed touch costs
+   recency, not correctness. *)
+let touch_hook_activity ~broker_root ~session_id =
+  if broker_root <> "" && session_id <> "" then
+    try
+      C2c_mcp.Broker.touch_session
+        (C2c_mcp.Broker.create ~root:broker_root)
+        ~session_id
+    with _ -> ()
+
 (* Drain all messages (repo + global) for the given session_id.
    [push_only] defaults to true (mid-turn semantics); turn-boundary callers
    (Stop hook) pass [push_only:false] to also deliver deferrable messages.
    Returns (repo_broker_opt, messages, alias). *)
 let drain_all_messages ?(push_only = true) ~session_id ~broker_root () =
+  (* #51: the Stop-hook route (both the standalone binary and `c2c hook
+     stop`) enters here. Touch BEFORE the drain, so an exception raised by
+     the drain cannot cost the anchor. *)
+  touch_hook_activity ~broker_root ~session_id;
   let repo_broker, repo_messages =
     match broker_root with
     | "" -> (None, [])
@@ -495,6 +527,11 @@ let run_post_tool_nudge ~session_id ~broker_root =
 (* Mode dispatch. Returns (output, alias); alias is "" on the nudge path
    (it never touches the registry). *)
 let run_post_tool ~session_id ~broker_root =
+  (* #51: the PostToolUse route. Anchor here rather than inside
+     [run_post_tool_full] so the C2C_POST_TOOL_NUDGE_ONLY=1 opt-out — which
+     never drains — still refreshes the anchor; delivery mode must not decide
+     whether a live session is reachable. *)
+  touch_hook_activity ~broker_root ~session_id;
   if post_tool_nudge_only () then
     (run_post_tool_nudge ~session_id ~broker_root, "")
   else run_post_tool_full ~session_id ~broker_root
