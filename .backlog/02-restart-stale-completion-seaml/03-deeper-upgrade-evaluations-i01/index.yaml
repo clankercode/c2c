@@ -4,13 +4,13 @@ epics:
     - complexity: high
       depends_on: []
       description: ""
-      estimate_hours: 7
+      estimate_hours: 9
       id: E1
       locked: false
       name: Seamless-delivery evaluations & monitor upgrade
       path: 01-seamless-delivery-evaluations
       status: pending
-estimate_hours: 7
+estimate_hours: 9
 id: P2.M3
 locked: false
 name: 'Deeper-upgrade evaluations (I011 spikes: go/no-go)'

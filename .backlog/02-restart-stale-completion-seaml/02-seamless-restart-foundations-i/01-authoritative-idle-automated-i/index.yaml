@@ -1,6 +1,6 @@
 complexity: high
 depends_on: []
-estimate_hours: 11
+estimate_hours: 12
 id: P2.M2.E1
 locked: false
 name: Authoritative idle + automated in-place client restart

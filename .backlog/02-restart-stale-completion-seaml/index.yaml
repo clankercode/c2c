@@ -1,13 +1,13 @@
 complexity: medium
 depends_on: []
-estimate_hours: 25
+estimate_hours: 27
 id: P2
 locked: false
 milestones:
     - complexity: medium
       depends_on: []
       description: ""
-      estimate_hours: 7
+      estimate_hours: 6
       id: M1
       locked: false
       name: Complete & prove restart-stale (I010)
@@ -16,7 +16,7 @@ milestones:
     - complexity: high
       depends_on: []
       description: ""
-      estimate_hours: 11
+      estimate_hours: 12
       id: M2
       locked: false
       name: 'Seamless restart foundations (I011): idle-gated auto-restart'
@@ -25,7 +25,7 @@ milestones:
     - complexity: high
       depends_on: []
       description: ""
-      estimate_hours: 7
+      estimate_hours: 9
       id: M3
       locked: false
       name: 'Deeper-upgrade evaluations (I011 spikes: go/no-go)'

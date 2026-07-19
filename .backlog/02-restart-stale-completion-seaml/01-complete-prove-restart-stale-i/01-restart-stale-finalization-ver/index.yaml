@@ -1,6 +1,6 @@
 complexity: medium
 depends_on: []
-estimate_hours: 7
+estimate_hours: 6
 id: P2.M1.E1
 locked: false
 name: restart-stale finalization (verify, test, document)

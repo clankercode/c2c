@@ -4,13 +4,13 @@ epics:
     - complexity: high
       depends_on: []
       description: ""
-      estimate_hours: 11
+      estimate_hours: 12
       id: E1
       locked: false
       name: Authoritative idle + automated in-place client restart
       path: 01-authoritative-idle-automated-i
       status: pending
-estimate_hours: 11
+estimate_hours: 12
 id: P2.M2
 locked: false
 name: 'Seamless restart foundations (I011): idle-gated auto-restart'
