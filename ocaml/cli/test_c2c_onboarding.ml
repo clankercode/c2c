@@ -419,8 +419,13 @@ let test_b241_rooms_join_uses_statefile_like_whoami () =
   in
   check int "whoami exits 0 with zero session env" 0 rc;
   check bool "whoami resolves init alias" true (string_contains who_out alias);
+  (* #26: the sole-registration fallback is now a loud WARN (was a quiet note:),
+     still exit 0. Keep asserting the "init fallback" wording for behaviour
+     equivalence, but require it be escalated to WARN. *)
   check bool "whoami notes init fallback" true
     (string_contains who_err "init fallback");
+  check bool "whoami escalates sole fallback to WARN" true
+    (string_contains who_err "WARN");
   (* peek-inbox also uses the shared path (may be empty) *)
   let rc, _, peek_err =
     run_c2c_status_split ~home:tmp ~broker:tmp ["peek-inbox"]
@@ -479,6 +484,74 @@ let test_stale_session_statefile_ignored () =
   check bool "whoami fails when statefile is stale" true (rc <> 0);
   check bool "stale session id never adopted" false
     (string_contains out "stale-session-xyz")
+
+(* #26 (subsumes #21): when the default-session.json fallback is ambiguous —
+   the statefile session is registered but at least one OTHER registration
+   exists — bare whoami must FAIL CLOSED and list BOTH candidate aliases,
+   never silently resolving as the statefile's (or the other agent's) alias. *)
+let test_ambiguous_statefile_fails_closed () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-idn-amb-%d" (Unix.getpid ()) in
+  (* init writes default-session.json pointing at this alias's session. *)
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--alias"; alias; "--room"; ""]
+  in
+  check int "init exits 0" 0 rc;
+  let statefile = tmp // "broker" // "default-session.json" in
+  check bool "default-session.json present" true (file_exists statefile);
+  (* Register a SECOND, different session/alias in the same broker. Now the
+     statefile session is no longer the sole registration. *)
+  let other_alias = Printf.sprintf "test-idn-other-%d" (Unix.getpid ()) in
+  let other_sid = Printf.sprintf "amb-other-session-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["register"; "--alias"; other_alias; "--session-id"; other_sid]
+  in
+  check int "register second peer exits 0" 0 rc;
+  (* Bare whoami (no session env): must fail closed, listing both candidates. *)
+  let rc, who_out, who_err =
+    run_c2c_status_split ~home:tmp ~broker:tmp ["whoami"]
+  in
+  let combined = who_out ^ who_err in
+  check bool "ambiguous whoami exits non-zero" true (rc <> 0);
+  check bool "ambiguous whoami lists statefile candidate alias" true
+    (string_contains combined alias);
+  check bool "ambiguous whoami lists the other candidate alias" true
+    (string_contains combined other_alias);
+  check bool "ambiguous whoami points at C2C_MCP_SESSION_ID fix" true
+    (string_contains combined "C2C_MCP_SESSION_ID");
+  (* Never present a resolved identity line for either alias. *)
+  check bool "ambiguous whoami never resolves statefile alias" false
+    (string_contains who_out ("alias:     " ^ alias));
+  check bool "ambiguous whoami never resolves other alias" false
+    (string_contains who_out ("alias:     " ^ other_alias))
+
+(* #26 escape hatch: C2C_ALLOW_DEFAULT_SESSION=1 restores the OLD silent
+   statefile-wins-if-registered behaviour even under ambiguity. *)
+let test_ambiguous_statefile_opt_in_restores_old () =
+  with_temp_env @@ fun tmp ->
+  let alias = Printf.sprintf "test-idn-optin-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--alias"; alias; "--room"; ""]
+  in
+  check int "init exits 0" 0 rc;
+  let other_alias = Printf.sprintf "test-idn-optin-other-%d" (Unix.getpid ()) in
+  let other_sid = Printf.sprintf "optin-other-session-%d" (Unix.getpid ()) in
+  let rc, _, _ =
+    run_c2c_status_split ~home:tmp ~broker:tmp
+      ["register"; "--alias"; other_alias; "--session-id"; other_sid]
+  in
+  check int "register second peer exits 0" 0 rc;
+  let rc, who_out, _ =
+    run_c2c_status_split
+      ~env:["C2C_ALLOW_DEFAULT_SESSION", "1"]
+      ~home:tmp ~broker:tmp ["whoami"]
+  in
+  check int "opt-in whoami exits 0 (old silent behaviour)" 0 rc;
+  check bool "opt-in whoami resolves statefile alias" true
+    (string_contains who_out alias)
 
 (* B172: managed `c2c new codex` registers under a launcher session_id, but
    in-session shell tools typically export only CODEX_THREAD_ID. whoami must
@@ -1033,6 +1106,8 @@ let () =
         ; test_case "B241 rooms join shares statefile fallback with whoami" `Quick
             test_b241_rooms_join_uses_statefile_like_whoami
         ; test_case "stale statefile (unregistered session) is ignored" `Quick test_stale_session_statefile_ignored
+        ; test_case "#26 ambiguous statefile fails closed with candidate list" `Quick test_ambiguous_statefile_fails_closed
+        ; test_case "#26 C2C_ALLOW_DEFAULT_SESSION restores old silent behaviour" `Quick test_ambiguous_statefile_opt_in_restores_old
         ; test_case "B172 whoami maps CODEX_THREAD_ID → managed banner alias" `Quick
             test_whoami_maps_codex_thread_to_managed_alias
         ; test_case "B172 whoami sole codex-app-server before thread map" `Quick

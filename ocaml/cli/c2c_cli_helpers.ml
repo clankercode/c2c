@@ -175,6 +175,95 @@ let session_id_from_statefile () =
         None
       end
 
+(* #26 (subsumes #21): the persisted default-session.json fallback is the CLI's
+   last-resort identity. The old gate returned it *silently* whenever it was
+   still registered — but a registered-but-background/dead session (e.g. a Grok
+   registration with pid=None) then won silently and WRONG, misattributing DMs
+   to a stale alias. Resolve it under a "fail-closed-on-ambiguity,
+   sole-corroborated-success" gate instead:
+     - [`Stale]           statefile absent or its session is not in the registry
+                          (unchanged: resolves to None).
+     - [`Sole sid]        the statefile session is the ONLY registration (or all
+                          rows share its sid) — the legitimate single-session
+                          human-CLI case; caller returns it but escalates the
+                          note to a loud WARN.
+     - [`Ambiguous others] at least one OTHER registration exists besides the
+                          statefile's — the dangerous multi-session case; caller
+                          returns None and fails closed with a candidate list.
+   Behaviour is NOT changed for the [`Sole]/[`Stale] cases; only the previously
+   silent multi-session case now fails closed. The escape hatch
+   [C2C_ALLOW_DEFAULT_SESSION] restores the old silent-if-registered behaviour. *)
+let resolve_statefile_session_gated ~broker_root :
+    [ `Sole of string | `Ambiguous of C2c_mcp.registration list | `Stale ] =
+  match read_session_statefile ~broker_root with
+  | None -> `Stale
+  | Some sid ->
+      let regs =
+        try
+          let broker = C2c_mcp.Broker.create ~root:broker_root in
+          C2c_mcp.Broker.list_registrations broker
+        with _ -> []
+      in
+      let sid_registered =
+        List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs
+      in
+      if not sid_registered then `Stale
+      else begin
+        let others =
+          List.filter
+            (fun (r : C2c_mcp.registration) -> r.session_id <> sid)
+            regs
+        in
+        match others with [] -> `Sole sid | _ -> `Ambiguous others
+      end
+
+let allow_default_session_env () =
+  match Sys.getenv_opt "C2C_ALLOW_DEFAULT_SESSION" with
+  | Some v ->
+      (match String.lowercase_ascii (String.trim v) with
+       | "1" | "true" | "yes" -> true
+       | _ -> false)
+  | None -> false
+
+(* Enumerate broker registrations as identity candidates: (alias, session_id,
+   client, registered_by, liveness). Used to fail closed with an actionable
+   list when identity resolution is ambiguous or absent; a later doctor
+   detector reuses this same shape. Best-effort — [] on any broker error. *)
+let candidate_registrations ~broker_root :
+    (string * string * string * string * string) list =
+  try
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    List.map
+      (fun (r : C2c_mcp.registration) ->
+        let client = Option.value r.client_type ~default:"?" in
+        let registered_by = Option.value r.registered_by ~default:"?" in
+        let liveness =
+          match C2c_mcp.Broker.registration_liveness_state r with
+          | C2c_mcp.Broker.Alive -> "alive"
+          | C2c_mcp.Broker.Dead -> "dead"
+          | C2c_mcp.Broker.Unknown -> "unknown"
+        in
+        (r.alias, r.session_id, client, registered_by, liveness))
+      (C2c_mcp.Broker.list_registrations broker)
+  with _ -> []
+
+let render_candidate_registration (alias, sid, client, registered_by, liveness) =
+  Printf.sprintf "%s  session_id=%s  client=%s  registered_by=%s  (%s)" alias sid
+    client registered_by liveness
+
+(* Fix-step lines that list the broker's registrations as identity candidates,
+   with the concrete env-var fix. Empty when the broker has no registrations
+   (nothing to disambiguate against). *)
+let candidate_identity_fix_steps ~broker_root =
+  match candidate_registrations ~broker_root with
+  | [] -> []
+  | cands ->
+      ("candidate identities registered in this broker:"
+       :: List.map
+            (fun c -> "  " ^ render_candidate_registration c)
+            cands)
+      @ [ "export C2C_MCP_SESSION_ID=<one of the above>   # pick YOUR session" ]
+
 (* B172: Codex app-server shell tools often export only CODEX_THREAD_ID (the
    live thread UUID). Managed identity markers stay frontend-scoped on purpose
    (B137 nested-theft guard), so bare `c2c whoami`/`send` would otherwise look
@@ -263,13 +352,48 @@ let env_session_id () =
         Printf.eprintf "[DEBUG env_session_id] returning Some=%s\n%!" resolved;
       Some resolved
   | None ->
-      (match session_id_from_statefile () with
-       | Some s ->
-           if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning statefile fallback=%s\n%!" s;
-           Some s
-       | None ->
-           if debug_enabled then Printf.eprintf "[DEBUG env_session_id] returning None\n%!";
-           None)
+      (* #26: last-resort default-session.json fallback. Escape hatch restores
+         the OLD silent-if-registered behaviour; otherwise fail closed on
+         ambiguity and only corroborated-sole succeeds (loudly). *)
+      if allow_default_session_env () then
+        (match session_id_from_statefile () with
+         | Some s ->
+             if debug_enabled then
+               Printf.eprintf
+                 "[DEBUG env_session_id] C2C_ALLOW_DEFAULT_SESSION=1 statefile fallback=%s\n%!"
+                 s;
+             Some s
+         | None ->
+             if debug_enabled then
+               Printf.eprintf "[DEBUG env_session_id] returning None (opt-in, stale)\n%!";
+             None)
+      else begin
+        let broker_root = C2c_utils.resolve_broker_root () in
+        match resolve_statefile_session_gated ~broker_root with
+        | `Sole sid ->
+            if not !session_fallback_note_emitted then begin
+              session_fallback_note_emitted := true;
+              Printf.eprintf
+                "WARN: session resolved from %s (c2c init fallback; sole registration). \
+                 Set C2C_MCP_SESSION_ID or a client-native session key to make this explicit.\n%!"
+                (session_statefile_path ~broker_root)
+            end;
+            if debug_enabled then
+              Printf.eprintf "[DEBUG env_session_id] returning sole statefile fallback=%s\n%!" sid;
+            Some sid
+        | `Ambiguous _ ->
+            (* Do NOT silently adopt the statefile: another registration exists
+               and picking one would misattribute authorship. Return None; the
+               downstream identity-error path lists the candidates. *)
+            if debug_enabled then
+              Printf.eprintf
+                "[DEBUG env_session_id] ambiguous statefile fallback — failing closed to None\n%!";
+            None
+        | `Stale ->
+            if debug_enabled then
+              Printf.eprintf "[DEBUG env_session_id] returning None (stale statefile)\n%!";
+            None
+      end
 
 let env_auto_alias () =
   match Sys.getenv_opt "C2C_MCP_AUTO_REGISTER_ALIAS" with
@@ -568,10 +692,13 @@ let resolve_alias ?(override : string option = None) ?(json = false) broker =
                 "coordinator"
               ) else begin
                 let intended = intended_client_kind () in
+                let broker_root = resolve_broker_root () in
                 identity_error ~json
                   ~reason:"cannot determine your alias (no session id / registration)."
                   ~candidate:None
-                  ~steps:(default_identity_fix_steps ~intended)
+                  ~steps:
+                    (default_identity_fix_steps ~intended
+                     @ candidate_identity_fix_steps ~broker_root)
                   ()
               end)
 

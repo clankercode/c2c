@@ -27,18 +27,24 @@ let whoami_cmd =
   let output_mode = if json then Json else Human in
   match env_session_id () with
   | None ->
+      (* #26: when the default-session.json fallback is ambiguous (another
+         registration exists), env_session_id fails closed to None rather than
+         silently adopting a stale alias — list the broker's registrations as
+         candidates so the operator can pick their own session explicitly. *)
+      let broker_root = resolve_broker_root () in
       identity_error ~json
         ~reason:"no session ID could be resolved."
         ~candidate:None
         ~steps:
-          [ "c2c init   # registers this context and persists a fallback session when no env is set"
-          ; "Claude Code: CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID"
-          ; "Codex: CODEX_THREAD_ID / `c2c install codex` / managed `c2c new codex`"
-          ; "Grok: GROK_SESSION_ID (hooks) or GROK_AGENT + active_sessions / `c2c install grok`"
-          ; "Agy: ANTIGRAVITY_CONVERSATION_ID / `c2c install agy`"
-          ; "Advanced: export C2C_MCP_SESSION_ID=<your-session>"
-          ; "c2c whoami   # re-check before send"
-          ]
+          ([ "c2c init   # registers this context and persists a fallback session when no env is set"
+           ; "Claude Code: CLAUDE_CODE_SESSION_ID / CLAUDE_SESSION_ID"
+           ; "Codex: CODEX_THREAD_ID / `c2c install codex` / managed `c2c new codex`"
+           ; "Grok: GROK_SESSION_ID (hooks) or GROK_AGENT + active_sessions / `c2c install grok`"
+           ; "Agy: ANTIGRAVITY_CONVERSATION_ID / `c2c install agy`"
+           ; "Advanced: export C2C_MCP_SESSION_ID=<your-session>"
+           ; "c2c whoami   # re-check before send"
+           ]
+           @ candidate_identity_fix_steps ~broker_root)
         ()
   | Some sid ->
       let regs = C2c_mcp.Broker.list_registrations broker in
