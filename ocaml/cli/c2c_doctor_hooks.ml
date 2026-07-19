@@ -1063,6 +1063,57 @@ let pp_compact r =
 
 (* --- CLI ------------------------------------------------------------------ *)
 
+(* --- --fix: restore dangling c2c-owned hook scripts ----------------------- *)
+
+(* Known c2c-owned Claude hook scripts mapped to their canonical content — the
+   same sources `c2c install claude` writes. When a profile-share setup shares
+   ~/.claude*/hooks -> ~/.claude-shared/hooks and one profile's `c2c uninstall`
+   removes the shared script, sibling profiles keep a dangling settings.json
+   reference (#19); `--fix` rewrites the script from these constants. *)
+let c2c_hook_script_content basename =
+  match basename with
+  | "c2c-inbox-check.sh" -> Some C2c_claude_hook_scripts.claude_hook_script
+  | "c2c-stop-deliver.sh" -> Some C2c_claude_hook_scripts.claude_stop_hook_script
+  | "c2c-session-hook.sh" -> Some C2c_claude_hook_scripts.claude_session_hook_script
+  | _ -> None
+
+let restore_hook_script path content =
+  try
+    let dir = Filename.dirname path in
+    (try C2c_utils.mkdir_p dir with _ -> ());
+    let tmp = Printf.sprintf "%s.tmp.%d" path (Unix.getpid ()) in
+    let oc = open_out_bin tmp in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc content);
+    Unix.chmod tmp 0o755;
+    Unix.rename tmp path;
+    Ok ()
+  with e -> Error (Printexc.to_string e)
+
+(* Restore every dangling c2c-owned hook script, deduped by path (the same
+   shared script is typically referenced by several profiles). Returns
+   (restored, unknown, failed). Never raises. *)
+let fix_dangling (r : result) =
+  let seen = Hashtbl.create 16 in
+  let restored = ref [] and unknown = ref [] and failed = ref [] in
+  List.iter
+    (fun (dir : dir_result) ->
+      List.iter
+        (fun (d : dangling) ->
+          let path = d.command_path in
+          if not (Hashtbl.mem seen path) then begin
+            Hashtbl.add seen path ();
+            match c2c_hook_script_content (Filename.basename path) with
+            | None -> unknown := path :: !unknown
+            | Some content -> (
+                match restore_hook_script path content with
+                | Ok () -> restored := path :: !restored
+                | Error msg -> failed := (path, msg) :: !failed)
+          end)
+        dir.dangling)
+    r.dirs;
+  (List.rev !restored, List.rev !unknown, List.rev !failed)
+
 let c2c_doctor_hooks_cmd =
   let json =
     Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"Output machine-readable JSON.")
@@ -1071,9 +1122,34 @@ let c2c_doctor_hooks_cmd =
     Cmdliner.Arg.(value & flag & info [ "compact" ]
       ~doc:"Single-line summary suitable for 'c2c doctor' rollup.")
   in
+  let fix =
+    Cmdliner.Arg.(value & flag & info [ "fix" ]
+      ~doc:"Restore dangling c2c-owned Claude hook scripts \
+            (c2c-inbox-check.sh, c2c-stop-deliver.sh, c2c-session-hook.sh) to \
+            the paths referenced by settings.json, rewriting them from the same \
+            source `c2c install claude` uses. Settings.json is not modified. \
+            Ignored with --json.")
+  in
   let cmd =
     let+ json = json
-    and+ compact = compact in
+    and+ compact = compact
+    and+ fix = fix in
+    (if fix && not json then begin
+       let r0 = check () in
+       let restored, unknown, failed = fix_dangling r0 in
+       List.iter (Printf.printf "restored hook script: %s\n") restored;
+       List.iter
+         (Printf.printf
+            "cannot auto-restore (not a c2c-owned hook script): %s\n")
+         unknown;
+       List.iter
+         (fun (p, m) -> Printf.printf "FAILED to restore %s: %s\n" p m)
+         failed;
+       if restored = [] && unknown = [] && failed = [] then
+         print_endline "no dangling c2c hook scripts to restore";
+       print_newline ();
+       flush stdout
+     end);
     let r = check () in
     let delivery = codex_delivery_report () in
     if json then
