@@ -128,9 +128,12 @@ gets `429`-ish:
   "required": { "difficulty": <D>, "epoch": <e>, "server_nonce": <n>,
                 "ctx": "c2c/v1/pow", "ttl_s": <s> } }
 ```
-Client mints PoW from the payload and retries. (Mirrors how the relay already
-returns structured `error_code` + payload for `alias_conflict`, nonce reuse,
-etc., so the client surface is consistent.)
+Client mints PoW from the payload and retries. Note the client's `requirement`
+does not parse `ttl_s` and ignores it: at the bounded retry budget the whole
+mint+retry sequence costs single-digit milliseconds, so a challenge cannot
+expire underneath it. Revisit if the retry ever grows a wall-clock component.
+(Mirrors how the relay already returns structured `error_code` + payload for
+`alias_conflict`, nonce reuse, etc., so the client surface is consistent.)
 
 **Capability discovery** — advertise support in `/health`
 (e.g. `"pow": {"enabled": true, "scheme": "sha256-leading-zeros-v1"}`) so older
@@ -156,9 +159,11 @@ clients/relays degrade gracefully and we can stage rollout.
    pick straw values, then observe real `relay.c2c.im` traffic before hardening.
 5. **Clock / epoch model.** `server_epoch` rotation cadence vs challenge `ttl`
    vs the existing nonce TTLs — reuse the nonce-window machinery where possible.
-6. **Client UX.** The OCaml `c2c` client now mints PoW and retries once on
-   `pow_required` transparently. It still needs proactive precompute from the
-   advertisement header if we want agents to avoid the initial challenge failure.
+6. **Client UX.** The OCaml `c2c` client now mints PoW and retries on
+   `pow_required` transparently, bounded at 3 minted attempts and
+   short-circuiting when the relay repeats an identical challenge (#11). It
+   still needs proactive precompute from the advertisement header if we want
+   agents to avoid the initial challenge failure.
 
 ## 6. Suggested phasing
 

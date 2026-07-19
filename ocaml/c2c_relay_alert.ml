@@ -208,9 +208,11 @@ let pow_retry_failed_emissions state ~observed ~sender =
       | None -> ""
     in
     let body = format_body Err (Printf.sprintf
-      "Proof-of-work retry failed%s — the relay still required PoW after a \
-       minted attempt. Affected messages remain queued and will retry; if \
-       this persists the relay may be under heavy load."
+      "Proof-of-work retry failed%s — the relay still required PoW after \
+       every minted attempt in the client's bounded retry budget (it \
+       re-mints against each fresh challenge, then stops rather than spin). \
+       Affected messages remain queued and will retry; if this persists the \
+       relay may be under heavy load."
       where)
     in
     let target = match sender with Some s -> Dm s | None -> Broadcast in

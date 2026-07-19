@@ -87,9 +87,43 @@ let body_with_minted_pow ~route ~actor_id body requirement =
         with_pow_fields body ~pow_nonce ~pow_epoch:requirement.epoch
           ~pow_server_nonce:requirement.server_nonce
 
-let retry_still_required_error relay_response =
+(* #11: the relay's difficulty is load-derived and moves while a request is in
+   flight (a live relay was observed stepping 0 -> 8 -> 12 -> 8). A single
+   minted retry loses that race: the proof is already stale on arrival, and we
+   used to give up while HOLDING the corrected challenge the rejection carried.
+   [post_with_retry] now re-reads the requirement from each rejection and mints
+   again, bounded by [max_minted_attempts].
+
+   Three, because each further attempt absorbs one more difficulty change
+   landing between challenge and arrival; two consecutive changes inside one
+   exchange is already well past anything observed, and an unsatisfiable or
+   hostile relay must terminate rather than spin. Worst case is 1 + 3 requests.
+
+   No sleep between attempts: the mint IS the backoff, and it costs
+   2^difficulty — a relay that wants us to slow down raises difficulty and
+   gets that for free, scaled to its own load signal. Adding wall-clock delay
+   on top would only penalise the legitimate sender the relay just told how to
+   comply. The cap needs no wall-clock component either: measured mint cost is
+   2.5ms at [Pow_policy.d_max] = 12 (the protocol ceiling), so three attempts
+   cost ~7.5ms; a failed mint exits immediately with pow_mint_failed rather
+   than consuming an attempt, so [Pow.max_mint_iterations] exhaustion is still
+   paid at most once, exactly as before. *)
+let max_minted_attempts = 3
+
+(* Re-minting against a challenge IDENTICAL to the one we just satisfied is
+   provably futile: [Pow.mint] is deterministic in the challenge string, so it
+   would produce the same nonce and earn the same rejection. Stopping there
+   keeps a relay that simply repeats itself at ONE minted retry (no extra
+   requests, no extra CPU) and means an adversary can only make us mint again
+   by issuing genuinely fresh work — still capped by [max_minted_attempts]. *)
+let same_requirement a b =
+  a.difficulty = b.difficulty && a.epoch = b.epoch
+  && a.server_nonce = b.server_nonce && a.ctx = b.ctx
+
+let retry_still_required_error ~minted relay_response =
   client_error ~relay_response "pow_retry_failed"
-    "relay still required PoW after one minted retry"
+    (Printf.sprintf "relay still required PoW after %d minted %s" minted
+       (if minted = 1 then "retry" else "retries"))
 
 (* B010: when a request succeeds only after we minted PoW, annotate the
    response with the difficulty we had to satisfy. The connector reads
@@ -103,19 +137,34 @@ let annotate_minted_difficulty response ~difficulty =
   | other -> other
 
 let post_with_retry ~post ~route ~actor_id body =
-  post body >>= fun response ->
-  match requirement_of_response response with
-  | Error msg ->
-      Lwt.return (client_error "pow_bad_required" msg)
-  | Ok None -> Lwt.return response
-  | Ok (Some requirement) ->
-      match body_with_minted_pow ~route ~actor_id body requirement with
-      | Error error_json -> Lwt.return error_json
-      | Ok retry_body ->
-          post retry_body >>= fun retry_response ->
-          if is_pow_required retry_response then
-            Lwt.return (retry_still_required_error retry_response)
-          else
+  (* [minted] counts proofs already sent; [last] is the requirement the most
+     recent proof satisfied — it supplies both the futility comparison and the
+     difficulty a succeeded-after-mint response is annotated with (B010), so
+     the connector's alert still names the difficulty that actually applied. *)
+  let rec handle ~minted ~last response =
+    match requirement_of_response response with
+    | Error msg -> Lwt.return (client_error "pow_bad_required" msg)
+    | Ok None -> (
+        match last with
+        | None -> Lwt.return response
+        | Some requirement ->
             Lwt.return
-              (annotate_minted_difficulty retry_response
-                 ~difficulty:requirement.difficulty)
+              (annotate_minted_difficulty response
+                 ~difficulty:requirement.difficulty))
+    | Ok (Some requirement) ->
+        let futile =
+          match last with
+          | Some previous -> same_requirement previous requirement
+          | None -> false
+        in
+        if minted >= max_minted_attempts || futile then
+          Lwt.return (retry_still_required_error ~minted response)
+        else (
+          match body_with_minted_pow ~route ~actor_id body requirement with
+          | Error error_json -> Lwt.return error_json
+          | Ok retry_body ->
+              post retry_body >>= fun retry_response ->
+              handle ~minted:(minted + 1) ~last:(Some requirement) retry_response
+          )
+  in
+  post body >>= handle ~minted:0 ~last:None
