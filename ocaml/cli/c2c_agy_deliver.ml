@@ -39,6 +39,43 @@ let write_agy_env session_id ~ls_address ~conversation_id =
   try Yojson.Safe.to_file path json
   with _ -> ()
 
+(* #66: `agy agentapi send-message` normally returns in well under a second, but
+   a hung child must not block the caller. Since #61 this drain runs on the Stop
+   hook, so an unbounded [Unix.waitpid] would wedge the agent at its turn
+   boundary — materially worse than a mid-turn stall, since that is exactly the
+   point control would otherwise hand back and the session go idle. Poll the
+   child with WNOHANG to a deadline, then SIGTERM (escalating to SIGKILL) and
+   reap it, so we neither hang nor leak a zombie. House idiom: the bounded waits
+   in [c2c_kimi_notifier]. *)
+let agentapi_send_timeout_s = 15.0
+
+let wait_child_bounded ~(timeout : float) (pid : int) : bool =
+  let deadline = Unix.gettimeofday () +. timeout in
+  (* Timed out: signal the child and reap it so nothing is left behind. *)
+  let kill_and_reap () : bool =
+    (try Unix.kill pid Sys.sigterm with _ -> ());
+    let kdeadline = Unix.gettimeofday () +. 2.0 in
+    let rec reap () =
+      match (try Unix.waitpid [ Unix.WNOHANG ] pid with _ -> (pid, Unix.WEXITED 0)) with
+      | 0, _ when Unix.gettimeofday () < kdeadline -> Unix.sleepf 0.05; reap ()
+      | 0, _ ->
+          (try Unix.kill pid Sys.sigkill with _ -> ());
+          (try ignore (Unix.waitpid [] pid) with _ -> ())
+      | _ -> ()
+    in
+    reap ();
+    false
+  in
+  let rec wait () =
+    match (try Unix.waitpid [ Unix.WNOHANG ] pid with _ -> (pid, Unix.WEXITED 127)) with
+    | 0, _ ->
+        if Unix.gettimeofday () >= deadline then kill_and_reap ()
+        else (Unix.sleepf 0.05; wait ())
+    | _, Unix.WEXITED 0 -> true
+    | _ -> false
+  in
+  wait ()
+
 let run_agentapi_send ~(ls_address : string) ~(conversation_id : string) ~(content : string) : bool =
   let command = "agy" in
   let argv = [| "agy"; "agentapi"; "send-message"; "--title=c2c inbound"; conversation_id; content |] in
@@ -56,9 +93,7 @@ let run_agentapi_send ~(ls_address : string) ~(conversation_id : string) ~(conte
     (fun () ->
       try
         let pid = Unix.create_process_env command argv env Unix.stdin devnull devnull in
-        match Unix.waitpid [] pid with
-        | _, Unix.WEXITED 0 -> true
-        | _ -> false
+        wait_child_bounded ~timeout:agentapi_send_timeout_s pid
       with _ -> false)
 
 let pid_alive pid =
@@ -77,6 +112,39 @@ let drain_global_messages ~session_id =
       let broker = C2c_mcp.Broker.create ~root in
       C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-watch-agy-global" broker ~session_id
     else []
+
+(* #66: injection has already succeeded, so the payload is in front of the agent.
+   These drains remove the delivered mail from the inbox; if a drain RAISES, the
+   messages stay and the NEXT Stop re-injects them — a turn-boundary
+   double-delivery that repeats every time the agent tries to settle. The old
+   path let that exception propagate into the hook's outer [try _ -> ()], which
+   swallowed it with no trace. Retry a few times and, if it still fails, record a
+   broker.log event so a repeating re-injection is diagnosable rather than
+   mysterious. Never raises. *)
+let drain_after_inject ~(broker_root : string) ~(label : string)
+    (f : unit -> 'a) : unit =
+  let rec attempt n =
+    match (try `Ok (ignore (f ())) with e -> `Err e) with
+    | `Ok () -> ()
+    | `Err e ->
+        if n > 1 then (Unix.sleepf 0.1; attempt (n - 1))
+        else begin
+          (try
+             Broker_log.append_json ~broker_root
+               ~json:
+                 (`Assoc
+                    [ ("event", `String "agy_drain_after_inject_failed")
+                    ; ("ts", `Float (Unix.gettimeofday ()))
+                    ; ("label", `String label)
+                    ; ("detail", `String (Printexc.to_string e)) ])
+           with _ -> ());
+          Printf.printf
+            "[c2c-agy-deliver] WARNING: post-inject drain (%s) failed; mail may \
+             re-inject next turn: %s\n%!"
+            label (Printexc.to_string e)
+        end
+  in
+  attempt 3
 
 let deliver_loop
     ~(broker_root : string)
@@ -150,9 +218,12 @@ let deliver_loop
                if run_agentapi_send ~ls_address:env.ls_address ~conversation_id:env.conversation_id ~content:final_payload then begin
                  Printf.printf "[c2c-agy-deliver] injection succeeded; draining broker inboxes\n%!";
                  flush stdout;
-                 let _ = C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-watch-agy" broker ~session_id in
-                 let _ = drain_global_messages ~session_id in
-                 ()
+                 drain_after_inject ~broker_root ~label:"repo"
+                   (fun () ->
+                     C2c_mcp.Broker.drain_inbox ~drained_by:"deliver-watch-agy"
+                       broker ~session_id);
+                 drain_after_inject ~broker_root ~label:"global"
+                   (fun () -> drain_global_messages ~session_id)
                end else begin
                  Printf.printf "[c2c-agy-deliver] injection failed; retrying next iteration\n%!";
                  flush stdout
