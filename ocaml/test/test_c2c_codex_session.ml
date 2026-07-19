@@ -817,8 +817,8 @@ let test_generic_start_namespaced_name_reaches_app_server_alias_b221 () =
     | Error msg -> Alcotest.fail msg
   in
   let alias_override =
-    C2c_start.codex_alias_override_for_namespaced_name ~existing:None
-      ~namespaced:parsed.C2c_start.c2c_name
+    C2c_start.codex_alias_override_for_managed_start ~alias_opt:None
+      ~requested_name:parsed.C2c_start.c2c_name
   in
   Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
       let clock = ref 0.0 in
@@ -842,6 +842,98 @@ let test_generic_start_namespaced_name_reaches_app_server_alias_b221 () =
       | None -> Alcotest.fail "namespaced alias mapping should be published"
       | Some mapping ->
           Alcotest.(check string) "published namespaced alias" alias mapping.alias)
+
+(* #34 review, fix 1. [resolve_identity] guards only saved codex mappings and
+   managed-instance configs, so it is blind to a PLAIN broker registry row — a
+   vanilla Claude Code / hook-codex / relay peer, i.e. the common case. Before
+   this fix `c2c start codex -n <live-peer-alias>` sailed all the way through:
+   [C2c_mcp.Broker.register] did refuse (no hijack, delivery integrity was never
+   at risk), but only AFTER write_config, the outer pidfile, the app-server and
+   the TUI spawn — and uncaught, so the launcher died leaving an orphaned codex
+   frontend with no broker row, no delivery loop, and a poisoned instance dir.
+
+   Asserted here through a fork because the refusal is a hard [exit 1]: the child
+   must exit nonzero having spawned NOTHING and written NOTHING. *)
+let test_i34r_live_registry_alias_refused_before_launch () =
+  let alias = Printf.sprintf "i34r-live-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+  let tmp = Filename.temp_file "c2c-i34r-broker" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o700;
+  let spawn_marker = Filename.concat tmp "server-was-spawned" in
+  Fun.protect
+    ~finally:(fun () ->
+      cleanup_alias alias;
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote tmp))))
+    (fun () ->
+      (* A live plain peer already owns [alias]: this test process, which is
+         alive and signalable but is NOT the forked child's pid (self-owned rows
+         are deliberately not conflicts, so the holder must be someone else). *)
+      let holder_pid = Unix.getpid () in
+      Yojson.Safe.to_file (Filename.concat tmp "registry.json")
+        (`List
+           [ `Assoc
+               [ ("session_id", `String "some-other-session")
+               ; ("alias", `String alias)
+               ; ("pid", `Int holder_pid) ] ]);
+      flush stdout;
+      flush stderr;
+      match Unix.fork () with
+      | 0 ->
+          (* Child: the launcher. Any spawn is a failure, recorded on disk so
+             the parent can see it even though the child exits. *)
+          Unix.putenv "C2C_MCP_BROKER_ROOT" tmp;
+          let clock = ref 0.0 in
+          let bk =
+            scripted ~clock
+              ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+                close_out (open_out spawn_marker);
+                Error "must not be reached")
+              ~spawn_frontend:(fun ~argv:_ ~env:_ -> Error "must not be reached")
+              ()
+          in
+          let rc =
+            try
+              S.run ~mode:S.Start ~alias_override:alias ~yolo:false
+                ~extra_args:[] ~thread_id:(unique_sid ()) ~backend:bk
+                ~fallback:(fun ~extra_args:_ () -> 99) ()
+            with _ -> 98
+          in
+          (* Reached only if the guard did NOT refuse. *)
+          Stdlib.exit (if rc = 0 then 0 else rc)
+      | child ->
+          let _, status = Unix.waitpid [] child in
+          (match status with
+           | Unix.WEXITED 0 ->
+               Alcotest.fail
+                 "launcher accepted an alias held by a LIVE plain registry peer"
+           | Unix.WEXITED 1 -> ()
+           | Unix.WEXITED n ->
+               Alcotest.failf "expected exit 1 from the pre-launch guard, got %d" n
+           | _ -> Alcotest.fail "launcher child died abnormally");
+          Alcotest.(check bool) "app-server was never spawned" false
+            (Sys.file_exists spawn_marker);
+          Alcotest.(check bool) "no managed instance config was written" false
+            (Sys.file_exists (C2c_start.config_path alias));
+          Alcotest.(check bool) "no outer pidfile was written" false
+            (Sys.file_exists (C2c_start.outer_pid_path alias)))
+
+(* The managed-peer case was ALREADY clean via [config_exists] and must stay
+   that way: it errors out of resolve_identity with its own message, before the
+   registry guard and before any launch side effect. *)
+let test_i34r_managed_peer_path_not_regressed () =
+  let alias = Printf.sprintf "i34r-managed-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+  match
+    S.resolve_identity ~mode:S.Start ~alias_override:(Some alias)
+      ~thread_id:None
+      ~lookup:(fun _ -> None)
+      ~config_exists:(fun a -> a = alias)
+  with
+  | Ok _ ->
+      Alcotest.fail "a managed-instance-owned alias must still be refused"
+  | Error msg ->
+      Alcotest.(check bool) "still the non-app-server managed-instance message"
+        true
+        (string_mem "non-app-server managed instance" msg)
 
 let test_glue_new_mode_default_engages_app_server () =
   (* AC (B131): plain `c2c new codex` (mode=New, NO --app-server flag) must select
@@ -1652,7 +1744,11 @@ let () =
         ; test_case "unsupported codex auto-falls-back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish
         ; test_case "force-hooks env uses fallback" `Quick test_force_hooks_env_uses_fallback
         ; test_case "diagnostic followup upgrade only for version issues (B175)"
-            `Quick test_diagnostic_followup_upgrade_only_when_version_issue ] )
+            `Quick test_diagnostic_followup_upgrade_only_when_version_issue
+        ; test_case "#34r live plain registry alias refused before any launch"
+            `Quick test_i34r_live_registry_alias_refused_before_launch
+        ; test_case "#34r managed-peer refusal path not regressed"
+            `Quick test_i34r_managed_peer_path_not_regressed ] )
     ; ( "mcp-preflight-B224",
         [ test_case "parse bare command" `Quick test_preflight_parse_bare
         ; test_case "parse opam exec args, stop at sub-table" `Quick test_preflight_parse_opam

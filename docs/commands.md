@@ -1084,12 +1084,24 @@ Four command forms share one implementation path for managed Codex sessions:
 
 Key semantics:
 
-- **Generated alias.** With no `--alias`, a stable, human-readable alias is
-  derived deterministically from the Codex session id. Two new threads get
+- **Requested name wins; otherwise a generated alias.** `c2c start codex
+  -n NAME` publishes `NAME` as the broker alias, matching every other managed
+  client (#34). With no `-n` and no `--alias`, a stable, human-readable alias
+  is derived deterministically from the Codex session id. Two new threads get
   distinct aliases; resume/restart retains the same alias. `--alias` is an
-  **optional** override of the display/routing identity — it never replaces the
-  authoritative Codex thread id, and a conflict with a differently-owned saved
-  alias is rejected.
+  **optional** override of the display/routing identity — it outranks `-n` and
+  a role's `c2c_alias` (the mismatch is reported on stderr and recorded in
+  `broker.log` as `managed_name_not_alias`, naming which source won), it never
+  replaces the authoritative Codex thread id, and a conflict with a
+  differently-owned saved alias is rejected. With `--agent ROLE` and no
+  `--alias`, the role's `c2c_alias` supplies the broker alias.
+- **Naming an existing instance resumes it.** `c2c start codex` resumes the
+  saved session when the identity you name already has one — whether you name
+  it with `--alias` or with `-n NAME`. Because `-n` now *is* the alias (#34),
+  the instance handle and the broker alias agree, so `c2c stop NAME` /
+  `c2c restart NAME` address the session you started. An identity that is
+  already **alive** is refused up front (`FATAL: alias '…' is already alive`)
+  before anything is launched — no half-started Codex frontend.
 - **Namespaced name after `--`.** `--c2c:name NAME` is equivalent to the
   pre-separator alias/name selector for `c2c codex` and `c2c new codex`, but
   can be written after an alias-provided trailing `--`. It is removed before

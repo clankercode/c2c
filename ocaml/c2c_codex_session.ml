@@ -1379,6 +1379,19 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     | Ok r -> (r.r_name, r.r_session_id, r.r_alias, r.r_thread_id)
     | Error msg -> Printf.eprintf "%serror:%s %s\n%!" (red ()) (reset ()) msg; exit 1
   in
+  (* #34 review (fix 1): [resolve_identity] only guards a saved codex mapping
+     ([lookup]) and a managed-instance config ([config_exists]). It is blind to a
+     plain broker registry row — i.e. every MCP-registered vanilla Claude Code /
+     hook-codex / relay peer, which is the common case. Without this precheck,
+     `c2c start codex -n <live-peer-alias>` sails through and the refusal only
+     lands inside [C2c_mcp.Broker.register] far below, AFTER write_config, the
+     outer pidfile, the app-server and the TUI spawn — leaving an orphaned codex
+     frontend with no broker row and a poisoned instance dir. Refuse here, before
+     any side effect, while the terminal is still ours. *)
+  (match (try Some (C2c_start.broker_root ()) with _ -> None) with
+   | Some root when String.trim root <> "" ->
+       C2c_start.check_registry_alias_alive ~broker_root:root ~name:alias
+   | _ -> ());
   (* B227: a thread id survives in mappings/configs/restart requests even when
      Codex never persisted that thread (a zero-turn session writes no rollout).
      Resuming it hard-fails the frontend ("No saved session found") and strands
@@ -1519,9 +1532,36 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          on the launcher session_id).  Do this immediately after start returns
          so first-turn CLI whoami/send resolve the same identity the banner
          prints.  The delivery loop refreshes the same row while attached. *)
-      register_managed_app_server_identity
-        ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
-        ~pid:(Unix.getpid ());
+      (* #34 review (fix 1, belt-and-braces): the pre-launch precheck above
+         closes the realistic race, but [Broker.register] can still refuse
+         (someone claimed the alias during startup) and it raises. Uncaught,
+         that killed the launcher AFTER the TUI already owned the terminal —
+         an orphaned frontend with no broker row and no delivery loop. Never
+         let it escape; and because the TUI paints over the terminal, stderr
+         alone is not loud (#40's lesson) — record it durably in broker.log. *)
+      (try
+         register_managed_app_server_identity
+           ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
+           ~pid:(Unix.getpid ())
+       with e ->
+         let detail = Printexc.to_string e in
+         Printf.eprintf
+           "%swarning:%s c2c could not publish broker alias '%s': %s\n\
+            \  This session will NOT receive c2c mail. Exit it and retry with a \
+            free alias (`c2c dev instances` / `c2c list`).\n%!"
+           (red ()) (reset ()) alias detail;
+         (try
+            Broker_log.append_json
+              ~broker_root:(try C2c_start.broker_root () with _ -> "")
+              ~json:(`Assoc
+                 [ ("event", `String "managed_registration_failed")
+                 ; ("ts", `Float (Unix.gettimeofday ()))
+                 ; ("client", `String "codex-app-server")
+                 ; ("name", `String name)
+                 ; ("session_id", `String session_id)
+                 ; ("alias", `String alias)
+                 ; ("detail", `String detail) ])
+          with _ -> ()));
       (* B176: the pre-TUI handoff line (with alias + endpoint) is emitted inside
          start() via lifecycle_log immediately before spawn_frontend — do not
          reprint a second banner here (avoids duplicate/interleaved TUI noise). *)

@@ -2961,13 +2961,14 @@ let remove_pidfile (path : string) =
     registry, print a human-readable FATAL message and exit 1.  Called before
     the flock so the common-case error says "alias foo is alive" rather than
     the more opaque "lock held". *)
-let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
+let registry_alive_conflict ~(broker_root : string) ~(name : string)
+    : (string * int) option =
   let reg_path = broker_root // "registry.json" in
-  if not (Sys.file_exists reg_path) then ()
+  if not (Sys.file_exists reg_path) then None
   else begin
     match (try Some (Yojson.Safe.from_file reg_path) with _ -> None) with
-    | None -> ()
     | Some (`List regs) ->
+        let self = Unix.getpid () in
         let alive_entry =
           List.find_opt (fun r ->
             match r with
@@ -2975,22 +2976,33 @@ let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
                 let sid   = (match List.assoc_opt "session_id" fields with Some (`String s) -> s | _ -> "") in
                 let alias = (match List.assoc_opt "alias"      fields with Some (`String a) -> a | _ -> "") in
                 (sid = name || alias = name) &&
-                (match List.assoc_opt "pid" fields with Some (`Int p) -> pid_alive p | _ -> false)
+                (match List.assoc_opt "pid" fields with
+                 (* A row owned by THIS process is never a conflict: the
+                    app-server launcher restarts in place via [execve], which
+                    preserves the pid, so self-matching would refuse a legal
+                    restart. *)
+                 | Some (`Int p) -> p <> self && pid_alive p
+                 | _ -> false)
             | _ -> false) regs
         in
         (match alive_entry with
-         | None -> ()
          | Some (`Assoc fields) ->
              let alias = (match List.assoc_opt "alias" fields with Some (`String a) -> a | _ -> name) in
-             let pid_s = (match List.assoc_opt "pid" fields with Some (`Int p) -> string_of_int p | _ -> "unknown") in
-             Printf.eprintf
-               "FATAL: alias '%s' is already alive in registry (pid %s).\n\
-                \  Stop it first:  c2c stop %s\n%!"
-               alias pid_s name;
-             exit 1
-         | _ -> ())
-    | _ -> ()
+             let pid = (match List.assoc_opt "pid" fields with Some (`Int p) -> p | _ -> 0) in
+             Some (alias, pid)
+         | _ -> None)
+    | _ -> None
   end
+
+let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
+  match registry_alive_conflict ~broker_root ~name with
+  | None -> ()
+  | Some (alias, pid) ->
+      Printf.eprintf
+        "FATAL: alias '%s' is already alive in registry (pid %d).\n\
+         \  Stop it first:  c2c stop %s\n%!"
+        alias pid name;
+      exit 1
 
 (** Acquire an exclusive POSIX advisory lock on `outer_pid_path name`.
     Writes our PID into the file.  Returns the open fd — caller MUST keep it
@@ -4420,16 +4432,69 @@ let merge_namespaced_name ~(existing : string option)
 
 (* Generic [c2c start codex] has two launch paths: the normal app-server path
    receives [alias_override] directly, while the legacy managed-client path
-   derives its alias from the instance [name].  A post-separator B221 name
+   derives its alias from the instance [name].  The requested instance name
    therefore has to fill an otherwise-absent app-server override as well as
    the instance name.  An explicit/role-derived alias remains authoritative,
    preserving the existing ability to give the instance and broker alias
-   different names. *)
-let codex_alias_override_for_namespaced_name ~(existing : string option)
-    ~(namespaced : string option) : string option =
-  match existing with
-  | Some _ -> existing
-  | None -> namespaced
+   different names.
+
+   #34: this used to be fed only the post-separator B221 [--c2c:name], so
+   `c2c start codex -n NAME` reached the app-server path with no override and
+   [C2c_codex_session.derive_alias] minted `codex-<word>-<word>-<hex>` instead
+   — the requested name vanished without a word. [requested_name] is now the
+   already-merged instance name (`-n` and `--c2c:name` share that slot, and
+   conflicting values are rejected upstream by [merge_namespaced_name]), which
+   is exactly what every non-codex client uses as its alias.
+
+   [requested_name] must stay [None] for an auto-picked name: leaving the
+   override absent keeps [derive_alias]'s collision probing and its stable
+   derivation from the session id, so a restart resumes the same identity. *)
+let codex_alias_override_for_managed_start ~(alias_opt : string option)
+    ~(requested_name : string option) : string option =
+  match alias_opt with
+  | Some _ -> alias_opt
+  | None -> requested_name
+
+(* #34: [--alias] outranking an explicit [-n] is legitimate — it is how an
+   instance and its broker alias are deliberately given different names — but
+   it must not be silent, because the alias is the address peers send to and
+   `-n` is the value the operator just typed. [None] when there is nothing to
+   say. Pure so the wording is unit-testable. *)
+let managed_alias_override_for_role ~(alias_opt : string option)
+    ~(role_alias : string option) : string option =
+  match alias_opt with Some _ -> alias_opt | None -> role_alias
+
+let codex_requested_name_for_managed_start ~(name : string)
+    ~(name_from_auto_gen : bool) : string option =
+  if name_from_auto_gen then None else Some name
+
+type managed_alias_source = Alias_flag | Role_alias
+
+let codex_managed_start_name_notice ?(source : managed_alias_source = Alias_flag)
+    ~(name : string) ~(alias : string) () : string option =
+  if String.lowercase_ascii name = String.lowercase_ascii alias then None
+  else
+    let winner =
+      match source with
+      | Alias_flag -> "--alias wins"
+      | Role_alias -> "the role's c2c_alias wins"
+    in
+    Some
+      (Printf.sprintf
+         "note: c2c start codex: -n '%s' is NOT the broker alias — %s. Peers \
+          must address '%s' (`c2c send %s ...`), and the managed instance is \
+          '%s' (`c2c stop %s` / `c2c restart %s`).\n"
+         name winner alias alias alias alias alias)
+
+let managed_name_not_alias_record ~(name : string) ~(alias : string)
+    ~(detail : string) ~(ts : float) : Yojson.Safe.t =
+  `Assoc
+    [ ("event", `String "managed_name_not_alias")
+    ; ("ts", `Float ts)
+    ; ("client", `String "codex")
+    ; ("requested_name", `String name)
+    ; ("alias", `String alias)
+    ; ("detail", `String (String.trim detail)) ]
 
 (* Parse the command + argv for `c2c start pty` from [extra_args].
 
