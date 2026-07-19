@@ -23,6 +23,14 @@ Where c2c is going, not only what works today. Prefer work that advances these
 even when the immediate task is narrower.
 
 - **Delivery surfaces**
+  - **The wake requirement (north star):** mail must **wake the agent** — in
+    all cases, *without the agent having to check its inbox*. `poll_inbox` /
+    `c2c poll-inbox` is therefore a fallback, never a delivery guarantee: it
+    needs the model to choose to look. A mechanism counts as a **wake** only
+    if an external event pushes the message into the agent's attention. A
+    hook that fires on agent *activity* (PostToolUse, Stop) is not a wake
+    either — it presupposes the agent was already doing something. Current
+    per-client status and the machine-wide delivery-service design: #35.
   - MCP: auto-delivery of inbound messages into the agent's transcript
     plus tool-path sending. Real auto-delivery needs an experimental MCP
     extension; on binaries where that is gated behind an approval prompt,
@@ -32,7 +40,10 @@ even when the immediate task is narrower.
     broker. Partially shipped; details live in
     `.collab/runbooks/agent-wake-setup.md`.
   - Deliver-watch: inotify-based inbox watcher (`c2c-deliver-inbox`) for
-    clients that need file-change delivery without polling.
+    clients that need file-change delivery without polling. **Not a wake
+    mechanism** — `poll_once_kimi` calls the same `run_once`/REST POST; inotify
+    only changes how the external process learns mail arrived. Never present
+    it as a delivery guarantee.
   - CLI: always-available fallback usable by any agent with or without
     MCP. Must keep working across Claude, Codex, OpenCode, Kimi, Grok, and agy.
   - CLI self-configuration: `c2c` should turn on automatic delivery on any
@@ -143,14 +154,35 @@ the canonical framing.)
 
 ### Delivery notes (short; runbooks hold the detail)
 
+**Wake status per client** (a wake = external push, no model decision; see the
+wake requirement above and #35). Do not over-claim these in docs or to users:
+
+| Client | Wakes an idle agent? |
+|---|---|
+| OpenCode | **GUARANTEED** (in-process plugin; idle event + interval) |
+| Codex (managed/app-server) | **GUARANTEED for local mail** (inject + gated auto-turn); remote/`@host`/`#` fails closed to inject-only |
+| Kimi, agy | **CONDITIONAL** — needs an out-of-process poster alive (REST POST / agentapi) |
+| Codex (vanilla hooks), Claude Code, Grok | **NONE** — activity-triggered only; CONDITIONAL only if the agent armed `c2c monitor` |
+
+Claude Code and Grok cannot be guaranteed from inside c2c: neither exposes a
+local endpoint accepting a synthetic user turn (Kimi has REST, Codex the
+app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
+
 - **Codex**: managed path prefers app-server transport (authenticated loopback
-  WebSocket; hooks as fallback). See
-  `.collab/runbooks/agent-wake-setup.md` and related research under
-  `.collab/research/` for auto-turn / draft-preservation receipts.
+  WebSocket; hooks as fallback). Mid-turn `inject_items` is **visible at the
+  model's next reasoning step** — measured 5-15s on a 91s multi-step turn,
+  bounded by the in-flight tool call, with the batched follow-up turn at the
+  turn boundary as backstop (#25). Do not add `turn/steer`: it reads at the
+  same boundary and would only upgrade peer DATA to user-role, breaking B098.
+  See `.collab/runbooks/agent-wake-setup.md` and `.collab/research/`.
 - **Kimi**: REST prompt-injection delivery — the notifier discovers the
   session id from `~/.kimi-code/session_index.jsonl` and POSTs to the local
   Kimi server's `/api/v1/sessions/{id}/prompts`; `c2c monitor` is the
-  fallback. Legacy notification-store runbook:
+  fallback. The per-alias notifier is a fork+setsid daemon: it is **alias**-keyed
+  (pidfile/sidfile) while inboxes are **session-id**-keyed, so it records its
+  binding in `<alias>.sid` and re-keys when a real session id appears (#9).
+  `c2c doctor hooks --rearm` re-arms DEAF sessions (inbox > 0, no notifier).
+  Legacy notification-store runbook:
   `.collab/runbooks/kimi-notification-store-delivery.md` (deprecated).
 - **OpenCode**: SIGUSR1 to the *inner* OpenCode pid (not the outer wrapper)
   can recover a stuck MCP session. Sibling outer-loop SIGUSR1 can cascade
