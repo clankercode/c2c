@@ -443,6 +443,69 @@ let codex_appserver_nudge ~broker_root ~regs ~session_id ~managed_sid_for_payloa
           else "")
   with _ -> ""
 
+(* --- #52: `codex exec` one-shot runs must not mint permanent rows ----------
+
+   `codex exec` fires SessionStart and never SessionEnd (measured, codex-cli
+   0.144.6), so the auto-register arm below used to mint a `codex-hook` row
+   per invocation that nothing could ever retire: ~42 immortal rows per 35
+   minutes of ordinary use on the reporting host, median inter-arrival 2.0s.
+
+   #51's activity TTL cannot reach this. That TTL retires a pid-less hook row
+   whose anchor is older than 24h, and an exec row is FRESH — freshness is
+   precisely what the TTL trusts. Steady-state resident count is rate x TTL
+   however the TTL is tuned, so shortening it does not help and would
+   reintroduce the false-dead risk #51's review rejected.
+
+   Finding the signal: the SessionStart payload is byte-identical between the
+   two modes — same key set, same `source = "startup"` — and the hook's
+   environment carries no codex-set marker either. Both were captured live.
+   The ONLY discriminator is the hook's parent: codex spawns hook commands
+   directly (no shell in between), so /proc/<getppid>/cmdline IS the codex
+   invocation, and its argv[1] is the subcommand.
+
+   Deliberately the PARENT only, never an ancestor walk. An interactive codex
+   started from inside a `codex exec` run would inherit an `exec` ancestor and
+   be misread as one-shot, which is the one direction that costs mail. *)
+let codex_parent_cmdline () =
+  (* Fixture gate: a file of NUL-separated argv standing in for the real
+     /proc entry, so the hook tests need no live codex. *)
+  let path =
+    match Sys.getenv_opt "C2C_CODEX_PARENT_CMDLINE_PATH" with
+    | Some p when String.trim p <> "" -> String.trim p
+    | _ -> Printf.sprintf "/proc/%d/cmdline" (Unix.getppid ())
+  in
+  try
+    let ic = open_in_bin path in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        let buf = Buffer.create 256 in
+        (try
+           while true do
+             Buffer.add_channel buf ic 256
+           done
+         with End_of_file -> ());
+        Buffer.contents buf
+        |> String.split_on_char '\x00'
+        |> List.filter (fun s -> s <> ""))
+  with _ -> []
+
+(* True only for an unambiguous `codex exec ...`. Every other answer — a
+   shell wrapper between codex and the hook, a platform without /proc, a
+   parent that exited first, or codex's own `--flag ... exec` spelling where
+   the subcommand is not argv[1] — is FALSE, i.e. register as before. That
+   asymmetry is the point: a spurious ghost row is recoverable and is what
+   #51's TTL already handles, whereas skipping a live interactive session's
+   registration destroys its mail. Matching argv[1] exactly (rather than
+   "exec appears somewhere in argv") also keeps an interactive session whose
+   initial prompt happens to be the word "exec" out of scope. *)
+let parent_is_codex_exec () =
+  match codex_parent_cmdline () with
+  | argv0 :: "exec" :: _ ->
+      String.split_on_char '/' argv0
+      |> List.exists (fun comp -> String.lowercase_ascii comp = "codex")
+  | _ -> false
+
 let hook_codex_cmd =
   let open Cmdliner.Term in
   const (fun () ->
@@ -628,6 +691,26 @@ let hook_codex_cmd =
                   let managed_sid = managed_sid_for_payload in
                   let sid = Option.value managed_sid ~default:payload_sid in
                   let is_managed = Option.is_some managed_sid in
+                  (* #52: a vanilla `codex exec` thread is a one-shot batch
+                     run — it lives seconds, no peer can address the fresh
+                     random alias it would be given, and it has no wake path.
+                     Registering it is pure cost, and because exec never fires
+                     SessionEnd the cost is permanent. Skip the MINT.
+
+                     Scoped to this arm on purpose. Everything above has
+                     already resolved (step1 payload row, step2 managed
+                     thread, app-server marker, managed env), so an exec run
+                     that inherits a real identity keeps it, and no existing
+                     row is ever touched — this only declines to CREATE one.
+                     Skipping is therefore not the irreversible operation
+                     deregistration would be.
+
+                     Nothing depends on the row existing: an exec run that
+                     actually uses c2c auto-registers on demand through
+                     [C2c_send_cmd]'s own sticky path, so the identity appears
+                     if and only if it is used, and later hook fires in that
+                     same run then resolve it via step1 and drain normally. *)
+                  if (not is_managed) && parent_is_codex_exec () then exit 0;
                   (* B188: prefer sticky alias for this session_id from another
                      broker fingerprint before minting / env alias. Managed
                      sessions with an explicit install/env alias still fall
