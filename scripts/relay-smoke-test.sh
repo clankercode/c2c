@@ -288,25 +288,53 @@ echo ""
 # and ship undetected to prod. See
 # .collab/research/2026-04-29-smoke-coverage-audit-cairn.md proposal D.
 echo "--- 10. send_all broadcast loopback ---"
-SA_PROBE="smoke send_all probe $(date +%s)"
-# Broadcast is non-idempotent: never retry after an ambiguous timeout. Each
-# request without an explicit message_id creates a new broadcast.
-sa_out=$("$C2C_BIN" relay dm send-all "$SA_PROBE" --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
-echo "$sa_out"
-if echo "$sa_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
-  green "send_all ack ok"
-  # Poll inbox; loopback semantic depends on relay behavior. Accept
-  # either (a) message landed (self-loopback included) as hard PASS, or
-  # (b) message absent (sender excluded) as info — both are defensible
-  # spec choices. The ack itself is the regression-catcher.
-  sa_poll=$("$C2C_BIN" relay dm poll --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
-  if echo "$sa_poll" | grep -qF "$SA_PROBE"; then
-    green "send_all delivered to self-loopback"
-  else
-    info "send_all not in own inbox (relay may exclude sender — non-fatal)"
-  fi
+# send_all fans out to EVERY alias registered at the relay, and a probe it
+# delivers into another peer's inbox CANNOT be recalled by the sender — there
+# is no deregister/retract path, so the probe persists indefinitely (#54). This
+# harness is documented for an ISOLATED relay (one alias: our own), where the
+# broadcast only self-loopbacks and pollutes nothing. Guard against accidental
+# use on a shared local relay: re-list peers and, if anyone other than us is
+# registered, SKIP the broadcast rather than write residue into real inboxes.
+# Fail closed — if isolation cannot be confirmed, do not broadcast. Fan-out
+# coverage (cairn gap D) still runs in full on a genuinely isolated relay.
+iso_list=$(C2C_MCP_AUTO_REGISTER_ALIAS="$ALIAS" "$C2C_BIN" relay list --relay-url "$RELAY" 2>&1) || true
+others=$(SMOKE_ALIAS="$ALIAS" python3 -c "import json,sys,os
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print('unknown'); sys.exit(0)
+# Only a genuine {ok:true, peers:[...]} response proves isolation. An error
+# object (ok:false, no peers) must NOT read as 'nobody else here' — fail closed.
+if not (isinstance(d, dict) and d.get('ok') is True and isinstance(d.get('peers'), list)):
+    print('unknown'); sys.exit(0)
+me = os.environ.get('SMOKE_ALIAS','').lower()
+others = [p for p in d['peers']
+          if isinstance(p, dict) and str(p.get('alias','')).lower() != me]
+print(len(others))" <<<"$iso_list" 2>/dev/null || echo unknown)
+if [ "$others" != "0" ]; then
+  info "relay not isolated ($others other peer(s) registered) — skipping send_all"
+  info "broadcast probes cannot be recalled; run against a dedicated isolated relay to exercise 1:N fan-out (#54)"
 else
-  red "send_all failed (broadcast fan-out regressed?)"
+  SA_PROBE="smoke send_all probe $(date +%s)"
+  # Broadcast is non-idempotent: never retry after an ambiguous timeout. Each
+  # request without an explicit message_id creates a new broadcast.
+  sa_out=$("$C2C_BIN" relay dm send-all "$SA_PROBE" --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+  echo "$sa_out"
+  if echo "$sa_out" | python3 -c "import json,sys; d=json.load(sys.stdin); exit(0 if d.get('ok') else 1)" 2>/dev/null; then
+    green "send_all ack ok"
+    # Poll inbox; loopback semantic depends on relay behavior. Accept
+    # either (a) message landed (self-loopback included) as hard PASS, or
+    # (b) message absent (sender excluded) as info — both are defensible
+    # spec choices. The ack itself is the regression-catcher.
+    sa_poll=$("$C2C_BIN" relay dm poll --alias "$ALIAS" --relay-url "$RELAY" 2>&1) || true
+    if echo "$sa_poll" | grep -qF "$SA_PROBE"; then
+      green "send_all delivered to self-loopback"
+    else
+      info "send_all not in own inbox (relay may exclude sender — non-fatal)"
+    fi
+  else
+    red "send_all failed (broadcast fan-out regressed?)"
+  fi
 fi
 echo ""
 
