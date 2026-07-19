@@ -10,6 +10,47 @@ module S = C2c_codex_session
 module PB = C2c_mcp_helpers_post_broker
 module B = C2c_mcp.Broker
 
+(* #31 (nit 2): the config.json repair inside persist_discovered_thread is a
+   SIDE repair, not part of the binding verdict. If it raises (ENOSPC / EACCES /
+   read-only fs) the binding is still correct, so the exception must NOT escape:
+   the deliver loop's fail-closed latch would otherwise mark a correctly-bound
+   unit degraded for its whole life. Forced here by making the instance dir
+   read-only so open_out on config.json fails. *)
+let test_i31_config_repair_failure_does_not_break_binding () =
+  let name = Printf.sprintf "i31-repair-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+  let dir = C2c_start.instance_dir name in
+  C2c_io.mkdir_p dir;
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.chmod dir 0o755 with _ -> ());
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      S.write_mapping ~instance_dir:dir
+        { S.session_id = "sid"; alias = name; thread_id = Some "thread-exact";
+          created_at = 1.; updated_at = 2. };
+      C2c_start.write_config
+        { C2c_start.name; client = "codex"; session_id = "sid";
+          resume_session_id = "sid"; codex_resume_target = None; alias = name;
+          extra_args = []; created_at = 1.; last_launch_at = None;
+          last_exit_code = None; last_exit_reason = None; broker_root = "";
+          auto_join_rooms = ""; binary_override = None; model_override = None;
+          agent_name = None };
+      (* Read+execute only: config.json can be READ (so the repair is attempted)
+         but not rewritten. Skip if the fs does not enforce it (e.g. running as
+         root) rather than asserting something untrue. *)
+      Unix.chmod dir 0o500;
+      let writable =
+        try
+          let oc = open_out (Filename.concat dir "probe.tmp") in
+          close_out oc; true
+        with _ -> false
+      in
+      if not writable then
+        Alcotest.(check bool)
+          "binding still reported bound despite a failing config repair" true
+          (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root:""
+             ~thread_id:"thread-exact"))
+
 (* ------------------------------------------------------------------ *)
 (* Deterministic session-ID-derived alias                              *)
 (* ------------------------------------------------------------------ *)
@@ -586,6 +627,62 @@ let test_online_attached_degraded_fail_closed () =
   with_tmp_dir (fun dir ->
       Alcotest.(check bool) "no persisted record → fail-closed degraded" true
         (S.online_attached_delivery_degraded ~instance_dir:dir ()))
+
+let test_i31_degraded_reason_roundtrip () =
+  (* #31: the persisted record carries WHY it is degraded, so doctor/health can
+     pick the followable remediation. *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-A";
+      (* refused binding: degraded, reason=binding-refused, and thread_loaded
+         stays TRUE (a thread IS loaded; only the binding was refused). *)
+      S.write_delivery_degraded ~reason:S.Dr_binding_refused ~instance_dir:dir
+        ~unit_id:"u-A" true;
+      Alcotest.(check bool) "still degraded" true
+        (S.online_attached_delivery_degraded ~instance_dir:dir ());
+      Alcotest.(check bool) "reason surfaces as binding-refused" true
+        (S.online_attached_delivery_binding_refused ~instance_dir:dir ());
+      (match C2c_io.read_json_opt (S.delivery_status_path ~instance_dir:dir) with
+       | Some (`Assoc a) ->
+           Alcotest.(check (option bool)) "thread_loaded decoupled from degraded"
+             (Some true)
+             (match List.assoc_opt "thread_loaded" a with
+              | Some (`Bool b) -> Some b | _ -> None)
+       | _ -> Alcotest.fail "delivery-status record unreadable");
+      (* no-thread: same degraded verdict, but NOT attributed to a refusal. *)
+      S.write_delivery_degraded ~reason:S.Dr_no_thread ~instance_dir:dir
+        ~unit_id:"u-A" true;
+      Alcotest.(check bool) "no-thread is not reported as a refused binding" false
+        (S.online_attached_delivery_binding_refused ~instance_dir:dir ());
+      (* healthy: no reason at all. *)
+      S.write_delivery_degraded ~instance_dir:dir ~unit_id:"u-A" false;
+      Alcotest.(check bool) "healthy record has no refusal reason" false
+        (S.online_attached_delivery_binding_refused ~instance_dir:dir ());
+      Alcotest.(check (option (module struct
+          type t = S.degraded_reason
+          let equal = ( = )
+          let pp fmt r = Format.pp_print_string fmt (S.degraded_reason_to_string r)
+        end : Alcotest.TESTABLE with type t = S.degraded_reason)))
+        "healthy record reports no reason" None
+        (S.delivery_degraded_reason_of_instance ~instance_dir:dir ~unit_id:"u-A" ()));
+  (* A record stamped for a DIFFERENT unit is never trusted for its reason
+     either — no specific-but-wrong remediation from a stale record. *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-NEW";
+      S.write_delivery_degraded ~reason:S.Dr_binding_refused ~instance_dir:dir
+        ~unit_id:"u-OLD" true;
+      Alcotest.(check bool) "stale-unit refusal reason is not trusted" false
+        (S.online_attached_delivery_binding_refused ~instance_dir:dir ()));
+  (* Backward compatibility: a degraded record written by a pre-#31 binary has
+     no [reason] field and must read as the historical no-thread meaning. *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-A";
+      let path = S.delivery_status_path ~instance_dir:dir in
+      let oc = open_out path in
+      output_string oc
+        {|{"unit_id":"u-A","degraded":true,"thread_loaded":false,"updated_at":1.0}|};
+      close_out oc;
+      Alcotest.(check bool) "legacy degraded record is not a refusal" false
+        (S.online_attached_delivery_binding_refused ~instance_dir:dir ()))
 
 (* #27: a persisted degraded=false record whose HEARTBEAT [updated_at] is stale
    (the deliver loop was SIGKILLed while the frontend TUI child survived) must be
@@ -1531,7 +1628,9 @@ let () =
     ; ( "delivery-degraded",
         [ test_case "persist + read + flip + stale roundtrip" `Quick test_delivery_degraded_roundtrip
         ; test_case "online-attached decision fail-closed (true/false/absent/stale)" `Quick test_online_attached_degraded_fail_closed
-        ; test_case "online-attached stale heartbeat downgrades to degraded (#27)" `Quick test_online_attached_degraded_stale_heartbeat ] )
+        ; test_case "online-attached stale heartbeat downgrades to degraded (#27)" `Quick test_online_attached_degraded_stale_heartbeat
+        ; test_case "degraded reason roundtrip: binding-refused vs no-thread (#31)" `Quick test_i31_degraded_reason_roundtrip
+        ; test_case "failing config repair does not break the binding verdict (#31)" `Quick test_i31_config_repair_failure_does_not_break_binding ] )
     ; ( "codex-thread-split-brain-24",
         [ test_case "resolver prefers alive regardless of readdir order" `Quick
             test_resolver_prefers_alive_regardless_of_order

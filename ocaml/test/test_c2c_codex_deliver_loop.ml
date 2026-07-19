@@ -39,7 +39,8 @@ type harness = {
   mutable deregisters : int;
   mutable passes : int;
   mutable global_pass_events : Ing.health list;  (* on_global_pass calls *)
-  mutable degraded_events : bool list;       (* on_degraded calls, in order *)
+  (* on_degraded calls, in order: (degraded, binding_refused) *)
+  mutable degraded_events : (bool * bool) list;
   clock : float ref;
 }
 
@@ -49,7 +50,7 @@ let mk_harness ?(steps = []) () =
 
 let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     ?(broker_root = temp_broker_root ()) ?(global_broker_root = None)
-    ?(is_dnd = fun () -> false) ?(on_thread_discovered = fun _ -> ())
+    ?(is_dnd = fun () -> false) ?(on_thread_discovered = fun _ -> true)
     ?(restart_requested = fun ~thread_id:_ -> None)
     (h : harness) : DL.deps =
   { broker_root;
@@ -70,7 +71,9 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     register = (fun () -> h.registers <- h.registers + 1);
     deregister = (fun () -> h.deregisters <- h.deregisters + 1);
     on_pass = (fun _ -> h.passes <- h.passes + 1);
-    on_degraded = (fun b -> h.degraded_events <- h.degraded_events @ [ b ]);
+    on_degraded =
+      (fun ~degraded ~binding_refused ->
+        h.degraded_events <- h.degraded_events @ [ (degraded, binding_refused) ]);
     on_thread_discovered;
     restart_requested;
     global_broker_root;
@@ -80,6 +83,10 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     poll_interval_s = 1.0;
     discover_interval_s = 0.0;   (* attempt discovery every idle poll *)
     max_wall_s }
+
+(* Just the degraded flags, in order — for assertions that do not care about
+   the #31 reason discriminator. *)
+let degraded_flags (h : harness) = List.map fst h.degraded_events
 
 (* ------------------------------------------------------------------ *)
 
@@ -135,7 +142,7 @@ let test_discovery_persists_then_restart_before_delivery () =
   let o =
     DL.run
       (mk_deps
-         ~on_thread_discovered:(fun tid -> discovered := tid :: !discovered)
+         ~on_thread_discovered:(fun tid -> discovered := tid :: !discovered; true)
          ~restart_requested:(fun ~thread_id ->
            if thread_id = "thread-1" then Some "/resolved/c2c" else None) h)
   in
@@ -189,7 +196,9 @@ let test_on_degraded_transition_healthy () =
   let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] () in
   let _ = DL.run (mk_deps h) in
   Alcotest.(check (list bool)) "degraded true at start, then false on thread load"
-    [ true; false ] h.degraded_events
+    [ true; false ] (degraded_flags h);
+  Alcotest.(check bool) "no stamp claims a refused binding" false
+    (List.exists snd h.degraded_events)
 
 let test_on_degraded_stays_degraded_no_thread () =
   (* B138: a session that never loads a thread fires [true] once and never
@@ -197,7 +206,10 @@ let test_on_degraded_stays_degraded_no_thread () =
   let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_offline ] () in
   let _ = DL.run (mk_deps ~discover:(fun () -> []) h) in
   Alcotest.(check (list bool)) "only the initial degraded=true, never healthy"
-    [ true ] h.degraded_events
+    [ true ] (degraded_flags h);
+  Alcotest.(check (list (pair bool bool)))
+    "the no-thread degradation is NOT reported as a refused binding"
+    [ (true, false) ] h.degraded_events
 
 let test_heartbeat_restamps_while_alive () =
   (* #27: while the loop is alive it re-stamps the degraded signal on a
@@ -214,7 +226,60 @@ let test_heartbeat_restamps_while_alive () =
   let _ = DL.run (mk_deps h) in
   Alcotest.(check (list bool))
     "start=true, thread-load=false, then healthy heartbeats re-stamp false"
-    [ true; false; false; false ] h.degraded_events
+    [ true; false; false; false ] (degraded_flags h)
+
+let test_i31_refused_binding_latches_degraded () =
+  (* #31: [on_thread_discovered] returning FALSE means the #24 guard refused to
+     mint a duplicate thread binding (a live managed sibling owns the thread).
+     The unit is running without a binding — genuinely degraded — so the
+     discovery stamp must stay [true] and the #27 heartbeats must re-stamp the
+     LATCHED value, never flipping back to healthy. 25 running polls => two
+     heartbeats (clock 10 and 20) on top of the start/discovery stamps. *)
+  let steps = List.init 25 (fun _ -> Ep.Sv_running) in
+  let h = mk_harness ~steps () in
+  let o = DL.run (mk_deps ~on_thread_discovered:(fun _ -> false) h) in
+  Alcotest.(check (option string)) "thread was still discovered/driven"
+    (Some "thread-1") o.DL.thread_id;
+  Alcotest.(check (list bool))
+    "degraded latched true through discovery and every heartbeat"
+    [ true; true; true; true ] (degraded_flags h);
+  Alcotest.(check bool) "never re-stamped healthy" false
+    (List.exists (fun (b, _) -> b = false) h.degraded_events);
+  (* #31 nit 1: every stamp AFTER discovery must carry the binding-refused
+     reason, so doctor/health can offer the followable remediation. The initial
+     start stamp predates discovery and is honestly [no-thread]. *)
+  Alcotest.(check (list (pair bool bool)))
+    "discovery + heartbeats report the refusal reason; the start stamp does not"
+    [ (true, false); (true, true); (true, true); (true, true) ]
+    h.degraded_events;
+  Alcotest.(check bool) "outcome reports degraded" true o.DL.degraded;
+  Alcotest.(check bool) "outcome attributes it to the refused binding" true
+    o.DL.binding_refused
+
+let test_i31_persisted_binding_clears_degraded () =
+  (* #31 converse: a SUCCESSFUL persist latches healthy — unchanged behaviour. *)
+  let steps = List.init 25 (fun _ -> Ep.Sv_running) in
+  let h = mk_harness ~steps () in
+  let o = DL.run (mk_deps ~on_thread_discovered:(fun _ -> true) h) in
+  Alcotest.(check (list bool)) "healthy after a persisted binding"
+    [ true; false; false; false ] (degraded_flags h);
+  Alcotest.(check bool) "no stamp claims a refused binding" false
+    (List.exists snd h.degraded_events);
+  Alcotest.(check bool) "outcome not degraded" false o.DL.degraded;
+  Alcotest.(check bool) "outcome not binding-refused" false o.DL.binding_refused
+
+let test_i31_discovery_callback_raising_fails_closed () =
+  (* #31: an exception from [on_thread_discovered] is an UNKNOWN binding state;
+     fail closed to degraded rather than claiming health, and never wedge the
+     supervisor. *)
+  let steps = List.init 12 (fun _ -> Ep.Sv_running) in
+  let h = mk_harness ~steps () in
+  let o = DL.run (mk_deps ~on_thread_discovered:(fun _ -> failwith "boom") h) in
+  Alcotest.(check bool) "loop survived the raising callback" true
+    (o.DL.final = Ep.Sv_frontend_exited);
+  Alcotest.(check bool) "outcome degraded (fail-closed)" true o.DL.degraded;
+  Alcotest.(check bool) "no healthy stamp" false
+    (List.exists (fun (b, _) -> b = false) h.degraded_events)
 
 (* ------------------------- B141: global (cross-repo) inbox ------------------------- *)
 
@@ -331,7 +396,10 @@ let () =
         ; test_case "discovery stops after found" `Quick test_discover_throttle_reused_after_found
         ; test_case "on_degraded transitions true->false on thread load" `Quick test_on_degraded_transition_healthy
         ; test_case "on_degraded stays true when no thread loads" `Quick test_on_degraded_stays_degraded_no_thread
-        ; test_case "heartbeat re-stamps degraded signal while alive (#27)" `Quick test_heartbeat_restamps_while_alive ] )
+        ; test_case "heartbeat re-stamps degraded signal while alive (#27)" `Quick test_heartbeat_restamps_while_alive
+        ; test_case "refused thread binding latches degraded across heartbeats (#31)" `Quick test_i31_refused_binding_latches_degraded
+        ; test_case "persisted thread binding clears degraded (#31)" `Quick test_i31_persisted_binding_clears_degraded
+        ; test_case "raising discovery callback fails closed to degraded (#31)" `Quick test_i31_discovery_callback_raising_fails_closed ] )
     ; ( "global-inbox (B141)",
         [ test_case "cross-repo mail injected, no turn, never drained" `Quick test_global_inbox_injected_no_turn
         ; test_case "None root disables global delivery" `Quick test_global_none_disables

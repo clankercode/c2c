@@ -24,8 +24,8 @@ type deps = {
   register : unit -> unit;
   deregister : unit -> unit;
   on_pass : Autoturn.pass_outcome -> unit;
-  on_degraded : bool -> unit;
-  on_thread_discovered : string -> unit;
+  on_degraded : degraded:bool -> binding_refused:bool -> unit;
+  on_thread_discovered : string -> bool;
   restart_requested : thread_id:string -> string option;
   global_broker_root : string option;
   on_global_pass : Ingress.health -> unit;
@@ -42,6 +42,7 @@ type outcome = {
   passes : int;
   global_passes : int;
   degraded : bool;
+  binding_refused : bool;
   restart_executable : string option;
 }
 
@@ -104,7 +105,9 @@ let heartbeat_interval_s = 10.0
 
 let run (d : deps) : outcome =
   d.register ();
-  let report_degraded b = try d.on_degraded b with _ -> () in
+  let report_degraded ?(binding_refused = false) b =
+    try d.on_degraded ~degraded:b ~binding_refused with _ -> ()
+  in
   (* Registered but no frontend thread discovered yet — nothing actually
      delivers until a thread loads. Persist the degraded signal immediately so
      the doctor/health (which read persisted state) never overclaim LIVE
@@ -117,17 +120,38 @@ let run (d : deps) : outcome =
       let passes = ref 0 in
       let global_passes = ref 0 in
       let last_discover = ref neg_infinity in
+      (* #31: degraded LATCH. [on_thread_discovered] returns whether the durable
+         thread binding was actually persisted; since #24 it REFUSES (false) when
+         a live managed sibling already owns the thread. Such a unit holds a
+         thread it may not bind — genuinely degraded — so latch that verdict here
+         instead of re-deriving degraded from [!thread] alone. Set from the
+         persist result at discovery (refusal -> true, success -> false) and
+         re-stamped verbatim by the #27 heartbeat, so the #24 split-brain signal
+         survives for `c2c doctor` / `c2c health` to observe.
+
+         ONE-SHOT BY DESIGN: discovery runs only while [!thread = None], so it
+         never re-runs after the first hit and a refusal therefore holds for the
+         unit's whole life. That is the honest reading — the unit really does
+         lack a durable binding until something changes outside this process —
+         and recovery is INTENTIONALLY by restart (resolve the owning sibling,
+         then relaunch), not by silently re-deriving health on a timer. *)
+      let degraded_latched = ref false in
+      let current_degraded () = !thread = None || !degraded_latched in
+      let stamp_degraded () =
+        report_degraded ~binding_refused:!degraded_latched (current_degraded ())
+      in
       (* #27: liveness heartbeat. Seed with the loop-start time so the first
          beat only fires after [heartbeat_interval_s] — the start/discovery
          transitions above already stamped a fresh record, so we do not
          double-stamp on the first pass. Re-stamps the CURRENT degraded state
-         ([!thread = None]) via [report_degraded], which advances [updated_at]
-         without changing the honest degraded value. *)
+         ([current_degraded ()], #31: the LATCHED value) via [report_degraded],
+         which advances [updated_at] without changing the honest degraded
+         value. *)
       let last_heartbeat = ref (d.now ()) in
       let maybe_heartbeat () =
         if d.now () -. !last_heartbeat >= heartbeat_interval_s then begin
           last_heartbeat := d.now ();
-          report_degraded (!thread = None)
+          stamp_degraded ()
         end
       in
       (* Attempt frontend-thread discovery, throttled to [discover_interval_s]
@@ -141,30 +165,22 @@ let run (d : deps) : outcome =
           | tid :: _ when String.trim tid <> "" ->
               (* First thread discovered — the loop can now inject/deliver. This
                  None -> Some transition fires exactly once (the [!thread = None]
-                 guard above), so [on_degraded false] is emitted once, on the
-                 healthy transition. *)
+                 guard above), so the degraded transition below is emitted once,
+                 carrying the latched persist verdict (#31). *)
               thread := Some tid;
-              (try d.on_thread_discovered tid with _ -> ());
-              (* TODO (#24 signal masking, pre-existing — see #27 review
-                 FINDING-1): [on_thread_discovered] persists degraded=true when
-                 [persist_discovered_thread] REFUSES the binding because a live
-                 managed sibling already owns this thread
-                 (c2c_codex_session.ml, on_thread_discovered). This
-                 unconditional [report_degraded false] immediately overwrites
-                 that refusal signal, and the #27 heartbeat now re-stamps
-                 [false] every ~10s, so the #24 split-brain signal can never
-                 resurface. Proper fix: latch the degraded state from
-                 [persist_discovered_thread]'s boolean result and have both this
-                 transition and [maybe_heartbeat] re-stamp the LATCHED value
-                 rather than [!thread = None]. Deliberately NOT changed here —
-                 #27 is observability-only and must not alter #24 semantics. *)
-              report_degraded false
+              (* #31: latch the persist verdict. A raised exception is an
+                 UNKNOWN binding state, so it fails closed to degraded rather
+                 than silently claiming health. *)
+              let persisted = try d.on_thread_discovered tid with _ -> false in
+              degraded_latched := not persisted;
+              stamp_degraded ()
           | _ -> ()
         end
       in
       let mk_outcome ?restart_executable final =
         { final; thread_id = !thread; passes = !passes;
-          global_passes = !global_passes; degraded = !thread = None;
+          global_passes = !global_passes; degraded = current_degraded ();
+          binding_refused = !degraded_latched;
           restart_executable }
       in
       (* B141: deliver the session's GLOBAL (cross-repo sessions-broker) inbox

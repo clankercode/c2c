@@ -146,6 +146,7 @@ and grok_identity_result = {
 type codex_delivery_mode =
   | Cd_app_server
   | Cd_app_server_degraded  (* online-attached but the deliver loop never loaded a thread (B138) *)
+  | Cd_app_server_unbound   (* #31: thread loaded + delivering, but the #24 guard refused its durable binding *)
   | Cd_app_server_unavailable
   | Cd_hooks_wake
   | Cd_hooks_only
@@ -172,6 +173,7 @@ type codex_delivery_report = {
 let codex_delivery_mode_label = function
   | Cd_app_server -> "app-server"
   | Cd_app_server_degraded -> "app-server (degraded: no thread loaded)"
+  | Cd_app_server_unbound -> "app-server (degraded: thread binding refused)"
   | Cd_app_server_unavailable -> "app-server-unavailable"
   | Cd_hooks_wake -> "hooks+wake"
   | Cd_hooks_only -> "hooks"
@@ -182,7 +184,8 @@ let codex_delivery_mode_label = function
    Hook modes ([Cd_hooks_only]/[Cd_hooks_wake]) still deliver at hook boundaries,
    so they are NOT deaf. *)
 let codex_mode_is_degraded = function
-  | Cd_app_server_degraded | Cd_app_server_unavailable | Cd_unavailable -> true
+  | Cd_app_server_degraded | Cd_app_server_unbound
+  | Cd_app_server_unavailable | Cd_unavailable -> true
   | Cd_app_server | Cd_hooks_wake | Cd_hooks_only -> false
 
 (* Pure classifier. [app_server_status] is the T006 lifecycle status string
@@ -225,10 +228,34 @@ let classify_codex_hook_fallback ~(hooks_installed : bool)
               app-server transport delivers arrival-time without hooks)";
       cd_input_injecting = false }
 
-let classify_codex_delivery ~(app_server_status : string option)
+let classify_codex_delivery ~(binding_refused : bool)
+    ~(app_server_status : string option)
     ~(degraded : bool) ~(hooks_installed : bool) ~(wake_target : bool)
     : codex_delivery =
   match app_server_status with
+  | Some "online-attached" when degraded && binding_refused ->
+      (* #31: DEGRADED, but not for the B138 reason — a Codex thread IS loaded
+         and inbound mail IS being injected into it. What failed is the DURABLE
+         thread binding: the #24 split-brain guard refused to record it because
+         a live managed sibling already owns that thread. The B138 remediation
+         ("open a thread") is unfollowable here — a thread is already open and
+         discovered — so this gets its own classification whose remediation
+         names the real action: resolve the sibling that owns the thread. *)
+      { cd_mode = Cd_app_server_unbound;
+        cd_summary =
+          "app-server remote TUI is attached and a Codex thread IS loaded (mail \
+           is being injected into it), BUT this unit's durable thread binding \
+           was REFUSED because another live managed instance already owns that \
+           thread (#24 split-brain guard). The binding is not recorded, so it \
+           will not survive a restart and two units are pointed at one thread";
+        cd_remediation =
+          Some "another live managed codex instance already owns this thread; \
+                list the managed instances (`c2c dev instances`) and stop or \
+                re-point the sibling that owns it, then restart this instance \
+                (`c2c restart <name>`) so it can bind the thread. Opening \
+                another thread in the TUI will NOT clear this (#24/#31); \
+                `c2c dev diag <name>` shows the live loop state";
+        cd_input_injecting = false }
   | Some "online-attached" when degraded ->
       (* B138: the app-server transport is attached (authenticated loopback,
          live pid) BUT the managed deliver loop is DEGRADED — it registered and
@@ -307,7 +334,10 @@ let classify_codex_delivery ~(app_server_status : string option)
    status mapping only exposes the lifecycle label). [degraded] (B138) is the
    persisted deliver-loop signal: true iff the loop is supervising but never
    loaded a thread; false/absent → not known degraded. *)
-let live_codex_instances () : (string * string option * bool * bool) list =
+(* (name, app_server_status, wake_target, degraded, binding_refused) — the last
+   field (#31) discriminates the two degraded shapes for the classifier. *)
+let live_codex_instances () :
+    (string * string option * bool * bool * bool) list =
   try
     let base = C2c_start.instances_dir in
     if not (Sys.file_exists base && Sys.is_directory base) then []
@@ -337,12 +367,26 @@ let live_codex_instances () : (string * string option * bool * bool) list =
                       with _ -> true)
                  | _ -> false
                in
-               Some (name, app_status, wake, degraded)
+               (* #31: also read WHY it is degraded, so the report can carry
+                  the followable remediation. Never fails toward "refused". *)
+               let binding_refused =
+                 degraded
+                 && (match app_status with
+                     | Some "online-attached" ->
+                         (try
+                            C2c_codex_session
+                            .online_attached_delivery_binding_refused
+                              ~instance_dir ()
+                          with _ -> false)
+                     | _ -> false)
+               in
+               Some (name, app_status, wake, degraded, binding_refused)
            | _ -> None)
   with _ -> []
 
 let codex_delivery_report ?hooks_installed
-    ?(instances : (string * string option * bool * bool) list option) () :
+    ?(instances :
+       (string * string option * bool * bool * bool) list option) () :
     codex_delivery_report =
   let hooks_installed =
     match hooks_installed with
@@ -353,15 +397,16 @@ let codex_delivery_report ?hooks_installed
     match instances with Some l -> l | None -> live_codex_instances ()
   in
   { cdr_default =
-      classify_codex_delivery ~app_server_status:None ~degraded:false
-        ~hooks_installed ~wake_target:false;
+      classify_codex_delivery ~binding_refused:false ~app_server_status:None
+        ~degraded:false ~hooks_installed ~wake_target:false;
     cdr_instances =
       List.map
-        (fun (name, app_status, wake, degraded) ->
+        (fun (name, app_status, wake, degraded, binding_refused) ->
           { ci_name = name;
             ci_app_server_status = app_status;
             ci_delivery =
-              classify_codex_delivery ~app_server_status:app_status ~degraded
+              classify_codex_delivery ~binding_refused
+                ~app_server_status:app_status ~degraded
                 ~hooks_installed ~wake_target:wake })
         instances }
 
@@ -411,7 +456,8 @@ let doctor_hooks_exit_failure ~(total_dangling : int) ~(codex_issues : int)
    socket — it is OBSERVABILITY ONLY (message content is untouched; nothing here
    triggers or gates delivery). *)
 let codex_send_delivery_warning ?hooks_installed
-    ?(instances : (string * string option * bool * bool) list option)
+    ?(instances :
+       (string * string option * bool * bool * bool) list option)
     (to_alias : string) : string option =
   let rep = codex_delivery_report ?hooks_installed ?instances () in
   match List.find_opt (fun i -> i.ci_name = to_alias) rep.cdr_instances with

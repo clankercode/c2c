@@ -259,7 +259,9 @@ let test_codex_trust_index_drift_reported () =
 
 (* --- Codex delivery-mode classification (T005) ---------------------------- *)
 
-let classify = C2c_doctor_hooks.classify_codex_delivery
+(* #31: the reason discriminator defaults to "not a refused binding" for the
+   pre-existing cases; the #31 tests below call the full function. *)
+let classify = C2c_doctor_hooks.classify_codex_delivery ~binding_refused:false
 let label d = C2c_doctor_hooks.codex_delivery_mode_label d.C2c_doctor_hooks.cd_mode
 
 let test_delivery_app_server_healthy () =
@@ -291,6 +293,76 @@ let test_delivery_app_server_healthy () =
   in
   check bool "online-attached app-server delivery is never input-injecting" false
     dw.C2c_doctor_hooks.cd_input_injecting
+
+let test_i31_delivery_app_server_unbound () =
+  (* #31: degraded because the #24 guard REFUSED the durable thread binding. A
+     thread IS loaded and mail IS being injected, so the B138 label/remediation
+     ("no thread loaded", "open or focus a thread") would be false AND
+     unfollowable. Must report its own classification naming the real action:
+     resolve the live managed sibling that owns the thread. *)
+  let d =
+    C2c_doctor_hooks.classify_codex_delivery ~binding_refused:true
+      ~degraded:true ~app_server_status:(Some "online-attached")
+      ~hooks_installed:true ~wake_target:false
+  in
+  check string "refused binding gets its own label"
+    "app-server (degraded: thread binding refused)" (label d);
+  check bool "still counts as a degraded (deaf-ish) mode" true
+    (C2c_doctor_hooks.codex_mode_is_degraded d.C2c_doctor_hooks.cd_mode);
+  let summary = d.C2c_doctor_hooks.cd_summary in
+  check bool "summary does NOT claim no thread loaded" false
+    (C2c_doctor_hooks.contains summary "no Codex thread");
+  check bool "summary says a thread IS loaded and names the sibling cause" true
+    (C2c_doctor_hooks.contains summary "thread IS loaded"
+     && C2c_doctor_hooks.contains summary "already owns");
+  (match d.C2c_doctor_hooks.cd_remediation with
+   | None -> fail "unbound app-server must carry an actionable remediation"
+   | Some fix ->
+       check bool "remediation points at the owning sibling / instances" true
+         (C2c_doctor_hooks.contains fix "c2c dev instances"
+          && C2c_doctor_hooks.contains fix "sibling");
+       check bool "remediation does NOT tell the operator to open a thread" false
+         (C2c_doctor_hooks.contains fix "open or focus a thread"));
+  check bool "unbound delivery is data-path, not input-injecting" false
+    d.C2c_doctor_hooks.cd_input_injecting;
+  (* The no-thread shape is unchanged when the discriminator is false. *)
+  let no_thread =
+    classify ~degraded:true ~app_server_status:(Some "online-attached")
+      ~hooks_installed:true ~wake_target:false
+  in
+  check string "binding_refused=false keeps the B138 label"
+    "app-server (degraded: no thread loaded)" (label no_thread);
+  (* And a HEALTHY unit is never relabelled by the discriminator. *)
+  let healthy =
+    C2c_doctor_hooks.classify_codex_delivery ~binding_refused:true
+      ~degraded:false ~app_server_status:(Some "online-attached")
+      ~hooks_installed:true ~wake_target:false
+  in
+  check string "not degraded => still LIVE app-server" "app-server"
+    (label healthy)
+
+let test_i31_delivery_report_carries_unbound () =
+  (* #31: the report threads the reason per instance — two online-attached
+     degraded units are distinguished, and both are still counted DEAF. *)
+  let rep =
+    C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
+      ~instances:
+        [ ("cx-nothread", Some "online-attached", false, true, false)
+        ; ("cx-unbound", Some "online-attached", false, true, true)
+        ]
+      ()
+  in
+  let modes =
+    List.map
+      (fun i -> (i.C2c_doctor_hooks.ci_name, label i.C2c_doctor_hooks.ci_delivery))
+      rep.C2c_doctor_hooks.cdr_instances
+  in
+  check (list (pair string string)) "degraded reasons distinguished"
+    [ ("cx-nothread", "app-server (degraded: no thread loaded)")
+    ; ("cx-unbound", "app-server (degraded: thread binding refused)") ]
+    modes;
+  check int "both are deaf" 2
+    (List.length (C2c_doctor_hooks.codex_deaf_instances rep))
 
 let test_delivery_app_server_degraded () =
   (* B138: online-attached BUT the deliver loop never loaded a thread → the
@@ -441,10 +513,10 @@ let test_delivery_report_structure () =
   let rep =
     C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
       ~instances:
-        [ ("cx-live", Some "online-attached", false, false)
-        ; ("cx-degraded", Some "online-attached", false, true)
-        ; ("cx-broken", Some "failed-startup", false, false)
-        ; ("cx-tmux", None, true, false)
+        [ ("cx-live", Some "online-attached", false, false, false)
+        ; ("cx-degraded", Some "online-attached", false, true, false)
+        ; ("cx-broken", Some "failed-startup", false, false, false)
+        ; ("cx-tmux", None, true, false, false)
         ]
       ()
   in
@@ -483,14 +555,14 @@ let test_delivery_report_structure () =
 (* --- #27: codex DEAF summary + sender-side warning ------------------------ *)
 
 let degraded_instances =
-  [ ("cx-live", Some "online-attached", false, false)       (* app-server: live *)
-  ; ("cx-deaf", Some "online-attached", false, true)        (* degraded: no thread *)
-  ; ("cx-broken", Some "failed-startup", false, false)      (* app-server-unavailable *)
+  [ ("cx-live", Some "online-attached", false, false, false)       (* app-server: live *)
+  ; ("cx-deaf", Some "online-attached", false, true, false)        (* degraded: no thread *)
+  ; ("cx-broken", Some "failed-startup", false, false, false)      (* app-server-unavailable *)
   ]
 
 let healthy_instances =
-  [ ("cx-live", Some "online-attached", false, false)
-  ; ("cx-hooks", None, false, false)                        (* hooks fallback: not deaf *)
+  [ ("cx-live", Some "online-attached", false, false, false)
+  ; ("cx-hooks", None, false, false, false)                        (* hooks fallback: not deaf *)
   ]
 
 let test_codex_deaf_summary_present_for_degraded () =
@@ -1023,6 +1095,8 @@ let () =
     ; ( "codex-delivery-mode"
       , [ test_case "app-server healthy" `Quick test_delivery_app_server_healthy
         ; test_case "app-server degraded (no thread loaded)" `Quick test_delivery_app_server_degraded
+        ; test_case "app-server unbound: refused binding gets its own label + remediation (#31)" `Quick test_i31_delivery_app_server_unbound
+        ; test_case "delivery report distinguishes the two degraded reasons (#31)" `Quick test_i31_delivery_report_carries_unbound
         ; test_case "starting is not overclaimed as app-server" `Quick test_delivery_app_server_starting_not_overclaimed
         ; test_case "app-server unavailable + remediation" `Quick test_delivery_app_server_unavailable
         ; test_case "hooks+wake is input-injecting" `Quick test_delivery_hooks_wake_is_input_injecting
