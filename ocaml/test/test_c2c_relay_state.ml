@@ -46,13 +46,13 @@ let classify_with ?(relay_configured = true) ?(has_identity = true)
   classify ~relay_configured ~has_identity ~has_alias ~registration
     ~connector_live ~local_reg_evidence
 
-let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) () :
-    C2c_relay_connector.connector_state =
+let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?last_error_op
+    ?last_error_detail () : C2c_relay_connector.connector_state =
   {
     C2c_relay_connector.cs_last_sync_ts = last_sync;
     cs_last_ok_ts = last_ok;
-    cs_last_error_op = None;
-    cs_last_error_detail = None;
+    cs_last_error_op = last_error_op;
+    cs_last_error_detail = last_error_detail;
     cs_last_error_ts = None;
     (* H3 added cs_node_id to connector_state; this H5 fixture predates it.
        None = no node-id recorded, the pre-H3 behaviour. *)
@@ -284,12 +284,6 @@ let test_connector_absent_state () =
   check bool "no age" true (info.conn_last_sync_age_s = None);
   check string "health absent" "absent" (health_to_string info.conn_health)
 
-(* --- human/JSON parity ------------------------------------------------------- *)
-
-let all_states =
-  [ Unconfigured; Configured_not_registered; Configured_unverified;
-    Registered_live; Registered_expired; Registered_unreachable ]
-
 let json_string j key =
   match j with
   | `Assoc fields ->
@@ -297,6 +291,127 @@ let json_string j key =
        | Some (`String s) -> s
        | _ -> failwith (Printf.sprintf "missing string key %S" key))
   | _ -> failwith "expected Assoc"
+
+(* --- #11(2): erroring must report the real error, not a guess -------------- *)
+
+(* An erroring connector means the machine-wide connector service synced THIS
+   repo's broker root within the freshness window and that sync failed —
+   connector-state.json is per-root, so the failure is in scope here. The
+   state file already carries the failing op and its detail; the old
+   remediation ignored both and appended a guessed checklist ("check token
+   …, identity …, relay reachability") instead. Surface the fact we have. *)
+
+let erroring_info ?last_error_op ?last_error_detail () =
+  connector_info ~process_present:true
+    ~state:
+      (Some
+         (conn_state ~last_sync:(now -. 10.0) ~last_ok:(now -. 9999.0)
+            ?last_error_op ?last_error_detail ()))
+    ~now ()
+
+let test_connector_erroring_surfaces_real_error () =
+  let info =
+    erroring_info ~last_error_op:"poll"
+      ~last_error_detail:"relay 401 unauthorized: signer not accepted" ()
+  in
+  check string "health erroring" "erroring" (health_to_string info.conn_health);
+  let human = connector_line info in
+  (* The operator must see the actual failure, not a checklist. *)
+  check bool "human surfaces the real error detail" true
+    (string_contains ~needle:"relay 401 unauthorized: signer not accepted"
+       human);
+  check bool "human names the failing op" true
+    (string_contains ~needle:"poll" human);
+  check bool "guessed blame tail is gone when the real error is known" false
+    (string_contains ~needle:"check token" human);
+  (* …and the copy-pasteable recovery command survives (docs/commands.md
+     contract: remediation is a runnable command when not live). *)
+  check bool "remediation still a runnable restart command" true
+    (match info.conn_remediation with
+     | Some r -> string_contains ~needle:"c2c restart relay-connect" r
+     | None -> false);
+  check bool "human still carries the restart command" true
+    (string_contains ~needle:"c2c restart relay-connect" human);
+  (* JSON parity: the same fact, machine-readable. *)
+  let j = connector_json info in
+  check string "json last_error_detail" "relay 401 unauthorized: signer not accepted"
+    (json_string j "last_error_detail");
+  check string "json last_error_op" "poll" (json_string j "last_error_op")
+
+let test_connector_erroring_without_detail_keeps_guidance () =
+  (* Older connectors (and some failure paths) record no detail. With no fact
+     to report, the guessed checklist is the best available advice and must
+     NOT be dropped — that was the defect in the withdrawn fix. *)
+  let info = erroring_info () in
+  check string "health erroring" "erroring" (health_to_string info.conn_health);
+  check bool "falls back to the checklist when no error is recorded" true
+    (match info.conn_remediation with
+     | Some r ->
+         string_contains ~needle:"c2c restart relay-connect" r
+         && string_contains ~needle:"check token" r
+     | None -> false);
+  let j = connector_json info in
+  check bool "json last_error_detail is null" true
+    (match j with
+     | `Assoc fields -> List.assoc_opt "last_error_detail" fields = Some `Null
+     | _ -> false)
+
+let test_connector_wedged_remediation_untouched () =
+  (* Wedged is a property of the connector PROCESS — machine-wide and
+     independent of any repo's relay config — and is the one class where
+     "restart the connector" is unambiguously right. Pin it: no error tail,
+     no checklist, just the restart command. *)
+  let info =
+    connector_info ~process_present:true
+      ~state:
+        (Some
+           (conn_state ~last_sync:(now -. 3600.0) ~last_ok:(now -. 3600.0)
+              ~last_error_op:"push"
+              ~last_error_detail:"connection refused" ()))
+      ~now ()
+  in
+  check string "health wedged" "wedged" (health_to_string info.conn_health);
+  check (option string) "wedged remediation is the bare restart command"
+    (Some
+       "c2c restart relay-connect 2>/dev/null || (pkill -f 'c2c relay \
+        connect' 2>/dev/null; c2c relay connect &)")
+    info.conn_remediation
+
+(* --- #11(2): the two lines must not read as one contradiction ------------- *)
+
+let test_relay_lines_scopes_disambiguated () =
+  (* The reported symptom: "connector: erroring" printed beside
+     "state: unconfigured — no relay URL configured" reads as
+     self-contradictory. Both are true; they answer different questions.
+     The rendered lines must say which is which. *)
+  let cls = { state = Unconfigured; reason = "no relay URL configured" } in
+  let sline = state_line cls in
+  let cline =
+    connector_line
+      (erroring_info ~last_error_op:"push"
+         ~last_error_detail:"relay unreachable" ())
+  in
+  (* Each line keeps everything it said before… *)
+  check bool "state line keeps the classification body" true
+    (string_contains ~needle:(classification_human cls) sline);
+  check bool "connector line keeps the health body" true
+    (string_contains
+       ~needle:(connector_human (erroring_info ~last_error_op:"push"
+                                   ~last_error_detail:"relay unreachable" ()))
+       cline);
+  (* …and gains a scope marker that distinguishes it from the other. *)
+  check bool "state line is scoped to this repo" true
+    (string_contains ~needle:"this repo" sline);
+  check bool "connector line is scoped to the machine service" true
+    (string_contains ~needle:"machine connector service" cline);
+  check bool "the two scope markers are not the same claim" false
+    (string_contains ~needle:"machine connector service" sline)
+
+(* --- human/JSON parity ------------------------------------------------------- *)
+
+let all_states =
+  [ Unconfigured; Configured_not_registered; Configured_unverified;
+    Registered_live; Registered_expired; Registered_unreachable ]
 
 let test_state_strings_distinct_and_stable () =
   let strings = List.map state_to_string all_states in
@@ -338,7 +453,10 @@ let test_connector_human_json_parity () =
         ~state:
           (Some (conn_state ~last_sync:(now -. 9999.0) ~last_ok:(now -. 9999.0) ()))
         ~now ();
-      connector_info ~state:None ~now () ]
+      connector_info ~state:None ~now ();
+      (* #11: erroring, with and without a recorded error. *)
+      erroring_info ~last_error_op:"poll" ~last_error_detail:"boom" ();
+      erroring_info () ]
   in
   List.iter
     (fun info ->
@@ -376,7 +494,34 @@ let test_connector_human_json_parity () =
        check bool "json has remediation key" true
          (match j with
           | `Assoc fields -> List.mem_assoc "remediation" fields
-          | _ -> false))
+          | _ -> false);
+       (* #11: remediation and the recorded error must not diverge between
+          the two surfaces. Whatever the human line offers as a command, the
+          JSON must offer verbatim; whatever error the human reports, the
+          JSON must carry. *)
+       (match info.conn_remediation with
+        | Some r ->
+            check string "json remediation matches record" r
+              (json_string j "remediation");
+            check bool "human line carries the remediation" true
+              (string_contains ~needle:r human)
+        | None ->
+            check bool "json remediation null when none" true
+              (match j with
+               | `Assoc fields -> List.assoc_opt "remediation" fields = Some `Null
+               | _ -> false));
+       (match info.conn_last_error_detail with
+        | Some d ->
+            check string "json last_error_detail matches record" d
+              (json_string j "last_error_detail");
+            check bool "human line reports the recorded error" true
+              (string_contains ~needle:d human)
+        | None ->
+            check bool "json last_error_detail null when none" true
+              (match j with
+               | `Assoc fields ->
+                   List.assoc_opt "last_error_detail" fields = Some `Null
+               | _ -> false)))
     cases
 
 (* --- B234: alias line parenthetical must match composite registration ------ *)
@@ -580,6 +725,15 @@ let () =
           test_case "connector_pid_alive helper" `Quick
             test_connector_pid_alive_helper;
           test_case "absent state" `Quick test_connector_absent_state ] );
+      ( "connector presentation (#11)",
+        [ test_case "erroring surfaces the real error" `Quick
+            test_connector_erroring_surfaces_real_error;
+          test_case "erroring without detail keeps guidance" `Quick
+            test_connector_erroring_without_detail_keeps_guidance;
+          test_case "wedged remediation untouched" `Quick
+            test_connector_wedged_remediation_untouched;
+          test_case "state/connector line scopes disambiguated" `Quick
+            test_relay_lines_scopes_disambiguated ] );
       ( "human/JSON parity",
         [ test_case "state strings distinct + pinned" `Quick
             test_state_strings_distinct_and_stable;

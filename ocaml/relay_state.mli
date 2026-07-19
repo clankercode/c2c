@@ -18,7 +18,12 @@
    about whether a connector is live.
 
    B181: process presence ≠ bridge health. [connector_info] reports process
-   evidence, health class, and remediation separately from [conn_live]. *)
+   evidence, health class, and remediation separately from [conn_live].
+
+   #11: (2) and (3) are different scopes — this repo's relay configuration vs
+   the machine-wide connector service's last sync of this repo's broker root —
+   and printed unlabelled they read as one contradictory statement. See
+   [state_line] / [connector_line] and the [scope_*] tokens. *)
 
 (** Evidence about this alias's registration on the configured relay. *)
 type registration_evidence =
@@ -88,11 +93,25 @@ val classify :
     "state:" line (guaranteeing human/JSON parity). *)
 val state_to_string : state -> string
 
-(** [{"state": <state_to_string>, "reason": <reason>}] *)
+(** Stable --json scope tokens (#11). The [state:] line describes THIS repo's
+    relay configuration; the [connector:] line describes the machine-wide
+    connector service's last sync of this repo's broker root. They are
+    different questions and were read as one contradictory answer
+    ("erroring" beside "unconfigured"). *)
+val scope_repo_relay_config : string
+
+val scope_connector_machine_service : string
+
+(** [{"state": <state_to_string>, "reason": <reason>,
+     "scope": <scope_repo_relay_config>}] *)
 val classification_json : classification -> Yojson.Safe.t
 
 (** ["<state_to_string> — <reason>"] — the human "state:" line body. *)
 val classification_human : classification -> string
+
+(** The full human "state:" line: [classification_human] plus the scope
+    marker matching [scope_repo_relay_config]. *)
+val state_line : classification -> string
 
 (** Parenthetical after the human [alias:] value in status/whoami (B234).
 
@@ -135,7 +154,15 @@ type connector_info = {
       (** Broker-attributed connector process observed (optional input). *)
   conn_health : connector_health;
   conn_remediation : string option;
-      (** Copy-pasteable recovery when not live. *)
+      (** Copy-pasteable recovery command when not live. Always a runnable
+          command; for [Health_erroring] with no recorded error it also
+          carries a commented what-to-check tail (#11). *)
+  conn_last_error_op : string option;
+      (** Failing op recorded by the connector's last sync of this root
+          (#11), e.g. "poll"/"push". [None] on older state files. *)
+  conn_last_error_detail : string option;
+      (** Detail for that failure — reported to the operator instead of
+          guessing at the cause. [None] when nothing was recorded. *)
 }
 
 (** Derive connector info from the broker-owned connector-state file (already
@@ -152,9 +179,15 @@ val connector_info :
   connector_info
 
 (** [{"live", "state_file", "last_sync_age_s", "last_ok_age_s",
-     "process_present", "health", "remediation"}] *)
+     "process_present", "health", "remediation", "scope", "last_error_op",
+     "last_error_detail"}] *)
 val connector_json : connector_info -> Yojson.Safe.t
 
-(** Human connector line. Leading word agrees with [conn_live] /
-    [health]: live | down | wedged | erroring | starting | none. *)
+(** Human connector line body. Leading word agrees with [conn_live] /
+    [health]: live | down | wedged | erroring | starting | none. An erroring
+    bridge also reports the recorded [last error] (#11). *)
 val connector_human : connector_info -> string
+
+(** The full human "connector:" line: [connector_human] plus the scope marker
+    matching [scope_connector_machine_service]. *)
+val connector_line : connector_info -> string

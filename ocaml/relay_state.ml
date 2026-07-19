@@ -10,7 +10,13 @@
    contradict `c2c doctor --relay` about whether a connector is live.
 
    B181: process presence is NOT bridge health. [connector_info] reports
-   process evidence, health class, and remediation separately from [conn_live]. *)
+   process evidence, health class, and remediation separately from [conn_live].
+
+   #11: the `state:` and `connector:` lines have different scopes (this repo's
+   relay config vs the machine-wide connector service acting on this repo's
+   broker root). [state_line] / [connector_line] label them so the pair stops
+   reading as a contradiction, and an erroring connector reports the error it
+   recorded rather than a guessed checklist. *)
 
 type registration_evidence =
   | Reg_not_checked
@@ -99,14 +105,32 @@ let classify ~relay_configured ~has_identity ~has_alias ~registration
           { state = Configured_unverified;
             reason = "registration not checked — pass --relay to query" }
 
+(* #11(2): the `state:` and `connector:` lines answer different questions, and
+   an operator reading "erroring" beside "unconfigured — no relay URL
+   configured" has no way to tell that. Both are true at once: `state:` is
+   THIS repo's relay configuration, while the connector line is the
+   machine-wide connector service reporting its last sync of this repo's
+   broker root (connector-state.json is per-root, so that failure is in scope
+   here even for a repo that configured no relay of its own — the service
+   syncs every discovered root with its shared url/token). Each line carries
+   its scope, in the human text and as a stable token in --json. *)
+let scope_repo_relay_config = "repo_relay_config"
+let scope_connector_machine_service = "machine_connector_service"
+
 let classification_json (c : classification) : Yojson.Safe.t =
   `Assoc
     [ ("state", `String (state_to_string c.state))
     ; ("reason", `String c.reason)
+    ; ("scope", `String scope_repo_relay_config)
     ]
 
 let classification_human (c : classification) =
   Printf.sprintf "%s — %s" (state_to_string c.state) c.reason
+
+(* The rendered `state:` line: classification plus its scope marker. *)
+let state_line (c : classification) =
+  Printf.sprintf "%s  [scope: this repo's relay config]"
+    (classification_human c)
 
 (* B234: parenthetical after the human alias value. Must not claim the
    alias is "not a relay registration" when composite state indicates
@@ -157,6 +181,11 @@ type connector_info = {
   conn_process_present : bool;
   conn_health : connector_health;
   conn_remediation : string option;
+  (* #11(2): the failing op and its detail as recorded by the connector's
+     last sync of this broker root. Reported instead of guessing at the
+     cause; None on older state files and on paths that record no detail. *)
+  conn_last_error_op : string option;
+  conn_last_error_detail : string option;
 }
 
 let default_remediation_start =
@@ -178,17 +207,33 @@ let derive_health ~live ~process_present ~state ~now : connector_health =
       else if process_present then Health_wedged
       else Health_stale
 
-let remediation_for = function
+(* [last_error] is the detail the connector recorded for the failing sync,
+   when it recorded one.
+
+   #11(2): Health_erroring means the connector synced THIS broker root inside
+   the freshness window and that sync failed — a live, in-scope failure whose
+   cause is already in the state file. When we have it, the human line reports
+   it (see [connector_human]) and the remediation stays a bare runnable
+   command. Only when nothing was recorded do we fall back to the guessed
+   checklist, which is then the best advice available. Health_wedged is
+   deliberately untouched: it is a property of the connector *process*,
+   independent of any repo's relay config, and "restart" is right for it
+   whatever the last error said. *)
+let remediation_for ?last_error health =
+  match health with
   | Health_ok -> None
   | Health_absent -> Some default_remediation_start
   | Health_starting -> Some default_remediation_restart
   | Health_stale -> Some default_remediation_start
   | Health_wedged -> Some default_remediation_restart
   | Health_erroring ->
-      Some
-        (default_remediation_restart
-         ^ "  # also: check token (c2c relay setup), identity (c2c init), \
-            relay reachability")
+      (match last_error with
+       | Some _ -> Some default_remediation_restart
+       | None ->
+           Some
+             (default_remediation_restart
+              ^ "  # also: check token (c2c relay setup), identity (c2c init), \
+                 relay reachability"))
 
 let connector_info ?(process_present = false)
     ~(state : C2c_relay_connector.connector_state option) ~now () =
@@ -196,6 +241,16 @@ let connector_info ?(process_present = false)
     Relay_doctor.connector_running ~scoped_procs:[] ~state ~now
   in
   let health = derive_health ~live ~process_present ~state ~now in
+  let last_error_op =
+    match state with
+    | Some st -> st.C2c_relay_connector.cs_last_error_op
+    | None -> None
+  in
+  let last_error =
+    match state with
+    | Some st -> st.C2c_relay_connector.cs_last_error_detail
+    | None -> None
+  in
   {
     conn_live = live;
     conn_state_present = state <> None;
@@ -211,7 +266,9 @@ let connector_info ?(process_present = false)
        | None -> None);
     conn_process_present = process_present;
     conn_health = health;
-    conn_remediation = remediation_for health;
+    conn_remediation = remediation_for ?last_error health;
+    conn_last_error_op = last_error_op;
+    conn_last_error_detail = last_error;
   }
 
 let connector_json (c : connector_info) : Yojson.Safe.t =
@@ -230,6 +287,13 @@ let connector_json (c : connector_info) : Yojson.Safe.t =
     ; ("health", `String (health_to_string c.conn_health))
     ; ( "remediation",
         match c.conn_remediation with
+        | Some s -> `String s
+        | None -> `Null )
+    ; ("scope", `String scope_connector_machine_service)
+    ; ( "last_error_op",
+        match c.conn_last_error_op with Some s -> `String s | None -> `Null )
+    ; ( "last_error_detail",
+        match c.conn_last_error_detail with
         | Some s -> `String s
         | None -> `Null )
     ]
@@ -260,6 +324,14 @@ let connector_human (c : connector_info) =
     | Some r -> Printf.sprintf " — %s" r
     | None -> ""
   in
+  (* #11(2): report the failure the connector actually recorded. Same idiom as
+     Relay_doctor's connector check; the op prefix says which leg failed. *)
+  let err_bit =
+    match (c.conn_last_error_op, c.conn_last_error_detail) with
+    | _, None -> ""
+    | None, Some detail -> Printf.sprintf " last error: %s" detail
+    | Some op, Some detail -> Printf.sprintf " last error: %s: %s" op detail
+  in
   match c.conn_health with
   | Health_ok ->
       Printf.sprintf "live (%s%s%s)" age_bit ok_bit
@@ -281,4 +353,11 @@ let connector_human (c : connector_info) =
       Printf.sprintf "down (%s%s; no attributable process)%s" age_bit ok_bit
         rem_bit
   | Health_erroring ->
-      Printf.sprintf "erroring (%s%s%s)%s" age_bit ok_bit proc_bit rem_bit
+      Printf.sprintf "erroring (%s%s%s)%s%s" age_bit ok_bit proc_bit err_bit
+        rem_bit
+
+(* The rendered `connector:` line: health plus its scope marker. *)
+let connector_line (c : connector_info) =
+  Printf.sprintf "%s  [scope: machine connector service, this repo's broker \
+                  root]"
+    (connector_human c)

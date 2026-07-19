@@ -912,7 +912,9 @@ that are easy to conflate:
    optional `lease:` when `--relay` is passed), not the alias parenthetical.
 3. **Connector** — whether a broker-owned connector bridge is live (the same
    signal as `c2c doctor --relay`'s `relay.connector` check; the two surfaces
-   never disagree).
+   never disagree). This is a *machine-wide service* reporting on *this
+   repo's broker root* — a different scope from the `state:` line, which each
+   line now labels; see **Scopes** below.
 
 The `state:` line (and `relay.registration.state` in `--json`) is the
 composite classification:
@@ -933,8 +935,8 @@ Human and `--json` output carry the same state string and reason. Example
 Relay:
   url:        https://relay.c2c.im  (configured)
   alias:      (no current session alias)
-  state:      configured_not_registered — no current session alias to register
-  connector:  none (no connector sync state — start with 'c2c start relay-connect')
+  state:      configured_not_registered — no current session alias to register  [scope: this repo's relay config]
+  connector:  none (no connector sync state — start with 'c2c relay connect') — c2c start relay-connect 2>/dev/null || c2c relay connect &  [scope: machine connector service, this repo's broker root]
 ```
 
 and the matching `--json` fields under `relay`:
@@ -942,7 +944,8 @@ and the matching `--json` fields under `relay`:
 ```json
 "registration": {
     "state": "configured_not_registered",
-    "reason": "no current session alias to register"
+    "reason": "no current session alias to register",
+    "scope": "repo_relay_config"
 },
 "connector": {
     "live": false,
@@ -951,7 +954,10 @@ and the matching `--json` fields under `relay`:
     "last_ok_age_s": null,
     "process_present": false,
     "health": "absent",
-    "remediation": "c2c start relay-connect 2>/dev/null || c2c relay connect &"
+    "remediation": "c2c start relay-connect 2>/dev/null || c2c relay connect &",
+    "scope": "machine_connector_service",
+    "last_error_op": null,
+    "last_error_detail": null
 }
 ```
 
@@ -961,7 +967,34 @@ is `health: "wedged"` / `live: false` — restart the connector; do not assume
 the PID means inbound relay traffic is flowing. `remediation` is a
 copy-pasteable recovery command when not live.
 
-Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
+#### Scopes: `state:` and `connector:` answer different questions
+
+The two lines carry a `scope` marker (human) / `scope` key (`--json`) because
+they are not the same claim, and a `connector: erroring` beside a
+`state: unconfigured` otherwise reads as a contradiction:
+
+| Line | `scope` | What it describes |
+|------|---------|-------------------|
+| `state:` | `repo_relay_config` | **This repo's** relay configuration and registration. |
+| `connector:` | `machine_connector_service` | The **machine-wide** connector service's last sync of **this repo's broker root**. |
+
+Both can be true at once. The connector service discovers every broker root on
+the machine and syncs each with its shared relay URL/token, writing a
+*per-root* `connector-state.json`. So `erroring` on this repo means the
+service synced this repo's root within the freshness window and that sync
+failed — a live, in-scope failure — even when this repo configured no relay
+URL of its own.
+
+When the connector recorded why it failed, that error is reported instead of
+guessing: `last_error_op` / `last_error_detail` in `--json`, and
+`last error: <op>: <detail>` in the human line. `remediation` stays a runnable
+restart command. Only when no error was recorded does `remediation` append the
+commented fallback checklist (`# also: check token …, identity …, relay
+reachability`).
+
+The `registration.scope`, `connector.scope`, `connector.last_error_op` and
+`connector.last_error_detail` keys are additive, as are `registration` and
+`connector` themselves — pre-existing `relay` JSON keys (`url`, `configured`,
 `alias`, `host_id`, `identity_pk`, `fingerprint`, `lease`) are unchanged.
 
 ### Rooms (`c2c rooms …`)

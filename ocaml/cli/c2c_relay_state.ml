@@ -342,9 +342,12 @@ let print_relay_section (s : snapshot) (lease : lease_result option) ~now () =
        Printf.printf "  alias:      %s%s\n" a
          (Relay_state.alias_line_note classification)
    | None -> Printf.printf "  alias:      (no current session alias)\n");
-  Printf.printf "  state:      %s\n"
-    (Relay_state.classification_human classification);
-  Printf.printf "  connector:  %s\n" (Relay_state.connector_human conn);
+  (* #11: these two lines have different scopes — this repo's relay config vs
+     the machine-wide connector service acting on this repo's broker root —
+     and without saying so they read as one contradictory statement
+     ("erroring" beside "unconfigured"). *)
+  Printf.printf "  state:      %s\n" (Relay_state.state_line classification);
+  Printf.printf "  connector:  %s\n" (Relay_state.connector_line conn);
   (match s.host_id with
    | Some h -> Printf.printf "  host_id:    %s  (opaque; address peers as <alias>@<host_id>)\n" h
    | None -> ());
