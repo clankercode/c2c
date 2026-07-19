@@ -104,10 +104,10 @@ the canonical framing.)
   `.collab/runbooks/git-workflow.md` §`just`-recipes. If you edit
   `data/opencode-plugin/c2c.ts`, run `just codegen-opencode-plugin` and
   commit both the TS source and `ocaml/cli/c2c_opencode_plugin_embedded.ml`.
-- **Test results can be wrong in BOTH directions. Five known ways (2026-07-19).**
+- **Test results can be wrong in BOTH directions. Six known ways (2026-07-19).**
   Any of these will make you report a branch green that isn't, or condemn one
   that is. When a count or a verdict is load-bearing (a review, a merge
-  decision), guard against all five:
+  decision), guard against all six:
   1. **Stale binary.** `dune exec` can run a previously-built `.exe` and pass.
      Always `dune build <targets>` explicitly first. Suites that shell out to
      `c2c.exe` must declare it in `(deps ...)` — several already do; a stanza
@@ -134,6 +134,15 @@ the canonical framing.)
      neither can fake a pass — but both read as a broken branch rather than a
      broken invocation. Prefer `dune ... --root <abs-worktree-path>` with
      `eval $(opam env)`, not reliance on cwd.
+  6. **From a worktree, plain `dune build` resolves the root to the MAIN
+     checkout** (`Entering directory '/home/xertrov/src/c2c'`; `.worktrees …
+     excluded by a (dirs …) stanza`), so `dune build @ocaml/cli/runtest` and
+     `dune build ocaml/cli/test_*.exe` fail there — **while a stale test exe in
+     the worktree `_build` runs happily with the OLD test list.** A reviewer got
+     `Test Successful, 37 tests run` with none of the new cases present: a
+     green run of a test file that was never rebuilt. Use
+     `scripts/dune-build-locked.sh build ./ocaml/cli/<target>.exe` (the
+     relative-with-`./` form), which resolves correctly.
   Known-flaky: `test_c2c_relay_managed.ml` `"relay ready"` binds a random port;
   re-run in isolation before blaming a branch. A worktree placed **outside**
   the repo tree fails ~148 tests environmentally — keep them in `.worktrees/`.
