@@ -47,3 +47,4 @@ reviews/
 *.x25519
 *.tmp.*
 tmp/
+.collab/screenshots/
