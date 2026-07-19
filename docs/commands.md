@@ -1205,7 +1205,11 @@ Key semantics:
   the instance handle and the broker alias agree, so `c2c stop NAME` /
   `c2c restart NAME` address the session you started. An identity that is
   already **alive** is refused up front (`FATAL: alias '…' is already alive`)
-  before anything is launched — no half-started Codex frontend.
+  before anything is launched — no half-started Codex frontend. This
+  pre-launch guard is *name-scoped* (#77): it checks the name/alias you named,
+  so when a codex launch auto-derives its alias after start, a collision on
+  that derived alias is caught by the late broker refusal instead — still
+  cleanly, with no half-started frontend.
 - **Namespaced name after `--`.** `--c2c:name NAME` is equivalent to the
   pre-separator alias/name selector for `c2c codex` and `c2c new codex`, but
   can be written after an alias-provided trailing `--`. It is removed before
