@@ -898,10 +898,33 @@ let test_i34r_live_registry_alias_refused_before_launch () =
                 ~fallback:(fun ~extra_args:_ () -> 99) ()
             with _ -> 98
           in
-          (* Reached only if the guard did NOT refuse. *)
-          Stdlib.exit (if rc = 0 then 0 else rc)
+          (* Reached only if the guard did NOT refuse. #57: [Unix._exit] rather
+             than [Stdlib.exit] so this child never runs Alcotest's [at_exit]
+             (which would touch the parent's per-test log files from the fork). *)
+          Unix._exit (if rc = 0 then 0 else rc)
       | child ->
-          let _, status = Unix.waitpid [] child in
+          (* #57: bound the wait. The refusal is a hard [exit 1] today, but a
+             future regression that made the launcher BLOCK instead of refusing
+             would hang CI forever on an unbounded [waitpid]. Poll to a deadline,
+             then SIGKILL and fail loudly. 30s is far longer than the guard's
+             instant decision, so this never fires on healthy code. *)
+          let status =
+            let deadline = Unix.gettimeofday () +. 30.0 in
+            let rec wait_bounded () =
+              match Unix.waitpid [ Unix.WNOHANG ] child with
+              | 0, _ ->
+                  if Unix.gettimeofday () >= deadline then begin
+                    (try Unix.kill child Sys.sigkill with _ -> ());
+                    (try ignore (Unix.waitpid [] child) with _ -> ());
+                    Alcotest.fail
+                      "pre-launch guard did not return within 30s — a \
+                       regression made the launcher BLOCK instead of refusing \
+                       (would hang CI)"
+                  end else (Unix.sleepf 0.02; wait_bounded ())
+              | _, status -> status
+            in
+            wait_bounded ()
+          in
           (match status with
            | Unix.WEXITED 0 ->
                Alcotest.fail
