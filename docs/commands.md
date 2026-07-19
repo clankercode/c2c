@@ -976,7 +976,7 @@ otherwise reads as a contradiction:
 
 | Line | Question it answers | `scope` |
 |------|---------------------|---------|
-| `state:` | Is a relay URL visible to me, and from which config file? | `relay_config_machine` \| `relay_config_repo` \| `relay_config_explicit` |
+| `state:` | Is a relay URL visible to me, and which relay config file would this context read? | `relay_config_machine` \| `relay_config_repo` \| `relay_config_explicit` |
 | `connector:` | Did the machine-wide connector service's last sync of **this repo's broker root** succeed? | `machine_connector_service` |
 
 Both can be true at once. The connector service discovers every broker root on
@@ -999,8 +999,17 @@ fingerprint-derived), so on a plain shell the file is **machine-wide** — and
 | `scope` | Config file | Reach |
 |---------|-------------|-------|
 | `relay_config_machine` | `~/.config/c2c/relay.json` | Machine-wide (the default). |
-| `relay_config_repo` | `<C2C_MCP_BROKER_ROOT>/relay.json` | This repo's broker root. |
+| `relay_config_repo` | `<C2C_MCP_BROKER_ROOT>/relay.json` | Wherever that env var points (it is a free-form override, not necessarily this repo's root). |
 | `relay_config_explicit` | `$C2C_RELAY_CONFIG` | Wherever you pointed it. |
+
+**The marker names a file, not the URL's origin.** `relay_configured` resolves
+`C2C_RELAY_URL` *first* and only then the config file, so when `C2C_RELAY_URL`
+is exported the URL came from the environment and the named file contributed
+nothing — it need not even exist. The marker is still accurate about what it
+says: it names the relay config file this context would read (the one that
+applies otherwise, and the one `c2c relay setup` writes) and how far that
+file's reach goes. Read it as "the config file in play here", not as "where
+this URL came from".
 
 When the connector recorded why it failed, that error is reported instead of
 leaving you to guess: `last_error_op` / `last_error_detail` in `--json`, and

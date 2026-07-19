@@ -94,10 +94,19 @@ val classify :
     "state:" line (guaranteeing human/JSON parity). *)
 val state_to_string : state -> string
 
-(** Which relay config file the [state:] line was derived from (#11).
+(** Which relay config file the [state:] line's context would read (#11).
 
-    [relay_configured] is [resolve_relay_url () <> None], which falls back to
-    the relay config file resolved by [C2c_relay_cmd.relay_config_path]:
+    NOT a provenance claim about the URL: [relay_configured] is
+    [resolve_relay_url None <> None] = [C2C_RELAY_URL] → the relay config
+    file, so when [C2C_RELAY_URL] is exported the URL came from the
+    environment and the named file contributed nothing (and may not exist).
+    The rendered marker stays true regardless because it only names a real
+    path and describes that path's reach; it is the file that applies
+    otherwise, and the one [c2c relay setup] writes. Deliberately no fourth
+    env-URL constructor: the payload is a file path, [C2C_RELAY_URL] is a URL,
+    and that file still supplies the TOKEN when the URL is overridden.
+
+    The file is resolved by [C2c_relay_cmd.relay_config_path]:
     [C2C_RELAY_CONFIG] → [<C2C_MCP_BROKER_ROOT>/relay.json] → else
     [$HOME/.config/c2c/relay.json]. Nothing in broker-root resolution sets
     [C2C_MCP_BROKER_ROOT], so the DEFAULT case (any plain shell) reads a
@@ -109,7 +118,11 @@ val state_to_string : state -> string
 type relay_config_location =
   | Relay_config_machine of string  (** [$HOME/.config/c2c/relay.json]. *)
   | Relay_config_repo of string
-      (** [<C2C_MCP_BROKER_ROOT>/relay.json] — this repo's broker root. *)
+      (** [<C2C_MCP_BROKER_ROOT>/relay.json]. Named by the env var, not
+          claimed as "this repo's" root: [C2C_MCP_BROKER_ROOT] is a free-form
+          override, and [C2c_repo_fp.resolve_broker_root] ignores values it
+          rejects (e.g. legacy [.git/c2c/mcp] paths) while this classifier
+          still honours them. *)
   | Relay_config_explicit of string
       (** [C2C_RELAY_CONFIG] points somewhere explicit; scope unknowable. *)
 
@@ -191,7 +204,14 @@ type connector_info = {
           command; [Health_erroring] always also carries the commented
           what-to-check tail (#11 — it is a [#] shell comment, so it never
           breaks copy-paste, and the recorded error is reported alongside it
-          rather than in place of it). *)
+          rather than in place of it). The tail is unconditional because
+          [Health_erroring] with [conn_last_error_detail = None] is REACHABLE
+          and expected: [C2c_relay_connector.touch_connector_last_sync]
+          refreshes last_sync at pass start while preserving last_ok and the
+          last_error fields (B228), so a pass that hangs after a successful
+          predecessor yields fresh last_sync + stale last_ok + no recorded
+          error. A checklist conditioned on "an error is known" would give a
+          hung connector no guidance at all. *)
   conn_last_error_op : string option;
       (** Failing op recorded by the connector's last sync of this root
           (#11), e.g. "poll"/"push". [None] on older state files. *)

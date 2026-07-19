@@ -116,10 +116,11 @@ let classify ~relay_configured ~has_identity ~has_alias ~registration
    discovered root with its shared url/token).
 
    The `state:` line, however, must NOT be labelled "this repo's relay
-   config". [relay_configured] is `resolve_relay_url () <> None`, which falls
-   back to the relay config FILE, and [C2c_relay_cmd.relay_config_path]
-   resolves that file as C2C_RELAY_CONFIG → <C2C_MCP_BROKER_ROOT>/relay.json →
-   else $HOME/.config/c2c/relay.json. Nothing in broker-root resolution sets
+   config". [relay_configured] is `resolve_relay_url None <> None`, which is
+   C2C_RELAY_URL → the relay config FILE, and
+   [C2c_relay_cmd.relay_config_path] resolves that file as C2C_RELAY_CONFIG →
+   <C2C_MCP_BROKER_ROOT>/relay.json → else
+   $HOME/.config/c2c/relay.json. Nothing in broker-root resolution sets
    C2C_MCP_BROKER_ROOT (it is fingerprint-derived), so in the ordinary case —
    any plain shell — the predicate reads a MACHINE-WIDE file and a repo-scope
    claim is simply false; `c2c relay setup` then writes that same machine-wide
@@ -147,14 +148,34 @@ let relay_config_scope_token = function
 let relay_config_path_of = function
   | Relay_config_machine p | Relay_config_repo p | Relay_config_explicit p -> p
 
-(* The human tail for the `state:` line. Says where the relay URL/token this
-   line reports on lives, and how far that file's reach goes. *)
+(* The human tail for the `state:` line: the relay config FILE this context
+   would read, and how far that file's reach goes.
+
+   Deliberately NOT "where the URL this line reports on came from". [
+   relay_configured] is `resolve_relay_url None <> None` = C2C_RELAY_URL →
+   config file, so with C2C_RELAY_URL exported the URL came from the
+   environment and this path contributed nothing (it need not even exist).
+   The rendered string survives that case because it only ever names a real
+   path and describes THAT path's reach — it never claims to be the
+   provenance of the URL. Operators with C2C_RELAY_URL set should read this
+   as "the file that would apply otherwise, and the one `c2c relay setup`
+   writes"; the env var overrides it. We do not add a fourth env-URL
+   constructor: the payload here is a file path, C2C_RELAY_URL is a URL, and
+   the config file still supplies the TOKEN even when the URL is overridden,
+   so suppressing the path would lose a still-load-bearing pointer. *)
 let relay_config_note (loc : relay_config_location) =
   match loc with
   | Relay_config_machine p ->
       Printf.sprintf "[relay config: %s (machine-wide)]" p
   | Relay_config_repo p ->
-      Printf.sprintf "[relay config: %s (this repo's broker root)]" p
+      (* NOT "this repo's broker root": C2C_MCP_BROKER_ROOT is a free-form
+         override and nothing binds it to this repo. Pointed at a legacy
+         .git/c2c/mcp path it is ignored by
+         [C2c_repo_fp.resolve_broker_root] (canonical fallback wins) while
+         this classifier still honours it — so the named file can belong to a
+         root the process is not using. Naming the env var is unconditionally
+         true and just as actionable. *)
+      Printf.sprintf "[relay config: %s (from C2C_MCP_BROKER_ROOT)]" p
   | Relay_config_explicit p ->
       Printf.sprintf "[relay config: %s (C2C_RELAY_CONFIG)]" p
 
@@ -170,8 +191,9 @@ let classification_json ~(config : relay_config_location)
 let classification_human (c : classification) =
   Printf.sprintf "%s — %s" (state_to_string c.state) c.reason
 
-(* The rendered `state:` line: classification plus the relay config file it
-   was derived from. *)
+(* The rendered `state:` line: classification plus the relay config file this
+   context would read (see [relay_config_note] — C2C_RELAY_URL, when set,
+   overrides that file for the URL). *)
 let state_line ~(config : relay_config_location) (c : classification) =
   Printf.sprintf "%s  %s" (classification_human c) (relay_config_note config)
 
@@ -256,13 +278,25 @@ let derive_health ~live ~process_present ~state ~now : connector_health =
    instead of leaving the operator to guess.
 
    The what-to-check checklist stays UNCONDITIONAL rather than being traded
-   for the recorded error. [write_connector_state] sets ok = (last_error =
-   None) and only advances last_ok_ts when ok, so Health_erroring (fresh sync
-   ∧ stale last_ok) IMPLIES last_error was Some: a "no recorded error"
-   fallback is unreachable outside hand-written/legacy state files, and
-   conditioning the checklist on it would delete the checklist in production
-   while appearing to preserve it. The recorded errors are also weak
-   substitutes — `("sync", Printexc.to_string exn)` is opaque, and
+   for the recorded error, because Health_erroring does NOT imply a recorded
+   error. [C2c_relay_connector.touch_connector_last_sync] (called at the top
+   of every [run_sync_once]) refreshes last_sync_ts while PRESERVING last_ok_ts
+   and the last_error_* fields — that is its B228 purpose, so a hung HTTP path
+   shows as erroring rather than as a frozen state file. So: pass N succeeds
+   (last_error := Null, last_ok := T), pass N+1 touches last_sync and then
+   hangs; once T ages past the 120s [Relay_doctor] window we have a fresh
+   last_sync, a stale last_ok, and last_error = None — Health_erroring with
+   NOTHING recorded. The sync watchdog only fires at [sync_watchdog_s] =
+   max 90.0 (interval *. 4.0) after pass start, so that window is tens of
+   seconds to minutes wide on a routine production hang, not a legacy file.
+
+   That makes the unconditional checklist MORE necessary, not less: a hung
+   sync is exactly the case with no error text to show, so a checklist
+   conditioned on "an error is known" would leave the operator with no
+   guidance at all in the one state that most needs it.
+   [test_connector_erroring_without_detail_keeps_guidance] pins this reachable
+   None case. The recorded errors are also weak substitutes when they do
+   exist — `("sync", Printexc.to_string exn)` is opaque, and
    `("poll_inbox", "dropped N policy-rejected inbound row(s)…")` is inbound
    accounting rather than a connectivity fault yet still drives `erroring`.
    The checklist is a `#` shell comment on a runnable command: it costs
@@ -352,6 +386,21 @@ let connector_json (c : connector_info) : Yojson.Safe.t =
    keeps more of a useful message while still capping the line. *)
 let err_detail_max_chars = 120
 
+(* [String.sub s 0 n] is a BYTE slice, and err_detail sources include
+   [Yojson.Safe.to_string] of relay response bodies and [Printexc.to_string],
+   either of which can carry non-ASCII UTF-8. Cutting mid-sequence emits a
+   lone continuation byte and renders as mojibake, so back the cut off to the
+   last index that is not a continuation byte (0b10xxxxxx). Pure and
+   total: for ASCII it is the identity, and it can only shorten. *)
+let utf8_safe_cut s n =
+  let n = min n (String.length s) in
+  let rec back i =
+    if i <= 0 then 0
+    else if Char.code s.[i] land 0xC0 <> 0x80 then i
+    else back (i - 1)
+  in
+  if n >= String.length s then String.length s else back n
+
 let fmt_age_s a =
   if a < 60.0 then Printf.sprintf "%.0fs" a
   else if a < 3600.0 then Printf.sprintf "%.0fm" (a /. 60.0)
@@ -390,7 +439,7 @@ let connector_human (c : connector_info) =
   let err_bit =
     let clip s =
       if String.length s > err_detail_max_chars then
-        String.sub s 0 err_detail_max_chars ^ "..."
+        String.sub s 0 (utf8_safe_cut s err_detail_max_chars) ^ "..."
       else s
     in
     match (c.conn_last_error_op, c.conn_last_error_detail) with

@@ -323,11 +323,14 @@ let test_connector_erroring_surfaces_real_error () =
   check bool "human names the failing op" true
     (string_contains ~needle:"poll" human);
   (* The what-to-check tail is kept ALONGSIDE the real error, not traded for
-     it. write_connector_state sets ok = (last_error = None) and only advances
-     last_ok_ts when ok, so Health_erroring implies last_error was Some —
-     dropping the checklist "only when an error is known" would delete it in
-     every production case while looking like it was preserved. It is a `#`
-     shell comment on a runnable command, so it costs nothing. *)
+     it. Health_erroring does NOT imply last_error was Some: B228's
+     touch_connector_last_sync refreshes last_sync at pass start while
+     preserving last_ok and last_error, so a pass that hangs after a
+     successful predecessor is erroring with nothing recorded (see the
+     no-detail test below). Conditioning the checklist on "an error is known"
+     would therefore drop it in exactly the case with no error text to fall
+     back on. It is a `#` shell comment on a runnable command, so keeping it
+     unconditionally costs nothing. *)
   check bool "what-to-check tail is retained alongside the real error" true
     (string_contains ~needle:"check token" human);
   (* …and the copy-pasteable recovery command survives (docs/commands.md
@@ -345,9 +348,15 @@ let test_connector_erroring_surfaces_real_error () =
   check string "json last_error_op" "poll" (json_string j "last_error_op")
 
 let test_connector_erroring_without_detail_keeps_guidance () =
-  (* Legacy / hand-written state files can record no detail. The checklist is
-     unconditional, so this path is guidance-identical to the one above; pin
-     it so the two cannot silently diverge again. *)
+  (* Erroring with NO recorded detail is a reachable production state, not a
+     legacy-file curiosity: B228's touch_connector_last_sync stamps last_sync
+     at pass start and preserves last_ok + last_error, so a pass that hangs
+     after a successful predecessor lands here for the tens of seconds to
+     minutes before sync_watchdog_s (max 90.0 (interval *. 4.0)) fires. This
+     is the case with no error text to show, so it is the case that most needs
+     the checklist. The checklist is unconditional, so this path is
+     guidance-identical to the one above; pin it so the two cannot silently
+     diverge again. *)
   let info = erroring_info () in
   check string "health erroring" "erroring" (health_to_string info.conn_health);
   check bool "falls back to the checklist when no error is recorded" true
@@ -457,6 +466,43 @@ let test_connector_error_detail_bounded () =
   check string "json keeps the full detail" detail
     (json_string (connector_json info) "last_error_detail")
 
+let test_connector_error_truncation_is_utf8_safe () =
+  (* The clip is a BYTE slice and err_detail sources (Yojson.Safe.to_string of
+     a relay body, Printexc.to_string) can carry non-ASCII. A cut landing
+     mid-sequence would emit a lone continuation byte -> mojibake. Build a
+     detail whose 120-byte boundary falls inside a 3-byte character: 119 ASCII
+     bytes then U+2014, so byte 120 is a continuation byte. *)
+  let detail = String.make 119 'e' ^ "\xe2\x80\x94" ^ String.make 200 'z' in
+  let info =
+    erroring_info ~last_error_op:"poll" ~last_error_detail:detail ()
+  in
+  let human = connector_line info in
+  (* Every byte of the rendered line must be part of a well-formed sequence:
+     no continuation byte may follow a non-lead byte. *)
+  let no_orphan_continuation s =
+    let n = String.length s in
+    let rec go i =
+      if i >= n then true
+      else
+        let b = Char.code s.[i] in
+        if b < 0x80 then go (i + 1)
+        else if b land 0xE0 = 0xC0 then i + 1 < n && go (i + 2)
+        else if b land 0xF0 = 0xE0 then i + 2 < n && go (i + 3)
+        else if b land 0xF8 = 0xF0 then i + 3 < n && go (i + 4)
+        else false (* lone continuation byte or invalid lead *)
+    in
+    go 0
+  in
+  check bool "truncated human line is well-formed UTF-8" true
+    (no_orphan_continuation human);
+  (* It backed off rather than splitting: the partial em-dash is gone. *)
+  check bool "detail was truncated" true (string_contains ~needle:"..." human);
+  check bool "no partial em-dash retained" false
+    (string_contains ~needle:"\xe2\x80..." human);
+  (* --json still keeps the full, untruncated detail. *)
+  check string "json keeps the full detail" detail
+    (json_string (connector_json info) "last_error_detail")
+
 (* --- #11(2): scope/provenance labels ------------------------------------- *)
 
 let test_state_line_names_the_relay_config_file () =
@@ -466,7 +512,14 @@ let test_state_line_names_the_relay_config_file () =
      broker-root resolution is fingerprint-derived), reads the machine-wide
      $HOME/.config/c2c/relay.json. `c2c relay setup` then writes that same
      machine-wide file, contradicting the label. Naming the file is true in
-     every branch. *)
+     every branch.
+
+     Note the marker is NOT a provenance claim about the URL either:
+     relay_configured is resolve_relay_url None <> None = C2C_RELAY_URL →
+     config file, so with C2C_RELAY_URL exported the named file contributed
+     nothing. The rendered string survives because it only names a path and
+     describes THAT path's reach. Every needle below is checked against a
+     rendered line, so no assertion here asserts provenance. *)
   let cls = { state = Unconfigured; reason = "no relay URL configured" } in
   let machine =
     state_line ~config:(Relay_config_machine "/home/u/.config/c2c/relay.json") cls
@@ -480,8 +533,14 @@ let test_state_line_names_the_relay_config_file () =
   let repo =
     state_line ~config:(Relay_config_repo "/b/root/relay.json") cls
   in
-  check bool "broker-root config IS this repo's" true
-    (string_contains ~needle:"this repo's broker root" repo);
+  (* C2C_MCP_BROKER_ROOT is a free-form override — C2c_repo_fp.resolve_broker_root
+     rejects values like a legacy .git/c2c/mcp path and falls back to the
+     canonical root, while this classifier still honours them. So the branch
+     names the env var and makes NO repo-scope claim. *)
+  check bool "broker-root case names the env var" true
+    (string_contains ~needle:"from C2C_MCP_BROKER_ROOT" repo);
+  check bool "broker-root case claims no repo scope" false
+    (string_contains ~needle:"this repo" repo);
   check bool "repo case names its file" true
     (string_contains ~needle:"/b/root/relay.json" repo);
   let explicit =
@@ -885,6 +944,8 @@ let () =
             test_connector_wedged_remediation_untouched;
           test_case "error detail bounded, command last" `Quick
             test_connector_error_detail_bounded;
+          test_case "error truncation is utf-8 safe" `Quick
+            test_connector_error_truncation_is_utf8_safe;
           test_case "state/connector line scopes disambiguated" `Quick
             test_relay_lines_scopes_disambiguated;
           test_case "state line names the relay config file" `Quick
