@@ -104,10 +104,10 @@ the canonical framing.)
   `.collab/runbooks/git-workflow.md` §`just`-recipes. If you edit
   `data/opencode-plugin/c2c.ts`, run `just codegen-opencode-plugin` and
   commit both the TS source and `ocaml/cli/c2c_opencode_plugin_embedded.ml`.
-- **Test results can be wrong in BOTH directions. Six known ways (2026-07-19).**
+- **Test results can be wrong in BOTH directions. Seven known ways (2026-07-19).**
   Any of these will make you report a branch green that isn't, or condemn one
   that is. When a count or a verdict is load-bearing (a review, a merge
-  decision), guard against all six:
+  decision), guard against all seven:
   1. **Stale binary.** `dune exec` can run a previously-built `.exe` and pass.
      Always `dune build <targets>` explicitly first. Suites that shell out to
      `c2c.exe` must declare it in `(deps ...)` — several already do; a stanza
@@ -143,6 +143,11 @@ the canonical framing.)
      green run of a test file that was never rebuilt. Use
      `scripts/dune-build-locked.sh build ./ocaml/cli/<target>.exe` (the
      relative-with-`./` form), which resolves correctly.
+  7. **`@ocaml/cli/runtest` is NOT the repo-wide alias.** Forced, it yields
+     ~57 suites / ~803 tests — under a third of the suite — so a count quoted
+     from it reads clean against a 139/3066 baseline while most tests never
+     ran. Quote repo-wide `@runtest` (or say explicitly which subtree you
+     measured, and compare against a baseline measured the same way).
   Known-flaky: `test_c2c_relay_managed.ml` `"relay ready"` binds a random port;
   re-run in isolation before blaming a branch. A worktree placed **outside**
   the repo tree fails ~148 tests environmentally — keep them in `.worktrees/`.
