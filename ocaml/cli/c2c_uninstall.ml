@@ -9,7 +9,7 @@ open C2c_types
 open Cmdliner.Term.Syntax
 
 let known_components =
-  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "self"; "git-hook"; "git-shim"; "all" ]
+  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "self"; "git-shim"; "all" ]
 
 let home_dir () = try Sys.getenv "HOME" with Not_found -> ""
 
@@ -263,49 +263,6 @@ let safe_remove_owned ~dry_run path =
   end
 
 (* -------------------------------------------------------------------------- *)
-(* Git hook verification/removal *)
-(* -------------------------------------------------------------------------- *)
-
-let c2c_hook_source () =
-  match Git_helpers.git_repo_toplevel () with
-  | None -> None
-  | Some r ->
-      let parent = Option.value (Git_helpers.git_common_dir_parent ()) ~default:r in
-      let src = parent // ".c2c" // "hooks" // "pre-commit.sh" in
-      if Sys.file_exists src then Some src else None
-
-let string_contains s sub =
-  let rec aux i =
-    if i + String.length sub > String.length s then false
-    else if String.sub s i (String.length sub) = sub then true
-    else aux (i + 1)
-  in
-  aux 0
-
-let is_c2c_hook hook_path hook_src =
-  if not (Sys.file_exists hook_path) then false
-  else
-    try
-      let stat = Unix.lstat hook_path in
-      match stat.Unix.st_kind with
-      | Unix.S_LNK ->
-          let target = Unix.readlink hook_path in
-          string_contains target "scripts/git-hooks" || target = hook_src
-      | _ ->
-          let src_content = C2c_utils.read_file_opt hook_src in
-          let dst_content = C2c_utils.read_file_opt hook_path in
-          src_content <> "" && src_content = dst_content
-    with _ -> false
-
-let remove_git_hook_file ~dry_run path hook_src =
-  if not (is_c2c_hook path hook_src) then None
-  else if dry_run then Some path
-  else begin
-    (try Unix.unlink path with Unix.Unix_error _ -> ());
-    Some path
-  end
-
-(* -------------------------------------------------------------------------- *)
 (* Manifest helpers *)
 (* -------------------------------------------------------------------------- *)
 
@@ -494,16 +451,6 @@ let recompute_git_shim_artifacts () =
   in
   base @ instances
 
-let recompute_git_hook_artifacts ~target_dir =
-  let git_common =
-    match Git_helpers.git_common_dir () with
-    | Some d -> d
-    | None -> target_dir // ".git"
-  in
-  [ C2c_install_manifest.owned_file (git_common // "hooks" // "pre-commit")
-  ; C2c_install_manifest.owned_file (git_common // "hooks" // "pre-push")
-  ]
-
 let recompute_artifacts_for_component ~component ~target_dir =
   match component with
   | "claude" -> recompute_claude_artifacts ~target_dir
@@ -513,7 +460,6 @@ let recompute_artifacts_for_component ~component ~target_dir =
   | "crush" -> recompute_crush_artifacts ()
   | "grok" -> recompute_grok_artifacts ()
   | "agy" -> recompute_agy_artifacts ()
-  | "git-hook" -> ([], recompute_git_hook_artifacts ~target_dir, None)
   | "git-shim" -> ([], recompute_git_shim_artifacts (), None)
   | _ -> ([], [], None)
 
@@ -590,18 +536,7 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
       | None -> None
     else None
   in
-  (* For git-hook, verify before removing. *)
-  let removed_paths =
-    if component = "git-hook" then
-      match c2c_hook_source () with
-      | Some hook_src ->
-          List.filter_map
-            (fun a -> remove_git_hook_file ~dry_run a.C2c_install_manifest.path hook_src)
-            artifacts
-      | None -> []
-    else
-      List.filter_map (remove_artifact ~dry_run) artifacts
-  in
+  let removed_paths = List.filter_map (remove_artifact ~dry_run) artifacts in
   let all_removed =
     match settings_removed with
     | Some p -> p :: removed_paths
@@ -666,7 +601,7 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
     exit 124
   end;
   if component = "all" then begin
-    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "crush"; "git-shim"; "git-hook" ] in
+    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "crush"; "git-shim" ] in
     let target_dir = resolve_target_dir target_dir_opt in
     let all_removed = ref [] in
     List.iter
@@ -683,12 +618,6 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
   end else begin
     let target_dir =
       if component = "opencode" || component = "claude" then resolve_target_dir target_dir_opt
-      else if component = "git-hook" then
-        (match Git_helpers.git_common_dir () with
-         | Some d -> d
-         | None ->
-             let t = resolve_target_dir target_dir_opt in
-             t // ".git")
       else resolve_target_dir None
     in
     let _, removed = uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias:alias_opt in
