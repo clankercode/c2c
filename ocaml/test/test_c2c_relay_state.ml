@@ -46,13 +46,13 @@ let classify_with ?(relay_configured = true) ?(has_identity = true)
   classify ~relay_configured ~has_identity ~has_alias ~registration
     ~connector_live ~local_reg_evidence
 
-let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) () :
-    C2c_relay_connector.connector_state =
+let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?last_error_op
+    ?last_error_detail () : C2c_relay_connector.connector_state =
   {
     C2c_relay_connector.cs_last_sync_ts = last_sync;
     cs_last_ok_ts = last_ok;
-    cs_last_error_op = None;
-    cs_last_error_detail = None;
+    cs_last_error_op = last_error_op;
+    cs_last_error_detail = last_error_detail;
     cs_last_error_ts = None;
     (* H3 added cs_node_id to connector_state; this H5 fixture predates it.
        None = no node-id recorded, the pre-H3 behaviour. *)
@@ -284,12 +284,6 @@ let test_connector_absent_state () =
   check bool "no age" true (info.conn_last_sync_age_s = None);
   check string "health absent" "absent" (health_to_string info.conn_health)
 
-(* --- human/JSON parity ------------------------------------------------------- *)
-
-let all_states =
-  [ Unconfigured; Configured_not_registered; Configured_unverified;
-    Registered_live; Registered_expired; Registered_unreachable ]
-
 let json_string j key =
   match j with
   | `Assoc fields ->
@@ -297,6 +291,309 @@ let json_string j key =
        | Some (`String s) -> s
        | _ -> failwith (Printf.sprintf "missing string key %S" key))
   | _ -> failwith "expected Assoc"
+
+(* --- #11(2): erroring must report the real error, not a guess -------------- *)
+
+(* An erroring connector means the machine-wide connector service synced THIS
+   repo's broker root within the freshness window and that sync failed —
+   connector-state.json is per-root, so the failure is in scope here. The
+   state file already carries the failing op and its detail; the old
+   remediation ignored both and appended a guessed checklist ("check token
+   …, identity …, relay reachability") instead. Surface the fact we have. *)
+
+let erroring_info ?last_error_op ?last_error_detail () =
+  connector_info ~process_present:true
+    ~state:
+      (Some
+         (conn_state ~last_sync:(now -. 10.0) ~last_ok:(now -. 9999.0)
+            ?last_error_op ?last_error_detail ()))
+    ~now ()
+
+let test_connector_erroring_surfaces_real_error () =
+  let info =
+    erroring_info ~last_error_op:"poll"
+      ~last_error_detail:"relay 401 unauthorized: signer not accepted" ()
+  in
+  check string "health erroring" "erroring" (health_to_string info.conn_health);
+  let human = connector_line info in
+  (* The operator must see the actual failure, not a checklist. *)
+  check bool "human surfaces the real error detail" true
+    (string_contains ~needle:"relay 401 unauthorized: signer not accepted"
+       human);
+  check bool "human names the failing op" true
+    (string_contains ~needle:"poll" human);
+  (* The what-to-check tail is kept ALONGSIDE the real error, not traded for
+     it. Health_erroring does NOT imply last_error was Some: B228's
+     touch_connector_last_sync refreshes last_sync at pass start while
+     preserving last_ok and last_error, so a pass that hangs after a
+     successful predecessor is erroring with nothing recorded (see the
+     no-detail test below). Conditioning the checklist on "an error is known"
+     would therefore drop it in exactly the case with no error text to fall
+     back on. It is a `#` shell comment on a runnable command, so keeping it
+     unconditionally costs nothing. *)
+  check bool "what-to-check tail is retained alongside the real error" true
+    (string_contains ~needle:"check token" human);
+  (* …and the copy-pasteable recovery command survives (docs/commands.md
+     contract: remediation is a runnable command when not live). *)
+  check bool "remediation still a runnable restart command" true
+    (match info.conn_remediation with
+     | Some r -> string_contains ~needle:"c2c restart relay-connect" r
+     | None -> false);
+  check bool "human still carries the restart command" true
+    (string_contains ~needle:"c2c restart relay-connect" human);
+  (* JSON parity: the same fact, machine-readable. *)
+  let j = connector_json info in
+  check string "json last_error_detail" "relay 401 unauthorized: signer not accepted"
+    (json_string j "last_error_detail");
+  check string "json last_error_op" "poll" (json_string j "last_error_op")
+
+let test_connector_erroring_without_detail_keeps_guidance () =
+  (* Erroring with NO recorded detail is a reachable production state, not a
+     legacy-file curiosity: B228's touch_connector_last_sync stamps last_sync
+     at pass start and preserves last_ok + last_error, so a pass that hangs
+     after a successful predecessor lands here for the tens of seconds to
+     minutes before sync_watchdog_s (max 90.0 (interval *. 4.0)) fires. This
+     is the case with no error text to show, so it is the case that most needs
+     the checklist. The checklist is unconditional, so this path is
+     guidance-identical to the one above; pin it so the two cannot silently
+     diverge again. *)
+  let info = erroring_info () in
+  check string "health erroring" "erroring" (health_to_string info.conn_health);
+  check bool "falls back to the checklist when no error is recorded" true
+    (match info.conn_remediation with
+     | Some r ->
+         string_contains ~needle:"c2c restart relay-connect" r
+         && string_contains ~needle:"check token" r
+     | None -> false);
+  let j = connector_json info in
+  check bool "json last_error_detail is null" true
+    (match j with
+     | `Assoc fields -> List.assoc_opt "last_error_detail" fields = Some `Null
+     | _ -> false)
+
+let test_connector_wedged_remediation_untouched () =
+  (* Wedged is a property of the connector PROCESS — machine-wide and
+     independent of any repo's relay config — and is the one class where
+     "restart the connector" is unambiguously right. Pin it: no error tail,
+     no checklist, just the restart command. *)
+  let info =
+    connector_info ~process_present:true
+      ~state:
+        (Some
+           (conn_state ~last_sync:(now -. 3600.0) ~last_ok:(now -. 3600.0)
+              ~last_error_op:"push"
+              ~last_error_detail:"connection refused" ()))
+      ~now ()
+  in
+  check string "health wedged" "wedged" (health_to_string info.conn_health);
+  check (option string) "wedged remediation is the bare restart command"
+    (Some
+       "c2c restart relay-connect 2>/dev/null || (pkill -f 'c2c relay \
+        connect' 2>/dev/null; c2c relay connect &)")
+    info.conn_remediation
+
+(* --- #11(2): the two lines must not read as one contradiction ------------- *)
+
+let test_relay_lines_scopes_disambiguated () =
+  (* The reported symptom: "connector: erroring" printed beside
+     "state: unconfigured — no relay URL configured" reads as
+     self-contradictory. Both are true; they answer different questions.
+     The rendered lines must say which is which. *)
+  let cls = { state = Unconfigured; reason = "no relay URL configured" } in
+  (* The DEFAULT host: no env var set, so the relay config is machine-wide. *)
+  let sline =
+    state_line ~config:(Relay_config_machine "/home/u/.config/c2c/relay.json")
+      cls
+  in
+  let cinfo =
+    erroring_info ~last_error_op:"push" ~last_error_detail:"relay unreachable" ()
+  in
+  let cline = connector_line cinfo in
+  (* Each line keeps everything it said before… *)
+  check bool "state line keeps the classification body" true
+    (string_contains ~needle:(classification_human cls) sline);
+  check bool "connector line keeps the health body" true
+    (string_contains ~needle:(connector_human cinfo) cline);
+  (* …and gains a marker that distinguishes it from the other. The state line
+     names its config FILE (which on this default host is machine-wide); the
+     connector line names the machine service acting on this repo's root. *)
+  check bool "state line names the relay config file it read" true
+    (string_contains ~needle:"relay config: /home/u/.config/c2c/relay.json"
+       sline);
+  check bool "connector line is scoped to the machine service" true
+    (string_contains ~needle:"machine connector service" cline);
+  check bool "the two markers are not the same claim" false
+    (string_contains ~needle:"machine connector service" sline);
+  (* The withdrawn premise must stay absent: neither line claims the other's
+     subject, and the state line makes no repo-scope claim it cannot back. *)
+  check bool "state line makes no repo-scope claim on a default host" false
+    (string_contains ~needle:"this repo" sline);
+  check bool "connector line does not claim to describe the relay config" false
+    (string_contains ~needle:"relay config:" cline)
+
+(* --- #11(2): the recorded error must not crowd out the recovery command --- *)
+
+let test_connector_error_detail_bounded () =
+  (* err_detail sources include Yojson.Safe.to_string of a whole relay
+     response — unbounded in principle. The connector's own log renderers clip
+     this field; the human line must too, or a large detail pushes the
+     copy-pasteable command far down a wrapped line. *)
+  let detail = String.make 900 'x' in
+  let info =
+    erroring_info ~last_error_op:"poll" ~last_error_detail:detail ()
+  in
+  let human = connector_line info in
+  check bool "human line does not carry the full 900-char detail" false
+    (string_contains ~needle:detail human);
+  check bool "detail is elided" true (string_contains ~needle:"xxx..." human);
+  check bool "human line stays bounded" true (String.length human < 500);
+  (* The command must survive AND come last, so a long detail cannot displace
+     it: the error sits inside the parenthesised evidence group. *)
+  check bool "recovery command still present" true
+    (string_contains ~needle:"c2c restart relay-connect" human);
+  let idx needle =
+    let n = String.length needle and h = String.length human in
+    let rec go i = if i + n > h then -1
+      else if String.sub human i n = needle then i else go (i + 1) in
+    go 0
+  in
+  check bool "the recovery command follows the error, not the reverse" true
+    (idx "last error:" >= 0 && idx "c2c restart relay-connect" > idx "last error:");
+  (* A separator, so the previous bit and the error do not run together. *)
+  check bool "error bit is separated" true
+    (string_contains ~needle:"; last error:" human);
+  (* --json keeps the whole thing: truncation is a rendering concern only. *)
+  check string "json keeps the full detail" detail
+    (json_string (connector_json info) "last_error_detail")
+
+let test_connector_error_truncation_is_utf8_safe () =
+  (* The clip is a BYTE slice and err_detail sources (Yojson.Safe.to_string of
+     a relay body, Printexc.to_string) can carry non-ASCII. A cut landing
+     mid-sequence would emit a lone continuation byte -> mojibake. Build a
+     detail whose 120-byte boundary falls inside a 3-byte character: 119 ASCII
+     bytes then U+2014, so byte 120 is a continuation byte. *)
+  let detail = String.make 119 'e' ^ "\xe2\x80\x94" ^ String.make 200 'z' in
+  let info =
+    erroring_info ~last_error_op:"poll" ~last_error_detail:detail ()
+  in
+  let human = connector_line info in
+  (* Every byte of the rendered line must be part of a well-formed sequence:
+     no continuation byte may follow a non-lead byte. *)
+  let no_orphan_continuation s =
+    let n = String.length s in
+    let rec go i =
+      if i >= n then true
+      else
+        let b = Char.code s.[i] in
+        if b < 0x80 then go (i + 1)
+        else if b land 0xE0 = 0xC0 then i + 1 < n && go (i + 2)
+        else if b land 0xF0 = 0xE0 then i + 2 < n && go (i + 3)
+        else if b land 0xF8 = 0xF0 then i + 3 < n && go (i + 4)
+        else false (* lone continuation byte or invalid lead *)
+    in
+    go 0
+  in
+  check bool "truncated human line is well-formed UTF-8" true
+    (no_orphan_continuation human);
+  (* It backed off rather than splitting: the partial em-dash is gone. *)
+  check bool "detail was truncated" true (string_contains ~needle:"..." human);
+  check bool "no partial em-dash retained" false
+    (string_contains ~needle:"\xe2\x80..." human);
+  (* --json still keeps the full, untruncated detail. *)
+  check string "json keeps the full detail" detail
+    (json_string (connector_json info) "last_error_detail")
+
+(* --- #11(2): scope/provenance labels ------------------------------------- *)
+
+let test_state_line_names_the_relay_config_file () =
+  (* The blocking defect this replaces: the line asserted "[scope: this repo's
+     relay config]" while relay_configured, in the DEFAULT case (neither
+     C2C_RELAY_CONFIG nor C2C_MCP_BROKER_ROOT set — every plain shell, since
+     broker-root resolution is fingerprint-derived), reads the machine-wide
+     $HOME/.config/c2c/relay.json. `c2c relay setup` then writes that same
+     machine-wide file, contradicting the label. Naming the file is true in
+     every branch.
+
+     Note the marker is NOT a provenance claim about the URL either:
+     relay_configured is resolve_relay_url None <> None = C2C_RELAY_URL →
+     config file, so with C2C_RELAY_URL exported the named file contributed
+     nothing. The rendered string survives because it only names a path and
+     describes THAT path's reach. Every needle below is checked against a
+     rendered line, so no assertion here asserts provenance. *)
+  let cls = { state = Unconfigured; reason = "no relay URL configured" } in
+  let machine =
+    state_line ~config:(Relay_config_machine "/home/u/.config/c2c/relay.json") cls
+  in
+  check bool "machine-wide default is not claimed as repo scope" false
+    (string_contains ~needle:"this repo" machine);
+  check bool "machine-wide default says machine-wide" true
+    (string_contains ~needle:"machine-wide" machine);
+  check bool "the file is named" true
+    (string_contains ~needle:"/home/u/.config/c2c/relay.json" machine);
+  let repo =
+    state_line ~config:(Relay_config_repo "/b/root/relay.json") cls
+  in
+  (* C2C_MCP_BROKER_ROOT is a free-form override — C2c_repo_fp.resolve_broker_root
+     rejects values like a legacy .git/c2c/mcp path and falls back to the
+     canonical root, while this classifier still honours them. So the branch
+     names the env var and makes NO repo-scope claim. *)
+  check bool "broker-root case names the env var" true
+    (string_contains ~needle:"from C2C_MCP_BROKER_ROOT" repo);
+  check bool "broker-root case claims no repo scope" false
+    (string_contains ~needle:"this repo" repo);
+  check bool "repo case names its file" true
+    (string_contains ~needle:"/b/root/relay.json" repo);
+  let explicit =
+    state_line ~config:(Relay_config_explicit "/etc/c2c.json") cls
+  in
+  check bool "explicit override names the env var, claims no scope" true
+    (string_contains ~needle:"C2C_RELAY_CONFIG" explicit);
+  check bool "explicit override makes no repo claim" false
+    (string_contains ~needle:"this repo" explicit);
+  (* Every variant still carries the classification verbatim. *)
+  List.iter
+    (fun l ->
+       check bool "state line keeps the classification body" true
+         (string_contains ~needle:(classification_human cls) l))
+    [ machine; repo; explicit ]
+
+let test_scope_tokens_pinned () =
+  (* These are sold as stable --json tokens; pin the literal values and the
+     mapping from location to token, in both the accessor and the rendered
+     JSON. *)
+  check (list string) "relay-config scope token contract"
+    [ "relay_config_machine"; "relay_config_repo"; "relay_config_explicit" ]
+    [ scope_relay_config_machine; scope_relay_config_repo;
+      scope_relay_config_explicit ];
+  check string "connector scope token contract" "machine_connector_service"
+    scope_connector_machine_service;
+  let cls = { state = Unconfigured; reason = "no relay URL configured" } in
+  List.iter
+    (fun (loc, tok, path) ->
+       check string "accessor token" tok (relay_config_scope_token loc);
+       check string "accessor path" path (relay_config_path_of loc);
+       let j = classification_json ~config:loc cls in
+       check string "registration.scope" tok (json_string j "scope");
+       check string "registration.config_path" path (json_string j "config_path"))
+    [ (Relay_config_machine "/home/u/.config/c2c/relay.json",
+       "relay_config_machine", "/home/u/.config/c2c/relay.json");
+      (Relay_config_repo "/b/root/relay.json", "relay_config_repo",
+       "/b/root/relay.json");
+      (Relay_config_explicit "/etc/c2c.json", "relay_config_explicit",
+       "/etc/c2c.json") ];
+  (* The connector line's token is unchanged and is asserted here for the
+     first time — it was the other untested half of the contract. *)
+  check string "connector.scope"  "machine_connector_service"
+    (json_string
+       (connector_json (erroring_info ~last_error_op:"push"
+                          ~last_error_detail:"boom" ()))
+       "scope")
+
+(* --- human/JSON parity ------------------------------------------------------- *)
+
+let all_states =
+  [ Unconfigured; Configured_not_registered; Configured_unverified;
+    Registered_live; Registered_expired; Registered_unreachable ]
 
 let test_state_strings_distinct_and_stable () =
   let strings = List.map state_to_string all_states in
@@ -309,19 +606,25 @@ let test_state_strings_distinct_and_stable () =
     strings
 
 let test_classification_human_json_parity () =
+  let config = Relay_config_machine "/home/u/.config/c2c/relay.json" in
   List.iter
     (fun state ->
        let c = { state; reason = "some reason" } in
-       let json_state = json_string (classification_json c) "state" in
+       let json_state = json_string (classification_json ~config c) "state" in
        let human = classification_human c in
        check bool
          (Printf.sprintf "human line embeds JSON state %S" json_state)
          true
          (string_contains ~needle:json_state human);
        check string "JSON reason matches record"
-         c.reason (json_string (classification_json c) "reason");
+         c.reason (json_string (classification_json ~config c) "reason");
        check bool "human line embeds reason" true
-         (string_contains ~needle:c.reason human))
+         (string_contains ~needle:c.reason human);
+       (* The rendered line and the JSON must agree on the config file too. *)
+       check bool "state line embeds the JSON config_path" true
+         (string_contains
+            ~needle:(json_string (classification_json ~config c) "config_path")
+            (state_line ~config c)))
     all_states
 
 let test_connector_human_json_parity () =
@@ -338,7 +641,10 @@ let test_connector_human_json_parity () =
         ~state:
           (Some (conn_state ~last_sync:(now -. 9999.0) ~last_ok:(now -. 9999.0) ()))
         ~now ();
-      connector_info ~state:None ~now () ]
+      connector_info ~state:None ~now ();
+      (* #11: erroring, with and without a recorded error. *)
+      erroring_info ~last_error_op:"poll" ~last_error_detail:"boom" ();
+      erroring_info () ]
   in
   List.iter
     (fun info ->
@@ -376,7 +682,34 @@ let test_connector_human_json_parity () =
        check bool "json has remediation key" true
          (match j with
           | `Assoc fields -> List.mem_assoc "remediation" fields
-          | _ -> false))
+          | _ -> false);
+       (* #11: remediation and the recorded error must not diverge between
+          the two surfaces. Whatever the human line offers as a command, the
+          JSON must offer verbatim; whatever error the human reports, the
+          JSON must carry. *)
+       (match info.conn_remediation with
+        | Some r ->
+            check string "json remediation matches record" r
+              (json_string j "remediation");
+            check bool "human line carries the remediation" true
+              (string_contains ~needle:r human)
+        | None ->
+            check bool "json remediation null when none" true
+              (match j with
+               | `Assoc fields -> List.assoc_opt "remediation" fields = Some `Null
+               | _ -> false));
+       (match info.conn_last_error_detail with
+        | Some d ->
+            check string "json last_error_detail matches record" d
+              (json_string j "last_error_detail");
+            check bool "human line reports the recorded error" true
+              (string_contains ~needle:d human)
+        | None ->
+            check bool "json last_error_detail null when none" true
+              (match j with
+               | `Assoc fields ->
+                   List.assoc_opt "last_error_detail" fields = Some `Null
+               | _ -> false)))
     cases
 
 (* --- B234: alias line parenthetical must match composite registration ------ *)
@@ -507,6 +840,22 @@ let test_whoami_json_human_parity_unconfigured () =
         | Some (`Bool b) -> check bool "connector not live in isolated env" false b
         | _ -> fail "relay.connector.live missing")
    | _ -> fail "relay.connector missing");
+  (* #11(2): this harness sets C2C_MCP_BROKER_ROOT, so the relay config file
+     really is repo-local here and the tokens must say so — end-to-end, not
+     just in the pure renderer. On a plain shell (no env var) the same code
+     path reports relay_config_machine instead; that is the case the old
+     "this repo's relay config" label got wrong. *)
+  check string "registration.scope reflects the broker-root config file"
+    "relay_config_repo" (json_string registration "scope");
+  check string "registration.config_path names that file"
+    (Filename.concat (Filename.concat tmp "broker") "relay.json")
+    (json_string registration "config_path");
+  (match Yojson.Safe.Util.member "connector" relay with
+   | `Assoc fields ->
+       check bool "connector.scope token present" true
+         (List.assoc_opt "scope" fields
+          = Some (`String "machine_connector_service"))
+   | _ -> fail "relay.connector missing");
   check bool "relay.alias key still present (additive JSON)" true
     (match relay with
      | `Assoc fields -> List.mem_assoc "alias" fields
@@ -519,6 +868,12 @@ let test_whoami_json_human_parity_unconfigured () =
     (string_contains ~needle:"state:" out_h);
   check bool "human output has a connector: line" true
     (string_contains ~needle:"connector:" out_h);
+  check bool "human state line names the same relay config file" true
+    (string_contains
+       ~needle:
+         ("relay config: "
+          ^ Filename.concat (Filename.concat tmp "broker") "relay.json")
+       out_h);
   (* Local broker alias is present; the old conflated "  registered:" label
      (A020/A027) must stay gone. B234: unconfigured is not positive absence —
      do not require "not a relay registration" on the alias line. *)
@@ -580,6 +935,22 @@ let () =
           test_case "connector_pid_alive helper" `Quick
             test_connector_pid_alive_helper;
           test_case "absent state" `Quick test_connector_absent_state ] );
+      ( "connector presentation (#11)",
+        [ test_case "erroring surfaces the real error" `Quick
+            test_connector_erroring_surfaces_real_error;
+          test_case "erroring without detail keeps guidance" `Quick
+            test_connector_erroring_without_detail_keeps_guidance;
+          test_case "wedged remediation untouched" `Quick
+            test_connector_wedged_remediation_untouched;
+          test_case "error detail bounded, command last" `Quick
+            test_connector_error_detail_bounded;
+          test_case "error truncation is utf-8 safe" `Quick
+            test_connector_error_truncation_is_utf8_safe;
+          test_case "state/connector line scopes disambiguated" `Quick
+            test_relay_lines_scopes_disambiguated;
+          test_case "state line names the relay config file" `Quick
+            test_state_line_names_the_relay_config_file;
+          test_case "scope tokens pinned" `Quick test_scope_tokens_pinned ] );
       ( "human/JSON parity",
         [ test_case "state strings distinct + pinned" `Quick
             test_state_strings_distinct_and_stable;

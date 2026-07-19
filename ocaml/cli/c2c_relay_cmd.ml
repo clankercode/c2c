@@ -280,15 +280,30 @@ match storage with
     let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
     Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 
-let relay_config_path () =
+(* #11(2): the same three branches as [relay_config_path], but KEEPING which
+   branch was taken. Surfaces that report on the relay config (whoami/status'
+   `state:` line) must name the file rather than claim a scope: only the
+   middle branch is repo-local, and in the default case — neither env var set,
+   which is every plain shell, since broker-root resolution is
+   fingerprint-derived and never sets C2C_MCP_BROKER_ROOT — the file is
+   machine-wide. [relay_config_path] is derived from this so the two can never
+   drift; the payload is the real path (no abbreviation), since an operator
+   reading the label may want to open or `cat` it. *)
+let relay_config_location () : Relay_state.relay_config_location =
   match Sys.getenv_opt "C2C_RELAY_CONFIG" with
-  | Some p when p <> "" -> p
+  | Some p when p <> "" -> Relay_state.Relay_config_explicit p
   | _ ->
       (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-       | Some d when String.trim d <> "" -> Filename.concat (String.trim d) "relay.json"
+       | Some d when String.trim d <> "" ->
+           Relay_state.Relay_config_repo
+             (Filename.concat (String.trim d) "relay.json")
        | _ ->
            let home = try Sys.getenv "HOME" with Not_found -> "." in
-           Filename.concat home ".config/c2c/relay.json")
+           Relay_state.Relay_config_machine
+             (Filename.concat home ".config/c2c/relay.json"))
+
+let relay_config_path () =
+  Relay_state.relay_config_path_of (relay_config_location ())
 
 (* Delegated to C2c_io.read_file_trimmed (#388) *)
 let read_file_trimmed = C2c_io.read_file_trimmed

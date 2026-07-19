@@ -912,7 +912,9 @@ that are easy to conflate:
    optional `lease:` when `--relay` is passed), not the alias parenthetical.
 3. **Connector** — whether a broker-owned connector bridge is live (the same
    signal as `c2c doctor --relay`'s `relay.connector` check; the two surfaces
-   never disagree).
+   never disagree). This is a *machine-wide service* reporting on *this
+   repo's broker root* — a different question from the `state:` line, which
+   each line now labels; see **Scopes** below.
 
 The `state:` line (and `relay.registration.state` in `--json`) is the
 composite classification:
@@ -933,8 +935,8 @@ Human and `--json` output carry the same state string and reason. Example
 Relay:
   url:        https://relay.c2c.im  (configured)
   alias:      (no current session alias)
-  state:      configured_not_registered — no current session alias to register
-  connector:  none (no connector sync state — start with 'c2c start relay-connect')
+  state:      configured_not_registered — no current session alias to register  [relay config: /home/you/.config/c2c/relay.json (machine-wide)]
+  connector:  none (no connector sync state — start with 'c2c relay connect') — c2c start relay-connect 2>/dev/null || c2c relay connect &  [scope: machine connector service, this repo's broker root]
 ```
 
 and the matching `--json` fields under `relay`:
@@ -942,7 +944,9 @@ and the matching `--json` fields under `relay`:
 ```json
 "registration": {
     "state": "configured_not_registered",
-    "reason": "no current session alias to register"
+    "reason": "no current session alias to register",
+    "scope": "relay_config_machine",
+    "config_path": "/home/you/.config/c2c/relay.json"
 },
 "connector": {
     "live": false,
@@ -951,7 +955,10 @@ and the matching `--json` fields under `relay`:
     "last_ok_age_s": null,
     "process_present": false,
     "health": "absent",
-    "remediation": "c2c start relay-connect 2>/dev/null || c2c relay connect &"
+    "remediation": "c2c start relay-connect 2>/dev/null || c2c relay connect &",
+    "scope": "machine_connector_service",
+    "last_error_op": null,
+    "last_error_detail": null
 }
 ```
 
@@ -961,8 +968,65 @@ is `health: "wedged"` / `live: false` — restart the connector; do not assume
 the PID means inbound relay traffic is flowing. `remediation` is a
 copy-pasteable recovery command when not live.
 
-Both keys are additive — pre-existing `relay` JSON keys (`url`, `configured`,
-`alias`, `host_id`, `identity_pk`, `fingerprint`, `lease`) are unchanged.
+#### Scopes: `state:` and `connector:` answer different questions
+
+The two lines carry a marker (human) / `scope` key (`--json`) because they are
+not the same claim, and a `connector: erroring` beside a `state: unconfigured`
+otherwise reads as a contradiction:
+
+| Line | Question it answers | `scope` |
+|------|---------------------|---------|
+| `state:` | Is a relay URL visible to me, and which relay config file would this context read? | `relay_config_machine` \| `relay_config_repo` \| `relay_config_explicit` |
+| `connector:` | Did the machine-wide connector service's last sync of **this repo's broker root** succeed? | `machine_connector_service` |
+
+Both can be true at once. The connector service discovers every broker root on
+the machine and syncs each with its shared relay URL/token, writing a
+*per-root* `connector-state.json`. So `erroring` on this repo means the
+service synced this repo's root within the freshness window and that sync
+failed — a live, in-scope failure — even when no relay URL was configured for
+this repo in particular.
+
+**The `state:` line names its config file rather than claiming a scope,
+because the scope is not fixed.** `relay_configured` resolves `C2C_RELAY_URL`
+and then the relay config file, and that file is `C2C_RELAY_CONFIG` →
+`<C2C_MCP_BROKER_ROOT>/relay.json` → else `~/.config/c2c/relay.json`. Nothing
+in broker-root resolution sets `C2C_MCP_BROKER_ROOT` (it is
+fingerprint-derived), so on a plain shell the file is **machine-wide** — and
+`c2c relay setup` writes that machine-wide file. Only a managed session with
+`C2C_MCP_BROKER_ROOT` set gets a genuinely repo-local relay config. The
+`scope` token and the matching `config_path` key say which case you are in:
+
+| `scope` | Config file | Reach |
+|---------|-------------|-------|
+| `relay_config_machine` | `~/.config/c2c/relay.json` | Machine-wide (the default). |
+| `relay_config_repo` | `<C2C_MCP_BROKER_ROOT>/relay.json` | Wherever that env var points (it is a free-form override, not necessarily this repo's root). |
+| `relay_config_explicit` | `$C2C_RELAY_CONFIG` | Wherever you pointed it. |
+
+**The marker names a file, not the URL's origin.** `relay_configured` resolves
+`C2C_RELAY_URL` *first* and only then the config file, so when `C2C_RELAY_URL`
+is exported the URL came from the environment and the named file did not supply
+the URL — it need not even exist. It is still load-bearing, though: the token
+resolves independently by the same env-first rule, so unless `C2C_RELAY_TOKEN`
+is also set, that file remains the only source of the relay **token**. The
+marker is accurate about what it says: it names the relay config file this
+context would read (the one that applies otherwise, and the one
+`c2c relay setup` writes) and how far that file's reach goes. Read it as "the
+config file in play here", not as "where this URL came from".
+
+When the connector recorded why it failed, that error is reported instead of
+leaving you to guess: `last_error_op` / `last_error_detail` in `--json`, and
+`; last error: <op>: <detail>` inside the human line's evidence group
+(truncated there — `--json` keeps the full detail — so a large error cannot
+displace the command that follows it). `remediation` stays a runnable restart
+command and, for `erroring`, always also carries the commented what-to-check
+tail (`# also: check token …, identity …, relay reachability`); it is a `#`
+shell comment, so it never breaks copy-paste.
+
+The `registration.scope`, `registration.config_path`, `connector.scope`,
+`connector.last_error_op` and `connector.last_error_detail` keys are additive,
+as are `registration` and `connector` themselves — pre-existing `relay` JSON
+keys (`url`, `configured`, `alias`, `host_id`, `identity_pk`, `fingerprint`,
+`lease`) are unchanged.
 
 ### Rooms (`c2c rooms …`)
 
