@@ -933,6 +933,17 @@ type prior_session_hit =
   ; registration : registration
   }
 
+val find_session_hits_across_brokers :
+  session_id:string ->
+  ?exclude_roots:string list ->
+  unit ->
+  prior_session_hit list
+(** EVERY known broker root holding a registration for [session_id], unranked.
+    Use when the caller has its own notion of which root is preferable —
+    [find_prior_session_across_brokers] collapses to one global "best" hit,
+    which is the wrong answer for "does any of THESE specific roots already own
+    this session?" (see the agy multi-workspace tie-break, #69). *)
+
 val find_prior_session_across_brokers :
   session_id:string ->
   ?exclude_root:string ->

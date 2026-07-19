@@ -26,15 +26,31 @@ let repo_fingerprint_uncached () =
     let hex = Digestif.SHA256.to_hex hash in
     String.sub hex 0 12
 
+let repo_fingerprint_cache = ref None
+
 (** Memoized fingerprint — one git shell-out per process lifetime. *)
-let repo_fingerprint =
-  let cache = ref None in
-  fun () ->
-    match !cache with
-    | Some v -> v
-    | None ->
-        let v = repo_fingerprint_uncached () in
-        cache := Some v; v
+let repo_fingerprint () =
+  match !repo_fingerprint_cache with
+  | Some v -> v
+  | None ->
+      let v = repo_fingerprint_uncached () in
+      repo_fingerprint_cache := Some v;
+      v
+
+(** Drop the memoized fingerprint so the next [repo_fingerprint ()] recomputes
+    from the CURRENT cwd.
+
+    The memo assumes what its docstring says: that the fingerprint is
+    runtime-stable because neither the git remote URL nor the toplevel changes
+    during a process lifetime. That assumption is false for any process that
+    [Unix.chdir]s ACROSS repositories — which `c2c hook agy` now does, because
+    agy runs every hook command from `~/.gemini/config` and the real workspace
+    only arrives in the payload (#69). Without this reset, a single stray
+    broker-root resolution before that chdir would cache "default" and silently
+    revert the fix, with no compile error and no test failure anywhere near the
+    change that caused it. Callers that relocate the process must reset rather
+    than rely on nobody having resolved a root above them. *)
+let reset_repo_fingerprint_cache () = repo_fingerprint_cache := None
 
 (** XDG_STATE_HOME per XDG spec, with HOME fallback.
     Duplicated here because c2c_utils (CLI executable) can't be called from
