@@ -1038,6 +1038,19 @@ let managed_session_id_from_codex_config_json ~instance_dir ~broker_root ~thread
       else None
     with _ -> None
 
+(* #24: one-shot-per-thread stderr signal for the genuinely dangerous
+   ambiguous-and-none-live split-brain state. Guarded behind [debug_enabled]
+   AND deduped per thread_id so a per-tool-call hot path never spams. *)
+let codex_thread_split_brain_warned : (string, unit) Hashtbl.t = Hashtbl.create 8
+
+(* #24: resolve a Codex thread id to its managed session id. A thread can end
+   up mapped by more than one managed instance (split-brain); routing/`whoami`
+   MUST agree with whichever identity the live deliver loop is watching, not
+   whichever [Sys.readdir] happens to list first. This resolver is a PURE read:
+   it consults the broker registry for liveness but never mutates broker state,
+   writes files, or registers. Ranking is fully deterministic — liveness tier,
+   then newest [registered_at], then lexicographic [session_id] — so identical
+   inputs always pick the same winner regardless of readdir order. *)
 let managed_session_id_from_codex_thread ~broker_root ~thread_id =
   let instances_dir = managed_instances_dir () in
   if not (Sys.file_exists instances_dir && Sys.is_directory instances_dir) then None
@@ -1050,15 +1063,85 @@ let managed_session_id_from_codex_thread ~broker_root ~thread_id =
           if not (Sys.file_exists instance_dir && Sys.is_directory instance_dir) then None
           else
             match managed_session_id_from_codex_session_json ~instance_dir ~thread_id with
-            | Some _ as sid -> sid
+            | Some sid -> Some (sid, name)
             | None ->
-                managed_session_id_from_codex_config_json
-                  ~instance_dir ~broker_root ~thread_id)
+                (match
+                   managed_session_id_from_codex_config_json
+                     ~instance_dir ~broker_root ~thread_id
+                 with
+                 | Some sid -> Some (sid, name)
+                 | None -> None))
         entries
     in
     match matches with
-    | session_id :: _ -> Some session_id
     | [] -> None
+    | [ (session_id, _) ] ->
+        (* Single mapping: keep working even when the session is offline
+           (whoami/send for a legitimately-idle managed unit). No broker read,
+           no ambiguity — the deterministic winner is trivially itself. *)
+        Some session_id
+    | _ :: _ :: _ ->
+        (* Ambiguous: >=2 instances claim this thread. Rank by liveness so we
+           follow whichever identity the live deliver loop is watching. Broker
+           access is best-effort and read-only. *)
+        let regs =
+          try Broker.list_registrations (Broker.create ~root:broker_root)
+          with _ -> []
+        in
+        (* Higher is better. Tier: 2 = alive (live pid / fresh lease),
+           1 = pidless Unknown (treated alive by [registration_is_alive]),
+           0 = dead or entirely unregistered. *)
+        let rank (session_id, _name) =
+          let tier, registered_at =
+            match
+              List.find_opt
+                (fun (r : registration) -> r.session_id = session_id)
+                regs
+            with
+            | None -> (0, None)
+            | Some r ->
+                let tier =
+                  match Broker.registration_liveness_state r with
+                  | Broker.Alive -> 2
+                  | Broker.Unknown -> 1
+                  | Broker.Dead -> 0
+                in
+                (tier, r.registered_at)
+          in
+          (tier, Option.value registered_at ~default:neg_infinity, session_id)
+        in
+        (* Strict total order over candidates (distinct session_ids guarantee a
+           unique max via the lexicographic final tiebreak): better tier wins,
+           then newer [registered_at], then smaller [session_id]. *)
+        let better a b =
+          let ta, ra, sa = rank a in
+          let tb, rb, sb = rank b in
+          if ta <> tb then ta > tb
+          else if ra <> rb then ra > rb
+          else String.compare sa sb < 0
+        in
+        let winner =
+          List.fold_left
+            (fun best c -> if better c best then c else best)
+            (List.hd matches) (List.tl matches)
+        in
+        let winner_sid, _ = winner in
+        let winner_tier, _, _ = rank winner in
+        (* Ambiguous AND no live candidate is the dangerous state: whoami/send
+           will pick a deterministic-but-possibly-stale identity. Emit once per
+           thread (debug-gated) so operators can spot the split-brain. *)
+        if winner_tier = 0
+           && debug_enabled
+           && not (Hashtbl.mem codex_thread_split_brain_warned thread_id)
+        then begin
+          Hashtbl.replace codex_thread_split_brain_warned thread_id ();
+          Printf.eprintf
+            "[DEBUG managed_session_id_from_codex_thread] ambiguous split-brain \
+             thread %s: %d managed instances claim it and NONE are live; \
+             deterministically picking session %s (#24)\n%!"
+            thread_id (List.length matches) winner_sid
+        end;
+        Some winner_sid
 
 let codex_turn_metadata_session_id params =
   let open Yojson.Safe.Util in

@@ -7,6 +7,8 @@
 
 open C2c_codex_app_server
 module S = C2c_codex_session
+module PB = C2c_mcp_helpers_post_broker
+module B = C2c_mcp.Broker
 
 (* ------------------------------------------------------------------ *)
 (* Deterministic session-ID-derived alias                              *)
@@ -362,8 +364,9 @@ let test_thread_persistence_repairs_config_independently () =
           last_exit_code = None; last_exit_reason = None; broker_root = "";
           auto_join_rooms = ""; binary_override = None; model_override = None;
           agent_name = None };
-      S.persist_discovered_thread ~instance_dir:dir ~name
-        ~thread_id:"thread-exact";
+      Alcotest.(check bool) "already-ours persist reports bound" true
+        (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root:""
+           ~thread_id:"thread-exact");
       match C2c_start.load_config_opt name with
       | Some cfg ->
           Alcotest.(check (option string)) "config repaired despite fresh mapping"
@@ -396,6 +399,146 @@ let test_delivery_degraded_roundtrip () =
       (* File name is the documented path so doctor/health read the same place. *)
       Alcotest.(check bool) "status file exists at the documented path" true
         (Sys.file_exists (S.delivery_status_path ~instance_dir:dir)))
+
+(* ------------------------------------------------------------------ *)
+(* #24 Codex thread split-brain: liveness-aware read resolver +        *)
+(* write-side duplicate guard. Fully hermetic — no live Codex, uses    *)
+(* this process's own pid for "alive" and a >pid_max pid for "dead".   *)
+(* ------------------------------------------------------------------ *)
+
+(* A pid guaranteed to have no /proc entry (exceeds Linux pid_max). *)
+let dead_pid = 1_073_741_824
+
+(* Run [f] with C2C_INSTANCES_DIR pointed at a fresh instances root and a
+   fresh isolated broker root (no collision with any live peer). *)
+let with_split_brain_env f =
+  with_tmp_dir (fun root ->
+      let inst = Filename.concat root "instances" in
+      let broker_root = Filename.concat root "broker" in
+      C2c_io.mkdir_p inst;
+      C2c_io.mkdir_p broker_root;
+      let prev = Sys.getenv_opt "C2C_INSTANCES_DIR" in
+      Unix.putenv "C2C_INSTANCES_DIR" inst;
+      Fun.protect
+        ~finally:(fun () ->
+          match prev with
+          | Some v -> Unix.putenv "C2C_INSTANCES_DIR" v
+          | None -> Unix.putenv "C2C_INSTANCES_DIR" "")
+        (fun () -> f ~inst ~broker_root))
+
+let write_codex_mapping ~dir ~session_id ~thread_id =
+  C2c_io.mkdir_p dir;
+  S.write_mapping ~instance_dir:dir
+    { S.session_id; alias = Filename.basename dir; thread_id;
+      created_at = 1.; updated_at = 2. }
+
+let register_alive broker ~session_id ~alias =
+  let pid = Unix.getpid () in
+  B.register broker ~session_id ~alias ~pid:(Some pid)
+    ~pid_start_time:(B.read_pid_start_time pid) ()
+
+let register_dead broker ~session_id ~alias =
+  B.register broker ~session_id ~alias ~pid:(Some dead_pid)
+    ~pid_start_time:None ()
+
+(* A: the resolver must follow the LIVE identity, not the first readdir hit.
+   Asserted with the two instance dirs created in both orders. *)
+let test_resolver_prefers_alive_regardless_of_order () =
+  let run ~stale_first =
+    with_split_brain_env (fun ~inst ~broker_root ->
+        let broker = B.create ~root:broker_root in
+        let thread = "thread-split-24" in
+        let stale = (Filename.concat inst "unit-stale", "sid-stale") in
+        let live = (Filename.concat inst "unit-live", "sid-live") in
+        let make (dir, sid) =
+          write_codex_mapping ~dir ~session_id:sid ~thread_id:(Some thread)
+        in
+        (* Creation order is the only thing [stale_first] changes; the resolver
+           ranks by liveness, so the result must be identical either way. *)
+        if stale_first then (make stale; make live)
+        else (make live; make stale);
+        register_dead broker ~session_id:"sid-stale" ~alias:"unit-stale";
+        register_alive broker ~session_id:"sid-live" ~alias:"unit-live";
+        Alcotest.(check (option string))
+          (Printf.sprintf "alive session wins (stale_first=%b)" stale_first)
+          (Some "sid-live")
+          (PB.managed_session_id_from_codex_thread ~broker_root
+             ~thread_id:thread))
+  in
+  run ~stale_first:true;
+  run ~stale_first:false
+
+(* A: none live → deterministic pick = newest registered_at. [sid-a-older] is
+   registered FIRST (older) and sorts lexicographically BEFORE [sid-z-newer],
+   so a correct newest-registered_at pick returns "sid-z-newer" and proves
+   registered_at dominates the lexicographic final tiebreak. *)
+let test_resolver_none_live_picks_newest () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let broker = B.create ~root:broker_root in
+      let thread = "thread-both-dead-24" in
+      write_codex_mapping ~dir:(Filename.concat inst "unit-a")
+        ~session_id:"sid-a-older" ~thread_id:(Some thread);
+      write_codex_mapping ~dir:(Filename.concat inst "unit-z")
+        ~session_id:"sid-z-newer" ~thread_id:(Some thread);
+      register_dead broker ~session_id:"sid-a-older" ~alias:"unit-a";
+      register_dead broker ~session_id:"sid-z-newer" ~alias:"unit-z";
+      Alcotest.(check (option string))
+        "none live -> newest registered_at wins (not lexicographic)"
+        (Some "sid-z-newer")
+        (PB.managed_session_id_from_codex_thread ~broker_root ~thread_id:thread))
+
+(* A: a single (unique) mapping keeps working even when offline — no broker
+   liveness required, so whoami/send for a legitimately-idle unit still resolve. *)
+let test_resolver_single_offline_mapping_resolves () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let thread = "thread-solo-24" in
+      write_codex_mapping ~dir:(Filename.concat inst "unit-solo")
+        ~session_id:"sid-solo" ~thread_id:(Some thread);
+      (* No broker registration at all. *)
+      Alcotest.(check (option string)) "sole mapping resolves offline"
+        (Some "sid-solo")
+        (PB.managed_session_id_from_codex_thread ~broker_root ~thread_id:thread))
+
+(* B: write-side guard refuses to mint a second binding when a LIVE managed
+   sibling already owns the thread. *)
+let test_write_guard_refuses_on_live_sibling () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let broker = B.create ~root:broker_root in
+      let thread = "thread-guard-24" in
+      let self_dir = Filename.concat inst "self" in
+      let sib_dir = Filename.concat inst "sib" in
+      write_codex_mapping ~dir:self_dir ~session_id:"sid-self" ~thread_id:None;
+      write_codex_mapping ~dir:sib_dir ~session_id:"sid-sib"
+        ~thread_id:(Some thread);
+      register_alive broker ~session_id:"sid-sib" ~alias:"sib";
+      Alcotest.(check bool) "refused: live sibling owns thread" false
+        (S.persist_discovered_thread ~instance_dir:self_dir ~name:"self"
+           ~broker_root ~thread_id:thread);
+      match S.load_mapping ~instance_dir:self_dir with
+      | Some m ->
+          Alcotest.(check (option string)) "no second binding written" None
+            m.thread_id
+      | None -> Alcotest.fail "self mapping vanished")
+
+(* B: a DEAD prior owner is freely reclaimed — the binding is written. *)
+let test_write_guard_reclaims_dead_sibling () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let broker = B.create ~root:broker_root in
+      let thread = "thread-reclaim-24" in
+      let self_dir = Filename.concat inst "self" in
+      let sib_dir = Filename.concat inst "sib" in
+      write_codex_mapping ~dir:self_dir ~session_id:"sid-self" ~thread_id:None;
+      write_codex_mapping ~dir:sib_dir ~session_id:"sid-sib"
+        ~thread_id:(Some thread);
+      register_dead broker ~session_id:"sid-sib" ~alias:"sib";
+      Alcotest.(check bool) "dead prior owner freely reclaimed" true
+        (S.persist_discovered_thread ~instance_dir:self_dir ~name:"self"
+           ~broker_root ~thread_id:thread);
+      match S.load_mapping ~instance_dir:self_dir with
+      | Some m ->
+          Alcotest.(check (option string)) "binding written on reclaim"
+            (Some thread) m.thread_id
+      | None -> Alcotest.fail "self mapping vanished")
 
 (* Build a minimal Running app-server persisted record for the given unit_id so
    online_attached_delivery_degraded can resolve the live unit. *)
@@ -1355,6 +1498,17 @@ let () =
     ; ( "delivery-degraded",
         [ test_case "persist + read + flip + stale roundtrip" `Quick test_delivery_degraded_roundtrip
         ; test_case "online-attached decision fail-closed (true/false/absent/stale)" `Quick test_online_attached_degraded_fail_closed ] )
+    ; ( "codex-thread-split-brain-24",
+        [ test_case "resolver prefers alive regardless of readdir order" `Quick
+            test_resolver_prefers_alive_regardless_of_order
+        ; test_case "resolver none-live picks newest registered_at" `Quick
+            test_resolver_none_live_picks_newest
+        ; test_case "resolver single offline mapping still resolves" `Quick
+            test_resolver_single_offline_mapping_resolves
+        ; test_case "write-guard refuses on live sibling" `Quick
+            test_write_guard_refuses_on_live_sibling
+        ; test_case "write-guard reclaims dead sibling" `Quick
+            test_write_guard_reclaims_dead_sibling ] )
     ; ( "lifecycle-glue",
         [ test_case "default (no flag) engages app-server, publishes after start"
             `Quick test_glue_happy_publishes_after_start

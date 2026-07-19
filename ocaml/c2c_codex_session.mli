@@ -247,8 +247,15 @@ type mapping = {
 val mapping_path : instance_dir:string -> string
 val load_mapping : instance_dir:string -> mapping option
 val write_mapping : instance_dir:string -> mapping -> unit
+(** #24: persist the discovered Codex [thread_id] onto this managed unit.
+    Returns [true] when the thread is (or was already) bound to this unit, and
+    [false] when persistence was REFUSED because a live managed sibling already
+    owns [thread_id] — the caller then records the degraded delivery signal
+    rather than minting a split-brain second binding. A DEAD prior owner is
+    reclaimed freely. Pure w.r.t. the broker registry (read-only liveness). *)
 val persist_discovered_thread :
-  instance_dir:string -> name:string -> thread_id:string -> unit
+  instance_dir:string -> name:string -> broker_root:string ->
+  thread_id:string -> bool
 
 val restart_request_path : instance_dir:string -> string
 val restart_result_path : instance_dir:string -> request_id:string -> string
