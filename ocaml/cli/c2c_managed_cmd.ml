@@ -461,28 +461,28 @@ let start_cmd =
   in
   let effective_alias = Option.value alias_opt ~default:name in
   let alias_from_auto_gen = name_from_auto_gen && (alias_opt = None) in
-  (* #58: the {alias} a kickoff prompt shows must be the address that will
+  (* #58 / #76: the {alias} a kickoff prompt shows must be the address that will
      actually be published. For a codex auto-derive (auto-picked name, no
      --alias / -n) the app-server mints a codex-<…> alias from its session id
-     AFTER launch (the production wiring below composes
-     [codex_alias_override_for_managed_start ~alias_opt ~requested_name]), so
-     [effective_alias] (= the instance name) is not that address and is not
-     knowable here. Tell the agent to self-verify rather than assert an alias it
-     will not hold (the #34 lesson). When authoritative, [effective_alias] IS
-     the published alias: it is [alias_opt] (explicit --alias) or, failing that,
-     [name] — which equals the -n requested name whenever that override
-     resolves. This covers the no-role launch paths; the role/agent branches
-     keep their own [effective_alias] (their published-alias relationship has a
-     separate [agent_name]-vs-[name] wrinkle tracked as a follow-up). *)
-  let kickoff_alias =
-    if
-      C2c_start.kickoff_alias_is_authoritative ~client ~alias_opt
+     AFTER launch, so the launcher cannot know it and must tell the agent to
+     self-verify (the #34 lesson). [C2c_start.managed_kickoff_alias] returns the
+     showable address, or [None] to defer; it is keyed on the branch's REAL
+     alias override — [alias_opt] on this no-role path, and [role_alias] on the
+     two role/agent branches (#76: those used to interpolate their own
+     [effective_alias], which defaulted to the ROLE name at the --agent site
+     while the session publishes the instance name). Whenever it returns
+     [Some a], [managed_published_alias] returns the same [a]. *)
+  let kickoff_alias_or_defer ~(alias_override : string option) : string =
+    match
+      C2c_start.managed_kickoff_alias ~client ~name ~alias_override
         ~requested_name:
           (C2c_start.codex_requested_name_for_managed_start ~name
              ~name_from_auto_gen)
-    then effective_alias
-    else "(auto-assigned at launch — run `c2c whoami` to see it)"
+    with
+    | Some a -> a
+    | None -> "(auto-assigned at launch — run `c2c whoami` to see it)"
   in
+  let kickoff_alias = kickoff_alias_or_defer ~alias_override:alias_opt in
   (* Resolve agent file path: canonical .c2c/roles/<agent>.md first,
      falling back to client-native agent path if canonical doesn't exist. *)
   let agent_role_path agent_name =
@@ -528,7 +528,14 @@ let start_cmd =
                   C2c_start.managed_alias_override_for_role ~alias_opt
                     ~role_alias:role.C2c_role.c2c_alias
                 in
-                let effective_alias = Option.value role_alias ~default:agent_name in
+                (* #76: show [role_alias] (else the instance [name], the value
+                   the publish path registers) — NOT [agent_name], the ROLE's
+                   display name. The old [~default:agent_name] made the kickoff
+                   assert an address the session never holds. Defer to whoami
+                   only when codex will derive one post-launch. *)
+                let kickoff_alias =
+                  kickoff_alias_or_defer ~alias_override:role_alias
+                in
                 (* write_agent_file: opencode/claude write .md with YAML frontmatter.
                    Kimi writes AgentSpec YAML (agent.yaml) + system.md.
                    Codex has no user agent file surface.
@@ -541,7 +548,7 @@ let start_cmd =
                 end;
                 let kickoff =
                   if client = "claude" then Some (C2c_start.claude_onboarding_preamble ~name:agent_name)
-                  else Some (default_kickoff_prompt ~name:agent_name ~alias:effective_alias ~role:role.C2c_role.body ())
+                  else Some (default_kickoff_prompt ~name:agent_name ~alias:kickoff_alias ~role:role.C2c_role.body ())
                 in
                 let alias_override = role_alias in
                let auto_join_rooms =
@@ -604,7 +611,16 @@ let start_cmd =
                       C2c_start.managed_alias_override_for_role ~alias_opt
                         ~role_alias:role.C2c_role.c2c_alias
                     in
-                    let effective_alias = Option.value role_alias ~default:name in
+                    (* #76: same treatment as the explicit --agent branch — show
+                       [role_alias] else the instance [name] (the published
+                       address), deferring to whoami only on a codex auto-derive.
+                       This branch already defaulted to [name] (not the role
+                       name), so it was never wrong for non-codex; routing it
+                       through [managed_kickoff_alias] adds the codex-derive
+                       deferral and keeps both role branches identical. *)
+                    let kickoff_alias =
+                      kickoff_alias_or_defer ~alias_override:role_alias
+                    in
                     (* write_agent_file: opencode/claude only — same rationale
                        as gate at line ~7488. See design doc for per-client
                        divergence details. *)
@@ -612,7 +628,7 @@ let start_cmd =
                       write_agent_file ~client ~name ~content:rendered;
                     let kickoff =
                       if client = "claude" then Some (C2c_start.claude_onboarding_preamble ~name)
-                      else Some (default_kickoff_prompt ~name ~alias:effective_alias ~role:role.C2c_role.body ())
+                      else Some (default_kickoff_prompt ~name ~alias:kickoff_alias ~role:role.C2c_role.body ())
                     in
                     let alias_override = role_alias in
                     let auto_join_rooms =

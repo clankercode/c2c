@@ -639,6 +639,82 @@ let test_i58_kickoff_alias_is_authoritative () =
     (auth ~client:"kimi" ~name:"myinstance" ~name_from_auto_gen:false
        ~alias_opt:None)
 
+(* #76 (follow-up to #58): the {alias} a ROLE / --agent kickoff shows must equal
+   the alias the publish path registers — the two role branches used to
+   interpolate their own [effective_alias], and the [--agent] site defaulted it
+   to [agent_name] (the ROLE display name) while every client publishes the
+   INSTANCE name. This drove the whole matrix through the exact production
+   composition: [role_alias] = managed_alias_override_for_role, then
+   managed_kickoff_alias / managed_published_alias keyed on that [role_alias].
+   Invariant asserted per cell: whenever the kickoff shows [Some a],
+   [managed_published_alias] is [Some a] — i.e. the shown alias is always the
+   published one, and [None] only when codex will derive post-launch. *)
+let test_i76_role_kickoff_alias_matches_published () =
+  (* [agent_name] is deliberately distinct from [name] in every cell so a
+     regression to [~default:agent_name] would surface as shown = "ROLE". *)
+  let cell ~client ~name ~agent_name:_ ~role_c2c_alias ~alias_opt
+      ~name_from_auto_gen ~expect_shown =
+    let role_alias =
+      C2c_start.managed_alias_override_for_role ~alias_opt
+        ~role_alias:role_c2c_alias
+    in
+    let requested_name =
+      C2c_start.codex_requested_name_for_managed_start ~name ~name_from_auto_gen
+    in
+    let shown =
+      C2c_start.managed_kickoff_alias ~client ~name ~alias_override:role_alias
+        ~requested_name
+    in
+    let published =
+      C2c_start.managed_published_alias ~client ~name ~alias_override:role_alias
+        ~requested_name
+    in
+    let tag =
+      Printf.sprintf "%s name=%s alias=%s role_alias=%s auto=%b" client name
+        (Option.value alias_opt ~default:"-")
+        (Option.value role_c2c_alias ~default:"-")
+        name_from_auto_gen
+    in
+    check (option string) (tag ^ ": kickoff shows the expected alias")
+      expect_shown shown;
+    (* The core invariant: a shown alias is always the published one. *)
+    (match shown with
+     | Some a ->
+         check (option string) (tag ^ ": shown alias == published alias")
+           (Some a) published
+     | None -> ())
+  in
+  (* {codex, non-codex} x {--agent branch (agent_name<>name), auto-role branch
+     (agent_name=name)} x {role c2c_alias, --alias, -n only, auto name}.
+     agent_name is set to a ROLE-ish name in the --agent cells and to [name] in
+     the auto-role cells, matching how c2c_managed_cmd binds it. *)
+  List.iter (fun client ->
+    (* role c2c_alias set, no --alias: publishes the role alias. *)
+    cell ~client ~name:"inst" ~agent_name:"ROLE"
+      ~role_c2c_alias:(Some "rolebroker") ~alias_opt:None
+      ~name_from_auto_gen:false ~expect_shown:(Some "rolebroker");
+    (* --alias set: outranks the role alias for both codex and non-codex. *)
+    cell ~client ~name:"inst" ~agent_name:"ROLE"
+      ~role_c2c_alias:(Some "rolebroker") ~alias_opt:(Some "cli-alias")
+      ~name_from_auto_gen:false ~expect_shown:(Some "cli-alias");
+    (* -n only (explicit name, no alias): publishes the INSTANCE name — this is
+       the #76 defect cell for --agent, which used to show "ROLE". *)
+    cell ~client ~name:"inst" ~agent_name:"ROLE" ~role_c2c_alias:None
+      ~alias_opt:None ~name_from_auto_gen:false ~expect_shown:(Some "inst"))
+    [ "codex"; "claude" ];
+  (* auto-role branch mirror: agent_name = name (c2c infers the role from the
+     instance name). Same publish semantics — never "ROLE". *)
+  cell ~client:"claude" ~name:"inst" ~agent_name:"inst" ~role_c2c_alias:None
+    ~alias_opt:None ~name_from_auto_gen:false ~expect_shown:(Some "inst");
+  (* Auto-picked name, no override: codex defers to whoami (derived
+     post-launch); non-codex still knows it publishes the instance name. *)
+  cell ~client:"codex" ~name:"codex-auto-9f" ~agent_name:"ROLE"
+    ~role_c2c_alias:None ~alias_opt:None ~name_from_auto_gen:true
+    ~expect_shown:None;
+  cell ~client:"claude" ~name:"claude-auto-9f" ~agent_name:"ROLE"
+    ~role_c2c_alias:None ~alias_opt:None ~name_from_auto_gen:true
+    ~expect_shown:(Some "claude-auto-9f")
+
 (* #49: managed kimi's outer loop exits just past the old flat 5s restart bound,
    so restart aborted and left the session killed-but-not-relaunched. The
    default outer-exit ceiling is now longer for kimi and unchanged for clients
@@ -4817,6 +4893,8 @@ let () =
             `Quick, test_i34r_requested_name_wiring )
         ; ( "i58_kickoff_alias_is_authoritative",
             `Quick, test_i58_kickoff_alias_is_authoritative )
+        ; ( "i76_role_kickoff_alias_matches_published",
+            `Quick, test_i76_role_kickoff_alias_matches_published )
         ; ( "i49_default_restart_timeout",
             `Quick, test_i49_default_restart_timeout )
         ; ( "i34r_name_notice_names_its_source",

@@ -4612,6 +4612,42 @@ let kickoff_alias_is_authoritative ~(client : string)
   client <> "codex"
   || codex_alias_override_for_managed_start ~alias_opt ~requested_name <> None
 
+(* #76: the address the publish path actually registers for a managed start.
+   [alias_override] is the branch's REAL override — the CLI [--alias] on the
+   no-role path, or [managed_alias_override_for_role ~alias_opt
+   ~role_alias:role.c2c_alias] on the [--agent] / auto-inferred-role paths. For
+   codex this is [codex_alias_override_for_managed_start] (which is [None] when
+   the app-server will derive a [codex-…] alias post-launch); for every other
+   client it is [C2C_MCP_AUTO_REGISTER_ALIAS = alias_override, else the instance
+   name] — the value [build_env] / [run_tmux_loop] register verbatim. Never the
+   role's display name. Pure so the wiring is assertable. *)
+let managed_published_alias ~(client : string) ~(name : string)
+    ~(alias_override : string option) ~(requested_name : string option) :
+    string option =
+  if client = "codex" then
+    codex_alias_override_for_managed_start ~alias_opt:alias_override
+      ~requested_name
+  else Some (Option.value alias_override ~default:name)
+
+(* #76: the alias to interpolate into a kickoff prompt's [{alias}], or [None]
+   when the launcher must defer to `c2c whoami`. Shows [Option.value
+   alias_override ~default:name] exactly when {!kickoff_alias_is_authoritative}
+   (keyed on the branch's real [alias_override], NOT a role display name), which
+   is precisely when that value equals {!managed_published_alias}. This closes
+   the #58 follow-up: the [--agent] branch previously defaulted the shown alias
+   to the ROLE name ([agent_name]) while the session publishes the instance name,
+   so the kickoff asserted an address peers could not reach. Invariant (checked
+   in tests): whenever this returns [Some a], [managed_published_alias] with the
+   same arguments returns [Some a]. Pure. *)
+let managed_kickoff_alias ~(client : string) ~(name : string)
+    ~(alias_override : string option) ~(requested_name : string option) :
+    string option =
+  if
+    kickoff_alias_is_authoritative ~client ~alias_opt:alias_override
+      ~requested_name
+  then Some (Option.value alias_override ~default:name)
+  else None
+
 type managed_alias_source = Alias_flag | Role_alias
 
 let codex_managed_start_name_notice ?(source : managed_alias_source = Alias_flag)
