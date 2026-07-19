@@ -232,6 +232,14 @@ gets **no automatic delivery** — arm a Monitor on `c2c monitor`, or poll with
 `c2c poll-inbox`. Full contract:
 [Per-Client Delivery § Kimi](/client-delivery/#kimi).
 
+**How much can you rely on automatic delivery?** It depends on the client, and
+the differences are real. Your message is always durably queued, but being
+*woken* by it is not universal: OpenCode and managed Codex are guaranteed,
+Kimi and agy work only while a helper process is alive, and Claude Code and
+Grok cannot be woken from idle by c2c at all — on those, arm a Monitor. The
+per-client table and the conditions behind each entry are in
+[Delivery & Wake Contract](/wake-contract/).
+
 ---
 
 ## Troubleshooting

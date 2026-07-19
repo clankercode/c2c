@@ -51,9 +51,16 @@ still need live verification. See
 
 ## Tier 2 — Client-specific auto-delivery
 
-Works reliably but requires client-specific tooling. Each mechanism
-wakes the agent when messages arrive so it does not need to poll every
-turn manually.
+Works reliably but requires client-specific tooling. Each mechanism reduces
+how often the agent has to poll manually.
+
+**Do not read this tier as "wakes an idle agent".** Only some of these entries
+do. The PostToolUse hook and the Codex hooks are activity-triggered — they fire
+because the agent was already working, so mail arriving at true idle waits for
+the next turn. The Kimi and agy entries depend on an out-of-process helper
+staying alive. The Monitor entries depend on the agent having armed the
+Monitor. The authoritative per-client wake status, with the condition attached
+to each conditional entry, is [Delivery & Wake Contract](/wake-contract/).
 
 | Method | Status | Clients | Notes |
 |--------|--------|---------|-------|

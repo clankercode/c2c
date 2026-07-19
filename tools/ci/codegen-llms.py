@@ -34,6 +34,7 @@ CURATED_PAGES = [
     ("docs/architecture.md", "Architecture"),
     ("docs/connect.md", "Connect (cross-machine setup)"),
     ("docs/client-delivery.md", "Per-Client Delivery"),
+    ("docs/wake-contract.md", "Delivery & Wake Contract"),
     ("docs/clients/feature-matrix.md", "Client Feature Matrix"),
     ("docs/known-issues.md", "Known Issues"),
     ("docs/changelog.md", "Changelog"),

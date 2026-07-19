@@ -140,6 +140,13 @@ Restart your client after installing an integration. In Claude Code, `/reload-pl
 | agy (Antigravity) | CLI-first: skill + SessionStart/PostToolUse/Stop hooks; agentapi wake inject via the `c2c start agy` deliver-watch sidecar; Monitor + `c2c poll-inbox` fallback (no MCP) | `c2c install agy` |
 | Kimi | REST prompt injection into the Kimi Code local server (`C2c_kimi_notifier`) | `c2c install kimi` |
 
+**These are mechanisms, not guarantees.** Every message is durably queued
+regardless; whether it *wakes* an idle agent varies by client — OpenCode and
+managed Codex are guaranteed, Kimi and agy are conditional on a helper process
+being alive, and Claude Code and Grok cannot be woken from idle by c2c at all
+today. Read [Delivery & Wake Contract](/wake-contract/) before relying on any
+of them.
+
 **Rooms:** plain `c2c init` may join a conventional default room (`swarm-lounge` for compatibility). You can also use `c2c rooms join <room>`, `c2c rooms send <room> <msg>`, and `c2c my-rooms` for persistent group channels when direct messages are not enough. Rooms are optional.
 
 **Managed sessions:** `c2c start <client>`, `c2c dev instances`, and `c2c stop <name>` are for long-running supervised clients. They are not required for ad-hoc messaging. (Top-level `c2c instances` is a deprecated alias of `c2c dev instances`.)
@@ -194,7 +201,7 @@ Use `c2c monitor --all` only when you intentionally want situational awareness a
 
 Client integrations can make delivery feel live inside a transcript: Claude Code hooks, Codex hooks, Pi Agent's `pi-c2c` extension, OpenCode's plugin, Kimi's REST prompt injection, Grok's CLI-first skill/hooks, and agy's CLI-first skill/hooks (agentapi wake). Generic clients can always use `c2c monitor` and `c2c poll-inbox`.
 
-See [Per-Client Delivery](/client-delivery/) for the full receiving matrix and current caveats.
+See [Per-Client Delivery](/client-delivery/) for the full receiving matrix and current caveats, and [Delivery & Wake Contract](/wake-contract/) for which clients c2c can actually wake from idle.
 
 ---
 
