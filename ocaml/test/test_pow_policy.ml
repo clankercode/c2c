@@ -30,11 +30,21 @@ let test_required_difficulty_cap () =
 (* Pin d_max: it is the worst-case mint CPU a routine request ever pays.
    Bumping it is a CPU regression and must be a deliberate edit, not a drift.
    2^12 = ~4096 hashes keeps routine requests at low-ms while still deterring
-   floods in aggregate. Must stay well under Pow.max_mint_iterations (2^24). *)
+   floods in aggregate.
+
+   #71: the old headroom check here was [d_max <= 16], which was slack
+   inherited from a [Pow.max_mint_iterations] of 2^24 and would have permitted
+   a d_max that fails ~13% of honest mints. Derive it from the actual budget
+   instead: a legitimate actor must have a >= 32x margin over 2^d_max, so
+   P(mint finds no nonce) ~= e^-32 rather than the e^-1 = 37% a mean-sized
+   budget would give (iterations-to-hit is geometric, not fixed). The mirror
+   of this assertion lives in test_pow.ml on purpose — whichever of the two
+   constants an author edits, a test in that file's own suite fires. *)
 let test_d_max_bounds_mint_cpu () =
   Alcotest.(check int) "d_max pinned at 12 (low-ms worst-case mint)" 12 PP.d_max;
-  Alcotest.(check bool) "d_max leaves ample mint headroom under 2^24 cap" true
-    (PP.d_max <= 16)
+  Alcotest.(check bool)
+    "d_max leaves >= 32x mint margin under Pow.max_mint_iterations" true
+    ((1 lsl PP.d_max) * 32 <= Pow.max_mint_iterations)
 
 let test_accumulator_records_decays_and_reads_difficulty () =
   let acc = PP.create () in

@@ -107,7 +107,9 @@ let body_with_minted_pow ~route ~actor_id body requirement =
    2.5ms at [Pow_policy.d_max] = 12 (the protocol ceiling), so three attempts
    cost ~7.5ms; a failed mint exits immediately with pow_mint_failed rather
    than consuming an attempt, so [Pow.max_mint_iterations] exhaustion is still
-   paid at most once, exactly as before. *)
+   paid at most once, exactly as before. Since #71 that exhaustion costs 2^17
+   hashes (~0.15-0.25s) rather than 2^24 (~20-32s), so the 3x amplification
+   this cap introduces now applies to a ceiling that was itself re-derived. *)
 let max_minted_attempts = 3
 
 (* Re-minting against a challenge IDENTICAL to the one we just satisfied is
