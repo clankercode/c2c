@@ -2969,6 +2969,10 @@ let registry_alive_conflict ~(broker_root : string) ~(name : string)
     match (try Some (Yojson.Safe.from_file reg_path) with _ -> None) with
     | Some (`List regs) ->
         let self = Unix.getpid () in
+        (* #67: [Broker.register]'s [same_process] exempts a same-pid row ONLY
+           when the stored [pid_start_time] matches the registering process's,
+           so the guard must know self's start time to agree with it. *)
+        let self_start = C2c_mcp.Broker.read_pid_start_time self in
         (* #56: [Broker.register] matches the alias with [alias_casefold], so a
            byte-exact match here left the guard LOOSER than the authority it
            front-runs: `-n foo` against a live `Foo` row passed the precheck and
@@ -2988,25 +2992,49 @@ let registry_alive_conflict ~(broker_root : string) ~(name : string)
                 let alias = (match List.assoc_opt "alias"      fields with Some (`String a) -> a | _ -> "") in
                 (sid = name || C2c_mcp.Broker.alias_casefold alias = name_folded) &&
                 (match List.assoc_opt "pid" fields with
-                 (* A row owned by THIS process is never a conflict: the
-                    app-server launcher restarts in place via [execve], which
-                    preserves the pid, so self-matching would refuse a legal
-                    restart. *)
-                 | Some (`Int p) when p = self -> false
-                 (* #56: defer to the broker's own predicate rather than
-                    stopping at "the pid exists".  [Broker.register] — the
-                    authority this guard front-runs — compares the row's
-                    stored [pid_start_time] against /proc, so a recycled pid
-                    reads as dead there; a bare liveness check here refused
-                    launches the broker would have accepted.  One definition
-                    of "alive", not two that can drift.  A row we cannot
-                    parse falls back to the old check: erring toward refusing
-                    is the safe direction. *)
                  | Some (`Int p) ->
-                     (match (try Some (C2c_mcp.Broker.registration_of_json r)
-                             with _ -> None) with
-                      | Some reg -> C2c_mcp.Broker.registration_is_alive reg
-                      | None -> pid_alive p)
+                     let reg_opt =
+                       try Some (C2c_mcp.Broker.registration_of_json r)
+                       with _ -> None
+                     in
+                     (* #67: a row owned by THIS process is exempt ONLY when it
+                        is provably the same process — same pid AND matching
+                        [pid_start_time] — which is exactly [Broker.register]'s
+                        [same_process].  The app-server launcher restarts in
+                        place via [execve], which preserves BOTH pid and start
+                        time, so a real restart still passes here.  The old
+                        guard exempted any [p = self] unconditionally, so a
+                        self-pid row that never captured a start time passed the
+                        precheck and was refused LATE by [register] (whose
+                        [same_process] returns false when either start time is
+                        absent) — after the launcher had written config, the
+                        pidfile, and spawned the frontend.  Mirroring
+                        [same_process] moves that refusal EARLY, before any side
+                        effect (the orphaned-TUI shape #34 added this guard to
+                        eliminate). *)
+                     let is_same_process =
+                       p = self &&
+                       (match reg_opt with
+                        | Some (reg : C2c_mcp.registration) ->
+                            (match reg.pid_start_time, self_start with
+                             | Some cst, Some sst -> cst = sst
+                             | _ -> false)
+                        | None -> false)
+                     in
+                     if is_same_process then false
+                     (* #56: for a genuinely different holder, defer to the
+                        broker's own predicate rather than stopping at "the pid
+                        exists".  [Broker.register] compares the row's stored
+                        [pid_start_time] against /proc, so a recycled pid reads
+                        as dead there; a bare liveness check here refused
+                        launches the broker would have accepted.  One definition
+                        of "alive", not two that can drift.  A row we cannot
+                        parse falls back to the old check: erring toward
+                        refusing is the safe direction. *)
+                     else
+                       (match reg_opt with
+                        | Some reg -> C2c_mcp.Broker.registration_is_alive reg
+                        | None -> pid_alive p)
                  (* Pid-less rows are not conflicts — and this is EXACT
                     AGREEMENT with the authority, not an override of it.
                     [Broker.register]'s conflict test is not
