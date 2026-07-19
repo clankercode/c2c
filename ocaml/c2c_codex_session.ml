@@ -231,16 +231,20 @@ let delivery_status_path ~instance_dir = instance_dir // "codex-delivery-status.
    supervised but no thread was discovered to inject into. Written fail-closed
    (true) at session start + loop start, flipped to false once a thread loads.
    Never raises (delivery health must never wedge the session). *)
-let write_delivery_degraded ~instance_dir ~(unit_id : string) (degraded : bool) : unit =
+let write_delivery_degraded ?now ~instance_dir ~(unit_id : string) (degraded : bool) : unit =
   try
     (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
      with _ -> ());
     let path = delivery_status_path ~instance_dir in
+    (* #27: [updated_at] doubles as the deliver loop's liveness HEARTBEAT — the
+       loop re-stamps it on a throttle while alive, so a stale value means the
+       loop died. [?now] is a test seam; production uses the wall clock. *)
+    let ts = match now with Some t -> t | None -> Unix.gettimeofday () in
     let j =
       `Assoc [ ("unit_id", `String unit_id);
                ("degraded", `Bool degraded);
                ("thread_loaded", `Bool (not degraded));
-               ("updated_at", `Float (Unix.gettimeofday ())) ]
+               ("updated_at", `Float ts) ]
     in
     let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
     let oc = open_out tmp in
@@ -253,8 +257,17 @@ let write_delivery_degraded ~instance_dir ~(unit_id : string) (degraded : bool) 
    stamped unit_id matches [unit_id] (the currently-attached unit). [None] =
    absent / parse error / unit_id mismatch (stale record from a prior run on a
    reused dir). Total — any read/parse error reads as [None]. *)
-let delivery_degraded_of_instance ~(instance_dir : string) ~(unit_id : string)
-    : bool option =
+(* #27: staleness window for the deliver-loop heartbeat. The loop re-stamps
+   [updated_at] roughly every {!C2c_codex_deliver_loop.heartbeat_interval_s}
+   (~10s) while alive; a persisted [degraded=false] is only trustworthy while
+   that heartbeat is fresh. The window is DELIBERATELY GENEROUS — a slow/paused
+   host (this machine has known post-resume RTC/NTP clock jumps) must never be
+   false-flagged as deaf — so only a clearly-silent heartbeat (older than the
+   window, i.e. many missed beats) is treated as a dead loop. *)
+let default_stale_window_s = 120.0
+
+let delivery_degraded_of_instance ?now ?(stale_window_s = default_stale_window_s)
+    ~(instance_dir : string) ~(unit_id : string) () : bool option =
   match C2c_io.read_json_opt (delivery_status_path ~instance_dir) with
   | Some (`Assoc a) ->
       let unit_matches =
@@ -263,7 +276,28 @@ let delivery_degraded_of_instance ~(instance_dir : string) ~(unit_id : string)
         | _ -> false
       in
       if not unit_matches then None
-      else (match List.assoc_opt "degraded" a with Some (`Bool b) -> Some b | _ -> None)
+      else (
+        match List.assoc_opt "degraded" a with
+        | Some (`Bool false) ->
+            (* Persisted HEALTHY: trust it only while the heartbeat is fresh.
+               A stale [updated_at] means the deliver loop died (SIGKILL etc.)
+               while the frontend TUI child survived — the record still claims
+               healthy but nothing is delivering (#27). Downgrade to degraded so
+               the silent-deaf session becomes visible. Only ever DOWNGRADES a
+               healthy claim; a missing [updated_at] (older record) is treated
+               as fresh (no false-flag). *)
+            let now = match now with Some t -> t | None -> Unix.gettimeofday () in
+            let updated_at =
+              match List.assoc_opt "updated_at" a with
+              | Some (`Float f) -> Some f
+              | Some (`Int i) -> Some (float_of_int i)
+              | _ -> None
+            in
+            (match updated_at with
+             | Some ts when now -. ts > stale_window_s -> Some true
+             | _ -> Some false)
+        | Some (`Bool b) -> Some b
+        | _ -> None)
   | _ -> None
 
 (* Decide, fail-closed, whether an ONLINE-ATTACHED managed codex session's
@@ -275,12 +309,13 @@ let delivery_degraded_of_instance ~(instance_dir : string) ~(unit_id : string)
    we must fail TOWARD degraded rather than overclaim LIVE. A genuinely healthy
    session (thread loaded) wrote degraded=false with the matching unit_id, so it
    still reads healthy — the healthy path is not weakened. Total. *)
-let online_attached_delivery_degraded ~(instance_dir : string) : bool =
+let online_attached_delivery_degraded ?now ?(stale_window_s = default_stale_window_s)
+    ~(instance_dir : string) () : bool =
   match C2c_codex_app_server.load_persisted ~instance_dir with
   | Some p ->
       (match
-         delivery_degraded_of_instance ~instance_dir
-           ~unit_id:p.C2c_codex_app_server.unit_id
+         delivery_degraded_of_instance ?now ~stale_window_s ~instance_dir
+           ~unit_id:p.C2c_codex_app_server.unit_id ()
        with
        | Some b -> b
        | None -> true)

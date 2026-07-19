@@ -384,18 +384,18 @@ let test_delivery_degraded_roundtrip () =
       let uid = "u-1" in
       (* No signal file yet → None. *)
       Alcotest.(check (option bool)) "absent signal reads as None"
-        None (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid);
+        None (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid ());
       (* Degraded at loop start. *)
       S.write_delivery_degraded ~instance_dir:dir ~unit_id:uid true;
       Alcotest.(check (option bool)) "persisted degraded=true (matching unit)"
-        (Some true) (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid);
+        (Some true) (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid ());
       (* Flip to healthy once a thread loads — later write wins. *)
       S.write_delivery_degraded ~instance_dir:dir ~unit_id:uid false;
       Alcotest.(check (option bool)) "flip to healthy persists degraded=false"
-        (Some false) (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid);
+        (Some false) (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:uid ());
       (* A DIFFERENT unit_id must NOT trust the record — stale prior-run value. *)
       Alcotest.(check (option bool)) "mismatched unit_id reads as None (stale)"
-        None (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:"u-2");
+        None (S.delivery_degraded_of_instance ~instance_dir:dir ~unit_id:"u-2" ());
       (* File name is the documented path so doctor/health read the same place. *)
       Alcotest.(check bool) "status file exists at the documented path" true
         (Sys.file_exists (S.delivery_status_path ~instance_dir:dir)))
@@ -562,30 +562,63 @@ let test_online_attached_degraded_fail_closed () =
   with_tmp_dir (fun dir ->
       write_persisted_unit ~dir ~unit_id:"u-A";
       Alcotest.(check bool) "no delivery record → fail-closed degraded" true
-        (S.online_attached_delivery_degraded ~instance_dir:dir));
+        (S.online_attached_delivery_degraded ~instance_dir:dir ()));
   (* matching degraded=true → degraded *)
   with_tmp_dir (fun dir ->
       write_persisted_unit ~dir ~unit_id:"u-A";
       S.write_delivery_degraded ~instance_dir:dir ~unit_id:"u-A" true;
       Alcotest.(check bool) "matching degraded=true → degraded" true
-        (S.online_attached_delivery_degraded ~instance_dir:dir));
+        (S.online_attached_delivery_degraded ~instance_dir:dir ()));
   (* matching degraded=false (thread loaded) → healthy (NOT weakened) *)
   with_tmp_dir (fun dir ->
       write_persisted_unit ~dir ~unit_id:"u-A";
       S.write_delivery_degraded ~instance_dir:dir ~unit_id:"u-A" false;
       Alcotest.(check bool) "matching degraded=false → healthy" false
-        (S.online_attached_delivery_degraded ~instance_dir:dir));
+        (S.online_attached_delivery_degraded ~instance_dir:dir ()));
   (* stale record from a prior run (healthy=false but WRONG unit) → fail-closed
      degraded, so a reused dir never masks a new no-thread session *)
   with_tmp_dir (fun dir ->
       write_persisted_unit ~dir ~unit_id:"u-NEW";
       S.write_delivery_degraded ~instance_dir:dir ~unit_id:"u-OLD" false;
       Alcotest.(check bool) "stale healthy record (wrong unit) → fail-closed degraded"
-        true (S.online_attached_delivery_degraded ~instance_dir:dir));
+        true (S.online_attached_delivery_degraded ~instance_dir:dir ()));
   (* no persisted app-server record at all → fail-closed degraded *)
   with_tmp_dir (fun dir ->
       Alcotest.(check bool) "no persisted record → fail-closed degraded" true
-        (S.online_attached_delivery_degraded ~instance_dir:dir))
+        (S.online_attached_delivery_degraded ~instance_dir:dir ()))
+
+(* #27: a persisted degraded=false record whose HEARTBEAT [updated_at] is stale
+   (the deliver loop was SIGKILLed while the frontend TUI child survived) must be
+   downgraded to degraded so the silently-deaf session becomes visible. A FRESH
+   heartbeat still reads healthy. Uses the [?now]/[?stale_window_s] test seams so
+   the assertion is hermetic (no real clock). *)
+let test_online_attached_degraded_stale_heartbeat () =
+  let window = 120.0 in
+  (* Stamp a healthy record at t=1000 with a matching unit. *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-A";
+      S.write_delivery_degraded ~now:1000.0 ~instance_dir:dir ~unit_id:"u-A" false;
+      (* Fresh heartbeat (now just past the stamp, within the window) → healthy. *)
+      Alcotest.(check bool) "fresh heartbeat (degraded=false) → healthy" false
+        (S.online_attached_delivery_degraded ~now:1005.0 ~stale_window_s:window
+           ~instance_dir:dir ());
+      (* Stale heartbeat (now far past the stamp, beyond the window) → the loop
+         is presumed dead, so degraded=false is DOWNGRADED to degraded. *)
+      Alcotest.(check bool) "stale heartbeat (degraded=false) → degraded" true
+        (S.online_attached_delivery_degraded ~now:(1000.0 +. window +. 30.0)
+           ~stale_window_s:window ~instance_dir:dir ());
+      (* Same, at the raw read layer (matching unit, degraded=false, stale). *)
+      Alcotest.(check (option bool)) "raw read: stale healthy → Some true"
+        (Some true)
+        (S.delivery_degraded_of_instance ~now:(1000.0 +. window +. 30.0)
+           ~stale_window_s:window ~instance_dir:dir ~unit_id:"u-A" ()));
+  (* A DEGRADED record with a stale heartbeat stays degraded (never upgraded). *)
+  with_tmp_dir (fun dir ->
+      write_persisted_unit ~dir ~unit_id:"u-A";
+      S.write_delivery_degraded ~now:1000.0 ~instance_dir:dir ~unit_id:"u-A" true;
+      Alcotest.(check bool) "stale + already degraded → still degraded" true
+        (S.online_attached_delivery_degraded ~now:(1000.0 +. window +. 30.0)
+           ~stale_window_s:window ~instance_dir:dir ()))
 
 (* ------------------------------------------------------------------ *)
 (* Lifecycle glue: alias published only after start succeeds; graceful *)
@@ -1497,7 +1530,8 @@ let () =
         [ test_case "roundtrip" `Quick test_mapping_roundtrip ] )
     ; ( "delivery-degraded",
         [ test_case "persist + read + flip + stale roundtrip" `Quick test_delivery_degraded_roundtrip
-        ; test_case "online-attached decision fail-closed (true/false/absent/stale)" `Quick test_online_attached_degraded_fail_closed ] )
+        ; test_case "online-attached decision fail-closed (true/false/absent/stale)" `Quick test_online_attached_degraded_fail_closed
+        ; test_case "online-attached stale heartbeat downgrades to degraded (#27)" `Quick test_online_attached_degraded_stale_heartbeat ] )
     ; ( "codex-thread-split-brain-24",
         [ test_case "resolver prefers alive regardless of readdir order" `Quick
             test_resolver_prefers_alive_regardless_of_order

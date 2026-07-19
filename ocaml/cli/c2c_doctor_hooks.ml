@@ -177,6 +177,14 @@ let codex_delivery_mode_label = function
   | Cd_hooks_only -> "hooks"
   | Cd_unavailable -> "unavailable"
 
+(* #27: a delivery mode with NO live c2c delivery path — a managed codex instance
+   in one of these modes is DEAF (mail queues but is not read at arrival time).
+   Hook modes ([Cd_hooks_only]/[Cd_hooks_wake]) still deliver at hook boundaries,
+   so they are NOT deaf. *)
+let codex_mode_is_degraded = function
+  | Cd_app_server_degraded | Cd_app_server_unavailable | Cd_unavailable -> true
+  | Cd_app_server | Cd_hooks_wake | Cd_hooks_only -> false
+
 (* Pure classifier. [app_server_status] is the T006 lifecycle status string
    for a managed instance ("starting" / "online-attached" / "offline" /
    "failed-startup"), or [None] for a vanilla session / no app-server record.
@@ -325,7 +333,7 @@ let live_codex_instances () : (string * string option * bool * bool) list =
                  match app_status with
                  | Some "online-attached" ->
                      (try C2c_codex_session.online_attached_delivery_degraded
-                            ~instance_dir
+                            ~instance_dir ()
                       with _ -> true)
                  | _ -> false
                in
@@ -356,6 +364,50 @@ let codex_delivery_report ?hooks_installed
               classify_codex_delivery ~app_server_status:app_status ~degraded
                 ~hooks_installed ~wake_target:wake })
         instances }
+
+(* #27: the DEAF managed codex instances in a report — those with no live c2c
+   delivery path (degraded / app-server-unavailable / unavailable). *)
+let codex_deaf_instances (rep : codex_delivery_report) : codex_instance_delivery list =
+  List.filter (fun i -> codex_mode_is_degraded i.ci_delivery.cd_mode) rep.cdr_instances
+
+(* #27: one-line rollup for `c2c doctor`, mirroring the Kimi DEAF summary line.
+   [None] when every managed codex instance has a live delivery path. Pure so the
+   doctor summary and tests share it. *)
+let codex_deaf_summary (rep : codex_delivery_report) : string option =
+  match codex_deaf_instances rep with
+  | [] -> None
+  | deaf ->
+      Some
+        (Printf.sprintf
+           "Codex delivery: %d instance(s) with no live c2c delivery path (%s) \
+            — run 'c2c doctor hooks'"
+           (List.length deaf)
+           (String.concat ", "
+              (List.map
+                 (fun i ->
+                   Printf.sprintf "%s=%s" i.ci_name
+                     (codex_delivery_mode_label i.ci_delivery.cd_mode))
+                 deaf)))
+
+(* #27: observability helper shared by `c2c send`. Given the live (or injected)
+   codex instances, return a sender warning when [to_alias] names a managed codex
+   instance whose delivery mode has NO live c2c path (degraded / unavailable).
+   [None] for a healthy instance, or a recipient that is not a managed codex
+   instance. Pure (instances injected) so it is unit-testable and never touches a
+   socket — it is OBSERVABILITY ONLY (message content is untouched; nothing here
+   triggers or gates delivery). *)
+let codex_send_delivery_warning ?hooks_installed
+    ?(instances : (string * string option * bool * bool) list option)
+    (to_alias : string) : string option =
+  let rep = codex_delivery_report ?hooks_installed ?instances () in
+  match List.find_opt (fun i -> i.ci_name = to_alias) rep.cdr_instances with
+  | Some i when codex_mode_is_degraded i.ci_delivery.cd_mode ->
+      Some
+        (Printf.sprintf
+           "recipient %s has no live c2c delivery path (codex delivery %s); \
+            message queued but may not be read — see `c2c doctor hooks`"
+           to_alias (codex_delivery_mode_label i.ci_delivery.cd_mode))
+  | _ -> None
 
 (* --- pure helpers --------------------------------------------------------- *)
 
@@ -1232,7 +1284,24 @@ let pp_codex_delivery_human (rep : codex_delivery_report) =
            | Some s -> Printf.sprintf " (app_server_status=%s)" s
            | None -> "");
         pp_delivery "    " i.ci_delivery)
-      rep.cdr_instances
+      rep.cdr_instances;
+  (* #27: prominent DEAF rollup so a silently-deaf managed codex (dead deliver
+     loop / stale heartbeat / failed app-server) is not buried in the per-
+     instance list — mirrors the Kimi DEAF summary line. *)
+  (match codex_deaf_instances rep with
+   | [] -> ()
+   | deaf ->
+       Printf.printf
+         "\n  ✗ DEAF: %d managed codex instance(s) with no live c2c delivery path:\n"
+         (List.length deaf);
+       List.iter
+         (fun i ->
+           Printf.printf "    ✗ %s (%s)\n" i.ci_name
+             (codex_delivery_mode_label i.ci_delivery.cd_mode))
+         deaf;
+       Printf.printf
+         "    → mail to these queues but may not be read at arrival time; \
+          see `c2c doctor hooks`\n")
 
 let pp_codex_delivery_compact (rep : codex_delivery_report) =
   let inst_str =
@@ -1246,7 +1315,12 @@ let pp_codex_delivery_compact (rep : codex_delivery_report) =
            rep.cdr_instances)
   in
   Printf.printf "Codex delivery: default=%s; %s\n"
-    (codex_delivery_mode_label rep.cdr_default.cd_mode) inst_str
+    (codex_delivery_mode_label rep.cdr_default.cd_mode) inst_str;
+  (* #27: append the DEAF rollup line so the compact `c2c doctor` summary also
+     surfaces a silently-deaf managed codex, mirroring the Kimi DEAF line. *)
+  (match codex_deaf_summary rep with
+   | Some line -> Printf.printf "%s\n" line
+   | None -> ())
 
 let pp_compact r =
   (if r.total_referenced = 0 then

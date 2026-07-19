@@ -199,6 +199,23 @@ let test_on_degraded_stays_degraded_no_thread () =
   Alcotest.(check (list bool)) "only the initial degraded=true, never healthy"
     [ true ] h.degraded_events
 
+let test_heartbeat_restamps_while_alive () =
+  (* #27: while the loop is alive it re-stamps the degraded signal on a
+     throttle (~heartbeat_interval_s) so the persisted heartbeat advances and a
+     reader can tell a live loop from a dead one. With a thread loaded, the
+     re-stamps carry the CURRENT (healthy) state. The fake clock advances 1s per
+     poll; heartbeat_interval_s = 10, so after 25 running polls (clock 0..24) two
+     heartbeats fire (at clock 10 and 20) on top of the two start/thread-load
+     transitions. Semantics are unchanged — only [updated_at] advances. *)
+  Alcotest.(check (float 1e-6)) "heartbeat throttle is 10s"
+    10.0 DL.heartbeat_interval_s;
+  let steps = List.init 25 (fun _ -> Ep.Sv_running) in
+  let h = mk_harness ~steps () in
+  let _ = DL.run (mk_deps h) in
+  Alcotest.(check (list bool))
+    "start=true, thread-load=false, then healthy heartbeats re-stamp false"
+    [ true; false; false; false ] h.degraded_events
+
 (* ------------------------- B141: global (cross-repo) inbox ------------------------- *)
 
 let mk_msg ?(from = "cross-repo-peer") ?message_id content : C2c_mcp.message =
@@ -313,7 +330,8 @@ let () =
         ; test_case "wall-clock bound returns + deregisters" `Quick test_max_wall_bound
         ; test_case "discovery stops after found" `Quick test_discover_throttle_reused_after_found
         ; test_case "on_degraded transitions true->false on thread load" `Quick test_on_degraded_transition_healthy
-        ; test_case "on_degraded stays true when no thread loads" `Quick test_on_degraded_stays_degraded_no_thread ] )
+        ; test_case "on_degraded stays true when no thread loads" `Quick test_on_degraded_stays_degraded_no_thread
+        ; test_case "heartbeat re-stamps degraded signal while alive (#27)" `Quick test_heartbeat_restamps_while_alive ] )
     ; ( "global-inbox (B141)",
         [ test_case "cross-repo mail injected, no turn, never drained" `Quick test_global_inbox_injected_no_turn
         ; test_case "None root disables global delivery" `Quick test_global_none_disables

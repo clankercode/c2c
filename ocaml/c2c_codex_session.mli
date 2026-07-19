@@ -212,27 +212,43 @@ val status_of_instance : instance_dir:string -> status option
     persists its degraded (no-thread-loaded) signal into (B138). *)
 val delivery_status_path : instance_dir:string -> string
 
-(** [write_delivery_degraded ~instance_dir ~unit_id degraded] persists the
+(** [write_delivery_degraded ?now ~instance_dir ~unit_id degraded] persists the
     deliver-loop degraded signal, STAMPED with the attached app-server unit's
     generation [unit_id] (best-effort; never raises). [true] = the app-server
     unit is supervised but no frontend thread has loaded, so nothing is actually
-    delivered; [false] = a thread loaded and delivery is live. *)
-val write_delivery_degraded : instance_dir:string -> unit_id:string -> bool -> unit
+    delivered; [false] = a thread loaded and delivery is live. The stamped
+    [updated_at] doubles as the deliver loop's liveness HEARTBEAT (re-stamped on
+    a throttle while the loop is alive, #27). [?now] overrides the wall clock
+    stamp (test seam). *)
+val write_delivery_degraded :
+  ?now:float -> instance_dir:string -> unit_id:string -> bool -> unit
 
-(** [delivery_degraded_of_instance ~instance_dir ~unit_id] reads the persisted
-    signal, trusting it ONLY when its stamped unit_id matches [unit_id]. [None]
-    when the file is absent / unparseable / stamped for a DIFFERENT unit (a
-    stale record from a prior run on a reused instance dir). Total. *)
+(** [delivery_degraded_of_instance ?now ?stale_window_s ~instance_dir ~unit_id]
+    reads the persisted signal, trusting it ONLY when its stamped unit_id matches
+    [unit_id]. [None] when the file is absent / unparseable / stamped for a
+    DIFFERENT unit (a stale record from a prior run on a reused instance dir).
+    #27: a persisted [degraded=false] whose heartbeat [updated_at] is older than
+    [stale_window_s] (default {!default_stale_window_s}) relative to [now]
+    (default wall clock) reads as [Some true] — the deliver loop died while the
+    record still claimed healthy. Only ever DOWNGRADES a healthy claim. Total. *)
 val delivery_degraded_of_instance :
-  instance_dir:string -> unit_id:string -> bool option
+  ?now:float -> ?stale_window_s:float ->
+  instance_dir:string -> unit_id:string -> unit -> bool option
 
-(** [online_attached_delivery_degraded ~instance_dir] decides, fail-closed,
-    whether an ONLINE-ATTACHED session's delivery loop is degraded (B138). Loads
-    the live unit_id and trusts the persisted signal only on a stamp match;
-    absence / staleness / a missing persisted record all read as [true] (fail
-    toward degraded — never overclaim LIVE). A genuinely healthy session (thread
-    loaded, matching stamp, degraded=false) still reads [false]. Total. *)
-val online_attached_delivery_degraded : instance_dir:string -> bool
+(** Generous default staleness window (seconds) for the deliver-loop heartbeat
+    (#27). Deliberately large so a slow/paused host is never false-flagged. *)
+val default_stale_window_s : float
+
+(** [online_attached_delivery_degraded ?now ?stale_window_s ~instance_dir]
+    decides, fail-closed, whether an ONLINE-ATTACHED session's delivery loop is
+    degraded (B138). Loads the live unit_id and trusts the persisted signal only
+    on a stamp match; absence / staleness / a missing persisted record all read
+    as [true] (fail toward degraded — never overclaim LIVE). A genuinely healthy
+    session (thread loaded, matching stamp, degraded=false, FRESH heartbeat)
+    still reads [false]. [?now]/[?stale_window_s] are hermetic test seams (#27).
+    Total. *)
+val online_attached_delivery_degraded :
+  ?now:float -> ?stale_window_s:float -> instance_dir:string -> unit -> bool
 
 (* --------------------------- identity mapping ----------------------------- *)
 

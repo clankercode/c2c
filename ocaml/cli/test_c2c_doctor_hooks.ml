@@ -480,6 +480,76 @@ let test_delivery_report_structure () =
         (C2c_doctor_hooks.contains json forbidden))
     [ "ws://"; "token"; "127.0.0.1" ]
 
+(* --- #27: codex DEAF summary + sender-side warning ------------------------ *)
+
+let degraded_instances =
+  [ ("cx-live", Some "online-attached", false, false)       (* app-server: live *)
+  ; ("cx-deaf", Some "online-attached", false, true)        (* degraded: no thread *)
+  ; ("cx-broken", Some "failed-startup", false, false)      (* app-server-unavailable *)
+  ]
+
+let healthy_instances =
+  [ ("cx-live", Some "online-attached", false, false)
+  ; ("cx-hooks", None, false, false)                        (* hooks fallback: not deaf *)
+  ]
+
+let test_codex_deaf_summary_present_for_degraded () =
+  let rep =
+    C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
+      ~instances:degraded_instances ()
+  in
+  match C2c_doctor_hooks.codex_deaf_summary rep with
+  | None -> fail "expected a DEAF summary line for degraded/unavailable instances"
+  | Some line ->
+      check bool "summary counts the two deaf instances" true
+        (C2c_doctor_hooks.contains line "2 instance(s)");
+      check bool "summary names the degraded instance" true
+        (C2c_doctor_hooks.contains line "cx-deaf");
+      check bool "summary names the unavailable instance" true
+        (C2c_doctor_hooks.contains line "cx-broken");
+      check bool "summary excludes the live instance" false
+        (C2c_doctor_hooks.contains line "cx-live");
+      check bool "summary points at c2c doctor hooks" true
+        (C2c_doctor_hooks.contains line "c2c doctor hooks")
+
+let test_codex_deaf_summary_absent_when_healthy () =
+  let rep =
+    C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
+      ~instances:healthy_instances ()
+  in
+  check bool "no DEAF summary when every instance has a live path" true
+    (C2c_doctor_hooks.codex_deaf_summary rep = None)
+
+let test_codex_send_warning_present_for_degraded () =
+  (* Fix B: the sender-side warning surfaces for a degraded local codex
+     recipient — mirrors what `c2c send` prints to stderr. *)
+  (match
+     C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "cx-deaf"
+   with
+   | None -> fail "expected a sender warning for a degraded codex recipient"
+   | Some w ->
+       check bool "warning names the recipient" true
+         (C2c_doctor_hooks.contains w "cx-deaf");
+       check bool "warning says no live c2c delivery path" true
+         (C2c_doctor_hooks.contains w "no live c2c delivery path");
+       check bool "warning points at c2c doctor hooks" true
+         (C2c_doctor_hooks.contains w "c2c doctor hooks"));
+  (* app-server-unavailable recipient also warns. *)
+  check bool "unavailable recipient warns" true
+    (C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "cx-broken" <> None)
+
+let test_codex_send_warning_absent_for_healthy_or_unknown () =
+  (* A live app-server recipient must NOT warn. *)
+  check bool "live recipient → no warning" true
+    (C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "cx-live" = None);
+  (* An unknown / non-managed-codex recipient must NOT warn. *)
+  check bool "unknown recipient → no warning" true
+    (C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "claude-somebody" = None)
+
 (* --- B238: Kimi deaf-session classifier ---------------------------------- *)
 
 let test_kimi_classify_deaf_when_inbox_and_no_notifier () =
@@ -768,6 +838,10 @@ let () =
         ; test_case "offline record falls back to hooks" `Quick test_delivery_offline_record_falls_back_to_hooks
         ; test_case "never claims instant delivery" `Quick test_delivery_never_claims_instant
         ; test_case "report structure + json hygiene" `Quick test_delivery_report_structure
+        ; test_case "DEAF summary present for degraded (#27)" `Quick test_codex_deaf_summary_present_for_degraded
+        ; test_case "DEAF summary absent when healthy (#27)" `Quick test_codex_deaf_summary_absent_when_healthy
+        ; test_case "send warning present for degraded recipient (#27)" `Quick test_codex_send_warning_present_for_degraded
+        ; test_case "send warning absent for healthy/unknown recipient (#27)" `Quick test_codex_send_warning_absent_for_healthy_or_unknown
         ] )
     ; ( "kimi-delivery-b238"
       , [ test_case "deaf when inbox + no notifier" `Quick test_kimi_classify_deaf_when_inbox_and_no_notifier

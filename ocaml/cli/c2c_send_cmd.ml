@@ -536,6 +536,20 @@ let send_cmd =
           | Some w -> Printf.eprintf "warning: %s\n%!" w
           | None -> ())
      end;
+     (* #27: OBSERVABILITY ONLY. Best-effort sender-side warning when the local
+        recipient is a managed codex instance with no live c2c delivery path
+        (dead deliver loop / stale heartbeat / failed app-server) — the mail was
+        already durably enqueued above; this only makes a silent failure visible.
+        Local-broker only (remote alias@host has its own relay warning). NEVER
+        blocks, slows, or fails the send, and does not change the exit code. *)
+     (try
+        match target with
+        | `Alias to_alias when not (C2c_mcp.Broker.is_remote_alias to_alias) ->
+            (match C2c_doctor_hooks.codex_send_delivery_warning to_alias with
+             | Some w -> Printf.eprintf "warning: %s\n%!" w
+             | None -> ())
+        | _ -> ()
+      with _ -> ());
      (* B088: opt-in strict exit. Default stays 0 (fire-and-forget
         back-compat) — [--fail-if-queued] turns any not-synchronously-delivered
         send into a non-zero exit so scripts can detect non-delivery.
