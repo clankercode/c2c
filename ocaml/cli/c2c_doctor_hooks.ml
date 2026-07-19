@@ -836,6 +836,89 @@ let check_kimi_delivery ?broker_root () : kimi_delivery_result =
   ; kd_no_notifier = List.rev !no_notifier
   }
 
+(* --- #9 A(2): `c2c doctor hooks --rearm` self-heal for DEAF kimi sessions --
+
+   A kimi session goes DEAF when it is registered (mail lands in its inbox) but
+   no notifier daemon is running to drain it (see the hook-alarm race fixed by
+   A(1)). `--rearm` walks the EXACT DEAF set already computed by
+   [check_kimi_delivery] (inbox>0 AND no notifier) and arms a notifier for each,
+   keyed by the registration's REAL session_id so [run_once] drains the inbox
+   the mail actually landed in. Healthy sessions (notifier running) and merely
+   idle ones (empty inbox) are never in [kd_deaf], so they are never touched.
+
+   Hermetic tests set C2C_KIMI_HOOK_SKIP_NOTIFIER=1 (the same fixture the kimi
+   hook honours) so no real notifier is forked: the outcome is recorded as
+   [Rearm_skipped_fixture] and callers can assert on the reported set. *)
+type rearm_outcome =
+  | Rearm_armed              (* ensure_daemon forked/adopted a notifier *)
+  | Rearm_already_running    (* a live notifier was already present *)
+  | Rearm_failed of string   (* ensure_daemon raised / returned no pid *)
+  | Rearm_skipped_fixture    (* C2C_KIMI_HOOK_SKIP_NOTIFIER=1 — no fork *)
+
+type rearm_result = {
+  rr_alias : string;
+  rr_session_id : string;
+  rr_outcome : rearm_outcome;
+}
+
+let rearm_skip_fixture () =
+  match Sys.getenv_opt "C2C_KIMI_HOOK_SKIP_NOTIFIER" with
+  | Some v ->
+      let t = String.lowercase_ascii (String.trim v) in
+      t = "1" || t = "true" || t = "yes"
+  | None -> false
+
+(* Arm a notifier for every DEAF kimi session. Pure w.r.t. healthy sessions:
+   it only iterates [kd_deaf], each of which is guaranteed [notifier_running =
+   false]. Never raises. Exposed for unit tests. *)
+let rearm_deaf_kimi_sessions ?broker_root () : rearm_result list =
+  let broker_root =
+    match broker_root with
+    | Some r -> r
+    | None -> C2c_utils.resolve_broker_root ()
+  in
+  let delivery = check_kimi_delivery ~broker_root () in
+  let skip = rearm_skip_fixture () in
+  List.map
+    (fun (i : kimi_session_issue) ->
+      let outcome =
+        if skip then Rearm_skipped_fixture
+        else
+          try
+            match
+              C2c_kimi_notifier.ensure_daemon
+                ~alias:i.ksi_alias ~broker_root
+                ~session_id:i.ksi_session_id ~tmux_pane:None ()
+            with
+            | Some _ -> Rearm_armed
+            | None ->
+                if C2c_kimi_notifier.already_running i.ksi_alias then
+                  Rearm_already_running
+                else Rearm_failed "ensure_daemon returned no pid"
+          with e -> Rearm_failed (Printexc.to_string e)
+      in
+      { rr_alias = i.ksi_alias
+      ; rr_session_id = i.ksi_session_id
+      ; rr_outcome = outcome })
+    delivery.kd_deaf
+
+let pp_rearm_human (results : rearm_result list) =
+  if results = [] then
+    print_endline "no DEAF kimi sessions to re-arm"
+  else
+    List.iter
+      (fun r ->
+        let status =
+          match r.rr_outcome with
+          | Rearm_armed -> "re-armed notifier"
+          | Rearm_already_running -> "notifier already running"
+          | Rearm_failed msg -> "FAILED: " ^ msg
+          | Rearm_skipped_fixture -> "attempted (fixture skip — no fork)"
+        in
+        Printf.printf "kimi %s (session %s): %s\n"
+          r.rr_alias r.rr_session_id status)
+      results
+
 (* --- Grok identity-drift detector (#23a) ---------------------------------- *)
 
 (* A grok registration, mirroring is_kimi_registration: client_type=grok, or
@@ -1467,10 +1550,20 @@ let c2c_doctor_hooks_cmd =
             With --json the repair still runs, silently, so the emitted report \
             reflects the post-fix state.")
   in
+  let rearm =
+    Cmdliner.Arg.(value & flag & info [ "rearm" ]
+      ~doc:"Self-heal DEAF kimi sessions: for every kimi registration with an \
+            undelivered inbox and no running notifier (B238), arm a notifier \
+            keyed by the registration's real session_id so queued mail drains. \
+            Healthy/idle sessions are never touched. With --json the repair \
+            still runs, silently, so the emitted report reflects the post-arm \
+            state.")
+  in
   let cmd =
     let+ json = json
     and+ compact = compact
-    and+ fix = fix in
+    and+ fix = fix
+    and+ rearm = rearm in
     (if fix then begin
        let r0 = check () in
        let restored, unknown, failed = fix_dangling r0 in
@@ -1487,6 +1580,16 @@ let c2c_doctor_hooks_cmd =
            failed;
          if restored = [] && unknown = [] && failed = [] then
            print_endline "no dangling c2c hook scripts to restore";
+         print_newline ();
+         flush stdout
+       end
+     end);
+    (if rearm then begin
+       let results = rearm_deaf_kimi_sessions () in
+       (* Under --json, arm silently so we don't corrupt the JSON envelope; the
+          post-arm [check ()] below reflects the result. *)
+       if not json then begin
+         pp_rearm_human results;
          print_newline ();
          flush stdout
        end

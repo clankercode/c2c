@@ -1033,6 +1033,118 @@ let test_ensure_daemon_ignores_reused_non_notifier_pid () =
     (try Unix.kill victim Sys.sigkill with _ -> ());
     (try ignore (Unix.waitpid [] victim) with _ -> ()))
 
+(* ─── #9 B: managed notifier must watch the REAL session-id inbox ─────────
+   The kimi SessionStart hook registers a managed session under Kimi's real
+   session id, so peer mail lands in <real-sid>.inbox.json — NOT the alias
+   inbox. resolve_kimi_notifier_session_id encodes the priority the managed
+   launcher uses to pick that inbox. Fully hermetic: no fork, no live Kimi,
+   no real ~/.kimi-code (KIMI_CODE_HOME is redirected). *)
+let with_b9_tmp_dir f =
+  let tmp = Filename.temp_file "c2c-kimi-b9-" "" in
+  Sys.remove tmp;
+  Unix.mkdir tmp 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      let rec rmrf p =
+        if Sys.file_exists p then
+          if Sys.is_directory p then begin
+            Array.iter (fun c -> rmrf (Filename.concat p c)) (Sys.readdir p);
+            (try Unix.rmdir p with _ -> ())
+          end else (try Sys.remove p with _ -> ())
+      in
+      rmrf tmp)
+    (fun () -> f tmp)
+
+let b9_broker_root tmp =
+  let broker_root = Filename.concat tmp "broker" in
+  Unix.mkdir broker_root 0o755;
+  broker_root
+
+let test_b9_resolve_prefers_registration_real_sid () =
+  with_b9_tmp_dir (fun tmp ->
+    let broker_root = b9_broker_root tmp in
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    C2c_mcp.Broker.register broker
+      ~session_id:"019f-real-kimi-sid" ~alias:"zz-kimi-managed"
+      ~pid:None ~pid_start_time:None ~client_type:(Some "kimi")
+      ~registered_by:(Some "kimi-hook") ~from_auto_gen:true ();
+    let got =
+      C2c_start.resolve_kimi_notifier_session_id ~broker_root
+        ~alias:"zz-kimi-managed" ~cwd:"/nonexistent-workdir"
+        ~fallback:"zz-kimi-managed"
+    in
+    Alcotest.(check string)
+      "arms on the registration's REAL session_id, not the alias"
+      "019f-real-kimi-sid" got)
+
+let test_b9_resolve_degenerate_alias_equals_sid () =
+  with_b9_tmp_dir (fun tmp ->
+    let broker_root = b9_broker_root tmp in
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    C2c_mcp.Broker.register broker
+      ~session_id:"zz-kimi-degen" ~alias:"zz-kimi-degen"
+      ~pid:None ~pid_start_time:None ~client_type:(Some "kimi")
+      ~from_auto_gen:true ();
+    let got =
+      C2c_start.resolve_kimi_notifier_session_id ~broker_root
+        ~alias:"zz-kimi-degen" ~cwd:"/nonexistent-workdir"
+        ~fallback:"zz-kimi-degen"
+    in
+    Alcotest.(check string) "degenerate alias == session_id preserved"
+      "zz-kimi-degen" got)
+
+let test_b9_resolve_uses_session_index_when_no_registration () =
+  with_b9_tmp_dir (fun tmp ->
+    let broker_root = b9_broker_root tmp in
+    let kimi_home = Filename.concat tmp "kimi-code" in
+    Unix.mkdir kimi_home 0o755;
+    let workdir = "/proj/managed-kimi" in
+    let idx = open_out (Filename.concat kimi_home "session_index.jsonl") in
+    output_string idx
+      (Printf.sprintf
+         {|{"sessionId":"019f-index-sid","workDir":"%s","updated_at":"2026-07-19T00:00:00Z"}|}
+         workdir);
+    output_char idx '\n';
+    close_out idx;
+    let prev = Sys.getenv_opt "KIMI_CODE_HOME" in
+    Unix.putenv "KIMI_CODE_HOME" kimi_home;
+    Fun.protect
+      ~finally:(fun () ->
+        match prev with
+        | Some v -> Unix.putenv "KIMI_CODE_HOME" v
+        | None -> Unix.putenv "KIMI_CODE_HOME" "")
+      (fun () ->
+        let got =
+          C2c_start.resolve_kimi_notifier_session_id ~broker_root
+            ~alias:"zz-kimi-noreg" ~cwd:workdir ~fallback:"zz-kimi-noreg"
+        in
+        Alcotest.(check string)
+          "no registration → resolves via kimi session_index"
+          "019f-index-sid" got))
+
+let test_b9_resolve_falls_back_to_alias_when_unknown () =
+  with_b9_tmp_dir (fun tmp ->
+    let broker_root = b9_broker_root tmp in
+    (* Redirect KIMI_CODE_HOME to an empty dir so no real session_index leaks
+       a match for the sandbox cwd. *)
+    let kimi_home = Filename.concat tmp "kimi-code" in
+    Unix.mkdir kimi_home 0o755;
+    let prev = Sys.getenv_opt "KIMI_CODE_HOME" in
+    Unix.putenv "KIMI_CODE_HOME" kimi_home;
+    Fun.protect
+      ~finally:(fun () ->
+        match prev with
+        | Some v -> Unix.putenv "KIMI_CODE_HOME" v
+        | None -> Unix.putenv "KIMI_CODE_HOME" "")
+      (fun () ->
+        let got =
+          C2c_start.resolve_kimi_notifier_session_id ~broker_root
+            ~alias:"zz-kimi-unknown" ~cwd:"/nonexistent-workdir"
+            ~fallback:"zz-kimi-unknown"
+        in
+        Alcotest.(check string) "unresolvable → fallback (alias)"
+          "zz-kimi-unknown" got))
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -1087,4 +1199,10 @@ let () =
       ; Alcotest.test_case "daemon comm matches kernel-stored value" `Quick test_notifier_comm_matches_kernel
       ; Alcotest.test_case "ensure_daemon ignores reused non-notifier pid (no kill)" `Quick test_ensure_daemon_ignores_reused_non_notifier_pid
       ]
+    ; ( "b9-managed-notifier-real-sid"
+      , [ Alcotest.test_case "prefers registration real session_id" `Quick test_b9_resolve_prefers_registration_real_sid
+        ; Alcotest.test_case "degenerate alias == session_id preserved" `Quick test_b9_resolve_degenerate_alias_equals_sid
+        ; Alcotest.test_case "no registration → session_index" `Quick test_b9_resolve_uses_session_index_when_no_registration
+        ; Alcotest.test_case "unresolvable → fallback alias" `Quick test_b9_resolve_falls_back_to_alias_when_unknown
+        ] )
     ]

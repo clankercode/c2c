@@ -757,6 +757,81 @@ let test_kimi_registration_detector () =
     (C2c_doctor_hooks.is_kimi_registration
        (mk ~alias:"claude-x" ~client_type:(Some "claude") ~registered_by:None))
 
+(* --- #9 A(2): `doctor hooks --rearm` self-heal for DEAF kimi sessions ----- *)
+
+let register_kimi broker_root ~session_id ~alias =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None
+    ~pid_start_time:None ~client_type:(Some "kimi")
+    ~registered_by:(Some "kimi-hook") ~from_auto_gen:true ();
+  broker
+
+(* rearm must ATTEMPT to arm the genuinely DEAF session (inbox>0, no notifier)
+   and NEVER touch an idle one (empty inbox → not deaf). The notifier fork is
+   suppressed via C2C_KIMI_HOOK_SKIP_NOTIFIER=1, so this is fully fork-free:
+   the outcome is recorded as Rearm_skipped_fixture and we assert on the
+   reported set (no real process is ever spawned). *)
+let test_rearm_targets_only_deaf_sessions () =
+  with_tmp_dir (fun dir ->
+    let broker_root = dir // "broker" in
+    C2c_io.mkdir_p broker_root;
+    (* DEAF: registered, inbox>0, no notifier. *)
+    let b = register_kimi broker_root ~session_id:"zz-deaf-sid"
+              ~alias:"zz-kimi-deaf-arm" in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-kimi-peer-arm"
+      ~to_alias:"zz-kimi-deaf-arm" ~content:"waiting one" ();
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-kimi-peer-arm"
+      ~to_alias:"zz-kimi-deaf-arm" ~content:"waiting two" ();
+    (* NOT deaf: registered, empty inbox (would only go deaf on first DM). *)
+    ignore (register_kimi broker_root ~session_id:"zz-idle-sid"
+              ~alias:"zz-kimi-idle-arm");
+    let prev = Sys.getenv_opt "C2C_KIMI_HOOK_SKIP_NOTIFIER" in
+    Unix.putenv "C2C_KIMI_HOOK_SKIP_NOTIFIER" "1";
+    Fun.protect
+      ~finally:(fun () ->
+        match prev with
+        | Some v -> Unix.putenv "C2C_KIMI_HOOK_SKIP_NOTIFIER" v
+        | None -> Unix.putenv "C2C_KIMI_HOOK_SKIP_NOTIFIER" "")
+      (fun () ->
+        let results =
+          C2c_doctor_hooks.rearm_deaf_kimi_sessions ~broker_root ()
+        in
+        check int "exactly one session re-armed (the DEAF one)" 1
+          (List.length results);
+        let r = List.hd results in
+        check string "re-armed the deaf alias" "zz-kimi-deaf-arm"
+          r.C2c_doctor_hooks.rr_alias;
+        check string "armed on the REAL registration session_id (not the alias)"
+          "zz-deaf-sid" r.C2c_doctor_hooks.rr_session_id;
+        (match r.C2c_doctor_hooks.rr_outcome with
+         | C2c_doctor_hooks.Rearm_skipped_fixture -> ()
+         | _ -> fail "fixture gate must suppress the real fork");
+        (* the idle session must never appear in the arm set *)
+        check bool "idle session not touched" false
+          (List.exists
+             (fun x -> x.C2c_doctor_hooks.rr_alias = "zz-kimi-idle-arm")
+             results)))
+
+(* No DEAF sessions → rearm is a clean no-op (empty result set). *)
+let test_rearm_noop_when_no_deaf () =
+  with_tmp_dir (fun dir ->
+    let broker_root = dir // "broker" in
+    C2c_io.mkdir_p broker_root;
+    ignore (register_kimi broker_root ~session_id:"zz-idle-only-sid"
+              ~alias:"zz-kimi-idle-only");
+    let prev = Sys.getenv_opt "C2C_KIMI_HOOK_SKIP_NOTIFIER" in
+    Unix.putenv "C2C_KIMI_HOOK_SKIP_NOTIFIER" "1";
+    Fun.protect
+      ~finally:(fun () ->
+        match prev with
+        | Some v -> Unix.putenv "C2C_KIMI_HOOK_SKIP_NOTIFIER" v
+        | None -> Unix.putenv "C2C_KIMI_HOOK_SKIP_NOTIFIER" "")
+      (fun () ->
+        let results =
+          C2c_doctor_hooks.rearm_deaf_kimi_sessions ~broker_root ()
+        in
+        check int "no deaf sessions → empty result" 0 (List.length results)))
+
 (* --- Grok identity-drift detector (#23a) ---------------------------------- *)
 
 (* Seed a hermetic broker + statefile + fixture active_sessions.json. The
@@ -970,6 +1045,10 @@ let () =
         ; test_case "no issue when notifier running" `Quick test_kimi_classify_no_issue_when_notifier_running
         ; test_case "empty inbox soft-warn only" `Quick test_kimi_classify_warn_only_empty_inbox
         ; test_case "registration detector" `Quick test_kimi_registration_detector
+        ; test_case "--rearm targets only DEAF sessions (#9 A2)" `Quick
+            test_rearm_targets_only_deaf_sessions
+        ; test_case "--rearm no-op when no DEAF (#9 A2)" `Quick
+            test_rearm_noop_when_no_deaf
         ] )
     ; ( "grok-identity-23a"
       , [ test_case "flags stale statefile identity" `Quick test_grok_flags_stale_statefile_identity

@@ -1822,6 +1822,38 @@ let is_kimi_session_id_like sid =
 let fresh_kimi_session_id () =
   "session_" ^ Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
 
+(* #9 B: resolve which session-id inbox the managed kimi notifier must drain.
+   The kimi SessionStart hook registers this session under Kimi's REAL session
+   id, so peer mail lands in <real-sid>.inbox.json — NOT <alias>.inbox.json.
+   Arming the notifier with the alias (the pre-#9 behaviour) made run_once
+   drain an empty <alias>.inbox.json → the managed session went DEAF. Resolve
+   in priority order: (1) the broker registration for [alias] (authoritative
+   for where mail lands — the hook writes the real sid there), (2) the Kimi
+   session_index for [cwd] (the same discovery the notifier's REST delivery
+   uses), (3) [fallback] (the alias / [name]) when neither is available yet.
+   The degenerate alias == session_id case is preserved: a registration whose
+   session_id equals the alias resolves back to the alias, so behaviour is
+   unchanged. Pure/read-only; never raises. Exposed for unit tests. *)
+let resolve_kimi_notifier_session_id ~broker_root ~alias ~cwd ~fallback =
+  let from_registration () =
+    try
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      List.find_map
+        (fun (r : C2c_mcp.registration) ->
+           if String.lowercase_ascii r.alias = String.lowercase_ascii alias
+           then Some r.session_id else None)
+        (C2c_mcp.Broker.list_registrations broker)
+    with _ -> None
+  in
+  match from_registration () with
+  | Some sid -> sid
+  | None ->
+      (match
+         (try C2c_kimi_notifier.resolve_kimi_session_id ~cwd with _ -> None)
+       with
+       | Some sid -> sid
+       | None -> fallback)
+
 let opencode_log_dir () = home_dir () // ".local" // "share" // "opencode" // "log"
 
 let latest_opencode_log () : string option =
@@ -5089,6 +5121,24 @@ let run_outer_loop ~(name : string) ~(client : string)
           (if client = "kimi" then begin
              let alias = Option.value alias_override ~default:name in
              let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
+             (* #9 B: arm the notifier keyed by the REAL kimi session id, NOT
+                the alias. The kimi SessionStart hook registers this session
+                under Kimi's real session id, so peer mail lands in
+                <real-sid>.inbox.json. Passing the alias as ~session_id (the
+                old behaviour) made run_once drain an empty <alias>.inbox.json
+                → the managed session went DEAF. Resolve in priority order:
+                (1) the broker registration for this alias (authoritative for
+                where mail actually lands — the hook writes the real sid there),
+                (2) the kimi session_index for our cwd, (3) fall back to [name]
+                only when neither is available yet. run_once uses whatever we
+                pass as its drain_sid, so this makes it drain the registration's
+                real-session-id inbox. Degenerate case alias == session_id is
+                preserved (the registration's session_id == name → same as
+                before, no regression). *)
+             let real_session_id =
+               resolve_kimi_notifier_session_id ~broker_root ~alias
+                 ~cwd:(Sys.getcwd ()) ~fallback:name
+             in
              (* B145: ensure_daemon (not start_daemon) so a stale notifier left
                 over from a previous binary is cycled onto the new one even on a
                 bare start with no clean stop. Capture the pid + pidfile so the
@@ -5096,7 +5146,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                 stop/restart. *)
              match
                C2c_kimi_notifier.ensure_daemon
-                 ~alias ~broker_root ~session_id:name ~tmux_pane ()
+                 ~alias ~broker_root ~session_id:real_session_id ~tmux_pane ()
              with
              | Some p ->
                  notifier_pid := Some p;

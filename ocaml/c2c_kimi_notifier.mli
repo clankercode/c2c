@@ -144,6 +144,15 @@ val poll_once_global :
     by [#158]) and returns it, or [None] if not found / unreadable. *)
 val read_session_id_from_config : string -> string option
 
+(** [resolve_kimi_session_id ~cwd] discovers the real Kimi session id for
+    [cwd] by reading [~/.kimi-code/session_index.jsonl] (the same discovery
+    the notifier's REST delivery uses). Managed [c2c start kimi] sessions
+    launch without [--session], so Kimi mints the id and we resolve it
+    afterwards. [None] until Kimi has recorded the session for that workdir.
+    Exposed so the managed launcher can arm the notifier on the REAL
+    session-id inbox rather than the alias inbox (#9 B). *)
+val resolve_kimi_session_id : cwd:string -> string option
+
 (** [workspace_hash_for_path path] computes [md5(path)] as kimi-cli does
     (see [kimi_cli/metadata.py:WorkDirMeta.sessions_dir]). *)
 val workspace_hash_for_path : string -> string

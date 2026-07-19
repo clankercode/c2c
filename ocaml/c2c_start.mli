@@ -85,6 +85,20 @@ val kimi_disabled_for_release : bool
 val kimi_disabled_notice : string
 (** List of supported client names. *)
 
+(** [resolve_kimi_notifier_session_id ~broker_root ~alias ~cwd ~fallback]
+    picks the session-id inbox a managed Kimi notifier must drain (#9 B).
+    Priority: (1) the broker registration for [alias] (where peer mail
+    actually lands — the kimi hook registers the real session id there),
+    (2) the Kimi session_index for [cwd], (3) [fallback] (the alias) when
+    neither has appeared yet. Preserves the degenerate alias == session_id
+    case. Pure/read-only; never raises. Exposed for unit tests. *)
+val resolve_kimi_notifier_session_id :
+  broker_root:string ->
+  alias:string ->
+  cwd:string ->
+  fallback:string ->
+  string
+
 val deliver_kickoff_for_client :
   client:string ->
   name:string ->
