@@ -879,7 +879,18 @@ let restart_cmd =
   let+ name = name
   and+ timeout = timeout
   and+ force = force in
-  let timeout_s = Option.value timeout ~default:5.0 in
+  (* #49: when the operator did not pass --timeout, default the outer-exit
+     ceiling per client. Managed kimi's outer loop winds down a notifier + REST
+     client and exits just past the old flat 5s, which made restart abort and
+     leave the session killed-but-not-relaunched. *)
+  let timeout_s =
+    match timeout with
+    | Some t -> t
+    | None ->
+        (match C2c_start.load_config_opt name with
+         | Some cfg -> C2c_start.default_restart_timeout_s ~client:cfg.C2c_start.client
+         | None -> 5.0)
+  in
   (* B212: the machine-wide relay connector persists a config shape that the
      harness-client restart path cannot parse (no session_id/alias/resume),
      which used to escape as an uncaught Not_found. Recognise it up front and

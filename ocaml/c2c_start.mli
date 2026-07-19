@@ -829,6 +829,13 @@ val load_config : string -> instance_config
 val load_config_opt : string -> instance_config option
 (** [load_config_opt name] loads instance config.json; returns [None] if absent. *)
 
+val default_restart_timeout_s : client:string -> float
+(** #49: the default outer-exit wait ceiling for [c2c restart], per client.
+    Managed kimi's outer winds down a notifier + REST client and exits just past
+    the old flat 5s bound, so it gets a longer default (others keep 5s). Only an
+    upper bound — [cmd_restart] returns as soon as the outer exits — and the
+    [--timeout] flag overrides it. *)
+
 val sync_instance_alias : session_id:string -> alias:string -> unit
 (** Scan all instance configs and update any whose [session_id] matches the
     given [session_id] to use the new [alias]. Prevents stale-alias drift on
