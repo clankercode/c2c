@@ -75,6 +75,21 @@ let c2c_deliver_inbox_binary =
   let dir = Filename.dirname c2c_binary in
   Filename.concat dir "c2c_deliver_inbox.exe"
 
+(* B248 (B247/B226 sibling): native client session keys that must never leak
+   from a live host session into a test invocation. When these tests run inside
+   a live Claude/Codex/etc session, an inherited CLAUDE_CODE_SESSION_ID (etc.)
+   makes c2c resolve the host's — usually unregistered — session id; combined
+   with C2C_MCP_AUTO_REGISTER_ALIAS=cli-test below, identity-resolving commands
+   (schedule/memory/…) then hit the B187 borrowed-alias guard and exit
+   non-zero, though they pass in clean CI where these keys are absent. Scrub
+   them in every c2c_cmd invocation so the harness matches CI. C2C_MCP_SESSION_ID
+   is deliberately NOT scrubbed — tests that need a fixed identity set it
+   explicitly in their own command prefix, and it wins over these native keys. *)
+let host_session_env_keys =
+  [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "CODEX_THREAD_ID"
+  ; "C2C_OPENCODE_SESSION_ID"; "GROK_SESSION_ID"; "ANTIGRAVITY_CONVERSATION_ID"
+  ; "KIMI_SESSION_ID" ]
+
 let c2c_cmd partial =
   let dir = Filename.dirname c2c_binary in
   let wrapper = Filename.concat dir "c2c" in
@@ -83,8 +98,11 @@ let c2c_cmd partial =
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     Printf.fprintf oc "#!/bin/sh\nexec %s \"$@\"\n" (Filename.quote c2c_binary));
   Unix.chmod wrapper 0o755;
-  Printf.sprintf "PATH=%s:$PATH C2C_MCP_AUTO_REGISTER_ALIAS=cli-test %s"
-    (Filename.quote dir) partial
+  let scrub =
+    String.concat " " (List.map (fun k -> "-u " ^ k) host_session_env_keys)
+  in
+  Printf.sprintf "env %s PATH=%s:$PATH C2C_MCP_AUTO_REGISTER_ALIAS=cli-test %s"
+    scrub (Filename.quote dir) partial
 
 let isolated_home_env home =
   Printf.sprintf "HOME=%s XDG_CONFIG_HOME=%s XDG_STATE_HOME=%s C2C_CLI_FORCE=1"
