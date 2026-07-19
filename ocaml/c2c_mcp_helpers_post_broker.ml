@@ -1528,6 +1528,87 @@ let is_subagent_context () =
   | Some v when String.trim v = "1" -> true
   | _ -> false
 
+(* ---------------------------------------------------------------------------
+ * Managed `c2c start kimi` identity predicates (#40 / #47 / #48).
+ *
+ * Hoisted here from [c2c_hook_cmd.ml] so BOTH surfaces that must recognise a
+ * launcher-owned managed kimi row share ONE definition:
+ *   - the SessionStart hook (`c2c hook kimi`), which adopts the row's
+ *     session_id instead of minting a competing alias; and
+ *   - the in-session MCP server's startup auto-register ([auto_register_impl]
+ *     below), which under #48 must NOT mint/rebind the install-time sticky
+ *     alias when a managed row already owns this cwd — one global
+ *     `~/.kimi-code/mcp.json` bakes a single install alias with no
+ *     C2C_MCP_SESSION_ID, so without this the MCP server registered a SECOND
+ *     identity that tripped #40's "2 live managed kimi instances share cwd"
+ *     ambiguity guard on relaunch.
+ *
+ * The reasoning behind each predicate (why pid+start_time, why pid=None is a
+ * reclaim signal, the co-located-vanilla and unbounded-reclaim caveats) is
+ * unchanged from the #40/#47 hook documentation; see the c2c_hook_cmd.ml
+ * call site and CLAUDE.md's kimi delivery notes. Pure over [regs].
+ * ------------------------------------------------------------------------- *)
+
+(* #40 F7: normalize both sides. The launcher writes [Sys.getcwd ()] (already
+   canonical) but a client-supplied cwd is whatever the client passes, so a
+   trailing slash or a symlinked path would silently defeat the match and
+   resurrect the competing-alias bug. realpath is best-effort: on failure
+   fall back to a trailing-slash strip rather than dropping the match. *)
+let normalize_hook_cwd p =
+  let p = String.trim p in
+  let stripped =
+    let n = String.length p in
+    if n > 1 && p.[n - 1] = '/' then String.sub p 0 (n - 1) else p
+  in
+  try Unix.realpath stripped with _ -> stripped
+
+(* The identity half of the match: a managed (launcher-written, not
+   hook-written) kimi row owning [cwd]. Says nothing about liveness. *)
+let is_managed_kimi_row_for_cwd ~(want : string) (r : registration) =
+  r.client_type = Some "kimi"
+  && r.registered_by <> Some "kimi-hook"
+  && (match r.cwd with Some c -> normalize_hook_cwd c = want | None -> false)
+
+(* #40: live managed `c2c start kimi` rows owning [cwd]. Liveness is the
+   pid + pid_start_time pair (anti-PID-reuse), which does not decay, so no
+   recency window is applied — managed sessions legitimately run for days. *)
+let live_managed_kimi_registrations ~(cwd : string)
+    (regs : registration list) : registration list =
+  let want = normalize_hook_cwd cwd in
+  let pid_is_live p start_time =
+    p > 0
+    && Sys.file_exists (Printf.sprintf "/proc/%d" p)
+    &&
+    match start_time with
+    | None -> true (* pre-#40 row: pid existence is all we have *)
+    | Some recorded -> (
+        match Broker.capture_pid_start_time (Some p) with
+        | Some now -> now = recorded
+        | None -> false (* unreadable now but recorded then → fail closed *))
+  in
+  List.filter
+    (fun (r : registration) ->
+       is_managed_kimi_row_for_cwd ~want r
+       && (match r.pid with
+           | Some p -> pid_is_live p r.pid_start_time
+           | None -> false))
+    regs
+
+(* #47: managed kimi rows for [cwd] whose liveness fields were STRIPPED on
+   teardown ([C2c_start.clear_registration_pid] nulls pid+pid_start_time but
+   keeps the row as the workspace's sticky alias). [pid = None] here is a
+   positive RECLAIM signal because only c2c writes it, and only on teardown
+   of a row it owns. Deliberately NOT extended to [pid = Some p] where p is
+   dead (a stale liveness claim). See the #40/#47 hook documentation for the
+   full caveat about Broker.register's None handling. *)
+let reclaimable_managed_kimi_registrations ~(cwd : string)
+    (regs : registration list) : registration list =
+  let want = normalize_hook_cwd cwd in
+  List.filter
+    (fun (r : registration) ->
+       is_managed_kimi_row_for_cwd ~want r && r.pid = None)
+    regs
+
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
@@ -1558,6 +1639,39 @@ let auto_register_impl ~broker_root ?session_id_override () =
          CLAUDE_SESSION_ID from a running Claude Code session but has a
          different C2C_MCP_AUTO_REGISTER_ALIAS configured. *)
       let existing = Broker.list_registrations broker in
+      (* #48: managed-kimi single authority. The global ~/.kimi-code/mcp.json
+         bakes ONE install-time C2C_MCP_AUTO_REGISTER_ALIAS with no
+         C2C_MCP_SESSION_ID, so every managed kimi session's in-session MCP
+         server would auto-register that same sticky alias under its own
+         (session-index-derived) session id — a SECOND identity competing with
+         the AUTHORITATIVE launcher row (#40). `whoami` then resolves the
+         install alias while delivery uses the launcher row, and on relaunch the
+         extra managed-looking row trips #40's "2 live managed kimi instances
+         share cwd" ambiguity guard. When a LIVE (or torn-down/reclaimable,
+         #47) managed kimi row already owns this cwd, the launcher owns identity:
+         RESOLVE to it, do not mint/rebind. Gated on client_type=kimi so a
+         non-kimi MCP server sharing a directory is unaffected, and on a managed
+         (registered_by <> "kimi-hook") row so vanilla kimi — whose hook row is
+         adopted below via [same_session_hook_identity_row] — still registers
+         its install alias exactly as before. *)
+      let managed_kimi_owns_cwd =
+        current_client_type () = Some "kimi"
+        && (match (try Sys.getcwd () with Sys_error _ -> "") with
+            | "" -> false
+            | cwd ->
+                live_managed_kimi_registrations ~cwd existing <> []
+                || reclaimable_managed_kimi_registrations ~cwd existing <> [])
+      in
+      if managed_kimi_owns_cwd then begin
+        (try
+           let cwd = try Sys.getcwd () with Sys_error _ -> "?" in
+           Printf.eprintf
+             "[auto_register_startup] kimi: a managed `c2c start kimi` row owns \
+              cwd %s — resolving to the launcher identity, not \
+              minting/rebinding install-time alias %S (#48).\n%!"
+             cwd env_alias
+         with _ -> ())
+      end else begin
       (* B119 / B233: hook auto-registrations are the identity authority for
          their session_id. The SessionStart hooks (`c2c hook claude` /
          `c2c hook codex` / `c2c hook kimi`) register a fresh per-session
@@ -1795,6 +1909,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
                  (Option.value (current_client_type ()) ~default:"?")
            | None -> ())
       end
+      end (* #48: close the managed-kimi [else begin] guard *)
   end)
 
 let auto_register_startup ~broker_root = auto_register_impl ~broker_root ()

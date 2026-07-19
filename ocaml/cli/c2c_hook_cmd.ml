@@ -1296,83 +1296,20 @@ let hook_grok : unit Cmdliner.Cmd.t =
 
 let kimi_session_events = [ "SessionStart"; "SessionEnd" ]
 
-(* #40: live managed `c2c start kimi` registrations owning [cwd].
-
-   Kimi Code >= 0.27 runs sessions inside a SHARED long-lived `kimi server`
-   daemon and spawns hook commands from that daemon's environment, so this hook
-   CANNOT see the managed session's C2C_MCP_SESSION_ID /
-   C2C_MCP_AUTO_REGISTER_ALIAS — one daemon serves many sessions, and its env
-   describes none of them. Minting a fresh alias here therefore produced a
-   SECOND, competing identity for an already-managed session (and re-keyed its
-   notifier onto an inbox no mail lands in). The launcher now registers the
-   managed alias itself; this lookup lets the hook recognise that row by
-   [cwd] + live [pid] and adopt it instead of minting.
-
-   Match criteria (all required): kimi client_type, NOT hook-registered
-   (managed rows have no [registered_by]), same [cwd], and a live pid whose
-   start-time matches the one recorded at registration.
-
-   KNOWN LIMITATION (#40 F2) — this identifies the managed *instance owning the
-   directory*, NOT the specific Kimi session that fired this hook. Nothing in
-   the payload can do the latter: kimi's session_index maps session id to
-   workDir only, and the hook cannot see the managed env. So a **co-located
-   vanilla** kimi TUI — a bare `kimi` started in a directory that already has a
-   managed instance — is adopted too: it never registers its own alias and its
-   identity skill names the managed alias. Delivery is unaffected (the REST
-   layer is workdir-keyed either way), and the ">= 2 managed" bail below does
-   not cover this 1-managed + 1-vanilla case. Documented rather than fixed:
-   the obvious fix (first-wins claim of the payload sid on the managed row)
-   would silently strand a managed session that ever re-mints its session id,
-   trading a cosmetic wrong-identity for a real deafness — not a trade worth
-   making without knowing when kimi re-mints.
-
-   The pid + pid_start_time pair is an anti-PID-REUSE guard, not proof of
-   identity: it establishes that the registering instance is still alive, so a
-   row left behind by a dead instance is never adopted. [pid_start_time] is
-   corroborated because the launcher records it (via
-   [Broker.capture_pid_start_time]) and a bare `/proc/<pid>` existence check
-   would happily match an unrelated process that reused the pid. No recency
-   window is applied — unlike [C2c_start.registration_is_adoptable], whose
-   300s bound guards a *notifier binding* — because managed sessions
-   legitimately run for days and a time bound would stop the hook adopting a
-   perfectly live instance. Liveness here comes from the pid pair, which does
-   not decay. Pure over [regs] so it is unit-testable without a broker. *)
-let live_managed_kimi_registrations ~(cwd : string)
-    (regs : C2c_mcp.registration list) : C2c_mcp.registration list =
-  (* #40 F7: normalize both sides. The launcher writes [Sys.getcwd ()] (already
-     canonical) but kimi's payload cwd is whatever the client passes, so a
-     trailing slash or a symlinked path would silently defeat the match and
-     resurrect the competing-alias bug. realpath is best-effort: on failure
-     fall back to a trailing-slash strip rather than dropping the match. *)
-  let normalize p =
-    let p = String.trim p in
-    let stripped =
-      let n = String.length p in
-      if n > 1 && p.[n - 1] = '/' then String.sub p 0 (n - 1) else p
-    in
-    try Unix.realpath stripped with _ -> stripped
-  in
-  let want = normalize cwd in
-  let pid_is_live p start_time =
-    p > 0
-    && Sys.file_exists (Printf.sprintf "/proc/%d" p)
-    &&
-    match start_time with
-    | None -> true (* pre-#40 row: pid existence is all we have *)
-    | Some recorded -> (
-        match C2c_mcp.Broker.capture_pid_start_time (Some p) with
-        | Some now -> now = recorded
-        | None -> false (* unreadable now but recorded then → fail closed *))
-  in
-  List.filter
-    (fun (r : C2c_mcp.registration) ->
-       r.client_type = Some "kimi"
-       && r.registered_by <> Some "kimi-hook"
-       && (match r.cwd with Some c -> normalize c = want | None -> false)
-       && (match r.pid with
-           | Some p -> pid_is_live p r.pid_start_time
-           | None -> false))
-    regs
+(* #40 / #47 / #48: the managed `c2c start kimi` identity predicates now live
+   in [C2c_mcp_helpers_post_broker] so the in-session MCP server's startup
+   auto-register shares ONE definition with this hook (#48 — the global
+   ~/.kimi-code/mcp.json bakes a single install alias with no
+   C2C_MCP_SESSION_ID, so without adoption the MCP server minted a competing
+   identity that tripped the "2 live managed kimi instances" guard on
+   relaunch). The full #40/#47 reasoning — why the hook cannot read the managed
+   env, why liveness is the pid+start_time pair, the co-located-vanilla and
+   unbounded-reclaim caveats — is documented at the definitions there. These
+   aliases keep the call sites below unchanged. *)
+let normalize_hook_cwd = C2c_mcp.normalize_hook_cwd
+let live_managed_kimi_registrations = C2c_mcp.live_managed_kimi_registrations
+let reclaimable_managed_kimi_registrations =
+  C2c_mcp.reclaimable_managed_kimi_registrations
 
 let hook_kimi_cmd =
   let open Cmdliner.Term in

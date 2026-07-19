@@ -52,6 +52,11 @@
  (deps c2c.exe))
 
 (test
+ (name test_c2c_mcp_kimi_adopt)
+ (modules test_c2c_mcp_kimi_adopt)
+ (libraries c2c_mcp alcotest unix))
+
+(test
  (name test_c2c_memory)
  (modules test_c2c_memory c2c_memory)
  (libraries c2c_mcp alcotest cmdliner yojson str unix))
