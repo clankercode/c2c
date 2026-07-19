@@ -1984,8 +1984,37 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
      "command" on it, and rejected the file with "invalid hook \"c2c-hooks\":
      command hook must specify 'command'". That error is per-FILE, so it took
      out every OTHER tool's hooks in this shared file too, and no c2c agy hook
-     had fired since agy 1.1.2 (1.1.1 accepted the grouped shape everywhere;
-     see the version note in the docstring of test_c2c_setup_agy.ml).
+     had fired since agy 1.1.2.
+
+     Version sensitivity — stated honestly, because the comfortable version of
+     this paragraph was false. On agy <= 1.1.1 the OLD grouped-everywhere shape
+     PARSED AND RAN. This host's logs (~/.gemini/antigravity-cli/log):
+
+       I0713 23:12:12 jsonhook.go:159] Loaded hooks.json ...: 1 named hooks,
+         3 total handlers          (last such load: I0714 16:15:40)
+       57x E ... post-tool hook failed: failed to unmarshal result from hook
+         jsonhook__c2c-hooks_PostToolUse_0_0 ...  (00:36:18 .. 16:17:22 on 07-14)
+       W0714 16:27:12 hooks.go:44] Failed to parse hooks file ...  (FIRST failure)
+
+     "3 total handlers" means all three events loaded, and 57 hook-result errors
+     mean handlers were genuinely EXECUTING. So this change is NOT free: a user
+     still on <= 1.1.1 goes from WORKING to BROKEN, and because the rejection is
+     per-file, they lose every OTHER tool's hooks in this shared file with them.
+     Do NOT restate this as "on <= 1.1.1 hooks just don't fire, i.e. the status
+     quo" — that reading is contradicted by the logs above.
+
+     We still do not branch on version, and that remains correct:
+       - a single file cannot carry both shapes — one bad named hook rejects the
+         whole file, so there is no "write both and let the right one win";
+       - there is no reliable install-time version signal (`agy --version`
+         reports 1.1.4 while the component that parses hooks reports 1.1.2);
+       - agy self-updates (this host went 1.1.1 -> 1.1.4 within days), so the
+         exposed population shrinks toward zero on its own;
+       - the new shape is the one agy's own shipped documentation specifies.
+     We therefore target 1.1.2+ unconditionally and accept a real, bounded
+     regression for <= 1.1.1 rather than a permanent break for everyone else.
+     (Schema provenance and the live-probe evidence: docstring of
+     test_c2c_setup_agy.ml.)
 
      Hook stdout is agy's result contract (protojson), so each handler
      discards the c2c hook's own stdout and emits an empty result object;
@@ -1999,7 +2028,12 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
       ; ("timeout", `Int 10)
       ]
   in
-  (* "" matches every tool name, the agy equivalent of Claude's catch-all. *)
+  (* "" matches every tool name, the agy equivalent of Claude's catch-all. agy
+     documents both "*" and "" as catch-alls; "" is the safer pick, since the
+     matcher is an unanchored Go regex — "" matches natively while "*" is not a
+     valid regex and works only via a special case. Do not narrow this: a
+     non-catch-all matcher installs cleanly, parses cleanly, and then silently
+     never fires for most tools. Pinned by test_c2c_setup_agy.ml. *)
   let grouped event = `List [ `Assoc [ ("matcher", `String ""); ("hooks", `List [ handler event ]) ] ] in
   let flat event = `List [ handler event ] in
   let agy_hooks =
