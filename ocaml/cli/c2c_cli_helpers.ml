@@ -209,6 +209,12 @@ let resolve_statefile_session_gated ~broker_root :
       in
       if not sid_registered then `Stale
       else begin
+        (* Deliberately LIVENESS-BLIND: any other registration → ambiguous.
+           Do NOT "fix" this to exclude dead/stale others — liveness is an
+           unreliable gate signal (pidless/CLI regs report alive; most stale
+           rows are Unknown, not dead), so excluding them would resurrect the
+           #26 silent-misattribution. Liveness is surfaced in the candidate
+           printout only; C2C_ALLOW_DEFAULT_SESSION is the escape hatch. *)
         let others =
           List.filter
             (fun (r : C2c_mcp.registration) -> r.session_id <> sid)

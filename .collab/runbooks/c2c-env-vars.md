@@ -60,9 +60,18 @@ Explicit session ID override. Set this when launching one-shot child CLI probes 
 
 ### Client-native session keys (read, not set, by c2c)
 
-When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode), `GROK_SESSION_ID` (Grok Build TUI; injected into Grok **hook** processes — tool shells typically do **not** get this key). When the client is Grok (see below) and `GROK_SESSION_ID` is still empty, c2c resolves the live session by matching an ancestor pid against `~/.grok/active_sessions.json` (override path: `C2C_GROK_ACTIVE_SESSIONS`, for tests). kimi has no native key. If none is present, the CLI additionally falls back to the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (validated against the registry; last-resort, single identity per repo, CLI-only — the MCP server never reads it).
+When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode), `GROK_SESSION_ID` (Grok Build TUI; injected into Grok **hook** processes — tool shells typically do **not** get this key). When the client is Grok (see below) and `GROK_SESSION_ID` is still empty, c2c resolves the live session by matching an ancestor pid against `~/.grok/active_sessions.json` (override path: `C2C_GROK_ACTIVE_SESSIONS`, for tests). kimi has no native key. If none is present, the CLI additionally consults the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (single identity per repo, CLI-only — the MCP server never reads it). **#26 fail-closed gate:** the statefile only resolves an identity when its session is the **sole** registration in the broker (a loud `WARN:` is printed, exit 0); if **any other** session is registered, bare `c2c whoami`/`send`/`poll-inbox`/`rooms` **fail closed** with a candidate list + an `export C2C_MCP_SESSION_ID=…` hint instead of silently adopting a possibly-stale alias (which had caused wrong-sender DMs — #21). Set `C2C_ALLOW_DEFAULT_SESSION=1` to restore the pre-#26 silent "statefile wins if registered" behaviour.
 
 **Client-type inference (B134, B173).** The same ambient keys drive `inferred_client_type_from_env` / `c2c init` detect (shared): `C2C_MCP_CLIENT_TYPE` override → `CODEX_THREAD_ID` → Claude session keys → OpenCode → `GROK_SESSION_ID` → truthy `GROK_AGENT` (Grok tool shells export this, often `1`) → unofficial Cursor Agent markers (`CURSOR_AGENT` truthy, or `CURSOR_INVOKED_AS=cursor-agent`). Cursor labeling is **best-effort identity only** (alias prefix `cursor-`, `client: "cursor"`) — not install/hooks/MCP parity. Genuine Codex markers always win over Grok/Cursor markers.
+
+### `C2C_ALLOW_DEFAULT_SESSION`
+
+Opt-in escape hatch (`1`/`true`/`yes`) that restores the pre-#26 behaviour: the
+per-repo `default-session.json` statefile silently resolves an identity whenever
+its session is still registered, with no fail-closed-on-ambiguity check. Off by
+default — leave it unset so multi-session hosts fail closed rather than
+misattribute a bare `c2c whoami`/`send` to a stale alias. Only set it for a
+genuine single-human-CLI workflow that relies on the old convenience.
 
 ### `C2C_MCP_AUTO_REGISTER_ALIAS`
 
