@@ -236,23 +236,182 @@ let test_server_listening_url_parses_log () =
             (Some "http://127.0.0.1:58630")
             (C2c_kimi_deliver.server_listening_url ())))
 
-let test_server_base_url_prefers_listening_log () =
+(* ─── #39 regression suite: stale server.log must never win ──────────────── *)
+
+(* Bind :0, read the assigned port, close. Nothing is listening there once we
+   return, so it is a reliable "dead port" for the liveness probe without
+   hard-coding a number some other process might own. *)
+let dead_port () =
+  let fd = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Fun.protect
+    ~finally:(fun () -> try Unix.close fd with _ -> ())
+    (fun () ->
+      Unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
+      match Unix.getsockname fd with
+      | Unix.ADDR_INET (_, p) -> p
+      | _ -> Alcotest.fail "expected an INET socket")
+
+let server_dir_of tmp =
+  let kc = Filename.concat tmp ".kimi-code" in
+  (try Unix.mkdir kc 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  let sd = Filename.concat kc "server" in
+  (try Unix.mkdir sd 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  sd
+
+let write_stale_log tmp port =
+  let path = Filename.concat (server_dir_of tmp) "server.log" in
+  let oc = open_out path in
+  Fun.protect
+    ~finally:(fun () -> close_out oc)
+    (fun () ->
+      Printf.fprintf oc
+        "{\"level\":30,\"msg\":\"server listening\",\"address\":\"http://127.0.0.1:%d\"}\n"
+        port;
+      (* What a modern warm start actually appends: plain text, no JSON record.
+         This is why the log ages into a permanently stale port (#39). *)
+      output_string oc
+        "server already running (pid=721503, port=58627, started=2026-07-19T08:50:28.865Z)\n")
+
+let write_lock tmp contents =
+  let path = Filename.concat (server_dir_of tmp) "lock" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc contents)
+
+(* Kimi's real lock shape, with our own pid so the liveness probe sees it live. *)
+let write_live_lock tmp port =
+  write_lock tmp
+    (Printf.sprintf
+       {|{"pid":%d,"started_at":"2026-07-19T08:50:28.865Z","host":"127.0.0.1","port":%d,"host_version":"1.2.3"}|}
+       (Unix.getpid ()) port)
+
+let without_port_env f = with_env "C2C_KIMI_SERVER_PORT" "" f
+
+(* THE RED TEST (#39). Pre-fix, server_base_url scraped server.log first and
+   unconditionally, so it returned the days-old dead port and delivery failed
+   forever. The live lock is ground truth and must win. *)
+let test_server_base_url_prefers_live_lock_over_stale_log () =
   with_tmpdir (fun tmp ->
       with_home tmp (fun () ->
           without_fixture (fun () ->
-              let kc = Filename.concat tmp ".kimi-code" in
-              Unix.mkdir kc 0o700;
-              let server_dir = Filename.concat kc "server" in
-              Unix.mkdir server_dir 0o700;
-              let log_path = Filename.concat server_dir "server.log" in
-              let oc = open_out log_path in
-              output_string oc
-                "{\"level\":30,\"msg\":\"server listening\",\"address\":\"http://127.0.0.1:58631\"}\n";
-              close_out oc;
-              Alcotest.(check (option string))
-                "base URL uses discovered listening port"
-                (Some "http://127.0.0.1:58631")
-                (C2c_kimi_deliver.server_base_url ()))))
+              without_port_env (fun () ->
+                  let stale = dead_port () in
+                  write_stale_log tmp stale;
+                  write_live_lock tmp 58627;
+                  Alcotest.(check (option string))
+                    "live lock port wins over stale server.log record"
+                    (Some "http://127.0.0.1:58627")
+                    (C2c_kimi_deliver.server_base_url ())))))
+
+let test_live_lock_url_ignores_dead_pid () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              (* pid 2^31-1 is not a live process on Linux (pid_max is lower). *)
+              write_lock tmp
+                {|{"pid":2147483647,"started_at":"x","host":"127.0.0.1","port":58999}|};
+              Alcotest.(check (option string)) "stale lock (dead pid) ignored" None
+                (C2c_kimi_deliver.live_lock_url ()))))
+
+let test_live_lock_url_tolerates_malformed_lock () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              write_lock tmp "not json at all {{{";
+              Alcotest.(check (option string)) "malformed lock → None, no raise" None
+                (C2c_kimi_deliver.live_lock_url ());
+              write_lock tmp {|{"pid":123}|};
+              Alcotest.(check (option string)) "lock missing port → None" None
+                (C2c_kimi_deliver.live_lock_url ()))))
+
+let test_server_base_url_falls_through_malformed_lock () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              without_port_env (fun () ->
+                  write_lock tmp "{{{ garbage";
+                  write_stale_log tmp (dead_port ());
+                  Alcotest.(check (option string))
+                    "malformed lock + dead log port → default port"
+                    (Some "http://127.0.0.1:58627")
+                    (C2c_kimi_deliver.server_base_url ())))))
+
+(* No lock at all: the log record names a dead port, so it must be skipped
+   rather than returned (returning it is what made the notifier spin forever). *)
+let test_server_base_url_skips_dead_log_address () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              without_port_env (fun () ->
+                  let stale = dead_port () in
+                  write_stale_log tmp stale;
+                  let resolved = C2c_kimi_deliver.server_base_url () in
+                  Alcotest.(check bool) "dead log address not returned" false
+                    (resolved = Some (Printf.sprintf "http://127.0.0.1:%d" stale));
+                  Alcotest.(check (option string)) "falls through to default port"
+                    (Some "http://127.0.0.1:58627") resolved))))
+
+let test_server_base_url_env_beats_stale_log () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              write_stale_log tmp (dead_port ());
+              with_env "C2C_KIMI_SERVER_PORT" "12345" (fun () ->
+                  Alcotest.(check (option string))
+                    "$C2C_KIMI_SERVER_PORT wins over a stale log record"
+                    (Some "http://127.0.0.1:12345")
+                    (C2c_kimi_deliver.server_base_url ())))))
+
+(* A live log address is still honoured when nothing better exists — the fix
+   demotes the log, it does not delete it. *)
+let test_server_base_url_uses_live_log_address () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              without_port_env (fun () ->
+                  let fd = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+                  Fun.protect
+                    ~finally:(fun () -> try Unix.close fd with _ -> ())
+                    (fun () ->
+                      Unix.bind fd (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
+                      Unix.listen fd 1;
+                      let port =
+                        match Unix.getsockname fd with
+                        | Unix.ADDR_INET (_, p) -> p
+                        | _ -> Alcotest.fail "expected an INET socket"
+                      in
+                      write_stale_log tmp port;
+                      Alcotest.(check (option string))
+                        "live log address is used when no lock and no env"
+                        (Some (Printf.sprintf "http://127.0.0.1:%d" port))
+                        (C2c_kimi_deliver.server_base_url ()))))))
+
+let test_address_is_live_probe () =
+  let dead = dead_port () in
+  Alcotest.(check bool) "dead port probes false" false
+    (C2c_kimi_deliver.address_is_live (Printf.sprintf "http://127.0.0.1:%d" dead));
+  Alcotest.(check bool) "unparseable URL probes false" false
+    (C2c_kimi_deliver.address_is_live "not-a-url")
+
+(* Under kimi's experimental multi_server flag the exclusive lock is replaced
+   by server/instances/<id>.json. Same authority, different shape. *)
+let test_instance_registry_url () =
+  with_tmpdir (fun tmp ->
+      with_home tmp (fun () ->
+          without_fixture (fun () ->
+              without_port_env (fun () ->
+                  let sd = server_dir_of tmp in
+                  let inst = Filename.concat sd "instances" in
+                  Unix.mkdir inst 0o700;
+                  let oc = open_out (Filename.concat inst "01ABC.json") in
+                  Printf.fprintf oc
+                    {|{"server_id":"01ABC","pid":%d,"host":"127.0.0.1","port":58777,"started_at":1,"heartbeat_at":2}|}
+                    (Unix.getpid ());
+                  close_out oc;
+                  write_stale_log tmp (dead_port ());
+                  Alcotest.(check (option string))
+                    "instance registry wins over stale log"
+                    (Some "http://127.0.0.1:58777")
+                    (C2c_kimi_deliver.server_base_url ())))))
 
 let test_submit_prompt_detects_http_200_error_code () =
   (* Kimi Code local server returns HTTP 200 for many errors, with the real
@@ -341,8 +500,25 @@ let () =
           test_server_base_url_returns_fixture_url
       ; Alcotest.test_case "uses $C2C_KIMI_SERVER_PORT override" `Quick
           test_server_base_url_uses_kimi_server_port_override
-      ; Alcotest.test_case "prefers discovered listening URL" `Quick
-          test_server_base_url_prefers_listening_log
+      ]
+    ; "server_base_url_stale_port_39",
+      [ Alcotest.test_case "live lock beats stale server.log" `Quick
+          test_server_base_url_prefers_live_lock_over_stale_log
+      ; Alcotest.test_case "dead-pid lock is ignored" `Quick
+          test_live_lock_url_ignores_dead_pid
+      ; Alcotest.test_case "malformed lock does not raise" `Quick
+          test_live_lock_url_tolerates_malformed_lock
+      ; Alcotest.test_case "malformed lock falls through cleanly" `Quick
+          test_server_base_url_falls_through_malformed_lock
+      ; Alcotest.test_case "dead log address is skipped" `Quick
+          test_server_base_url_skips_dead_log_address
+      ; Alcotest.test_case "$C2C_KIMI_SERVER_PORT beats stale log" `Quick
+          test_server_base_url_env_beats_stale_log
+      ; Alcotest.test_case "live log address still honoured" `Quick
+          test_server_base_url_uses_live_log_address
+      ; Alcotest.test_case "TCP liveness probe" `Quick test_address_is_live_probe
+      ; Alcotest.test_case "instance registry beats stale log" `Quick
+          test_instance_registry_url
       ]
     ; "session_index",
       [ Alcotest.test_case "parses index and resolves by workdir" `Quick

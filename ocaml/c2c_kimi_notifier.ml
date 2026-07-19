@@ -257,27 +257,90 @@ let kimi_server_is_responding () =
                Lwt.return (code = 200))
            with _ -> false)
 
+(* #39: consecutive failed start attempts, and the earliest time we are willing
+   to try `kimi server run` again. Before #39 this path re-spawned + waited 10s
+   on every poll (~every 2s) against an address it had never validated, so a
+   stale-port resolution produced an identical ECONNREFUSED line forever with
+   no actionable signal. *)
+let ensure_failures = ref 0
+let next_start_attempt = ref 0.0
+
+(* Escalating backoff so a persistently unreachable server costs one attempt
+   per 10s → 20s → … → 5min instead of one per poll. *)
+let start_backoff_s n =
+  let base = 10.0 *. (2.0 ** float_of_int (max 0 (n - 1))) in
+  if base > 300.0 then 300.0 else base
+
+(* Threshold at which the log line changes from "transient" to "actionable" —
+   past this, retrying is not going to fix it and the operator needs to know
+   WHICH address we are failing against. *)
+let ensure_failures_actionable = 3
+
 (* Start the Kimi server if it is not already running.  The command is
    idempotent: if a server is already bound it prints the existing URL and
-   exits.  We only start a real server outside of fixture/test mode. *)
+   exits.  We only start a real server outside of fixture/test mode.
+
+   Non-fatal by construction: on any failure we simply return, delivery reports
+   an error, and the message stays in the broker inbox for the next poll. Each
+   call re-resolves the base URL via [C2c_kimi_deliver.server_base_url] rather
+   than reusing a cached address, so a server that moved ports is picked up on
+   the next attempt (#39). *)
 let ensure_kimi_server_running () =
   if C2c_kimi_deliver.fixture_enabled () then ()
-  else if not (kimi_server_is_responding ()) then begin
-    Printf.eprintf
-      "[kimi-notifier] Kimi server not responding; starting it...\n%!";
-    let cmd = "kimi server run --keep-alive >/dev/null 2>&1" in
-    ignore (Unix.system cmd);
-    let deadline = Unix.gettimeofday () +. 10.0 in
-    let rec wait () =
-      if Unix.gettimeofday () > deadline then
-        Printf.eprintf
-          "[kimi-notifier] timed out waiting for Kimi server\n%!"
-      else if kimi_server_is_responding () then ()
-      else (
-        Unix.sleepf 0.2;
-        wait ())
-    in
-    wait ()
+  else if kimi_server_is_responding () then begin
+    if !ensure_failures > 0 then
+      Printf.eprintf "[kimi-notifier] Kimi server reachable again at %s\n%!"
+        (Option.value ~default:"(unknown)" (C2c_kimi_deliver.server_base_url ()));
+    ensure_failures := 0;
+    next_start_attempt := 0.0
+  end
+  else begin
+    let now = Unix.gettimeofday () in
+    if now < !next_start_attempt then
+      (* Backing off: do not spawn another server, do not block the poll loop.
+         Delivery will fail cleanly and the message stays queued. *)
+      ()
+    else begin
+      let base =
+        Option.value ~default:"(unresolved)" (C2c_kimi_deliver.server_base_url ())
+      in
+      Printf.eprintf
+        "[kimi-notifier] Kimi server not responding at %s; starting it...\n%!" base;
+      let cmd = "kimi server run --keep-alive >/dev/null 2>&1" in
+      ignore (Unix.system cmd);
+      let deadline = Unix.gettimeofday () +. 10.0 in
+      let rec wait () =
+        if kimi_server_is_responding () then true
+        else if Unix.gettimeofday () > deadline then false
+        else (
+          Unix.sleepf 0.2;
+          wait ())
+      in
+      if wait () then begin
+        ensure_failures := 0;
+        next_start_attempt := 0.0
+      end
+      else begin
+        incr ensure_failures;
+        let n = !ensure_failures in
+        let backoff = start_backoff_s n in
+        next_start_attempt := Unix.gettimeofday () +. backoff;
+        if n >= ensure_failures_actionable then
+          Printf.eprintf
+            "[kimi-notifier] Kimi server still unreachable at %s after %d \
+             attempts. c2c resolved that address from kimi's server lock \
+             (%s), $C2C_KIMI_SERVER_PORT, or the server.log record. Check the \
+             real port with `ss -ltnp | grep kimi` and export \
+             C2C_KIMI_SERVER_PORT=<port> if it disagrees. Mail stays queued; \
+             retrying in %.0fs.\n%!"
+            base n (C2c_kimi_deliver.server_lock_path ()) backoff
+        else
+          Printf.eprintf
+            "[kimi-notifier] timed out waiting for Kimi server at %s \
+             (attempt %d); retrying in %.0fs\n%!"
+            base n backoff
+      end
+    end
   end
 
 (* Resolve the Kimi session id for the current working directory by reading

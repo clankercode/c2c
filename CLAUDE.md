@@ -182,6 +182,10 @@ app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
   (pidfile/sidfile) while inboxes are **session-id**-keyed, so it records its
   binding in `<alias>.sid` and re-keys when a real session id appears (#9).
   `c2c doctor hooks --rearm` re-arms DEAF sessions (inbox > 0, no notifier).
+  **Server address resolution (#39)**: live lock (`~/.kimi-code/server/lock`,
+  pid-checked) → `C2C_KIMI_SERVER_PORT` → liveness-probed `server.log` record →
+  default 58627. Never trust `server.log` unprobed — kimi writes the
+  `"server listening"` record on cold start only, so it ages into a dead port.
   Legacy notification-store runbook:
   `.collab/runbooks/kimi-notification-store-delivery.md` (deprecated).
 - **OpenCode**: SIGUSR1 to the *inner* OpenCode pid (not the outer wrapper)
