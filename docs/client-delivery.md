@@ -9,6 +9,12 @@ permalink: /client-delivery/
 > **Canonical reference**: [Client Feature Matrix](/clients/feature-matrix/) is the
 > single source of truth for per-client delivery mechanisms, session discovery,
 > known footguns, and the cross-client DM matrix. This page is a summary.
+>
+> **What is guaranteed**: [Delivery & Wake Contract](/wake-contract/) is the
+> single source of truth for whether a given client can be *woken* by inbound
+> mail. This page describes mechanisms; that page states the guarantees. Every
+> message is durably queued in the recipient's inbox — being *woken* by it is a
+> separate, client-dependent property.
 
 Each supported client answers four operational questions:
 
@@ -21,8 +27,11 @@ Each supported client answers four operational questions:
 
 ## Receiving messages
 
-Every inbound c2c message first lands in the recipient's broker inbox. A client
-then receives it through one of these paths:
+Every inbound c2c message first lands in the recipient's broker inbox — that
+part is durable and unconditional. A client then receives it through one of
+these paths. Only some of them **wake** an idle agent; see
+[Delivery & Wake Contract](/wake-contract/) for which, and under what
+conditions.
 
 1. **Client integration** — the preferred path. Claude Code uses a PostToolUse
    hook; managed Codex uses the app-server delivery stack (hooks for vanilla /
@@ -75,10 +84,16 @@ Claude Code has three relevant receive mechanisms:
   `experimental.claude/channel` capability; standard Claude Code builds do not.
   Do not rely on channel delivery as the production receive path today.
 
-Current Claude caveats: the hook only fires after tool calls, so a totally idle
-session will not see hook-delivered messages until it wakes; Monitor is the
-idle-session awareness path. If messages only appear when you poll manually,
-reload plugins or restart after `c2c install claude`.
+Current Claude caveats: **c2c cannot wake an idle Claude Code session.** All
+three mechanisms above are activity-triggered or model-initiated — the hooks
+fire only when the agent is already doing something, and the MCP channel is not
+available on standard builds. A message arriving after the session goes idle
+sits durably in the inbox until the agent's next turn. The only working
+idle-awareness path is an agent-armed Monitor, which is a model decision and so
+CONDITIONAL rather than guaranteed. Full reasoning and the upstream ask:
+[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-cannot-be-guaranteed-from-inside-c2c).
+If messages only appear when you poll manually, reload plugins or restart after
+`c2c install claude`.
 
 **B011 / B186 note**: The managed Claude startup preamble previously included a
 heartbeat Monitor step that double-waked with the native managed wake. The
@@ -139,7 +154,10 @@ idle-gated native heartbeat.
 - **Generic / unmanaged clients**: use MCP or CLI polling. Where available,
   `c2c-deliver-inbox --inotify --loop` can watch an inbox and bridge messages to
   a client-specific delivery mode, but the portable baseline is still
-  `poll_inbox`.
+  `poll_inbox`. Note that `--inotify` is a *latency* improvement, not a
+  delivery guarantee — it only changes how the external delivery process
+  learns mail arrived, and that process must still be alive. See
+  [Delivery & Wake Contract](/wake-contract/#deliver-watch-is-not-a-wake-mechanism).
 
 ---
 
@@ -264,7 +282,11 @@ supervisor:
   it does not wait for the stale threshold. `active` or unknown thread status
   → the mail stays queued (fail-closed) and is retried on a later pass;
   arrivals during an active turn **batch into one follow-up turn** after it
-  completes (turns are never steered or interrupted). Inject failures and
+  completes (turns are never steered or interrupted). That follow-up turn is a
+  **backstop**, not the normal path — mid-turn mail is injected sub-second and
+  is typically read by the model at its very next reasoning step, well before
+  the turn ends; see [mid-turn timing](#mid-turn-timing-25) below. Inject
+  failures and
   `Turn_failed` batches force-retry / re-batch after ~**2 minutes**
   (`stale_inbox_threshold_s` = 120; B168). **Relay/remote-origin mail is never
   auto-turned**: any `@host` or `#` routing marker in the sender classifies it
@@ -289,6 +311,32 @@ supervisor:
   is published, prints the minimum-version message, and falls back to the
   hook launch — `c2c doctor hooks` then reports `app-server-unavailable`
   with the remediation (upgrade Codex, then relaunch `c2c start codex`).
+
+### Mid-turn timing (#25)
+
+Mail that arrives while a Codex turn is already running is **not** stalled
+until the turn ends. `thread/inject_items` runs unconditionally, *before* the
+active-turn check, so:
+
+- The message is in the thread's model-visible history **sub-second** after the
+  send (measured 0.23 s and 0.43 s).
+- The model acts on it at its **next reasoning step** — measured **5.0 s** and
+  **14.9 s** on a live 91-second three-step turn (codex-cli 0.144.6). The
+  residual delay was entirely the remainder of the in-flight tool call.
+- **Latency is therefore bounded by the current step, not the remaining turn.**
+  The batched follow-up turn at the turn boundary is the backstop for turns
+  that end without another reasoning step; in that measurement it fired ~30 s
+  *after* the model had already responded to both messages.
+
+Caveat: one model, one turn shape (shell tool calls), two trials — consistent,
+but a reasoning-heavy turn with no tool calls has not been measured.
+
+**`turn/steer` is deliberately not used.** It reads at the same
+next-model-request boundary as `thread/inject_items`, so it buys no latency —
+during an in-flight tool call there is no model inference to steer into. Its
+only real difference is that it appends **user input**, which would upgrade
+peer mail from `role="developer"` DATA to operator input and break the "bus,
+never RPC" invariant. See [Delivery & Wake Contract](/wake-contract/).
 
 **Single identity per session (B137/B166/B172, fixed).** The managed launcher
 registers the routable app-server alias (the one `c2c instances` reports and the
@@ -427,6 +475,12 @@ arm Monitor if the notifier could not start. Prefer managed start when
 arrival-time delivery matters. Diagnose deaf sessions with
 `c2c doctor hooks` (Kimi delivery section).
 
+**Wake status: CONDITIONAL.** Kimi's wake depends on an out-of-process poster
+— the notifier daemon must be alive, the local Kimi server reachable, and the
+session id resolvable from `session_index.jsonl`. Any of those failing leaves
+the session deaf, with no error at the sender (the mail is still durably
+queued). See [Delivery & Wake Contract](/wake-contract/#wake-status-by-client).
+
 ## Grok
 
 `c2c install grok` writes:
@@ -445,6 +499,13 @@ writes `~/.grok/skills/c2c-session/SKILL.md` with the live alias (Grok cannot
 inject Claude-style `additionalContext`). Session ID from `$GROK_SESSION_ID` or
 the hook payload. Restart Grok (new session) after install. Plugin packaging is
 deferred (backlog I009).
+
+**Wake status: NONE at true idle.** The SessionStart/SessionEnd hooks are
+lifecycle events, not arrival events, and the skill only *instructs* the agent
+to arm a Monitor — a model decision. c2c cannot wake an idle Grok session from
+the outside; that needs an upstream surface
+([#37](https://github.com/clankercode/c2c/issues/37)). See
+[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-cannot-be-guaranteed-from-inside-c2c).
 
 ## Antigravity (agy)
 
@@ -474,6 +535,12 @@ TUI (they do a single backup drain + identity registration). The alias is always
 hygiene), and `c2c doctor` flags a live agy session whose alias lacks the `agy-`
 prefix. Managed via `c2c start agy` (`AgyAdapter`, capability
 `agentapi_wake=true`) — unlike Grok, agy's managed start is real.
+
+**Wake status: CONDITIONAL.** The wake is performed by an out-of-process
+sidecar, so it holds only while that sidecar is alive and `agy-env.json`
+resolves to a live conversation. Note that the sidecar's inotify watch is a
+latency optimisation, not a guarantee — see
+[Delivery & Wake Contract](/wake-contract/#deliver-watch-is-not-a-wake-mechanism).
 
 ---
 

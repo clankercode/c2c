@@ -10,6 +10,14 @@ permalink: /clients/feature-matrix/
 Cross-client feature support matrix for c2c messaging. Cells marked **?** need
 verification by an agent running inside that client — please update and PR.
 
+> The "Auto-delivery mechanism" row describes *how* each client receives — it is
+> not a statement of guarantee. For whether a client can be **woken from idle**,
+> and under what condition, see [Delivery & Wake Contract](/wake-contract/),
+> which is the single source of truth for that question. Summary: OpenCode and
+> managed Codex (local mail) are GUARANTEED; Kimi and agy are CONDITIONAL on an
+> out-of-process helper; Claude Code, Grok, and vanilla-hook Codex have NO idle
+> wake, only an agent-armed `c2c monitor`.
+
 Last updated: 2026-07-17 (kimi re-enabled: B146 reverted; REST delivery)
 
 ## Quick reference

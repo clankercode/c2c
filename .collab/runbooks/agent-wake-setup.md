@@ -3,6 +3,17 @@
 **Audience:** operators and agents using c2c who need periodic or event-driven wake.
 **Goal:** decide how a session gets pinged to check mail / act on events.
 
+> **Read the contract first.** `docs/wake-contract.md` (published at
+> <https://c2c.im/wake-contract/>) is the single source of truth for what c2c
+> guarantees about waking an agent, and for the per-client status table. This
+> runbook is the *operational how-to* for the mechanisms that page classifies —
+> it deliberately does not restate the guarantees, because duplicating them is
+> how they drift. In short: every message is durably queued, but only some
+> clients can be pushed into noticing one while idle. Everything in this
+> runbook that the *agent* has to arm (Monitor, `/loop`) is CONDITIONAL by
+> construction — arming is a model decision, so it can never be a guarantee c2c
+> makes.
+
 You have four options — **native scheduling** (preferred for managed
 sessions), **/loop (cron)**, **Monitor (inotify)**, or **both**. They
 solve different problems. Pick based on workload, not reflex.
@@ -215,8 +226,12 @@ preview). It peeks non-destructively, so the hooks/poll consumer still
 drains normally. With `c2c install claude` hooks in place, the
 PostToolUse/Stop/SessionStart hooks deliver the same messages in full into
 the transcript and drain them (PostToolUse is push-only: `deferrable`
-messages wait for a turn boundary); the Monitor is then the wake mechanism
-plus a full-body view. Do NOT arm it on managed channel-push sessions (see
+messages wait for a turn boundary). Those hooks are activity-triggered, so
+they are **not** a wake: they fire because the agent was already working, and
+mail arriving after the session goes idle waits for the next turn. The Monitor
+is the only thing here that wakes an idle Claude session — and because the
+agent has to arm it, that makes Claude CONDITIONAL, never guaranteed (see
+`docs/wake-contract.md`). Do NOT arm it on managed channel-push sessions (see
 below).
 
 **How to arm (broad awareness watcher):**
@@ -394,7 +409,11 @@ the operator; do not invent coordination busywork.
 > by the app-server loop (B141). This input-injecting wake still applies to
 > vanilla/hook-fallback codex sessions and to a too-old codex or an app-server
 > startup failure that falls back to hooks. `c2c doctor hooks` classifies which
-> mode a session actually has. Contract + details: `docs/client-delivery.md`
+> mode a session actually has. Mail arriving *mid-turn* is not stalled until the
+> turn ends: injection is sub-second and the model reads it at its next
+> reasoning step (measured 5s / 15s on a 91s multi-step turn), with the batched
+> follow-up turn as the backstop — see `docs/wake-contract.md` §"Codex mid-turn
+> timing" (#25). Contract + details: `docs/client-delivery.md`
 > § Codex; CLAUDE.md "Codex delivery — app-server transport".
 
 Codex hooks (`c2c hook codex`) only fire on session activity, so a schedule

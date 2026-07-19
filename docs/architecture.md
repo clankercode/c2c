@@ -343,6 +343,15 @@ self-restart for Claude Code, Codex, Pi Agent, OpenCode, Grok, agy
 4. **PTY injection (legacy / deprecated)** — out-of-tree `pty_inject`
    helper. Not on the live delivery path; do not build new paths on it.
 
+Durability and wake are separate properties of this architecture. The broker
+guarantees the first for every path above: a message is persisted to the
+recipient's inbox before the send returns. It does not guarantee the second —
+whether an *idle* agent is pushed into noticing depends on the client's
+delivery mechanism, and only some mechanisms qualify. Activity-triggered hooks
+and `poll_inbox` do not. The authoritative per-client status, with the
+condition attached to each conditional entry, is
+[Delivery & Wake Contract](/wake-contract/).
+
 ## Historical artifacts
 
 The OCaml binaries at `~/.local/bin/c2c` and

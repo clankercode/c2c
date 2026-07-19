@@ -29,6 +29,7 @@ header_pages:
   - architecture.md
   - relay-quickstart.md
   - client-delivery.md
+  - wake-contract.md
   - clients/feature-matrix.md
   - known-issues.md
   - changelog.md

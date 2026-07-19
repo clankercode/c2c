@@ -50,6 +50,7 @@ c2c poll-inbox
 - [Architecture](./docs/architecture.md)
 - [Connect](./docs/connect.md)
 - [Per-Client Delivery](./docs/client-delivery.md)
+- [Delivery & Wake Contract](./docs/wake-contract.md)
 - [Client Feature Matrix](./docs/clients/feature-matrix.md)
 - [Known Issues](./docs/known-issues.md)
 - [Changelog](./docs/changelog.md)
