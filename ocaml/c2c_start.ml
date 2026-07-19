@@ -4534,6 +4534,30 @@ let codex_requested_name_for_managed_start ~(name : string)
     ~(name_from_auto_gen : bool) : string option =
   if name_from_auto_gen then None else Some name
 
+(* #58: at kickoff-composition time the launcher substitutes the {alias}
+   placeholder with the address it believes will be published. For codex with an
+   auto-picked name and no --alias, [codex_alias_override_for_managed_start]
+   resolves to [None], so the app-server derives a codex-<word>-<word>-<hex>
+   alias from its session id ([C2c_codex_session.derive_alias]) — the launcher's
+   [effective_alias] (= the instance name) is NOT that address. The derived
+   alias is only knowable post-launch, so the kickoff must not assert an address
+   the session will not hold (the #34 lesson). This predicate is [false] exactly
+   in that case; callers then tell the agent to self-verify via `c2c whoami`
+   instead of interpolating the wrong name.
+
+   [true] for every non-codex client (their alias is the instance name) and for
+   codex whenever any override resolves (explicit --alias, or a requested -n /
+   --c2c:name). Deliberate safe over-approximation: a codex role carrying a
+   c2c_alias but an auto-picked name also resolves the override to [None] here
+   (this helper does not see the role alias), so the kickoff defers to whoami
+   rather than showing the role alias — never wrong, only less specific, and
+   still strictly better than today's assertion of the instance name. Pure so
+   the wiring is unit-testable. *)
+let kickoff_alias_is_authoritative ~(client : string)
+    ~(alias_opt : string option) ~(requested_name : string option) : bool =
+  client <> "codex"
+  || codex_alias_override_for_managed_start ~alias_opt ~requested_name <> None
+
 type managed_alias_source = Alias_flag | Role_alias
 
 let codex_managed_start_name_notice ?(source : managed_alias_source = Alias_flag)
