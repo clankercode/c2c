@@ -2969,19 +2969,66 @@ let registry_alive_conflict ~(broker_root : string) ~(name : string)
     match (try Some (Yojson.Safe.from_file reg_path) with _ -> None) with
     | Some (`List regs) ->
         let self = Unix.getpid () in
+        (* #56: [Broker.register] matches the alias with [alias_casefold], so a
+           byte-exact match here left the guard LOOSER than the authority it
+           front-runs: `-n foo` against a live `Foo` row passed the precheck and
+           was refused late by [register] — the orphaned-TUI / poisoned
+           instance-dir shape #34 added this guard to eliminate.  Folding can
+           only ever move a refusal EARLIER: every newly-matched row is one
+           [register] would also flag, since the liveness test below is the
+           broker's own and is strictly weaker (pid-less and unparseable rows
+           stay non-conflicts here).  session_id stays byte-exact — [register]
+           compares session ids exactly too. *)
+        let name_folded = C2c_mcp.Broker.alias_casefold name in
         let alive_entry =
           List.find_opt (fun r ->
             match r with
             | `Assoc fields ->
                 let sid   = (match List.assoc_opt "session_id" fields with Some (`String s) -> s | _ -> "") in
                 let alias = (match List.assoc_opt "alias"      fields with Some (`String a) -> a | _ -> "") in
-                (sid = name || alias = name) &&
+                (sid = name || C2c_mcp.Broker.alias_casefold alias = name_folded) &&
                 (match List.assoc_opt "pid" fields with
                  (* A row owned by THIS process is never a conflict: the
                     app-server launcher restarts in place via [execve], which
                     preserves the pid, so self-matching would refuse a legal
                     restart. *)
-                 | Some (`Int p) -> p <> self && pid_alive p
+                 | Some (`Int p) when p = self -> false
+                 (* #56: defer to the broker's own predicate rather than
+                    stopping at "the pid exists".  [Broker.register] — the
+                    authority this guard front-runs — compares the row's
+                    stored [pid_start_time] against /proc, so a recycled pid
+                    reads as dead there; a bare liveness check here refused
+                    launches the broker would have accepted.  One definition
+                    of "alive", not two that can drift.  A row we cannot
+                    parse falls back to the old check: erring toward refusing
+                    is the safe direction. *)
+                 | Some (`Int p) ->
+                     (match (try Some (C2c_mcp.Broker.registration_of_json r)
+                             with _ -> None) with
+                      | Some reg -> C2c_mcp.Broker.registration_is_alive reg
+                      | None -> pid_alive p)
+                 (* Pid-less rows are not conflicts — and this is EXACT
+                    AGREEMENT with the authority, not an override of it.
+                    [Broker.register]'s conflict test is not
+                    [registration_is_alive] alone; it reads
+
+                      alias_casefold reg.alias = target
+                      && reg.session_id <> session_id
+                      && Option.is_some reg.pid          <-- this clause
+                      && registration_is_alive reg
+                      && not (same_process reg)
+
+                    so [register] already excludes pid-less rows itself,
+                    whatever [registration_is_alive]'s #51 leniency answers for
+                    them.  No trade is being made here: #51's pid-less hook
+                    rows and [clear_registration_pid] teardown are fine on both
+                    sides.  The coupling is invisible from this file — drop
+                    that [Option.is_some reg.pid] clause from [register] and
+                    this branch silently becomes a false ACCEPT (guard passes,
+                    register refuses late) — so
+                    [i56_pidless_row_guard_agrees_with_register] in
+                    test_c2c_start.ml pins it rather than trusting this
+                    comment. *)
                  | _ -> false)
             | _ -> false) regs
         in
@@ -2998,10 +3045,29 @@ let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
   match registry_alive_conflict ~broker_root ~name with
   | None -> ()
   | Some (alias, pid) ->
+      (* #56: `c2c stop` only knows about managed instances, so it is a dead
+         end when the row belongs to an unmanaged MCP peer — which is the
+         common case for a plain broker registration.  Name both exits.
+
+         The remediation must name the registry THIS guard consulted, not the
+         one the suggested command would pick for itself: we were handed an
+         explicit [broker_root], while `c2c deregister` resolves via
+         [resolve_effective_broker_root] (env / git default).  Under
+         C2C_MCP_BROKER_ROOT or --cross-repo those differ, and an
+         un-interpolated suggestion targets a different registry and prints
+         "no registration found" — a remediation that silently does nothing,
+         which is exactly the class of failure #11 was about.  `c2c
+         deregister` accepts `--root DIR` (alias of `--broker-root`, and it
+         overrides --cross-repo); `c2c list` has no such flag, so that line
+         uses the env-var form. *)
       Printf.eprintf
         "FATAL: alias '%s' is already alive in registry (pid %d).\n\
-         \  Stop it first:  c2c stop %s\n%!"
-        alias pid name;
+         \  Broker root:                   %s\n\
+         \  If it is a managed session:    c2c stop %s\n\
+         \  If it is an unmanaged peer:    c2c deregister %s --root %s   (then retry)\n\
+         \  Or launch under another name:  c2c start <client> -n <other-name>\n\
+         \  Inspect the holder:            C2C_MCP_BROKER_ROOT=%s c2c list\n%!"
+        alias pid broker_root name alias broker_root broker_root;
       exit 1
 
 (** Acquire an exclusive POSIX advisory lock on `outer_pid_path name`.
