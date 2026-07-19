@@ -480,6 +480,194 @@ let test_delivery_report_structure () =
         (C2c_doctor_hooks.contains json forbidden))
     [ "ws://"; "token"; "127.0.0.1" ]
 
+(* --- #27: codex DEAF summary + sender-side warning ------------------------ *)
+
+let degraded_instances =
+  [ ("cx-live", Some "online-attached", false, false)       (* app-server: live *)
+  ; ("cx-deaf", Some "online-attached", false, true)        (* degraded: no thread *)
+  ; ("cx-broken", Some "failed-startup", false, false)      (* app-server-unavailable *)
+  ]
+
+let healthy_instances =
+  [ ("cx-live", Some "online-attached", false, false)
+  ; ("cx-hooks", None, false, false)                        (* hooks fallback: not deaf *)
+  ]
+
+let test_codex_deaf_summary_present_for_degraded () =
+  let rep =
+    C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
+      ~instances:degraded_instances ()
+  in
+  match C2c_doctor_hooks.codex_deaf_summary rep with
+  | None -> fail "expected a DEAF summary line for degraded/unavailable instances"
+  | Some line ->
+      check bool "summary counts the two deaf instances" true
+        (C2c_doctor_hooks.contains line "2 instance(s)");
+      check bool "summary names the degraded instance" true
+        (C2c_doctor_hooks.contains line "cx-deaf");
+      check bool "summary names the unavailable instance" true
+        (C2c_doctor_hooks.contains line "cx-broken");
+      check bool "summary excludes the live instance" false
+        (C2c_doctor_hooks.contains line "cx-live");
+      check bool "summary points at c2c doctor hooks" true
+        (C2c_doctor_hooks.contains line "c2c doctor hooks")
+
+let test_codex_deaf_summary_absent_when_healthy () =
+  let rep =
+    C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true
+      ~instances:healthy_instances ()
+  in
+  check bool "no DEAF summary when every instance has a live path" true
+    (C2c_doctor_hooks.codex_deaf_summary rep = None)
+
+let test_codex_send_warning_present_for_degraded () =
+  (* Fix B: the sender-side warning surfaces for a degraded local codex
+     recipient — mirrors what `c2c send` prints to stderr. *)
+  (match
+     C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "cx-deaf"
+   with
+   | None -> fail "expected a sender warning for a degraded codex recipient"
+   | Some w ->
+       check bool "warning names the recipient" true
+         (C2c_doctor_hooks.contains w "cx-deaf");
+       check bool "warning says no live c2c delivery path" true
+         (C2c_doctor_hooks.contains w "no live c2c delivery path");
+       check bool "warning points at c2c doctor hooks" true
+         (C2c_doctor_hooks.contains w "c2c doctor hooks"));
+  (* app-server-unavailable recipient also warns. *)
+  check bool "unavailable recipient warns" true
+    (C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "cx-broken" <> None)
+
+(* #27 FINDING-2: `c2c doctor hooks` must EXIT 1 on a DEAF managed codex, the
+   same way it does for a DEAF kimi session or grok identity drift. Without this
+   the red DEAF block printed and the command still exited 0, so nothing
+   scripted could detect it. Pins the predicate the command exits on. *)
+let test_doctor_exit_code_fails_on_codex_deaf () =
+  let clean ?(codex_deaf = 0) () =
+    C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:0
+      ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf
+  in
+  (* Baseline: an otherwise-clean run with no codex DEAF exits 0. *)
+  check bool "all clean → no failure" false (clean ());
+  (* The #27 regression: codex DEAF ALONE must fail the check. *)
+  check bool "codex DEAF alone → failure (exit 1)" true (clean ~codex_deaf:1 ());
+  check bool "several codex DEAF → failure" true (clean ~codex_deaf:3 ());
+  (* Parity with the pre-existing signals, so the convention is pinned too. *)
+  check bool "kimi DEAF alone → failure" true
+    (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:0
+       ~kimi_deaf:1 ~grok_flagged:false ~codex_deaf:0);
+  check bool "grok drift alone → failure" true
+    (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:0
+       ~kimi_deaf:0 ~grok_flagged:true ~codex_deaf:0);
+  check bool "dangling hook alone → failure" true
+    (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:1 ~codex_issues:0
+       ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0);
+  check bool "codex managed-block issue alone → failure" true
+    (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:1
+       ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0)
+
+(* #27 NIT-3: the DEAF rollup must reach `--json` consumers too, mirroring the
+   kimi deaf/deaf_count fields. *)
+let test_codex_deaf_json_fields () =
+  let json instances =
+    Yojson.Safe.to_string
+      (C2c_doctor_hooks.codex_delivery_report_to_json
+         (C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true ~instances ()))
+  in
+  let deaf_json = json degraded_instances in
+  List.iter
+    (fun needle ->
+      check bool (Printf.sprintf "deaf json mentions %s" needle) true
+        (C2c_doctor_hooks.contains deaf_json needle))
+    [ "\"deaf\""; "\"deaf_count\":2"; "\"deaf_summary\""; "cx-deaf"; "cx-broken" ];
+  let healthy_json = json healthy_instances in
+  check bool "healthy json reports deaf_count 0" true
+    (C2c_doctor_hooks.contains healthy_json "\"deaf_count\":0");
+  check bool "healthy json has a null deaf_summary" true
+    (C2c_doctor_hooks.contains healthy_json "\"deaf_summary\":null")
+
+(* Capture everything the given thunk writes to stdout, so the human/compact
+   printers can be asserted on directly (#27 NIT-4 — the previous tests only
+   covered the shared summary helper, not what the printers actually emit). *)
+let capture_stdout (f : unit -> unit) : string =
+  let tmp = Filename.temp_file "c2c_doctor_pp" ".out" in
+  let fd = Unix.openfile tmp [ Unix.O_WRONLY; Unix.O_TRUNC ] 0o600 in
+  flush stdout;
+  let saved = Unix.dup Unix.stdout in
+  Unix.dup2 fd Unix.stdout;
+  Fun.protect
+    ~finally:(fun () ->
+      flush stdout;
+      Unix.dup2 saved Unix.stdout;
+      Unix.close saved;
+      Unix.close fd)
+    f;
+  let ic = open_in tmp in
+  let content =
+    Fun.protect ~finally:(fun () -> close_in ic)
+      (fun () -> really_input_string ic (in_channel_length ic))
+  in
+  (try Sys.remove tmp with _ -> ());
+  content
+
+let report_of instances =
+  C2c_doctor_hooks.codex_delivery_report ~hooks_installed:true ~instances ()
+
+let test_codex_deaf_rollup_is_printed_human () =
+  let out =
+    capture_stdout (fun () ->
+      C2c_doctor_hooks.pp_codex_delivery_human (report_of degraded_instances))
+  in
+  check bool "human output carries the DEAF rollup header" true
+    (C2c_doctor_hooks.contains out "DEAF");
+  check bool "human rollup says no live c2c delivery path" true
+    (C2c_doctor_hooks.contains out "no live c2c delivery path");
+  check bool "human rollup names the degraded instance" true
+    (C2c_doctor_hooks.contains out "cx-deaf");
+  check bool "human rollup names the unavailable instance" true
+    (C2c_doctor_hooks.contains out "cx-broken");
+  check bool "human rollup points at c2c doctor hooks" true
+    (C2c_doctor_hooks.contains out "c2c doctor hooks");
+  (* A fully-healthy report must print NO DEAF block at all. *)
+  let clean_out =
+    capture_stdout (fun () ->
+      C2c_doctor_hooks.pp_codex_delivery_human (report_of healthy_instances))
+  in
+  check bool "healthy human output has no DEAF block" false
+    (C2c_doctor_hooks.contains clean_out "DEAF")
+
+let test_codex_deaf_rollup_is_printed_compact () =
+  let out =
+    capture_stdout (fun () ->
+      C2c_doctor_hooks.pp_codex_delivery_compact (report_of degraded_instances))
+  in
+  check bool "compact output keeps the per-instance rollup" true
+    (C2c_doctor_hooks.contains out "Codex delivery:");
+  check bool "compact output appends the DEAF summary line" true
+    (C2c_doctor_hooks.contains out "no live c2c delivery path");
+  check bool "compact DEAF line counts both instances" true
+    (C2c_doctor_hooks.contains out "2 instance(s)");
+  let clean_out =
+    capture_stdout (fun () ->
+      C2c_doctor_hooks.pp_codex_delivery_compact (report_of healthy_instances))
+  in
+  check bool "healthy compact output still prints the rollup" true
+    (C2c_doctor_hooks.contains clean_out "Codex delivery:");
+  check bool "healthy compact output has no DEAF summary line" false
+    (C2c_doctor_hooks.contains clean_out "no live c2c delivery path")
+
+let test_codex_send_warning_absent_for_healthy_or_unknown () =
+  (* A live app-server recipient must NOT warn. *)
+  check bool "live recipient → no warning" true
+    (C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "cx-live" = None);
+  (* An unknown / non-managed-codex recipient must NOT warn. *)
+  check bool "unknown recipient → no warning" true
+    (C2c_doctor_hooks.codex_send_delivery_warning ~hooks_installed:true
+       ~instances:degraded_instances "claude-somebody" = None)
+
 (* --- B238: Kimi deaf-session classifier ---------------------------------- *)
 
 let test_kimi_classify_deaf_when_inbox_and_no_notifier () =
@@ -768,6 +956,14 @@ let () =
         ; test_case "offline record falls back to hooks" `Quick test_delivery_offline_record_falls_back_to_hooks
         ; test_case "never claims instant delivery" `Quick test_delivery_never_claims_instant
         ; test_case "report structure + json hygiene" `Quick test_delivery_report_structure
+        ; test_case "DEAF summary present for degraded (#27)" `Quick test_codex_deaf_summary_present_for_degraded
+        ; test_case "DEAF summary absent when healthy (#27)" `Quick test_codex_deaf_summary_absent_when_healthy
+        ; test_case "send warning present for degraded recipient (#27)" `Quick test_codex_send_warning_present_for_degraded
+        ; test_case "send warning absent for healthy/unknown recipient (#27)" `Quick test_codex_send_warning_absent_for_healthy_or_unknown
+        ; test_case "doctor exit code fails on codex DEAF (#27)" `Quick test_doctor_exit_code_fails_on_codex_deaf
+        ; test_case "DEAF fields present in --json (#27)" `Quick test_codex_deaf_json_fields
+        ; test_case "DEAF rollup printed by human printer (#27)" `Quick test_codex_deaf_rollup_is_printed_human
+        ; test_case "DEAF summary printed by compact printer (#27)" `Quick test_codex_deaf_rollup_is_printed_compact
         ] )
     ; ( "kimi-delivery-b238"
       , [ test_case "deaf when inbox + no notifier" `Quick test_kimi_classify_deaf_when_inbox_and_no_notifier

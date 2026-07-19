@@ -496,6 +496,34 @@ let send_cmd =
      let delivery_state =
        C2c_schema_v1.string_of_delivery_state delivery_state_v1
      in
+     (* #27: OBSERVABILITY ONLY. Best-effort sender-side warning when the local
+        recipient is a managed codex instance with no live c2c delivery path
+        (dead deliver loop / stale heartbeat / failed app-server) — the mail was
+        already durably enqueued above; this only makes a silent failure visible.
+        Local-broker only (remote alias@host has its own relay warning). Computed
+        HERE, above the output block, so it reaches the machine-readable receipt
+        too (`--json` consumers otherwise saw a bare "delivered" for a DEAF
+        recipient). NEVER blocks, slows, or fails the send, and does not change
+        the exit code. *)
+     let codex_deaf_warning_opt =
+       try
+         match target with
+         | `Alias to_alias when not (C2c_mcp.Broker.is_remote_alias to_alias) ->
+             C2c_doctor_hooks.codex_send_delivery_warning to_alias
+         | _ -> None
+       with _ -> None
+     in
+     (* Fold into the receipt's single delivery-warning slot so the codex DEAF
+        warning is reported through exactly the same surface (stderr in human
+        mode, [delivery.warning] in the JSON receipt) as the remote/offline
+        warnings. Both can apply at once (e.g. an offline DEAF codex peer). *)
+     let delivery_warning_opt =
+       match delivery_warning_opt, codex_deaf_warning_opt with
+       | Some a, Some b -> Some (a ^ "; " ^ b)
+       | Some a, None -> Some a
+       | None, (Some _ as b) -> b
+       | None, None -> None
+     in
      begin match output_mode with
      | Json ->
          (* B088/B127: delivery.state lets machine consumers tell remote-only

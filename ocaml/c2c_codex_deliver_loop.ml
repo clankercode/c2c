@@ -94,6 +94,14 @@ let is_terminal = function
   | Ep.Sv_running -> false
   | Ep.Sv_frontend_exited | Ep.Sv_server_died | Ep.Sv_offline -> true
 
+(* #27: while the loop is alive it re-stamps the persisted delivery-status
+   heartbeat ([updated_at]) so a reader can tell a live loop from a dead one.
+   THROTTLED — the poll cadence is ~1s, but re-stamping every pass would be
+   ~86k atomic writes/day, so we only re-stamp on this interval. The read-side
+   staleness window ({!C2c_codex_session.default_stale_window_s}, ~120s) is many
+   multiples of this so a single slow/paused beat never false-flags. *)
+let heartbeat_interval_s = 10.0
+
 let run (d : deps) : outcome =
   d.register ();
   let report_degraded b = try d.on_degraded b with _ -> () in
@@ -109,6 +117,19 @@ let run (d : deps) : outcome =
       let passes = ref 0 in
       let global_passes = ref 0 in
       let last_discover = ref neg_infinity in
+      (* #27: liveness heartbeat. Seed with the loop-start time so the first
+         beat only fires after [heartbeat_interval_s] — the start/discovery
+         transitions above already stamped a fresh record, so we do not
+         double-stamp on the first pass. Re-stamps the CURRENT degraded state
+         ([!thread = None]) via [report_degraded], which advances [updated_at]
+         without changing the honest degraded value. *)
+      let last_heartbeat = ref (d.now ()) in
+      let maybe_heartbeat () =
+        if d.now () -. !last_heartbeat >= heartbeat_interval_s then begin
+          last_heartbeat := d.now ();
+          report_degraded (!thread = None)
+        end
+      in
       (* Attempt frontend-thread discovery, throttled to [discover_interval_s]
          while we still have none. One `thread/loaded/list` socket per interval
          is cheap and self-heals if the operator opens a thread late. *)
@@ -124,6 +145,19 @@ let run (d : deps) : outcome =
                  healthy transition. *)
               thread := Some tid;
               (try d.on_thread_discovered tid with _ -> ());
+              (* TODO (#24 signal masking, pre-existing — see #27 review
+                 FINDING-1): [on_thread_discovered] persists degraded=true when
+                 [persist_discovered_thread] REFUSES the binding because a live
+                 managed sibling already owns this thread
+                 (c2c_codex_session.ml, on_thread_discovered). This
+                 unconditional [report_degraded false] immediately overwrites
+                 that refusal signal, and the #27 heartbeat now re-stamps
+                 [false] every ~10s, so the #24 split-brain signal can never
+                 resurface. Proper fix: latch the degraded state from
+                 [persist_discovered_thread]'s boolean result and have both this
+                 transition and [maybe_heartbeat] re-stamp the LATCHED value
+                 rather than [!thread = None]. Deliberately NOT changed here —
+                 #27 is observability-only and must not alter #24 semantics. *)
               report_degraded false
           | _ -> ()
         end
@@ -162,6 +196,9 @@ let run (d : deps) : outcome =
         else begin
           (* Sv_running: (re)discover the thread if needed, then drive one pass. *)
           maybe_discover ();
+          (* #27: advance the liveness heartbeat (throttled) so a reader can
+             tell this live loop from a dead one. *)
+          maybe_heartbeat ();
           (match !thread with
            | Some tid ->
                (match (try d.restart_requested ~thread_id:tid with _ -> None) with
@@ -176,6 +213,13 @@ let run (d : deps) : outcome =
                 | Some po -> incr passes; (try d.on_pass po with _ -> ())
                 | None -> ());
                run_global_pass ~thread_id:tid;
+               (* #27: beat AGAIN after the delivery work. A single healthy pass
+                  can legitimately run far longer than the read-side staleness
+                  window against a hung-but-not-dead app-server
+                  ([Ingress.max_batch] = 32 injections x 8-12s socket timeouts),
+                  which would false-flag a LIVE loop as deaf until the next beat.
+                  Beating on both sides of the work closes that window. *)
+               maybe_heartbeat ();
                if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline
                else (d.sleep d.poll_interval_s; loop ())
                end)

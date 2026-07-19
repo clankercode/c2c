@@ -779,7 +779,7 @@ let read_managed_instances () =
                      thread loaded — or when the record is absent/stale — instead
                      of overclaiming "app-server". *)
                   if (try C2c_codex_session.online_attached_delivery_degraded
-                            ~instance_dir
+                            ~instance_dir ()
                       with _ -> true)
                   then
                     C2c_doctor_hooks.codex_delivery_mode_label

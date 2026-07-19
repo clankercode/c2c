@@ -104,6 +104,13 @@ type outcome = {
       (** validated executable path when launcher should stop and re-exec *)
 }
 
+(** #27: throttle interval (seconds) for the loop's liveness heartbeat. While
+    the loop is alive it re-stamps the persisted delivery-status [updated_at] no
+    more than once per this interval, so a reader can distinguish a live loop
+    (fresh heartbeat) from a dead one (stale) without ~86k atomic writes/day.
+    Much smaller than {!C2c_codex_session.default_stale_window_s}. *)
+val heartbeat_interval_s : float
+
 (** Build the autoturn config the loop drives, for a discovered [thread_id].
     Reuses {!deps.inject_client}/{!deps.turn_client}/gates verbatim — no gate is
     reimplemented. Exposed for tests. *)
