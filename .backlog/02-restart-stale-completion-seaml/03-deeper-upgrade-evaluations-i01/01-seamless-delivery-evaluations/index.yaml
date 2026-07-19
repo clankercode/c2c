@@ -21,7 +21,12 @@ tasks:
       id: T001
       priority: medium
       status: pending
-      tags: []
+      tags:
+        - i011
+        - c2c
+        - spike
+        - codex
+        - sidecar
       title: 'SPIKE: extract Codex app-server delivery loop into ledger-backed sidecar (go/no-go)'
     - complexity: medium
       depends_on:
