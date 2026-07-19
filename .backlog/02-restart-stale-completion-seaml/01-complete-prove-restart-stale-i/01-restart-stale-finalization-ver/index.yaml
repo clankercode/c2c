@@ -48,5 +48,9 @@ tasks:
       id: T003
       priority: medium
       status: pending
-      tags: []
+      tags:
+        - i010
+        - c2c
+        - docs
+        - receipt
       title: I010 evidence receipt + current-doc truth (keeps I010 OPEN)

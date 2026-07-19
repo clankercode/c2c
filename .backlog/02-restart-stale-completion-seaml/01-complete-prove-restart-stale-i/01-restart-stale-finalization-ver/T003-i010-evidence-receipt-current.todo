@@ -10,7 +10,11 @@ id: P2.M1.E1.T003
 priority: medium
 started_at: null
 status: pending
-tags: []
+tags:
+    - i010
+    - c2c
+    - docs
+    - receipt
 title: I010 evidence receipt + current-doc truth (keeps I010 OPEN)
 updated_at: "2026-07-19T23:48:12Z"
 ---
