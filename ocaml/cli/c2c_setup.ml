@@ -1969,18 +1969,45 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
       try Yojson.Safe.from_file hooks_path with _ -> `Assoc []
     else `Assoc []
   in
+  (* #65: agy's hooks.json is NOT Claude's. It parses as
+     [map[string]jsonhook.JSONHookSpec]: the top-level key names the hook and
+     the spec's own fields are the event names. The per-event payload shape
+     then differs BY EVENT:
+
+       - tool events (PreToolUse / PostToolUse) are GROUPED — an array of
+         [{ "matcher": <tool-name regex>, "hooks": [ <handler>, ... ] }];
+       - every other event (SessionStart / PreInvocation / PostInvocation /
+         Stop) is FLAT — the array items ARE the handler objects.
+
+     We previously wrote Claude's grouped shape for all three, so agy read the
+     [{"hooks": [...]}] wrapper of a flat event as a handler, found no
+     "command" on it, and rejected the file with "invalid hook \"c2c-hooks\":
+     command hook must specify 'command'". That error is per-FILE, so it took
+     out every OTHER tool's hooks in this shared file too, and no c2c agy hook
+     had fired since agy 1.1.2 (1.1.1 accepted the grouped shape everywhere;
+     see the version note in the docstring of test_c2c_setup_agy.ml).
+
+     Hook stdout is agy's result contract (protojson), so each handler
+     discards the c2c hook's own stdout and emits an empty result object;
+     otherwise agy logs "failed to unmarshal result from hook ...". Errors on
+     stderr are left visible. The trailing echo also runs if `c2c` is missing,
+     so a hook can never fail the host turn. *)
+  let handler event =
+    `Assoc
+      [ ("type", `String "command")
+      ; ("command", `String (Printf.sprintf "c2c hook agy %s >/dev/null; echo '{}'" event))
+      ; ("timeout", `Int 10)
+      ]
+  in
+  (* "" matches every tool name, the agy equivalent of Claude's catch-all. *)
+  let grouped event = `List [ `Assoc [ ("matcher", `String ""); ("hooks", `List [ handler event ]) ] ] in
+  let flat event = `List [ handler event ] in
   let agy_hooks =
-    `Assoc [
-      ("SessionStart", `List [
-        `Assoc [ ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String "c2c hook agy SessionStart"); ("timeout", `Int 10) ] ]) ]
-      ]);
-      ("PostToolUse", `List [
-        `Assoc [ ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String "c2c hook agy PostToolUse"); ("timeout", `Int 10) ] ]) ]
-      ]);
-      ("Stop", `List [
-        `Assoc [ ("hooks", `List [ `Assoc [ ("type", `String "command"); ("command", `String "c2c hook agy Stop"); ("timeout", `Int 10) ] ]) ]
-      ])
-    ]
+    `Assoc
+      [ ("SessionStart", flat "SessionStart")
+      ; ("PostToolUse", grouped "PostToolUse")
+      ; ("Stop", flat "Stop")
+      ]
   in
   let updated_fields =
     match existing_json with
