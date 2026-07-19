@@ -569,6 +569,45 @@ let test_kimi_registration_detector () =
     (C2c_doctor_hooks.is_kimi_registration
        (mk ~alias:"claude-x" ~client_type:(Some "claude") ~registered_by:None))
 
+(* --fix (#19): restore a dangling c2c-owned hook script from the canonical
+   embedded content, without touching settings.json. *)
+let test_fix_restores_dangling_c2c_hook () =
+  with_tmp_dir (fun dir ->
+    let missing = dir // "c2c-inbox-check.sh" in
+    write_file (dir // "settings.json") (settings_json "PostToolUse" missing);
+    let r = run_check [ dir ] in
+    check int "dangling before fix" 1 r.C2c_doctor_hooks.total_dangling;
+    let restored, unknown, failed = C2c_doctor_hooks.fix_dangling r in
+    check int "restored one" 1 (List.length restored);
+    check int "none unknown" 0 (List.length unknown);
+    check int "none failed" 0 (List.length failed);
+    check bool "script exists after fix" true (Sys.file_exists missing);
+    let ic = open_in missing in
+    let content =
+      Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
+        really_input_string ic (in_channel_length ic))
+    in
+    check bool "content is the canonical inbox-check script" true
+      (content = C2c_claude_hook_scripts.claude_hook_script);
+    let st = Unix.stat missing in
+    check int "mode is 0755" 0o755 (st.Unix.st_perm land 0o777);
+    let r2 = run_check [ dir ] in
+    check int "dangling after fix" 0 r2.C2c_doctor_hooks.total_dangling)
+
+(* --fix only restores KNOWN c2c-owned scripts; an unknown dangling script
+   (even one containing 'c2c') is reported, never fabricated. *)
+let test_fix_ignores_non_c2c_owned_dangling () =
+  with_tmp_dir (fun dir ->
+    let missing = dir // "my-c2c-custom.sh" in
+    write_file (dir // "settings.json") (settings_json "PostToolUse" missing);
+    let r = run_check [ dir ] in
+    check int "dangling before" 1 r.C2c_doctor_hooks.total_dangling;
+    let restored, unknown, failed = C2c_doctor_hooks.fix_dangling r in
+    check int "nothing restored" 0 (List.length restored);
+    check int "one unknown" 1 (List.length unknown);
+    check int "none failed" 0 (List.length failed);
+    check bool "custom script still absent" false (Sys.file_exists missing))
+
 let () =
   run "c2c_doctor_hooks"
     [ ( "dangling_detection"
@@ -581,6 +620,8 @@ let () =
         ; test_case "non-c2c missing hook ignored"    `Quick test_non_c2c_hook_not_flagged
         ; test_case "relative and PATH c2c ignored"   `Quick test_relative_and_path_c2c_commands_ignored
         ; test_case "multiple dirs aggregate"         `Quick test_multiple_dirs_aggregate
+        ; test_case "--fix restores dangling c2c hook" `Quick test_fix_restores_dangling_c2c_hook
+        ; test_case "--fix ignores non-c2c-owned dangling" `Quick test_fix_ignores_non_c2c_owned_dangling
         ] )
     ; ( "codex-managed-blocks"
       , [ test_case "current blocks ok" `Quick test_codex_managed_blocks_current
