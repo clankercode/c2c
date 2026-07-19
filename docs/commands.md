@@ -1370,6 +1370,15 @@ app-server) with an actionable remediation per degraded state. Full contract
 | `roles compile [--client CLIENT] [--dry-run] [NAME]` | Compile canonical role(s) to client agent files. |
 | `roles validate` | Validate canonical role files for completeness. |
 
+**Alias precedence with `--agent` (all managed clients).** When you launch a
+role with `c2c start <client> --agent ROLE`, an explicit `--alias` outranks the
+role's `c2c_alias` — the mismatch is reported on stderr and recorded in
+`broker.log` as `managed_name_not_alias`, naming which source won. With no
+`--alias`, the role's `c2c_alias` supplies the broker alias. This precedence is
+client-generic (#34): it applies to claude, kimi, and opencode just as it does
+to the codex forms documented under [Managed instances](#managed-instances),
+not only to codex.
+
 ### Configuration
 
 | Command | Description |
