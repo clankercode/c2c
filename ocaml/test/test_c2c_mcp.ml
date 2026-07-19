@@ -5678,13 +5678,14 @@ let write_file path contents =
   close_out oc
 
 let registry_json_for_hook_expiry ?pid ?(registered_by = Some "codex-hook")
-    ~session_id ~alias ~registered_at ~last_activity_ts () =
+    ?(client_type = "codex") ~session_id ~alias ~registered_at
+    ~last_activity_ts () =
   let fields =
     [ ("session_id", `String session_id)
     ; ("alias", `String alias)
     ; ("registered_at", `Float registered_at)
     ; ("last_activity_ts", `Float last_activity_ts)
-    ; ("client_type", `String "codex")
+    ; ("client_type", `String client_type)
     ]
     @ (match pid with Some p -> [ ("pid", `Int p) ] | None -> [])
     @ (match registered_by with
@@ -5810,6 +5811,106 @@ let test_sweep_reaps_expired_codex_hook_auto_registration () =
            (fun (r : C2c_mcp.registration) ->
               r.session_id = "codex-hook-sweep-fresh")
            regs))
+
+(* ---------------------------------------------------------------------- *)
+(* #51: pid-less hook registrations were immortal.                          *)
+(*                                                                          *)
+(* Every SessionStart-hook client registers with [pid = None] (the hook is   *)
+(* a short-lived process; its own pid is gone before anyone reads the row,   *)
+(* and its parent is the client CLI or — for kimi >= 0.27, cf. #40 — a       *)
+(* shared daemon serving many sessions). [registration_is_alive] answered    *)
+(* [true] unconditionally for pid-less rows, so those rows never aged out:   *)
+(* 664 permanently-"alive" ghosts against 8 real sessions on the reporting   *)
+(* host. Only codex-hook rows had a decay TTL, and only in the tri-state.    *)
+(*                                                                          *)
+(* The fix scopes decay to hook auto-registrations — rows that NEVER had a   *)
+(* pid — identified by [registered_by] ending in "-hook". Pid-less rows      *)
+(* WITHOUT a hook [registered_by] (plain CLI registrations, and managed rows *)
+(* whose teardown stripped the pid per #47) keep the lenient legacy answer,  *)
+(* so this change cannot false-dead them.                                    *)
+(* ---------------------------------------------------------------------- *)
+
+(* Build a registration record directly rather than round-tripping through
+   [list_registrations]: that loader already drops expired codex-hook rows
+   (B085), which would hide exactly the row under test. *)
+let hook_row_aged ?pid ~registered_by ~client_type ~age_s ~now () :
+    C2c_mcp.registration =
+  let ts = now -. age_s in
+  { (stale_codex_hook_registration ~now) with
+    session_id = Printf.sprintf "s-%s-%.0f" client_type age_s
+  ; alias = Printf.sprintf "a-%s-%.0f" client_type age_s
+  ; pid
+  ; pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid
+  ; registered_at = Some ts
+  ; last_activity_ts = Some ts
+  ; client_type = Some client_type
+  ; registered_by
+  }
+
+(* RED for #51: a pid-less hook row 30 days old reports alive. grok-hook and
+   codex-hook together are 579 of the 664 ghosts; only codex-hook had a TTL,
+   so grok/claude/kimi/agy hook rows never decayed at all. *)
+let test_51_stale_hook_row_is_not_alive () =
+  let now = Unix.gettimeofday () in
+  List.iter
+    (fun (rb, ct) ->
+      let reg =
+        hook_row_aged ~registered_by:(Some rb) ~client_type:ct
+          ~age_s:(30.0 *. 24.0 *. 3600.0) ~now ()
+      in
+      check bool (rb ^ ": stale hook row must not be alive") false
+        (C2c_mcp.Broker.registration_is_alive reg);
+      check bool (rb ^ ": stale hook row liveness is Dead") true
+        (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Dead))
+    [ ("codex-hook", "codex")
+    ; ("grok-hook", "grok")
+    ; ("claude-hook", "claude")
+    ; ("kimi-hook", "kimi")
+    ; ("agy-hook", "agy")
+    ]
+
+(* A hook row inside the TTL is still routable — its next hook fire can drain
+   the inbox — so it must stay alive. Guards against over-correcting #51 into
+   a false-dead that breaks vanilla hook-client delivery. *)
+let test_51_fresh_hook_row_stays_alive () =
+  let now = Unix.gettimeofday () in
+  let reg =
+    hook_row_aged ~registered_by:(Some "grok-hook") ~client_type:"grok"
+      ~age_s:60.0 ~now ()
+  in
+  check bool "fresh hook row is alive" true
+    (C2c_mcp.Broker.registration_is_alive reg);
+  check bool "fresh hook row liveness is Alive" true
+    (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Alive)
+
+(* Disambiguation guard. A pid-less row with no hook [registered_by] is either
+   a plain CLI registration or a managed row whose teardown stripped the pid
+   (#47). Neither is a "never had a pid" hook ghost, and #47 relies on such a
+   row remaining reclaimable, so the lenient legacy answer must survive #51
+   however old the row is. *)
+let test_51_pidless_non_hook_row_keeps_lenient_liveness () =
+  let now = Unix.gettimeofday () in
+  let reg =
+    hook_row_aged ~registered_by:None ~client_type:"kimi"
+      ~age_s:(30.0 *. 24.0 *. 3600.0) ~now ()
+  in
+  check bool "pid-less non-hook row stays alive (legacy leniency)" true
+    (C2c_mcp.Broker.registration_is_alive reg);
+  check bool "pid-less non-hook row liveness stays Unknown" true
+    (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Unknown)
+
+(* A hook row that still carries a live pid is judged by the pid, not the TTL —
+   the TTL only substitutes for evidence we do not have. *)
+let test_51_old_hook_row_with_live_pid_stays_alive () =
+  let now = Unix.gettimeofday () in
+  let reg =
+    hook_row_aged ~pid:(Unix.getpid ()) ~registered_by:(Some "grok-hook")
+      ~client_type:"grok" ~age_s:(30.0 *. 24.0 *. 3600.0) ~now ()
+  in
+  check bool "old hook row with a live pid is alive" true
+    (C2c_mcp.Broker.registration_is_alive reg);
+  check bool "old hook row with a live pid is Alive" true
+    (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Alive)
 
 let test_auto_register_startup_redelivers_dead_letter_messages () =
   with_temp_dir (fun dir ->
@@ -16639,6 +16740,14 @@ let () =
              test_list_keeps_old_codex_hook_registration_with_live_pid
          ; test_case "sweep reaps expired codex-hook auto-registration (B085)" `Quick
              test_sweep_reaps_expired_codex_hook_auto_registration
+         ; test_case "#51 stale pid-less hook row is not alive" `Quick
+             test_51_stale_hook_row_is_not_alive
+         ; test_case "#51 fresh pid-less hook row stays alive" `Quick
+             test_51_fresh_hook_row_stays_alive
+         ; test_case "#51 pid-less non-hook row keeps lenient liveness" `Quick
+             test_51_pidless_non_hook_row_keeps_lenient_liveness
+         ; test_case "#51 old hook row with live pid stays alive" `Quick
+             test_51_old_hook_row_with_live_pid_stays_alive
          ; test_case "sweep preserves non-empty orphan to dead-letter" `Quick
              test_sweep_preserves_nonempty_orphan_to_dead_letter
          ; test_case "sweep empty orphan writes no dead-letter" `Quick

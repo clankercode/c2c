@@ -421,6 +421,36 @@ open C2c_mcp_helpers
   let is_codex_hook_auto_registration reg =
     reg.registered_by = Some codex_hook_registered_by
 
+  (* #51: liveness-decay scope. Every SessionStart-hook client registers with
+     [pid = None] and there is no honest pid to record instead: the hook is a
+     short-lived process (its own pid is gone before any reader looks) and its
+     parent is either the client CLI or — for kimi >= 0.27, cf. #40 — a shared
+     daemon serving many sessions, so the parent pid identifies no session.
+     Such a row therefore carries NO liveness evidence beyond its activity
+     anchor, and [registration_is_alive] used to answer [true] for it forever:
+     664 permanently-"alive" ghosts against 8 real sessions on the reporting
+     host, with mail to a ghost silently dead-lettering.
+
+     Match on the "-hook" suffix rather than an enumeration so a new client's
+     hook decays from the day it ships instead of joining the ghost pile until
+     someone remembers to extend a list. Deliberately distinct from
+     [is_hook_auto_registration] above, whose narrower membership encodes an
+     identity-authority rule (B119/B233), not a liveness one.
+
+     The suffix is also the disambiguator #51 needed. [pid = None] used to mean
+     two different things: "never had a pid" (hook) and "torn down", the latter
+     because managed teardown strips the pid so a reused pid cannot read
+     ghost-alive (#47). Only the first is a ghost; scoping decay to hook rows
+     leaves torn-down and plain-CLI rows on the lenient legacy answer, so #47's
+     reclaimable-row assumption is untouched and neither can be false-dead. *)
+  let is_any_hook_registration reg =
+    match reg.registered_by with
+    | Some rb ->
+        let n = String.length rb and suffix = "-hook" in
+        let m = String.length suffix in
+        n > m && String.sub rb (n - m) m = suffix
+    | None -> false
+
   (* B119 / B233: hook auto-registrations (SessionStart hooks of any client)
      are the identity authority for their session_id — the MCP server adopts
      them. Include kimi-hook so unmanaged Kimi MCP (global mcp.json, no
@@ -435,13 +465,20 @@ open C2c_mcp_helpers
     | Some ts -> Some ts
     | None -> reg.registered_at
 
-  let is_expired_codex_hook_auto_registration reg =
-    is_codex_hook_auto_registration reg
+  (* #51: was codex-hook-only, which left grok/claude/kimi/agy hook rows —
+     230 of the 664 observed ghosts — with no decay path at all. The TTL and
+     anchor are unchanged; only the client scope widened. A row with no anchor
+     at all stays non-expired: absent evidence is not evidence of death, and
+     the sweep predicate below already reaps anchorless legacy rows. *)
+  let is_expired_hook_auto_registration reg =
+    is_any_hook_registration reg
     && reg.pid = None
     &&
     match codex_hook_activity_anchor reg with
     | Some ts -> Unix.gettimeofday () -. ts > codex_hook_auto_registration_ttl_s
     | None -> false
+
+  let is_expired_codex_hook_auto_registration = is_expired_hook_auto_registration
 
   let load_registrations t =
     ensure_root t;
@@ -1721,7 +1758,15 @@ open C2c_mcp_helpers
                   with Unix.Unix_error _ -> false)
     else
       match reg.pid with
-      | None -> true
+      (* #51: pid-less rows stay lenient — a CLI-registered or torn-down row
+         has no pid to check and declaring it dead would break its delivery,
+         which is why this branch answers [true]. The one exception is a hook
+         auto-registration past its activity TTL: that row NEVER had a pid, so
+         leniency here is unbounded rather than merely uncertain, and its next
+         hook fire — the only thing that could drain its inbox — is never
+         coming. Without this cut, mail to it enqueues to an inbox nobody
+         drains. *)
+      | None -> not (is_expired_hook_auto_registration reg)
       | Some pid ->
           if not (Sys.file_exists ("/proc/" ^ string_of_int pid)) then false
           else
@@ -1742,12 +1787,15 @@ open C2c_mcp_helpers
   type liveness_state = Alive | Dead | Unknown
 
   let registration_liveness_state reg =
-    (* Vanilla Codex sessions are registered by short-lived hooks, so they
-       deliberately have no stable process PID to inspect.  Their bounded
-       hook-activity lease is nevertheless the delivery signal: while it is
-       fresh the next Codex hook can drain a queued message.  Do not leave
-       these peers as [Unknown] in discovery output when we have that signal. *)
-    if is_codex_hook_auto_registration reg && reg.pid = None then
+    (* Vanilla hook-driven sessions (codex, claude, grok, kimi, agy) are
+       registered by short-lived hooks, so they deliberately have no stable
+       process PID to inspect.  Their bounded hook-activity lease is
+       nevertheless the delivery signal: while it is fresh the next hook fire
+       can drain a queued message.  Do not leave these peers as [Unknown] in
+       discovery output when we have that signal — and once the lease lapses,
+       say [Dead] rather than [Unknown] so `list` stops offering an
+       unreachable peer as a routing target (#51). *)
+    if is_any_hook_registration reg && reg.pid = None then
       match codex_hook_activity_anchor reg with
       | Some ts
         when Unix.gettimeofday () -. ts <= codex_hook_auto_registration_ttl_s ->
@@ -1977,9 +2025,9 @@ open C2c_mcp_helpers
 
   let is_sweep_keepable reg =
     if
-      is_codex_hook_auto_registration reg
+      is_any_hook_registration reg
       && reg.pid = None
-    then not (is_expired_codex_hook_auto_registration reg)
+    then not (is_expired_hook_auto_registration reg)
     else
     match reg.pid with
     | Some _ ->

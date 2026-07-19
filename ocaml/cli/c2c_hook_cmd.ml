@@ -11,6 +11,23 @@ let sleep_to_min_runtime start_time =
   let sleep_s = max 0.0 ((min_hook_runtime_ms -. elapsed_ms) /. 1000.0) in
   if sleep_s > 0.0 then Unix.sleepf sleep_s
 
+(* #51: refresh the hook row's activity anchor on every hook fire.
+
+   A hook auto-registration carries [pid = None] and is therefore judged live
+   by its [last_activity_ts] TTL (Broker.is_expired_hook_auto_registration).
+   Nothing on the vanilla hook path stamped that field — only the MCP surface
+   calls [touch_session] — so the anchor stayed pinned at [registered_at] and
+   the TTL measured session AGE rather than session ACTIVITY. That is what
+   makes a TTL safe to apply here at all: hooks fire on UserPromptSubmit /
+   PostToolUse, so a session doing work keeps its anchor fresh and cannot be
+   declared dead while alive, while an abandoned session stops refreshing and
+   decays on schedule.
+
+   Best-effort and never fatal: a hook must never fail its host turn, and a
+   missed touch only costs recency, not correctness. *)
+let touch_hook_activity ~broker ~session_id =
+  try C2c_mcp.Broker.touch_session broker ~session_id with _ -> ()
+
 let hook_post_tool_cmd =
   (* Claude PostToolUse hook — CLI fallback for the standalone
      c2c-inbox-hook-ocaml binary (`~/.claude/hooks/c2c-inbox-check.sh` runs
@@ -652,6 +669,7 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       touch_hook_activity ~broker ~session_id;
        (* B137 / B168: is this an app-server-backed managed codex session?
           Detected by the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION
           — present even before the launcher's broker registration lands, so the
@@ -1025,6 +1043,7 @@ let hook_claude_cmd =
                          ~session_id:sid ~alias ~client:(Some "claude"));
                   (sid, Some alias))
        in
+       touch_hook_activity ~broker ~session_id;
        let alias_of sid =
          List.find_map
            (fun (r : C2c_mcp.registration) ->
@@ -1277,6 +1296,7 @@ let hook_grok_cmd =
                        C2c_cli_helpers.write_session_statefile ~broker_root
                          ~session_id:sid ~alias ~client:(Some "grok"));
                   (sid, Some alias))       in
+       touch_hook_activity ~broker ~session_id;
        (* #22: the identity skill is now identity-agnostic (byte-stable across
           all sessions), so it no longer consumes the resolved alias/session_id.
           The big match above still runs for its registration side effects. *)
@@ -1564,6 +1584,7 @@ let hook_kimi_cmd =
               C2c_cli_helpers.write_session_statefile ~broker_root
                 ~session_id ~alias ~client:(Some "kimi"))
        end;
+       touch_hook_activity ~broker ~session_id;
        (* Resolve live alias after register (or existing registration). *)
        let regs = C2c_mcp.Broker.list_registrations broker in
        let alias =
@@ -1792,6 +1813,7 @@ let hook_agy_cmd =
            ()
          end
        end;
+       touch_hook_activity ~broker ~session_id:sid;
 
        if event = "Stop" || event = "SessionEnd" then begin
          let regs = C2c_mcp.Broker.list_registrations broker in
