@@ -5728,6 +5728,50 @@ let write_registry_json dir regs =
   write_file (Filename.concat dir "registry.json")
     (Yojson.Safe.to_string (`List regs))
 
+(* #55: send_all iterates load_registrations, which does NOT apply the
+   expiry filter, but resolves each row through resolve_live_session_id_by_alias,
+   which does. A row that is expired therefore appears in the loop and then
+   resolves to Unknown_alias — and that arm used to be `-> ()`, so the recipient
+   vanished from BOTH sent_to and skipped. The caller was told the broadcast
+   succeeded while silently omitting a peer.
+
+   This is structural, not a timing race: every expired hook row is dropped
+   silently on every broadcast. The asymmetry with All_recipients_dead (which
+   has always been reported) is the defect. *)
+let test_send_all_reports_unknown_alias_in_skipped () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      write_registry_json dir
+        [ registry_json_for_hook_expiry
+            ~session_id:"session-live" ~alias:"zz-sa-live"
+            ~registered_by:None
+            ~registered_at:(now -. 60.0)
+            ~last_activity_ts:(now -. 60.0) ()
+        ; registry_json_for_hook_expiry
+            ~session_id:"session-expired" ~alias:"zz-sa-expired"
+            ~registered_at:(now -. (25.0 *. 3600.0))
+            ~last_activity_ts:(now -. (25.0 *. 3600.0)) ()
+        ];
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let result =
+        C2c_mcp.Broker.send_all broker ~from_alias:"zz-sa-sender"
+          ~content:"broadcast probe" ~exclude_aliases:[]
+      in
+      check bool "live peer received" true
+        (List.mem "zz-sa-live" result.sent_to);
+      check bool "expired peer NOT in sent_to" false
+        (List.mem "zz-sa-expired" result.sent_to);
+      (* The defect: it was in neither list, so nothing upstream could tell
+         a recipient had been dropped. *)
+      check bool "expired peer IS reported in skipped" true
+        (List.mem_assoc "zz-sa-expired" result.skipped);
+      (* A distinct reason from "not_alive": list/resolve disagreement is a
+         different condition from a peer being dead, and conflating them would
+         hide the case entirely. *)
+      check (option string) "skipped reason distinguishes unknown_alias"
+        (Some "unknown_alias")
+        (List.assoc_opt "zz-sa-expired" result.skipped))
+
 let test_list_skips_expired_codex_hook_auto_registration () =
   with_temp_dir (fun dir ->
       let now = Unix.gettimeofday () in
@@ -16633,6 +16677,8 @@ let () =
              test_sweep_keeps_pidless_recent_drained_row
          ; test_case "#344 sweep keeps alive pid row" `Quick
              test_sweep_keeps_alive_pid_row
+         ; test_case "#55 send_all reports Unknown_alias in skipped" `Quick
+             test_send_all_reports_unknown_alias_in_skipped
          ; test_case "list skips expired codex-hook auto-registration (B085)" `Quick
              test_list_skips_expired_codex_hook_auto_registration
          ; test_case "list keeps old codex-hook row with live pid (B085)" `Quick

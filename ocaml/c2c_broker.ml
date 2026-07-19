@@ -2941,7 +2941,18 @@ open C2c_mcp_helpers
                     sent := reg.alias :: !sent
                 | All_recipients_dead ->
                     skipped := (reg.alias, "not_alive") :: !skipped
-                | Unknown_alias -> ()
+                (* #55: this arm used to be [()], so a recipient that failed
+                   to resolve vanished from BOTH sent_to and skipped and the
+                   caller was told the broadcast succeeded. It is reachable
+                   structurally, not just as a race: the loop above iterates
+                   [load_registrations], which does NOT apply the expiry
+                   filter, while [resolve_live_session_id_by_alias] does — so
+                   every expired hook row lands here on every broadcast.
+                   A distinct reason from "not_alive": list/resolve
+                   disagreement is a different condition from a peer being
+                   dead, and conflating them would hide it. *)
+                | Unknown_alias ->
+                    skipped := (reg.alias, "unknown_alias") :: !skipped
             end)
           regs;
         { sent_to = List.rev !sent; skipped = List.rev !skipped })
