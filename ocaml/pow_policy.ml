@@ -10,7 +10,9 @@ let step = 4
    ~1M hashes minting each one. 2^12 (~4096 hashes, low single-digit ms) keeps
    a meaningful per-message deterrent against floods in aggregate while making
    routine requests imperceptible. Must stay well under Pow.max_mint_iterations
-   (2^24) so a client can always mint at the maximum required difficulty. *)
+   (2^17 since #71 — a 32x margin over 2^12) so a client can always mint at the
+   maximum required difficulty. Raising d_max REQUIRES re-deriving that budget:
+   it is a security bound on hostile-relay CPU, not spare headroom. *)
 let d_max = 12
 let window_s = 600.0
 
