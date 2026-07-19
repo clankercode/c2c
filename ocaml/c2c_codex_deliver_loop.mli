@@ -55,16 +55,24 @@ type deps = {
   on_pass : C2c_codex_autoturn.pass_outcome -> unit;
       (** structured metrics/log sink — contains NO body/credential/composer *)
   on_degraded : bool -> unit;
-      (** best-effort persisted-health sink for the degraded (no-thread) signal.
-          Fired [true] at loop start (registered but no frontend thread
-          discovered yet, so nothing actually delivers) and [false] the moment a
-          thread is first discovered (healthy). Lets the caller persist the
-          signal where `c2c doctor`/`c2c health` (which read persisted state) can
-          see it, so they don't overclaim LIVE app-server delivery for a session
-          whose deliver loop is degraded. Best-effort — the loop swallows any
-          exception it raises and never lets it wedge supervision. *)
-  on_thread_discovered : string -> unit;
-      (** Fired exactly once for the first authoritative loaded thread. *)
+      (** best-effort persisted-health sink for the degraded signal. Fired
+          [true] at loop start (registered but no frontend thread discovered
+          yet, so nothing actually delivers), then re-stamped with the LATCHED
+          degraded state (#31) on thread discovery and on each #27 heartbeat:
+          [false] once a thread is discovered AND its binding persisted, but
+          [true] — and staying true — when [on_thread_discovered] reports the
+          binding was refused (#24 split-brain guard). Lets the caller persist
+          the signal where `c2c doctor`/`c2c health` (which read persisted
+          state) can see it, so they don't overclaim LIVE app-server delivery
+          for a session whose deliver loop is degraded. Best-effort — the loop
+          swallows any exception it raises and never lets it wedge
+          supervision. *)
+  on_thread_discovered : string -> bool;
+      (** Fired exactly once for the first authoritative loaded thread. Returns
+          whether the durable thread binding was PERSISTED: [false] means the
+          #24 guard refused it (a live managed sibling already owns this
+          thread), which latches the loop degraded. A raised exception is an
+          unknown binding state and fails closed to degraded. *)
   restart_requested : thread_id:string -> string option;
       (** Checked between passes. Production returns [true] only after the
           app-server thread is authoritatively Idle, or an explicit force. *)
@@ -99,7 +107,10 @@ type outcome = {
   thread_id : string option;     (** the thread the loop drove, if discovered *)
   passes : int;                  (** number of deliver passes run *)
   global_passes : int;           (** B141: global (cross-repo) ingress passes run *)
-  degraded : bool;               (** true iff no thread was ever discovered *)
+  degraded : bool;
+      (** true iff no thread was ever discovered, OR (#31) the discovered
+          thread's durable binding was refused by [on_thread_discovered] — the
+          latched degraded state, matching the last [on_degraded] stamp. *)
   restart_executable : string option;
       (** validated executable path when launcher should stop and re-exec *)
 }

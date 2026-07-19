@@ -1151,11 +1151,16 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
              still lacks the restart target. Repair each durable surface on
              its own predicate. #24: refuses (returns false) when a live managed
              sibling already owns this thread — do not mint a second binding;
-             instead record the degraded delivery signal for doctor/health. *)
-          if not
-               (persist_discovered_thread ~instance_dir ~name ~broker_root
-                  ~thread_id)
-          then write_delivery_degraded ~instance_dir ~unit_id true);
+             instead record the degraded delivery signal for doctor/health.
+             #31: the verdict is also RETURNED to the deliver loop, which
+             latches it so the following (and every subsequent heartbeat)
+             degraded stamp cannot overwrite this refusal with [false]. *)
+          let persisted =
+            persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id
+          in
+          if not persisted then
+            write_delivery_degraded ~instance_dir ~unit_id true;
+          persisted);
       restart_requested =
         (fun ~thread_id ->
           match consume_restart_request ~instance_dir with
