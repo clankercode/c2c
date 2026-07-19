@@ -107,8 +107,8 @@ let payload_for event =
     {|{"hook_event_name":"%s","session_id":"%s","cwd":"/tmp/proj"}|}
     event sid
 
-let rows ctx =
-  let registry = ctx.broker_root // "registry.json" in
+let rows_at broker_root =
+  let registry = broker_root // "registry.json" in
   if not (Sys.file_exists registry) then []
   else
     match Yojson.Safe.from_string (read_file registry) with
@@ -118,6 +118,8 @@ let rows ctx =
         | Some (`List rows) -> rows
         | _ -> [])
     | _ -> []
+
+let rows ctx = rows_at ctx.broker_root
 
 let field row name =
   match row with
@@ -281,10 +283,224 @@ let test_managed_row_untouched_by_stop_and_session_end () =
     ; ("C2C_MCP_AUTO_REGISTER_ALIAS", "agytest-managed-qx42")
     ]
 
+(* ------------------------------------------------------------------ *)
+(* #69: which BROKER a vanilla agy session lands in.
+
+   agy runs each hook command with cwd set to the directory containing
+   hooks.json — `~/.gemini/config` (documented in agy's own embedded hook
+   reference, and confirmed by a live 1.1.4 probe: every fire recorded
+   cwd=/home/xertrov/.gemini/config). That directory is not a git repo, so
+   [resolve_broker_root ()] fingerprints it as "default" and a vanilla agy
+   session registers into `~/.c2c/repos/default/broker` — invisible to peers
+   in the repo it is actually working in. Managed agy escaped this only
+   because `c2c start` exports C2C_MCP_BROKER_ROOT, which hook children
+   inherit.
+
+   The workspace IS recoverable from the payload. agy's common input fields
+   include `workspacePaths`, and a live probe on 1.1.4 found it populated with
+   the real workspace root on EVERY event of an interactive session, and of
+   `agy -p --add-dir <ws>`. #69/#68 recorded it as always `[]`; that came from
+   plain `agy --print`, which registers no workspace at all — the field was
+   honestly reporting "no workspace", not failing to report one.
+
+   These cases deliberately do NOT set C2C_MCP_BROKER_ROOT. Setting it is both
+   what masks this bug and what fixes it, which is exactly why #65's live
+   verification (correctly isolated via that env var) could not see #69. They
+   therefore use [fire_vanilla], which pins only HOME and runs the hook from a
+   NON-repo cwd, reproducing agy's real invocation. *)
+
+let fire_vanilla ?(extra_env = []) ctx ~hook_cwd ~args ~stdin_payload =
+  let payload_path = ctx.dir // "payload.json" in
+  let out_path = ctx.dir // "cmd.out" in
+  let err_path = ctx.dir // "cmd.err" in
+  write_file payload_path stdin_payload;
+  let extra =
+    String.concat " "
+      (List.map
+         (fun (k, v) -> Printf.sprintf "%s=%s" k (Filename.quote v))
+         extra_env)
+  in
+  let cmd =
+    Printf.sprintf "cd %s && env -i HOME=%s PATH=%s %s %s %s < %s > %s 2> %s"
+      (Filename.quote hook_cwd)
+      (Filename.quote ctx.home)
+      (Filename.quote (Sys.getenv "PATH"))
+      extra
+      (Filename.quote c2c_binary)
+      args
+      (Filename.quote payload_path)
+      (Filename.quote out_path)
+      (Filename.quote err_path)
+  in
+  let rc = Sys.command cmd in
+  (rc, read_file out_path, read_file err_path)
+
+(* A real git repo with a unique remote, so its fingerprint is deterministic,
+   unique per test, and — crucially — NOT "default". *)
+let make_workspace ctx ~name =
+  let ws = ctx.dir // name in
+  mkdir_p ws;
+  let quiet = " >/dev/null 2>&1" in
+  ignore (Sys.command (Printf.sprintf "git -C %s init -q%s" (Filename.quote ws) quiet));
+  ignore
+    (Sys.command
+       (Printf.sprintf "git -C %s remote add origin https://example.invalid/%s-%08x.git%s"
+          (Filename.quote ws) name (Random.bits ()) quiet));
+  ws
+
+(* agy's hook cwd stand-in: a plain directory, not a repo — the property that
+   makes [resolve_broker_root ()] fall through to the "default" fingerprint. *)
+let make_hook_cwd ctx =
+  let d = ctx.dir // "gemini-config" in
+  mkdir_p d;
+  d
+
+let repos_dir ctx = ctx.home // ".c2c" // "repos"
+
+(* Every repo fingerprint under HOME whose broker registered [session_id].
+   Asserting over the whole set (rather than probing one expected path) is
+   what makes "landed in `default`" a visible failure instead of a silent
+   absence, and catches a row written to two brokers at once. *)
+let fingerprints_holding ctx ~session_id =
+  let dir = repos_dir ctx in
+  if not (Sys.file_exists dir) then []
+  else
+    Sys.readdir dir |> Array.to_list |> List.sort String.compare
+    |> List.filter (fun fp ->
+           List.exists
+             (fun row -> field row "session_id" = Some (`String session_id))
+             (rows_at (dir // fp // "broker")))
+
+let agy_payload ?(workspace_paths = []) event =
+  let ws =
+    `List (List.map (fun p -> `String p) workspace_paths)
+  in
+  Yojson.Safe.to_string
+    (`Assoc
+       [ ("hook_event_name", `String event)
+       ; ("session_id", `String sid)
+       ; ("conversationId", `String sid)
+       ; ("workspacePaths", ws)
+       ])
+
+(* THE #69 REGRESSION. The row must land in the WORKSPACE's broker, never in
+   `default`, when the payload names a workspace. *)
+let test_vanilla_registers_into_workspace_broker () =
+  with_ctx (fun ctx ->
+    let ws = make_workspace ctx ~name:"ws" in
+    let hook_cwd = make_hook_cwd ctx in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+        ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] "SessionStart")
+    in
+    check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    let fps = fingerprints_holding ctx ~session_id:sid in
+    check int
+      (Printf.sprintf "registered into exactly one broker (got: [%s])"
+         (String.concat "; " fps))
+      1 (List.length fps);
+    check bool
+      (Printf.sprintf
+         "#69: vanilla agy must not register into the `default` broker (got: %s)"
+         (String.concat "; " fps))
+      false
+      (List.mem "default" fps))
+
+(* The workspace must also reach the registration row, so the worktree-mismatch
+   guard has something to check (#68 — the same payload field answers both). *)
+let test_vanilla_records_workspace_as_cwd () =
+  with_ctx (fun ctx ->
+    let ws = make_workspace ctx ~name:"wscwd" in
+    let hook_cwd = make_hook_cwd ctx in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+        ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] "SessionStart")
+    in
+    check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    match fingerprints_holding ctx ~session_id:sid with
+    | [ fp ] -> (
+        let row =
+          List.find_opt
+            (fun row -> field row "session_id" = Some (`String sid))
+            (rows_at (repos_dir ctx // fp // "broker"))
+        in
+        match row with
+        | None -> fail "row vanished between lookups"
+        | Some row ->
+            check bool
+              (Printf.sprintf "#68: row records the workspace as cwd (got: %s)"
+                 (match field row "cwd" with
+                  | Some (`String c) -> c
+                  | _ -> "<none>"))
+              true
+              (field row "cwd" = Some (`String ws)))
+    | fps -> failf "expected one broker, got [%s]" (String.concat "; " fps))
+
+(* MANAGED MUST NOT REGRESS. `c2c start agy` exports C2C_MCP_BROKER_ROOT and
+   hook children inherit it; that export stays authoritative even when the
+   payload names a different workspace. Without this, the #69 fix would
+   silently relocate every managed agy session. *)
+let test_managed_broker_root_env_still_wins () =
+  with_ctx (fun ctx ->
+    let ws = make_workspace ctx ~name:"wsmanaged" in
+    let hook_cwd = make_hook_cwd ctx in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+        ~stdin_payload:(agy_payload ~workspace_paths:[ ws ] "SessionStart")
+        ~extra_env:[ ("C2C_MCP_BROKER_ROOT", ctx.broker_root) ]
+    in
+    check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    check bool "managed: row lands in the exported broker root" true
+      (row_for ctx ~session_id:sid <> None);
+    check int
+      "managed: nothing written to any workspace-fingerprinted broker" 0
+      (List.length (fingerprints_holding ctx ~session_id:sid)))
+
+(* NO WORKSPACE IS A REAL STATE, NOT A BUG — `agy -p` without --add-dir has
+   none. We must not guess one, but we must not register into `default`
+   silently either: the row is then unaddressable from the repo the operator
+   thinks they are in, with nothing anywhere saying so. Record it durably
+   where `c2c dev tail-log` / doctor can find it, mirroring the
+   `managed_registration_failed` treatment in `c2c start kimi` (#40 F5). *)
+let test_absent_workspace_is_recorded_not_silent () =
+  with_ctx (fun ctx ->
+    let hook_cwd = make_hook_cwd ctx in
+    let rc, _, err =
+      fire_vanilla ctx ~hook_cwd ~args:"hook agy SessionStart"
+        ~stdin_payload:(agy_payload ~workspace_paths:[] "SessionStart")
+    in
+    check int ("SessionStart exit 0 (stderr: " ^ err ^ ")") 0 rc;
+    let log = repos_dir ctx // "default" // "broker" // "broker.log" in
+    let contents = read_file log in
+    let mentions needle =
+      let nl = String.length needle and cl = String.length contents in
+      let rec loop i =
+        if i + nl > cl then false
+        else if String.sub contents i nl = needle then true
+        else loop (i + 1)
+      in
+      loop 0
+    in
+    check bool
+      ("#69: fallback to the `default` broker must be recorded in broker.log \
+        (log: " ^ log ^ ")")
+      true
+      (mentions "agy_workspace_unresolved"))
+
 let () =
   Random.self_init ();
   run "c2c_hook_agy"
-    [ ( "hook_agy_turn_end"
+    [ ( "hook_agy_broker_root"
+      , [ test_case "#69 vanilla registers into the workspace broker" `Quick
+            test_vanilla_registers_into_workspace_broker
+        ; test_case "#68 vanilla records the workspace as cwd" `Quick
+            test_vanilla_records_workspace_as_cwd
+        ; test_case "#69 managed C2C_MCP_BROKER_ROOT still wins" `Quick
+            test_managed_broker_root_env_still_wins
+        ; test_case "#69 absent workspace is recorded, not silent" `Quick
+            test_absent_workspace_is_recorded_not_silent
+        ] )
+    ; ( "hook_agy_turn_end"
       , [ test_case "#61 Stop keeps vanilla row addressable" `Quick
             test_stop_keeps_vanilla_row_addressable
         ; test_case "#61 repeated Stops keep the row" `Quick

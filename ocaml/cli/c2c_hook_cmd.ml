@@ -2009,8 +2009,80 @@ let hook_agy_cmd =
               | None -> conversation_id)
        in
        let sid = match target_sid with Some s -> s | None -> exit 0 in
+       (* #69: agy runs every hook command with cwd set to the directory
+          containing hooks.json — `~/.gemini/config` (agy's own embedded hook
+          reference documents this, and a 1.1.4 probe confirmed every fire
+          recorded that cwd). That directory is not a repo, so
+          [resolve_broker_root ()] fingerprints it "default" and a VANILLA agy
+          session registers into `~/.c2c/repos/default/broker`: invisible to
+          peers in the repo it is working in, and mail sent from that repo does
+          not resolve. Managed agy escaped this only because `c2c start`
+          exports C2C_MCP_BROKER_ROOT, which hook children inherit.
+
+          The workspace comes from the PAYLOAD, never from this process's own
+          cwd or ancestry. agy's common input fields include `workspacePaths`,
+          and it carries the real workspace root on every event of an
+          interactive session (and of `agy -p --add-dir <ws>`). #69/#68
+          recorded it as always `[]`; that reading came from plain `agy
+          --print`, which registers no workspace at all — the field was
+          correctly reporting "no workspace", not failing to report one.
+
+          Guessing from the hook's environment is exactly the #40 mistake: a
+          hook's environment is not its session's, and a confidently wrong
+          broker root is worse than a visibly wrong one, because mail routes
+          somewhere plausible and is silently lost rather than obviously
+          misfiled. So when the payload names nothing, we change nothing —
+          see the [agy_workspace_unresolved] record below. *)
+       let workspace_path =
+         match payload with
+         | `Assoc fields -> (
+             match List.assoc_opt "workspacePaths" fields with
+             | Some (`List (`String p :: _)) when String.trim p <> "" ->
+                 let p = String.trim p in
+                 if (try Sys.is_directory p with _ -> false) then Some p
+                 else None
+             | _ -> None)
+         | _ -> None
+       in
+       (* chdir rather than passing a root down: the fingerprint is computed
+          from git in the process cwd, and every downstream broker/delivery
+          call in this hook resolves through the same path. Same idiom as the
+          kimi hook. C2C_MCP_BROKER_ROOT still wins inside
+          [resolve_broker_root], so this cannot relocate a managed session. *)
+       (match workspace_path with
+        | Some ws -> (try Unix.chdir ws with _ -> ())
+        | None -> ());
        let broker_root = C2c_utils.resolve_broker_root () in
        let broker = C2c_mcp.Broker.create ~root:broker_root in
+       (* #69: registering into `default` is a real state (an agy session with
+          no workspace), but a SILENT one — the row is unaddressable from the
+          repo the operator believes they are in, with nothing anywhere saying
+          so. Record it durably where `c2c dev tail-log` / doctor can find it,
+          mirroring the `managed_registration_failed` treatment in `c2c start
+          kimi` (#40 F5). Only on SessionStart: the condition is per-session,
+          and PostToolUse/Stop fire every turn. *)
+       if
+         event = "SessionStart" && workspace_path = None
+         && Sys.getenv_opt "C2C_MCP_BROKER_ROOT" = None
+         && Filename.basename (Filename.dirname broker_root) = "default"
+       then
+         (try
+            Broker_log.append_json ~broker_root
+              ~json:
+                (`Assoc
+                   [ ("event", `String "agy_workspace_unresolved")
+                   ; ("ts", `Float (Unix.gettimeofday ()))
+                   ; ("client", `String "agy")
+                   ; ("session_id", `String sid)
+                   ; ("broker_root", `String broker_root)
+                   ; ( "detail"
+                     , `String
+                         "agy hook payload carried no workspacePaths, so the \
+                          session registered into the `default` broker and is \
+                          not addressable from any repo. `agy --print` without \
+                          --add-dir has no workspace; an interactive session \
+                          should. See #69." ) ])
+          with _ -> ());
 
        let ls_address =
          match Sys.getenv_opt "ANTIGRAVITY_LS_ADDRESS" with
@@ -2040,10 +2112,20 @@ let hook_agy_cmd =
                      ~pid_start_time:
                        (C2c_mcp.Broker.capture_pid_start_time None)
                      ~client_type:(Some "agy")
+                     (* #68: agy sends neither `cwd` nor `workspaceRoot`, so
+                        this was always None and the worktree-mismatch guard
+                        was inert for agy. `workspacePaths` is the field agy
+                        actually populates; the two ahead of it are kept for
+                        any agy build that grows them. *)
                      ~cwd:
                        (match payload_string_field payload "cwd" with
                         | Some c -> Some c
-                        | None -> payload_string_field payload "workspaceRoot")
+                        | None -> (
+                            match
+                              payload_string_field payload "workspaceRoot"
+                            with
+                            | Some c -> Some c
+                            | None -> workspace_path))
                      (* #51 (blocker 2): `c2c start agy` never calls
                         [eager_register_managed_alias] (AgyAdapter is absent
                         from every call site) and its deliver sidecar spawns
