@@ -1478,6 +1478,112 @@ let test_b9_resolves_at_spawn_then_rekeys_to_real_sid () =
           "end state: bound to the real session-id inbox, not the alias"
           real_sid resolved_now))
 
+(* ---------------------------------------------------------------------------
+ * #40 — managed `c2c start kimi` must end up broker-registered under its own
+ * alias. These model the launcher's real sequence WITHOUT launching kimi: the
+ * launcher calls [register_managed_kimi_session] with (name, alias, inner pid,
+ * cwd) and then arms the notifier via [resolve_kimi_notifier_session_id]. Both
+ * are exactly the calls `c2c start kimi` makes, in order.
+ * --------------------------------------------------------------------------- *)
+
+let test_i40_managed_start_registers_instance_name_as_alias () =
+  with_b9_tmp_dir (fun tmp ->
+    let broker_root = b9_broker_root tmp in
+    let name = "zz-i40-managed" in
+    let cwd = "/proj/i40" in
+    (* Launcher step 1: register. Our own pid stands in for kimi's inner pid —
+       it must be a LIVE pid, exactly as at launch time. *)
+    (match
+       C2c_start.register_managed_kimi_session ~broker_root ~name ~alias:name
+         ~pid:(Unix.getpid ()) ~cwd
+     with
+     | Ok () -> ()
+     | Error e -> Alcotest.failf "registration failed: %s" e);
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    let regs = C2c_mcp.Broker.list_registrations broker in
+    (* This is precisely what `c2c send <name>` resolves against — the lookup
+       that returned "alias 'kimi-e2e-b' is not registered" in the #40 e2e. *)
+    let row =
+      List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = name) regs
+    in
+    (match row with
+     | None ->
+         Alcotest.failf "alias %s is not registered after managed start" name
+     | Some r ->
+         Alcotest.(check string) "session_id is the instance name" name
+           r.session_id;
+         Alcotest.(check (option string)) "cwd recorded for hook adoption"
+           (Some cwd) r.cwd;
+         Alcotest.(check (option string)) "client_type kimi" (Some "kimi")
+           r.client_type);
+    (* Launcher step 2: arm the notifier. With the registration in place it
+       must bind to <name>.inbox.json — the inbox `c2c send <name>` writes. *)
+    let armed =
+      C2c_start.resolve_kimi_notifier_session_id ~broker_root ~alias:name
+        ~cwd:"/nonexistent-workdir" ~fallback:name ()
+    in
+    Alcotest.(check string) "notifier drains the managed inbox" name armed)
+
+let test_i40_alias_override_wins_over_instance_name () =
+  with_b9_tmp_dir (fun tmp ->
+    let broker_root = b9_broker_root tmp in
+    let name = "zz-i40-name" and alias = "zz-i40-alias" in
+    (match
+       C2c_start.register_managed_kimi_session ~broker_root ~name ~alias
+         ~pid:(Unix.getpid ()) ~cwd:"/proj/i40"
+     with
+     | Ok () -> ()
+     | Error e -> Alcotest.failf "registration failed: %s" e);
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    let aliases =
+      List.map (fun (r : C2c_mcp.registration) -> r.alias)
+        (C2c_mcp.Broker.list_registrations broker)
+    in
+    Alcotest.(check bool) "--alias override is the broker alias" true
+      (List.mem alias aliases);
+    Alcotest.(check bool) "instance name is NOT also registered" false
+      (List.mem name aliases))
+
+let test_i40_registration_failure_is_loud_and_actionable () =
+  (* Unwritable broker root: registration must FAIL rather than silently
+     no-op, and the operator message must name the alias, the exact `c2c send`
+     error peers hit, and the recovery command. *)
+  with_b9_tmp_dir (fun tmp ->
+    let blocked = Filename.concat tmp "no-write" in
+    Unix.mkdir blocked 0o500;
+    Fun.protect
+      ~finally:(fun () -> try Unix.chmod blocked 0o755 with _ -> ())
+      (fun () ->
+        let broker_root = Filename.concat blocked "broker" in
+        match
+          C2c_start.register_managed_kimi_session ~broker_root
+            ~name:"zz-i40-fail" ~alias:"zz-i40-fail" ~pid:(Unix.getpid ())
+            ~cwd:"/proj/i40"
+        with
+        | Ok () ->
+            Alcotest.fail
+              "expected registration to fail on an unwritable broker root"
+        | Error reason ->
+            let msg =
+              C2c_start.managed_kimi_registration_failure_message
+                ~name:"zz-i40-fail" ~alias:"zz-i40-fail" ~broker_root ~reason
+            in
+            let has needle =
+              let hl = String.length msg and nl = String.length needle in
+              let rec at i =
+                i + nl <= hl
+                && (String.sub msg i nl = needle || at (i + 1))
+              in
+              at 0
+            in
+            Alcotest.(check bool) "names the alias" true (has "zz-i40-fail");
+            Alcotest.(check bool) "quotes the peer-visible error" true
+              (has "is not registered");
+            Alcotest.(check bool) "gives a recovery command" true
+              (has "c2c start kimi -n");
+            Alcotest.(check bool) "names the broker root" true
+              (has broker_root)))
+
 let () =
   Alcotest.run "c2c_kimi_notifier"
     [ "notification_id",
@@ -1548,5 +1654,10 @@ let () =
         ; Alcotest.test_case "prefers most-recent live registration" `Quick test_b9_prefers_most_recent_live_registration
         ; Alcotest.test_case "re-key decision table" `Quick test_b9_rekey_decision_table
         ; Alcotest.test_case "placeholder is the alias, not the instance name" `Quick test_b9_placeholder_is_alias_not_instance_name
+        ] )
+    ; ( "i40-managed-start-registration"
+      , [ Alcotest.test_case "managed start registers -n as the broker alias" `Quick test_i40_managed_start_registers_instance_name_as_alias
+        ; Alcotest.test_case "--alias override wins over instance name" `Quick test_i40_alias_override_wins_over_instance_name
+        ; Alcotest.test_case "registration failure is loud and actionable" `Quick test_i40_registration_failure_is_loud_and_actionable
         ] )
     ]

@@ -274,6 +274,98 @@ let test_session_start_no_backlog_no_false_nudge () =
     check bool "no false queued nudge" false
       (contains ~haystack:skill ~needle:"already queued"))
 
+(* ---------------------------------------------------------------------------
+ * #40 — the hook and managed sessions
+ *
+ * Kimi Code >= 0.27 spawns hooks from the shared `kimi server` daemon, so the
+ * hook cannot see a managed session's C2C_MCP_SESSION_ID /
+ * C2C_MCP_AUTO_REGISTER_ALIAS. It must therefore recognise the launcher's
+ * registration by cwd + live pid and adopt it, rather than minting a second,
+ * competing identity for the same live session.
+ * --------------------------------------------------------------------------- *)
+
+(* Mirrors what `c2c start kimi` writes via
+   [C2c_start.register_managed_kimi_session]: session_id = instance name, a
+   live pid, the launch cwd, and NO registered_by (that marks hook rows). *)
+let register_managed_session ctx ~alias ~cwd =
+  let b = C2c_mcp.Broker.create ~root:ctx.broker_root in
+  C2c_mcp.Broker.register b ~session_id:alias ~alias
+    ~pid:(Some (Unix.getpid ())) ~pid_start_time:None
+    ~client_type:(Some "kimi") ~cwd:(Some cwd) ~from_auto_gen:false ();
+  b
+
+let test_i40_hook_adopts_managed_session_instead_of_minting () =
+  with_ctx (fun ctx ->
+    ignore (register_managed_session ctx ~alias:"zz-i40-managed" ~cwd:"/tmp/proj");
+    (* The daemon-spawned hook: real kimi session id in the payload, and NO
+       managed identity env — exactly the #40 reproduction. *)
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:
+          {|{"hook_event_name":"SessionStart","session_id":"session_5f3a2591-0289-4bd3-b214-12c4d6939412","cwd":"/tmp/proj"}|}
+    in
+    check int "exit 0" 0 rc;
+    let regs = list_registrations ctx.broker_root in
+    check int "no second identity minted" 1 (List.length regs);
+    let sid, alias = List.hd regs in
+    check string "managed alias preserved" "zz-i40-managed" alias;
+    check string "managed session_id preserved" "zz-i40-managed" sid;
+    check bool "adoption is logged" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    (* Identity skill must name the alias peers can actually address. *)
+    let skill = read_file (identity_skill_path ctx) in
+    check bool "skill names the managed alias" true
+      (contains ~haystack:skill ~needle:"zz-i40-managed"))
+
+let test_i40_hook_bails_loudly_on_ambiguous_managed_cwd () =
+  with_ctx (fun ctx ->
+    ignore (register_managed_session ctx ~alias:"zz-i40-two-a" ~cwd:"/tmp/proj");
+    ignore (register_managed_session ctx ~alias:"zz-i40-two-b" ~cwd:"/tmp/proj");
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:
+          {|{"hook_event_name":"SessionStart","session_id":"session_0baa88d1-3c1f-4121-bfb6-676117f52203","cwd":"/tmp/proj"}|}
+    in
+    check int "never fails the host turn" 0 rc;
+    check int "no third identity minted" 2
+      (List.length (list_registrations ctx.broker_root));
+    check bool "ambiguity is explained, not silent" true
+      (contains ~haystack:stderr ~needle:"cannot tell which one");
+    check bool "names the candidates" true
+      (contains ~haystack:stderr ~needle:"zz-i40-two-a"))
+
+(* A dead managed pid means the instance is gone: its row must not be adopted,
+   so a genuinely new vanilla session still gets its own alias. *)
+let test_i40_hook_ignores_dead_managed_registration () =
+  with_ctx (fun ctx ->
+    let b = C2c_mcp.Broker.create ~root:ctx.broker_root in
+    C2c_mcp.Broker.register b ~session_id:"zz-i40-dead" ~alias:"zz-i40-dead"
+      ~pid:(Some 2147483646) ~pid_start_time:None ~client_type:(Some "kimi")
+      ~cwd:(Some "/tmp/proj") ~from_auto_gen:false ();
+    let rc, _, _ = run_hook ctx ~payload:session_start_payload in
+    check int "exit 0" 0 rc;
+    let regs = list_registrations ctx.broker_root in
+    check int "fresh session minted its own identity" 2 (List.length regs);
+    check bool "the new row is not the dead managed one" true
+      (List.exists (fun (sid, _) -> sid = session_id) regs))
+
+(* The bare `exit 0` on an unresolvable session id is what made #40 invisible.
+   It must stay exit 0 (never fail the host turn) but say why. *)
+let test_i40_unresolvable_session_id_logs_reason_and_exits_0 () =
+  with_ctx (fun ctx ->
+    let rc, _, stderr =
+      run_hook ctx ~payload:{|{"hook_event_name":"SessionStart","cwd":"/tmp/proj"}|}
+    in
+    check int "still exits 0" 0 rc;
+    check bool "logs a reason" true
+      (contains ~haystack:stderr ~needle:"no usable session id");
+    check bool "names the env var it looked for" true
+      (contains ~haystack:stderr ~needle:"C2C_MCP_SESSION_ID");
+    check bool "says what the consequence is" true
+      (contains ~haystack:stderr ~needle:"unreachable by peers");
+    check int "nothing registered" 0
+      (List.length (list_registrations ctx.broker_root)))
+
 let () =
   Random.self_init ();
   run "c2c_hook_kimi"
@@ -290,5 +382,15 @@ let () =
             test_session_start_surfaces_queued_backlog
         ; test_case "SessionStart no backlog no false nudge (#12)" `Quick
             test_session_start_no_backlog_no_false_nudge
+        ] )
+    ; ( "hook_kimi_managed_40"
+      , [ test_case "adopts managed session instead of minting" `Quick
+            test_i40_hook_adopts_managed_session_instead_of_minting
+        ; test_case "ambiguous managed cwd bails loudly" `Quick
+            test_i40_hook_bails_loudly_on_ambiguous_managed_cwd
+        ; test_case "dead managed registration is ignored" `Quick
+            test_i40_hook_ignores_dead_managed_registration
+        ; test_case "unresolvable session id logs reason, exits 0" `Quick
+            test_i40_unresolvable_session_id_logs_reason_and_exits_0
         ] )
     ]

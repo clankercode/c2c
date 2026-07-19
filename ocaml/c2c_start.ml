@@ -2125,7 +2125,8 @@ let read_pid_start_time (pid : int) : int option =
   with Sys_error _ | End_of_file -> None
 
 let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
-    ~(alias : string) ~(pid : int) ~(client_type : string) : unit =
+    ~(alias : string) ~(pid : int) ?(cwd : string option)
+    ~(client_type : string) () : unit =
   (* Managed codex-headless needs broker reachability before the bridge has
      produced a thread id. Ensure the broker dir exists before taking the
      registry lock so the eager registration path can bootstrap cleanly. *)
@@ -2143,7 +2144,14 @@ let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
        ; ("client_type", `String client_type) ]
        @ (match pid_start_time with
           | Some n -> [ ("pid_start_time", `Int n) ]
-          | None -> []))
+          | None -> [])
+       (* #40: record the launch cwd. The kimi SessionStart hook uses it to
+          recognise that a managed instance already owns this workspace (the
+          hook cannot see the managed identity env — see
+          [register_managed_kimi_session]). *)
+       @ (match cwd with
+          | Some c when String.trim c <> "" -> [ ("cwd", `String c) ]
+          | _ -> []))
   in
   with_file_lock lock_path (fun () ->
     let regs =
@@ -2170,6 +2178,63 @@ let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
         regs
     in
     write_json_file_atomic reg_path (`List (row :: kept)))
+
+(* ---------------------------------------------------------------------------
+ * #40 — managed kimi broker registration
+ *
+ * WHY THE LAUNCHER MUST REGISTER: Kimi Code >= 0.27 runs sessions inside a
+ * SHARED, long-lived `kimi server` daemon (`~/.kimi-code/server/server.log`
+ * logs "server already running (pid=..., port=...)" when a second TUI attaches)
+ * and spawns SessionStart hook commands from THAT daemon's process
+ * environment. The managed identity vars `c2c start` puts in the TUI's env
+ * (C2C_MCP_SESSION_ID / C2C_MCP_AUTO_REGISTER_ALIAS, see [build_env]) are
+ * therefore invisible to `c2c hook kimi`: the hook mints a fresh alias against
+ * Kimi's real session id, and `c2c send <instance-name>` reports
+ * "alias '<name>' is not registered". The hook can never be the identity
+ * authority for a managed session — one daemon serves many sessions, so its
+ * env cannot describe any of them. The launcher knows the alias, so the
+ * launcher registers.
+ * --------------------------------------------------------------------------- *)
+
+(* Actionable operator message for a failed managed-kimi registration. Pure so
+ * the wording is unit-testable. *)
+let managed_kimi_registration_failure_message ~(name : string) ~(alias : string)
+    ~(broker_root : string) ~(reason : string) : string =
+  Printf.sprintf
+    "error: c2c start kimi: broker registration for alias '%s' FAILED (%s).\n\
+    \  This session is UNREACHABLE: `c2c send %s ...` will report \
+     \"alias '%s' is not registered\".\n\
+    \  Broker root: %s\n\
+    \  Fix: check that the broker dir is writable (`c2c doctor`), then \
+     `c2c stop %s && c2c start kimi -n %s`.\n"
+    alias reason alias alias broker_root name name
+
+(* Registration is written under the registry flock, then READ BACK. A silent
+   no-op write is exactly the failure mode #40 was; verifying turns it into a
+   loud, actionable error. Returns [Error reason] rather than raising so the
+   launch path decides how loud to be. *)
+let register_managed_kimi_session ~(broker_root : string) ~(name : string)
+    ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
+  match
+    eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
+      ~cwd ~client_type:"kimi" ()
+  with
+  | exception e -> Error (Printexc.to_string e)
+  | () ->
+      (match
+         (try
+            let broker = C2c_mcp.Broker.create ~root:broker_root in
+            Ok
+              (List.exists
+                 (fun (r : C2c_mcp.registration) ->
+                    String.lowercase_ascii r.alias
+                    = String.lowercase_ascii alias)
+                 (C2c_mcp.Broker.list_registrations broker))
+          with e -> Error (Printexc.to_string e))
+       with
+       | Error e -> Error ("registry read-back failed: " ^ e)
+       | Ok true -> Ok ()
+       | Ok false -> Error "registry write did not persist the alias")
 
 let instance_dir name = instances_dir // name
 let per_agent_managed_heartbeats ~(name : string) : managed_heartbeat list =
@@ -4426,7 +4491,7 @@ let run_pty_loop ~(name : string) ~(extra_args : string list)
     (* Register the managed alias *)
     (try
       eager_register_managed_alias ~broker_root ~session_id ~alias:name
-        ~pid ~client_type:"pty"
+        ~pid ~client_type:"pty" ()
     with e ->
       Printf.eprintf "warning: registration failed: %s\n%!" (Printexc.to_string e));
     (* PTY deliver loop (runs in parent, polling broker and writing to master) *)
@@ -5068,8 +5133,38 @@ let run_outer_loop ~(name : string) ~(client : string)
                   ~session_id:name
                   ~alias:(Option.value alias_override ~default:name)
                   ~pid
-                  ~client_type:"codex-headless"
+                  ~client_type:"codex-headless" ()
               with _ -> ()));
+          (* #40: register the managed kimi alias from the LAUNCHER. The
+             SessionStart hook cannot do it — Kimi Code >= 0.27 spawns hooks
+             from the shared `kimi server` daemon, whose env has no
+             C2C_MCP_AUTO_REGISTER_ALIAS for this instance. See
+             [register_managed_kimi_session]. Registering here also makes
+             `-n <name>` the broker alias (unless --alias/role overrides it),
+             and must happen BEFORE the notifier is armed below so
+             [resolve_kimi_notifier_session_id] binds the daemon to
+             <name>.inbox.json — the inbox `c2c send <name>` writes to. *)
+          (if client = "kimi" then begin
+             let alias = Option.value alias_override ~default:name in
+             let cwd = try Sys.getcwd () with _ -> "" in
+             (match
+                register_managed_kimi_session ~broker_root ~name ~alias ~pid ~cwd
+              with
+              | Ok () -> ()
+              | Error reason ->
+                  prerr_string
+                    (managed_kimi_registration_failure_message ~name ~alias
+                       ~broker_root ~reason);
+                  flush stderr);
+             (* Name/alias distinction is explicit rather than silent: peers
+                must address the ALIAS, `c2c stop`/`restart` take the NAME. *)
+             if String.lowercase_ascii alias <> String.lowercase_ascii name then
+               Printf.eprintf
+                 "note: c2c start kimi: instance name '%s' is not the broker \
+                  alias — peers must address '%s' (`c2c send %s ...`); \
+                  `c2c stop`/`c2c restart` still take '%s'.\n%!"
+                 name alias alias name
+           end);
           (match thread_id_handoff_path_opt with
            | Some path ->
                (* In XML mode the bridge does not start/resume a thread until it sees the first
@@ -5186,6 +5281,13 @@ let run_outer_loop ~(name : string) ~(client : string)
                 placeholder would never be recognised and the no-downgrade
                 guard would go inert — letting a correctly-bound daemon be
                 flapped onto a <name>.inbox.json nothing lands in. *)
+             (* #40 UPDATE: the launcher now writes its own registration
+                (session_id = [name]) just above, so branch (1) normally
+                resolves to [name] and the notifier drains <name>.inbox.json —
+                which is where `c2c send <alias>` puts mail. The hook no longer
+                mints a competing real-sid identity for managed sessions (it
+                adopts this row instead), so the real-sid branch survives only
+                for pre-#40 rows and hook-registered vanilla sessions. *)
              let real_session_id =
                resolve_kimi_notifier_session_id ~broker_root ~alias
                  ~cwd:(Sys.getcwd ()) ~fallback:alias ()

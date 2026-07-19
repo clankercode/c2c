@@ -186,6 +186,16 @@ app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
   pid-checked) → `C2C_KIMI_SERVER_PORT` → liveness-probed `server.log` record →
   default 58627. Never trust `server.log` unprobed — kimi writes the
   `"server listening"` record on cold start only, so it ages into a dead port.
+  **The SessionStart hook is NOT the identity authority for managed sessions
+  (#40).** Kimi Code >= 0.27 runs sessions inside a shared, long-lived
+  `kimi server` daemon and spawns hook commands from *that daemon's*
+  environment, so `c2c hook kimi` cannot see a managed instance's
+  `C2C_MCP_SESSION_ID` / `C2C_MCP_AUTO_REGISTER_ALIAS`. `c2c start kimi`
+  therefore registers the alias itself (`register_managed_kimi_session`,
+  session_id = instance name, cwd + live pid recorded) and the hook *adopts*
+  that row by cwd + live pid instead of minting a competing alias. Two managed
+  kimi instances in one directory are indistinguishable to the hook — it bails
+  loudly rather than guess.
   Legacy notification-store runbook:
   `.collab/runbooks/kimi-notification-store-delivery.md` (deprecated).
 - **OpenCode**: SIGUSR1 to the *inner* OpenCode pid (not the outer wrapper)
