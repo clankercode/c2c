@@ -2097,6 +2097,23 @@ let hook_agy_cmd =
                  let hits =
                    C2c_mcp.find_session_hits_across_brokers ~session_id:sid ()
                  in
+                 (* A `default` hit is NON-EVIDENCE and must not compete. Every
+                    non-repo candidate fingerprints to `default`, so such a hit
+                    cannot distinguish candidates — but it CAN win the affinity
+                    test and, if it sorts first, flip the session off the very
+                    broker it registered in, freezing that row's anchor until
+                    #51's TTL retires it. That is the exact symptom this
+                    selection exists to prevent. Reachable in practice: any
+                    session that ran on the pre-fix binary already has a
+                    `default` row for its sid, so an upgrade plus one non-repo
+                    --add-dir reaches it. Dropping these leaves the sorted-first
+                    fallback to handle the all-non-repo case identically. *)
+                 let hits =
+                   List.filter
+                     (fun (h : C2c_mcp.prior_session_hit) ->
+                        h.fingerprint <> "default")
+                     hits
+                 in
                  if hits = [] then None
                  else
                    (* [repo_fingerprint_uncached] deliberately, NOT the memoized
