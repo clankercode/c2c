@@ -25,7 +25,9 @@
       outbound-send rate limit) DM the originating sender alias. Connector-wide
       rate limits and difficulty changes are connector-log-only.
 
-    This module is intentionally {b pure} — no IO, no network, no clock. The
+    This module is intentionally {b pure} — no IO, no network. The wall clock
+    it needs for the #72 re-alert floor is {e passed in} by the connector
+    ([step ~now]) rather than read here, so decisions stay reproducible. The
     connector observes relay responses, aggregates them into an
     {!observation} for the sync pass, and calls {!step}; the connector owns
     all side effects (inbox writes). That keeps the severity/dedup/routing
@@ -60,6 +62,19 @@ type emission = {
   body : string;   (** human-readable, severity-tagged message body *)
 }
 
+(** #72: per-alias re-alert bookkeeping for the inbound-contract drop DM. The
+    #62 plateau list alone re-armed on any intervening clean sync, so a relay
+    dropping one bad row every few minutes (with clean polls between) DM'd the
+    agent on {e every} occurrence — 50 misrouted rows across 50 syncs = 50 DMs.
+    A wall-clock floor mutes re-alerts for the same alias for
+    [inbound_contract_realert_floor_s] after the last emission and carries the
+    count of muted drop-syncs into the next one, so nothing is silently lost. *)
+type inbound_contract_alert = {
+  ic_last_alert_ts : float;  (** wall-clock time of the last emitted DM *)
+  ic_suppressed : int;
+    (** drop-syncs muted since that DM, not yet reported to the agent *)
+}
+
 (** Edge-trigger state persisted by the connector across sync passes. *)
 type state = {
   last_difficulty : int;  (** highest PoW difficulty last surfaced; 0 = none *)
@@ -67,8 +82,9 @@ type state = {
   rate_limited_senders : string list;
     (** sender aliases currently inside sender-attributable plateaus *)
   pow_failing : bool;     (** currently inside a pow_retry_failed plateau *)
-  inbound_contract_aliases : string list;
-    (** #62: recipient aliases currently inside a relay-contract-drop plateau *)
+  inbound_contract_alerts : (string * inbound_contract_alert) list;
+    (** #62/#72: per recipient alias, the last-alert timestamp + muted count
+        used to floor re-alerts. Keyed case-insensitively (registry contract). *)
 }
 
 let initial_state = {
@@ -76,7 +92,7 @@ let initial_state = {
   rate_limited = false;
   rate_limited_senders = [];
   pow_failing = false;
-  inbound_contract_aliases = [];
+  inbound_contract_alerts = [];
 }
 
 (** A single permanently-failed outbound message. Discrete (one per
@@ -238,35 +254,86 @@ let pow_retry_failed_emissions state ~observed ~sender =
     while every inbound row is being destroyed. Keeping them out of health is
     right (a restart cannot fix a bad relay); the alert is what replaces it.
 
-    Edge-triggered per recipient alias, exactly like the rate-limit plateaus:
-    a relay serving garbage on every 30s sync alerts ONCE, and can re-alert
-    only after a sync in which that alias saw no contract drops. *)
-let inbound_contract_emissions state ~aliases =
+    Edge-triggered per recipient alias, AND floored in wall-clock time (#72).
+    The #62 plateau (consecutive drops) is suppressed as before; additionally,
+    once an alias has alerted, further drops are muted for
+    [inbound_contract_realert_floor_s] {e even across intervening clean syncs},
+    and the count of muted drop-syncs is carried into the next emission so no
+    mail-loss episode is silently dropped. A record is retired once its floor
+    has elapsed with no fresh drop, so a genuinely new episode later re-alerts
+    immediately. (The rate-limit plateaus above deliberately keep the simpler
+    consecutive-sync dedup — #72 scopes the floor to this louder [Err] DM; the
+    same mechanism could be lifted there if that path ever floods.) *)
+let inbound_contract_realert_floor_s = 3600.
+  (** #72: minimum wall-clock gap between two inbound-contract DMs for the same
+      alias. The agent can act on the first drop notice as well as the fiftieth;
+      one hour mirrors a sane human attention budget. *)
+
+let inbound_contract_emissions ?(floor = inbound_contract_realert_floor_s) ~now
+    state ~aliases =
   let aliases = dedupe_aliases aliases in
-  let emissions =
-    List.filter_map
-      (fun alias ->
-        if alias_mem alias state.inbound_contract_aliases then None
-        else
-          let body = format_body Err (Printf.sprintf
-            "Relay served inbound rows for %s that could not be delivered, \
-             and they were DROPPED: they failed the broker-inbox contract \
-             (malformed row) or were addressed to a different recipient. \
-             Polling the relay is destructive, so those messages are gone \
-             from the relay and will NOT be retried. This is a relay-side or \
-             identity fault, not a local one — restarting the connector \
-             cannot clear it. Check that your alias matches what the relay \
-             routes to this host (c2c whoami, c2c init); see \
-             inbound_rejected_note in connector-state.json and the \
-             relay_inbound_contract_drops events in broker.log for the \
-             per-reason breakdown."
-            alias)
-          in
-          Some { severity = Err; target = Dm alias;
-                 kind = "inbound_contract"; body })
-      aliases
+  let find alias =
+    let alias = String.lowercase_ascii alias in
+    List.find_opt
+      (fun (k, _) -> String.lowercase_ascii k = alias)
+      state.inbound_contract_alerts
   in
-  (emissions, { state with inbound_contract_aliases = aliases })
+  let make_emission alias suppressed =
+    let muted =
+      if suppressed > 0 then
+        Printf.sprintf
+          " (%d further sync%s dropping rows for this alias were suppressed \
+           since the previous alert to avoid flooding your inbox — each was \
+           mail already lost.)"
+          suppressed (if suppressed = 1 then "" else "s")
+      else ""
+    in
+    let body = format_body Err (Printf.sprintf
+      "Relay served inbound rows for %s that could not be delivered, \
+       and they were DROPPED: they failed the broker-inbox contract \
+       (malformed row) or were addressed to a different recipient. \
+       Polling the relay is destructive, so those messages are gone \
+       from the relay and will NOT be retried. This is a relay-side or \
+       identity fault, not a local one — restarting the connector \
+       cannot clear it. Check that your alias matches what the relay \
+       routes to this host (c2c whoami, c2c init); see \
+       inbound_rejected_note in connector-state.json and the \
+       relay_inbound_contract_drops events in broker.log for the \
+       per-reason breakdown.%s"
+      alias muted)
+    in
+    { severity = Err; target = Dm alias; kind = "inbound_contract"; body }
+  in
+  (* Step every alias that dropped rows this sync. *)
+  let emissions, updated =
+    List.fold_left
+      (fun (ems, acc) alias ->
+        match find alias with
+        | None ->
+            (* Fresh episode: alert now, start the floor. *)
+            (make_emission alias 0 :: ems,
+             (alias, { ic_last_alert_ts = now; ic_suppressed = 0 }) :: acc)
+        | Some (_, r) when now -. r.ic_last_alert_ts >= floor ->
+            (* Floor elapsed: re-alert, reporting what was muted meanwhile. *)
+            (make_emission alias r.ic_suppressed :: ems,
+             (alias, { ic_last_alert_ts = now; ic_suppressed = 0 }) :: acc)
+        | Some (_, r) ->
+            (* Inside the floor: mute and count, keep the original timestamp. *)
+            (ems,
+             (alias, { r with ic_suppressed = r.ic_suppressed + 1 }) :: acc))
+      ([], []) aliases
+  in
+  (* Retain records for aliases that did NOT drop this sync only while still
+     inside their floor; retire the rest so a later recurrence re-alerts fresh
+     and the map cannot grow without bound. *)
+  let retained =
+    List.filter
+      (fun (alias, r) ->
+        (not (alias_mem alias aliases)) && now -. r.ic_last_alert_ts < floor)
+      state.inbound_contract_alerts
+  in
+  (List.rev emissions,
+   { state with inbound_contract_alerts = List.rev_append updated retained })
 
 (** DLQ: discrete, one err DM per dead-lettered entry, to the sender. *)
 let dlq_emission (d : dlq_event) =
@@ -278,8 +345,11 @@ let dlq_emission (d : dlq_event) =
   { severity = Err; target = Dm d.dlq_sender; kind = "dlq"; body }
 
 (** Fold a sync pass's observations into emissions + the next dedup state.
-    Pure: same [(state, observation)] always yields the same result. *)
-let step state obs =
+    Pure: same [(now, state, observation)] always yields the same result.
+    [now] is the connector's wall clock, used only for the #72 inbound-contract
+    re-alert floor; it defaults to [0.] so pure-decider tests that do not
+    exercise the floor need not thread a timestamp. *)
+let step ?(now = 0.) state obs =
   let diff_em, state = difficulty_emissions state obs.obs_difficulty in
   let rl_em, state =
     rate_limited_emissions state ~connector_observed:obs.obs_rate_limited
@@ -290,7 +360,8 @@ let step state obs =
       ~observed:obs.obs_pow_retry_failed ~sender:obs.obs_pow_retry_sender
   in
   let ic_em, state =
-    inbound_contract_emissions state ~aliases:obs.obs_inbound_contract_aliases
+    inbound_contract_emissions ~now state
+      ~aliases:obs.obs_inbound_contract_aliases
   in
   let dlq_em = List.map dlq_emission obs.obs_dlqs in
   (diff_em @ rl_em @ prf_em @ ic_em @ dlq_em, state)
