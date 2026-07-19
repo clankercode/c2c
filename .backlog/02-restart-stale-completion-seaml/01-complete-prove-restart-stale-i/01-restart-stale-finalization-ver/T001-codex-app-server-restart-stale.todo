@@ -8,7 +8,12 @@ id: P2.M1.E1.T001
 priority: high
 started_at: null
 status: pending
-tags: []
+tags:
+    - i010
+    - c2c
+    - restart-stale
+    - codex
+    - proof
 title: Codex app-server restart-stale live proof (real tmux)
 updated_at: "2026-07-19T23:48:00Z"
 ---

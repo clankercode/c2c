@@ -19,7 +19,12 @@ tasks:
       id: T001
       priority: high
       status: pending
-      tags: []
+      tags:
+        - i010
+        - c2c
+        - restart-stale
+        - codex
+        - proof
       title: Codex app-server restart-stale live proof (real tmux)
     - complexity: medium
       depends_on: []
