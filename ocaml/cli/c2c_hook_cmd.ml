@@ -1479,7 +1479,9 @@ let hook_kimi_cmd =
          try
            C2c_mcp.Broker.read_inbox broker ~session_id
            |> List.filter (fun (m : C2c_mcp.message) ->
-                  m.C2c_mcp.from_alias <> "c2c-system")
+                  not
+                    (C2c_kimi_notifier.is_system_event
+                       ~from_alias:m.C2c_mcp.from_alias))
            |> List.length
          with _ -> 0
        in

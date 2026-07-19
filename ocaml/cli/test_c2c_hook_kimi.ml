@@ -255,8 +255,10 @@ let test_session_start_surfaces_queued_backlog () =
       (contains ~haystack:skill ~needle:"2 c2c message");
     check bool "skill flags pre-startup backlog" true
       (contains ~haystack:skill ~needle:"already queued");
-    check bool "skill nudges poll-inbox" true
-      (contains ~haystack:skill ~needle:"poll-inbox"))
+    (* Discriminating: the callout's own read-now phrasing, absent from the
+       base template's delivery line (which also mentions poll-inbox). *)
+    check bool "callout tells the agent to read the backlog now" true
+      (contains ~haystack:skill ~needle:"Read them now with `c2c poll-inbox`"))
 
 (* Zero backlog must not produce a false queued nudge. *)
 let test_session_start_no_backlog_no_false_nudge () =
