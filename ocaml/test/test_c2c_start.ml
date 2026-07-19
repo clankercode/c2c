@@ -639,6 +639,20 @@ let test_i58_kickoff_alias_is_authoritative () =
     (auth ~client:"kimi" ~name:"myinstance" ~name_from_auto_gen:false
        ~alias_opt:None)
 
+(* #49: managed kimi's outer loop exits just past the old flat 5s restart bound,
+   so restart aborted and left the session killed-but-not-relaunched. The
+   default outer-exit ceiling is now longer for kimi and unchanged for clients
+   whose outer exits promptly. *)
+let test_i49_default_restart_timeout () =
+  check (float 0.001) "kimi gets a longer outer-exit ceiling" 20.0
+    (C2c_start.default_restart_timeout_s ~client:"kimi");
+  check (float 0.001) "codex keeps the tight ceiling" 5.0
+    (C2c_start.default_restart_timeout_s ~client:"codex");
+  check (float 0.001) "claude keeps the tight ceiling" 5.0
+    (C2c_start.default_restart_timeout_s ~client:"claude");
+  check (float 0.001) "opencode keeps the tight ceiling" 5.0
+    (C2c_start.default_restart_timeout_s ~client:"opencode")
+
 (* Fix 3. The notice fires for a role-derived alias too, where "--alias wins"
    points the operator at a flag they never typed. *)
 let test_i34r_name_notice_names_its_source () =
@@ -4657,6 +4671,8 @@ let () =
             `Quick, test_i34r_requested_name_wiring )
         ; ( "i58_kickoff_alias_is_authoritative",
             `Quick, test_i58_kickoff_alias_is_authoritative )
+        ; ( "i49_default_restart_timeout",
+            `Quick, test_i49_default_restart_timeout )
         ; ( "i34r_name_notice_names_its_source",
             `Quick, test_i34r_name_notice_names_its_source )
         ; ( "i34r_managed_name_not_alias_record",

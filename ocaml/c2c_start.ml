@@ -5208,11 +5208,16 @@ let run_outer_loop ~(name : string) ~(client : string)
          recovers once our row lands). Registering first closes it.
 
          The pid recorded is the OUTER wrapper's, not the inner client's. That
-         is deliberate and is the better liveness signal: the outer loop lives
-         for the whole managed instance and survives `c2c restart` cycling the
-         inner child, so the row stays adoptable across a restart, whereas an
-         inner pid would go dead mid-instance. Consumers only ever ask "is this
-         instance still alive" (hook adoption, pick_live_registration_sid). *)
+         is deliberate and is the better liveness signal: within an instance's
+         life the outer supervises and outlives the inner child (the inner dies
+         first during teardown), whereas an inner pid would read dead
+         mid-instance while the instance is still up. Consumers only ever
+         ask "is this instance still alive" (hook adoption,
+         pick_live_registration_sid). (#49: it does NOT survive `c2c restart` —
+         that path waits for the old outer to exit and execve's into a NEW outer
+         with a new pid, and the new `c2c start` re-registers the row. The
+         earlier "survives restart" rationale here was wrong; the pid choice is
+         right for the within-instance reason above.) *)
       let kimi_registration_authoritative = ref false in
       (if client = "kimi" then begin
          let alias = Option.value alias_override ~default:name in
@@ -6251,6 +6256,20 @@ let wait_for_exit ~(pid : int) ~(timeout_s : float) : bool =
     end
   in
   loop 0.0
+
+(* #49: the outer-exit wait CEILING for [c2c restart]. [wait_for_exit] returns
+   the instant the outer exits, so this is only an upper bound — a generous
+   value costs nothing when the outer exits promptly. Managed kimi's outer loop
+   winds down a per-alias notifier daemon and a REST-backed client before
+   exiting, so it reliably exits just past the old flat 5s bound; that made
+   restart abort with "outer pid did not exit within 5s" and kill the session
+   without relaunching — the worst outcome. Give kimi room; every other client's
+   outer exits promptly and keeps the tight bound. The `--timeout` flag still
+   overrides this default. *)
+let default_restart_timeout_s ~(client : string) : float =
+  match client with
+  | "kimi" -> 20.0
+  | _ -> 5.0
 
 (** Build the argv list for re-launching `c2c start` from instance config.
     Preserves all user-facing flags so the restarted session is identical. *)
