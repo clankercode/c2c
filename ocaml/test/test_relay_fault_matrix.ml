@@ -14,9 +14,11 @@
        that surface is the stdout JSON result: error_code / error fields —
        stderr carries only fix-it hints on specific auth failures),
      - retry behavior matches what the code claims (the ONLY retry in the
-       relay client is the single PoW minted retry in Pow_client
-       .post_with_retry; there is NO generic retry/backoff — 429 is
-       single-shot, pinned here),
+       relay client is the bounded PoW minted retry in Pow_client
+       .post_with_retry — since #11 up to three minted attempts, each minted
+       from the challenge carried by the latest rejection, stopping early when
+       the relay merely repeats an identical challenge; there is NO generic
+       retry/backoff — 429 is single-shot, pinned here),
      - NO FALSE SUCCESS: a faulted request never prints ok:true / exits 0.
 
    KNOWN DEFECTS FOUND BY THIS MATRIX — both FIXED by the H7
@@ -552,15 +554,16 @@ let list_relay_timeout_nonfatal () =
 (* Matrix: PoW adverse (register challenge handling)                   *)
 (* ------------------------------------------------------------------ *)
 
-let pow_required_body ?(difficulty = 1) ?(ctx = "c2c/v1/pow") () =
+let pow_required_body ?(difficulty = 1) ?(ctx = "c2c/v1/pow") ?(epoch = 1)
+    ?(server_nonce = "f5bx-nonce") () =
   `Assoc
     [ ("ok", `Bool false);
       ("error_code", `String "pow_required");
       ("required",
        `Assoc
          [ ("difficulty", `Int difficulty);
-           ("epoch", `Int 1);
-           ("server_nonce", `String "f5bx-nonce");
+           ("epoch", `Int epoch);
+           ("server_nonce", `String server_nonce);
            ("ctx", `String ctx);
          ]);
     ]
@@ -654,9 +657,14 @@ let pow_accept_then_401 () =
             (contains ~needle:"pow_nonce" second.Relay_test_support.body)
       | _ -> Alcotest.fail "expected exactly two captured requests")
 
-(* Challenge loop: relay keeps demanding PoW after the minted retry. The
-   client must stop after ONE retry (pow_retry_failed) — bounded, never an
-   infinite mint loop. *)
+(* Challenge loop, IDENTICAL challenge: relay keeps demanding PoW and keeps
+   re-issuing the very same (difficulty, epoch, server_nonce, ctx). Since #11
+   the client re-mints from each fresh rejection, but [Pow.mint] is
+   deterministic in the challenge string, so re-minting an identical challenge
+   would reproduce the same nonce and earn the same rejection. The client
+   recognises that as futile and stops after ONE retry — exactly the old
+   bound, held here so the #11 loop cannot be read as licence to re-mint
+   pointlessly. *)
 let pow_required_forever_bounded () =
   let tmp = mkdtemp () in
   init_identity tmp;
@@ -686,6 +694,85 @@ let pow_mint_then_success () =
       Alcotest.(check bool) "success annotated with pow_minted_difficulty" true
         (contains ~needle:"pow_minted_difficulty" out);
       Alcotest.(check int) "exactly two requests" 2
+        (List.length (requests_for ~path:"/register" srv)))
+
+(* #11 REGRESSION — the reported bug. The relay's difficulty is load-derived
+   and can rise between issuing a challenge and receiving the proof, so the
+   minted retry arrives stale and is rejected with a FRESH, higher challenge.
+   The single-shot retry gave up there ("pow_retry_failed") while holding the
+   corrected requirement in the very error it returned. The client must now
+   re-read the requirement from the rejection, mint at the NEW difficulty and
+   succeed: three requests, exit 0. *)
+let pow_difficulty_raised_midflight_succeeds () =
+  let tmp = mkdtemp () in
+  init_identity tmp;
+  with_fault ~meth:"POST" ~path:"/register"
+    [ json_response ~status:429 (pow_required_body ~difficulty:1 ());
+      (* difficulty raised while our proof was in flight *)
+      json_response ~status:429
+        (pow_required_body ~difficulty:5 ~epoch:2 ~server_nonce:"f5bx-raised" ());
+      json_response (`Assoc [ ("ok", `Bool true) ]);
+    ]
+    (fun srv url ->
+      let rc, out, err = run_c2c ~tmp (register_args ~url) in
+      Alcotest.(check int)
+        (Printf.sprintf "re-mint after mid-flight raise succeeds (out=%S err=%S)"
+           out err)
+        0 rc;
+      let reqs = requests_for ~path:"/register" srv in
+      Alcotest.(check int) "exactly three requests (two minted attempts)" 3
+        (List.length reqs);
+      (* B010 is preserved AND reports the difficulty that actually applied,
+         not the stale first challenge — the connector's alert would otherwise
+         understate the increase it exists to report. *)
+      let json = Yojson.Safe.from_string out in
+      Alcotest.(check bool) "success still annotated with pow_minted_difficulty"
+        true
+        (match member "pow_minted_difficulty" json with
+         | `Int _ -> true
+         | _ -> false);
+      Alcotest.(check int) "annotated difficulty is the LATEST challenge's" 5
+        (match member "pow_minted_difficulty" json with
+         | `Int d -> d
+         | _ -> -1))
+
+(* #11 bound: a relay that always requires PoW but rotates the challenge every
+   time defeats the identical-challenge short circuit, so this is the case the
+   attempt CAP has to stop. Four requests total (one unminted + three minted)
+   and an honest pow_retry_failed — never a spin, never unbounded mint CPU. *)
+let pow_rotating_challenge_bounded_at_cap () =
+  let tmp = mkdtemp () in
+  init_identity tmp;
+  let challenge n =
+    json_response ~status:429
+      (pow_required_body ~difficulty:1 ~epoch:n
+         ~server_nonce:(Printf.sprintf "f5bx-rot-%d" n) ())
+  in
+  with_fault ~meth:"POST" ~path:"/register"
+    (* the last scripted response repeats, so an unbounded client would spin *)
+    [ challenge 1; challenge 2; challenge 3; challenge 4; challenge 5 ]
+    (fun srv url ->
+      assert_honest_failure ~what:"register vs rotating endless pow_required"
+        ~needle:"pow_retry_failed"
+        (run_c2c ~tmp (register_args ~url));
+      Alcotest.(check int) "exactly four requests (attempt cap holds)" 4
+        (List.length (requests_for ~path:"/register" srv)))
+
+(* Short-circuit control: no challenge at all means no retry and NO
+   pow_minted_difficulty annotation — the success path's shape is unchanged
+   for the overwhelmingly common case. *)
+let pow_not_required_first_attempt_short_circuits () =
+  let tmp = mkdtemp () in
+  init_identity tmp;
+  with_fault ~meth:"POST" ~path:"/register"
+    [ json_response (`Assoc [ ("ok", `Bool true) ]) ]
+    (fun srv url ->
+      let rc, out, _ = run_c2c ~tmp (register_args ~url) in
+      Alcotest.(check int) "unchallenged register: exit 0" 0 rc;
+      Alcotest.(check bool) "no pow_minted_difficulty on an unminted success"
+        false
+        (contains ~needle:"pow_minted_difficulty" out);
+      Alcotest.(check int) "exactly one request (no retry)" 1
         (List.length (requests_for ~path:"/register" srv)))
 
 (* ------------------------------------------------------------------ *)
@@ -998,11 +1085,20 @@ let () =
           Alcotest.test_case "B088 PoW accept-then-401 one retry then honest fail"
             `Quick pow_accept_then_401;
           Alcotest.test_case
-            "B088 endless pow_required bounded at one retry (no loop)" `Quick
-            pow_required_forever_bounded;
+            "B088 endless identical pow_required bounded at one retry (no loop)"
+            `Quick pow_required_forever_bounded;
           Alcotest.test_case
             "B088 minted retry succeeds + pow_minted_difficulty annotated"
             `Quick pow_mint_then_success;
+          Alcotest.test_case
+            "#11 difficulty raised mid-flight: re-mint from the new challenge"
+            `Quick pow_difficulty_raised_midflight_succeeds;
+          Alcotest.test_case
+            "#11 rotating endless pow_required bounded at the attempt cap"
+            `Quick pow_rotating_challenge_bounded_at_cap;
+          Alcotest.test_case
+            "#11 unchallenged register: one request, no annotation" `Quick
+            pow_not_required_first_attempt_short_circuits;
         ] );
       ( "doctor vs faulted relay",
         [ Alcotest.test_case
