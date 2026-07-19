@@ -2416,7 +2416,9 @@ let sync (t : t) : sync_result Lwt.t =
     obs_dlqs = List.rev !obs_dlqs;
     obs_inbound_contract_aliases = List.rev !obs_inbound_contract_aliases;
   } in
-  let emissions, new_alert_state = C2c_relay_alert.step t.alert_state observation in
+  let emissions, new_alert_state =
+    C2c_relay_alert.step ~now:(Unix.gettimeofday ()) t.alert_state observation
+  in
   t.alert_state <- new_alert_state;
   let alerts_emitted = deliver_alert_emissions t.broker_root regs emissions in
 

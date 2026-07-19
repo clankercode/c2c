@@ -1036,7 +1036,7 @@ Dropped rows are reported as `connector.inbound_rejected` (a count) and
 `c2c whoami --json`, mirrored in the human line as
 `; last sync dropped N inbound row(s): …`, tagged onto the connector's own
 sync line as `[drops: …]`, and durably in `broker.log`. The first two are
-are **per-sync**: they describe the connector's last sync, not a running total,
+**per-sync**: they describe the connector's last sync, not a running total,
 and clear when a sync drops nothing.
 
 The durable `broker.log` event names the **class** that was dropped, because
@@ -1051,10 +1051,12 @@ A relay-contract drop additionally raises an **edge-triggered `c2c-system` DM**
 to the affected alias. It has to: polling the relay is destructive — a row is
 drained on serve and never re-offered — so those messages are already
 permanently gone, and because these drops correctly do not move health,
-nothing else would tell the agent. The alert fires once per episode and re-arms
-only after a sync with no contract drops, so a relay serving garbage every 30s
-does not flood the inbox. If you see one, check that your alias matches what
-the relay routes to this host (`c2c whoami`, `c2c init`).
+nothing else would tell the agent. The alert fires once per episode, then a
+further drop for the same alias is muted for about an hour and its count folded
+into the next alert (#72) — so neither a relay serving garbage every 30s nor one
+dropping a bad row intermittently floods the inbox, and no mail-loss occurrence
+is silently lost. If you see one, check that your alias matches what the relay
+routes to this host (`c2c whoami`, `c2c init`).
 
 One inbound condition stays a genuine error: `inbound_rate_state`, meaning the
 connector could not read or persist its local inbound-rate state and is

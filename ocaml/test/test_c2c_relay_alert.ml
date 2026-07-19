@@ -21,6 +21,7 @@ let obs ?(difficulty = None) ?(rate_limited = false)
 let kinds ems = List.map (fun e -> e.A.kind) ems
 let sevs ems = List.map (fun e -> A.severity_to_string e.A.severity) ems
 let targets ems = List.map (fun e -> A.target_to_string e.A.target) ems
+let contract_aliases st = List.map fst st.A.inbound_contract_alerts
 
 let contains ~needle s =
   let nl = String.length needle and sl = String.length s in
@@ -185,30 +186,93 @@ let test_inbound_contract_dms_affected_alias () =
      && contains ~needle:"NOT be retried" (List.hd ems).A.body);
   Alcotest.(check bool) "body names the alias" true
     (contains ~needle:"alpha" (List.hd ems).A.body);
-  Alcotest.(check (list string)) "plateau recorded" [ "alpha" ]
-    st.A.inbound_contract_aliases
+  Alcotest.(check (list string)) "alert record kept for alpha" [ "alpha" ]
+    (contract_aliases st)
 
 let test_inbound_contract_plateau_does_not_spam () =
   (* A relay serving garbage on every 30s sync must alert once, not 120
      times an hour into the agent's inbox. *)
-  let _, st1 =
-    A.step A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  let ems1, st1 =
+    A.step ~now:0. A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
   in
-  let ems2, st2 = A.step st1 (obs ~inbound_contract_aliases:[ "alpha" ] ()) in
+  Alcotest.(check (list string)) "first sync alerts" [ "inbound_contract" ]
+    (kinds ems1);
+  let ems2, st2 =
+    A.step ~now:30. st1 (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
   Alcotest.(check (list string)) "sustained failure does not re-alert" []
     (kinds ems2);
-  let ems3, st3 = A.step st2 (obs ~inbound_contract_aliases:[ "alpha" ] ()) in
+  let ems3, _ =
+    A.step ~now:60. st2 (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
   Alcotest.(check (list string)) "still quiet on the third sync" []
+    (kinds ems3)
+
+(* #72 (the headline defect): intermittent drops with CLEAN polls between must
+   NOT re-alert on every occurrence. Under #62 an idle sync cleared the plateau
+   list, so the next drop re-fired — 50 misrouted rows across 50 syncs = 50 DMs.
+   Within the re-alert floor the recurrence is now muted and merely counted. *)
+let test_inbound_contract_intermittent_within_floor_is_muted () =
+  let ems1, st1 =
+    A.step ~now:0. A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  Alcotest.(check (list string)) "first drop alerts" [ "inbound_contract" ]
+    (kinds ems1);
+  (* a clean sync in between must NOT re-arm the alert *)
+  let ems2, st2 = A.step ~now:100. st1 (obs ()) in
+  Alcotest.(check (list string)) "clean sync is silent" [] (kinds ems2);
+  Alcotest.(check (list string)) "record retained inside the floor" [ "alpha" ]
+    (contract_aliases st2);
+  (* a fresh drop, still inside the floor, is muted (previously re-alerted) *)
+  let ems3, _ =
+    A.step ~now:200. st2 (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  Alcotest.(check (list string)) "recurrence within the floor is muted" []
+    (kinds ems3)
+
+(* #72: after the floor elapses a recurrence re-alerts, and the DM carries the
+   count of occurrences muted meanwhile so nothing is silently lost. *)
+let test_inbound_contract_realerts_after_floor_with_count () =
+  let floor = A.inbound_contract_realert_floor_s in
+  let ems1, st1 =
+    A.step ~now:0. A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  Alcotest.(check (list string)) "first drop alerts" [ "inbound_contract" ]
+    (kinds ems1);
+  (* two muted recurrences inside the floor *)
+  let _, st2 =
+    A.step ~now:60. st1 (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  let _, st3 =
+    A.step ~now:120. st2 (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  (* one more, now past the floor: re-alerts and reports the 2 muted syncs *)
+  let ems4, _ =
+    A.step ~now:(floor +. 1.) st3 (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  Alcotest.(check (list string)) "re-alerts after the floor"
+    [ "inbound_contract" ] (kinds ems4);
+  Alcotest.(check bool) "DM reports the 2 muted occurrences" true
+    (contains ~needle:"2 further" (List.hd ems4).A.body)
+
+(* #72: once the floor elapses with no fresh drop the record is retired, so a
+   genuinely new episode later alerts immediately with no muted-count clause. *)
+let test_inbound_contract_record_retired_after_floor () =
+  let floor = A.inbound_contract_realert_floor_s in
+  let _, st1 =
+    A.step ~now:0. A.initial_state (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  let ems2, st2 = A.step ~now:(floor +. 1.) st1 (obs ()) in
+  Alcotest.(check (list string)) "clean sync after floor is silent" []
+    (kinds ems2);
+  Alcotest.(check (list string)) "record retired" [] (contract_aliases st2);
+  let ems3, _ =
+    A.step ~now:(floor +. 2.) st2 (obs ~inbound_contract_aliases:[ "alpha" ] ())
+  in
+  Alcotest.(check (list string)) "fresh episode re-alerts" [ "inbound_contract" ]
     (kinds ems3);
-  (* Recovery clears the edge so a LATER recurrence is reported again — the
-     dedup must not become a permanent mute. *)
-  let ems4, st4 = A.step st3 (obs ()) in
-  Alcotest.(check (list string)) "recovery is silent" [] (kinds ems4);
-  Alcotest.(check (list string)) "plateau cleared" []
-    st4.A.inbound_contract_aliases;
-  let ems5, _ = A.step st4 (obs ~inbound_contract_aliases:[ "alpha" ] ()) in
-  Alcotest.(check (list string)) "a fresh recurrence re-alerts"
-    [ "inbound_contract" ] (kinds ems5)
+  Alcotest.(check bool) "no muted-count clause on a fresh alert" false
+    (contains ~needle:"further sync" (List.hd ems3).A.body)
 
 let test_inbound_contract_aliases_dedupe_independently () =
   let _, st1 =
@@ -223,7 +287,7 @@ let test_inbound_contract_aliases_dedupe_independently () =
 let test_no_inbound_contract_drops_is_silent () =
   let ems, st = A.step A.initial_state (obs ()) in
   Alcotest.(check (list string)) "nothing emitted" [] (kinds ems);
-  Alcotest.(check (list string)) "no plateau" [] st.A.inbound_contract_aliases
+  Alcotest.(check (list string)) "no record" [] (contract_aliases st)
 
 (* --- combined: independent edges in one sync --- *)
 
@@ -267,8 +331,14 @@ let () =
     "inbound_contract", [
       Alcotest.test_case "DMs the alias whose mail was destroyed" `Quick
         test_inbound_contract_dms_affected_alias;
-      Alcotest.test_case "plateau does not spam, recovery re-arms" `Quick
+      Alcotest.test_case "continuous drops alert once" `Quick
         test_inbound_contract_plateau_does_not_spam;
+      Alcotest.test_case "#72 intermittent drops within floor are muted" `Quick
+        test_inbound_contract_intermittent_within_floor_is_muted;
+      Alcotest.test_case "#72 re-alerts after floor carrying muted count" `Quick
+        test_inbound_contract_realerts_after_floor_with_count;
+      Alcotest.test_case "#72 record retired after floor re-alerts fresh" `Quick
+        test_inbound_contract_record_retired_after_floor;
       Alcotest.test_case "aliases dedupe independently" `Quick
         test_inbound_contract_aliases_dedupe_independently;
       Alcotest.test_case "no drops is silent" `Quick

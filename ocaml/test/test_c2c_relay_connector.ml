@@ -913,6 +913,56 @@ let test_rate_limit_dms_only_affected_senders () =
       (List.length (read_inbox_messages dir "sess-carol"))
   )
 
+(* #72 item 2: pin the sync-loop seam between "the classifier flagged a
+   relay-contract drop" and "the affected agent actually receives a DM".
+   [classify_poll_outcome] and the alert decider [step] each had coverage, but
+   NOTHING asserted that a contract drop surfaced in a poll is threaded into an
+   observation and delivered as a c2c-system DM — the exact gap #62's blocker
+   fix was about (the prior [cs_inbound_rejected] signal was parsed and surfaced
+   nowhere). This reproduces the connector's own wiring
+   (c2c_relay_connector.ml: [pa_contract_note] -> [obs_inbound_contract_aliases]
+   -> [step] -> [deliver_alert_emissions]) end to end over file IO. *)
+let test_contract_drop_in_sync_delivers_dm () =
+  let dir = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf dir) (fun () ->
+    let regs = [
+      ("sess-alpha", "alpha", "claude");
+      ("sess-beta", "beta", "codex");   (* unaffected peer — must NOT be DM'd *)
+    ] in
+    (* A poll that served a schema-violating (relay-contract) row for alpha. *)
+    let acc =
+      Conn.classify_poll_outcome ~alias:"alpha" ~polled:3 ~rate_state_error:None
+        [ Conn.Inbound_schema ]
+    in
+    (* The exact connector wiring: a contract note lifts the alias into the
+       observation the alert decider consumes; a bare policy drop would not. *)
+    let obs_inbound_contract_aliases =
+      match acc.Conn.pa_contract_note with Some _ -> [ "alpha" ] | None -> []
+    in
+    let emissions, _ =
+      C2c_relay_alert.step C2c_relay_alert.initial_state
+        { C2c_relay_alert.obs_difficulty = None; obs_rate_limited = false;
+          obs_rate_limited_senders = [];
+          obs_pow_retry_failed = false; obs_pow_retry_sender = None;
+          obs_dlqs = []; obs_inbound_contract_aliases } in
+    let delivered = Conn.deliver_alert_emissions dir regs emissions in
+    Alcotest.(check int) "one system DM delivered" 1 delivered;
+    let alpha_msgs = read_inbox_messages dir "sess-alpha" in
+    Alcotest.(check int) "alpha inbox has the alert" 1 (List.length alpha_msgs);
+    let m = List.hd alpha_msgs in
+    Alcotest.(check string) "from c2c-system" "c2c-system"
+      (msg_field "from_alias" m);
+    Alcotest.(check string) "to alpha" "alpha" (msg_field "to_alias" m);
+    let content = msg_field "content" m in
+    Alcotest.(check bool) "tagged ERR" true
+      (contains_sub ~needle:"[c2c-relay ERR]" content);
+    Alcotest.(check bool) "names the destroyed-mail alias and DROPPED" true
+      (contains_sub ~needle:"alpha" content
+       && contains_sub ~needle:"DROPPED" content);
+    Alcotest.(check int) "unaffected beta inbox untouched" 0
+      (List.length (read_inbox_messages dir "sess-beta"))
+  )
+
 (* --- B087: response_difficulty must not crash on any input shape ---
 
    [response_difficulty] previously did [member "difficulty" (member "required"
@@ -1869,6 +1919,8 @@ let () =
       Alcotest.test_case "difficulty alert stays out of inboxes" `Quick test_difficulty_alert_does_not_reach_sessions;
       Alcotest.test_case "rate limit DMs only affected senders" `Quick
         test_rate_limit_dms_only_affected_senders;
+      Alcotest.test_case "#72 contract drop in a sync delivers a DM" `Quick
+        test_contract_drop_in_sync_delivers_dm;
     ];
     "B087 response_difficulty", [
       Alcotest.test_case "no crash on null/missing/wrong-type/valid" `Quick test_response_difficulty_no_crash;
