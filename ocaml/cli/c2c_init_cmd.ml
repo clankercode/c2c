@@ -761,6 +761,5 @@ let install =
   Cmdliner.Cmd.group ~default:C2c_setup.install_default_term info
     ([ C2c_setup.install_self_subcmd
      ; C2c_setup.install_all_subcmd
-     ; C2c_setup.install_git_hook_subcmd
      ]
      @ List.map C2c_setup.install_client_subcmd C2c_setup.install_subcommand_clients)

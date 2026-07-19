@@ -260,15 +260,6 @@ class C2CUninstallTests(unittest.TestCase):
         self.assertFalse((dest / "c2c").exists())
         self.assertIsNone(self.manifest())
 
-    def test_install_git_hook_dry_run_json_has_single_summary(self):
-        result = run_cli("install", "git-hook", "--dry-run", "--json", env=self.env)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        payload = json.loads(result.stdout)
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["component"], "git-hook")
-        self.assertIn("installed", payload)
-        self.assertTrue(any(a["kind"] == "owned-file" for a in payload["installed"]))
-
     def test_uninstall_git_shim_uses_recompute_fallback(self):
         shim_dir = self.temp_dir / "shim-bin"
         shim_dir.mkdir()
@@ -282,22 +273,6 @@ class C2CUninstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse((shim_dir / "git").exists())
         self.assertFalse((shim_dir / "git-pre-reset").exists())
-
-    def test_uninstall_git_hook_leaves_non_c2c_pre_commit(self):
-        project = self.temp_dir / "repo"
-        project.mkdir()
-        subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
-        source = project / ".c2c" / "hooks" / "pre-commit.sh"
-        source.parent.mkdir(parents=True)
-        source.write_text("#!/bin/sh\necho c2c\n", encoding="utf-8")
-        hook = project / ".git" / "hooks" / "pre-commit"
-        hook.write_text("#!/bin/sh\necho user-owned\n", encoding="utf-8")
-        hook.chmod(0o755)
-
-        result = run_cli("uninstall", "git-hook", env=self.env, cwd=project)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertTrue(hook.exists())
-        self.assertIn("user-owned", hook.read_text(encoding="utf-8"))
 
     def test_uninstall_all_json_is_machine_readable(self):
         project = self.temp_dir / "all-project"

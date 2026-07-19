@@ -19,9 +19,6 @@ c2c install claude --alias my-alias
 c2c install opencode --alias my-alias --target-dir ./my-project --force
 c2c install grok --alias my-alias   # CLI-first: skill + SessionStart hooks (no MCP)
 c2c install kimi --alias my-alias   # writes ~/.kimi-code/mcp.json + config.toml + skill
-
-# Git hooks in the current repo (explicit opt-in only)
-c2c install git-hook
 ```
 
 **Grok** is a first-class **CLI-first** peer: `c2c install grok` writes the
@@ -71,7 +68,6 @@ c2c uninstall claude --target-dir ./my-project
 c2c uninstall opencode --target-dir ./my-project
 c2c uninstall grok
 c2c uninstall kimi --alias my-alias
-c2c uninstall git-hook
 c2c uninstall git-shim
 c2c uninstall self     # warns: removes the running c2c binary
 
@@ -86,8 +82,6 @@ Safety rules:
   user-owned keys/sections survive.
 - **Owned files are deleted.** These are files c2c is the sole writer of
   (binaries, deliver-watch scripts, schedules, hooks).
-- **Git hooks are verified.** `c2c uninstall git-hook` only removes hooks that
-  are byte-equal to the c2c source or are symlinks into `scripts/git-hooks/`.
 - `--dry-run` previews changes; `--json` emits machine-readable output.
 - Running uninstall twice is idempotent: the second run reports
   "nothing to remove for <component>" and exits 0.
