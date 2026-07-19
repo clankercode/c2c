@@ -5847,9 +5847,14 @@ let hook_row_aged ?pid ~registered_by ~client_type ~age_s ~now () :
   ; registered_by
   }
 
-(* RED for #51: a pid-less hook row 30 days old reports alive. grok-hook and
-   codex-hook together are 579 of the 664 ghosts; only codex-hook had a TTL,
-   so grok/claude/kimi/agy hook rows never decayed at all. *)
+(* RED for #51: a pid-less hook row 30 days old reports alive. Only codex-hook
+   had a TTL, so claude/agy hook rows never decayed at all.
+
+   Scope is the [hook_anchor_is_activity_backed] allowlist. grok-hook and
+   kimi-hook are covered by the companion assertion below and by
+   test_c2c_hook_anchor: they are installed with SessionStart + SessionEnd
+   only, so their anchor never advances past session start and a TTL there
+   would kill live agents' delivery rather than reap ghosts. *)
 let test_51_stale_hook_row_is_not_alive () =
   let now = Unix.gettimeofday () in
   List.iter
@@ -5862,12 +5867,56 @@ let test_51_stale_hook_row_is_not_alive () =
         (C2c_mcp.Broker.registration_is_alive reg);
       check bool (rb ^ ": stale hook row liveness is Dead") true
         (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Dead))
-    [ ("codex-hook", "codex")
-    ; ("grok-hook", "grok")
-    ; ("claude-hook", "claude")
-    ; ("kimi-hook", "kimi")
-    ; ("agy-hook", "agy")
-    ]
+    [ ("codex-hook", "codex"); ("claude-hook", "claude"); ("agy-hook", "agy") ]
+
+(* #51 blocker 1: a hook client with NO mid-session anchor must never decay.
+
+   grok and kimi install SessionStart + SessionEnd only, and each hard-exits
+   on any other event before reaching [touch_hook_activity], so their anchor
+   is stamped once at session start. Applying the TTL there measures session
+   AGE, and the row does not merely "read Dead": the predicate runs inside
+   [list_registrations] / [matching_regs_for_alias] /
+   [resolve_live_session_id_by_alias], so a >24h-old LIVE grok session
+   vanishes from routing — [send_all] skips it with no `skipped` entry and a
+   1:1 DM raises before it can reach the B127 offline queue. 223 of the 664
+   observed ghosts are grok-hook rows; keeping them immortal is the
+   deliberate, cheaper error. *)
+let test_51_hook_client_without_mid_session_anchor_never_decays () =
+  let now = Unix.gettimeofday () in
+  List.iter
+    (fun (rb, ct) ->
+      let reg =
+        hook_row_aged ~registered_by:(Some rb) ~client_type:ct
+          ~age_s:(30.0 *. 24.0 *. 3600.0) ~now ()
+      in
+      check bool
+        (rb ^ ": no mid-session anchor => must stay alive however old") true
+        (C2c_mcp.Broker.registration_is_alive reg);
+      check bool
+        (rb ^ ": no mid-session anchor => liveness stays Unknown, never Dead")
+        true
+        (C2c_mcp.Broker.registration_liveness_state reg
+         = C2c_mcp.Broker.Unknown))
+    [ ("grok-hook", "grok"); ("kimi-hook", "kimi") ]
+
+(* And the mirror at the fresh end: a fresh grok/kimi row must NOT be promoted
+   to [Alive] either. "Fresh" there means only "the session started recently",
+   which is the pre-#335 None->true collapse that produced the measured nudge
+   flood (135 nudges to one pid-less peer over 19.9h). The nudge paths skip on
+   strict [Alive], so [Unknown] is what keeps them skipped. *)
+let test_51_fresh_row_without_mid_session_anchor_is_not_promoted () =
+  let now = Unix.gettimeofday () in
+  List.iter
+    (fun (rb, ct) ->
+      let reg =
+        hook_row_aged ~registered_by:(Some rb) ~client_type:ct ~age_s:60.0 ~now
+          ()
+      in
+      check bool (rb ^ ": fresh row without an activity anchor stays Unknown")
+        true
+        (C2c_mcp.Broker.registration_liveness_state reg
+         = C2c_mcp.Broker.Unknown))
+    [ ("grok-hook", "grok"); ("kimi-hook", "kimi") ]
 
 (* A hook row inside the TTL is still routable — its next hook fire can drain
    the inbox — so it must stay alive. Guards against over-correcting #51 into
@@ -5875,7 +5924,7 @@ let test_51_stale_hook_row_is_not_alive () =
 let test_51_fresh_hook_row_stays_alive () =
   let now = Unix.gettimeofday () in
   let reg =
-    hook_row_aged ~registered_by:(Some "grok-hook") ~client_type:"grok"
+    hook_row_aged ~registered_by:(Some "claude-hook") ~client_type:"claude"
       ~age_s:60.0 ~now ()
   in
   check bool "fresh hook row is alive" true
@@ -5904,8 +5953,10 @@ let test_51_pidless_non_hook_row_keeps_lenient_liveness () =
 let test_51_old_hook_row_with_live_pid_stays_alive () =
   let now = Unix.gettimeofday () in
   let reg =
-    hook_row_aged ~pid:(Unix.getpid ()) ~registered_by:(Some "grok-hook")
-      ~client_type:"grok" ~age_s:(30.0 *. 24.0 *. 3600.0) ~now ()
+    (* codex-hook: a client that IS decay-eligible, so this proves the pid
+       wins over the TTL rather than passing because the TTL never applied. *)
+    hook_row_aged ~pid:(Unix.getpid ()) ~registered_by:(Some "codex-hook")
+      ~client_type:"codex" ~age_s:(30.0 *. 24.0 *. 3600.0) ~now ()
   in
   check bool "old hook row with a live pid is alive" true
     (C2c_mcp.Broker.registration_is_alive reg);
@@ -16744,6 +16795,12 @@ let () =
              test_51_stale_hook_row_is_not_alive
          ; test_case "#51 fresh pid-less hook row stays alive" `Quick
              test_51_fresh_hook_row_stays_alive
+         ; test_case
+             "#51 hook client without a mid-session anchor never decays" `Quick
+             test_51_hook_client_without_mid_session_anchor_never_decays
+         ; test_case
+             "#51 fresh row without a mid-session anchor is not promoted"
+             `Quick test_51_fresh_row_without_mid_session_anchor_is_not_promoted
          ; test_case "#51 pid-less non-hook row keeps lenient liveness" `Quick
              test_51_pidless_non_hook_row_keeps_lenient_liveness
          ; test_case "#51 old hook row with live pid stays alive" `Quick

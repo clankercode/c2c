@@ -354,6 +354,15 @@
  (libraries c2c_mcp alcotest yojson unix)
  (deps c2c.exe))
 
+; #51: does firing a hook actually advance the activity anchor the liveness
+; TTL measures? Asserts decay <=> proven mid-session anchor, in both
+; directions, end-to-end through the real binary.
+(test
+ (name test_c2c_hook_anchor)
+ (modules test_c2c_hook_anchor)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps c2c.exe))
+
 ; T001 spike: fixture-gated Codex app-server remote-TUI / passive-injection
 ; safety-invariant guard. Default-SKIP (green without codex); set
 ; C2C_CODEX_APPSERVER_PROBE=1 to run scripts/codex-app-server-probe.py live.

@@ -180,9 +180,22 @@ let nudge_tick ?(from_session_id="broker") ~broker ~cadence_minutes ~idle_minute
     (fun (reg : registration) ->
       (* #335 v2a: nudges require strict Alive state.
          Diverges from Broker.registration_is_alive (which collapses
-         Unknown→Alive for sweep/enqueue backward-compat per
-         c2c_mcp.ml:861-872). See
-         .collab/design/2026-04-28T04-16-00Z-stanza-coder-335-v2a-pidless-nudge-skip.md *)
+         Unknown→Alive for sweep/enqueue backward-compat).
+
+         Rationale (the design note this used to cite,
+         .collab/design/...-335-v2a-pidless-nudge-skip.md, was never
+         committed; the reasoning survives in commit 1f0321fb and in
+         .collab/findings/2026-04-28T03-35-00Z-stanza-coder-335-resume-drain-nudge-flood.md):
+         "135 archived nudges to Lyra-Quill-X across 19.9h ... 13 of 20
+         zombie registrations had pid:null and were eligible for nudges
+         under the v1 alive predicate's None→true collapse."
+
+         #51 keeps this arm intact. It narrows which pid-less rows can read
+         Alive at all — only hook clients whose hooks fire mid-session, so a
+         fresh anchor means recent ACTIVITY rather than merely a recent
+         session start (Broker.hook_anchor_is_activity_backed). Rows that
+         cannot refresh their anchor stay Unknown and remain skipped here,
+         so the flood above is not re-admitted. *)
       match Broker.registration_liveness_state reg with
       | Broker.Dead -> incr dead
       | Broker.Unknown ->

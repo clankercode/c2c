@@ -28,6 +28,34 @@ let sleep_to_min_runtime start_time =
 let touch_hook_activity ~broker ~session_id =
   try C2c_mcp.Broker.touch_session broker ~session_id with _ -> ()
 
+(* #51 (blocker 2): is this hook fire coming from a MANAGED session?
+
+   A hook must not stamp [registered_by = "<client>-hook"] on a managed
+   session's row. That string is the liveness/decay classifier (a "-hook" row
+   is one that NEVER had a pid, see [Broker.is_any_hook_registration]) and the
+   deregister-on-SessionEnd selector. Mislabelling a managed row therefore
+   both subjects it to a TTL it cannot refresh while idle and makes an
+   ordinary Stop tear it down. Codex has gated this since B136/B168 via
+   [codex_session_is_managed]; agy and grok did not.
+
+   The signal is the launcher's env, exported into the client child before it
+   spawns (`C2c_start.build_env`), so every hook the client fires inherits it.
+   [C2C_MCP_SESSION_ID] is [session_id_env] for both AgyAdapter and the grok
+   adapter; [C2C_MCP_AUTO_REGISTER_ALIAS] is belt-and-braces for the window
+   before the sid is settled. ORed, so any one marker suppresses the hook
+   label — fail toward "treat as managed", because the cost of that error is a
+   ghost row and the cost of the reverse is a live agent losing mail.
+
+   Deliberately NOT reading grok's native [GROK_SESSION_ID]: that is set by
+   vanilla grok too and would mark every grok session managed. *)
+let managed_launcher_marker_present () =
+  let set name =
+    match Sys.getenv_opt name with
+    | Some s -> String.trim s <> ""
+    | None -> false
+  in
+  set "C2C_MCP_SESSION_ID" || set "C2C_MCP_AUTO_REGISTER_ALIAS"
+
 let hook_post_tool_cmd =
   (* Claude PostToolUse hook — CLI fallback for the standalone
      c2c-inbox-hook-ocaml binary (`~/.claude/hooks/c2c-inbox-check.sh` runs
@@ -1278,7 +1306,16 @@ let hook_grok_cmd =
                                | Some c -> Some c
                                | None ->
                                    payload_string_field payload "workspaceRoot")
-                            ~registered_by:(Some "grok-hook")
+                            (* #51 (blocker 2), pre-emptive: grok has the same
+                               shape as agy — no is_managed gate, and (unlike
+                               claude at the `Option.is_some env_sid` exit) no
+                               bail on a set-but-unregistered env sid. Managed
+                               grok is deferred so this is unreachable today;
+                               gate it now so `c2c start grok` cannot ship a
+                               managed session wearing a hook label. *)
+                            ~registered_by:
+                              (if managed_launcher_marker_present () then None
+                               else Some "grok-hook")
                             ~from_auto_gen ()
                         with e ->
                           (try
@@ -1799,7 +1836,20 @@ let hook_agy_cmd =
                        (match payload_string_field payload "cwd" with
                         | Some c -> Some c
                         | None -> payload_string_field payload "workspaceRoot")
-                     ~registered_by:(Some "agy-hook")
+                     (* #51 (blocker 2): `c2c start agy` never calls
+                        [eager_register_managed_alias] (AgyAdapter is absent
+                        from every call site) and its deliver sidecar spawns
+                        without --register, so THIS is the only row a managed
+                        agy session ever gets. Labelling it "agy-hook" made it
+                        pid-less-and-decaying: idle past the TTL — exactly
+                        when its out-of-process agentapi wake still works — it
+                        flipped Dead and sends were refused. It also matched
+                        the Stop/SessionEnd deregister selector below, so an
+                        ordinary turn end tore the managed row down. Mirror
+                        codex: managed rows carry no hook label. *)
+                     ~registered_by:
+                       (if managed_launcher_marker_present () then None
+                        else Some "agy-hook")
                      ~from_auto_gen ()
                  with _ -> ())
                ()

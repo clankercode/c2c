@@ -431,11 +431,13 @@ open C2c_mcp_helpers
      664 permanently-"alive" ghosts against 8 real sessions on the reporting
      host, with mail to a ghost silently dead-lettering.
 
-     Match on the "-hook" suffix rather than an enumeration so a new client's
-     hook decays from the day it ships instead of joining the ghost pile until
-     someone remembers to extend a list. Deliberately distinct from
+     Match on the "-hook" suffix rather than an enumeration: this predicate
+     answers "did this row ever have a pid?", which is true of every client's
+     hook, present and future. Deliberately distinct from
      [is_hook_auto_registration] above, whose narrower membership encodes an
-     identity-authority rule (B119/B233), not a liveness one.
+     identity-authority rule (B119/B233), not a liveness one. Whether such a
+     row may DECAY is a strictly stronger question, gated separately by
+     [hook_anchor_is_activity_backed] below.
 
      The suffix is also the disambiguator #51 needed. [pid = None] used to mean
      two different things: "never had a pid" (hook) and "torn down", the latter
@@ -465,13 +467,52 @@ open C2c_mcp_helpers
     | Some ts -> Some ts
     | None -> reg.registered_at
 
-  (* #51: was codex-hook-only, which left grok/claude/kimi/agy hook rows —
-     230 of the 664 observed ghosts — with no decay path at all. The TTL and
-     anchor are unchanged; only the client scope widened. A row with no anchor
-     at all stays non-expired: absent evidence is not evidence of death, and
-     the sweep predicate below already reaps anchorless legacy rows. *)
+  (* #51 (blocker 1): an activity TTL is only honest for a client whose
+     INSTALLED hooks fire MID-SESSION and reach [touch_hook_activity]. For any
+     other client the anchor is stamped once, at SessionStart, and never moves
+     — so the TTL measures session AGE, which is precisely the defect #51 set
+     out to remove. Applying it anyway does not produce a harmless "reads
+     Dead": the widened predicate runs inside [list_registrations],
+     [matching_regs_for_alias] and [resolve_live_session_id_by_alias], so the
+     row ceases to exist for routing. [send_all] then skips the live agent via
+     [Unknown_alias -> ()] with no `skipped` entry, and a 1:1 DM raises before
+     it can reach the B127 offline queue — the message is destroyed rather
+     than parked. Trading 664 harmless ghosts for silent mail loss to live
+     agents is the worse outcome, so decay is an ALLOWLIST.
+
+     Membership is "we ship a hook that fires repeatedly during a session AND
+     it reaches the touch", verified end-to-end in test_c2c_hook_anchor:
+       - codex : UserPromptSubmit + PostToolUse (C2c_setup, codex hooks block)
+       - claude: PostToolUse + Stop (the standalone `c2c hook post-tool` /
+                 `c2c hook stop` scripts; `c2c hook claude` itself is
+                 SessionStart/SessionEnd only and hard-exits on anything else)
+       - agy   : SessionStart + PostToolUse + Stop (C2c_setup agy hooks)
+     Grok and kimi are installed with SessionStart + SessionEnd ONLY. Neither
+     has an event that can refresh the anchor, so neither may decay. They stay
+     immortal — 226 of the 664 ghosts persist — and that is the deliberate
+     trade: a client left immortal costs peer-discovery noise; a live client
+     declared Dead costs mail. Give grok/kimi a real mid-session hook (or an
+     out-of-band touch that does not depend on the model choosing to act) and
+     move them here, with the anchor test proving it — never before.
+
+     Deliberately NOT suffix-matched: a new client's hook must opt IN after
+     someone checks its installed events, because the default failure mode of
+     opting-out (ghosts) is recoverable and the default failure mode of
+     opting-in (lost mail) is not. *)
+  let hook_anchor_is_activity_backed reg =
+    match reg.registered_by with
+    | Some ("codex-hook" | "claude-hook" | "agy-hook") -> true
+    | _ -> false
+
+  (* #51: was codex-hook-only, which left claude/agy hook rows with no decay
+     path at all. The TTL and anchor are unchanged; only the client scope
+     widened, and only as far as [hook_anchor_is_activity_backed] can vouch
+     for. A row with no anchor at all stays non-expired: absent evidence is
+     not evidence of death, and the sweep predicate below already reaps
+     anchorless legacy rows. *)
   let is_expired_hook_auto_registration reg =
     is_any_hook_registration reg
+    && hook_anchor_is_activity_backed reg
     && reg.pid = None
     &&
     match codex_hook_activity_anchor reg with
@@ -1787,15 +1828,32 @@ open C2c_mcp_helpers
   type liveness_state = Alive | Dead | Unknown
 
   let registration_liveness_state reg =
-    (* Vanilla hook-driven sessions (codex, claude, grok, kimi, agy) are
-       registered by short-lived hooks, so they deliberately have no stable
-       process PID to inspect.  Their bounded hook-activity lease is
-       nevertheless the delivery signal: while it is fresh the next hook fire
-       can drain a queued message.  Do not leave these peers as [Unknown] in
-       discovery output when we have that signal — and once the lease lapses,
-       say [Dead] rather than [Unknown] so `list` stops offering an
-       unreachable peer as a routing target (#51). *)
-    if is_any_hook_registration reg && reg.pid = None then
+    (* Vanilla hook-driven sessions are registered by short-lived hooks, so
+       they deliberately have no stable process PID to inspect.  Their bounded
+       hook-activity lease is nevertheless the delivery signal: while it is
+       fresh the next hook fire can drain a queued message.  Do not leave these
+       peers as [Unknown] in discovery output when we have that signal — and
+       once the lease lapses, say [Dead] rather than [Unknown] so `list` stops
+       offering an unreachable peer as a routing target (#51).
+
+       #51 (blocker 1): gated by [hook_anchor_is_activity_backed], the SAME
+       predicate that gates decay, and that symmetry is the point. An anchor
+       may be read as evidence — of life OR of death — only for a client whose
+       hooks fire on activity. For grok/kimi a "fresh" anchor means only
+       "the session started recently", which is the pre-#335 None->true
+       collapse in a new costume: the arm that produced a measured flood of
+       135 archived nudges to one pid-less peer over 19.9h (13 of 20 zombie
+       rows had pid:null), and #52 measures pid-less hook rows accruing at
+       ~42/35min, so "fresh" is not a rare state. Those rows therefore stay
+       [Unknown], the strict-[Alive] skip in the nudge paths (relay_nudge,
+       c2c_wake_inject, c2c_deliver_watch, c2c_deliver_inbox, c2c_monitor_cmd)
+       keeps ignoring them unchanged, and nothing about #51 re-admits the
+       flood. For codex/claude/agy a fresh anchor really is recent activity,
+       so [Alive] is honest and nudging them is justified. *)
+    if
+      is_any_hook_registration reg && hook_anchor_is_activity_backed reg
+      && reg.pid = None
+    then
       match codex_hook_activity_anchor reg with
       | Some ts
         when Unix.gettimeofday () -. ts <= codex_hook_auto_registration_ttl_s ->
@@ -2024,8 +2082,13 @@ open C2c_mcp_helpers
   let pidless_keep_window_s = 3600.0
 
   let is_sweep_keepable reg =
+    (* #51: same gate again, so sweep and [registration_is_alive] cannot
+       disagree — sweep must never reap a row liveness calls Alive (a fresh
+       grok-hook row hit the 1800s provisional window while reading alive).
+       Non-activity-backed hook rows fall through to the legacy pid-less
+       arms below, exactly as before #51. *)
     if
-      is_any_hook_registration reg
+      is_any_hook_registration reg && hook_anchor_is_activity_backed reg
       && reg.pid = None
     then not (is_expired_hook_auto_registration reg)
     else
