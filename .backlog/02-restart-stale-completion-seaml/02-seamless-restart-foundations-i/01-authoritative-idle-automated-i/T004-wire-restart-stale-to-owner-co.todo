@@ -55,3 +55,8 @@ Wire `restart-stale` to drive the generic seam (F) for managed TUI/hook clients,
 - **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
 - **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
 - Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.
+
+
+### CORRECTION (consistency pass) — AC wording
+Default `restart-stale` does NOT restart ALL targets: Busy/Unknown clients remain guided by default. Precise AC: by default the command safely CLASSIFIES and HANDLES every stale target (auto in-pane restart on authoritative Idle; guided otherwise). `c2c restart-stale --force` is the one-command path that actually restarts every current managed client in-pane, matching I010's explicit "Unknown skips unless forced" clause.
+NOTE: 3h estimate is PROVISIONAL; if per-client adapters exceed one bounded task (assessed during D/E), G MUST be split before claim.
