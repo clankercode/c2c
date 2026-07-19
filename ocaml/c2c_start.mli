@@ -627,7 +627,13 @@ val registry_alive_conflict :
     the saved codex mappings / managed-instance configs that
     [C2c_codex_session.resolve_identity] consults. Rows owned by the calling pid
     are deliberately not conflicts — the app-server launcher restarts in place
-    with [execve], which preserves the pid. Exported for tests. *)
+    with [execve], which preserves the pid.
+
+    "LIVE" is decided by [C2c_mcp.Broker.registration_is_alive], the same
+    predicate [Broker.register] applies, so this guard can never be stricter
+    than the refusal it front-runs (#56): a row naming a recycled pid has a
+    stale [pid_start_time] and is not a conflict. Pid-less rows are likewise
+    not conflicts — they name no process to collide with. Exported for tests. *)
 
 val check_registry_alias_alive : broker_root:string -> name:string -> unit
 (** Registry precheck for launchers: print a FATAL message and [exit 1] when

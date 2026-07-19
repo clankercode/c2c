@@ -424,6 +424,11 @@ module Broker : sig
   (** Serializes alias-keyed key/pin preparation.  Multi-alias callers use
       deterministic case-folded lock ordering, so rename can safely lock its
       old and target aliases together. *)
+  val registration_of_json : Yojson.Safe.t -> registration
+  (** Parse one `registry.json` row.  Exposed so callers holding raw registry
+      JSON (rather than a broker [t]) can still reach [registration_is_alive]
+      instead of open-coding a second, driftable notion of "alive" (#56).
+      Raises [Yojson.Safe.Util.Type_error] on a row missing session_id/alias. *)
   val registration_is_alive : registration -> bool
   (** Sweep-specific bounded liveness. Unlike [registration_is_alive], old
       pidless rows eventually become reappable. *)

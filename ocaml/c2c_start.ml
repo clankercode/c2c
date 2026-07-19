@@ -2981,7 +2981,25 @@ let registry_alive_conflict ~(broker_root : string) ~(name : string)
                     app-server launcher restarts in place via [execve], which
                     preserves the pid, so self-matching would refuse a legal
                     restart. *)
-                 | Some (`Int p) -> p <> self && pid_alive p
+                 | Some (`Int p) when p = self -> false
+                 (* #56: defer to the broker's own predicate rather than
+                    stopping at "the pid exists".  [Broker.register] — the
+                    authority this guard front-runs — compares the row's
+                    stored [pid_start_time] against /proc, so a recycled pid
+                    reads as dead there; a bare liveness check here refused
+                    launches the broker would have accepted.  One definition
+                    of "alive", not two that can drift.  A row we cannot
+                    parse falls back to the old check: erring toward refusing
+                    is the safe direction. *)
+                 | Some (`Int p) ->
+                     (match (try Some (C2c_mcp.Broker.registration_of_json r)
+                             with _ -> None) with
+                      | Some reg -> C2c_mcp.Broker.registration_is_alive reg
+                      | None -> pid_alive p)
+                 (* A pid-less row has no process to collide with.
+                    [registration_is_alive] is lenient for such rows so their
+                    delivery keeps working, but leniency HERE would be a fresh
+                    false refusal, so the guard still requires a pid. *)
                  | _ -> false)
             | _ -> false) regs
         in
@@ -2998,10 +3016,16 @@ let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
   match registry_alive_conflict ~broker_root ~name with
   | None -> ()
   | Some (alias, pid) ->
+      (* #56: `c2c stop` only knows about managed instances, so it is a dead
+         end when the row belongs to an unmanaged MCP peer — which is the
+         common case for a plain broker registration.  Name both exits. *)
       Printf.eprintf
         "FATAL: alias '%s' is already alive in registry (pid %d).\n\
-         \  Stop it first:  c2c stop %s\n%!"
-        alias pid name;
+         \  If it is a managed session:    c2c stop %s\n\
+         \  If it is an unmanaged peer:    c2c deregister %s   (then retry)\n\
+         \  Or launch under another name:  c2c start <client> -n <other-name>\n\
+         \  Inspect the holder:            c2c list\n%!"
+        alias pid name alias;
       exit 1
 
 (** Acquire an exclusive POSIX advisory lock on `outer_pid_path name`.

@@ -703,6 +703,70 @@ let test_i34r_registry_alive_conflict_sees_plain_rows () =
       check (option (pair string int)) "self-owned row is not a conflict" None
         (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"peer-alias"))
 
+(* #56. The pre-launch guard must not be STRICTER than [Broker.register], the
+   authority it front-runs: that one compares the row's stored
+   [pid_start_time] against /proc, so a recycled pid reads as dead there.  A
+   guard that stops at "the pid exists" refuses launches the broker would have
+   accepted — a false REFUSAL with no way forward. *)
+let test_i56_registry_alive_conflict_honours_pid_start_time () =
+  let dir = Filename.temp_file "c2c-i56" "" in
+  Sys.remove dir;
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      let reg = Filename.concat dir "registry.json" in
+      let write rows = Yojson.Safe.to_file reg (`List rows) in
+      let row ~alias ~pid ~start =
+        `Assoc
+          ([ ("session_id", `String ("sid-" ^ alias))
+           ; ("alias", `String alias)
+           ; ("pid", `Int pid) ]
+           @ (match start with Some s -> [ ("pid_start_time", `Int s) ] | None -> []))
+      in
+      (* Same live pid throughout; only the stored start time varies, so any
+         difference in verdict is attributable to the start-time comparison. *)
+      let live = Unix.getppid () in
+      let real_start = C2c_mcp.Broker.read_pid_start_time live in
+      check bool "fixture precondition: can read the live pid's start time" true
+        (real_start <> None);
+      (* Reboot / crash then pid recycling: the row names a live pid, but the
+         process wearing it now started at a different time. *)
+      write [ row ~alias:"recycled" ~pid:live
+                ~start:(Some (match real_start with Some s -> s + 7777 | None -> 7777)) ];
+      check (option (pair string int)) "recycled pid is NOT a conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"recycled");
+      (* The genuinely-live case must still refuse — the fix must not open a
+         false ACCEPT while closing the false refusal. *)
+      write [ row ~alias:"recycled" ~pid:live ~start:real_start ];
+      check (option (pair string int)) "matching start time is still a conflict"
+        (Some ("recycled", live))
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"recycled");
+      (* Legacy rows predate the field; absent evidence is not evidence of
+         death, so they stay a conflict (as [registration_is_alive] has it). *)
+      write [ row ~alias:"recycled" ~pid:live ~start:None ];
+      check (option (pair string int)) "row without pid_start_time is a conflict"
+        (Some ("recycled", live))
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"recycled");
+      (* #34's carve-out, re-asserted against the start-time path: a row owned
+         by THIS pid — with the correct start time, so it is unambiguously
+         alive — is the execve-in-place restart, never a conflict. *)
+      let self = Unix.getpid () in
+      write [ row ~alias:"recycled" ~pid:self
+                ~start:(C2c_mcp.Broker.read_pid_start_time self) ];
+      check (option (pair string int)) "self-owned live row is not a conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"recycled");
+      (* A pid-less row has no process to collide with.  [registration_is_alive]
+         is lenient here for delivery's sake, but leniency at THIS call site
+         would be a fresh false refusal, so the guard keeps requiring a pid. *)
+      write
+        [ `Assoc
+            [ ("session_id", `String "sid-pidless")
+            ; ("alias", `String "pidless") ] ];
+      check (option (pair string int)) "pid-less row is not a conflict" None
+        (C2c_start.registry_alive_conflict ~broker_root:dir ~name:"pidless"))
+
 let test_namespaced_name_filtered_from_generic_tmux_command_b221 () =
   (* [c2c_managed_cmd] now passes this single filtered [client_args] value as
      both ordinary passthrough and [tmux_command].  This exercises the exact
@@ -4421,6 +4485,8 @@ let () =
             `Quick, test_i34r_managed_name_not_alias_record )
         ; ( "i34r_registry_alive_conflict_sees_plain_rows",
             `Quick, test_i34r_registry_alive_conflict_sees_plain_rows )
+        ; ( "i56_registry_alive_conflict_honours_pid_start_time",
+            `Quick, test_i56_registry_alive_conflict_honours_pid_start_time )
         ; ( "namespaced_name_filtered_from_generic_tmux_command_b221",
             `Quick, test_namespaced_name_filtered_from_generic_tmux_command_b221 )
         ; ( "generic_start_tmux_consumes_namespaced_control_b221",
