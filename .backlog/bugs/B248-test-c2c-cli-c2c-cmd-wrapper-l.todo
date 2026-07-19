@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-19T04:57:09Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-19T04:57:06Z"
 depends_on: []
 estimate_hours: 1
 id: B248
 priority: high
-status: pending
+started_at: "2026-07-19T04:57:09Z"
+status: in_progress
 tags: []
 title: 'test_c2c_cli c2c_cmd wrapper leaks host session env: schedule/memory identity tests fail in live Claude session (B247 sibling)'
-updated_at: "2026-07-19T04:57:06Z"
+updated_at: "2026-07-19T04:57:09Z"
 ---
 
 test_c2c_cli c2c_cmd wrapper leaks host session env: schedule/memory identity tests fail in live Claude session (B247 sibling)
