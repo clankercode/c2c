@@ -9,7 +9,11 @@ id: P2.M3.E1.T002
 priority: medium
 started_at: null
 status: pending
-tags: []
+tags:
+    - i011
+    - c2c
+    - spike
+    - sidecar
 title: 'SPIKE: granular deliver-inbox/poker sidecar restart (go/no-go)'
 updated_at: "2026-07-19T23:48:25Z"
 ---

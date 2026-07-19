@@ -36,7 +36,11 @@ tasks:
       id: T002
       priority: medium
       status: pending
-      tags: []
+      tags:
+        - i011
+        - c2c
+        - spike
+        - sidecar
       title: 'SPIKE: granular deliver-inbox/poker sidecar restart (go/no-go)'
     - complexity: medium
       depends_on:
