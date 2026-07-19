@@ -33,7 +33,11 @@ tasks:
       id: T002
       priority: high
       status: pending
-      tags: []
+      tags:
+        - i010
+        - c2c
+        - restart-stale
+        - tests
       title: restart-stale command test coverage (hermetic)
     - complexity: low
       depends_on:
