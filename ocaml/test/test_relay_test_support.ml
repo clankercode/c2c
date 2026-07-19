@@ -493,11 +493,17 @@ let test_connector_poll_messages_wrong_type () =
             (Sys.file_exists
                (Filename.concat broker_root (sm_session ^ ".inbox.json")))))
 
+let contains_substr ~sub s =
+  let n = String.length sub and m = String.length s in
+  let rec go i = i + n <= m && (String.sub s i n = sub || go (i + 1)) in
+  n = 0 || go 0
+
 (* H9 fix (rows B095/B238; closes the F5c dishonest cell): poll_inbox rows
    that fail the minimum broker-inbox contract — string from_alias /
    to_alias / content, exactly what C2c_broker.message_of_json REQUIRES —
-   are dropped BEFORE append_to_local_inbox, with the drop recorded as a
-   poll_inbox sync error. Valid rows in the same batch still deliver
+   are dropped BEFORE append_to_local_inbox, with the drop recorded — as
+   accounting rather than as a sync error since #62; see the assertion below.
+   Valid rows in the same batch still deliver
    (partial-batch delivery); dropped rows never count in
    inbound_delivered; and the local inbox file stays parseable by the
    broker layer. Pre-fix (verified dishonest 2026-07-10 on fbb16453),
@@ -542,11 +548,31 @@ let test_connector_poll_garbage_rows_dropped () =
           check int "only the valid row delivered" 1 r.inbound_delivered;
           check int "both garbage rows counted as rejected" 2
             r.inbound_rejected;
-          (match r.last_error with
-           | Some e ->
-               check string "dropped rows recorded as poll_inbox error"
-                 "poll_inbox" e.C2c_relay_connector.err_op
-           | None -> fail "dropped rows must record a sync error");
+          (* #62 revised this assertion. H9's invariant is that a drop is
+             never SILENT; recording it in [last_error] was the mechanism
+             originally chosen for that, and that mechanism was wrong: it made
+             a successful poll suppress [ok], freeze [last_ok_ts] and pin the
+             connector to Health_erroring with a restart remediation that
+             cannot clear it — the local connector cannot fix a relay that
+             keeps serving the same malformed row. The invariant is now
+             carried by [inbound_rejected] (asserted above, unchanged), the
+             drop note, and a durable broker.log event, so this checks
+             strictly more than it did before. *)
+          check bool "a poll that only dropped rows is not a fault" true
+            (r.last_error = None);
+          (match r.C2c_relay_connector.inbound_rejected_note with
+           | Some note ->
+               check bool "note counts the dropped rows" true
+                 (contains_substr ~sub:"dropped 2 policy-rejected inbound row(s) of 3"
+                    note);
+               check bool "note names the rejection reason" true
+                 (contains_substr ~sub:"schema=2" note)
+           | None -> fail "dropped rows must still be recorded as accounting");
+          let broker_log = Filename.concat broker_root "broker.log" in
+          check bool "drop recorded durably in broker.log" true
+            (Sys.file_exists broker_log
+             && contains_substr ~sub:"relay_inbound_policy_drops"
+                  (In_channel.with_open_bin broker_log In_channel.input_all));
           let inbox_path =
             Filename.concat broker_root (sm_session ^ ".inbox.json")
           in
@@ -700,11 +726,6 @@ let test_connector_non_object_response_start_once () =
 (* per-op sync error (never counted registered/delivered) and --once        *)
 (* exits 2 via the existing B087 sync-with-errors path.                     *)
 (* ======================================================================== *)
-
-let contains_substr ~sub s =
-  let n = String.length sub and m = String.length s in
-  let rec go i = i + n <= m && (String.sub s i n = sub || go (i + 1)) in
-  n = 0 || go 0
 
 let last_error_detail (r : C2c_relay_connector.sync_result) =
   match r.C2c_relay_connector.last_error with

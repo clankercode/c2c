@@ -296,9 +296,12 @@ let derive_health ~live ~process_present ~state ~now : connector_health =
    guidance at all in the one state that most needs it.
    [test_connector_erroring_without_detail_keeps_guidance] pins this reachable
    None case. The recorded errors are also weak substitutes when they do
-   exist — `("sync", Printexc.to_string exn)` is opaque, and
-   `("poll_inbox", "dropped N policy-rejected inbound row(s)…")` is inbound
-   accounting rather than a connectivity fault yet still drives `erroring`.
+   exist — `("sync", Printexc.to_string exn)` is opaque. (The other example
+   this comment used to cite,
+   `("poll_inbox", "dropped N policy-rejected inbound row(s)…")`, is gone:
+   #62 moved inbound-policy accounting out of `last_error` entirely, so it
+   no longer drives `erroring`. See
+   [C2c_relay_connector.classify_poll_outcome].)
    The checklist is a `#` shell comment on a runnable command: it costs
    nothing and never breaks copy-paste, so render it alongside the error.
 

@@ -1022,6 +1022,20 @@ command and, for `erroring`, always also carries the commented what-to-check
 tail (`# also: check token …, identity …, relay reachability`); it is a `#`
 shell comment, so it never breaks copy-paste.
 
+**`erroring` means the sync failed — not that it filtered something.** A poll
+that rejects policy-violating or malformed inbound rows *succeeded*: the
+connector's B196 inbound policy did its job. Those drops are accounting, so
+they never populate `last_error` and never hold back `last_ok` (#62). Reading
+them as a fault used to pin the connector to `erroring` and recommend a restart
+that could not clear it — the next poll dropped the same rows — while masking
+any genuine connectivity failure behind the same label. Dropped rows are
+reported instead as the `inbound_rejected` count and `inbound_rejected_note`
+summary in `connector-state.json`, as a `[drops: …]` tag on the connector's
+sync line, and durably as a `relay_inbound_policy_drops` event in `broker.log`.
+One inbound condition stays a genuine error: `inbound_rate_state`, meaning the
+connector could not read or persist its local inbound-rate state and is
+therefore denying *every* inbound row until that host-local file is fixed.
+
 The `registration.scope`, `registration.config_path`, `connector.scope`,
 `connector.last_error_op` and `connector.last_error_detail` keys are additive,
 as are `registration` and `connector` themselves — pre-existing `relay` JSON

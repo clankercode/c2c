@@ -65,6 +65,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?last_error_op
     cs_outbox_dlqed = 0;
     cs_inbound_delivered = 0;
     cs_inbound_rejected = 0;
+    cs_inbound_rejected_note = None;
   }
 
 (* --- acceptance state: Unconfigured ---------------------------------------- *)

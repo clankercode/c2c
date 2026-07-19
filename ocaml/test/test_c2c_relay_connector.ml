@@ -989,6 +989,7 @@ let sync_result_with_sessions sessions : Conn.sync_result =
     outbox_dlqed = 0;
     inbound_delivered = 0;
     inbound_rejected = 0;
+    inbound_rejected_note = None;
     alerts_emitted = 0;
     rate_limited = false;
     retry_after_s = None;
@@ -1034,7 +1035,8 @@ let test_connector_peek_key_uses_recorded_session_when_local_unresolved () =
         [ ("grok-powder-kelo-6z5j", "019f64e1-04be-73c0-83e3-c71a3b40d406") ];
       cs_pid = None;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
-      cs_inbound_delivered = 0; cs_inbound_rejected = 0 }
+      cs_inbound_delivered = 0; cs_inbound_rejected = 0;
+      cs_inbound_rejected_note = None }
   in
   (match
      Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1079,7 +1081,8 @@ let test_connector_peek_key_backward_compat_fallback () =
       cs_sessions = [];  (* pre-B209 state file *)
       cs_pid = None;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
-      cs_inbound_delivered = 0; cs_inbound_rejected = 0 }
+      cs_inbound_delivered = 0; cs_inbound_rejected = 0;
+      cs_inbound_rejected_note = None }
   in
   match
     Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1111,7 +1114,8 @@ let test_resolve_cli_dm_inbox_key_prefers_connector () =
         [ ("kimi-suvi-lumo-9cr1", "sess-connector-owned-1") ];
       cs_pid = Some 4242;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
-      cs_inbound_delivered = 0; cs_inbound_rejected = 0 }
+      cs_inbound_delivered = 0; cs_inbound_rejected = 0;
+      cs_inbound_rejected_note = None }
   in
   let node_id, session_id =
     Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
@@ -1218,8 +1222,8 @@ let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error ()
   : Conn.sync_result =
   { registered = []; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
-    inbound_delivered = 0; inbound_rejected = 0; alerts_emitted = 0;
-    rate_limited; retry_after_s; last_error }
+    inbound_delivered = 0; inbound_rejected = 0; inbound_rejected_note = None;
+    alerts_emitted = 0; rate_limited; retry_after_s; last_error }
 
 let test_stale_exit_default_threshold () =
   (* B228: default = max(180, interval*6); 30s interval -> 180s, 60s -> 360s. *)
@@ -1420,8 +1424,9 @@ let test_touch_connector_last_sync_preserves_last_ok () =
   let ok_result : Conn.sync_result =
     { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
       outbox_forwarded = 1; outbox_failed = 0; outbox_dlqed = 0;
-      inbound_delivered = 2; inbound_rejected = 0; alerts_emitted = 0;
-      rate_limited = false; retry_after_s = None; last_error = None }
+      inbound_delivered = 2; inbound_rejected = 0; inbound_rejected_note = None;
+      alerts_emitted = 0; rate_limited = false; retry_after_s = None;
+      last_error = None }
   in
   Conn.write_connector_state ~node_id:"n1" tmp ok_result;
   let before =
@@ -1500,6 +1505,154 @@ let test_machine_graceful_completion_stops_remaining_roots () =
       Unix.close call_r;
       Alcotest.(check bool) "graceful shutdown has no watchdog strike" false
         (connector_state_has_watchdog tmp)
+
+(* --- #62: inbound-policy accounting is not a connectivity fault ----------- *)
+
+(* Dropping a policy-violating inbound row is a SUCCESSFUL poll doing its job.
+   Routing that outcome through [last_error] made [write_connector_state]
+   compute ok = false, freeze [last_ok_ts], and — once the frozen stamp aged
+   past the 120s window while last_sync stayed fresh — pin the connector to
+   Health_erroring with a restart remediation that cannot clear it. Worse, a
+   connector already pinned there hides a real connectivity failure. These
+   cases pin the fault/accounting split at the seam where it is decided. *)
+
+let test_policy_drops_are_not_faults () =
+  let acc =
+    Conn.classify_poll_outcome ~alias:"alpha" ~polled:5 ~rate_state_error:None
+      [ Conn.Inbound_oversize; Conn.Inbound_oversize; Conn.Inbound_sender_rate ]
+  in
+  Alcotest.(check int) "policy drops record no fault" 0
+    (List.length acc.Conn.pa_errors);
+  match acc.Conn.pa_note with
+  | None -> Alcotest.fail "policy drops must still be reported as accounting"
+  | Some note ->
+      Alcotest.(check bool) "note counts the drops" true
+        (contains_sub
+           ~needle:"dropped 3 policy-rejected inbound row(s) of 5 for alpha"
+           note);
+      Alcotest.(check bool) "note keeps the per-reason breakdown" true
+        (contains_sub ~needle:"oversize=2" note
+         && contains_sub ~needle:"sender_rate=1" note)
+
+let test_clean_poll_has_neither () =
+  let acc =
+    Conn.classify_poll_outcome ~alias:"alpha" ~polled:4 ~rate_state_error:None []
+  in
+  Alcotest.(check int) "no fault" 0 (List.length acc.Conn.pa_errors);
+  Alcotest.(check bool) "no note when nothing was dropped" true
+    (acc.Conn.pa_note = None)
+
+let test_rate_state_failure_stays_a_fault () =
+  (* [inbound_rate_state] is NOT the same class as a policy drop and is
+     deliberately left fatal. It is not a filtering verdict: it means the
+     connector could not read or persist the local inbound-rate state, and
+     [filter_inbound_messages_persisted] then rejects EVERY row in the batch.
+     Mail is being denied by a broken host-local file, the operator can act on
+     it, and it must keep suppressing ok so the condition stays visible. *)
+  let acc =
+    Conn.classify_poll_outcome ~alias:"alpha" ~polled:2
+      ~rate_state_error:
+        (Some "cannot persist relay inbound rate state: Permission denied")
+      [ Conn.Inbound_policy; Conn.Inbound_policy ]
+  in
+  (match acc.Conn.pa_errors with
+   | [ (op, detail) ] ->
+       Alcotest.(check string) "recorded under its own op" "inbound_rate_state"
+         op;
+       Alcotest.(check bool) "detail preserved" true
+         (contains_sub ~needle:"Permission denied" detail)
+   | errs ->
+       Alcotest.failf "expected exactly one fault, got %d" (List.length errs));
+  Alcotest.(check bool) "the denied rows are still accounted for" true
+    (acc.Conn.pa_note <> None)
+
+(* [sync] turns the accumulated poll errors into [last_error] by taking the
+   head of the list; these two mirror that composition so the assertion is
+   about the health the connector actually reports, not about the classifier
+   in isolation. *)
+let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
+  let last_error = match acc.Conn.pa_errors with
+    | [] -> None
+    | (op, detail) :: _ ->
+        Some { Conn.err_op = op; err_detail = detail;
+               err_ts = Unix.gettimeofday () }
+  in
+  { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
+    outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
+    inbound_delivered = 2; inbound_rejected = 3;
+    inbound_rejected_note = acc.Conn.pa_note; alerts_emitted = 0;
+    rate_limited = false; retry_after_s = None; last_error }
+
+let health_of_result result =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  Conn.write_connector_state ~node_id:"n1" tmp result;
+  let state = Conn.read_connector_state tmp in
+  let now = Unix.gettimeofday () in
+  let last_ok =
+    match state with
+    | Some st -> st.Conn.cs_last_ok_ts
+    | None -> Alcotest.fail "no connector state written"
+  in
+  let info = Relay_state.connector_info ~process_present:true ~state ~now () in
+  (info.Relay_state.conn_health, last_ok)
+
+let test_policy_drop_sync_stays_healthy () =
+  let acc =
+    Conn.classify_poll_outcome ~alias:"alpha" ~polled:5 ~rate_state_error:None
+      [ Conn.Inbound_oversize; Conn.Inbound_oversize; Conn.Inbound_sender_rate ]
+  in
+  let health, last_ok = health_of_result (result_of_poll_accounting acc) in
+  Alcotest.(check bool) "a poll that only dropped rows advances last_ok" true
+    (last_ok > 0.0);
+  Alcotest.(check bool) "and does not report erroring" true
+    (health = Relay_state.Health_ok)
+
+let test_failed_poll_still_errors () =
+  (* The other half of the split: a poll that actually failed must keep
+     freezing last_ok and reporting erroring, or the fix would have bought
+     quiet at the cost of the signal. *)
+  let health, last_ok =
+    health_of_result
+      (result_of_poll_accounting
+         { Conn.pa_errors =
+             [ ("poll_inbox", {|{"ok":false,"error":"signature_invalid"}|}) ];
+           pa_note = None })
+  in
+  Alcotest.(check (float 1e-9)) "failed poll does not advance last_ok" 0.0
+    last_ok;
+  Alcotest.(check bool) "failed poll reports erroring" true
+    (health = Relay_state.Health_erroring)
+
+(* B228: [touch_connector_last_sync] refreshes last_sync while preserving
+   last_ok and last_error, so a pass that hangs after a successful predecessor
+   reads as erroring with NOTHING recorded. That path is independent of this
+   fix and must survive it — [Relay_state]'s remediation checklist is
+   unconditional precisely because of it. *)
+let test_hung_sync_still_errors_without_a_recorded_error () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let now = Unix.gettimeofday () in
+  (* A successful pass whose last_ok has since aged past the freshness window. *)
+  let stale_ok = `Assoc
+    [ ("last_sync_ts", `Float (now -. 300.0))
+    ; ("last_ok_ts", `Float (now -. 300.0))
+    ; ("last_error_op", `Null)
+    ; ("last_error_detail", `Null)
+    ; ("last_error_ts", `Null) ]
+  in
+  let oc = open_out (Filename.concat tmp "connector-state.json") in
+  Yojson.Safe.to_channel oc stale_ok;
+  close_out oc;
+  (* The next pass stamps last_sync and then hangs. *)
+  Conn.touch_connector_last_sync tmp;
+  let state = Conn.read_connector_state tmp in
+  let now = Unix.gettimeofday () in
+  Alcotest.(check bool) "hung pass records no error" true
+    (match state with Some st -> st.Conn.cs_last_error_detail = None | None -> false);
+  let info = Relay_state.connector_info ~process_present:true ~state ~now () in
+  Alcotest.(check bool) "hung pass still reports erroring" true
+    (info.Relay_state.conn_health = Relay_state.Health_erroring)
 
 let () =
   Random.self_init ();
@@ -1646,5 +1799,19 @@ let () =
     "B231 CLI dm inbox key", [
       Alcotest.test_case "prefers connector lease over cli-<alias>" `Quick
         test_resolve_cli_dm_inbox_key_prefers_connector;
+    ];
+    "#62 poll accounting is not a fault", [
+      Alcotest.test_case "policy drops record a note, not an error" `Quick
+        test_policy_drops_are_not_faults;
+      Alcotest.test_case "a clean poll records neither" `Quick
+        test_clean_poll_has_neither;
+      Alcotest.test_case "inbound rate-state failure stays fatal" `Quick
+        test_rate_state_failure_stays_a_fault;
+      Alcotest.test_case "drop-only sync advances last_ok and stays ok" `Quick
+        test_policy_drop_sync_stays_healthy;
+      Alcotest.test_case "genuinely failed poll still errors" `Quick
+        test_failed_poll_still_errors;
+      Alcotest.test_case "B228 hung sync errors with no recorded error" `Quick
+        test_hung_sync_still_errors_without_a_recorded_error;
     ];
   ]

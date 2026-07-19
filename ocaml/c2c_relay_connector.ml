@@ -60,6 +60,10 @@ type sync_result = {
   outbox_dlqed : int;  (* entries moved to local DLQ this sync *)
   inbound_delivered : int;
   inbound_rejected : int;  (* schema- or B196 policy-rejected rows this sync *)
+  (* #62: per-alias summary of THIS sync's policy-rejected rows, joined with
+     "; " across sessions. Accounting, not a fault — see [classify_poll_outcome]
+     — so it is reported alongside the counter and NEVER via [last_error]. *)
+  inbound_rejected_note : string option;
   alerts_emitted : int;  (* B010: c2c-system alert messages injected this sync *)
   rate_limited : bool;
   (* B210: this sync pass observed a relay rate-limit rejection (HTTP 429 /
@@ -658,6 +662,46 @@ let summarize_inbound_rejections reasons =
          |> Option.map (fun count -> Printf.sprintf "%s=%d" name count))
   |> String.concat ", "
 
+(* #62: what one session's inbound poll produced, split by whether it belongs
+   in [last_error]. [pa_errors] are faults — [write_connector_state] derives
+   [ok] from [last_error], so anything landing here freezes [last_ok_ts] and,
+   once that stamp ages past the freshness window while last_sync stays fresh,
+   pins [Relay_state.derive_health] to [Health_erroring]. [pa_note] is
+   accounting: it is reported, but it never touches health. *)
+type poll_accounting = {
+  pa_errors : (string * string) list;
+  pa_note : string option;
+}
+
+(* A poll that rejected policy-violating rows SUCCEEDED — B196 enforcement is
+   the point of the filter, not a symptom of a broken bridge. Recording it as
+   a sync error made the connector recommend a restart that could not clear the
+   condition (the next poll drops the same rows), and a connector pinned to
+   erroring by routine filtering makes a real connectivity failure invisible.
+   So drops become [pa_note] and leave [ok]/[last_ok_ts] alone.
+
+   [rate_state_error] is deliberately NOT reclassified with them. It is not a
+   filtering verdict at all: it means the connector could not read or persist
+   the local inbound-rate state, and [filter_inbound_messages_persisted]
+   responds by rejecting EVERY row in the batch. Mail is being denied by a
+   broken host-local file, that is actionable, and it must keep suppressing
+   [ok] so it stays visible. *)
+let classify_poll_outcome ~alias ~polled ~rate_state_error rejection_reasons =
+  let pa_note =
+    if rejection_reasons = [] then None
+    else
+      Some
+        (Printf.sprintf
+           "dropped %d policy-rejected inbound row(s) of %d for %s (%s)"
+           (List.length rejection_reasons) polled alias
+           (summarize_inbound_rejections rejection_reasons))
+  in
+  let pa_errors = match rate_state_error with
+    | None -> []
+    | Some detail -> [ ("inbound_rate_state", detail) ]
+  in
+  { pa_errors; pa_note }
+
 type t = {
   relay_url : string;
   token : string option;
@@ -1142,6 +1186,9 @@ type connector_state = {
   cs_outbox_dlqed : int;
   cs_inbound_delivered : int;
   cs_inbound_rejected : int;  (* H9: schema-invalid poll rows dropped *)
+  (* #62: last sync's drop summary. Additive/optional — absent in state files
+     written before the fault/accounting split, and [None] there. *)
+  cs_inbound_rejected_note : string option;
 }
 
 let write_connector_state ?node_id broker_root (result : sync_result) =
@@ -1205,6 +1252,10 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
     ; ("outbox_dlqed", `Int result.outbox_dlqed)
     ; ("inbound_delivered", `Int result.inbound_delivered)
     ; ("inbound_rejected", `Int result.inbound_rejected)
+    ; ("inbound_rejected_note",
+       match result.inbound_rejected_note with
+       | Some note -> `String note
+       | None -> `Null)
     ] @ rl_assoc @ node_id_assoc @ sessions_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
@@ -1260,6 +1311,7 @@ let read_connector_state broker_root : connector_state option =
         cs_outbox_dlqed = get_int "outbox_dlqed";
         cs_inbound_delivered = get_int "inbound_delivered";
         cs_inbound_rejected = get_int "inbound_rejected";
+        cs_inbound_rejected_note = get_str "inbound_rejected_note";
       }
 
 (** B209: the authoritative relay peek key for a connector-managed [alias].
@@ -1398,6 +1450,7 @@ let write_connector_state_error broker_root ~op ~detail =
     ; ("outbox_dlqed", `Int 0)
     ; ("inbound_delivered", `Int 0)
     ; ("inbound_rejected", `Int 0)
+    ; ("inbound_rejected_note", `Null)
     ; ("last_error_op", `String op)
     ; ("last_error_detail", `String detail)
     ; ("last_error_ts", `Float now)
@@ -2204,10 +2257,10 @@ let sync (t : t) : sync_result Lwt.t =
     | Ok _ -> []
     | Error detail -> [ ("inbound_policy", detail ^ "; inbound delivery denied") ]
   in
-  let inbound_delivered, inbound_rejected, poll_errors =
-    List.fold_left (fun (delivered, rejected, errs) (session_id, alias, _) ->
+  let inbound_delivered, inbound_rejected, inbound_notes, poll_errors =
+    List.fold_left (fun (delivered, rejected, notes, errs) (session_id, alias, _) ->
       if !abort_on_rate_limit then
-        delivered, rejected, errs
+        delivered, rejected, notes, errs
       else if List.mem session_id t.registered then
         let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
         note_observation ~sender:None json;
@@ -2218,34 +2271,29 @@ let sync (t : t) : sync_result Lwt.t =
               ~broker_root:t.broker_root ~expected_recipient:alias
               inbound_policy msgs
           in
-          let errs =
-            if rejection_reasons = [] then errs
-            else
-              let detail = Printf.sprintf
-                "dropped %d policy-rejected inbound row(s) of %d for %s (%s)"
-                (List.length rejection_reasons) (List.length msgs) alias
-                (summarize_inbound_rejections rejection_reasons)
-              in
-              ("poll_inbox", detail) :: errs
+          let acc =
+            classify_poll_outcome ~alias ~polled:(List.length msgs)
+              ~rate_state_error rejection_reasons
           in
-          let errs = match rate_state_error with
-            | None -> errs
-            | Some detail -> ("inbound_rate_state", detail) :: errs
+          let errs = List.rev_append acc.pa_errors errs in
+          let notes = match acc.pa_note with
+            | None -> notes
+            | Some note -> note :: notes
           in
           let delivered =
             if deliverable = [] then delivered
             else delivered + append_to_local_inbox t.broker_root session_id deliverable
           in
-          delivered, rejected + List.length rejection_reasons, errs
+          delivered, rejected + List.length rejection_reasons, notes, errs
         end
         else if json_bool_member ~key:"ok" json then
-          delivered, rejected, errs
+          delivered, rejected, notes, errs
         else
           let detail = Yojson.Safe.to_string json in
-          delivered, rejected, ("poll_inbox", detail) :: errs
+          delivered, rejected, notes, ("poll_inbox", detail) :: errs
       else
-        delivered, rejected, errs
-    ) (0, 0, initial_poll_errors) regs
+        delivered, rejected, notes, errs
+    ) (0, 0, [], initial_poll_errors) regs
   in
 
   let last_error = match reg_errors @ send_errors @ poll_errors with
@@ -2253,6 +2301,26 @@ let sync (t : t) : sync_result Lwt.t =
     | (op, detail) :: _ ->
         Some { err_op = op; err_detail = detail; err_ts = Unix.gettimeofday () }
   in
+
+  (* #62: keeping policy drops out of [last_error] must not lose them. They
+     stay reported three ways: the [inbound_rejected] counter and this note in
+     connector-state.json, the sync summary line, and a durable timestamped
+     broker.log event — which is the only one that survives the next sync
+     overwriting the state file. *)
+  let inbound_rejected_note = match List.rev inbound_notes with
+    | [] -> None
+    | notes -> Some (String.concat "; " notes)
+  in
+  (match inbound_rejected_note with
+   | None -> ()
+   | Some note ->
+       Broker_log.append_json ~broker_root:t.broker_root
+         ~json:(`Assoc
+            [ ("event", `String "relay_inbound_policy_drops")
+            ; ("ts", `Float (Unix.gettimeofday ()))
+            ; ("node_id", `String t.node_id)
+            ; ("dropped", `Int inbound_rejected)
+            ; ("detail", `String note) ]));
 
   (* B010/B222: turn this sync's observations into severity-tagged emissions
      (edge-triggered against t.alert_state). Difficulty changes are logged;
@@ -2291,6 +2359,7 @@ let sync (t : t) : sync_result Lwt.t =
     alerts_emitted;
     inbound_delivered;
     inbound_rejected;
+    inbound_rejected_note;
     rate_limited = !obs_rate_limited;
     retry_after_s = !obs_retry_after;
     last_error;
@@ -2541,9 +2610,15 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
                | None -> " RATE_LIMITED"
              else ""
            in
+           (* #62: policy drops are accounting, not a fault, so they get their
+              own tag rather than err_str — see [classify_poll_outcome]. *)
+           let drop_tag = match result.inbound_rejected_note with
+             | Some note -> Printf.sprintf " [drops: %s]" note
+             | None -> ""
+           in
            (* B244: rate-limits are operator-visible on stdout summary AND
               stderr so log scrapers / `c2c doctor` greps cannot miss them. *)
-           Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s%s\n%!"
+           Printf.printf "[relay-connector] sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s%s%s\n%!"
              (List.length result.registered)
              (List.length result.heartbeated)
              result.outbox_forwarded
@@ -2553,6 +2628,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              result.inbound_rejected
              result.alerts_emitted
              err_str
+             drop_tag
              rl_tag;
            if result.rate_limited then
              Printf.eprintf
@@ -2655,12 +2731,19 @@ let print_sync_result ?broker_root result =
       | None -> " RATE_LIMITED"
     else ""
   in
+  (* #62: drops no longer ride in err_str, so give them their own tag —
+     otherwise removing them from [last_error] would silently remove them
+     from the operator's view of the sync too. *)
+  let drop_tag = match result.inbound_rejected_note with
+    | Some note -> Printf.sprintf " [drops: %s]" note
+    | None -> ""
+  in
   Printf.printf
-    "%s sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s%s\n%!"
+    "%s sync: registered=%d heartbeated=%d fwd=%d failed=%d dlqed=%d inbound=%d rejected=%d alerts=%d%s%s%s\n%!"
     prefix (List.length result.registered) (List.length result.heartbeated)
     result.outbox_forwarded result.outbox_failed result.outbox_dlqed
     result.inbound_delivered result.inbound_rejected result.alerts_emitted
-    err_str rl_tag;
+    err_str drop_tag rl_tag;
   if result.rate_limited then
     Printf.eprintf
       "%s RATE_LIMITED (HTTP 429) this sync — remaining heartbeat/poll/send \
