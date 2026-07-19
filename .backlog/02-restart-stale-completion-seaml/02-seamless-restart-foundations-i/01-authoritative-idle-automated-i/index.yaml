@@ -48,7 +48,12 @@ tasks:
       id: T003
       priority: high
       status: pending
-      tags: []
+      tags:
+        - i011
+        - c2c
+        - upgrade
+        - restart
+        - seam
       title: Generic owner-control self-reexec restart seam (one seam)
     - complexity: high
       depends_on:

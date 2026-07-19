@@ -9,7 +9,12 @@ id: P2.M2.E1.T003
 priority: high
 started_at: null
 status: pending
-tags: []
+tags:
+    - i011
+    - c2c
+    - upgrade
+    - restart
+    - seam
 title: Generic owner-control self-reexec restart seam (one seam)
 updated_at: "2026-07-19T23:48:12Z"
 ---
