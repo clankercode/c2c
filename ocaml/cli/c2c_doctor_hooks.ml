@@ -45,6 +45,7 @@ type result = {
   codex : codex_result;
   agy : agy_result;
   kimi : kimi_delivery_result;
+  grok : grok_identity_result;
 }
 
 and block_diff = {
@@ -90,6 +91,21 @@ and kimi_delivery_result = {
   kd_sessions_checked : int;
   kd_deaf : kimi_session_issue list; (* inbox>0 and no notifier *)
   kd_no_notifier : kimi_session_issue list; (* registered kimi, no notifier (may be empty inbox) *)
+}
+
+(* #23(a): read-only Grok identity-drift detector. The Grok host injects
+   C2C_MCP_SESSION_ID into tool shells (upstream, out of c2c scope); the c2c-side
+   diagnostic is a PURE data cross-check between (1) grok broker registrations,
+   (2) the CLI statefile identity, and (3) ~/.grok/active_sessions.json foreground
+   pids. NO ancestor-pid resolution — the doctor runs in a different process tree,
+   so it must not reuse session_id_from_grok_active_sessions. *)
+and grok_identity_result = {
+  gid_grok_regs : int; (* number of grok registrations on this broker *)
+  gid_statefile_sid : string option; (* identity the CLI statefile points at *)
+  gid_live_grok_sids : string list; (* grok reg sids corroborated alive in active_sessions *)
+  gid_flagged : bool;
+  gid_reason : string option;
+  gid_remediation : string list; (* export line + candidate identities *)
 }
 
 (* --- Codex delivery-mode classification (P1.M1.E1.T005) -------------------- *)
@@ -754,6 +770,171 @@ let check_kimi_delivery ?broker_root () : kimi_delivery_result =
   ; kd_no_notifier = List.rev !no_notifier
   }
 
+(* --- Grok identity-drift detector (#23a) ---------------------------------- *)
+
+(* A grok registration, mirroring is_kimi_registration: client_type=grok, or
+   registered_by=grok-hook, or the sticky client prefix "grok-". *)
+let is_grok_registration (r : C2c_mcp.registration) =
+  (match r.client_type with Some "grok" -> true | _ -> false)
+  || (match r.registered_by with Some "grok-hook" -> true | _ -> false)
+  || (let a = String.lowercase_ascii r.alias in
+      String.length a >= 5 && String.sub a 0 5 = "grok-")
+
+(* An active_sessions.json foreground entry: its session id and pid liveness.
+   Liveness is checked directly against /proc (the doctor process is unrelated
+   to the Grok TUI process tree, so ancestor-pid resolution would be wrong). *)
+type grok_active_entry = {
+  gae_session_id : string;
+  gae_pid : int option;
+  gae_alive : bool;
+}
+
+let pid_alive pid = pid > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" pid)
+
+(* Parse ~/.grok/active_sessions.json (path via the shared helper, which honors
+   C2C_GROK_ACTIVE_SESSIONS for tests). Pure/read-only; [] on any error. Unlike
+   session_id_from_grok_active_sessions it does NOT filter by ancestor pid — it
+   reports every entry with its own /proc liveness. *)
+let read_grok_active_entries ?path () : grok_active_entry list =
+  let path =
+    match path with
+    | Some p -> p
+    | None -> C2c_mcp_helpers_post_broker.grok_active_sessions_path ()
+  in
+  if not (Sys.file_exists path) then []
+  else
+    match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+    | Some (`List entries) ->
+        List.filter_map
+          (function
+            | `Assoc fields ->
+                let sid =
+                  match List.assoc_opt "session_id" fields with
+                  | Some (`String s) when String.trim s <> "" ->
+                      Some (String.trim s)
+                  | _ -> None
+                in
+                let pid =
+                  match List.assoc_opt "pid" fields with
+                  | Some (`Int p) -> Some p
+                  | Some (`Intlit s) -> int_of_string_opt s
+                  | Some (`Float f) -> Some (int_of_float f)
+                  | _ -> None
+                in
+                (match sid with
+                 | Some sid ->
+                     let alive =
+                       match pid with Some p -> pid_alive p | None -> false
+                     in
+                     Some { gae_session_id = sid; gae_pid = pid; gae_alive = alive }
+                 | None -> None)
+            | _ -> None)
+          entries
+    | _ -> []
+
+(* Grok-scoped identity candidates for remediation, reusing the shared #26
+   shape so `c2c doctor` and the identity fail-closed surface agree. *)
+let grok_candidates ~broker_root =
+  C2c_identity_candidates.candidate_registrations ~broker_root
+  |> List.filter (fun (alias, _sid, client, registered_by, _liveness) ->
+       client = "grok"
+       || registered_by = "grok-hook"
+       || (let a = String.lowercase_ascii alias in
+           String.length a >= 5 && String.sub a 0 5 = "grok-"))
+
+let check_grok_identity ?broker_root () : grok_identity_result =
+  let broker_root =
+    match broker_root with
+    | Some r -> r
+    | None -> C2c_utils.resolve_broker_root ()
+  in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let regs = try C2c_mcp.Broker.list_registrations broker with _ -> [] in
+  let grok_regs = List.filter is_grok_registration regs in
+  let grok_reg_sids =
+    List.map (fun (r : C2c_mcp.registration) -> r.session_id) grok_regs
+  in
+  let statefile_sid = C2c_identity_candidates.read_session_statefile ~broker_root in
+  let active = read_grok_active_entries () in
+  let alive_active_sids =
+    List.filter_map
+      (fun e -> if e.gae_alive then Some e.gae_session_id else None)
+      active
+  in
+  (* grok registrations corroborated by an alive foreground active_sessions
+     entry — the only identities we treat as authoritative. *)
+  let live_grok_sids =
+    List.filter (fun sid -> List.mem sid alive_active_sids) grok_reg_sids
+  in
+  let sole_live =
+    match live_grok_sids with [ sid ] -> Some sid | _ -> None
+  in
+  let statefile_is_grok =
+    match statefile_sid with
+    | Some sid -> List.mem sid grok_reg_sids
+    | None -> false
+  in
+  (* Flag conditions (see #23). Detector is quiet when there are no grok
+     registrations at all — nothing to disambiguate. *)
+  let reason =
+    if grok_regs = [] then None
+    else
+      match statefile_sid with
+      | Some sid when statefile_is_grok
+                      && not (List.mem sid alive_active_sids) ->
+          Some
+            (Printf.sprintf
+               "the CLI statefile identity (session %s) is a grok registration \
+                that is NOT an alive foreground Grok session (its pid is dead or \
+                absent from ~/.grok/active_sessions.json) — inbound DMs are being \
+                misattributed to a stale identity"
+               sid)
+      | Some sid
+        when statefile_is_grok && sole_live <> None
+             && sole_live <> Some sid ->
+          Some
+            (Printf.sprintf
+               "the CLI statefile identity (session %s) disagrees with the live \
+                Grok session resolved from ~/.grok/active_sessions.json (session \
+                %s)"
+               sid
+               (match sole_live with Some s -> s | None -> "?"))
+      | _ ->
+          if List.length grok_regs >= 2 && sole_live = None then
+            Some
+              (Printf.sprintf
+                 "%d grok registrations exist but none is a singly-corroborated \
+                  live foreground session in ~/.grok/active_sessions.json — \
+                  identity is ambiguous and DMs may be misrouted"
+                 (List.length grok_regs))
+          else None
+  in
+  let flagged = reason <> None in
+  let remediation =
+    if not flagged then []
+    else
+      let live_hint =
+        match sole_live with
+        | Some sid -> Printf.sprintf "export C2C_MCP_SESSION_ID=%s" sid
+        | None ->
+            "export C2C_MCP_SESSION_ID=<your live grok session id>   # pick YOURS below"
+      in
+      let cands = grok_candidates ~broker_root in
+      live_hint
+      :: (if cands = [] then []
+          else
+            "candidate grok identities in this broker:"
+            :: List.map
+                 (fun c -> "  " ^ C2c_identity_candidates.render_candidate_registration c)
+                 cands)
+  in
+  { gid_grok_regs = List.length grok_regs;
+    gid_statefile_sid = statefile_sid;
+    gid_live_grok_sids = live_grok_sids;
+    gid_flagged = flagged;
+    gid_reason = reason;
+    gid_remediation = remediation }
+
 let check ?(dirs = claude_dirs ()) () =
   let dirs = List.filter (fun d -> Sys.file_exists d && Sys.is_directory d) dirs in
   let dir_results = List.map scan_dir dirs in
@@ -763,7 +944,8 @@ let check ?(dirs = claude_dirs ()) () =
   let codex = check_codex_managed_blocks () in
   let agy = check_agy_status () in
   let kimi = check_kimi_delivery () in
-  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy; kimi }
+  let grok = check_grok_identity () in
+  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy; kimi; grok }
 
 (* --- output formatters ---------------------------------------------------- *)
 
@@ -871,6 +1053,31 @@ let pp_human r =
           warn_only
       end
     end
+  end;
+  Printf.printf "\n=== Grok identity check ===\n\n";
+  if r.grok.gid_grok_regs = 0 then
+    Printf.printf "No registered Grok sessions on this broker.\n"
+  else begin
+    Printf.printf "  registered grok sessions: %d\n" r.grok.gid_grok_regs;
+    Printf.printf "  statefile identity: %s\n"
+      (match r.grok.gid_statefile_sid with Some s -> s | None -> "(none)");
+    Printf.printf "  live grok sessions (active_sessions.json): %s\n"
+      (match r.grok.gid_live_grok_sids with
+       | [] -> "(none corroborated)"
+       | l -> String.concat ", " l);
+    if not r.grok.gid_flagged then
+      Printf.printf "  identity OK (no drift detected).\n"
+    else begin
+      (match r.grok.gid_reason with
+       | Some reason -> Printf.printf "  ✗ DRIFT: %s\n" reason
+       | None -> ());
+      if r.grok.gid_remediation <> [] then begin
+        Printf.printf "      → fix:\n";
+        List.iter
+          (fun line -> Printf.printf "        %s\n" line)
+          r.grok.gid_remediation
+      end
+    end
   end
 
 let to_json r =
@@ -947,6 +1154,17 @@ let to_json r =
       ("no_notifier_count", `Int (List.length k.kd_no_notifier))
     ]
   in
+  let grok_to_json (g : grok_identity_result) =
+    `Assoc [
+      ("grok_registrations", `Int g.gid_grok_regs);
+      ("statefile_sid",
+       match g.gid_statefile_sid with Some s -> `String s | None -> `Null);
+      ("live_grok_sids", `List (List.map (fun s -> `String s) g.gid_live_grok_sids));
+      ("flagged", `Bool g.gid_flagged);
+      ("reason", match g.gid_reason with Some s -> `String s | None -> `Null);
+      ("remediation", `List (List.map (fun s -> `String s) g.gid_remediation))
+    ]
+  in
   `Assoc [
     ("dirs", `List (List.map dir_to_json r.dirs));
     ("total_referenced", `Int r.total_referenced);
@@ -955,7 +1173,8 @@ let to_json r =
     ("codex_managed_blocks", codex_to_json r.codex);
     ("total_codex_issues", `Int r.codex.total_issues);
     ("agy", agy_to_json r.agy);
-    ("kimi_delivery", kimi_to_json r.kimi)
+    ("kimi_delivery", kimi_to_json r.kimi);
+    ("grok_identity", grok_to_json r.grok)
   ]
 
 let pp_json r = print_endline (Yojson.Safe.to_string (to_json r))
@@ -1059,7 +1278,16 @@ let pp_compact r =
       n_none
   else
     Printf.printf "Kimi delivery: %d session(s) armed\n"
-      r.kimi.kd_sessions_checked
+      r.kimi.kd_sessions_checked;
+  if r.grok.gid_grok_regs = 0 then
+    Printf.printf "Grok identity: no registered grok sessions\n"
+  else if r.grok.gid_flagged then
+    Printf.printf
+      "Grok identity: DRIFT (%d registration(s)) — run 'c2c doctor hooks'\n"
+      r.grok.gid_grok_regs
+  else
+    Printf.printf "Grok identity: %d session(s), no drift\n"
+      r.grok.gid_grok_regs
 
 (* --- CLI ------------------------------------------------------------------ *)
 
@@ -1184,6 +1412,7 @@ let c2c_doctor_hooks_cmd =
     if r.total_dangling > 0
        || r.codex.total_issues > 0
        || r.kimi.kd_deaf <> []
+       || r.grok.gid_flagged
     then exit 1
   in
   Cmdliner.Cmd.v
@@ -1191,6 +1420,7 @@ let c2c_doctor_hooks_cmd =
        ~doc:"Check Claude Code settings.json hook entries for dangling c2c \
              scripts, Codex managed-block drift, the live Codex delivery \
              mode (app-server / app-server-unavailable / hooks+wake / hooks / \
-             unavailable), and Kimi sessions that are DEAF (undelivered inbox \
-             + no notifier — B238).")
+             unavailable), Kimi sessions that are DEAF (undelivered inbox \
+             + no notifier — B238), and Grok identity drift (statefile identity \
+             not corroborated by a live foreground session — #23).")
     cmd

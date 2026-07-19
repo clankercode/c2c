@@ -92,15 +92,21 @@ let test_refresh_grok_skill_if_stale () =
 
 let test_session_identity_skill_write_remove () =
   with_temp_home (fun home ->
-    C2c_setup.write_grok_session_identity_skill ~alias:"grok-test-xx"
-      ~session_id:"019f4fb9-3c7a-7720-96c2-5cacb719d951";
+    (* #22: the identity skill is identity-agnostic — it must NOT embed any
+       concrete alias/session_id, and must point the agent at `c2c whoami`. *)
+    C2c_setup.write_grok_session_identity_skill ();
     let path = home // ".grok" // "skills" // "c2c-session" // "SKILL.md" in
     check bool "identity skill exists" true (Sys.file_exists path);
     let body = read_file path in
-    check bool "alias in body" true
+    check bool "points at c2c whoami" true
+      (contains ~haystack:body ~needle:"c2c whoami");
+    check bool "no concrete alias embedded" false
       (contains ~haystack:body ~needle:"grok-test-xx");
-    check bool "session id in body" true
+    check bool "no concrete session id embedded" false
       (contains ~haystack:body ~needle:"019f4fb9-3c7a-7720-96c2-5cacb719d951");
+    (* Two writes produce byte-identical content (clobber is a no-op). *)
+    C2c_setup.write_grok_session_identity_skill ();
+    check string "byte-stable across writes" body (read_file path);
     C2c_setup.remove_grok_session_identity_skill ();
     check bool "identity skill removed" false (Sys.file_exists path))
 

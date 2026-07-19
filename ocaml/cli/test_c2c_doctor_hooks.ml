@@ -569,6 +569,134 @@ let test_kimi_registration_detector () =
     (C2c_doctor_hooks.is_kimi_registration
        (mk ~alias:"claude-x" ~client_type:(Some "claude") ~registered_by:None))
 
+(* --- Grok identity-drift detector (#23a) ---------------------------------- *)
+
+(* Seed a hermetic broker + statefile + fixture active_sessions.json. The
+   active_sessions path is overridden via C2C_GROK_ACTIVE_SESSIONS so no real
+   ~/.grok file is touched. *)
+let with_grok_fixture f =
+  with_tmp_dir (fun dir ->
+    let broker_root = dir // "broker" in
+    C2c_io.mkdir_p broker_root;
+    let active_path = dir // "active_sessions.json" in
+    let prev = Sys.getenv_opt "C2C_GROK_ACTIVE_SESSIONS" in
+    Unix.putenv "C2C_GROK_ACTIVE_SESSIONS" active_path;
+    Fun.protect
+      ~finally:(fun () ->
+        match prev with
+        | Some v -> Unix.putenv "C2C_GROK_ACTIVE_SESSIONS" v
+        | None -> Unix.putenv "C2C_GROK_ACTIVE_SESSIONS" "")
+      (fun () -> f ~broker_root ~active_path))
+
+let register_grok broker_root ~session_id ~alias =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  ignore
+    (C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None
+       ~pid_start_time:None ~client_type:(Some "grok") ~from_auto_gen:true ())
+
+(* Write the CLI statefile (default-session.json) that read_session_statefile
+   consumes — inline so the test does not link the heavy c2c_cli_helpers. *)
+let write_statefile broker_root ~session_id =
+  write_file (broker_root // "default-session.json")
+    (Yojson.Safe.to_string (`Assoc [ ("session_id", `String session_id) ]))
+
+(* entries: (session_id, pid option) list — pid absent means no foreground pid. *)
+let write_active_sessions active_path entries =
+  let json =
+    `List
+      (List.map
+         (fun (sid, pid) ->
+           `Assoc
+             (("session_id", `String sid)
+              :: (match pid with Some p -> [ ("pid", `Int p) ] | None -> [])))
+         entries)
+  in
+  write_file active_path (Yojson.Safe.to_string json)
+
+let dead_pid = 2_147_483_646 (* astronomically unlikely to be a live pid *)
+
+(* Statefile points at a grok session whose pid is dead/absent in
+   active_sessions.json → drift is flagged with remediation. *)
+let test_grok_flags_stale_statefile_identity () =
+  with_grok_fixture (fun ~broker_root ~active_path ->
+    let sid = "grok-sess-dead-0001" in
+    register_grok broker_root ~session_id:sid ~alias:"grok-fixaa";
+    write_statefile broker_root ~session_id:sid;
+    (* active_sessions lists the sid but with a dead pid → not corroborated *)
+    write_active_sessions active_path [ (sid, Some dead_pid) ];
+    let g = C2c_doctor_hooks.check_grok_identity ~broker_root () in
+    check int "one grok reg" 1 g.C2c_doctor_hooks.gid_grok_regs;
+    check bool "flagged" true g.C2c_doctor_hooks.gid_flagged;
+    check bool "no live grok sids" true (g.C2c_doctor_hooks.gid_live_grok_sids = []);
+    check bool "remediation mentions C2C_MCP_SESSION_ID" true
+      (List.exists
+         (fun l -> C2c_doctor_hooks.contains l "C2C_MCP_SESSION_ID")
+         g.C2c_doctor_hooks.gid_remediation);
+    check bool "remediation lists a grok candidate" true
+      (List.exists
+         (fun l -> C2c_doctor_hooks.contains l "grok-fixaa")
+         g.C2c_doctor_hooks.gid_remediation))
+
+(* A single live grok session that matches the statefile → no drift. *)
+let test_grok_quiet_when_corroborated () =
+  with_grok_fixture (fun ~broker_root ~active_path ->
+    let sid = "grok-sess-live-0002" in
+    register_grok broker_root ~session_id:sid ~alias:"grok-fixbb";
+    write_statefile broker_root ~session_id:sid;
+    (* alive: our own pid definitely has a /proc entry *)
+    write_active_sessions active_path [ (sid, Some (Unix.getpid ())) ];
+    let g = C2c_doctor_hooks.check_grok_identity ~broker_root () in
+    check int "one grok reg" 1 g.C2c_doctor_hooks.gid_grok_regs;
+    check bool "not flagged" false g.C2c_doctor_hooks.gid_flagged;
+    check bool "sole live grok sid corroborated" true
+      (g.C2c_doctor_hooks.gid_live_grok_sids = [ sid ]);
+    check bool "no remediation" true (g.C2c_doctor_hooks.gid_remediation = []))
+
+(* Two grok registrations, none alive in active_sessions → ambiguous drift. *)
+let test_grok_flags_ambiguous_multi_registration () =
+  with_grok_fixture (fun ~broker_root ~active_path ->
+    register_grok broker_root ~session_id:"grok-a-0003" ~alias:"grok-fixcc";
+    register_grok broker_root ~session_id:"grok-b-0004" ~alias:"grok-fixdd";
+    (* both dead → no single corroborated live one *)
+    write_active_sessions active_path
+      [ ("grok-a-0003", Some dead_pid); ("grok-b-0004", Some dead_pid) ];
+    let g = C2c_doctor_hooks.check_grok_identity ~broker_root () in
+    check int "two grok regs" 2 g.C2c_doctor_hooks.gid_grok_regs;
+    check bool "flagged ambiguous" true g.C2c_doctor_hooks.gid_flagged)
+
+(* No grok registrations at all → detector is silent. *)
+let test_grok_quiet_when_no_grok_regs () =
+  with_grok_fixture (fun ~broker_root ~active_path ->
+    write_active_sessions active_path [];
+    let g = C2c_doctor_hooks.check_grok_identity ~broker_root () in
+    check int "zero grok regs" 0 g.C2c_doctor_hooks.gid_grok_regs;
+    check bool "not flagged" false g.C2c_doctor_hooks.gid_flagged)
+
+let test_grok_registration_detector () =
+  let mk ~alias ~client_type ~registered_by : C2c_mcp.registration =
+    { session_id = "sid"; alias; pid = None; pid_start_time = None
+    ; registered_at = None; canonical_alias = None; dnd = false
+    ; dnd_since = None; dnd_until = None; client_type; plugin_version = None
+    ; confirmed_at = None; enc_pubkey = None; ed25519_pubkey = None
+    ; pubkey_signed_at = None; pubkey_sig = None; compacting = None
+    ; last_activity_ts = None; role = None; compaction_count = 0
+    ; automated_delivery = None; tmux_location = None; herdr_pane = None
+    ; herdr_socket = None; cwd = None; metadata_opt_out = false
+    ; registered_by; opaque_host_id = None }
+  in
+  check bool "client_type=grok" true
+    (C2c_doctor_hooks.is_grok_registration
+       (mk ~alias:"x" ~client_type:(Some "grok") ~registered_by:None));
+  check bool "registered_by=grok-hook" true
+    (C2c_doctor_hooks.is_grok_registration
+       (mk ~alias:"x" ~client_type:None ~registered_by:(Some "grok-hook")));
+  check bool "alias prefix grok-" true
+    (C2c_doctor_hooks.is_grok_registration
+       (mk ~alias:"grok-amber" ~client_type:None ~registered_by:None));
+  check bool "claude not grok" false
+    (C2c_doctor_hooks.is_grok_registration
+       (mk ~alias:"claude-x" ~client_type:(Some "claude") ~registered_by:None))
+
 (* --fix (#19): restore a dangling c2c-owned hook script from the canonical
    embedded content, without touching settings.json. *)
 let test_fix_restores_dangling_c2c_hook () =
@@ -646,5 +774,12 @@ let () =
         ; test_case "no issue when notifier running" `Quick test_kimi_classify_no_issue_when_notifier_running
         ; test_case "empty inbox soft-warn only" `Quick test_kimi_classify_warn_only_empty_inbox
         ; test_case "registration detector" `Quick test_kimi_registration_detector
+        ] )
+    ; ( "grok-identity-23a"
+      , [ test_case "flags stale statefile identity" `Quick test_grok_flags_stale_statefile_identity
+        ; test_case "quiet when corroborated live" `Quick test_grok_quiet_when_corroborated
+        ; test_case "flags ambiguous multi-registration" `Quick test_grok_flags_ambiguous_multi_registration
+        ; test_case "quiet when no grok regs" `Quick test_grok_quiet_when_no_grok_regs
+        ; test_case "registration detector" `Quick test_grok_registration_detector
         ] )
     ]

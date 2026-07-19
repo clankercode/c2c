@@ -112,19 +112,12 @@ let find_python_script script =
      agents sharing a repo will collide — last `c2c init` wins;
    - a stale statefile (session no longer in the broker registry) is ignored. *)
 
-let session_statefile_path ~broker_root =
-  Filename.concat broker_root "default-session.json"
+(* #23: shared with `c2c doctor hooks` via C2c_identity_candidates so both
+   surfaces read the SAME statefile identity and present the SAME candidate
+   list. Delegated (not duplicated) to keep them in lockstep. *)
+let session_statefile_path = C2c_identity_candidates.session_statefile_path
 
-let read_session_statefile ~broker_root =
-  let path = session_statefile_path ~broker_root in
-  if not (Sys.file_exists path) then None
-  else
-    match (try Some (Yojson.Safe.from_file path) with _ -> None) with
-    | Some (`Assoc fields) ->
-        (match List.assoc_opt "session_id" fields with
-         | Some (`String sid) when String.trim sid <> "" -> Some (String.trim sid)
-         | _ -> None)
-    | _ -> None
+let read_session_statefile = C2c_identity_candidates.read_session_statefile
 
 (* Best-effort, non-fatal: identity persistence must never break init. *)
 let write_session_statefile ~broker_root ~session_id ~alias ~client =
@@ -235,27 +228,10 @@ let allow_default_session_env () =
    client, registered_by, liveness). Used to fail closed with an actionable
    list when identity resolution is ambiguous or absent; a later doctor
    detector reuses this same shape. Best-effort — [] on any broker error. *)
-let candidate_registrations ~broker_root :
-    (string * string * string * string * string) list =
-  try
-    let broker = C2c_mcp.Broker.create ~root:broker_root in
-    List.map
-      (fun (r : C2c_mcp.registration) ->
-        let client = Option.value r.client_type ~default:"?" in
-        let registered_by = Option.value r.registered_by ~default:"?" in
-        let liveness =
-          match C2c_mcp.Broker.registration_liveness_state r with
-          | C2c_mcp.Broker.Alive -> "alive"
-          | C2c_mcp.Broker.Dead -> "dead"
-          | C2c_mcp.Broker.Unknown -> "unknown"
-        in
-        (r.alias, r.session_id, client, registered_by, liveness))
-      (C2c_mcp.Broker.list_registrations broker)
-  with _ -> []
+let candidate_registrations = C2c_identity_candidates.candidate_registrations
 
-let render_candidate_registration (alias, sid, client, registered_by, liveness) =
-  Printf.sprintf "%s  session_id=%s  client=%s  registered_by=%s  (%s)" alias sid
-    client registered_by liveness
+let render_candidate_registration =
+  C2c_identity_candidates.render_candidate_registration
 
 (* Fix-step lines that list the broker's registrations as identity candidates,
    with the concrete env-var fix. Empty when the broker has no registrations

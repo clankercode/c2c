@@ -87,10 +87,12 @@ let run_hook ?(extra_env = []) ctx ~payload =
 
 let session_id = "019f4fb9-3c7a-7720-96c2-5cacb719d951"
 
-let session_start_payload =
+let session_start_payload_for sid =
   Printf.sprintf
     {|{"hook_event_name":"SessionStart","session_id":"%s","cwd":"/tmp/proj"}|}
-    session_id
+    sid
+
+let session_start_payload = session_start_payload_for session_id
 
 let session_end_payload =
   Printf.sprintf
@@ -145,10 +147,52 @@ let test_session_start_registers_and_writes_identity_skill () =
     in
     check bool "identity skill written" true (Sys.file_exists id_skill);
     let body = read_file id_skill in
-    check bool "alias in identity skill" true
+    (* #22: identity-agnostic — must point at `c2c whoami` and must NOT embed
+       the concrete alias or session_id (which would clobber across sessions). *)
+    check bool "points at c2c whoami" true
+      (contains ~haystack:body ~needle:"c2c whoami");
+    check bool "concrete alias NOT embedded" false
       (contains ~haystack:body ~needle:alias);
+    check bool "concrete session_id NOT embedded" false
+      (contains ~haystack:body ~needle:session_id);
     if String.trim stderr <> "" && contains ~haystack:stderr ~needle:"failed"
     then failf "unexpected stderr: %s" stderr)
+
+(* #22: two SessionStarts with DIFFERENT sessions (→ different aliases) must
+   write byte-identical identity-skill content, so the fixed-path clobber is a
+   harmless no-op instead of a last-writer-wins identity race. *)
+let test_identity_skill_byte_stable_across_sessions () =
+  with_ctx (fun ctx ->
+    let sid1 = "019f4fb9-3c7a-7720-96c2-5cacb719d951" in
+    let sid2 = "019aaaaa-1111-7222-8333-444455556666" in
+    let id_skill =
+      ctx.home // ".grok" // "skills" // "c2c-session" // "SKILL.md"
+    in
+    let rc1, _, _ =
+      run_hook ctx ~payload:(session_start_payload_for sid1)
+        ~extra_env:[ ("GROK_SESSION_ID", sid1) ]
+    in
+    check int "start1 exit 0" 0 rc1;
+    check bool "skill written after start1" true (Sys.file_exists id_skill);
+    let body1 = read_file id_skill in
+    let rc2, _, _ =
+      run_hook ctx ~payload:(session_start_payload_for sid2)
+        ~extra_env:[ ("GROK_SESSION_ID", sid2) ]
+    in
+    check int "start2 exit 0" 0 rc2;
+    let body2 = read_file id_skill in
+    check string "identity skill byte-identical after 2nd SessionStart"
+      body1 body2;
+    (* Two distinct grok- aliases are now registered, yet neither leaks into
+       the shared identity skill. *)
+    let aliases = list_aliases ctx.broker_root in
+    check bool "two distinct aliases registered" true
+      (List.length (List.sort_uniq String.compare aliases) >= 2);
+    List.iter
+      (fun a ->
+        check bool ("alias not embedded in skill: " ^ a) false
+          (contains ~haystack:body1 ~needle:a))
+      aliases)
 
 let test_session_end_deregisters () =
   with_ctx (fun ctx ->
@@ -189,6 +233,8 @@ let () =
     [ ( "hook_grok"
       , [ test_case "SessionStart registers + identity skill" `Quick
             test_session_start_registers_and_writes_identity_skill
+        ; test_case "identity skill byte-stable across sessions" `Quick
+            test_identity_skill_byte_stable_across_sessions
         ; test_case "SessionEnd deregisters" `Quick
             test_session_end_deregisters
         ; test_case "malformed payload exit 0" `Quick

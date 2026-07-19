@@ -1277,20 +1277,11 @@ let hook_grok_cmd =
                        C2c_cli_helpers.write_session_statefile ~broker_root
                          ~session_id:sid ~alias ~client:(Some "grok"));
                   (sid, Some alias))       in
-       let alias =
-         match onboarded_alias with
-         | Some a -> a
-         | None ->
-             (match
-                List.find_map
-                  (fun (r : C2c_mcp.registration) ->
-                     if r.session_id = session_id then Some r.alias else None)
-                  (regs ())
-              with
-              | Some a -> a
-              | None -> "unknown")
-       in
-       C2c_setup.write_grok_session_identity_skill ~alias ~session_id;
+       (* #22: the identity skill is now identity-agnostic (byte-stable across
+          all sessions), so it no longer consumes the resolved alias/session_id.
+          The big match above still runs for its registration side effects. *)
+       ignore (session_id, onboarded_alias);
+       C2c_setup.write_grok_session_identity_skill ();
        (* Grok ignores passive-hook stdout for transcript inject; exit 0. *)
        exit 0
      with e ->
