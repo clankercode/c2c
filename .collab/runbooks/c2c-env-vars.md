@@ -278,6 +278,22 @@ Advanced/operator override for the T007 auto-turn: when set (non-empty), pins
 Unset (the default) uses the thread's configured approval policy. Same
 E2E-determinism use case as `C2C_CODEX_TURN_MODEL`.
 
+### `C2C_CODEX_PARENT_CMDLINE_PATH` (#52, tests only)
+
+Test fixture gate for the `codex exec` detection in `c2c hook codex`. Points at
+a file of NUL-separated argv standing in for `/proc/<getppid>/cmdline`, which is
+what the hook reads in production to tell a one-shot `codex exec` run from an
+interactive session. Unset (the default) reads the real `/proc` entry.
+
+Background: `codex exec` fires SessionStart but never SessionEnd, so it used to
+mint a permanent `codex-hook` registration per invocation. The SessionStart
+payload and the hook environment are identical between the two modes, so the
+parent process argv is the only available signal; the hook declines to
+auto-register when — and only when — the parent is unambiguously `codex exec`.
+Every ambiguous case registers as before, because a spare ghost row is
+recoverable (it decays under #51's TTL) while a missing registration on a live
+session destroys mail.
+
 ---
 
 ## Permission supervisors
