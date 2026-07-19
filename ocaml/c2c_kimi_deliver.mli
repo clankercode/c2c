@@ -2,6 +2,13 @@
 
 val server_token_path : unit -> string
 val server_base_url : unit -> string option
+(** [server_base_url ()] resolves the base URL of the local Kimi Code server.
+
+    Precedence (#39): fixture override → live lock file / instance registry →
+    [$C2C_KIMI_SERVER_PORT] → liveness-probed server.log record → default port
+    58627. The log record is last-resort and probed because modern kimi-code
+    only appends it on a COLD start, so it ages into a dead port and used to
+    pre-empt every correct source. *)
 val read_server_token : unit -> string option
 val fixture_enabled : unit -> bool
 
@@ -23,7 +30,24 @@ val session_dir_for_session_id : session_id:string -> string option
 
 val server_listening_url : unit -> string option
 (** [server_listening_url ()] scans ~/.kimi-code/server/server.log for the
-    latest "server listening" log line and returns the bound address. *)
+    latest "server listening" log line and returns the bound address.
+
+    HISTORICAL ONLY (#39): the log is append-only and the record is written on
+    a cold start, so the address may name a long-dead server. Never use it
+    without [address_is_live]. *)
+
+val server_lock_path : unit -> string
+(** Path to kimi's single-instance server lock, ~/.kimi-code/server/lock. *)
+
+val live_lock_url : unit -> string option
+(** [live_lock_url ()] returns the base URL recorded by the currently-running
+    Kimi server, from the exclusive lock file or (under kimi's [multi_server]
+    flag) the server/instances registry. [None] when the file is missing,
+    malformed, or records a dead pid. Never raises. *)
+
+val address_is_live : string -> bool
+(** [address_is_live url] TCP-connects to the host:port of [url] with a short
+    timeout ([$C2C_KIMI_PROBE_TIMEOUT], default 0.5s). Never raises. *)
 
 val submit_prompt : session_id:string -> body:string -> (int, string) result
 (** [submit_prompt ~session_id ~body] POSTs a text prompt to

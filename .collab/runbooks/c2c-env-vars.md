@@ -356,6 +356,33 @@ hook. Same removal cycle as the parent env var.
 Seconds the hook will block on `c2c await-reply` before falling closed
 (default 120). Not deprecated; tunable independently.
 
+### `C2C_KIMI_SERVER_PORT`
+
+Overrides the port c2c uses to reach the local Kimi Code REST server. It is
+one candidate in a precedence chain, not the whole answer (#39):
+
+1. `C2C_KIMI_DELIVER_FIXTURE_BASE_URL` (tests only; requires
+   `C2C_KIMI_DELIVER_FIXTURE=1`)
+2. kimi's live server lock — `~/.kimi-code/server/lock`, or
+   `~/.kimi-code/server/instances/*.json` under kimi's `multi_server` flag.
+   Used only when the recorded pid is alive.
+3. `C2C_KIMI_SERVER_PORT`
+4. the last `"msg":"server listening"` record in
+   `~/.kimi-code/server/server.log` — **only if a TCP probe says it is live**
+5. default port `58627`
+
+The log record used to sit at the top of this chain. Modern kimi-code appends
+it only on a *cold* start (a warm start logs plain text: `server already
+running (pid=…, port=…)`), so it aged into a permanently dead port and
+silently broke 100% of Kimi delivery — and `C2C_KIMI_SERVER_PORT` could not
+rescue it, because the log scrape pre-empted the fallback it fed.
+
+### `C2C_KIMI_PROBE_TIMEOUT`
+
+Seconds the TCP liveness probe waits when validating a candidate Kimi server
+address (default `0.5`). Only the log-scraped candidate is probed; the lock
+file is validated by pid-liveness instead.
+
 ---
 
 ## E2E / Relay
