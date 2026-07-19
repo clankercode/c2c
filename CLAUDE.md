@@ -113,6 +113,11 @@ the canonical framing.)
      `c2c.exe` must declare it in `(deps ...)` — several already do; a stanza
      that forgets races the binary's build on a cold `_build` and fails ~163
      tests spuriously (#60, fixed for `test_agent_refine`).
+     **Measuring a baseline by stashing is the nastiest form of this:**
+     `git stash` + build leaves an *unfixed* `c2c.exe` in `_build`, and
+     `git stash pop` does NOT rebuild it. The next run then exercises the old
+     binary against restored source and reports the fix not working. Rebuild
+     after every stash/restore, and after any `git checkout` of a source file.
   2. **`@runtest` without `--force` is a false green.** It reruns only
      *uncached* suites and still exits 0 — seen as 27 suites / 768 tests where
      the real figure was 137 / 3015. Use `--force` whenever you quote a count.
