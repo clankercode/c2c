@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-19T04:57:09Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-19T05:01:50Z"
 complexity: medium
 created_at: "2026-07-19T04:57:06Z"
 depends_on: []
+duration_minutes: 4.693258849166667
 estimate_hours: 1
 id: B248
 priority: high
 started_at: "2026-07-19T04:57:09Z"
-status: in_progress
+status: done
 tags: []
 title: 'test_c2c_cli c2c_cmd wrapper leaks host session env: schedule/memory identity tests fail in live Claude session (B247 sibling)'
-updated_at: "2026-07-19T04:57:09Z"
+updated_at: "2026-07-19T05:01:50Z"
 ---
 
 test_c2c_cli c2c_cmd wrapper leaks host session env: schedule/memory identity tests fail in live Claude session (B247 sibling)
