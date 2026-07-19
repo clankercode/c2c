@@ -1,0 +1,53 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-19T23:48:25Z"
+depends_on:
+    - P2.M2.E1.T002
+    - P2.M2.E1.T003
+estimate_hours: 3
+id: P2.M2.E1.T004
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Wire restart-stale to owner-control seam + per-client adapters (satisfies I010 literal AC)
+updated_at: "2026-07-19T23:48:25Z"
+---
+Wire restart-stale to drive the seam; per-client adapters + conformance; default-auto only on authoritative Idle, else guided, --force drives Busy/Unknown. See full spec appended.
+
+
+## Task G — Wire restart-stale to owner-control seam + per-client adapters (satisfies I010 literal AC)
+
+Derived from: I010 (literal all-managed-instance AC) + I011. Depends on E + F.
+
+### Scope
+Wire `restart-stale` to drive the generic seam (F) for managed TUI/hook clients, adding the per-client ADAPTERS + conformance the seam needs. This is the task that makes the ONE command restart ALL version-mismatched managed instances — closing I010's literal acceptance.
+
+### Policy (per partner decisions 1 & 2)
+- Default: auto-restart in-pane ONLY when the idle contract (E) reports authoritative `Idle`.
+- `Busy` / `Unknown` → stays guided-manual by default (fail closed).
+- `--force` → drives in-pane owner restart even for `Busy` / `Unknown`, for EVERY current managed client.
+- Coordinator-last preserved.
+- Partial default-auto is acceptable: unsupported clients fall to guided by default; `--force` still restarts them.
+
+### Steps
+1. Add per-client adapters over F's generic seam for Claude, OpenCode, Kimi, agy, Codex(hooks). Exclude Gemini + managed Grok.
+2. Replace the `Guided` branch in `restart_stale_cmd` with: idle-eligible → seam auto-restart; else guided; `--force` → seam regardless.
+3. Conformance tests per adapter; end-to-end tmux proof for at least the authoritative path (OpenCode) and one fail-closed path.
+
+### Acceptance criteria
+- `c2c restart-stale` restarts all version-mismatched managed instances: auto on authoritative Idle, guided on Busy/Unknown, `--force` drives all in-pane.
+- No TTY theft; no ambient-env leak (inherits F's guarantees).
+- Per-client conformance tests + tmux proof.
+- If adapters exceed one bounded task, G is split before claim (flagged during D/E).
+- Satisfies I010's literal AC → unblocks I010 closure in K.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

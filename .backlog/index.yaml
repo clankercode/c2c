@@ -2,7 +2,7 @@ critical_path:
     - I010
     - I011
 description: ""
-next_available: B008
+next_available: P2.M1.E1.T001
 phases:
     - depends_on: []
       description: Canonical managed remote-TUI delivery architecture that preserves the operator composer; local messages may wake the recipient and start an agent turn under its delivery policy, but message content can never satisfy an approval or write an approval verdict.
@@ -14,11 +14,21 @@ phases:
       priority: high
       status: done
       weeks: 3
+    - depends_on: []
+      description: 'Coupled program: finish and prove the shipped c2c restart-stale (I010 remaining gaps) and build the deeper seamless-upgrade work (I011). I010''s ''restart ALL version-mismatched instances'' is only fully met once TUI clients auto-restart, which needs I011''s authoritative idle signal — so the two are planned together. Design synthesis: .collab/design/2026-07-12-c2c-client-upgrade-restart.md. Receipt: .collab/research/2026-07-12-i010-restart-stale-receipt.md.'
+      estimate_hours: 25
+      id: P2
+      locked: false
+      name: restart-stale completion + seamless managed-client upgrades (I010+I011)
+      path: 02-restart-stale-completion-seaml
+      priority: medium
+      status: pending
+      weeks: 3
 project: c2c
 stats:
     blocked: 0
-    done: 224
+    done: 250
     in_progress: 3
-    pending: 9
-    total_tasks: 239
+    pending: 20
+    total_tasks: 276
 timeline_weeks: 0

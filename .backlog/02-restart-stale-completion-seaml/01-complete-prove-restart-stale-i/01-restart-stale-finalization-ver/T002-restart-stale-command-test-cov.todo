@@ -1,0 +1,45 @@
+---
+completed_at: null
+complexity: medium
+created_at: "2026-07-19T23:48:00Z"
+depends_on: []
+estimate_hours: 2
+id: P2.M1.E1.T002
+priority: high
+started_at: null
+status: pending
+tags: []
+title: restart-stale command test coverage (hermetic)
+updated_at: "2026-07-19T23:48:00Z"
+---
+Hermetic tests for restart-stale decision logic. See full spec appended.
+
+
+## Task B — restart-stale command test coverage (hermetic)
+
+Derived from: I010 (test gaps found in audit). Runs parallel with A.
+
+### Context
+`restart_stale_cmd` (`ocaml/cli/c2c_managed_cmd.ml:981-1168`) has only 2 integration cases today (`ocaml/test/test_c2c_restart_stale.ml`): stale-TUI→guided in dry-run, and dead-instance-excluded. The stale PRIMITIVE is well covered (`ocaml/cli/test_c2c_stale.ml`, 8 cases). The command DECISION logic is under-tested.
+
+### Coverage to add (hermetic — no real clients, no codex quota)
+- `--exclude-coordinator` skips the coordinator (matched by name==configured coordinator alias).
+- Coordinator-last ordering: non-coordinators acted on before the coordinator.
+- Self-skip: instance whose name == `C2C_INSTANCE_NAME` is Skipped "self".
+- `--force`: Unknown/Current instances become eligible; app-server `--force` passes through.
+- A SUCCESSFUL app-server auto-restart path via a hermetic owner-fixture (owner accepts → "restarting"), asserting the `Restarted` action + summary counts. This is the hermetic counterpart to A's real proof — do NOT duplicate A's live assertions here.
+- JSON output shape (`ok`, `dry_run`, `instances[]`, `summary{}`) and exit code (1 iff any Failed).
+
+### Acceptance criteria
+- New Alcotest cases in `ocaml/test/test_c2c_restart_stale.ml` (or a sibling) covering every bullet above, green under `scripts/dune-build-locked.sh` build + `@runtest --force`.
+- Owner-fixture gated by env (follow the repo's fixture convention, e.g. a restart-result fixture) so no real Codex process is required.
+- No overlap with A: B is hermetic decision-logic; A is the live model/tmux proof.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

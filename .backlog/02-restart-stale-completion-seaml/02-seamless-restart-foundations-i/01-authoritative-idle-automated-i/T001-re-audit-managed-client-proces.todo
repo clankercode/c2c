@@ -1,0 +1,42 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-19T23:48:00Z"
+depends_on: []
+estimate_hours: 2
+id: P2.M2.E1.T001
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Re-audit managed-client process model + measure restart disruption
+updated_at: "2026-07-19T23:48:00Z"
+---
+Refresh the July process-model table and measure restart disruption. Gates E/F/G/H/I/J. See full spec appended.
+
+
+## Task D — Re-audit managed-client process model + measure restart disruption
+
+Derived from: I011 ("start with measured restart disruption and real tmux dogfood evidence"). Gates E, F, G, H, I, J. Runs parallel with A/B.
+
+### Why
+The July 2026 process-model table in `.collab/design/2026-07-12-c2c-client-upgrade-restart.md` is STALE after many later fixes (kimi notifier #40/#47, agy #61/#65/#69, B145). Later work must not build on stale ownership assumptions.
+
+### Steps
+1. Re-audit the CURRENT per-client process model + sidecar ownership for each managed client — Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). For each: who supervises delivery, which sidecars exist (deliver-inbox, poker, kimi notifier, agy-inject), how they are tracked (pid files / setsid detached / in-proc thread), and what a restart costs. Exclude Gemini (deprecated) and managed Grok (deferred).
+2. Measure restart disruption per client via `scripts/c2c_tmux.py`: what is lost/interrupted on `c2c restart <name>` today (transcript/context, in-flight turn, sidecar continuity, delivery gap). Quantify where possible.
+3. Produce a refreshed ownership+disruption table as a tracked artifact.
+
+### Acceptance criteria
+- Tracked artifact (`.collab/research/<UTC>-i011-process-model-and-disruption.md`) with: refreshed per-client ownership table; measured disruption numbers; explicit call-outs of where the July design is now wrong.
+- Explicitly enumerates the current client set and excludes Gemini + managed Grok.
+- Findings feed E (idle capability per client), F/G (which clients get owner-control), and H/I/J (which sidecars are worth extracting/granular-restarting).
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

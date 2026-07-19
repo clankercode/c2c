@@ -1,0 +1,46 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-19T23:48:12Z"
+depends_on:
+    - P2.M2.E1.T001
+estimate_hours: 4
+id: P2.M2.E1.T003
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Generic owner-control self-reexec restart seam (one seam)
+updated_at: "2026-07-19T23:48:12Z"
+---
+ONE generic request/result + owner self-reexec seam (generalizes B153). Adapters/conformance live in G. See full spec appended.
+
+
+## Task F — Generic owner-control self-reexec restart seam (ONE seam)
+
+Derived from: I011 (the auto-restart enabler) + partner review flag 2. Depends on D. Does NOT depend on E's idle conclusion (F is the generic protocol; G applies the idle policy).
+
+### Scope discipline (partner flag: "all clients" is covert-epic sized)
+Implement ONE generic request/result + owner self-reexec seam — the generalization of the existing B153 Codex owner-control seam (`c2c_codex_session.ml` request_restart/consume_restart_request/write_restart_result/await_restart_result + the `Unix.execve` self-reexec). Per-client ADAPTERS and conformance are G's job, NOT F's. If during D/E the per-client adapters prove larger than one bounded task, split G before claim.
+
+### Requirements
+- Restart happens IN THE ORIGINAL PANE via owner self-reexec — NEVER batch-spawn `c2c restart` (that execve's into a new supervisor and steals the caller's TTY).
+- Instance-identity TOCTOU protection: verify PID + start-time (and instance name) before and at reexec so a reused PID cannot cause a wrong-process restart.
+- Exact relaunch fidelity: preserve SEMANTIC launch config — client args / model / resume / session id / workdir and the CONTROLLED c2c env only. Do NOT persist or dump ambient environment or secrets.
+- Timeout + result protocol (request id, await result, `restarting` / declined / timeout), mirroring the codex seam.
+- Coordinator-last ordering respected by the seam's callers.
+
+### Acceptance criteria
+- One generic, client-agnostic owner-control seam (request/result files + owner self-reexec), unit-tested (roundtrip, TOCTOU rejection on pid/start-time mismatch, timeout).
+- No TTY theft: the seam never spawns a supervisor in the caller's terminal.
+- No ambient-env/secret persistence — only semantic launch config + controlled c2c env.
+- B098 invariant: the seam is driven only by a local operator command/request, never by an inbound peer message.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

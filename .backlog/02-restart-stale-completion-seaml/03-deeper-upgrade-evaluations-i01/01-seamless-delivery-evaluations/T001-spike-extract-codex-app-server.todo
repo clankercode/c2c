@@ -1,0 +1,44 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-19T23:48:25Z"
+depends_on:
+    - P2.M1.E1.T001
+    - P2.M2.E1.T001
+estimate_hours: 3
+id: P2.M3.E1.T001
+priority: medium
+started_at: null
+status: pending
+tags: []
+title: 'SPIKE: extract Codex app-server delivery loop into ledger-backed sidecar (go/no-go)'
+updated_at: "2026-07-19T23:48:25Z"
+---
+GO/NO-GO spike w/ invariants. Not an assumed impl. See full spec appended.
+
+
+## Task H — SPIKE: extract Codex app-server delivery loop into ledger-backed sidecar (go/no-go)
+
+Derived from: I011 clause 2. Depends on A + D (measured Codex disruption matters). SPIKE — not an assumed implementation task.
+
+### Question
+Can the Codex app-server ingress/autoturn delivery loop (`C2c_codex_deliver_loop.run`, today the supervisor's foreground thread welded to the TUI lifetime) be extracted into a separate ledger-backed sidecar process — like `c2c-deliver-inbox` already is — so c2c DELIVERY code can upgrade WITHOUT cycling the Codex TUI/thread? This is the architectural precondition for truly "seamless" Codex upgrades.
+
+### Spike outputs (required)
+- GO / NO-GO verdict backed by evidence (feasibility probe + measured disruption from A/D).
+- Explicit safety invariants that any extraction MUST preserve: ledger exactly-once (no loss/dup), B098 data-not-RPC (peer mail is DATA, autoturn gate unchanged), thread/ingress correctness, no double-injection.
+- If GO: create independently scoped follow-up backlog task(s) for the implementation — do NOT implement in this task.
+- If NO-GO: record why, with evidence.
+
+### Acceptance criteria
+- Tracked spike artifact with GO/NO-GO, invariants, and (if GO) scoped follow-up tasks created in backlog.
+- No production delivery code changed in the spike beyond throwaway probes (probes in an isolated worktree).
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

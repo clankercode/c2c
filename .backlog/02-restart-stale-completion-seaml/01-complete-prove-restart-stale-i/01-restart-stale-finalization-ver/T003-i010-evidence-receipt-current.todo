@@ -1,0 +1,45 @@
+---
+completed_at: null
+complexity: low
+created_at: "2026-07-19T23:48:12Z"
+depends_on:
+    - P2.M1.E1.T001
+    - P2.M1.E1.T002
+estimate_hours: 1
+id: P2.M1.E1.T003
+priority: medium
+started_at: null
+status: pending
+tags: []
+title: I010 evidence receipt + current-doc truth (keeps I010 OPEN)
+updated_at: "2026-07-19T23:48:12Z"
+---
+Receipt/linkage only. Does NOT close I010 or reconcile acceptance downward. See full spec appended.
+
+
+## Task C — I010 evidence receipt + current-doc truth (keeps I010 OPEN)
+
+Derived from: I010. Depends on A + B. Per partner review: this is receipt/linkage ONLY.
+
+### What C IS
+- A short evidence receipt tying the shipped restart-stale + A's live proof + B's tests together, linked to phase P2 and idea I010.
+- Ensure current docs are TRUTHFUL about today's behaviour (app-server auto-restart; TUI/hook clients guided-manual pending G) without publishing prose that G/K will soon rewrite.
+
+### What C IS NOT (hard constraints)
+- Does NOT mark I010 done.
+- Does NOT reconcile I010 acceptance downward or call its `in_progress` status "stale". I010 stays OPEN through G (closure decision (b)); its literal all-managed-instance AC is only met once G ships owner-control + `--force` for every current managed client.
+- Does NOT duplicate canonical doc prose that K owns — avoid soon-stale duplication. If a doc must change now, prefer linking the receipt.
+
+### Acceptance criteria
+- Receipt file committed under `.collab/research/` or `.collab/findings/` linking A's finding, B's tests, P2, and I010/I011.
+- I010 idea remains `in_progress`; no acceptance rewrite.
+- Any doc touched is factually current and non-duplicative of the planned K closeout.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

@@ -1,0 +1,42 @@
+---
+completed_at: null
+complexity: medium
+created_at: "2026-07-19T23:48:25Z"
+depends_on:
+    - P2.M2.E1.T001
+estimate_hours: 2
+id: P2.M3.E1.T003
+priority: medium
+started_at: null
+status: pending
+tags: []
+title: 'SPIKE: monitor/heartbeat self-detect-stale -> self-exit + exact relaunch hint (go/no-go)'
+updated_at: "2026-07-19T23:48:25Z"
+---
+GO/NO-GO. Only sanctioned candidate = self-exit + exact relaunch hint; external respawn forbidden. See full spec appended.
+
+
+## Task J — SPIKE: monitor/heartbeat self-detect-stale → self-exit + exact relaunch hint (go/no-go)
+
+Derived from: I011 clause 4. Depends on D. SPIKE — does NOT precommit implementation.
+
+### Constraint (partner review)
+Monitors/heartbeats are AGENT-SUPERVISED (the agent launched them via its Monitor tool and sees their stdout in-transcript). External respawn is FORBIDDEN. The ONLY sanctioned candidate to evaluate is: the monitor self-detects it is running a stale binary (SHA/identity compare via `runtime_identity`), prints an EXACT copy-pasteable relaunch hint reconstructed from `Sys.argv`, and `exit 0` cleanly so a `persistent:true` Monitor re-runs the fresh binary. The design doc §"Tier 2" already specs this.
+
+### Spike outputs (required)
+- GO / NO-GO on shipping the self-exit + exact-relaunch-hint behaviour (no other candidate is allowed).
+- Safety invariants: no lost visibility (agent must see the exit + hint), no message loss (inbox state is on disk; a fresh monitor resumes), clean `exit 0` not a crash, hint reconstructed exactly from argv.
+- If GO: independently scoped follow-up implementation task. If NO-GO: record why.
+
+### Acceptance criteria
+- Tracked spike artifact with GO/NO-GO, invariants, and (if GO) a scoped follow-up task.
+- No external-respawn design considered or implemented.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

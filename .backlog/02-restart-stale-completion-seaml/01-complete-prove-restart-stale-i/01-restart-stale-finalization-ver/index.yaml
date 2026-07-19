@@ -1,0 +1,43 @@
+complexity: medium
+depends_on: []
+estimate_hours: 7
+id: P2.M1.E1
+locked: false
+name: restart-stale finalization (verify, test, document)
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 3
+    total: 3
+status: pending
+tasks:
+    - complexity: high
+      depends_on: []
+      estimate_hours: 3
+      file: T001-codex-app-server-restart-stale.todo
+      id: T001
+      priority: high
+      status: pending
+      tags: []
+      title: Codex app-server restart-stale live proof (real tmux)
+    - complexity: medium
+      depends_on: []
+      estimate_hours: 2
+      file: T002-restart-stale-command-test-cov.todo
+      id: T002
+      priority: high
+      status: pending
+      tags: []
+      title: restart-stale command test coverage (hermetic)
+    - complexity: low
+      depends_on:
+        - P2.M1.E1.T001
+        - P2.M1.E1.T002
+      estimate_hours: 1
+      file: T003-i010-evidence-receipt-current.todo
+      id: T003
+      priority: medium
+      status: pending
+      tags: []
+      title: I010 evidence receipt + current-doc truth (keeps I010 OPEN)

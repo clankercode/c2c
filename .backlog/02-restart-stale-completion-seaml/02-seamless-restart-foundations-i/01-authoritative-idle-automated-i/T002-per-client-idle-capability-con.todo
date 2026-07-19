@@ -1,0 +1,51 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-19T23:48:12Z"
+depends_on:
+    - P2.M2.E1.T001
+estimate_hours: 3
+id: P2.M2.E1.T002
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Per-client idle capability contract (fail-closed)
+updated_at: "2026-07-19T23:48:12Z"
+---
+Authoritative per-client in-flight/idle contract; Unknown fails closed. See full spec appended.
+
+
+## Task E — Per-client idle capability contract (fail-closed)
+
+Derived from: I011 clause 1 ("define authoritative per-client in-flight-turn/idle state"). Depends on D.
+
+### Design
+Idle is a per-client CAPABILITY CONTRACT, not one global heuristic. For each managed client the contract returns one of: `Idle` (authoritative), `Busy` (authoritative), or `Unknown`. Restart policy consumes it:
+- default auto-restart only on authoritative `Idle`;
+- `Busy` / `Unknown` → fail closed to guided/manual unless `--force`.
+
+NEVER substitute activity-age/last-seen timestamps for authoritative idle (the current cross-client timestamp is a heuristic, explicitly rejected).
+
+### Steps
+1. From D's refreshed model, determine per client whether an authoritative idle signal exists:
+   - Codex app-server: has real Idle state (already used by the autoturn gate).
+   - OpenCode: likely authoritative — the plugin tracks `session.status` / `session.idle` / `is_idle`. Verify against the live plugin.
+   - Claude / Kimi / agy / Codex(hooks): probably NO authoritative local turn-state endpoint → contract returns `Unknown`.
+2. Implement the capability contract as a typed per-client function/table.
+3. If a client has no authoritative signal, E RECORDS "no authoritative TUI path" for it — do not fake one.
+
+### Acceptance criteria
+- Typed per-client idle contract returning Idle/Busy/Unknown, fail-closed on Unknown.
+- At least one authoritative TUI idle path proven (OpenCode expected). If D/verification invalidates OpenCode, E must explicitly record that NO authoritative TUI path exists, and G still ships the seam + `--force`-all + fail-closed default.
+- Unit tests for the contract's fail-closed behaviour.
+- No activity-age substitution anywhere.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

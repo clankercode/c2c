@@ -1,0 +1,42 @@
+complexity: medium
+depends_on: []
+estimate_hours: 25
+id: P2
+locked: false
+milestones:
+    - complexity: medium
+      depends_on: []
+      description: ""
+      estimate_hours: 7
+      id: M1
+      locked: false
+      name: Complete & prove restart-stale (I010)
+      path: 01-complete-prove-restart-stale-i
+      status: pending
+    - complexity: high
+      depends_on: []
+      description: ""
+      estimate_hours: 11
+      id: M2
+      locked: false
+      name: 'Seamless restart foundations (I011): idle-gated auto-restart'
+      path: 02-seamless-restart-foundations-i
+      status: pending
+    - complexity: high
+      depends_on: []
+      description: ""
+      estimate_hours: 7
+      id: M3
+      locked: false
+      name: 'Deeper-upgrade evaluations (I011 spikes: go/no-go)'
+      path: 03-deeper-upgrade-evaluations-i01
+      status: pending
+name: restart-stale completion + seamless managed-client upgrades (I010+I011)
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 11
+    total_tasks: 11
+status: pending
+weeks: 3

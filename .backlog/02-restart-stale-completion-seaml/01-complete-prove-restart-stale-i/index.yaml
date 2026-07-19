@@ -1,0 +1,23 @@
+complexity: medium
+depends_on: []
+epics:
+    - complexity: medium
+      depends_on: []
+      description: ""
+      estimate_hours: 7
+      id: E1
+      locked: false
+      name: restart-stale finalization (verify, test, document)
+      path: 01-restart-stale-finalization-ver
+      status: pending
+estimate_hours: 7
+id: P2.M1
+locked: false
+name: Complete & prove restart-stale (I010)
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 3
+    total_tasks: 3
+status: pending

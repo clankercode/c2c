@@ -1,0 +1,53 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-19T23:48:00Z"
+depends_on: []
+estimate_hours: 3
+id: P2.M1.E1.T001
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Codex app-server restart-stale live proof (real tmux)
+updated_at: "2026-07-19T23:48:00Z"
+---
+Deploy-gate live proof for I010. See full spec appended.
+
+
+## Task A — Codex app-server restart-stale live proof (real tmux)
+
+Derived from: I010 increment 4 (the one genuine remaining gap). Deploy-gate.
+
+### Context
+`restart-stale` already auto-drives app-server Codex restart via the B153 owner-control seam (`request_app_server_restart`, `c2c_managed_cmd.ml:968-985`). What is NOT yet proven live: a real managed Codex session accepting the request, self-reexecing in its own pane, and resuming the exact thread with correct ledger/inbox behaviour. The receipt (`.collab/research/2026-07-12-i010-restart-stale-receipt.md`) only proved routing with a fake sleeper owner (timeout path); no codex quota spent, no real thread resumed.
+
+### Steps
+1. Launch a real managed Codex app-server session with `scripts/c2c_tmux.py` (`c2c new codex` / `c2c start codex`). Do NOT launch managed clients directly from bash — use tmux per CLAUDE.md.
+2. Send peer mail BEFORE restart; confirm it is model-visible.
+3. Install a differing binary (or use `--force`) so the instance is classified Stale.
+4. Run `c2c restart-stale` (and separately `--dry-run`); observe the owner accept + self-reexec.
+5. Send peer mail AFTER restart; confirm visibility on the resumed thread.
+6. Capture a finding under `.collab/findings/<UTC>-<alias>-i010-codex-restart-stale-live-proof.md`.
+
+### Acceptance criteria (all asserted, per partner review)
+- Same Codex thread/session resumed (exact thread id, not a new thread).
+- Owner/executable replacement actually observed (`/proc/<pid>/exe` inode changes to the installed image).
+- Pre- AND post-restart peer message visibility to the model.
+- Ledger exactly-once: no lost and no duplicated injection across the restart.
+- Idle gate honoured by default; `--force` override drives restart regardless.
+- Exercised through the canonical `scripts/c2c_tmux.py` harness (not ad-hoc spawns).
+- Finding captured with evidence.
+
+### Notes
+- Real codex quota + tmux required. Runs in parallel with B (hermetic).
+- A is the REAL proof; B owns the hermetic owner-fixture successful-restart case — keep them non-overlapping.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

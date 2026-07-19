@@ -1,0 +1,47 @@
+---
+completed_at: null
+complexity: medium
+created_at: "2026-07-19T23:48:33Z"
+depends_on:
+    - P2.M2.E1.T004
+    - P2.M3.E1.T001
+    - P2.M3.E1.T002
+    - P2.M3.E1.T003
+estimate_hours: 2
+id: P2.M3.E1.T004
+priority: medium
+started_at: null
+status: pending
+tags: []
+title: 'Final closeout: consolidate decisions, canonical docs/generated surfaces, reconcile+close I010/I011 by criteria met'
+updated_at: "2026-07-19T23:48:33Z"
+---
+Owns final docs/closeout. Close only criteria actually met. See full spec appended.
+
+
+## Task K — Final closeout: consolidate decisions, canonical docs, reconcile + close I010/I011 by criteria met
+
+Derived from: I010 + I011. Depends on G + H + I + J. Owns final docs/closeout so earlier tasks avoid publishing soon-stale prose.
+
+### Scope
+1. Consolidate the decisions taken across P2 (idle contract, owner-control seam, per-client policy, spike verdicts).
+2. Update CANONICAL docs + generated surfaces: CLAUDE.md delivery/wake notes, `.collab/runbooks/agent-wake-setup.md`, `docs/commands.md`, and any generated help/skill surfaces that describe restart-stale behaviour. (C deliberately left this to K.)
+3. Reconcile the I010 and I011 idea bodies/status against what was ACTUALLY delivered.
+4. Close ONLY the criteria actually met:
+   - I010 → done ONLY if G shipped owner-control + `--force`-all for every current managed client (its literal all-managed-instance AC). If G was split/partial, I010 stays open with the residual named.
+   - I011 → close/settle each clause by its spike verdict; GO spikes must already have follow-up tasks (from H/I/J); NO-GO clauses recorded as such.
+
+### Acceptance criteria
+- Canonical docs + generated surfaces updated and consistent (no drift; verbatim-not-paraphrase for load-bearing recipes per #414).
+- I010/I011 bodies + statuses reconciled to reality; nothing closed that wasn't delivered.
+- P2 aggregate estimates/metadata normalized (`bl sync`).
+- A single closeout note linking all P2 artifacts (A's proof, D's audit, spike verdicts, follow-up tasks).
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.

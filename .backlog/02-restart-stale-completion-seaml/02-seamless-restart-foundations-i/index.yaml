@@ -1,0 +1,23 @@
+complexity: high
+depends_on: []
+epics:
+    - complexity: high
+      depends_on: []
+      description: ""
+      estimate_hours: 11
+      id: E1
+      locked: false
+      name: Authoritative idle + automated in-place client restart
+      path: 01-authoritative-idle-automated-i
+      status: pending
+estimate_hours: 11
+id: P2.M2
+locked: false
+name: 'Seamless restart foundations (I011): idle-gated auto-restart'
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 4
+    total_tasks: 4
+status: pending

@@ -1,0 +1,54 @@
+complexity: high
+depends_on: []
+estimate_hours: 11
+id: P2.M2.E1
+locked: false
+name: Authoritative idle + automated in-place client restart
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 4
+    total: 4
+status: pending
+tasks:
+    - complexity: high
+      depends_on: []
+      estimate_hours: 2
+      file: T001-re-audit-managed-client-proces.todo
+      id: T001
+      priority: high
+      status: pending
+      tags: []
+      title: Re-audit managed-client process model + measure restart disruption
+    - complexity: high
+      depends_on:
+        - P2.M2.E1.T001
+      estimate_hours: 3
+      file: T002-per-client-idle-capability-con.todo
+      id: T002
+      priority: high
+      status: pending
+      tags: []
+      title: Per-client idle capability contract (fail-closed)
+    - complexity: high
+      depends_on:
+        - P2.M2.E1.T001
+      estimate_hours: 4
+      file: T003-generic-owner-control-self-ree.todo
+      id: T003
+      priority: high
+      status: pending
+      tags: []
+      title: Generic owner-control self-reexec restart seam (one seam)
+    - complexity: high
+      depends_on:
+        - P2.M2.E1.T002
+        - P2.M2.E1.T003
+      estimate_hours: 3
+      file: T004-wire-restart-stale-to-owner-co.todo
+      id: T004
+      priority: high
+      status: pending
+      tags: []
+      title: Wire restart-stale to owner-control seam + per-client adapters (satisfies I010 literal AC)

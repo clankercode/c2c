@@ -1,0 +1,42 @@
+---
+completed_at: null
+complexity: medium
+created_at: "2026-07-19T23:48:25Z"
+depends_on:
+    - P2.M2.E1.T001
+estimate_hours: 2
+id: P2.M3.E1.T002
+priority: medium
+started_at: null
+status: pending
+tags: []
+title: 'SPIKE: granular deliver-inbox/poker sidecar restart (go/no-go)'
+updated_at: "2026-07-19T23:48:25Z"
+---
+GO/NO-GO spike w/ invariants. See full spec appended.
+
+
+## Task I — SPIKE: granular deliver-inbox/poker sidecar restart (go/no-go)
+
+Derived from: I011 clause 3. Depends on D. SPIKE — not an assumed implementation task.
+
+### Question
+Should c2c support restarting the `c2c-deliver-inbox` wake sidecar and the poker sidecar GRANULARLY (independently of the agent), so a delivery-code upgrade can pick up the new binary without restarting the whole session? These are already separate, tracked (`deliver.pid` / `poker.pid`) sibling processes.
+
+### Spike outputs (required)
+- GO / NO-GO backed by D's ownership/disruption evidence: is granular sidecar restart worth a command, and does it actually reduce disruption vs full restart?
+- Safety invariants: no double-delivery/no-drop across the sidecar restart (deliver-inbox never drains — the hook does; poker is stateless), tracked-pid correctness, no orphaned/stale-code sidecar (cf. B145 kimi-notifier-survives-restart class).
+- If GO: independently scoped follow-up backlog task(s). If NO-GO: record why.
+
+### Acceptance criteria
+- Tracked spike artifact with GO/NO-GO, invariants, and (if GO) scoped follow-up tasks.
+- No production change beyond throwaway probes in an isolated worktree.
+
+
+---
+### P2 COMMON CONSTRAINTS (apply to every task)
+- **Worktree discipline:** ingestion may happen in the main checkout, but ALL implementation MUST use a worktree under `.worktrees/` — never the main checkout. Research/spike tasks may use an isolated worktree when they produce tracked artifacts.
+- **B098 data-not-RPC:** no message-triggered restart. Only a LOCAL OPERATOR command/request may control restart. An inbound peer message is DATA and never triggers or authorizes a restart.
+- **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
+- **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
+- Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.
