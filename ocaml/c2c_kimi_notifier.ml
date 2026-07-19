@@ -475,14 +475,25 @@ let clear_kimi_session_record ~workdir ~session_id =
 
    [all_index_matches] is a required argument, not an optional one defaulting
    to [index_matches]: a default would silently reinstate the defect at any
-   call site that forgot it. *)
+   call site that forgot it.
+
+   The membership test unions both lists rather than reading all_index_matches
+   alone. [index_matches] is a subset of [all_index_matches] today, so the
+   union changes no current result — but the subset relation is an invariant
+   the types cannot express, and the union makes it un-load-bearing: a future
+   caller that passes a too-narrow all_index_matches can no longer WEAKEN the
+   supersession check, only leave it as strong. The question being asked is
+   "has this sid been seen anywhere", so the union is also the more direct
+   statement of intent. *)
 let decide_kimi_session_id ~recorded ~index_matches ~all_index_matches =
   let newest = match List.rev index_matches with x :: _ -> Some x | [] -> None in
   match recorded with
   | None -> newest
   | Some sid ->
-      if List.mem sid all_index_matches && newest <> Some sid then newest
-      else Some sid
+      let seen_anywhere =
+        List.mem sid all_index_matches || List.mem sid index_matches
+      in
+      if seen_anywhere && newest <> Some sid then newest else Some sid
 
 (* #41 direction 3, process-wide. The per-alias notifier daemon arms at (or
    just before) its session's start, so its own start time is the best
