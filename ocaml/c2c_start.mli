@@ -565,6 +565,31 @@ val kickoff_alias_is_authoritative :
     over-approximation for the codex-role-alias-with-auto-name case (defers to
     whoami rather than showing the role alias — never wrong). Pure. *)
 
+val managed_published_alias :
+  client:string -> name:string -> alias_override:string option ->
+  requested_name:string option -> string option
+(** #76: the address the publish path actually registers for a managed start.
+    [alias_override] is the branch's real override (the CLI [--alias] on the
+    no-role path, or {!managed_alias_override_for_role} on the [--agent] /
+    auto-inferred-role paths). For codex this is
+    {!codex_alias_override_for_managed_start} ([None] when the app-server derives
+    a [codex-…] alias post-launch); for every other client it is the
+    [C2C_MCP_AUTO_REGISTER_ALIAS] value ([alias_override], else the instance
+    [name]). Never a role's display name. Pure. *)
+
+val managed_kickoff_alias :
+  client:string -> name:string -> alias_override:string option ->
+  requested_name:string option -> string option
+(** #76 (follow-up to #58): the alias to interpolate into a kickoff prompt's
+    [{alias}], or [None] when the launcher must defer to [c2c whoami]. Returns
+    [Some (alias_override, else name)] exactly when
+    {!kickoff_alias_is_authoritative} — keyed on the branch's real
+    [alias_override], never a role display name — which is precisely when that
+    value equals {!managed_published_alias}. Fixes the [--agent] branch, which
+    used to show the ROLE name while the session published the instance name.
+    Invariant: whenever this is [Some a], {!managed_published_alias} with the
+    same arguments is [Some a]. Pure. *)
+
 type managed_alias_source = Alias_flag | Role_alias
 
 val codex_managed_start_name_notice :
