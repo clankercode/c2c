@@ -528,11 +528,20 @@ val merge_namespaced_name :
 (** Merge a normal pre-separator name with [--c2c:name]. Equal values coalesce;
     conflicting values are rejected. *)
 
-val codex_alias_override_for_namespaced_name :
-  existing:string option -> namespaced:string option -> string option
-(** Resolve the alias override for generic [c2c start codex]. A normal
-    explicit or role-derived alias wins; otherwise [--c2c:name] supplies the
-    alias consumed by the app-server launch path (B221). *)
+val codex_alias_override_for_managed_start :
+  alias_opt:string option -> requested_name:string option -> string option
+(** Resolve the alias override for generic [c2c start codex]. An explicit or
+    role-derived [--alias] wins; otherwise the requested instance name
+    ([-n NAME], or the B221 [--c2c:name] that merges into the same slot)
+    supplies the alias consumed by the app-server launch path (#34). [None]
+    when the name was auto-picked, so the app-server keeps deriving a stable
+    alias from its session id. *)
+
+val codex_managed_start_name_notice :
+  name:string -> alias:string -> string option
+(** Operator notice for [c2c start codex] when the instance name is not the
+    published broker alias ([--alias] beat an explicit [-n]). [None] when they
+    agree (case-insensitively). *)
 
 val parse_pty_cmd_argv : string list -> string * string list
 (** Parse the command + argv for [c2c start pty] from the already-stripped

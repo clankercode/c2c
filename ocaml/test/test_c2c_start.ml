@@ -484,8 +484,8 @@ let test_namespaced_name_wires_generic_codex_alias_b221 () =
          ~namespaced:parsed.C2c_start.c2c_name)
   in
   let app_server_alias =
-    C2c_start.codex_alias_override_for_namespaced_name ~existing:None
-      ~namespaced:parsed.C2c_start.c2c_name
+    C2c_start.codex_alias_override_for_managed_start ~alias_opt:None
+      ~requested_name:parsed.C2c_start.c2c_name
   in
   check (option string) "generic instance name" (Some "cx-custom") name;
   check (option string) "normal app-server alias override" (Some "cx-custom")
@@ -493,8 +493,69 @@ let test_namespaced_name_wires_generic_codex_alias_b221 () =
   check (list string) "codex frontend args remain filtered and ordered"
     [ "--model"; "gpt-5.6-sol" ] parsed.C2c_start.client_args;
   check (option string) "explicit alias stays authoritative" (Some "broker-alias")
-    (C2c_start.codex_alias_override_for_namespaced_name
-       ~existing:(Some "broker-alias") ~namespaced:parsed.C2c_start.c2c_name)
+    (C2c_start.codex_alias_override_for_managed_start
+       ~alias_opt:(Some "broker-alias") ~requested_name:parsed.C2c_start.c2c_name)
+
+(* #34: `c2c start codex -n NAME` used to register an auto-derived
+   `codex-<word>-<word>-<hex>` alias and drop NAME on the floor. The app-server
+   path only ever saw [--alias] / the role alias, so the requested name never
+   reached [C2c_codex_session.resolve_identity]. Assert the whole seam: the
+   override the launcher computes, and the alias identity resolution then
+   publishes. *)
+let test_start_codex_n_flag_sets_alias_i34 () =
+  (* `c2c start codex -n spikeq7` — no --alias, no --c2c:name. *)
+  let alias_override =
+    C2c_start.codex_alias_override_for_managed_start ~alias_opt:None
+      ~requested_name:(Some "spikeq7")
+  in
+  check (option string) "-n supplies the app-server alias override"
+    (Some "spikeq7") alias_override;
+  match
+    C2c_codex_session.resolve_identity ~mode:C2c_codex_session.Start
+      ~alias_override ~thread_id:None
+      ~lookup:(fun _ -> None) ~config_exists:(fun _ -> false)
+  with
+  | Error e -> fail ("resolve_identity refused the requested name: " ^ e)
+  | Ok r ->
+      check string "published alias is the requested -n name" "spikeq7"
+        r.C2c_codex_session.r_alias;
+      check string "instance name matches" "spikeq7"
+        r.C2c_codex_session.r_name
+
+(* Precedence + the auto-generated-name case. An explicit [--alias] still wins
+   (that is the documented way to give instance and broker alias different
+   names), and an auto-picked instance name must NOT become an override —
+   leaving it [None] keeps [derive_alias]'s collision probing and its
+   stable-across-resume derivation from the session id. *)
+let test_start_codex_alias_precedence_i34 () =
+  check (option string) "--alias beats -n" (Some "broker-alias")
+    (C2c_start.codex_alias_override_for_managed_start
+       ~alias_opt:(Some "broker-alias") ~requested_name:(Some "spikeq7"));
+  check (option string) "auto-picked name stays derived" None
+    (C2c_start.codex_alias_override_for_managed_start ~alias_opt:None
+       ~requested_name:None)
+
+(* Silence was half the bug. When [--alias] does win over an explicit [-n], the
+   name the operator typed is not the address peers must use — say so. *)
+let test_start_codex_name_not_alias_notice_i34 () =
+  check (option string) "no notice when name is the alias" None
+    (C2c_start.codex_managed_start_name_notice ~name:"spikeq7"
+       ~alias:"spikeq7");
+  check (option string) "case-insensitive match is not a mismatch" None
+    (C2c_start.codex_managed_start_name_notice ~name:"SpikeQ7"
+       ~alias:"spikeq7");
+  match
+    C2c_start.codex_managed_start_name_notice ~name:"spikeq7"
+      ~alias:"broker-alias"
+  with
+  | None -> fail "expected a notice when -n is not the published alias"
+  | Some msg ->
+      check bool "names the requested -n value" true
+        (string_contains msg "spikeq7");
+      check bool "names the alias peers must address" true
+        (string_contains msg "broker-alias");
+      check bool "tells the operator how to address it" true
+        (string_contains msg "c2c send broker-alias")
 
 let test_namespaced_name_filtered_from_generic_tmux_command_b221 () =
   (* [c2c_managed_cmd] now passes this single filtered [client_args] value as
@@ -4198,6 +4259,12 @@ let () =
             `Quick, test_merge_namespaced_name_b221 )
         ; ( "namespaced_name_wires_generic_codex_alias_b221",
             `Quick, test_namespaced_name_wires_generic_codex_alias_b221 )
+        ; ( "start_codex_n_flag_sets_alias_i34",
+            `Quick, test_start_codex_n_flag_sets_alias_i34 )
+        ; ( "start_codex_alias_precedence_i34",
+            `Quick, test_start_codex_alias_precedence_i34 )
+        ; ( "start_codex_name_not_alias_notice_i34",
+            `Quick, test_start_codex_name_not_alias_notice_i34 )
         ; ( "namespaced_name_filtered_from_generic_tmux_command_b221",
             `Quick, test_namespaced_name_filtered_from_generic_tmux_command_b221 )
         ; ( "generic_start_tmux_consumes_namespaced_control_b221",

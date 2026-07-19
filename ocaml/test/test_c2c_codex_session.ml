@@ -817,8 +817,8 @@ let test_generic_start_namespaced_name_reaches_app_server_alias_b221 () =
     | Error msg -> Alcotest.fail msg
   in
   let alias_override =
-    C2c_start.codex_alias_override_for_namespaced_name ~existing:None
-      ~namespaced:parsed.C2c_start.c2c_name
+    C2c_start.codex_alias_override_for_managed_start ~alias_opt:None
+      ~requested_name:parsed.C2c_start.c2c_name
   in
   Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
       let clock = ref 0.0 in

@@ -1084,12 +1084,15 @@ Four command forms share one implementation path for managed Codex sessions:
 
 Key semantics:
 
-- **Generated alias.** With no `--alias`, a stable, human-readable alias is
-  derived deterministically from the Codex session id. Two new threads get
+- **Requested name wins; otherwise a generated alias.** `c2c start codex
+  -n NAME` publishes `NAME` as the broker alias, matching every other managed
+  client (#34). With no `-n` and no `--alias`, a stable, human-readable alias
+  is derived deterministically from the Codex session id. Two new threads get
   distinct aliases; resume/restart retains the same alias. `--alias` is an
-  **optional** override of the display/routing identity — it never replaces the
-  authoritative Codex thread id, and a conflict with a differently-owned saved
-  alias is rejected.
+  **optional** override of the display/routing identity — it outranks `-n`
+  (the mismatch is reported on stderr and recorded in `broker.log` as
+  `managed_name_not_alias`), it never replaces the authoritative Codex thread
+  id, and a conflict with a differently-owned saved alias is rejected.
 - **Namespaced name after `--`.** `--c2c:name NAME` is equivalent to the
   pre-separator alias/name selector for `c2c codex` and `c2c new codex`, but
   can be written after an alias-provided trailing `--`. It is removed before

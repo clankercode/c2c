@@ -4420,16 +4420,44 @@ let merge_namespaced_name ~(existing : string option)
 
 (* Generic [c2c start codex] has two launch paths: the normal app-server path
    receives [alias_override] directly, while the legacy managed-client path
-   derives its alias from the instance [name].  A post-separator B221 name
+   derives its alias from the instance [name].  The requested instance name
    therefore has to fill an otherwise-absent app-server override as well as
    the instance name.  An explicit/role-derived alias remains authoritative,
    preserving the existing ability to give the instance and broker alias
-   different names. *)
-let codex_alias_override_for_namespaced_name ~(existing : string option)
-    ~(namespaced : string option) : string option =
-  match existing with
-  | Some _ -> existing
-  | None -> namespaced
+   different names.
+
+   #34: this used to be fed only the post-separator B221 [--c2c:name], so
+   `c2c start codex -n NAME` reached the app-server path with no override and
+   [C2c_codex_session.derive_alias] minted `codex-<word>-<word>-<hex>` instead
+   — the requested name vanished without a word. [requested_name] is now the
+   already-merged instance name (`-n` and `--c2c:name` share that slot, and
+   conflicting values are rejected upstream by [merge_namespaced_name]), which
+   is exactly what every non-codex client uses as its alias.
+
+   [requested_name] must stay [None] for an auto-picked name: leaving the
+   override absent keeps [derive_alias]'s collision probing and its stable
+   derivation from the session id, so a restart resumes the same identity. *)
+let codex_alias_override_for_managed_start ~(alias_opt : string option)
+    ~(requested_name : string option) : string option =
+  match alias_opt with
+  | Some _ -> alias_opt
+  | None -> requested_name
+
+(* #34: [--alias] outranking an explicit [-n] is legitimate — it is how an
+   instance and its broker alias are deliberately given different names — but
+   it must not be silent, because the alias is the address peers send to and
+   `-n` is the value the operator just typed. [None] when there is nothing to
+   say. Pure so the wording is unit-testable. *)
+let codex_managed_start_name_notice ~(name : string) ~(alias : string) :
+    string option =
+  if String.lowercase_ascii name = String.lowercase_ascii alias then None
+  else
+    Some
+      (Printf.sprintf
+         "note: c2c start codex: -n '%s' is NOT the broker alias — --alias \
+          wins. Peers must address '%s' (`c2c send %s ...`), and the managed \
+          instance is '%s' (`c2c stop %s` / `c2c restart %s`).\n"
+         name alias alias alias alias alias)
 
 (* Parse the command + argv for `c2c start pty` from [extra_args].
 

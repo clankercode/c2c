@@ -223,7 +223,7 @@ let start_cmd =
     C2c_start.strip_start_extra_argv_prefix extra_argv
   in
   let name =
-    Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name (default: auto-generated).")
+    Cmdliner.Arg.(value & opt (some string) None & info [ "name"; "n" ] ~docv:"NAME" ~doc:"Instance name, and the broker alias peers send to unless --alias overrides it (default: auto-generated).")
   in
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Custom alias (defaults to instance name).")
@@ -711,10 +711,36 @@ let start_cmd =
       ()
   in
   if client = "codex" then
+    (* #34: [name] is the merged instance name (`-n` / `--c2c:name`); pass it
+       so the app-server path publishes the name the operator asked for
+       instead of silently minting one. [name_from_auto_gen] keeps a
+       c2c-picked name out of the override. *)
     let codex_alias_override =
-      C2c_start.codex_alias_override_for_namespaced_name
-        ~existing:alias_override ~namespaced:namespaced_name
+      C2c_start.codex_alias_override_for_managed_start
+        ~alias_opt:alias_override
+        ~requested_name:(if name_from_auto_gen then None else Some name)
     in
+    (* When --alias legitimately outranks an explicit -n, say so — and record
+       it durably: the codex TUI takes the terminal moments later, so a
+       stderr-only note is not "loud" (#40 F5 learned this the hard way). *)
+    (match codex_alias_override with
+     | Some alias when not name_from_auto_gen ->
+         (match C2c_start.codex_managed_start_name_notice ~name ~alias with
+          | None -> ()
+          | Some msg ->
+              prerr_string msg;
+              flush stderr;
+              (try
+                 Broker_log.append_json ~broker_root:(resolve_broker_root ())
+                   ~json:(`Assoc
+                      [ ("event", `String "managed_name_not_alias")
+                      ; ("ts", `Float (Unix.gettimeofday ()))
+                      ; ("client", `String "codex")
+                      ; ("requested_name", `String name)
+                      ; ("alias", `String alias)
+                      ; ("detail", `String (String.trim msg)) ])
+               with _ -> ()))
+     | _ -> ());
     exit (C2c_codex_cmd.start_delegate
             ~alias_override:codex_alias_override
             ~thread_id:thread_id_flag ~yolo:yolo_flag
