@@ -461,3 +461,15 @@ Env-var reference: `.collab/runbooks/c2c-env-vars.md` § Codex wake-inject.
 - `.collab/runbooks/c2c-delivery-smoke.md` — the smoke test you should
   run after touching broker/hook code.
 - `.collab/runbooks/deprecated/coordinator-failover.md` — historical swarm-era process only.
+
+## Managed binary upgrades (`c2c restart-stale`)
+
+As of P2 (I010/I011 foundations):
+
+- **Codex app-server:** in-place owner-control restart. Default auto only when idle policy allows; Busy fails closed unless `--force`. The owner retains the authoritative thread-status gate.
+- **TUI/hook clients (Claude, OpenCode, Kimi, agy, Codex hooks):** `restart-stale` writes an owner-control request that the outer loop polls and self-reexecs **in the original pane**. Busy/Unknown stay guided (`c2c restart <name>` in-pane) unless `--force`.
+- Peer mail is DATA (B098) and never authorizes restart.
+- Spikes: Codex delivery sidecar extraction **NO-GO**; granular deliver/poker restart **CONDITIONAL GO** (notifier NO-GO until dual-ownership fixed); monitor self-detect-stale **GO** (self-exit + relaunch hint only; no external respawn).
+
+See `.collab/research/2026-07-20-p2-closeout.md`.
+
