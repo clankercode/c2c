@@ -2277,7 +2277,87 @@ let kimi_notifier_arm_is_authoritative ~(registered_ok : bool)
     ~(resolved_sid : string) ~(name : string) : bool =
   registered_ok && resolved_sid = name
 
+(* ---------------------------------------------------------------------------
+ * Managed agy broker registration (mirror of #40 for kimi).
+ *
+ * WHY THE LAUNCHER MUST REGISTER: managed `c2c start agy` used to rely solely
+ * on the SessionStart/live-hook path to write the broker row. That left a race
+ * (and a total miss when SessionStart never fired — e.g. bogus
+ * `--conversation <instance-name>` on a fresh start) where peers saw
+ * `queued_offline` / "alias is not registered" until a manual `c2c register`.
+ * The launcher knows the alias and outer pid, so it registers eagerly like
+ * kimi. The hook still writes agy-env.json (agentapi wake metadata) and may
+ * adopt the row; it must not mint a competing alias when the managed markers
+ * are present.
+ * --------------------------------------------------------------------------- *)
+
+let managed_agy_registration_failure_message ~(name : string) ~(alias : string)
+    ~(broker_root : string) ~(reason : string) : string =
+  Printf.sprintf
+    "error: c2c start agy: broker registration for alias '%s' FAILED (%s).\n\
+    \  This session is UNREACHABLE: `c2c send %s ...` will report \
+     \"alias '%s' is not registered\".\n\
+    \  Broker root: %s\n\
+    \  Fix: check that the broker dir is writable (`c2c doctor`), then \
+     `c2c stop %s && c2c start agy -n %s`.\n"
+    alias reason alias alias broker_root name name
+
+let register_managed_agy_session ~(broker_root : string) ~(name : string)
+    ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
+  match
+    eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
+      ~cwd ~client_type:"agy" ()
+  with
+  | exception e -> Error (Printexc.to_string e)
+  | () ->
+      (match
+         (try
+            let broker = C2c_mcp.Broker.create ~root:broker_root in
+            Ok
+              (List.exists
+                 (fun (r : C2c_mcp.registration) ->
+                    String.lowercase_ascii r.alias
+                    = String.lowercase_ascii alias)
+                 (C2c_mcp.Broker.list_registrations broker))
+          with e -> Error (Printexc.to_string e))
+       with
+       | Error e -> Error ("registry read-back failed: " ^ e)
+       | Ok true -> Ok ()
+       | Ok false -> Error "registry write did not persist the alias")
+
+(* True when [sid] is a real agy conversation UUID that may be passed as
+   `agy --conversation <sid>`. Instance names and empty strings are not. *)
+let is_agy_conversation_id (sid : string) : bool =
+  match Uuidm.of_string (String.trim sid) with
+  | Some _ -> true
+  | None -> false
+
 let instance_dir name = instances_dir // name
+
+(* agy-env.json is written by `c2c hook agy` (SessionStart / live hooks) under
+   the managed instance dir. The conversation_id it records is the only
+   authoritative resume target for `agy --conversation` — c2c-minted UUIDs in
+   instance config are NOT agy conversation ids. *)
+let agy_env_path (name : string) : string =
+  instance_dir name // "agy-env.json"
+
+let read_agy_conversation_id (name : string) : string option =
+  let path = agy_env_path name in
+  if not (Sys.file_exists path) then None
+  else
+    try
+      match Yojson.Safe.from_file path with
+      | `Assoc fields ->
+          (match List.assoc_opt "conversation_id" fields with
+           | Some (`String s) when is_agy_conversation_id s -> Some (String.trim s)
+           | _ -> None)
+      | _ -> None
+    with _ -> None
+
+let clear_agy_env (name : string) : unit =
+  let path = agy_env_path name in
+  try if Sys.file_exists path then Sys.remove path with _ -> ()
+
 let per_agent_managed_heartbeats ~(name : string) : managed_heartbeat list =
   managed_heartbeats_from_toml_path (instance_dir name // "heartbeat.toml")
 
@@ -3666,6 +3746,15 @@ let prepare_launch_args ~(name : string) ~(client : string)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "kimi") : CLIENT_ADAPTER) in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ~alias_from_auto_gen ()
+    | "agy" ->
+        (* AgyAdapter is registered in client_adapters but was previously dead
+           code: prepare_launch_args fell through to `| _ -> []`, so managed
+           starts never emitted AgyAdapter's argv and never applied its
+           --conversation rules. Dispatch here so fresh starts omit a bogus
+           conversation id and resumes pass a real UUID. *)
+        let module A = (val (Stdlib.Hashtbl.find client_adapters "agy") : CLIENT_ADAPTER) in
+        A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
+          ~extra_args:extra_args ~alias_from_auto_gen ()
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -4094,11 +4183,18 @@ module AgyAdapter : CLIENT_ADAPTER = struct
 
   let build_start_args ~name ?alias_override:_ ?model_override ?resume_session_id
       ?(extra_args = []) ?alias_from_auto_gen:_ () =
+    ignore name;
     ignore extra_args;
+    (* `agy --conversation <id>` RESUMES an existing conversation. agy 1.1.4
+       does NOT fire SessionStart on resume (#73), so a bogus conversation id
+       (instance name, non-UUID) both fails to resume anything useful AND
+       suppresses the SessionStart path that writes agy-env.json for agentapi
+       wake. Only pass --conversation when we have a real UUID. Fresh starts
+       omit the flag so agy mints a new conversation and SessionStart fires. *)
     let base =
       match resume_session_id with
-      | Some sid -> [ "--conversation"; sid ]
-      | None -> [ "--conversation"; name ]
+      | Some sid when is_agy_conversation_id sid -> [ "--conversation"; String.trim sid ]
+      | _ -> []
     in
     match model_override with
     | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
@@ -5382,6 +5478,43 @@ let run_outer_loop ~(name : string) ~(client : string)
               `c2c stop`/`c2c restart` still take '%s'.\n%!"
              name alias alias name
        end);
+      (* Managed agy: same pre-fork register as kimi. Without this, peers see
+         queued_offline until a SessionStart/live hook lands a row — and when
+         SessionStart never fires (bogus --conversation) the alias stays dead
+         forever. Outer pid is the liveness signal (same rationale as kimi). *)
+      (if client = "agy" then begin
+         let alias = Option.value alias_override ~default:name in
+         let cwd = try Sys.getcwd () with _ -> "" in
+         (match
+            register_managed_agy_session ~broker_root ~name ~alias
+              ~pid:(Unix.getpid ()) ~cwd
+          with
+          | Ok () -> ()
+          | Error reason ->
+              let msg =
+                managed_agy_registration_failure_message ~name ~alias
+                  ~broker_root ~reason
+              in
+              prerr_string msg;
+              flush stderr;
+              (try
+                 Broker_log.append_json ~broker_root
+                   ~json:(`Assoc
+                      [ ("event", `String "managed_registration_failed")
+                      ; ("ts", `Float (Unix.gettimeofday ()))
+                      ; ("client", `String "agy")
+                      ; ("instance", `String name)
+                      ; ("alias", `String alias)
+                      ; ("reason", `String reason)
+                      ; ("detail", `String (String.trim msg)) ])
+               with _ -> ()));
+         if String.lowercase_ascii alias <> String.lowercase_ascii name then
+           Printf.eprintf
+             "note: c2c start agy: instance name '%s' is not the broker \
+              alias — peers must address '%s' (`c2c send %s ...`); \
+              `c2c stop`/`c2c restart` still take '%s'.\n%!"
+             name alias alias name
+       end);
       let child_pid_opt =
         try
           (* S10 (#482): compute pre-deliver hook path for needs_deliver
@@ -6262,6 +6395,15 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
             Some ex.resume_session_id
           else if client = "kimi" && is_kimi_session_id_like ex.resume_session_id then
             Some ex.resume_session_id
+          else if client = "agy" then
+            (* Prefer agy-env.json (hook-written real conversation UUID) over
+               instance config, which historically stored a c2c-minted UUID that
+               is not an agy conversation id. *)
+            (match read_agy_conversation_id name with
+             | Some cid -> Some cid
+             | None when is_agy_conversation_id ex.resume_session_id ->
+                 Some ex.resume_session_id
+             | None -> None)
           else
             match Uuidm.of_string ex.resume_session_id with
             | Some _ -> Some ex.resume_session_id
@@ -6275,14 +6417,23 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
               let ses_file = instance_dir name // "opencode-session.txt" in
               (try Sys.remove ses_file with _ -> ())
             end;
+            if client = "agy" then clear_agy_env name;
             if client = "kimi" then
               Some (fresh_kimi_session_id ())
+            else if client = "agy" then
+              (* Empty sentinel: AgyAdapter omits --conversation so agy mints a
+                 new conversation and SessionStart can fire. *)
+              Some ""
             else
               Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
           end else
           match client, session_id_override with
           | "kimi", None -> Some ""
           | "kimi", Some s -> Some s
+          | "agy", None ->
+              (match rs_valid with Some v -> Some v | None -> Some "")
+          | "agy", Some s when is_agy_conversation_id s -> Some s
+          | "agy", Some _ -> Some ""
           | _, Some s -> Some s
           | _, None ->
               (match ses_id_from_file with
@@ -6311,6 +6462,9 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | "codex-headless", Some sid -> sid
           | "kimi", None -> ""
           | "kimi", Some s -> s
+          | "agy", None -> ""
+          | "agy", Some s when is_agy_conversation_id s -> s
+          | "agy", Some _ -> ""
           | _, Some s -> s
           | _, None ->
             if client = "claude" then
@@ -6383,11 +6537,15 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
   (* The persisted empty string sentinel means "no thread id yet" for a fresh
      headless launch and must not become `--thread-id ""` on argv.
      For Kimi we now also use the empty sentinel: managed Kimi sessions launch
-     without `--session` and let Kimi Code mint its own CLI/TUI session id. *)
+     without `--session` and let Kimi Code mint its own CLI/TUI session id.
+     For agy: only a real conversation UUID is a resume target; non-UUIDs
+     (including the instance name default) must become None so AgyAdapter
+     omits `--conversation` and SessionStart can fire. *)
   let launch_resume_session_id =
     match client, cfg.resume_session_id with
     | "codex-headless", sid when String.trim sid = "" -> None
     | "kimi", sid when String.trim sid = "" -> None
+    | "agy", sid when not (is_agy_conversation_id sid) -> None
     | _, sid -> Some sid
   in
 

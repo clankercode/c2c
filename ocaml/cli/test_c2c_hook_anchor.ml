@@ -256,15 +256,13 @@ let test_decay_only_for_activity_backed_clients () =
             (not has_anchor) visible))
     clients
 
-(* #51 blocker 2: `c2c start agy` never eager-registers (AgyAdapter is absent
-   from every [eager_register_managed_alias] call site and the deliver sidecar
-   spawns without --register), so the agy hook writes the ONLY row a managed
-   agy session gets. Labelling it "agy-hook" made that row pid-less AND
-   decaying: idle past the TTL — precisely when its out-of-process agentapi
-   wake still works — it flipped Dead and sends were refused. The same label
-   is the Stop/SessionEnd deregister selector, so an ordinary turn end also
-   tore the managed row down. Grok is the same latent shape (managed grok is
-   deferred, so this is pre-emptive there). *)
+(* #51 blocker 2: managed agy now eager-registers pre-fork, but the hook may
+   still write/adopt a row when markers are present. Labelling a managed row
+   "agy-hook" made it pid-less AND decaying: idle past the TTL — precisely when
+   its out-of-process agentapi wake still works — it flipped Dead and sends
+   were refused. The same label is the SessionEnd deregister selector, so an
+   ordinary teardown path also tore the managed row down. Grok is the same
+   latent shape (managed grok is deferred, so this is pre-emptive there). *)
 let test_managed_session_row_is_not_labelled_hook () =
   List.iter
     (fun (client, args, marker) ->

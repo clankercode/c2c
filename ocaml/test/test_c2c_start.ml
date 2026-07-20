@@ -4336,6 +4336,118 @@ let test_prepare_launch_args_kimi_omits_agent_file () =
   check bool "--agent-file must NOT appear in args" false
     (List.mem "--agent-file" args)
 
+(* Managed agy wake path: AgyAdapter must be dispatched from prepare_launch_args
+   (it was previously dead code under `| _ -> []`), and must never pass a bogus
+   `--conversation <instance-name>` on a fresh start. Only a real UUID is a
+   resume target. Eager registration mirrors kimi #40 so peers can address the
+   alias before SessionStart. *)
+
+let test_is_agy_conversation_id () =
+  check bool "uuid is conversation id" true
+    (C2c_start.is_agy_conversation_id "6f3bf913-4851-4e16-94e3-998913669726");
+  check bool "instance name is not" false
+    (C2c_start.is_agy_conversation_id "e2e-agy-wake");
+  check bool "empty is not" false (C2c_start.is_agy_conversation_id "");
+  check bool "whitespace uuid trims" true
+    (C2c_start.is_agy_conversation_id "  6f3bf913-4851-4e16-94e3-998913669726  ")
+
+let test_prepare_launch_args_agy_fresh_omits_conversation () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-agy-wake" ~client:"agy"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "fresh: --conversation omitted" false
+    (List.mem "--conversation" args);
+  check bool "fresh: instance name not on argv" false
+    (List.mem "e2e-agy-wake" args)
+
+let test_prepare_launch_args_agy_bogus_resume_omits_conversation () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-agy-wake" ~client:"agy"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"e2e-agy-wake" ()
+  in
+  check bool "instance-name resume is not a conversation id" false
+    (List.mem "--conversation" args)
+
+let test_prepare_launch_args_agy_uuid_resume_passes_conversation () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let cid = "6f3bf913-4851-4e16-94e3-998913669726" in
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-agy-wake" ~client:"agy"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ~resume_session_id:cid ()
+  in
+  check bool "uuid resume passes --conversation" true
+    (has_adjacent_pair "--conversation" cid args)
+
+let test_prepare_launch_args_agy_model_flag () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-agy-wake" ~client:"agy"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"Gemini 3.5 Flash (Low)" ()
+  in
+  check bool "model flag present" true
+    (has_adjacent_pair "--model" "Gemini 3.5 Flash (Low)" args);
+  check bool "fresh still omits conversation with model" false
+    (List.mem "--conversation" args)
+
+let test_register_managed_agy_session_persists_row () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let name = "zz-agy-managed" in
+  let cwd = "/proj/agy" in
+  (match
+     C2c_start.register_managed_agy_session ~broker_root ~name ~alias:name
+       ~pid:(Unix.getpid ()) ~cwd
+   with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "registration failed: %s" e));
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = name) regs with
+  | None -> fail (Printf.sprintf "alias %s not registered" name)
+  | Some r ->
+      check string "session_id is instance name" name r.session_id;
+      check (option string) "cwd recorded" (Some cwd) r.cwd;
+      check (option string) "client_type agy" (Some "agy") r.client_type
+
+let test_register_managed_agy_alias_override () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let name = "zz-agy-name" and alias = "zz-agy-alias" in
+  (match
+     C2c_start.register_managed_agy_session ~broker_root ~name ~alias
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/agy"
+   with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "registration failed: %s" e));
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let aliases =
+    List.map (fun (r : C2c_mcp.registration) -> r.alias)
+      (C2c_mcp.Broker.list_registrations broker)
+  in
+  check bool "alias override is registered" true (List.mem alias aliases);
+  check bool "instance name is not also registered" false (List.mem name aliases)
+
+let test_managed_agy_registration_failure_message () =
+  let msg =
+    C2c_start.managed_agy_registration_failure_message ~name:"zz-agy-fail"
+      ~alias:"zz-agy-fail" ~broker_root:"/tmp/broker-x" ~reason:"disk full"
+  in
+  check bool "names alias" true (string_contains msg "zz-agy-fail");
+  check bool "peer error" true (string_contains msg "is not registered");
+  check bool "recovery" true (string_contains msg "c2c start agy -n");
+  check bool "broker root" true (string_contains msg "/tmp/broker-x")
+
 (* #489 regression: verify kimi_agent_yaml_path returns a path under
    .kimi-code/agents/<name>/agent.yaml (yaml dir), NOT .kimi-code/agents/<name>.md.
    This is the contract that write_agent_file (c2c.ml) and
@@ -4837,6 +4949,24 @@ let () =
             `Quick, test_prepare_launch_args_kimi_omits_agent_file )
         ; ( "write_agent_file_kimi_uses_yaml_path",
             `Quick, test_kimi_write_agent_file_uses_yaml_path )
+        ] )
+    ; ( "agy_adapter",
+        [ ( "is_agy_conversation_id",
+            `Quick, test_is_agy_conversation_id )
+        ; ( "fresh_omits_conversation",
+            `Quick, test_prepare_launch_args_agy_fresh_omits_conversation )
+        ; ( "bogus_resume_omits_conversation",
+            `Quick, test_prepare_launch_args_agy_bogus_resume_omits_conversation )
+        ; ( "uuid_resume_passes_conversation",
+            `Quick, test_prepare_launch_args_agy_uuid_resume_passes_conversation )
+        ; ( "model_flag",
+            `Quick, test_prepare_launch_args_agy_model_flag )
+        ; ( "register_managed_agy_session_persists_row",
+            `Quick, test_register_managed_agy_session_persists_row )
+        ; ( "register_managed_agy_alias_override",
+            `Quick, test_register_managed_agy_alias_override )
+        ; ( "registration_failure_message",
+            `Quick, test_managed_agy_registration_failure_message )
         ] )
     ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",

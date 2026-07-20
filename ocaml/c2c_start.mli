@@ -126,6 +126,29 @@ val kimi_notifier_arm_is_authoritative :
 val managed_kimi_registration_failure_message :
   name:string -> alias:string -> broker_root:string -> reason:string -> string
 
+(** [register_managed_agy_session ~broker_root ~name ~alias ~pid ~cwd]
+    registers a managed `c2c start agy` instance on the broker under
+    [session_id = name] and [alias], recording [cwd] and [pid], then READS the
+    registry back to confirm the row persisted. Mirrors
+    {!register_managed_kimi_session} so peers can address the alias before any
+    SessionStart hook fires (and when SessionStart never fires). *)
+val register_managed_agy_session :
+  broker_root:string ->
+  name:string ->
+  alias:string ->
+  pid:int ->
+  cwd:string ->
+  (unit, string) result
+
+(** Operator-facing text for a failed managed-agy registration. Pure; pinned
+    by unit tests. *)
+val managed_agy_registration_failure_message :
+  name:string -> alias:string -> broker_root:string -> reason:string -> string
+
+(** [is_agy_conversation_id sid] is true iff [sid] is a UUID suitable for
+    `agy --conversation`. Instance names and empty strings are false. *)
+val is_agy_conversation_id : string -> bool
+
 (** [pick_live_registration_sid ~alias ~now regs] is the session_id of the
     MOST-RECENT registration for [alias] that can be corroborated as live
     (any explicit pid still exists, and a timestamp places it inside the

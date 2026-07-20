@@ -2243,17 +2243,13 @@ let hook_agy_cmd =
                             with
                             | Some c -> Some c
                             | None -> workspace_path))
-                     (* #51 (blocker 2): `c2c start agy` never calls
-                        [eager_register_managed_alias] (AgyAdapter is absent
-                        from every call site) and its deliver sidecar spawns
-                        without --register, so THIS is the only row a managed
-                        agy session ever gets. Labelling it "agy-hook" made it
-                        pid-less-and-decaying: idle past the TTL — exactly
-                        when its out-of-process agentapi wake still works — it
-                        flipped Dead and sends were refused. It also matched
-                        the Stop/SessionEnd deregister selector below, so an
-                        ordinary turn end tore the managed row down. Mirror
-                        codex: managed rows carry no hook label. *)
+                     (* #51 (blocker 2) + managed-agy wake fix: `c2c start agy`
+                        now eager-registers pre-fork (like kimi #40), so a
+                        managed row usually already exists when the hook
+                        fires. Labelling a managed row "agy-hook" would still
+                        make it match the SessionEnd deregister selector and
+                        the #51 decay path. Mirror codex: managed rows carry
+                        no hook label. *)
                      ~registered_by:
                        (if managed_launcher_marker_present () then None
                         else Some "agy-hook")
