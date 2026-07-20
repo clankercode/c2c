@@ -283,9 +283,8 @@ let[@noreturn] start ~name ~daemon () =
             supervisor_pid name;
           exit 0
         end else if status = "ALREADY\n" then begin
+          (* Child already printed the full Already_running diagnostic. *)
           ignore (Unix.waitpid [] supervisor_pid);
-          Printf.eprintf
-            "error: a machine-wide deliver-service is already running.\n%!";
           exit 1
         end else begin
           ignore (Unix.waitpid [] supervisor_pid);
