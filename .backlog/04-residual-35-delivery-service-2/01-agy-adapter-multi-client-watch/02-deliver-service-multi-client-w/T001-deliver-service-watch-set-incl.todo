@@ -1,16 +1,17 @@
 ---
 claimed_at: "2026-07-20T13:13:19Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T13:13:19Z"
 complexity: medium
 created_at: "2026-07-20T13:10:43Z"
 depends_on:
     - P4.M1.E1.T002
+duration_minutes: 0.00614978815
 estimate_hours: 2
 id: P4.M1.E2.T001
 priority: high
 started_at: "2026-07-20T13:13:19Z"
-status: in_progress
+status: done
 tags: []
 title: deliver-service watch-set includes agy endpoints
 updated_at: "2026-07-20T13:13:19Z"
