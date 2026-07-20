@@ -58,6 +58,7 @@ let test_toctou_pid_mismatch () =
       (match
          C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
            ~owner ~plan
+           ~identity_at:(fun () -> owner)
            ~teardown:(fun () -> Ok ())
            ~do_exec:(fun _ -> exec_called := true)
            ()
@@ -97,7 +98,8 @@ let test_toctou_start_time_mismatch () =
       in
       (match
          C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
-           ~owner ~plan ~teardown:(fun () -> Ok ())
+           ~owner ~plan
+           ~identity_at:(fun () -> owner) ~teardown:(fun () -> Ok ())
            ~do_exec:(fun _ -> ())
            ()
        with
@@ -136,7 +138,8 @@ let test_name_mismatch () =
       in
       (match
          C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
-           ~owner ~plan ~teardown:(fun () -> Ok ())
+           ~owner ~plan
+           ~identity_at:(fun () -> owner) ~teardown:(fun () -> Ok ())
            ~do_exec:(fun _ -> ())
            ()
        with
@@ -185,7 +188,8 @@ let test_ack_only_after_teardown_commit () =
       in
       (match
          C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
-           ~owner ~plan ~teardown ~do_exec ()
+           ~owner ~plan
+           ~identity_at:(fun () -> owner) ~teardown ~do_exec ()
        with
        | Ok () -> ()
        | Error e -> Alcotest.failf "commit failed: %s" e);
@@ -215,6 +219,7 @@ let test_teardown_failure_does_not_exec () =
       (match
          C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
            ~owner ~plan
+           ~identity_at:(fun () -> owner)
            ~teardown:(fun () -> Error "reap-failed")
            ~do_exec:(fun _ -> exec_called := true)
            ()
@@ -363,7 +368,8 @@ let test_plan_env_filtered_before_exec () =
       let seen = ref [||] in
       (match
          C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
-           ~owner ~plan ~teardown:(fun () -> Ok ())
+           ~owner ~plan
+           ~identity_at:(fun () -> owner) ~teardown:(fun () -> Ok ())
            ~do_exec:(fun p -> seen := p.env)
            ()
        with

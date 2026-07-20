@@ -278,13 +278,12 @@ let await_result ~instance_dir ~request_id ~(timeout_s : float) :
 (** [identity_at] is re-sampled at the reexec boundary (after teardown).
     Defaults to the pre-teardown [owner] only when tests inject a static
     identity; production callers should re-read pid/start-time. *)
+(** [identity_at] is MANDATORY: re-sample pid/start-time after teardown.
+    Tests inject a function; production owners must re-read self identity. *)
 let commit_takeover ~instance_dir ~(request : request) ~(owner : identity)
     ~(plan : launch_plan) ~(teardown : unit -> (unit, string) result)
-    ?identity_at ?(do_exec : (launch_plan -> unit) option) ()
-    : (unit, string) result =
-  let identity_at =
-    match identity_at with Some f -> f | None -> fun () -> owner
-  in
+    ~(identity_at : unit -> identity)
+    ?(do_exec : (launch_plan -> unit) option) () : (unit, string) result =
   match validate_identity ~request ~owner with
   | Error reason ->
       write_result ~instance_dir ~request_id:request.id
