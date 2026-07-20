@@ -29,9 +29,9 @@ epics:
       locked: false
       name: 'C1: DELIVERY_ENDPOINT hybrid first cut'
       path: 03-c1-delivery-endpoint-hybrid-fi
-      status: pending
+      status: done
 estimate_hours: 40
 id: P3.M1
 locked: false
 name: C2→C3→C1 deepen sequence
-status: pending
+status: done

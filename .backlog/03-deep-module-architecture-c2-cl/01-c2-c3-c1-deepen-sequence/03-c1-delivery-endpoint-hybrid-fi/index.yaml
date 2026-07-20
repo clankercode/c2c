@@ -5,7 +5,7 @@ estimate_hours: 18
 id: P3.M1.E3
 locked: false
 name: 'C1: DELIVERY_ENDPOINT hybrid first cut'
-status: pending
+status: done
 tasks:
     - complexity: medium
       depends_on: []
@@ -44,6 +44,6 @@ tasks:
       file: T004-c1-closeout-docs-35-issue-comm.todo
       id: T004
       priority: medium
-      status: in_progress
+      status: done
       tags: []
       title: 'C1 closeout docs + #35 issue comment'

@@ -2,7 +2,7 @@ complexity: medium
 depends_on: []
 estimate_hours: 40
 id: P3
-locked: false
+locked: true
 milestones:
     - complexity: medium
       depends_on: []
@@ -12,7 +12,7 @@ milestones:
       locked: false
       name: C2→C3→C1 deepen sequence
       path: 01-c2-c3-c1-deepen-sequence
-      status: pending
+      status: done
 name: Deep-module architecture (C2 claim · C3 liveness · C1 DeliveryEndpoint)
-status: pending
+status: done
 weeks: 4
