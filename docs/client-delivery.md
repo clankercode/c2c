@@ -147,12 +147,14 @@ idle-gated native heartbeat.
   present); `c2c doctor hooks` reports this under the Grok section (#37).
 - **Antigravity (agy)**: `c2c install agy` is **CLI-first** (no MCP —
   `mcp=false`, `receive="agentapi"`). Preferred inbound is **agentapi inject** by
-  the `c2c start … deliver-watch` sidecar, which reads the conversation target
-  from `agy-env.json` and calls `agy agentapi send-message`. SessionStart runs
-  `c2c hook agy` to auto-register (`registered_by=agy-hook`) and write
-  `agy-env.json`; hooks alone do not wake an idle TUI. Managed via `c2c start
-  agy`. Fallback: `c2c poll-inbox` / `c2c monitor`. See
-  [Antigravity (agy)](#antigravity-agy) below.
+  the `c2c start … deliver-watch` sidecar, which reads/ensures
+  `agy-env.json` under the managed instances dir and calls
+  `agy agentapi send-message`. SessionStart may write env when LS env vars are
+  present; deliver-watch auto-discovers HTTP LS + conversation from the CLI log
+  (and can mint a wake conversation) when hooks never wrote it. Hooks alone do
+  not wake an idle TUI. Managed via `c2c start agy`. Fallback:
+  `c2c poll-inbox` / `c2c monitor`. See [Antigravity (agy)](#antigravity-agy)
+  below.
 - **Generic / unmanaged clients**: use MCP or CLI polling. Where available,
   `c2c-deliver-inbox --inotify --loop` can watch an inbox and bridge messages to
   a client-specific delivery mode, but the portable baseline is still
@@ -522,26 +524,32 @@ the outside; that needs an upstream surface
 
 **No MCP config** is written (install metadata records `mcp=false`,
 `receive="agentapi"`). Preferred inbound is **agentapi inject** by the
-`c2c start … deliver-watch` sidecar (`c2c_agy_deliver.ml`): it reads
-`~/.c2c/instances/<sid>/agy-env.json` (`ls_address` + `conversation_id`, written
-by the SessionStart hook), drains the repo inbox plus the cross-repo
+`c2c start … deliver-watch` sidecar (`c2c_agy_deliver.ml` / `C2c_agy_agentapi`):
+it reads `~/.local/share/c2c/instances/<sid>/agy-env.json` (or
+`$C2C_INSTANCES_DIR/<sid>/`; `ls_address` + `conversation_id`). When SessionStart
+does not export `ANTIGRAVITY_LS_ADDRESS` (common on managed start), the sidecar
+**auto-discovers** HTTP LS port + conversation id from the agy CLI log
+(pid-scoped fd → log when possible), and may call
+`agy agentapi new-conversation` to mint a wake channel if the TUI has no
+conversation yet. Then drains the repo inbox plus the cross-repo
 sessions-broker inbox, and injects standard `<c2c event="message">` envelopes via
 `agy agentapi send-message --title="c2c inbound" <conversation_id> <content>` with
 `ANTIGRAVITY_LS_ADDRESS` set. The broker inbox is drained **only after a
 successful inject** (persist-first). Fallback: `c2c poll-inbox` / `c2c monitor`.
 
 SessionStart runs `c2c hook agy` to auto-register (`registered_by=agy-hook`,
-`client_type=agy`) and write `agy-env.json`; hooks alone do **not** wake an idle
-TUI (they do a single backup drain + identity registration). The alias is always
-`agy-*` — the skill aborts sends if the alias is not `agy-*` (identity-hijack
-hygiene), and `c2c doctor` flags a live agy session whose alias lacks the `agy-`
-prefix. Managed via `c2c start agy` (`AgyAdapter`, capability
-`agentapi_wake=true`) — unlike Grok, agy's managed start is real.
+`client_type=agy`) and write `agy-env.json` when LS env is present; hooks alone
+do **not** wake an idle TUI (they do a single backup drain + identity
+registration). The alias is always `agy-*` — the skill aborts sends if the alias
+is not `agy-*` (identity-hijack hygiene), and `c2c doctor` flags a live agy
+session whose alias lacks the `agy-` prefix. Managed via `c2c start agy`
+(`AgyAdapter`, capability `agentapi_wake=true`) — unlike Grok, agy's managed
+start is real.
 
 **Wake status: CONDITIONAL.** The wake is performed by an out-of-process
 sidecar, so it holds only while that sidecar is alive and `agy-env.json`
-resolves to a live conversation. Note that the sidecar's inotify watch is a
-latency optimisation, not a guarantee — see
+resolves (or can be auto-discovered) to a live conversation. Note that the
+sidecar's inotify watch is a latency optimisation, not a guarantee — see
 [Delivery & Wake Contract](/wake-contract/#deliver-watch-is-not-a-wake-mechanism).
 
 ---

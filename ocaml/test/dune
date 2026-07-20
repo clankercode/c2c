@@ -620,3 +620,9 @@
  (name test_c2c_delivery_endpoint)
  (modules test_c2c_delivery_endpoint)
  (libraries c2c_mcp alcotest unix))
+
+; Auto agy-env discovery (managed instances path + CLI log parsers + ensure).
+(test
+ (name test_c2c_agy_agentapi)
+ (modules test_c2c_agy_agentapi)
+ (libraries c2c_mcp alcotest yojson unix))

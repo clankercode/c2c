@@ -1,43 +1,21 @@
-(* c2c_agy_deliver: Antigravity agentapi delivery watcher *)
+(* c2c_agy_deliver: Antigravity agentapi delivery watcher.
+
+   Env path + send-message live in C2c_agy_agentapi (shared with DeliveryEndpoint).
+   This module keeps the poll loop + #66 bounded-wait / drain-after-inject.
+*)
 
 let ( // ) = Filename.concat
 
-let instance_dir name =
-  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-  home // ".c2c" // "instances" // name
+let env_file_path = C2c_agy_agentapi.env_file_path
 
-let env_file_path session_id =
-  instance_dir session_id // "agy-env.json"
-
-type agy_env = {
+type agy_env = C2c_agy_agentapi.agy_env = {
   ls_address : string;
   conversation_id : string;
 }
 
-let read_agy_env session_id : agy_env option =
-  let path = env_file_path session_id in
-  if not (Sys.file_exists path) then None
-  else
-    try
-      let json = Yojson.Safe.from_file path in
-      match json with
-      | `Assoc fields ->
-          let ls = List.assoc "ls_address" fields |> function `String s -> s | _ -> raise Exit in
-          let conv = List.assoc "conversation_id" fields |> function `String s -> s | _ -> raise Exit in
-          Some { ls_address = ls; conversation_id = conv }
-      | _ -> None
-    with _ -> None
+let read_agy_env = C2c_agy_agentapi.read_agy_env
 
-let write_agy_env session_id ~ls_address ~conversation_id =
-  let dir = instance_dir session_id in
-  (try C2c_io.mkdir_p dir with _ -> ());
-  let path = env_file_path session_id in
-  let json = `Assoc [
-    ("ls_address", `String ls_address);
-    ("conversation_id", `String conversation_id);
-  ] in
-  try Yojson.Safe.to_file path json
-  with _ -> ()
+let write_agy_env = C2c_agy_agentapi.write_agy_env
 
 (* #66: `agy agentapi send-message` normally returns in well under a second, but
    a hung child must not block the caller. Since #61 this drain runs on the Stop
@@ -76,25 +54,9 @@ let wait_child_bounded ~(timeout : float) (pid : int) : bool =
   in
   wait ()
 
-let run_agentapi_send ~(ls_address : string) ~(conversation_id : string) ~(content : string) : bool =
-  let command = "agy" in
-  let argv = [| "agy"; "agentapi"; "send-message"; "--title=c2c inbound"; conversation_id; content |] in
-  let env =
-    Unix.environment ()
-    |> Array.to_list
-    |> List.filter (fun s ->
-           not (String.length s >= 23 && String.sub s 0 23 = "ANTIGRAVITY_LS_ADDRESS="))
-    |> fun l -> (Printf.sprintf "ANTIGRAVITY_LS_ADDRESS=%s" ls_address) :: l
-    |> Array.of_list
-  in
-  let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
-  Fun.protect
-    ~finally:(fun () -> try Unix.close devnull with _ -> ())
-    (fun () ->
-      try
-        let pid = Unix.create_process_env command argv env Unix.stdin devnull devnull in
-        wait_child_bounded ~timeout:agentapi_send_timeout_s pid
-      with _ -> false)
+let run_agentapi_send ~(ls_address : string) ~(conversation_id : string)
+    ~(content : string) : bool =
+  C2c_agy_agentapi.run_agentapi_send ~ls_address ~conversation_id ~content
 
 let pid_alive pid =
   if pid <= 0 then false
@@ -161,9 +123,21 @@ let deliver_loop
         Printf.printf "[c2c-agy-deliver] max iterations (%d) reached, stopping\n%!" m
     | _ ->
         incr iterations;
-        (match read_agy_env session_id with
+        (* Auto-discover agy-env when hooks never wrote it (managed start). *)
+        let env =
+          match
+            C2c_agy_agentapi.ensure_agy_env ~session_id
+              ?agy_pid:watched_pid ()
+          with
+          | Some e -> Some e
+          | None -> read_agy_env session_id
+        in
+        (match env with
          | None ->
-             Printf.printf "[c2c-agy-deliver] iteration %d: agy environment file not found yet\n%!" !iterations;
+             Printf.printf
+               "[c2c-agy-deliver] iteration %d: agy-env not ready (discovering \
+                LS + conversation from CLI log)\n%!"
+               !iterations;
              flush stdout
          | Some env ->
              let repo_messages = C2c_mcp.Broker.read_inbox broker ~session_id in

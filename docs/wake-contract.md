@@ -60,7 +60,7 @@ reaches an agent sitting completely idle.**
 | **OpenCode** | **GUARANTEED** | In-process TypeScript plugin (`session.idle` event + background interval → `promptAsync`). Cannot orphan: if it is not running, the client is not running. |
 | **Codex** (managed / app-server) | **GUARANTEED for local-broker mail** | `thread/inject_items` on arrival plus one gated auto-turn (thread idle, DND off). Remote / `@host` / `#` senders **fail closed** to inject-only — durable and readable, but not a wake. |
 | **Kimi** | **CONDITIONAL** | Needs an out-of-process poster alive: the notifier daemon, a reachable local Kimi server, and a resolvable session id in `~/.kimi-code/session_index.jsonl`. |
-| **agy** (Antigravity) | **CONDITIONAL** | Needs the deliver-watch sidecar alive and `agy-env.json` resolvable, so `agy agentapi send-message` can inject. |
+| **agy** (Antigravity) | **CONDITIONAL** | Needs the deliver-watch sidecar alive and `agy-env.json` present or auto-discoverable (CLI log HTTP LS + conversation; managed instances dir), so `agy agentapi send-message` can inject. |
 | **Codex** (vanilla hooks) | **NONE** at true idle | Hooks fire on session activity only. `hooks+wake` (tmux/herdr input injection) is a legacy partial mitigation, not a guarantee. |
 | **Claude Code** | **NONE** at true idle | PostToolUse / Stop / SessionStart are activity-triggered. CONDITIONAL only if the agent armed `c2c monitor`. |
 | **Grok** | **NONE** at true idle | Skill + SessionStart/SessionEnd hooks. The skill *instructs* the agent to arm a Monitor — a model decision. CONDITIONAL only if armed. |

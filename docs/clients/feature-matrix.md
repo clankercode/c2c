@@ -273,11 +273,15 @@ merged hooks under `~/.gemini/`, never an MCP server. There is no MCP path in th
 vanilla install.
 
 **Auto-delivery mechanism**: **agentapi inject** by the `c2c start … deliver-watch`
-sidecar (`c2c_agy_deliver.ml`). The sidecar reads
-`~/.c2c/instances/<sid>/agy-env.json` (`ls_address` + `conversation_id`, written by
-the SessionStart hook), drains the repo inbox plus the cross-repo sessions-broker
-inbox, and injects standard `<c2c event="message">` envelopes via `agy agentapi
-send-message --title="c2c inbound" <conversation_id> <content>` with
+sidecar (`c2c_agy_deliver.ml` / `C2c_agy_agentapi`). The sidecar reads
+`~/.local/share/c2c/instances/<sid>/agy-env.json` (or `$C2C_INSTANCES_DIR/<sid>/`;
+`ls_address` + `conversation_id`). Env is written by SessionStart when
+`ANTIGRAVITY_LS_ADDRESS` is present, and **auto-discovered** by deliver-watch when
+it is not: HTTP LS port + conversation id from the agy CLI log (pid-scoped when
+possible), minting a wake conversation via `agy agentapi new-conversation` if the
+TUI is still conversation-less. Then drains the repo inbox plus the cross-repo
+sessions-broker inbox and injects standard `<c2c event="message">` envelopes via
+`agy agentapi send-message --title="c2c inbound" <conversation_id> <content>` with
 `ANTIGRAVITY_LS_ADDRESS` set. The broker inbox is drained **only after a successful
 inject** (persist-first). Fallback: `c2c poll-inbox` / `c2c monitor`. Hooks alone do
 **not** wake an idle TUI — they only do a single backup drain + identity

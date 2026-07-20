@@ -257,7 +257,10 @@ per-file, so it disabled other tools' hooks in that file too); and the
 teardown arm treated `Stop` — an ordinary turn-end event for agy — as
 session-end, unconditionally deleting `agy-env.json` at every turn end, which
 is the file the agy-inject sidecar needs precisely during the idle window
-(#61). Both are fixed and merged. **#69 is fixed too**: agy runs hooks with cwd
+(#61). Both are fixed and merged. **Managed auto-env (2026-07-21):** hooks often
+lack `ANTIGRAVITY_LS_ADDRESS` on managed start; deliver-watch / `C2c_agy_agentapi.ensure_agy_env`
+now discovers HTTP LS + conversation from the CLI log (pid-scoped) and writes
+`~/.local/share/c2c/instances/<sid>/agy-env.json` (not `~/.c2c/instances/`). **#69 is fixed too**: agy runs hooks with cwd
 `~/.gemini/config`, so an unmanaged session used to register into the `default`
 broker and be invisible to peers in its own repo. `c2c hook agy` now takes the
 workspace from the payload's **`workspacePaths`** and `chdir`s there before
