@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-20T00:25:28Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-07-19T23:48:00Z"
@@ -6,8 +8,8 @@ depends_on: []
 estimate_hours: 3
 id: P2.M1.E1.T001
 priority: high
-started_at: null
-status: pending
+started_at: "2026-07-20T00:25:28Z"
+status: in_progress
 tags:
     - i010
     - c2c
@@ -15,7 +17,7 @@ tags:
     - codex
     - proof
 title: Codex app-server restart-stale live proof (real tmux)
-updated_at: "2026-07-19T23:48:00Z"
+updated_at: "2026-07-20T00:25:28Z"
 ---
 Deploy-gate live proof for I010. See full spec appended.
 
