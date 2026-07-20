@@ -487,21 +487,22 @@ open C2c_mcp_helpers
                  `c2c hook stop` scripts; `c2c hook claude` itself is
                  SessionStart/SessionEnd only and hard-exits on anything else)
        - agy   : SessionStart + PostToolUse + Stop (C2c_setup agy hooks)
-     Grok and kimi are installed with SessionStart + SessionEnd ONLY. Neither
-     has an event that can refresh the anchor, so neither may decay. They stay
-     immortal — 226 of the 664 ghosts persist — and that is the deliberate
-     trade: a client left immortal costs peer-discovery noise; a live client
-     declared Dead costs mail. Give grok/kimi a real mid-session hook (or an
-     out-of-band touch that does not depend on the model choosing to act) and
-     move them here, with the anchor test proving it — never before.
+     Grok and kimi historically installed SessionStart + SessionEnd ONLY and
+     stayed immortal (#59 carve-out). Empirically both fire mid-session events
+     (UserPromptSubmit / PreToolUse / PostToolUse / Stop); #59 installs those
+     hooks and adds kimi-hook / grok-hook here only after the touch path exists.
 
      Deliberately NOT suffix-matched: a new client's hook must opt IN after
      someone checks its installed events, because the default failure mode of
      opting-out (ghosts) is recoverable and the default failure mode of
      opting-in (lost mail) is not. *)
+  (* #59: kimi-hook and grok-hook join only after mid-session install +
+     touch path exist (research 2026-07-20T12-00-00Z). Do not add clients
+     here without verified repeating hooks that reach touch_hook_activity. *)
   let hook_anchor_is_activity_backed reg =
     match reg.registered_by with
-    | Some ("codex-hook" | "claude-hook" | "agy-hook") -> true
+    | Some ("codex-hook" | "claude-hook" | "agy-hook" | "kimi-hook" | "grok-hook") ->
+        true
     | _ -> false
 
   (* #51: was codex-hook-only, which left claude/agy hook rows with no decay

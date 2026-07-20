@@ -587,17 +587,42 @@ let append_toml_block ?(block_id = approval_hook_block_id) ~config_path ~hook_pa
 
 let session_start_hook_block_id = "session-start-hook-kimi"
 
-(* Active-by-default SessionStart hook. Auto-registers this Kimi Code session
-   on the c2c broker so the REST prompt-injection delivery path can target it.
-   Unlike the PreToolUse approval block above, this ships uncommented: it is
-   the default receive surface for managed and vanilla Kimi Code sessions. *)
+(* Active-by-default session hooks. SessionStart auto-registers so REST
+   delivery can target the session; mid-session events refresh the #51
+   activity anchor; SessionEnd deregisters hook-owned rows. Unlike the
+   PreToolUse approval block above, this ships uncommented. *)
+(* #59: SessionStart still registers; mid-session events refresh
+   last_activity_ts so kimi-hook rows can decay under #51. Empirically
+   confirmed on Kimi Code 0.28 (see research 2026-07-20T12-00-00Z). *)
 let session_start_toml_block_template = {toml|
-# c2c-managed SessionStart hook for Kimi Code.
-# Auto-registers this Kimi Code session on the c2c broker at session start.
+# c2c-managed session hooks for Kimi Code.
+# SessionStart: auto-register on the broker.
+# UserPromptSubmit / PreToolUse / PostToolUse / Stop: activity anchors (#59).
+# SessionEnd: deregister hook-owned rows.
 # Installed by `c2c install kimi`.
 
 [[hooks]]
 event = "SessionStart"
+command = "c2c hook kimi"
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "c2c hook kimi"
+
+[[hooks]]
+event = "PreToolUse"
+command = "c2c hook kimi"
+
+[[hooks]]
+event = "PostToolUse"
+command = "c2c hook kimi"
+
+[[hooks]]
+event = "Stop"
+command = "c2c hook kimi"
+
+[[hooks]]
+event = "SessionEnd"
 command = "c2c hook kimi"
 |toml}
 

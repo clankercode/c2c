@@ -166,8 +166,9 @@ let fire ?(extra_env = []) ctx ~args ~payload =
    - the installed hook events (`C2c_setup`: codex writes
      UserPromptSubmit+PostToolUse+SessionStart+SessionEnd; agy writes
      SessionStart+PostToolUse+Stop; claude writes PostToolUse+Stop alongside
-     its SessionStart/SessionEnd hook; grok and kimi write SessionStart and
-     SessionEnd only), and
+     its SessionStart/SessionEnd hook; grok and kimi write SessionStart +
+     mid-session UserPromptSubmit/PreToolUse/PostToolUse/Stop + SessionEnd
+     after #59), and
    - [Broker.hook_anchor_is_activity_backed], which gates decay. *)
 let clients =
   [ ( "codex-hook"
@@ -186,8 +187,18 @@ let clients =
        (#61) — that was the bug, not the contract: agy installs Stop as an
        ordinary turn-end hook, so it is the most frequent anchor agy has. *)
   ; ("agy-hook", "agy", [ ("hook agy PostToolUse", ""); ("hook agy Stop", "") ])
-  ; ("grok-hook", "grok", [])
-  ; ("kimi-hook", "kimi", [])
+  ; ( "grok-hook"
+    , "grok"
+    , [ ("hook grok", {|"hook_event_name":"PostToolUse",|})
+      ; ("hook grok", {|"hook_event_name":"UserPromptSubmit",|})
+      ; ("hook grok", {|"hook_event_name":"Stop",|})
+      ] )
+  ; ( "kimi-hook"
+    , "kimi"
+    , [ ("hook kimi", {|"hook_event_name":"PostToolUse",|})
+      ; ("hook kimi", {|"hook_event_name":"UserPromptSubmit",|})
+      ; ("hook kimi", {|"hook_event_name":"Stop",|})
+      ] )
   ]
 
 (* Forward direction: a mid-session hook fire must move the anchor. *)
