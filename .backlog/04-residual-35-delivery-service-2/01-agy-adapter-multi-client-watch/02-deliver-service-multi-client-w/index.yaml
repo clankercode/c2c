@@ -14,7 +14,8 @@ tasks:
       file: T001-deliver-service-watch-set-incl.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: deliver-service watch-set includes agy endpoints
     - complexity: medium
       depends_on:
