@@ -56,3 +56,10 @@ Derived from: I010 + I011. Depends on G + H + I + J. Owns final docs/closeout so
 
 ### OPERATOR CORRECTION (2026-07-20) — idea status semantics
 The operator defines an idea as complete once fully ingested. I010 and I011 were fully ingested into P2 and are already `done`; do NOT reopen them and do NOT use their idea statuses as implementation-completion flags. Reconcile their bodies/evidence only if useful, preserve `done`, and express delivered versus residual implementation truth through P2 tasks, closeout artifacts, and any GO follow-up tasks.
+
+
+### Operator note (2026-07-20) — G split
+Original G was split into G1 (P2.M2.E1.T004 app-server) and G2 (P2.M2.E1.T005
+outer-loop) before claim, per D. This closeout task now depends on both G1 and
+G2. I010 literal all-managed-instance AC is met only when G1+G2 both ship.
+I010/I011 idea status remains done under ingestion semantics; do not reopen.
