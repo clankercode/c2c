@@ -80,9 +80,22 @@ let state_root = function
       | _ -> j)
   | j -> j
 
+let is_idle_event_type = function
+  | "session.idle" | "session.status.idle" -> true
+  | _ -> false
+
+let is_busy_event_type = function
+  | "session.status.busy" | "step.start" | "session.created" -> true
+  | s when String.length s > 11 && String.sub s 0 11 = "permission." -> true
+  | _ -> false
+
 (** Authoritative OpenCode path: plugin writes [agent.is_idle] on
     session.idle / session.status events into the instance statefile.
-    Freshness is required so a stale snapshot cannot claim Idle forever. *)
+
+    Heartbeats refresh [state_last_updated_at] without changing [is_idle], so
+    Idle must be corroborated by a recent idle-class [last_step] event — not
+    merely a live plugin heartbeat. That keeps Idle authoritative and
+    fail-closed rather than an activity-age proxy. *)
 let query_opencode_statefile ~(statefile : string) ~(now : float)
     ~(freshness_s : float) : idle_state =
   match C2c_io.read_json_opt statefile with
@@ -115,10 +128,37 @@ let query_opencode_statefile ~(statefile : string) ~(now : float)
            match Json_util.assoc_opt "agent" state with
            | None -> Unknown "opencode statefile missing agent block"
            | Some agent -> (
-               match Json_util.bool_member "is_idle" agent with
-               | Some true -> Idle
-               | Some false -> Busy
-               | None ->
+               let last_step = Json_util.assoc_opt "last_step" agent in
+               let step_type =
+                 match last_step with
+                 | Some step -> Json_util.string_member "event_type" step
+                 | None -> None
+               in
+               let step_at =
+                 match last_step with
+                 | Some step -> (
+                     match Json_util.string_member "at" step with
+                     | Some s -> parse_rfc3339_opt s
+                     | None -> None)
+                 | None -> None
+               in
+               match Json_util.bool_member "is_idle" agent, step_type, step_at with
+               | Some true, Some ev, Some at
+                 when is_idle_event_type ev && now -. at <= freshness_s
+                      && at -. now <= 5.0 ->
+                   Idle
+               | Some true, Some ev, Some at when is_idle_event_type ev ->
+                   Unknown
+                     (Printf.sprintf
+                        "opencode idle last_step stale (age %.1fs > %.1fs)"
+                        (now -. at) freshness_s)
+               | Some true, _, _ ->
+                   Unknown
+                     "opencode is_idle=true without recent idle last_step \
+                      (heartbeat freshness alone is not authoritative)"
+               | Some false, Some ev, _ when is_busy_event_type ev -> Busy
+               | Some false, _, _ -> Busy
+               | None, _, _ ->
                    Unknown "opencode agent.is_idle absent (null/unknown)")))
 
 (** Codex app-server: only the owner's thread_status query is authoritative.

@@ -31,13 +31,27 @@ let iso_at epoch =
     (tm.Unix.tm_year + 1900) (tm.Unix.tm_mon + 1) tm.Unix.tm_mday
     tm.Unix.tm_hour tm.Unix.tm_min tm.Unix.tm_sec
 
-let write_opencode_state dir ~name ~is_idle ~updated_epoch =
+let write_opencode_state dir ~name ~is_idle ~updated_epoch
+    ?last_step_type ?last_step_epoch () =
   let path = Filename.concat dir "oc-plugin-state.json" in
   let ts = iso_at updated_epoch in
+  let last_step =
+    match last_step_type with
+    | None -> []
+    | Some ev ->
+        let at =
+          match last_step_epoch with
+          | Some e -> iso_at e
+          | None -> ts
+        in
+        [ ( "last_step",
+            `Assoc [ ("event_type", `String ev); ("at", `String at) ] )
+        ]
+  in
   let agent =
     match is_idle with
-    | None -> `Assoc [ ("is_idle", `Null) ]
-    | Some b -> `Assoc [ ("is_idle", `Bool b) ]
+    | None -> `Assoc ([ ("is_idle", `Null) ] @ last_step)
+    | Some b -> `Assoc ([ ("is_idle", `Bool b) ] @ last_step)
   in
   let json =
     `Assoc
@@ -74,11 +88,13 @@ let test_opencode_idle_busy_fresh () =
   let dir = tmp_dir () in
   let now = 1_700_000_000.0 in
   ignore (write_opencode_state dir ~name:"oc1" ~is_idle:(Some true)
-            ~updated_epoch:now);
+            ~updated_epoch:now ~last_step_type:"session.idle"
+            ~last_step_epoch:now ());
   check_state "opencode idle" C2c_idle_contract.Idle
     (C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now ());
   ignore (write_opencode_state dir ~name:"oc1" ~is_idle:(Some false)
-            ~updated_epoch:now);
+            ~updated_epoch:now ~last_step_type:"session.status.busy"
+            ~last_step_epoch:now ());
   check_state "opencode busy" C2c_idle_contract.Busy
     (C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now ())
 
@@ -94,7 +110,8 @@ let test_opencode_stale_and_null_fail_closed () =
   let dir = tmp_dir () in
   let now = 1_700_000_100.0 in
   ignore (write_opencode_state dir ~name:"oc1" ~is_idle:(Some true)
-            ~updated_epoch:(now -. 200.0));
+            ~updated_epoch:(now -. 200.0) ~last_step_type:"session.idle"
+            ~last_step_epoch:(now -. 200.0) ());
   (match
      C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now
        ~opencode_freshness_s:90.0 ()
@@ -106,7 +123,7 @@ let test_opencode_stale_and_null_fail_closed () =
        Alcotest.failf "expected Unknown, got %s"
          (C2c_idle_contract.idle_state_to_string other));
   ignore (write_opencode_state dir ~name:"oc1" ~is_idle:None
-            ~updated_epoch:now);
+            ~updated_epoch:now ());
   check_state "null is_idle is unknown"
     (C2c_idle_contract.Unknown "opencode agent.is_idle absent (null/unknown)")
     (C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now ())
@@ -115,7 +132,8 @@ let test_opencode_future_timestamp_fail_closed () =
   let dir = tmp_dir () in
   let now = 1_700_000_000.0 in
   ignore (write_opencode_state dir ~name:"oc1" ~is_idle:(Some true)
-            ~updated_epoch:(now +. 3600.0));
+            ~updated_epoch:(now +. 3600.0) ~last_step_type:"session.idle"
+            ~last_step_epoch:(now +. 3600.0) ());
   match
     C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now
       ~opencode_freshness_s:90.0 ()
@@ -170,6 +188,34 @@ let test_resolve_codex_by_mapping () =
        ~has_app_server_mapping:false
      = Some C2c_idle_contract.Codex_hooks)
 
+let test_opencode_heartbeat_alone_not_idle () =
+  (* Heartbeat refreshes state_last_updated_at without a recent idle last_step.
+     That must NOT grant Idle. *)
+  let dir = tmp_dir () in
+  let now = 1_700_000_200.0 in
+  ignore (write_opencode_state dir ~name:"oc1" ~is_idle:(Some true)
+            ~updated_epoch:now ~last_step_type:"session.idle"
+            ~last_step_epoch:(now -. 200.0) ());
+  (match
+     C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now
+       ~opencode_freshness_s:90.0 ()
+   with
+   | C2c_idle_contract.Unknown reason ->
+       Alcotest.(check bool) "stale last_step" true
+         (contains reason "stale" || contains reason "last_step")
+   | other ->
+       Alcotest.failf "heartbeat-only idle must be Unknown, got %s"
+         (C2c_idle_contract.idle_state_to_string other));
+  ignore (write_opencode_state dir ~name:"oc1" ~is_idle:(Some true)
+            ~updated_epoch:now ());
+  match C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now () with
+  | C2c_idle_contract.Unknown reason ->
+      Alcotest.(check bool) "missing last_step" true
+        (contains reason "last_step" || contains reason "heartbeat")
+  | other ->
+      Alcotest.failf "is_idle without last_step must be Unknown, got %s"
+        (C2c_idle_contract.idle_state_to_string other)
+
 let test_never_uses_activity_age_for_claude () =
   (* Even with a fabricated "recent activity" file, Claude stays Unknown —
      activity-age is not a substitute for authoritative idle. *)
@@ -192,6 +238,8 @@ let () =
             test_opencode_stale_and_null_fail_closed
         ; Alcotest.test_case "opencode future timestamp fail closed" `Quick
             test_opencode_future_timestamp_fail_closed
+        ; Alcotest.test_case "opencode heartbeat alone not idle" `Quick
+            test_opencode_heartbeat_alone_not_idle
         ; Alcotest.test_case "opencode missing statefile" `Quick
             test_opencode_missing_statefile
         ; Alcotest.test_case "claude/kimi/agy/hooks unknown" `Quick
