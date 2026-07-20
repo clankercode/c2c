@@ -12,7 +12,7 @@ tasks:
       file: T001-move-agy-agentapi-send-into-c2.todo
       id: T001
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Move agy agentapi send into c2c_mcp-callable surface
     - complexity: high
