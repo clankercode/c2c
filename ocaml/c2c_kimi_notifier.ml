@@ -785,16 +785,18 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir =
     let to_keep = to_skip @ !undelivered in
     write_inbox_file ~broker_root ~session_id:drain_sid to_keep;
     let n = List.length !delivered in
-    (* Wake pane if idle and something was delivered.  The wake fires even
-       when we have no session_dir (managed Kimi sessions have no predictable
-       session id) because tmux_pane_is_idle falls back to the captured-pane
-       heuristic when session_dir is absent. *)
+    (* REST /api/v1/sessions/{id}/prompts already injects a turn.prompt into the
+       live session (wire.jsonl). Default: do NOT also type "[c2c] check inbox"
+       into the TUI composer — on modern kimi-code Enter often fails
+       (extended-keys/focus), so the text stacks while the real turn already
+       ran. Opt-in only: C2C_KIMI_TMUX_COMPOSER_WAKE=1 for legacy hosts. *)
     (match tmux_pane with
-     | Some pane when n > 0 ->
-       if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
-         tmux_wake ~pane
+     | Some pane when n > 0
+       && Sys.getenv_opt "C2C_KIMI_TMUX_COMPOSER_WAKE" = Some "1" ->
+         if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
+           tmux_wake ~pane
      | _ -> ());
-     n
+    n
 
 (* ─── P4: global sessions broker drain ─────────────────────────────────────── *)
 
@@ -877,9 +879,10 @@ let poll_once_global ~session_id ~alias ~tmux_pane ~workdir =
          not recoverable without sender re-send. *)
       let n = List.length !delivered in
       (match tmux_pane with
-       | Some pane when n > 0 ->
-         if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
-           tmux_wake ~pane
+       | Some pane when n > 0
+         && Sys.getenv_opt "C2C_KIMI_TMUX_COMPOSER_WAKE" = Some "1" ->
+           if tmux_pane_is_idle ~pane ?session_dir:session_dir_opt () then
+             tmux_wake ~pane
        | _ -> ());
       n
 
