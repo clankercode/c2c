@@ -249,6 +249,8 @@ let test_filter_env_strips_ambient_and_instance () =
      ; "PATH=/usr/bin"
      ; "C2C_INSTANCE_NAME=should-go"
      ; "C2C_MCP_BROKER_ROOT=/tmp/broker"
+     ; "C2C_RELAY_TOKEN=secret-should-go"
+     ; "C2C_AUTH_TOKEN=also-secret"
      ; "SECRET_TOKEN=nope"
      ; "AWS_SECRET_ACCESS_KEY=nope"
      ; "TERM=xterm"
@@ -267,6 +269,10 @@ let test_filter_env_strips_ambient_and_instance () =
   Alcotest.(check bool) "keeps TERM" true (List.mem "TERM" keys);
   Alcotest.(check bool) "strips instance" false
     (List.mem "C2C_INSTANCE_NAME" keys);
+  Alcotest.(check bool) "strips C2C_RELAY_TOKEN" false
+    (List.mem "C2C_RELAY_TOKEN" keys);
+  Alcotest.(check bool) "strips C2C_AUTH_TOKEN" false
+    (List.mem "C2C_AUTH_TOKEN" keys);
   Alcotest.(check bool) "strips SECRET" false (List.mem "SECRET_TOKEN" keys);
   Alcotest.(check bool) "strips AWS" false
     (List.mem "AWS_SECRET_ACCESS_KEY" keys)

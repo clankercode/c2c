@@ -96,9 +96,9 @@ let env_key e =
   try String.sub e 0 (String.index e '=') with Not_found -> e
 
 let is_controlled_key k =
+  (* Finite allowlist only — never a C2C_* wildcard. Credential-bearing
+     ambient vars (C2C_RELAY_TOKEN, etc.) must not ride a self-reexec. *)
   List.exists (fun allowed -> String.equal allowed k) controlled_env_keys
-  || (String.length k > 4 && String.sub k 0 4 = "C2C_"
-      && k <> "C2C_INSTANCE_NAME")
 
 (** Build a controlled environment from [source] (default: current env).
     Always strips [C2C_INSTANCE_NAME] so a re-exec of `c2c start` does not
@@ -170,9 +170,26 @@ let request_restart ~instance_dir ~instance_name ~(force : bool)
 
 let parse_request = function
   | `Assoc fields ->
+      let id_ok s =
+        (* Generated shape: "<pid>-<hex>". Reject path separators / junk so a
+           crafted request_id cannot escape the instance_dir. *)
+        let s = String.trim s in
+        String.length s > 0 && String.length s < 128
+        && (try
+              String.iter
+                (function
+                  | 'a' .. 'z'
+                  | 'A' .. 'Z'
+                  | '0' .. '9'
+                  | '-' | '_' -> ()
+                  | _ -> raise Exit)
+                s;
+              true
+            with Exit -> false)
+      in
       let id =
         match string_member "request_id" fields with
-        | Some s when String.trim s <> "" -> s
+        | Some s when id_ok s -> s
         | _ -> fresh_request_id ()
       in
       let instance_name =
