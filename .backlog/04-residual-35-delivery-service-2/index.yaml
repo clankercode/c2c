@@ -2,7 +2,7 @@ complexity: medium
 depends_on: []
 estimate_hours: 16
 id: P4
-locked: false
+locked: true
 milestones:
     - complexity: medium
       depends_on: []
@@ -12,7 +12,7 @@ milestones:
       locked: false
       name: agy adapter + multi-client watch + smoke
       path: 01-agy-adapter-multi-client-watch
-      status: pending
+      status: done
 name: 'Residual #35 delivery-service (2nd adapter + dogfood)'
-status: pending
+status: done
 weeks: 2

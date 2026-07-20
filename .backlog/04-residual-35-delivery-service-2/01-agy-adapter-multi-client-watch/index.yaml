@@ -19,9 +19,9 @@ epics:
       locked: false
       name: deliver-service multi-client watch + live smoke
       path: 02-deliver-service-multi-client-w
-      status: pending
+      status: done
 estimate_hours: 12
 id: P4.M1
 locked: false
 name: agy adapter + multi-client watch + smoke
-status: pending
+status: done
