@@ -39,6 +39,10 @@ val endpoint_of_kimi_reg :
   broker_root:string -> C2c_mcp.registration -> endpoint option
 
 module Kimi : S
+module Agy : S
+
+val endpoint_of_agy_reg :
+  broker_root:string -> C2c_mcp.registration -> endpoint option
 
 val drain_policy_to_string : drain_policy -> string
 val probe_to_string : probe_result -> string

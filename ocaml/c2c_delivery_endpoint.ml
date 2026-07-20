@@ -102,6 +102,43 @@ end
 
 let () = register (module Kimi)
 
+
+
+(** Derive agy endpoint from registration. *)
+let endpoint_of_agy_reg ~broker_root (reg : C2c_mcp.registration) : endpoint option =
+  let ct_ok =
+    match reg.client_type with
+    | Some ct -> String.lowercase_ascii (String.trim ct) = "agy"
+    | None ->
+        (match reg.registered_by with
+         | Some rb -> String.lowercase_ascii rb = "agy-hook"
+         | None -> false)
+  in
+  if not ct_ok then None
+  else
+    Some
+      { kind = "agy"
+      ; broker_root
+      ; session_id = reg.session_id
+      ; alias = reg.alias
+      ; workdir = reg.cwd
+      }
+
+module Agy : S = struct
+  let kind = "agy"
+  let drain_policy = After_push
+
+  let probe (ep : endpoint) : probe_result =
+    match C2c_agy_agentapi.read_agy_env ep.session_id with
+    | None -> `Dead "agy-env.json missing"
+    | Some _ -> `Live
+
+  let deliver (ep : endpoint) (msg : C2c_mcp.message) : (unit, string) result =
+    C2c_agy_agentapi.deliver_messages ~session_id:ep.session_id [ msg ]
+end
+
+let () = register (module Agy)
+
 let drain_policy_to_string = function
   | After_push -> "after_push"
   | Hooks_own_drain -> "hooks_own_drain"
