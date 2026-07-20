@@ -37,6 +37,7 @@ let command_tier_map () : (string * safety) list =
   ; "send-all", Tier1
   ; "sweep", Tier1
   ; "sweep-dryrun", Tier1
+  ; "gc-inboxes", Tier2  (* destructive maintenance; dry-run default, --apply to delete *)
   ; "monitor", Tier1
   ; "screen", Tier1
   ; "history", Tier1

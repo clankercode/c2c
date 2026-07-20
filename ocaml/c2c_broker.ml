@@ -3763,6 +3763,193 @@ open C2c_mcp_helpers
     do_broadcast ();
     result
 
+  (* --------------------------------------------------------------------- *)
+  (* #53: gc-inboxes — reclaim inbox files that have NO registration row.   *)
+  (*                                                                        *)
+  (* Distinct from [sweep], which also deletes inboxes belonging to DEAD    *)
+  (* rows. gc-inboxes ONLY targets an inbox whose session_id is absent from *)
+  (* the registry ENTIRELY — no row at all (not dead, not pidless). A dead  *)
+  (* or pidless row is reachable (#51/#59 territory: the session can resume *)
+  (* and drain), so its inbox is preserved. Two independent guards must     *)
+  (* BOTH hold before an inbox is eligible:                                 *)
+  (*   1. no-row  — its session_id appears in NO registry row.              *)
+  (*   2. age     — the file mtime AND the newest message ts are both older *)
+  (*                than [older_than_s]. This is the RACE GUARD: an inbox    *)
+  (*                written microseconds before its registration lands has  *)
+  (*                a fresh mtime and is NOT reclaimed. Any recent signal    *)
+  (*                (fresh file OR fresh message) protects it.              *)
+  (* Fails CLOSED: if the registry cannot be read as a JSON list (missing,  *)
+  (* oversized, or unparseable) NO inbox is a candidate — reclaiming against *)
+  (* an empty/misread registry would delete every mailbox. An operator with *)
+  (* genuinely zero registrations can write `[]` to registry.json to opt in *)
+  (* deliberately. *)
+
+  type gc_inbox_candidate =
+    { gc_session_id : string
+    ; gc_message_count : int
+    ; gc_newest_ts : float option
+    ; gc_mtime : float
+    ; gc_by_sender : (string * int) list
+    }
+
+  type gc_inboxes_result =
+    { gc_root : string
+    ; gc_registry_readable : bool
+    ; gc_inbox_files : int
+    ; gc_orphans_total : int
+    ; gc_candidates : gc_inbox_candidate list
+    ; gc_skipped_recent : int
+    ; gc_applied : bool
+    ; gc_deleted : string list
+    ; gc_deleted_messages : int
+    }
+
+  (* Strict registry read for gc: returns [Some tbl] whose keys are every
+     session_id present in the registry (rows of ANY liveness — alive, dead,
+     pidless), or [None] when the registry cannot be trusted (missing /
+     oversized / unparseable / not a JSON list). A generous 4 MiB cap is used
+     rather than [read_json_file]'s 64 KiB so a large-but-valid registry on a
+     busy broker is not mistaken for corruption (which would fail closed and
+     never reclaim anything). This is deliberately NOT [load_registrations],
+     which fails OPEN (returns [] on a parse error) and would make every inbox
+     look orphaned. *)
+  let gc_registry_session_ids_strict t : (string, unit) Hashtbl.t option =
+    let path = registry_path t in
+    if not (Sys.file_exists path) then None
+    else
+      let content = C2c_io.read_file_opt path in
+      if String.length content > 4 * 1024 * 1024 then None
+      else
+        match (try Some (Yojson.Safe.from_string content) with _ -> None) with
+        | Some (`List items) ->
+            let tbl = Hashtbl.create 256 in
+            List.iter
+              (function
+                | `Assoc fields ->
+                    (match List.assoc_opt "session_id" fields with
+                     | Some (`String sid) -> Hashtbl.replace tbl sid ()
+                     | _ -> ())
+                | _ -> ())
+              items;
+            Some tbl
+        | _ -> None
+
+  let gc_by_sender (msgs : message list) : (string * int) list =
+    let tbl = Hashtbl.create 16 in
+    List.iter
+      (fun (m : message) ->
+        let n = try Hashtbl.find tbl m.from_alias with Not_found -> 0 in
+        Hashtbl.replace tbl m.from_alias (n + 1))
+      msgs;
+    Hashtbl.fold (fun k v acc -> (k, v) :: acc) tbl []
+    |> List.sort (fun (_, a) (_, b) -> compare (b : int) a)
+
+  let gc_inbox_mtime t ~session_id =
+    try Some (Unix.stat (inbox_path t ~session_id)).Unix.st_mtime
+    with Unix.Unix_error _ -> None
+
+  (* Describe an orphan inbox and decide the age verdict. Caller has already
+     established no-row. Returns [(candidate, eligible)] where [eligible] is
+     the age guard: BOTH the file mtime AND the newest message ts must precede
+     [cutoff]. A vanished file (mtime = None, a concurrent delete) is treated
+     as NOT old -> not eligible. *)
+  let gc_describe_orphan t ~session_id ~cutoff =
+    let msgs = load_inbox t ~session_id in
+    let newest_ts =
+      match msgs with
+      | [] -> None
+      | _ -> Some (List.fold_left (fun acc (m : message) -> max acc m.ts) 0. msgs)
+    in
+    let mtime_opt = gc_inbox_mtime t ~session_id in
+    let cand =
+      { gc_session_id = session_id
+      ; gc_message_count = List.length msgs
+      ; gc_newest_ts = newest_ts
+      ; gc_mtime = (match mtime_opt with Some m -> m | None -> 0.)
+      ; gc_by_sender = gc_by_sender msgs
+      }
+    in
+    let mtime_old = match mtime_opt with Some m -> m < cutoff | None -> false in
+    let ts_old = match newest_ts with None -> true | Some ts -> ts < cutoff in
+    (cand, mtime_old && ts_old)
+
+  (* [gc_inboxes t ~older_than_s ~apply] — reclaim (or, when [apply=false],
+     preview) orphan inbox files. See the header comment for the invariant.
+     The preview path is lock-free (best-effort snapshot for reporting). The
+     apply path takes the registry lock for the whole transaction (so a
+     registration that appears concurrently protects its inbox — its
+     session_id is re-read from the freshly-locked registry) and the per-inbox
+     lock around each unlink (so it interlocks with a concurrent enqueue,
+     which holds the same lock). Lock order registry -> inbox matches the rest
+     of the broker. The .inbox.lock sidecar is intentionally left in place,
+     exactly as [sweep] does. *)
+  let gc_inboxes t ~older_than_s ~apply : gc_inboxes_result =
+    ensure_root t;
+    let now = Unix.gettimeofday () in
+    let cutoff = now -. older_than_s in
+    let scan reg_sids =
+      let inbox_sids = list_inbox_session_ids t in
+      let orphans =
+        List.filter (fun sid -> not (Hashtbl.mem reg_sids sid)) inbox_sids
+      in
+      let candidates, skipped =
+        List.fold_left
+          (fun (cands, skipped) sid ->
+            let cand, eligible = gc_describe_orphan t ~session_id:sid ~cutoff in
+            if eligible then (cand :: cands, skipped) else (cands, skipped + 1))
+          ([], 0) orphans
+      in
+      (List.length inbox_sids, List.length orphans, List.rev candidates, skipped)
+    in
+    let closed applied =
+      { gc_root = t.root; gc_registry_readable = false; gc_inbox_files = 0
+      ; gc_orphans_total = 0; gc_candidates = []; gc_skipped_recent = 0
+      ; gc_applied = applied; gc_deleted = []; gc_deleted_messages = 0 }
+    in
+    if not apply then
+      match gc_registry_session_ids_strict t with
+      | None -> closed false
+      | Some reg_sids ->
+          let files, orphans_total, candidates, skipped = scan reg_sids in
+          { gc_root = t.root; gc_registry_readable = true; gc_inbox_files = files
+          ; gc_orphans_total = orphans_total; gc_candidates = candidates
+          ; gc_skipped_recent = skipped; gc_applied = false
+          ; gc_deleted = []; gc_deleted_messages = 0 }
+    else
+      with_registry_lock t (fun () ->
+        match gc_registry_session_ids_strict t with
+        | None -> closed true
+        | Some reg_sids ->
+            let files, orphans_total, candidates, skipped = scan reg_sids in
+            let deleted = ref [] in
+            let deleted_messages = ref 0 in
+            List.iter
+              (fun cand ->
+                let sid = cand.gc_session_id in
+                with_inbox_lock t ~session_id:sid (fun () ->
+                    (* Re-verify under the inbox lock: a delivery that raced the
+                       preview took this same lock, so state is now settled.
+                       Re-check no-row (against the freshly-locked registry) and
+                       re-check age (re-stat + reload); only then unlink. *)
+                    if not (Hashtbl.mem reg_sids sid) then begin
+                      let _cand2, eligible =
+                        gc_describe_orphan t ~session_id:sid ~cutoff
+                      in
+                      if eligible then begin
+                        let n = List.length (load_inbox t ~session_id:sid) in
+                        if try_unlink (inbox_path t ~session_id:sid) then begin
+                          deleted := sid :: !deleted;
+                          deleted_messages := !deleted_messages + n
+                        end
+                      end
+                    end))
+              candidates;
+            { gc_root = t.root; gc_registry_readable = true; gc_inbox_files = files
+            ; gc_orphans_total = orphans_total; gc_candidates = candidates
+            ; gc_skipped_recent = skipped; gc_applied = true
+            ; gc_deleted = List.rev !deleted
+            ; gc_deleted_messages = !deleted_messages })
+
   (** [registry_prune t ~managed_session_ids ~patterns] — remove dead test registrations.
       Partitions registrations into kept and pruned: a registration is pruned
       when BOTH (1) it is dead per [is_sweep_keepable] AND (2) its alias

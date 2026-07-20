@@ -602,6 +602,35 @@ module Broker : sig
       bounded pidless liveness and offline-mail protection. *)
   val sweep_preview : t -> sweep_result
   val sweep : t -> sweep_result
+
+  (* #53: gc-inboxes — reclaim inbox files with NO registration row. *)
+  type gc_inbox_candidate =
+    { gc_session_id : string
+    ; gc_message_count : int
+    ; gc_newest_ts : float option
+    ; gc_mtime : float
+    ; gc_by_sender : (string * int) list
+    }
+  type gc_inboxes_result =
+    { gc_root : string
+    ; gc_registry_readable : bool
+    ; gc_inbox_files : int
+    ; gc_orphans_total : int
+    ; gc_candidates : gc_inbox_candidate list
+    ; gc_skipped_recent : int
+    ; gc_applied : bool
+    ; gc_deleted : string list
+    ; gc_deleted_messages : int
+    }
+  (** [gc_inboxes t ~older_than_s ~apply] reclaims (or, when [apply] is false,
+      previews) inbox files whose session_id has NO registration row at all —
+      neither alive, dead, nor pidless. An inbox is a candidate only when it is
+      BOTH row-less AND older than [older_than_s] (file mtime and newest
+      message ts both precede the cutoff — the race guard). Fails closed
+      ([gc_registry_readable = false], zero candidates) when the registry
+      cannot be read as a JSON list. The apply path holds the registry lock
+      across the transaction and the per-inbox lock around each unlink. *)
+  val gc_inboxes : t -> older_than_s:float -> apply:bool -> gc_inboxes_result
   val registry_prune : t -> managed_session_ids:string list -> patterns:string list -> registration list
   val registry_prune_preview : t -> managed_session_ids:string list -> patterns:string list -> registration list
   val deregister : t -> alias:string -> registration option
