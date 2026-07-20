@@ -51,6 +51,12 @@
  (libraries c2c_mcp alcotest yojson unix)
  (deps c2c.exe))
 
+; #74: unit tests for the default-broker cwd-scope filter helpers (pure, no binary needed).
+(test
+ (name test_c2c_list_scope)
+ (modules test_c2c_list_scope)
+ (libraries c2c_mcp alcotest unix))
+
 (test
  (name test_c2c_find)
  (modules test_c2c_find)
