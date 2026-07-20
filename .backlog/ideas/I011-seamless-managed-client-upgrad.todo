@@ -1,4 +1,5 @@
 ---
+completed_at: "2026-07-20T00:19:00Z"
 complexity: high
 created_at: "2026-07-12T08:41:13Z"
 depends_on:
@@ -6,13 +7,10 @@ depends_on:
 estimate_hours: 16
 id: I011
 priority: low
-status: pending
-tags:
-    - c2c
-    - upgrade
-    - followup
-    - app-server
+started_at: null
+status: done
+tags: []
 title: Seamless managed-client upgrades after restart-stale
-updated_at: "2026-07-12T08:41:13Z"
+updated_at: "2026-07-20T00:19:00Z"
 ---
 FOLLOW-UP TO I010. Preserve the deeper work intentionally excluded from c2c restart-stale: (1) define authoritative per-client in-flight-turn/idle state before claiming interruption-safe restarts; (2) evaluate extracting the Codex app-server ingress/autoturn delivery loop into a ledger-backed sidecar so c2c delivery code can upgrade without cycling the Codex TUI/thread; (3) evaluate granular sidecar restart for deliver-inbox/poker; and (4) evaluate monitor/heartbeat upgrade behavior without silently losing visibility. Do not implement these merely for architectural purity. Start with measured restart disruption and real tmux dogfood evidence, then split only justified pieces into concrete tasks. Acceptance for intake: evidence-backed go/no-go for each item, explicit safety invariants, and independently scoped backlog tasks for accepted work.
