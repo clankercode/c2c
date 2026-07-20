@@ -63,7 +63,7 @@ tasks:
       file: T004-wire-restart-stale-to-owner-co.todo
       id: T004
       priority: high
-      status: in_progress
+      status: done
       tags:
         - i010
         - i011

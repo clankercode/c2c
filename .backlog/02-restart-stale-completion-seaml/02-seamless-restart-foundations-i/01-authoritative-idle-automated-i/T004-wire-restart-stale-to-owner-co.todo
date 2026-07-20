@@ -1,17 +1,18 @@
 ---
 claimed_at: "2026-07-20T02:48:06Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T02:53:17Z"
 complexity: high
 created_at: "2026-07-19T23:48:25Z"
 depends_on:
     - P2.M2.E1.T002
     - P2.M2.E1.T003
+duration_minutes: 5.190458222583334
 estimate_hours: 1.5
 id: P2.M2.E1.T004
 priority: high
 started_at: "2026-07-20T02:48:06Z"
-status: in_progress
+status: done
 tags:
     - i010
     - i011
@@ -20,7 +21,7 @@ tags:
     - app-server
     - g1
 title: 'G1: app-server owner self-reexec path (idle/force policy + restart-stale)'
-updated_at: "2026-07-20T02:48:06Z"
+updated_at: "2026-07-20T02:53:17Z"
 ---
 ## Task G1 — App-server owner self-reexec path (split of original G)
 
