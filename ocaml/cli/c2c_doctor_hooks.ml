@@ -897,7 +897,7 @@ let is_kimi_registration (r : C2c_mcp.registration) =
 (* #42: /proc liveness of a pid (best-effort). Mirrors [pid_alive] defined
    later in the grok section; declared here because the kimi classifier needs
    it earlier in the file. *)
-let kimi_pid_alive pid = pid > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" pid)
+let kimi_pid_alive pid = C2c_liveness.pid_alive pid
 
 let classify_kimi_session
     ~(alias : string)
@@ -1194,7 +1194,7 @@ type grok_active_entry = {
   gae_alive : bool;
 }
 
-let pid_alive pid = pid > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" pid)
+let pid_alive pid = C2c_liveness.pid_alive pid
 
 (* Cheap read of <broker>/.monitor-locks/<alias>.lock: true only when the
    lockfile holds a pid that is currently alive in /proc. Stale/missing locks

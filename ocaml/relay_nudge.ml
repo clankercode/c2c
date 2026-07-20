@@ -179,6 +179,7 @@ let nudge_tick ?(from_session_id="broker") ~broker ~cadence_minutes ~idle_minute
   List.iter
     (fun (reg : registration) ->
       (* #335 v2a: nudges require strict Alive state.
+         Purpose Nudge in C2c_liveness.is_alive_for (strict Alive only).
          Diverges from Broker.registration_is_alive (which collapses
          Unknown→Alive for sweep/enqueue backward-compat).
 
