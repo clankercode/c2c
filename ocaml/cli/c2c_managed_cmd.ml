@@ -974,6 +974,15 @@ type stale_action =
   | Skipped of string      (* current / unknown / coordinator-excluded / self *)
   | Failed of string       (* auto-restart was attempted and failed *)
 
+(* Hermetic command-test seam.  The request is still written through the real
+   owner-control path (so tests can inspect its force bit), but a configured
+   result stands in for the live app-server owner and avoids launching Codex.
+   Unset or blank in production. *)
+let restart_stale_owner_result_fixture () =
+  match Sys.getenv_opt "C2C_RESTART_STALE_OWNER_RESULT_FIXTURE" with
+  | Some result when String.trim result <> "" -> Some (String.trim result)
+  | _ -> None
+
 (* Request an in-place restart of one app-server Codex instance via the B153
    owner-control seam, called DIRECTLY (not by shelling out to `c2c restart`).
    The live owner self-reexecs in its own pane; we only write the request and
@@ -986,7 +995,11 @@ let request_app_server_restart ~name ~force ~timeout_s : stale_action =
   try
     let request_id = C2c_codex_session.request_restart ~instance_dir ~force in
     match
-      C2c_codex_session.await_restart_result ~instance_dir ~request_id ~timeout_s
+      match restart_stale_owner_result_fixture () with
+      | Some result -> Some result
+      | None ->
+          C2c_codex_session.await_restart_result ~instance_dir ~request_id
+            ~timeout_s
     with
     | Some "restarting" -> Restarted
     | Some result -> Skipped (Printf.sprintf "app-server owner declined: %s" result)
