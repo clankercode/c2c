@@ -1071,6 +1071,44 @@ let test_fix_ignores_non_c2c_owned_dangling () =
     check int "none failed" 0 (List.length failed);
     check bool "custom script still absent" false (Sys.file_exists missing))
 
+(* #50: `c2c doctor hooks` must surface when the Kimi SessionStart hook
+   (`c2c hook kimi`) is NOT installed, because that silently degrades kimi
+   delivery-identity resolution to session_index.jsonl index-order guessing
+   (the #41 regression). The check reads the installed CONFIG source of truth
+   — the SessionStart [[hooks]] block in ~/.kimi-code/config.toml — not live
+   sessions. *)
+let kimi_config_path home = home // ".kimi-code" // "config.toml"
+
+let test_kimi_hook_degraded_when_block_absent () =
+  with_tmp_dir (fun home ->
+    (* kimi is in use (config present) but no c2c SessionStart hook block. *)
+    write_file (kimi_config_path home) "model = \"kimi\"\n";
+    let r = C2c_doctor_hooks.check_kimi_session_start_hook ~home () in
+    check bool "kimi config detected" true r.C2c_doctor_hooks.khook_config_exists;
+    check bool "SessionStart hook NOT installed (delivery identity degraded)" false
+      r.C2c_doctor_hooks.khook_installed)
+
+let test_kimi_hook_healthy_when_block_present () =
+  with_tmp_dir (fun home ->
+    let config_path = kimi_config_path home in
+    write_file config_path "model = \"kimi\"\n";
+    (* Write the block via the installer's OWN writer so the check is proven
+       against the exact marker `c2c install kimi` emits. *)
+    ignore
+      (C2c_kimi_hook.append_session_start_toml_block ~config_path ~dry_run:false ());
+    let r = C2c_doctor_hooks.check_kimi_session_start_hook ~home () in
+    check bool "kimi config detected" true r.C2c_doctor_hooks.khook_config_exists;
+    check bool "SessionStart hook installed (delivery identity authoritative)" true
+      r.C2c_doctor_hooks.khook_installed)
+
+let test_kimi_hook_not_detected_when_no_config () =
+  with_tmp_dir (fun home ->
+    (* No ~/.kimi-code/config.toml at all — kimi not in use; report is
+       "not detected", not an error. *)
+    let r = C2c_doctor_hooks.check_kimi_session_start_hook ~home () in
+    check bool "no kimi config" false r.C2c_doctor_hooks.khook_config_exists;
+    check bool "hook not installed" false r.C2c_doctor_hooks.khook_installed)
+
 let () =
   run "c2c_doctor_hooks"
     [ ( "dangling_detection"
@@ -1130,5 +1168,13 @@ let () =
         ; test_case "flags ambiguous multi-registration" `Quick test_grok_flags_ambiguous_multi_registration
         ; test_case "quiet when no grok regs" `Quick test_grok_quiet_when_no_grok_regs
         ; test_case "registration detector" `Quick test_grok_registration_detector
+        ] )
+    ; ( "kimi-session-start-hook-50"
+      , [ test_case "degraded when SessionStart block absent" `Quick
+            test_kimi_hook_degraded_when_block_absent
+        ; test_case "healthy when SessionStart block present" `Quick
+            test_kimi_hook_healthy_when_block_present
+        ; test_case "not detected when no kimi config" `Quick
+            test_kimi_hook_not_detected_when_no_config
         ] )
     ]
