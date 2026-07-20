@@ -60,3 +60,5 @@ C2 (single-writer claim) → C3 (liveness policy) → C1 (DeliveryEndpoint hybri
 - Epic **P3.M1.E3** C1 endpoint — T001 skeleton · T002 kimi adapter · T003 route deliver-service · T004 docs/#35
 
 Deps: E2 depends E1; E3 depends E2; E3.T002 depends E1.T003.
+
+Planning complete: P3 11/11 tasks done (C2 claim, C3 liveness, C1 DeliveryEndpoint hybrid).
