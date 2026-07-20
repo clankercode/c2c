@@ -4,7 +4,7 @@ estimate_hours: 6
 id: P4.M1.E1
 locked: false
 name: 'Second DeliveryEndpoint: agy agentapi'
-status: pending
+status: done
 tasks:
     - complexity: medium
       depends_on: []
@@ -22,6 +22,6 @@ tasks:
       file: T002-agy-deliveryendpoint-adapter-h.todo
       id: T002
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Agy DeliveryEndpoint adapter + hermetic tests

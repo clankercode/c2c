@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-20T13:10:49Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T13:13:19Z"
 complexity: high
 created_at: "2026-07-20T13:10:43Z"
 depends_on:
     - P4.M1.E1.T001
+duration_minutes: 2.5033249392333334
 estimate_hours: 3
 id: P4.M1.E1.T002
 priority: high
 started_at: "2026-07-20T13:10:49Z"
-status: in_progress
+status: done
 tags: []
 title: Agy DeliveryEndpoint adapter + hermetic tests
-updated_at: "2026-07-20T13:10:49Z"
+updated_at: "2026-07-20T13:13:19Z"
 ---
 Adapter probe (agy-env present) + deliver via agentapi. drain_policy After_push or match current. endpoint_of_agy_reg. Registry has kimi+agy (>=2 adapters). Hermetic tests.

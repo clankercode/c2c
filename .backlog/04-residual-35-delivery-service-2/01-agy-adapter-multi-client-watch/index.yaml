@@ -9,7 +9,7 @@ epics:
       locked: false
       name: 'Second DeliveryEndpoint: agy agentapi'
       path: 01-second-deliveryendpoint-agy-ag
-      status: pending
+      status: done
     - complexity: medium
       depends_on:
         - P4.M1.E1
