@@ -1,0 +1,50 @@
+{
+  "payload": {
+    "hookEventName": "post_tool_use",
+    "sessionId": "019f7efb-4bff-7d13-81ed-ffc2383143b4",
+    "cwd": "/tmp/c2c-i59-grok-probe.c1S3yj/ws",
+    "workspaceRoot": "/tmp/c2c-i59-grok-probe.c1S3yj/ws",
+    "timestamp": "2026-07-20T10:03:51.009715498+00:00",
+    "transcriptPath": "/home/xertrov/.grok/sessions/%2Ftmp%2Fc2c-i59-grok-probe.c1S3yj%2Fws/019f7efb-4bff-7d13-81ed-ffc2383143b4/updates.jsonl",
+    "toolName": "read_file",
+    "toolUseId": "call-285eb7a5-9a7a-45ef-8d27-9b1717b03f79-0",
+    "toolInput": {
+      "target_file": "/tmp/c2c-i59-grok-probe.c1S3yj/ws/hello.txt"
+    },
+    "toolResult": {
+      "type": "ReadFile",
+      "FileContent": {
+        "content": "1\u2192probe-file-content\n",
+        "content_concise": "1\u2192probe-file-content\n",
+        "absolute_path": "/tmp/c2c-i59-grok-probe.c1S3yj/ws/hello.txt",
+        "offset": null,
+        "raw_output": "probe-file-content\n",
+        "total_lines": 2
+      }
+    },
+    "toolInputTruncated": false,
+    "toolResultTruncated": false,
+    "isBackgrounded": false
+  },
+  "env": {
+    "SESSION_MANAGER": "local/xsm:@/tmp/.ICE-unix/3562,unix/xsm:/tmp/.ICE-unix/3562",
+    "GROK_HOOKS_LOG": "1",
+    "XDG_SESSION_PATH": "/org/freedesktop/DisplayManager/Session1",
+    "GROK_HOOK_NAME": "global/c2c-i59-probe:post_tool_use[0].hooks[0]",
+    "GROK_SESSION_ID": "019f7efb-4bff-7d13-81ed-ffc2383143b4",
+    "GROK_WORKSPACE_ROOT": "/tmp/c2c-i59-grok-probe.c1S3yj/ws",
+    "DESKTOP_SESSION": "plasma",
+    "XDG_SESSION_DESKTOP": "KDE",
+    "XDG_SESSION_TYPE": "wayland",
+    "C2C_MCP_BROKER_ROOT": "/home/xertrov/.c2c/sessions/broker",
+    "KDE_SESSION_UID": "1000",
+    "XDG_SESSION_CLASS": "user",
+    "GROK_DEBUG_LOG": "/tmp/c2c-i59-grok-probe.c1S3yj/debug.log",
+    "KDE_SESSION_VERSION": "6",
+    "C2C_MCP_SESSION_ID": "pi-019f7ef5-06d0-7ae6-a965-35461d72ced3",
+    "XDG_SESSION_ID": "5",
+    "KDE_FULL_SESSION": "true",
+    "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus",
+    "GROK_HOOK_EVENT": "post_tool_use"
+  }
+}
