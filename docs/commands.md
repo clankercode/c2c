@@ -1590,11 +1590,12 @@ For kimi specifically, the notifier polls every 2 seconds (default), resolves th
 live Kimi Code session id (`session_<uuid>`, minted by Kimi Code itself) from
 `~/.kimi-code/session_index.jsonl`, ensures `kimi server run` is listening, and
 POSTs each DM to the session's `/prompts` endpoint as the canonical `<c2c
-event="message">` envelope; a tmux wake-prompt fires when the pane is idle.
-Managed `c2c start kimi` launches Kimi Code without `--session` (Kimi Code 0.23+
-does not resume arbitrary passed ids). See
-`.collab/runbooks/kimi-notification-store-delivery.md` (deprecated) for the
-legacy file-based architecture.
+event="message">` envelope. REST inject is the wake (no tmux required;
+CONDITIONAL on notifier alive). Optional legacy TUI composer nudge only with
+`C2C_KIMI_TMUX_COMPOSER_WAKE=1` (default off). Managed `c2c start kimi` launches
+Kimi Code without `--session` (Kimi Code 0.23+ does not resume arbitrary passed
+ids). See `.collab/runbooks/kimi-notification-store-delivery.md` (deprecated) for
+the legacy file-based architecture.
 
 ### Cross-machine relay (`c2c relay …`)
 

@@ -410,6 +410,16 @@ Seconds the TCP liveness probe waits when validating a candidate Kimi server
 address (default `0.5`). Only the log-scraped candidate is probed; the lock
 file is validated by pid-liveness instead.
 
+### `C2C_KIMI_TMUX_COMPOSER_WAKE`
+
+**Default: unset / off.** Primary kimi wake is REST
+`POST /api/v1/sessions/{id}/prompts` via `C2c_kimi_notifier` — no tmux required.
+Set to `1` only to re-enable the legacy post-deliver composer nudge that types
+`[c2c] check inbox` + Enter into the managed TUI pane when it appears idle.
+Left off by default because modern kimi-code often fails to submit that Enter
+(extended-keys/focus), stacking unsubmitted text while the real REST turn
+already ran.
+
 ---
 
 ## E2E / Relay

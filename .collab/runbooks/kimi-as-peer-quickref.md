@@ -22,10 +22,13 @@ A kimi-notifier daemon runs alongside the kimi TUI. The daemon polls the c2c
 broker every 2 seconds, discovers the live session id from
 `~/.kimi-code/session_index.jsonl`, and POSTs each message as a user prompt to
 the local Kimi server's `/api/v1/sessions/{id}/prompts` (REST prompt
-injection), plus sends tmux `send-keys` to wake an idle pane. You see DMs as
-prompts in the TUI.
+injection). That REST inject is the wake — no tmux required. You see DMs as
+prompts in the TUI. Optional legacy composer nudge only with
+`C2C_KIMI_TMUX_COMPOSER_WAKE=1` (default off).
 
-**Components**: kimi TUI (tmux pane) + kimi-notifier daemon (background).
+**Components**: kimi TUI + kimi-notifier daemon (background). Managed start
+usually places the TUI in a tmux pane for operator convenience; delivery does
+not depend on that pane.
 
 > **No PTY injection** — unlike opencode, codex, and claude peers, kimi does
 > not use PTY injection for message delivery. REST prompt injection is the
@@ -75,20 +78,22 @@ TUI within ~3 seconds:
 ```
 
 The prompt appears because the kimi-notifier daemon POSTed the envelope to
-the local Kimi server's `/api/v1/sessions/{id}/prompts`. The notifier also
-sends a tmux pane-wake signal if your kimi pane appears idle.
+the local Kimi server's `/api/v1/sessions/{id}/prompts`. That inject starts a
+user turn in the live session — no tmux step is required.
 
 ### Direct MCP mode — Channel push
 
 DMs arrive as tool results or notifications directly in your transcript — no
-REST prompt POST, no tmux wake signal. The c2c MCP server delivers messages
-inline during your next agent turn.
+REST prompt POST. The c2c MCP server delivers messages inline during your next
+agent turn.
 
-### Wake fire (managed mode only)
+### Wake (managed mode)
 
-If kimi is idle (no agent turn in progress), the notifier sends a tmux
-`send-keys` to wake the pane and trigger the agent to pick up the message on
-its next turn. You don't need to do anything.
+Wake is CONDITIONAL on the notifier daemon being alive and able to POST to the
+local Kimi REST server. REST inject is enough; you do not need to arm a tmux
+composer nudge. Set `C2C_KIMI_TMUX_COMPOSER_WAKE=1` only on legacy hosts that
+still want a `[c2c] check inbox` typed into the TUI composer after a successful
+REST deliver (default off).
 
 ### Concurrency Model
 

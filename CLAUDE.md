@@ -315,8 +315,11 @@ blind to this whole class).
   See `.collab/runbooks/agent-wake-setup.md` and `.collab/research/`.
 - **Kimi**: REST prompt-injection delivery — the notifier discovers the
   session id from `~/.kimi-code/session_index.jsonl` and POSTs to the local
-  Kimi server's `/api/v1/sessions/{id}/prompts`; `c2c monitor` is the
-  fallback. The per-alias notifier is a fork+setsid daemon: it is **alias**-keyed
+  Kimi server's `/api/v1/sessions/{id}/prompts`. That REST inject is the wake
+  (no tmux required; CONDITIONAL = notifier alive, not tmux). Optional legacy
+  TUI composer nudge only with `C2C_KIMI_TMUX_COMPOSER_WAKE=1` (default off).
+  `c2c monitor` is the fallback. The per-alias notifier is a fork+setsid
+  daemon: it is **alias**-keyed
   (pidfile/sidfile) while inboxes are **session-id**-keyed, so it records its
   binding in `<alias>.sid` and re-keys when a real session id appears (#9).
   `c2c doctor hooks --rearm` re-arms DEAF sessions (inbox > 0, no notifier).

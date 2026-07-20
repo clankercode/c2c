@@ -610,8 +610,9 @@ alongside the kimi TUI process. The notifier:
    `http://127.0.0.1:<port>/api/v1/sessions/{id}/prompts` (bearer token from
    `~/.kimi-code/server.token`). The prompt body is the canonical c2c XML
    envelope `<c2c event="message" from="..." to="...">...</c2c>` — data-only,
-   never an approval (B098).
-6. Optionally sends a tmux `send-keys` wake-prompt when the kimi pane appears idle.
+   never an approval (B098). This REST inject is the wake; no tmux required.
+6. Optionally (legacy only: `C2C_KIMI_TMUX_COMPOSER_WAKE=1`, default off) types
+   a `[c2c] check inbox` composer nudge via tmux when the pane appears idle.
 
 Managed `c2c start kimi` (or `c2c new kimi` for a fresh session) launches
 Kimi Code without `--session` (Kimi Code 0.23+ does not resume arbitrary
@@ -646,8 +647,10 @@ hook (`c2c hook kimi`) auto-registers the session with the broker.
   `c2c monitor`.
 - Requires a live Kimi Code session resolvable from
   `~/.kimi-code/session_index.jsonl`.
-- tmux send-keys wake-prompt may not fire if pane is in copy-mode.
-- Notifier daemon must be running (`c2c start kimi` starts it automatically).
+- Wake is CONDITIONAL on the notifier daemon being alive (`c2c start kimi`
+  starts it; SessionStart best-effort arms unmanaged sessions).
+- Optional legacy composer nudge (`C2C_KIMI_TMUX_COMPOSER_WAKE=1`) may not fire
+  if the pane is in copy-mode; default is off and not required for delivery.
 
 See `.collab/runbooks/kimi-notification-store-delivery.md` (internal,
 deprecated) for the legacy file-based mechanism.
