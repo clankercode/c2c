@@ -48,3 +48,20 @@ as the primary path.
 - #59 decay carve-out (deliberate)
 - agy auth / SessionStart for agentapi
 
+
+## Hermetic / automated test inventory (no tmux keys required)
+
+| Suite | Client | What it proves |
+|---|---|---|
+| `ocaml/test/test_c2c_codex_autoturn_b098.ml` | Codex app-server | Local auto-turn; remote/`@host`/`#` fail closed |
+| `ocaml/test/test_c2c_kimi_notifier.ml` | Kimi | Notifier drain + REST path hermetic fixtures |
+| `ocaml/test/test_c2c_kimi_deliver.ml` | Kimi | REST deliver_message |
+| `ocaml/cli/test_c2c_agy_deliver.ml` | agy | agentapi deliver loop (bounded wait, env) |
+| `ocaml/test/test_c2c_wake_inject.ml` | Codex hooks | wake_inject unit (tmux/herdr **fallback** path) |
+| Live finding 2026-07-20 | Codex app-server, Kimi | Real WOKE-* without recipient keystroke |
+
+### Policy for new e2e
+- Prefer hermetic OCaml for B098 and REST/agentapi.
+- Live e2e: observe via capture-pane / wire.jsonl / agentapi — **never** send-keys to recipient during wake window.
+- Claude/Grok: assert monitor path or document NONE without monitor.
+
