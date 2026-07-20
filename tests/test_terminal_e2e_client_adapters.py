@@ -8,8 +8,10 @@ from unittest import mock
 import pytest
 
 from tests.e2e.framework.capabilities import (
+    AGY_AGENTAPI,
     CLAUDE_CHANNEL,
     CODEX_HEADLESS_THREAD_ID_FD,
+    CODEX_MANAGED,
     CODEX_XML_FD,
     KIMI_WIRE,
     OPENCODE_PLUGIN,
@@ -69,18 +71,21 @@ def _make_agent(*, client: str, name: str, backend: str = "tmux") -> StartedAgen
     )
 
 
-def test_codex_adapter_detects_xml_fd_capability(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_codex_adapter_detects_managed_capability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tests.e2e.framework.client_adapters import CodexAdapter
 
     monkeypatch.setattr(
-        "tests.e2e.framework.client_adapters.subprocess.run",
-        lambda *a, **k: mock.Mock(stdout="Usage: codex --xml-input-fd <fd>\n", stderr=""),
+        "tests.e2e.framework.client_adapters.shutil.which",
+        lambda name: "/usr/bin/codex" if name == "codex" else None,
     )
 
     adapter = CodexAdapter(tmp_path)
     capabilities = adapter.probe_capabilities(None)
 
-    assert capabilities[CODEX_XML_FD] is True
+    assert capabilities[CODEX_MANAGED] is True
+    assert CODEX_XML_FD not in capabilities
 
 
 def test_codex_headless_adapter_detects_thread_id_fd_capability(
@@ -235,17 +240,19 @@ def test_codex_headless_adapter_ready_requires_sidecars_and_startup_grace(tmp_pa
         assert adapter.is_ready(scenario, agent) is True
 
 
-def test_capability_probe_returns_false_on_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_capability_probe_returns_false_when_codex_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from tests.e2e.framework.client_adapters import CodexAdapter
 
-    def fake_run(*args: object, **kwargs: object) -> mock.Mock:
-        raise subprocess.TimeoutExpired(cmd=["codex", "--help"], timeout=1.0)
-
-    monkeypatch.setattr("tests.e2e.framework.client_adapters.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "tests.e2e.framework.client_adapters.shutil.which",
+        lambda name: None,
+    )
 
     adapter = CodexAdapter(tmp_path)
 
-    assert adapter.probe_capabilities(None) == {CODEX_XML_FD: False}
+    assert adapter.probe_capabilities(None) == {CODEX_MANAGED: False}
 
 
 def test_headless_capability_probe_returns_false_on_subprocess_failure(
@@ -303,6 +310,118 @@ def test_kimi_adapter_uses_shared_wire_capability_name(
     adapter = KimiAdapter(tmp_path)
 
     assert adapter.probe_capabilities(None) == {KIMI_WIRE: True}
+
+
+def test_agy_adapter_builds_managed_launch_command(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import AgyAdapter
+
+    adapter = AgyAdapter(tmp_path)
+    config = AgentConfig(
+        client="agy",
+        name="agy-a",
+        auto=True,
+        model="gemini-3-flash",
+        extra_args=["--mode", "accept-edits"],
+    )
+    scenario = mock.Mock(workdir=tmp_path / "work")
+
+    launch = adapter.build_launch(scenario, config)
+
+    assert launch["command"][:5] == ["c2c", "start", "agy", "-n", "agy-a"]
+    assert "--model" in launch["command"]
+    assert "gemini-3-flash" in launch["command"]
+    assert "--auto" in launch["command"]
+    assert launch["command"][-3:] == ["--", "--mode", "accept-edits"]
+    assert launch["cwd"] == scenario.workdir
+    assert launch["title"] == "agy-a"
+
+
+def test_agy_adapter_uses_agentapi_capability_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from tests.e2e.framework.client_adapters import AgyAdapter
+
+    monkeypatch.setattr(
+        "tests.e2e.framework.client_adapters.shutil.which",
+        lambda name: "/usr/bin/agy" if name == "agy" else None,
+    )
+
+    adapter = AgyAdapter(tmp_path)
+
+    assert adapter.probe_capabilities(None) == {AGY_AGENTAPI: True}
+
+
+def test_agy_adapter_ready_requires_live_inner_pid(tmp_path: Path) -> None:
+    from tests.e2e.framework.client_adapters import AgyAdapter
+
+    adapter = AgyAdapter(tmp_path)
+    agent = _make_agent(client="agy", name="agy-a")
+    scenario = mock.Mock(drivers={"tmux": _ReadyDriver(alive=True)})
+    instance_dir = tmp_path / ".local" / "share" / "c2c" / "instances" / agent.name
+    instance_dir.mkdir(parents=True)
+    inner_pid = instance_dir / "inner.pid"
+
+    with (
+        mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path),
+        mock.patch("tests.e2e.framework.client_adapters.os.kill", side_effect=ProcessLookupError),
+    ):
+        assert adapter.is_ready(scenario, agent) is False
+        inner_pid.write_text("4242\n", encoding="utf-8")
+        assert adapter.is_ready(scenario, agent) is False
+
+    with (
+        mock.patch("tests.e2e.framework.client_adapters.Path.home", return_value=tmp_path),
+        mock.patch("tests.e2e.framework.client_adapters.os.kill", return_value=None),
+    ):
+        assert adapter.is_ready(scenario, agent) is True
+
+
+def test_kimi_e2e_notifier_paths_match_shipped_layout() -> None:
+    """Structural: kimi e2e notifier helpers target real C2c_kimi_notifier paths."""
+    # Import helpers from the live module without running gated live tests.
+    from tests import test_c2c_kimi_e2e as kimi_e2e
+
+    alias = "structural-only-alias"
+    paths = kimi_e2e._notifier_pid_paths(alias)
+    assert any("kimi-notifiers" in str(p) for p in paths)
+    assert any("notifier.pid" in str(p) for p in paths)
+    assert str(kimi_e2e._notifier_sid_path(alias)).endswith(f"{alias}.sid")
+    assert kimi_e2e._notifier_armed(alias) is False
+
+
+def test_agy_registered_in_scenario_fixture_adapters() -> None:
+    """conftest scenario fixture must register AgyAdapter (criterion 3)."""
+    import inspect
+
+    import tests.conftest as conf
+
+    src = inspect.getsource(conf.scenario)
+    assert '"agy"' in src or "'agy'" in src
+    assert "AgyAdapter" in inspect.getsource(conf)
+
+
+def test_client_e2e_gates_documented_for_preflight() -> None:
+    """Cheap always-on preflight: live modules reference opt-in gate env names."""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    twin = (root / "tests" / "test_c2c_codex_twin_e2e.py").read_text(encoding="utf-8")
+    kimi = (root / "tests" / "test_c2c_kimi_e2e.py").read_text(encoding="utf-8")
+    agy = (root / "tests" / "test_c2c_agy_e2e.py").read_text(encoding="utf-8")
+    live_ml = (root / "ocaml" / "test" / "test_c2c_codex_live_e2e.ml").read_text(
+        encoding="utf-8"
+    )
+    assert "C2C_TEST_CODEX_TWIN_E2E" in twin
+    assert "C2C_TEST_KIMI_E2E" in kimi
+    assert "C2C_TEST_AGY_E2E" in agy
+    assert "C2C_CODEX_APPSERVER_LIVE" in live_ml
+    assert "C2C_CODEX_HOOKS_LIVE" in live_ml
+    # Adapter modules import cleanly and name the three clients.
+    from tests.e2e.framework.client_adapters import AgyAdapter, CodexAdapter, KimiAdapter
+
+    assert AgyAdapter.client_name == "agy"
+    assert CodexAdapter.client_name == "codex"
+    assert KimiAdapter.client_name == "kimi"
 
 
 def test_pi_adapter_builds_launch_command_with_model_and_hermetic_env(tmp_path: Path) -> None:

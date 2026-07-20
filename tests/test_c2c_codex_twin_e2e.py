@@ -1,8 +1,14 @@
 """Live Codex twin smoke tests on the shared terminal E2E framework.
 
 These are opt-in because they launch real Codex sessions in tmux.
-They assert the current local Codex launch surface, including
-``--xml-input-fd`` on managed inner processes.
+
+Primary managed delivery is app-server inject (+ hooks fallback). This suite
+proves managed start, broker registration, and peer DM landing in the
+receiver's broker inbox. Full inject/auto-turn wake is covered by the gated
+B144 harnesses:
+
+  * scripts/codex-managed-appserver-live-e2e.py  (C2C_CODEX_APPSERVER_LIVE=1)
+  * scripts/codex-hooks-live-e2e.py              (C2C_CODEX_HOOKS_LIVE=1)
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.framework.capabilities import CODEX_MANAGED
 from tests.e2e.framework.scenario import Scenario
 
 
@@ -65,12 +72,6 @@ def _registered(agent, scenario: Scenario) -> bool:
     return True
 
 
-def _assert_xml_launch_surface(scenario: Scenario, *agents) -> None:
-    scenario.require_capability("codex_xml_fd")
-    for agent in agents:
-        assert "--xml-input-fd" in scenario.managed_inner_cmdline(agent)
-
-
 def _wait_for_registered_agents_or_skip(
     scenario: Scenario,
     *agents,
@@ -83,13 +84,15 @@ def _wait_for_registered_agents_or_skip(
         )
     except AssertionError:
         pytest.skip(
-            "managed Codex twins launched with --xml-input-fd but did not auto-register with the broker"
+            "managed Codex twins launched but did not auto-register with the broker"
         )
 
 
-def test_codex_twin_launches_with_xml_input_fd(scenario: Scenario) -> None:
+def test_codex_twin_managed_start_and_register(scenario: Scenario) -> None:
+    """Managed twins start (app-server or hooks) and register alive."""
     _init_git_repo(scenario.workdir)
     scenario.refresh_capabilities()
+    scenario.require_capability(CODEX_MANAGED)
 
     suffix = _unique_suffix()
     alias_a = f"codex-a-{suffix}"
@@ -100,36 +103,70 @@ def test_codex_twin_launches_with_xml_input_fd(scenario: Scenario) -> None:
     a = scenario.start_agent("codex", name=alias_a, auto=True)
     b = scenario.start_agent("codex", name=alias_b, auto=True)
     scenario.wait_for_init(a, b, timeout=120.0)
-    _assert_xml_launch_surface(scenario, a, b)
+
+    # Upstream removed --xml-input-fd; managed path must not reintroduce it.
+    for agent in (a, b):
+        cmdline = scenario.managed_inner_cmdline(agent)
+        assert "--xml-input-fd" not in cmdline, (
+            f"managed codex must not use removed XML sideband: {cmdline}"
+        )
+
+    _wait_for_registered_agents_or_skip(scenario, a, b)
 
     scenario.comment(
-        "Managed Codex twins should launch with XML sideband input enabled."
+        "Managed Codex twins register without the retired --xml-input-fd surface."
     )
-
     scenario.assert_agent(a).alive()
     scenario.assert_agent(b).alive()
+    scenario.assert_agent(a).registered_alive()
+    scenario.assert_agent(b).registered_alive()
 
 
-def test_codex_twin_xml_user_turn_delivery(scenario: Scenario) -> None:
+def test_codex_twin_peer_dm_reaches_broker_inbox(scenario: Scenario) -> None:
+    """Peer DM is enqueued in the receiver broker inbox (delivery seam).
+
+    Model-visible inject / auto-turn is proven by the B144 live harnesses,
+    not by scraping the TUI pane (app-server inject is not pane-visible).
+    """
     _init_git_repo(scenario.workdir)
     scenario.refresh_capabilities()
+    scenario.require_capability(CODEX_MANAGED)
 
     suffix = _unique_suffix()
-    alias_a = f"codex-xml-a-{suffix}"
-    alias_b = f"codex-xml-b-{suffix}"
+    alias_a = f"codex-dm-a-{suffix}"
+    alias_b = f"codex-dm-b-{suffix}"
     _write_role_file(scenario.workdir, alias_a)
     _write_role_file(scenario.workdir, alias_b)
 
     a = scenario.start_agent("codex", name=alias_a, auto=True)
     b = scenario.start_agent("codex", name=alias_b, auto=True)
     scenario.wait_for_init(a, b, timeout=120.0)
-    _assert_xml_launch_surface(scenario, a, b)
     _wait_for_registered_agents_or_skip(scenario, a, b)
 
-    message = f"xml-turn-ping-{os.getpid()}"
+    message = f"codex-twin-ping-{os.getpid()}-{time.time_ns()}"
     scenario.send_dm(a, b, message)
-    scenario.wait_for(
-        lambda: message in scenario.capture(b)
-        and not scenario.broker_inbox_contains(b, message),
-        timeout=90.0,
-    )
+
+    # Messaging contract: unique marker appears in the receiver inbox at least
+    # once. Poll tightly so a fast app-server/hooks drain still races us.
+    # Model-visible inject is proven by B144 live harnesses, not pane scrape.
+    seen = {"ok": False}
+
+    def _see_or_seen() -> bool:
+        if scenario.broker_inbox_contains(b, message):
+            seen["ok"] = True
+            return True
+        return seen["ok"]
+
+    try:
+        scenario.wait_for(_see_or_seen, timeout=90.0, interval=0.05)
+    except AssertionError:
+        # Last-chance: deliver may have drained; broker.log often retains the body.
+        blog = scenario.broker_root() / "broker.log"
+        if blog.exists() and message in blog.read_text(encoding="utf-8", errors="replace"):
+            scenario.comment(
+                "DM marker not in inbox but present in broker.log (deliver drained)"
+            )
+            return
+        raise AssertionError(
+            f"peer DM marker never appeared in inbox or broker.log for {b.name}: {message}"
+        )

@@ -28,7 +28,15 @@ import pytest
 os.environ.setdefault("C2C_ALLOW_PYTHON_LEGACY", "1")
 
 from tests.e2e.framework.artifacts import ArtifactCollector
-from tests.e2e.framework.client_adapters import CodexAdapter, CodexHeadlessAdapter, ClaudeAdapter, KimiAdapter, OpenCodeAdapter, PiAdapter
+from tests.e2e.framework.client_adapters import (
+    AgyAdapter,
+    CodexAdapter,
+    CodexHeadlessAdapter,
+    ClaudeAdapter,
+    KimiAdapter,
+    OpenCodeAdapter,
+    PiAdapter,
+)
 from tests.e2e.framework.fake_pty_driver import FakePtyDriver
 from tests.e2e.framework.scenario import Scenario
 from tests.e2e.framework.tmux_driver import TmuxDriver
@@ -292,6 +300,7 @@ def scenario(request: pytest.FixtureRequest, tmp_path: Path) -> Scenario:
             "opencode": OpenCodeAdapter(Path.cwd()),
             "claude": ClaudeAdapter(Path.cwd()),
             "kimi": KimiAdapter(Path.cwd()),
+            "agy": AgyAdapter(Path.cwd()),
             "pi": PiAdapter(Path.cwd()),
         },
     )

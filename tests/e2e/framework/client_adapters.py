@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .capabilities import (
+    AGY_AGENTAPI,
     CLAUDE_CHANNEL,
     CODEX_HEADLESS_THREAD_ID_FD,
-    CODEX_XML_FD,
+    CODEX_MANAGED,
     KIMI_WIRE,
     OPENCODE_PLUGIN,
     PI_C2C,
@@ -130,7 +131,9 @@ class CodexAdapter:
         return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
 
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
-        return {CODEX_XML_FD: _help_contains("codex", "--xml-input-fd")}
+        # Primary managed delivery is app-server (+ hooks fallback). Upstream
+        # removed --xml-input-fd; do not treat XML sideband as a capability.
+        return {CODEX_MANAGED: shutil.which("codex") is not None}
 
 
 class CodexHeadlessAdapter:
@@ -293,6 +296,45 @@ class KimiAdapter:
     def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
         return {KIMI_WIRE: shutil.which("kimi") is not None}
 
+
+class AgyAdapter:
+    """Managed Antigravity (agy) sessions via ``c2c start agy``.
+
+    Delivery is agentapi inject through the deliver-watch sidecar
+    (``c2c_agy_deliver`` / ``C2c_agy_agentapi``), not MCP. Readiness is the
+    managed inner.pid (same outer-loop shape as kimi/codex).
+    """
+
+    client_name = "agy"
+    default_backend = "tmux"
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+
+    def build_launch(self, scenario: Scenario, config: AgentConfig) -> dict[str, object]:
+        command = ["c2c", "start", self.client_name, "-n", config.name]
+        if config.model:
+            command.extend(["--model", config.model])
+        if config.auto:
+            command.append("--auto")
+        if config.extra_args:
+            command.extend(["--", *config.extra_args])
+        return {
+            "command": command,
+            "cwd": scenario.workdir,
+            "env": dict(config.env),
+            "title": config.name,
+        }
+
+    def is_ready(self, scenario: Scenario, agent: StartedAgent) -> bool:
+        if not scenario.drivers[agent.backend].is_alive(agent.handle):
+            return False
+        return _has_live_pid(_instance_dir(agent.name) / "inner.pid")
+
+    def probe_capabilities(self, scenario: Scenario | None) -> dict[str, bool]:
+        # OCaml AgyAdapter advertises agentapi_wake=true; here we only know
+        # whether the binary is present for live smoke gating.
+        return {AGY_AGENTAPI: shutil.which("agy") is not None}
 
 
 def _broker_registered_alive(broker_root: Path, alias: str) -> bool:
