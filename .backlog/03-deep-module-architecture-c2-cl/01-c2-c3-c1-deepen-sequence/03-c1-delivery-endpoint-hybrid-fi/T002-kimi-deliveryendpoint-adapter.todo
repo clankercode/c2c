@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-07-20T13:02:35Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 created_at: "2026-07-20T12:54:21Z"
 depends_on:
@@ -7,12 +10,11 @@ depends_on:
 estimate_hours: 6
 id: P3.M1.E3.T002
 priority: high
-status: pending
-tags:
-    - c1
-    - kimi
+started_at: "2026-07-20T13:02:35Z"
+status: in_progress
+tags: []
 title: Kimi DeliveryEndpoint adapter (uses C2 claim path)
-updated_at: "2026-07-20T12:54:21Z"
+updated_at: "2026-07-20T13:02:35Z"
 ---
 ## Acceptance
 - Kimi adapter: probe + deliver wrapping C2c_kimi_deliver
