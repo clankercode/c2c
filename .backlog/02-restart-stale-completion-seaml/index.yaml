@@ -2,7 +2,7 @@ complexity: medium
 depends_on: []
 estimate_hours: 27
 id: P2
-locked: false
+locked: true
 milestones:
     - complexity: medium
       depends_on: []
@@ -30,7 +30,7 @@ milestones:
       locked: false
       name: 'Deeper-upgrade evaluations (I011 spikes: go/no-go)'
       path: 03-deeper-upgrade-evaluations-i01
-      status: pending
+      status: done
 name: restart-stale completion + seamless managed-client upgrades (I010+I011)
 stats:
     blocked: 0
@@ -38,5 +38,5 @@ stats:
     in_progress: 0
     pending: 11
     total_tasks: 11
-status: pending
+status: done
 weeks: 3

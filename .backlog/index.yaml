@@ -18,11 +18,11 @@ phases:
       description: 'Coupled program: finish and prove the shipped c2c restart-stale (I010 remaining gaps) and build the deeper seamless-upgrade work (I011). I010''s ''restart ALL version-mismatched instances'' is only fully met once TUI clients auto-restart, which needs I011''s authoritative idle signal — so the two are planned together. Design synthesis: .collab/design/2026-07-12-c2c-client-upgrade-restart.md. Receipt: .collab/research/2026-07-12-i010-restart-stale-receipt.md.'
       estimate_hours: 27
       id: P2
-      locked: false
+      locked: true
       name: restart-stale completion + seamless managed-client upgrades (I010+I011)
       path: 02-restart-stale-completion-seaml
       priority: medium
-      status: pending
+      status: done
       weeks: 3
 project: c2c
 stats:

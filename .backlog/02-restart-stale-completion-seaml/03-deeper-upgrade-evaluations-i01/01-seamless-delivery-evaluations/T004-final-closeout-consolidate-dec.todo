@@ -1,7 +1,7 @@
 ---
 claimed_at: "2026-07-20T02:53:51Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T02:54:33Z"
 complexity: medium
 created_at: "2026-07-19T23:48:33Z"
 depends_on:
@@ -11,11 +11,12 @@ depends_on:
     - P2.M3.E1.T002
     - P2.M3.E1.T003
     - P2.M1.E1.T003
+duration_minutes: 0.7097870294333334
 estimate_hours: 2
 id: P2.M3.E1.T004
 priority: medium
 started_at: "2026-07-20T02:53:51Z"
-status: in_progress
+status: done
 tags:
     - i010
     - i011
@@ -23,7 +24,7 @@ tags:
     - docs
     - closeout
 title: 'Final closeout: consolidate decisions, canonical docs/generated surfaces, reconcile+close I010/I011 by criteria met'
-updated_at: "2026-07-20T02:53:51Z"
+updated_at: "2026-07-20T02:54:33Z"
 ---
 Owns final docs/closeout. Close only criteria actually met. See full spec appended.
 

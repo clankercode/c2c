@@ -9,7 +9,7 @@ epics:
       locked: false
       name: Seamless-delivery evaluations & monitor upgrade
       path: 01-seamless-delivery-evaluations
-      status: pending
+      status: done
 estimate_hours: 9
 id: P2.M3
 locked: false
@@ -20,4 +20,4 @@ stats:
     in_progress: 0
     pending: 4
     total_tasks: 4
-status: pending
+status: done
