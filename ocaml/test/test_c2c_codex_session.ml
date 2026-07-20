@@ -1213,6 +1213,24 @@ let test_new_codex_aborts_on_stale_block () =
 (* The C2C_CODEX_SKIP_MCP_PREFLIGHT=1 escape lets a launch through even with a
    stale block (operator override). With no backend and force-hooks on, the
    fallback runs instead of aborting. *)
+(* #27: hook-fallback preflight — a managed launch with no hook block installed
+   would rely on the app-server bridge as its ONLY delivery path. *)
+let test_hook_fallback_warning_present_when_missing () =
+  match S.codex_hook_fallback_warning ~hooks_installed:false with
+  | None -> Alcotest.fail "expected a warning when hooks are not installed"
+  | Some d ->
+      Alcotest.(check bool) "names the #27 silent-deaf risk" true
+        (string_mem "silently" d || string_mem "silent" d
+         || string_mem "queues silently" d || string_mem "#27" d);
+      Alcotest.(check bool) "names the repair command" true
+        (string_mem "c2c install codex" d);
+      Alcotest.(check bool) "names the skip escape" true
+        (string_mem "C2C_CODEX_SKIP_HOOK_PREFLIGHT" d)
+
+let test_hook_fallback_warning_absent_when_installed () =
+  Alcotest.(check bool) "no warning when hooks are installed" true
+    (S.codex_hook_fallback_warning ~hooks_installed:true = None)
+
 let test_skip_env_bypasses_preflight () =
   with_tmp_dir (fun dir ->
       let cfg = Filename.concat dir "config.toml" in
@@ -1783,6 +1801,10 @@ let () =
         ; test_case "no block => missing" `Quick test_preflight_missing_block
         ; test_case "reads config file + override" `Quick test_preflight_reads_config_file
         ; test_case "diagnostic is actionable" `Quick test_preflight_diagnostic_is_actionable
+        ; test_case "hook-fallback warning present when hooks missing (#27)" `Quick
+            test_hook_fallback_warning_present_when_missing
+        ; test_case "hook-fallback warning absent when hooks installed (#27)" `Quick
+            test_hook_fallback_warning_absent_when_installed
         ; test_case "new codex aborts before launch on stale block" `Quick
             test_new_codex_aborts_on_stale_block
         ; test_case "skip env bypasses preflight" `Quick test_skip_env_bypasses_preflight ] )

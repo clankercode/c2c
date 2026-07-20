@@ -641,6 +641,37 @@ let codex_mcp_preflight_diagnostic (reason : string) : string =
      (Set C2C_CODEX_SKIP_MCP_PREFLIGHT=1 to launch anyway.)\n"
     reason
 
+(* --- #27: hook-fallback preflight ----------------------------------------- *)
+(* A managed Codex launch defaults to the app-server transport for arrival-time
+   delivery; the c2c hook blocks that `c2c install codex` writes into
+   ~/.codex/config.toml are the FALLBACK that keeps the session reachable when
+   the app-server bridge is unavailable or later drops. When those blocks are
+   absent at launch time, the app-server transport is the SOLE delivery path: if
+   it goes offline, inbound c2c mail queues silently and the session is never
+   woken — exactly the #27 config-drift scenario (managed block removed after
+   launch, bridge offline, six messages queued unseen).
+
+   This is NOT a launch blocker: the app-server path is the primary managed path
+   and may well be healthy, and on an old codex the fallback IS the primary path
+   (so the same warning still applies). It is a WARNING only, mirroring how a
+   MISSING (rather than stale) MCP block does not abort the launch. Pure so it is
+   unit-testable; [run] wires it as a best-effort stderr note. *)
+let codex_hook_fallback_warning ~(hooks_installed : bool) : string option =
+  if hooks_installed then None
+  else
+    Some
+      "[c2c codex] no c2c hook fallback is installed (~/.codex/config.toml has \
+       no c2c hooks block).\n\
+       This managed session will rely on the app-server transport as its ONLY \
+       c2c delivery path — if that bridge is unavailable or later goes offline, \
+       inbound mail queues silently and the session is NOT woken (#27).\n\
+       Install the hook fallback so delivery degrades to the hook boundary \
+       instead of going deaf:\n\
+       \n\
+      \    c2c install codex\n\
+       \n\
+       (Set C2C_CODEX_SKIP_HOOK_PREFLIGHT=1 to silence this check.)\n"
+
 (* ---------------- B227: resume-thread persistence preflight ---------------- *)
 
 (* Codex persists a resumable session as a rollout file
@@ -1677,6 +1708,23 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
   match preflight_block with
   | Some rc -> rc
   | None ->
+    (* #27: warn (never abort) when a real managed launch has NO hook fallback,
+       so the operator can restore it before the app-server bridge becomes a
+       single point of silent-deaf failure. Only genuine launches are checked
+       (an injected [backend] is a hermetic test with no real config), reading
+       the same config the MCP preflight did (honours C2C_CODEX_CONFIG_PATH). A
+       read error fails quiet (assume installed) rather than nagging spuriously.
+       Suppressible with C2C_CODEX_SKIP_HOOK_PREFLIGHT=1. *)
+    (if backend = None
+        && Sys.getenv_opt "C2C_CODEX_SKIP_HOOK_PREFLIGHT" <> Some "1"
+     then
+       let hooks_installed =
+         try C2c_start.codex_hooks_installed ~config_path:(codex_config_path ()) ()
+         with _ -> true
+       in
+       match codex_hook_fallback_warning ~hooks_installed with
+       | Some msg -> Printf.eprintf "%s%!" msg
+       | None -> ());
     (* B131 / coordinator directive: the app-server transport is the DEFAULT and
        ONLY managed codex path for a supported codex. Unsupported codex (<0.144)
        or a genuine app-server startup failure returns a structured diagnostic
