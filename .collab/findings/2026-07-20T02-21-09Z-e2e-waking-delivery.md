@@ -142,3 +142,22 @@ the earlier ZQ7X4WAKE exchange rather than staging a fresh wake — not counted 
 second PASS. The wake mechanism is model/effort-independent, so the sol-high PASS is
 authoritative. To run strictly luna-low, set codex global effort to low (affects all
 codex sessions) or use a fresh thread; deferred as not worth mutating global state.
+
+
+## agy re-run after da3c29d1 / 8d31fa41 (2026-07-20 ~17:05 AEST)
+
+### Fixed (verified live)
+- **Eager register:** `e2e-agy-wake` appears in broker registry with `client_type=agy`, outer pid, cwd. `c2c send e2e-agy-wake` returns **ok** (no longer `queued_offline` / not registered).
+- **Argv:** `meta.json` args are only `--model 'Gemini 3.5 Flash (Low)' --dangerously-skip-permissions` — **no** bogus `--conversation <name>`.
+
+### Still BLOCKED for wake PASS
+- **No `agy-env.json`** after minutes of idle TUI.
+- **No new brain/conversation dir** under `~/.gemini/antigravity-cli/brain/` (latest still ~11:04).
+- **SessionStart appears not to fire** (or fails before writing env). Host log:
+  `You are not logged into Antigravity` / token source errors on managed start (cli.log).
+- **Hooks path:** c2c install writes `~/.gemini/config/hooks.json` (`c2c-hooks` key, #65 format). Public docs also mention `~/.gemini/antigravity-cli/hooks.json` — verify which path agy 1.1.4 loads on this host.
+- One-shot `c2c-deliver-inbox` reported `delivered=1` and emptied inbox **without** agentapi (generic drain path / missing env) — **not a wake**.
+
+### Verdict after fix
+Infrastructure for registration + SessionStart-friendly argv: **PASS**.  
+End-to-end agentapi wake + model `WOKE-*`: **still FAIL / BLOCKED** until hooks fire + agy-env exists (auth + hook discovery).
