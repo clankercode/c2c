@@ -127,6 +127,14 @@ val codex_mcp_preflight_diagnostic : string -> string
     the preflight found a stale c2c MCP block. *)
 val codex_mcp_preflight_exit_code : int
 
+(** [codex_hook_fallback_warning ~hooks_installed] (#27) returns an operator
+    warning when a managed Codex launch has no c2c hook fallback installed, so
+    the app-server transport would be its SOLE delivery path (silent-deaf if the
+    bridge later drops). [None] when hooks are installed. Pure; {!run} wires it
+    as a best-effort, non-fatal stderr note for genuine launches, suppressible
+    with [C2C_CODEX_SKIP_HOOK_PREFLIGHT]. *)
+val codex_hook_fallback_warning : hooks_installed:bool -> string option
+
 (* ---------------- B227: resume-thread persistence preflight --------------- *)
 
 (** Whether Codex holds a persisted (resumable) session for a thread id. *)
