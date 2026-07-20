@@ -34,9 +34,9 @@ milestones:
 name: restart-stale completion + seamless managed-client upgrades (I010+I011)
 stats:
     blocked: 0
-    done: 0
+    done: 12
     in_progress: 0
-    pending: 11
-    total_tasks: 11
+    pending: 0
+    total_tasks: 12
 status: done
 weeks: 3

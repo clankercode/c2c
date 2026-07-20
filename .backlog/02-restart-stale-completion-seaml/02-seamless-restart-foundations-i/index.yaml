@@ -16,8 +16,8 @@ locked: false
 name: 'Seamless restart foundations (I011): idle-gated auto-restart'
 stats:
     blocked: 0
-    done: 0
+    done: 5
     in_progress: 0
-    pending: 4
-    total_tasks: 4
+    pending: 0
+    total_tasks: 5
 status: done
