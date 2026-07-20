@@ -12,7 +12,8 @@ tasks:
       file: T001-move-agy-agentapi-send-into-c2.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Move agy agentapi send into c2c_mcp-callable surface
     - complexity: high
       depends_on:
@@ -21,5 +22,6 @@ tasks:
       file: T002-agy-deliveryendpoint-adapter-h.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Agy DeliveryEndpoint adapter + hermetic tests
