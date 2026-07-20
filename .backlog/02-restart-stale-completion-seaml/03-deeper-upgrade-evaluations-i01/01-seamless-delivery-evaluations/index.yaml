@@ -20,7 +20,7 @@ tasks:
       file: T001-spike-extract-codex-app-server.todo
       id: T001
       priority: medium
-      status: pending
+      status: in_progress
       tags:
         - i011
         - c2c
@@ -35,7 +35,7 @@ tasks:
       file: T002-spike-granular-deliver-inbox-p.todo
       id: T002
       priority: medium
-      status: pending
+      status: in_progress
       tags:
         - i011
         - c2c
@@ -49,7 +49,7 @@ tasks:
       file: T003-spike-monitor-heartbeat-self-d.todo
       id: T003
       priority: medium
-      status: pending
+      status: in_progress
       tags:
         - i011
         - c2c

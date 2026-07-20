@@ -63,7 +63,7 @@ tasks:
       file: T004-wire-restart-stale-to-owner-co.todo
       id: T004
       priority: high
-      status: pending
+      status: in_progress
       tags:
         - i010
         - i011
@@ -80,6 +80,6 @@ tasks:
       file: T005-g2-outer-loop-owner-control-ad.todo
       id: T005
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: 'G2: outer-loop owner-control adapters + restart-stale wiring'
