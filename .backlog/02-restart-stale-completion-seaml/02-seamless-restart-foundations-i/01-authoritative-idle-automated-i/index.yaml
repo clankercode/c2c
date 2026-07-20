@@ -72,3 +72,13 @@ tasks:
         - app-server
         - g1
       title: 'G1: app-server owner self-reexec path (idle/force policy + restart-stale)'
+    - complexity: high
+      depends_on:
+        - P2.M2.E1.T002
+        - P2.M2.E1.T003
+      estimate_hours: 3
+      file: T005-g2-outer-loop-owner-control-ad.todo
+      id: T005
+      priority: high
+      status: pending
+      title: 'G2: outer-loop owner-control adapters + restart-stale wiring'

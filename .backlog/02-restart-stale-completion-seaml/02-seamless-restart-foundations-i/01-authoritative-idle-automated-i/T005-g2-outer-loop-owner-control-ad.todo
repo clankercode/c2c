@@ -1,0 +1,64 @@
+---
+complexity: high
+created_at: "2026-07-20T02:13:02Z"
+depends_on:
+    - P2.M2.E1.T002
+    - P2.M2.E1.T003
+estimate_hours: 3
+id: P2.M2.E1.T005
+priority: high
+status: pending
+tags:
+    - i010
+    - i011
+    - c2c
+    - restart-stale
+    - outer-loop
+    - g2
+title: 'G2: outer-loop owner-control adapters + restart-stale wiring'
+updated_at: "2026-07-20T02:13:02Z"
+---
+## Task G2 — Outer-loop owner-control adapters + restart-stale wiring (split of original G)
+
+Derived from: I010 + I011. Split of original P2.M2.E1.T004 (G) per D
+(`.collab/research/2026-07-20T01-10-09Z-i011-process-model-and-disruption.md`):
+outer-loop clients replace the owner, move panes today, and have client-specific
+resume/sidecar races. Do not force this path behind the app-server self-reexec.
+
+Depends on E + F. Sister task: G1 (app-server path).
+
+### Scope
+Wire `restart-stale` to drive F's generic owner-control seam for managed
+**TUI/hook** clients, with per-client adapters + conformance:
+
+1. Adapters over F for Claude, OpenCode, Kimi, agy, Codex(hooks). Exclude Gemini
+   and managed Grok.
+2. Replace the `Guided`-only branch in `restart_stale_cmd` for these clients with:
+   idle-eligible (E authoritative Idle) → seam auto-restart; Busy/Unknown →
+   guided by default; `--force` → seam regardless.
+3. Owner must self-reexec in the **original pane** (no caller-TTY capture).
+4. Validate native resume identifiers before destructive stop (OpenCode `ses_*`,
+   agy conversation id, Codex hooks real thread id). Generated c2c UUIDs are not
+   native resume tokens (D).
+5. Kimi dual ownership (outer + SessionStart hook arm) is a Kimi-specific subcase:
+   adapters/cleanup must leave no pidfile-less detached notifiers.
+6. Conformance tests per adapter; tmux proof for at least one authoritative path
+   (OpenCode if E proves it) and one fail-closed path.
+
+### Out of scope
+- App-server path (G1).
+- Spikes H/I/J and docs closeout K.
+
+### Acceptance criteria
+- For TUI/hook managed clients: default auto only on authoritative Idle; guided
+  on Busy/Unknown; `--force` drives in-pane owner restart for every such client.
+- No TTY theft; no ambient-env leak; B098 preserved.
+- Per-client conformance tests + tmux proof as above.
+- Together with G1, satisfies original G / I010 literal all-managed-instance AC
+  for K's closeout decision.
+
+### Original G AC closure (shared with G1)
+Together with G1, G2 restores the original G acceptance: by default the command
+safely classifies/handles every stale target (auto on authoritative Idle;
+guided otherwise); `restart-stale --force` restarts every current managed client
+in-pane.
