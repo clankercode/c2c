@@ -966,6 +966,43 @@ let restart : unit Cmdliner.Cmd.t =
 
 (* --- subcommand: restart-stale (idea I010) -------------------------------- *)
 
+(* P2.M2.E1.T004 G1 — idle policy for restart-stale decisions.
+   auto only on authoritative Idle; Busy/Unknown fail closed unless force. *)
+(** Default auto policy from the idle contract. For app-server, Unknown
+    DELEGATES to the owner (which holds the authoritative thread_status);
+    Busy fails closed. For TUI, Unknown/Busy both fail closed to guided. *)
+let idle_allows_auto ~(force : bool) ~(app_server : bool)
+    (idle : C2c_idle_contract.idle_state) : bool =
+  if force then true
+  else
+    match idle with
+    | C2c_idle_contract.Idle -> true
+    | C2c_idle_contract.Busy -> false
+    | C2c_idle_contract.Unknown _ ->
+        (* App-server owner has the real status API; restart-stale cannot
+           query it without a side channel. Delegate rather than skip. *)
+        app_server
+
+let restart_stale_idle_fixture () : C2c_idle_contract.idle_state option =
+  match Sys.getenv_opt "C2C_RESTART_STALE_IDLE_FIXTURE" with
+  | Some s ->
+      (match String.lowercase_ascii (String.trim s) with
+       | "idle" -> Some C2c_idle_contract.Idle
+       | "busy" -> Some C2c_idle_contract.Busy
+       | "unknown" -> Some (C2c_idle_contract.Unknown "fixture")
+       | _ -> None)
+  | None -> None
+
+let resolve_idle_for_instance ~(client : string) ~(name : string)
+    ~(has_app_server_mapping : bool) : C2c_idle_contract.idle_state =
+  match restart_stale_idle_fixture () with
+  | Some idle -> idle
+  | None ->
+      C2c_idle_contract.query_client ~client
+        ~instance_dir:(C2c_start.instance_dir name)
+        ~has_app_server_mapping ()
+
+
 (* What restart-stale decided to do for one managed instance. *)
 type stale_action =
   | Restarted              (* app-server codex: owner accepted in-place restart *)
@@ -1097,20 +1134,28 @@ let restart_stale_cmd =
                 Skipped (Printf.sprintf "unknown identity: %s" reason)
             | _ when not eligible -> Skipped "already current"
             | _ ->
-                if not (is_app_server mi) then
-                  (* TUI/hook clients: `c2c restart` would execve into a new
-                     supervisor and capture THIS terminal, dragging the agent
-                     off its own tmux pane. Safe in-place restart of these is
-                     the follow-up idea I011; for now emit the manual command. *)
+                let has_map = is_app_server mi in
+                let idle =
+                  resolve_idle_for_instance ~client:mi.mi_client ~name:mi.mi_name
+                    ~has_app_server_mapping:has_map
+                in
+                let allow = idle_allows_auto ~force ~app_server:has_map idle in
+                if not has_map then
+                  (* TUI/hook clients: G2 owns in-pane owner-control. Until
+                     then emit guided manual restart (no TTY theft). *)
                   Guided (Printf.sprintf "c2c restart %s" mi.mi_name)
+                else if not allow then
+                  Skipped
+                    (Printf.sprintf "idle contract %s (fail closed; use --force)"
+                       (C2c_idle_contract.idle_state_to_string idle))
                 else if dry_run then Would_restart
                 else begin
-                  (* Progress: the app-server request+await can take up to
-                     ~timeout_s, so tell the operator which instance we're on. *)
                   if output_mode = Human then
                     Printf.eprintf
                       "[restart-stale] requesting app-server restart for '%s'...\n%!"
                       mi.mi_name;
+                  (* Owner retains authoritative active-turn gate; --force
+                     overrides both restart-stale pre-check and owner gate. *)
                   request_app_server_restart ~name:mi.mi_name ~force ~timeout_s
                 end
         in
