@@ -1,6 +1,6 @@
 critical_path:
-    - I010
-    - I011
+    - I008
+    - I003
 description: ""
 next_available: P2.M1.E1.T001
 phases:
@@ -27,8 +27,8 @@ phases:
 project: c2c
 stats:
     blocked: 0
-    done: 250
-    in_progress: 3
-    pending: 20
+    done: 252
+    in_progress: 2
+    pending: 19
     total_tasks: 276
 timeline_weeks: 0
