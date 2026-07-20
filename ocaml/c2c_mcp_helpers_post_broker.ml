@@ -2064,7 +2064,13 @@ let with_session_lwt ~session_id_override broker arguments f =
    This does not widen the trust boundary beyond #40's already-accepted
    co-located-vanilla-kimi adoption: same normalized cwd + kimi already means
    "the workspace's managed identity", and the broker is a local-only file a
-   co-located process could write directly regardless. *)
+   co-located process could write directly regardless.
+
+   THREAT MODEL — [C2C_MCP_CLIENT_TYPE=kimi] is env-spoofable, so this guard's
+   safety rests ENTIRELY on c2c's same-UID local-file model (a process that can
+   set that env and chdir into the workspace can already write the registry).
+   It must NOT be relied on as a security boundary if the broker ever gains a
+   cross-UID or remote-write surface. *)
 let self_managed_kimi_row ?session_id_override broker =
   if current_client_type () <> Some "kimi" then None
   else
