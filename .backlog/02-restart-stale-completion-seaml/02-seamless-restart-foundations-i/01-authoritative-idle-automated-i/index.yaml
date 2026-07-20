@@ -33,7 +33,7 @@ tasks:
       file: T002-per-client-idle-capability-con.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags:
         - i011
         - c2c
@@ -47,7 +47,7 @@ tasks:
       file: T003-generic-owner-control-self-ree.todo
       id: T003
       priority: high
-      status: pending
+      status: in_progress
       tags:
         - i011
         - c2c
