@@ -37,3 +37,5 @@ ideas:
       status: done
       tags: []
       title: Seamless managed-client upgrades after restart-stale
+    - file: I012-follow-up-i-granular-deliver-p.todo
+      id: I012
