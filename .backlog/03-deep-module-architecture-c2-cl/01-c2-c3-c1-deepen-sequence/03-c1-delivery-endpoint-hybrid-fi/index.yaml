@@ -44,5 +44,6 @@ tasks:
       file: T004-c1-closeout-docs-35-issue-comm.todo
       id: T004
       priority: medium
-      status: pending
+      status: in_progress
+      tags: []
       title: 'C1 closeout docs + #35 issue comment'
