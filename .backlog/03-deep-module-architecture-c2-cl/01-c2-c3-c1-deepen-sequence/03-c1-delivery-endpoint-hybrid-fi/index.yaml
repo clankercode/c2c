@@ -1,0 +1,45 @@
+complexity: high
+depends_on:
+    - P3.M1.E2
+estimate_hours: 18
+id: P3.M1.E3
+locked: false
+name: 'C1: DELIVERY_ENDPOINT hybrid first cut'
+status: pending
+tasks:
+    - complexity: medium
+      depends_on: []
+      estimate_hours: 3
+      file: T001-delivery-endpoint-module-type.todo
+      id: T001
+      priority: high
+      status: pending
+      title: DELIVERY_ENDPOINT module type + registry skeleton
+    - complexity: high
+      depends_on:
+        - P3.M1.E3.T001
+        - P3.M1.E1.T003
+      estimate_hours: 6
+      file: T002-kimi-deliveryendpoint-adapter.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Kimi DeliveryEndpoint adapter (uses C2 claim path)
+    - complexity: high
+      depends_on:
+        - P3.M1.E3.T002
+      estimate_hours: 5
+      file: T003-route-deliver-service-through.todo
+      id: T003
+      priority: medium
+      status: pending
+      title: Route deliver-service through endpoint table; Mode_* temporary
+    - complexity: low
+      depends_on:
+        - P3.M1.E3.T003
+      estimate_hours: 1
+      file: T004-c1-closeout-docs-35-issue-comm.todo
+      id: T004
+      priority: medium
+      status: pending
+      title: 'C1 closeout docs + #35 issue comment'

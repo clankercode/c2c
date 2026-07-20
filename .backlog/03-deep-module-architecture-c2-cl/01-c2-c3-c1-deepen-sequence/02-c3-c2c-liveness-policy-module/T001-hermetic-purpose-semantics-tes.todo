@@ -1,0 +1,19 @@
+---
+complexity: medium
+created_at: "2026-07-20T12:54:20Z"
+depends_on: []
+estimate_hours: 2
+id: P3.M1.E2.T001
+priority: high
+status: pending
+tags:
+    - tdd
+    - c3
+    - liveness
+title: Hermetic purpose-semantics tests for liveness (TDD red)
+updated_at: "2026-07-20T12:54:20Z"
+---
+## Acceptance
+- Pin Delivery (lenient), Nudge (strict Alive), List, Sweep, Doctor (tristate)
+- Mirror current broker collapses (facade-first — no behavior change intent)
+- Red against intended C2c_liveness API

@@ -41,3 +41,12 @@ ideas:
       id: I012
     - file: I013-follow-up-j-monitor-self-detec.todo
       id: I013
+    - complexity: high
+      depends_on: []
+      estimate_hours: 40
+      file: I014-deep-module-architecture-c2-cl.todo
+      id: I014
+      priority: high
+      status: pending
+      tags: []
+      title: 'Deep-module architecture: C2 claim · C3 liveness · C1 DeliveryEndpoint'

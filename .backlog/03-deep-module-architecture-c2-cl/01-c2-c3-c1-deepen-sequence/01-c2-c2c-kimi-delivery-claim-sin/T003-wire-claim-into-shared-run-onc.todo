@@ -1,0 +1,24 @@
+---
+complexity: high
+created_at: "2026-07-20T12:54:20Z"
+depends_on:
+    - P3.M1.E1.T002
+estimate_hours: 3
+id: P3.M1.E1.T003
+priority: high
+status: pending
+tags:
+    - c2
+    - kimi
+    - notifier
+title: Wire claim into shared run_once (both paths)
+updated_at: "2026-07-20T12:54:20Z"
+---
+## Acceptance
+- After system-event partition, before POST: try_claim
+- Claim fail → skip msg, leave in inbox (no busy-wait, no drop-without-POST)
+- Success POST → release claim; failed POST → release for retry
+- deliver-service Active/Primary and notifier both go through run_once (already)
+- Shadow still never POSTs from service
+- Hermetic or fixture tests for dual-claimer single POST
+- docs/commands or design note if operator-visible

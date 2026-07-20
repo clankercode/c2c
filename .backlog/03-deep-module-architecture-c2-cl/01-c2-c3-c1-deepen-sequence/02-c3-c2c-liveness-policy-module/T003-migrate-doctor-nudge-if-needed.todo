@@ -1,0 +1,20 @@
+---
+complexity: medium
+created_at: "2026-07-20T12:54:20Z"
+depends_on:
+    - P3.M1.E2.T002
+estimate_hours: 3
+id: P3.M1.E2.T003
+priority: high
+status: pending
+tags:
+    - c3
+    - doctor
+title: Migrate doctor (+ nudge if needed) to C2c_liveness
+updated_at: "2026-07-20T12:54:20Z"
+---
+## Acceptance
+- Doctor pid/liveness checks call C2c_liveness (drop local kimi_pid_alive mirrors where possible)
+- Wake class remains separate (Grok NONE/CONDITIONAL)
+- relay_nudge uses is_alive_for Nudge (strict) if not already via broker facade
+- Hermetic doctor tests still green

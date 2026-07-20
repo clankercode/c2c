@@ -1,0 +1,59 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-07-20T12:53:40Z"
+depends_on: []
+estimate_hours: 40
+id: I014
+priority: high
+started_at: null
+status: pending
+tags: []
+title: 'Deep-module architecture: C2 claim · C3 liveness · C1 DeliveryEndpoint'
+updated_at: "2026-07-20T12:53:40Z"
+---
+Architecture review (2026-07-20) + grilling locked sequence C2 → C3 → C1.
+
+Report: /tmp/architecture-review-20260720T102723Z.html
+Served: http://xsm:10435/architecture-review-c2c-20260720.html
+
+## Shared understanding (do not re-litigate without Max)
+
+### Sequence
+C2 (single-writer claim) → C3 (liveness policy) → C1 (DeliveryEndpoint hybrid)
+
+### C2 — C2c_kimi_delivery_claim
+- Claim-before-POST, per-message, broker-local, 30s TTL
+- Both notifier + deliver-service call claim
+- On fail: skip msg, leave in inbox
+- Call site: inside shared run_once after system-event partition, before POST
+- Winner releases after successful POST; failed POST releases for retry
+
+### C3 — C2c_liveness
+- New module: state reg→Alive|Dead|Unknown + is_alive_for purpose
+- Purposes: Delivery, Nudge, List, Sweep, Doctor
+- Doctor uses for pid/liveness; wake class stays separate
+- Facade-first migration; purpose-semantics tests first
+
+### C1 — DELIVERY_ENDPOINT (hybrid first cut)
+- Module type: probe / deliver / drain_policy
+- Registry table; kimi first real adapter
+- Mode_* temporary until ≥2 adapters
+- Derive endpoint from registration (optional field later)
+- Kimi path uses C2 claim; adapter declares drain_policy
+
+## Explicit non-goals for first land
+- Full Mode_* deletion day one
+- Changing Unknown→Alive collapse semantics in C3
+- Generalizing claim beyond kimi before second client needs it
+
+
+## Created Work Items (ingested 2026-07-20)
+
+- Phase **P3** — Deep-module architecture (C2 claim · C3 liveness · C1 DeliveryEndpoint)
+- Milestone **P3.M1** — C2→C3→C1 deepen sequence
+- Epic **P3.M1.E1** C2 claim — T001 hermetic tests · T002 implement module · T003 wire run_once · T004 closeout
+- Epic **P3.M1.E2** C3 liveness — T001 purpose tests · T002 implement+facade · T003 doctor migrate
+- Epic **P3.M1.E3** C1 endpoint — T001 skeleton · T002 kimi adapter · T003 route deliver-service · T004 docs/#35
+
+Deps: E2 depends E1; E3 depends E2; E3.T002 depends E1.T003.

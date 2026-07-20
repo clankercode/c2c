@@ -1,0 +1,23 @@
+---
+complexity: medium
+created_at: "2026-07-20T12:54:20Z"
+depends_on: []
+estimate_hours: 2
+id: P3.M1.E1.T001
+priority: high
+status: pending
+tags:
+    - tdd
+    - c2
+    - claim
+title: Hermetic tests for claim semantics (TDD red)
+updated_at: "2026-07-20T12:54:20Z"
+---
+## Acceptance
+- Suite for try_claim / release / TTL expiry / dual-claimer single winner
+- Broker-local claim path under temp broker_root
+- Per-message key; 30s default TTL
+- No production code required for red (or minimal stubs)
+
+## Locked decisions
+Claim-before-POST, per-message, broker-local, 30s, both loops, fail→skip inbox

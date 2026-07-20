@@ -1,0 +1,37 @@
+complexity: medium
+depends_on: []
+epics:
+    - complexity: high
+      depends_on: []
+      description: Claim-before-POST per-message broker-local 30s. Both loops. Inside run_once after partition.
+      estimate_hours: 12
+      id: E1
+      locked: false
+      name: 'C2: C2c_kimi_delivery_claim (single-writer)'
+      path: 01-c2-c2c-kimi-delivery-claim-sin
+      status: pending
+    - complexity: medium
+      depends_on:
+        - P3.M1.E1
+      description: state + is_alive_for purposes. Facade-first. Tests first. Doctor pid via liveness; wake separate.
+      estimate_hours: 10
+      id: E2
+      locked: false
+      name: 'C3: C2c_liveness policy module'
+      path: 02-c3-c2c-liveness-policy-module
+      status: pending
+    - complexity: high
+      depends_on:
+        - P3.M1.E2
+      description: probe/deliver/drain_policy. Kimi first adapter. Mode_* temporary. Derive from reg. Uses C2 claim.
+      estimate_hours: 18
+      id: E3
+      locked: false
+      name: 'C1: DELIVERY_ENDPOINT hybrid first cut'
+      path: 03-c1-delivery-endpoint-hybrid-fi
+      status: pending
+estimate_hours: 40
+id: P3.M1
+locked: false
+name: C2→C3→C1 deepen sequence
+status: pending

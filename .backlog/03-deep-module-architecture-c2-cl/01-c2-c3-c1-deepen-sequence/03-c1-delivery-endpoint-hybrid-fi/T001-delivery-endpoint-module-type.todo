@@ -1,0 +1,19 @@
+---
+complexity: medium
+created_at: "2026-07-20T12:54:20Z"
+depends_on: []
+estimate_hours: 3
+id: P3.M1.E3.T001
+priority: high
+status: pending
+tags:
+    - c1
+    - endpoint
+title: DELIVERY_ENDPOINT module type + registry skeleton
+updated_at: "2026-07-20T12:54:20Z"
+---
+## Acceptance
+- Module type: kind, probe, deliver, drain_policy
+- Registry table / lookup by kind
+- No Mode_* deletion yet
+- Hermetic compile + empty registry tests

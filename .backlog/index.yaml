@@ -24,6 +24,16 @@ phases:
       priority: medium
       status: done
       weeks: 3
+    - depends_on: []
+      description: Architecture review deepenings. Sequence C2→C3→C1. Idea I014. Report architecture-review-c2c-20260720.
+      estimate_hours: 40
+      id: P3
+      locked: false
+      name: Deep-module architecture (C2 claim · C3 liveness · C1 DeliveryEndpoint)
+      path: 03-deep-module-architecture-c2-cl
+      priority: high
+      status: pending
+      weeks: 4
 project: c2c
 stats:
     blocked: 0

@@ -1,0 +1,19 @@
+---
+complexity: low
+created_at: "2026-07-20T12:54:21Z"
+depends_on:
+    - P3.M1.E3.T003
+estimate_hours: 1
+id: P3.M1.E3.T004
+priority: medium
+status: pending
+tags:
+    - c1
+    - docs
+title: 'C1 closeout docs + #35 issue comment'
+updated_at: "2026-07-20T12:54:21Z"
+---
+## Acceptance
+- Update design/plan notes for hybrid land
+- GH #35 comment: phase 2.5 architecture deepen C1 partial
+- I014 completion criteria linked

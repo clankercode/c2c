@@ -1,0 +1,23 @@
+---
+complexity: high
+created_at: "2026-07-20T12:54:20Z"
+depends_on:
+    - P3.M1.E1.T001
+estimate_hours: 4
+id: P3.M1.E1.T002
+priority: high
+status: pending
+tags:
+    - c2
+    - claim
+title: Implement C2c_kimi_delivery_claim module
+updated_at: "2026-07-20T12:54:20Z"
+---
+## Acceptance
+- Module C2c_kimi_delivery_claim with try_claim / release (or equivalent)
+- Broker-local store; per-message keys; 30s TTL (env override OK)
+- Hermetic suite green
+- Wire into c2c_mcp dune modules
+
+## Non-goals
+Generic multi-client owner (C1 later)

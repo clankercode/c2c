@@ -1,0 +1,20 @@
+---
+complexity: high
+created_at: "2026-07-20T12:54:21Z"
+depends_on:
+    - P3.M1.E3.T002
+estimate_hours: 5
+id: P3.M1.E3.T003
+priority: medium
+status: pending
+tags:
+    - c1
+    - deliver-service
+title: Route deliver-service through endpoint table; Mode_* temporary
+updated_at: "2026-07-20T12:54:21Z"
+---
+## Acceptance
+- deliver-service watch-set resolves kimi endpoints via table
+- Mode_* in deliver_inbox unchanged for legacy arms
+- Document ≥2 adapters before Mode delete
+- doctor deliver-service shows adapter kinds

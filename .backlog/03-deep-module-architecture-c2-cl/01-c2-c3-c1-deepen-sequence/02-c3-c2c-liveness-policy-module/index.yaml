@@ -1,0 +1,35 @@
+complexity: medium
+depends_on:
+    - P3.M1.E1
+estimate_hours: 10
+id: P3.M1.E2
+locked: false
+name: 'C3: C2c_liveness policy module'
+status: pending
+tasks:
+    - complexity: medium
+      depends_on: []
+      estimate_hours: 2
+      file: T001-hermetic-purpose-semantics-tes.todo
+      id: T001
+      priority: high
+      status: pending
+      title: Hermetic purpose-semantics tests for liveness (TDD red)
+    - complexity: high
+      depends_on:
+        - P3.M1.E2.T001
+      estimate_hours: 4
+      file: T002-implement-c2c-liveness-broker.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Implement C2c_liveness + broker facade wrappers
+    - complexity: medium
+      depends_on:
+        - P3.M1.E2.T002
+      estimate_hours: 3
+      file: T003-migrate-doctor-nudge-if-needed.todo
+      id: T003
+      priority: high
+      status: pending
+      title: Migrate doctor (+ nudge if needed) to C2c_liveness

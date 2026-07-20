@@ -1,0 +1,19 @@
+---
+complexity: low
+created_at: "2026-07-20T12:54:20Z"
+depends_on:
+    - P3.M1.E1.T003
+estimate_hours: 1
+id: P3.M1.E1.T004
+priority: medium
+status: pending
+tags:
+    - c2
+    - docs
+title: 'C2 closeout: doctor/docs + dual-run note'
+updated_at: "2026-07-20T12:54:20Z"
+---
+## Acceptance
+- Note in deliver-service / kimi docs that Active uses claim-before-POST
+- Optional doctor field: claim dir present / count (if cheap)
+- I014 / epic notes updated

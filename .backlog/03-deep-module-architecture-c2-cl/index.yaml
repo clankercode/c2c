@@ -1,0 +1,18 @@
+complexity: medium
+depends_on: []
+estimate_hours: 40
+id: P3
+locked: false
+milestones:
+    - complexity: medium
+      depends_on: []
+      description: Locked grill decisions. Implement C2 claim, then C3 liveness, then C1 DeliveryEndpoint hybrid. I014.
+      estimate_hours: 40
+      id: M1
+      locked: false
+      name: C2→C3→C1 deepen sequence
+      path: 01-c2-c3-c1-deepen-sequence
+      status: pending
+name: Deep-module architecture (C2 claim · C3 liveness · C1 DeliveryEndpoint)
+status: pending
+weeks: 4
