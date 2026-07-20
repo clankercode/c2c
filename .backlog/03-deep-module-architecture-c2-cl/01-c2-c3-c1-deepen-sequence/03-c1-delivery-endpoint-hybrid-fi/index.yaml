@@ -24,7 +24,7 @@ tasks:
       file: T002-kimi-deliveryendpoint-adapter.todo
       id: T002
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Kimi DeliveryEndpoint adapter (uses C2 claim path)
     - complexity: high
