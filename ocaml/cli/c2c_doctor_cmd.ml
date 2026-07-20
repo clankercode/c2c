@@ -898,11 +898,36 @@ let tags_doctor = Cmdliner.Cmd.v
              not delivery actuals. Mirror of `c2c doctor delivery-mode`.")
     tags_doctor_cmd
 
+(* --- subcommand: doctor deliver-service (#35 phase 1 stub) --- *)
+let deliver_service_cmd =
+  let json =
+    Cmdliner.Arg.(value & flag & info [ "json" ]
+      ~doc:"Machine-readable JSON (alive/dead + pid when known).")
+  in
+  let+ json = json in
+  let status = C2c_deliver_managed.supervisor_status () in
+  if json then
+    print_json (C2c_deliver_managed.supervisor_status_to_json status)
+  else
+    C2c_deliver_managed.pp_supervisor_status_human status;
+  (* Non-zero when dead so scripts can gate on it; phase 1 is informational
+     only — adapters are not required yet. *)
+  match status with
+  | Alive _ -> ()
+  | Dead _ -> exit 1
+
+let deliver_service_doctor = Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "deliver-service"
+       ~doc:"#35 phase 1: report whether the machine-wide deliver-service \
+             supervisor is alive. Scaffold only — no adapter health yet.")
+    deliver_service_cmd
+
 let doctor = Cmdliner.Cmd.group
     ~default:doctor_cmd
     (Cmdliner.Cmd.info "doctor"
        ~doc:"Health snapshot + push-pending analysis (for Max / human operators).")
     [ doctor_docs_drift; monitor_leak; delivery_mode; relay_mesh; relay_pin_status; tags_doctor;
+      deliver_service_doctor;
       C2c_opencode_plugin_drift.opencode_plugin_drift_cmd;
       C2c_doctor_cherry_pick_readiness.c2c_doctor_cherry_pick_readiness_cmd;
       C2c_doctor_hooks.c2c_doctor_hooks_cmd;
