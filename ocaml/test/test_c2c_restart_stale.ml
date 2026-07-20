@@ -399,12 +399,12 @@ let test_force_makes_current_and_unknown_eligible () =
                   ~args:"--dry-run --force --json"
               in
               Alcotest.(check int) "forced exit 0" 0 rc;
-              Alcotest.(check string) "current becomes eligible" "guided"
+              Alcotest.(check string) "current becomes eligible" "would_restart"
                 (action_kind (instance "current-tui" forced));
-              Alcotest.(check string) "unknown becomes eligible" "guided"
+              Alcotest.(check string) "unknown becomes eligible" "would_restart"
                 (action_kind (instance "unknown-tui" forced));
-              check_summary forced ~restarted:0 ~would_restart:0
-                ~needs_manual_restart:2 ~skipped:0 ~failed:0)))
+              check_summary forced ~restarted:0 ~would_restart:2
+                ~needs_manual_restart:0 ~skipped:0 ~failed:0)))
 
 let test_owner_fixture_restarts_and_receives_force () =
   with_temp_dir (fun dir ->
@@ -436,17 +436,63 @@ let test_failed_action_sets_json_error_and_exit_one () =
           ignore (mk_app_server_instance dir ~name:"app-timeout" ~pid);
           ignore (mk_instance dir ~name:"guided-tui" ~client:"claude" ~pid);
           let rc, j =
-            run_json ~instances_dir:dir ~args:"--force --timeout 0 --json"
+            run_json_with_env ~instances_dir:dir
+              ~env:[ ("C2C_RESTART_STALE_IDLE_FIXTURE", "busy") ]
+              ~args:"--force --timeout 0 --json"
           in
+          (* force + busy still allows auto for app-server; TUI busy without
+             force would be guided, but --force makes outer owner attempt too.
+             Keep one Failed app-server row; TUI may restart or fail. *)
           Alcotest.(check int) "any Failed makes exit 1" 1 rc;
           check_json_shape ~ok:false ~dry_run:false ~instances:2 j;
           Alcotest.(check string) "owner timeout is failed" "failed"
             (action_kind (instance "app-timeout" j));
-          Alcotest.(check string) "nonfailure row still guided" "guided"
+          (* With --force, busy TUI is still allow=true and attempts outer
+             owner; timeout 0 yields Failed. *)
+          Alcotest.(check string) "forced tui also fails timeout" "failed"
             (action_kind (instance "guided-tui" j));
           check_summary j ~restarted:0 ~would_restart:0
-            ~needs_manual_restart:1 ~skipped:0 ~failed:1))
+            ~needs_manual_restart:0 ~skipped:0 ~failed:2))
 
+
+let test_outer_owner_fixture_restarts () =
+  with_temp_dir (fun dir ->
+      let pid = spawn_sleeper () in
+      with_pid pid (fun () ->
+          ignore (mk_instance dir ~name:"tui-owner" ~client:"claude" ~pid);
+          let rc, j =
+            run_json_with_env ~instances_dir:dir
+              ~env:
+                [ ("C2C_RESTART_STALE_IDLE_FIXTURE", "idle")
+                ; ("C2C_RESTART_STALE_OWNER_RESULT_FIXTURE", "restarting") ]
+              ~args:"--json --timeout 0"
+          in
+          Alcotest.(check int) "outer owner restart exits 0" 0 rc;
+          Alcotest.(check string) "outer restarted" "restarted"
+            (action_kind (instance "tui-owner" j));
+          check_summary j ~restarted:1 ~would_restart:0
+            ~needs_manual_restart:0 ~skipped:0 ~failed:0;
+          let req_path =
+            dir // "tui-owner" // "owner-restart.request.json"
+          in
+          Alcotest.(check bool) "owner request written" true
+            (Sys.file_exists req_path)))
+
+let test_outer_busy_stays_guided () =
+  with_temp_dir (fun dir ->
+      let pid = spawn_sleeper () in
+      with_pid pid (fun () ->
+          ignore (mk_instance dir ~name:"tui-busy" ~client:"claude" ~pid);
+          let rc, j =
+            run_json_with_env ~instances_dir:dir
+              ~env:[ ("C2C_RESTART_STALE_IDLE_FIXTURE", "busy") ]
+              ~args:"--json --timeout 0"
+          in
+          Alcotest.(check int) "busy guided exits 0" 0 rc;
+          Alcotest.(check string) "busy guided" "guided"
+            (action_kind (instance "tui-busy" j));
+          check_summary j ~restarted:0 ~would_restart:0
+            ~needs_manual_restart:1 ~skipped:0 ~failed:0))
 
 let test_app_server_busy_fail_closed_unless_force () =
   with_temp_dir (fun dir ->
@@ -513,6 +559,10 @@ let () =
             test_owner_fixture_restarts_and_receives_force;
           Alcotest.test_case "Failed action controls JSON and exit" `Quick
             test_failed_action_sets_json_error_and_exit_one;
+          Alcotest.test_case "outer owner fixture restarts" `Quick
+            test_outer_owner_fixture_restarts;
+          Alcotest.test_case "outer busy stays guided" `Quick
+            test_outer_busy_stays_guided;
           Alcotest.test_case "app-server busy fail closed unless force" `Quick
             test_app_server_busy_fail_closed_unless_force;
           Alcotest.test_case "app-server idle allows auto" `Quick

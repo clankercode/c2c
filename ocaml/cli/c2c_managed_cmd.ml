@@ -966,11 +966,6 @@ let restart : unit Cmdliner.Cmd.t =
 
 (* --- subcommand: restart-stale (idea I010) -------------------------------- *)
 
-(* P2.M2.E1.T004 G1 — idle policy for restart-stale decisions.
-   auto only on authoritative Idle; Busy/Unknown fail closed unless force. *)
-(** Default auto policy from the idle contract. For app-server, Unknown
-    DELEGATES to the owner (which holds the authoritative thread_status);
-    Busy fails closed. For TUI, Unknown/Busy both fail closed to guided. *)
 let idle_allows_auto ~(force : bool) ~(app_server : bool)
     (idle : C2c_idle_contract.idle_state) : bool =
   if force then true
@@ -978,10 +973,7 @@ let idle_allows_auto ~(force : bool) ~(app_server : bool)
     match idle with
     | C2c_idle_contract.Idle -> true
     | C2c_idle_contract.Busy -> false
-    | C2c_idle_contract.Unknown _ ->
-        (* App-server owner has the real status API; restart-stale cannot
-           query it without a side channel. Delegate rather than skip. *)
-        app_server
+    | C2c_idle_contract.Unknown _ -> app_server
 
 let restart_stale_idle_fixture () : C2c_idle_contract.idle_state option =
   match Sys.getenv_opt "C2C_RESTART_STALE_IDLE_FIXTURE" with
@@ -1043,6 +1035,39 @@ let request_app_server_restart ~name ~force ~timeout_s : stale_action =
     | None -> Failed "timed out waiting for app-server owner"
   with exn ->
     Failed (Printf.sprintf "app-server restart error: %s" (Printexc.to_string exn))
+
+(* G2: request in-pane outer-loop restart via C2c_owner_control. Never execve
+   into a supervisor from this process (no TTY theft). *)
+let request_outer_owner_restart ~name ~force ~timeout_s ~outer_pid : stale_action =
+  let instance_dir = C2c_start.instance_dir name in
+  try
+    let start_time =
+      match C2c_owner_control.read_pid_start_time outer_pid with
+      | Some t -> t
+      | None ->
+          raise (Failure "outer pid start_time unavailable")
+    in
+    let request_id =
+      C2c_owner_control.request_restart ~instance_dir ~instance_name:name
+        ~force ~expected_pid:outer_pid ~expected_start_time:start_time ()
+    in
+    match
+      match restart_stale_owner_result_fixture () with
+      | Some result ->
+          Some (C2c_owner_control.result_kind_of_string result)
+      | None ->
+          C2c_owner_control.await_result ~instance_dir ~request_id ~timeout_s
+    with
+    | Some C2c_owner_control.Restarting -> Restarted
+    | Some (C2c_owner_control.Declined r) ->
+        Skipped (Printf.sprintf "outer owner declined: %s" r)
+    | Some (C2c_owner_control.Failed r) ->
+        Failed (Printf.sprintf "outer owner failed: %s" r)
+    | Some C2c_owner_control.Timed_out | None ->
+        Failed "timed out waiting for outer owner"
+  with exn ->
+    Failed (Printf.sprintf "outer owner restart error: %s" (Printexc.to_string exn))
+
 
 let restart_stale_cmd =
   let dry_run =
@@ -1141,9 +1166,19 @@ let restart_stale_cmd =
                 in
                 let allow = idle_allows_auto ~force ~app_server:has_map idle in
                 if not has_map then
-                  (* TUI/hook clients: G2 owns in-pane owner-control. Until
-                     then emit guided manual restart (no TTY theft). *)
-                  Guided (Printf.sprintf "c2c restart %s" mi.mi_name)
+                  (* TUI/hook: outer owner-control in original pane (G2). *)
+                  if not allow then
+                    Guided (Printf.sprintf "c2c restart %s" mi.mi_name)
+                  else if dry_run then Would_restart
+                  else begin
+                    if output_mode = Human then
+                      Printf.eprintf
+                        "[restart-stale] requesting outer owner restart for '%s'...
+%!"
+                        mi.mi_name;
+                    request_outer_owner_restart ~name:mi.mi_name ~force
+                      ~timeout_s ~outer_pid:pid
+                  end
                 else if not allow then
                   Skipped
                     (Printf.sprintf "idle contract %s (fail closed; use --force)"
@@ -1152,13 +1187,12 @@ let restart_stale_cmd =
                 else begin
                   if output_mode = Human then
                     Printf.eprintf
-                      "[restart-stale] requesting app-server restart for '%s'...\n%!"
+                      "[restart-stale] requesting app-server restart for '%s'...
+%!"
                       mi.mi_name;
-                  (* Owner retains authoritative active-turn gate; --force
-                     overrides both restart-stale pre-check and owner gate. *)
                   request_app_server_restart ~name:mi.mi_name ~force ~timeout_s
                 end
-        in
+              in
         (mi, verdict, action))
       ordered
   in
