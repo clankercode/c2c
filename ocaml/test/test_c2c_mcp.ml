@@ -16394,6 +16394,179 @@ let test_stable_pid_matches_grok_ancestor () =
         (Some 100)
         (C2c_mcp.Broker.stable_client_pid ~proc_root:proc ~start_pid:300 ()))
 
+(* --- #53 gc-inboxes ------------------------------------------------------- *)
+
+(* Write a minimal registry.json holding exactly [rows] (session_id, alias).
+   gc reads only session_id, so minimal rows are faithful. *)
+let gc_write_registry dir ~rows =
+  let json =
+    `List (List.map (fun (sid, alias) ->
+        `Assoc [ ("session_id", `String sid); ("alias", `String alias) ]) rows)
+  in
+  let oc = open_out (Filename.concat dir "registry.json") in
+  output_string oc (Yojson.Safe.to_string json);
+  close_out oc
+
+(* Write an inbox file for [session_id] with one message per timestamp in [ts],
+   then stamp its mtime. This bypasses enqueue so the message ts (and thus the
+   age guard's newest-ts component) is fully controlled. *)
+let gc_write_inbox dir ~session_id ~sender ~ts ~mtime =
+  let rows =
+    List.map (fun t ->
+        `Assoc [ ("from_alias", `String sender)
+               ; ("to_alias", `String session_id)
+               ; ("content", `String "hi")
+               ; ("ts", `Float t) ]) ts
+  in
+  let path = Filename.concat dir (session_id ^ ".inbox.json") in
+  let oc = open_out path in
+  output_string oc (Yojson.Safe.to_string (`List rows));
+  close_out oc;
+  Unix.utimes path mtime mtime;
+  path
+
+let gc_day = 86400.
+let gc_older_than = 7. *. gc_day
+
+let test_gc_dryrun_lists_old_orphan_without_deleting () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let old_t = now -. (10. *. gc_day) in
+      gc_write_registry dir ~rows:[ ("keep-sess", "keep-alias") ];
+      let orphan_path =
+        gc_write_inbox dir ~session_id:"orphan-sess" ~sender:"c2c-system"
+          ~ts:[ old_t; old_t; old_t ] ~mtime:old_t
+      in
+      let _ =
+        gc_write_inbox dir ~session_id:"keep-sess" ~sender:"peer"
+          ~ts:[ old_t ] ~mtime:old_t
+      in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:false in
+      check bool "registry readable" true r.gc_registry_readable;
+      check bool "not applied" false r.gc_applied;
+      check int "one orphan total" 1 r.gc_orphans_total;
+      check int "one candidate" 1 (List.length r.gc_candidates);
+      check int "no recent skipped" 0 r.gc_skipped_recent;
+      let c = List.hd r.gc_candidates in
+      check string "candidate is the orphan" "orphan-sess" c.gc_session_id;
+      check int "candidate message count" 3 c.gc_message_count;
+      check int "nothing deleted in dry-run" 0 (List.length r.gc_deleted);
+      check bool "orphan inbox still on disk" true (Sys.file_exists orphan_path))
+
+let test_gc_apply_deletes_old_orphan () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let old_t = now -. (10. *. gc_day) in
+      gc_write_registry dir ~rows:[ ("keep-sess", "keep-alias") ];
+      let orphan_path =
+        gc_write_inbox dir ~session_id:"orphan-sess" ~sender:"c2c-system"
+          ~ts:[ old_t; old_t ] ~mtime:old_t
+      in
+      let keep_path =
+        gc_write_inbox dir ~session_id:"keep-sess" ~sender:"peer"
+          ~ts:[ old_t ] ~mtime:old_t
+      in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:true in
+      check bool "applied" true r.gc_applied;
+      check int "one deleted" 1 (List.length r.gc_deleted);
+      check string "deleted the orphan" "orphan-sess" (List.hd r.gc_deleted);
+      check int "two messages reclaimed" 2 r.gc_deleted_messages;
+      check bool "orphan inbox gone" false (Sys.file_exists orphan_path);
+      check bool "registered inbox preserved" true (Sys.file_exists keep_path))
+
+let test_gc_never_touches_registered_inbox () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let old_t = now -. (30. *. gc_day) in
+      (* Old inbox, but it HAS a registration row (dead/pidless is irrelevant:
+         a row exists) — must never be a candidate nor deleted. *)
+      gc_write_registry dir ~rows:[ ("live-sess", "live-alias") ];
+      let path =
+        gc_write_inbox dir ~session_id:"live-sess" ~sender:"peer"
+          ~ts:[ old_t ] ~mtime:old_t
+      in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let prev = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:false in
+      check int "no orphans (row exists)" 0 prev.gc_orphans_total;
+      check int "no candidates" 0 (List.length prev.gc_candidates);
+      let app = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:true in
+      check int "apply deletes nothing" 0 (List.length app.gc_deleted);
+      check bool "registered inbox still on disk" true (Sys.file_exists path))
+
+let test_gc_age_guard_keeps_recent_and_mixed () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let old_t = now -. (10. *. gc_day) in
+      let recent = now -. 3600. (* 1h *) in
+      (* Empty registry [] is readable and asserts zero registrations, so all
+         three inboxes are row-less orphans. Only the both-old one is eligible;
+         a recent mtime OR a recent message ts protects the others. *)
+      gc_write_registry dir ~rows:[];
+      let both_old =
+        gc_write_inbox dir ~session_id:"both-old" ~sender:"c2c-system"
+          ~ts:[ old_t ] ~mtime:old_t
+      in
+      let new_mtime_old_ts =
+        gc_write_inbox dir ~session_id:"fresh-file" ~sender:"c2c-system"
+          ~ts:[ old_t ] ~mtime:recent
+      in
+      let old_mtime_new_ts =
+        gc_write_inbox dir ~session_id:"fresh-msg" ~sender:"c2c-system"
+          ~ts:[ recent ] ~mtime:old_t
+      in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let r = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:false in
+      check bool "registry readable ([])" true r.gc_registry_readable;
+      check int "three orphans total" 3 r.gc_orphans_total;
+      check int "only one eligible" 1 (List.length r.gc_candidates);
+      check int "two kept as recent" 2 r.gc_skipped_recent;
+      check string "eligible is both-old" "both-old"
+        (List.hd r.gc_candidates).gc_session_id;
+      (* Apply and confirm only the both-old file is removed. *)
+      let a = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:true in
+      check int "apply deletes exactly one" 1 (List.length a.gc_deleted);
+      check bool "both-old removed" false (Sys.file_exists both_old);
+      check bool "fresh-file kept" true (Sys.file_exists new_mtime_old_ts);
+      check bool "fresh-msg kept" true (Sys.file_exists old_mtime_new_ts))
+
+let test_gc_fails_closed_on_missing_registry () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let old_t = now -. (30. *. gc_day) in
+      (* No registry.json at all — the ambiguous case. Must reclaim NOTHING. *)
+      let orphan_path =
+        gc_write_inbox dir ~session_id:"orphan-sess" ~sender:"c2c-system"
+          ~ts:[ old_t ] ~mtime:old_t
+      in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let prev = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:false in
+      check bool "registry not readable" false prev.gc_registry_readable;
+      check int "no candidates when fail-closed" 0 (List.length prev.gc_candidates);
+      let app = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:true in
+      check bool "still not readable on apply" false app.gc_registry_readable;
+      check int "apply deletes nothing when fail-closed" 0 (List.length app.gc_deleted);
+      check bool "old orphan preserved (fail closed)" true (Sys.file_exists orphan_path))
+
+let test_gc_fails_closed_on_corrupt_registry () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let old_t = now -. (30. *. gc_day) in
+      let oc = open_out (Filename.concat dir "registry.json") in
+      output_string oc "{ this is not valid json ";
+      close_out oc;
+      let orphan_path =
+        gc_write_inbox dir ~session_id:"orphan-sess" ~sender:"c2c-system"
+          ~ts:[ old_t ] ~mtime:old_t
+      in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let app = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:true in
+      check bool "corrupt registry not readable" false app.gc_registry_readable;
+      check int "corrupt registry deletes nothing" 0 (List.length app.gc_deleted);
+      check bool "old orphan preserved (corrupt registry)" true
+        (Sys.file_exists orphan_path))
+
 let () =
   run "c2c_mcp"
     [ ( "stable_client_pid",
@@ -17342,4 +17515,17 @@ let () =
                 test_generate_alias_charset_lowercase
             ; test_case "B082 default_name keeps prefix+nonce" `Quick
                 test_default_name_ignores_no_nonce_for_default_alias
+            (* --- #53 gc-inboxes --- *)
+            ; test_case "gc dry-run lists old orphan without deleting" `Quick
+                test_gc_dryrun_lists_old_orphan_without_deleting
+            ; test_case "gc --apply deletes old orphan" `Quick
+                test_gc_apply_deletes_old_orphan
+            ; test_case "gc never touches a registered inbox" `Quick
+                test_gc_never_touches_registered_inbox
+            ; test_case "gc age guard keeps recent and mixed-age orphans" `Quick
+                test_gc_age_guard_keeps_recent_and_mixed
+            ; test_case "gc fails closed on missing registry" `Quick
+                test_gc_fails_closed_on_missing_registry
+            ; test_case "gc fails closed on corrupt registry" `Quick
+                test_gc_fails_closed_on_corrupt_registry
             ] ) ]

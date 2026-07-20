@@ -106,6 +106,156 @@ let force_flag =
     ~doc:"Skip the active/recent-registration safety check and run sweep anyway.\
           Use this only when you have verified no live sessions are present.")
 
+(* --- subcommand: gc-inboxes (#53) ----------------------------------------- *)
+
+(* Reclaim inbox files that have NO registration row at all. Dry-run by
+   default; deletion requires --apply. See Broker.gc_inboxes for the safety
+   invariant (no-row AND age; fails closed on an unreadable registry). *)
+
+let gc_default_older_than = "7d"
+
+let humanize_age ~now (mtime : float) : string =
+  let secs = now -. mtime in
+  if secs < 0. then "future"
+  else
+    let days = secs /. 86400. in
+    if days >= 1. then Printf.sprintf "%.1fd" days
+    else Printf.sprintf "%.1fh" (secs /. 3600.)
+
+(* Aggregate by-sender counts across all candidate inboxes, sorted desc. *)
+let gc_aggregate_by_sender (cands : C2c_mcp.Broker.gc_inbox_candidate list) =
+  let tbl = Hashtbl.create 16 in
+  List.iter (fun (c : C2c_mcp.Broker.gc_inbox_candidate) ->
+    List.iter (fun (sender, n) ->
+      let cur = try Hashtbl.find tbl sender with Not_found -> 0 in
+      Hashtbl.replace tbl sender (cur + n))
+      c.gc_by_sender)
+    cands;
+  Hashtbl.fold (fun k v acc -> (k, v) :: acc) tbl []
+  |> List.sort (fun (_, a) (_, b) -> compare (b : int) a)
+
+(* Bucket candidate ages (by file mtime) into human-readable ranges. *)
+let gc_age_buckets ~now (cands : C2c_mcp.Broker.gc_inbox_candidate list) =
+  let b_7_14 = ref 0 and b_14_30 = ref 0 and b_30_90 = ref 0 and b_90 = ref 0 in
+  List.iter (fun (c : C2c_mcp.Broker.gc_inbox_candidate) ->
+    let days = (now -. c.gc_mtime) /. 86400. in
+    if days < 14. then incr b_7_14
+    else if days < 30. then incr b_14_30
+    else if days < 90. then incr b_30_90
+    else incr b_90)
+    cands;
+  [ ("7-14d", !b_7_14); ("14-30d", !b_14_30); ("30-90d", !b_30_90); ("90d+", !b_90) ]
+
+let gc_inboxes_run ~json ~apply ~older_than ~cross_repo ~explicit_root =
+  match C2c_stats.parse_duration older_than with
+  | None ->
+      Printf.eprintf
+        "error: --older-than must be a duration like 7d, 24h, or 30m (got %s).\n%!"
+        older_than;
+      exit 124
+  | Some older_than_s ->
+      let broker_root =
+        resolve_effective_broker_root ~explicit_root ~cross_repo ()
+      in
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let result = C2c_mcp.Broker.gc_inboxes broker ~older_than_s ~apply in
+      let now = Unix.gettimeofday () in
+      let open C2c_mcp.Broker in
+      let total_msgs =
+        List.fold_left (fun a c -> a + c.gc_message_count) 0 result.gc_candidates
+      in
+      let by_sender = gc_aggregate_by_sender result.gc_candidates in
+      let output_mode = if json then Json else Human in
+      (match output_mode with
+       | Json ->
+           print_json
+             (`Assoc
+               [ ("root", `String result.gc_root)
+               ; ("registry_readable", `Bool result.gc_registry_readable)
+               ; ("older_than_s", `Float older_than_s)
+               ; ("apply", `Bool result.gc_applied)
+               ; ("inbox_files", `Int result.gc_inbox_files)
+               ; ("orphans_total", `Int result.gc_orphans_total)
+               ; ("skipped_recent", `Int result.gc_skipped_recent)
+               ; ("candidates", `Int (List.length result.gc_candidates))
+               ; ("candidate_messages", `Int total_msgs)
+               ; ("deleted", `List (List.map (fun s -> `String s) result.gc_deleted))
+               ; ("deleted_messages", `Int result.gc_deleted_messages)
+               ; ( "by_sender"
+                 , `Assoc (List.map (fun (s, n) -> (s, `Int n)) by_sender) )
+               ; ( "candidate_inboxes"
+                 , `List
+                     (List.map
+                        (fun c ->
+                          `Assoc
+                            [ ("session_id", `String c.gc_session_id)
+                            ; ("messages", `Int c.gc_message_count)
+                            ; ( "newest_ts"
+                              , match c.gc_newest_ts with
+                                | None -> `Null
+                                | Some t -> `Float t )
+                            ; ("mtime", `Float c.gc_mtime)
+                            ]) result.gc_candidates) )
+               ])
+       | Human ->
+           if not result.gc_registry_readable then begin
+             Printf.eprintf
+               "error: registry at %s is missing or unreadable — reclaiming \
+                NOTHING (fail closed).\n\
+               \  If you truly have zero registrations, write `[]` to \
+                registry.json to opt in.\n%!"
+               (Filename.concat broker_root "registry.json");
+             exit 123
+           end;
+           Printf.printf "broker root: %s\n" result.gc_root;
+           Printf.printf "inbox files on disk    %d\n" result.gc_inbox_files;
+           Printf.printf "orphan inboxes (no row) %d\n" result.gc_orphans_total;
+           Printf.printf "  too recent (kept)     %d\n" result.gc_skipped_recent;
+           Printf.printf "  eligible (>%s)        %d  (%d messages)\n"
+             older_than (List.length result.gc_candidates) total_msgs;
+           if result.gc_candidates <> [] then begin
+             Printf.printf "\nage distribution (by mtime):\n";
+             List.iter (fun (label, n) ->
+               if n > 0 then Printf.printf "  %-8s %d\n" label n)
+               (gc_age_buckets ~now result.gc_candidates);
+             Printf.printf "\nby sender:\n";
+             List.iter (fun (sender, n) ->
+               Printf.printf "  %-24s %d\n" sender n) by_sender
+           end;
+           if result.gc_applied then begin
+             Printf.printf "\nDELETED %d inbox(es), %d messages reclaimed.\n"
+               (List.length result.gc_deleted) result.gc_deleted_messages
+           end
+           else if result.gc_candidates <> [] then
+             Printf.printf
+               "\nDry-run: nothing deleted. Re-run with --apply to reclaim \
+                the %d eligible inbox(es).\n"
+               (List.length result.gc_candidates)
+           else
+             Printf.printf "\nNothing to reclaim.\n")
+
+let gc_inboxes_cmd =
+  let+ json = json_flag
+  and+ apply =
+    Cmdliner.Arg.(value & flag & info [ "apply" ]
+      ~doc:"Actually delete the eligible orphan inboxes. Without this flag \
+            the command is a DRY RUN and touches nothing on disk.")
+  and+ older_than =
+    Cmdliner.Arg.(value & opt string gc_default_older_than
+      & info [ "older-than" ] ~docv:"DURATION"
+        ~doc:"Only reclaim an orphan whose inbox mtime AND newest message \
+              timestamp are older than this (e.g. 7d, 24h, 30m). This is the \
+              race guard: an inbox written just before its registration is \
+              never reclaimed. Default: 7d.")
+  and+ cross_repo = cross_repo_flag
+  and+ explicit_root =
+    Cmdliner.Arg.(value & opt (some string) None
+      & info [ "root"; "broker-root" ] ~docv:"DIR"
+        ~doc:"Operate on the broker at DIR instead of this repo's broker. \
+              Wins over --cross-repo.")
+  in
+  gc_inboxes_run ~json ~apply ~older_than ~cross_repo ~explicit_root
+
 let sweep_cmd =
   let+ json = json_flag
   and+ force = force_flag in
@@ -339,3 +489,24 @@ let sweep_dryrun =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "sweep-dryrun" ~doc:"Read-only preview of what sweep would drop (safe during active swarm).")
     sweep_dryrun_cmd
+
+let gc_inboxes =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "gc-inboxes"
+       ~doc:"Reclaim inbox files that have NO registration row (dry-run by default; --apply to delete)."
+       ~man:
+         [ `S "DESCRIPTION"
+         ; `P "Deletes orphan inbox files — an inbox whose session_id has NO \
+                registration row at all (not dead, not pidless: absent). Dead \
+                and pidless rows are reachable and are always preserved (that \
+                is $(b,c2c sweep)'s territory, and #51/#59's)."
+         ; `P "An inbox is eligible only when it is BOTH row-less AND older \
+                than $(b,--older-than) (its file mtime and newest message \
+                timestamp both precede the cutoff — the race guard). The \
+                command fails closed and reclaims nothing if the registry \
+                cannot be read as a JSON list."
+         ; `P "Dry-run by default: it prints what it WOULD reclaim (count, \
+                messages, age distribution, by-sender) and changes nothing. \
+                Pass $(b,--apply) to actually delete."
+         ])
+    gc_inboxes_cmd
