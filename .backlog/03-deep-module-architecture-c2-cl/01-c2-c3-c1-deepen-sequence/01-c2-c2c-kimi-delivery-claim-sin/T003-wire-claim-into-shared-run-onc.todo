@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-07-20T12:58:13Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 created_at: "2026-07-20T12:54:20Z"
 depends_on:
@@ -6,13 +9,11 @@ depends_on:
 estimate_hours: 3
 id: P3.M1.E1.T003
 priority: high
-status: pending
-tags:
-    - c2
-    - kimi
-    - notifier
+started_at: "2026-07-20T12:58:13Z"
+status: in_progress
+tags: []
 title: Wire claim into shared run_once (both paths)
-updated_at: "2026-07-20T12:54:20Z"
+updated_at: "2026-07-20T12:58:13Z"
 ---
 ## Acceptance
 - After system-event partition, before POST: try_claim
