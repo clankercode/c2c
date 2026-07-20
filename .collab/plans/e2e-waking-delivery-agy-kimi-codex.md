@@ -3,8 +3,24 @@
 Execution-ready plan for the goal's second half: *ensure via e2e tests that
 agy/kimi/codex full automated **waking** delivery works.* Complements
 `agent-wake-setup.md` (mechanism reference) and `c2c-delivery-smoke.md` (plain
-delivery smoke). **Blocked on `just install-all` + `c2c install agy`** — nothing
-is live until then; this plan is the runbook to execute the moment it is.
+delivery smoke).
+
+## Status (closeout 2026-07-20)
+
+Evidence finding: `.collab/findings/2026-07-20T02-21-09Z-e2e-waking-delivery.md`.
+
+| Client | Plan wake class | Execution status | Notes |
+|---|---|---|---|
+| **codex** (managed/app-server) | GUARANTEED local | **PASS** | Inject + gated auto-turn; B098 negatives test-covered |
+| **kimi** (managed) | CONDITIONAL REST | **PASS** (wire) | Full model alias required; TUI not authoritative |
+| **agy** (managed) | CONDITIONAL agentapi | **BLOCKED — not PASS** | register+argv PASS after da3c29d1; agentapi/SessionStart/agy-env blocked (auth + hooks path) |
+| Cross-client topology | codex→kimi, agy→codex | **Deferred** | Wait for agy green |
+
+**Plan preconditions met:** `just install-all` / `just bi` and `c2c install agy` ran; harness used dedicated tmux `c2ce2e`.
+
+**Remaining work (agy full PASS):** (1) Antigravity auth on host, (2) confirm hooks load path and SessionStart fire, (3) assert `agy-env.json` + brain conversation after managed start, (4) re-run wake matrix for `WOKE-*` with no human Enter, (5) then topology codex→kimi and agy→codex. **Do not claim agy wake PASS** on register/argv/`delivered=N` alone.
+
+**Model-rule note vs execution:** plan lists kimi as bare `k2p7`; live e2e required full config alias `kimi-code/kimi-for-coding-highspeed` (bare ids raise `[config.invalid]`). Codex PASS ran on default gpt-5.6-sol high before luna-low rule; mechanism is model-independent — see finding.
 
 ## Model rules for e2e testing (Max, 2026-07-20 — verbatim, use cheap models)
 Always run e2e waking-delivery tests on these models to conserve quota. Copy the
