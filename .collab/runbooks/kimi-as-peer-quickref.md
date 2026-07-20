@@ -255,7 +255,15 @@ session's registration is stale. Always use `c2c restart` (not `start` after
    server (`kimi server run`) isn't listening, the notifier falls back
    silently — check `c2c doctor hooks` for a DEAF classification.
 
-6. **Peer side**: confirm the send succeeded (the sender should see `queued: true`).
+6. **Is the `c2c hook kimi` SessionStart hook installed?** (#41/#50) The hook
+   writes kimi's own payload session id to a workspace-keyed record that the
+   notifier prefers when resolving which session to POST to; without it,
+   session resolution silently reverts to `session_index.jsonl` index-order
+   guessing (mail can land on the *previous* session). `c2c doctor hooks`
+   reports this under "Kimi SessionStart hook (delivery identity #41)" as
+   DEGRADED when absent; the fix is `c2c install kimi`.
+
+7. **Peer side**: confirm the send succeeded (the sender should see `queued: true`).
 
 ### No message arrival (direct MCP mode)
 

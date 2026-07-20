@@ -45,6 +45,7 @@ type result = {
   codex : codex_result;
   agy : agy_result;
   kimi : kimi_delivery_result;
+  kimi_hook : kimi_hook_result;
   grok : grok_identity_result;
 }
 
@@ -91,6 +92,23 @@ and kimi_delivery_result = {
   kd_sessions_checked : int;
   kd_deaf : kimi_session_issue list; (* inbox>0 and no notifier *)
   kd_no_notifier : kimi_session_issue list; (* registered kimi, no notifier (may be empty inbox) *)
+}
+
+(* #50: the Kimi SessionStart hook (`c2c hook kimi`) is load-bearing for
+   delivery IDENTITY (#41), not just wake. It writes kimi's own payload
+   session id to a workspace-keyed record, and the notifier PREFERS that
+   record when resolving which session to POST mail to. Where the hook is NOT
+   installed, no record is written and session resolution silently reverts to
+   the pre-#41 bug: binding to the newest session_index.jsonl entry (= the
+   PREVIOUS session). The degradation is fail-safe but SILENT — nothing else
+   distinguishes "delivery identity authoritative" from "delivery identity
+   guesswork", which is exactly what doctor exists to surface. This is a
+   config-based install check (NOT live-session based): it reads the same
+   source of truth the installer writes. *)
+and kimi_hook_result = {
+  khook_config_path : string;   (* ~/.kimi-code/config.toml *)
+  khook_config_exists : bool;   (* kimi config present at all (kimi in use) *)
+  khook_installed : bool;       (* SessionStart [[hooks]] block present *)
 }
 
 (* #23(a): read-only Grok identity-drift detector. The Grok host injects
@@ -802,6 +820,34 @@ let check_agy_status ?home () =
   in
   { installed; skill_exists; hooks_exists; has_c2c_hooks; alias_prefix_ok; alias_prefix_reason }
 
+(* #50: is the `c2c hook kimi` SessionStart hook installed? Mirrors the
+   codex/agy managed-block checks: it reads the INSTALLED CONFIG, not live
+   sessions. The source of truth is the SessionStart [[hooks]] block that
+   `c2c install kimi` appends to ~/.kimi-code/config.toml, keyed by
+   C2c_kimi_hook.session_start_hook_block_id — so this check consults the same
+   marker the installer writes rather than inventing a path. When the block is
+   absent, kimi delivery-identity resolution silently degrades to
+   session_index.jsonl index-order guessing (the #41 regression). *)
+let check_kimi_session_start_hook ?home () : kimi_hook_result =
+  let home =
+    match home with
+    | Some h -> h
+    | None -> (try Sys.getenv "HOME" with Not_found -> "/tmp")
+  in
+  let config_path = home // ".kimi-code" // "config.toml" in
+  let config_exists = Sys.file_exists config_path in
+  let installed =
+    try
+      C2c_kimi_hook.toml_block_already_present
+        ~block_id:C2c_kimi_hook.session_start_hook_block_id
+        ~config_path ()
+    with _ -> false
+  in
+  { khook_config_path = config_path
+  ; khook_config_exists = config_exists
+  ; khook_installed = installed
+  }
+
 (* B238 pure classifier: given a registration snapshot + inbox depth +
    notifier liveness, decide whether the session is "deaf" (mail waiting,
    no delivery daemon). Exposed for unit tests. *)
@@ -1139,8 +1185,9 @@ let check ?(dirs = claude_dirs ()) () =
   let codex = check_codex_managed_blocks () in
   let agy = check_agy_status () in
   let kimi = check_kimi_delivery () in
+  let kimi_hook = check_kimi_session_start_hook () in
   let grok = check_grok_identity () in
-  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy; kimi; grok }
+  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy; kimi; kimi_hook; grok }
 
 (* --- output formatters ---------------------------------------------------- *)
 
@@ -1249,6 +1296,22 @@ let pp_human r =
       end
     end
   end;
+  Printf.printf "\n=== Kimi SessionStart hook (delivery identity #41) ===\n\n";
+  if not r.kimi_hook.khook_config_exists then
+    Printf.printf "Kimi c2c install not detected (no %s).\n" r.kimi_hook.khook_config_path
+  else if r.kimi_hook.khook_installed then
+    Printf.printf
+      "  SessionStart hook: OK (`c2c hook kimi` present — delivery-identity record authoritative per #41)\n"
+  else begin
+    Printf.printf
+      "  ✗ DEGRADED: `c2c hook kimi` SessionStart hook is NOT installed in %s.\n"
+      r.kimi_hook.khook_config_path;
+    Printf.printf
+      "      Kimi delivery-identity resolution reverts to session_index.jsonl index-order guessing (the #41 regression):\n";
+    Printf.printf
+      "      mail can be POSTed to the PREVIOUS session in this workspace, silently.\n";
+    Printf.printf "      → fix: c2c install kimi\n"
+  end;
   Printf.printf "\n=== Grok identity check ===\n\n";
   if r.grok.gid_grok_regs = 0 then
     Printf.printf "No registered Grok sessions on this broker.\n"
@@ -1349,6 +1412,16 @@ let to_json r =
       ("no_notifier_count", `Int (List.length k.kd_no_notifier))
     ]
   in
+  let kimi_hook_to_json (k : kimi_hook_result) =
+    `Assoc [
+      ("config_path", `String k.khook_config_path);
+      ("config_exists", `Bool k.khook_config_exists);
+      ("session_start_hook_installed", `Bool k.khook_installed);
+      (* degraded iff kimi is in use (config present) but the hook block is absent *)
+      ("delivery_identity_degraded",
+       `Bool (k.khook_config_exists && not k.khook_installed))
+    ]
+  in
   let grok_to_json (g : grok_identity_result) =
     `Assoc [
       ("grok_registrations", `Int g.gid_grok_regs);
@@ -1369,6 +1442,7 @@ let to_json r =
     ("total_codex_issues", `Int r.codex.total_issues);
     ("agy", agy_to_json r.agy);
     ("kimi_delivery", kimi_to_json r.kimi);
+    ("kimi_session_start_hook", kimi_hook_to_json r.kimi_hook);
     ("grok_identity", grok_to_json r.grok)
   ]
 
