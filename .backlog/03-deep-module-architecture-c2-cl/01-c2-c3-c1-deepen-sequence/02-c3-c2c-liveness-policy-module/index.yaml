@@ -13,7 +13,8 @@ tasks:
       file: T001-hermetic-purpose-semantics-tes.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Hermetic purpose-semantics tests for liveness (TDD red)
     - complexity: high
       depends_on:
