@@ -47,3 +47,7 @@ Derived from: I010. Depends on A + B. Per partner review: this is receipt/linkag
 - **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
 - **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
 - Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.
+
+
+### OPERATOR CORRECTION (2026-07-20) — idea status semantics
+The operator defines an idea as complete once it has been fully ingested. I010 and I011 were fully ingested into P2 and are already `done`; this supersedes this task's older "keeps I010 open" / `in_progress` wording. Do NOT reopen either idea. This task records implementation evidence and current behavior truth only; P2 task status is the implementation source of truth.
