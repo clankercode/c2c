@@ -24,5 +24,6 @@ tasks:
       file: T002-live-smoke-deliver-service-sta.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: 'Live smoke: deliver-service start/stop/doctor + shadow'
