@@ -68,7 +68,7 @@ tasks:
       file: T004-final-closeout-consolidate-dec.todo
       id: T004
       priority: medium
-      status: pending
+      status: in_progress
       tags:
         - i010
         - i011
