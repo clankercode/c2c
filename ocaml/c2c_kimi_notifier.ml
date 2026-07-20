@@ -1238,20 +1238,23 @@ let stop_all_daemons () =
 (* #42: tear down every notifier daemon whose recorded session binding
    ([<alias>.sid]) equals [session_id], REGARDLESS of the notifier's own alias.
 
-   The leak this closes: a SessionStart hook can arm a notifier under an
-   AUTO-MINTED alias that differs from the managed instance alias (adoption
-   miss / pre-#40). [c2c stop]'s alias-keyed [stop_daemon ~alias:cfg.alias]
-   then never signals it, so it outlives the TUI — POSTing headless model
-   turns (quota burn) and draining that session's mail invisibly. The two
-   notifiers (managed-alias + hook-minted-alias) both resolve the SAME real
-   kimi session id for the shared workspace, so the PROVABLE common key is the
-   session_id each daemon recorded for itself in its sidfile.
+   Purpose: [c2c stop]'s alias-keyed [stop_daemon ~alias:cfg.alias] misses a
+   daemon that bound under a DIFFERENT alias but is draining THIS session's
+   inbox (a differently-aliased daemon left over from a rename/restart, or a
+   hook arm that adopted this session's id under another alias). This scans the
+   state dir and reaps every daemon whose OWN sidfile names [session_id].
 
-   Safety (why this can never kill a live or unrelated session's notifier):
-   - We match ONLY on the binding the daemon itself wrote ([running_session_id]
+   The CALLER controls safety by choosing [session_id]: [c2c stop] passes the
+   managed session's own id (the instance name), which is provably unique to
+   that instance, so this can only reap daemons draining that instance's inbox.
+   It never passes a resolved kimi UUID — see
+   [C2c_start.teardown_kimi_notifiers_for_stop] for why a UUID key would risk a
+   co-located live session.
+
+   Safety of the match itself (independent of the caller's key):
+   - Matches ONLY on the binding the daemon itself wrote ([running_session_id]
      reads [<alias>.sid]); a daemon serving a DIFFERENT session records a
-     different sid and is excluded by the equality test. A live co-located
-     session's notifier likewise has its own sid.
+     different sid and is excluded by the equality test.
    - FAIL CLOSED on unknown binding: a pre-#9 daemon with no sidfile yields
      [None] here, the equality is false, and it is left running.
    - The actual signal goes through [stop_daemon], which is identity-gated

@@ -1295,6 +1295,54 @@ let test_stop_daemons_for_session_spares_live_and_unknown () =
     C2c_kimi_notifier.stop_daemon ~alias:live_alias;
     C2c_kimi_notifier.stop_daemon ~alias:nosid_alias)
 
+(* #42 (integration): the `c2c stop` teardown COMPOSITION
+   C2c_start.teardown_kimi_notifiers_for_stop reaps BOTH the instance-alias
+   notifier AND a differently-aliased notifier bound to the instance's own
+   session id (= name), while SPARING a live notifier bound to a DIFFERENT
+   session. This is the c2c_start.ml wiring the unit tests above do not exercise
+   (owned key = the instance name only). Because the key is the provably-unique
+   instance name — never a resolved uuid — a live co-located peer can never be
+   reaped. *)
+let test_teardown_for_stop_reaps_by_name_spares_other () =
+  with_notifier_home (fun ~broker_root ->
+    let name = "i42stop-instance-zzq" in
+    (* (a) notifier under the instance alias, bound to the instance session id. *)
+    let inst_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:name ~broker_root ~session_id:name ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start instance notifier returned None"
+    in
+    (* (b) a DIFFERENTLY-aliased notifier also bound to the instance session id
+       (e.g. left over from a rename/restart) — the alias-keyed stop_daemon
+       would miss it; the by-binding reap must catch it. *)
+    let other_alias = "i42stop-picket-zzq" in
+    let bound_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:other_alias ~broker_root ~session_id:name ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start bound notifier returned None"
+    in
+    (* (c) a live notifier bound to a DIFFERENT session — must survive. *)
+    let live_alias = "i42stop-livepeer-zzq" in
+    let live_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:live_alias ~broker_root ~session_id:"i42stop-other-sid" ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start live-peer notifier returned None"
+    in
+    C2c_start.teardown_kimi_notifiers_for_stop ~alias:name ~session_id:name;
+    Alcotest.(check bool) "instance-alias notifier killed" false (pid_alive_local inst_pid);
+    Alcotest.(check bool) "differently-aliased same-session notifier killed" false
+      (pid_alive_local bound_pid);
+    Alcotest.(check bool) "instance pidfile removed" false
+      (Sys.file_exists (C2c_kimi_notifier.pidfile_path name));
+    Alcotest.(check bool) "bound-alias pidfile removed" false
+      (Sys.file_exists (C2c_kimi_notifier.pidfile_path other_alias));
+    (* SAFETY: the different-session live notifier is untouched. *)
+    Alcotest.(check bool) "live different-session notifier still alive" true
+      (pid_alive_local live_pid);
+    Alcotest.(check bool) "live different-session notifier still running" true
+      (C2c_kimi_notifier.already_running live_alias);
+    C2c_kimi_notifier.stop_daemon ~alias:live_alias)
+
 (* ─── #9 B: managed notifier must watch the REAL session-id inbox ─────────
    The kimi SessionStart hook registers a managed session under Kimi's real
    session id, so peer mail lands in <real-sid>.inbox.json — NOT the alias
@@ -2089,6 +2137,7 @@ let () =
     ; "i42-notifier-leak-teardown",
       [ Alcotest.test_case "stop_daemons_for_session reaps hook-armed auto-minted-alias leak" `Quick test_stop_daemons_for_session_reaps_hook_armed_leak
       ; Alcotest.test_case "stop_daemons_for_session spares live/unknown-binding daemons (safety invariant)" `Quick test_stop_daemons_for_session_spares_live_and_unknown
+      ; Alcotest.test_case "teardown_for_stop reaps instance+bound aliases, spares other session (integration)" `Quick test_teardown_for_stop_reaps_by_name_spares_other
       ]
     ; ( "b9-managed-notifier-real-sid"
       , [ Alcotest.test_case "prefers registration real session_id" `Quick test_b9_resolve_prefers_registration_real_sid

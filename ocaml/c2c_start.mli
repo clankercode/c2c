@@ -158,6 +158,23 @@ val resolve_kimi_notifier_session_id :
   unit ->
   string
 
+(** [teardown_kimi_notifiers_for_stop ~alias ~session_id] is the [c2c stop] /
+    supervisor-cleanup teardown for a managed session's kimi notifier(s) (#42).
+    It reaps the notifier under the instance [alias] AND any daemon — whatever
+    its own alias — whose recorded [<alias>.sid] binding names [session_id],
+    catching a differently-aliased daemon still draining this session's inbox
+    that the alias-keyed teardown misses.
+
+    [session_id] MUST be the managed session's OWN id (the instance name),
+    never a resolved kimi uuid: the instance name is provably unique, so the
+    by-binding reap can never signal a live DIFFERENT / co-located session's
+    notifier. A hook daemon armed under an auto-minted alias records kimi's real
+    uuid, not the name, and is deliberately NOT reaped here (FAIL CLOSED — a
+    uuid resolved from the fallible #41 workspace fallback could name a live
+    peer); `c2c doctor hooks` surfaces that state instead. Exposed for tests. *)
+val teardown_kimi_notifiers_for_stop :
+  alias:string -> session_id:string -> unit
+
 val deliver_kickoff_for_client :
   client:string ->
   name:string ->
