@@ -275,9 +275,6 @@ let await_result ~instance_dir ~request_id ~(timeout_s : float) :
     [do_exec] defaults to [Unix.execve] with the plan's env; tests inject a
     no-op. The [Restarting] result is written only after [teardown]
     returns [Ok] and immediately before [do_exec] — never before commit. *)
-(** [identity_at] is re-sampled at the reexec boundary (after teardown).
-    Defaults to the pre-teardown [owner] only when tests inject a static
-    identity; production callers should re-read pid/start-time. *)
 (** [identity_at] is MANDATORY: re-sample pid/start-time after teardown.
     Tests inject a function; production owners must re-read self identity. *)
 let commit_takeover ~instance_dir ~(request : request) ~(owner : identity)
