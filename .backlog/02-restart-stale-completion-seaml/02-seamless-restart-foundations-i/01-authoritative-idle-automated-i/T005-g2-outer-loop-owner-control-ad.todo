@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-07-20T02:13:02Z"
 depends_on:
@@ -7,14 +8,9 @@ depends_on:
 estimate_hours: 3
 id: P2.M2.E1.T005
 priority: high
+started_at: null
 status: pending
-tags:
-    - i010
-    - i011
-    - c2c
-    - restart-stale
-    - outer-loop
-    - g2
+tags: []
 title: 'G2: outer-loop owner-control adapters + restart-stale wiring'
 updated_at: "2026-07-20T02:13:02Z"
 ---
@@ -62,3 +58,9 @@ Together with G1, G2 restores the original G acceptance: by default the command
 safely classifies/handles every stale target (auto on authoritative Idle;
 guided otherwise); `restart-stale --force` restarts every current managed client
 in-pane.
+
+
+### Split provenance (2026-07-20)
+Original single task G (P2.M2.E1.T004) was split before claim per D's determination
+into G1 (P2.M2.E1.T004, app-server) and G2 (this task, outer-loop). Original
+dependency/acceptance closure is preserved across G1+G2; K depends on both.

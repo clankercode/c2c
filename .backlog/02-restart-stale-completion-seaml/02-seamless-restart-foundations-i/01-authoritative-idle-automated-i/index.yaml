@@ -81,4 +81,5 @@ tasks:
       id: T005
       priority: high
       status: pending
+      tags: []
       title: 'G2: outer-loop owner-control adapters + restart-stale wiring'
