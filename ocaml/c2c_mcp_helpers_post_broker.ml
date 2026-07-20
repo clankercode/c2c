@@ -1609,6 +1609,80 @@ let reclaimable_managed_kimi_registrations ~(cwd : string)
        is_managed_kimi_row_for_cwd ~want r && r.pid = None)
     regs
 
+(* True when any live or reclaimable managed kimi row owns [cwd] for a kimi
+   process. Used to suppress mint/rebind of the install-time alias (#48) and
+   to fail closed on auto-join when self cannot be resolved uniquely. *)
+let managed_kimi_owns_cwd_of ~(regs : registration list) =
+  current_client_type () = Some "kimi"
+  && (match (try Sys.getcwd () with Sys_error _ -> "") with
+      | "" -> false
+      | cwd ->
+          live_managed_kimi_registrations ~cwd regs <> []
+          || reclaimable_managed_kimi_registrations ~cwd regs <> [])
+
+(* #48: the managed `c2c start kimi` launcher row that an UNREGISTERED
+   in-session kimi MCP server belongs to, if any.
+
+   The global ~/.kimi-code/mcp.json carries no per-session C2C_MCP_SESSION_ID,
+   so a managed kimi MCP server resolves its own session id from the kimi
+   session_index (a uuid) that never matches the launcher row's session_id (the
+   instance name). Since #48 the startup auto-register no longer mints a
+   competing row under that uuid, so identity resolution BY SESSION_ID finds
+   nothing — [whoami] would report "unregistered" and [send] would fail with
+   missing-sender / be rejected as impersonation of the launcher row. This
+   binds the session to its launcher identity BY CWD so whoami reports the
+   managed alias and send sends AS it (single authority — #48 option 1).
+
+   Deliberately narrow. Returns [Some] only when ALL hold:
+     - this process declares client_type = kimi (a non-kimi MCP server sharing
+       the directory is never bound to a kimi row);
+     - the process's own session_id has NO registration (a session that already
+       owns an identity must not be relabelled as another row's alias — this is
+       what keeps the impersonation carve-out below from letting a registered
+       session send as someone else);
+     - EXACTLY ONE managed (registered_by <> "kimi-hook") kimi row owns the
+       current normalized cwd. Two or more is the #40 ambiguity — fail closed
+       to [None] rather than guess which launcher is self.
+   This does not widen the trust boundary beyond #40's already-accepted
+   co-located-vanilla-kimi adoption: same normalized cwd + kimi already means
+   "the workspace's managed identity", and the broker is a local-only file a
+   co-located process could write directly regardless.
+
+   THREAT MODEL — [C2C_MCP_CLIENT_TYPE=kimi] is env-spoofable, so this guard's
+   safety rests ENTIRELY on c2c's same-UID local-file model (a process that can
+   set that env and chdir into the workspace can already write the registry).
+   It must NOT be relied on as a security boundary if the broker ever gains a
+   cross-UID or remote-write surface.
+
+   Defined here (before auto_register/auto_join) so both startup paths share
+   one resolution of "self" for managed kimi. *)
+let self_managed_kimi_row ?session_id_override broker =
+  if current_client_type () <> Some "kimi" then None
+  else
+    let regs = Broker.list_registrations broker in
+    let own_sid =
+      match session_id_override with
+      | Some sid -> Some sid
+      | None -> current_session_id ()
+    in
+    let own_row_exists =
+      match own_sid with
+      | Some sid -> List.exists (fun (r : registration) -> r.session_id = sid) regs
+      | None -> false
+    in
+    if own_row_exists then None
+    else
+      match (try Sys.getcwd () with Sys_error _ -> "") with
+      | "" -> None
+      | cwd -> (
+          match live_managed_kimi_registrations ~cwd regs with
+          | [ m ] -> Some m
+          | _ :: _ -> None (* #40 ambiguity: >= 2 managed rows share cwd *)
+          | [] -> (
+              match reclaimable_managed_kimi_registrations ~cwd regs with
+              | [ m ] -> Some m
+              | _ -> None))
+
 let auto_register_impl ~broker_root ?session_id_override () =
   match auto_register_alias () with
   | None -> ()
@@ -1654,14 +1728,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
          (registered_by <> "kimi-hook") row so vanilla kimi — whose hook row is
          adopted below via [same_session_hook_identity_row] — still registers
          its install alias exactly as before. *)
-      let managed_kimi_owns_cwd =
-        current_client_type () = Some "kimi"
-        && (match (try Sys.getcwd () with Sys_error _ -> "") with
-            | "" -> false
-            | cwd ->
-                live_managed_kimi_registrations ~cwd existing <> []
-                || reclaimable_managed_kimi_registrations ~cwd existing <> [])
-      in
+      let managed_kimi_owns_cwd = managed_kimi_owns_cwd_of ~regs:existing in
       if managed_kimi_owns_cwd then begin
         (try
            let cwd = try Sys.getcwd () with Sys_error _ -> "?" in
@@ -1967,22 +2034,39 @@ let auto_join_rooms_impl ~broker_root ?session_id_override () =
       | _ -> false
     in
     if not contaminated then begin
-      let alias =
+      (* Resolve join identity: prefer a row already registered under this
+         session_id; else bind to the managed launcher row (#48) so room
+         membership is under the launcher alias+session_id, never the
+         install-time sticky alias / MCP-derived uuid. [Broker.join_room]
+         treats same-alias+new-session_id as a restart and would REBIND a
+         managed member's session_id if we joined as managed-alias + MCP
+         uuid — so both fields must come from the launcher row. When a
+         managed row owns cwd but self cannot be resolved uniquely (#40
+         ambiguity), skip entirely rather than fall through to the install
+         alias (that would mint a competing room identity). *)
+      let alias, session_id =
         match
           List.find_opt
             (fun reg -> reg.session_id = session_id)
             existing
         with
-        | Some reg -> reg.alias
-        | None -> alias
+        | Some reg -> (reg.alias, reg.session_id)
+        | None ->
+            (match self_managed_kimi_row ?session_id_override broker with
+             | Some m -> (m.alias, m.session_id)
+             | None ->
+                 if managed_kimi_owns_cwd_of ~regs:existing then
+                   ("", "") (* fail closed: do not join as install alias *)
+                 else (alias, session_id))
       in
-      List.iter
-        (fun room_id ->
-          if Broker.valid_room_id room_id then
-            ignore (Broker.join_room broker ~room_id ~alias ~session_id)
-          (* silently skip invalid room IDs so a misconfiguration doesn't
-             crash the server *))
-        rooms
+      if alias <> "" && session_id <> "" then
+        List.iter
+          (fun room_id ->
+            if Broker.valid_room_id room_id then
+              ignore (Broker.join_room broker ~room_id ~alias ~session_id)
+            (* silently skip invalid room IDs so a misconfiguration doesn't
+               crash the server *))
+          rooms
     end
   end
 
@@ -2037,66 +2121,6 @@ let with_session_lwt ~session_id_override broker arguments f =
   in
   Broker.touch_session broker ~session_id;
   f ~session_id
-
-(* #48: the managed `c2c start kimi` launcher row that an UNREGISTERED
-   in-session kimi MCP server belongs to, if any.
-
-   The global ~/.kimi-code/mcp.json carries no per-session C2C_MCP_SESSION_ID,
-   so a managed kimi MCP server resolves its own session id from the kimi
-   session_index (a uuid) that never matches the launcher row's session_id (the
-   instance name). Since #48 the startup auto-register no longer mints a
-   competing row under that uuid, so identity resolution BY SESSION_ID finds
-   nothing — [whoami] would report "unregistered" and [send] would fail with
-   missing-sender / be rejected as impersonation of the launcher row. This
-   binds the session to its launcher identity BY CWD so whoami reports the
-   managed alias and send sends AS it (single authority — #48 option 1).
-
-   Deliberately narrow. Returns [Some] only when ALL hold:
-     - this process declares client_type = kimi (a non-kimi MCP server sharing
-       the directory is never bound to a kimi row);
-     - the process's own session_id has NO registration (a session that already
-       owns an identity must not be relabelled as another row's alias — this is
-       what keeps the impersonation carve-out below from letting a registered
-       session send as someone else);
-     - EXACTLY ONE managed (registered_by <> "kimi-hook") kimi row owns the
-       current normalized cwd. Two or more is the #40 ambiguity — fail closed
-       to [None] rather than guess which launcher is self.
-   This does not widen the trust boundary beyond #40's already-accepted
-   co-located-vanilla-kimi adoption: same normalized cwd + kimi already means
-   "the workspace's managed identity", and the broker is a local-only file a
-   co-located process could write directly regardless.
-
-   THREAT MODEL — [C2C_MCP_CLIENT_TYPE=kimi] is env-spoofable, so this guard's
-   safety rests ENTIRELY on c2c's same-UID local-file model (a process that can
-   set that env and chdir into the workspace can already write the registry).
-   It must NOT be relied on as a security boundary if the broker ever gains a
-   cross-UID or remote-write surface. *)
-let self_managed_kimi_row ?session_id_override broker =
-  if current_client_type () <> Some "kimi" then None
-  else
-    let regs = Broker.list_registrations broker in
-    let own_sid =
-      match session_id_override with
-      | Some sid -> Some sid
-      | None -> current_session_id ()
-    in
-    let own_row_exists =
-      match own_sid with
-      | Some sid -> List.exists (fun (r : registration) -> r.session_id = sid) regs
-      | None -> false
-    in
-    if own_row_exists then None
-    else
-      match (try Sys.getcwd () with Sys_error _ -> "") with
-      | "" -> None
-      | cwd -> (
-          match live_managed_kimi_registrations ~cwd regs with
-          | [ m ] -> Some m
-          | _ :: _ -> None (* #40 ambiguity: >= 2 managed rows share cwd *)
-          | [] -> (
-              match reclaimable_managed_kimi_registrations ~cwd regs with
-              | [ m ] -> Some m
-              | _ -> None))
 
 let current_registered_alias ?session_id_override broker =
   let by_session_id =
