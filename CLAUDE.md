@@ -242,6 +242,9 @@ wake requirement above and #35). Do not over-claim these in docs or to users:
 | Kimi, agy | **CONDITIONAL** — needs an out-of-process poster alive (REST POST / agentapi) |
 | Codex (vanilla hooks), Claude Code, Grok | **NONE** — activity-triggered only; CONDITIONAL only if the agent armed `c2c monitor` |
 
+**Primary automatic delivery must not depend on tmux/herdr send-keys.** Guaranteed/CONDITIONAL rows above are plugin, app-server inject, REST, or agentapi. Codex *hooks* Mode_wake_inject (tmux/herdr nudge) is a fallback for unmanaged/hooks sessions only — prefer managed app-server. Kimi optional `C2C_KIMI_TMUX_COMPOSER_WAKE=1` is legacy composer nudge, not the wake path. Matrix: `.collab/research/2026-07-20T11-00-00Z-auto-delivery-no-sendkeys-matrix.md`.
+
+
 Claude Code and Grok cannot be guaranteed from inside c2c: neither exposes a
 local endpoint accepting a synthetic user turn (Kimi has REST, Codex the
 app-server, OpenCode the plugin API). That is an upstream ask, not our bug.

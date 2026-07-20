@@ -53,7 +53,7 @@ as the primary path.
 
 | Suite | Client | What it proves |
 |---|---|---|
-| `ocaml/test/test_c2c_codex_autoturn_b098.ml` | Codex app-server | Local auto-turn; remote/`@host`/`#` fail closed |
+| `ocaml/cli/test_c2c_codex_autoturn_b098.ml` / `ocaml/test/test_c2c_codex_autoturn.ml` | Codex app-server | Local auto-turn; remote/`@host`/`#` fail closed |
 | `ocaml/test/test_c2c_kimi_notifier.ml` | Kimi | Notifier drain + REST path hermetic fixtures |
 | `ocaml/test/test_c2c_kimi_deliver.ml` | Kimi | REST deliver_message |
 | `ocaml/cli/test_c2c_agy_deliver.ml` | agy | agentapi deliver loop (bounded wait, env) |
