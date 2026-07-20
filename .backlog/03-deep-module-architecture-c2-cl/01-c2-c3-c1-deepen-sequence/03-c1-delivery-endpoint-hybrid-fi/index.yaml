@@ -34,7 +34,8 @@ tasks:
       file: T003-route-deliver-service-through.todo
       id: T003
       priority: medium
-      status: pending
+      status: in_progress
+      tags: []
       title: Route deliver-service through endpoint table; Mode_* temporary
     - complexity: low
       depends_on:
