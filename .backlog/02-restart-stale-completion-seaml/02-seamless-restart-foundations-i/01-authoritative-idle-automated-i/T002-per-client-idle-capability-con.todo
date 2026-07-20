@@ -1,23 +1,24 @@
 ---
 claimed_at: "2026-07-20T02:13:41Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T02:32:31Z"
 complexity: high
 created_at: "2026-07-19T23:48:12Z"
 depends_on:
     - P2.M2.E1.T001
+duration_minutes: 18.849808541333335
 estimate_hours: 3
 id: P2.M2.E1.T002
 priority: high
 started_at: "2026-07-20T02:13:41Z"
-status: in_progress
+status: done
 tags:
     - i011
     - c2c
     - upgrade
     - idle
 title: Per-client idle capability contract (fail-closed)
-updated_at: "2026-07-20T02:13:41Z"
+updated_at: "2026-07-20T02:32:31Z"
 ---
 Authoritative per-client in-flight/idle contract; Unknown fails closed. See full spec appended.
 

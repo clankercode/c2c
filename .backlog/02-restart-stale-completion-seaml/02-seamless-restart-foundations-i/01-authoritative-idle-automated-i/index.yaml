@@ -33,7 +33,7 @@ tasks:
       file: T002-per-client-idle-capability-con.todo
       id: T002
       priority: high
-      status: in_progress
+      status: done
       tags:
         - i011
         - c2c
