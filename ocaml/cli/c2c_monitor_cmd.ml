@@ -899,6 +899,29 @@ let monitor_cmd =
                is re-attempted honestly. *)
             let terminal_logged = ref false in
             let last_terminal_target = ref "" in
+            (* Shared teardown tail for every terminal disable path. [announce]
+               prints the generic "disabled — local inbox watch continues" line;
+               a caller whose own one-shot message already says so passes
+               [~announce:false] to avoid a redundant second line. *)
+            let disable_relay_or_exit ?(announce = true) () =
+              if C2c_monitor_logic.should_exit_on_relay_terminal ~local_watch_active
+              then
+                (* Pure-relay monitor (no local watch): tear down so a supervisor
+                   notices a dead relay stream. *)
+                exit C2c_monitor_logic.exit_relay_terminal
+              else begin
+                (* B142: a local inbox/archive watch is active — a relay-side
+                   problem must NOT tear down local receive. Disable ONLY the
+                   relay loop; the main-thread inotify watch keeps running. Set
+                   the stop flag so the loop returns on its next guard check. *)
+                if announce && not (Atomic.get relay_stop) then
+                  Printf.eprintf
+                    "%s relay watch: disabled — local inbox watch continues \
+                     (relay failure does not stop local receive)\n%!"
+                    (now_hms ());
+                Atomic.set relay_stop true
+              end
+            in
             let handle_disable ~node_id ~session_id ~code detail remediation =
               let target = node_id ^ "/" ^ session_id in
               if !last_terminal_target <> target then begin
@@ -917,23 +940,29 @@ let monitor_cmd =
                   (now_hms ()) code
                   (now_hms ()) remediation
               end;
-              if C2c_monitor_logic.should_exit_on_relay_terminal ~local_watch_active
-              then
-                (* Pure-relay monitor (no local watch): tear down so a supervisor
-                   notices a dead relay stream. *)
-                exit C2c_monitor_logic.exit_relay_terminal
-              else begin
-                (* B142: a local inbox/archive watch is active — a relay-side
-                   problem must NOT tear down local receive. Disable ONLY the
-                   relay loop; the main-thread inotify watch keeps running. Set
-                   the stop flag so the loop returns on its next guard check. *)
-                if not (Atomic.get relay_stop) then
-                  Printf.eprintf
-                    "%s relay watch: disabled — local inbox watch continues \
-                     (relay failure does not stop local receive)\n%!"
-                    (now_hms ());
-                Atomic.set relay_stop true
-              end
+              disable_relay_or_exit ()
+            in
+            (* #63: connector-owned signature_invalid. Fail closed after the
+               FIRST failure with ONE clear line — the connector owns relay
+               delivery for this session, so the CLI monitor cannot sign peeks
+               for it and re-running `c2c relay register` cannot help. Local
+               inbox watch is unaffected. No soft-retry, no register hint. *)
+            let handle_disable_connector_owned ~node_id ~session_id detail
+                remediation =
+              let target = node_id ^ "/" ^ session_id in
+              if !last_terminal_target <> target then begin
+                terminal_logged := false;
+                last_terminal_target := target
+              end;
+              if not !terminal_logged then begin
+                terminal_logged := true;
+                Printf.eprintf
+                  "%s relay watch: off — the relay connector owns relay delivery \
+                   for this session (peek key %s/%s: %s); the CLI monitor cannot \
+                   sign peeks for it. Local inbox watch continues. %s\n%!"
+                  (now_hms ()) node_id session_id detail remediation
+              end;
+              disable_relay_or_exit ~announce:false ()
             in
             let rec relay_loop last_tick =
               if Atomic.get relay_stop || Unix.getppid () = 1 then ()
@@ -1074,9 +1103,24 @@ let monitor_cmd =
                          C2c_monitor_logic.empty_transient_streak;
                        rl_streak := C2c_monitor_logic.empty_transient_streak;
                        last_rl_retry_after := None;
+                       (* #63: is the CURRENT peek key connector-owned? If so, a
+                          signature_invalid is permanent for the CLI monitor and
+                          must fail closed on the first failure — the alias signer
+                          can never own the connector's (node, session). *)
+                       let connector_owned_key =
+                         match peek_target with
+                         | Some (k, alias_str) ->
+                             C2c_monitor_logic.peek_key_is_connector_owned
+                               ~alias:alias_str ~node_id:k.node_id
+                               ~session_id:k.session_id
+                               ~has_explicit_key:
+                                 (node_id_override <> None
+                                  || session_id_override <> None)
+                         | None -> false
+                       in
                        let action, budget' =
                          C2c_monitor_logic.decide_on_terminal
-                           ~now ~code ~budget:!soft_budget ()
+                           ~connector_owned_key ~now ~code ~budget:!soft_budget ()
                        in
                        soft_budget := budget';
                        (match action with
@@ -1093,7 +1137,11 @@ let monitor_cmd =
                               (now_hms ()) remediation_hint
                         | C2c_monitor_logic.Disable { remediation; severity = _ } ->
                             handle_disable ~node_id ~session_id ~code detail
-                              remediation));
+                              remediation
+                        | C2c_monitor_logic.Disable_connector_owned
+                            { remediation } ->
+                            handle_disable_connector_owned ~node_id ~session_id
+                              detail remediation));
                   (* B246: unconditional inter-peek yield. When a peek takes
                      longer than the configured interval (slow relay, loaded
                      host, tiny --relay-interval), the loop otherwise re-peeks
