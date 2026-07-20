@@ -254,7 +254,20 @@ let monitor_cmd =
                  this flag, a missing binding is reported once and relay watch \
                  stays off while local inbox monitoring continues.")
   in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id register_relay_alias ->
+  (* I013: self-detect binary upgrade; print exact relaunch; exit 0.
+     No external respawn (B098) — supervisor/operator decides. *)
+  let self_stale_exit_flag =
+    Arg.(value & flag & info ["self-stale-exit"]
+           ~doc:"Exit cleanly (0) with an exact relaunch command when the \
+                 running monitor binary is stale relative to the installed \
+                 $(b,c2c) (post-$(b,just install-all)). Orphan detection \
+                 (ppid=1) remains always-on. Does NOT respawn — print the \
+                 hint and stop so the operator (or a supervisor that respects \
+                 $(b,monitor.stale-exit)) decides. Check interval defaults to \
+                 60s; first check is deferred one full interval. Override with \
+                 $(b,C2C_MONITOR_SELF_STALE_INTERVAL).")
+  in
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id register_relay_alias self_stale_exit ->
     (* Resolve effective flags: --archive and --full-body are now defaults.
        --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
     let full_body = full_body || not snippet in  (* full_body unless --snippet *)
@@ -1342,6 +1355,63 @@ let monitor_cmd =
           in
           loop ()) ())
     in
+    (* I013: optional binary-upgrade self-stale thread. Pure classification via
+       C2c_stale; on Stale print exact relaunch + exit 0. Never respawns.
+       First check deferred one full interval (spike invariant 3). *)
+    let _self_stale_thread =
+      if not self_stale_exit then None
+      else
+        let interval =
+          match Sys.getenv_opt "C2C_MONITOR_SELF_STALE_INTERVAL" with
+          | Some s ->
+              (try
+                 let f = float_of_string (String.trim s) in
+                 if f > 0. then f else C2c_monitor_stale.default_check_interval_s
+               with _ -> C2c_monitor_stale.default_check_interval_s)
+          | None -> C2c_monitor_stale.default_check_interval_s
+        in
+        let relaunch = C2c_monitor_stale.reconstruct_monitor_command () in
+        (* Re-resolve the installed path each tick: install-all's rm+cp mints a
+           new inode at the same path, so a start-of-thread cache would keep
+           comparing against the pre-upgrade image and never fire. *)
+        Some (Thread.create (fun () ->
+          (* Defer first check so a monitor that starts mid-install does not
+             immediately self-exit. *)
+          Thread.delay interval;
+          let rec loop () =
+            (* Orphan still wins — same exit 0, no relaunch spam required. *)
+            if Unix.getppid () = 1 then exit 0
+            else begin
+              (match C2c_monitor_stale.resolve_installed_exe () with
+               | None -> ()
+               | Some path ->
+                   let img = C2c_stale.installed_image path in
+                   let v = C2c_stale.classify_installed img (Unix.getpid ()) in
+                   match C2c_monitor_stale.decide_binary_verdict v with
+                   | C2c_monitor_stale.Continue -> ()
+                   | C2c_monitor_stale.Exit_stale reason ->
+                       let msg =
+                         C2c_monitor_stale.format_stale_exit
+                           ~now_hms:(now_hms ()) ~reason
+                           ~relaunch_command:relaunch ()
+                       in
+                       (* Always surface the human hint on stderr so operators
+                          see it even under --json. *)
+                       Printf.eprintf "%s%!" msg;
+                       if json then begin
+                         print_string
+                           (Yojson.Safe.to_string
+                              (C2c_monitor_stale.stale_exit_json ~reason
+                                 ~relaunch_command:relaunch));
+                         print_newline ()
+                       end;
+                       exit 0);
+              Thread.delay interval;
+              loop ()
+            end
+          in
+          loop ()) ())
+    in
     (* Belt-and-braces startup orphan check: if the parent already died before
        we enter the inotify loop, exit immediately rather than loop forever. *)
     (if Unix.getppid () = 1 then exit 0);
@@ -1779,7 +1849,7 @@ let monitor_cmd =
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
     $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
     $ force_flag $ drain_flag $ cross_repo $ no_relay $ relay_interval $ relay_node_id $ relay_session_id
-    $ register_relay_alias
+    $ register_relay_alias $ self_stale_exit_flag
 
 (* --- monitor Cmd ---------------------------------------------------------- *)
 
@@ -1856,7 +1926,9 @@ let monitor =
             ; `S "EXIT STATUS"
             ; `P "0  clean exit (parent gone / stop; also after a terminal relay \
                   failure when a local inbox watch is active — the local watch keeps \
-                  running and the process exits 0 only when it stops). \
+                  running and the process exits 0 only when it stops; also \
+                  $(b,--self-stale-exit) after a binary-upgrade detection with an \
+                  exact relaunch hint — do not treat as error / do not auto-respawn). \
                   1  usage or startup error (broker root unresolved, lockfile conflict). \
                   3  terminal relay failure (auth / identity / signature / bad request) \
                   when relay-watch is the sole source (no local watch active)."
@@ -1876,6 +1948,8 @@ let monitor =
             ; `P "$(b,c2c monitor --relay-node-id machine-42)  — peek a relay inbox keyed machine-42/machine-42"
             ; `P "$(b,c2c monitor --relay-node-id host-1 --relay-session-id <sid>)  — connector-managed inbox (needs both)"
             ; `P "$(b,c2c monitor --live)  — watch live inboxes instead of archive (legacy)"
+            ; `P "$(b,c2c monitor --self-stale-exit)  — exit 0 with exact relaunch command \
+                  when the running binary is stale after an install (I013; no auto-respawn)"
             ; `P "$(b,c2c monitor --json)  — NDJSON output for programmatic parsing \
                   (one object per line, flushed per event; message events carry the \
                   canonical message schema v1 fields plus the legacy \
