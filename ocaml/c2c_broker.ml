@@ -3550,9 +3550,10 @@ open C2c_mcp_helpers
      tail-log` is silent on dead-letter writes — contradicting the
      "log silent failures" rule. Best-effort: any IO error is swallowed
      (broker.log emission must never block the dead-letter write itself).
-     The reason field defaults to "inbox_sweep" since that is the only
-     current caller (sweep loop on a vanished session); future callers
-     can pass a different reason to distinguish e.g. cross-host rejects. *)
+     The reason field defaults to "inbox_sweep" (sweep loop on a vanished
+     session). Callers that are not sweep pass a distinct reason —
+     currently [gc_inboxes] uses "inbox_gc" so operators can tell the
+     two reclamation paths apart in broker.log / dead-letter triage. *)
   let log_dead_letter_write t ~reason ~session_id ~msg =
     (try
        let path = Filename.concat t.root "broker.log" in
@@ -3881,8 +3882,10 @@ open C2c_mcp_helpers
      session_id is re-read from the freshly-locked registry) and the per-inbox
      lock around each unlink (so it interlocks with a concurrent enqueue,
      which holds the same lock). Lock order registry -> inbox matches the rest
-     of the broker. The .inbox.lock sidecar is intentionally left in place,
-     exactly as [sweep] does. *)
+     of the broker. Before unlinking, any non-empty content is archived to
+     dead-letter.jsonl with reason "inbox_gc" (mirrors [sweep]'s non-lossy
+     cleanup; #53 proposed archive-then-remove). The .inbox.lock sidecar is
+     intentionally left in place, exactly as [sweep] does. *)
   let gc_inboxes t ~older_than_s ~apply : gc_inboxes_result =
     ensure_root t;
     let now = Unix.gettimeofday () in
@@ -3930,13 +3933,23 @@ open C2c_mcp_helpers
                     (* Re-verify under the inbox lock: a delivery that raced the
                        preview took this same lock, so state is now settled.
                        Re-check no-row (against the freshly-locked registry) and
-                       re-check age (re-stat + reload); only then unlink. *)
+                       re-check age (re-stat + reload); only then archive +
+                       unlink. *)
                     if not (Hashtbl.mem reg_sids sid) then begin
                       let _cand2, eligible =
                         gc_describe_orphan t ~session_id:sid ~cutoff
                       in
                       if eligible then begin
-                        let n = List.length (load_inbox t ~session_id:sid) in
+                        (* Archive-then-remove (#53): rescue undelivered mail
+                           to dead-letter.jsonl before the inbox file goes.
+                           Empty inboxes still unlink (append_dead_letter is a
+                           no-op on []). Reason "inbox_gc" distinguishes this
+                           path from sweep's "inbox_sweep" in broker.log. *)
+                        let msgs = load_inbox t ~session_id:sid in
+                        let n = List.length msgs in
+                        if msgs <> [] then
+                          append_dead_letter ~reason:"inbox_gc" t
+                            ~session_id:sid ~messages:msgs;
                         if try_unlink (inbox_path t ~session_id:sid) then begin
                           deleted := sid :: !deleted;
                           deleted_messages := !deleted_messages + n

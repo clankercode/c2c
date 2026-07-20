@@ -629,7 +629,9 @@ module Broker : sig
       message ts both precede the cutoff — the race guard). Fails closed
       ([gc_registry_readable = false], zero candidates) when the registry
       cannot be read as a JSON list. The apply path holds the registry lock
-      across the transaction and the per-inbox lock around each unlink. *)
+      across the transaction and the per-inbox lock around each unlink, and
+      archives non-empty content to dead-letter.jsonl with reason
+      ["inbox_gc"] before unlinking (mirrors [sweep]; #53 archive-then-remove). *)
   val gc_inboxes : t -> older_than_s:float -> apply:bool -> gc_inboxes_result
   val registry_prune : t -> managed_session_ids:string list -> patterns:string list -> registration list
   val registry_prune_preview : t -> managed_session_ids:string list -> patterns:string list -> registration list

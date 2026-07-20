@@ -16474,7 +16474,65 @@ let test_gc_apply_deletes_old_orphan () =
       check string "deleted the orphan" "orphan-sess" (List.hd r.gc_deleted);
       check int "two messages reclaimed" 2 r.gc_deleted_messages;
       check bool "orphan inbox gone" false (Sys.file_exists orphan_path);
-      check bool "registered inbox preserved" true (Sys.file_exists keep_path))
+      check bool "registered inbox preserved" true (Sys.file_exists keep_path);
+      (* #53 harden: archive-then-remove — undelivered mail lands in
+         dead-letter.jsonl before the inbox file is unlinked. *)
+      let dl_path = C2c_mcp.Broker.dead_letter_path broker in
+      check bool "dead-letter.jsonl written" true (Sys.file_exists dl_path);
+      let dl_lines =
+        let ic = open_in dl_path in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let acc = ref [] in
+            (try
+               while true do
+                 let line = input_line ic |> String.trim in
+                 if line <> "" then acc := line :: !acc
+               done
+             with End_of_file -> ());
+            List.rev !acc)
+      in
+      check int "two dead-letter records" 2 (List.length dl_lines);
+      List.iter
+        (fun line ->
+          let json = Yojson.Safe.from_string line in
+          let open Yojson.Safe.Util in
+          check string "dead-letter session_id" "orphan-sess"
+            (json |> member "from_session_id" |> to_string))
+        dl_lines;
+      (* broker.log carries reason=inbox_gc so operators can tell this path
+         from sweep's inbox_sweep. *)
+      let log_path = Filename.concat dir "broker.log" in
+      check bool "broker.log written" true (Sys.file_exists log_path);
+      let log_lines =
+        let ic = open_in log_path in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let acc = ref [] in
+            (try
+               while true do
+                 let line = input_line ic |> String.trim in
+                 if line <> "" then acc := line :: !acc
+               done
+             with End_of_file -> ());
+            List.rev !acc)
+      in
+      let inbox_gc_events =
+        List.filter
+          (fun line ->
+            try
+              let json = Yojson.Safe.from_string line in
+              let open Yojson.Safe.Util in
+              json |> member "event" |> to_string = "dead_letter_write"
+              && json |> member "reason" |> to_string = "inbox_gc"
+              && json |> member "from_session_id" |> to_string = "orphan-sess"
+            with _ -> false)
+          log_lines
+      in
+      check int "two inbox_gc dead_letter_write events" 2
+        (List.length inbox_gc_events))
 
 let test_gc_never_touches_registered_inbox () =
   with_temp_dir (fun dir ->
@@ -16494,6 +16552,72 @@ let test_gc_never_touches_registered_inbox () =
       let app = C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:true in
       check int "apply deletes nothing" 0 (List.length app.gc_deleted);
       check bool "registered inbox still on disk" true (Sys.file_exists path))
+
+(* Managed sessions (c2c start) always have a registry row — sticky alias
+   after teardown, live pid while running. The no-row predicate therefore
+   preserves them the same way it preserves any other registration. This
+   hermetic case makes that invariant explicit so a future "smarter"
+   orphan classifier cannot quietly start reclaiming managed inboxes. *)
+let test_gc_never_touches_managed_session_inbox () =
+  with_temp_dir (fun dir ->
+      let now = Unix.gettimeofday () in
+      let old_t = now -. (30. *. gc_day) in
+      (* Minimal managed-shaped row: session_id = instance name (kimi/codex
+         managed convention), alias present. No pid is fine — managed
+         teardown strips pid on purpose and the sticky row remains. *)
+      gc_write_registry dir
+        ~rows:[ ("codex-worker-1", "codex-worker-1") ];
+      let managed_path =
+        gc_write_inbox dir ~session_id:"codex-worker-1" ~sender:"peer"
+          ~ts:[ old_t; old_t ] ~mtime:old_t
+      in
+      (* Control orphan that SHOULD be reclaimed, so the test proves the
+         classifier still works when a managed row is also present. *)
+      let orphan_path =
+        gc_write_inbox dir ~session_id:"orphan-sess" ~sender:"c2c-system"
+          ~ts:[ old_t ] ~mtime:old_t
+      in
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      let prev =
+        C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:false
+      in
+      check int "one orphan total (managed has a row)" 1 prev.gc_orphans_total;
+      check int "one candidate (the real orphan)" 1 (List.length prev.gc_candidates);
+      check string "candidate is the orphan not managed" "orphan-sess"
+        (List.hd prev.gc_candidates).gc_session_id;
+      let app =
+        C2c_mcp.Broker.gc_inboxes broker ~older_than_s:gc_older_than ~apply:true
+      in
+      check int "apply deletes only the orphan" 1 (List.length app.gc_deleted);
+      check string "deleted sid is orphan" "orphan-sess" (List.hd app.gc_deleted);
+      check bool "managed inbox preserved" true (Sys.file_exists managed_path);
+      check bool "orphan inbox deleted" false (Sys.file_exists orphan_path);
+      (* Orphan mail is archived; managed mail must not appear in dead-letter. *)
+      let dl_path = C2c_mcp.Broker.dead_letter_path broker in
+      check bool "dead-letter written for orphan" true (Sys.file_exists dl_path);
+      let dl_sids =
+        let ic = open_in dl_path in
+        Fun.protect
+          ~finally:(fun () -> close_in ic)
+          (fun () ->
+            let acc = ref [] in
+            (try
+               while true do
+                 let line = input_line ic |> String.trim in
+                 if line <> "" then
+                   try
+                     let json = Yojson.Safe.from_string line in
+                     let open Yojson.Safe.Util in
+                     acc := (json |> member "from_session_id" |> to_string) :: !acc
+                   with _ -> ()
+               done
+             with End_of_file -> ());
+            List.rev !acc)
+      in
+      check bool "dead-letter has orphan-sess" true
+        (List.mem "orphan-sess" dl_sids);
+      check bool "dead-letter has no managed sid" true
+        (not (List.mem "codex-worker-1" dl_sids)))
 
 let test_gc_age_guard_keeps_recent_and_mixed () =
   with_temp_dir (fun dir ->
@@ -17522,6 +17646,8 @@ let () =
                 test_gc_apply_deletes_old_orphan
             ; test_case "gc never touches a registered inbox" `Quick
                 test_gc_never_touches_registered_inbox
+            ; test_case "gc never touches a managed session inbox" `Quick
+                test_gc_never_touches_managed_session_inbox
             ; test_case "gc age guard keeps recent and mixed-age orphans" `Quick
                 test_gc_age_guard_keeps_recent_and_mixed
             ; test_case "gc fails closed on missing registry" `Quick
