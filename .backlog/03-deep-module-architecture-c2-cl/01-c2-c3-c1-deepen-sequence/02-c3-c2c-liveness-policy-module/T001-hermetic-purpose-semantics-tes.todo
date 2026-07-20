@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-20T12:58:37Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T13:00:50Z"
 complexity: medium
 created_at: "2026-07-20T12:54:20Z"
 depends_on: []
+duration_minutes: 2.226537266033333
 estimate_hours: 2
 id: P3.M1.E2.T001
 priority: high
 started_at: "2026-07-20T12:58:37Z"
-status: in_progress
+status: done
 tags: []
 title: Hermetic purpose-semantics tests for liveness (TDD red)
-updated_at: "2026-07-20T12:58:37Z"
+updated_at: "2026-07-20T13:00:50Z"
 ---
 ## Acceptance
 - Pin Delivery (lenient), Nudge (strict Alive), List, Sweep, Doctor (tristate)
