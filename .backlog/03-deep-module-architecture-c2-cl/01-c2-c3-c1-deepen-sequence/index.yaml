@@ -19,7 +19,7 @@ epics:
       locked: false
       name: 'C3: C2c_liveness policy module'
       path: 02-c3-c2c-liveness-policy-module
-      status: pending
+      status: done
     - complexity: high
       depends_on:
         - P3.M1.E2
