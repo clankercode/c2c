@@ -9,7 +9,7 @@ epics:
       locked: false
       name: Authoritative idle + automated in-place client restart
       path: 01-authoritative-idle-automated-i
-      status: pending
+      status: done
 estimate_hours: 12
 id: P2.M2
 locked: false
@@ -20,4 +20,4 @@ stats:
     in_progress: 0
     pending: 4
     total_tasks: 4
-status: pending
+status: done

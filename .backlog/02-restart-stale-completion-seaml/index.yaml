@@ -21,7 +21,7 @@ milestones:
       locked: false
       name: 'Seamless restart foundations (I011): idle-gated auto-restart'
       path: 02-seamless-restart-foundations-i
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: ""
