@@ -13,7 +13,7 @@ tasks:
       file: T001-delivery-endpoint-module-type.todo
       id: T001
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: DELIVERY_ENDPOINT module type + registry skeleton
     - complexity: high
