@@ -382,13 +382,29 @@ let start_cmd =
   in
   (* The nested-session guard below applies to harness clients
      (claude/codex/etc.) where running `c2c start` from inside another
-     agent session can hijack session IDs. relay-connect is a pure
-     background daemon — no inheritance hazard — so it dispatches before
-     the guard. *)
-  if client <> "relay-connect" && Sys.getenv_opt "C2C_INSTANCE_NAME" <> None then begin
+     agent session can hijack session IDs. Machine-wide daemons
+     (relay-connect, deliver-service) are pure background processes — no
+     inheritance hazard — so they dispatch before the guard. *)
+  let is_machine_daemon =
+    client = "relay-connect" || client = "deliver-service"
+  in
+  if (not is_machine_daemon) && Sys.getenv_opt "C2C_INSTANCE_NAME" <> None then begin
     Printf.eprintf "error: cannot run 'c2c start' from inside a c2c session.\n";
     Printf.eprintf "  Hint: use the outer shell or a separate terminal instead.\n%!";
     exit 1
+  end;
+  (* #35 phase 1: machine-wide deliver-service scaffold. No adapters yet —
+     just the supervised singleton (lock + pidfile + idle loop). Shared
+     instance dir + outer.pid plumbing with `c2c instances` / `c2c stop`. *)
+  if client = "deliver-service" then begin
+    let name = match name_opt with
+      | Some n -> n
+      | None -> C2c_deliver_managed.default_instance_name
+    in
+    C2c_deliver_managed.start
+      ~name
+      ~daemon:(not foreground_flag)
+      () [@ocaml.warning "-21"];
   end;
   (* relay-connect: managed connector daemon. Branches off the harness-client
      pipeline early — connectors don't need session ids, role files, kickoff
@@ -916,6 +932,14 @@ let restart_cmd =
      starts a supervised instance instead of falling through to
      "no config found for instance".
      [restart] does not return on success and exits cleanly on error. *)
+  (match C2c_deliver_managed.read_managed_config ~name with
+   | Some _ ->
+       C2c_deliver_managed.restart ~name ~timeout_s ()
+         [@ocaml.warning "-21"]
+   | None when C2c_deliver_managed.is_default_deliver_service_name name ->
+       C2c_deliver_managed.restart ~name ~timeout_s ()
+         [@ocaml.warning "-21"]
+   | None -> ());
   (match C2c_relay_managed.read_managed_config ~name with
    | Some _ ->
        C2c_relay_managed.restart

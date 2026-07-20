@@ -713,7 +713,7 @@ let claude_onboarding_preamble ~name =
    no intro; every actual agent client does, so a plain no-role start is never
    intro-less. *)
 let intro_on_no_role (client : string) : bool =
-  not (List.mem client [ "pty"; "tmux"; "relay-connect" ])
+  not (List.mem client [ "pty"; "tmux"; "relay-connect"; "deliver-service" ])
 
 (* Decode common backslash escapes in a TOML basic-string value
    (newline, tab, backslash, quote). Lets operators encode multi-line
