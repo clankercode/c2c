@@ -447,6 +447,55 @@ let test_failed_action_sets_json_error_and_exit_one () =
           check_summary j ~restarted:0 ~would_restart:0
             ~needs_manual_restart:1 ~skipped:0 ~failed:1))
 
+
+let test_app_server_busy_fail_closed_unless_force () =
+  with_temp_dir (fun dir ->
+      let pid = spawn_sleeper () in
+      with_pid pid (fun () ->
+          ignore (mk_app_server_instance dir ~name:"app-busy" ~pid);
+          let rc, j =
+            run_json_with_env ~instances_dir:dir
+              ~env:
+                [ ("C2C_RESTART_STALE_IDLE_FIXTURE", "busy")
+                ; ("C2C_RESTART_STALE_OWNER_RESULT_FIXTURE", "restarting") ]
+              ~args:"--json --timeout 0"
+          in
+          Alcotest.(check int) "busy fail closed exits 0" 0 rc;
+          Alcotest.(check string) "busy skipped" "skipped"
+            (action_kind (instance "app-busy" j));
+          check_summary j ~restarted:0 ~would_restart:0
+            ~needs_manual_restart:0 ~skipped:1 ~failed:0;
+          let rc, forced =
+            run_json_with_env ~instances_dir:dir
+              ~env:
+                [ ("C2C_RESTART_STALE_IDLE_FIXTURE", "busy")
+                ; ("C2C_RESTART_STALE_OWNER_RESULT_FIXTURE", "restarting") ]
+              ~args:"--force --json --timeout 0"
+          in
+          Alcotest.(check int) "force overrides busy" 0 rc;
+          Alcotest.(check string) "forced restart" "restarted"
+            (action_kind (instance "app-busy" forced));
+          check_summary forced ~restarted:1 ~would_restart:0
+            ~needs_manual_restart:0 ~skipped:0 ~failed:0))
+
+let test_app_server_idle_allows_auto () =
+  with_temp_dir (fun dir ->
+      let pid = spawn_sleeper () in
+      with_pid pid (fun () ->
+          ignore (mk_app_server_instance dir ~name:"app-idle" ~pid);
+          let rc, j =
+            run_json_with_env ~instances_dir:dir
+              ~env:
+                [ ("C2C_RESTART_STALE_IDLE_FIXTURE", "idle")
+                ; ("C2C_RESTART_STALE_OWNER_RESULT_FIXTURE", "restarting") ]
+              ~args:"--json --timeout 0"
+          in
+          Alcotest.(check int) "idle auto exits 0" 0 rc;
+          Alcotest.(check string) "idle restarted" "restarted"
+            (action_kind (instance "app-idle" j));
+          check_summary j ~restarted:1 ~would_restart:0
+            ~needs_manual_restart:0 ~skipped:0 ~failed:0))
+
 let () =
   Alcotest.run "c2c_restart_stale"
     [ ( "restart-stale",
@@ -463,5 +512,9 @@ let () =
           Alcotest.test_case "owner fixture restarts and receives force" `Quick
             test_owner_fixture_restarts_and_receives_force;
           Alcotest.test_case "Failed action controls JSON and exit" `Quick
-            test_failed_action_sets_json_error_and_exit_one ] )
+            test_failed_action_sets_json_error_and_exit_one;
+          Alcotest.test_case "app-server busy fail closed unless force" `Quick
+            test_app_server_busy_fail_closed_unless_force;
+          Alcotest.test_case "app-server idle allows auto" `Quick
+            test_app_server_idle_allows_auto ] )
     ]
