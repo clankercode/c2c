@@ -505,3 +505,11 @@ for quoted counts, no stash-baseline without rebuild.
   in registry — each has an explicit mitigation above.
 - **Open:** claim path location, auto-start policy, vanilla-without-cwd — none
   block shadow mode.
+
+
+## P3 C2 landed (2026-07-20)
+
+Single-writer is now **claim-before-POST** via `C2c_kimi_delivery_claim`, not only
+`already_running` DEAF-fallback. Both notifier and deliver-service claim inside
+`run_once` (per-message, broker-local, 30s TTL). Active mode still prefers not
+posting when a notifier is live, but dual-POST is structurally prevented by claims.
