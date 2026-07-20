@@ -47,7 +47,7 @@ tasks:
       file: T003-generic-owner-control-self-ree.todo
       id: T003
       priority: high
-      status: in_progress
+      status: done
       tags:
         - i011
         - c2c
