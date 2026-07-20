@@ -10,6 +10,32 @@ bare (TTY preserved — NOT piped; a `tee` pipe makes stdout a non-TTY and codex
 frontend never loads → "delivery loop DEGRADED"). Observation via `tmux capture-pane`,
 never a keystroke to the recipient during the wake window.
 
+## FINAL STATUS (closeout 2026-07-20)
+
+| Client | Documented wake class | E2E wake verdict | Evidence basis | Residual blockers |
+|---|---|---|---|---|
+| **codex** (managed/app-server) | GUARANTEED (local mail) | **PASS** | Inject + gated auto-turn; nonce `WOKE-ZQ7X4WAKE`; ~25s; no human keystroke; B098 DATA framing intact | B098 negative controls (remote/`@host`/`#`/DND) covered by `test_c2c_codex_autoturn_b098.ml`, not re-staged in this harness |
+| **kimi** (managed) | CONDITIONAL (REST notifier alive) | **PASS** (wire-authoritative) | REST inject → `llm.request` → content `WOKE-KMWAKE7383` in `wire.jsonl`; ~11s; inbox drained; TUI not authoritative | Requires full model alias `kimi-code/kimi-for-coding-highspeed` (bare `k2p7` invalid); CONDITIONAL on notifier daemon |
+| **agy** (managed) | CONDITIONAL (agentapi) | **NOT PASS / BLOCKED** | After da3c29d1/8d31fa41: register+argv infrastructure PASS; no agentapi wake | See residual blockers below — **do not claim agy wake PASS** |
+
+**Overall goal status:** 2/3 clients green on the wake bar (codex, kimi). agy infrastructure fixed; end-to-end agentapi wake still blocked. Cross-client topology (`codex→kimi`, `agy→codex`) deferred until agy green.
+
+### agy residual blockers (exact)
+1. **Auth:** managed start logs `You are not logged into Antigravity` / token-source errors (`cli.log`). Without a logged-in agy session, SessionStart and agentapi binding do not complete.
+2. **SessionStart → env chain:** no `agy-env.json` and no new `~/.gemini/antigravity-cli/brain/<conversation-id>/` after managed launch — agentapi needs `ANTIGRAVITY_LS_ADDRESS` + conversation id from that env file.
+3. **Hooks path discovery:** c2c writes `~/.gemini/config/hooks.json` (#65 format). Public docs also mention `~/.gemini/antigravity-cli/hooks.json` — confirm which path agy 1.1.4 actually loads on this host; inert hooks mean no SessionStart side effects even when auth works.
+4. **False-positive drain:** `c2c-deliver-inbox` can report `delivered=N` and empty the inbox **without** agentapi (generic drain) — **not a wake**. Judge only by model turn / `WOKE-*` with no human Enter.
+5. **Already fixed (do not re-fix):** eager managed register + omit bogus `--conversation <name>` on fresh start (da3c29d1, merged 8d31fa41) — live-verified register+argv PASS.
+
+### Exact next steps for agy full PASS
+1. **Auth:** log into Antigravity on host `xsm` (interactive `agy` once, or restore valid token source) until managed `c2c start agy` no longer logs not-logged-in / token errors.
+2. **Hooks path:** after auth, confirm SessionStart fires — either observe hook process / broker activity, or write a one-shot probe; if hooks never fire, compare load path `~/.gemini/config/hooks.json` vs `~/.gemini/antigravity-cli/hooks.json` and align install or agy config.
+3. **agy-env gate:** re-launch `c2c start agy -n e2e-agy-wake --new-session -- --model 'Gemini 3.5 Flash (Low)' --dangerously-skip-permissions` (bare TTY in `c2ce2e`); assert `agy-env.json` exists with LS address + conversation id and a new brain dir appears.
+4. **Wake matrix (agy only):** idle recipient → local `c2c send e2e-agy-wake "… WOKE-<nonce>"` with **no** recipient keystroke → PASS only if model produces `WOKE-<nonce>` (agentapi path). Confirm inbox drain is via agentapi, not generic deliver-only.
+5. **Negative:** stop/kill agentapi poster or clear agy-env → no wake (CONDITIONAL caveat).
+6. **Topology (after agy green):** one `codex → kimi` and one `agy → codex` local send; same nonce wake bar; record latencies in an amended finding or follow-on finding.
+7. **Do not** call agy wake PASS on register-only, argv-only, or `delivered=N` without a model turn.
+
 ## codex (managed / app-server) — GUARANTEED (local mail): **PASS**
 
 - Recipient: `c2c start codex -n e2e-cdx-wake`, app-server `ws://127.0.0.1:38281`,
