@@ -1,17 +1,20 @@
 ---
+claimed_at: "2026-07-20T12:57:58Z"
+claimed_by: cli-user
+completed_at: "2026-07-20T12:58:13Z"
 complexity: low
 created_at: "2026-07-20T12:54:20Z"
 depends_on:
     - P3.M1.E1.T003
+duration_minutes: 0.25654033475
 estimate_hours: 1
 id: P3.M1.E1.T004
 priority: medium
-status: pending
-tags:
-    - c2
-    - docs
+started_at: "2026-07-20T12:57:58Z"
+status: done
+tags: []
 title: 'C2 closeout: doctor/docs + dual-run note'
-updated_at: "2026-07-20T12:54:20Z"
+updated_at: "2026-07-20T12:58:13Z"
 ---
 ## Acceptance
 - Note in deliver-service / kimi docs that Active uses claim-before-POST

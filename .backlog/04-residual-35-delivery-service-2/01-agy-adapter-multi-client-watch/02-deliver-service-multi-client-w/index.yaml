@@ -1,0 +1,27 @@
+complexity: medium
+depends_on:
+    - P4.M1.E1
+estimate_hours: 6
+id: P4.M1.E2
+locked: false
+name: deliver-service multi-client watch + live smoke
+status: pending
+tasks:
+    - complexity: medium
+      depends_on:
+        - P4.M1.E1.T002
+      estimate_hours: 2
+      file: T001-deliver-service-watch-set-incl.todo
+      id: T001
+      priority: high
+      status: pending
+      title: deliver-service watch-set includes agy endpoints
+    - complexity: medium
+      depends_on:
+        - P4.M1.E2.T001
+      estimate_hours: 2
+      file: T002-live-smoke-deliver-service-sta.todo
+      id: T002
+      priority: high
+      status: pending
+      title: 'Live smoke: deliver-service start/stop/doctor + shadow'

@@ -1,0 +1,25 @@
+complexity: high
+depends_on: []
+estimate_hours: 6
+id: P4.M1.E1
+locked: false
+name: 'Second DeliveryEndpoint: agy agentapi'
+status: pending
+tasks:
+    - complexity: medium
+      depends_on: []
+      estimate_hours: 2
+      file: T001-move-agy-agentapi-send-into-c2.todo
+      id: T001
+      priority: high
+      status: pending
+      title: Move agy agentapi send into c2c_mcp-callable surface
+    - complexity: high
+      depends_on:
+        - P4.M1.E1.T001
+      estimate_hours: 3
+      file: T002-agy-deliveryendpoint-adapter-h.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Agy DeliveryEndpoint adapter + hermetic tests

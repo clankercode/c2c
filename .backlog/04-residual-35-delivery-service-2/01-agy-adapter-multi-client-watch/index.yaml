@@ -1,0 +1,27 @@
+complexity: medium
+depends_on: []
+epics:
+    - complexity: high
+      depends_on: []
+      description: ""
+      estimate_hours: 6
+      id: E1
+      locked: false
+      name: 'Second DeliveryEndpoint: agy agentapi'
+      path: 01-second-deliveryendpoint-agy-ag
+      status: pending
+    - complexity: medium
+      depends_on:
+        - P4.M1.E1
+      description: ""
+      estimate_hours: 6
+      id: E2
+      locked: false
+      name: deliver-service multi-client watch + live smoke
+      path: 02-deliver-service-multi-client-w
+      status: pending
+estimate_hours: 12
+id: P4.M1
+locked: false
+name: agy adapter + multi-client watch + smoke
+status: pending

@@ -34,6 +34,16 @@ phases:
       priority: high
       status: done
       weeks: 4
+    - depends_on: []
+      description: 'After P3 hybrid: agy DeliveryEndpoint, multi-client watch-set, live deliver-service smoke. #35 stays open until multi-day dual-run proven.'
+      estimate_hours: 16
+      id: P4
+      locked: false
+      name: 'Residual #35 delivery-service (2nd adapter + dogfood)'
+      path: 04-residual-35-delivery-service-2
+      priority: high
+      status: pending
+      weeks: 2
 project: c2c
 stats:
     blocked: 0

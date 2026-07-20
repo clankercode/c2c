@@ -1,0 +1,18 @@
+complexity: medium
+depends_on: []
+estimate_hours: 16
+id: P4
+locked: false
+milestones:
+    - complexity: medium
+      depends_on: []
+      description: ""
+      estimate_hours: 12
+      id: M1
+      locked: false
+      name: agy adapter + multi-client watch + smoke
+      path: 01-agy-adapter-multi-client-watch
+      status: pending
+name: 'Residual #35 delivery-service (2nd adapter + dogfood)'
+status: pending
+weeks: 2

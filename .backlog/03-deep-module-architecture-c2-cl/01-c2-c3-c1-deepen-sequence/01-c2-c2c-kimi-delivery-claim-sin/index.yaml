@@ -4,7 +4,7 @@ estimate_hours: 12
 id: P3.M1.E1
 locked: false
 name: 'C2: C2c_kimi_delivery_claim (single-writer)'
-status: pending
+status: done
 tasks:
     - complexity: medium
       depends_on: []
@@ -22,7 +22,8 @@ tasks:
       file: T002-implement-c2c-kimi-delivery-cl.todo
       id: T002
       priority: high
-      status: pending
+      status: done
+      tags: []
       title: Implement C2c_kimi_delivery_claim module
     - complexity: high
       depends_on:
@@ -31,7 +32,8 @@ tasks:
       file: T003-wire-claim-into-shared-run-onc.todo
       id: T003
       priority: high
-      status: pending
+      status: done
+      tags: []
       title: Wire claim into shared run_once (both paths)
     - complexity: low
       depends_on:
@@ -40,5 +42,6 @@ tasks:
       file: T004-c2-closeout-doctor-docs-dual-r.todo
       id: T004
       priority: medium
-      status: pending
+      status: done
+      tags: []
       title: 'C2 closeout: doctor/docs + dual-run note'
