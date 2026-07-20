@@ -1,15 +1,20 @@
-(* c2c_list_scope — repo-scope filtering for `c2c list` (#74).
+(* c2c_list_scope — cwd-scope filtering for peer discovery on the shared
+   `default` broker (#74).
 
-   The `default` broker (and any busy repo broker) accumulates hundreds of
-   unrelated agents that all landed in the same broker because they ran outside
-   a git repo. Peer discovery there is meaningless: `c2c list` shows every
-   agent that ever ran outside a repo on this machine, regardless of which
-   directory it was in.
+   The `default` broker is a machine-wide junk drawer: every agent launched
+   outside a git repo lands there, so unrelated agents in unrelated directories
+   all see each other as peers (215 rows on one host, 209 with real non-repo
+   cwds). Real repo brokers are already partitioned by fingerprint and do NOT
+   need this filter — applying it there would hide same-repo worktree peers
+   from each other (`git rev-parse --show-toplevel` differs per worktree while
+   they share one fingerprint broker).
 
-   The default `c2c list` therefore hides rows whose registration `cwd` is
-   NOT the current scope directory (or a subdirectory of it). Scope directory =
-   the git toplevel when the process is inside a repo, else the current working
-   directory. `--all` (and `--global` / `--cross-repo`) bypass the filter.
+   Default `c2c list` / MCP `list` therefore hide rows whose registration
+   `cwd` is NOT the current scope directory (or a subdirectory of it), BUT
+   only when the listing's broker root is the `default` fingerprint broker.
+   Scope directory = the git toplevel when the process is inside a repo, else
+   the current working directory. CLI `--all` / `--global` / `--cross-repo`
+   bypass the filter; MCP `include_all:true` does the same.
 
    Fail-open: a row with NO cwd metadata is always SHOWN — never hide a
    possibly-live peer just because it lacks metadata. Per #74 the bulk of the
@@ -33,6 +38,17 @@ let normalize_dir (d : string) : string =
     while !last > 0 && d.[!last] = '/' do decr last done;
     if !last = 0 && d.[0] = '/' then "/" else String.sub d 0 (!last + 1)
   end
+
+(* True when [broker_root] is the machine-wide `default` fingerprint broker.
+   Layout is `.../repos/<fp>/broker`, so the fingerprint is the basename of
+   the parent of the broker directory. Pure/lexical. *)
+let is_default_broker_root (broker_root : string) : bool =
+  let root = normalize_dir broker_root in
+  if root = "" then false
+  else
+    let parent = Filename.dirname root in
+    let fp = Filename.basename parent in
+    fp = "default"
 
 (* row_in_scope: is a row whose registration cwd is [row_cwd] in scope for a
    listing anchored at [scope_dir]?
@@ -65,3 +81,14 @@ let resolve_scope_dir () : string =
   match Git_helpers.git_repo_toplevel () with
   | Some d -> d
   | None -> (try Sys.getcwd () with _ -> "")
+
+(* Apply the #74 filter when the broker is the shared `default` junk drawer
+   and the caller has not opted out. Returns (kept, hidden_count). Pure
+   except for [resolve_scope_dir] when filtering actually runs. *)
+let maybe_filter_default_broker ~(broker_root : string) ~(apply : bool)
+    ~(cwd_of : 'a -> string option) (rows : 'a list) : 'a list * int =
+  if (not apply) || not (is_default_broker_root broker_root) then (rows, 0)
+  else
+    let scope_dir = resolve_scope_dir () in
+    let (in_scope, hidden) = partition_by_scope ~scope_dir ~cwd_of rows in
+    (in_scope, List.length hidden)

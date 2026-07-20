@@ -104,7 +104,7 @@ let short_pk (pk : string) : string =
 let list_cmd =
   let all =
     Cmdliner.Arg.(value & flag & info [ "all"; "a" ]
-      ~doc:"Show extended info (session ID, registered time) and include confirmed-dead sessions. By default, stale sessions whose process has exited are hidden so peer discovery stays focused on reachable agents. Also disables the default repo-scope filter: rows whose registration cwd is outside the current scope directory (git toplevel, else cwd) are otherwise hidden so shared brokers such as 'default' stop showing every unrelated agent as a peer (#74).")
+      ~doc:"Show extended info (session ID, registered time) and include confirmed-dead sessions. By default, stale sessions whose process has exited are hidden so peer discovery stays focused on reachable agents. Also disables the default-broker cwd-scope filter (#74): on the shared 'default' broker, rows whose registration cwd is outside the current scope directory (git toplevel, else cwd) are otherwise hidden so unrelated non-repo agents stop showing as peers.")
   in
   let enriched =
     Cmdliner.Arg.(value & flag & info [ "enriched"; "e" ]
@@ -398,27 +398,22 @@ let list_cmd =
         with _ -> acc
       ) [] all_roots
   in
-  (* #74: repo-scope filter for the default single-broker listing. Hides rows
-     whose registration cwd is outside the current scope directory (git
-     toplevel, else cwd) so the 'default' / busy brokers stop presenting every
-     unrelated agent as a peer. Bypassed by --all (show everything), --global
-     (already spans brokers) and --cross-repo (an explicit cross-repo view).
-     Rows with no cwd fail open (shown). Applied AFTER regs_filter so the
-     hidden count only reflects rows that would otherwise have been shown. *)
+  (* #74: cwd-scope filter ONLY on the shared `default` broker. Real repo
+     brokers are already fingerprint-partitioned; applying the filter there
+     would hide same-repo worktree peers from each other. Bypassed by --all,
+     --global, and --cross-repo. Rows with no cwd fail open (shown). Applied
+     AFTER regs_filter so the hidden count only reflects rows that would
+     otherwise have been shown. *)
   let apply_scope_filter = (not all) && (not global) && (not cross_repo) in
   let (single_regs, scope_hidden_count) =
     if global then ([], 0)
     else
-      let broker = C2c_mcp.Broker.create ~root:(resolve_effective_broker_root ~cross_repo ()) in
+      let broker_root = resolve_effective_broker_root ~cross_repo () in
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
       let regs = C2c_mcp.Broker.list_registrations broker |> regs_filter in
-      if apply_scope_filter then
-        let scope_dir = C2c_list_scope.resolve_scope_dir () in
-        let (in_scope, hidden) =
-          C2c_list_scope.partition_by_scope ~scope_dir
-            ~cwd_of:(fun (r : C2c_mcp.registration) -> r.cwd) regs
-        in
-        (in_scope, List.length hidden)
-      else (regs, 0)
+      C2c_list_scope.maybe_filter_default_broker ~broker_root
+        ~apply:apply_scope_filter
+        ~cwd_of:(fun (r : C2c_mcp.registration) -> r.cwd) regs
   in
   let mode_regs =
     if global then List.map (fun (_, _, r) -> r) global_rows else single_regs
@@ -737,8 +732,9 @@ let list_cmd =
                   Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
                regs) in
   if relay && output_mode = Human then emit_relay_human ();
-  (* #74: make the repo-scope filtering discoverable, never silent. Printed to
-     stderr so it does not corrupt --json stdout, in both output modes. *)
+  (* #74: make the default-broker cwd-scope filtering discoverable, never
+     silent. Printed to stderr so it does not corrupt --json stdout, in both
+     output modes. Only non-zero when the listing was on the `default` broker. *)
   if scope_hidden_count > 0 then
     Printf.eprintf
       "(%d agent%s in other directories hidden — use --all to show)\n%!"

@@ -497,14 +497,32 @@ let list ~broker ~session_id_override:_ ~arguments =
           | `Bool b -> b | _ -> false
         with _ -> false
       in
+      (* #74: MCP parity with CLI — on the shared `default` broker, hide rows
+         whose registration cwd is outside the current scope dir. Opt out with
+         include_all:true (CLI --all equivalent). Real repo brokers are not
+         filtered (worktree peers must remain visible). *)
+      let include_all =
+        try match Yojson.Safe.Util.member "include_all" arguments with
+          | `Bool b -> b | _ -> false
+        with _ -> false
+      in
       let registrations =
         let all = Broker.list_registrations broker in
-        if alive_only then
-          List.filter (fun reg ->
-            match Broker.registration_liveness_state reg with
-            | C2c_broker.Alive -> true
-            | C2c_broker.Dead | C2c_broker.Unknown -> false) all
-        else all
+        let all =
+          if alive_only then
+            List.filter (fun reg ->
+              match Broker.registration_liveness_state reg with
+              | C2c_broker.Alive -> true
+              | C2c_broker.Dead | C2c_broker.Unknown -> false) all
+          else all
+        in
+        let broker_root = Broker.root broker in
+        let (kept, _hidden) =
+          C2c_list_scope.maybe_filter_default_broker ~broker_root
+            ~apply:(not include_all)
+            ~cwd_of:(fun (r : registration) -> r.cwd) all
+        in
+        kept
       in
       let content =
         `List

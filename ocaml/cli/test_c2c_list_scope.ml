@@ -1,14 +1,17 @@
-(* test_c2c_list_scope — unit tests for the #74 repo-scope filter helpers.
+(* test_c2c_list_scope — unit tests for the #74 default-broker cwd-scope filter.
 
-   Covers the semantics decided for `c2c list`:
+   Covers the semantics decided for `c2c list` / MCP `list`:
    (a) default HIDES a foreign-cwd row;
-   (b) default SHOWS a same-repo / subdirectory-cwd row;
+   (b) default SHOWS a same-dir / subdirectory-cwd row;
    (c) default SHOWS a no-cwd row (fail-open) — and an empty/blank cwd too;
-   (d) --all is modelled by simply not calling the filter (all rows show);
-   (e) partition_by_scope yields the correct hidden count for the footer.
+   (d) --all / include_all is modelled by simply not calling the filter;
+   (e) partition_by_scope yields the correct hidden count for the footer;
+   (f) is_default_broker_root only matches .../repos/default/broker;
+   (g) maybe_filter_default_broker no-ops on real-repo broker roots so
+       same-repo worktree peers stay visible to each other.
 
-   The helpers are pure/lexical, so these exercise the real logic directly
-   without a broker, a git repo, or the binary. *)
+   The helpers are pure/lexical (except resolve_scope_dir, which is not
+   exercised here), so these run without a broker, a git repo, or the binary. *)
 
 open Alcotest
 
@@ -82,6 +85,47 @@ let test_normalize_dir () =
   check string "whitespace trimmed" "/a/b"
     (C2c_list_scope.normalize_dir "  /a/b  ")
 
+(* (f) only the literal `default` fingerprint broker is special-cased. *)
+let test_is_default_broker_root () =
+  check bool "canonical default" true
+    (C2c_list_scope.is_default_broker_root
+       "/home/xertrov/.c2c/repos/default/broker");
+  check bool "trailing slash still default" true
+    (C2c_list_scope.is_default_broker_root
+       "/home/xertrov/.c2c/repos/default/broker/");
+  check bool "real repo fp is not default" false
+    (C2c_list_scope.is_default_broker_root
+       "/home/xertrov/.c2c/repos/054fefced4c4/broker");
+  check bool "sessions broker is not default" false
+    (C2c_list_scope.is_default_broker_root
+       "/home/xertrov/.c2c/sessions/broker");
+  check bool "empty is not default" false
+    (C2c_list_scope.is_default_broker_root "");
+  (* A path whose leaf is "default" but not .../repos/default/broker: the
+     fingerprint is the parent basename, so .../default/broker is the match
+     pattern; a bare "default" dir with no parent "default" segment fails. *)
+  check bool "unrelated path ending in broker" false
+    (C2c_list_scope.is_default_broker_root "/tmp/broker")
+
+(* (g) maybe_filter no-ops on non-default roots (worktree safety). We pass a
+   fixed scope via the pure partition path by testing the gate only: when the
+   root is a real fingerprint, apply=true still returns every row. *)
+let test_maybe_filter_skips_real_repo () =
+  let (kept, hidden) =
+    C2c_list_scope.maybe_filter_default_broker
+      ~broker_root:"/home/xertrov/.c2c/repos/054fefced4c4/broker"
+      ~apply:true ~cwd_of:snd rows
+  in
+  check int "real-repo: all kept" 7 (List.length kept);
+  check int "real-repo: none hidden" 0 hidden;
+  let (kept2, hidden2) =
+    C2c_list_scope.maybe_filter_default_broker
+      ~broker_root:"/home/xertrov/.c2c/repos/default/broker"
+      ~apply:false ~cwd_of:snd rows
+  in
+  check int "opt-out: all kept" 7 (List.length kept2);
+  check int "opt-out: none hidden" 0 hidden2
+
 let () =
   run "c2c_list_scope"
     [ ( "row_in_scope",
@@ -92,5 +136,9 @@ let () =
         [ test_case "partition + hidden count" `Quick
             test_partition_and_hidden_count ] );
       ( "normalize_dir",
-        [ test_case "normalize" `Quick test_normalize_dir ] )
+        [ test_case "normalize" `Quick test_normalize_dir ] );
+      ( "default_broker_gate",
+        [ test_case "is_default_broker_root" `Quick test_is_default_broker_root;
+          test_case "maybe_filter skips real repo" `Quick
+            test_maybe_filter_skips_real_repo ] )
     ]
