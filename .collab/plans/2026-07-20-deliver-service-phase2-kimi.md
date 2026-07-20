@@ -513,3 +513,11 @@ Single-writer is now **claim-before-POST** via `C2c_kimi_delivery_claim`, not on
 `already_running` DEAF-fallback. Both notifier and deliver-service claim inside
 `run_once` (per-message, broker-local, 30s TTL). Active mode still prefers not
 posting when a notifier is live, but dual-POST is structurally prevented by claims.
+
+
+## P3 C1 hybrid landed (2026-07-20)
+
+`C2c_delivery_endpoint` module type + registry with **kimi** adapter
+(`probe` / `deliver` / `drain_policy=After_push`). deliver-service watch-set
+derives endpoints via `endpoint_of_kimi_reg`. Mode_* fan-out in deliver_inbox
+**not** deleted (need ≥2 adapters). Claim path (C2) still wraps drain POSTs.

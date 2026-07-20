@@ -112,29 +112,35 @@ type watch_entry = {
 
 (** Pure: should this registration be a kimi watch candidate? *)
 let is_kimi_registration (reg : C2c_mcp.registration) : bool =
-  match reg.client_type with
-  | Some ct -> String.lowercase_ascii (String.trim ct) = "kimi"
+  match C2c_delivery_endpoint.endpoint_of_kimi_reg ~broker_root:"/" reg with
+  | Some _ -> true
   | None ->
-      (match reg.registered_by with
-       | Some rb ->
-           let rb = String.lowercase_ascii rb in
-           rb = "kimi-hook" || rb = "kimi"
-       | None -> false)
+      (* endpoint_of_kimi_reg needs workdir; still true for client_type alone
+         when testing pure client filter without cwd. *)
+      (match reg.client_type with
+       | Some ct -> String.lowercase_ascii (String.trim ct) = "kimi"
+       | None ->
+           (match reg.registered_by with
+            | Some rb ->
+                let rb = String.lowercase_ascii rb in
+                rb = "kimi-hook" || rb = "kimi"
+            | None -> false))
 
-(** Pure: build a watch entry or None if workdir missing (no cwd fallback). *)
+(** Pure: build a watch entry via DeliveryEndpoint registry derivation. *)
 let watch_entry_of_reg ~broker_root (reg : C2c_mcp.registration) : watch_entry option =
-  if not (is_kimi_registration reg) then None
-  else
-    match reg.cwd with
-    | Some w when String.trim w <> "" ->
-        Some
-          { broker_root
-          ; session_id = reg.session_id
-          ; alias = reg.alias
-          ; workdir = String.trim w
-          ; client_type = reg.client_type
-          }
-    | _ -> None
+  match C2c_delivery_endpoint.endpoint_of_kimi_reg ~broker_root reg with
+  | Some ep ->
+      (match ep.workdir with
+       | Some w ->
+           Some
+             { broker_root = ep.broker_root
+             ; session_id = ep.session_id
+             ; alias = ep.alias
+             ; workdir = w
+             ; client_type = reg.client_type
+             }
+       | None -> None)
+  | None -> None
 
 (** Pure fail-open merge: if a root failed, keep previous entries for that root. *)
 let merge_watch_sets ~prev ~fresh ~failed_roots : watch_entry list =
