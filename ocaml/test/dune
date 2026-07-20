@@ -175,6 +175,11 @@
  (deps %{exe:../cli/c2c.exe}))
 
 (test
+ (name test_c2c_owner_control)
+ (modules test_c2c_owner_control)
+ (libraries c2c_mcp alcotest yojson unix))
+
+(test
  (name test_relay_remote_broker)
  (modules test_relay_remote_broker)
  (libraries c2c_mcp alcotest))
