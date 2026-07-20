@@ -208,7 +208,7 @@ let apply_delayed_drop ~prev ~fresh ~miss_counts ~max_misses =
   in
   fresh @ delayed
 
-let write_config ~config_path ~phase ~kimi_enabled ~kimi_mode =
+let write_config ~config_path ~phase ~kimi_enabled ~kimi_mode ~agy_enabled =
   json_to_file config_path
     (`Assoc
        [ ("client", `String "deliver-service")
@@ -217,6 +217,7 @@ let write_config ~config_path ~phase ~kimi_enabled ~kimi_mode =
        ; ("phase", `Int phase)
        ; ("kimi_adapter", `Bool kimi_enabled)
        ; ("kimi_mode", `String (kimi_mode_to_string kimi_mode))
+       ; ("agy_adapter", `Bool agy_enabled)
        ; ("created_at", `Float (Unix.gettimeofday ()))
        ])
 
@@ -474,24 +475,66 @@ let supervisor_status ?(name = default_instance_name) () : supervisor_status =
         }
   | None -> Dead { reason = "no outer.pid (supervisor not started)" }
 
+let read_runtime_flags ~name =
+  match read_managed_config ~name with
+  | Some { mc_phase } ->
+      let path = instances_dir () // name // "config.json" in
+      let kimi_en, kimi_mode, agy_en =
+        try
+          match Yojson.Safe.from_file path with
+          | `Assoc a ->
+              let ke =
+                match List.assoc_opt "kimi_adapter" a with
+                | Some (`Bool b) -> b
+                | _ -> false
+              in
+              let km =
+                match List.assoc_opt "kimi_mode" a with
+                | Some (`String s) -> kimi_mode_of_string s
+                | _ -> Shadow
+              in
+              let ae =
+                match List.assoc_opt "agy_adapter" a with
+                | Some (`Bool b) -> b
+                | _ -> false
+              in
+              (ke, km, ae)
+          | _ -> (false, Shadow, false)
+        with _ -> (false, Shadow, false)
+      in
+      (mc_phase, kimi_en, kimi_mode, agy_en)
+  | None ->
+      ( (if kimi_adapter_enabled () || agy_adapter_enabled () then 2 else 1)
+      , kimi_adapter_enabled ()
+      , kimi_adapter_mode ()
+      , agy_adapter_enabled () )
+
 let supervisor_status_to_json (s : supervisor_status) : Yojson.Safe.t =
-  let phase = if kimi_adapter_enabled () then 2 else 1 in
-  let adapters =
-    if kimi_adapter_enabled () then [ `String "kimi" ] else []
-  in
+  let kinds = C2c_delivery_endpoint.list_kinds () in
+  let kinds_json = List.map (fun k -> `String k) kinds in
   match s with
   | Alive { pid; name } ->
+      let phase, kimi_en, kimi_mode, agy_en = read_runtime_flags ~name in
+      let adapters =
+        (if kimi_en then [ `String "kimi" ] else [])
+        @ (if agy_en then [ `String "agy" ] else [])
+      in
       `Assoc
         [ ("service", `String "deliver-service")
         ; ("status", `String "alive")
         ; ("pid", `Int pid)
         ; ("name", `String name)
         ; ("phase", `Int phase)
-        ; ("kimi_adapter", `Bool (kimi_adapter_enabled ()))
-        ; ("kimi_mode", `String (kimi_mode_to_string (kimi_adapter_mode ())))
+        ; ("kimi_adapter", `Bool kimi_en)
+        ; ("kimi_mode", `String (kimi_mode_to_string kimi_mode))
+        ; ("agy_adapter", `Bool agy_en)
         ; ("adapters", `List adapters)
+        ; ("endpoint_kinds_registered", `List kinds_json)
         ]
   | Dead { reason } ->
+      let phase =
+        if kimi_adapter_enabled () || agy_adapter_enabled () then 2 else 1
+      in
       `Assoc
         [ ("service", `String "deliver-service")
         ; ("status", `String "dead")
@@ -499,21 +542,31 @@ let supervisor_status_to_json (s : supervisor_status) : Yojson.Safe.t =
         ; ("phase", `Int phase)
         ; ("kimi_adapter", `Bool (kimi_adapter_enabled ()))
         ; ("kimi_mode", `String (kimi_mode_to_string (kimi_adapter_mode ())))
-        ; ("adapters", `List adapters)
+        ; ("agy_adapter", `Bool (agy_adapter_enabled ()))
+        ; ("adapters", `List [])
+        ; ("endpoint_kinds_registered", `List kinds_json)
         ]
 
 let pp_supervisor_status_human (s : supervisor_status) =
   match s with
   | Alive { pid; name } ->
+      let _phase, kimi_en, kimi_mode, agy_en = read_runtime_flags ~name in
+      let adapters =
+        String.concat ","
+          ((if kimi_en then [ "kimi" ] else [])
+          @ (if agy_en then [ "agy" ] else [])
+          @ (if not kimi_en && not agy_en then [ "none" ] else []))
+      in
       Printf.printf
         "=== deliver-service (machine-wide, #35 phase 1/2) ===\n\n\
         \  status: ALIVE (pid=%d, name=%s)\n\
         \  adapters: %s\n\
         \  kimi_mode: %s\n\
+        \  endpoint_kinds: %s\n\
         \  stop: c2c stop %s\n\n%!"
-        pid name
-        (if kimi_adapter_enabled () then "kimi" else "none (set C2C_DELIVER_SERVICE_KIMI=1)")
-        (kimi_mode_to_string (kimi_adapter_mode ()))
+        pid name adapters
+        (kimi_mode_to_string kimi_mode)
+        (String.concat "," (C2c_delivery_endpoint.list_kinds ()))
         name
   | Dead { reason } ->
       Printf.printf
@@ -564,9 +617,11 @@ let run_owner ~name ~foreground ~ready_fd =
       if not foreground then redirect_daemon_stdio log_path;
       write_config
         ~config_path:(inst_dir // "config.json")
-        ~phase:(if kimi_adapter_enabled () then 2 else 1)
+        ~phase:
+          (if kimi_adapter_enabled () || agy_adapter_enabled () then 2 else 1)
         ~kimi_enabled:(kimi_adapter_enabled ())
-        ~kimi_mode:(kimi_adapter_mode ());
+        ~kimi_mode:(kimi_adapter_mode ())
+        ~agy_enabled:(agy_adapter_enabled ());
       write_pidfile pid_path (Unix.getpid ());
       (match ready_fd with
        | Some fd ->
