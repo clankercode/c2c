@@ -293,6 +293,8 @@ let tick_one_entry (e : watch_entry) ~mode : int =
     if not (service_should_post ~mode ~alias:e.alias) then 0
     else
       try
+        (* Identify service as claimant for C2 claim-before-POST. *)
+        Unix.putenv "C2C_KIMI_DELIVERY_CLAIMANT" ("deliver-service:" ^ e.alias);
         C2c_kimi_notifier.run_once
           ~broker_root:e.broker_root
           ~alias:e.alias

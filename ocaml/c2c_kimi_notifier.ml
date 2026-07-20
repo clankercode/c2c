@@ -776,17 +776,39 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir =
          with exn ->
            Printf.eprintf "[kimi-notifier] chat-log write failed: %s\n%!"
              (Printexc.to_string exn));
-        (* REST prompt injection. System events are already partitioned out. *)
-        try
-          match deliver_via_rest ~alias ~msg ~workdir () with
-          | Ok () -> delivered := msg :: !delivered
-          | Error reason ->
-              Printf.eprintf "[kimi-notifier] REST delivery failed: %s\n%!" reason;
-              undelivered := msg :: !undelivered
-        with exn ->
-          Printf.eprintf "[kimi-notifier] delivery exception: %s\n%!"
-            (Printexc.to_string exn);
-          undelivered := msg :: !undelivered)
+        (* P3 C2: claim-before-POST — both notifier and deliver-service share
+           this path. Loser skips; message stays in inbox. *)
+        let msg_key = C2c_kimi_delivery_claim.message_key_of_msg msg in
+        let claimant =
+          match Sys.getenv_opt "C2C_KIMI_DELIVERY_CLAIMANT" with
+          | Some c when String.trim c <> "" -> String.trim c
+          | _ -> "kimi-notifier:" ^ alias
+        in
+        match
+          C2c_kimi_delivery_claim.try_claim ~broker_root ~session_id:drain_sid
+            ~msg_key ~claimant ()
+        with
+        | C2c_kimi_delivery_claim.Busy _ ->
+            undelivered := msg :: !undelivered
+        | C2c_kimi_delivery_claim.Claimed ->
+            (try
+               match deliver_via_rest ~alias ~msg ~workdir () with
+               | Ok () ->
+                   C2c_kimi_delivery_claim.release ~broker_root
+                     ~session_id:drain_sid ~msg_key ~claimant;
+                   delivered := msg :: !delivered
+               | Error reason ->
+                   C2c_kimi_delivery_claim.release ~broker_root
+                     ~session_id:drain_sid ~msg_key ~claimant;
+                   Printf.eprintf
+                     "[kimi-notifier] REST delivery failed: %s\n%!" reason;
+                   undelivered := msg :: !undelivered
+             with exn ->
+               C2c_kimi_delivery_claim.release ~broker_root
+                 ~session_id:drain_sid ~msg_key ~claimant;
+               Printf.eprintf "[kimi-notifier] delivery exception: %s\n%!"
+                 (Printexc.to_string exn);
+               undelivered := msg :: !undelivered))
       to_deliver;
     (* Write back to_skip (system events) + any undelivered non-system messages
        so delivery can retry. await-reply never reads this inbox. *)
