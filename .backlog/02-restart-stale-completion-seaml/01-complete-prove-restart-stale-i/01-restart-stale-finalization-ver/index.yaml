@@ -18,7 +18,7 @@ tasks:
       file: T001-codex-app-server-restart-stale.todo
       id: T001
       priority: high
-      status: in_progress
+      status: done
       tags:
         - i010
         - c2c
