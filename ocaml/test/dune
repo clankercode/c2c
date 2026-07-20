@@ -605,3 +605,9 @@
  (modules test_c2c_alias_words)
  (libraries c2c_mcp alcotest)
  (deps ../../data/c2c_alias_words.txt ../../data/c2c_alias_words_easy.txt))
+
+(test
+ (name test_c2c_kimi_delivery_claim)
+ (modules test_c2c_kimi_delivery_claim)
+ (libraries c2c_mcp alcotest unix))
+
