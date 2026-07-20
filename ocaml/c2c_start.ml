@@ -1896,6 +1896,39 @@ let resolve_kimi_notifier_session_id ?now ~broker_root ~alias ~cwd ~fallback () 
        | Some sid -> sid
        | None -> fallback)
 
+(* #42: the `c2c stop` / supervisor-cleanup teardown for a managed session's
+   kimi notifier(s). Reaps (a) the notifier under the instance [alias], and
+   (b) ANY notifier — whatever its OWN alias — whose recorded binding
+   ([<alias>.sid]) names [session_id]. Both stop paths call this so the two
+   behave identically and the composition is unit-testable.
+
+   [session_id] MUST be the managed session's OWN identifier — the instance
+   name ([register_managed_kimi_session] sets session_id = name). It is
+   deliberately NOT a resolved kimi UUID, and (b) deliberately does NOT read
+   the notifier's [running_session_id] to widen the key:
+
+   - The instance name is provably unique to this instance, so (b) can only
+     reap daemons that recorded THIS instance's name. It can never reap a live
+     DIFFERENT session's notifier.
+   - The leak this issue targets — a SessionStart-hook daemon armed under an
+     AUTO-MINTED alias — records kimi's real session UUID (not the name; see
+     the hook mint path + start_daemon's verbatim sid write). Reaping by that
+     UUID is UNSAFE: a managed notifier only resolves that UUID via the fallible
+     #41 workspace-record fallback (taken exactly when the managed registration
+     FAILED to persist), and that fallback can just as easily name a live
+     CO-LOCATED session — reaping it drops that peer's delivery (the
+     sweep-drops-managed-sessions class). So we FAIL CLOSED and do not reap by
+     an unauthenticated UUID. That state (managed instance whose registration
+     never landed) is instead SURFACED by `c2c doctor hooks`
+     ([kd_unregistered_managed]) and closed structurally by #35's wake service.
+
+   [stop_daemon] is identity-gated (comm-match on c2c-kimi-notif), so even (a)
+   never signals a stale/reused non-notifier pid. *)
+let teardown_kimi_notifiers_for_stop ~alias ~session_id =
+  (try C2c_kimi_notifier.stop_daemon ~alias with _ -> ());
+  (try ignore (C2c_kimi_notifier.stop_daemons_for_session ~session_id)
+   with _ -> ())
+
 let opencode_log_dir () = home_dir () // ".local" // "share" // "opencode" // "log"
 
 let latest_opencode_log () : string option =
@@ -4919,10 +4952,14 @@ let run_outer_loop ~(name : string) ~(client : string)
              in
              reap 40;
              (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ()));
+        (* #42: tear down the notifier under the instance alias AND any daemon
+           (whatever its own alias) bound to this managed session's id (= name).
+           Keyed on the instance name — provably unique — so a live/different
+           session's notifier is never reaped. See
+           [teardown_kimi_notifiers_for_stop] for the safety argument. *)
         (if client = "kimi" then
-           try C2c_kimi_notifier.stop_daemon
-                 ~alias:(Option.value alias_override ~default:name)
-           with _ -> ())
+           teardown_kimi_notifiers_for_stop
+             ~alias:(Option.value alias_override ~default:name) ~session_id:name)
       in
 
       let cleanup_and_exit code =
@@ -6302,7 +6339,12 @@ let cmd_stop (name : string) : int =
   let stop_kimi_notifier () =
     match load_config_opt name with
     | Some cfg when cfg.client = "kimi" ->
-        (try C2c_kimi_notifier.stop_daemon ~alias:cfg.alias with _ -> ())
+        (* #42: reap the instance-alias notifier AND any daemon (whatever its
+           own alias) bound to this managed session's own id. Keyed on the
+           instance session id (= name, provably unique) — never a resolved
+           uuid — so a live/different session's notifier can never be reaped.
+           See [teardown_kimi_notifiers_for_stop] for the full safety argument. *)
+        teardown_kimi_notifiers_for_stop ~alias:cfg.alias ~session_id:cfg.session_id
     | _ -> ()
   in
   match read_pid (outer_pid_path name) with

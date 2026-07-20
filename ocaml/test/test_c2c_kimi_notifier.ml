@@ -1216,6 +1216,133 @@ let test_ensure_daemon_ignores_reused_non_notifier_pid () =
     (try Unix.kill victim Sys.sigkill with _ -> ());
     (try ignore (Unix.waitpid [] victim) with _ -> ()))
 
+(* #42 (A, test a): stop_daemons_for_session tears down EVERY notifier whose
+   recorded binding (<alias>.sid) names the session being stopped — including a
+   hook-armed daemon that bound under an AUTO-MINTED alias ≠ the managed
+   instance alias (the exact leak: `c2c stop kimi-e2e-c` left
+   `kimi-gem-picket-*`'s notifier running). Both same-sid daemons are reaped
+   regardless of alias; a daemon bound to a DIFFERENT session is spared. *)
+let test_stop_daemons_for_session_reaps_hook_armed_leak () =
+  with_notifier_home (fun ~broker_root ->
+    let sid = "i42-shared-sid" in
+    (* Managed instance-alias notifier, bound to the shared real session id. *)
+    let inst_alias = "i42-instance-zzq" in
+    let inst_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:inst_alias ~broker_root ~session_id:sid ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start instance notifier returned None"
+    in
+    (* Hook-armed daemon under an AUTO-MINTED alias, SAME session id. *)
+    let minted_alias = "i42-gem-picket-zzq" in
+    let minted_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:minted_alias ~broker_root ~session_id:sid ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start minted notifier returned None"
+    in
+    (* An unrelated live notifier bound to a DIFFERENT session — must survive. *)
+    let other_alias = "i42-other-zzq" in
+    let other_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:other_alias ~broker_root ~session_id:"i42-other-sid" ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start other notifier returned None"
+    in
+    let torn = C2c_kimi_notifier.stop_daemons_for_session ~session_id:sid in
+    Alcotest.(check bool) "minted-alias daemon reported torn down" true
+      (List.mem minted_alias torn);
+    Alcotest.(check bool) "instance-alias daemon reported torn down" true
+      (List.mem inst_alias torn);
+    Alcotest.(check bool) "minted daemon process killed" false (pid_alive_local minted_pid);
+    Alcotest.(check bool) "instance daemon process killed" false (pid_alive_local inst_pid);
+    Alcotest.(check bool) "minted pidfile removed" false
+      (Sys.file_exists (C2c_kimi_notifier.pidfile_path minted_alias));
+    (* SAFETY: the different-session daemon was neither reported nor killed. *)
+    Alcotest.(check bool) "other-session daemon NOT reported torn down" false
+      (List.mem other_alias torn);
+    Alcotest.(check bool) "other-session daemon still alive" true (pid_alive_local other_pid);
+    C2c_kimi_notifier.stop_daemon ~alias:other_alias)
+
+(* #42 (A, test b — the SAFETY INVARIANT): stop_daemons_for_session must NEVER
+   signal a daemon bound to a different/live session, and must FAIL CLOSED on a
+   daemon whose binding is unknown (no sidfile). A leaked daemon costs quota;
+   killing a live session's notifier drops its delivery (the
+   sweep-drops-managed-sessions class). *)
+let test_stop_daemons_for_session_spares_live_and_unknown () =
+  with_notifier_home (fun ~broker_root ->
+    (* A live notifier bound to a DIFFERENT session. *)
+    let live_alias = "i42safe-live-zzq" in
+    let live_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:live_alias ~broker_root ~session_id:"i42safe-live-sid" ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start live notifier returned None"
+    in
+    (* A notifier with a pidfile but NO sidfile (unknown binding). Remove its
+       sidfile to simulate a pre-#9 daemon. *)
+    let nosid_alias = "i42safe-nosid-zzq" in
+    let nosid_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:nosid_alias ~broker_root ~session_id:"whatever" ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start nosid notifier returned None"
+    in
+    (try Sys.remove (C2c_kimi_notifier.session_file_path nosid_alias) with _ -> ());
+    Alcotest.(check (option string)) "nosid daemon has no recorded binding" None
+      (C2c_kimi_notifier.running_session_id nosid_alias);
+    (* Stop a session that neither daemon is (provably) bound to. *)
+    let torn = C2c_kimi_notifier.stop_daemons_for_session ~session_id:"i42safe-target-sid" in
+    Alcotest.(check (list string)) "nothing torn down for an unowned session" [] torn;
+    Alcotest.(check bool) "live different-session daemon still alive" true (pid_alive_local live_pid);
+    Alcotest.(check bool) "unknown-binding daemon still alive (fail closed)" true
+      (pid_alive_local nosid_pid);
+    C2c_kimi_notifier.stop_daemon ~alias:live_alias;
+    C2c_kimi_notifier.stop_daemon ~alias:nosid_alias)
+
+(* #42 (integration): the `c2c stop` teardown COMPOSITION
+   C2c_start.teardown_kimi_notifiers_for_stop reaps BOTH the instance-alias
+   notifier AND a differently-aliased notifier bound to the instance's own
+   session id (= name), while SPARING a live notifier bound to a DIFFERENT
+   session. This is the c2c_start.ml wiring the unit tests above do not exercise
+   (owned key = the instance name only). Because the key is the provably-unique
+   instance name — never a resolved uuid — a live co-located peer can never be
+   reaped. *)
+let test_teardown_for_stop_reaps_by_name_spares_other () =
+  with_notifier_home (fun ~broker_root ->
+    let name = "i42stop-instance-zzq" in
+    (* (a) notifier under the instance alias, bound to the instance session id. *)
+    let inst_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:name ~broker_root ~session_id:name ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start instance notifier returned None"
+    in
+    (* (b) a DIFFERENTLY-aliased notifier also bound to the instance session id
+       (e.g. left over from a rename/restart) — the alias-keyed stop_daemon
+       would miss it; the by-binding reap must catch it. *)
+    let other_alias = "i42stop-picket-zzq" in
+    let bound_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:other_alias ~broker_root ~session_id:name ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start bound notifier returned None"
+    in
+    (* (c) a live notifier bound to a DIFFERENT session — must survive. *)
+    let live_alias = "i42stop-livepeer-zzq" in
+    let live_pid =
+      match C2c_kimi_notifier.start_daemon
+              ~alias:live_alias ~broker_root ~session_id:"i42stop-other-sid" ~tmux_pane:None ()
+      with Some p -> p | None -> Alcotest.fail "start live-peer notifier returned None"
+    in
+    C2c_start.teardown_kimi_notifiers_for_stop ~alias:name ~session_id:name;
+    Alcotest.(check bool) "instance-alias notifier killed" false (pid_alive_local inst_pid);
+    Alcotest.(check bool) "differently-aliased same-session notifier killed" false
+      (pid_alive_local bound_pid);
+    Alcotest.(check bool) "instance pidfile removed" false
+      (Sys.file_exists (C2c_kimi_notifier.pidfile_path name));
+    Alcotest.(check bool) "bound-alias pidfile removed" false
+      (Sys.file_exists (C2c_kimi_notifier.pidfile_path other_alias));
+    (* SAFETY: the different-session live notifier is untouched. *)
+    Alcotest.(check bool) "live different-session notifier still alive" true
+      (pid_alive_local live_pid);
+    Alcotest.(check bool) "live different-session notifier still running" true
+      (C2c_kimi_notifier.already_running live_alias);
+    C2c_kimi_notifier.stop_daemon ~alias:live_alias)
+
 (* ─── #9 B: managed notifier must watch the REAL session-id inbox ─────────
    The kimi SessionStart hook registers a managed session under Kimi's real
    session id, so peer mail lands in <real-sid>.inbox.json — NOT the alias
@@ -2006,6 +2133,11 @@ let () =
       ; Alcotest.test_case "ensure_daemon skips current daemon (same SHA)" `Quick test_ensure_daemon_skips_when_sha_matches
       ; Alcotest.test_case "daemon comm matches kernel-stored value" `Quick test_notifier_comm_matches_kernel
       ; Alcotest.test_case "ensure_daemon ignores reused non-notifier pid (no kill)" `Quick test_ensure_daemon_ignores_reused_non_notifier_pid
+      ]
+    ; "i42-notifier-leak-teardown",
+      [ Alcotest.test_case "stop_daemons_for_session reaps hook-armed auto-minted-alias leak" `Quick test_stop_daemons_for_session_reaps_hook_armed_leak
+      ; Alcotest.test_case "stop_daemons_for_session spares live/unknown-binding daemons (safety invariant)" `Quick test_stop_daemons_for_session_spares_live_and_unknown
+      ; Alcotest.test_case "teardown_for_stop reaps instance+bound aliases, spares other session (integration)" `Quick test_teardown_for_stop_reaps_by_name_spares_other
       ]
     ; ( "b9-managed-notifier-real-sid"
       , [ Alcotest.test_case "prefers registration real session_id" `Quick test_b9_resolve_prefers_registration_real_sid

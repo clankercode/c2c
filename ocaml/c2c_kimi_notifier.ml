@@ -1234,3 +1234,48 @@ let stop_all_daemons () =
            n + 1
          end else n)
       0 entries
+
+(* #42: tear down every notifier daemon whose recorded session binding
+   ([<alias>.sid]) equals [session_id], REGARDLESS of the notifier's own alias.
+
+   Purpose: [c2c stop]'s alias-keyed [stop_daemon ~alias:cfg.alias] misses a
+   daemon that bound under a DIFFERENT alias but is draining THIS session's
+   inbox (a differently-aliased daemon left over from a rename/restart, or a
+   hook arm that adopted this session's id under another alias). This scans the
+   state dir and reaps every daemon whose OWN sidfile names [session_id].
+
+   The CALLER controls safety by choosing [session_id]: [c2c stop] passes the
+   managed session's own id (the instance name), which is provably unique to
+   that instance, so this can only reap daemons draining that instance's inbox.
+   It never passes a resolved kimi UUID — see
+   [C2c_start.teardown_kimi_notifiers_for_stop] for why a UUID key would risk a
+   co-located live session.
+
+   Safety of the match itself (independent of the caller's key):
+   - Matches ONLY on the binding the daemon itself wrote ([running_session_id]
+     reads [<alias>.sid]); a daemon serving a DIFFERENT session records a
+     different sid and is excluded by the equality test.
+   - FAIL CLOSED on unknown binding: a pre-#9 daemon with no sidfile yields
+     [None] here, the equality is false, and it is left running.
+   - The actual signal goes through [stop_daemon], which is identity-gated
+     (comm-match on [c2c-kimi-notif]) — so even a stale/reused pid is never
+     signalled.
+
+   Returns the aliases whose notifier was torn down. Best-effort: an unreadable
+   state dir yields []. *)
+let stop_daemons_for_session ~session_id =
+  let dir = home () // ".local" // "share" // "c2c" // "kimi-notifiers" in
+  match (try Sys.readdir dir with _ -> [||]) with
+  | [||] -> []
+  | entries ->
+    Array.fold_left
+      (fun acc entry ->
+         if Filename.check_suffix entry ".pid" then begin
+           let alias = Filename.chop_suffix entry ".pid" in
+           match running_session_id alias with
+           | Some sid when sid = session_id ->
+             (try stop_daemon ~alias with _ -> ());
+             alias :: acc
+           | _ -> acc
+         end else acc)
+      [] entries

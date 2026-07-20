@@ -86,12 +86,32 @@ and kimi_session_issue = {
   ksi_notifier_running : bool;
   ksi_registered_by : string option;
   ksi_fix_command : string;
+  (* #42 (A3): liveness of the registration's process. [None] = pidless /
+     unknown (legacy or torn-down managed row); [Some true] = alive;
+     [Some false] = CONFIRMED dead. [--rearm] must NOT re-arm a confirmed-dead
+     session — that mints a leaked headless notifier (the #42 amplification). *)
+  ksi_proc_alive : bool option;
+}
+
+(* #42 (B): a managed kimi instance present on disk
+   ([~/.local/share/c2c/instances/<name>]) with NO live registration on the
+   broker being checked. The DEAF classifier and [--rearm] iterate only
+   REGISTERED sessions, so this — the most common broken state — was invisible
+   to both. It is a DIFFERENT failure from "registered but no notifier" and
+   carries a different remediation (restart the managed instance, don't arm a
+   notifier for a session that never registered). *)
+and kimi_unregistered_managed = {
+  kum_name : string;         (* managed instance name *)
+  kum_alias : string;        (* configured alias *)
+  kum_session_id : string;   (* configured session id (= name for managed kimi) *)
+  kum_fix_command : string;
 }
 
 and kimi_delivery_result = {
   kd_sessions_checked : int;
   kd_deaf : kimi_session_issue list; (* inbox>0 and no notifier *)
   kd_no_notifier : kimi_session_issue list; (* registered kimi, no notifier (may be empty inbox) *)
+  kd_unregistered_managed : kimi_unregistered_managed list; (* #42(B): on disk, never registered here *)
 }
 
 (* #50: the Kimi SessionStart hook (`c2c hook kimi`) is load-bearing for
@@ -857,12 +877,19 @@ let is_kimi_registration (r : C2c_mcp.registration) =
   || (let a = String.lowercase_ascii r.alias in
       String.length a >= 5 && String.sub a 0 5 = "kimi-")
 
+(* #42: /proc liveness of a pid (best-effort). Mirrors [pid_alive] defined
+   later in the grok section; declared here because the kimi classifier needs
+   it earlier in the file. *)
+let kimi_pid_alive pid = pid > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" pid)
+
 let classify_kimi_session
     ~(alias : string)
     ~(session_id : string)
     ~(inbox_count : int)
     ~(notifier_running : bool)
     ~(registered_by : string option)
+    ?pid
+    ()
   : kimi_session_issue option * bool (* issue-if-no-notifier, is_deaf *)
   =
   let fix =
@@ -873,6 +900,10 @@ let classify_kimi_session
        # or drain once: C2C_MCP_SESSION_ID=%s c2c poll-inbox"
       (Filename.quote alias) (Filename.quote session_id)
   in
+  (* [None] pid = liveness unknown (pidless / torn-down managed row); we do NOT
+     assert death from an absent pid. [Some p] resolves to CONFIRMED
+     alive/dead. *)
+  let proc_alive = match pid with None -> None | Some p -> Some (kimi_pid_alive p) in
   let issue =
     { ksi_alias = alias
     ; ksi_session_id = session_id
@@ -880,6 +911,7 @@ let classify_kimi_session
     ; ksi_notifier_running = notifier_running
     ; ksi_registered_by = registered_by
     ; ksi_fix_command = fix
+    ; ksi_proc_alive = proc_alive
     }
   in
   if notifier_running then
@@ -887,6 +919,92 @@ let classify_kimi_session
   else
     let deaf = inbox_count > 0 in
     (Some issue, deaf)
+
+(* #42 (B): the managed-instances dir. Mirrors [C2c_start.instances_dir] but
+   duplicated here on purpose — the doctor-hooks test executable does NOT link
+   c2c_start (see its (modules ...) in ocaml/cli/dune), so depending on it would
+   break the hermetic build. Honors the same [C2C_INSTANCES_DIR] override tests
+   use. *)
+let kimi_instances_dir ?home () =
+  match Sys.getenv_opt "C2C_INSTANCES_DIR" with
+  | Some d when String.trim d <> "" -> String.trim d
+  | _ ->
+    let home =
+      match home with Some h -> h | None -> (try Sys.getenv "HOME" with Not_found -> "/tmp")
+    in
+    home // ".local" // "share" // "c2c" // "instances"
+
+(* #42 (B): read the minimal fields of an on-disk instance config.json we need
+   to classify it. Read-only, best-effort ([None] on any parse error). *)
+type kimi_instance_on_disk = {
+  kio_name : string;
+  kio_client : string;
+  kio_alias : string;
+  kio_session_id : string;
+  kio_broker_root : string option;
+}
+
+let read_instance_config path : kimi_instance_on_disk option =
+  match (try Some (Yojson.Safe.from_file path) with _ -> None) with
+  | Some (`Assoc fields) ->
+    let str k = match List.assoc_opt k fields with Some (`String s) -> Some s | _ -> None in
+    (match str "name", str "client" with
+     | Some name, Some client ->
+       Some
+         { kio_name = name
+         ; kio_client = client
+         ; kio_alias = (match str "alias" with Some a -> a | None -> name)
+         ; kio_session_id = (match str "session_id" with Some s -> s | None -> name)
+         ; kio_broker_root = str "broker_root"
+         }
+     | _ -> None)
+  | _ -> None
+
+(* #42 (B): managed kimi instances on disk with NO registration on [broker_root].
+   Scoped to this broker: an instance is included when its persisted broker_root
+   equals [broker_root] (normalized) OR it persisted none (the common case — the
+   default resolver was used). This deliberately excludes instances that ARE
+   registered (those are covered by the normal DEAF / no-notifier classification
+   above). Case-insensitive alias/session match, mirroring broker alias
+   casefolding. *)
+let unregistered_managed_kimi_instances ?home ~broker_root ~(regs : C2c_mcp.registration list) () =
+  let dir = kimi_instances_dir ?home () in
+  let norm p = try Unix.realpath p with _ -> p in
+  let broker_root_n = norm broker_root in
+  let ci s = String.lowercase_ascii (String.trim s) in
+  let entries = try Sys.readdir dir with _ -> [||] in
+  Array.fold_left
+    (fun acc name ->
+      let cfg_path = dir // name // "config.json" in
+      match read_instance_config cfg_path with
+      | Some c when c.kio_client = "kimi" ->
+        let broker_scoped =
+          match c.kio_broker_root with
+          | None -> true
+          | Some br -> norm br = broker_root_n
+        in
+        let has_registration =
+          List.exists
+            (fun (r : C2c_mcp.registration) ->
+               ci r.session_id = ci c.kio_session_id || ci r.alias = ci c.kio_alias)
+            regs
+        in
+        if broker_scoped && not has_registration then
+          { kum_name = c.kio_name
+          ; kum_alias = c.kio_alias
+          ; kum_session_id = c.kio_session_id
+          ; kum_fix_command =
+              Printf.sprintf
+                "c2c restart %s   # managed instance exists on disk but never \
+                 registered — restart it (do NOT --rearm: there is no session \
+                 to deliver to)"
+                (Filename.quote c.kio_name)
+          }
+          :: acc
+        else acc
+      | _ -> acc)
+    [] entries
+  |> List.rev
 
 let check_kimi_delivery ?broker_root () : kimi_delivery_result =
   let broker_root =
@@ -917,6 +1035,8 @@ let check_kimi_delivery ?broker_root () : kimi_delivery_result =
           ~inbox_count
           ~notifier_running
           ~registered_by:r.registered_by
+          ?pid:r.pid
+          ()
       with
       | None, _ -> ()
       | Some issue, is_deaf ->
@@ -926,6 +1046,8 @@ let check_kimi_delivery ?broker_root () : kimi_delivery_result =
   { kd_sessions_checked = List.length kimi_regs
   ; kd_deaf = List.rev !deaf
   ; kd_no_notifier = List.rev !no_notifier
+  ; kd_unregistered_managed =
+      (try unregistered_managed_kimi_instances ~broker_root ~regs () with _ -> [])
   }
 
 (* --- #9 A(2): `c2c doctor hooks --rearm` self-heal for DEAF kimi sessions --
@@ -946,6 +1068,7 @@ type rearm_outcome =
   | Rearm_already_running    (* a live notifier was already present *)
   | Rearm_failed of string   (* ensure_daemon raised / returned no pid *)
   | Rearm_skipped_fixture    (* C2C_KIMI_HOOK_SKIP_NOTIFIER=1 — no fork *)
+  | Rearm_skipped_dead       (* #42(A3): registration process CONFIRMED dead — arming would mint a leaked headless notifier *)
 
 type rearm_result = {
   rr_alias : string;
@@ -975,6 +1098,13 @@ let rearm_deaf_kimi_sessions ?broker_root () : rearm_result list =
     (fun (i : kimi_session_issue) ->
       let outcome =
         if skip then Rearm_skipped_fixture
+        (* #42(A3): CONFIRM-DEAD before deciding NOT to re-arm. Only a positively
+           confirmed-dead process ([Some false]) is skipped — arming there would
+           fork a notifier that POSTs headless turns into a dead session (quota
+           burn) and eats its mail. Unknown liveness ([None] — pidless legacy /
+           torn-down managed row) is NOT treated as death: we preserve the
+           existing heal for sessions whose liveness we cannot establish. *)
+        else if i.ksi_proc_alive = Some false then Rearm_skipped_dead
         else
           try
             match
@@ -1006,6 +1136,7 @@ let pp_rearm_human (results : rearm_result list) =
           | Rearm_already_running -> "notifier already running"
           | Rearm_failed msg -> "FAILED: " ^ msg
           | Rearm_skipped_fixture -> "attempted (fixture skip — no fork)"
+          | Rearm_skipped_dead -> "skipped (process confirmed dead — not re-armed)"
         in
         Printf.printf "kimi %s (session %s): %s\n"
           r.rr_alias r.rr_session_id status)
@@ -1257,8 +1388,21 @@ let pp_human r =
      | None -> Printf.printf "  alias prefix constraints: OK (all live agy sessions are agy-*)\n")
   end;
   Printf.printf "\n=== Kimi delivery (B238) ===\n\n";
+  (* #42(B): managed instances present on disk but never registered — a distinct
+     failure from "registered but no notifier", printed first so it is not lost
+     when there are also registered sessions. *)
+  if r.kimi.kd_unregistered_managed <> [] then begin
+    Printf.printf "  managed instance(s) on disk with NO registration here:\n";
+    List.iter
+      (fun (u : kimi_unregistered_managed) ->
+        Printf.printf "    ✗ %s (alias=%s session=%s) — not registered\n"
+          u.kum_name u.kum_alias u.kum_session_id;
+        Printf.printf "      → fix: %s\n" u.kum_fix_command)
+      r.kimi.kd_unregistered_managed
+  end;
   if r.kimi.kd_sessions_checked = 0 then
-    Printf.printf "No registered Kimi sessions on this broker.\n"
+    (if r.kimi.kd_unregistered_managed = [] then
+       Printf.printf "No registered Kimi sessions on this broker.\n")
   else begin
     Printf.printf "  registered kimi sessions: %d\n" r.kimi.kd_sessions_checked;
     if r.kimi.kd_deaf = [] && r.kimi.kd_no_notifier = [] then
@@ -1400,7 +1544,17 @@ let to_json r =
       ("notifier_running", `Bool i.ksi_notifier_running);
       ("registered_by",
        match i.ksi_registered_by with Some s -> `String s | None -> `Null);
+      ("proc_alive",
+       (match i.ksi_proc_alive with Some b -> `Bool b | None -> `Null));
       ("fix_command", `String i.ksi_fix_command)
+    ]
+  in
+  let kimi_unregistered_to_json (u : kimi_unregistered_managed) =
+    `Assoc [
+      ("name", `String u.kum_name);
+      ("alias", `String u.kum_alias);
+      ("session_id", `String u.kum_session_id);
+      ("fix_command", `String u.kum_fix_command)
     ]
   in
   let kimi_to_json (k : kimi_delivery_result) =
@@ -1409,7 +1563,12 @@ let to_json r =
       ("deaf", `List (List.map kimi_issue_to_json k.kd_deaf));
       ("no_notifier", `List (List.map kimi_issue_to_json k.kd_no_notifier));
       ("deaf_count", `Int (List.length k.kd_deaf));
-      ("no_notifier_count", `Int (List.length k.kd_no_notifier))
+      ("no_notifier_count", `Int (List.length k.kd_no_notifier));
+      (* #42(B): managed instances on disk with no live registration here. *)
+      ("unregistered_managed",
+       `List (List.map kimi_unregistered_to_json k.kd_unregistered_managed));
+      ("unregistered_managed_count",
+       `Int (List.length k.kd_unregistered_managed))
     ]
   in
   let kimi_hook_to_json (k : kimi_hook_result) =
@@ -1572,8 +1731,15 @@ let pp_compact r =
       r.codex.total_issues;
   let n_deaf = List.length r.kimi.kd_deaf in
   let n_none = List.length r.kimi.kd_no_notifier in
+  let n_unreg = List.length r.kimi.kd_unregistered_managed in
+  (* #42(B): surface unregistered managed instances distinctly in the rollup. *)
+  if n_unreg > 0 then
+    Printf.printf
+      "Kimi delivery: %d managed instance(s) on disk NOT registered — run 'c2c restart <name>'\n"
+      n_unreg;
   if r.kimi.kd_sessions_checked = 0 then
-    Printf.printf "Kimi delivery: no registered kimi sessions\n"
+    (if n_unreg = 0 then
+       Printf.printf "Kimi delivery: no registered kimi sessions\n")
   else if n_deaf > 0 then
     Printf.printf
       "Kimi delivery: %d DEAF (undelivered+no notifier) — run 'c2c doctor hooks'\n"
