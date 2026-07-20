@@ -274,14 +274,172 @@ let test_stop_supervisor_noop_when_absent () =
       (C2c_deliver_managed.stop_supervisor ~name:"deliver-service"
          ~timeout_s:0.5))
 
+
+(* --- #35 phase 2 pure decide tests --- *)
+
+let mk_reg ~session_id ~alias ~client_type ~cwd ~registered_by : C2c_mcp.registration =
+  { session_id
+  ; alias
+  ; pid = None
+  ; pid_start_time = None
+  ; registered_at = Some (Unix.gettimeofday ())
+  ; canonical_alias = None
+  ; dnd = false
+  ; dnd_since = None
+  ; dnd_until = None
+  ; client_type
+  ; plugin_version = None
+  ; confirmed_at = None
+  ; enc_pubkey = None
+  ; ed25519_pubkey = None
+  ; pubkey_signed_at = None
+  ; pubkey_sig = None
+  ; compacting = None
+  ; last_activity_ts = None
+  ; role = None
+  ; compaction_count = 0
+  ; automated_delivery = None
+  ; tmux_location = None
+  ; herdr_pane = None
+  ; herdr_socket = None
+  ; cwd
+  ; metadata_opt_out = false
+  ; registered_by
+  ; opaque_host_id = None
+  }
+
+let test_is_kimi_registration () =
+  let k =
+    mk_reg ~session_id:"s1" ~alias:"a1" ~client_type:(Some "kimi")
+      ~cwd:(Some "/tmp/ws") ~registered_by:None
+  in
+  check bool "client_type kimi" true (C2c_deliver_managed.is_kimi_registration k);
+  let hook =
+    mk_reg ~session_id:"s2" ~alias:"a2" ~client_type:None ~cwd:(Some "/tmp/ws")
+      ~registered_by:(Some "kimi-hook")
+  in
+  check bool "registered_by kimi-hook" true
+    (C2c_deliver_managed.is_kimi_registration hook);
+  let codex =
+    mk_reg ~session_id:"s3" ~alias:"a3" ~client_type:(Some "codex")
+      ~cwd:(Some "/tmp/ws") ~registered_by:None
+  in
+  check bool "codex not kimi" false (C2c_deliver_managed.is_kimi_registration codex)
+
+let test_watch_entry_requires_workdir () =
+  let with_cwd =
+    mk_reg ~session_id:"s1" ~alias:"a1" ~client_type:(Some "kimi")
+      ~cwd:(Some "/tmp/ws") ~registered_by:None
+  in
+  (match C2c_deliver_managed.watch_entry_of_reg ~broker_root:"/b" with_cwd with
+   | Some e ->
+       check string "workdir" "/tmp/ws" e.workdir;
+       check string "alias" "a1" e.alias
+   | None -> fail "expected entry");
+  let no_cwd =
+    mk_reg ~session_id:"s1" ~alias:"a1" ~client_type:(Some "kimi") ~cwd:None
+      ~registered_by:None
+  in
+  check bool "no cwd => None" true
+    (C2c_deliver_managed.watch_entry_of_reg ~broker_root:"/b" no_cwd = None)
+
+let test_merge_watch_sets_fail_open () =
+  let prev :
+      C2c_deliver_managed.watch_entry list =
+    [ { broker_root = "/bad"
+      ; session_id = "old"
+      ; alias = "old-a"
+      ; workdir = "/w"
+      ; client_type = Some "kimi"
+      }
+    ; { broker_root = "/good"
+      ; session_id = "g0"
+      ; alias = "g0-a"
+      ; workdir = "/w"
+      ; client_type = Some "kimi"
+      }
+    ]
+  in
+  let fresh =
+    [ { C2c_deliver_managed.broker_root = "/good"
+      ; session_id = "g1"
+      ; alias = "g1-a"
+      ; workdir = "/w"
+      ; client_type = Some "kimi"
+      }
+    ]
+  in
+  let merged =
+    C2c_deliver_managed.merge_watch_sets ~prev ~fresh ~failed_roots:[ "/bad" ]
+  in
+  let ids =
+    List.map
+      (fun (e : C2c_deliver_managed.watch_entry) -> e.session_id)
+      merged
+  in
+  check bool "keeps old from failed root" true (List.mem "old" ids);
+  check bool "uses fresh for good root" true (List.mem "g1" ids);
+  check bool "drops stale good-root when scan ok" false (List.mem "g0" ids)
+
+let test_delayed_drop () =
+  let prev =
+    [ { C2c_deliver_managed.broker_root = "/b"
+      ; session_id = "gone"
+      ; alias = "g"
+      ; workdir = "/w"
+      ; client_type = Some "kimi"
+      }
+    ]
+  in
+  let fresh = [] in
+  let kept =
+    C2c_deliver_managed.apply_delayed_drop ~prev ~fresh
+      ~miss_counts:[ ("gone", 2) ] ~max_misses:5
+  in
+  check int "still kept under max" 1 (List.length kept);
+  let dropped =
+    C2c_deliver_managed.apply_delayed_drop ~prev ~fresh
+      ~miss_counts:[ ("gone", 5) ] ~max_misses:5
+  in
+  check int "dropped at max" 0 (List.length dropped)
+
+let test_kimi_mode_parsing () =
+  check string "default shadow" "shadow"
+    (C2c_deliver_managed.kimi_mode_to_string
+       (C2c_deliver_managed.kimi_mode_of_string ""));
+  check string "active" "active"
+    (C2c_deliver_managed.kimi_mode_to_string
+       (C2c_deliver_managed.kimi_mode_of_string "ACTIVE"));
+  check string "invalid -> shadow" "shadow"
+    (C2c_deliver_managed.kimi_mode_to_string
+       (C2c_deliver_managed.kimi_mode_of_string "nope"));
+  check string "primary" "primary"
+    (C2c_deliver_managed.kimi_mode_to_string
+       (C2c_deliver_managed.kimi_mode_of_string "primary"))
+
+let test_service_should_post_shadow () =
+  check bool "shadow never posts" false
+    (C2c_deliver_managed.service_should_post ~mode:C2c_deliver_managed.Shadow
+       ~alias:"any")
+
 let () =
-  run "c2c deliver managed (#35 phase 1)"
+  run "c2c deliver managed (#35 phase 1/2)"
     [ ( "paths"
       , [ test_case "machine lock ignores instance name" `Quick
             test_machine_lock_is_name_independent
         ; test_case "C2C_INSTANCES_DIR override" `Quick
             test_instances_dir_honors_override
         ; test_case "default name classifier" `Quick test_default_name
+        ] )
+    ; ( "phase2 decide"
+      , [ test_case "is_kimi_registration" `Quick test_is_kimi_registration
+        ; test_case "watch_entry requires workdir" `Quick
+            test_watch_entry_requires_workdir
+        ; test_case "merge_watch_sets fail-open" `Quick
+            test_merge_watch_sets_fail_open
+        ; test_case "delayed drop" `Quick test_delayed_drop
+        ; test_case "kimi mode parsing" `Quick test_kimi_mode_parsing
+        ; test_case "shadow never posts" `Quick test_service_should_post_shadow
         ] )
     ; ( "config"
       , [ test_case "parse recognises deliver-service only" `Quick

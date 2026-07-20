@@ -1,10 +1,15 @@
-(* c2c_deliver_managed.ml — machine-wide supervised delivery service (#35 phase 1).
+(* c2c_deliver_managed.ml — machine-wide supervised delivery service (#35).
 
-   Scaffold only: one supervised singleton per local user/machine, modeled on
-   [C2c_relay_managed]. Owns a POSIX machine lock + pidfile for its lifetime.
-   Phase 1 has NO client adapters and does not change any delivery path; the
-   process simply holds the lock and idles so start/stop/doctor/tests can
-   prove the skeleton. Later phases add watchers and per-client adapters. *)
+   Phase 1: supervised singleton (lock + pidfile + start/stop/doctor).
+   Phase 2: optional kimi adapter tick (flag-gated), dual-run with the
+   per-alias notifier:
+     - mode=shadow (default): rebuild watch-set, log would-deliver, no POST
+     - mode=active: POST only when notifier is not already_running (DEAF
+       fallback — single-writer, closes #9 class without dual POST)
+     - mode=primary: service owns drain for watched kimi rows
+
+   Fail-open watch-set rebuild (stale-but-trying over empty-and-silent).
+   B098: adapters only probe+deliver DATA; no approval paths. *)
 
 let ( // ) = Filename.concat
 
@@ -60,13 +65,120 @@ let read_pidfile path =
 let pid_alive pid =
   try Unix.kill pid 0; true with Unix.Unix_error _ -> false
 
-let write_config ~config_path =
+type kimi_mode = Shadow | Active | Primary
+
+let kimi_mode_of_string s =
+  match String.lowercase_ascii (String.trim s) with
+  | "shadow" | "" -> Shadow
+  | "active" -> Active
+  | "primary" -> Primary
+  | _ -> Shadow (* invalid → safe default *)
+
+let kimi_mode_to_string = function
+  | Shadow -> "shadow"
+  | Active -> "active"
+  | Primary -> "primary"
+
+(** Env: C2C_DELIVER_SERVICE_KIMI=1 enables kimi adapter; mode from
+    C2C_DELIVER_SERVICE_KIMI_MODE (default shadow). *)
+let kimi_adapter_enabled () =
+  match Sys.getenv_opt "C2C_DELIVER_SERVICE_KIMI" with
+  | Some v ->
+      let v = String.lowercase_ascii (String.trim v) in
+      v = "1" || v = "true" || v = "yes" || v = "on"
+  | None -> false
+
+let kimi_adapter_mode () =
+  match Sys.getenv_opt "C2C_DELIVER_SERVICE_KIMI_MODE" with
+  | Some s -> kimi_mode_of_string s
+  | None -> Shadow
+
+let tick_interval_s () =
+  match Sys.getenv_opt "C2C_DELIVER_SERVICE_INTERVAL" with
+  | Some s ->
+      (try
+         let f = float_of_string (String.trim s) in
+         if f < 0.2 then 0.2 else if f > 30. then 30. else f
+       with _ -> 1.5)
+  | None -> 1.5
+
+type watch_entry = {
+  broker_root : string;
+  session_id : string;
+  alias : string;
+  workdir : string;
+  client_type : string option;
+}
+
+(** Pure: should this registration be a kimi watch candidate? *)
+let is_kimi_registration (reg : C2c_mcp.registration) : bool =
+  match reg.client_type with
+  | Some ct -> String.lowercase_ascii (String.trim ct) = "kimi"
+  | None ->
+      (match reg.registered_by with
+       | Some rb ->
+           let rb = String.lowercase_ascii rb in
+           rb = "kimi-hook" || rb = "kimi"
+       | None -> false)
+
+(** Pure: build a watch entry or None if workdir missing (no cwd fallback). *)
+let watch_entry_of_reg ~broker_root (reg : C2c_mcp.registration) : watch_entry option =
+  if not (is_kimi_registration reg) then None
+  else
+    match reg.cwd with
+    | Some w when String.trim w <> "" ->
+        Some
+          { broker_root
+          ; session_id = reg.session_id
+          ; alias = reg.alias
+          ; workdir = String.trim w
+          ; client_type = reg.client_type
+          }
+    | _ -> None
+
+(** Pure fail-open merge: if a root failed, keep previous entries for that root. *)
+let merge_watch_sets ~prev ~fresh ~failed_roots : watch_entry list =
+  let keep_from_prev =
+    List.filter
+      (fun (e : watch_entry) -> List.mem e.broker_root failed_roots)
+      prev
+  in
+  let from_fresh =
+    List.filter
+      (fun (e : watch_entry) -> not (List.mem e.broker_root failed_roots))
+      fresh
+  in
+  keep_from_prev @ from_fresh
+
+(** Pure delayed-drop: entry missing from [fresh] stays while miss count < max. *)
+let apply_delayed_drop ~prev ~fresh ~miss_counts ~max_misses =
+  let fresh_ids =
+    List.fold_left
+      (fun acc (e : watch_entry) -> e.session_id :: acc)
+      [] fresh
+  in
+  let delayed =
+    List.filter
+      (fun (e : watch_entry) ->
+         (not (List.mem e.session_id fresh_ids))
+         &&
+         let m =
+           try List.assoc e.session_id miss_counts with Not_found -> 0
+         in
+         m < max_misses)
+      prev
+  in
+  fresh @ delayed
+
+let write_config ~config_path ~phase ~kimi_enabled ~kimi_mode =
   json_to_file config_path
     (`Assoc
        [ ("client", `String "deliver-service")
        ; ("scope", `String "machine")
        ; ("supervised", `Bool true)
-       ; ("phase", `Int 1)
+       ; ("phase", `Int phase)
+       ; ("kimi_adapter", `Bool kimi_enabled)
+       ; ("kimi_mode", `String (kimi_mode_to_string kimi_mode))
        ; ("created_at", `Float (Unix.gettimeofday ()))
        ])
 
@@ -81,8 +193,6 @@ let parse_managed_config (json : Yojson.Safe.t) : managed_config option =
          | _ -> false)
         || (match List.assoc_opt "supervised" a, List.assoc_opt "scope" a with
             | Some (`Bool true), Some (`String "machine") ->
-                (* Distinguish from relay-connect: require client tag when both
-                   supervised+machine appear. Prefer explicit client match. *)
                 (match List.assoc_opt "client" a with
                  | Some (`String "deliver-service") -> true
                  | _ -> false)
@@ -128,18 +238,124 @@ let redirect_daemon_stdio log_path =
      Unix.close fd
    with _ -> ())
 
-(** Phase-1 idle loop: hold the lock, respond to SIGTERM/SIGINT, sleep.
-    No adapters, no inbox watching. *)
+let scan_kimi_watch_entries () : watch_entry list * string list =
+  let failed = ref [] in
+  let acc = ref [] in
+  let roots =
+    try
+      List.map (fun (_fp, root) -> root) (C2c_repo_fp.list_all_broker_roots ())
+    with exn ->
+      Printf.eprintf
+        "[deliver-service] list_all_broker_roots failed: %s\n%!"
+        (Printexc.to_string exn);
+      []
+  in
+  List.iter
+    (fun broker_root ->
+      try
+        let broker = C2c_mcp.Broker.create ~root:broker_root in
+        let regs = C2c_mcp.Broker.list_registrations broker in
+        List.iter
+          (fun reg ->
+            match watch_entry_of_reg ~broker_root reg with
+            | Some e -> acc := e :: !acc
+            | None -> ())
+          regs
+      with exn ->
+        Printf.eprintf
+          "[deliver-service] broker scan failed for %s: %s\n%!"
+          broker_root (Printexc.to_string exn);
+        failed := broker_root :: !failed)
+    roots;
+  (List.rev !acc, !failed)
+
+let log_would_deliver (e : watch_entry) ~inbox_n ~mode =
+  Printf.printf
+    "[deliver-service] would-deliver mode=%s alias=%s session=%s workdir=%s inbox=%d broker=%s\n%!"
+    (kimi_mode_to_string mode) e.alias e.session_id e.workdir inbox_n e.broker_root
+
+let service_should_post ~mode ~alias =
+  match mode with
+  | Shadow -> false
+  | Active -> not (C2c_kimi_notifier.already_running alias)
+  | Primary -> true
+
+let tick_one_entry (e : watch_entry) ~mode : int =
+  let broker = C2c_mcp.Broker.create ~root:e.broker_root in
+  let msgs =
+    try C2c_mcp.Broker.read_inbox broker ~session_id:e.session_id
+    with _ -> []
+  in
+  let n = List.length msgs in
+  if n = 0 then 0
+  else begin
+    log_would_deliver e ~inbox_n:n ~mode;
+    if not (service_should_post ~mode ~alias:e.alias) then 0
+    else
+      try
+        C2c_kimi_notifier.run_once
+          ~broker_root:e.broker_root
+          ~alias:e.alias
+          ~session_id:e.session_id
+          ~tmux_pane:None
+          ~workdir:e.workdir
+      with exn ->
+        Printf.eprintf
+          "[deliver-service] run_once failed alias=%s: %s\n%!"
+          e.alias (Printexc.to_string exn);
+        0
+  end
+
+(** Phase-2 loop: rebuild kimi watch-set (fail open), optional deliver. *)
 let idle_supervise ~pid_path =
   let stopping = ref false in
   let request_stop _ = stopping := true in
   Sys.set_signal Sys.sigterm (Sys.Signal_handle request_stop);
   Sys.set_signal Sys.sigint (Sys.Signal_handle request_stop);
+  let prev_watch = ref ([] : watch_entry list) in
+  let miss_counts = ref ([] : (string * int) list) in
   Fun.protect
     ~finally:(fun () -> remove_pidfile_if_owned pid_path)
     (fun () ->
       while not !stopping do
-        Unix.sleepf 0.5
+        let kimi_on = kimi_adapter_enabled () in
+        let mode = kimi_adapter_mode () in
+        if kimi_on then begin
+          let fresh, failed_roots =
+            try scan_kimi_watch_entries ()
+            with exn ->
+              Printf.eprintf
+                "[deliver-service] scan exception: %s — retaining previous watch-set\n%!"
+                (Printexc.to_string exn);
+              (!prev_watch, [])
+          in
+          let merged =
+            merge_watch_sets ~prev:!prev_watch ~fresh ~failed_roots
+          in
+          let fresh_ids =
+            List.map (fun (e : watch_entry) -> e.session_id) fresh
+          in
+          miss_counts :=
+            List.filter_map
+              (fun (e : watch_entry) ->
+                 if List.mem e.session_id fresh_ids then Some (e.session_id, 0)
+                 else
+                   let m =
+                     try List.assoc e.session_id !miss_counts with Not_found -> 0
+                   in
+                   Some (e.session_id, m + 1))
+              merged;
+          let watched =
+            apply_delayed_drop
+              ~prev:!prev_watch ~fresh:merged ~miss_counts:!miss_counts
+              ~max_misses:5
+          in
+          prev_watch := watched;
+          List.iter
+            (fun e -> ignore (tick_one_entry e ~mode))
+            watched
+        end;
+        Unix.sleepf (tick_interval_s ())
       done;
       0)
 
@@ -147,10 +363,6 @@ type supervisor_status =
   | Alive of { pid : int; name : string }
   | Dead of { reason : string }
 
-(** Doctor stub: is the machine-wide deliver-service supervisor alive?
-    Prefers outer.pid under the default instance name; falls back to "no
-    pidfile / not running" when absent. Does not try the lock (lock probe
-    would race with a live owner). *)
 let supervisor_status ?(name = default_instance_name) () : supervisor_status =
   let pid_path = instances_dir () // name // "outer.pid" in
   match read_pidfile pid_path with
@@ -164,6 +376,10 @@ let supervisor_status ?(name = default_instance_name) () : supervisor_status =
   | None -> Dead { reason = "no outer.pid (supervisor not started)" }
 
 let supervisor_status_to_json (s : supervisor_status) : Yojson.Safe.t =
+  let phase = if kimi_adapter_enabled () then 2 else 1 in
+  let adapters =
+    if kimi_adapter_enabled () then [ `String "kimi" ] else []
+  in
   match s with
   | Alive { pid; name } ->
       `Assoc
@@ -171,33 +387,42 @@ let supervisor_status_to_json (s : supervisor_status) : Yojson.Safe.t =
         ; ("status", `String "alive")
         ; ("pid", `Int pid)
         ; ("name", `String name)
-        ; ("phase", `Int 1)
-        ; ("adapters", `List [])
+        ; ("phase", `Int phase)
+        ; ("kimi_adapter", `Bool (kimi_adapter_enabled ()))
+        ; ("kimi_mode", `String (kimi_mode_to_string (kimi_adapter_mode ())))
+        ; ("adapters", `List adapters)
         ]
   | Dead { reason } ->
       `Assoc
         [ ("service", `String "deliver-service")
         ; ("status", `String "dead")
         ; ("reason", `String reason)
-        ; ("phase", `Int 1)
-        ; ("adapters", `List [])
+        ; ("phase", `Int phase)
+        ; ("kimi_adapter", `Bool (kimi_adapter_enabled ()))
+        ; ("kimi_mode", `String (kimi_mode_to_string (kimi_adapter_mode ())))
+        ; ("adapters", `List adapters)
         ]
 
 let pp_supervisor_status_human (s : supervisor_status) =
   match s with
   | Alive { pid; name } ->
       Printf.printf
-        "=== deliver-service (machine-wide, #35 phase 1) ===\n\n\
+        "=== deliver-service (machine-wide, #35 phase 1/2) ===\n\n\
         \  status: ALIVE (pid=%d, name=%s)\n\
-        \  adapters: none yet (scaffold only)\n\
+        \  adapters: %s\n\
+        \  kimi_mode: %s\n\
         \  stop: c2c stop %s\n\n%!"
-        pid name name
+        pid name
+        (if kimi_adapter_enabled () then "kimi" else "none (set C2C_DELIVER_SERVICE_KIMI=1)")
+        (kimi_mode_to_string (kimi_adapter_mode ()))
+        name
   | Dead { reason } ->
       Printf.printf
-        "=== deliver-service (machine-wide, #35 phase 1) ===\n\n\
+        "=== deliver-service (machine-wide, #35 phase 1/2) ===\n\n\
         \  status: DEAD (%s)\n\
         \  start: c2c start deliver-service\n\
-        \  adapters: none yet (scaffold only)\n\n%!"
+        \  adapters: enable with C2C_DELIVER_SERVICE_KIMI=1\n\
+        \  mode: C2C_DELIVER_SERVICE_KIMI_MODE=shadow|active|primary\n\n%!"
         reason
 
 let stop_supervisor ~name ~timeout_s : bool =
@@ -238,7 +463,11 @@ let run_owner ~name ~foreground ~ready_fd =
       let log_path = inst_dir // "log" in
       mkdir_p inst_dir;
       if not foreground then redirect_daemon_stdio log_path;
-      write_config ~config_path:(inst_dir // "config.json");
+      write_config
+        ~config_path:(inst_dir // "config.json")
+        ~phase:(if kimi_adapter_enabled () then 2 else 1)
+        ~kimi_enabled:(kimi_adapter_enabled ())
+        ~kimi_mode:(kimi_adapter_mode ());
       write_pidfile pid_path (Unix.getpid ());
       (match ready_fd with
        | Some fd ->
@@ -257,8 +486,6 @@ let read_ready fd =
   let n = Unix.read fd buf 0 (Bytes.length buf) in
   Bytes.sub_string buf 0 n
 
-(** Start the one machine-wide deliver-service. A different [name] changes
-    only its managed display/stop name; it cannot create a second service. *)
 let[@noreturn] start ~name ~daemon () =
   if not daemon then
     exit (run_owner ~name ~foreground:true ~ready_fd:None)
@@ -278,12 +505,15 @@ let[@noreturn] start ~name ~daemon () =
         if status = "READY\n" then begin
           Printf.printf
             "[c2c start deliver-service] machine-wide supervisor pid=%d\n\
-             [c2c start deliver-service] phase 1 scaffold (no adapters yet)\n\
+             [c2c start deliver-service] phase %d (kimi=%b mode=%s)\n\
              [c2c start deliver-service] stop with: c2c stop %s\n%!"
-            supervisor_pid name;
+            supervisor_pid
+            (if kimi_adapter_enabled () then 2 else 1)
+            (kimi_adapter_enabled ())
+            (kimi_mode_to_string (kimi_adapter_mode ()))
+            name;
           exit 0
         end else if status = "ALREADY\n" then begin
-          (* Child already printed the full Already_running diagnostic. *)
           ignore (Unix.waitpid [] supervisor_pid);
           exit 1
         end else begin
