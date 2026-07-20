@@ -1,16 +1,18 @@
 ---
+claimed_at: "2026-07-20T13:01:09Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-20T12:54:20Z"
 depends_on: []
 estimate_hours: 3
 id: P3.M1.E3.T001
 priority: high
-status: pending
-tags:
-    - c1
-    - endpoint
+started_at: "2026-07-20T13:01:09Z"
+status: in_progress
+tags: []
 title: DELIVERY_ENDPOINT module type + registry skeleton
-updated_at: "2026-07-20T12:54:20Z"
+updated_at: "2026-07-20T13:01:09Z"
 ---
 ## Acceptance
 - Module type: kind, probe, deliver, drain_policy
