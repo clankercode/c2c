@@ -6814,6 +6814,130 @@ let cmd_reset_thread ?(do_exec : (string array -> unit) option)
            exit 1);
       cmd_restart ?do_exec name ~timeout_s:5.0
 
+
+(* I012: operator-only granular restart of deliver/poker sidecars without
+   killing the inner client. Notifier is intentionally unsupported here
+   (kimi dual-arm residual — use c2c stop/start or doctor --rearm).
+   B098: local operator CLI only. *)
+type sidecar_kind = Deliver | Poker
+
+let sidecar_kind_of_string = function
+  | "deliver" | "delivery" | "deliver-inbox" -> Some Deliver
+  | "poker" -> Some Poker
+  | "notifier" | "kimi-notifier" -> None (* refuse — dual-ownership residual *)
+  | _ -> None
+
+let sidecar_kind_to_string = function
+  | Deliver -> "deliver"
+  | Poker -> "poker"
+
+let cmd_restart_sidecar (name : string) (kind_s : string) : int =
+  match sidecar_kind_of_string (String.lowercase_ascii (String.trim kind_s)) with
+  | None ->
+      if String.lowercase_ascii (String.trim kind_s) = "notifier"
+         || String.lowercase_ascii (String.trim kind_s) = "kimi-notifier"
+      then begin
+        Printf.eprintf
+          "error: restart-sidecar does not support 'notifier' (kimi dual-arm residual).\n\
+           \  Use `c2c stop %s && c2c start …` or `c2c doctor hooks --rearm` instead.\n%!"
+          name;
+        2
+      end else begin
+        Printf.eprintf
+          "error: unknown sidecar '%s' (want deliver|poker)\n%!" kind_s;
+        2
+      end
+  | Some kind ->
+      (match load_config_opt name with
+       | None ->
+           Printf.eprintf "error: no managed instance config for '%s'\n%!" name;
+           1
+       | Some cfg ->
+           let outer_live =
+             match read_pid (outer_pid_path name) with
+             | Some p when pid_alive p -> true
+             | _ -> false
+           in
+           if not outer_live then begin
+             Printf.eprintf
+               "error: instance '%s' outer is not running — start it first\n%!"
+               name;
+             1
+           end else begin
+             let pid_path =
+               match kind with
+               | Deliver -> deliver_pid_path name
+               | Poker -> poker_pid_path name
+             in
+             let client_cfg =
+               try Some (Stdlib.Hashtbl.find clients cfg.client)
+               with Not_found -> None
+             in
+             let allowed =
+               match kind, client_cfg with
+               | Deliver, Some c -> c.needs_deliver
+               | Deliver, None -> true
+               | Poker, Some c -> c.needs_poker
+               | Poker, None -> false
+             in
+             if not allowed then begin
+               Printf.eprintf
+                 "error: client '%s' does not use sidecar '%s'\n%!"
+                 cfg.client (sidecar_kind_to_string kind);
+               1
+             end else begin
+               (* Stop existing via pidfile (external path; outer's in-memory
+                  ref may lag — acceptable for operator repair; next full stop
+                  still reaps via pidfile cleanup). *)
+               (match read_pid pid_path with
+                | Some p when pid_alive p ->
+                    Printf.printf
+                      "[c2c restart-sidecar] stopping %s pid %d for '%s'\n%!"
+                      (sidecar_kind_to_string kind) p name;
+                    (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
+                    let rec wait_try n =
+                      if n <= 0 then ()
+                      else if not (pid_alive p) then ()
+                      else (Unix.sleepf 0.1; wait_try (n - 1))
+                    in
+                    wait_try 20;
+                    if pid_alive p then
+                      (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ());
+                    remove_pidfile pid_path
+                | Some _ ->
+                    Printf.printf
+                      "[c2c restart-sidecar] stale pidfile for %s; removing\n%!"
+                      (sidecar_kind_to_string kind);
+                    remove_pidfile pid_path
+                | None ->
+                    Printf.printf
+                      "[c2c restart-sidecar] no live %s for '%s'; starting fresh\n%!"
+                      (sidecar_kind_to_string kind) name);
+               let child_pid_opt = read_pid (inner_pid_path name) in
+               let started =
+                 match kind with
+                 | Deliver ->
+                     start_deliver_daemon ~name ~client:cfg.client
+                       ~broker_root:cfg.broker_root ?child_pid_opt ()
+                 | Poker ->
+                     start_poker ~name ~client:cfg.client
+                       ~broker_root:cfg.broker_root ?child_pid_opt ()
+               in
+               match started with
+               | Some p ->
+                   write_pid pid_path p;
+                   Printf.printf
+                     "[c2c restart-sidecar] started %s pid %d for '%s'\n%!"
+                     (sidecar_kind_to_string kind) p name;
+                   0
+               | None ->
+                   Printf.eprintf
+                     "error: failed to start %s for '%s'\n%!"
+                     (sidecar_kind_to_string kind) name;
+                   1
+             end
+           end)
+
 let cmd_instances () : int =
   if not (Sys.file_exists instances_dir) then
     (Printf.printf "No c2c instances found.\n"; 0)
