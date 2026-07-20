@@ -47,6 +47,6 @@ ideas:
       file: I014-deep-module-architecture-c2-cl.todo
       id: I014
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: 'Deep-module architecture: C2 claim · C3 liveness · C1 DeliveryEndpoint'
