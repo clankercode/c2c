@@ -5894,11 +5894,9 @@ let hook_row_aged ?pid ~registered_by ~client_type ~age_s ~now () :
 (* RED for #51: a pid-less hook row 30 days old reports alive. Only codex-hook
    had a TTL, so claude/agy hook rows never decayed at all.
 
-   Scope is the [hook_anchor_is_activity_backed] allowlist. grok-hook and
-   kimi-hook are covered by the companion assertion below and by
-   test_c2c_hook_anchor: they are installed with SessionStart + SessionEnd
-   only, so their anchor never advances past session start and a TTL there
-   would kill live agents' delivery rather than reap ghosts. *)
+   Scope is the [hook_anchor_is_activity_backed] allowlist. After #59,
+   kimi-hook and grok-hook are activity-backed (mid-session install + touch)
+   and are included here. *)
 let test_51_stale_hook_row_is_not_alive () =
   let now = Unix.gettimeofday () in
   List.iter
@@ -5911,9 +5909,16 @@ let test_51_stale_hook_row_is_not_alive () =
         (C2c_mcp.Broker.registration_is_alive reg);
       check bool (rb ^ ": stale hook row liveness is Dead") true
         (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Dead))
-    [ ("codex-hook", "codex"); ("claude-hook", "claude"); ("agy-hook", "agy") ]
+    [ ("codex-hook", "codex")
+    ; ("claude-hook", "claude")
+    ; ("agy-hook", "agy")
+    ; ("kimi-hook", "kimi")
+    ; ("grok-hook", "grok")
+    ]
 
-(* #51 blocker 1: a hook client with NO mid-session anchor must never decay.
+(* #51 blocker 1 historically: a hook client with NO mid-session anchor must
+   never decay. #59 gave kimi/grok mid-session hooks — the test body now
+   asserts they decay (see rename note in the function).
 
    grok and kimi install SessionStart + SessionEnd only, and each hard-exits
    on any other event before reaching [touch_hook_activity], so their anchor
@@ -5925,22 +5930,23 @@ let test_51_stale_hook_row_is_not_alive () =
    1:1 DM raises before it can reach the B127 offline queue. 223 of the 664
    observed ghosts are grok-hook rows; keeping them immortal is the
    deliberate, cheaper error. *)
+(* #59: kimi-hook and grok-hook now install mid-session activity hooks, so
+   they join the activity-backed allowlist and stale rows decay like codex. *)
 let test_51_hook_client_without_mid_session_anchor_never_decays () =
   let now = Unix.gettimeofday () in
+  (* No remaining SessionStart-only clients on the allowlist path; keep the
+     test name for history but assert kimi/grok NOW decay when stale. *)
   List.iter
     (fun (rb, ct) ->
       let reg =
         hook_row_aged ~registered_by:(Some rb) ~client_type:ct
           ~age_s:(30.0 *. 24.0 *. 3600.0) ~now ()
       in
-      check bool
-        (rb ^ ": no mid-session anchor => must stay alive however old") true
+      check bool (rb ^ ": #59 mid-session install => stale hook row not alive")
+        false
         (C2c_mcp.Broker.registration_is_alive reg);
-      check bool
-        (rb ^ ": no mid-session anchor => liveness stays Unknown, never Dead")
-        true
-        (C2c_mcp.Broker.registration_liveness_state reg
-         = C2c_mcp.Broker.Unknown))
+      check bool (rb ^ ": #59 mid-session install => liveness Dead") true
+        (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Dead))
     [ ("grok-hook", "grok"); ("kimi-hook", "kimi") ]
 
 (* And the mirror at the fresh end: a fresh grok/kimi row must NOT be promoted
@@ -5948,6 +5954,8 @@ let test_51_hook_client_without_mid_session_anchor_never_decays () =
    which is the pre-#335 None->true collapse that produced the measured nudge
    flood (135 nudges to one pid-less peer over 19.9h). The nudge paths skip on
    strict [Alive], so [Unknown] is what keeps them skipped. *)
+(* #59: with activity-backed anchors, a fresh kimi/grok hook row is Alive
+   (within TTL), same as claude — not Unknown forever. *)
 let test_51_fresh_row_without_mid_session_anchor_is_not_promoted () =
   let now = Unix.gettimeofday () in
   List.iter
@@ -5956,10 +5964,8 @@ let test_51_fresh_row_without_mid_session_anchor_is_not_promoted () =
         hook_row_aged ~registered_by:(Some rb) ~client_type:ct ~age_s:60.0 ~now
           ()
       in
-      check bool (rb ^ ": fresh row without an activity anchor stays Unknown")
-        true
-        (C2c_mcp.Broker.registration_liveness_state reg
-         = C2c_mcp.Broker.Unknown))
+      check bool (rb ^ ": #59 fresh activity-backed hook row is Alive") true
+        (C2c_mcp.Broker.registration_liveness_state reg = C2c_mcp.Broker.Alive))
     [ ("grok-hook", "grok"); ("kimi-hook", "kimi") ]
 
 (* A hook row inside the TTL is still routable — its next hook fire can drain

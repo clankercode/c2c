@@ -1290,7 +1290,17 @@ let hook_claude : unit Cmdliner.Cmd.t =
     hook_claude_cmd
 
 
-let grok_session_events = [ "SessionStart"; "SessionEnd" ]
+(* #59: mid-session events empirically fire on Grok Build 0.2.x
+   (UserPromptSubmit / PreToolUse / PostToolUse / Stop). Install them and
+   touch activity so grok-hook rows may join the #51 decay allowlist. *)
+let grok_session_events =
+  [ "SessionStart"
+  ; "SessionEnd"
+  ; "UserPromptSubmit"
+  ; "PreToolUse"
+  ; "PostToolUse"
+  ; "Stop"
+  ]
 
 let hook_grok_cmd =
   let open Cmdliner.Term in
@@ -1321,10 +1331,48 @@ let hook_grok_cmd =
          match String.lowercase_ascii event with
          | "session_start" | "sessionstart" -> "SessionStart"
          | "session_end" | "sessionend" -> "SessionEnd"
-         | other -> event
+         | "user_prompt_submit" | "userpromptsubmit" -> "UserPromptSubmit"
+         | "pre_tool_use" | "pretooluse" -> "PreToolUse"
+         | "post_tool_use" | "posttooluse" -> "PostToolUse"
+         | "stop" -> "Stop"
+         | _ -> event
        in
        if not (List.mem event grok_session_events) then exit 0;
        if event = "SessionStart" then C2c_setup.refresh_grok_skill_if_stale ();
+       (* Mid-session: only refresh activity anchor — never re-register or
+          tear down. Fail open if we cannot resolve a session id. *)
+       if event <> "SessionStart" && event <> "SessionEnd" then begin
+         let broker_root = C2c_utils.resolve_broker_root () in
+         let broker = C2c_mcp.Broker.create ~root:broker_root in
+         let validated s =
+           match C2c_mcp.validate_session_id s with
+           | Ok sid -> Some sid
+           | Error _ -> None
+         in
+         let payload_sid =
+           match payload_string_field payload "session_id" with
+           | Some s -> validated s
+           | None ->
+               (match payload_string_field payload "sessionId" with
+                | Some s -> validated s
+                | None -> None)
+         in
+         let env_sid =
+           match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+           | Some s when String.trim s <> "" -> validated (String.trim s)
+           | _ ->
+               (match Sys.getenv_opt "GROK_SESSION_ID" with
+                | Some s when String.trim s <> "" -> validated (String.trim s)
+                | _ -> None)
+         in
+         (match payload_sid with
+          | Some sid -> touch_hook_activity ~broker ~session_id:sid
+          | None ->
+              (match env_sid with
+               | Some sid -> touch_hook_activity ~broker ~session_id:sid
+               | None -> ()));
+         exit 0
+       end;
        let broker_root = C2c_utils.resolve_broker_root () in
        let broker = C2c_mcp.Broker.create ~root:broker_root in
        let regs () = C2c_mcp.Broker.list_registrations broker in
@@ -1460,7 +1508,17 @@ let hook_grok : unit Cmdliner.Cmd.t =
        ~doc:"Grok Build TUI SessionStart/SessionEnd hook: auto-registers the session (registered_by=grok-hook), refreshes the /c2c skill, and writes a c2c-session identity skill (Grok cannot inject additionalContext). Installed by `c2c install grok`. Never fails the host turn.")
     hook_grok_cmd
 
-let kimi_session_events = [ "SessionStart"; "SessionEnd" ]
+(* #59: mid-session events empirically fire on Kimi Code 0.28
+   (UserPromptSubmit / PreToolUse / PostToolUse / Stop). Install + handle
+   them so kimi-hook can join the #51 activity-backed decay allowlist. *)
+let kimi_session_events =
+  [ "SessionStart"
+  ; "SessionEnd"
+  ; "UserPromptSubmit"
+  ; "PreToolUse"
+  ; "PostToolUse"
+  ; "Stop"
+  ]
 
 (* #40 / #47 / #48: the managed `c2c start kimi` identity predicates now live
    in [C2c_mcp_helpers_post_broker] so the in-session MCP server's startup
@@ -1505,11 +1563,43 @@ let hook_kimi_cmd =
          match String.lowercase_ascii event with
          | "session_start" | "sessionstart" -> "SessionStart"
          | "session_end" | "sessionend" -> "SessionEnd"
+         | "user_prompt_submit" | "userpromptsubmit" -> "UserPromptSubmit"
+         | "pre_tool_use" | "pretooluse" -> "PreToolUse"
+         | "post_tool_use" | "posttooluse" -> "PostToolUse"
+         | "stop" -> "Stop"
          | _ -> event
        in
        if not (List.mem event kimi_session_events) then exit 0;
        let broker_root = C2c_utils.resolve_broker_root () in
        let broker = C2c_mcp.Broker.create ~root:broker_root in
+       (* Mid-session: activity touch only (no register / no SessionEnd teardown). *)
+       if event <> "SessionStart" && event <> "SessionEnd" then begin
+         let validated s =
+           match C2c_mcp.validate_session_id s with
+           | Ok sid -> Some sid
+           | Error _ -> None
+         in
+         let payload_sid =
+           match payload_string_field payload "session_id" with
+           | Some s -> validated s
+           | None ->
+               (match payload_string_field payload "sessionId" with
+                | Some s -> validated s
+                | None -> None)
+         in
+         let env_sid =
+           match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+           | Some s when String.trim s <> "" -> validated (String.trim s)
+           | _ -> None
+         in
+         (match env_sid with
+          | Some sid -> touch_hook_activity ~broker ~session_id:sid
+          | None ->
+              (match payload_sid with
+               | Some sid -> touch_hook_activity ~broker ~session_id:sid
+               | None -> ()));
+         exit 0
+       end;
        let validated s =
          match C2c_mcp.validate_session_id s with
          | Ok sid -> Some sid

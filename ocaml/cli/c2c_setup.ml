@@ -1902,9 +1902,39 @@ let is_deliver_watch_client client = List.mem client deliver_watch_clients
    Absolute paths break when the build worktree moves; `c2c install self`
    puts a stable binary on PATH under ~/.local/bin. *)
 let grok_hooks_json () =
+  (* #59: mid-session events empirically fire on Grok Build 0.2.x — install
+     them so grok-hook activity anchors advance and rows can decay under #51. *)
   {|{
   "hooks": {
     "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "c2c hook grok", "timeout": 10 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "c2c hook grok", "timeout": 10 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "c2c hook grok", "timeout": 10 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "c2c hook grok", "timeout": 10 }
+        ]
+      }
+    ],
+    "Stop": [
       {
         "hooks": [
           { "type": "command", "command": "c2c hook grok", "timeout": 10 }
@@ -1919,8 +1949,7 @@ let grok_hooks_json () =
       }
     ]
   }
-}
-|}
+}|}
 
 let setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
   let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
