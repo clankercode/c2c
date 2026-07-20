@@ -1,6 +1,7 @@
 # I010 / P2 `restart-stale` evidence receipt
 
-Date: 2026-07-20  
+Date: 2026-07-20
+
 Scope: P2.M1.E1.T003 (linkage and current-behaviour truth only)
 
 ## Status
