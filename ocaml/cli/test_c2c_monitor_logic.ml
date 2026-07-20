@@ -700,8 +700,10 @@ let test_terminal_severity_taxonomy () =
     [ "unauthorized"; "not_registered"; "unknown_node"; "not_found"
     ; "missing_proof_field"; "bad_request" ]
 
-let is_retry_soft = function L.Retry_soft _ -> true | L.Disable _ -> false
-let is_disable = function L.Disable _ -> true | L.Retry_soft _ -> false
+let is_retry_soft = function L.Retry_soft _ -> true | _ -> false
+let is_disable = function L.Disable _ -> true | _ -> false
+let is_disable_connector_owned =
+  function L.Disable_connector_owned _ -> true | _ -> false
 
 let test_hard_terminal_disables_immediately () =
   let action, budget =
@@ -715,7 +717,7 @@ let test_hard_terminal_disables_immediately () =
        Alcotest.(check bool) "hard severity" true (severity = L.Hard_terminal);
        Alcotest.(check bool) "remediation mentions register" true
          (str_contains remediation "relay register")
-   | L.Retry_soft _ -> Alcotest.fail "expected Disable for unauthorized")
+   | _ -> Alcotest.fail "expected Disable for unauthorized")
 
 let test_soft_terminal_retries_before_budget () =
   (* B185 core: first timestamp_out_of_window must NOT permanently disable. *)
@@ -733,7 +735,7 @@ let test_soft_terminal_retries_before_budget () =
        Alcotest.(check bool) "hint mentions clock/skew" true
          (str_contains remediation_hint "Clock" || str_contains remediation_hint "skew"
           || str_contains remediation_hint "NTP")
-   | L.Disable _ -> Alcotest.fail "must not disable on first soft terminal")
+   | _ -> Alcotest.fail "must not disable on first soft terminal")
 
 let test_soft_terminal_exhausts_budget () =
   (* Walk the soft streak to threshold with enough wall-clock span. *)
@@ -756,7 +758,7 @@ let test_soft_terminal_exhausts_budget () =
              (severity = L.Soft_terminal);
            Alcotest.(check bool) "remediation non-empty" true
              (String.length remediation > 10)
-       | L.Retry_soft _ -> Alcotest.fail "expected Disable after budget")
+       | _ -> Alcotest.fail "expected Disable after budget")
     end
   in
   loop 1 L.empty_soft_budget 1000.0
@@ -795,6 +797,71 @@ let test_soft_terminal_recovery_resets_via_empty_budget () =
   in
   Alcotest.(check bool) "after reset still Retry_soft" true (is_retry_soft action);
   Alcotest.(check int) "streak restarts at 1" 1 after.L.consecutive
+
+(* ---------- #63: connector-owned peek key fails closed once ---------- *)
+
+let test_connector_owned_predicate () =
+  (* Connector-managed key (not cli-<alias>, no override) is connector-owned. *)
+  Alcotest.(check bool) "connector node/session is connector-owned" true
+    (L.peek_key_is_connector_owned ~alias:"me"
+       ~node_id:"host-abc" ~session_id:"sess-42" ~has_explicit_key:false);
+  (* The direct cli-<alias> convention is NOT connector-owned (re-register can
+     legitimately fix a signature drift there). *)
+  Alcotest.(check bool) "cli-<alias> key is not connector-owned" false
+    (L.peek_key_is_connector_owned ~alias:"me"
+       ~node_id:"cli-me" ~session_id:"cli-me" ~has_explicit_key:false);
+  (* An operator-supplied override is the operator's key, not the connector's. *)
+  Alcotest.(check bool) "explicit override is not connector-owned" false
+    (L.peek_key_is_connector_owned ~alias:"me"
+       ~node_id:"host-abc" ~session_id:"sess-42" ~has_explicit_key:true)
+
+let test_connector_owned_signature_disables_first_failure () =
+  (* #63: signature_invalid on a connector-owned key must fail closed on the
+     FIRST failure — no soft budget, no re-register hint. *)
+  let action, budget =
+    L.decide_on_terminal ~connector_owned_key:true
+      ~now:1000.0 ~code:"signature_invalid"
+      ~budget:L.empty_soft_budget ()
+  in
+  Alcotest.(check bool) "connector-owned -> Disable_connector_owned on 1st"
+    true (is_disable_connector_owned action);
+  Alcotest.(check int) "no soft budget accrued" 0 budget.L.consecutive;
+  (match action with
+   | L.Disable_connector_owned { remediation } ->
+       Alcotest.(check bool) "advice names the connector" true
+         (str_contains remediation "connector");
+       (* The hint must WARN AGAINST re-registering, not recommend it. *)
+       Alcotest.(check bool) "advice says do NOT re-register" true
+         (str_contains remediation "Do NOT")
+   | _ -> Alcotest.fail "expected Disable_connector_owned")
+
+let test_connector_owned_transient_still_soft_retries () =
+  (* Narrowness: a NON-signature soft code (clock skew) on a connector-owned key
+     must STILL soft-retry — only signature_invalid short-circuits. *)
+  let action, _ =
+    L.decide_on_terminal ~connector_owned_key:true
+      ~now:1000.0 ~code:"timestamp_out_of_window"
+      ~budget:L.empty_soft_budget ()
+  in
+  Alcotest.(check bool) "clock skew still soft-retries even if connector-owned"
+    true (is_retry_soft action)
+
+let test_direct_signature_invalid_keeps_register_hint () =
+  (* The cli-<alias> case (connector_owned_key:false, the default) is unchanged:
+     signature_invalid still soft-retries AND the remediation still points at
+     `c2c relay register`, which CAN fix an alias-owned key whose identity drifted. *)
+  let action, budget =
+    L.decide_on_terminal ~now:1000.0 ~code:"signature_invalid"
+      ~budget:L.empty_soft_budget ()
+  in
+  Alcotest.(check bool) "direct signature_invalid still soft-retries" true
+    (is_retry_soft action);
+  Alcotest.(check int) "soft streak = 1" 1 budget.L.consecutive;
+  (match action with
+   | L.Retry_soft { remediation_hint; _ } ->
+       Alcotest.(check bool) "direct hint still mentions relay register" true
+         (str_contains remediation_hint "relay register")
+   | _ -> Alcotest.fail "expected Retry_soft for direct signature_invalid")
 
 (* ---------- B180: identity rebind after rename ---------- *)
 
@@ -1089,6 +1156,16 @@ let () =
             test_soft_terminal_requires_min_span
         ; Alcotest.test_case "soft streak resets after empty budget" `Quick
             test_soft_terminal_recovery_resets_via_empty_budget
+        ] )
+    ; ( "i63-connector-owned-fail-closed",
+        [ Alcotest.test_case "connector-owned key predicate" `Quick
+            test_connector_owned_predicate
+        ; Alcotest.test_case "connector-owned signature disables on first failure"
+            `Quick test_connector_owned_signature_disables_first_failure
+        ; Alcotest.test_case "connector-owned non-signature soft still retries"
+            `Quick test_connector_owned_transient_still_soft_retries
+        ; Alcotest.test_case "direct signature_invalid keeps register hint" `Quick
+            test_direct_signature_invalid_keeps_register_hint
         ] )
     ; ( "b211-transient-wedge-escalation",
         [ Alcotest.test_case "below threshold logs each attempt" `Quick

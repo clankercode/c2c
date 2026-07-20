@@ -293,6 +293,30 @@ let resolve_relay_peek_key
   in
   { node_id; session_id }
 
+(* #63: does the resolved peek key belong to the relay CONNECTOR rather than to
+   the `cli-<alias>` relay-register lease this monitor signs with?
+
+   [resolve_relay_peek_key] only ever yields a non-`cli-<alias>` key two ways:
+   an operator-supplied `--relay-node-id`/`--relay-session-id` override, or a
+   connector-managed default (connector-state.json). So, with NO explicit
+   override, any key that is not exactly (`cli-<alias>`, `cli-<alias>`) is the
+   connector's own (node, session) pair — which the connector owns on the relay,
+   NOT this alias's direct-register lease. Peeking it while signing as the alias
+   therefore fails `signature_invalid` ("signer does not own session") and can
+   NEVER be fixed client-side by re-registering the alias (that reserves the
+   cli-<alias> key, a different one). This predicate lets the terminal-error
+   policy fail closed once, with connector-appropriate advice, instead of
+   soft-looping with a misleading "re-run relay register" hint.
+
+   An explicit override is deliberately NOT treated as connector-owned: the
+   operator named that key, so a signature failure there is about their chosen
+   binding (re-register / key advice may apply). Pure so it is unit-testable. *)
+let peek_key_is_connector_owned ~alias ~node_id ~session_id ~has_explicit_key =
+  if has_explicit_key then false
+  else
+    let base = "cli-" ^ alias in
+    not (node_id = base && session_id = base)
+
 (* Decide whether the relay watcher should run, given the resolved inputs.
    Pure so the gating logic (alias resolved? relay configured? identity
    available?) is unit-testable. The watcher needs: an alias to peek as, a relay
@@ -597,6 +621,19 @@ let remediation_for_code = function
       "Re-register (`c2c relay register`) or fix the key/clock, then restart \
        the monitor."
 
+(* #63: advice for the connector-owned-key signature failure. Deliberately does
+   NOT nudge toward `c2c relay register` — that reserves the cli-<alias> key, a
+   DIFFERENT one from the connector's, so re-registering cannot fix a peek the
+   connector owns. Cross-host mail is delivered locally by the connector, so it
+   still reaches the operator through the local inbox watch. *)
+let connector_owned_remediation =
+  "the relay connector (`c2c relay connect`) owns relay delivery for this \
+   session; the CLI monitor cannot sign peeks for a connector-owned inbox. This \
+   is expected while the connector is running. Do NOT re-run `c2c relay \
+   register` (it reserves the cli-<alias> key, not the connector's). Cross-host \
+   mail is delivered locally by the connector and still surfaces via the local \
+   inbox watch."
+
 type terminal_action =
   | Retry_soft of {
       consecutive : int;
@@ -607,6 +644,14 @@ type terminal_action =
       severity : terminal_severity;
       remediation : string;
     }
+  | Disable_connector_owned of {
+      remediation : string;
+    }
+    (* #63: signature_invalid on a CONNECTOR-owned peek key. Fail closed after
+       the FIRST failure (no soft budget): re-signing or re-registering can
+       never make the alias own the connector's (node, session). Distinct from
+       [Disable] so the caller prints connector-ownership advice, not the
+       generic "recovery budget exhausted / re-register" message. *)
 
 (* B185 pure policy: hard terminal → disable immediately; soft terminal →
    retry until [threshold] consecutive failures spanning at least [min_span_s]
@@ -615,10 +660,19 @@ type terminal_action =
 let decide_on_terminal
     ?(threshold = default_soft_terminal_threshold)
     ?(min_span_s = default_soft_terminal_min_span_s)
+    ?(connector_owned_key = false)
     ~now
     ~code
     ~budget
     () : terminal_action * soft_terminal_budget =
+  (* #63: signature_invalid against a connector-owned peek key is permanent for
+     the CLI monitor — the alias signer can never own the connector's (node,
+     session). Short-circuit BEFORE the soft-budget: fail closed on the first
+     such failure with connector-ownership advice, never the re-register hint. *)
+  if connector_owned_key && code = "signature_invalid" then
+    ( Disable_connector_owned { remediation = connector_owned_remediation },
+      empty_soft_budget )
+  else
   let severity = terminal_severity_of_code code in
   let remediation = remediation_for_code code in
   match severity with
