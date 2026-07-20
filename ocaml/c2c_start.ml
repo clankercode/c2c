@@ -1573,10 +1573,7 @@ let () =
     { binary = "opencode"; deliver_client = "opencode";
       needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] };
-  (* kimi: delivery via C2c_kimi_notifier — REST prompt injection into the
-     local Kimi Code server (legacy notification-store path deprecated). The
-     deprecated wire-bridge path was removed in the kimi-wire-bridge-cleanup
-     slice. *)
+  (* kimi: delivery via C2c_kimi_notifier — REST POST to local kimi server /prompts (no tmux required). *)
   Stdlib.Hashtbl.add clients "kimi"
     { binary = "kimi"; deliver_client = "kimi";
       needs_deliver = false; needs_poker = true;
@@ -5574,11 +5571,14 @@ let run_outer_loop ~(name : string) ~(client : string)
                  loop ())
                ())
            );
-          (* Start kimi-notifier (file-based notification-store push).
-             File-based notification push to ~/.kimi-code/sessions/<wh>/<sid>/notifications/.
-             Optionally tmux send-keys-wakes the kimi pane when idle. See
-             c2c_kimi_notifier.mli + .collab/research/2026-04-29T10-27-00Z-stanza-
-             coder-kimi-notification-store-push-validated.md. *)
+          (* Start kimi-notifier (primary wake path = REST).
+             The notifier drains the broker inbox and POSTs to the local kimi
+             server: POST /api/v1/sessions/{id}/prompts (no tmux required).
+             Session id is resolved from workdir via kimi-sessions record /
+             session_index (#41). TMUX_PANE is optional and only used if
+             C2C_KIMI_TMUX_COMPOSER_WAKE=1 (legacy composer nudge; default off).
+             Vanilla `kimi` (no c2c start) is armed the same way by SessionStart
+             with tmux_pane=None. *)
           (if client = "kimi" then begin
              let alias = Option.value alias_override ~default:name in
              let tmux_pane = Sys.getenv_opt "TMUX_PANE" in
