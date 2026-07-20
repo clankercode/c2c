@@ -82,25 +82,62 @@ let aliases regs =
 let session_ids regs =
   List.map (fun (r : C2c_mcp.registration) -> r.session_id) regs
 
+(* Seed the AUTHORITATIVE managed launcher row: managed (registered_by=None),
+   kimi, owning [cwd], live (self pid + matching start time). *)
+let seed_managed_kimi_row broker ~cwd ~alias =
+  let self = Unix.getpid () in
+  C2c_mcp.Broker.register broker
+    ~session_id:"managed-kimi-instance"
+    ~alias
+    ~pid:(Some self)
+    ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some self))
+    ~client_type:(Some "kimi")
+    ~cwd:(Some cwd)
+    ~registered_by:None
+    ~from_auto_gen:true
+    ()
+
+(* A recipient peer so a [send] fully resolves. Offline (dead pid) forces the
+   durable-queue path — no notifier side effects. *)
+let seed_offline_peer broker ~alias =
+  C2c_mcp.Broker.register broker
+    ~session_id:"peer-session"
+    ~alias
+    ~pid:(Some 999999999) (* > pid_max: /proc entry can never exist *)
+    ~pid_start_time:(Some 1)
+    ~client_type:(Some "claude")
+    ()
+
+let contains ~needle haystack =
+  let hl = String.length haystack and nl = String.length needle in
+  if nl = 0 then true
+  else
+    let rec at i = i + nl <= hl && (String.sub haystack i nl = needle || at (i + 1)) in
+    at 0
+
+(* Drive a real tool handler end-to-end and return (text, is_error). *)
+let run_tool ~broker ~tool_name ~arguments =
+  let result =
+    Lwt_main.run
+      (C2c_mcp.handle_tool_call ~broker ~session_id_override:None ~tool_name
+         ~arguments)
+  in
+  let open Yojson.Safe.Util in
+  let text =
+    match member "content" result with
+    | `List (first :: _) -> (match member "text" first with `String s -> s | _ -> "")
+    | _ -> ""
+  in
+  let is_error = match member "isError" result with `Bool b -> b | _ -> false in
+  (text, is_error)
+
 (* (a) A live managed kimi row owning cwd suppresses the MCP mint/rebind. *)
 let test_adopts_live_managed_row () =
   with_ctx (fun ~home ~broker_root ~workdir ->
     Unix.chdir workdir;
     let cwd = Sys.getcwd () in
-    (* Seed the AUTHORITATIVE launcher row: managed (registered_by=None),
-       kimi, owning cwd, live (self pid + matching start time). *)
-    let self = Unix.getpid () in
     let broker = C2c_mcp.Broker.create ~root:broker_root in
-    C2c_mcp.Broker.register broker
-      ~session_id:"managed-kimi-instance"
-      ~alias:"kimi-managed-anchor"
-      ~pid:(Some self)
-      ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some self))
-      ~client_type:(Some "kimi")
-      ~cwd:(Some cwd)
-      ~registered_by:None
-      ~from_auto_gen:true  (* managed kimi aliases come from the auto-gen pool *)
-      ();
+    seed_managed_kimi_row broker ~cwd ~alias:"kimi-managed-anchor";
     set_env
       (base_env ~home ~alias:"kimi-install-sticky"
          ~session_id:"kimi-uuid-distinct-9f4fb9");
@@ -131,6 +168,89 @@ let test_vanilla_still_registers_install_alias () =
     check bool "registered under the session id" true
       (List.mem "kimi-uuid-vanilla-b" (session_ids regs)))
 
+(* Common setup for the send/whoami identity tests: a live managed launcher row
+   owns cwd, plus a recipient peer, and this process presents as an UNREGISTERED
+   in-session kimi MCP server (client_type=kimi, session id = a uuid with no
+   row). [f] receives the live broker handle. *)
+let with_managed_kimi_mcp_session ~home ~broker_root ~workdir ?(client_type = "kimi") f =
+  Unix.chdir workdir;
+  let cwd = Sys.getcwd () in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  seed_managed_kimi_row broker ~cwd ~alias:"kimi-managed-anchor";
+  seed_offline_peer broker ~alias:"peer-target";
+  set_env
+    (base_env ~home ~alias:"kimi-install-sticky"
+       ~session_id:"kimi-uuid-mcp-session");
+  Unix.putenv "C2C_MCP_CLIENT_TYPE" client_type;
+  f broker
+
+(* whoami: an unregistered managed-kimi MCP session reports the LAUNCHER
+   alias (resolved by cwd), not "" and not the install alias. *)
+let test_whoami_reports_managed_alias () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    with_managed_kimi_mcp_session ~home ~broker_root ~workdir (fun broker ->
+      let text, is_error = run_tool ~broker ~tool_name:"whoami" ~arguments:(`Assoc []) in
+      check bool "whoami not an error" false is_error;
+      (* whoami reports the managed alias (bare, or as {alias,canonical_alias}
+         JSON when the row carries a canonical alias) — never "" and never the
+         install alias. *)
+      check bool "whoami names the managed alias" true
+        (contains ~needle:"kimi-managed-anchor" text);
+      check bool "whoami does NOT report the install alias" false
+        (contains ~needle:"kimi-install-sticky" text)))
+
+(* send with NO from_alias: sender resolves to the managed alias by cwd, so it
+   is neither missing-sender nor impersonation-rejected. *)
+let test_send_resolves_to_managed_alias () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    with_managed_kimi_mcp_session ~home ~broker_root ~workdir (fun broker ->
+      let text, is_error =
+        run_tool ~broker ~tool_name:"send"
+          ~arguments:(`Assoc [ ("to_alias", `String "peer-target"); ("content", `String "hi") ])
+      in
+      check bool "send did NOT fail on sender resolution" false
+        (contains ~needle:"missing sender alias" text
+         || contains ~needle:"cannot send as another agent" text);
+      check bool "send succeeded (queued to offline peer)" false is_error))
+
+(* send WITH from_alias = the managed alias: the impersonation guard treats the
+   launcher row as SELF (carve-out), so it is allowed. *)
+let test_send_with_managed_from_alias_allowed () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    with_managed_kimi_mcp_session ~home ~broker_root ~workdir (fun broker ->
+      let text, is_error =
+        run_tool ~broker ~tool_name:"send"
+          ~arguments:
+            (`Assoc
+               [ ("to_alias", `String "peer-target")
+               ; ("content", `String "hi")
+               ; ("from_alias", `String "kimi-managed-anchor")
+               ])
+      in
+      check bool "explicit managed from_alias not rejected as impersonation" false
+        (contains ~needle:"cannot send as another agent" text);
+      check bool "send succeeded" false is_error))
+
+(* Narrowness: a NON-kimi session sharing the cwd must NOT be able to send as
+   the managed kimi alias — the carve-out is inert and the impersonation guard
+   still fires. *)
+let test_non_kimi_cannot_impersonate_managed_alias () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    with_managed_kimi_mcp_session ~home ~broker_root ~workdir ~client_type:"claude"
+      (fun broker ->
+        let text, is_error =
+          run_tool ~broker ~tool_name:"send"
+            ~arguments:
+              (`Assoc
+                 [ ("to_alias", `String "peer-target")
+                 ; ("content", `String "hi")
+                 ; ("from_alias", `String "kimi-managed-anchor")
+                 ])
+        in
+        check bool "non-kimi impersonation rejected" true is_error;
+        check bool "rejection is the impersonation message" true
+          (contains ~needle:"cannot send as another agent" text)))
+
 let () =
   run "c2c_mcp_kimi_adopt"
     [ ( "auto_register vs managed kimi row (#48)",
@@ -138,5 +258,15 @@ let () =
             test_adopts_live_managed_row
         ; test_case "vanilla kimi still registers install alias" `Quick
             test_vanilla_still_registers_install_alias
+        ] )
+    ; ( "managed kimi MCP identity: whoami + send (#48)",
+        [ test_case "whoami reports the launcher alias" `Quick
+            test_whoami_reports_managed_alias
+        ; test_case "send resolves to the managed alias" `Quick
+            test_send_resolves_to_managed_alias
+        ; test_case "send with explicit managed from_alias allowed" `Quick
+            test_send_with_managed_from_alias_allowed
+        ; test_case "non-kimi cannot impersonate the managed alias" `Quick
+            test_non_kimi_cannot_impersonate_managed_alias
         ] )
     ]

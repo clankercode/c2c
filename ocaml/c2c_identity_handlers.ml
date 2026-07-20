@@ -548,8 +548,15 @@ let list ~broker ~session_id_override:_ ~arguments =
 let whoami ~broker ~session_id_override ~arguments =
       let session_id = resolve_session_id ?session_id_override:session_id_override arguments in
       let reg_opt =
-        Broker.list_registrations broker
-        |> List.find_opt (fun reg -> reg.session_id = session_id)
+        match
+          Broker.list_registrations broker
+          |> List.find_opt (fun reg -> reg.session_id = session_id)
+        with
+        | Some _ as r -> r
+        | None ->
+            (* #48: an unregistered managed-kimi MCP session reports its
+               launcher identity (resolved by cwd) rather than "unregistered". *)
+            self_managed_kimi_row ?session_id_override:session_id_override broker
       in
       let content =
         match reg_opt with
