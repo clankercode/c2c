@@ -23,7 +23,8 @@ tasks:
       file: T002-implement-c2c-liveness-broker.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Implement C2c_liveness + broker facade wrappers
     - complexity: medium
       depends_on:
@@ -32,5 +33,6 @@ tasks:
       file: T003-migrate-doctor-nudge-if-needed.todo
       id: T003
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Migrate doctor (+ nudge if needed) to C2c_liveness

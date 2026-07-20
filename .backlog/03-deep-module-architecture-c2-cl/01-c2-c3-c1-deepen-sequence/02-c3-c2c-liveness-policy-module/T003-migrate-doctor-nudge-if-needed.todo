@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-07-20T13:00:50Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-20T12:54:20Z"
 depends_on:
@@ -6,12 +9,11 @@ depends_on:
 estimate_hours: 3
 id: P3.M1.E2.T003
 priority: high
-status: pending
-tags:
-    - c3
-    - doctor
+started_at: "2026-07-20T13:00:50Z"
+status: in_progress
+tags: []
 title: Migrate doctor (+ nudge if needed) to C2c_liveness
-updated_at: "2026-07-20T12:54:20Z"
+updated_at: "2026-07-20T13:00:50Z"
 ---
 ## Acceptance
 - Doctor pid/liveness checks call C2c_liveness (drop local kimi_pid_alive mirrors where possible)
