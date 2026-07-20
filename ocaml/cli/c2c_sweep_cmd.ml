@@ -110,7 +110,9 @@ let force_flag =
 
 (* Reclaim inbox files that have NO registration row at all. Dry-run by
    default; deletion requires --apply. See Broker.gc_inboxes for the safety
-   invariant (no-row AND age; fails closed on an unreadable registry). *)
+   invariant (no-row AND age; fails closed on an unreadable registry).
+   --apply archives non-empty content to dead-letter.jsonl (reason
+   "inbox_gc") before unlinking, matching sweep's non-lossy cleanup. *)
 
 let gc_default_older_than = "7d"
 
@@ -223,7 +225,9 @@ let gc_inboxes_run ~json ~apply ~older_than ~cross_repo ~explicit_root =
                Printf.printf "  %-24s %d\n" sender n) by_sender
            end;
            if result.gc_applied then begin
-             Printf.printf "\nDELETED %d inbox(es), %d messages reclaimed.\n"
+             Printf.printf
+               "\nDELETED %d inbox(es), %d messages archived to \
+                dead-letter.jsonl (reason=inbox_gc) then reclaimed.\n"
                (List.length result.gc_deleted) result.gc_deleted_messages
            end
            else if result.gc_candidates <> [] then
@@ -508,5 +512,9 @@ let gc_inboxes =
          ; `P "Dry-run by default: it prints what it WOULD reclaim (count, \
                 messages, age distribution, by-sender) and changes nothing. \
                 Pass $(b,--apply) to actually delete."
+         ; `P "On $(b,--apply), non-empty content is first archived to \
+                $(b,dead-letter.jsonl) with reason $(b,inbox_gc) (same \
+                archive-then-remove pattern as $(b,c2c sweep)), then the \
+                inbox file is unlinked. Review the dry-run first."
          ])
     gc_inboxes_cmd
