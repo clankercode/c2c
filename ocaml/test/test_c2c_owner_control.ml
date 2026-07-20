@@ -119,13 +119,13 @@ let test_name_mismatch () =
   let dir = tmp_dir () in
   let _id =
     C2c_owner_control.request_restart ~instance_dir:dir ~instance_name:"alpha"
-      ~force:false ()
+      ~force:false ~expected_pid:1 ~expected_start_time:1 ()
   in
   match C2c_owner_control.consume_request ~instance_dir:dir with
   | None -> Alcotest.fail "request"
   | Some req ->
       let owner =
-        { C2c_owner_control.name = "beta"; pid = 1; start_time = None }
+        { C2c_owner_control.name = "beta"; pid = 1; start_time = Some 1 }
       in
       let plan =
         { C2c_owner_control.executable = "/bin/true"
@@ -196,13 +196,13 @@ let test_teardown_failure_does_not_exec () =
   let dir = tmp_dir () in
   let id =
     C2c_owner_control.request_restart ~instance_dir:dir ~instance_name:"inst-a"
-      ~force:false ~expected_pid:1 ()
+      ~force:false ~expected_pid:1 ~expected_start_time:1 ()
   in
   match C2c_owner_control.consume_request ~instance_dir:dir with
   | None -> Alcotest.fail "request"
   | Some req ->
       let owner =
-        { C2c_owner_control.name = "inst-a"; pid = 1; start_time = None }
+        { C2c_owner_control.name = "inst-a"; pid = 1; start_time = Some 1 }
       in
       let plan =
         { C2c_owner_control.executable = "/bin/true"
@@ -277,6 +277,111 @@ let test_filter_env_strips_ambient_and_instance () =
   Alcotest.(check bool) "strips AWS" false
     (List.mem "AWS_SECRET_ACCESS_KEY" keys)
 
+
+let test_unpinned_request_rejected () =
+  let dir = tmp_dir () in
+  (* Write a malformed request missing pins and ensure consume fails closed. *)
+  let path = C2c_owner_control.request_path ~instance_dir:dir in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+      output_string oc
+        {|{"request_id":"x-1","force":true,"instance_name":"inst-a","requested_at":1.0}|};
+      output_string oc "\n");
+  Alcotest.(check bool) "unpinned rejected" true
+    (C2c_owner_control.consume_request ~instance_dir:dir = None)
+
+let test_revalidate_at_reexec () =
+  let dir = tmp_dir () in
+  let id =
+    C2c_owner_control.request_restart ~instance_dir:dir ~instance_name:"inst-a"
+      ~force:true ~expected_pid:9 ~expected_start_time:3 ()
+  in
+  match C2c_owner_control.consume_request ~instance_dir:dir with
+  | None -> Alcotest.fail "request"
+  | Some req ->
+      let owner =
+        { C2c_owner_control.name = "inst-a"; pid = 9; start_time = Some 3 }
+      in
+      let plan =
+        { C2c_owner_control.executable = "/bin/true"
+        ; argv = [| "/bin/true" |]
+        ; cwd = None
+        ; env = [||]
+        }
+      in
+      let exec_called = ref false in
+      (match
+         C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
+           ~owner ~plan ~teardown:(fun () -> Ok ())
+           ~identity_at:(fun () ->
+             { C2c_owner_control.name = "inst-a"
+             ; pid = 9
+             ; start_time = Some 999
+             })
+           ~do_exec:(fun _ -> exec_called := true)
+           ()
+       with
+       | Error "start-time-mismatch" -> ()
+       | other ->
+           Alcotest.failf "expected start-time-mismatch at reexec, got %s"
+             (match other with Ok () -> "ok" | Error e -> e));
+      Alcotest.(check bool) "no exec after revalidation fail" false !exec_called;
+      (match
+         C2c_owner_control.await_result ~instance_dir:dir ~request_id:id
+           ~timeout_s:0.2
+       with
+       | Some (C2c_owner_control.Declined "start-time-mismatch") -> ()
+       | Some other ->
+           Alcotest.failf "bad result %s"
+             (C2c_owner_control.result_kind_to_string other)
+       | None -> Alcotest.fail "missing result")
+
+let test_plan_env_filtered_before_exec () =
+  let dir = tmp_dir () in
+  let id =
+    C2c_owner_control.request_restart ~instance_dir:dir ~instance_name:"inst-a"
+      ~force:true ~expected_pid:2 ~expected_start_time:2 ()
+  in
+  match C2c_owner_control.consume_request ~instance_dir:dir with
+  | None -> Alcotest.fail "request"
+  | Some req ->
+      let owner =
+        { C2c_owner_control.name = "inst-a"; pid = 2; start_time = Some 2 }
+      in
+      let plan =
+        { C2c_owner_control.executable = "/bin/true"
+        ; argv = [| "/bin/true" |]
+        ; cwd = None
+        ; env =
+            [| "HOME=/h"
+             ; "C2C_RELAY_TOKEN=secret"
+             ; "AWS_SECRET_ACCESS_KEY=nope"
+             ; "PATH=/bin"
+            |]
+        }
+      in
+      let seen = ref [||] in
+      (match
+         C2c_owner_control.commit_takeover ~instance_dir:dir ~request:req
+           ~owner ~plan ~teardown:(fun () -> Ok ())
+           ~do_exec:(fun p -> seen := p.env)
+           ()
+       with
+       | Ok () -> ()
+       | Error e -> Alcotest.failf "commit failed: %s" e);
+      let keys =
+        Array.to_list !seen
+        |> List.map (fun e ->
+               try String.sub e 0 (String.index e '=') with Not_found -> e)
+      in
+      Alcotest.(check bool) "keeps HOME" true (List.mem "HOME" keys);
+      Alcotest.(check bool) "keeps PATH" true (List.mem "PATH" keys);
+      Alcotest.(check bool) "strips relay token" false
+        (List.mem "C2C_RELAY_TOKEN" keys);
+      Alcotest.(check bool) "strips aws" false
+        (List.mem "AWS_SECRET_ACCESS_KEY" keys);
+      ignore id
+
 let () =
   Alcotest.run "c2c_owner_control"
     [ ( "owner-control",
@@ -293,5 +398,11 @@ let () =
         ; Alcotest.test_case "await timeout" `Quick test_timeout_await
         ; Alcotest.test_case "controlled env filter" `Quick
             test_filter_env_strips_ambient_and_instance
+        ; Alcotest.test_case "unpinned request rejected" `Quick
+            test_unpinned_request_rejected
+        ; Alcotest.test_case "revalidate identity at reexec" `Quick
+            test_revalidate_at_reexec
+        ; Alcotest.test_case "plan env filtered before exec" `Quick
+            test_plan_env_filtered_before_exec
         ] )
     ]

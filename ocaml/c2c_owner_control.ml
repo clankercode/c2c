@@ -102,8 +102,8 @@ let is_controlled_key k =
 
 (** Build a controlled environment from [source] (default: current env).
     Always strips [C2C_INSTANCE_NAME] so a re-exec of `c2c start` does not
-    trip the nested-session guard. Only allowlisted keys (plus other C2C_*
-    except instance name) survive. *)
+    trip the nested-session guard. Only the finite [controlled_env_keys]
+    allowlist survives — no C2C_* wildcard. *)
 let filter_env ?(source = Unix.environment ()) () : string array =
   source
   |> Array.to_list
@@ -149,21 +149,17 @@ let float_member name fields =
     [expected_pid]/expected_start_time] pin the owner identity so a reused
     PID cannot satisfy the request later. *)
 let request_restart ~instance_dir ~instance_name ~(force : bool)
-    ?expected_pid ?expected_start_time () : string =
+    ~(expected_pid : int) ~(expected_start_time : int) () : string =
   C2c_io.mkdir_p instance_dir;
   let request_id = fresh_request_id () in
   let fields =
     [ ("request_id", `String request_id)
     ; ("force", `Bool force)
     ; ("instance_name", `String instance_name)
+    ; ("expected_pid", `Int expected_pid)
+    ; ("expected_start_time", `Int expected_start_time)
     ; ("requested_at", `Float (Unix.gettimeofday ()))
     ]
-    @ (match expected_pid with
-       | Some p -> [ ("expected_pid", `Int p) ]
-       | None -> [])
-    @ (match expected_start_time with
-       | Some t -> [ ("expected_start_time", `Int t) ]
-       | None -> [])
   in
   write_json_atomic (request_path ~instance_dir) (`Assoc fields);
   request_id
@@ -197,17 +193,21 @@ let parse_request = function
         | Some s -> s
         | None -> ""
       in
-      Some
-        { id
-        ; force = (match bool_member "force" fields with Some b -> b | None -> false)
-        ; instance_name
-        ; expected_pid = int_member "expected_pid" fields
-        ; expected_start_time = int_member "expected_start_time" fields
-        ; requested_at =
-            (match float_member "requested_at" fields with
-             | Some f -> f
-             | None -> 0.0)
-        }
+      (match int_member "expected_pid" fields, int_member "expected_start_time" fields with
+       | Some pid, Some st ->
+           Some
+             { id
+             ; force =
+                 (match bool_member "force" fields with Some b -> b | None -> false)
+             ; instance_name
+             ; expected_pid = Some pid
+             ; expected_start_time = Some st
+             ; requested_at =
+                 (match float_member "requested_at" fields with
+                  | Some f -> f
+                  | None -> 0.0)
+             }
+       | _ -> None)
   | _ -> None
 
 (** Owner side: consume (and remove) a pending request, if any. *)
@@ -223,19 +223,19 @@ let consume_request ~instance_dir : request option =
     Returns [Ok ()] or [Error reason] for a declined/fail-closed decision. *)
 let validate_identity ~(request : request) ~(owner : identity) :
     (unit, string) result =
-  if
-    request.instance_name <> ""
-    && not (String.equal request.instance_name owner.name)
-  then Error "instance-name-mismatch"
+  if String.trim request.instance_name = "" then Error "instance-name-missing"
+  else if not (String.equal request.instance_name owner.name) then
+    Error "instance-name-mismatch"
   else
-    match request.expected_pid with
-    | Some expected when expected <> owner.pid -> Error "pid-mismatch"
-    | _ -> (
-        match (request.expected_start_time, owner.start_time) with
-        | Some expected, Some actual when expected <> actual ->
-            Error "start-time-mismatch"
-        | Some _, None -> Error "start-time-unavailable"
-        | _ -> Ok ())
+    match (request.expected_pid, request.expected_start_time) with
+    | None, _ | _, None -> Error "identity-pins-missing"
+    | Some expected_pid, Some expected_st -> (
+        if expected_pid <> owner.pid then Error "pid-mismatch"
+        else
+          match owner.start_time with
+          | None -> Error "start-time-unavailable"
+          | Some actual when actual <> expected_st -> Error "start-time-mismatch"
+          | Some _ -> Ok ())
 
 let write_result ~instance_dir ~request_id ~(result : result_kind) : unit =
   C2c_io.mkdir_p instance_dir;
@@ -275,9 +275,16 @@ let await_result ~instance_dir ~request_id ~(timeout_s : float) :
     [do_exec] defaults to [Unix.execve] with the plan's env; tests inject a
     no-op. The [Restarting] result is written only after [teardown]
     returns [Ok] and immediately before [do_exec] — never before commit. *)
+(** [identity_at] is re-sampled at the reexec boundary (after teardown).
+    Defaults to the pre-teardown [owner] only when tests inject a static
+    identity; production callers should re-read pid/start-time. *)
 let commit_takeover ~instance_dir ~(request : request) ~(owner : identity)
     ~(plan : launch_plan) ~(teardown : unit -> (unit, string) result)
-    ?(do_exec : (launch_plan -> unit) option) () : (unit, string) result =
+    ?identity_at ?(do_exec : (launch_plan -> unit) option) ()
+    : (unit, string) result =
+  let identity_at =
+    match identity_at with Some f -> f | None -> fun () -> owner
+  in
   match validate_identity ~request ~owner with
   | Error reason ->
       write_result ~instance_dir ~request_id:request.id
@@ -289,26 +296,38 @@ let commit_takeover ~instance_dir ~(request : request) ~(owner : identity)
           write_result ~instance_dir ~request_id:request.id
             ~result:(Failed reason);
           Error reason
-      | Ok () ->
-          (* Takeover is committed: identity matched and teardown finished. *)
-          write_result ~instance_dir ~request_id:request.id ~result:Restarting;
-          let exec =
-            match do_exec with
-            | Some f -> f
-            | None ->
-                fun p ->
-                  (match p.cwd with
-                   | Some dir ->
-                       (try Unix.chdir dir
-                        with Unix.Unix_error (e, _, _) ->
-                          Printf.eprintf
-                            "warning: owner-control chdir %s failed: %s\n%!"
-                            dir (Unix.error_message e))
-                   | None -> ());
-                  Unix.execve p.executable p.argv p.env
-          in
-          exec plan;
-          Ok ())
+      | Ok () -> (
+          (* Re-check identity immediately before ack/reexec. *)
+          let owner_now = identity_at () in
+          match validate_identity ~request ~owner:owner_now with
+          | Error reason ->
+              write_result ~instance_dir ~request_id:request.id
+                ~result:(Declined reason);
+              Error reason
+          | Ok () ->
+              (* Enforce controlled env — never pass ambient/secrets through. *)
+              let plan =
+                { plan with env = filter_env ~source:plan.env () }
+              in
+              write_result ~instance_dir ~request_id:request.id
+                ~result:Restarting;
+              let exec =
+                match do_exec with
+                | Some f -> f
+                | None ->
+                    fun p ->
+                      (match p.cwd with
+                       | Some dir ->
+                           (try Unix.chdir dir
+                            with Unix.Unix_error (e, _, _) ->
+                              Printf.eprintf
+                                "warning: owner-control chdir %s failed: %s\n%!"
+                                dir (Unix.error_message e))
+                       | None -> ());
+                      Unix.execve p.executable p.argv p.env
+              in
+              exec plan;
+              Ok ()))
 
 (** Read /proc/<pid>/stat field 22 (starttime, clock ticks) when available. *)
 let read_pid_start_time ?(proc_root = "/proc") (pid : int) : int option =
