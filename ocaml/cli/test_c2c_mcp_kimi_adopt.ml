@@ -82,12 +82,12 @@ let aliases regs =
 let session_ids regs =
   List.map (fun (r : C2c_mcp.registration) -> r.session_id) regs
 
-(* Seed the AUTHORITATIVE managed launcher row: managed (registered_by=None),
+(* Seed an AUTHORITATIVE managed launcher row: managed (registered_by=None),
    kimi, owning [cwd], live (self pid + matching start time). *)
-let seed_managed_kimi_row broker ~cwd ~alias =
+let seed_managed_kimi_row ?(session_id = "managed-kimi-instance") broker ~cwd ~alias =
   let self = Unix.getpid () in
   C2c_mcp.Broker.register broker
-    ~session_id:"managed-kimi-instance"
+    ~session_id
     ~alias
     ~pid:(Some self)
     ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some self))
@@ -105,6 +105,18 @@ let seed_offline_peer broker ~alias =
     ~alias
     ~pid:(Some 999999999) (* > pid_max: /proc entry can never exist *)
     ~pid_start_time:(Some 1)
+    ~client_type:(Some "claude")
+    ()
+
+(* A LIVE third-party peer (distinct session, live self pid) whose alias a
+   caller might try to send AS. *)
+let seed_live_third_party broker ~alias =
+  let self = Unix.getpid () in
+  C2c_mcp.Broker.register broker
+    ~session_id:"third-party-session"
+    ~alias
+    ~pid:(Some self)
+    ~pid_start_time:(C2c_mcp.Broker.capture_pid_start_time (Some self))
     ~client_type:(Some "claude")
     ()
 
@@ -251,6 +263,59 @@ let test_non_kimi_cannot_impersonate_managed_alias () =
         check bool "rejection is the impersonation message" true
           (contains ~needle:"cannot send as another agent" text)))
 
+(* Alias-SPECIFIC: the carve-out binds to the launcher alias only. A from_alias
+   argument naming a DIFFERENT (live third-party) alias cannot override it —
+   [current_registered_alias] resolves self FIRST, so the message is attributed
+   to the managed anchor, never the requested third party. *)
+let test_from_alias_arg_cannot_override_self () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    with_managed_kimi_mcp_session ~home ~broker_root ~workdir (fun broker ->
+      seed_live_third_party broker ~alias:"peer-live";
+      let text, is_error =
+        run_tool ~broker ~tool_name:"send"
+          ~arguments:
+            (`Assoc
+               [ ("to_alias", `String "peer-target")
+               ; ("content", `String "hi")
+               ; ("from_alias", `String "peer-live")
+               ])
+      in
+      check bool "send not an error" false is_error;
+      check bool "attributed to the managed anchor (self)" true
+        (contains ~needle:"\"from_alias\":\"kimi-managed-anchor\"" text);
+      check bool "NOT attributed to the requested third-party alias" false
+        (contains ~needle:"peer-live" text)))
+
+(* #40 ambiguity fail-closed: TWO live managed kimi rows share the cwd, so
+   [self_managed_kimi_row] returns None (cannot tell which launcher is self).
+   whoami reports unregistered and send fails closed with missing-sender. *)
+let test_two_managed_rows_fail_closed () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    Unix.chdir workdir;
+    let cwd = Sys.getcwd () in
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    seed_managed_kimi_row broker ~cwd ~alias:"kimi-managed-anchor"
+      ~session_id:"managed-kimi-instance-1";
+    seed_managed_kimi_row broker ~cwd ~alias:"kimi-managed-other"
+      ~session_id:"managed-kimi-instance-2";
+    seed_offline_peer broker ~alias:"peer-target";
+    set_env
+      (base_env ~home ~alias:"kimi-install-sticky"
+         ~session_id:"kimi-uuid-mcp-session");
+    Unix.putenv "C2C_MCP_CLIENT_TYPE" "kimi";
+    let whoami_text, whoami_err =
+      run_tool ~broker ~tool_name:"whoami" ~arguments:(`Assoc [])
+    in
+    check bool "whoami not an error" false whoami_err;
+    check string "whoami reports unregistered (empty)" "" whoami_text;
+    let send_text, send_err =
+      run_tool ~broker ~tool_name:"send"
+        ~arguments:(`Assoc [ ("to_alias", `String "peer-target"); ("content", `String "hi") ])
+    in
+    check bool "send fails closed" true send_err;
+    check bool "send reports missing sender alias" true
+      (contains ~needle:"missing sender alias" send_text))
+
 let () =
   run "c2c_mcp_kimi_adopt"
     [ ( "auto_register vs managed kimi row (#48)",
@@ -268,5 +333,9 @@ let () =
             test_send_with_managed_from_alias_allowed
         ; test_case "non-kimi cannot impersonate the managed alias" `Quick
             test_non_kimi_cannot_impersonate_managed_alias
+        ; test_case "from_alias arg cannot override self (alias-specific)" `Quick
+            test_from_alias_arg_cannot_override_self
+        ; test_case "two managed rows: fail closed (whoami + send)" `Quick
+            test_two_managed_rows_fail_closed
         ] )
     ]
