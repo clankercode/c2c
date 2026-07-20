@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-20T00:25:46Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-07-19T23:48:00Z"
@@ -6,8 +8,8 @@ depends_on: []
 estimate_hours: 2
 id: P2.M2.E1.T001
 priority: high
-started_at: null
-status: pending
+started_at: "2026-07-20T00:25:46Z"
+status: in_progress
 tags:
     - i011
     - c2c
@@ -15,7 +17,7 @@ tags:
     - audit
     - evidence
 title: Re-audit managed-client process model + measure restart disruption
-updated_at: "2026-07-19T23:48:00Z"
+updated_at: "2026-07-20T00:25:46Z"
 ---
 Refresh the July process-model table and measure restart disruption. Gates E/F/G/H/I/J. See full spec appended.
 

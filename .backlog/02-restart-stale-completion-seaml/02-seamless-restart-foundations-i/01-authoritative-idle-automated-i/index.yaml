@@ -18,7 +18,7 @@ tasks:
       file: T001-re-audit-managed-client-proces.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
       tags:
         - i011
         - c2c
