@@ -142,7 +142,9 @@ idle-gated native heartbeat.
   inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
   the conversation). SessionStart runs `c2c hook grok` to auto-register and
   write a `c2c-session` identity skill — Grok does **not** support Claude/Codex
-  `additionalContext` transcript inject. Fallback: `c2c poll-inbox`.
+  `additionalContext` transcript inject. Fallback: `c2c poll-inbox`. Wake class
+  is **NONE** at true idle (CONDITIONAL only if a live `c2c monitor` lock is
+  present); `c2c doctor hooks` reports this under the Grok section (#37).
 - **Antigravity (agy)**: `c2c install agy` is **CLI-first** (no MCP —
   `mcp=false`, `receive="agentapi"`). Preferred inbound is **agentapi inject** by
   the `c2c start … deliver-watch` sidecar, which reads the conversation target

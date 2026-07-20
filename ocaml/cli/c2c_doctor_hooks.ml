@@ -137,6 +137,21 @@ and kimi_hook_result = {
    (2) the CLI statefile identity, and (3) ~/.grok/active_sessions.json foreground
    pids. NO ancestor-pid resolution — the doctor runs in a different process tree,
    so it must not reuse session_id_from_grok_active_sessions. *)
+
+(* #37: Grok has no local inject API, so idle wake is NONE unless the agent
+   armed `c2c monitor` (a model decision → CONDITIONAL, never GUARANTEED).
+   Pure classify so hermetic tests do not need a live monitor process. *)
+and grok_wake_class =
+  | Grok_wake_none
+  | Grok_wake_conditional_monitor
+
+and grok_wake_session = {
+  gws_alias : string;
+  gws_session_id : string;
+  gws_monitor_alive : bool;
+  gws_class : grok_wake_class;
+}
+
 and grok_identity_result = {
   gid_grok_regs : int; (* number of grok registrations on this broker *)
   gid_statefile_sid : string option; (* identity the CLI statefile points at *)
@@ -144,6 +159,8 @@ and grok_identity_result = {
   gid_flagged : bool;
   gid_reason : string option;
   gid_remediation : string list; (* export line + candidate identities *)
+  gid_wake_class : grok_wake_class; (* overall: CONDITIONAL if any live monitor lock *)
+  gid_wake_sessions : grok_wake_session list;
 }
 
 (* --- Codex delivery-mode classification (P1.M1.E1.T005) -------------------- *)
@@ -1142,7 +1159,7 @@ let pp_rearm_human (results : rearm_result list) =
           r.rr_alias r.rr_session_id status)
       results
 
-(* --- Grok identity-drift detector (#23a) ---------------------------------- *)
+(* --- Grok identity-drift detector (#23a) + wake honesty (#37) -------------- *)
 
 (* A grok registration, mirroring is_kimi_registration: client_type=grok, or
    registered_by=grok-hook, or the sticky client prefix "grok-". *)
@@ -1151,6 +1168,22 @@ let is_grok_registration (r : C2c_mcp.registration) =
   || (match r.registered_by with Some "grok-hook" -> true | _ -> false)
   || (let a = String.lowercase_ascii r.alias in
       String.length a >= 5 && String.sub a 0 5 = "grok-")
+
+(* #37 pure classifier: Grok idle wake is never GUARANTEED. A live per-alias
+   monitor lock (cheap evidence that `c2c monitor` is armed) upgrades NONE →
+   CONDITIONAL for that session. Arming remains a model decision. *)
+let classify_grok_wake ~(monitor_alive : bool) : grok_wake_class =
+  if monitor_alive then Grok_wake_conditional_monitor else Grok_wake_none
+
+let grok_wake_class_label = function
+  | Grok_wake_none -> "NONE"
+  | Grok_wake_conditional_monitor -> "CONDITIONAL"
+
+let grok_wake_class_detail = function
+  | Grok_wake_none ->
+      "NONE at true idle (no local inject API; CONDITIONAL only if agent armed c2c monitor)"
+  | Grok_wake_conditional_monitor ->
+      "CONDITIONAL (live c2c monitor lock detected — still a model-armed path, not a guarantee)"
 
 (* An active_sessions.json foreground entry: its session id and pid liveness.
    Liveness is checked directly against /proc (the doctor process is unrelated
@@ -1162,6 +1195,30 @@ type grok_active_entry = {
 }
 
 let pid_alive pid = pid > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" pid)
+
+(* Cheap read of <broker>/.monitor-locks/<alias>.lock: true only when the
+   lockfile holds a pid that is currently alive in /proc. Stale/missing locks
+   and unreadable files are false. Matches #354 lock layout. *)
+let grok_monitor_lock_alive ~broker_root ~alias =
+  let lock_path =
+    Filename.concat
+      (Filename.concat broker_root ".monitor-locks")
+      (alias ^ ".lock")
+  in
+  if not (Sys.file_exists lock_path) then false
+  else
+    try
+      let ic = open_in lock_path in
+      Fun.protect
+        ~finally:(fun () -> close_in_noerr ic)
+        (fun () ->
+          let line =
+            try String.trim (input_line ic) with End_of_file -> ""
+          in
+          match int_of_string_opt line with
+          | Some p when p > 0 -> pid_alive p
+          | _ -> false)
+    with _ -> false
 
 (* Parse ~/.grok/active_sessions.json (path via the shared helper, which honors
    C2C_GROK_ACTIVE_SESSIONS for tests). Pure/read-only; [] on any error. Unlike
@@ -1300,12 +1357,35 @@ let check_grok_identity ?broker_root () : grok_identity_result =
                  (fun c -> "  " ^ C2c_identity_candidates.render_candidate_registration c)
                  cands)
   in
+  (* #37: per-session wake class. Prefer the cheap monitor-lock probe when a
+     live pid is present; otherwise stay NONE. Overall class is CONDITIONAL if
+     any session has a live monitor, else NONE when any grok regs exist. *)
+  let wake_sessions =
+    List.map
+      (fun (r : C2c_mcp.registration) ->
+        let monitor_alive =
+          grok_monitor_lock_alive ~broker_root ~alias:r.alias
+        in
+        let cls = classify_grok_wake ~monitor_alive in
+        { gws_alias = r.alias;
+          gws_session_id = r.session_id;
+          gws_monitor_alive = monitor_alive;
+          gws_class = cls })
+      grok_regs
+  in
+  let wake_class =
+    if List.exists (fun s -> s.gws_class = Grok_wake_conditional_monitor) wake_sessions
+    then Grok_wake_conditional_monitor
+    else Grok_wake_none
+  in
   { gid_grok_regs = List.length grok_regs;
     gid_statefile_sid = statefile_sid;
     gid_live_grok_sids = live_grok_sids;
     gid_flagged = flagged;
     gid_reason = reason;
-    gid_remediation = remediation }
+    gid_remediation = remediation;
+    gid_wake_class = wake_class;
+    gid_wake_sessions = wake_sessions }
 
 let check ?(dirs = claude_dirs ()) () =
   let dirs = List.filter (fun d -> Sys.file_exists d && Sys.is_directory d) dirs in
@@ -1479,7 +1559,21 @@ let pp_human r =
           (fun line -> Printf.printf "        %s\n" line)
           r.grok.gid_remediation
       end
-    end
+    end;
+    (* #37: honest wake class — Grok has no local inject API. *)
+    Printf.printf "  wake: %s\n"
+      (grok_wake_class_detail r.grok.gid_wake_class);
+    List.iter
+      (fun (s : grok_wake_session) ->
+        Printf.printf "    %s (session %s): %s%s\n"
+          s.gws_alias s.gws_session_id
+          (grok_wake_class_label s.gws_class)
+          (if s.gws_monitor_alive then " (monitor lock alive)" else ""))
+      r.grok.gid_wake_sessions;
+    if r.grok.gid_wake_class = Grok_wake_none then
+      Printf.printf
+        "      → arm: Monitor({ description: \"c2c inbox watcher\", \
+         command: \"c2c monitor\", persistent: true })\n"
   end
 
 let to_json r =
@@ -1581,6 +1675,14 @@ let to_json r =
        `Bool (k.khook_config_exists && not k.khook_installed))
     ]
   in
+  let grok_wake_session_to_json (s : grok_wake_session) =
+    `Assoc [
+      ("alias", `String s.gws_alias);
+      ("session_id", `String s.gws_session_id);
+      ("monitor_alive", `Bool s.gws_monitor_alive);
+      ("wake_class", `String (grok_wake_class_label s.gws_class))
+    ]
+  in
   let grok_to_json (g : grok_identity_result) =
     `Assoc [
       ("grok_registrations", `Int g.gid_grok_regs);
@@ -1589,7 +1691,10 @@ let to_json r =
       ("live_grok_sids", `List (List.map (fun s -> `String s) g.gid_live_grok_sids));
       ("flagged", `Bool g.gid_flagged);
       ("reason", match g.gid_reason with Some s -> `String s | None -> `Null);
-      ("remediation", `List (List.map (fun s -> `String s) g.gid_remediation))
+      ("remediation", `List (List.map (fun s -> `String s) g.gid_remediation));
+      ("wake_class", `String (grok_wake_class_label g.gid_wake_class));
+      ("wake_detail", `String (grok_wake_class_detail g.gid_wake_class));
+      ("wake_sessions", `List (List.map grok_wake_session_to_json g.gid_wake_sessions))
     ]
   in
   `Assoc [
@@ -1753,13 +1858,18 @@ let pp_compact r =
       r.kimi.kd_sessions_checked;
   if r.grok.gid_grok_regs = 0 then
     Printf.printf "Grok identity: no registered grok sessions\n"
-  else if r.grok.gid_flagged then
-    Printf.printf
-      "Grok identity: DRIFT (%d registration(s)) — run 'c2c doctor hooks'\n"
-      r.grok.gid_grok_regs
-  else
-    Printf.printf "Grok identity: %d session(s), no drift\n"
-      r.grok.gid_grok_regs
+  else begin
+    if r.grok.gid_flagged then
+      Printf.printf
+        "Grok identity: DRIFT (%d registration(s)) — run 'c2c doctor hooks'\n"
+        r.grok.gid_grok_regs
+    else
+      Printf.printf "Grok identity: %d session(s), no drift\n"
+        r.grok.gid_grok_regs;
+    (* #37 compact wake honesty line — always printed when grok regs exist. *)
+    Printf.printf "Grok wake: %s\n"
+      (grok_wake_class_detail r.grok.gid_wake_class)
+  end
 
 (* --- CLI ------------------------------------------------------------------ *)
 
@@ -1918,6 +2028,7 @@ let c2c_doctor_hooks_cmd =
              scripts, Codex managed-block drift, the live Codex delivery \
              mode (app-server / app-server-unavailable / hooks+wake / hooks / \
              unavailable), Kimi sessions that are DEAF (undelivered inbox \
-             + no notifier — B238), and Grok identity drift (statefile identity \
-             not corroborated by a live foreground session — #23).")
+             + no notifier — B238), Grok identity drift (statefile identity \
+             not corroborated by a live foreground session — #23), and Grok \
+             wake class honesty (NONE / CONDITIONAL-if-monitor-armed — #37).")
     cmd

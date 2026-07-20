@@ -1134,6 +1134,85 @@ let test_grok_registration_detector () =
     (C2c_doctor_hooks.is_grok_registration
        (mk ~alias:"claude-x" ~client_type:(Some "claude") ~registered_by:None))
 
+(* #37 pure wake classifier: never GUARANTEED; live monitor → CONDITIONAL. *)
+let test_classify_grok_wake_none_without_monitor () =
+  check bool "no monitor → NONE" true
+    (C2c_doctor_hooks.classify_grok_wake ~monitor_alive:false
+     = C2c_doctor_hooks.Grok_wake_none);
+  check string "label NONE" "NONE"
+    (C2c_doctor_hooks.grok_wake_class_label C2c_doctor_hooks.Grok_wake_none)
+
+let test_classify_grok_wake_conditional_with_monitor () =
+  check bool "live monitor → CONDITIONAL" true
+    (C2c_doctor_hooks.classify_grok_wake ~monitor_alive:true
+     = C2c_doctor_hooks.Grok_wake_conditional_monitor);
+  check string "label CONDITIONAL" "CONDITIONAL"
+    (C2c_doctor_hooks.grok_wake_class_label
+       C2c_doctor_hooks.Grok_wake_conditional_monitor);
+  check bool "detail names model-armed path" true
+    (C2c_doctor_hooks.contains
+       (C2c_doctor_hooks.grok_wake_class_detail
+          C2c_doctor_hooks.Grok_wake_conditional_monitor)
+       "model-armed")
+
+(* Integration: registered grok without a monitor lock → overall NONE. *)
+let test_grok_wake_none_when_no_monitor_lock () =
+  with_grok_fixture (fun ~broker_root ~active_path ->
+    let sid = "grok-sess-wake-none" in
+    register_grok broker_root ~session_id:sid ~alias:"grok-wake-aa";
+    write_statefile broker_root ~session_id:sid;
+    write_active_sessions active_path [ (sid, Some (Unix.getpid ())) ];
+    let g = C2c_doctor_hooks.check_grok_identity ~broker_root () in
+    check bool "overall NONE" true
+      (g.C2c_doctor_hooks.gid_wake_class = C2c_doctor_hooks.Grok_wake_none);
+    check int "one wake session row" 1
+      (List.length g.C2c_doctor_hooks.gid_wake_sessions);
+    let s = List.hd g.C2c_doctor_hooks.gid_wake_sessions in
+    check string "alias" "grok-wake-aa" s.C2c_doctor_hooks.gws_alias;
+    check bool "monitor not alive" false s.C2c_doctor_hooks.gws_monitor_alive;
+    check bool "session class NONE" true
+      (s.C2c_doctor_hooks.gws_class = C2c_doctor_hooks.Grok_wake_none))
+
+(* Integration: live pid in .monitor-locks/<alias>.lock → CONDITIONAL. *)
+let test_grok_wake_conditional_when_monitor_lock_alive () =
+  with_grok_fixture (fun ~broker_root ~active_path ->
+    let sid = "grok-sess-wake-cond" in
+    let alias = "grok-wake-bb" in
+    register_grok broker_root ~session_id:sid ~alias;
+    write_statefile broker_root ~session_id:sid;
+    write_active_sessions active_path [ (sid, Some (Unix.getpid ())) ];
+    let lock_dir = broker_root // ".monitor-locks" in
+    C2c_io.mkdir_p lock_dir;
+    write_file (lock_dir // (alias ^ ".lock"))
+      (string_of_int (Unix.getpid ()) ^ "\n");
+    let g = C2c_doctor_hooks.check_grok_identity ~broker_root () in
+    check bool "overall CONDITIONAL" true
+      (g.C2c_doctor_hooks.gid_wake_class
+       = C2c_doctor_hooks.Grok_wake_conditional_monitor);
+    let s = List.hd g.C2c_doctor_hooks.gid_wake_sessions in
+    check bool "monitor alive" true s.C2c_doctor_hooks.gws_monitor_alive;
+    check bool "session class CONDITIONAL" true
+      (s.C2c_doctor_hooks.gws_class
+       = C2c_doctor_hooks.Grok_wake_conditional_monitor))
+
+(* Stale lock pid must not upgrade to CONDITIONAL. *)
+let test_grok_wake_stale_monitor_lock_stays_none () =
+  with_grok_fixture (fun ~broker_root ~active_path ->
+    let sid = "grok-sess-wake-stale" in
+    let alias = "grok-wake-cc" in
+    register_grok broker_root ~session_id:sid ~alias;
+    write_active_sessions active_path [ (sid, Some (Unix.getpid ())) ];
+    let lock_dir = broker_root // ".monitor-locks" in
+    C2c_io.mkdir_p lock_dir;
+    write_file (lock_dir // (alias ^ ".lock"))
+      (string_of_int dead_pid ^ "\n");
+    let g = C2c_doctor_hooks.check_grok_identity ~broker_root () in
+    check bool "stale lock → NONE" true
+      (g.C2c_doctor_hooks.gid_wake_class = C2c_doctor_hooks.Grok_wake_none);
+    check bool "monitor not reported alive" false
+      (List.hd g.C2c_doctor_hooks.gid_wake_sessions)
+        .C2c_doctor_hooks.gws_monitor_alive)
+
 (* --fix (#19): restore a dangling c2c-owned hook script from the canonical
    embedded content, without touching settings.json. *)
 let test_fix_restores_dangling_c2c_hook () =
@@ -1274,6 +1353,18 @@ let () =
         ; test_case "flags ambiguous multi-registration" `Quick test_grok_flags_ambiguous_multi_registration
         ; test_case "quiet when no grok regs" `Quick test_grok_quiet_when_no_grok_regs
         ; test_case "registration detector" `Quick test_grok_registration_detector
+        ] )
+    ; ( "grok-wake-37"
+      , [ test_case "classify NONE without monitor" `Quick
+            test_classify_grok_wake_none_without_monitor
+        ; test_case "classify CONDITIONAL with monitor" `Quick
+            test_classify_grok_wake_conditional_with_monitor
+        ; test_case "doctor NONE when no monitor lock" `Quick
+            test_grok_wake_none_when_no_monitor_lock
+        ; test_case "doctor CONDITIONAL when monitor lock alive" `Quick
+            test_grok_wake_conditional_when_monitor_lock_alive
+        ; test_case "stale monitor lock stays NONE" `Quick
+            test_grok_wake_stale_monitor_lock_stays_none
         ] )
     ; ( "kimi-session-start-hook-50"
       , [ test_case "degraded when SessionStart block absent" `Quick
