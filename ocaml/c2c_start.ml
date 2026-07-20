@@ -4919,10 +4919,29 @@ let run_outer_loop ~(name : string) ~(client : string)
              in
              reap 40;
              (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ()));
-        (if client = "kimi" then
-           try C2c_kimi_notifier.stop_daemon
-                 ~alias:(Option.value alias_override ~default:name)
-           with _ -> ())
+        (if client = "kimi" then begin
+           let alias = Option.value alias_override ~default:name in
+           (* #42: same leak-reaping as [cmd_stop]. Capture the managed
+              notifier's recorded binding before removing its sidfile, then tear
+              down every notifier bound to a session this instance owns —
+              including a hook-armed daemon that bound under an auto-minted alias
+              ≠ [alias] (which the alias-keyed stop_daemon below would miss). The
+              managed session id is [name] (register_managed_kimi_session sets
+              session_id = instance name). Keyed on each daemon's own recorded
+              sid, so a different/live session's notifier is never signalled. *)
+           let recorded =
+             match C2c_kimi_notifier.running_session_id alias with
+             | Some s -> [ s ]
+             | None -> []
+           in
+           let owned_sids = List.sort_uniq compare (name :: recorded) in
+           (try C2c_kimi_notifier.stop_daemon ~alias with _ -> ());
+           List.iter
+             (fun sid ->
+               try ignore (C2c_kimi_notifier.stop_daemons_for_session ~session_id:sid)
+               with _ -> ())
+             owned_sids
+         end)
       in
 
       let cleanup_and_exit code =
@@ -6302,7 +6321,26 @@ let cmd_stop (name : string) : int =
   let stop_kimi_notifier () =
     match load_config_opt name with
     | Some cfg when cfg.client = "kimi" ->
-        (try C2c_kimi_notifier.stop_daemon ~alias:cfg.alias with _ -> ())
+        (* #42: capture the managed notifier's OWN recorded session binding
+           BEFORE stop_daemon removes its sidfile — a hook-armed daemon under an
+           auto-minted alias resolves the SAME real kimi session id for this
+           workspace, so it is the provable key that also reaps the leak. *)
+        let recorded =
+          match C2c_kimi_notifier.running_session_id cfg.alias with
+          | Some s -> [ s ]
+          | None -> []
+        in
+        let owned_sids = List.sort_uniq compare (cfg.session_id :: recorded) in
+        (try C2c_kimi_notifier.stop_daemon ~alias:cfg.alias with _ -> ());
+        (* #42: also tear down any OTHER notifier alias bound to a session this
+           instance owns (the hook-armed auto-minted-alias leak). Keyed on the
+           binding each daemon recorded for itself, so a daemon serving a
+           different/live session is never touched. *)
+        List.iter
+          (fun sid ->
+            try ignore (C2c_kimi_notifier.stop_daemons_for_session ~session_id:sid)
+            with _ -> ())
+          owned_sids
     | _ -> ()
   in
   match read_pid (outer_pid_path name) with

@@ -1234,3 +1234,45 @@ let stop_all_daemons () =
            n + 1
          end else n)
       0 entries
+
+(* #42: tear down every notifier daemon whose recorded session binding
+   ([<alias>.sid]) equals [session_id], REGARDLESS of the notifier's own alias.
+
+   The leak this closes: a SessionStart hook can arm a notifier under an
+   AUTO-MINTED alias that differs from the managed instance alias (adoption
+   miss / pre-#40). [c2c stop]'s alias-keyed [stop_daemon ~alias:cfg.alias]
+   then never signals it, so it outlives the TUI — POSTing headless model
+   turns (quota burn) and draining that session's mail invisibly. The two
+   notifiers (managed-alias + hook-minted-alias) both resolve the SAME real
+   kimi session id for the shared workspace, so the PROVABLE common key is the
+   session_id each daemon recorded for itself in its sidfile.
+
+   Safety (why this can never kill a live or unrelated session's notifier):
+   - We match ONLY on the binding the daemon itself wrote ([running_session_id]
+     reads [<alias>.sid]); a daemon serving a DIFFERENT session records a
+     different sid and is excluded by the equality test. A live co-located
+     session's notifier likewise has its own sid.
+   - FAIL CLOSED on unknown binding: a pre-#9 daemon with no sidfile yields
+     [None] here, the equality is false, and it is left running.
+   - The actual signal goes through [stop_daemon], which is identity-gated
+     (comm-match on [c2c-kimi-notif]) — so even a stale/reused pid is never
+     signalled.
+
+   Returns the aliases whose notifier was torn down. Best-effort: an unreadable
+   state dir yields []. *)
+let stop_daemons_for_session ~session_id =
+  let dir = home () // ".local" // "share" // "c2c" // "kimi-notifiers" in
+  match (try Sys.readdir dir with _ -> [||]) with
+  | [||] -> []
+  | entries ->
+    Array.fold_left
+      (fun acc entry ->
+         if Filename.check_suffix entry ".pid" then begin
+           let alias = Filename.chop_suffix entry ".pid" in
+           match running_session_id alias with
+           | Some sid when sid = session_id ->
+             (try stop_daemon ~alias with _ -> ());
+             alias :: acc
+           | _ -> acc
+         end else acc)
+      [] entries

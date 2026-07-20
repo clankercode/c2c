@@ -49,6 +49,21 @@ val stop_daemon : alias:string -> unit
     sweep a notifier left over from a pre-disable session. *)
 val stop_all_daemons : unit -> int
 
+(** [stop_daemons_for_session ~session_id] tears down every notifier daemon
+    whose recorded session binding ([<alias>.sid]) equals [session_id],
+    regardless of the notifier's own alias, and returns the aliases torn down
+    (#42). Used by [c2c stop] to reap a hook-armed daemon that bound under an
+    AUTO-MINTED alias ≠ the managed instance alias — the alias-keyed
+    {!stop_daemon} misses it and it leaks (headless quota burn + mail-eating).
+
+    Safe by construction: it matches ONLY on the binding the daemon wrote for
+    itself, so a daemon serving a DIFFERENT (incl. live) session — a different
+    recorded sid — is never touched; a daemon with no sidfile (unknown binding)
+    FAILS CLOSED (left running); and the signal itself goes through the
+    identity-gated {!stop_daemon}. Best-effort: unreadable state dir yields
+    [[]]. *)
+val stop_daemons_for_session : session_id:string -> string list
+
 (** [pidfile_path alias] is the on-disk pidfile for the [alias] notifier
     ([~/.local/share/c2c/kimi-notifiers/<alias>.pid]). Exposed for the
     supervisor teardown wiring + tests. *)

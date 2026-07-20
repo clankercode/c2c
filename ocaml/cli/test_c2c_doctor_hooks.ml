@@ -750,6 +750,7 @@ let test_kimi_classify_deaf_when_inbox_and_no_notifier () =
       ~inbox_count:3
       ~notifier_running:false
       ~registered_by:(Some "kimi-hook")
+      ()
   with
   | Some issue, true ->
       check string "alias" "kimi-tulip" issue.C2c_doctor_hooks.ksi_alias;
@@ -767,6 +768,7 @@ let test_kimi_classify_no_issue_when_notifier_running () =
       ~inbox_count:5
       ~notifier_running:true
       ~registered_by:None
+      ()
   with
   | None, false -> ()
   | _ -> fail "notifier running must not be flagged"
@@ -779,6 +781,7 @@ let test_kimi_classify_warn_only_empty_inbox () =
       ~inbox_count:0
       ~notifier_running:false
       ~registered_by:(Some "kimi-hook")
+      ()
   with
   | Some _, false -> () (* issue for no-notifier list, not deaf *)
   | None, _ -> fail "empty inbox without notifier should still yield a soft issue"
@@ -903,6 +906,105 @@ let test_rearm_noop_when_no_deaf () =
           C2c_doctor_hooks.rearm_deaf_kimi_sessions ~broker_root ()
         in
         check int "no deaf sessions → empty result" 0 (List.length results)))
+
+(* #42 (A3): register a kimi session with a specific pid so liveness is
+   determinate (register_kimi uses pid:None → unknown liveness). *)
+let register_kimi_pid broker_root ~session_id ~alias ~pid =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:(Some pid)
+    ~pid_start_time:None ~client_type:(Some "kimi")
+    ~registered_by:(Some "kimi-hook") ~from_auto_gen:true ();
+  broker
+
+(* #42 (A3, test c): --rearm must NOT re-arm a registration whose process is
+   CONFIRMED dead — arming there forks a notifier that POSTs headless turns into
+   a dead session (quota burn) and eats its mail. The pid is a forked child that
+   has exited and been reaped (guaranteed dead). The fixture skip is deliberately
+   OFF so we exercise the real dead-check; HOME is redirected so any accidental
+   fork (a regression) is contained and reaped rather than escaping to the real
+   notifier dir. *)
+let test_rearm_skips_confirmed_dead_session () =
+  with_tmp_dir (fun dir ->
+    let broker_root = dir // "broker" in
+    C2c_io.mkdir_p broker_root;
+    let dead_pid =
+      match Unix.fork () with
+      | 0 -> Stdlib.exit 0
+      | p -> ignore (Unix.waitpid [] p); p
+    in
+    let b = register_kimi_pid broker_root ~session_id:"i42dead-sid"
+              ~alias:"i42-kimi-dead-arm" ~pid:dead_pid in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"i42-peer"
+      ~to_alias:"i42-kimi-dead-arm" ~content:"waiting" ();
+    let old_home = Sys.getenv_opt "HOME" in
+    Unix.putenv "HOME" dir;
+    Fun.protect
+      ~finally:(fun () ->
+        (let ndir = dir // ".local/share/c2c/kimi-notifiers" in
+         try
+           Array.iter (fun e ->
+             if Filename.check_suffix e ".pid" then
+               C2c_kimi_notifier.stop_daemon ~alias:(Filename.chop_suffix e ".pid"))
+             (Sys.readdir ndir)
+         with _ -> ());
+        match old_home with Some v -> Unix.putenv "HOME" v | None -> Unix.putenv "HOME" "")
+      (fun () ->
+        let results = C2c_doctor_hooks.rearm_deaf_kimi_sessions ~broker_root () in
+        check int "the dead deaf session is in the result set" 1 (List.length results);
+        let r = List.hd results in
+        check string "targeted the dead alias" "i42-kimi-dead-arm"
+          r.C2c_doctor_hooks.rr_alias;
+        (match r.C2c_doctor_hooks.rr_outcome with
+         | C2c_doctor_hooks.Rearm_skipped_dead -> ()
+         | _ -> fail "confirmed-dead session must be Rearm_skipped_dead, not armed");
+        check bool "no notifier was forked for the dead session" false
+          (C2c_kimi_notifier.already_running "i42-kimi-dead-arm")))
+
+(* #42 (B, test d): the DEAF scan surfaces a managed instance that exists on
+   disk but has NO registration on this broker — distinctly (kd_unregistered_managed,
+   remediation = restart, not --rearm) from "registered but no notifier". A
+   registered instance is NOT double-reported; a non-kimi instance is ignored. *)
+let test_deaf_scan_surfaces_unregistered_managed_instance () =
+  with_tmp_dir (fun dir ->
+    let broker_root = dir // "broker" in
+    C2c_io.mkdir_p broker_root;
+    write_file (broker_root // "registrations.yaml") "registrations: []\n";
+    let instances = dir // "instances" in
+    let br_json = Yojson.Safe.to_string (`String broker_root) in
+    (* A managed kimi instance on disk, never registered. *)
+    write_file (instances // "kimi-ghost" // "config.json")
+      (Printf.sprintf
+         {|{"name":"kimi-ghost","client":"kimi","session_id":"kimi-ghost","alias":"kimi-ghost","broker_root":%s}|}
+         br_json);
+    (* A REGISTERED kimi instance must NOT be flagged as unregistered. *)
+    ignore (register_kimi broker_root ~session_id:"kimi-live" ~alias:"kimi-live");
+    write_file (instances // "kimi-live" // "config.json")
+      (Printf.sprintf
+         {|{"name":"kimi-live","client":"kimi","session_id":"kimi-live","alias":"kimi-live","broker_root":%s}|}
+         br_json);
+    (* A non-kimi instance must be ignored. *)
+    write_file (instances // "opus1" // "config.json")
+      {|{"name":"opus1","client":"claude","session_id":"opus1","alias":"opus1"}|};
+    let old_inst = Sys.getenv_opt "C2C_INSTANCES_DIR" in
+    Unix.putenv "C2C_INSTANCES_DIR" instances;
+    Fun.protect
+      ~finally:(fun () ->
+        match old_inst with
+        | Some v -> Unix.putenv "C2C_INSTANCES_DIR" v
+        | None -> Unix.putenv "C2C_INSTANCES_DIR" "")
+      (fun () ->
+        let d = C2c_doctor_hooks.check_kimi_delivery ~broker_root () in
+        check int "exactly one unregistered managed instance" 1
+          (List.length d.C2c_doctor_hooks.kd_unregistered_managed);
+        let u = List.hd d.C2c_doctor_hooks.kd_unregistered_managed in
+        check string "the ghost instance is the one flagged" "kimi-ghost"
+          u.C2c_doctor_hooks.kum_name;
+        check bool "remediation is restart (distinct from --rearm)" true
+          (C2c_doctor_hooks.contains u.C2c_doctor_hooks.kum_fix_command "c2c restart");
+        check bool "registered instance not double-reported" false
+          (List.exists
+             (fun x -> x.C2c_doctor_hooks.kum_name = "kimi-live")
+             d.C2c_doctor_hooks.kd_unregistered_managed)))
 
 (* --- Grok identity-drift detector (#23a) ---------------------------------- *)
 
@@ -1161,6 +1263,10 @@ let () =
             test_rearm_targets_only_deaf_sessions
         ; test_case "--rearm no-op when no DEAF (#9 A2)" `Quick
             test_rearm_noop_when_no_deaf
+        ; test_case "--rearm skips confirmed-dead session (#42 A3)" `Quick
+            test_rearm_skips_confirmed_dead_session
+        ; test_case "DEAF scan surfaces unregistered managed instance (#42 B)" `Quick
+            test_deaf_scan_surfaces_unregistered_managed_instance
         ] )
     ; ( "grok-identity-23a"
       , [ test_case "flags stale statefile identity" `Quick test_grok_flags_stale_statefile_identity
