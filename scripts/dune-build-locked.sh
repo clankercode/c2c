@@ -316,6 +316,28 @@ reclaim_stale_slot() {
     echo "c2c dune-build-locked: reclaiming stale dune slot $lock (#70); killing idle holders:" >&2
     printf 'c2c dune-build-locked:   %s\n' "${reasons[@]}" >&2
 
+    # #75: re-verify starttime immediately before signalling so a recycled
+    # pid cannot be mis-killed. Field 22 of /proc/<pid>/stat is starttime
+    # (clock ticks after boot) — same identity pin as #52 EXIT-trap.
+    local -a still_doomed=()
+    local p snap_st live_st
+    for p in "${doomed[@]}"; do
+        snap_st="${_START_OF[$p]:-}"
+        [ -n "$snap_st" ] || continue
+        live_st="$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null || true)"
+        if [ -z "$live_st" ]; then
+            continue  # already exited
+        fi
+        if [ "$live_st" != "$snap_st" ]; then
+            echo "c2c dune-build-locked: skip pid $p — starttime changed (recycled; #75)" >&2
+            printf '%s skip recycled pid %s (snap=%s live=%s)\n'                 "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$p" "$snap_st" "$live_st"                 >>"$REAPER_LOG" 2>/dev/null || true
+            continue
+        fi
+        still_doomed+=("$p")
+    done
+    [ "${#still_doomed[@]}" -gt 0 ] || return 1
+    doomed=("${still_doomed[@]}")
+
     kill -TERM "${doomed[@]}" 2>/dev/null || true
     local waited=0
     while [ "$waited" -lt 20 ]; do
@@ -327,7 +349,15 @@ reclaim_stale_slot() {
         sleep 0.1
         waited=$(( waited + 1 ))
     done
-    kill -KILL "${doomed[@]}" 2>/dev/null || true
+    # Re-verify again before KILL (same race window).
+    still_doomed=()
+    for p in "${doomed[@]}"; do
+        snap_st="${_START_OF[$p]:-}"
+        live_st="$(awk '{print $22}' "/proc/$p/stat" 2>/dev/null || true)"
+        [ -n "$live_st" ] && [ "$live_st" = "$snap_st" ] && still_doomed+=("$p")
+    done
+    [ "${#still_doomed[@]}" -gt 0 ] || return 0
+    kill -KILL "${still_doomed[@]}" 2>/dev/null || true
     echo "c2c dune-build-locked: reaped ${#doomed[@]} stale holder(s); see $REAPER_LOG" >&2
     return 0
 }
