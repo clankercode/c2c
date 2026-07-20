@@ -32,7 +32,7 @@ tasks:
       file: T002-restart-stale-command-test-cov.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags:
         - i010
         - c2c
