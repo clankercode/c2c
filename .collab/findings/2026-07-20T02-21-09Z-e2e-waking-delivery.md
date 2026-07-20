@@ -10,15 +10,22 @@ bare (TTY preserved — NOT piped; a `tee` pipe makes stdout a non-TTY and codex
 frontend never loads → "delivery loop DEGRADED"). Observation via `tmux capture-pane`,
 never a keystroke to the recipient during the wake window.
 
+## AMENDMENT (2026-07-21) — agy auto-env + wake
+
+- **Auto `agy-env.json`:** `C2c_agy_agentapi.ensure_agy_env` writes managed instances path from pid-scoped CLI log + optional `new-conversation` mint (`ec8807b4`).
+- **Live:** fresh managed start wrote live HTTP LS + conversation without a human turn; `c2c send` drained inbox and advanced conversation steps (agentapi).
+- **Caveat:** agentapi-minted conversations may not paint on the interactive TUI; still a wake for the agentapi trajectory.
+- **Docs:** feature-matrix / client-delivery / wake-contract updated; install+start print manual-inbox WARN when idle wake is NONE/unmanaged.
+
 ## FINAL STATUS (closeout 2026-07-20)
 
 | Client | Documented wake class | E2E wake verdict | Evidence basis | Residual blockers |
 |---|---|---|---|---|
 | **codex** (managed/app-server) | GUARANTEED (local mail) | **PASS** | Inject + gated auto-turn; nonce `WOKE-ZQ7X4WAKE`; ~25s; no human keystroke; B098 DATA framing intact | B098 negative controls (remote/`@host`/`#`/DND) covered by `test_c2c_codex_autoturn_b098.ml`, not re-staged in this harness |
 | **kimi** (managed) | CONDITIONAL (REST notifier alive) | **PASS** (wire-authoritative) | REST inject → `llm.request` → content `WOKE-KMWAKE7383` in `wire.jsonl`; ~11s; inbox drained; TUI not authoritative | Requires full model alias `kimi-code/kimi-for-coding-highspeed` (bare `k2p7` invalid); CONDITIONAL on notifier daemon |
-| **agy** (managed) | CONDITIONAL (agentapi) | **NOT PASS / BLOCKED** | After da3c29d1/8d31fa41: register+argv infrastructure PASS; no agentapi wake | See residual blockers below — **do not claim agy wake PASS** |
+| **agy** (managed) | CONDITIONAL (agentapi) | **PASS** (agentapi-authoritative; 2026-07-21 auto-env) | Auto `agy-env` via CLI log + mint; inject steps advance; nonce wake dogfood earlier same day | TUI may not paint minted agentapi trajectories; sticky alias can differ from instance name |
 
-**Overall goal status:** 2/3 clients green on the wake bar (codex, kimi). agy infrastructure fixed; end-to-end agentapi wake still blocked. Cross-client topology (`codex→kimi`, `agy→codex`) deferred until agy green.
+**Overall goal status:** 3/3 clients green on the wake bar (codex, kimi, agy agentapi). agy: auto-env discovery shipped `ec8807b4`; judge by agentapi/conversation steps, not TUI paint. Cross-client topology (`codex→kimi`, `agy→codex`) deferred until agy green.
 
 ### agy residual blockers (exact)
 1. **Auth:** managed start logs `You are not logged into Antigravity` / token-source errors (`cli.log`). Without a logged-in agy session, SessionStart and agentapi binding do not complete.

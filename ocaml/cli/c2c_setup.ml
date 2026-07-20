@@ -1985,6 +1985,7 @@ let setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
        Printf.printf "  alias hint: %s\n" alias_val;
        Printf.printf "  receive: arm Monitor({ command: \"c2c monitor\", persistent: true })\n";
        Printf.printf "  Restart Grok (or open a new session) so SessionStart can auto-register.\n%!"
+       (* Shared WARN footer is printed by do_install_client after the summary. *)
    | Json -> ());
   { artifacts; extra_json = extra }
 
@@ -2110,6 +2111,7 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
        Printf.printf "  alias hint: %s\n" alias_val;
        Printf.printf "  receive: agy agentapi send-message (delivered by c2c start deliver-watch sidecar)\n";
        Printf.printf "  Restart agy (or open a new session) so hooks can auto-register.\n%!"
+       (* Shared WARN footer is printed by do_install_client after the summary. *)
    | Json -> ());
   { artifacts; extra_json = extra }
 
@@ -2176,8 +2178,16 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
   let artifacts = result.artifacts in
   if not dry_run then
     write_manifest_best_effort ~component:client ~alias:(Some alias_val) ~target_dir artifacts;
-  if not skip_summary then
-    print_install_summary ~output_mode ~dry_run ~component:client { result with artifacts }
+  if not skip_summary then begin
+    print_install_summary ~output_mode ~dry_run ~component:client { result with artifacts };
+    (* Wake/receive honesty: install alone is not idle wake for NONE/CONDITIONAL
+       clients. Grok/agy already print a receive line; this footer is the shared
+       WARN for codex/claude/kimi/etc so operators do not assume arrival-time. *)
+    (match output_mode with
+     | Human ->
+         C2c_wake_guidance.print_install_receive_footer ~client ()
+     | _ -> ())
+  end
 
 (* --- install: detection + TUI --------------------------------------------- *)
 

@@ -5653,6 +5653,8 @@ let run_outer_loop ~(name : string) ~(client : string)
                     dark silently. *)
                  Printf.eprintf "%s"
                    (deliver_start_failure_warning ~name ~client));
+          (* Idle-wake honesty once per managed launch (not every outer iter). *)
+          C2c_wake_guidance.print_managed_start_receive_footer ~client ();
           (if client = "opencode" then
              let startup_grace_s =
                match Sys.getenv_opt "C2C_OPENCODE_PLUGIN_GRACE_S" with

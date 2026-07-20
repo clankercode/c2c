@@ -626,3 +626,8 @@
  (name test_c2c_agy_agentapi)
  (modules test_c2c_agy_agentapi)
  (libraries c2c_mcp alcotest yojson unix))
+
+(test
+ (name test_c2c_wake_guidance)
+ (modules test_c2c_wake_guidance)
+ (libraries c2c_mcp alcotest))

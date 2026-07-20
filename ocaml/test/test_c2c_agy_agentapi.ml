@@ -40,7 +40,7 @@ let spawn_healthz_once () : int * int =
   if pid = 0 then begin
     (* child *)
     (try
-       Unix.alarm 3;
+       ignore (Unix.alarm 3);
        let client, _ = Unix.accept sock in
        let buf = Bytes.create 512 in
        ignore (Unix.read client buf 0 512);

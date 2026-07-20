@@ -99,6 +99,14 @@ Until then, the honest advice for Claude Code and Grok is: **arm a Monitor.**
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
 ```
 
+### Install / start warnings (operator honesty)
+
+`c2c install <client>` and `c2c start <client>` print a **manual-inbox warning**
+when idle wake is NONE or when install alone is not enough (vanilla Codex,
+unmanaged Kimi/agy, Claude, Grok). Prefer managed `c2c start` where it provides
+arrival-time delivery (Codex app-server, Kimi notifier, agy agentapi). The copy
+lives in `C2c_wake_guidance` so install, start, and this page stay aligned.
+
 ---
 
 ## `deliver-watch` is not a wake mechanism
