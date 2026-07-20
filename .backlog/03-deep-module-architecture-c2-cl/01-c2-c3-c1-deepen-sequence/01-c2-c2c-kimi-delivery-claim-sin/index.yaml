@@ -12,7 +12,8 @@ tasks:
       file: T001-hermetic-tests-for-claim-seman.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Hermetic tests for claim semantics (TDD red)
     - complexity: high
       depends_on:

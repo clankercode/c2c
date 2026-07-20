@@ -1,17 +1,18 @@
 ---
+claimed_at: "2026-07-20T12:54:33Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-20T12:54:20Z"
 depends_on: []
 estimate_hours: 2
 id: P3.M1.E1.T001
 priority: high
-status: pending
-tags:
-    - tdd
-    - c2
-    - claim
+started_at: "2026-07-20T12:54:33Z"
+status: in_progress
+tags: []
 title: Hermetic tests for claim semantics (TDD red)
-updated_at: "2026-07-20T12:54:20Z"
+updated_at: "2026-07-20T12:54:33Z"
 ---
 ## Acceptance
 - Suite for try_claim / release / TTL expiry / dual-claimer single winner
