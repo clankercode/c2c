@@ -349,8 +349,9 @@ let run_inotify_loop
  * Inbox polling + delivery via c2c_mcp library
  * --------------------------------------------------------------------------- *)
 
-(* For kimi: use the kimi notifier which handles notification-store writes
-   and tmux wake internally. The session_id IS the kimi alias in managed context.
+(* For kimi: use the kimi notifier (REST POST /prompts is the wake path).
+   Optional legacy composer nudge only if C2C_KIMI_TMUX_COMPOSER_WAKE=1.
+   The session_id IS the kimi alias in managed context.
    P4: also polls the global sessions broker for session-id addressed messages. *)
 let poll_once_kimi ?workdir ~(broker_root : string) ~(session_id : string) () : int =
   let tmux_pane = Sys.getenv_opt "TMUX_PANE" in

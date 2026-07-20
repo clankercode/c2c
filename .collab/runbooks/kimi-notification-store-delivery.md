@@ -1,6 +1,6 @@
 # Kimi Notification-Store Delivery
 
-> **Deprecated:** Kimi Code (the current `kimi` binary) no longer reads the legacy file-based notification store. Delivery now uses the Kimi Code local REST server. This runbook is kept for reference on legacy kimi-cli only.
+> **Deprecated:** Kimi Code (the current `kimi` binary) no longer reads the legacy file-based notification store. Delivery now uses the Kimi Code local REST server (`POST /api/v1/sessions/{id}/prompts` via `C2c_kimi_notifier`) — that REST inject is the wake and **does not require tmux**. Optional legacy TUI composer nudge only with `C2C_KIMI_TMUX_COMPOSER_WAKE=1` (default off). This runbook is kept for reference on legacy kimi-cli only; do not treat the tmux send-keys steps below as current product behaviour.
 
 > **Legacy mechanism for delivering c2c DMs to managed `c2c start kimi` sessions (kimi-cli only).**
 > Replaces the now-removed kimi wire-bridge (which spawned a fully-agentic

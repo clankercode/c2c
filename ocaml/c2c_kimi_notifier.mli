@@ -358,23 +358,25 @@ val kimi_session_is_idle :
   threshold_s:float ->
   bool
 
-(** [tmux_pane_has_pending_wake ~pane] captures the bottom of the pane
+(** Legacy opt-in only ([C2C_KIMI_TMUX_COMPOSER_WAKE=1]). Primary kimi wake is
+    REST [POST /api/v1/sessions/\{id\}/prompts] — no tmux required.
+
+    [tmux_pane_has_pending_wake ~pane] captures the bottom of the pane
     and returns [true] if the literal text ["[c2c] check inbox"] is
     present in the input-box region (last 4 lines of the captured tail).
-    When [true], the previous wake's typed text is still sitting unsent
-    in kimi's input box; firing another wake would just stack more text
-    on top. Used by [tmux_pane_is_idle] to suppress duplicate wakes. *)
+    When [true], the previous nudge's typed text is still sitting unsent
+    in kimi's input box; firing another nudge would just stack more text
+    on top. Used by [tmux_pane_is_idle] to suppress duplicate nudges. *)
 val tmux_pane_has_pending_wake : pane:string -> bool
 
-(** [tmux_pane_is_idle ~pane ?session_dir ?now ()] returns [true] iff the
-    pane is safe to wake. Three guards (all must pass):
+(** Legacy opt-in only ([C2C_KIMI_TMUX_COMPOSER_WAKE=1]). Returns [true] iff the
+    pane is safe for a composer nudge. Three guards (all must pass):
     - no busy-marker (Thinking / Tool: / elapsed_steps= / permission)
       visible in the captured pane tail,
-    - no prior ["[c2c] check inbox"] wake-text still pending in the
-      input box,
+    - no prior ["[c2c] check inbox"] text still pending in the input box,
     - if [session_dir] is supplied, [wire.jsonl] mtime older than 2s.
     Defaults [now] to [Unix.gettimeofday ()]. Logs skip reasons to
-    stderr so notifier.log shows when wakes were correctly suppressed. *)
+    stderr so notifier.log shows when nudges were correctly suppressed. *)
 val tmux_pane_is_idle :
   pane:string ->
   ?session_dir:string ->

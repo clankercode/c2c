@@ -561,7 +561,14 @@ let deliver_via_rest ~alias ~msg ~workdir () =
       Error (Printf.sprintf "no Kimi session for workdir %s" workdir)
   | Some session_id -> C2c_kimi_deliver.deliver_message ~session_id ~msg
 
-(* ─── Tmux idle detection + wake ─────────────────────────────────────────── *)
+(* ─── Legacy opt-in: tmux composer nudge ─────────────────────────────────────
+   Primary kimi wake is REST POST /api/v1/sessions/{id}/prompts (deliver_via_rest).
+   That injects a turn.prompt into the live session — no tmux required.
+
+   The helpers below only run when C2C_KIMI_TMUX_COMPOSER_WAKE=1 AND a pane is
+   known. Default is OFF: typing "[c2c] check inbox" into the TUI composer after
+   a successful REST deliver stacks unsubmitted text on modern kimi-code when
+   Enter fails (extended-keys/focus). Keep for legacy hosts only. *)
 
 (* Capture last few lines of pane scrollback. Empty/None on failure. *)
 let tmux_capture_tail ~pane =
@@ -650,6 +657,7 @@ let tmux_pane_is_idle ~pane ?session_dir ?(now = Unix.gettimeofday ()) () =
         false
       end
 
+(* Legacy only. Callers must gate on C2C_KIMI_TMUX_COMPOSER_WAKE=1. *)
 let tmux_wake ~pane =
   let cmd = Printf.sprintf
     "tmux send-keys -t %s '[c2c] check inbox' Enter 2>/dev/null"
@@ -785,11 +793,7 @@ let run_once ~broker_root ~alias ~session_id ~tmux_pane ~workdir =
     let to_keep = to_skip @ !undelivered in
     write_inbox_file ~broker_root ~session_id:drain_sid to_keep;
     let n = List.length !delivered in
-    (* REST /api/v1/sessions/{id}/prompts already injects a turn.prompt into the
-       live session (wire.jsonl). Default: do NOT also type "[c2c] check inbox"
-       into the TUI composer — on modern kimi-code Enter often fails
-       (extended-keys/focus), so the text stacks while the real turn already
-       ran. Opt-in only: C2C_KIMI_TMUX_COMPOSER_WAKE=1 for legacy hosts. *)
+    (* REST already woke the session. Optional legacy composer nudge only. *)
     (match tmux_pane with
      | Some pane when n > 0
        && Sys.getenv_opt "C2C_KIMI_TMUX_COMPOSER_WAKE" = Some "1" ->
@@ -878,6 +882,7 @@ let poll_once_global ~session_id ~alias ~tmux_pane ~workdir =
          is separate from the per-repo broker. Undleivered messages are logged but
          not recoverable without sender re-send. *)
       let n = List.length !delivered in
+      (* REST already woke the session. Optional legacy composer nudge only. *)
       (match tmux_pane with
        | Some pane when n > 0
          && Sys.getenv_opt "C2C_KIMI_TMUX_COMPOSER_WAKE" = Some "1" ->
