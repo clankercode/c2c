@@ -1301,3 +1301,25 @@ let restart_self_cmd =
 
 let restart_self : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "restart-self" ~doc:"Signal our own managed inner client so the outer loop relaunches it. Intended for agents to reload themselves after a binary update; name falls back to \\$C2C_MCP_SESSION_ID.") restart_self_cmd
+
+
+let restart_sidecar_cmd =
+  let name =
+    Cmdliner.Arg.(required & pos 0 (some string) None
+      & info [] ~docv:"NAME" ~doc:"Managed instance name.")
+  in
+  let kind =
+    Cmdliner.Arg.(required & pos 1 (some string) None
+      & info [] ~docv:"SIDECAR"
+      ~doc:"Sidecar to restart: deliver or poker. notifier is refused.")
+  in
+  let+ name = name
+  and+ kind = kind in
+  exit (C2c_start.cmd_restart_sidecar name kind)
+
+let restart_sidecar : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "restart-sidecar"
+       ~doc:"Restart a managed deliver or poker sidecar without killing the inner client (I012). Local-operator only; never message-triggered (B098).")
+    restart_sidecar_cmd
+

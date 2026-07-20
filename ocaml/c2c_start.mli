@@ -1093,5 +1093,10 @@ val cmd_restart_self : ?name:string -> unit -> int
     inside a managed c2c-start session (name falls back to
     [C2C_MCP_SESSION_ID]). Returns 0 on signal, non-zero on error. *)
 
+val cmd_restart_sidecar : string -> string -> int
+(** [cmd_restart_sidecar name kind] restarts a managed sidecar without
+    killing the inner client. [kind] is [deliver] or [poker]. Refuses
+    [notifier]. Local-operator only (B098). Returns 0 on success. *)
+
 val cmd_instances : unit -> int
 (** [cmd_instances ()] lists all known instances. Returns 0. *)
