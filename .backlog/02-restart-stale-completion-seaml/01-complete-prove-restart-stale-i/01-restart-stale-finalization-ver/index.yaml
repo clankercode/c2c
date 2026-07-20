@@ -10,7 +10,7 @@ stats:
     in_progress: 0
     pending: 3
     total: 3
-status: pending
+status: done
 tasks:
     - complexity: high
       depends_on: []
@@ -47,7 +47,7 @@ tasks:
       file: T003-i010-evidence-receipt-current.todo
       id: T003
       priority: medium
-      status: in_progress
+      status: done
       tags:
         - i010
         - c2c

@@ -12,7 +12,7 @@ milestones:
       locked: false
       name: Complete & prove restart-stale (I010)
       path: 01-complete-prove-restart-stale-i
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: ""
