@@ -1,0 +1,11 @@
+{
+  "hook_event_name": "PostToolUse",
+  "session_id": "session_3d2943fa-9f86-4579-aee7-c58cc8090105",
+  "cwd": "/tmp/c2c-i59-probe.WsHUL9/ws",
+  "tool_name": "Read",
+  "tool_input": {
+    "path": "hello.txt"
+  },
+  "tool_call_id": "tool_CPXUrljJPuAdcTDgybNI37b2",
+  "tool_output": "1\tprobe-file-content"
+}

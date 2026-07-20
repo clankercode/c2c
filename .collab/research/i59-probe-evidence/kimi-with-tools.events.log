@@ -1,0 +1,6 @@
+1784541756.803	SessionStart	keys=['cwd', 'hook_event_name', 'session_id', 'source']
+1784541757.612	UserPromptSubmit	keys=['cwd', 'hook_event_name', 'prompt', 'session_id']
+1784541779.926	PreToolUse	keys=['cwd', 'hook_event_name', 'session_id', 'tool_call_id', 'tool_input', 'tool_name']
+1784541779.984	PostToolUse	keys=['cwd', 'hook_event_name', 'session_id', 'tool_call_id', 'tool_input', 'tool_name', 'tool_output']
+1784541787.096	Stop	keys=['cwd', 'hook_event_name', 'session_id', 'stop_hook_active']
+1784541788.155	SessionEnd	keys=['cwd', 'hook_event_name', 'reason', 'session_id']

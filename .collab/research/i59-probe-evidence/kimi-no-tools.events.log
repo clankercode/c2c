@@ -1,0 +1,4 @@
+1784541704.503	SessionStart	keys=['cwd', 'hook_event_name', 'session_id', 'source']
+1784541706.908	UserPromptSubmit	keys=['cwd', 'hook_event_name', 'prompt', 'session_id']
+1784541739.965	Stop	keys=['cwd', 'hook_event_name', 'session_id', 'stop_hook_active']
+1784541743.035	SessionEnd	keys=['cwd', 'hook_event_name', 'reason', 'session_id']
