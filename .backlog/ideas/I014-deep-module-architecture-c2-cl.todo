@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-07-20T13:03:13Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T13:03:13Z"
 complexity: high
 created_at: "2026-07-20T12:53:40Z"
 depends_on: []
+duration_minutes: 0.010849935916666666
 estimate_hours: 40
 id: I014
 priority: high
 started_at: "2026-07-20T13:03:13Z"
-status: in_progress
+status: done
 tags: []
 title: 'Deep-module architecture: C2 claim · C3 liveness · C1 DeliveryEndpoint'
 updated_at: "2026-07-20T13:03:13Z"
