@@ -51,3 +51,7 @@ Derived from: I010 + I011. Depends on G + H + I + J. Owns final docs/closeout so
 - **Client scope:** managed clients in scope = Claude, OpenCode, Kimi, agy, Codex(hooks), Codex(app-server). Explicitly EXCLUDE Gemini (deprecated) and managed Grok (deferred).
 - **Review:** run the pirfl / review-and-fix loop before merge. REVIEW_MODEL = Codex via ccc-review-cx (gpt-5.6-terra). Merge to master only after review passes.
 - Design refs: `.collab/design/2026-07-12-c2c-client-upgrade-restart.md`; receipt `.collab/research/2026-07-12-i010-restart-stale-receipt.md`. Derived from ideas I010 / I011.
+
+
+### OPERATOR CORRECTION (2026-07-20) — idea status semantics
+The operator defines an idea as complete once fully ingested. I010 and I011 were fully ingested into P2 and are already `done`; do NOT reopen them and do NOT use their idea statuses as implementation-completion flags. Reconcile their bodies/evidence only if useful, preserve `done`, and express delivered versus residual implementation truth through P2 tasks, closeout artifacts, and any GO follow-up tasks.
