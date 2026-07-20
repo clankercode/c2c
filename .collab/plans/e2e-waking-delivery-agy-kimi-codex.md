@@ -6,6 +6,18 @@ agy/kimi/codex full automated **waking** delivery works.* Complements
 delivery smoke). **Blocked on `just install-all` + `c2c install agy`** — nothing
 is live until then; this plan is the runbook to execute the moment it is.
 
+## Model rules for e2e testing (Max, 2026-07-20 — verbatim, use cheap models)
+Always run e2e waking-delivery tests on these models to conserve quota. Copy the
+launch strings verbatim; do not substitute a "better" model.
+
+- **Codex:** `gpt-5.6-luna` with reasoning effort **low**.
+- **Kimi:** `k2p7` with **thinking off**.
+- **Antigravity (agy):** `3.5 flash` with **low thinking**.
+
+The wake *mechanism* (inject + gated auto-turn / REST POST / agentapi) is
+model-independent, so these cheap models are sufficient to prove a wake; they are a
+quota-conservation rule, not a correctness constraint.
+
 ## What "wake" means here (the bar)
 Per the north star: mail must **wake the agent** — an external event pushes the
 message into the agent's attention **without the model choosing to poll**.

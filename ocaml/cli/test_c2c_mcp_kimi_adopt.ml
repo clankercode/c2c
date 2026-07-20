@@ -97,6 +97,20 @@ let seed_managed_kimi_row ?(session_id = "managed-kimi-instance") broker ~cwd ~a
     ~from_auto_gen:true
     ()
 
+(* #47 reclaimable: pid/start_time stripped on teardown, row kept as sticky. *)
+let seed_reclaimable_managed_kimi_row
+    ?(session_id = "managed-kimi-instance") broker ~cwd ~alias =
+  C2c_mcp.Broker.register broker
+    ~session_id
+    ~alias
+    ~pid:None
+    ~pid_start_time:None
+    ~client_type:(Some "kimi")
+    ~cwd:(Some cwd)
+    ~registered_by:None
+    ~from_auto_gen:true
+    ()
+
 (* A recipient peer so a [send] fully resolves. Offline (dead pid) forces the
    durable-queue path — no notifier side effects. *)
 let seed_offline_peer broker ~alias =
@@ -316,6 +330,87 @@ let test_two_managed_rows_fail_closed () =
     check bool "send reports missing sender alias" true
       (contains ~needle:"missing sender alias" send_text))
 
+(* #47 reclaimable: a torn-down managed row (pid=None) still owns the workspace
+   sticky alias — auto-register must not mint, and whoami/send must bind to it. *)
+let test_reclaimable_managed_row_adopts () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    Unix.chdir workdir;
+    let cwd = Sys.getcwd () in
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    seed_reclaimable_managed_kimi_row broker ~cwd ~alias:"kimi-managed-anchor";
+    seed_offline_peer broker ~alias:"peer-target";
+    set_env
+      (base_env ~home ~alias:"kimi-install-sticky"
+         ~session_id:"kimi-uuid-reclaim");
+    C2c_mcp.auto_register_startup ~broker_root;
+    let regs = regs_of broker_root in
+    check bool "install-time alias NOT registered" false
+      (List.mem "kimi-install-sticky" (aliases regs));
+    check bool "no row under the MCP session id" false
+      (List.mem "kimi-uuid-reclaim" (session_ids regs));
+    check bool "reclaimable managed anchor preserved" true
+      (List.mem "kimi-managed-anchor" (aliases regs));
+    let whoami_text, whoami_err =
+      run_tool ~broker ~tool_name:"whoami" ~arguments:(`Assoc [])
+    in
+    check bool "whoami not an error" false whoami_err;
+    check bool "whoami names the reclaimable managed alias" true
+      (contains ~needle:"kimi-managed-anchor" whoami_text);
+    let _send_text, send_err =
+      run_tool ~broker ~tool_name:"send"
+        ~arguments:(`Assoc [ ("to_alias", `String "peer-target"); ("content", `String "hi") ])
+    in
+    check bool "send as reclaimable managed alias succeeds" false send_err)
+
+(* #48 auto-join: when a managed row owns cwd, room membership must land under
+   the LAUNCHER alias+session_id — never the install sticky alias / MCP uuid.
+   [Broker.join_room] rebinds same-alias + new session_id as a restart, so both
+   fields must come from the launcher row. *)
+let test_auto_join_binds_to_managed_identity () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    Unix.chdir workdir;
+    let cwd = Sys.getcwd () in
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    seed_managed_kimi_row broker ~cwd ~alias:"kimi-managed-anchor"
+      ~session_id:"managed-kimi-instance";
+    set_env
+      (base_env ~home ~alias:"kimi-install-sticky"
+         ~session_id:"kimi-uuid-mcp-session");
+    Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+    C2c_mcp.auto_register_startup ~broker_root;
+    C2c_mcp.auto_join_rooms_startup ~broker_root;
+    let members = C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge" in
+    check int "exactly one room member" 1 (List.length members);
+    let m = List.hd members in
+    check string "joined as managed alias" "kimi-managed-anchor" m.rm_alias;
+    check string "joined under launcher session_id" "managed-kimi-instance"
+      m.rm_session_id;
+    check bool "install alias not a room member" false
+      (List.exists (fun (mm : C2c_mcp.room_member) -> mm.rm_alias = "kimi-install-sticky") members);
+    Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+
+(* #48 + #40: two managed rows share cwd → self unresolved → auto-join must
+   fail closed (no install-alias room member) rather than mint a competing
+   room identity. *)
+let test_auto_join_two_managed_fail_closed () =
+  with_ctx (fun ~home ~broker_root ~workdir ->
+    Unix.chdir workdir;
+    let cwd = Sys.getcwd () in
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    seed_managed_kimi_row broker ~cwd ~alias:"kimi-managed-anchor"
+      ~session_id:"managed-kimi-instance-1";
+    seed_managed_kimi_row broker ~cwd ~alias:"kimi-managed-other"
+      ~session_id:"managed-kimi-instance-2";
+    set_env
+      (base_env ~home ~alias:"kimi-install-sticky"
+         ~session_id:"kimi-uuid-mcp-session");
+    Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "swarm-lounge";
+    C2c_mcp.auto_register_startup ~broker_root;
+    C2c_mcp.auto_join_rooms_startup ~broker_root;
+    let members = C2c_mcp.Broker.read_room_members broker ~room_id:"swarm-lounge" in
+    check int "no room members under ambiguity" 0 (List.length members);
+    Unix.putenv "C2C_MCP_AUTO_JOIN_ROOMS" "")
+
 let () =
   run "c2c_mcp_kimi_adopt"
     [ ( "auto_register vs managed kimi row (#48)",
@@ -323,6 +418,8 @@ let () =
             test_adopts_live_managed_row
         ; test_case "vanilla kimi still registers install alias" `Quick
             test_vanilla_still_registers_install_alias
+        ; test_case "reclaimable managed row adopts (no competing alias)" `Quick
+            test_reclaimable_managed_row_adopts
         ] )
     ; ( "managed kimi MCP identity: whoami + send (#48)",
         [ test_case "whoami reports the launcher alias" `Quick
@@ -337,5 +434,11 @@ let () =
             test_from_alias_arg_cannot_override_self
         ; test_case "two managed rows: fail closed (whoami + send)" `Quick
             test_two_managed_rows_fail_closed
+        ] )
+    ; ( "managed kimi MCP auto-join (#48)",
+        [ test_case "auto-join binds to launcher alias+session_id" `Quick
+            test_auto_join_binds_to_managed_identity
+        ; test_case "auto-join two managed rows: fail closed" `Quick
+            test_auto_join_two_managed_fail_closed
         ] )
     ]
