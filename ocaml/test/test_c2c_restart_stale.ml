@@ -83,6 +83,12 @@ let mk_app_server_instance dir ~name ~pid =
        name name);
   inst
 
+let write_coordinator_config dir coordinator_alias =
+  let config_dir = dir // ".c2c" in
+  Unix.mkdir config_dir 0o755;
+  write_file (config_dir // "config.toml")
+    (Printf.sprintf "[swarm]\ncoordinator_alias = %S\n" coordinator_alias)
+
 let merged_env defaults overrides =
   List.fold_left
     (fun env (name, value) -> (name, value) :: List.remove_assoc name env)
@@ -309,7 +315,10 @@ let test_coordinator_last_and_excluded () =
   with_temp_dir (fun dir ->
       let pid = spawn_sleeper () in
       with_pid pid (fun () ->
-          ignore (mk_instance dir ~name:"coordinator1" ~client:"claude" ~pid);
+          let coordinator_name = "configured-coord" in
+          write_coordinator_config dir coordinator_name;
+          ignore
+            (mk_instance dir ~name:coordinator_name ~client:"claude" ~pid);
           ignore (mk_instance dir ~name:"worker-z" ~client:"claude" ~pid);
           let rc, j = run_json ~instances_dir:dir ~args:"--dry-run --json" in
           Alcotest.(check int) "ordered run exits 0" 0 rc;
@@ -318,9 +327,9 @@ let test_coordinator_last_and_excluded () =
             |> List.map (fun row -> str (member "name" row))
           in
           Alcotest.(check (list string)) "coordinator ordered last"
-            [ "worker-z"; "coordinator1" ] names;
+            [ "worker-z"; coordinator_name ] names;
           Alcotest.(check bool) "coordinator marker" true
-            (bool_of (member "coordinator" (instance "coordinator1" j)));
+            (bool_of (member "coordinator" (instance coordinator_name j)));
           Alcotest.(check bool) "worker is not coordinator" false
             (bool_of (member "coordinator" (instance "worker-z" j)));
           let rc, excluded =
@@ -330,7 +339,7 @@ let test_coordinator_last_and_excluded () =
           Alcotest.(check int) "excluded run exits 0" 0 rc;
           Alcotest.(check string) "worker remains eligible" "guided"
             (action_kind (instance "worker-z" excluded));
-          let coordinator = instance "coordinator1" excluded in
+          let coordinator = instance coordinator_name excluded in
           Alcotest.(check string) "coordinator skipped" "skipped"
             (action_kind coordinator);
           Alcotest.(check string) "exclusion reason"
