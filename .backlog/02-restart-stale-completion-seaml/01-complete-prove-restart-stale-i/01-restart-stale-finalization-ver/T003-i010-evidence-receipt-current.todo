@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-20T01:00:24Z"
+claimed_by: cli-user
 completed_at: null
 complexity: low
 created_at: "2026-07-19T23:48:12Z"
@@ -8,15 +10,15 @@ depends_on:
 estimate_hours: 1
 id: P2.M1.E1.T003
 priority: medium
-started_at: null
-status: pending
+started_at: "2026-07-20T01:00:24Z"
+status: in_progress
 tags:
     - i010
     - c2c
     - docs
     - receipt
 title: I010 evidence receipt + current-doc truth (keeps I010 OPEN)
-updated_at: "2026-07-19T23:48:12Z"
+updated_at: "2026-07-20T01:00:24Z"
 ---
 Receipt/linkage only. Does NOT close I010 or reconcile acceptance downward. See full spec appended.
 

@@ -47,7 +47,7 @@ tasks:
       file: T003-i010-evidence-receipt-current.todo
       id: T003
       priority: medium
-      status: pending
+      status: in_progress
       tags:
         - i010
         - c2c
