@@ -1,23 +1,24 @@
 ---
 claimed_at: "2026-07-20T02:48:06Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T02:53:45Z"
 complexity: medium
 created_at: "2026-07-19T23:48:25Z"
 depends_on:
     - P2.M2.E1.T001
+duration_minutes: 5.657203910833333
 estimate_hours: 2
 id: P2.M3.E1.T003
 priority: medium
 started_at: "2026-07-20T02:48:06Z"
-status: in_progress
+status: done
 tags:
     - i011
     - c2c
     - spike
     - monitor
 title: 'SPIKE: monitor/heartbeat self-detect-stale -> self-exit + exact relaunch hint (go/no-go)'
-updated_at: "2026-07-20T02:48:06Z"
+updated_at: "2026-07-20T02:53:45Z"
 ---
 GO/NO-GO. Only sanctioned candidate = self-exit + exact relaunch hint; external respawn forbidden. See full spec appended.
 

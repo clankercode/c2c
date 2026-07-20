@@ -1,17 +1,18 @@
 ---
 claimed_at: "2026-07-20T02:48:06Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-20T02:53:45Z"
 complexity: high
 created_at: "2026-07-19T23:48:25Z"
 depends_on:
     - P2.M1.E1.T001
     - P2.M2.E1.T001
+duration_minutes: 5.657032014116667
 estimate_hours: 3
 id: P2.M3.E1.T001
 priority: medium
 started_at: "2026-07-20T02:48:06Z"
-status: in_progress
+status: done
 tags:
     - i011
     - c2c
@@ -19,7 +20,7 @@ tags:
     - codex
     - sidecar
 title: 'SPIKE: extract Codex app-server delivery loop into ledger-backed sidecar (go/no-go)'
-updated_at: "2026-07-20T02:48:06Z"
+updated_at: "2026-07-20T02:53:45Z"
 ---
 GO/NO-GO spike w/ invariants. Not an assumed impl. See full spec appended.
 
