@@ -82,6 +82,14 @@ let test_opencode_idle_busy_fresh () =
   check_state "opencode busy" C2c_idle_contract.Busy
     (C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now ())
 
+let contains s sub =
+  let rec loop i =
+    if i + String.length sub > String.length s then false
+    else if String.sub s i (String.length sub) = sub then true
+    else loop (i + 1)
+  in
+  loop 0
+
 let test_opencode_stale_and_null_fail_closed () =
   let dir = tmp_dir () in
   let now = 1_700_000_100.0 in
@@ -93,12 +101,7 @@ let test_opencode_stale_and_null_fail_closed () =
    with
    | C2c_idle_contract.Unknown reason ->
        Alcotest.(check bool) "stale mentions age" true
-         (let rec contains s sub i =
-            if i + String.length sub > String.length s then false
-            else if String.sub s i (String.length sub) = sub then true
-            else contains s sub (i + 1)
-          in
-          String.length reason > 0 && contains reason "stale" 0)
+         (String.length reason > 0 && contains reason "stale")
    | other ->
        Alcotest.failf "expected Unknown, got %s"
          (C2c_idle_contract.idle_state_to_string other));
@@ -107,6 +110,22 @@ let test_opencode_stale_and_null_fail_closed () =
   check_state "null is_idle is unknown"
     (C2c_idle_contract.Unknown "opencode agent.is_idle absent (null/unknown)")
     (C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now ())
+
+let test_opencode_future_timestamp_fail_closed () =
+  let dir = tmp_dir () in
+  let now = 1_700_000_000.0 in
+  ignore (write_opencode_state dir ~name:"oc1" ~is_idle:(Some true)
+            ~updated_epoch:(now +. 3600.0));
+  match
+    C2c_idle_contract.query ~kind:OpenCode ~instance_dir:dir ~now
+      ~opencode_freshness_s:90.0 ()
+  with
+  | C2c_idle_contract.Unknown reason ->
+      Alcotest.(check bool) "future skew mentioned" true
+        (contains reason "future")
+  | other ->
+      Alcotest.failf "future timestamp must be Unknown, got %s"
+        (C2c_idle_contract.idle_state_to_string other)
 
 let test_opencode_missing_statefile () =
   let dir = tmp_dir () in
@@ -171,6 +190,8 @@ let () =
             test_opencode_idle_busy_fresh
         ; Alcotest.test_case "opencode stale/null fail closed" `Quick
             test_opencode_stale_and_null_fail_closed
+        ; Alcotest.test_case "opencode future timestamp fail closed" `Quick
+            test_opencode_future_timestamp_fail_closed
         ; Alcotest.test_case "opencode missing statefile" `Quick
             test_opencode_missing_statefile
         ; Alcotest.test_case "claude/kimi/agy/hooks unknown" `Quick

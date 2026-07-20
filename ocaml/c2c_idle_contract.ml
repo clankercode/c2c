@@ -99,6 +99,13 @@ let query_opencode_statefile ~(statefile : string) ~(now : float)
       in
       (match updated_at with
        | None -> Unknown "opencode statefile has no parseable timestamp"
+       | Some ts when ts -. now > 5.0 ->
+           (* Future skew: clock skew / corrupt timestamp must fail closed,
+              not grant Idle until wall-clock catches up. 5s slack for mild NTP. *)
+           Unknown
+             (Printf.sprintf
+                "opencode statefile timestamp in the future (skew %.1fs)"
+                (ts -. now))
        | Some ts when now -. ts > freshness_s ->
            Unknown
              (Printf.sprintf
