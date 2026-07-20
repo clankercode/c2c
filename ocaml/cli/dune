@@ -54,7 +54,7 @@
 (test
  (name test_c2c_mcp_kimi_adopt)
  (modules test_c2c_mcp_kimi_adopt)
- (libraries c2c_mcp alcotest unix))
+ (libraries c2c_mcp alcotest unix lwt.unix yojson))
 
 (test
  (name test_c2c_memory)
