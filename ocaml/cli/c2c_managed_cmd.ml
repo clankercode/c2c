@@ -966,6 +966,35 @@ let restart : unit Cmdliner.Cmd.t =
 
 (* --- subcommand: restart-stale (idea I010) -------------------------------- *)
 
+let idle_allows_auto ~(force : bool) ~(app_server : bool)
+    (idle : C2c_idle_contract.idle_state) : bool =
+  if force then true
+  else
+    match idle with
+    | C2c_idle_contract.Idle -> true
+    | C2c_idle_contract.Busy -> false
+    | C2c_idle_contract.Unknown _ -> app_server
+
+let restart_stale_idle_fixture () : C2c_idle_contract.idle_state option =
+  match Sys.getenv_opt "C2C_RESTART_STALE_IDLE_FIXTURE" with
+  | Some s ->
+      (match String.lowercase_ascii (String.trim s) with
+       | "idle" -> Some C2c_idle_contract.Idle
+       | "busy" -> Some C2c_idle_contract.Busy
+       | "unknown" -> Some (C2c_idle_contract.Unknown "fixture")
+       | _ -> None)
+  | None -> None
+
+let resolve_idle_for_instance ~(client : string) ~(name : string)
+    ~(has_app_server_mapping : bool) : C2c_idle_contract.idle_state =
+  match restart_stale_idle_fixture () with
+  | Some idle -> idle
+  | None ->
+      C2c_idle_contract.query_client ~client
+        ~instance_dir:(C2c_start.instance_dir name)
+        ~has_app_server_mapping ()
+
+
 (* What restart-stale decided to do for one managed instance. *)
 type stale_action =
   | Restarted              (* app-server codex: owner accepted in-place restart *)
@@ -1006,6 +1035,39 @@ let request_app_server_restart ~name ~force ~timeout_s : stale_action =
     | None -> Failed "timed out waiting for app-server owner"
   with exn ->
     Failed (Printf.sprintf "app-server restart error: %s" (Printexc.to_string exn))
+
+(* G2: request in-pane outer-loop restart via C2c_owner_control. Never execve
+   into a supervisor from this process (no TTY theft). *)
+let request_outer_owner_restart ~name ~force ~timeout_s ~outer_pid : stale_action =
+  let instance_dir = C2c_start.instance_dir name in
+  try
+    let start_time =
+      match C2c_owner_control.read_pid_start_time outer_pid with
+      | Some t -> t
+      | None ->
+          raise (Failure "outer pid start_time unavailable")
+    in
+    let request_id =
+      C2c_owner_control.request_restart ~instance_dir ~instance_name:name
+        ~force ~expected_pid:outer_pid ~expected_start_time:start_time ()
+    in
+    match
+      match restart_stale_owner_result_fixture () with
+      | Some result ->
+          Some (C2c_owner_control.result_kind_of_string result)
+      | None ->
+          C2c_owner_control.await_result ~instance_dir ~request_id ~timeout_s
+    with
+    | Some C2c_owner_control.Restarting -> Restarted
+    | Some (C2c_owner_control.Declined r) ->
+        Skipped (Printf.sprintf "outer owner declined: %s" r)
+    | Some (C2c_owner_control.Failed r) ->
+        Failed (Printf.sprintf "outer owner failed: %s" r)
+    | Some C2c_owner_control.Timed_out | None ->
+        Failed "timed out waiting for outer owner"
+  with exn ->
+    Failed (Printf.sprintf "outer owner restart error: %s" (Printexc.to_string exn))
+
 
 let restart_stale_cmd =
   let dry_run =
@@ -1097,23 +1159,40 @@ let restart_stale_cmd =
                 Skipped (Printf.sprintf "unknown identity: %s" reason)
             | _ when not eligible -> Skipped "already current"
             | _ ->
-                if not (is_app_server mi) then
-                  (* TUI/hook clients: `c2c restart` would execve into a new
-                     supervisor and capture THIS terminal, dragging the agent
-                     off its own tmux pane. Safe in-place restart of these is
-                     the follow-up idea I011; for now emit the manual command. *)
-                  Guided (Printf.sprintf "c2c restart %s" mi.mi_name)
+                let has_map = is_app_server mi in
+                let idle =
+                  resolve_idle_for_instance ~client:mi.mi_client ~name:mi.mi_name
+                    ~has_app_server_mapping:has_map
+                in
+                let allow = idle_allows_auto ~force ~app_server:has_map idle in
+                if not has_map then
+                  (* TUI/hook: outer owner-control in original pane (G2). *)
+                  if not allow then
+                    Guided (Printf.sprintf "c2c restart %s" mi.mi_name)
+                  else if dry_run then Would_restart
+                  else begin
+                    if output_mode = Human then
+                      Printf.eprintf
+                        "[restart-stale] requesting outer owner restart for '%s'...
+%!"
+                        mi.mi_name;
+                    request_outer_owner_restart ~name:mi.mi_name ~force
+                      ~timeout_s ~outer_pid:pid
+                  end
+                else if not allow then
+                  Skipped
+                    (Printf.sprintf "idle contract %s (fail closed; use --force)"
+                       (C2c_idle_contract.idle_state_to_string idle))
                 else if dry_run then Would_restart
                 else begin
-                  (* Progress: the app-server request+await can take up to
-                     ~timeout_s, so tell the operator which instance we're on. *)
                   if output_mode = Human then
                     Printf.eprintf
-                      "[restart-stale] requesting app-server restart for '%s'...\n%!"
+                      "[restart-stale] requesting app-server restart for '%s'...
+%!"
                       mi.mi_name;
                   request_app_server_restart ~name:mi.mi_name ~force ~timeout_s
                 end
-        in
+              in
         (mi, verdict, action))
       ordered
   in

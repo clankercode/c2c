@@ -5708,8 +5708,117 @@ let run_outer_loop ~(name : string) ~(client : string)
         if child_pid_opt = 0 then (130, Some "term")
         else
           (try
+             (* G2: poll owner-control requests between waitpid WNOHANG cycles
+                so the outer can self-reexec in-pane without caller TTY theft. *)
+             let poll_owner_control () =
+               match C2c_owner_control.consume_request
+                       ~instance_dir:(instance_dir name)
+               with
+               | None -> ()
+               | Some req ->
+                   let owner =
+                     { C2c_owner_control.name
+                     ; pid = Unix.getpid ()
+                     ; start_time =
+                         C2c_owner_control.read_pid_start_time (Unix.getpid ())
+                     }
+                   in
+                   (match C2c_owner_control.validate_identity ~request:req ~owner
+                    with
+                    | Error reason ->
+                        C2c_owner_control.write_result
+                          ~instance_dir:(instance_dir name) ~request_id:req.id
+                          ~result:(C2c_owner_control.Declined reason)
+                    | Ok () ->
+                        let resume_ok =
+                          match client, load_config_opt name with
+                          | "opencode", Some cfg ->
+                              let sid = cfg.resume_session_id in
+                              String.length sid >= 4
+                              && String.sub sid 0 4 = "ses_"
+                          | _ -> true
+                        in
+                        if not resume_ok then
+                          C2c_owner_control.write_result
+                            ~instance_dir:(instance_dir name)
+                            ~request_id:req.id
+                            ~result:
+                              (C2c_owner_control.Declined
+                                 "opencode resume_session_id is not ses_*")
+                        else
+                          let teardown () =
+                            try
+                              stop_sidecar !deliver_pid;
+                              stop_sidecar !poker_pid;
+                              stop_notifier ();
+                              if child_pid_opt > 0 then begin
+                                (try Unix.kill (-child_pid_opt) Sys.sigterm
+                                 with _ -> ());
+                                Unix.sleepf 0.3;
+                                (try Unix.kill (-child_pid_opt) Sys.sigkill
+                                 with _ -> ());
+                                (try
+                                   ignore
+                                     (Unix.waitpid [ Unix.WNOHANG ]
+                                        child_pid_opt)
+                                 with _ -> ())
+                              end;
+                              Ok ()
+                            with exn ->
+                              Error
+                                (Printf.sprintf "teardown: %s"
+                                   (Printexc.to_string exn))
+                          in
+                          (match load_config_opt name with
+                           | None ->
+                               C2c_owner_control.write_result
+                                 ~instance_dir:(instance_dir name)
+                                 ~request_id:req.id
+                                 ~result:
+                                   (C2c_owner_control.Failed "no instance config")
+                           | Some cfg ->
+                               let cfg =
+                                 { cfg with
+                                   last_launch_at =
+                                     Some (Unix.gettimeofday ())
+                                 }
+                               in
+                               write_config cfg;
+                               write_expected_cwd ~name;
+                               (* Re-exec this outer with the same argv — same
+                                  pattern as the exit-42 broker_root repair.
+                                  build_start_argv is defined later in the
+                                  module and is not yet in scope here. *)
+                               let argv = Array.copy Sys.argv in
+                               let plan =
+                                 { C2c_owner_control.executable = argv.(0)
+                                 ; argv
+                                 ; cwd = None
+                                 ; env = C2c_owner_control.filter_env ()
+                                 }
+                               in
+                               ignore
+                                 (C2c_owner_control.commit_takeover
+                                    ~instance_dir:(instance_dir name)
+                                    ~request:req ~owner ~plan ~teardown
+                                    ~identity_at:(fun () ->
+                                      { C2c_owner_control.name
+                                      ; pid = Unix.getpid ()
+                                      ; start_time =
+                                          C2c_owner_control.read_pid_start_time
+                                            (Unix.getpid ())
+                                      })
+                                    ()))
+                   )
+             in
              let rec wait_for_child () =
-               match Unix.waitpid [ Unix.WUNTRACED ] child_pid_opt with
+               match
+                 Unix.waitpid [ Unix.WNOHANG; Unix.WUNTRACED ] child_pid_opt
+               with
+               | 0, _ ->
+                   (try poll_owner_control () with _ -> ());
+                   Unix.sleepf 0.25;
+                   wait_for_child ()
                | _, Unix.WSIGNALED n -> (128 + n, Some (signal_name n))
                | _, Unix.WSTOPPED sig_n when sig_n = Sys.sigtstp ->
                    (* Ctrl-Z (SIGTSTP) on the child's foreground pgrp: user

@@ -447,6 +447,46 @@ let test_failed_action_sets_json_error_and_exit_one () =
           check_summary j ~restarted:0 ~would_restart:0
             ~needs_manual_restart:1 ~skipped:0 ~failed:1))
 
+
+let test_outer_owner_fixture_restarts () =
+  with_temp_dir (fun dir ->
+      let pid = spawn_sleeper () in
+      with_pid pid (fun () ->
+          ignore (mk_instance dir ~name:"tui-owner" ~client:"claude" ~pid);
+          let rc, j =
+            run_json_with_env ~instances_dir:dir
+              ~env:
+                [ ("C2C_RESTART_STALE_IDLE_FIXTURE", "idle")
+                ; ("C2C_RESTART_STALE_OWNER_RESULT_FIXTURE", "restarting") ]
+              ~args:"--json --timeout 0"
+          in
+          Alcotest.(check int) "outer owner restart exits 0" 0 rc;
+          Alcotest.(check string) "outer restarted" "restarted"
+            (action_kind (instance "tui-owner" j));
+          check_summary j ~restarted:1 ~would_restart:0
+            ~needs_manual_restart:0 ~skipped:0 ~failed:0;
+          let req_path =
+            dir // "tui-owner" // "owner-restart.request.json"
+          in
+          Alcotest.(check bool) "owner request written" true
+            (Sys.file_exists req_path)))
+
+let test_outer_busy_stays_guided () =
+  with_temp_dir (fun dir ->
+      let pid = spawn_sleeper () in
+      with_pid pid (fun () ->
+          ignore (mk_instance dir ~name:"tui-busy" ~client:"claude" ~pid);
+          let rc, j =
+            run_json_with_env ~instances_dir:dir
+              ~env:[ ("C2C_RESTART_STALE_IDLE_FIXTURE", "busy") ]
+              ~args:"--json --timeout 0"
+          in
+          Alcotest.(check int) "busy guided exits 0" 0 rc;
+          Alcotest.(check string) "busy guided" "guided"
+            (action_kind (instance "tui-busy" j));
+          check_summary j ~restarted:0 ~would_restart:0
+            ~needs_manual_restart:1 ~skipped:0 ~failed:0))
+
 let () =
   Alcotest.run "c2c_restart_stale"
     [ ( "restart-stale",
@@ -463,5 +503,9 @@ let () =
           Alcotest.test_case "owner fixture restarts and receives force" `Quick
             test_owner_fixture_restarts_and_receives_force;
           Alcotest.test_case "Failed action controls JSON and exit" `Quick
-            test_failed_action_sets_json_error_and_exit_one ] )
+            test_failed_action_sets_json_error_and_exit_one;
+          Alcotest.test_case "outer owner fixture restarts" `Quick
+            test_outer_owner_fixture_restarts;
+          Alcotest.test_case "outer busy stays guided" `Quick
+            test_outer_busy_stays_guided ] )
     ]
