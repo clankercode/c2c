@@ -9,7 +9,7 @@ epics:
       locked: false
       name: 'C2: C2c_kimi_delivery_claim (single-writer)'
       path: 01-c2-c2c-kimi-delivery-claim-sin
-      status: pending
+      status: done
     - complexity: medium
       depends_on:
         - P3.M1.E1
