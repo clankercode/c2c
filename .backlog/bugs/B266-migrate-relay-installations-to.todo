@@ -46,3 +46,5 @@ Ship a safe operator/user migration from current global authenticated-peer disco
 ## Independent review evidence gaps
 
 Add dedicated doctor aggregate/exit-status coverage for insecure production states, and CLI lifecycle output tests proving list/revoke never expose reusable secrets. `contact issue --json` intentionally outputs the one-time secret; document that stdout must be protected from logs/history and test that other commands do not repeat it.
+
+Post-close dogfood finding (2026-07-22): `c2c relay serve --db-path PATH` is parsed and printed but not passed to `SqliteRelay.create`; the server still opens `<persist_dir>/c2c_relay.db` (or cwd default). This did not weaken the rollback floor, but makes the CLI flag misleading and initially invalidated a DB-inspection harness. Track/fix separately with a CLI regression proving the selected file is actually opened.
