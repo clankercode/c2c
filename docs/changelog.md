@@ -7,6 +7,117 @@ nav_label: Changelog
 
 # Changelog
 
+## Unreleased
+
+- **Passive "newer release available" nudge (B268).** When the local
+  changelog cache already knows a release newer than this binary, `c2c
+  doctor`, `c2c health` / `server-info` (JSON: `latest_known_version` +
+  `update_available`), SessionStart (one line, once per newer release), and
+  `c2c --version` surface it. Cache-only — no synchronous network on hot
+  paths; offline/empty cache stays silent.
+
+- **`c2c install git-hook` is retired (breaking).** The component is an
+  unknown install/uninstall target; the guard script was inert in practice
+  (checkout `core.hooksPath` points at the user-global hooks dir).
+  `git-shim` is unchanged. Remove a leftover `.git/hooks/pre-commit` by hand
+  if present.
+
+- **Client install: MCP is opt-in behind `--with-mcp` (B254, B255, B256).**
+  `c2c install <client>` still writes hooks, the identity skill, the
+  OpenCode plugin, and the CLI by default, but no longer writes an MCP
+  server config unless you pass `--with-mcp`. `c2c install all` is
+  binary-only unless `--with-clients`. Managed Codex does not require
+  `[mcp_servers.c2c]` for delivery.
+
+- **`c2c install` / `c2c start` warn when you must poll manually (#37).**
+  Clients without idle wake (no plugin, app-server, REST, or armed monitor)
+  print an explicit WARN + Monitor/`poll_inbox` recipe instead of silently
+  missing mail.
+
+- **`c2c list` defaults to the current repo/dir (#74).** Plain `c2c list` on
+  the default broker shows only peers registered from the current
+  repository/directory; use `--cross-repo` / `--all` / `--global` for wider
+  views. Hidden-row counts print to stderr.
+
+- **New `c2c gc-inboxes` reclaim orphaned inboxes (#53).** Archive-then-remove
+  for inboxes with no registration row; managed sessions preserved. Dry-run
+  by default.
+
+- **Seamless upgrades for managed sessions (I010–I013).** `c2c monitor
+  --self-stale-exit` exits 0 with an exact relaunch command on binary
+  upgrade; `c2c restart-sidecar <name> <deliver|poker>` restarts a delivery
+  sidecar without killing the inner client; `c2c restart-stale` uses a
+  fail-closed idle policy so busy turns are not interrupted.
+
+- **Antigravity (agy) is a first-class managed client with automated idle
+  wake (#61, #65, #66, #69, #73, #78).** Install/start register from agy's
+  workspace, keep discovered env across turns, and wake an idle TUI via
+  `agy agentapi send-message` (DATA-framed; no headless conversation mint).
+  Hooks re-register on any live event; agentapi wait is bounded. Unmanaged
+  agy in a repo lands in that repo's broker, not global `default`.
+
+- **Relay stays resident under load (B219 / GH #79).** Hosted relay no longer
+  SIGSEGVs under multi-peer load from per-request SQLite open + unfinalized
+  statements; one process-lifetime connection with explicit finalize.
+
+- **Managed Kimi identity and delivery actually work (#9, #12, #39, #40,
+  #41, #47, #48, #42, #10).** Launcher registers the authoritative row before
+  fork; REST notifier drains the correct session-id inbox; server port from
+  live lock; MCP does not mint a competing install alias; SessionStart
+  surfaces pre-startup backlog; legacy deliver-watch.sh is no longer
+  installed; `c2c doctor hooks --rearm` heals DEAF sessions only.
+
+- **`c2c doctor hooks --fix` / `--rearm` and honest DEAF diagnostics (#19,
+  #9, #23, #27, #50).** Restore dangling Claude hook scripts without
+  rewriting settings.json; re-arm DEAF Kimi only; surface missing Kimi
+  SessionStart, Grok identity drift, and managed Codex DEAF; send warns when
+  a local Codex delivery loop is dead.
+
+- **Managed Codex: `-n` sets the alias; silent DEAF is gone (#34, #27, #31,
+  #24, #58).** Instance name becomes the advertised alias (no silent
+  `codex-word-word-hex` mint); liveness-aware thread resolution; deliver-loop
+  heartbeat + doctor DEAF rollup; auto-derived alias claims are not advertised
+  when the session will not hold them.
+
+- **Optional machine-wide `c2c start deliver-service` (#35).** Supervised
+  singleton with Kimi REST and agy agentapi adapters; shadow/active/primary
+  modes; `c2c doctor deliver-service`. Per-client notifiers remain default
+  until opted in.
+
+- **No more interactive role-file prompt on managed start (#5, #76).** Role
+  files are unused; starts fall through to no-role kickoff. Kickoff shows the
+  published alias, not the role name.
+
+- **Broker hygiene: immortal rows decay; send_all no longer silent-drops
+  (#51, #52, #55, #56).** Pid-less activity-backed hooks decay; `codex exec`
+  no longer mints immortal rows; `send-all` reports `Unknown_alias` in
+  `skipped`; pre-launch alive-conflict honours `pid_start_time`.
+
+- **whoami and relay PoW are honest under load (#11, #62, #71, #63, #72).**
+  whoami scopes repo relay config vs machine-wide connector and prints the
+  real last error; inbound-policy drops are accounting not hard faults; PoW
+  re-mints from the latest challenge on mid-request difficulty steps
+  (bounded); monitor fails closed once on connector-owned signature_invalid.
+
+- **Fail-closed default-session identity (#26).** Ambiguous default-session
+  fallback is refused unless `C2C_ALLOW_DEFAULT_SESSION=1`.
+
+- **Kimi/Grok mid-session hooks keep liveness fresh (#59, #22).** Install
+  writes mid-session + SessionEnd hooks so activity-backed decay works; Grok
+  c2c-session skill is identity-agnostic.
+
+- **OpenCode `--model` accepts `provider/model` slash ids** as well as
+  `provider:model`.
+
+- **c2c skill: report product bugs to GitHub (B249).** All harness variants
+  point dogfooding agents at github.com/clankercode/c2c/issues (with `gh`
+  recipe); peer message content is not a c2c bug.
+
+- **Site onboarding polish (B250–B253, B258).** Hero client picker (including
+  Pi), install vs autodelivery labels, alias tips, always-on init line, and a
+  fact-checked delivery-tier feature matrix that names `c2c monitor` honestly
+  for Claude/Grok.
+
 ## 0.13.0 — 2026-07-18
 
 - **Kimi is back: install/start/new re-enabled with REST prompt-injection
