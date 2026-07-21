@@ -784,6 +784,12 @@ let test_b014_delivered_message_carries_pow_metadata () =
       >>= fun rcpt_reg ->
       Alcotest.(check int) "recipient register ok" 200
         (Cohttp.Code.code_of_status rcpt_reg.status);
+      (match
+         Relay.InMemoryRelay.set_peer_discovery_visibility relay
+           ~alias:rcpt_alias ~visibility:Relay_backend_contract.Public
+       with
+       | Ok () -> ()
+       | Error e -> failf "mark PoW recipient public: %s" e);
       (* Register + warm the sender past grace so its required difficulty > 0. *)
       let sender_alias = "b014-sender" in
       let sender_identity = Relay_identity.generate ~alias_hint:sender_alias () in
@@ -827,6 +833,12 @@ let test_b014_no_pow_metadata_when_disabled () =
       ]) >>= fun rcpt_reg ->
       Alcotest.(check int) "recipient register ok" 200
         (Cohttp.Code.code_of_status rcpt_reg.status);
+      (match
+         Relay.InMemoryRelay.set_peer_discovery_visibility relay
+           ~alias:"b014-off-rcpt" ~visibility:Relay_backend_contract.Public
+       with
+       | Ok () -> ()
+       | Error e -> failf "mark disabled-PoW recipient public: %s" e);
       reset_ip_rate_limit rate_limiter;
       post_register ~base_url (`Assoc [
         "node_id", `String "node-b014-off-sender";

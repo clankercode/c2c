@@ -534,6 +534,22 @@ requires a signed envelope; unsigned/envelope-less requests are rejected with
 
 HTTP regression coverage: `tests/test_relay_signed_room_ops_gate.py`.
 
+### `C2C_RELAY_TRUST_FORWARDED_PROTO` (B265)
+
+Server-side, production-only trust switch for an operator-controlled TLS
+terminator. `POST /contact/v1/deliver` accepts reusable contact-grant secrets
+only over native TLS, or when this variable is truthy (`1`, `true`, `TRUE`, or
+`yes`) **and** the trusted proxy supplies `X-Forwarded-Proto: https`.
+
+Unset by default. Never enable it when clients can reach the relay directly or
+can overwrite the forwarding header: an arbitrary client-supplied
+`X-Forwarded-Proto` is not transport authentication. Prefer native TLS where
+possible. The route still independently requires a token-configured relay and
+a verified Ed25519 peer request. Regression coverage:
+`ocaml/test/test_relay_contact_delivery_handlers.ml` (signed cleartext,
+untrusted forwarded-proto, native-TLS acceptance, protocol, sender, and
+uniform-denial cases).
+
 ### `C2C_RELAY_E2E_STRICT_V2`
 
 When truthy (`1`, `true`, `yes`, `on` — case-insensitive), the relay-e2e verifier rejects envelopes with `envelope_version < 2` before checking the signature. Default off — v1 envelopes continue to verify normally during the v1↔v2 cutover window. The flag is env-read on every verify, so ops can flip it without daemon restart. Used together with Slice B-min-version (per-peer downgrade pin): B handles once-seen-v2-stays-v2 attacks, C handles the global cutover for first-contact peers. See `.collab/design/2026-04-29-relay-crypto-crit-fix-plan-cairn.md` "Slice C — Strict-mode flip".

@@ -230,7 +230,9 @@ module type RELAY = sig
     content:string ->
     ?now:float ->
     unit ->
-    [ `Accepted of float | `Duplicate of float | `Rejected ]
+    [ `Accepted of float * string
+    | `Duplicate of float * string
+    | `Rejected ]
 end
 
 (* --- B147: usage-stats window definitions shared by both backends --- *)
