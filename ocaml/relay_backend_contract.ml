@@ -41,6 +41,10 @@ type contact_grant_meta = {
   label : string option;
 }
 
+(* B264: peer discovery visibility for private-by-default reachability.
+   Distinct from room visibility (public/unlisted/gated/private rooms). *)
+type peer_discovery_visibility = Private | Public
+
 (* --- RELAY signature - satisfied by both InMemoryRelay and SqliteRelay --- *)
 
 module type RELAY = sig
@@ -62,6 +66,13 @@ module type RELAY = sig
   val enc_pubkey_of : t -> alias:string -> string option
   val signed_at_of : t -> alias:string -> float option
   val sig_b64_of : t -> alias:string -> string option
+  (** Ordinary peer-facing key lookup used by /pubkey. After B264, private
+      aliases return [None] (same external shape as unknown). Owner/admin
+      and internal routing continue to use [identity_pk_of] etc. *)
+  val peer_identity_pk_of : t -> alias:string -> string option
+  val peer_enc_pubkey_of : t -> alias:string -> string option
+  val peer_signed_at_of : t -> alias:string -> float option
+  val peer_sig_b64_of : t -> alias:string -> string option
   (* L3/5 identity bootstrapping. *)
   val set_allowed_identity : t -> alias:string -> identity_pk_b64:string -> unit
   val allowed_identity_of : t -> alias:string -> string option
@@ -82,7 +93,20 @@ module type RELAY = sig
   val heartbeat :
     t -> node_id:string -> session_id:string -> ?opaque_host_id:string
     -> (string * RegistrationLease.t)
+  (** Ordinary peer discovery. After B264, private leases are omitted.
+      Dead filtering is orthogonal via [include_dead]. *)
   val list_peers : t -> ?include_dead:bool -> RegistrationLease.t list
+  (** Operator/admin full lease directory (Bearer-admin /include_dead path).
+      Includes private leases. *)
+  val list_peers_admin : t -> ?include_dead:bool -> RegistrationLease.t list
+  (** Current discovery visibility of a registered alias, or [None] if no lease. *)
+  val peer_discovery_visibility_of :
+    t -> alias:string -> peer_discovery_visibility option
+  (** Owner/admin management: set discovery visibility. Private is the
+      production default after B264/B266 migration. *)
+  val set_peer_discovery_visibility :
+    t -> alias:string -> visibility:peer_discovery_visibility
+    -> (unit, string) result
   (* [pow_difficulty]: B014 — the sender's PoW difficulty (leading-zero bits)
      at send-accept time, stored as sibling metadata on the delivered message.
      Default [-1] = not recorded (relay PoW disabled / sender identity
