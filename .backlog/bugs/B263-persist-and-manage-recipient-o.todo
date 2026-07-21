@@ -76,3 +76,12 @@ Before completion, add and pass:
 - Commit-failure rollback on the process-lifetime SQLite connection must be protected (coordinator fix pending verification).
 
 Do not mark B263 done until these are dispositioned and the 34+ test suite, B219 lifecycle, review, rebase, and merge gates pass.
+
+## Final verified evidence
+
+- Merged implementation: `91198e3d` (feature commit `7e28956c`).
+- Focused grant suite: 36/36 pass after rebase onto local `master`.
+- B219/relay lifecycle suite: 54/54 pass after rebase.
+- Covers issue/list/revoke/rotate/admit, owner→alias binding, sender binding, expiry, sibling rotation, replay/idempotency, restart, concurrent revoke/admit, SQLite raw-secret absence, malformed stored rows, 7-day GC retention and monotonic generations.
+- Mechanical B219 audit: no raw `Sqlite3.prepare`, no per-op `db_open`; five public locks/five transactions; all statements via `with_stmt`; no raw grant secret SQL reference.
+- v1 management trust boundary is documented in `Relay_backend_contract.RELAY`: host-local/already-verified owner control plane only; future remote management must authenticate alias+signer before backend calls.
