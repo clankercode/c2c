@@ -1475,19 +1475,21 @@ module SqliteRelay : RELAY = struct
   }
 
   let sqlite_table_has_column conn ~table ~column =
-    let info_stmt = Sqlite3.prepare conn (Printf.sprintf "PRAGMA table_info(%s)" table) in
     let found = ref false in
-    let rec loop () =
-      let rc = Sqlite3.step info_stmt in
-      if rc = Sqlite3.Rc.ROW then begin
-        let col_name = Sqlite3.Data.to_string_exn (Sqlite3.column info_stmt 1) in
-        if col_name = column then found := true;
-        loop ()
-      end
-    in
-    (try loop () with _ -> ());
-    (try Sqlite3.finalize info_stmt |> ignore with _ -> ());
-    !found
+    let info_stmt = Sqlite3.prepare conn (Printf.sprintf "PRAGMA table_info(%s)" table) in
+    Fun.protect
+      ~finally:(fun () -> (try ignore (Sqlite3.finalize info_stmt) with _ -> ()))
+      (fun () ->
+        let rec loop () =
+          let rc = Sqlite3.step info_stmt in
+          if rc = Sqlite3.Rc.ROW then begin
+            let col_name = Sqlite3.Data.to_string_exn (Sqlite3.column info_stmt 1) in
+            if col_name = column then found := true;
+            loop ()
+          end
+        in
+        (try loop () with _ -> ());
+        !found)
 
   let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let db_path = Filename.concat persist_dir "c2c_relay.db" in
