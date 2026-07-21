@@ -166,3 +166,22 @@ Reviewed `docs/security/index.md` against ledger and code:
 - Attack matrix + claim ledger remain the regression authority; this review does not weaken acceptance criteria.
 
 Signed-off disposition: **PASS-WITH-NOTES** for plan item “Obtain incremental independent security review and resolve every accepted blocker or major finding.”
+
+
+---
+
+## Clean-tip reaffirmation (6f313eea)
+
+Re-audited on local `master` after `feature/b265-clean` + `feature/b266-clean` merge and
+B264 public-list suite compatibility fix.
+
+| Gate | Result |
+|---|---|
+| Full monorepo `@runtest --force` | exit 0, 0 FAIL, ~3426 tests (tip `6f313eea`) |
+| Focused B263–B267 suites | grants 36, discovery 25, delivery 30, migration 5, matrix 15, doctor 12, relay 54 |
+| Dogfood isolated local | AUTH-OK inbox; unauth legacy unknown_alias; contact_unauthorised; cleartext refuse; health git_hash=6f313eea |
+| Residual M1 (old binary on migrated DB) | ops constraint — accepted; not a code defect on tip |
+| Residual optional WS push on contact Accepted | product note, not blocker |
+| Verdict | **PASS-WITH-NOTES** on clean master tip `6f313eea` |
+
+Salvage branch `feature/b264-private-discovery` remains reference-only (plan Deviations).

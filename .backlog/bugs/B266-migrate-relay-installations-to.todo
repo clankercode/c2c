@@ -1,20 +1,20 @@
 ---
-claimed_at: "2026-07-21T15:47:20Z"
+claimed_at: "2026-07-21T17:53:21Z"
 claimed_by: cli-user
-completed_at: "2026-07-21T17:34:07Z"
+completed_at: "2026-07-21T17:53:21Z"
 complexity: high
 created_at: "2026-07-21T13:50:18Z"
 depends_on:
     - B265
-duration_minutes: 106.7866909629
+duration_minutes: 0.005442910016666667
 estimate_hours: 8
 id: B266
 priority: critical
-started_at: "2026-07-21T15:47:20Z"
+started_at: "2026-07-21T17:53:21Z"
 status: done
 tags: []
 title: Migrate relay installations to private fail-closed reachability
-updated_at: "2026-07-21T17:34:07Z"
+updated_at: "2026-07-21T17:53:21Z"
 ---
 ## Purpose
 
