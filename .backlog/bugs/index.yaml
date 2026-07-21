@@ -247,3 +247,4 @@ bugs:
     - file: B248-test-c2c-cli-c2c-cmd-wrapper-l.todo
     - file: B249-add-general-instructions-to-c2.todo
     - file: B250-move-running-pi-signpost-from.todo
+    - file: B251-add-setup-hooks-skill-label-fo.todo
