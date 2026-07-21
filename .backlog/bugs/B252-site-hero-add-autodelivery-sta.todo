@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-21T09:59:33Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-21T10:34:42Z"
 complexity: medium
 created_at: "2026-07-21T09:55:19Z"
 depends_on: []
+duration_minutes: 35.16056224485
 estimate_hours: 1
 id: B252
 priority: high
 started_at: "2026-07-21T09:59:33Z"
-status: in_progress
+status: done
 tags: []
 title: 'site hero: add ''autodelivery start with:'' (or something) type label for the ''c2c new <client>'' line for those clients where it needs that, and suggest setting an alias. should have a little help icon that popus up suggestions for aliases like my cx alias for example.'
-updated_at: "2026-07-21T09:59:33Z"
+updated_at: "2026-07-21T10:34:42Z"
 ---
 
 site hero: add 'autodelivery start with:' (or something) type label for the 'c2c new <client>' line for those clients where it needs that, and suggest setting an alias. should have a little help icon that popus up suggestions for aliases like my cx alias for example.
