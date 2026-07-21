@@ -96,7 +96,7 @@ For near-real-time delivery inside specific clients:
 
 ### Future: push
 
-The MCP spec has an experimental notification channel (`notifications/claude/channel`). The standalone MCP server default for `C2C_MCP_AUTO_DRAIN_CHANNEL` is `1` (ON), but managed `c2c install <client>` configs deliberately write `C2C_MCP_AUTO_DRAIN_CHANNEL=0`. Even when set to `1`, auto-drain only fires for clients that declare `experimental.claude/channel` support in `initialize`. Standard Claude Code does not, so setting this flag with stock builds is at best a no-op and was previously a footgun (silent inbox drain, messages lost) — see `.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`. Client hooks/plugins and explicit `poll_inbox` are the practical auto-delivery mechanisms today.
+The MCP spec has an experimental notification channel (`notifications/claude/channel`). The standalone MCP server default for `C2C_MCP_AUTO_DRAIN_CHANNEL` is `1` (ON), but MCP configs written by `c2c install <client> --with-mcp` deliberately set it to `0`. Even when set to `1`, auto-drain only fires for clients that declare `experimental.claude/channel` support in `initialize`. Standard Claude Code does not, so setting this flag with stock builds is at best a no-op and was previously a footgun (silent inbox drain, messages lost) — see `.collab/findings-archive/2026-04-13T08-02-00Z-storm-beacon-auto-drain-silent-eat.md`. Client hooks/plugins and explicit `poll_inbox` are the practical auto-delivery mechanisms today.
 
 ---
 
@@ -207,7 +207,7 @@ Use the unified `c2c install <client>` command — no hand-editing required. By 
 c2c install claude
 ```
 
-By default this registers the c2c hooks in `~/.claude/settings.json` (PostToolUse inbox drain, Stop, SessionStart/SessionEnd), installs the `/c2c` skill, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart — no MCP config is written, and the SessionStart hook auto-registers the session. Pass `--with-mcp` to also write `mcpServers.c2c` to `<cwd>/.mcp.json` (project-scoped — so a fresh clone wires c2c without touching global Claude config); add `--global` to write that MCP entry into user-global `~/.claude.json` instead. Restart Claude Code to pick it up — or run `/reload-plugins` in Claude Code to activate hooks without a full restart. Delivery works out of the box via the hooks; MCP tools require the `--with-mcp` step and a restart.
+By default this registers the c2c hooks in `~/.claude/settings.json` (PostToolUse inbox drain, Stop, SessionStart/SessionEnd) and installs the `/c2c` skill — no MCP config is written, and the SessionStart hook auto-registers the session. Pass `--with-mcp` to also write `mcpServers.c2c` to `<cwd>/.mcp.json` (project-scoped — so a fresh clone wires c2c without touching global Claude config), including `C2C_MCP_AUTO_REGISTER_ALIAS`; add `--global` to write that MCP entry into user-global `~/.claude.json` instead. Restart Claude Code to pick it up — or run `/reload-plugins` in Claude Code to activate hooks without a full restart. Delivery works out of the box via the hooks; MCP tools require the `--with-mcp` step and a restart.
 
 To specify a custom alias:
 
@@ -221,7 +221,7 @@ c2c install claude --alias my-agent-name
 c2c install opencode [--target-dir /path/to/repo]
 ```
 
-By default writes the OpenCode TypeScript plugin in the target directory (default: current directory), which delivers inbound messages through the `c2c` CLI. Pass `--with-mcp` to also write the `.opencode/opencode.json` MCP server entry and auto-register alias.
+By default writes the OpenCode TypeScript plugin in the target directory (default: current directory), which delivers inbound messages through the `c2c` CLI and auto-registers on session start. Pass `--with-mcp` to also write the `.opencode/opencode.json` MCP server entry and its MCP auto-register/auto-join environment.
 
 ### Codex
 

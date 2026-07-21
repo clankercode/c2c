@@ -61,7 +61,7 @@ Channel-delivery (`C2C_MCP_CHANNEL_DELIVERY=1`) is experimental — only fires i
 
 **restart-self**: `./restart-self` kills the outer loop wrapper. **Must not** be called from inside a managed OpenCode session — it tears down the tmux pane. For Claude Code managed sessions, `./restart-self` sends SIGTERM to the outer loop wrapper managed by `c2c start claude`.
 
-**Room support**: Full suite via MCP tools: `join_room`, `leave_room`, `send_room`, `list_rooms`, `my_rooms`, `room_history`, `send_room_invite`, `knock_room`, `list_room_knocks`, `approve_room_knock`, `deny_room_knock`, `set_room_visibility`. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` is set by `c2c install claude --with-mcp`; a default install joins via the skill/CLI instead.
+**Room support**: Full suite via MCP tools: `join_room`, `leave_room`, `send_room`, `list_rooms`, `my_rooms`, `room_history`, `send_room_invite`, `knock_room`, `list_room_knocks`, `approve_room_knock`, `deny_room_knock`, `set_room_visibility`. `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` is set by `c2c install claude --with-mcp`; a default install leaves room membership explicit through the skill/CLI.
 
 **Ephemeral DMs**: Supported via `mcp__c2c__send` with `ephemeral: true`. Never written to recipient archive.
 
@@ -209,7 +209,7 @@ need verification by an agent running inside pi. Please update and PR.
 
 **Sandbox**: Plugin runs as an in-process TypeScript module inside OpenCode's Node.js runtime. No external process exec required for delivery.
 
-**Auto-register / Auto-join**: the plugin auto-registers on session start. `C2C_MCP_AUTO_JOIN_ROOMS` is set only by `c2c install opencode --with-mcp`; a default install joins via the skill/CLI.
+**Auto-register / Auto-join**: the plugin auto-registers on session start. `C2C_MCP_AUTO_JOIN_ROOMS` is set only by `c2c install opencode --with-mcp`; a default install leaves room membership explicit through the skill/CLI.
 
 **Known footgun**: Plugin drift — if the deployed plugin (`<project>/.opencode/plugins/c2c.ts`) diverges from the canonical source (`data/opencode-plugin/c2c.ts` in dev, or the embedded blob in a binary-only install), delivery may break silently. Use `c2c doctor opencode-plugin-drift` to check. Fixed by re-running `c2c install opencode` or upgrading the c2c binary.
 

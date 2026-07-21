@@ -511,8 +511,22 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
                 (fun a -> if a.C2c_install_manifest.kind = "schedule" then Some a else None)
                 r.artifacts
         in
+        (* The receipt is the authority for which mutable MCP fragments this
+           particular installation owns. A post-B254 default install omits
+           them; adding the deterministic fallback [shared-key]/TOML-section
+           artifacts here would let its uninstall delete an operator's
+           pre-existing MCP configuration. Shared blocks are safe to backfill
+           because their c2c markers make ownership explicit. *)
+        let shared_missing_from_receipt =
+          List.filter
+            (fun (artifact : C2c_install_manifest.artifact) ->
+               artifact.kind <> "shared-key"
+               && artifact.kind <> "shared-toml-section")
+            recomputed_shared
+        in
         ( dedupe_artifacts
-            (r.C2c_install_manifest.artifacts @ recomputed_shared @ recomputed_owned @ sched)
+            (r.C2c_install_manifest.artifacts @ shared_missing_from_receipt
+             @ recomputed_owned @ sched)
         , recomputed_settings )
     | None ->
         let sched =

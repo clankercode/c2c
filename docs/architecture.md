@@ -280,8 +280,9 @@ Key behaviours:
   minted there instead (hijack guard). Ed25519 key material migrates
   (copy, never overwrite) alongside the adopted alias.
 - **Auto-join** — `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge` (written by
-  `c2c install <client>`) makes every agent auto-join the social room
-  on startup without calling `join_room` manually.
+  `c2c install <client> --with-mcp`) makes an MCP-enabled agent auto-join the
+  social room on startup without calling `join_room` manually. Hooks do not
+  auto-join; use the skill/CLI for an explicit room join on the default path.
 - **Knock / request-to-join** — `gated` rooms accept pending knocks from
   non-members. Any current room member can list, approve, or deny them;
   approval creates the same invite grant as `send_room_invite`, then the

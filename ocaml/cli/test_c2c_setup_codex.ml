@@ -88,6 +88,12 @@ let test_fresh_install_writes_hooks_and_agents_md () =
     check bool "extra_json reports mcp=false" true
       (List.exists (fun (k, v) -> k = "mcp" && v = `Bool false)
          result.C2c_setup.extra_json);
+    check bool "default result does not advertise an MCP server" false
+      (List.mem_assoc "server" result.C2c_setup.extra_json);
+    check bool "hooks/skill install is detectable without MCP" true
+      (C2c_setup.client_integration_configured "codex");
+    check bool "MCP config remains absent from detection" false
+      (C2c_setup.client_mcp_configured "codex");
     let agents_md = read_file (home // ".codex" // "AGENTS.md") in
     check int "one AGENTS.md block" 1
       (count_occurrences ~haystack:agents_md
@@ -252,6 +258,8 @@ let test_with_mcp_writes_mcp_block () =
     let config = read_file (home // ".codex" // "config.toml") in
     check bool "[mcp_servers.c2c] present with --with-mcp" true
       (contains ~haystack:config ~needle:"[mcp_servers.c2c]");
+    check bool "MCP command written" true
+      (contains ~haystack:config ~needle:"command = \"c2c-mcp-server\"");
     check bool "C2C_MCP_AUTO_REGISTER_ALIAS written" true
       (contains ~haystack:config
          ~needle:"C2C_MCP_AUTO_REGISTER_ALIAS = \"codex-fixture-zz\"");
@@ -259,6 +267,12 @@ let test_with_mcp_writes_mcp_block () =
     check int "one hooks block" 1
       (count_occurrences ~haystack:config
          ~needle:C2c_codex_hooks.config_begin_marker);
+    let agents_md = read_file (home // ".codex" // "AGENTS.md") in
+    check int "one AGENTS.md block with --with-mcp" 1
+      (count_occurrences ~haystack:agents_md
+         ~needle:C2c_codex_hooks.agents_md_begin_marker);
+    check bool "skill still written with --with-mcp" true
+      (Sys.file_exists (home // ".codex" // "skills" // "c2c" // "SKILL.md"));
     check bool "shared-toml-section artifact present" true
       (List.exists
          (fun (a : C2c_install_manifest.artifact) ->
@@ -267,7 +281,11 @@ let test_with_mcp_writes_mcp_block () =
          result.C2c_setup.artifacts);
     check bool "extra_json reports mcp=true" true
       (List.exists (fun (k, v) -> k = "mcp" && v = `Bool true)
-         result.C2c_setup.extra_json))
+         result.C2c_setup.extra_json);
+    check (option string) "MCP result identifies server" (Some "/fake/bin/c2c_mcp_server.exe")
+      (match List.assoc_opt "server" result.C2c_setup.extra_json with
+       | Some (`String server) -> Some server
+       | _ -> None))
 
 let test_preserves_user_agents_md () =
   with_temp_home (fun home ->

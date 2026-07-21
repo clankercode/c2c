@@ -1177,7 +1177,8 @@ let test_preflight_reads_config_file () =
 
 let test_preflight_diagnostic_is_actionable () =
   let d = S.codex_mcp_preflight_diagnostic "the c2c MCP command `x` is not runnable" in
-  Alcotest.(check bool) "names the repair command" true (string_mem "c2c install codex" d);
+  Alcotest.(check bool) "names the MCP opt-in repair command" true
+    (string_mem "c2c install codex --with-mcp" d);
   Alcotest.(check bool) "names the skip escape" true
     (string_mem "C2C_CODEX_SKIP_MCP_PREFLIGHT" d)
 

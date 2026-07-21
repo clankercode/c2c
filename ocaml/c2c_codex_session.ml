@@ -479,14 +479,13 @@ let executable_file path =
   with _ -> false
 
 (* --- B224: codex MCP-block preflight -------------------------------------- *)
-(* Managed Codex launches (all four command forms funnel through {!run}) rely
-   ENTIRELY on the machine-wide [mcp_servers.c2c] block that `c2c install codex`
-   writes into ~/.codex/config.toml — [CodexAdapter.refresh_identity] is a
-   no-op, so nothing revalidates it per launch (contrast KimiAdapter, which
-   rewrites a fresh per-instance MCP config every start). When that block is
-   stale (an `opam exec -- <server_path>` whose build path was removed, or a
-   bare `c2c-mcp-server` no longer on PATH) Codex fails the MCP handshake and
-   the operator lands in a silently-broken managed session:
+(* Managed Codex launches (all four command forms funnel through {!run}) use
+   the app-server transport, hooks, and CLI without requiring an MCP block.
+   The optional machine-wide [mcp_servers.c2c] block is written only by
+   `c2c install codex --with-mcp`. If it is present but stale (an `opam exec
+   -- <server_path>` whose build path was removed, or a bare `c2c-mcp-server`
+   no longer on PATH), Codex fails the MCP handshake and the operator lands in
+   a silently-broken managed session:
 
      MCP client for `c2c` failed to start: ... connection closed
      MCP startup incomplete (failed: c2c)
@@ -636,7 +635,7 @@ let codex_mcp_preflight_diagnostic (reason : string) : string =
      (handshake failure).\n\
      Repair the machine-wide install, then relaunch:\n\
      \n\
-    \    c2c install codex\n\
+    \    c2c install codex --with-mcp\n\
      \n\
      (Set C2C_CODEX_SKIP_MCP_PREFLIGHT=1 to launch anyway.)\n"
     reason
