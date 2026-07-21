@@ -93,10 +93,11 @@ let with_install_env ~home ~bin_dir f =
     Unix.putenv "PATH" old_path)
     f
 
-let install_opencode_cmd ~exe ~target ~broker_root ~alias =
+let install_opencode_cmd ~with_mcp ~exe ~target ~broker_root ~alias =
   Printf.sprintf
-    "%s install opencode --target-dir %s --broker-root %s --alias %s --no-deliver-watch --json"
+    "%s install opencode%s --target-dir %s --broker-root %s --alias %s --no-deliver-watch --json"
     (Filename.quote exe)
+    (if with_mcp then " --with-mcp" else "")
     (Filename.quote target)
     (Filename.quote broker_root)
     (Filename.quote alias)
@@ -118,23 +119,24 @@ let test_install_opencode_binary_only_writes_embedded () =
       with_tmp_dir (fun invocation_cwd ->
       let bin_dir = home // "bin" in
       Unix.mkdir bin_dir 0o700;
-      (* setup_opencode resolves the MCP server via which_binary. Provide a
-         dummy executable so the install does not fail before writing the plugin. *)
-      let dummy_server = bin_dir // "c2c-mcp-server" in
-      write_file dummy_server "#!/bin/sh\nexit 0\n";
-      Unix.chmod dummy_server 0o755;
+      (* B254/B255: the default plugin install must not need an MCP server on
+         PATH, because it does not write an MCP config. *)
       let exe = c2c_exe_path () in
       with_install_env ~home ~bin_dir
         (fun () ->
           with_cwd invocation_cwd (fun () ->
           let broker_root = target // "broker" in
           let cmd =
-            install_opencode_cmd ~exe ~target ~broker_root ~alias:"test-embed"
+            install_opencode_cmd ~with_mcp:false ~exe ~target ~broker_root
+              ~alias:"test-embed"
           in
           let rc = Sys.command cmd in
           check int "c2c install opencode exits 0" 0 rc;
           let plugin_path = target // ".opencode" // "plugins" // "c2c.ts" in
           check bool "plugin file was written" true (Sys.file_exists plugin_path);
+          let mcp_config = target // ".opencode" // "opencode.json" in
+          check bool "default install does not write opencode MCP config" false
+            (Sys.file_exists mcp_config);
           let installed = read_file plugin_path in
           check string "installed plugin equals embedded content"
             C2c_opencode_plugin_embedded.content installed;
@@ -145,6 +147,31 @@ let test_install_opencode_binary_only_writes_embedded () =
           in
           check bool "binary-only install writes a regular file, not a symlink"
             false is_symlink)))))
+
+let test_install_opencode_with_mcp_writes_config () =
+  with_tmp_dir (fun home ->
+    with_tmp_dir (fun target ->
+      with_tmp_dir (fun invocation_cwd ->
+        let bin_dir = home // "bin" in
+        Unix.mkdir bin_dir 0o700;
+        let dummy_server = bin_dir // "c2c-mcp-server" in
+        write_file dummy_server "#!/bin/sh\nexit 0\n";
+        Unix.chmod dummy_server 0o755;
+        let exe = c2c_exe_path () in
+        with_install_env ~home ~bin_dir (fun () ->
+          with_cwd invocation_cwd (fun () ->
+            let broker_root = target // "broker" in
+            let cmd =
+              install_opencode_cmd ~with_mcp:true ~exe ~target ~broker_root
+                ~alias:"test-embed-mcp"
+            in
+            let rc = Sys.command cmd in
+            check int "c2c install opencode --with-mcp exits 0" 0 rc;
+            let mcp_config = target // ".opencode" // "opencode.json" in
+            check bool "--with-mcp writes opencode MCP config" true
+              (Sys.file_exists mcp_config);
+            check bool "MCP config contains c2c entry" true
+              (contains (read_file mcp_config) "\"c2c\""))))))
 
 let test_install_opencode_dev_symlink_is_target_relative () =
   with_tmp_dir (fun home ->
@@ -164,7 +191,7 @@ let test_install_opencode_dev_symlink_is_target_relative () =
           with_cwd invocation_cwd (fun () ->
             let broker_root = target // "broker" in
             let cmd =
-              install_opencode_cmd ~exe ~target ~broker_root
+              install_opencode_cmd ~with_mcp:false ~exe ~target ~broker_root
                 ~alias:"test-embed-dev"
             in
             let rc = Sys.command cmd in
@@ -194,6 +221,8 @@ let () =
         ] )
     ; ( "binary_only_install",
         [ test_case "install_opencode_writes_embedded" `Quick test_install_opencode_binary_only_writes_embedded
+        ; test_case "install_opencode_with_mcp_writes_config" `Quick
+            test_install_opencode_with_mcp_writes_config
         ] )
     ; ( "dev_checkout",
         [ test_case "install_opencode_symlink_uses_target_not_cwd" `Quick

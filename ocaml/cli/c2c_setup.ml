@@ -692,7 +692,7 @@ let write_deliver_watch_scripts ~dry_run ~client_dir ~broker_root ~client_name =
   write_script supervisor_path supervisor_script;
   write_script pre_deliver_path pre_deliver_script
 
-let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~alias_from_auto_gen =
+let setup_codex ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~alias_from_auto_gen =
   let config_path = Filename.concat (Sys.getenv "HOME") (".codex" // "config.toml") in
   let existing =
     if Sys.file_exists config_path then
@@ -715,51 +715,65 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
       ~end_marker:C2c_codex_hooks.config_end_marker
       existing
   in
-  let lines = String.split_on_char '\n' existing in
+  (* B254: only strip an existing [mcp_servers.c2c*] section when we are about
+     to rewrite it (with_mcp). In the default (no-MCP) path we leave any
+     user/prior c2c MCP lines untouched — the hooks block is still managed
+     idempotently below regardless. *)
   let stripped =
-    let buf = Buffer.create (String.length existing) in
-    let in_c2c = ref false in
-    List.iter (fun line ->
-      let trimmed = String.trim line in
-      if String.length trimmed > 0 && trimmed.[0] = '[' then begin
-        in_c2c :=
-          (try
-             let sec = String.sub trimmed 1 (String.length trimmed - 2) in
-             String.length sec >= String.length "mcp_servers.c2c"
-             && String.sub sec 0 (String.length "mcp_servers.c2c") = "mcp_servers.c2c"
-           with _ -> false)
-      end;
-      if not !in_c2c then Buffer.add_string buf line;
-      Buffer.add_char buf '\n'
-    ) lines;
-    Buffer.contents buf
+    if not with_mcp then existing
+    else
+      let lines = String.split_on_char '\n' existing in
+      let buf = Buffer.create (String.length existing) in
+      let in_c2c = ref false in
+      List.iter (fun line ->
+        let trimmed = String.trim line in
+        if String.length trimmed > 0 && trimmed.[0] = '[' then begin
+          in_c2c :=
+            (try
+               let sec = String.sub trimmed 1 (String.length trimmed - 2) in
+               String.length sec >= String.length "mcp_servers.c2c"
+               && String.sub sec 0 (String.length "mcp_servers.c2c") = "mcp_servers.c2c"
+             with _ -> false)
+        end;
+        if not !in_c2c then Buffer.add_string buf line;
+        Buffer.add_char buf '\n'
+      ) lines;
+      Buffer.contents buf
   in
-  let buf = Buffer.create 1024 in
-  Buffer.add_string buf "\n[mcp_servers.c2c]\n";
-  if mcp_command = "c2c-mcp-server" then begin
-    Buffer.add_string buf "command = \"c2c-mcp-server\"\n";
-    Buffer.add_string buf "args = []\n"
-  end else begin
-    Buffer.add_string buf "command = \"opam\"\n";
-    Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"%s\"]\n" server_path)
-  end;
-  Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
-  Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
-  (* Without C2C_MCP_AUTO_REGISTER_ALIAS the c2c MCP server inside codex never
-     auto-registers (auto_register_impl bails when the alias env is absent) —
-     mirror setup_kimi, which has always written it. *)
-  Buffer.add_string buf (Printf.sprintf "C2C_MCP_AUTO_REGISTER_ALIAS = \"%s\"\n" alias_val);
-  Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
-  Buffer.add_string buf "C2C_MCP_AUTO_DRAIN_CHANNEL = \"0\"\n";
-  Buffer.add_string buf
-    (Printf.sprintf "C2C_MCP_AUTO_JOIN_ROOMS = \"%s\"\n" (default_social_room ()));
-  Buffer.add_string buf "C2C_AUTO_JOIN_ROLE_ROOM = \"1\"\n";
-  if alias_from_auto_gen then
-    Buffer.add_string buf "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN = \"1\"\n";
-  List.iter (fun tool ->
-    Buffer.add_string buf (Printf.sprintf "\n[mcp_servers.c2c.tools.%s]\n" tool);
-    Buffer.add_string buf "approval_mode = \"auto\"\n"
-  ) c2c_tools_list;
+  (* B254: the MCP-server section is written only on the opt-in [with_mcp] path.
+     Empty string on the default path so [new_content] is hooks-only. *)
+  let mcp_buf =
+    if not with_mcp then ""
+    else begin
+      let buf = Buffer.create 1024 in
+      Buffer.add_string buf "\n[mcp_servers.c2c]\n";
+      if mcp_command = "c2c-mcp-server" then begin
+        Buffer.add_string buf "command = \"c2c-mcp-server\"\n";
+        Buffer.add_string buf "args = []\n"
+      end else begin
+        Buffer.add_string buf "command = \"opam\"\n";
+        Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"%s\"]\n" server_path)
+      end;
+      Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
+      Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
+      (* Without C2C_MCP_AUTO_REGISTER_ALIAS the c2c MCP server inside codex never
+         auto-registers (auto_register_impl bails when the alias env is absent) —
+         mirror setup_kimi, which has always written it. *)
+      Buffer.add_string buf (Printf.sprintf "C2C_MCP_AUTO_REGISTER_ALIAS = \"%s\"\n" alias_val);
+      Buffer.add_string buf "C2C_MCP_CLIENT_TYPE = \"codex\"\n";
+      Buffer.add_string buf "C2C_MCP_AUTO_DRAIN_CHANNEL = \"0\"\n";
+      Buffer.add_string buf
+        (Printf.sprintf "C2C_MCP_AUTO_JOIN_ROOMS = \"%s\"\n" (default_social_room ()));
+      Buffer.add_string buf "C2C_AUTO_JOIN_ROLE_ROOM = \"1\"\n";
+      if alias_from_auto_gen then
+        Buffer.add_string buf "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN = \"1\"\n";
+      List.iter (fun tool ->
+        Buffer.add_string buf (Printf.sprintf "\n[mcp_servers.c2c.tools.%s]\n" tool);
+        Buffer.add_string buf "approval_mode = \"auto\"\n"
+      ) c2c_tools_list;
+      Buffer.contents buf
+    end
+  in
   (* #5 vanilla-codex: managed hooks block (UserPromptSubmit + PostToolUse +
      SessionStart + SessionEnd -> `c2c hook codex`) with pre-computed trust hashes so codex
      runs the hooks without a /hooks approval prompt. Idempotent: the previous
@@ -768,7 +782,7 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
   let hooks_block =
     C2c_codex_hooks.render_hooks_block ~config_path ~existing:stripped
   in
-  let new_content = stripped ^ Buffer.contents buf ^ "\n" ^ hooks_block in
+  let new_content = stripped ^ mcp_buf ^ "\n" ^ hooks_block in
   mkdir_or_dryrun dry_run (Filename.dirname config_path);
   if dry_run then
     Printf.printf "[DRY-RUN] would write %d bytes to %s\n%!" (String.length new_content) config_path
@@ -817,22 +831,26 @@ let setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
     (try Unix.unlink pre_deliver with Unix.Unix_error _ -> ())
   end;
   { artifacts =
-      [ C2c_install_manifest.shared_toml_section ~path:config_path ~section_prefix:"mcp_servers.c2c"
-      ; C2c_install_manifest.shared_block ~path:config_path
-          ~begin_marker:C2c_codex_hooks.config_begin_marker
-          ~end_marker:C2c_codex_hooks.config_end_marker ()
-      ; C2c_install_manifest.shared_block ~path:agents_md_path
-          ~begin_marker:C2c_codex_hooks.agents_md_begin_marker
-          ~end_marker:C2c_codex_hooks.agents_md_end_marker ()
-      ]
+      (if with_mcp then
+         [ C2c_install_manifest.shared_toml_section ~path:config_path ~section_prefix:"mcp_servers.c2c" ]
+       else [])
+      @ [ C2c_install_manifest.shared_block ~path:config_path
+            ~begin_marker:C2c_codex_hooks.config_begin_marker
+            ~end_marker:C2c_codex_hooks.config_end_marker ()
+        ; C2c_install_manifest.shared_block ~path:agents_md_path
+            ~begin_marker:C2c_codex_hooks.agents_md_begin_marker
+            ~end_marker:C2c_codex_hooks.agents_md_end_marker ()
+        ]
       @ (match skill_artifact with Some a -> [ a ] | None -> [])
   ; extra_json =
       [ ("client", `String client)
       ; ("alias", `String alias_val)
       ; ("broker_root", `String root)
       ; ("config", `String config_path)
-      ; ("server", `String server_path)
-      ; ("hooks", `String "UserPromptSubmit+PostToolUse+SessionStart+SessionEnd -> c2c hook codex (pre-trusted)")
+      ; ("mcp", `Bool with_mcp)
+      ]
+      @ (if with_mcp then [ ("server", `String server_path) ] else [])
+      @ [ ("hooks", `String "UserPromptSubmit+PostToolUse+SessionStart+SessionEnd -> c2c hook codex (pre-trusted)")
       ; ("agents_md", `String agents_md_path)
       ; ("skill", `String skill_path)
       ]
@@ -884,18 +902,25 @@ let build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen exi
               @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
   | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
 
-let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_auto_gen ?(force=false) () =
+let setup_kimi ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_auto_gen ?(force=false) () =
   let home = Sys.getenv "HOME" in
   let config_path = Filename.concat home (".kimi-code" // "mcp.json") in
   let toml_config_path = Filename.concat home (".kimi-code" // "config.toml") in
   let hook_install_dir = Filename.concat home (".local" // "bin") in
-  let existing =
-    if Sys.file_exists config_path then json_read_file config_path
-    else `Assoc []
-  in
-  let config = build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen existing in
+  (* Ensure ~/.kimi-code exists for the config.toml hook blocks regardless of
+     whether we write the (opt-in) mcp.json. *)
   mkdir_p dry_run (Filename.dirname config_path);
-  json_write_file_or_dryrun dry_run config_path config;
+  (* B254: write/merge ~/.kimi-code/mcp.json only on the opt-in [with_mcp]
+     path. Default install is config.toml hooks + skill + REST notifier — no
+     MCP config is read, merged, or written. *)
+  if with_mcp then begin
+    let existing =
+      if Sys.file_exists config_path then json_read_file config_path
+      else `Assoc []
+    in
+    let config = build_kimi_mcp_config ~root ~alias_val ~server_path ~alias_from_auto_gen existing in
+    json_write_file_or_dryrun dry_run config_path config
+  end;
   (* Slice 2 of #142: install the PreToolUse approval hook script and
      append a fully-commented [[hooks]] block to ~/.kimi-code/config.toml.
      Idempotent — running `c2c install kimi` twice yields one block. *)
@@ -960,24 +985,29 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_a
     []
   in
   { artifacts =
-      [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcpServers.c2c" ~format:"json"
-      ; C2c_install_manifest.shared_block ~path:toml_config_path
-          ~begin_marker ~end_marker
-          ~legacy_marker:C2c_kimi_hook.toml_block_legacy_marker ()
-      ; C2c_install_manifest.shared_block ~path:toml_config_path
-          ~begin_marker:session_start_begin_marker
-          ~end_marker:session_start_end_marker
-          ()
-      ; C2c_install_manifest.owned_file hook_path
-      ]
+      (if with_mcp then
+         [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcpServers.c2c" ~format:"json" ]
+       else [])
+      @ [ C2c_install_manifest.shared_block ~path:toml_config_path
+            ~begin_marker ~end_marker
+            ~legacy_marker:C2c_kimi_hook.toml_block_legacy_marker ()
+        ; C2c_install_manifest.shared_block ~path:toml_config_path
+            ~begin_marker:session_start_begin_marker
+            ~end_marker:session_start_end_marker
+            ()
+        ; C2c_install_manifest.owned_file hook_path
+        ]
       @ deliver_watch_artifacts
       @ (match skill_artifact with Some a -> [ a ] | None -> [])
   ; extra_json =
       [ ("client", `String "kimi")
       ; ("alias", `String alias_val)
       ; ("broker_root", `String root)
-      ; ("config", `String config_path)
-      ; ("hook_script", `String hook_path)
+      ; ("mcp", `Bool with_mcp)
+      ]
+      @ (if with_mcp then [ ("config", `String config_path) ] else [])
+      @
+      [ ("hook_script", `String hook_path)
       ; ("hooks_toml_path", `String toml_config_path)
       ; ("hooks_toml_block", `String hook_block_status_str)
       ; ("session_start_toml_block", `String session_start_block_status_str)
@@ -987,7 +1017,7 @@ let setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_a
 
 (* --- setup: OpenCode (JSON + plugin) --- *)
 
-let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ?(force=false) ?(deliver_watch=true) () =
+let setup_opencode ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ?(force=false) ?(deliver_watch=true) () =
   let target_dir = match target_dir_opt with
     | Some d -> d
     | None -> Sys.getcwd ()
@@ -1005,8 +1035,10 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
   in
   let config_dir = target_dir // ".opencode" in
   let config_path = config_dir // "opencode.json" in
-  (* Guard: if config already exists and has a c2c mcp entry, warn and skip unless --force. *)
-  if (not force) && Sys.file_exists config_path then begin
+  (* Guard: if config already exists and has a c2c mcp entry, warn and skip unless --force.
+     Only relevant on the opt-in [with_mcp] path — the default path never
+     touches opencode.json. *)
+  if with_mcp && (not force) && Sys.file_exists config_path then begin
     (try
        match json_read_file config_path with
        | `Assoc fields ->
@@ -1027,14 +1059,19 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
     else target_dir) in
   let session_id = Printf.sprintf "opencode-%s" dir_name in
   mkdir_or_dryrun dry_run config_dir;
+  (* B255: opencode.json (the MCP entry) is written only on the opt-in
+     [with_mcp] path. The default install writes the plugin + sidecar +
+     deliver-watch (the CLI-driven delivery path) and never creates or edits
+     opencode.json. *)
   let should_write_config =
-    force || not (Sys.file_exists config_path) ||
-    (try
-       match json_read_file config_path with
-       | `Assoc fields -> not (match List.assoc_opt "mcp" fields with
-           | Some (`Assoc m) -> List.mem_assoc "c2c" m | _ -> false)
-       | _ -> true
-     with _ -> true)
+    with_mcp &&
+    (force || not (Sys.file_exists config_path) ||
+     (try
+        match json_read_file config_path with
+        | `Assoc fields -> not (match List.assoc_opt "mcp" fields with
+            | Some (`Assoc m) -> List.mem_assoc "c2c" m | _ -> false)
+        | _ -> true
+      with _ -> true))
   in
   if should_write_config then begin
     let config =
@@ -1158,18 +1195,23 @@ let setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_d
     end else []
   in
   { artifacts =
-      [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcp.c2c" ~format:"json"
-      ; C2c_install_manifest.owned_file sidecar
-      ; plugin_artifact
-      ]
+      (if with_mcp then
+         [ C2c_install_manifest.shared_key ~path:config_path ~key:"mcp.c2c" ~format:"json" ]
+       else [])
+      @ [ C2c_install_manifest.owned_file sidecar
+        ; plugin_artifact
+        ]
       @ deliver_watch_artifacts
   ; extra_json =
       [ ("client", `String "opencode")
       ; ("session_id", `String session_id)
       ; ("alias", `String alias_val)
       ; ("broker_root", `String root)
-      ; ("config", `String config_path)
-      ; ("plugin", `String plugin_note)
+      ; ("mcp", `Bool with_mcp)
+      ]
+      @ (if with_mcp then [ ("config", `String config_path) ] else [])
+      @
+      [ ("plugin", `String plugin_note)
       ]
   }
 
@@ -1367,7 +1409,7 @@ let which_binary name =
 
    The PostToolUse hook script + settings.json registration always go to
    `~/.claude/` — those are user-global Claude features, not project-scoped. *)
-let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir ~alias_from_auto_gen ~skip_hooks =
+let setup_claude ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir ~alias_from_auto_gen ~skip_hooks =
   let claude_dir = resolve_claude_dir () in
   let project_dir =
     match project_dir with Some d -> d | None -> Sys.getcwd ()
@@ -1377,7 +1419,7 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     else Filename.concat project_dir ".mcp.json"
   in
   let config =
-    if Sys.file_exists mcp_config_path then json_read_file mcp_config_path
+    if with_mcp && Sys.file_exists mcp_config_path then json_read_file mcp_config_path
     else `Assoc []
   in
   let env_pairs =
@@ -1410,11 +1452,18 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
         `Assoc (filtered @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", mcp_entry) ])) ])
     | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", mcp_entry) ]) ]
   in
-  (* mkdir -p the parent (only matters in --global=false when project_dir
-     might not exist; existing-repo case is a no-op). *)
-  (try mkdir_p dry_run (Filename.dirname mcp_config_path)
-   with Unix.Unix_error _ -> ());
-  json_write_file_or_dryrun dry_run mcp_config_path config;
+  (* B254: write the client MCP config (.mcp.json / ~/.claude.json) only on the
+     opt-in [with_mcp] path. The default install writes hooks + skill only; the
+     SessionStart hook (`c2c hook claude`) still auto-registers, so delivery
+     works without MCP. When [with_mcp] is false we neither create nor rewrite
+     any existing user MCP config. *)
+  if with_mcp then begin
+    (* mkdir -p the parent (only matters in --global=false when project_dir
+       might not exist; existing-repo case is a no-op). *)
+    (try mkdir_p dry_run (Filename.dirname mcp_config_path)
+     with Unix.Unix_error _ -> ());
+    json_write_file_or_dryrun dry_run mcp_config_path config
+  end;
   let hook_status, stop_hook_status, session_hook_status, preauth_status, hook_artifacts, hook_extra_json =
     if skip_hooks then ("skipped", "skipped", "skipped", "skipped", [], [])
     else
@@ -1727,17 +1776,11 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     ) hook_binaries
   end;
   (hook_status, stop_hook_status, session_hook_status, preauth_status,
-   [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json"
-   ; C2c_install_manifest.owned_file hook_script
-   ; C2c_install_manifest.owned_file stop_hook_script
-   ; C2c_install_manifest.owned_file session_hook_script
-   ],
-   [ ("client", `String "claude")
-   ; ("alias", `String alias_val)
-   ; ("broker_root", `String root)
-   ; ("config", `String mcp_config_path)
-   ; ("scope", `String (if global then "global" else "project"))
-   ; ("hook_status", `String hook_status)
+   [ C2c_install_manifest.owned_file hook_script
+     ; C2c_install_manifest.owned_file stop_hook_script
+     ; C2c_install_manifest.owned_file session_hook_script
+     ],
+   [ ("hook_status", `String hook_status)
    ; ("stop_hook_status", `String stop_hook_status)
    ; ("session_hook_status", `String session_hook_status)
    ; ("preauth_hook_status", `String preauth_status)
@@ -1748,16 +1791,20 @@ let setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path 
     write_claude_skill ~output_mode ~dry_run ()
   in
   { artifacts =
-      [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json"
-      ] @ hook_artifacts @ (match skill_artifact with Some a -> [a] | None -> [])
+      (if with_mcp then
+         [ C2c_install_manifest.shared_key ~path:mcp_config_path ~key:"mcpServers.c2c" ~format:"json" ]
+       else [])
+      @ hook_artifacts @ (match skill_artifact with Some a -> [a] | None -> [])
   ; extra_json =
       [ ("client", `String "claude")
       ; ("alias", `String alias_val)
       ; ("broker_root", `String root)
-      ; ("config", `String mcp_config_path)
+      ; ("mcp", `Bool with_mcp)
       ; ("scope", `String (if global then "global" else "project"))
       ; ("skill", `String skill_path)
-      ] @ hook_extra_json
+      ]
+      @ (if with_mcp then [ ("config", `String mcp_config_path) ] else [])
+      @ hook_extra_json
   }
 
 (* --- install: crush (JSON) --- *)
@@ -2115,7 +2162,7 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
    | Json -> ());
   { artifacts; extra_json = extra }
 
-let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ?(skip_hooks=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
+let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ?(skip_hooks=false) ?(with_mcp=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   let root =
     match broker_root_opt with
@@ -2141,13 +2188,22 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
        C2c_mcp.mkdir_p config_dir;
        ignore (C2c_io.write_file_atomic (config_dir // "default-alias") (alias_val ^ "\n"))
      with _ -> ());  (* best-effort, non-fatal *)
-  let (server_path, mcp_command) = resolve_mcp_server_paths ~output_mode in
+  (* The hooks/skill/plugin install path is deliberately MCP-free. Do not
+     require an MCP-server binary merely to install that path: a release
+     binary installed without [c2c-mcp-server] must still install the
+     non-MCP delivery integration. [crush] keeps its legacy MCP-writing
+     setup until the deprecated cleanup route is removed. *)
+  let (server_path, mcp_command) =
+    match client with
+    | ("claude" | "codex" | "kimi" | "opencode") when not with_mcp -> ("", "")
+    | _ -> resolve_mcp_server_paths ~output_mode
+  in
   let result =
     match client with
-    | "claude" -> setup_claude ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen ~skip_hooks
-    | "codex" -> setup_codex ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~alias_from_auto_gen
-    | "kimi" -> setup_kimi ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_auto_gen ~force ()
-    | "opencode" -> setup_opencode ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
+    | "claude" -> setup_claude ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~server_path ~mcp_command ~force ~channel_delivery ~global ~project_dir:target_dir_opt ~alias_from_auto_gen ~skip_hooks
+    | "codex" -> setup_codex ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~client ~alias_from_auto_gen
+    | "kimi" -> setup_kimi ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~alias_from_auto_gen ~force ()
+    | "opencode" -> setup_opencode ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
     | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
     | "grok" -> setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | "agy" -> setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
@@ -2209,7 +2265,11 @@ let json_file_has_c2c_mcp_entry path =
       | _ -> false
     with _ -> false
 
-let client_configured client =
+(* Does this client currently have c2c MCP configuration? This deliberately
+   excludes the hooks/skill-only default install, so [install all --with-mcp]
+   can upgrade such an installation without doing work for clients whose MCP
+   server is already configured. *)
+let client_mcp_configured client =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
   match String.lowercase_ascii client with
   | "claude" ->
@@ -2283,12 +2343,63 @@ let client_configured client =
          with _ -> false)
   | _ -> false
 
+let file_contains path needle =
+  if not (Sys.file_exists path) then false
+  else
+    try
+      let ic = open_in_bin path in
+      let contents =
+        Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+          really_input_string ic (in_channel_length ic))
+      in
+      let needle_len = String.length needle in
+      let contents_len = String.length contents in
+      let rec loop index =
+        index <= contents_len - needle_len
+        && (String.sub contents index needle_len = needle || loop (index + 1))
+      in
+      loop 0
+    with _ -> false
+
+(* A default install intentionally has no MCP config, yet it is still a fully
+   configured c2c client: hooks and the /c2c skill provide the CLI delivery
+   path. TUI and bare [install all --with-clients] detection must recognise
+   that state instead of repeatedly offering the same installation. *)
+let client_integration_configured client =
+  let home = try Sys.getenv "HOME" with Not_found -> "" in
+  match String.lowercase_ascii client with
+  | "claude" ->
+      let claude_dir = resolve_claude_dir () in
+      Sys.file_exists (claude_dir // "hooks" // "c2c-session-hook.sh")
+      || Sys.file_exists (claude_dir // "skills" // "c2c" // "SKILL.md")
+  | "codex" | "codex-headless" ->
+      let codex_dir = home // ".codex" in
+      file_contains (codex_dir // "config.toml") C2c_codex_hooks.config_begin_marker
+      || file_contains (codex_dir // "AGENTS.md") C2c_codex_hooks.agents_md_begin_marker
+      || Sys.file_exists (codex_dir // "skills" // "c2c" // "SKILL.md")
+  | "kimi" ->
+      let kimi_dir = home // ".kimi-code" in
+      file_contains (kimi_dir // "config.toml") "# c2c-managed:BEGIN session-start-hook-kimi"
+      || Sys.file_exists (kimi_dir // "skills" // "c2c" // "SKILL.md")
+  | "opencode" ->
+      let opencode_dir = Sys.getcwd () // ".opencode" in
+      Sys.file_exists (opencode_dir // "plugins" // "c2c.ts")
+      || Sys.file_exists (opencode_dir // "c2c-sidecar.sh")
+  | "grok" | "agy" -> client_mcp_configured client
+  | "crush" -> client_mcp_configured client
+  | _ -> false
+
+(* Backwards-compatible name for callers that ask whether a client is ready
+   for c2c. Since B254 that means its non-MCP integration, not specifically an
+   MCP config block. *)
+let client_configured = client_integration_configured
+
 (* [detect_installation ()] returns the detection snapshot:
    (self_installed, [(client, binary_on_path, configured)]) *)
 let detect_installation () =
   let self = self_installed_path () <> None in
   let clients = List.map (fun c ->
-    (c, which_binary c <> None, client_configured c)
+    (c, which_binary c <> None, client_integration_configured c)
   ) known_clients in
   (self, clients)
 
@@ -2366,7 +2477,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
           let q =
             if configured
             then Printf.sprintf "  Reconfigure %s?" c
-            else Printf.sprintf "  Configure %s (writes MCP/hooks)?" c
+            else Printf.sprintf "  Configure %s (writes hooks + skill; MCP stays opt-in via 'c2c install %s --with-mcp')?" c c
           in
           (* B122: never default client MCP to yes, even in customize. *)
           (c, prompt_yn ~default_yes:false q)
@@ -2391,10 +2502,10 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
     List.iter (fun (c, do_it) ->
       if do_it then begin
         Printf.printf "\n→ Configuring %s...\n" c;
-        let channel_delivery =
-          if c = "claude" then prompt_channel_delivery () else false
-        in
-        do_install_client ~channel_delivery ~output_mode:Human ~dry_run ~client:c ~alias_opt ~no_nonce:false
+        (* The TUI configures the no-MCP path. Channel delivery is an MCP env
+           setting, so do not ask its prompt when the TUI cannot write it. *)
+        do_install_client ~with_mcp:false ~channel_delivery:false
+          ~output_mode:Human ~dry_run ~client:c ~alias_opt ~no_nonce:false
           ~broker_root_opt ~target_dir_opt:None ~force:false ()
       end
     ) do_clients;
@@ -2491,6 +2602,11 @@ let install_client_subcmd client =
     in
     Cmdliner.Arg.(value & flag & info ["no-deliver-watch"] ~doc)
   in
+  let with_mcp =
+    Cmdliner.Arg.(value & flag & info ["with-mcp"]
+      ~doc:"Also write the client MCP server config. Off by default — hooks + \
+            skill + CLI are the default delivery path.")
+  in
   let term =
     let+ json = json_flag
     and+ alias_opt = alias
@@ -2500,12 +2616,15 @@ let install_client_subcmd client =
     and+ force = force
     and+ dry_run = dry_run
     and+ global = global
-    and+ no_deliver_watch = no_deliver_watch in
+    and+ no_deliver_watch = no_deliver_watch
+    and+ with_mcp = with_mcp in
     let output_mode = if json then Json else Human in
     let channel_delivery =
-      if client = "claude" && output_mode = Human then prompt_channel_delivery () else false
+      if client = "claude" && with_mcp && output_mode = Human then
+        prompt_channel_delivery ()
+      else false
     in
-    do_install_client ~channel_delivery ~global ~deliver_watch:(not no_deliver_watch) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force ()
+    do_install_client ~with_mcp ~channel_delivery ~global ~deliver_watch:(not no_deliver_watch) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force ()
   in
   let doc = Printf.sprintf "Configure %s for c2c messaging." client in
   Cmdliner.Cmd.v (Cmdliner.Cmd.info client ~doc) term
@@ -2514,9 +2633,15 @@ let install_all_subcmd =
   let (alias, no_nonce, broker_root, _, _, dry_run, global) = install_common_args () in
   let with_clients =
     Cmdliner.Arg.(value & flag & info [ "with-clients" ]
-      ~doc:"Also configure every detected client (MCP/hooks). Off by default \
+      ~doc:"Also configure every detected client (hooks + skill). Off by default \
             (B122): bare $(b,c2c install all) installs the c2c binary only. \
             Prefer naming a single client with $(b,c2c install <client>).")
+  in
+  let with_mcp =
+    Cmdliner.Arg.(value & flag & info [ "with-mcp" ]
+      ~doc:"When combined with $(b,--with-clients), also write each client's MCP \
+            server config. Off by default — hooks + skill + CLI are the default \
+            delivery path.")
   in
   let term =
     let+ json = json_flag
@@ -2525,7 +2650,8 @@ let install_all_subcmd =
     and+ broker_root_opt = broker_root
     and+ dry_run = dry_run
     and+ global = global
-    and+ with_clients = with_clients in
+    and+ with_clients = with_clients
+    and+ with_mcp = with_mcp in
     let output_mode = if json then Json else Human in
     (* Human mode prints per-step; JSON mode emits one summary object so we
        don't interleave print_install_summary blobs from each client. *)
@@ -2555,7 +2681,12 @@ let install_all_subcmd =
     let skipped_clients = ref [] in
     let configured_clients = ref [] in
     let any_client_configured = ref false in
-    List.iter (fun (c, on_path, configured) ->
+    List.iter (fun (c, on_path, integration_configured) ->
+      let configured =
+        if with_mcp && List.mem c [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode" ]
+        then client_mcp_configured c
+        else integration_configured
+      in
       if not on_path then begin
         if human then Printf.printf "  %s: [not on PATH]\n" c;
         skipped_clients := (c, "not_on_path") :: !skipped_clients
@@ -2565,14 +2696,14 @@ let install_all_subcmd =
       end else if not with_clients then begin
         if human then
           Printf.printf
-            "  %s: [skipped; MCP opt-in — run 'c2c install %s' or pass --with-clients]\n"
+            "  %s: [skipped; client setup is opt-in — run 'c2c install %s' or pass --with-clients]\n"
             c c;
-        skipped_clients := (c, "mcp_opt_in") :: !skipped_clients
+        skipped_clients := (c, "client_setup_opt_in") :: !skipped_clients
       end else begin
         any_client_configured := true;
         configured_clients := c :: !configured_clients;
         if human then Printf.printf "\n→ Configuring %s...\n" c;
-        do_install_client ~global
+        do_install_client ~with_mcp ~global
           ~output_mode:(if human then Human else Json)
           ~dry_run ~client:c ~alias_opt ~no_nonce
           ~broker_root_opt ~target_dir_opt:None ~force:false
@@ -2584,7 +2715,7 @@ let install_all_subcmd =
       Printf.printf "\nDone.\n";
       if not with_clients && not !any_client_configured then begin
         Printf.printf
-          "\n  Client MCP/hooks were not configured (opt-in policy).\n\
+          "\n  Client hooks/skill were not configured (opt-in policy).\n\
           \  Pick one explicitly:\n\
           \    c2c install claude|codex|opencode|kimi|grok\n\
           \  Or bulk opt-in (still deliberate):\n\
@@ -2608,14 +2739,15 @@ let install_all_subcmd =
               `Assoc [ ("client", `String c); ("reason", `String reason) ])
               (List.rev !skipped_clients)))
         ; ("hint", `String
-            (if with_clients then "restart client after MCP install"
-             else "pass --with-clients or c2c install <client> for MCP"))
+            (if with_clients then "restart client after setup"
+             else "pass --with-clients or c2c install <client> for client setup"))
         ])
   in
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "all"
        ~doc:"Install the c2c binary only by default (scriptable, no prompts). \
-             Client MCP requires $(b,--with-clients) or $(b,c2c install <client>).")
+             Pass $(b,--with-clients) for hooks/skill setup and add $(b,--with-mcp) \
+             for MCP config; single-client MCP setup is $(b,c2c install <client> --with-mcp).")
     term
 
 let install_default_term =

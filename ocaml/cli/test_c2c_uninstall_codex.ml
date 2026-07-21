@@ -10,6 +10,22 @@ open Alcotest
 
 let ( // ) = Filename.concat
 
+let contains ~haystack ~needle =
+  let haystack_len = String.length haystack in
+  let needle_len = String.length needle in
+  let rec loop index =
+    index + needle_len <= haystack_len
+    && (String.sub haystack index needle_len = needle || loop (index + 1))
+  in
+  needle_len = 0 || loop 0
+
+let rec remove_tree path =
+  if Sys.is_directory path then begin
+    Array.iter (fun child -> remove_tree (path // child)) (Sys.readdir path);
+    Unix.rmdir path
+  end else
+    Unix.unlink path
+
 let with_temp_home f =
   let base = Filename.get_temp_dir_name () in
   let dir = base // Printf.sprintf "c2c-uninstall-codex-%08x" (Random.bits ()) in
@@ -19,7 +35,7 @@ let with_temp_home f =
   Fun.protect
     ~finally:(fun () ->
       (match prev_home with Some h -> Unix.putenv "HOME" h | None -> ());
-      try Unix.rmdir dir with _ -> ())
+      try remove_tree dir with _ -> ())
     (fun () -> f dir)
 
 let test_recompute_codex_covers_shared_blocks () =
@@ -73,6 +89,64 @@ let write_file path content =
   let oc = open_out_bin path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc content)
 
+let with_manifest_path path f =
+  let previous = Sys.getenv_opt "C2C_INSTALL_MANIFEST_PATH" in
+  Unix.putenv "C2C_INSTALL_MANIFEST_PATH" path;
+  Fun.protect
+    ~finally:(fun () ->
+      match previous with
+      | Some value -> Unix.putenv "C2C_INSTALL_MANIFEST_PATH" value
+      | None -> Unix.putenv "C2C_INSTALL_MANIFEST_PATH" "")
+    f
+
+(* A B254 no-MCP receipt must keep an operator's pre-existing MCP section on
+   uninstall. The fallback knows that section for manifest-less legacy installs,
+   so this goes through the full receipt-aware uninstall rather than testing a
+   helper in isolation. *)
+let test_uninstall_no_mcp_receipt_preserves_existing_mcp_section () =
+  with_temp_home (fun home ->
+    let manifest = home // "install-manifest.json" in
+    with_manifest_path manifest (fun () ->
+      let codex_dir = home // ".codex" in
+      C2c_mcp.mkdir_p codex_dir;
+      let config = codex_dir // "config.toml" in
+      let agents = codex_dir // "AGENTS.md" in
+      write_file config
+        ("[mcp_servers.c2c]\ncommand = \"/operator/c2c-mcp-server\"\n\n"
+         ^ C2c_codex_hooks.config_begin_marker ^ "\nmanaged = true\n"
+         ^ C2c_codex_hooks.config_end_marker ^ "\n");
+      write_file agents
+        (C2c_codex_hooks.agents_md_begin_marker ^ "\nmanaged orientation\n"
+         ^ C2c_codex_hooks.agents_md_end_marker ^ "\n");
+      let record : C2c_install_manifest.install_record =
+        { component = "codex"
+        ; alias = Some "codex-fixture-zz"
+        ; target_dir = home
+        ; c2c_version = "test"
+        ; ts = 0.
+        ; artifacts =
+            [ C2c_install_manifest.shared_block ~path:config
+                ~begin_marker:C2c_codex_hooks.config_begin_marker
+                ~end_marker:C2c_codex_hooks.config_end_marker ()
+            ; C2c_install_manifest.shared_block ~path:agents
+                ~begin_marker:C2c_codex_hooks.agents_md_begin_marker
+                ~end_marker:C2c_codex_hooks.agents_md_end_marker ()
+            ]
+        }
+      in
+      C2c_install_manifest.upsert_record ~record;
+      let removed, _ =
+        C2c_uninstall.uninstall_component ~output_mode:C2c_types.Json
+          ~dry_run:false ~component:"codex" ~target_dir:home ~alias:None
+      in
+      check bool "managed hook artifacts were removed" true removed;
+      let remaining = C2c_utils.read_file_opt config in
+      check bool "operator MCP section remains" true
+        (contains ~haystack:remaining ~needle:"[mcp_servers.c2c]");
+      check bool "managed hooks block was stripped" false
+        (contains ~haystack:remaining
+           ~needle:C2c_codex_hooks.config_begin_marker)))
+
 let test_grok_is_a_supported_uninstall_component () =
   with_temp_home (fun home ->
     check bool "grok accepted by uninstall command" true
@@ -106,5 +180,7 @@ let () =
             test_recompute_codex_covers_shared_blocks
         ; test_case "grok is supported and owns its artifacts" `Quick
             test_grok_is_a_supported_uninstall_component
+        ; test_case "B254 no-MCP receipt preserves existing MCP config" `Quick
+            test_uninstall_no_mcp_receipt_preserves_existing_mcp_section
         ] )
     ]

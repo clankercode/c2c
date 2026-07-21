@@ -277,7 +277,11 @@ let init_cmd =
           `No_client
       | Some client ->
           (try
-             C2c_setup.do_install_client ~output_mode ~dry_run:false ~client ~alias_opt:alias_for_install ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ~skip_summary:true ~skip_hooks:(not hooks) ();
+             (* do_install_client now defaults with_mcp=false (B254). This branch is
+                reached only when do_mcp_setup (with_mcp || hooks) is set, i.e.
+                `c2c init --with-mcp` / `--hooks`; preserve the prior behavior of
+                writing the client MCP config here. *)
+             C2c_setup.do_install_client ~with_mcp:true ~output_mode ~dry_run:false ~client ~alias_opt:alias_for_install ~no_nonce ~broker_root_opt:(Some root) ~target_dir_opt:None ~force:false ~skip_summary:true ~skip_hooks:(not hooks) ();
              `Ok (C2c_setup.canonical_install_client client)
            with e -> `Error (Printexc.to_string e))
   in

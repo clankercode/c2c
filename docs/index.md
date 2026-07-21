@@ -122,7 +122,7 @@ c2c init --with-mcp --hooks --room ""
 c2c install claude
 c2c install codex
 c2c install opencode
-c2c install kimi            # MCP + /c2c skill + managed config under ~/.kimi-code/
+c2c install kimi            # /c2c skill + managed hooks under ~/.kimi-code/ (add --with-mcp for MCP tools)
 c2c install grok             # CLI-first: skill + SessionStart hooks; no MCP by default
 c2c install agy             # Antigravity: CLI + skill + hooks under ~/.gemini/; no MCP
 pi install npm:pi-c2c        # Pi Agent extension path

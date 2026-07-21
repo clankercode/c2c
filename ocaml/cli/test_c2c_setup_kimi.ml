@@ -273,7 +273,7 @@ let test_kimi_config_uses_configured_social_room () =
 (* setup_kimi end-to-end: writes ~/.kimi-code/mcp.json and skill      *)
 (* ------------------------------------------------------------------ *)
 
-let run_setup_kimi ~alias_from_auto_gen ~alias_val ~home ~server_path () =
+let run_setup_kimi ?(with_mcp=false) ~alias_from_auto_gen ~alias_val ~home ~server_path () =
   let old_home = Sys.getenv_opt "HOME" in
   Fun.protect
     ~finally:(fun () ->
@@ -283,6 +283,7 @@ let run_setup_kimi ~alias_from_auto_gen ~alias_val ~home ~server_path () =
     (fun () ->
       Unix.putenv "HOME" home;
       C2c_setup.setup_kimi
+        ~with_mcp
         ~output_mode:C2c_types.Human ~dry_run:false
         ~root:"/fake/broker/root" ~alias_val
         ~server_path
@@ -294,7 +295,7 @@ let test_setup_kimi_writes_mcp_config_and_skill () =
     let home = dir // "home" in
     Unix.mkdir home 0o700;
     let result =
-      run_setup_kimi ~alias_from_auto_gen:false
+      run_setup_kimi ~with_mcp:true ~alias_from_auto_gen:false
         ~alias_val:"lyra-quill"
         ~home ~server_path:"/fake/bin/c2c_mcp_server.exe" ()
     in
@@ -303,6 +304,38 @@ let test_setup_kimi_writes_mcp_config_and_skill () =
     let skill_path = home // ".kimi-code" // "skills" // "c2c" // "SKILL.md" in
     Alcotest.(check bool) "~/.kimi-code/mcp.json exists" true
       (Sys.file_exists config_path);
+    let c2c_fields =
+      match Yojson.Safe.from_file config_path with
+      | `Assoc fields ->
+          (match List.assoc_opt "mcpServers" fields with
+           | Some (`Assoc servers) ->
+               (match List.assoc_opt "c2c" servers with
+                | Some (`Assoc entry) -> entry
+                | _ -> Alcotest.fail "mcpServers.c2c missing")
+           | _ -> Alcotest.fail "mcpServers missing")
+      | _ -> Alcotest.fail "mcp.json is not an object"
+    in
+    Alcotest.(check (option string)) "MCP type is stdio" (Some "stdio")
+      (match List.assoc_opt "type" c2c_fields with
+       | Some (`String s) -> Some s | _ -> None);
+    Alcotest.(check (option string)) "MCP command is opam" (Some "opam")
+      (match List.assoc_opt "command" c2c_fields with
+       | Some (`String s) -> Some s | _ -> None);
+    Alcotest.(check (list string)) "MCP args name the c2c server"
+      [ "exec"; "--"; "/fake/bin/c2c_mcp_server.exe" ]
+      (match List.assoc_opt "args" c2c_fields with
+       | Some (`List args) ->
+           List.filter_map (function `String s -> Some s | _ -> None) args
+       | _ -> []);
+    let env =
+      match List.assoc_opt "env" c2c_fields with
+      | Some (`Assoc env) -> env
+      | _ -> Alcotest.fail "mcpServers.c2c.env missing"
+    in
+    Alcotest.(check (option string)) "MCP env has configured broker root"
+      (Some "/fake/broker/root")
+      (match List.assoc_opt "C2C_MCP_BROKER_ROOT" env with
+       | Some (`String s) -> Some s | _ -> None);
     Alcotest.(check bool) "~/.kimi-code/skills/c2c/SKILL.md exists" true
       (Sys.file_exists skill_path);
     let content = read_file skill_path in
@@ -374,15 +407,48 @@ let test_setup_kimi_removes_legacy_deliver_watch () =
             contains_substring ~haystack:a.path ~needle:"deliver-watch.sh")
          result.C2c_setup.artifacts))
 
+(* B254: default install (with_mcp:false) must NOT write ~/.kimi-code/mcp.json,
+   while it still writes the config.toml hook blocks + the /c2c skill. *)
+let test_setup_kimi_default_omits_mcp_json () =
+  with_temp_dir (fun dir ->
+    let home = dir // "home" in
+    Unix.mkdir home 0o700;
+    let result =
+      run_setup_kimi ~with_mcp:false ~alias_from_auto_gen:false
+        ~alias_val:"lyra-quill"
+        ~home ~server_path:"/fake/bin/c2c_mcp_server.exe" ()
+    in
+    let config_path = home // ".kimi-code" // "mcp.json" in
+    let toml_path = home // ".kimi-code" // "config.toml" in
+    let skill_path = home // ".kimi-code" // "skills" // "c2c" // "SKILL.md" in
+    Alcotest.(check bool) "~/.kimi-code/mcp.json NOT written by default" false
+      (Sys.file_exists config_path);
+    Alcotest.(check bool) "config.toml hook blocks still written" true
+      (Sys.file_exists toml_path);
+    let toml_content = read_file toml_path in
+    Alcotest.(check bool) "SessionStart hook block present" true
+      (contains_substring ~haystack:toml_content
+         ~needle:"# c2c-managed:BEGIN session-start-hook-kimi");
+    Alcotest.(check bool) "skill still written" true (Sys.file_exists skill_path);
+    (* No mcpServers.c2c shared-key artifact in the manifest. *)
+    Alcotest.(check bool) "no mcpServers.c2c shared-key artifact" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-key" && a.key = Some "mcpServers.c2c")
+         result.C2c_setup.artifacts);
+    Alcotest.(check bool) "extra_json reports mcp=false" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool false)
+         result.C2c_setup.extra_json))
+
 (* ------------------------------------------------------------------ *)
 (* Feature B env-marker: setup_codex writes marker in config.toml      *)
 (* ------------------------------------------------------------------ *)
 
 (* run_setup_codex writes ~/.codex/config.toml (under $HOME) by calling
-   [C2c_setup.setup_codex] with a real mcp_command and the supplied
-   alias + marker. The env marker is only written when
+   [C2c_setup.setup_codex] on its opt-in MCP path with a real mcp_command and
+   the supplied alias + marker. The env marker is only written when
    alias_from_auto_gen=true. *)
-let run_setup_codex ~alias_from_auto_gen ~alias_val ~home ~server_path () =
+let run_setup_codex ?(with_mcp=true) ~alias_from_auto_gen ~alias_val ~home ~server_path () =
   let old_home = Sys.getenv_opt "HOME" in
   Fun.protect
     ~finally:(fun () ->
@@ -392,6 +458,7 @@ let run_setup_codex ~alias_from_auto_gen ~alias_val ~home ~server_path () =
     (fun () ->
       Unix.putenv "HOME" home;
       C2c_setup.setup_codex
+        ~with_mcp
         ~output_mode:C2c_types.Human ~dry_run:false
         ~root:"/fake/broker/root" ~alias_val
         ~server_path ~mcp_command:"c2c-mcp-server"
@@ -399,7 +466,7 @@ let run_setup_codex ~alias_from_auto_gen ~alias_val ~home ~server_path () =
         ~alias_from_auto_gen)
 
 let test_setup_codex_writes_env_marker_when_auto_gen () =
-  (* End-to-end: c2c install codex (no --alias) must write the
+  (* The opt-in MCP writer must write the
      C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN marker in the [mcp_servers.c2c.env]
      TOML block of ~/.codex/config.toml. The MCP server reads this
      marker and bypasses the user-supplied blocklist for the
@@ -474,8 +541,9 @@ let test_setup_codex_omits_env_marker_when_alias_explicit () =
    other clients' configs); the alias itself is communicated via the
    sidecar's `alias` field — not via the MCP env block, since opencode's
    plugin reads the sidecar directly. *)
-let run_setup_opencode ~alias_from_auto_gen ~alias_val ~target_dir ~server_path () =
+let run_setup_opencode ?(with_mcp=true) ~alias_from_auto_gen ~alias_val ~target_dir ~server_path () =
   C2c_setup.setup_opencode
+    ~with_mcp
     ~output_mode:C2c_types.Human ~dry_run:false
     ~root:"/fake/broker/root" ~alias_val
     ~server_path ~target_dir_opt:(Some target_dir)
@@ -497,7 +565,7 @@ let test_setup_opencode_writes_env_marker_and_sidecar_flag () =
     Alcotest.(check bool) "opencode.json exists" true (Sys.file_exists opencode_json);
     let json = read_json_file opencode_json in
     (* Find mcp.c2c.environment in the JSON. *)
-    let env_assoc =
+    let c2c_fields, env_assoc =
       match json with
       | `Assoc fields ->
           (match List.assoc_opt "mcp" fields with
@@ -505,12 +573,21 @@ let test_setup_opencode_writes_env_marker_and_sidecar_flag () =
                (match List.assoc_opt "c2c" mcp with
                 | Some (`Assoc c2c) ->
                     (match List.assoc_opt "environment" c2c with
-                     | Some (`Assoc env) -> env
+                     | Some (`Assoc env) -> (c2c, env)
                      | _ -> Alcotest.fail "environment missing from c2c entry")
                 | _ -> Alcotest.fail "c2c entry missing from mcp")
            | _ -> Alcotest.fail "mcp section missing")
       | _ -> Alcotest.fail "opencode.json is not a JSON object"
     in
+    Alcotest.(check (option string)) "MCP type is local" (Some "local")
+      (match List.assoc_opt "type" c2c_fields with
+       | Some (`String s) -> Some s | _ -> None);
+    Alcotest.(check (list string)) "MCP command names the c2c server"
+      [ "opam"; "exec"; "--"; "/fake/bin/c2c_mcp_server.exe" ]
+      (match List.assoc_opt "command" c2c_fields with
+       | Some (`List command) ->
+           List.filter_map (function `String s -> Some s | _ -> None) command
+       | _ -> []);
     Alcotest.(check bool)
       "env marker C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN present"
       true
@@ -524,6 +601,8 @@ let test_setup_opencode_writes_env_marker_and_sidecar_flag () =
     (* Sidecar carries the alias + alias_from_auto_gen:true. *)
     let sidecar = dir // ".opencode" // "c2c-plugin.json" in
     Alcotest.(check bool) "sidecar exists" true (Sys.file_exists sidecar);
+    Alcotest.(check bool) "plugin c2c.ts exists with --with-mcp" true
+      (Sys.file_exists (dir // ".opencode" // "plugins" // "c2c.ts"));
     let sidecar_json = read_json_file sidecar in
     (match sidecar_json with
      | `Assoc fields ->
@@ -566,6 +645,34 @@ let test_setup_opencode_omits_env_marker_when_alias_explicit () =
       "env marker absent when alias explicit"
       false
       (List.mem_assoc "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" env_assoc))
+
+(* B255: default install (with_mcp:false) must NOT create
+   <target>/.opencode/opencode.json, while it still writes the plugin
+   .opencode/plugins/c2c.ts (the CLI-driven delivery path). *)
+let test_setup_opencode_default_omits_opencode_json () =
+  with_temp_dir (fun dir ->
+    let result =
+      run_setup_opencode ~with_mcp:false
+        ~alias_from_auto_gen:false ~alias_val:"lyra-quill"
+        ~target_dir:dir ~server_path:"/fake/bin/c2c_mcp_server.exe" ()
+    in
+    let opencode_json = dir // ".opencode" // "opencode.json" in
+    Alcotest.(check bool) "opencode.json NOT created by default" false
+      (Sys.file_exists opencode_json);
+    let plugin = dir // ".opencode" // "plugins" // "c2c.ts" in
+    Alcotest.(check bool) "plugin c2c.ts still written" true
+      (Sys.file_exists plugin);
+    let sidecar = dir // ".opencode" // "c2c-plugin.json" in
+    Alcotest.(check bool) "sidecar still written" true (Sys.file_exists sidecar);
+    (* No mcp.c2c shared-key artifact in the manifest. *)
+    Alcotest.(check bool) "no mcp.c2c shared-key artifact" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-key" && a.key = Some "mcp.c2c")
+         result.C2c_setup.artifacts);
+    Alcotest.(check bool) "extra_json reports mcp=false" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool false)
+         result.C2c_setup.extra_json))
 
 let test_other_servers_preserved () =
   let existing =
@@ -852,6 +959,8 @@ let () =
             test_setup_kimi_writes_mcp_config_and_skill
         ; Alcotest.test_case "setup_kimi removes legacy deliver-watch.sh (#10)" `Quick
             test_setup_kimi_removes_legacy_deliver_watch
+        ; Alcotest.test_case "B254 default install omits ~/.kimi-code/mcp.json" `Quick
+            test_setup_kimi_default_omits_mcp_json
         ] )
     ; ("setup-codex-env-marker",
         [ Alcotest.test_case "setup_codex writes FROM_AUTO_GEN marker when alias auto-picked" `Quick
@@ -866,5 +975,7 @@ let () =
             test_setup_opencode_writes_env_marker_and_sidecar_flag
         ; Alcotest.test_case "setup_opencode omits env marker when alias explicit" `Quick
             test_setup_opencode_omits_env_marker_when_alias_explicit
+        ; Alcotest.test_case "B255 default install omits .opencode/opencode.json" `Quick
+            test_setup_opencode_default_omits_opencode_json
         ] )
     ]

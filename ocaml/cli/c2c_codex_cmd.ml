@@ -178,11 +178,14 @@ let codex : unit Cmd.t =
                       start. Exposes a reduced flag surface — pass codex options after \
                       $(b,--), e.g. $(b,c2c codex -- --model MODEL); use \
                       $(b,c2c start codex) for the full managed flags."
-                ; `P "Requires $(b,c2c install codex): the session inherits the \
-                      machine-wide $(b,[mcp_servers.c2c]) block in \
-                      $(b,~/.codex/config.toml). A stale block is refused up front \
-                      with a repair message — run $(b,c2c install codex) to fix, or \
-                      $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass." ])
+                ; `P "The $(b,[mcp_servers.c2c]) block in $(b,~/.codex/config.toml) \
+                      is optional (B256): managed Codex delivers via the \
+                      app-server + hooks + CLI, so a missing block does not block \
+                      the launch. Run $(b,c2c install codex --with-mcp) if you \
+                      also want the c2c MCP tools inside Codex. Only a $(i,stale) \
+                      block (present but unrunnable) is refused up front with a \
+                      repair message — run $(b,c2c install codex --with-mcp) to \
+                      fix, or $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass." ])
     codex_term
 
 (* --------------------------------- new ------------------------------------ *)
@@ -245,14 +248,16 @@ let new_cmd : unit Cmd.t =
                       fresh thread). $(b,c2c new kimi) is a reduced-surface \
                       shortcut for $(b,c2c start kimi --new-session)."
                 ; `S "PREREQUISITE"
-                ; `P "For codex: $(b,c2c install codex) must have run on this \
-                      machine — the managed session inherits the machine-wide \
-                      $(b,[mcp_servers.c2c]) block in $(b,~/.codex/config.toml). \
-                      A stale block is refused up front; repair with \
-                      $(b,c2c install codex) or set \
-                      $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass."
-                ; `P "For kimi: $(b,c2c install kimi) must have run so MCP + the \
-                      /c2c skill are configured under $(b,~/.kimi-code/)." ])
+                ; `P "For codex: the machine-wide $(b,[mcp_servers.c2c]) block in \
+                      $(b,~/.codex/config.toml) is optional (B256) — managed \
+                      Codex delivers via the app-server + hooks + CLI. Run \
+                      $(b,c2c install codex --with-mcp) if you also want the c2c \
+                      MCP tools inside Codex. Only a $(i,stale) block is refused \
+                      up front; repair with $(b,c2c install codex --with-mcp) or \
+                      set $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass."
+                ; `P "For kimi: $(b,c2c install kimi) must have run so the hooks + \
+                      /c2c skill are configured under $(b,~/.kimi-code/) (add \
+                      $(b,--with-mcp) for the MCP tools)." ])
     new_term
 
 (* ------------------------------- resume ----------------------------------- *)
@@ -290,11 +295,11 @@ let resume_cmd : unit Cmd.t =
                 ; `P "Resumes the Codex thread saved for the given c2c alias. Use \
                       $(b,--thread-id ID) to select an exact thread; conflicts are \
                       rejected rather than guessed."
-                ; `P "Like $(b,c2c new codex), a resume inherits the machine-wide \
-                      $(b,[mcp_servers.c2c]) block from $(b,~/.codex/config.toml); a \
-                      stale block is refused up front with a repair message — run \
-                      $(b,c2c install codex) to fix, or \
-                      $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass." ])
+                ; `P "Like $(b,c2c new codex), the machine-wide \
+                      $(b,[mcp_servers.c2c]) block in $(b,~/.codex/config.toml) is \
+                      optional (B256); only a $(i,stale) block is refused up front \
+                      with a repair message — run $(b,c2c install codex --with-mcp) \
+                      to fix, or $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass." ])
     resume_term
 
 (* Re-exported for c2c_managed_cmd so `c2c start codex` routes to the same path. *)

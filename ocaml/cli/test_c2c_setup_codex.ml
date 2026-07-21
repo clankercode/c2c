@@ -52,8 +52,8 @@ let with_temp_home f =
       try remove_tree dir with _ -> ())
     (fun () -> f dir)
 
-let run_setup () =
-  C2c_setup.setup_codex ~output_mode:C2c_types.Human ~dry_run:false
+let run_setup ?(with_mcp=false) () =
+  C2c_setup.setup_codex ~with_mcp ~output_mode:C2c_types.Human ~dry_run:false
     ~root:"/fake/broker/root" ~alias_val:"codex-fixture-zz"
     ~server_path:"/fake/bin/c2c_mcp_server.exe" ~mcp_command:"c2c-mcp-server"
     ~client:"codex" ~alias_from_auto_gen:false
@@ -76,9 +76,24 @@ let test_fresh_install_writes_hooks_and_agents_md () =
       ; Printf.sprintf "[hooks.state.\"%s:user_prompt_submit:0:0\"]"
           (home // ".codex" // "config.toml")
       ; "trusted_hash = \"sha256:"
-      ; "[mcp_servers.c2c]"
-      ; "C2C_MCP_AUTO_REGISTER_ALIAS = \"codex-fixture-zz\""
       ];
+    (* B256: default install writes NO [mcp_servers.c2c] block. *)
+    check bool "no [mcp_servers.c2c] block by default" false
+      (contains ~haystack:config ~needle:"[mcp_servers.c2c]");
+    check bool "no shared-toml-section artifact by default" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-toml-section")
+         result.C2c_setup.artifacts);
+    check bool "extra_json reports mcp=false" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool false)
+         result.C2c_setup.extra_json);
+    check bool "default result does not advertise an MCP server" false
+      (List.mem_assoc "server" result.C2c_setup.extra_json);
+    check bool "hooks/skill install is detectable without MCP" true
+      (C2c_setup.client_integration_configured "codex");
+    check bool "MCP config remains absent from detection" false
+      (C2c_setup.client_mcp_configured "codex");
     let agents_md = read_file (home // ".codex" // "AGENTS.md") in
     check int "one AGENTS.md block" 1
       (count_occurrences ~haystack:agents_md
@@ -235,6 +250,43 @@ let test_install_removes_stale_deliver_watch_scripts () =
                 || Filename.basename a.path = "pre-deliver.sh"))
          result.C2c_setup.artifacts))
 
+(* B256: --with-mcp writes the [mcp_servers.c2c] block + env, and declares the
+   shared-toml-section manifest artifact. *)
+let test_with_mcp_writes_mcp_block () =
+  with_temp_home (fun home ->
+    let result = run_setup ~with_mcp:true () in
+    let config = read_file (home // ".codex" // "config.toml") in
+    check bool "[mcp_servers.c2c] present with --with-mcp" true
+      (contains ~haystack:config ~needle:"[mcp_servers.c2c]");
+    check bool "MCP command written" true
+      (contains ~haystack:config ~needle:"command = \"c2c-mcp-server\"");
+    check bool "C2C_MCP_AUTO_REGISTER_ALIAS written" true
+      (contains ~haystack:config
+         ~needle:"C2C_MCP_AUTO_REGISTER_ALIAS = \"codex-fixture-zz\"");
+    (* hooks block still present alongside the MCP block. *)
+    check int "one hooks block" 1
+      (count_occurrences ~haystack:config
+         ~needle:C2c_codex_hooks.config_begin_marker);
+    let agents_md = read_file (home // ".codex" // "AGENTS.md") in
+    check int "one AGENTS.md block with --with-mcp" 1
+      (count_occurrences ~haystack:agents_md
+         ~needle:C2c_codex_hooks.agents_md_begin_marker);
+    check bool "skill still written with --with-mcp" true
+      (Sys.file_exists (home // ".codex" // "skills" // "c2c" // "SKILL.md"));
+    check bool "shared-toml-section artifact present" true
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-toml-section"
+            && a.section_prefix = Some "mcp_servers.c2c")
+         result.C2c_setup.artifacts);
+    check bool "extra_json reports mcp=true" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool true)
+         result.C2c_setup.extra_json);
+    check (option string) "MCP result identifies server" (Some "/fake/bin/c2c_mcp_server.exe")
+      (match List.assoc_opt "server" result.C2c_setup.extra_json with
+       | Some (`String server) -> Some server
+       | _ -> None))
+
 let test_preserves_user_agents_md () =
   with_temp_home (fun home ->
     let codex_dir = home // ".codex" in
@@ -263,5 +315,7 @@ let () =
             test_install_removes_stale_deliver_watch_scripts
         ; test_case "install writes codex skill" `Quick test_install_writes_codex_skill
         ; test_case "refresh codex skill if stale" `Quick test_refresh_codex_skill_if_stale
+        ; test_case "B256 --with-mcp writes [mcp_servers.c2c]" `Quick
+            test_with_mcp_writes_mcp_block
         ] )
     ]

@@ -129,7 +129,7 @@ let debug_install_failure label cmd rc content =
       "\n[install-test-debug:%s]\ncmd=%s\nrc=%d\noutput-start\n%s\noutput-end\n%!"
       label cmd rc content
 
-let install_codex_fixture ~home ~broker_root =
+let install_codex_fixture ?(with_mcp=false) ~home ~broker_root () =
   let alias = Printf.sprintf "cli-codex-%d" (Unix.getpid ()) in
   let schedule_root = Filename.concat home ".c2c-test-schedules" in
   let tmpfile = Filename.temp_file "c2c-install-codex-fixture" ".out" in
@@ -141,10 +141,13 @@ let install_codex_fixture ~home ~broker_root =
           (Filename.quote broker_root)
           (Filename.quote schedule_root)
       in
+      (* B254: MCP config is now opt-in on install; pass --with-mcp when the
+         fixture must produce the [mcp_servers.c2c] block. *)
       let cmd =
         c2c_cmd
-          (Printf.sprintf "%s c2c install codex --alias %s > %s 2>&1"
-             env (Filename.quote alias) (Filename.quote tmpfile))
+          (Printf.sprintf "%s c2c install codex%s --alias %s > %s 2>&1"
+             env (if with_mcp then " --with-mcp" else "")
+             (Filename.quote alias) (Filename.quote tmpfile))
       in
       let rc = Sys.command cmd in
       if rc <> 0 then
@@ -3117,7 +3120,7 @@ let test_connect_detects_codex () =
     Unix.mkdir home 0o755;
     let broker_root = Filename.concat dir "broker" in
     Unix.mkdir broker_root 0o755;
-    install_codex_fixture ~home ~broker_root;
+    install_codex_fixture ~with_mcp:true ~home ~broker_root ();
     let env =
       Printf.sprintf "%s C2C_MCP_BROKER_ROOT=%s"
         (isolated_home_env home) (Filename.quote broker_root)
@@ -3232,7 +3235,7 @@ let test_connect_dashboard_next_action_all_installed_no_session () =
       {|{"mcpServers":{"c2c":{"type":"stdio"}}}|};
     let broker_root = Filename.concat dir "broker" in
     Unix.mkdir broker_root 0o755;
-    install_codex_fixture ~home ~broker_root;
+    install_codex_fixture ~home ~broker_root ();
     let env =
       Printf.sprintf "%s C2C_MCP_BROKER_ROOT=%s"
         (isolated_home_env home) (Filename.quote broker_root)

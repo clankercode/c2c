@@ -48,8 +48,8 @@ let with_temp_home f =
       try remove_tree dir with _ -> ())
     (fun () -> f ~home:dir ~claude_dir)
 
-let run_setup ~project_dir () =
-  C2c_setup.setup_claude ~output_mode:C2c_types.Human ~dry_run:false
+let run_setup ?(with_mcp=false) ~project_dir () =
+  C2c_setup.setup_claude ~with_mcp ~output_mode:C2c_types.Human ~dry_run:false
     ~root:"/fake/broker/root" ~alias_val:"claude-fixture-zz" ~alias_opt:None
     ~server_path:"/fake/bin/c2c_mcp_server.exe" ~mcp_command:"c2c-mcp-server"
     ~force:false ~channel_delivery:false ~global:false
@@ -226,6 +226,108 @@ let test_refresh_claude_skill_if_stale () =
     check bool "up-to-date skill not rewritten" true
       (mtime_before = mtime_after))
 
+(* B254: default install (with_mcp:false) writes NO .mcp.json, but still
+   installs hooks + skill. --with-mcp writes .mcp.json. *)
+let test_default_install_omits_mcp_json () =
+  with_temp_home (fun ~home ~claude_dir ->
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    let result = run_setup ~with_mcp:false ~project_dir () in
+    let mcp_json = project_dir // ".mcp.json" in
+    check bool ".mcp.json NOT written by default" false (Sys.file_exists mcp_json);
+    (* hooks + skill still land *)
+    let session_hook = claude_dir // "hooks" // "c2c-session-hook.sh" in
+    check bool "session hook script still written" true (Sys.file_exists session_hook);
+    let skill = claude_dir // "skills" // "c2c" // "SKILL.md" in
+    check bool "skill still written" true (Sys.file_exists skill);
+    (* No mcpServers shared-key artifact in the manifest. *)
+    check bool "no mcpServers artifact" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-key" && a.key = Some "mcpServers.c2c")
+         result.C2c_setup.artifacts);
+    check bool "extra_json reports mcp=false" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool false)
+         result.C2c_setup.extra_json))
+
+(* A no-MCP install must not even parse a user MCP file: a malformed legacy
+   file is still user state, and the hooks/skill path remains independently
+   installable. *)
+let test_default_install_preserves_existing_malformed_mcp_json () =
+  with_temp_home (fun ~home ~claude_dir ->
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    let mcp_json = project_dir // ".mcp.json" in
+    let original = "{ this is intentionally not valid JSON\n" in
+    write_file mcp_json original;
+    let result = run_setup ~with_mcp:false ~project_dir () in
+    check string "existing MCP file is not rewritten" original (read_file mcp_json);
+    check bool "session hook still written" true
+      (Sys.file_exists (claude_dir // "hooks" // "c2c-session-hook.sh"));
+    check bool "skill still written" true
+      (Sys.file_exists (claude_dir // "skills" // "c2c" // "SKILL.md"));
+    check bool "no MCP artifact for untouched file" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-key" && a.key = Some "mcpServers.c2c")
+         result.C2c_setup.artifacts))
+
+let test_with_mcp_writes_mcp_json () =
+  with_temp_home (fun ~home ~claude_dir ->
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    let result = run_setup ~with_mcp:true ~project_dir () in
+    let mcp_json = project_dir // ".mcp.json" in
+    check bool ".mcp.json written with --with-mcp" true (Sys.file_exists mcp_json);
+    let c2c_fields =
+      match Yojson.Safe.from_file mcp_json with
+      | `Assoc fields ->
+          (match List.assoc_opt "mcpServers" fields with
+           | Some (`Assoc servers) ->
+               (match List.assoc_opt "c2c" servers with
+                | Some (`Assoc entry) -> entry
+                | _ -> Alcotest.fail "mcpServers.c2c missing")
+           | _ -> Alcotest.fail "mcpServers missing")
+      | _ -> Alcotest.fail ".mcp.json is not an object"
+    in
+    check (option string) "MCP type is stdio" (Some "stdio")
+      (match List.assoc_opt "type" c2c_fields with
+       | Some (`String s) -> Some s | _ -> None);
+    check (option string) "MCP command is c2c-mcp-server" (Some "c2c-mcp-server")
+      (match List.assoc_opt "command" c2c_fields with
+       | Some (`String s) -> Some s | _ -> None);
+    let env =
+      match List.assoc_opt "env" c2c_fields with
+      | Some (`Assoc env) -> env
+      | _ -> Alcotest.fail "mcpServers.c2c.env missing"
+    in
+    check (option string) "MCP env has configured broker root"
+      (Some "/fake/broker/root")
+      (match List.assoc_opt "C2C_MCP_BROKER_ROOT" env with
+       | Some (`String s) -> Some s | _ -> None);
+    (* The opt-in path retains the same hooks + skill delivery surface. *)
+    check bool "session hook still written with --with-mcp" true
+      (Sys.file_exists (claude_dir // "hooks" // "c2c-session-hook.sh"));
+    check bool "skill still written with --with-mcp" true
+      (Sys.file_exists (claude_dir // "skills" // "c2c" // "SKILL.md"));
+    check bool "mcpServers artifact present" true
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-key" && a.key = Some "mcpServers.c2c")
+         result.C2c_setup.artifacts);
+    check int "exactly one mcpServers artifact" 1
+      (List.length
+         (List.filter
+            (fun (a : C2c_install_manifest.artifact) ->
+               a.kind = "shared-key" && a.key = Some "mcpServers.c2c")
+            result.C2c_setup.artifacts));
+    check bool "extra_json reports mcp=true" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool true)
+         result.C2c_setup.extra_json);
+    check int "exactly one mcp JSON result field" 1
+      (List.length
+         (List.filter (fun (k, _) -> k = "mcp") result.C2c_setup.extra_json)))
+
 let () =
   Random.self_init ();
   run "c2c_setup_claude"
@@ -237,5 +339,11 @@ let () =
             test_uninstall_strips_session_hooks
         ; test_case "refresh claude skill if stale" `Quick
             test_refresh_claude_skill_if_stale
+        ; test_case "B254 default install omits .mcp.json" `Quick
+            test_default_install_omits_mcp_json
+        ; test_case "B254 default leaves malformed user .mcp.json untouched" `Quick
+            test_default_install_preserves_existing_malformed_mcp_json
+        ; test_case "B254 --with-mcp writes .mcp.json" `Quick
+            test_with_mcp_writes_mcp_json
         ] )
     ]
