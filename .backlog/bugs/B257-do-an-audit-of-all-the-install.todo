@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-21T11:34:52Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-21T11:33:08Z"
 depends_on: []
 estimate_hours: 1
 id: B257
 priority: high
-status: pending
+started_at: "2026-07-21T11:34:52Z"
+status: in_progress
 tags: []
 title: do an audit of all the install processes and figure out what files they create and/or edit and whether mcp is set up or not by default
-updated_at: "2026-07-21T11:33:08Z"
+updated_at: "2026-07-21T11:34:52Z"
 ---
 
 do an audit of all the install processes and figure out what files they create and/or edit and whether mcp is set up or not by default

@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-21T11:34:52Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-21T11:32:23Z"
 depends_on: []
 estimate_hours: 1
 id: B256
 priority: high
-status: pending
+started_at: "2026-07-21T11:34:52Z"
+status: in_progress
 tags: []
 title: claude install should not set mcp and should not set up a task wake thing
-updated_at: "2026-07-21T11:32:23Z"
+updated_at: "2026-07-21T11:34:52Z"
 ---
 
 claude install should not set mcp and should not set up a task wake thing

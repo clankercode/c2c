@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-21T11:34:52Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-21T11:30:40Z"
 depends_on: []
 estimate_hours: 1
 id: B255
 priority: high
-status: pending
+started_at: "2026-07-21T11:34:52Z"
+status: in_progress
 tags: []
 title: Opencode install must not set .opencode/opencode.json (no MCP by default; cli is default)
-updated_at: "2026-07-21T11:30:40Z"
+updated_at: "2026-07-21T11:34:52Z"
 ---
 
 Opencode install must not set .opencode/opencode.json (no MCP by default; cli is default)
