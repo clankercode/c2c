@@ -9,11 +9,7 @@ id: B263
 priority: critical
 started_at: null
 status: pending
-tags:
-    - security
-    - relay
-    - database
-    - capabilities
+tags: []
 title: Persist and manage recipient-owned relay contact grants
 updated_at: "2026-07-21T13:50:16Z"
 ---
@@ -35,3 +31,7 @@ Implement durable recipient-owned contact grants/capabilities using the post-ref
 - Backend parity and migration tests pass with two-thread limits.
 - Restart/persistence, concurrency, expiry, revocation, rollback, secret-redaction, and malformed-record tests pass.
 - Key/capability material has explicit file/database access controls and no `show` command prints reusable secrets by default.
+
+## B261 post-B219 constraints
+
+Extend `Relay_backend_contract.RELAY` once for both backends. SQLite uses the process-lifetime `SqliteRelay.t.db` connection under one non-reentrant `with_lock`; inner workers must not relock; every statement must finalize. Grant validation + idempotency + enqueue is one atomic backend operation. Add fresh schema to `sqlite_ddl` and checked fail-closed migration before publishing the backend.
