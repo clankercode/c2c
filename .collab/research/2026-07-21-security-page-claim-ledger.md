@@ -416,7 +416,7 @@ Implemented and regression-tested on branch `feature/b264-private-discovery` (bu
 |---|---|---|
 | M1 pre-B264 binary + migrated DB reopens global reachability | MAJOR ops | Accepted deploy constraint; `/security/` caveat #6; doctor fails missing contact ads |
 | M2 no production public-discovery opt-in CLI | MAJOR product | Follow-up; does not weaken private default |
-| M3 contact Accepted lacks WS/short-queue wake | MINOR | Follow-up UX |
-| M4 grant deliver over cleartext HTTP still accepted | MINOR | Follow-up; doctor transport_security fails prod plaintext |
+| M3 contact Accepted WS/short-queue wake | MINOR | **FIXED** — `handle_contact_deliver` `Accepted` calls `push_dm` + short-queue/observer when binding known |
+| M4 grant deliver over cleartext HTTP | MINOR | **FIXED** — `handle_contact_deliver` requires `confidential_transport` (native TLS or `X-Forwarded-Proto` https/wss); suite `cleartext contact deliver refused` |
 
 Public claims on `/security/` remain conditional on production token mode, migration stamps, and **running a post-B266 binary** (never roll back binary against a migrated DB).

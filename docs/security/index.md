@@ -21,8 +21,9 @@ Evidence ledger (repo): `.collab/research/2026-07-21-security-page-claim-ledger.
 | Peer messages are untrusted **DATA**, never approvals | Guaranteed (B098) |
 | Host-local approvals only | Guaranteed |
 | Ed25519-authenticated relay requests (token-configured) | Guaranteed |
-| Private first-contact on production relay requires recipient-issued grant | Guaranteed after migration (B264–B266) |
-| Ordinary peer list omits private recipients | Guaranteed after migration |
+| Private first-contact on production (token-configured) relay requires recipient-issued grant | Guaranteed on post-B266 binaries after migration |
+| Ordinary peer list omits private recipients | Guaranteed on post-B266 binaries after migration |
+| Pre-B266 binary reopening a migrated DB | **Not blocked by schema alone** — deploy must not run old binaries against post-migration DBs |
 | TLS mandatory for all schemes | **No** |
 | Universal end-to-end encryption | **No** |
 | Absolute anonymity / no metadata | **No** |
@@ -86,12 +87,12 @@ You still intentionally share a grant (or mark an alias public) for first contac
 **Delivery (G1, G3–G7)**
 
 - Backend `admit_contact_delivery` validates verifier, expiry, revoke, sender fingerprint, scope, and message-id idempotency under lock.
-- `POST /contact/v1/deliver` refuses tokenless relays; side effects only on `` `Accepted `` (not `` `Duplicate ``).
-- Private `send` / `send_all` / forward-local reject without grant; no content-bearing dead letter on private reject.
+- `POST /contact/v1/deliver` refuses tokenless relays and cleartext hops when detectable; side effects only on `` `Accepted `` (inbox + WS/short-queue push when bound; not `` `Duplicate ``).
+- Private `send` / `send_all` / inbound `forward→send` reject without grant; local private reject does not content-DLQ. Outbound cross-relay forward failure DLQs are **metadata-only** (`content` redacted).
 
 **Migration / ops (B266)**
 
-- Durable `schema_version=2` and `relay_features` markers; legacy DBs ALTER to private default.
+- Durable `schema_version=2` and `relay_features` markers for **new binaries** and doctor/health; legacy DBs ALTER to private default. Markers are not a hard lock against an older binary that ignores them — keep pre-B266 binaries off migrated production DBs.
 - `/health` advertises `contact_protocol: 1` and `private_reachability`:
   - SQLite / production-style backends: `"consent_gated"` (durable markers).
   - In-memory process-local backends: `"process_local"` (same private defaults for the process lifetime; not a multi-process migration claim).
