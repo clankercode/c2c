@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-21T11:34:51Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-21T12:56:34Z"
 complexity: medium
 created_at: "2026-07-21T10:41:06Z"
 depends_on: []
+duration_minutes: 81.72242926248333
 estimate_hours: 2
 id: B254
 priority: high
 started_at: "2026-07-21T11:34:51Z"
-status: in_progress
+status: done
 tags: []
 title: Ensure MCP is not configured by default for any client
-updated_at: "2026-07-21T11:34:51Z"
+updated_at: "2026-07-21T12:56:34Z"
 ---
 ## Problem
 By default, no client should get MCP configured unless the user deliberately opts in.
