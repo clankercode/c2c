@@ -1,0 +1,35 @@
+---
+complexity: high
+created_at: "2026-07-21T13:50:16Z"
+depends_on:
+    - B262
+estimate_hours: 10
+id: B263
+priority: critical
+status: pending
+tags:
+    - security
+    - relay
+    - database
+    - capabilities
+title: Persist and manage recipient-owned relay contact grants
+updated_at: "2026-07-21T13:50:16Z"
+---
+## Purpose
+
+Implement durable recipient-owned contact grants/capabilities using the post-refactor persistence architecture.
+
+## Work
+
+- Add the reviewed capability/grant data model and backend operations with in-memory/SQLite parity.
+- Implement cryptographically secure generation and constant-time validation where secret comparison applies.
+- Enforce recipient/sender/relay scoping, expiry, revocation, rotation, uniqueness, and atomic one-time/replay semantics required by the design.
+- Redact capability secrets from listings, logs, metrics, errors, registration leases, room metadata, and ordinary diagnostics.
+- Add safe schema migration, rolling-upgrade handling, rollback considerations, and startup validation; never silently downgrade to default-allow.
+- Add owner-authenticated management surfaces needed to issue, inspect safely, revoke, and rotate grants.
+
+## Acceptance evidence
+
+- Backend parity and migration tests pass with two-thread limits.
+- Restart/persistence, concurrency, expiry, revocation, rollback, secret-redaction, and malformed-record tests pass.
+- Key/capability material has explicit file/database access controls and no `show` command prints reusable secrets by default.
