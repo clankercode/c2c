@@ -1,0 +1,36 @@
+---
+complexity: high
+created_at: "2026-07-21T13:50:17Z"
+depends_on:
+    - B264
+estimate_hours: 12
+id: B265
+priority: critical
+status: pending
+tags:
+    - security
+    - relay
+    - delivery
+    - authorization
+title: Enforce consent-gated relay delivery on every DM path
+updated_at: "2026-07-21T13:50:17Z"
+---
+## Purpose
+
+Enforce recipient consent/capability checks on every relay first-contact delivery path before durable routing.
+
+## Work
+
+- Require valid recipient-issued authority in production before `R.send` or equivalent durable enqueue accepts first-contact peer mail.
+- Preserve Ed25519 sender authentication and alias binding; do not treat sender authentication as recipient consent.
+- Apply identical validation to HTTP, WebSocket, connector outbox/sync, direct relay CLI, retries, and any batch/room-adjacent DM path.
+- Bind grants to the intended recipient/host and sender where specified; reject guessed, leaked-but-bound-elsewhere, expired, revoked, replayed, malformed, wrong-version, and downgraded authority.
+- Return enumeration-resistant errors and avoid writing rejected content to recipient inboxes, dead letters, archives, or content-bearing audit logs.
+- Keep rate/size limits as defence in depth after admission, not as substitutes for consent.
+
+## Acceptance evidence
+
+- An authenticated but unauthorised relay peer cannot deliver by knowing or guessing a private alias.
+- Deliberate route/capability sharing permits only the intended scope.
+- Revocation/expiry/replay take effect under concurrent requests and across restarts.
+- Route and backend parity tests prove no bypass path remains.
