@@ -1,0 +1,49 @@
+---
+complexity: medium
+created_at: "2026-07-21T13:46:38Z"
+depends_on: []
+estimate_hours: 1
+id: B259
+priority: critical
+status: pending
+tags:
+    - security
+    - relay
+    - privacy
+title: Make relay reachability consent-gated and non-discoverable
+updated_at: "2026-07-21T13:46:38Z"
+---
+## Security defect
+
+The current relay does not enforce the intended private-reachability property.
+
+### Current behaviour verified against canonical OCaml code
+
+- Production `/list` requires authenticated peer Ed25519 credentials, but returns metadata-rich registration leases to authenticated relay peers (`ocaml/relay_server_auth.ml`, `ocaml/relay.ml`, `ocaml/relay_registration_lease.ml`).
+- `ocaml/relay.ml:handle_send` authenticates and binds the sender alias, but does not require recipient consent before routing to `R.send`.
+- `ocaml/c2c_relay_connector.ml:default_inbound_policy` defaults unknown senders to `Inbound_allow`; size and rate limits bound abuse but do not prevent unsolicited first contact.
+- Registration allowlisting gates who may register an alias, not which registered peers may discover or contact a recipient.
+
+### Intended invariant
+
+A relay peer must not be able to discover a recipient's contact identifier or deliver a first-contact DM unless that recipient has intentionally disclosed or authorised a usable contact route first. Knowledge of the route is the capability. Sender authentication still prevents spoofing, but authentication alone must not grant global discovery or unsolicited reachability.
+
+### Required design properties
+
+- Production peer discovery must not expose private recipient identifiers or registration metadata globally.
+- First-contact relay delivery must fail closed unless the sender presents recipient-issued authorisation/capability or matches an explicit recipient allow rule.
+- Disclosure/authorisation must be intentional, revocable where feasible, scoped to the intended recipient/sender relationship, and resistant to guessing and replay.
+- Existing local-only messaging and explicit public/gated room discovery semantics must remain deliberate and separately documented.
+- Development-mode bypasses must remain explicit and must not be mistaken for production guarantees.
+- Migration/compatibility behaviour must fail safely; do not silently preserve default-allow unsolicited reachability.
+
+### Acceptance evidence
+
+- Regression tests prove an authenticated but unauthorised peer cannot discover the private recipient, cannot send by guessing an identifier, and cannot deliver unsolicited first contact.
+- Tests prove a deliberately shared/authorised route permits the intended sender and rejects other senders, expired/revoked credentials, recipient mismatch, replay, and malformed credentials.
+- Tests cover HTTP and WebSocket/connector paths, persistence/backend parity, restart behaviour, and production-vs-development configuration boundaries as applicable.
+- Public documentation accurately explains the implemented capability/consent model and its remaining limitations without claiming universal E2E encryption, mandatory TLS, no-trace ephemeral delivery, or absolute prompt-injection prevention.
+
+### Evidence ledger
+
+See `.collab/research/2026-07-21-security-page-claim-ledger.md` for exact symbols, named tests, caveats, and public-page red lines discovered before implementation.
