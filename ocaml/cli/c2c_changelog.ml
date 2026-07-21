@@ -396,15 +396,24 @@ let spawn_background_fetch ~broker_root : unit =
          (try Unix.close devnull with _ -> ())
        with _ -> ())
 
-(* Return the newest release recorded in the local changelog cache that is
-   newer than [current].  This deliberately consults only the cache: callers
-   are ordinary, high-frequency CLI commands and must never wait on the
-   network.  When the cache is stale, warm it in the background so a later
-   command can surface the notice. *)
-let update_available ?current ~broker_root ~now () : string option =
+(* Remote-cache entries only (not the binary-embedded changelog). Used by
+   B268's "newer release available" signal — the embedded file can never
+   legitimately advertise a version ahead of this binary (PENDING.md is kept
+   out of CHANGELOG.md until release), so the warm remote.md is the only
+   offline-safe source of "upstream is ahead". Missing/unparseable cache → []. *)
+let remote_entries ~broker_root : entry list =
+  match read_file_opt (remote_cache_path ~broker_root) with
+  | Some md -> (try parse md with _ -> [])
+  | None -> []
+
+(* Return the highest version in the local *remote* changelog cache that is
+   strictly greater than [current], or [None]. Pure over the already-loaded
+   cache — no network, no background fetch, no marker I/O (B268). Offline /
+   missing cache → [None]. Callers on hot paths (version, health JSON, hooks)
+   must use this rather than inventing a synchronous fetch. *)
+let latest_known_newer ?current ~broker_root () : string option =
   let current = match current with Some v -> v | None -> Version.version in
-  if cache_is_stale ~broker_root ~now () then spawn_background_fetch ~broker_root;
-  merged_entries ~broker_root
+  remote_entries ~broker_root
   |> List.filter (fun entry -> compare_version entry.version current > 0)
   |> List.fold_left
        (fun latest entry ->
@@ -415,6 +424,14 @@ let update_available ?current ~broker_root ~now () : string option =
           | Some _ -> latest)
        None
 
+(* CLI notice path: pure read of the remote cache, PLUS a non-blocking
+   background warm when the cache is stale (detached curl — never waits).
+   Hot-path surfaces that must not even spawn a child (`--version`,
+   SessionStart nudge) call [latest_known_newer] directly instead. *)
+let update_available ?current ~broker_root ~now () : string option =
+  if cache_is_stale ~broker_root ~now () then spawn_background_fetch ~broker_root;
+  latest_known_newer ?current ~broker_root ()
+
 let update_notice ?current ~broker_root ~now () : string option =
   let current = match current with Some v -> v | None -> Version.version in
   match update_available ~current ~broker_root ~now () with
@@ -424,6 +441,59 @@ let update_notice ?current ~broker_root ~now () : string option =
         (Printf.sprintf
            "notice: c2c update available (%s -> %s); run `c2c self-update`."
            current latest)
+
+(* One-line agent-facing nudge for SessionStart (B268). Distinct from
+   [update_notice] (stderr CLI) and from [auto_show] (local binary upgrade
+   changelog block). *)
+let update_nudge_line ~current ~latest : string =
+  Printf.sprintf
+    "c2c: newer release %s available (you're on %s) — run `c2c self-update`."
+    latest current
+
+(* JSON fields for health / server-info (cache-only; silent when unknown). *)
+let update_status_json ?current ~broker_root () : (string * Yojson.Safe.t) list =
+  let current = match current with Some v -> v | None -> Version.version in
+  let latest = latest_known_newer ~current ~broker_root () in
+  [ ("latest_known_version",
+     match latest with Some v -> `String v | None -> `Null)
+  ; ("update_available", `Bool (Option.is_some latest))
+  ]
+
+(* Strip a relay /health version string into a dotted numeric token suitable
+   for [compare_version]. Returns [None] for missing / unusable versions. *)
+let parse_semver_token (raw : string) : string option =
+  let s = String.trim raw in
+  if s = "" || s = "?" then None
+  else
+    let s = strip_v s in
+    let s =
+      match String.index_opt s ' ' with
+      | Some i -> String.sub s 0 i
+      | None -> s
+    in
+    let s =
+      match String.index_opt s '-' with
+      | Some i when i > 0 -> String.sub s 0 i  (* 0.12.0-rc1 → 0.12.0 *)
+      | _ -> s
+    in
+    if s <> "" && String.exists (fun c -> c >= '0' && c <= '9') s then Some s
+    else None
+
+(* Compare a remote component's reported version against the local changelog
+   cache. [reported] is the raw version string option from /health (or similar).
+   Returns [Some (reported, latest)] when the component is strictly behind a
+   known release; [None] when equal/ahead/unknown/offline. *)
+let component_behind_latest ~(reported : string option) ~broker_root ()
+  : (string * string) option =
+  match reported with
+  | None -> None
+  | Some raw ->
+      (match parse_semver_token raw with
+       | None -> None
+       | Some ver ->
+           (match latest_known_newer ~current:ver ~broker_root () with
+            | None -> None
+            | Some latest -> Some (ver, latest)))
 
 (* Foreground fetch for the explicit `c2c changelog --fetch` path: same
    fixture/disable gating as the background fetch, but the real network path
@@ -484,6 +554,25 @@ let write_marker ~broker_root ~client ~version : unit =
   mkdir_p (broker_changelog_dir ~broker_root);
   ignore (C2c_io.write_file_atomic (marker_path ~broker_root ~client) (version ^ "\n"))
 
+(* SessionStart "newer release available" nudge (B268). Marker-guarded once per
+   newer release (never regress; equal/older marker = silent). Offline /
+   empty cache / current already latest = [None]. Uses the same lock family
+   as [auto_show] under a synthetic client key so concurrent hooks serialize. *)
+let update_nudge_auto_show ?current ~broker_root ~client ~now () : string option =
+  let current = match current with Some v -> v | None -> Version.version in
+  (* TTL-warm only (detached); the nudge itself is pure over the current cache. *)
+  if cache_is_stale ~broker_root ~now () then spawn_background_fetch ~broker_root;
+  match latest_known_newer ~current ~broker_root () with
+  | None -> None
+  | Some latest ->
+      let key = client ^ "-update-nudge" in
+      with_marker_lock ~broker_root ~client:key @@ fun () ->
+      match read_marker ~broker_root ~client:key with
+      | Some shown when compare_version latest shown <= 0 -> None
+      | _ ->
+          write_marker ~broker_root ~client:key ~version:latest;
+          Some (update_nudge_line ~current ~latest)
+
 (* Per-client version-change auto-show. Returns [Some block] to inject once, or
    [None]. Marker semantics (parent-specified surfacing contract):
    - marker is per-client and records the last version actually INJECTED;
@@ -500,6 +589,10 @@ let auto_show ?current ?(audience = "all") ~broker_root ~client ~now () : string
   with_marker_lock ~broker_root ~client @@ fun () ->
   match read_marker ~broker_root ~client with
   | Some prev when prev = current ->
+      (* Steady-state SessionStart: still TTL-warm the remote cache so B268's
+         passive "newer release" surfaces can see upstream without any
+         synchronous network (detached curl only). *)
+      if cache_is_stale ~broker_root ~now () then spawn_background_fetch ~broker_root;
       None  (* already injected for this version *)
   | None ->
       (* Fresh install: nothing to announce. Record current, warm the cache. *)

@@ -943,6 +943,19 @@ let hook_codex_cmd =
            with _ -> ""
          else ""
        in
+       (* B268: one-line "newer release available" when the local changelog
+          cache knows a version ahead of this binary. Marker-guarded once per
+          newer release; offline/empty = silent. *)
+       let update_nudge_context =
+         if event = "SessionStart" then
+           try
+             Option.value
+               (C2c_changelog.update_nudge_auto_show ~broker_root ~client:"codex"
+                  ~now:(Unix.gettimeofday ()) ())
+               ~default:""
+           with _ -> ""
+         else ""
+       in
        (* B136: occasional app-server nudge — SessionStart only, vanilla only,
           throttled. Additive to the note; never replaces intro/messages. *)
        let appserver_nudge =
@@ -952,7 +965,8 @@ let hook_codex_cmd =
          else ""
        in
        let context =
-         [ intro; changelog_context; appserver_nudge; messages_text ]
+         [ intro; changelog_context; update_nudge_context; appserver_nudge
+         ; messages_text ]
          |> List.filter (fun s -> String.trim s <> "")
          |> String.concat "\n\n"
        in
@@ -1257,9 +1271,20 @@ let hook_claude_cmd =
            with _ -> ""
          else ""
        in
+       (* B268: one-line newer-release nudge (cache-only, once per release). *)
+       let update_nudge_context =
+         if event = "SessionStart" then
+           try
+             Option.value
+               (C2c_changelog.update_nudge_auto_show ~broker_root ~client:"claude"
+                  ~now:(Unix.gettimeofday ()) ())
+               ~default:""
+           with _ -> ""
+         else ""
+       in
        let context =
-         [ intro; changelog_context; post_compact_context; cold_boot_context
-         ; messages_text ]
+         [ intro; changelog_context; update_nudge_context; post_compact_context
+         ; cold_boot_context; messages_text ]
          |> List.filter (fun s -> String.trim s <> "")
          |> String.concat "\n\n"
        in

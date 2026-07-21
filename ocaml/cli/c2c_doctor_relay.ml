@@ -571,6 +571,69 @@ let check_capabilities ~probe ~connector_running =
     (Relay_doctor.capabilities_check ~url:probe.url
        ~reachable:(probe.health <> None) ~connector_running)
 
+(* B268: client binary vs changelog cache — informational (PASS even when
+   behind; never fails doctor --relay). Offline/empty cache → PASS silent. *)
+let check_client_update ~broker_root =
+  match
+    (try C2c_changelog.latest_known_newer ~broker_root () with _ -> None)
+  with
+  | None ->
+      { check_id = "client.update"
+      ; status = Pass
+      ; message = sprintf "client version %s (no newer release in local changelog cache)"
+          Version.version
+      ; detail = None; fix_command = None; docs_url = None }
+  | Some latest ->
+      { check_id = "client.update"
+      ; status = Pass
+      ; message = sprintf "newer release %s available (you're on %s)"
+          latest Version.version
+      ; detail = Some "Surfaced from the local changelog cache (no network probe)."
+      ; fix_command = Some "c2c self-update"
+      ; docs_url = None }
+
+(* B268: relay /health version vs latest known in changelog cache.
+   Informational only — a client cannot upgrade a remote relay. Fail closed
+   (PASS + skip) when relay unreachable or version missing. *)
+let check_relay_version ~probe ~broker_root =
+  match probe.health with
+  | None ->
+      { check_id = "relay.version"
+      ; status = Inconclusive
+      ; message = "relay version check skipped (relay unreachable)"
+      ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  | Some j ->
+      let open Yojson.Safe.Util in
+      let reported =
+        match j |> member "version" |> to_string_option with
+        | Some v when String.trim v <> "" && v <> "?" -> Some v
+        | _ ->
+            (match j |> member "server_version" |> to_string_option with
+             | Some v when String.trim v <> "" && v <> "?" -> Some v
+             | _ -> None)
+      in
+      (match
+         try
+           C2c_changelog.component_behind_latest ~reported ~broker_root ()
+         with _ -> None
+       with
+       | None ->
+           let ver = Option.value reported ~default:"?" in
+           { check_id = "relay.version"
+           ; status = Pass
+           ; message = sprintf "relay version %s (not behind latest known release)" ver
+           ; detail = None; fix_command = None; docs_url = Some docs_relay }
+       | Some (ver, latest) ->
+           { check_id = "relay.version"
+           ; status = Pass
+           ; message = sprintf
+               "relay version %s is behind latest known %s (informational)"
+               ver latest
+           ; detail = Some
+               "Client cannot upgrade a remote relay — flag for deploy/ops."
+           ; fix_command = None
+           ; docs_url = Some docs_relay })
+
 (* ---------------------------------------------------------------------------
  * Run all checks
  * --------------------------------------------------------------------------- *)
@@ -647,6 +710,8 @@ let run_checks () =
     ; check_connector ~relay_url:probe.url ~scoped_procs ~state ~now
     ; check_outbox ~broker_root
     ; check_capabilities ~probe ~connector_running
+    ; check_client_update ~broker_root
+    ; check_relay_version ~probe ~broker_root
     ]
     @ (match duplicate_check with Some c -> [ of_rd c ] | None -> [])
   in

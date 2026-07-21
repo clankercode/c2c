@@ -99,7 +99,8 @@ let tail_log_cmd =
 let server_info_cmd =
   let+ json = json_flag in
   let output_mode = if json then Json else Human in
-  let info = C2c_mcp.server_info () in
+  (* B268: prefer the root-cmd merge so CLI server-info matches the fast path. *)
+  let info = C2c_root_cmd.server_info_with_update () in
   match output_mode with
   | Json -> print_json info
   | Human ->
@@ -108,6 +109,8 @@ let server_info_cmd =
        List.iter (fun (k, v) ->
          match v with
          | `String s -> Printf.printf "%s: %s\n" k s
+         | `Bool b -> Printf.printf "%s: %s\n" k (if b then "true" else "false")
+         | `Null -> Printf.printf "%s: null\n" k
          | `List l -> Printf.printf "%s:\n" k; List.iter (fun item -> Printf.printf "  - %s\n" (Yojson.Safe.to_string item)) l
          | _ -> Printf.printf "%s: %s\n" k (Yojson.Safe.to_string v))
          fields
