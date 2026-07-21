@@ -165,6 +165,37 @@ CREATE TABLE IF NOT EXISTS stats_snapshots (
     json TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_stats_snapshots_ts ON stats_snapshots(ts);
+
+-- B262/B263: recipient-issued, sender-bound contact grants. Store only the
+-- SHA-256 verifier of the 32-byte secret — never the raw secret. Fresh installs
+-- get these via CREATE IF NOT EXISTS; additive for existing DBs.
+CREATE TABLE IF NOT EXISTS contact_grants (
+    verifier BLOB PRIMARY KEY,
+    recipient_identity_fp BLOB NOT NULL,
+    delivery_alias TEXT NOT NULL,
+    sender_fp BLOB NOT NULL,
+    scope TEXT NOT NULL,
+    generation INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL,
+    revoked_at REAL,
+    label TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_contact_grants_recipient
+  ON contact_grants(recipient_identity_fp);
+
+-- Monotonic generation survives grant-row GC and relay restart.
+CREATE TABLE IF NOT EXISTS contact_grant_generations (
+    recipient_identity_fp BLOB PRIMARY KEY,
+    generation INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS contact_grant_message_ids (
+    verifier BLOB NOT NULL,
+    message_id TEXT NOT NULL,
+    accepted_at REAL NOT NULL,
+    PRIMARY KEY (verifier, message_id)
+);
 |sql}
 
 let exec_no_rows db sql =

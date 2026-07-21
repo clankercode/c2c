@@ -20,6 +20,27 @@ let with_lock m f =
   Mutex.lock m;
   Fun.protect ~finally:(fun () -> Mutex.unlock m) f
 
+(* B262/B263: recipient-issued, sender-bound contact grants (design freeze:
+   .collab/design/2026-07-22-b262-contact-grant-protocol.md). Shared domain
+   types live here so both backends and tests agree. *)
+
+type contact_issue_result = {
+  grant_secret : string; (* 32 raw bytes; returned once to owner *)
+  grant_id : string; (* base64url-nopad of SHA-256(secret); management id *)
+  expires_at : float;
+  generation : int;
+}
+
+type contact_grant_meta = {
+  grant_id : string;
+  sender_fp_prefix : string; (* short non-secret fingerprint prefix *)
+  delivery_alias : string;
+  expires_at : float;
+  revoked_at : float option;
+  generation : int;
+  label : string option;
+}
+
 (* --- RELAY signature - satisfied by both InMemoryRelay and SqliteRelay --- *)
 
 module type RELAY = sig
@@ -138,6 +159,54 @@ module type RELAY = sig
      backend appends a line to <persist_dir>/stats-history.jsonl (no-op
      without persist_dir). Driven hourly by the server loop. Never raises. *)
   val record_stats_snapshot : t -> now:float -> unit
+  (* B262/B263: recipient-owned, sender-bound contact grants. See
+     .collab/design/2026-07-22-b262-contact-grant-protocol.md.
+
+     TRUST BOUNDARY (v1): owner-management calls below are backend operations,
+     not authentication endpoints. [recipient_identity_pk] MUST come from an
+     already-verified host-local/owner control plane. A future remote management
+     route must authenticate alias + signing identity before calling them; do
+     not pass caller-supplied public keys through directly. Delivery admission
+     is separately bound to the verified request sender. *)
+  val issue_contact_grant :
+    t ->
+    recipient_identity_pk:string ->
+    delivery_alias:string ->
+    sender_identity_pk:string ->
+    expires_at:float ->
+    ?label:string ->
+    ?now:float ->
+    unit ->
+    (contact_issue_result, string) result
+  val list_contact_grants :
+    t -> recipient_identity_pk:string -> contact_grant_meta list
+  val revoke_contact_grant :
+    t ->
+    recipient_identity_pk:string ->
+    grant_id:string ->
+    ?now:float ->
+    unit ->
+    (unit, string) result
+  val rotate_contact_grant :
+    t ->
+    recipient_identity_pk:string ->
+    grant_id:string ->
+    sender_identity_pk:string ->
+    expires_at:float ->
+    ?label:string ->
+    ?now:float ->
+    unit ->
+    (contact_issue_result, string) result
+  val admit_contact_delivery :
+    t ->
+    verified_sender_alias:string ->
+    verified_sender_identity_pk:string ->
+    grant_secret:string ->
+    message_id:string ->
+    content:string ->
+    ?now:float ->
+    unit ->
+    [ `Accepted of float | `Duplicate of float | `Rejected ]
 end
 
 (* --- B147: usage-stats window definitions shared by both backends --- *)

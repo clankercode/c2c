@@ -22,6 +22,58 @@ include Relay_alias_helpers
 include Relay_sqlite_support
 include Relay_pairing_token_sql
 
+(* --- B262/B263 contact-grant helpers (shared by both backends) ---------- *)
+
+let contact_sha256_raw s =
+  Digestif.SHA256.(to_raw_string (digest_string s))
+
+let contact_b64url s =
+  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
+let contact_fp_of_pk pk = contact_sha256_raw pk
+
+let contact_grant_id_of_verifier verifier = contact_b64url verifier
+
+let contact_sender_fp_prefix sender_fp =
+  let full = contact_b64url sender_fp in
+  if String.length full <= 12 then full else String.sub full 0 12
+
+let contact_random_secret () =
+  (try Mirage_crypto_rng_unix.use_default () with _ -> ());
+  Mirage_crypto_rng.generate 32
+
+let contact_decode_grant_id grant_id =
+  match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet grant_id with
+  | Ok v when String.length v = 32 -> Some v
+  | _ -> None
+
+let contact_scope_v1 = "dm-first-contact"
+let contact_replay_retention_s = 7. *. 86_400.
+
+type contact_grant_rec = {
+  verifier : string;
+  recipient_identity_fp : string;
+  delivery_alias : string;
+  sender_fp : string;
+  scope : string;
+  generation : int;
+  created_at : float;
+  expires_at : float;
+  mutable revoked_at : float option;
+  label : string option;
+}
+
+let contact_meta_of_rec (g : contact_grant_rec) : contact_grant_meta =
+  {
+    grant_id = contact_grant_id_of_verifier g.verifier;
+    sender_fp_prefix = contact_sender_fp_prefix g.sender_fp;
+    delivery_alias = g.delivery_alias;
+    expires_at = g.expires_at;
+    revoked_at = g.revoked_at;
+    generation = g.generation;
+    label = g.label;
+  }
+
 (* --- InMemoryRelay --- *)
 
 module InMemoryRelay : RELAY = struct
@@ -74,6 +126,10 @@ module InMemoryRelay : RELAY = struct
     mutable stats_messages_ever : int;
     stats_seen_aliases : (string, float) Hashtbl.t;
     stats_seen_machines : (string, float) Hashtbl.t;
+    (* B263: contact grants — verifier-keyed; never store raw secret. *)
+    contact_grants : (string, contact_grant_rec) Hashtbl.t;
+    contact_grant_mids : ((string * string), float) Hashtbl.t;
+    contact_generation : (string, int) Hashtbl.t;
   }
 
   let room_history_jsonl_path persist_dir room_id =
@@ -397,6 +453,9 @@ module InMemoryRelay : RELAY = struct
       stats_messages_ever;
       stats_seen_aliases;
       stats_seen_machines;
+      contact_grants = Hashtbl.create 32;
+      contact_grant_mids = Hashtbl.create 64;
+      contact_generation = Hashtbl.create 16;
     }
 
   let with_lock t f =
@@ -1438,6 +1497,30 @@ module InMemoryRelay : RELAY = struct
       t.stats_message_events <-
         List.filter (fun ts -> ts >= now -. stats_event_retention_s)
           t.stats_message_events;
+      (* B262 §7.4: retain expired/revoked grants and replay ids for seven
+         days, then remove both under this backend lock. Generation state is
+         separate and deliberately survives grant-row GC. *)
+      let stale_grant_verifiers = ref [] in
+      Hashtbl.iter
+        (fun verifier g ->
+          let terminal_at =
+            match g.revoked_at with
+            | Some revoked_at -> max g.expires_at revoked_at
+            | None -> g.expires_at
+          in
+          if now >= terminal_at +. contact_replay_retention_s then
+            stale_grant_verifiers := verifier :: !stale_grant_verifiers)
+        t.contact_grants;
+      List.iter
+        (fun verifier ->
+          Hashtbl.remove t.contact_grants verifier;
+          let stale_mids = ref [] in
+          Hashtbl.iter
+            (fun ((mid_verifier, message_id) as key) _ ->
+              if mid_verifier = verifier then stale_mids := key :: !stale_mids)
+            t.contact_grant_mids;
+          List.iter (Hashtbl.remove t.contact_grant_mids) !stale_mids)
+        !stale_grant_verifiers;
       (* B148: compact the persisted jsonl to a bounded state snapshot so it
          doesn't grow unboundedly (gc already holds the lock). *)
       Option.iter (fun d ->
@@ -1448,6 +1531,205 @@ module InMemoryRelay : RELAY = struct
         t.persist_dir;
       `Ok (List.rev !expired, pruned)
     )
+
+  (* B262/B263: contact grants — in-memory lifecycle. *)
+  let issue_contact_grant t ~recipient_identity_pk ~delivery_alias
+      ~sender_identity_pk ~expires_at ?label ?now () =
+    with_lock t (fun () ->
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      if String.length recipient_identity_pk = 0
+         || String.length sender_identity_pk = 0
+         || delivery_alias = "" then
+        Result.Error "contact_grant_invalid_args"
+      else if expires_at <= now then
+        Result.Error "contact_grant_expires_in_past"
+      else
+        let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+        match Hashtbl.find_opt t.leases delivery_alias with
+        | None -> Result.Error "contact_grant_not_owner"
+        | Some lease
+          when RegistrationLease.identity_pk lease = ""
+               || contact_fp_of_pk (RegistrationLease.identity_pk lease)
+                  <> recipient_fp ->
+          Result.Error "contact_grant_not_owner"
+        | Some _ -> begin
+        let sender_fp = contact_fp_of_pk sender_identity_pk in
+        let prev_gen =
+          match Hashtbl.find_opt t.contact_generation recipient_fp with
+          | Some g -> g | None -> 0
+        in
+        let generation = prev_gen + 1 in
+        Hashtbl.replace t.contact_generation recipient_fp generation;
+        let grant_secret = contact_random_secret () in
+        let verifier = contact_sha256_raw grant_secret in
+        let rec_ =
+          {
+            verifier;
+            recipient_identity_fp = recipient_fp;
+            delivery_alias;
+            sender_fp;
+            scope = contact_scope_v1;
+            generation;
+            created_at = now;
+            expires_at;
+            revoked_at = None;
+            label;
+          }
+        in
+        Hashtbl.replace t.contact_grants verifier rec_;
+        Result.Ok
+          {
+            grant_secret;
+            grant_id = contact_grant_id_of_verifier verifier;
+            expires_at;
+            generation;
+          }
+      end)
+
+  let list_contact_grants t ~recipient_identity_pk =
+    with_lock t (fun () ->
+      let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+      Hashtbl.fold
+        (fun _ g acc ->
+          if g.recipient_identity_fp = recipient_fp then
+            contact_meta_of_rec g :: acc
+          else acc)
+        t.contact_grants [])
+
+  let revoke_contact_grant t ~recipient_identity_pk ~grant_id ?now () =
+    with_lock t (fun () ->
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      match contact_decode_grant_id grant_id with
+      | None -> Result.Error "contact_grant_not_found"
+      | Some verifier ->
+        (match Hashtbl.find_opt t.contact_grants verifier with
+         | None -> Result.Error "contact_grant_not_found"
+         | Some g ->
+           let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+           if g.recipient_identity_fp <> recipient_fp then
+             Result.Error "contact_grant_not_owner"
+           else begin
+             (match g.revoked_at with
+              | None -> g.revoked_at <- Some now
+              | Some _ -> ());
+             Result.Ok ()
+           end))
+
+  let rotate_contact_grant t ~recipient_identity_pk ~grant_id
+      ~sender_identity_pk ~expires_at ?label ?now () =
+    with_lock t (fun () ->
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      match contact_decode_grant_id grant_id with
+      | None -> Result.Error "contact_grant_not_found"
+      | Some old_verifier ->
+        (match Hashtbl.find_opt t.contact_grants old_verifier with
+         | None -> Result.Error "contact_grant_not_found"
+         | Some old ->
+           let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+           if old.recipient_identity_fp <> recipient_fp then
+             Result.Error "contact_grant_not_owner"
+           else if String.length sender_identity_pk = 0 then
+             Result.Error "contact_grant_invalid_args"
+           else if expires_at <= now then
+             Result.Error "contact_grant_expires_in_past"
+           else begin
+             (match old.revoked_at with
+              | None -> old.revoked_at <- Some now
+              | Some _ -> ());
+             let prev_gen =
+               match Hashtbl.find_opt t.contact_generation recipient_fp with
+               | Some g -> g | None -> old.generation
+             in
+             let generation = prev_gen + 1 in
+             Hashtbl.replace t.contact_generation recipient_fp generation;
+             let grant_secret = contact_random_secret () in
+             let verifier = contact_sha256_raw grant_secret in
+             let delivery_alias = old.delivery_alias in
+             let label =
+               match label with Some l -> Some l | None -> old.label
+             in
+             let rec_ =
+               {
+                 verifier;
+                 recipient_identity_fp = recipient_fp;
+                 delivery_alias;
+                 sender_fp = contact_fp_of_pk sender_identity_pk;
+                 scope = contact_scope_v1;
+                 generation;
+                 created_at = now;
+                 expires_at;
+                 revoked_at = None;
+                 label;
+               }
+             in
+             Hashtbl.replace t.contact_grants verifier rec_;
+             Result.Ok
+               {
+                 grant_secret;
+                 grant_id = contact_grant_id_of_verifier verifier;
+                 expires_at;
+                 generation;
+               }
+           end))
+
+  let admit_contact_delivery t ~verified_sender_alias
+      ~verified_sender_identity_pk ~grant_secret ~message_id ~content
+      ?now () =
+    with_lock t (fun () ->
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      if String.length grant_secret <> 32 || message_id = "" then `Rejected
+      else
+        let verifier = contact_sha256_raw grant_secret in
+        match Hashtbl.find_opt t.contact_grants verifier with
+        | None -> `Rejected
+        | Some g ->
+          (match g.revoked_at with
+           | Some _ -> `Rejected
+           | None when now >= g.expires_at -> `Rejected
+           | None when g.scope <> contact_scope_v1 -> `Rejected
+           | None ->
+             let sender_fp = contact_fp_of_pk verified_sender_identity_pk in
+             if sender_fp <> g.sender_fp then `Rejected
+             else
+               match Hashtbl.find_opt t.contact_grant_mids (verifier, message_id) with
+               | Some ts -> `Duplicate ts
+               | None ->
+                 (match Hashtbl.find_opt t.leases g.delivery_alias with
+                  | None -> `Rejected
+                  | Some lease
+                    when alias_released ~now
+                           ~last_seen:(RegistrationLease.last_seen lease)
+                         || not (RegistrationLease.is_alive lease) ->
+                    `Rejected
+                  | Some lease ->
+                    let lease_pk = RegistrationLease.identity_pk lease in
+                    if lease_pk = ""
+                       || contact_fp_of_pk lease_pk <> g.recipient_identity_fp
+                    then `Rejected
+                    else begin
+                      (* B262 G3 authority is the verified Ed25519 key fingerprint.
+                         [verified_sender_alias] is delivery metadata only; v1 does
+                         not require a live sender lease (design §7.2 step 7). *)
+                      let key =
+                        inbox_key (RegistrationLease.node_id lease)
+                          (RegistrationLease.session_id lease)
+                      in
+                      let msg =
+                        `Assoc
+                          [
+                            ("message_id", `String message_id);
+                            ("from_alias", `String verified_sender_alias);
+                            ("to_alias", `String g.delivery_alias);
+                            ("content", `String content);
+                            ("ts", `Float now);
+                          ]
+                      in
+                      let inbox = get_inbox t key in
+                      set_inbox t key (msg :: inbox);
+                      Hashtbl.replace t.contact_grant_mids
+                        (verifier, message_id) now;
+                      `Accepted now
+                    end)))
 end
 
 (* --- SqliteRelay --- *)
@@ -1495,8 +1777,18 @@ module SqliteRelay : RELAY = struct
     let db_path = Filename.concat persist_dir "c2c_relay.db" in
     let mutex = Mutex.create () in
     let conn = Sqlite3.db_open db_path in
-    Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" |> ignore;
-    Sqlite3.exec conn sqlite_ddl |> ignore;
+    let pragmas_rc =
+      Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;"
+    in
+    if not (Rc.is_success pragmas_rc) then begin
+      ignore (Sqlite3.db_close conn);
+      failwith ("relay sqlite pragma setup failed: " ^ Rc.to_string pragmas_rc)
+    end;
+    let ddl_rc = Sqlite3.exec conn sqlite_ddl in
+    if not (Rc.is_success ddl_rc) then begin
+      ignore (Sqlite3.db_close conn);
+      failwith ("relay sqlite schema setup failed: " ^ Rc.to_string ddl_rc)
+    end;
     (* #586 (slice 1): migrate older databases to the opaque_host_id
        column. `CREATE TABLE IF NOT EXISTS` does not add new columns
        to an existing leases table, so we probe pragma_table_info and
@@ -2406,6 +2698,34 @@ module SqliteRelay : RELAY = struct
       with_stmt conn "DELETE FROM stats_message_events WHERE ts < ?" (fun del_stats ->
         Sqlite3.bind_double del_stats 1 (now -. stats_event_retention_s) |> ignore;
         Sqlite3.step del_stats |> ignore);
+      (* B262 §7.4: cascade message-id replay state before deleting terminal
+         grants. The generation table is intentionally retained. *)
+      with_stmt conn
+        "DELETE FROM contact_grant_message_ids
+          WHERE verifier IN (
+            SELECT verifier FROM contact_grants
+             WHERE ? >= (CASE
+               WHEN revoked_at IS NULL THEN expires_at
+               WHEN revoked_at > expires_at THEN revoked_at
+               ELSE expires_at END) + ?)"
+        (fun del_mids ->
+          Sqlite3.bind_double del_mids 1 now |> ignore;
+          Sqlite3.bind_double del_mids 2 contact_replay_retention_s |> ignore;
+          let rc = Sqlite3.step del_mids in
+          if rc <> Rc.DONE then
+            failwith ("contact message-id gc failed: " ^ Rc.to_string rc));
+      with_stmt conn
+        "DELETE FROM contact_grants
+          WHERE ? >= (CASE
+            WHEN revoked_at IS NULL THEN expires_at
+            WHEN revoked_at > expires_at THEN revoked_at
+            ELSE expires_at END) + ?"
+        (fun del_grants ->
+          Sqlite3.bind_double del_grants 1 now |> ignore;
+          Sqlite3.bind_double del_grants 2 contact_replay_retention_s |> ignore;
+          let rc = Sqlite3.step del_grants in
+          if rc <> Rc.DONE then
+            failwith ("contact grant gc failed: " ^ Rc.to_string rc));
       `Ok (List.rev !expired_aliases, pruned)
     )
 
@@ -3211,6 +3531,490 @@ module SqliteRelay : RELAY = struct
   let get_device_pair_pending _t ~user_code:_ = None
   let set_device_pair_pending _t ~user_code:_ (_:device_pair_pending) = ()
   let remove_device_pair_pending _t ~user_code:_ = ()
+
+  (* B262/B263: contact grants — SQLite lifecycle on process-lifetime t.db. *)
+  let sql_begin_immediate conn =
+    let rc = Sqlite3.exec conn "BEGIN IMMEDIATE" in
+    if not (Rc.is_success rc) then
+      failwith ("BEGIN IMMEDIATE failed: " ^ Rc.to_string rc)
+
+  let sql_commit conn =
+    let rc = Sqlite3.exec conn "COMMIT" in
+    if not (Rc.is_success rc) then
+      failwith ("COMMIT failed: " ^ Rc.to_string rc)
+
+  let sql_rollback conn =
+    ignore (Sqlite3.exec conn "ROLLBACK")
+
+  let with_tx_immediate conn f =
+    sql_begin_immediate conn;
+    match (try Ok (f ()) with exn -> Error exn) with
+    | Error exn ->
+      sql_rollback conn;
+      raise exn
+    | Ok v ->
+      (try
+         sql_commit conn;
+         v
+       with exn ->
+         (* If COMMIT failed while the transaction is still active, clear it
+            before returning the shared process-lifetime connection. ROLLBACK
+            is best-effort because SQLite may already have ended the tx. *)
+         sql_rollback conn;
+         raise exn)
+
+  let next_generation_for_recipient conn ~recipient_fp =
+    with_stmt conn
+      "INSERT INTO contact_grant_generations (recipient_identity_fp, generation)
+       VALUES (?, 1)
+       ON CONFLICT(recipient_identity_fp)
+       DO UPDATE SET generation = generation + 1
+       RETURNING generation"
+      (fun stmt ->
+        Sqlite3.bind_blob stmt 1 recipient_fp |> ignore;
+        let rc = Sqlite3.step stmt in
+        if rc <> Rc.ROW then
+          failwith ("contact generation step failed: " ^ Rc.to_string rc);
+        match Sqlite3.Data.to_int (Sqlite3.column stmt 0) with
+        | Some i -> i
+        | None ->
+          int_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)))
+
+  let insert_contact_grant_row conn ~verifier ~recipient_fp ~delivery_alias
+      ~sender_fp ~generation ~created_at ~expires_at ~label =
+    with_stmt conn
+      "INSERT INTO contact_grants
+         (verifier, recipient_identity_fp, delivery_alias, sender_fp, scope,
+          generation, created_at, expires_at, revoked_at, label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)"
+      (fun stmt ->
+        Sqlite3.bind_blob stmt 1 verifier |> ignore;
+        Sqlite3.bind_blob stmt 2 recipient_fp |> ignore;
+        Sqlite3.bind_text stmt 3 delivery_alias |> ignore;
+        Sqlite3.bind_blob stmt 4 sender_fp |> ignore;
+        Sqlite3.bind_text stmt 5 contact_scope_v1 |> ignore;
+        Sqlite3.bind_int stmt 6 generation |> ignore;
+        Sqlite3.bind_double stmt 7 created_at |> ignore;
+        Sqlite3.bind_double stmt 8 expires_at |> ignore;
+        (match label with
+         | Some l -> Sqlite3.bind_text stmt 9 l |> ignore
+         | None -> Sqlite3.bind stmt 9 Sqlite3.Data.NULL |> ignore);
+        let rc = Sqlite3.step stmt in
+        if rc <> Rc.DONE then
+          failwith ("insert contact_grant failed: " ^ Rc.to_string rc))
+
+  let load_grant_by_verifier conn ~verifier =
+    let result = ref None in
+    with_stmt conn
+      "SELECT recipient_identity_fp, delivery_alias, sender_fp, scope,
+              generation, created_at, expires_at, revoked_at, label
+         FROM contact_grants WHERE verifier = ?"
+      (fun stmt ->
+        Sqlite3.bind_blob stmt 1 verifier |> ignore;
+        let rc = Sqlite3.step stmt in
+        if rc = Rc.ROW then begin
+          let recipient_fp =
+            Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
+          in
+          let delivery_alias =
+            Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)
+          in
+          let sender_fp = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2) in
+          let scope = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3) in
+          let generation =
+            match Sqlite3.Data.to_int (Sqlite3.column stmt 4) with
+            | Some i -> i
+            | None ->
+              int_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 4))
+          in
+          let created_at =
+            match Sqlite3.Data.to_float (Sqlite3.column stmt 5) with
+            | Some f -> f
+            | None ->
+              float_of_string
+                (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 5))
+          in
+          let expires_at =
+            match Sqlite3.Data.to_float (Sqlite3.column stmt 6) with
+            | Some f -> f
+            | None ->
+              float_of_string
+                (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 6))
+          in
+          let revoked_at =
+            match Sqlite3.column stmt 7 with
+            | Sqlite3.Data.NULL -> None
+            | d ->
+              (match Sqlite3.Data.to_float d with
+               | Some f -> Some f
+               | None ->
+                 (try Some (float_of_string (Sqlite3.Data.to_string_exn d))
+                  with _ -> None))
+          in
+          let label =
+            match Sqlite3.column stmt 8 with
+            | Sqlite3.Data.NULL -> None
+            | d ->
+              (try Some (Sqlite3.Data.to_string_exn d) with _ -> None)
+          in
+          result :=
+            Some
+              {
+                verifier;
+                recipient_identity_fp = recipient_fp;
+                delivery_alias;
+                sender_fp;
+                scope;
+                generation;
+                created_at;
+                expires_at;
+                revoked_at;
+                label;
+              }
+        end);
+    !result
+
+  let issue_contact_grant t ~recipient_identity_pk ~delivery_alias
+      ~sender_identity_pk ~expires_at ?label ?now () =
+    with_lock t (fun () ->
+      let conn = t.db in
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      if String.length recipient_identity_pk = 0
+         || String.length sender_identity_pk = 0
+         || delivery_alias = "" then
+        Result.Error "contact_grant_invalid_args"
+      else if expires_at <= now then
+        Result.Error "contact_grant_expires_in_past"
+      else
+        let owns_alias = ref false in
+        with_stmt conn
+          "SELECT identity_pk FROM leases WHERE alias = ?"
+          (fun stmt ->
+            Sqlite3.bind_text stmt 1 delivery_alias |> ignore;
+            if Sqlite3.step stmt = Rc.ROW then
+              let stored_pk =
+                try Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
+                with _ -> ""
+              in
+              owns_alias :=
+                stored_pk <> ""
+                && contact_fp_of_pk stored_pk
+                   = contact_fp_of_pk recipient_identity_pk);
+        if not !owns_alias then Result.Error "contact_grant_not_owner"
+        else
+        try
+          with_tx_immediate conn (fun () ->
+            let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+            let sender_fp = contact_fp_of_pk sender_identity_pk in
+            let generation =
+              next_generation_for_recipient conn ~recipient_fp
+            in
+            let grant_secret = contact_random_secret () in
+            let verifier = contact_sha256_raw grant_secret in
+            insert_contact_grant_row conn ~verifier ~recipient_fp
+              ~delivery_alias ~sender_fp ~generation ~created_at:now
+              ~expires_at ~label;
+            Result.Ok
+              {
+                grant_secret;
+                grant_id = contact_grant_id_of_verifier verifier;
+                expires_at;
+                generation;
+              })
+        with exn ->
+          Result.Error ("contact_grant_issue_failed: " ^ Printexc.to_string exn))
+
+  let list_contact_grants t ~recipient_identity_pk =
+    with_lock t (fun () ->
+      let conn = t.db in
+      let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+      let acc = ref [] in
+      with_stmt conn
+        "SELECT verifier, delivery_alias, sender_fp, generation, expires_at,
+                revoked_at, label
+           FROM contact_grants WHERE recipient_identity_fp = ?"
+        (fun stmt ->
+          Sqlite3.bind_blob stmt 1 recipient_fp |> ignore;
+          let rec loop () =
+            let rc = Sqlite3.step stmt in
+            if rc = Rc.ROW then begin
+              let verifier =
+                Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
+              in
+              let delivery_alias =
+                Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)
+              in
+              let sender_fp =
+                Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2)
+              in
+              let generation =
+                match Sqlite3.Data.to_int (Sqlite3.column stmt 3) with
+                | Some i -> i
+                | None ->
+                  int_of_string
+                    (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3))
+              in
+              let expires_at =
+                match Sqlite3.Data.to_float (Sqlite3.column stmt 4) with
+                | Some f -> f
+                | None ->
+                  float_of_string
+                    (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 4))
+              in
+              let revoked_at =
+                match Sqlite3.column stmt 5 with
+                | Sqlite3.Data.NULL -> None
+                | d ->
+                  (match Sqlite3.Data.to_float d with
+                   | Some f -> Some f
+                   | None ->
+                     (try Some (float_of_string (Sqlite3.Data.to_string_exn d))
+                      with _ -> None))
+              in
+              let label =
+                match Sqlite3.column stmt 6 with
+                | Sqlite3.Data.NULL -> None
+                | d ->
+                  (try Some (Sqlite3.Data.to_string_exn d) with _ -> None)
+              in
+              acc :=
+                {
+                  grant_id = contact_grant_id_of_verifier verifier;
+                  sender_fp_prefix = contact_sender_fp_prefix sender_fp;
+                  delivery_alias;
+                  expires_at;
+                  revoked_at;
+                  generation;
+                  label;
+                }
+                :: !acc;
+              loop ()
+            end
+          in
+          loop ());
+      !acc)
+
+  let revoke_contact_grant t ~recipient_identity_pk ~grant_id ?now () =
+    with_lock t (fun () ->
+      let conn = t.db in
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      match contact_decode_grant_id grant_id with
+      | None -> Result.Error "contact_grant_not_found"
+      | Some verifier ->
+        try
+          with_tx_immediate conn (fun () ->
+            match load_grant_by_verifier conn ~verifier with
+            | None -> Result.Error "contact_grant_not_found"
+            | Some g ->
+              let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+              if g.recipient_identity_fp <> recipient_fp then
+                Result.Error "contact_grant_not_owner"
+              else begin
+                with_stmt conn
+                  "UPDATE contact_grants SET revoked_at = ?
+                    WHERE verifier = ? AND revoked_at IS NULL"
+                  (fun stmt ->
+                    Sqlite3.bind_double stmt 1 now |> ignore;
+                    Sqlite3.bind_blob stmt 2 verifier |> ignore;
+                    let rc = Sqlite3.step stmt in
+                    if rc <> Rc.DONE then
+                      failwith
+                        ("revoke contact_grant failed: " ^ Rc.to_string rc));
+                Result.Ok ()
+              end)
+        with exn ->
+          Result.Error
+            ("contact_grant_revoke_failed: " ^ Printexc.to_string exn))
+
+  let rotate_contact_grant t ~recipient_identity_pk ~grant_id
+      ~sender_identity_pk ~expires_at ?label ?now () =
+    with_lock t (fun () ->
+      let conn = t.db in
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      match contact_decode_grant_id grant_id with
+      | None -> Result.Error "contact_grant_not_found"
+      | Some old_verifier ->
+        if String.length sender_identity_pk = 0 then
+          Result.Error "contact_grant_invalid_args"
+        else if expires_at <= now then
+          Result.Error "contact_grant_expires_in_past"
+        else
+          try
+            with_tx_immediate conn (fun () ->
+              match load_grant_by_verifier conn ~verifier:old_verifier with
+              | None -> Result.Error "contact_grant_not_found"
+              | Some old ->
+                let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+                if old.recipient_identity_fp <> recipient_fp then
+                  Result.Error "contact_grant_not_owner"
+                else begin
+                  with_stmt conn
+                    "UPDATE contact_grants SET revoked_at = ?
+                      WHERE verifier = ? AND revoked_at IS NULL"
+                    (fun stmt ->
+                      Sqlite3.bind_double stmt 1 now |> ignore;
+                      Sqlite3.bind_blob stmt 2 old_verifier |> ignore;
+                      let rc = Sqlite3.step stmt in
+                      if rc <> Rc.DONE then
+                        failwith
+                          ("rotate revoke failed: " ^ Rc.to_string rc));
+                  let generation =
+                    next_generation_for_recipient conn ~recipient_fp
+                  in
+                  let grant_secret = contact_random_secret () in
+                  let verifier = contact_sha256_raw grant_secret in
+                  let label =
+                    match label with Some l -> Some l | None -> old.label
+                  in
+                  insert_contact_grant_row conn ~verifier ~recipient_fp
+                    ~delivery_alias:old.delivery_alias
+                    ~sender_fp:(contact_fp_of_pk sender_identity_pk)
+                    ~generation ~created_at:now ~expires_at ~label;
+                  Result.Ok
+                    {
+                      grant_secret;
+                      grant_id = contact_grant_id_of_verifier verifier;
+                      expires_at;
+                      generation;
+                    }
+                end)
+          with exn ->
+            Result.Error
+              ("contact_grant_rotate_failed: " ^ Printexc.to_string exn))
+
+  let admit_contact_delivery t ~verified_sender_alias
+      ~verified_sender_identity_pk ~grant_secret ~message_id ~content
+      ?now () =
+    with_lock t (fun () ->
+      let conn = t.db in
+      let now = match now with Some n -> n | None -> Unix.gettimeofday () in
+      if String.length grant_secret <> 32 || message_id = "" then `Rejected
+      else
+        let verifier = contact_sha256_raw grant_secret in
+        try
+          with_tx_immediate conn (fun () ->
+            match load_grant_by_verifier conn ~verifier with
+            | None -> `Rejected
+            | Some g ->
+              (match g.revoked_at with
+               | Some _ -> `Rejected
+               | None when now >= g.expires_at -> `Rejected
+               | None when g.scope <> contact_scope_v1 -> `Rejected
+               | None ->
+                 let sender_fp =
+                   contact_fp_of_pk verified_sender_identity_pk
+                 in
+                 if sender_fp <> g.sender_fp then `Rejected
+                 else begin
+                   (* Idempotency first: existing (verifier, message_id). *)
+                   let prior = ref None in
+                   with_stmt conn
+                     "SELECT accepted_at FROM contact_grant_message_ids
+                       WHERE verifier = ? AND message_id = ?"
+                     (fun stmt ->
+                       Sqlite3.bind_blob stmt 1 verifier |> ignore;
+                       Sqlite3.bind_text stmt 2 message_id |> ignore;
+                       let rc = Sqlite3.step stmt in
+                       if rc = Rc.ROW then
+                         prior :=
+                           (match Sqlite3.Data.to_float (Sqlite3.column stmt 0) with
+                            | Some f -> Some f
+                            | None ->
+                              (try
+                                 Some
+                                   (float_of_string
+                                      (Sqlite3.Data.to_string_exn
+                                         (Sqlite3.column stmt 0)))
+                               with _ -> None)));
+                   match !prior with
+                   | Some ts -> `Duplicate ts
+                   | None ->
+                     let lease_info = ref None in
+                     with_stmt conn
+                       "SELECT node_id, session_id, last_seen, ttl, identity_pk
+                          FROM leases WHERE alias = ?"
+                       (fun stmt ->
+                         Sqlite3.bind_text stmt 1 g.delivery_alias |> ignore;
+                         let rc = Sqlite3.step stmt in
+                         if rc = Rc.ROW then begin
+                           let node_id =
+                             Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
+                           in
+                           let session_id =
+                             Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)
+                           in
+                           let last_seen =
+                             match Sqlite3.Data.to_float (Sqlite3.column stmt 2) with
+                             | Some f -> f
+                             | None ->
+                               float_of_string
+                                 (Sqlite3.Data.to_string_exn
+                                    (Sqlite3.column stmt 2))
+                           in
+                           let ttl =
+                             match Sqlite3.Data.to_float (Sqlite3.column stmt 3) with
+                             | Some f -> f
+                             | None ->
+                               float_of_string
+                                 (Sqlite3.Data.to_string_exn
+                                    (Sqlite3.column stmt 3))
+                           in
+                           let identity_pk =
+                             match Sqlite3.column stmt 4 with
+                             | Sqlite3.Data.NULL -> ""
+                             | d ->
+                               (try Sqlite3.Data.to_string_exn d with _ -> "")
+                           in
+                           lease_info :=
+                             Some (node_id, session_id, last_seen, ttl, identity_pk)
+                         end);
+                     match !lease_info with
+                     | None -> `Rejected
+                     | Some (node_id, session_id, last_seen, ttl, identity_pk) ->
+                       if alias_released ~now ~last_seen then `Rejected
+                       else if last_seen +. ttl < now then `Rejected
+                       else if identity_pk = ""
+                               || contact_fp_of_pk identity_pk
+                                  <> g.recipient_identity_fp
+                       then `Rejected
+                       else begin
+                         with_stmt conn
+                           "INSERT INTO inboxes
+                              (node_id, session_id, message_id, from_alias,
+                               to_alias, content, ts, pow_difficulty)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                           (fun ins ->
+                             Sqlite3.bind_text ins 1 node_id |> ignore;
+                             Sqlite3.bind_text ins 2 session_id |> ignore;
+                             Sqlite3.bind_text ins 3 message_id |> ignore;
+                             Sqlite3.bind_text ins 4 verified_sender_alias
+                             |> ignore;
+                             Sqlite3.bind_text ins 5 g.delivery_alias |> ignore;
+                             Sqlite3.bind_text ins 6 content |> ignore;
+                             Sqlite3.bind_double ins 7 now |> ignore;
+                             Sqlite3.bind_int ins 8 (-1) |> ignore;
+                             let rc = Sqlite3.step ins in
+                             if rc <> Rc.DONE then
+                               failwith
+                                 ("admit inbox insert failed: "
+                                  ^ Rc.to_string rc));
+                         with_stmt conn
+                           "INSERT INTO contact_grant_message_ids
+                              (verifier, message_id, accepted_at)
+                            VALUES (?, ?, ?)"
+                           (fun mid ->
+                             Sqlite3.bind_blob mid 1 verifier |> ignore;
+                             Sqlite3.bind_text mid 2 message_id |> ignore;
+                             Sqlite3.bind_double mid 3 now |> ignore;
+                             let rc = Sqlite3.step mid in
+                             if rc <> Rc.DONE then
+                               failwith
+                                 ("admit mid insert failed: "
+                                  ^ Rc.to_string rc));
+                         `Accepted now
+                       end
+                 end))
+        with _ -> `Rejected)
 end
 
 (* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
