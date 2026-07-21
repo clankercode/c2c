@@ -33,3 +33,7 @@ Specify the recipient-controlled capability/consent protocol that makes relay id
 - Security design is reviewed independently against canonical OCaml code and the post-refactor persistence model.
 - Abuse cases include enumeration, guessing, stolen/leaked capabilities, sender spoofing, replay, confused recipient/host, revocation races, stale caches, and downgrade attempts.
 - Testable acceptance properties are precise enough that implementation tasks cannot satisfy them through documentation or UI-only changes.
+
+## B261 post-B219 input
+
+Use the final B219 contract recorded in `.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`. Freeze a policy-shaped shared backend admission operation, choose explicit SQL atomicity/single-writer semantics, message-id retention, visibility views, rollback compatibility floor, `send_all`/`forward` behaviour, and the stable principal/device model before B263.
