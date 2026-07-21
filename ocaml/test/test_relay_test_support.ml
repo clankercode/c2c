@@ -265,6 +265,13 @@ let test_real_relay_health_and_list () =
         Relay.InMemoryRelay.register relay ~node_id:"node-f5a"
           ~session_id:"sess-f5a" ~alias:"f5a-realprobe" ()
       in
+      (* B264: private-by-default; ordinary /list only returns Public peers. *)
+      (match
+         Relay.InMemoryRelay.set_peer_discovery_visibility relay
+           ~alias:"f5a-realprobe" ~visibility:Relay_backend_contract.Public
+       with
+       | Ok () -> ()
+       | Error e -> fail ("set public f5a-realprobe: " ^ e));
       Real.call_json ~base_url ~meth:`GET ~path:"/health" ()
       >>= fun health ->
       check int "/health is 200 from the production handler" 200
@@ -1209,6 +1216,11 @@ let fixture_health =
       ("min_client_protocol_version",
        `Int Version.relay_min_client_protocol_version);
       ("auth_mode", `String "dev");
+      (* B265/B266 health ads — keep fake/real F5c vectors aligned. *)
+      ("contact_protocol", `Int 1);
+      ("private_reachability", `String "process_local");
+      ("dev_mode", `Bool true);
+      ("production_claims", `Bool false);
       ("pow",
        `Assoc
          [ ("enabled", `Bool false); ("scheme", `String Pow.scheme_id) ]) ]
@@ -1267,7 +1279,7 @@ let capture_fake () : (string * int * Yojson.Safe.t) list =
 let capture_real () : (string * int * Yojson.Safe.t) list =
   with_pow_env_off @@ fun () ->
   with_unsigned_inbox_allowed @@ fun () ->
-  Real.with_server (fun ~base_url ~relay:_ ->
+  Real.with_server (fun ~base_url ~relay ->
       let open Lwt.Infix in
       let one label ~meth ~path ?req () =
         (match req with
@@ -1283,6 +1295,14 @@ let capture_real () : (string * int * Yojson.Safe.t) list =
       in
       one "register-ok" ~meth:`POST ~path:"/register" ~req:req_register_ok ()
       >>= fun v1 ->
+      (* B264: private-by-default would hide the peer from ordinary /list and
+         fail legacy /send without a grant. F5c pins public-peer wire schema. *)
+      (match
+         Relay.InMemoryRelay.set_peer_discovery_visibility relay
+           ~alias:eq_alias ~visibility:Relay_backend_contract.Public
+       with
+       | Ok () -> ()
+       | Error e -> fail ("set public eq_alias: " ^ e));
       one "register-bad" ~meth:`POST ~path:"/register" ~req:req_register_bad ()
       >>= fun v2 ->
       one "send-ok" ~meth:`POST ~path:"/send" ~req:req_send_ok () >>= fun v3 ->

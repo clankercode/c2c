@@ -702,9 +702,13 @@ module InMemoryRelay : RELAY = struct
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
               | _ -> ());
-             (* B264: new registrations default to Private discovery; re-register keeps prior. *)
+             (* B264: new registrations default to Private discovery; re-register keeps prior.
+                Test-only override: C2C_RELAY_DEFAULT_DISCOVERY=public (hermetic/managed suites). *)
              if not (Hashtbl.mem t.discovery_visibility alias) then
-               Hashtbl.replace t.discovery_visibility alias Private;
+               Hashtbl.replace t.discovery_visibility alias
+                 (match Sys.getenv_opt "C2C_RELAY_DEFAULT_DISCOVERY" with
+                  | Some s when String.lowercase_ascii (String.trim s) = "public" -> Public
+                  | _ -> Private);
              let key = inbox_key node_id session_id in
              if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
              if old_inbox_msgs <> [] then set_inbox t key (List.append old_inbox_msgs (get_inbox t key));
@@ -2386,7 +2390,14 @@ module SqliteRelay : RELAY = struct
             in
             (* B174: coalesce opaque_host_id — empty excluded must not wipe a
                previously stored host id (older clients re-registering). *)
-            with_stmt conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os, discovery_visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private') ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" (fun stmt ->
+            (* B264: default Private; test-only C2C_RELAY_DEFAULT_DISCOVERY=public.
+               ON CONFLICT preserves existing discovery_visibility (not in UPDATE). *)
+            let default_discovery =
+              match Sys.getenv_opt "C2C_RELAY_DEFAULT_DISCOVERY" with
+              | Some s when String.lowercase_ascii (String.trim s) = "public" -> "public"
+              | _ -> "private"
+            in
+            with_stmt conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os, discovery_visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" (fun stmt ->
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -2402,6 +2413,7 @@ module SqliteRelay : RELAY = struct
             bind_text stmt 12 opaque_host_id_str |> ignore;
             bind_text stmt 13 client_version |> ignore;
             bind_text stmt 14 client_os |> ignore;
+            bind_text stmt 15 default_discovery |> ignore;
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc));
