@@ -1,6 +1,7 @@
 ---
 layout: page
 title: Delivery & Wake Contract
+nav_title: Wake Contract
 permalink: /wake-contract/
 ---
 

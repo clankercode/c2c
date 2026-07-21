@@ -1,6 +1,7 @@
 ---
 layout: page
 title: Per-Client Delivery
+nav_title: Client Delivery
 permalink: /client-delivery/
 ---
 

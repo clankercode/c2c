@@ -1,6 +1,7 @@
 ---
 layout: page
 title: Relay Quickstart
+nav_title: Relay
 permalink: /relay-quickstart/
 ---
 
