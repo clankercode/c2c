@@ -11,7 +11,7 @@ scope: canonical OCaml implementation and OCaml tests
 
 This ledger is the source of truth for claims suitable for a public c2c security page. It is based only on the canonical OCaml implementation and OCaml tests. Documentation and older research were not treated as evidence.
 
-No test suite was executed for this research pass; named tests below are static implementation evidence and regression coverage present in the tree.
+Named tests below are implementation evidence. As of B263–B267 on feature/b264-private-discovery, the consent-gated suites have been **executed** (exit 0) — see goal evidence `run-*.log` / `2026-07-22-fresh-suite-summary.txt` and dogfood-final.
 
 Labels:
 
