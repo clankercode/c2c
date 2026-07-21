@@ -702,13 +702,11 @@ module InMemoryRelay : RELAY = struct
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
               | _ -> ());
-             (* B264: new registrations default to Private discovery; re-register keeps prior.
-                Test-only override: C2C_RELAY_DEFAULT_DISCOVERY=public (hermetic/managed suites). *)
+             (* B264/B266: new registrations are always private by default;
+                re-register preserves prior visibility. Public exposure is an
+                explicit policy mutation, never an environment bypass. *)
              if not (Hashtbl.mem t.discovery_visibility alias) then
-               Hashtbl.replace t.discovery_visibility alias
-                 (match Sys.getenv_opt "C2C_RELAY_DEFAULT_DISCOVERY" with
-                  | Some s when String.lowercase_ascii (String.trim s) = "public" -> Public
-                  | _ -> Private);
+               Hashtbl.replace t.discovery_visibility alias Private;
              let key = inbox_key node_id session_id in
              if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
              if old_inbox_msgs <> [] then set_inbox t key (List.append old_inbox_msgs (get_inbox t key));
@@ -1903,43 +1901,148 @@ module SqliteRelay : RELAY = struct
         (try loop () with _ -> ());
         !found)
 
+  let sqlite_object_type conn ~name =
+    let stmt =
+      Sqlite3.prepare conn
+        "SELECT type FROM sqlite_master WHERE name = ? LIMIT 1"
+    in
+    Fun.protect
+      ~finally:(fun () -> try ignore (Sqlite3.finalize stmt) with _ -> ())
+      (fun () ->
+        Sqlite3.bind_text stmt 1 name |> ignore;
+        if Sqlite3.step stmt = Sqlite3.Rc.ROW then
+          Some (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0))
+        else None)
+
+  let checked_exec conn ~context sql =
+    let rc = Sqlite3.exec conn sql in
+    if not (Sqlite3.Rc.is_success rc) then
+      failwith (context ^ ": " ^ Sqlite3.Rc.to_string rc)
+
+  let sqlite_object_sql conn ~name =
+    let stmt =
+      Sqlite3.prepare conn
+        "SELECT sql FROM sqlite_master WHERE name = ? LIMIT 1"
+    in
+    Fun.protect
+      ~finally:(fun () -> try ignore (Sqlite3.finalize stmt) with _ -> ())
+      (fun () ->
+        Sqlite3.bind_text stmt 1 name |> ignore;
+        if Sqlite3.step stmt = Sqlite3.Rc.ROW then
+          match Sqlite3.column stmt 0 with
+          | Sqlite3.Data.NULL -> None
+          | value -> Some (Sqlite3.Data.to_string_exn value)
+        else None)
+
+  let sqlite_trigger_count conn ~table_name =
+    let stmt =
+      Sqlite3.prepare conn
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ?"
+    in
+    Fun.protect
+      ~finally:(fun () -> try ignore (Sqlite3.finalize stmt) with _ -> ())
+      (fun () ->
+        Sqlite3.bind_text stmt 1 table_name |> ignore;
+        if Sqlite3.step stmt <> Sqlite3.Rc.ROW then
+          failwith "B266 trigger count failed";
+        match Sqlite3.Data.to_int (Sqlite3.column stmt 0) with
+        | Some count -> count
+        | None -> failwith "B266 trigger count was not integer")
+
+  let secure_leases_table = "secure_leases_v2"
+  let legacy_refusal_view_sql =
+    "CREATE VIEW leases AS
+       SELECT alias, node_id, session_id, client_type, registered_at,
+              last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64,
+              opaque_host_id, client_version, client_os,
+              discovery_visibility
+         FROM secure_leases_v2 WHERE 0"
+
+  let normalize_sql sql =
+    sql |> String.lowercase_ascii
+    |> String.to_seq
+    |> Seq.filter (fun c -> c <> ' ' && c <> '\n' && c <> '\r' && c <> '\t')
+    |> String.of_seq
+
+  let require_legacy_refusal_view conn =
+    match sqlite_object_type conn ~name:"leases" with
+    | Some "view" ->
+      let actual = sqlite_object_sql conn ~name:"leases" |> Option.value ~default:"" in
+      if normalize_sql actual <> normalize_sql legacy_refusal_view_sql then
+        failwith "B266 legacy leases view does not match refusal definition";
+      if sqlite_trigger_count conn ~table_name:"leases" <> 0 then
+        failwith "B266 legacy leases view has write-capable triggers"
+    | Some kind ->
+      failwith ("B266 secure table coexists with legacy " ^ kind)
+    | None -> failwith "B266 secure table missing legacy refusal view"
+
   let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let db_path = Filename.concat persist_dir "c2c_relay.db" in
     let mutex = Mutex.create () in
     let conn = Sqlite3.db_open db_path in
-    (let rc = Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" in
+    (let rc = Sqlite3.exec conn "PRAGMA busy_timeout = 5000" in
      if not (Sqlite3.Rc.is_success rc) then
-       failwith ("sqlite pragma failed: " ^ Sqlite3.Rc.to_string rc));
+       failwith ("sqlite busy_timeout pragma failed: " ^ Sqlite3.Rc.to_string rc));
+    let rec set_wal attempts =
+      let rc = Sqlite3.exec conn "PRAGMA journal_mode = WAL" in
+      if Sqlite3.Rc.is_success rc then ()
+      else if attempts > 0 && (rc = Sqlite3.Rc.BUSY || rc = Sqlite3.Rc.LOCKED)
+      then begin Unix.sleepf 0.01; set_wal (attempts - 1) end
+      else failwith ("sqlite WAL pragma failed: " ^ Sqlite3.Rc.to_string rc)
+    in
+    set_wal 500;
     (let rc = Sqlite3.exec conn sqlite_ddl in
      if not (Sqlite3.Rc.is_success rc) then
        failwith ("sqlite_ddl failed (B266 security-critical): " ^ Sqlite3.Rc.to_string rc));
-    (* #586 (slice 1): migrate older databases to the opaque_host_id
-       column. `CREATE TABLE IF NOT EXISTS` does not add new columns
-       to an existing leases table, so we probe pragma_table_info and
-       ALTER if the column is missing. Idempotent on fresh installs
-       (the column is already declared in sqlite_ddl). *)
-    if not (sqlite_table_has_column conn ~table:"leases" ~column:"opaque_host_id") then
-      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN opaque_host_id TEXT NOT NULL DEFAULT ''" |> ignore;
-    (* B149: migrate older databases to the client_version / client_os lease
-       columns (client-reported connection metadata feeding /stats
-       connected.by_version / by_os). Same pragma-probe + ALTER pattern;
-       idempotent on fresh installs (declared in sqlite_ddl). *)
-    if not (sqlite_table_has_column conn ~table:"leases" ~column:"client_version") then
-      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_version TEXT NOT NULL DEFAULT ''" |> ignore;
-    if not (sqlite_table_has_column conn ~table:"leases" ~column:"client_os") then
-      Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_os TEXT NOT NULL DEFAULT ''" |> ignore;
-    (* B264/B266: peer discovery visibility. Existing leases default to private
-       so post-migration production state is fail-closed for enumeration.
-       Migration failures raise — do not ignore security-critical ALTERs. *)
-    if not (sqlite_table_has_column conn ~table:"leases" ~column:"discovery_visibility") then begin
-      let rc =
-        Sqlite3.exec conn
-          "ALTER TABLE leases ADD COLUMN discovery_visibility TEXT NOT NULL DEFAULT 'private'"
-      in
-      if not (Sqlite3.Rc.is_success rc) then
-        failwith
-          ("B266 migration failed: add discovery_visibility: " ^ Sqlite3.Rc.to_string rc)
-    end;
+    (* B266 rollback floor. Serialize detection, column migration, rename and
+       compatibility-view creation under one IMMEDIATE transaction. A second
+       new binary waits, then rechecks the committed object shape. Current
+       binaries use [secure_leases_v2]. Pre-B266 binaries see no recipients and
+       cannot INSERT/UPDATE the [leases] view. *)
+    checked_exec conn ~context:"B266 begin lease quarantine" "BEGIN IMMEDIATE";
+    (try
+       let lease_table =
+         match sqlite_object_type conn ~name:secure_leases_table with
+         | Some "table" -> secure_leases_table
+         | Some kind ->
+           failwith ("B266 secure lease object has unexpected type: " ^ kind)
+         | None ->
+           (match sqlite_object_type conn ~name:"leases" with
+            | Some "table" -> "leases"
+            | Some "view" ->
+              failwith "B266 legacy view exists without secure lease table"
+            | Some kind ->
+              failwith ("B266 legacy lease object has unexpected type: " ^ kind)
+            | None -> failwith "B266 lease table missing after schema setup")
+       in
+       let add_column_if_missing column ddl =
+         if not (sqlite_table_has_column conn ~table:lease_table ~column) then
+           checked_exec conn ~context:("B266 add lease column " ^ column)
+             (Printf.sprintf "ALTER TABLE %s ADD COLUMN %s" lease_table ddl)
+       in
+       add_column_if_missing "opaque_host_id"
+         "opaque_host_id TEXT NOT NULL DEFAULT ''";
+       add_column_if_missing "client_version"
+         "client_version TEXT NOT NULL DEFAULT ''";
+       add_column_if_missing "client_os"
+         "client_os TEXT NOT NULL DEFAULT ''";
+       add_column_if_missing "discovery_visibility"
+         "discovery_visibility TEXT NOT NULL DEFAULT 'private'";
+       if lease_table = "leases" then begin
+         checked_exec conn ~context:"B266 rename secure leases"
+           "ALTER TABLE leases RENAME TO secure_leases_v2";
+         (match Sys.getenv_opt "C2C_RELAY_MIGRATION_FAULT_FIXTURE" with
+          | Some "after-lease-rename" ->
+            failwith "B266 fixture: fail after lease rename"
+          | Some _ | None -> ());
+         checked_exec conn ~context:"B266 create legacy refusal view"
+           legacy_refusal_view_sql
+       end;
+       require_legacy_refusal_view conn;
+       checked_exec conn ~context:"B266 commit lease quarantine" "COMMIT"
+     with exn ->
+       ignore (Sqlite3.exec conn "ROLLBACK");
+       raise exn);
     (* B266: feature marker table (idempotent). *)
     (let rc =
        Sqlite3.exec conn
@@ -1991,6 +2094,7 @@ module SqliteRelay : RELAY = struct
                 ("B266 feature marker upsert failed: " ^ Sqlite3.Rc.to_string rc)))
       [ ("private_reachability", "consent_gated");
         ("contact_protocol", "1");
+        ("minimum_reader_generation", "2");
       ];
     if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
       Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
@@ -2117,7 +2221,7 @@ module SqliteRelay : RELAY = struct
          ON CONFLICT(alias) DO UPDATE SET last_seen = excluded.last_seen"
         [`Text alias; `Float ts] |> ignore)
 
-  (* B148: aggregate connected-lease counts from the leases table. Filters
+  (* B148: aggregate connected-lease counts from the secure_leases_v2 table. Filters
      with the SAME [alias_released] predicate as the memory backend (applied in
      OCaml, not SQL) so the two backends can't disagree on liveness. Emits
      aggregate counts only — never aliases, node_ids, or session ids.
@@ -2135,7 +2239,7 @@ module SqliteRelay : RELAY = struct
     in
     with_stmt conn
       "SELECT node_id, client_type, last_seen, client_version, client_os, \
-       opaque_host_id FROM leases" (fun stmt ->
+       opaque_host_id FROM secure_leases_v2" (fun stmt ->
       let col_string col = match Sqlite3.Data.to_string col with Some s -> s | None -> "" in
       let col_float col =
         match Sqlite3.Data.to_float col with
@@ -2260,7 +2364,7 @@ module SqliteRelay : RELAY = struct
 
   (* B219: inner worker — lock-free, called under the lock (register/gc). *)
   let release_alias conn alias =
-    with_stmt conn "SELECT node_id, session_id FROM leases WHERE alias = ?" (fun old_key_stmt ->
+    with_stmt conn "SELECT node_id, session_id FROM secure_leases_v2 WHERE alias = ?" (fun old_key_stmt ->
       Sqlite3.bind_text old_key_stmt 1 alias |> ignore;
       (match Sqlite3.step old_key_stmt with
        | Rc.ROW ->
@@ -2271,7 +2375,7 @@ module SqliteRelay : RELAY = struct
            Sqlite3.bind_text del_inbox 2 session_id |> ignore;
            Sqlite3.step del_inbox |> ignore)
        | _ -> ()));
-    with_stmt conn "DELETE FROM leases WHERE alias = ?" (fun del ->
+    with_stmt conn "DELETE FROM secure_leases_v2 WHERE alias = ?" (fun del ->
       Sqlite3.bind_text del 1 alias |> ignore;
       Sqlite3.step del |> ignore);
     with_stmt conn "DELETE FROM room_members WHERE alias = ?" (fun del_member ->
@@ -2310,11 +2414,11 @@ module SqliteRelay : RELAY = struct
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
         ("alias_not_allowed", dummy)
       | `Unlisted | `Allowed ->
-        let has_row = exec_prepared conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" [`Text alias] in
+        let has_row = exec_prepared conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM secure_leases_v2 WHERE alias = ?" [`Text alias] in
         let conflict_lease = ref None in
         let existing_pk = ref "" in
         if has_row then (
-          with_stmt conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" (fun stmt ->
+          with_stmt conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
           bind_text stmt 1 alias |> ignore;
           let rec check_existing () =
             let rc = step stmt in
@@ -2390,14 +2494,9 @@ module SqliteRelay : RELAY = struct
             in
             (* B174: coalesce opaque_host_id — empty excluded must not wipe a
                previously stored host id (older clients re-registering). *)
-            (* B264: default Private; test-only C2C_RELAY_DEFAULT_DISCOVERY=public.
-               ON CONFLICT preserves existing discovery_visibility (not in UPDATE). *)
-            let default_discovery =
-              match Sys.getenv_opt "C2C_RELAY_DEFAULT_DISCOVERY" with
-              | Some s when String.lowercase_ascii (String.trim s) = "public" -> "public"
-              | _ -> "private"
-            in
-            with_stmt conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os, discovery_visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" (fun stmt ->
+            (* Production behaviour is unconditionally private-by-default.
+               Tests that need public discovery must call the explicit setter. *)
+            with_stmt conn "INSERT INTO secure_leases_v2 (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os, discovery_visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private') ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN secure_leases_v2.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" (fun stmt ->
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -2413,7 +2512,6 @@ module SqliteRelay : RELAY = struct
             bind_text stmt 12 opaque_host_id_str |> ignore;
             bind_text stmt 13 client_version |> ignore;
             bind_text stmt 14 client_os |> ignore;
-            bind_text stmt 15 default_discovery |> ignore;
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc));
@@ -2422,7 +2520,7 @@ module SqliteRelay : RELAY = struct
               match opaque_host_id with
               | Some s when s <> "" -> Some s
               | _ ->
-                with_stmt conn "SELECT opaque_host_id FROM leases WHERE alias = ?" (fun sel ->
+                with_stmt conn "SELECT opaque_host_id FROM secure_leases_v2 WHERE alias = ?" (fun sel ->
                   bind_text sel 1 alias |> ignore;
                   if step sel = ROW then
                     let raw = Data.to_string_exn (column sel 0) in
@@ -2437,7 +2535,7 @@ module SqliteRelay : RELAY = struct
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "SELECT identity_pk, last_seen FROM leases WHERE alias = ?" (fun stmt ->
+      with_stmt conn "SELECT identity_pk, last_seen FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
       bind_text stmt 1 alias |> ignore;
       if step stmt = Rc.ROW then
         let pk = Data.to_string_exn (column stmt 0) in
@@ -2451,7 +2549,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       (* B264: reverse identity oracle only for public discovery aliases. *)
       with_stmt conn
-        "SELECT alias, last_seen FROM leases          WHERE identity_pk = ? AND discovery_visibility = 'public'" (fun stmt ->
+        "SELECT alias, last_seen FROM secure_leases_v2          WHERE identity_pk = ? AND discovery_visibility = 'public'" (fun stmt ->
       bind_text stmt 1 identity_pk |> ignore;
       let now = Unix.gettimeofday () in
       let rec loop () =
@@ -2517,7 +2615,7 @@ module SqliteRelay : RELAY = struct
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "SELECT enc_pubkey, last_seen FROM leases WHERE alias = ?" (fun stmt ->
+      with_stmt conn "SELECT enc_pubkey, last_seen FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
       bind_text stmt 1 alias |> ignore;
       if step stmt = Rc.ROW then
         let ek = Data.to_string_exn (column stmt 0) in
@@ -2529,7 +2627,7 @@ module SqliteRelay : RELAY = struct
   let alias_of_session t ~node_id ~session_id =
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "SELECT alias, last_seen FROM leases WHERE node_id = ? AND session_id = ? LIMIT 1" (fun stmt ->
+      with_stmt conn "SELECT alias, last_seen FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? LIMIT 1" (fun stmt ->
       bind_text stmt 1 node_id |> ignore;
       bind_text stmt 2 session_id |> ignore;
       if step stmt = Rc.ROW then
@@ -2543,7 +2641,7 @@ module SqliteRelay : RELAY = struct
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "SELECT signed_at, last_seen FROM leases WHERE alias = ?" (fun stmt ->
+      with_stmt conn "SELECT signed_at, last_seen FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
       bind_text stmt 1 alias |> ignore;
       if step stmt = Rc.ROW then
         let sa_float = data_to_float_default (column stmt 0) in
@@ -2556,7 +2654,7 @@ module SqliteRelay : RELAY = struct
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "SELECT sig_b64, last_seen FROM leases WHERE alias = ?" (fun stmt ->
+      with_stmt conn "SELECT sig_b64, last_seen FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
       bind_text stmt 1 alias |> ignore;
       if step stmt = Rc.ROW then
         let sb = Data.to_string_exn (column stmt 0) in
@@ -2610,12 +2708,12 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = t.db in
       let before = ref false in
-      with_stmt conn "SELECT alias FROM leases WHERE alias = ?" (fun stmt ->
+      with_stmt conn "SELECT alias FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 alias |> ignore;
         let rc = Sqlite3.step stmt in
         before := (rc = Rc.ROW));
       if !before then (
-        with_stmt conn "DELETE FROM leases WHERE alias = ?" (fun del ->
+        with_stmt conn "DELETE FROM secure_leases_v2 WHERE alias = ?" (fun del ->
           Sqlite3.bind_text del 1 alias |> ignore;
           Sqlite3.step del |> ignore)
       );
@@ -2690,7 +2788,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       let now = Unix.gettimeofday () in
       let found_lease = ref None in
-      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM leases WHERE node_id = ? AND session_id = ?" (fun stmt ->
+      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM secure_leases_v2 WHERE node_id = ? AND session_id = ?" (fun stmt ->
       Sqlite3.bind_text stmt 1 node_id |> ignore;
       Sqlite3.bind_text stmt 2 session_id |> ignore;
       let rec find_lease () =
@@ -2752,11 +2850,11 @@ module SqliteRelay : RELAY = struct
         (* B174: heal host id when the client reports one on heartbeat. *)
         let up_sql =
           if opaque_host_id <> "" then
-            "UPDATE leases SET last_seen = ?, \
+            "UPDATE secure_leases_v2 SET last_seen = ?, \
              opaque_host_id = CASE WHEN ? = '' THEN opaque_host_id ELSE ? END \
              WHERE alias = ?"
           else
-            "UPDATE leases SET last_seen = ? WHERE alias = ?"
+            "UPDATE secure_leases_v2 SET last_seen = ? WHERE alias = ?"
         in
         with_stmt conn up_sql (fun up_stmt ->
           Sqlite3.bind_double up_stmt 1 now |> ignore;
@@ -2776,7 +2874,7 @@ module SqliteRelay : RELAY = struct
     let now = Unix.gettimeofday () in
     let leases = ref [] in
     with_stmt conn
-      "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl,               identity_pk, opaque_host_id, client_version, client_os, discovery_visibility          FROM leases" (fun stmt ->
+      "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl,               identity_pk, opaque_host_id, client_version, client_os, discovery_visibility          FROM secure_leases_v2" (fun stmt ->
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
@@ -2856,7 +2954,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       let now = Unix.gettimeofday () in
       let expired_aliases = ref [] in
-      with_stmt conn "SELECT alias, last_seen, ttl FROM leases" (fun stmt ->
+      with_stmt conn "SELECT alias, last_seen, ttl FROM secure_leases_v2" (fun stmt ->
       let rec collect_expired () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
@@ -2881,7 +2979,7 @@ module SqliteRelay : RELAY = struct
         release_alias conn alias
       ) !expired_aliases;
       let live_keys = ref [] in
-      with_stmt conn "SELECT node_id, session_id FROM leases" (fun live_stmt ->
+      with_stmt conn "SELECT node_id, session_id FROM secure_leases_v2" (fun live_stmt ->
       let rec collect_live () =
         let rc = Sqlite3.step live_stmt in
         if rc = Rc.ROW then (
@@ -2955,7 +3053,7 @@ module SqliteRelay : RELAY = struct
       let lookup_alias, _ = normalize_relay_alias ~alias:to_alias ~opaque_host_id:None in
       let disc_vis = ref None in
       with_stmt conn
-        "SELECT discovery_visibility FROM leases WHERE alias = ?" (fun vstmt ->
+        "SELECT discovery_visibility FROM secure_leases_v2 WHERE alias = ?" (fun vstmt ->
         Sqlite3.bind_text vstmt 1 lookup_alias |> ignore;
         if Sqlite3.step vstmt = Rc.ROW then
           let raw =
@@ -2970,7 +3068,7 @@ module SqliteRelay : RELAY = struct
         (* B264: private recipient — uniform with unknown; no content DLQ. *)
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
       | Some Public ->
-        with_stmt conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" (fun stmt ->
+        with_stmt conn "SELECT alias, last_seen, ttl FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 lookup_alias |> ignore;
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
@@ -2990,7 +3088,7 @@ module SqliteRelay : RELAY = struct
           else if (last_seen +. ttl) < ts then
             `Error (relay_err_recipient_dead, Printf.sprintf "alias %S is registered but lease has expired" to_alias)
           else
-            with_stmt conn "SELECT node_id, session_id FROM leases WHERE alias = ?" (fun recv_stmt ->
+            with_stmt conn "SELECT node_id, session_id FROM secure_leases_v2 WHERE alias = ?" (fun recv_stmt ->
             Sqlite3.bind_text recv_stmt 1 lookup_alias |> ignore;
             let rc2 = Sqlite3.step recv_stmt in
             if rc2 = Rc.ROW then
@@ -3092,7 +3190,7 @@ module SqliteRelay : RELAY = struct
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       (* B264: broadcast only to public discovery recipients. *)
       with_stmt conn
-        "SELECT alias, last_seen, ttl, node_id, session_id FROM leases          WHERE alias != ? AND discovery_visibility = 'public'" (fun stmt ->
+        "SELECT alias, last_seen, ttl, node_id, session_id FROM secure_leases_v2          WHERE alias != ? AND discovery_visibility = 'public'" (fun stmt ->
       Sqlite3.bind_text stmt 1 from_alias |> ignore;
       let rec loop () =
         let rc = Sqlite3.step stmt in
@@ -3136,7 +3234,7 @@ module SqliteRelay : RELAY = struct
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
       let conn = t.db in
-      let active_alias = with_stmt conn "SELECT last_seen FROM leases WHERE alias = ? LIMIT 1" (fun lease_stmt ->
+      let active_alias = with_stmt conn "SELECT last_seen FROM secure_leases_v2 WHERE alias = ? LIMIT 1" (fun lease_stmt ->
       Sqlite3.bind_text lease_stmt 1 alias |> ignore;
       match Sqlite3.step lease_stmt with
       | Rc.ROW ->
@@ -3182,7 +3280,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
-      let sender_active = with_stmt conn "SELECT last_seen FROM leases WHERE alias = ? LIMIT 1" (fun sender_stmt ->
+      let sender_active = with_stmt conn "SELECT last_seen FROM secure_leases_v2 WHERE alias = ? LIMIT 1" (fun sender_stmt ->
       Sqlite3.bind_text sender_stmt 1 from_alias |> ignore;
       match Sqlite3.step sender_stmt with
       | Rc.ROW ->
@@ -3223,7 +3321,7 @@ module SqliteRelay : RELAY = struct
         Sqlite3.bind_double hist_stmt 5 ts |> ignore;
         Sqlite3.step hist_stmt |> ignore);
       List.iter (fun to_alias ->
-        with_stmt conn "SELECT node_id, session_id, last_seen, ttl FROM leases WHERE alias = ?" (fun node_stmt ->
+        with_stmt conn "SELECT node_id, session_id, last_seen, ttl FROM secure_leases_v2 WHERE alias = ?" (fun node_stmt ->
         Sqlite3.bind_text node_stmt 1 to_alias |> ignore;
         let rc = Sqlite3.step node_stmt in
         if rc = Rc.ROW then
@@ -3665,8 +3763,8 @@ module SqliteRelay : RELAY = struct
           "room is not discoverable or does not accept knocks")
       | Some _ ->
         let already_member = with_stmt conn
-          "SELECT leases.last_seen \
-           FROM room_members JOIN leases ON leases.alias = room_members.alias \
+          "SELECT secure_leases_v2.last_seen \
+           FROM room_members JOIN secure_leases_v2 ON secure_leases_v2.alias = room_members.alias \
            WHERE room_members.room_id = ? AND room_members.alias = ? LIMIT 1" (fun member_stmt ->
         Sqlite3.bind_text member_stmt 1 room_id |> ignore;
         Sqlite3.bind_text member_stmt 2 requester_alias |> ignore;
@@ -3716,8 +3814,8 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = t.db in
       with_stmt conn
-        "SELECT leases.last_seen \
-         FROM room_members JOIN leases ON leases.alias = room_members.alias \
+        "SELECT secure_leases_v2.last_seen \
+         FROM room_members JOIN secure_leases_v2 ON secure_leases_v2.alias = room_members.alias \
          WHERE room_members.room_id = ? AND room_members.alias = ? LIMIT 1" (fun stmt ->
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 alias |> ignore;
@@ -3915,7 +4013,7 @@ module SqliteRelay : RELAY = struct
           with_tx_immediate conn (fun () ->
             (* Owner binding: delivery_alias lease identity must match recipient. *)
             let lease_pk = ref None in
-            with_stmt conn "SELECT identity_pk FROM leases WHERE alias = ?" (fun stmt ->
+            with_stmt conn "SELECT identity_pk FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
               Sqlite3.bind_text stmt 1 delivery_alias |> ignore;
               if Sqlite3.step stmt = Rc.ROW then
                 lease_pk := Some (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)));
@@ -4152,7 +4250,7 @@ module SqliteRelay : RELAY = struct
                      let lease_info = ref None in
                      with_stmt conn
                        "SELECT node_id, session_id, last_seen, ttl, identity_pk
-                          FROM leases WHERE alias = ?"
+                          FROM secure_leases_v2 WHERE alias = ?"
                        (fun stmt ->
                          Sqlite3.bind_text stmt 1 g.delivery_alias |> ignore;
                          let rc = Sqlite3.step stmt in
@@ -4242,7 +4340,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       let result = ref None in
       with_stmt conn
-        "SELECT discovery_visibility FROM leases WHERE alias = ?" (fun stmt ->
+        "SELECT discovery_visibility FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 alias |> ignore;
         if Sqlite3.step stmt = Rc.ROW then
           let raw =
@@ -4261,13 +4359,13 @@ module SqliteRelay : RELAY = struct
       in
       (* Do not use changes()>0: setting the same value yields 0 changes. *)
       let exists = ref false in
-      with_stmt conn "SELECT 1 FROM leases WHERE alias = ?" (fun stmt ->
+      with_stmt conn "SELECT 1 FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 alias |> ignore;
         if Sqlite3.step stmt = Rc.ROW then exists := true);
       if not !exists then Result.Error "unknown_alias"
       else begin
         with_stmt conn
-          "UPDATE leases SET discovery_visibility = ? WHERE alias = ?" (fun stmt ->
+          "UPDATE secure_leases_v2 SET discovery_visibility = ? WHERE alias = ?" (fun stmt ->
           Sqlite3.bind_text stmt 1 vis |> ignore;
           Sqlite3.bind_text stmt 2 alias |> ignore;
           let rc = Sqlite3.step stmt in
@@ -4279,7 +4377,7 @@ module SqliteRelay : RELAY = struct
   let is_public_discovery_unlocked conn ~alias =
     let is_public = ref false in
     with_stmt conn
-      "SELECT discovery_visibility FROM leases WHERE alias = ?" (fun stmt ->
+      "SELECT discovery_visibility FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
       Sqlite3.bind_text stmt 1 alias |> ignore;
       if Sqlite3.step stmt = Rc.ROW then
         let raw =
@@ -4297,7 +4395,7 @@ module SqliteRelay : RELAY = struct
         let now = Unix.gettimeofday () in
         let result = ref None in
         with_stmt t.db
-          "SELECT identity_pk, last_seen, ttl FROM leases WHERE alias = ?"
+          "SELECT identity_pk, last_seen, ttl FROM secure_leases_v2 WHERE alias = ?"
           (fun stmt ->
             Sqlite3.bind_text stmt 1 alias |> ignore;
             if Sqlite3.step stmt = Rc.ROW then begin
@@ -4326,7 +4424,7 @@ module SqliteRelay : RELAY = struct
       if not (is_public_discovery_unlocked t.db ~alias) then None
       else
         let result = ref None in
-        with_stmt t.db "SELECT enc_pubkey FROM leases WHERE alias = ?" (fun stmt ->
+        with_stmt t.db "SELECT enc_pubkey FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
           Sqlite3.bind_text stmt 1 alias |> ignore;
           if Sqlite3.step stmt = Rc.ROW then
             let ek = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
@@ -4338,7 +4436,7 @@ module SqliteRelay : RELAY = struct
       if not (is_public_discovery_unlocked t.db ~alias) then None
       else
         let result = ref None in
-        with_stmt t.db "SELECT signed_at FROM leases WHERE alias = ?" (fun stmt ->
+        with_stmt t.db "SELECT signed_at FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
           Sqlite3.bind_text stmt 1 alias |> ignore;
           if Sqlite3.step stmt = Rc.ROW then
             match Sqlite3.Data.to_float (Sqlite3.column stmt 0) with
@@ -4351,7 +4449,7 @@ module SqliteRelay : RELAY = struct
       if not (is_public_discovery_unlocked t.db ~alias) then None
       else
         let result = ref None in
-        with_stmt t.db "SELECT sig_b64 FROM leases WHERE alias = ?" (fun stmt ->
+        with_stmt t.db "SELECT sig_b64 FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
           Sqlite3.bind_text stmt 1 alias |> ignore;
           if Sqlite3.step stmt = Rc.ROW then
             let s = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
@@ -5009,8 +5107,8 @@ end = struct
         let grant_secret_b64 = get_string body "grant_secret" in
         let message_id = get_string body "message_id" in
         let content = get_string body "content" in
-        if protocol <> "" && protocol <> "c2c-contact/1" then deny ()
-        else if grant_secret_b64 = "" || message_id = "" then deny ()
+        if protocol <> "c2c-contact/1" || grant_secret_b64 = ""
+           || message_id = "" || content = "" then deny ()
         else
           match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet grant_secret_b64 with
           | Error _ -> deny ()
@@ -5258,7 +5356,11 @@ end = struct
                 | None -> ())
              | None -> ())
           | `Error _ -> ());
-        respond_ok (json_of_send_result result)
+        (match result with
+         | `Error (code, _) when code = relay_err_unknown_alias ->
+           respond_unauthorized
+             (json_error_str err_contact_unauthorised "contact unauthorised")
+         | _ -> respond_ok (json_of_send_result result))
 
   let handle_send_all relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
@@ -5389,6 +5491,11 @@ end = struct
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts])
                             | `Duplicate ts ->
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
+                            | `Error (code, _)
+                              when code = relay_err_unknown_alias ->
+                              respond_unauthorized
+                                (json_error_str err_contact_unauthorised
+                                   "contact unauthorised")
                             | `Error (code, msg) ->
                               respond_bad_request (json_error_str code msg)
                     end
@@ -6629,13 +6736,20 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
          | Some s when s <> "" -> s
          | _ -> if native_tls then "https" else "http")
     in
-    (* B262 §10 / B267 review: grant secrets need confidential transport.
-       Trust native TLS or a reverse-proxy X-Forwarded-Proto of https/wss. *)
+    (* B262 §10: grant secrets need authenticated confidential transport.
+       A client-supplied X-Forwarded-Proto is evidence only when the operator
+       explicitly trusts its TLS terminator; otherwise arbitrary cleartext
+       clients could spoof https. *)
+    let trust_forwarded_proto =
+      match Sys.getenv_opt "C2C_RELAY_TRUST_FORWARDED_PROTO" with
+      | Some ("1" | "true" | "TRUE" | "yes") -> true
+      | Some _ | None -> false
+    in
     let confidential_transport =
       native_tls
-      ||
-      (let s = String.lowercase_ascii (String.trim scheme) in
-       s = "https" || s = "wss")
+      || (trust_forwarded_proto
+          && let s = String.lowercase_ascii (String.trim scheme) in
+             s = "https" || s = "wss")
     in
     let relay_url =
       match host_header with
@@ -6657,8 +6771,13 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     let body_sha256 = body_sha256_b64 body_str in
     let query = sorted_query_string uri in
     let ed25519_result =
-      try_verify_ed25519_request relay ~auth_header
-        ~meth:(meth_to_string meth) ~path ~query ~body_sha256_b64:body_sha256
+      (* /forward is Self_auth and has a route-specific peer-relay verifier.
+         Do not consume its nonce here and again in [handle_forward]. *)
+      if path = "/forward" then Ok None
+      else
+        try_verify_ed25519_request relay ~auth_header
+          ~meth:(meth_to_string meth) ~path ~query
+          ~body_sha256_b64:body_sha256
     in
     let include_dead = query_bool "include_dead" in
     let verified_alias, ed25519_verified, ed25519_err =
@@ -6671,16 +6790,20 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified
     in
     if not auth_ok then
-      let code, msg = match ed25519_err with
-        | Some (c, m) -> c, m
-        | None ->
-          let m = match auth_err_msg with
-            | Some m -> m
-            | None -> "missing or invalid auth"
-          in
-          err_unauthorized, m
-      in
-      respond_unauthorized (json_error_str code msg)
+      if path = "/contact/v1/deliver" then
+        respond_unauthorized
+          (json_error_str err_contact_unauthorised "contact unauthorised")
+      else
+        let code, msg = match ed25519_err with
+          | Some (c, m) -> c, m
+          | None ->
+            let m = match auth_err_msg with
+              | Some m -> m
+              | None -> "missing or invalid auth"
+            in
+            err_unauthorized, m
+        in
+        respond_unauthorized (json_error_str code msg)
     else
       let parse_body () =
         try Res.Ok (Yojson.Safe.from_string body_str)
@@ -6951,7 +7074,9 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       | `POST, "/contact/v1/deliver" ->
         let json = parse_body () in
         (match json with
-         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Error _ ->
+           respond_unauthorized
+             (json_error_str err_contact_unauthorised "contact unauthorised")
          | Ok j ->
            handle_contact_deliver relay ~verified_alias ~token
              ~confidential_transport j)

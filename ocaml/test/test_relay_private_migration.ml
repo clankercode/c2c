@@ -157,7 +157,7 @@ let test_fresh_sqlite_markers_and_private_default () =
       ~finally:(fun () -> ignore (Sqlite3.db_close db))
       (fun () ->
         check bool "discovery_visibility column" true
-          (column_exists db ~table:"leases" ~column:"discovery_visibility");
+          (column_exists db ~table:"secure_leases_v2" ~column:"discovery_visibility");
         check bool "relay_features table" true (table_exists db "relay_features");
         check bool "contact_grants table" true (table_exists db "contact_grants");
         check (option string) "private_reachability marker" (Some "consent_gated")
@@ -274,7 +274,7 @@ let test_interrupted_retry_adds_missing_column () =
       ~finally:(fun () -> ignore (Sqlite3.db_close db2))
       (fun () ->
         check bool "column added on retry" true
-          (column_exists db2 ~table:"leases" ~column:"discovery_visibility");
+          (column_exists db2 ~table:"secure_leases_v2" ~column:"discovery_visibility");
         check (option string) "markers after partial recovery"
           (Some "consent_gated")
           (feature_value db2 "private_reachability")))

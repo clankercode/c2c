@@ -401,7 +401,7 @@ Implemented and regression-tested on branch `feature/b264-private-discovery` (bu
 | Private-by-default discovery | `list_peers`, `list_peers_admin`, `peer_discovery_visibility_*`, `peer_*` lookups, `handle_list`, `handle_pubkey` | `test_relay_private_discovery` |
 | Contact grant lifecycle | `issue_contact_grant`, `list_contact_grants`, `revoke_contact_grant`, `rotate_contact_grant`, `admit_contact_delivery` | `test_relay_contact_grants` |
 | Delivery admission | private `send`/`send_all` gates, `handle_contact_deliver`, forward→private reject | `test_relay_contact_delivery_handlers`, `test_relay_private_reachability_matrix` |
-| Migration fail-closed | `schema_version=2`, `relay_features`, `discovery_visibility` ALTER default private | `test_relay_private_migration`, `test_relay_private_reachability_migration` |
+| Migration fail-closed | atomic `leases` → `secure_leases_v2` quarantine, empty non-writable legacy view, `schema_version=2`, `relay_features`, private default | `test_relay_b266_rollback_floor`, `test_relay_private_migration`, `test_relay_private_reachability_migration` |
 | Doctor/health | `/health` `contact_protocol`/`private_reachability`; doctor `relay.auth_mode`, `relay.contact_protocol`, `relay.transport_security` | doctor pure checks + health HTTP cases |
 | Owner CLI | `c2c relay contact issue\|list\|revoke` | manual help + secret-once issue path |
 
@@ -414,9 +414,9 @@ Implemented and regression-tested on branch `feature/b264-private-discovery` (bu
 
 | Finding | Class | Disposition |
 |---|---|---|
-| M1 pre-B264 binary + migrated DB reopens global reachability | MAJOR ops | Accepted deploy constraint; `/security/` caveat #6; doctor fails missing contact ads |
+| M1 pre-B264 binary + migrated DB reopens global reachability | MAJOR | **FIXED** — atomic lease-table quarantine; old reads return zero and old writes fail (`test_relay_b266_rollback_floor`) |
 | M2 no production public-discovery opt-in CLI | MAJOR product | Follow-up; does not weaken private default |
 | M3 contact Accepted WS/short-queue wake | MINOR | **FIXED** — `handle_contact_deliver` `Accepted` calls `push_dm` + short-queue/observer when binding known |
-| M4 grant deliver over cleartext HTTP | MINOR | **FIXED** — `handle_contact_deliver` requires `confidential_transport` (native TLS or `X-Forwarded-Proto` https/wss); suite `cleartext contact deliver refused` |
+| M4 grant deliver over cleartext HTTP | MINOR | **FIXED** — `handle_contact_deliver` requires native TLS or explicit trusted-proxy opt-in plus HTTPS; signed suite proves cleartext and spoofed untrusted `X-Forwarded-Proto` refuse |
 
 Public claims on `/security/` remain conditional on production token mode, migration stamps, and **running a post-B266 binary** (never roll back binary against a migrated DB).

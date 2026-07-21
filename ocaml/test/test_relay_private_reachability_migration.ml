@@ -105,7 +105,7 @@ let test_fresh_create_stamps_markers () =
           (table_exists db "contact_grant_message_ids");
         check bool "relay_features exists" true (table_exists db "relay_features");
         check bool "discovery_visibility column" true
-          (column_exists db ~table:"leases" ~column:"discovery_visibility");
+          (column_exists db ~table:"secure_leases_v2" ~column:"discovery_visibility");
         check
           (option string)
           "private_reachability marker"
@@ -185,7 +185,7 @@ VALUES ('legacy-alice', 'n-leg', 's-leg', 1.0, 9999999999.0, 86400.0);
       ~finally:(fun () -> ignore (Sqlite3.db_close db2))
       (fun () ->
         check bool "migrated discovery_visibility" true
-          (column_exists db2 ~table:"leases" ~column:"discovery_visibility");
+          (column_exists db2 ~table:"secure_leases_v2" ~column:"discovery_visibility");
         check bool "contact_grants after migrate" true
           (table_exists db2 "contact_grants");
         check

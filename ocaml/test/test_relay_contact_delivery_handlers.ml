@@ -543,21 +543,13 @@ let test_http_send_private_dev_unsigned_fails () =
         ]
     in
     RTSR.call_json ~base_url ~meth:`POST ~path:"/send" ~body () >|= fun r ->
-    (* Dev mode may return 200 ok=false or 4xx; must not deliver. *)
-    let delivered =
-      match r.json with
-      | Some (`Assoc f) ->
-        (match List.assoc_opt "ok" f, List.assoc_opt "result" f with
-         | Some (`Bool true), Some (`String "ok") -> true
-         | Some (`Bool true), None ->
-           (* ok true without error *)
-           (match List.assoc_opt "error_code" f with
-            | Some _ -> false
-            | None -> true)
-         | _ -> false)
-      | _ -> false
-    in
-    check bool "HTTP send private must not deliver" false delivered;
+    check int "private legacy send uses uniform HTTP 401" 401
+      (RTSR.status_code r);
+    check string "private legacy send uses uniform code"
+      "contact_unauthorised" (error_code_of r.json);
+    check string "private legacy send canonical body"
+      "{\"ok\":false,\"error_code\":\"contact_unauthorised\",\"error\":\"contact unauthorised\"}"
+      r.body_text;
     check int "inbox empty" 0
       (List.length
          (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-t" ~session_id:"s-t")))
@@ -616,158 +608,547 @@ let test_http_send_all_skips_private () =
       (List.length
          (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-fu" ~session_id:"s-fu")))
 
-(* Downgrade / wrong-version authority: unsupported protocol string is refused
-   with the same unauthorised class (no alias /send fallback). *)
-(* B262 §10: token-configured + cleartext hop must not accept grant secrets. *)
-let test_http_contact_cleartext_refused () =
-  RTSR.with_server ~token:"b267-tls-token" (fun ~base_url ~relay ->
+(* Signed production contact-delivery helper. These requests pass the outer
+   Ed25519 gate, so denial tests exercise the contact handler itself. *)
+let signed_contact_call ~base_url ~identity ~alias ~body ?(headers = []) () =
+  let body_str = Yojson.Safe.to_string body in
+  let authorization =
+    Relay_signed_ops.sign_request identity ~alias ~meth:"POST"
+      ~path:"/contact/v1/deliver" ~body_str ()
+  in
+  RTSR.call ~base_url ~meth:`POST ~path:"/contact/v1/deliver"
+    ~headers:
+      (("Content-Type", "application/json") ::
+       ("Authorization", authorization) :: headers)
+    ~body:body_str ()
+
+let register_with_identity relay ~alias identity =
+  let node_id = "n-" ^ alias in
+  let session_id = "s-" ^ alias in
+  let status, _ =
+    Relay.InMemoryRelay.register relay ~node_id ~session_id ~alias
+      ~identity_pk:identity.Relay_identity.public_key ()
+  in
+  check string ("register " ^ alias) "ok" status;
+  (node_id, session_id)
+
+let issue_for ~relay ~recipient_pk ~delivery_alias ~sender_pk =
+  let now = Unix.gettimeofday () in
+  match
+    Relay.InMemoryRelay.issue_contact_grant relay
+      ~recipient_identity_pk:recipient_pk ~delivery_alias
+      ~sender_identity_pk:sender_pk ~expires_at:(now +. 3600.) ~now ()
+  with
+  | Ok r -> r
+  | Error e -> failwith ("issue: " ^ e)
+
+let secret_b64 secret =
+  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet secret
+
+let error_code_of = function
+  | Some (`Assoc f) ->
+    (match List.assoc_opt "error_code" f with
+     | Some (`String c) -> c
+     | _ -> "")
+  | _ -> ""
+
+let test_signed_contact_cleartext_and_untrusted_proxy_refused () =
+  Relay_ws_server.reset_push_dm_count ();
+  RTSR.with_server ~token:"b265-cleartext" (fun ~base_url ~relay ->
     let open Lwt.Infix in
-    let pk_r = gen_pk () in
-    let pk_s = gen_pk () in
-    let _ =
-      Relay.InMemoryRelay.register relay ~node_id:"n-cr" ~session_id:"s-cr"
-        ~alias:"zzclr" ~identity_pk:pk_r ()
-    in
-    let _ =
-      Relay.InMemoryRelay.register relay ~node_id:"n-cs" ~session_id:"s-cs"
-        ~alias:"zzcls" ~identity_pk:pk_s ()
-    in
-    let now = Unix.gettimeofday () in
+    let recipient = Relay_identity.generate ~alias_hint:"zzc-r" () in
+    let sender = Relay_identity.generate ~alias_hint:"zzc-s" () in
+    let rn, rs = register_with_identity relay ~alias:"zzc-r" recipient in
+    let _ = register_with_identity relay ~alias:"zzc-s" sender in
     let issued =
-      match
-        Relay.InMemoryRelay.issue_contact_grant relay
-          ~recipient_identity_pk:pk_r ~delivery_alias:"zzclr"
-          ~sender_identity_pk:pk_s ~expires_at:(now +. 3600.) ()
-      with
-      | Ok r -> r
-      | Error e -> failwith e
+      issue_for ~relay ~recipient_pk:recipient.Relay_identity.public_key
+        ~delivery_alias:"zzc-r" ~sender_pk:sender.Relay_identity.public_key
     in
     let body =
       `Assoc
         [ ("protocol", `String "c2c-contact/1");
-          ("grant_secret", `String (b64url issued.grant_secret));
-          ("message_id", `String "http-clear-1");
-          ("content", `String "should-not");
+          ("grant_secret", `String (secret_b64 issued.grant_secret));
+          ("message_id", `String "m-cleartext");
+          ("content", `String "must-not-deliver") ]
+    in
+    signed_contact_call ~base_url ~identity:sender ~alias:"zzc-s" ~body ()
+    >>= fun clear ->
+    signed_contact_call ~base_url ~identity:sender ~alias:"zzc-s" ~body
+      ~headers:[ ("X-Forwarded-Proto", "https") ] ()
+    >>= fun spoofed ->
+    List.iter
+      (fun (name, r) ->
+        check int (name ^ " HTTP 401") 401 (RTSR.status_code r);
+        check string (name ^ " uniform code") "contact_unauthorised"
+          (error_code_of r.json))
+      [ ("cleartext", clear); ("untrusted forwarded proto", spoofed) ];
+    check string "identical transport denial bodies" clear.body_text
+      spoofed.body_text;
+    check int "no inbox on transport refusal" 0
+      (List.length
+         (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+    check int "transport denials emit no WS push" 0
+      (Relay_ws_server.push_dm_invocations ());
+    Lwt.return_unit)
+
+let test_signed_private_send_matches_contact_denial () =
+  RTSR.with_server ~token:"b265-send-uniform" ~native_tls:true
+    (fun ~base_url ~relay ->
+      let open Lwt.Infix in
+      let sender = Relay_identity.generate ~alias_hint:"zzus-s" () in
+      let recipient = Relay_identity.generate ~alias_hint:"zzus-r" () in
+      let _ = register_with_identity relay ~alias:"zzus-s" sender in
+      let rn, rs = register_with_identity relay ~alias:"zzus-r" recipient in
+      let send_body =
+        `Assoc
+          [ ("from_alias", `String "zzus-s");
+            ("to_alias", `String "zzus-r");
+            ("content", `String "unauthorised-send");
+            ("message_id", `String "m-uniform-send") ]
+      in
+      let send_body_str = Yojson.Safe.to_string send_body in
+      let send_auth =
+        Relay_signed_ops.sign_request sender ~alias:"zzus-s" ~meth:"POST"
+          ~path:"/send" ~body_str:send_body_str ()
+      in
+      RTSR.call ~base_url ~meth:`POST ~path:"/send"
+        ~headers:[ ("Content-Type", "application/json");
+                   ("Authorization", send_auth) ]
+        ~body:send_body_str ()
+      >>= fun send_denial ->
+      let contact_body =
+        `Assoc
+          [ ("protocol", `String "c2c-contact/1");
+            ("grant_secret", `String (secret_b64 "short"));
+            ("message_id", `String "m-uniform-contact");
+            ("content", `String "unauthorised-contact") ]
+      in
+      signed_contact_call ~base_url ~identity:sender ~alias:"zzus-s"
+        ~body:contact_body ()
+      >>= fun contact_denial ->
+      check int "signed private send 401" 401
+        (RTSR.status_code send_denial);
+      check int "contact denial 401" 401 (RTSR.status_code contact_denial);
+      check string "signed send/contact byte-identical denial"
+        contact_denial.body_text send_denial.body_text;
+      check int "signed private send leaves inbox empty" 0
+        (List.length
+           (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+      Lwt.return_unit)
+
+let test_signed_contact_accept_once_and_duplicate () =
+  Relay_ws_server.reset_push_dm_count ();
+  RTSR.with_server ~token:"b265-signed-contact" ~native_tls:true
+    (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let recipient = Relay_identity.generate ~alias_hint:"zzs-r" () in
+    let sender = Relay_identity.generate ~alias_hint:"zzs-s" () in
+    let (rn, rs) =
+      register_with_identity relay ~alias:"zzs-r" recipient
+    in
+    let _ = register_with_identity relay ~alias:"zzs-s" sender in
+    ignore
+      (Relay.InMemoryRelay.set_peer_discovery_visibility relay ~alias:"zzs-r"
+         ~visibility:Private);
+    let issued =
+      issue_for ~relay ~recipient_pk:recipient.Relay_identity.public_key
+        ~delivery_alias:"zzs-r" ~sender_pk:sender.Relay_identity.public_key
+    in
+    let body ~mid ~content ~protocol =
+      `Assoc
+        [ ("protocol", `String protocol);
+          ("grant_secret", `String (secret_b64 issued.grant_secret));
+          ("message_id", `String mid);
+          ("content", `String content);
+          ("from_alias", `String "zzs-s");
         ]
     in
-    RTSR.call_json ~base_url ~meth:`POST ~path:"/contact/v1/deliver" ~body ()
-    >|= fun r ->
-    check bool "cleartext contact deliver not 200-ok" true
-      (RTSR.status_code r <> 200
-       ||
-       match r.json with
-       | Some (`Assoc f) -> List.assoc_opt "ok" f <> Some (`Bool true)
-       | _ -> true);
-    check int "no inbox on cleartext refuse" 0
-      (List.length
-         (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-cr" ~session_id:"s-cr")))
+    signed_contact_call ~base_url ~identity:sender ~alias:"zzs-s"
+      ~body:(body ~mid:"m-signed-1" ~content:"hello-signed" ~protocol:"c2c-contact/1") ()
+    >>= fun r1 ->
+    check int "signed valid contact HTTP 200" 200 (RTSR.status_code r1);
+    check int "one inbox after signed accept" 1
+      (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+    signed_contact_call ~base_url ~identity:sender ~alias:"zzs-s"
+      ~body:(body ~mid:"m-signed-1" ~content:"hello-signed-dup" ~protocol:"c2c-contact/1") ()
+    >>= fun r2 ->
+    check int "signed duplicate HTTP 200" 200 (RTSR.status_code r2);
+    (match r2.json with
+     | Some (`Assoc f) ->
+       check bool "duplicate flag" true
+         (List.assoc_opt "duplicate" f = Some (`Bool true))
+     | _ -> fail "duplicate response non-JSON");
+    check int "still one inbox after duplicate" 1
+      (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+    check int "accepted pushes exactly once; duplicate does not repush" 1
+      (Relay_ws_server.push_dm_invocations ());
+    Lwt.return_unit)
 
-let test_http_contact_protocol_downgrade_refused () =
-  RTSR.with_server ~token:"b266-attack-token" (fun ~base_url ~relay ->
+let test_signed_contact_protocol_variants_denied () =
+  RTSR.with_server ~token:"b265-signed-proto" ~native_tls:true
+    (fun ~base_url ~relay ->
     let open Lwt.Infix in
-    let pk_r = gen_pk () in
-    let pk_s = gen_pk () in
-    let _ =
-      Relay.InMemoryRelay.register relay ~node_id:"n-pd" ~session_id:"s-pd"
-        ~alias:"zzpdr" ~identity_pk:pk_r ()
+    let recipient = Relay_identity.generate ~alias_hint:"zzp-r" () in
+    let sender = Relay_identity.generate ~alias_hint:"zzp-s" () in
+    let (rn, rs) =
+      register_with_identity relay ~alias:"zzp-r" recipient
     in
-    let _ =
-      Relay.InMemoryRelay.register relay ~node_id:"n-ps" ~session_id:"s-ps"
-        ~alias:"zzpds" ~identity_pk:pk_s ()
-    in
+    let _ = register_with_identity relay ~alias:"zzp-s" sender in
     ignore
-      (Relay.InMemoryRelay.set_peer_discovery_visibility relay ~alias:"zzpdr"
+      (Relay.InMemoryRelay.set_peer_discovery_visibility relay ~alias:"zzp-r"
          ~visibility:Private);
-    let now = Unix.gettimeofday () in
     let issued =
-      match
-        Relay.InMemoryRelay.issue_contact_grant relay
-          ~recipient_identity_pk:pk_r ~delivery_alias:"zzpdr"
-          ~sender_identity_pk:pk_s ~expires_at:(now +. 3600.) ()
-      with
-      | Ok r -> r
-      | Error e -> failwith ("issue: " ^ e)
+      issue_for ~relay ~recipient_pk:recipient.Relay_identity.public_key
+        ~delivery_alias:"zzp-r" ~sender_pk:sender.Relay_identity.public_key
     in
-    let secret_b64 =
-      Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet
-        issued.grant_secret
+    let try_proto protocol mid =
+      let body =
+        `Assoc
+          [ ("protocol", `String protocol);
+            ("grant_secret", `String (secret_b64 issued.grant_secret));
+            ("message_id", `String mid);
+            ("content", `String "nope");
+            ("from_alias", `String "zzp-s");
+          ]
+      in
+      signed_contact_call ~base_url ~identity:sender ~alias:"zzp-s" ~body ()
+    in
+    try_proto "c2c-contact/0" "m-proto-0" >>= fun r0 ->
+    try_proto "" "m-proto-empty" >>= fun r_empty ->
+    try_proto "c2c-contact/999" "m-proto-bad" >>= fun r_bad ->
+    List.iter
+      (fun (name, r) ->
+        check int (name ^ " HTTP not 200") 401 (RTSR.status_code r);
+        check string (name ^ " error_code") "contact_unauthorised"
+          (error_code_of r.json))
+      [ ("old", r0); ("empty", r_empty); ("unknown", r_bad) ];
+    check string "old/empty denial identical" r0.body_text r_empty.body_text;
+    check string "old/unknown denial identical" r0.body_text r_bad.body_text;
+    check int "inbox empty after protocol denials" 0
+      (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+    Lwt.return_unit)
+
+let test_signed_contact_denial_shapes_identical () =
+  Relay_ws_server.reset_push_dm_count ();
+  RTSR.with_server ~token:"b265-uniform-denials" ~native_tls:true
+    (fun ~base_url ~relay ->
+      let open Lwt.Infix in
+      let recipient = Relay_identity.generate ~alias_hint:"zzu-r" () in
+      let sender = Relay_identity.generate ~alias_hint:"zzu-s" () in
+      let rn, rs = register_with_identity relay ~alias:"zzu-r" recipient in
+      let _ = register_with_identity relay ~alias:"zzu-s" sender in
+      let issued =
+        issue_for ~relay ~recipient_pk:recipient.Relay_identity.public_key
+          ~delivery_alias:"zzu-r" ~sender_pk:sender.Relay_identity.public_key
+      in
+      let body ?(protocol="c2c-contact/1")
+          ?(grant_secret=secret_b64 issued.grant_secret)
+          ?(message_id="m-uniform") ?(content="must-not-deliver") () =
+        `Assoc
+          [ ("protocol", `String protocol);
+            ("grant_secret", `String grant_secret);
+            ("message_id", `String message_id);
+            ("content", `String content) ]
+      in
+      let signed body =
+        signed_contact_call ~base_url ~identity:sender ~alias:"zzu-s" ~body ()
+      in
+      signed (`Assoc []) >>= fun missing ->
+      let unregistered = Relay_identity.generate ~alias_hint:"zzu-unknown" () in
+      signed_contact_call ~base_url ~identity:unregistered
+        ~alias:"zzu-unknown" ~body:(body ()) ()
+      >>= fun unresolved_sender ->
+      signed (body ~grant_secret:"not-base64!" ()) >>= fun bad_b64 ->
+      signed (body ~grant_secret:(secret_b64 "short") ()) >>= fun short ->
+      let unknown_secret =
+        Digestif.SHA256.digest_string "unknown-contact-grant"
+        |> Digestif.SHA256.to_raw_string
+      in
+      signed
+        (body ~message_id:"m-rejected"
+           ~grant_secret:(secret_b64 unknown_secret) ())
+      >>= fun rejected ->
+      let malformed_body = "{" in
+      let malformed_auth =
+        Relay_signed_ops.sign_request sender ~alias:"zzu-s" ~meth:"POST"
+          ~path:"/contact/v1/deliver" ~body_str:malformed_body ()
+      in
+      RTSR.call ~base_url ~meth:`POST ~path:"/contact/v1/deliver"
+        ~headers:[ ("Content-Type", "application/json");
+                   ("Authorization", malformed_auth) ]
+        ~body:malformed_body ()
+      >>= fun malformed ->
+      let responses =
+        [ ("missing", missing); ("unresolved sender", unresolved_sender);
+          ("bad b64", bad_b64); ("short", short);
+          ("backend reject", rejected); ("malformed json", malformed) ]
+      in
+      let reference = missing.body_text in
+      List.iter
+        (fun (name, response) ->
+          check int (name ^ " HTTP 401") 401 (RTSR.status_code response);
+          check string (name ^ " uniform code") "contact_unauthorised"
+            (error_code_of response.json);
+          check string (name ^ " byte-identical body") reference
+            response.body_text)
+        responses;
+      check int "uniform denials leave inbox empty" 0
+        (List.length
+           (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+      check int "uniform denials emit no WS push" 0
+        (Relay_ws_server.push_dm_invocations ());
+      Lwt.return_unit)
+
+let test_signed_contact_wrong_sender_denied () =
+  RTSR.with_server ~token:"b265-signed-ws" ~native_tls:true
+    (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let recipient = Relay_identity.generate ~alias_hint:"zzw-r" () in
+    let sender = Relay_identity.generate ~alias_hint:"zzw-s" () in
+    let attacker = Relay_identity.generate ~alias_hint:"zzw-a" () in
+    let (rn, rs) =
+      register_with_identity relay ~alias:"zzw-r" recipient
+    in
+    let _ = register_with_identity relay ~alias:"zzw-s" sender in
+    let _ = register_with_identity relay ~alias:"zzw-a" attacker in
+    ignore
+      (Relay.InMemoryRelay.set_peer_discovery_visibility relay ~alias:"zzw-r"
+         ~visibility:Private);
+    let issued =
+      issue_for ~relay ~recipient_pk:recipient.Relay_identity.public_key
+        ~delivery_alias:"zzw-r" ~sender_pk:sender.Relay_identity.public_key
     in
     let body =
       `Assoc
-        [ ("protocol", `String "c2c-contact/0");
-          ("grant_secret", `String secret_b64);
-          ("message_id", `String "mid-proto-down");
-          ("content", `String "should-not-deliver");
-          ("from_alias", `String "zzpds");
+        [ ("protocol", `String "c2c-contact/1");
+          ("grant_secret", `String (secret_b64 issued.grant_secret));
+          ("message_id", `String "m-ws-1");
+          ("content", `String "stolen");
+          ("from_alias", `String "zzw-a");
         ]
     in
-    (* Even on a token-configured relay, wrong protocol must not deliver.
-       Auth may still reject unsigned requests; either way body must not land. *)
-    RTSR.call_json ~base_url ~meth:`POST ~path:"/contact/v1/deliver" ~body ()
-    >|= fun r ->
-    check bool "protocol downgrade not success-200-ok" true
-      (let code = RTSR.status_code r in
-       code <> 200
-       ||
-       match r.json with
+    signed_contact_call ~base_url ~identity:attacker ~alias:"zzw-a" ~body ()
+    >>= fun r ->
+    check int "wrong sender 401" 401 (RTSR.status_code r);
+    check string "wrong sender contact_unauthorised" "contact_unauthorised"
+      (error_code_of r.json);
+    check int "inbox empty" 0
+      (List.length (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+    Lwt.return_unit)
+
+
+let test_http_prod_registration_proofs () =
+  RTSR.with_server ~token:"b265-reg-token" (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let signed_body ~node_id ~session_id ~alias proof =
+      `Assoc
+        [ ("node_id", `String node_id);
+          ("session_id", `String session_id);
+          ("alias", `String alias);
+          ("ttl", `Int 3600);
+          ("identity_pk", `String proof.Relay_signed_ops.identity_pk_b64);
+          ("signature", `String proof.Relay_signed_ops.sig_b64);
+          ("nonce", `String proof.Relay_signed_ops.nonce);
+          ("timestamp", `String proof.Relay_signed_ops.ts) ]
+    in
+    let valid_identity = Relay_identity.generate ~alias_hint:"zzreg-valid" () in
+    let valid_proof =
+      Relay_signed_ops.sign_register valid_identity ~alias:"zzreg-valid"
+        ~relay_url:base_url
+    in
+    let valid_body =
+      signed_body ~node_id:"n-reg-valid" ~session_id:"s-reg-valid"
+        ~alias:"zzreg-valid" valid_proof
+    in
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/register" ~body:valid_body ()
+    >>= fun valid ->
+    check int "valid signed production register succeeds" 200
+      (RTSR.status_code valid);
+    check bool "valid register response ok" true
+      (match valid.json with
+       | Some (`Assoc fields) -> List.assoc_opt "ok" fields = Some (`Bool true)
+       | _ -> false);
+    check bool "valid register binds signer key" true
+      (Relay.InMemoryRelay.identity_pk_of relay ~alias:"zzreg-valid"
+       = Some valid_identity.Relay_identity.public_key);
+    let tampered_identity =
+      Relay_identity.generate ~alias_hint:"zzreg-original" ()
+    in
+    let tampered_proof =
+      Relay_signed_ops.sign_register tampered_identity ~alias:"zzreg-original"
+        ~relay_url:base_url
+    in
+    let tampered_body =
+      signed_body ~node_id:"n-reg-tampered" ~session_id:"s-reg-tampered"
+        ~alias:"zzreg-substituted" tampered_proof
+    in
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/register"
+      ~body:tampered_body ()
+    >>= fun tampered ->
+    check int "alias-substituted register proof refused" 401
+      (RTSR.status_code tampered);
+    check bool "tampered alias creates no lease" true
+      (Relay.InMemoryRelay.identity_pk_of relay ~alias:"zzreg-substituted"
+       = None);
+    let unsigned_body =
+      `Assoc
+        [ ("node_id", `String "n-unreg");
+          ("session_id", `String "s-unreg");
+          ("alias", `String "zzunreg-private-guess");
+          ("ttl", `Int 3600) ]
+    in
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/register"
+      ~body:unsigned_body ()
+    >|= fun unsigned ->
+    check bool "unsigned prod register not ok" true
+      (match unsigned.json with
        | Some (`Assoc f) -> List.assoc_opt "ok" f <> Some (`Bool true)
        | _ -> true);
-    check int "inbox empty after protocol downgrade" 0
-      (List.length
-         (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-pd" ~session_id:"s-pd")))
+    check bool "no lease created for unsigned" true
+      (Relay.InMemoryRelay.identity_pk_of relay
+         ~alias:"zzunreg-private-guess" = None))
 
-(* Empty/missing protocol must not default to c2c-contact/1 (B262 §6.1). *)
-let test_http_contact_protocol_empty_refused () =
-  RTSR.with_server ~token:"b266-empty-proto-token" (fun ~base_url ~relay ->
+(* B267: private-only send_all must not bump message stats at handler rule. *)
+let test_send_all_private_only_no_stats () =
+  RTSR.with_server (fun ~base_url ~relay ->
     let open Lwt.Infix in
-    let pk_r = gen_pk () in
-    let pk_s = gen_pk () in
+    let pk_a = gen_pk () in
+    let pk_b = gen_pk () in
     let _ =
-      Relay.InMemoryRelay.register relay ~node_id:"n-pe" ~session_id:"s-pe"
-        ~alias:"zzper" ~identity_pk:pk_r ()
+      Relay.InMemoryRelay.register relay ~node_id:"n-sa" ~session_id:"s-sa"
+        ~alias:"zzsafrom" ~identity_pk:pk_a ()
     in
     let _ =
-      Relay.InMemoryRelay.register relay ~node_id:"n-ps2" ~session_id:"s-ps2"
-        ~alias:"zzpes" ~identity_pk:pk_s ()
+      Relay.InMemoryRelay.register relay ~node_id:"n-sb" ~session_id:"s-sb"
+        ~alias:"zzsato" ~identity_pk:pk_b ()
     in
     ignore
-      (Relay.InMemoryRelay.set_peer_discovery_visibility relay ~alias:"zzper"
+      (Relay.InMemoryRelay.set_peer_discovery_visibility relay ~alias:"zzsato"
          ~visibility:Private);
-    let now = Unix.gettimeofday () in
-    let issued =
-      match
-        Relay.InMemoryRelay.issue_contact_grant relay
-          ~recipient_identity_pk:pk_r ~delivery_alias:"zzper"
-          ~sender_identity_pk:pk_s ~expires_at:(now +. 3600.) ()
-      with
-      | Ok r -> r
-      | Error e -> failwith ("issue: " ^ e)
+    let count_msgs j =
+      match j with
+      | `Assoc f ->
+        (match List.assoc_opt "ever" f with
+         | Some (`Assoc ef) ->
+           (match List.assoc_opt "messages" ef with
+            | Some (`Int n) -> n
+            | _ -> -1)
+         | _ -> -1)
+      | _ -> -1
     in
-    let secret_b64 =
-      Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet
-        issued.grant_secret
+    let m0 =
+      count_msgs
+        (Relay.InMemoryRelay.stats relay ~now:(Unix.gettimeofday ()))
     in
     let body =
       `Assoc
-        [ ("protocol", `String "");
-          ("grant_secret", `String secret_b64);
-          ("message_id", `String "mid-proto-empty");
-          ("content", `String "should-not-deliver");
-          ("from_alias", `String "zzpes");
+        [ ("from_alias", `String "zzsafrom");
+          ("content", `String "bcast");
+          ("message_id", `String "m-sa") ]
+    in
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/send_all" ~body ()
+    >|= fun response ->
+    check int "private-only send_all HTTP 200" 200
+      (RTSR.status_code response);
+    (match response.json with
+     | Some (`Assoc fields) ->
+       (match List.assoc_opt "delivered" fields with
+        | Some (`List delivered) -> check int "no public delivery" 0 (List.length delivered)
+        | _ -> fail "missing delivered list")
+     | _ -> fail "send_all response not JSON");
+    let m1 =
+      count_msgs
+        (Relay.InMemoryRelay.stats relay ~now:(Unix.gettimeofday ()))
+    in
+    check int "handler stats unchanged" m0 m1)
+
+let test_signed_forward_does_not_bypass_private_consent () =
+  Relay_ws_server.reset_push_dm_count ();
+  RTSR.with_server ~token:"b265-forward-token" (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let source_relay = Relay_identity.generate ~alias_hint:"source" () in
+    Relay.InMemoryRelay.add_peer_relay relay
+      { name = "source";
+        url = "https://source.invalid";
+        identity_pk = source_relay.Relay_identity.public_key };
+    let recipient = Relay_identity.generate ~alias_hint:"zzfwd-r" () in
+    let status, _ =
+      Relay.InMemoryRelay.register relay ~node_id:"n-fwd-r"
+        ~session_id:"s-fwd-r" ~alias:"zzfwd-r"
+        ~identity_pk:recipient.Relay_identity.public_key ()
+    in
+    check string "register private forward target" "ok" status;
+    let body =
+      `Assoc
+        [ ("from_alias", `String "sender@source");
+          ("to_alias", `String "zzfwd-r");
+          ("content", `String "source-auth-is-not-consent");
+          ("message_id", `String "m-signed-forward") ]
+    in
+    let body_str = Yojson.Safe.to_string body in
+    let authorization =
+      Relay_signed_ops.sign_request source_relay ~alias:"relay@source"
+        ~meth:"POST" ~path:"/forward" ~body_str ()
+    in
+    let before_stats =
+      Relay.InMemoryRelay.stats relay ~now:(Unix.gettimeofday ())
+    in
+    RTSR.call ~base_url ~meth:`POST ~path:"/forward"
+      ~headers:[ ("Content-Type", "application/json");
+                 ("Authorization", authorization) ]
+      ~body:body_str ()
+    >|= fun response ->
+    check int "valid source relay still denied private target" 401
+      (RTSR.status_code response);
+    check string "forward uses uniform contact denial" "contact_unauthorised"
+      (error_code_of response.json);
+    check string "forward denial canonical body"
+      "{\"ok\":false,\"error_code\":\"contact_unauthorised\",\"error\":\"contact unauthorised\"}"
+      response.body_text;
+    check int "signed forward leaves inbox empty" 0
+      (List.length
+         (Relay.InMemoryRelay.peek_inbox relay ~node_id:"n-fwd-r"
+            ~session_id:"s-fwd-r"));
+    check int "signed forward creates no DLQ" 0
+      (List.length (Relay.InMemoryRelay.dead_letter relay));
+    check int "signed forward emits no WS push" 0
+      (Relay_ws_server.push_dm_invocations ());
+    check string "signed forward stats unchanged"
+      (Yojson.Safe.to_string before_stats)
+      (Yojson.Safe.to_string
+         (Relay.InMemoryRelay.stats relay ~now:(Unix.gettimeofday ()))))
+
+(* Forward unknown-peer path: DLQ must not store content (B267 G1). *)
+let test_forward_unknown_peer_dlq_redacts_content () =
+  RTSR.with_server (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let pk = gen_pk () in
+    let _ =
+      Relay.InMemoryRelay.register relay ~node_id:"n-fw" ~session_id:"s-fw"
+        ~alias:"zzfwfrom" ~identity_pk:pk ()
+    in
+    let body =
+      `Assoc
+        [ ("from_alias", `String "zzfwfrom");
+          ("to_alias", `String "someone@notapeerhost");
+          ("content", `String "SECRET-FORWARD-PAYLOAD");
+          ("message_id", `String "mid-fw-redact");
         ]
     in
-    RTSR.call_json ~base_url ~meth:`POST ~path:"/contact/v1/deliver" ~body ()
-    >|= fun r ->
-    check bool "empty protocol not success-200-ok" true
-      (let code = RTSR.status_code r in
-       code <> 200
-       ||
-       match r.json with
-       | Some (`Assoc f) -> List.assoc_opt "ok" f <> Some (`Bool true)
-       | _ -> true);
-    check int "inbox empty after empty protocol" 0
-      (List.length
-         (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-pe" ~session_id:"s-pe")))
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/send" ~body () >|= fun _r ->
+    let dl = Relay.InMemoryRelay.dead_letter relay in
+    let has_secret =
+      List.exists
+        (function
+          | `Assoc f ->
+            (match List.assoc_opt "content" f with
+             | Some (`String s) -> String.equal s "SECRET-FORWARD-PAYLOAD"
+             | _ -> false)
+          | _ -> false)
+        dl
+    in
+    check bool "forward DLQ redacts content" false has_secret;
+    check bool "dlq non-empty for unknown peer" true (dl <> []))
 
 let () =
   Random.self_init ();
@@ -782,11 +1163,25 @@ let () =
             test_http_send_private_dev_unsigned_fails;
           test_case "POST /send_all skips private" `Quick
             test_http_send_all_skips_private;
-          test_case "cleartext contact deliver refused" `Quick
-            test_http_contact_cleartext_refused;
-          test_case "contact protocol downgrade refused" `Quick
-            test_http_contact_protocol_downgrade_refused;
-          test_case "contact protocol empty refused" `Quick
-            test_http_contact_protocol_empty_refused;
+          test_case "signed cleartext + spoofed proxy refused" `Quick
+            test_signed_contact_cleartext_and_untrusted_proxy_refused;
+          test_case "signed private send matches contact denial" `Quick
+            test_signed_private_send_matches_contact_denial;
+          test_case "signed contact accept once + duplicate" `Quick
+            test_signed_contact_accept_once_and_duplicate;
+          test_case "signed contact protocol variants denied" `Quick
+            test_signed_contact_protocol_variants_denied;
+          test_case "contact denial shapes byte-identical" `Quick
+            test_signed_contact_denial_shapes_identical;
+          test_case "signed contact wrong sender denied" `Quick
+            test_signed_contact_wrong_sender_denied;
+          test_case "production registration proof contract" `Quick
+            test_http_prod_registration_proofs;
+          test_case "send_all private-only no stats bump" `Quick
+            test_send_all_private_only_no_stats;
+          test_case "signed /forward does not confer consent" `Quick
+            test_signed_forward_does_not_bypass_private_consent;
+          test_case "forward unknown peer DLQ redacts content" `Quick
+            test_forward_unknown_peer_dlq_redacts_content;
         ] );
     ]

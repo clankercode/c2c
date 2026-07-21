@@ -768,7 +768,10 @@ let with_sqlite_relay_and_dir f =
 let sqlite_set_last_seen dir alias last_seen =
   let db_path = Filename.concat dir "c2c_relay.db" in
   let conn = Sqlite3.db_open db_path in
-  let stmt = Sqlite3.prepare conn "UPDATE leases SET last_seen = ?, ttl = 1 WHERE alias = ?" in
+  (* B266: upgraded binaries keep active registrations in the rollback-safe
+     table; legacy [leases] is an empty refusal view. *)
+  let stmt = Sqlite3.prepare conn
+      "UPDATE secure_leases_v2 SET last_seen = ?, ttl = 1 WHERE alias = ?" in
   Sqlite3.bind_double stmt 1 last_seen |> ignore;
   Sqlite3.bind_text stmt 2 alias |> ignore;
   Sqlite3.step stmt |> ignore;

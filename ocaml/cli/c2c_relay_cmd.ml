@@ -12,6 +12,14 @@ let json_flag =
   Cmdliner.Arg.(value & flag & info ["json"]
     ~doc:"Output raw JSON instead of a human-readable table.")
 
+let validate_production_storage ~token ~storage =
+  match token, storage with
+  | Some _, Some "sqlite" -> Ok ()
+  | Some _, _ ->
+    Error
+      "token-configured relay requires --storage sqlite; in-memory private reachability is process-local and not durable"
+  | None, _ -> Ok ()
+
 let relay_serve_cmd =
   let listen =
     Cmdliner.Arg.(value & opt (some string) None & info [ "listen" ] ~docv:"HOST:PORT" ~doc:"Address to listen on (default: 127.0.0.1:7331).")
@@ -240,6 +248,9 @@ let peer_relays_tbl = begin
   Printf.eprintf "  peer-relays: %d configured\n%!" (Hashtbl.length tbl);
   tbl
 end in
+(match validate_production_storage ~token ~storage with
+ | Ok () -> ()
+ | Error msg -> Printf.eprintf "error: %s\n%!" msg; exit 1);
 match storage with
 | Some "sqlite" ->
     Printf.printf "storage: sqlite\n%!";

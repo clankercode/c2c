@@ -12,14 +12,14 @@
 | Class | Count | Status |
 |---|---|---|
 | BLOCKER (invariant break in reviewed binary) | **0** | — |
-| MAJOR accepted with operational control | **1** (M1 binary rollback) | **Accepted / documented** |
+| MAJOR accepted with operational control | **0** | — |
 | MAJOR product follow-up (non-bypass) | **1** (M2 public opt-in CLI) | **Accepted as follow-up** |
 | MINOR | **1** remaining (M4 handler TLS); M3 fixed in remediation | **M3 fixed; M4 follow-up** |
 | NOTES | **2** | Documented |
 
 **Verdict for B267 independent-review gate:** **PASS-WITH-NOTES**
 
-No unresolved **BLOCKER** remains against G1/G2 in the reviewed binary. All MAJOR items are either operationally accepted with written deploy constraint (M1) or are non-bypass product gaps filed as follow-ups (M2–M4). Residual test gaps (WS push spy, full peer-forward HTTP e2e, repo-wide `@runtest --force`) are tracked as evidence completeness, not open security blockers on the shipped invariant.
+No unresolved **BLOCKER** or invariant-breaking **MAJOR** remains against G1/G2 after remediation. M1 is now fixed in code by the B266 atomic lease-table quarantine. M2 remains a non-bypass product follow-up.
 
 ---
 
@@ -52,7 +52,7 @@ No unresolved **BLOCKER** remains against G1/G2 in the reviewed binary. All MAJO
 | **G4** | **Met** | expire/revoke/rotate + concurrent revoke/admit |
 | **G5** | **Met** | mid table; Duplicate no second inbox |
 | **G6** | **Met** | list meta redaction; SQLite secret-at-rest; issue secret once |
-| **G7** | **Met** in binary; **ops residual M1** | Tokenless refuse; protocol downgrade refuse; doctor fails missing ads; old binary on stamped DB is M1 |
+| **G7** | **Met** | Tokenless refuse; protocol downgrade refuse; doctor fails missing ads; old-binary reads/writes fail closed after lease quarantine |
 | **G8** | **Met** | scope `dm-first-contact` only; rooms ≠ DM grant |
 | **G9** | **Met** at v1 freeze | Lease-bound recipient fp; key rotate fails closed; no multi-device inheritance |
 
@@ -60,19 +60,15 @@ No unresolved **BLOCKER** remains against G1/G2 in the reviewed binary. All MAJO
 
 ## Findings
 
-### M1 — MAJOR (accepted operational constraint): pre-B264 binary + migrated DB reopens global reachability
+### M1 — MAJOR (FIXED): pre-B264 binary + migrated DB
 
-**Severity:** MAJOR (deploy/ops), not a defect in the new binary  
-**Where:** Operational. New code stamps `schema_version=2` + `relay_features` (`private_reachability=consent_gated`, `contact_protocol=1`) in `SqliteRelay.create`, but **pre-B264 binaries never consult those stamps** and will list/send to all leases.  
-**Invariant impact:** G1/G2 **fail** if an operator runs an old binary against a post-migration SQLite DB.  
-**Disposition:** **ACCEPTED** with mandatory deploy rule:
+B266 atomically renames active registrations from `leases` to
+`secure_leases_v2` and creates an empty, non-writable compatibility view at the
+legacy name. New binaries preserve and use migrated rows; old reads return zero
+and old registration writes fail. The transaction rolls back fully on an
+injected interruption and serialises concurrent secure opens.
 
-1. Never run a pre-contact-grant `c2c` binary against a DB that has been opened by a post-B266 binary (`schema_version` stamp 2 / `relay_features.private_reachability`).
-2. Doctor on a modern client already **Fails** when health lacks `contact_protocol` / `private_reachability` — use doctor as preflight after upgrade and before claiming production private reachability.
-3. Documented on `/security/` configuration caveats and this review.
-4. Optional future harden (not blocking this review): refuse start when DB feature stamp is present but binary build lacks contact protocol (version gate).
-
-**Not fixed in-code in this pass** — cannot be fixed inside the old binary; control is deploy/process.
+**Regression:** `test_relay_b266_rollback_floor`.
 
 ### M2 — MAJOR product follow-up (non-bypass): no production CLI/HTTP to set Public discovery
 
@@ -87,11 +83,12 @@ No unresolved **BLOCKER** remains against G1/G2 in the reviewed binary. All MAJO
 **Test:** `push_dm` invocation counter + `private reject never invokes push_dm` in matrix suite.  
 **Disposition:** **FIXED** in this review remediation pass.
 
-### M4 — MINOR: TLS not enforced inside `handle_contact_deliver`
+### M4 — MINOR (FIXED): authenticated confidential contact transport
 
-**Where:** B262 §10 confidential transport; doctor `check_transport_security` fails prod plaintext URL; handler still accepts grant body over cleartext HTTP.  
-**Impact:** Grant secret confidentiality is deploy-dependent (TLS terminator / scheme). Signatures do not encrypt.  
-**Disposition:** **ACCEPTED FOLLOW-UP** — page and doctor already require TLS for production grant claims; optional handler refuse when scheme/proto is cleartext in prod.
+`handle_contact_deliver` requires native TLS, or explicit operator trust of a
+TLS terminator (`C2C_RELAY_TRUST_FORWARDED_PROTO=1`) plus an HTTPS forwarded
+scheme. Signed tests prove cleartext and an untrusted spoofed header are refused;
+a client header alone cannot unlock grant admission.
 
 ### N1 — NOTE: InMemory unknown path still content-DLQs; private does not
 
@@ -128,7 +125,7 @@ Reviewed `docs/security/index.md` against ledger and code:
 | TLS not mandatory / no universal E2E / no anonymity / ephemeral ≠ no-trace | Explicit non-guarantees present |
 | Forbidden absolute claims | Not present as guarantees |
 
-**Page update required by this review:** document M1 binary-rollback deploy constraint in configuration caveats (applied with this review).
+**Page update required by this review:** document enforced fail-closed rollback and explicit trusted-proxy requirements.
 
 ---
 
@@ -161,8 +158,8 @@ Reviewed `docs/security/index.md` against ledger and code:
 **Independent security review: COMPLETE.**
 
 - **0 blockers** open on the intended private-reachability invariant in the reviewed binary.  
-- **M1** accepted as mandatory deploy constraint and documented on `/security/` + this report.  
-- **M2, M4** accepted as non-blocking follow-ups; **M3 fixed** in remediation (WS/short-queue wake on Accepted + push_dm spy test).  
+- **M1 fixed** by atomic lease-table quarantine and rollback-floor regressions.
+- **M2** remains a non-bypass product follow-up; **M3 and M4 are fixed**.
 - Attack matrix + claim ledger remain the regression authority; this review does not weaken acceptance criteria.
 
 Signed-off disposition: **PASS-WITH-NOTES** for plan item “Obtain incremental independent security review and resolve every accepted blocker or major finding.”

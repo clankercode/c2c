@@ -286,6 +286,12 @@
  (modules test_relay_private_reachability_migration)
  (libraries c2c_mcp alcotest sqlite3 unix))
 
+; B266: enforceable old-binary rollback floor + interrupted migration.
+(test
+ (name test_relay_b266_rollback_floor)
+ (modules test_relay_b266_rollback_floor)
+ (libraries c2c_mcp alcotest sqlite3 unix))
+
 ; B266: pure doctor private-reachability diagnostics (Relay_doctor).
 (test
  (name test_relay_doctor_private_reachability)
