@@ -1778,6 +1778,7 @@ module InMemoryRelay : RELAY = struct
                     end)))
 
   let peer_discovery_visibility_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       match Hashtbl.find_opt t.leases alias with
       | None -> None
@@ -1788,6 +1789,7 @@ module InMemoryRelay : RELAY = struct
            | None -> Private))
 
   let set_peer_discovery_visibility t ~alias ~visibility =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       if Hashtbl.mem t.leases alias then begin
         Hashtbl.replace t.discovery_visibility alias visibility;
@@ -4167,6 +4169,7 @@ module SqliteRelay : RELAY = struct
         with _ -> `Rejected)
 
   let peer_discovery_visibility_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = t.db in
       let result = ref None in
@@ -4182,6 +4185,7 @@ module SqliteRelay : RELAY = struct
       !result)
 
   let set_peer_discovery_visibility t ~alias ~visibility =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
       let conn = t.db in
       let vis =

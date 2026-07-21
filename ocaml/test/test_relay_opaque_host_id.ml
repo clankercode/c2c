@@ -19,6 +19,38 @@
    8. c2c host-id CLI subcommand: exit 0 + stdout matches Host_id value.
    9. c2c host-id --json: exit 0 + stdout is valid JSON with host_id/kind/value. *)
 
+(* B264_TEST_PUBLIC_REGISTER: fixtures opt into Public discovery (private is default). *)
+let _b264_reg_mem t ~node_id ~session_id ~alias ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at ?sig_b64 ?opaque_host_id () =
+  let status, lease =
+    Relay.InMemoryRelay.register t ~node_id ~session_id ~alias ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at ?sig_b64 ?opaque_host_id ()
+  in
+  (match
+     status,
+     Relay.InMemoryRelay.set_peer_discovery_visibility t
+       ~alias:(Relay.RegistrationLease.alias lease)
+       ~visibility:Relay_backend_contract.Public
+   with
+   | "ok", Ok () -> ()
+   | "ok", Error e -> failwith ("B264 test set public: " ^ e)
+   | _ -> ());
+  (status, lease)
+
+let _b264_reg_sql t ~node_id ~session_id ~alias ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at ?sig_b64 ?opaque_host_id () =
+  let status, lease =
+    Relay.SqliteRelay.register t ~node_id ~session_id ~alias ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at ?sig_b64 ?opaque_host_id ()
+  in
+  (match
+     status,
+     Relay.SqliteRelay.set_peer_discovery_visibility t
+       ~alias:(Relay.RegistrationLease.alias lease)
+       ~visibility:Relay_backend_contract.Public
+   with
+   | "ok", Ok () -> ()
+   | "ok", Error e -> failwith ("B264 test set public: " ^ e)
+   | _ -> ());
+  (status, lease)
+
+
 open Alcotest
 
 (* --- helpers --- *)
@@ -124,7 +156,7 @@ let with_temp_dir f =
 
 let test_relay_register_with_opaque_host_id () =
   let t = make_test_relay () in
-  let status, lease = Relay.InMemoryRelay.register t
+  let status, lease = _b264_reg_mem t
     ~node_id:"n1" ~session_id:"s1" ~alias:"lyra-quill"
     ~opaque_host_id:(Some "3d08761ae3f3") () in
   check string "register status" "ok" status;
@@ -143,7 +175,7 @@ let test_relay_register_with_opaque_host_id () =
 
 let test_relay_register_without_opaque_host_id () =
   let t = make_test_relay () in
-  let status, lease = Relay.InMemoryRelay.register t
+  let status, lease = _b264_reg_mem t
     ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   check string "register status" "ok" status;
   let lease_ohid = Relay.RegistrationLease.opaque_host_id lease in
@@ -156,7 +188,7 @@ let test_relay_register_without_opaque_host_id () =
 
 let test_relay_register_with_alias_embedded_host_id () =
   let t = make_test_relay () in
-  let status, lease = Relay.InMemoryRelay.register t
+  let status, lease = _b264_reg_mem t
     ~node_id:"n1" ~session_id:"s1"
     ~alias:"lyra-quill@3d08761ae3f3" () in
   check string "register status" "ok" status;
@@ -174,7 +206,7 @@ let test_relay_register_with_alias_embedded_host_id () =
 
 let test_relay_send_to_embedded_host_id_alias () =
   let t = make_test_relay () in
-  let status, _lease = Relay.InMemoryRelay.register t
+  let status, _lease = _b264_reg_mem t
     ~node_id:"n1" ~session_id:"s1"
     ~alias:"lyra-quill@3d08761ae3f3" () in
   check string "register status" "ok" status;
@@ -193,7 +225,7 @@ let test_relay_send_to_embedded_host_id_alias () =
 
 let test_relay_identity_lookup_accepts_reply_route () =
   let t = make_test_relay () in
-  let status, _lease = Relay.InMemoryRelay.register t
+  let status, _lease = _b264_reg_mem t
     ~node_id:"n1" ~session_id:"s1"
     ~alias:"lyra-quill@3d08761ae3f3" ~identity_pk:"raw-test-pk" () in
   check string "register status" "ok" status;
@@ -206,7 +238,7 @@ let test_relay_identity_lookup_accepts_reply_route () =
 let test_sqlite_relay_send_to_embedded_host_id_alias () =
   with_temp_dir (fun dir ->
     let t = Relay.SqliteRelay.create ~persist_dir:dir () in
-    let status, lease = Relay.SqliteRelay.register t
+    let status, lease = _b264_reg_sql t
       ~node_id:"n1" ~session_id:"s1"
       ~alias:"lyra-quill@3d08761ae3f3" () in
     check string "register status" "ok" status;
@@ -227,7 +259,7 @@ let test_sqlite_relay_send_to_embedded_host_id_alias () =
 
 let test_relay_query_messages_since_matches_reply_route () =
   let t = make_test_relay () in
-  let status, _lease = Relay.InMemoryRelay.register t
+  let status, _lease = _b264_reg_mem t
     ~node_id:"n1" ~session_id:"s1"
     ~alias:"lyra-quill@3d08761ae3f3" () in
   check string "register status" "ok" status;
@@ -244,7 +276,7 @@ let test_relay_query_messages_since_matches_reply_route () =
 let test_sqlite_query_messages_since_matches_reply_route () =
   with_temp_dir (fun dir ->
     let t = Relay.SqliteRelay.create ~persist_dir:dir () in
-    let status, _lease = Relay.SqliteRelay.register t
+    let status, _lease = _b264_reg_sql t
       ~node_id:"n1" ~session_id:"s1"
       ~alias:"lyra-quill@3d08761ae3f3" () in
     check string "register status" "ok" status;
@@ -260,7 +292,7 @@ let test_sqlite_query_messages_since_matches_reply_route () =
 
 let test_relay_register_rejects_legacy_hash_alias () =
   let t = make_test_relay () in
-  let status, _lease = Relay.InMemoryRelay.register t
+  let status, _lease = _b264_reg_mem t
     ~node_id:"n1" ~session_id:"s1"
     ~alias:"lyra-quill#3d08761ae3f3" () in
   check string "legacy hash host-id alias rejected" "invalid_alias" status

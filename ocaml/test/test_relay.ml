@@ -2,6 +2,51 @@
 
 let fail_fmt fmt = Printf.ksprintf (fun s -> failwith s) fmt
 
+(* B264: registrations default to Private discovery. These wrappers force
+   Public after a successful register so pre-B264 lifecycle tests that exercise
+   ordinary /send, /send_all, and ordinary list_peers still exercise those
+   paths. Private-by-default + grant first-contact is covered by
+   test_relay_private_discovery / test_relay_contact_grants. *)
+let mark_public_mem t ~alias =
+  match
+    Relay.InMemoryRelay.set_peer_discovery_visibility t ~alias
+      ~visibility:Relay_backend_contract.Public
+  with
+  | Ok () -> ()
+  | Error e -> fail_fmt "mark_public_mem %s: %s" alias e
+
+let mark_public_sql t ~alias =
+  match
+    Relay.SqliteRelay.set_peer_discovery_visibility t ~alias
+      ~visibility:Relay_backend_contract.Public
+  with
+  | Ok () -> ()
+  | Error e -> fail_fmt "mark_public_sql %s: %s" alias e
+
+let _b264_reg_mem t ~node_id ~session_id ~alias
+    ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey
+    ?signed_at ?sig_b64 ?opaque_host_id () =
+  let status, lease =
+    Relay.InMemoryRelay.register t ~node_id ~session_id ~alias ?client_type
+      ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at
+      ?sig_b64 ?opaque_host_id ()
+  in
+  if status = "ok" then
+    mark_public_mem t ~alias:(Relay.RegistrationLease.alias lease);
+  (status, lease)
+
+let _b264_reg_sql t ~node_id ~session_id ~alias
+    ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey
+    ?signed_at ?sig_b64 ?opaque_host_id () =
+  let status, lease =
+    Relay.SqliteRelay.register t ~node_id ~session_id ~alias ?client_type
+      ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at
+      ?sig_b64 ?opaque_host_id ()
+  in
+  if status = "ok" then
+    mark_public_sql t ~alias:(Relay.RegistrationLease.alias lease);
+  (status, lease)
+
 let json_get_string json key =
   match json with
   | `Assoc fields ->
@@ -90,14 +135,14 @@ let test_relay_released_alias_hides_identity_before_gc () =
   let enc_pubkey = "alice-enc-pk" in
   let sig_b64 = "alice-sig" in
   let (status, lease) =
-    Relay.InMemoryRelay.register t
+    _b264_reg_mem t
       ~node_id:"n1" ~session_id:"s1" ~alias:"alice"
       ~identity_pk ~enc_pubkey ~signed_at:123.0 ~sig_b64 ()
   in
   if status <> "ok" then fail_fmt "inmemory: setup register failed: %s" status;
-  let (_bob_status, _) = Relay.InMemoryRelay.register t ~node_id:"n-bob" ~session_id:"s-bob" ~alias:"bob" () in
+  let (_bob_status, _) = _b264_reg_mem t ~node_id:"n-bob" ~session_id:"s-bob" ~alias:"bob" () in
   let (_carol_status, carol_lease) =
-    Relay.InMemoryRelay.register t ~node_id:"n-carol" ~session_id:"s-carol" ~alias:"carol" ()
+    _b264_reg_mem t ~node_id:"n-carol" ~session_id:"s-carol" ~alias:"carol" ()
   in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"retention-room" () in
@@ -188,7 +233,7 @@ let test_host_acceptable_accepts_matching_self_host () =
 
 let test_relay_register_creates_new_registration () =
   let t = make_test_relay () in
-  let (status, lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (status, lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   if status <> "ok" then fail_fmt "expected ok, got %s" status;
   if Relay.RegistrationLease.alias lease <> "alice" then fail_fmt "alias mismatch"
 
@@ -275,13 +320,13 @@ let test_receipt_sign_ctx_is_unique () =
 
 let test_relay_register_same_alias_different_node_raises_conflict () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (status, _) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (status, _) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" () in
   if status <> Relay.relay_err_alias_conflict then fail_fmt "expected alias_conflict, got %s" status
 
 let test_relay_heartbeat_refreshes_existing () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:1.0 () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:1.0 () in
   Unix.sleep 1;
   let (status, lease) = Relay.InMemoryRelay.heartbeat t ~node_id:"n1" ~session_id:"s1" ?opaque_host_id:None in
   if status <> "ok" then fail_fmt "expected ok, got %s" status;
@@ -296,8 +341,8 @@ let test_relay_heartbeat_unknown_session_raises_error () =
    register A → send to A → A re-registers with new session_id → assert A's new inbox has the messages. *)
 let test_relay_reregister_migrates_inbox () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   (* Bob sends 3 messages to alice while alice's lease is n1/s1 *)
   let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
     Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg1" ~message_id:None ~pow_difficulty:(-1) in
@@ -306,7 +351,7 @@ let test_relay_reregister_migrates_inbox () =
   let (_: [> `Ok of float | `Duplicate of float | `Error of string * string]) =
     Relay.InMemoryRelay.send t ~from_alias:"bob" ~to_alias:"alice" ~content:"msg3" ~message_id:None ~pow_difficulty:(-1) in
   (* Alice re-registers with same node_id but new session_id (simulates restart/reconnect) *)
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1_new" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1_new" ~alias:"alice" () in
   (* Alice polls her NEW session — with the F4 fix she should get all 3 migrated messages.
      Note: send prepends (msg :: inbox), so order is newest-first: [msg3; msg2; msg1]. *)
   let inbox = Relay.InMemoryRelay.poll_inbox t ~node_id:"n1" ~session_id:"s1_new" in
@@ -316,8 +361,8 @@ let test_relay_reregister_migrates_inbox () =
 
 let test_relay_send_delivers_to_recipient () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   match Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"hello bob" ~message_id:None ~pow_difficulty:(-1) with
   | `Ok ts ->
       if ts <= 0.0 then fail_fmt "ts should be positive";
@@ -330,7 +375,7 @@ let test_relay_send_delivers_to_recipient () =
 
 let test_relay_send_to_unknown_alias_goes_to_dead_letter () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   match Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"nobody" ~content:"hello" ~message_id:None ~pow_difficulty:(-1) with
   | `Error (err, _) ->
       if err <> Relay.relay_err_unknown_alias then fail_fmt "expected unknown_alias, got %s" err;
@@ -341,8 +386,8 @@ let test_relay_send_to_unknown_alias_goes_to_dead_letter () =
 
 let test_relay_poll_inbox_drains () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   let _ = Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"msg1" ~message_id:None ~pow_difficulty:(-1) in
   let first = Relay.InMemoryRelay.poll_inbox t ~node_id:"n2" ~session_id:"s2" in
   if List.length first <> 1 then fail_fmt "first poll should return 1";
@@ -351,8 +396,8 @@ let test_relay_poll_inbox_drains () =
 
 let test_relay_peek_inbox_does_not_drain () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   let _ = Relay.InMemoryRelay.send t ~from_alias:"alice" ~to_alias:"bob" ~content:"msg1" ~message_id:None ~pow_difficulty:(-1) in
   let first = Relay.InMemoryRelay.peek_inbox t ~node_id:"n2" ~session_id:"s2" in
   if List.length first <> 1 then fail_fmt "first peek should return 1";
@@ -361,9 +406,9 @@ let test_relay_peek_inbox_does_not_drain () =
 
 let test_relay_send_all_broadcasts_to_all_except_sender () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"carol" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n3" ~session_id:"s3" ~alias:"carol" () in
   match Relay.InMemoryRelay.send_all t ~from_alias:"alice" ~content:"broadcast" ~message_id:None with
   | `Ok (ts, delivered, skipped) ->
       if ts <= 0.0 then fail_fmt "ts should be positive";
@@ -375,8 +420,8 @@ let test_relay_send_all_broadcasts_to_all_except_sender () =
 
 let[@warning "-21"] test_relay_join_room_adds_member () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   match Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" () with
   | `Ok -> ()
   | `Error (err, msg) -> fail_fmt "join_room failed: %s %s" err msg;
@@ -388,8 +433,8 @@ let[@warning "-21"] test_relay_join_room_adds_member () =
 
 let test_relay_leave_room_removes_member () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"test-room" () in
   let _ = Relay.InMemoryRelay.leave_room t ~alias:"alice" ~room_id:"test-room" in
@@ -402,9 +447,9 @@ let test_relay_leave_room_removes_member () =
 
 let test_relay_send_room_delivers_to_all_except_sender () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"carol" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n3" ~session_id:"s3" ~alias:"carol" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"test-room" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"test-room" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"carol" ~room_id:"test-room" () in
@@ -418,10 +463,10 @@ let test_relay_send_room_delivers_to_all_except_sender () =
 
 let test_relay_gc_preserves_reserved_expired_leases () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:0.01 () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" ~ttl:300.0 () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:0.01 () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" ~ttl:300.0 () in
   Unix.sleep 1;
-  let (status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"alice" () in
+  let (status, _lease) = _b264_reg_mem t ~node_id:"n3" ~session_id:"s3" ~alias:"alice" () in
   if status <> Relay.relay_err_alias_conflict then
     fail_fmt "expired delivery lease should remain alias-reserved, got %s" status;
   match Relay.InMemoryRelay.gc t with
@@ -435,8 +480,8 @@ let test_relay_gc_preserves_reserved_expired_leases () =
 
 let test_relay_list_rooms_shows_all_with_counts () =
   let t = make_test_relay () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status, _lease) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_status, _lease) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"room-1" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"room-2" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"bob" ~room_id:"room-1" () in
@@ -487,7 +532,7 @@ let room_ids rooms =
 
 let test_relay_list_rooms_omits_nonpublic () =
   let t = make_test_relay () in
-  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_s, _l) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   (* public (listed), gated (listed), unlisted (hidden), private (hidden) *)
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"gated" ~alias:"alice" ~room_id:"gated-room" () in
@@ -508,13 +553,13 @@ let test_relay_list_rooms_omits_nonpublic () =
 let test_relay_list_rooms_unlisted_visible_to_members () =
   let t = make_test_relay () in
   let (_s, _l) =
-    Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+    _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
   in
   let (_s2, _l2) =
-    Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"member" ()
+    _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"member" ()
   in
   let (_s3, _l3) =
-    Relay.InMemoryRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"stranger" ()
+    _b264_reg_mem t ~node_id:"n3" ~session_id:"s3" ~alias:"stranger" ()
   in
   let _ =
     Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"creator"
@@ -555,7 +600,7 @@ let test_relay_list_rooms_unlisted_visible_to_members () =
    is open-join but not listed; private is invite-gated + not listed. *)
 let test_relay_join_gating_inmemory () =
   let t = make_test_relay () in
-  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" () in
+  let (_s, _l) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" () in
   (* gated room: listed, invite-gated join *)
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"gated" ~alias:"creator" ~room_id:"g" () in
   if not (List.mem "g" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
@@ -587,7 +632,7 @@ let test_relay_join_gating_inmemory () =
 let test_relay_knock_storage_inmemory () =
   let t = make_test_relay () in
   let (_s, _l) =
-    Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+    _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
   in
   let _ =
     Relay.InMemoryRelay.join_room t ~visibility:"gated"
@@ -626,10 +671,10 @@ let test_relay_knock_storage_inmemory () =
 let test_relay_knock_eligibility_inmemory () =
   let t = make_test_relay () in
   let (_s, _l) =
-    Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+    _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
   in
   let (_s2, _l2) =
-    Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" ()
+    _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" ()
   in
   let _ =
     Relay.InMemoryRelay.join_room t ~visibility:"gated"
@@ -661,7 +706,7 @@ let test_relay_knock_eligibility_inmemory () =
 
 let test_relay_join_visibility_set_on_create () =
   let t = make_test_relay () in
-  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_s, _l) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"rm" () in
   if Relay.InMemoryRelay.room_visibility_of t ~room_id:"rm" <> "unlisted" then
     fail_fmt "room created with --visibility unlisted should be unlisted";
@@ -678,8 +723,8 @@ let test_relay_join_visibility_set_on_create () =
 
 let test_relay_join_visibility_not_overridden_after_create () =
   let t = make_test_relay () in
-  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+  let (_s, _l) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_s, _l) = _b264_reg_mem t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"rm" () in
   (* A later joiner passing a different visibility must NOT change the room. *)
   let _ = Relay.InMemoryRelay.join_room t ~visibility:"public" ~alias:"bob" ~room_id:"rm" () in
@@ -688,7 +733,7 @@ let test_relay_join_visibility_not_overridden_after_create () =
 
 let test_relay_set_visibility_unlists_and_relists () =
   let t = make_test_relay () in
-  let (_s, _l) = Relay.InMemoryRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+  let (_s, _l) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
   let _ = Relay.InMemoryRelay.join_room t ~alias:"alice" ~room_id:"rm" () in
   if not (List.mem "rm" (room_ids (Relay.InMemoryRelay.list_rooms t))) then
     fail_fmt "public room should be listed initially";
@@ -736,15 +781,15 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
     let enc_pubkey = "alice-enc-pk" in
     let sig_b64 = "alice-sig" in
     let (_status, _lease) =
-      Relay.SqliteRelay.register t
+      _b264_reg_sql t
         ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ~ttl:1.0
         ~identity_pk ~enc_pubkey ~signed_at:123.0 ~sig_b64 ()
     in
     let (_status, _lease) =
-      Relay.SqliteRelay.register t ~node_id:"n-bob" ~session_id:"s-bob" ~alias:"bob" ()
+      _b264_reg_sql t ~node_id:"n-bob" ~session_id:"s-bob" ~alias:"bob" ()
     in
     let (_status, _lease) =
-      Relay.SqliteRelay.register t ~node_id:"n-carol" ~session_id:"s-carol" ~alias:"carol" ()
+      _b264_reg_sql t ~node_id:"n-carol" ~session_id:"s-carol" ~alias:"carol" ()
     in
     let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"retention-room" () in
     let _ = Relay.SqliteRelay.join_room t ~alias:"bob" ~room_id:"retention-room" () in
@@ -783,7 +828,7 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
            fail_fmt "sqlite: expired delivery lease should be reported skipped"
      | _ -> fail_fmt "sqlite: send_room should return Ok");
     let (status, _lease) =
-      Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" ()
+      _b264_reg_sql t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" ()
     in
     if status <> Relay.relay_err_alias_conflict then
       fail_fmt "sqlite: warned alias should remain reserved, got %s" status;
@@ -822,7 +867,7 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
            fail_fmt "sqlite: direct send to released alias should be unknown_alias, got %s" err
      | _ -> fail_fmt "sqlite: direct send to released alias should fail before gc");
     let (status, lease) =
-      Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ()
+      _b264_reg_sql t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" ()
     in
     if status <> "ok" then fail_fmt "sqlite: released alias should be reclaimable before gc, got %s" status;
     if Relay.RegistrationLease.node_id lease <> "n1" then
@@ -856,7 +901,7 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
     if List.exists (fun m -> Yojson.Safe.Util.to_string m = "alice") members then
       fail_fmt "sqlite: released alias should be removed from room membership";
     let (status, lease) =
-      Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" ()
+      _b264_reg_sql t ~node_id:"n2" ~session_id:"s2" ~alias:"alice" ()
     in
     if status <> "ok" then fail_fmt "sqlite: released alias should be reclaimable, got %s" status;
     if Relay.RegistrationLease.node_id lease <> "n2" then
@@ -864,7 +909,7 @@ let test_relay_sqlite_alias_retention_warns_and_releases () =
 
 let test_relay_sqlite_list_rooms_omits_nonpublic () =
   with_sqlite_relay_tempdir (fun t ->
-    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+    let (_s, _l) = _b264_reg_sql t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
     let _ = Relay.SqliteRelay.join_room t ~alias:"alice" ~room_id:"pub-room" () in
     let _ = Relay.SqliteRelay.join_room t ~visibility:"gated" ~alias:"alice" ~room_id:"gated-room" () in
     let _ = Relay.SqliteRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"unl-room" () in
@@ -881,13 +926,13 @@ let test_relay_sqlite_list_rooms_omits_nonpublic () =
 let test_relay_sqlite_list_rooms_unlisted_visible_to_members () =
   with_sqlite_relay_tempdir (fun t ->
     let (_s, _l) =
-      Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+      _b264_reg_sql t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
     in
     let (_s2, _l2) =
-      Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"member" ()
+      _b264_reg_sql t ~node_id:"n2" ~session_id:"s2" ~alias:"member" ()
     in
     let (_s3, _l3) =
-      Relay.SqliteRelay.register t ~node_id:"n3" ~session_id:"s3" ~alias:"stranger" ()
+      _b264_reg_sql t ~node_id:"n3" ~session_id:"s3" ~alias:"stranger" ()
     in
     let _ =
       Relay.SqliteRelay.join_room t ~visibility:"unlisted" ~alias:"creator"
@@ -921,7 +966,7 @@ let test_relay_sqlite_list_rooms_unlisted_visible_to_members () =
    not listed; private invite-gated not listed. *)
 let test_relay_join_gating_sqlite () =
   with_sqlite_relay_tempdir (fun t ->
-    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" () in
+    let (_s, _l) = _b264_reg_sql t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" () in
     let _ = Relay.SqliteRelay.join_room t ~visibility:"gated" ~alias:"creator" ~room_id:"g" () in
     if not (List.mem "g" (room_ids (Relay.SqliteRelay.list_rooms t))) then
       fail_fmt "sqlite gated room must be listed";
@@ -949,8 +994,8 @@ let test_relay_join_gating_sqlite () =
 
 let test_relay_sqlite_join_visibility_and_set () =
   with_sqlite_relay_tempdir (fun t ->
-    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-    let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
+    let (_s, _l) = _b264_reg_sql t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+    let (_s, _l) = _b264_reg_sql t ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
     let _ = Relay.SqliteRelay.join_room t ~visibility:"unlisted" ~alias:"alice" ~room_id:"rm" () in
     if Relay.SqliteRelay.room_visibility_of t ~room_id:"rm" <> "unlisted" then
       fail_fmt "sqlite: room created with --visibility unlisted should be unlisted";
@@ -987,7 +1032,7 @@ let test_relay_sqlite_join_visibility_and_set () =
       let listed = room_ids (Relay.SqliteRelay.list_rooms t) in
       if not (List.mem "legacy-room" listed) then
         fail_fmt "sqlite: legacy public room should be listed after migration";
-      let (_s, _l) = Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
+      let (_s, _l) = _b264_reg_sql t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
       (match Relay.SqliteRelay.join_room t ~visibility:"private" ~alias:"alice" ~room_id:"new-private" () with
        | `Ok -> ()
        | `Error (err, msg) -> fail_fmt "sqlite: migrated db join failed: %s %s" err msg);
@@ -999,7 +1044,7 @@ let test_relay_sqlite_join_visibility_and_set () =
 let test_relay_sqlite_knock_storage_persists () =
   with_sqlite_relay_and_dir (fun dir t ->
     let (_s, _l) =
-      Relay.SqliteRelay.register t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
+      _b264_reg_sql t ~node_id:"n1" ~session_id:"s1" ~alias:"creator" ()
     in
     let _ =
       Relay.SqliteRelay.join_room t ~visibility:"gated"
@@ -1070,9 +1115,9 @@ let send_with_cross_host_check relay ~from_alias ~to_alias ~content =
    host_acceptable check passes when host_opt=None, so bare alias → normal delivery). *)
 let test_cross_host_bare_alias_works_when_self_host_is_set () =
   let relay = Relay.InMemoryRelay.create ~self_host:(Some "hostA") () in
-  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+  let (_status_a, _lease_a) = _b264_reg_mem relay
     ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+  let (_status_b, _lease_b) = _b264_reg_mem relay
     ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   (* bare alias send — host_opt=None, host_acceptable returns true regardless
      of self_host, so this goes through as a normal local delivery *)
@@ -1094,9 +1139,9 @@ let test_cross_host_bare_alias_works_when_self_host_is_set () =
    and the rejection is written to dead_letter. *)
 let test_cross_host_alias_matching_self_host_accepted () =
   let relay = Relay.InMemoryRelay.create ~self_host:(Some "hostA") () in
-  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+  let (_status_a, _lease_a) = _b264_reg_mem relay
     ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+  let (_status_b, _lease_b) = _b264_reg_mem relay
     ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   (* bob@hostA matches self_host=Some "hostA" — host_acceptable returns true,
      send goes through to bare alias "bob" *)
@@ -1114,9 +1159,9 @@ let test_cross_host_alias_matching_self_host_accepted () =
 
 let test_cross_host_opaque_host_id_route_is_local () =
   let relay = Relay.InMemoryRelay.create ~self_host:(Some "relay.c2c.im") () in
-  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+  let (_status_a, _lease_a) = _b264_reg_mem relay
     ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+  let (_status_b, _lease_b) = _b264_reg_mem relay
     ~node_id:"n2" ~session_id:"s2" ~alias:"bob@3d08761ae3f3" () in
   match send_with_cross_host_check relay
     ~from_alias:"alice" ~to_alias:"bob@3d08761ae3f3" ~content:"hello opaque bob" with
@@ -1135,9 +1180,9 @@ let test_cross_host_opaque_host_id_route_is_local () =
 
 let test_cross_host_alias_unknown_host_rejected () =
   let relay = Relay.InMemoryRelay.create ~self_host:(Some "hostA") () in
-  let (_status_a, _lease_a) = Relay.InMemoryRelay.register relay
+  let (_status_a, _lease_a) = _b264_reg_mem relay
     ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
-  let (_status_b, _lease_b) = Relay.InMemoryRelay.register relay
+  let (_status_b, _lease_b) = _b264_reg_mem relay
     ~node_id:"n2" ~session_id:"s2" ~alias:"bob" () in
   (* bob@hostZ is unknown (hostZ != self_host="hostA") — host_acceptable
      returns false, dead_letter is written, error is returned *)
@@ -1207,10 +1252,10 @@ let assert_exec_prepared_finalizes_on_bind_error () =
 let test_relay_sqlite_persistent_connection_stress () =
   with_sqlite_relay_tempdir (fun t ->
     let (s1, _) =
-      Relay.SqliteRelay.register t ~node_id:"nStrA" ~session_id:"sStrA" ~alias:"zzstressa" ()
+      _b264_reg_sql t ~node_id:"nStrA" ~session_id:"sStrA" ~alias:"zzstressa" ()
     in
     let (s2, _) =
-      Relay.SqliteRelay.register t ~node_id:"nStrB" ~session_id:"sStrB" ~alias:"zzstressb" ()
+      _b264_reg_sql t ~node_id:"nStrB" ~session_id:"sStrB" ~alias:"zzstressb" ()
     in
     Alcotest.(check string) "register a ok" "ok" s1;
     Alcotest.(check string) "register b ok" "ok" s2;
@@ -1287,7 +1332,7 @@ let test_relay_sqlite_mixed_ops_on_shared_connection () =
     for i = 0 to 199 do
       let alias = Printf.sprintf "zzmix%d" i in
       let (st, _) =
-        Relay.SqliteRelay.register t ~node_id:(Printf.sprintf "n%d" i)
+        _b264_reg_sql t ~node_id:(Printf.sprintf "n%d" i)
           ~session_id:(Printf.sprintf "s%d" i) ~alias ()
       in
       Alcotest.(check string) "register ok" "ok" st;
