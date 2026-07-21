@@ -256,3 +256,4 @@ bugs:
     - file: B257-do-an-audit-of-all-the-install.todo
     - file: B258-feature-matrix-delivery-tier-s.todo
     - file: B259-make-relay-reachability-consen.todo
+    - file: B260-publish-code-verified-security.todo

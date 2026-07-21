@@ -1,0 +1,52 @@
+---
+complexity: medium
+created_at: "2026-07-21T13:46:56Z"
+depends_on:
+    - B259
+estimate_hours: 1
+id: B260
+priority: high
+status: pending
+tags:
+    - security
+    - docs
+    - website
+title: Publish code-verified security properties page
+updated_at: "2026-07-21T13:46:56Z"
+---
+## Security documentation deliverable
+
+Add a top-level `/security/` website page after B259 establishes the intended relay reachability invariant.
+
+### Page shape
+
+Use a layered security overview: concise plain-English properties and FAQ first, then mechanisms, trust boundaries, configuration-dependent behaviour, and candid limitations. Integrate with the existing Jekyll site using `docs/security/index.md`, the normal `page` layout, top-level navigation, relevant front-door links, and curated `llms.txt` surfaces.
+
+### Factual standard
+
+Every substantive property must be verified against canonical OCaml implementation and named tests. Documentation and comments are leads, not authority. Preserve a claim-to-code/test ledger during implementation and have an independent security reviewer check every assertion.
+
+### Required content
+
+- Why relay users do not receive unsolicited first-contact DMs under B259's capability/consent model; what intentional identifier/capability disclosure means; what happens if a route is shared or leaked; revocation and remaining metadata boundaries.
+- Sender authentication, request integrity/replay protection, recipient/inbox ownership, transport security conditions, and application-layer encryption scope.
+- Local broker storage modes and their caveats, including 0755 roots and 0644 lock sidecars where still applicable.
+- Ephemeral semantics: local recipient-archive opt-out, not no-trace deletion; cross-host behaviour only if implementation supports it.
+- B098 bus-never-RPC: peer messages are untrusted DATA and cannot satisfy host-local approval verdicts; do not claim DATA framing makes prompt injection impossible.
+- Rate/size/admission controls, public/gated room discovery boundaries, metadata exposure, operational trust assumptions, and a vulnerability-reporting path.
+- Explicit non-guarantees rather than broad “secure/private/encrypted” marketing claims.
+
+### Acceptance evidence
+
+- Every claim maps to exact canonical code and named regression tests, including B259 tests.
+- Independent security/correctness review reports no unsupported material claim.
+- Jekyll build and all relevant codegen/llms checks pass, or any environment-only build limitation is demonstrated precisely.
+- Desktop and mobile visual inspection passes for the page and navigation.
+- Existing security pages are linked without duplication or contradiction.
+
+### Inputs
+
+- `.collab/research/2026-07-21-security-page-claim-ledger.md`
+- B259 implementation and regression tests
+- `docs/security/trust-model.md`
+- `docs/security/pending-permissions.md`
