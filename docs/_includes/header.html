@@ -3,7 +3,7 @@
     <a class="site-title" rel="author" href="{{ "/" | relative_url }}">{{ site.title | escape }}</a>
 
     <nav class="site-nav" aria-label="Primary">
-      <input type="checkbox" id="nav-trigger" class="nav-trigger" />
+      <input type="checkbox" id="nav-trigger" class="nav-trigger" aria-label="Toggle navigation" aria-controls="primary-navigation-menu" />
       <label for="nav-trigger" class="nav-toggle" aria-label="Toggle navigation">
         <span class="menu-icon">
           <svg viewBox="0 0 18 15" width="18px" height="15px">
@@ -12,7 +12,7 @@
         </span>
       </label>
 
-      <div class="trigger">
+      <div id="primary-navigation-menu" class="trigger">
         {%- comment -%} Brand links home, so index.md is skipped here. {%- endcomment -%}
         {%- for path in site.header_pages -%}
           {%- assign my_page = site.pages | where: "path", path | first -%}

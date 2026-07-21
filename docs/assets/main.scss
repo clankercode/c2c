@@ -168,6 +168,18 @@ a:visited { color: var(--c2c-amber-dim); }
 
 @media (max-width: 1240px) {
   .site-nav { position: relative; }
+  .site-nav .nav-trigger {
+    display: block;
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
   .site-nav .nav-toggle {
     display: flex;
     align-items: center;
@@ -181,6 +193,10 @@ a:visited { color: var(--c2c-amber-dim); }
     transition: background 0.15s ease;
   }
   .site-nav .nav-toggle:hover { background: rgba(245,166,35,0.10); }
+  .site-nav .nav-trigger:focus-visible + .nav-toggle {
+    outline: 2px solid var(--c2c-cyan);
+    outline-offset: 3px;
+  }
   .site-nav .trigger {
     display: none;
     position: absolute;
