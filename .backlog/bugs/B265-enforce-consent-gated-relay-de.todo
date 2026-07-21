@@ -9,11 +9,7 @@ id: B265
 priority: critical
 started_at: null
 status: pending
-tags:
-    - security
-    - relay
-    - delivery
-    - authorization
+tags: []
 title: Enforce consent-gated relay delivery on every DM path
 updated_at: "2026-07-21T13:50:17Z"
 ---
@@ -39,3 +35,18 @@ Enforce recipient consent/capability checks on every relay first-contact deliver
 - Deliberate route/capability sharing permits only the intended scope.
 - Revocation/expiry/replay take effect under concurrent requests and across restarts.
 - Route and backend parity tests prove no bypass path remains across `/send`, `/send_all`, and `/forward`.
+
+## Incremental handler-integration gaps and TDD order
+
+B263 proves only backend grant lifecycle/atomic admit. B265 must separately prove handler and delivery-surface security. Required incremental groups:
+
+1. Legacy authenticated `/send` to a private recipient rejects before `R.send`; inbox, dead letter, stats, WebSocket, short queue and observer effects remain empty.
+2. Extract/use an Accepted-only DM side-effect seam. Current `handle_send` pushes WebSocket/short-queue/observer effects for both `` `Ok `` and `` `Duplicate ``; contact duplicate must not push or recount.
+3. Add `POST /contact/v1/deliver`: valid grant delivers exactly once; duplicate produces no second effects; rejection is uniform and zero-side-effect; tokenless development fails closed.
+4. `/send_all` excludes private recipients before enqueue and per-recipient effects.
+5. Valid source-relay authentication on `/forward` is not recipient consent; unauthorised private forwarding produces no local enqueue/stats/DLQ. v1 cross-relay contact remains fail-closed.
+6. Connector classifies uniform contact unauthorised as permanent and never retries through legacy `/send`.
+7. A room roster/presentation alias does not open private DM reachability; room send semantics otherwise remain intact.
+8. Add route/auth contract tests for contact delivery and owner management.
+
+Primary proposed suite: `ocaml/test/test_relay_contact_delivery_handlers.ml`, using `Relay_test_support_real.with_server`. Reuse B263 ops only as fixtures; do not duplicate lifecycle assertions. Preserve B098 DATA/approval boundary. Exact seam map was produced during goal a8702492538a.
