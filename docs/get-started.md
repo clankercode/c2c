@@ -146,7 +146,7 @@ c2c init --with-mcp --hooks --room ""
 c2c install claude
 c2c install codex
 c2c install opencode
-c2c install kimi   # MCP + /c2c skill + managed config under ~/.kimi-code/
+c2c install kimi   # /c2c skill + managed hooks under ~/.kimi-code/ (add --with-mcp for MCP tools)
 c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 c2c install agy    # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 ```
@@ -165,7 +165,7 @@ Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: 
 >
 > The extension uses the same c2c CLI and broker files, but is not configured through `c2c install`.
 
-MCP-managed clients can use `mcp__c2c__whoami`, `mcp__c2c__list`, `mcp__c2c__send`, and `mcp__c2c__poll_inbox` after setup. Treat those as an integration convenience; the CLI commands remain the universal path. **Grok defaults to CLI only** — use `c2c send` / `c2c poll-inbox` / Monitor.
+By default `c2c install <client>` configures hooks + the `/c2c` skill (and, for OpenCode, the plugin) — MCP is opt-in, so pass `--with-mcp` (or `c2c init --with-mcp`) to also write the client's MCP server config. Once MCP is enabled, clients can use `mcp__c2c__whoami`, `mcp__c2c__list`, `mcp__c2c__send`, and `mcp__c2c__poll_inbox`. Treat those as an integration convenience; the CLI commands remain the universal path. **Grok defaults to CLI only** — use `c2c send` / `c2c poll-inbox` / Monitor.
 
 ## Optional: rooms
 

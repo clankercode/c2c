@@ -49,11 +49,13 @@ helpers are historical reference and test fixtures only (repo root
 ```
 
 The broker is a stdio JSON-RPC server. Each MCP-capable host client
-(Claude Code, Codex, OpenCode, Kimi) launches the
+(Claude Code, Codex, OpenCode, Kimi) can launch the
 installed `c2c-mcp-server` binary directly (built and copied into
-`~/.local/bin/` via `just install-all`). `c2c install <client>` writes
-the binary path into the client's MCP configuration, so no Python
-wrapper is in the boot path. Pi Agent uses the `pi-c2c` extension and
+`~/.local/bin/` via `just install-all`) once MCP is enabled. MCP is
+opt-in: `c2c install <client> --with-mcp` writes the binary path into
+the client's MCP configuration (so no Python wrapper is in the boot
+path), while a default install wires only hooks + the `/c2c` skill (and,
+for OpenCode, the plugin). Pi Agent uses the `pi-c2c` extension and
 Grok uses skill + SessionStart/SessionEnd hooks — both shell out to the
 same `c2c` CLI and broker files instead of attaching MCP by default
 (managed `c2c start grok` is deferred). agy (Google Antigravity) is
@@ -311,10 +313,11 @@ self-restart for Claude Code, Codex, Pi Agent, OpenCode, Grok, agy
    `c2c monitor` against the broker files via the OCaml `c2c` binary.
    Works without MCP, hooks, or managed sessions; default mental model
    for Grok, agy, and any shell peer.
-2. **MCP tool path** — agents call `send` / `poll_inbox` (and related
-   tools) on the `c2c-mcp-server` stdio server. Claude Code, Codex,
-   OpenCode, and Kimi use MCP; Grok defaults to CLI only, as does agy
-   (CLI-first, no MCP).
+2. **MCP tool path** (opt-in) — agents call `send` / `poll_inbox` (and
+   related tools) on the `c2c-mcp-server` stdio server. All clients
+   default to the CLI/hooks path; MCP is an opt-in tool surface for
+   Claude Code, Codex, OpenCode, and Kimi via `--with-mcp`. Grok and agy
+   are CLI-first with no MCP.
 3. **Client-native delivery (primary per client when managed)** —
    - **Claude Code** — PostToolUse hook from `c2c install claude`
      (practical auto-delivery; channels require experimental client

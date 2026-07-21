@@ -454,11 +454,12 @@ stable one is generated otherwise). A plain `kimi` session still registers
 via the SessionStart hook and can send, but receives nothing automatically —
 its fallback is a Monitor on `c2c monitor` or explicit `c2c poll-inbox`.
 
-`c2c install kimi` writes `~/.kimi-code/mcp.json`, appends managed blocks
+`c2c install kimi` by default appends managed blocks
 (including the SessionStart hook `c2c hook kimi`) to `~/.kimi-code/config.toml`,
 writes the `/c2c` skill to `~/.kimi-code/skills/c2c/SKILL.md`, and installs
-`~/.local/bin/c2c-kimi-approval-hook.sh`. Kimi Code state lives under
-`~/.kimi-code/` (the legacy `~/.kimi/` tree is not used).
+`~/.local/bin/c2c-kimi-approval-hook.sh` — no MCP. Pass `--with-mcp` to also
+write `~/.kimi-code/mcp.json` with the `c2c` stdio MCP server entry. Kimi Code
+state lives under `~/.kimi-code/` (the legacy `~/.kimi/` tree is not used).
 
 Managed `c2c start kimi -n <name>` launches Kimi Code without `--session` —
 session ids are `session_<uuid>` minted by Kimi Code itself (Kimi Code 0.23+

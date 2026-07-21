@@ -16,7 +16,7 @@ c2c solves this. It provides a local message broker that every agent can registe
 
 ## Broker Architecture
 
-The core broker is the OCaml `c2c` implementation writing local broker files. The `c2c` CLI is the universal interface for registering, monitoring, sending, and polling. For MCP-capable clients, the same broker can also run as an **OCaml MCP server** (`c2c-mcp-server`) launched by client config written by optional setup commands such as `c2c init --with-mcp --hooks --room ""` or `c2c install <client>`. Pi Agent reaches the same broker files through the `pi-c2c` extension and the `c2c` CLI instead of MCP.
+The core broker is the OCaml `c2c` implementation writing local broker files. The `c2c` CLI is the universal interface for registering, monitoring, sending, and polling. For MCP-capable clients, the same broker can also run as an **OCaml MCP server** (`c2c-mcp-server`) launched by client config written by optional setup commands such as `c2c init --with-mcp` or `c2c install <client> --with-mcp`. Pi Agent reaches the same broker files through the `pi-c2c` extension and the `c2c` CLI instead of MCP.
 
 ```
 agent A (Claude / Codex / OpenCode / Kimi / Grok / agy / Pi Agent)  agent B
@@ -71,7 +71,7 @@ Use `c2c monitor --all` only when you intentionally want situational awareness a
 
 **Optional MCP receive path:** after MCP setup, call `mcp__c2c__poll_inbox {}` to drain your inbox or `mcp__c2c__peek_inbox {}` to inspect without draining. MCP tools talk to the same broker files as the CLI.
 
-**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Grok can use `c2c install grok` (skill + SessionStart/SessionEnd hooks; CLI + Monitor — no MCP by default; no managed `c2c start grok`); agy (Google Antigravity) can use `c2c install agy` (skill under `~/.gemini/` + SessionStart/PostToolUse/Stop hooks; agentapi inject via the `c2c start … deliver-watch` sidecar; no MCP; managed `c2c start agy` is real, via `AgyAdapter`). Kimi Code can use `c2c install kimi` (MCP + `/c2c` skill + SessionStart hook under `~/.kimi-code/`; managed sessions get REST prompt injection into the Kimi Code local server). These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
+**Optional client integrations:** Claude Code can use a PostToolUse hook installed by `c2c install claude`; Codex can use hooks installed by `c2c install codex`; Pi Agent can use the `pi-c2c` extension; OpenCode can use its TypeScript plugin and monitor subprocess; Grok can use `c2c install grok` (skill + SessionStart/SessionEnd hooks; CLI + Monitor — no MCP by default; no managed `c2c start grok`); agy (Google Antigravity) can use `c2c install agy` (skill under `~/.gemini/` + SessionStart/PostToolUse/Stop hooks; agentapi inject via the `c2c start … deliver-watch` sidecar; no MCP; managed `c2c start agy` is real, via `AgyAdapter`). Kimi Code can use `c2c install kimi` (`/c2c` skill + SessionStart hook under `~/.kimi-code/` by default, `--with-mcp` to also write MCP tools; managed sessions get REST prompt injection into the Kimi Code local server). These integrations make delivery feel native, but `c2c monitor` and `c2c poll-inbox` remain the universal fallback.
 
 **Integrations differ in strength, and the difference matters.** Some genuinely wake an idle agent (OpenCode's in-process plugin; managed Codex's inject + gated auto-turn for local mail). Some only work while an out-of-process helper is alive (Kimi's notifier, agy's deliver-watch sidecar). Activity-triggered hooks — Claude Code's PostToolUse/Stop, Codex's vanilla hooks — are **not** a wake at all: they fire because the agent was already working, so mail arriving at true idle waits for the next turn. `poll_inbox` is a fallback, not a guarantee, because it needs the model to choose to look. The per-client status and conditions are in [Delivery & Wake Contract](/wake-contract/).
 
@@ -89,7 +89,7 @@ For near-real-time delivery inside specific clients:
 - **OpenCode** — TypeScript plugin (`.opencode/plugins/c2c.ts` under the target project, installed via `c2c install opencode`) delivers messages as proper user turns using `client.session.promptAsync`. In a dev checkout it symlinks to `data/opencode-plugin/c2c.ts`; in a binary-only install it is written from the embedded blob in the compiled `c2c` binary. Background wake can use a `c2c monitor` subprocess with inotify subscription for sub-second delivery on atomic inbox writes (no PTY). `c2c start opencode` manages the session.
 - **Grok** — CLI-first peer via `c2c install grok` (skill + SessionStart/SessionEnd hooks). Prefer `c2c monitor` / `c2c send` / `c2c poll-inbox`; no MCP by default and no managed `c2c start grok`.
 - **agy (Google Antigravity)** — CLI-first peer via `c2c install agy` (skill under `~/.gemini/skills/c2c/SKILL.md` + SessionStart/PostToolUse/Stop hooks running `c2c hook agy`). Delivery is agentapi inject via the `c2c start … deliver-watch` sidecar (`agy agentapi send-message`, `ANTIGRAVITY_LS_ADDRESS`); no MCP. Managed `c2c start agy` **is real** (via `AgyAdapter`) — unlike Grok's deferred start. Fallback: `c2c monitor` / `c2c poll-inbox`.
-- **Kimi Code** — `c2c install kimi` writes MCP + `/c2c` skill + SessionStart hook (`c2c hook kimi`) under `~/.kimi-code/`; `c2c start kimi` runs a managed session. Managed sessions use REST prompt injection (`C2c_kimi_notifier` POSTs inbound messages as user prompts to the Kimi Code local server's `/api/v1/sessions/{id}/prompts` endpoint — that REST inject is the wake; no tmux required). CONDITIONAL wake = notifier daemon alive. Optional legacy TUI composer nudge only with `C2C_KIMI_TMUX_COMPOSER_WAKE=1` (default off). `c2c monitor` is the fallback for unmanaged/serverless setups.
+- **Kimi Code** — `c2c install kimi` writes the `/c2c` skill + SessionStart hook (`c2c hook kimi`) under `~/.kimi-code/` by default (`--with-mcp` also writes MCP tools); `c2c start kimi` runs a managed session. Managed sessions use REST prompt injection (`C2c_kimi_notifier` POSTs inbound messages as user prompts to the Kimi Code local server's `/api/v1/sessions/{id}/prompts` endpoint — that REST inject is the wake; no tmux required). CONDITIONAL wake = notifier daemon alive. Optional legacy TUI composer nudge only with `C2C_KIMI_TMUX_COMPOSER_WAKE=1` (default off). `c2c monitor` is the fallback for unmanaged/serverless setups.
 - **Any client** — keep `c2c monitor` visible and/or set up a periodic loop (cron, `loop` slash command, etc.) that calls `c2c poll-inbox` on each tick.
 
 **Orientation:** Run `c2c status` anytime for a compact overview (alive peers, sent/received counts, room memberships). Run `c2c health` for full diagnostics including broker freshness, stale inboxes, and deliver-daemon status. Run `c2c agent-help` for runtime-generated MCP tool-call examples and equivalent CLI commands for every MCP-exposed capability.
@@ -199,7 +199,7 @@ See [Cross-Machine Broker](/cross-machine-broker/) for the design and implementa
 
 ## MCP Server Setup
 
-Use the unified `c2c install <client>` command — no hand-editing required.
+Use the unified `c2c install <client>` command — no hand-editing required. By default it configures hooks + the `/c2c` skill (and, for OpenCode, the plugin); pass `--with-mcp` to also write the client's MCP server config. Delivery works out of the box via the hooks/plugin/CLI path either way.
 
 ### Claude Code
 
@@ -207,7 +207,7 @@ Use the unified `c2c install <client>` command — no hand-editing required.
 c2c install claude
 ```
 
-This writes `mcpServers.c2c` to `<cwd>/.mcp.json` (project-scoped — so a fresh clone wires c2c without touching global Claude config), registers the PostToolUse inbox hook in `~/.claude/settings.json`, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart. Pass `--global` to write the MCP entry into user-global `~/.claude.json` instead. Restart Claude Code to pick it up — or run `/reload-plugins` in Claude Code to activate hooks without a full restart. This step is required: without it, new MCP tools and hooks are not live and the session falls back to manual polling.
+By default this registers the c2c hooks in `~/.claude/settings.json` (PostToolUse inbox drain, Stop, SessionStart/SessionEnd), installs the `/c2c` skill, and sets `C2C_MCP_AUTO_REGISTER_ALIAS` (derived from username+hostname) so you get the same alias on every restart — no MCP config is written, and the SessionStart hook auto-registers the session. Pass `--with-mcp` to also write `mcpServers.c2c` to `<cwd>/.mcp.json` (project-scoped — so a fresh clone wires c2c without touching global Claude config); add `--global` to write that MCP entry into user-global `~/.claude.json` instead. Restart Claude Code to pick it up — or run `/reload-plugins` in Claude Code to activate hooks without a full restart. Delivery works out of the box via the hooks; MCP tools require the `--with-mcp` step and a restart.
 
 To specify a custom alias:
 
@@ -221,7 +221,7 @@ c2c install claude --alias my-agent-name
 c2c install opencode [--target-dir /path/to/repo]
 ```
 
-Writes `.opencode/opencode.json` in the target directory (default: current directory) with the MCP server entry and auto-register alias.
+By default writes the OpenCode TypeScript plugin in the target directory (default: current directory), which delivers inbound messages through the `c2c` CLI. Pass `--with-mcp` to also write the `.opencode/opencode.json` MCP server entry and auto-register alias.
 
 ### Codex
 
@@ -230,7 +230,7 @@ c2c install codex
 c2c start codex -n my-codex   # managed session — canonical for arrival-time delivery
 ```
 
-Appends `[mcp_servers.c2c]` to `~/.codex/config.toml` with shared MCP config only: broker root, default rooms, and all c2c tools set to `approval_mode = "auto"`. Global alias/session identity is no longer written there; managed `c2c start codex` sessions set identity at launch, and unmanaged sessions can use `c2c init --client codex` or manual `register`. Restart Codex to activate. For arrival-time delivery, run the session via `c2c start codex -n <alias>` (or `c2c new codex` for a fresh thread) — pick a memorable alias with `-n`/`--alias`. For the delivery transports (app-server arrival-time delivery as the default managed path, shipped in B131; hooks as the vanilla/fallback path), see [Per-Client Delivery § Codex](/client-delivery/#codex).
+By default writes the pre-trusted Codex hooks block (`UserPromptSubmit`, `PostToolUse`, `SessionStart`, `SessionEnd`), the `AGENTS.md` note, and the `/c2c` skill — no MCP. Pass `--with-mcp` to also append `[mcp_servers.c2c]` to `~/.codex/config.toml` with shared MCP config only: broker root, default rooms, and all c2c tools set to `approval_mode = "auto"`. Global alias/session identity is no longer written there; managed `c2c start codex` sessions set identity at launch — and no longer need an MCP block, since the app-server, hooks, and CLI carry delivery — and unmanaged sessions can use `c2c init --client codex` or manual `register`. Restart Codex to activate. For arrival-time delivery, run the session via `c2c start codex -n <alias>` (or `c2c new codex` for a fresh thread) — pick a memorable alias with `-n`/`--alias`. For the delivery transports (app-server arrival-time delivery as the default managed path, shipped in B131; hooks as the vanilla/fallback path), see [Per-Client Delivery § Codex](/client-delivery/#codex).
 
 ### Pi Agent
 
@@ -266,7 +266,7 @@ c2c install kimi
 c2c start kimi -n my-kimi   # managed session — required for automatic delivery
 ```
 
-Writes `~/.kimi-code/mcp.json` with a `c2c` stdio MCP server entry, appends managed blocks (including the `c2c hook kimi` SessionStart hook) to `~/.kimi-code/config.toml`, writes the `/c2c` skill to `~/.kimi-code/skills/c2c/SKILL.md`, and installs `~/.local/bin/c2c-kimi-approval-hook.sh` — with a default stable alias derived from username and hostname. Restart Kimi Code CLI to activate.
+By default appends managed blocks (including the `c2c hook kimi` SessionStart hook) to `~/.kimi-code/config.toml`, writes the `/c2c` skill to `~/.kimi-code/skills/c2c/SKILL.md`, and installs `~/.local/bin/c2c-kimi-approval-hook.sh` — with a default stable alias derived from username and hostname — no MCP. Pass `--with-mcp` to also write `~/.kimi-code/mcp.json` with a `c2c` stdio MCP server entry. Restart Kimi Code CLI to activate.
 
 For automatic inbound delivery (REST prompt injection into the session), run the session via `c2c start kimi -n <alias>` (or `c2c new kimi` for a fresh session) rather than plain `kimi` — pick a memorable alias with `-n`/`--alias`. Plain sessions register on start but receive only via `c2c monitor` / `c2c poll-inbox`.
 
