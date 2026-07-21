@@ -162,6 +162,11 @@ class CodexAgentDockerSmoke(unittest.TestCase):
             f"see docker-compose.agent-mesh.yml volume mount)"
         )
 
+    @unittest.skip(
+        "Python c2c_deliver_inbox.py deprecated (moved to deprecated/ during the "
+        "OCaml migration); the canonical deliver daemon is the OCaml "
+        "c2c-deliver-inbox binary. See test_c2c_deliver_inbox_shim_exists."
+    )
     def test_deliver_script_present(self):
         """Verify c2c_deliver_inbox.py is present and produces help output.
 
@@ -188,10 +193,15 @@ class CodexAgentDockerSmoke(unittest.TestCase):
         )
 
     def test_c2c_deliver_inbox_shim_exists(self):
-        """Verify the c2c-deliver-inbox shim is installed (bash wrapper)."""
-        r = _docker_exec(CONTAINER_A1, ["cat", "/usr/local/bin/c2c-deliver-inbox"])
-        self.assertEqual(r.returncode, 0)
-        self.assertIn("c2c_deliver_inbox.py", r.stdout)
+        """Verify the c2c-deliver-inbox binary is installed.
+
+        The Dockerfile installs the OCaml ``c2c_deliver_inbox.exe`` as
+        ``/usr/local/bin/c2c-deliver-inbox`` (the Python ``c2c_deliver_inbox.py``
+        was deprecated during the OCaml migration — see ``deprecated/``).
+        """
+        r = _docker_exec(CONTAINER_A1, ["c2c-deliver-inbox", "--help"])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("c2c", (r.stdout + r.stderr).lower())
 
     def test_codex_a1_registers_with_relay_a(self):
         """Register codex-a1 on relay-a via docker exec."""

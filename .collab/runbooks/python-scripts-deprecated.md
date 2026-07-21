@@ -11,6 +11,18 @@ isn't published to the public `https://c2c.im/` site.
 `C2C_ALLOW_PYTHON_LEGACY=1`. Fresh audit:
 `.collab/research/2026-07-11T17-30-00Z-b123-deprecated-python-user-facing-audit.md`.
 
+**2026-07-21 — whole root Python layer relocated to `deprecated/`.** All 54
+root-level `c2c_*.py` / `claude_*.py` / `relay.py` product-surface modules were
+`git mv`d into `deprecated/` (the OCaml `c2c` binary is canonical for every one
+of them; nothing under `scripts/`, `tools/`, `conftest`, or fixtures imports
+them). The ~48 legacy-testing files that imported them moved alongside into
+`deprecated/tests/` (out of the default `pytest tests/` collection; a
+`deprecated/tests/conftest.py` path-shim keeps their imports resolvable, though
+the few that use live `tests/conftest.py` fixtures need that wired back for a
+green run). `pytest tests/` collects the live OCaml-surface tests only. The
+mappings below still describe each module's OCaml replacement; the paths are now
+`deprecated/<name>` rather than repo root.
+
 When all scripts on this list are removed from `scripts/`, delete this
 runbook.
 

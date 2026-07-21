@@ -536,6 +536,12 @@ def deliver_once(
                 submit_delay=submit_delay,
             ):
                 delivered += 1
+                if auto_reply and "from_alias" in message:
+                    try:
+                        import c2c_send
+                        c2c_send.send_to_alias(message["from_alias"], "Acknowledged.", False)
+                    except Exception as e:
+                        print(f"Auto-reply failed: {e}", file=sys.stderr)
 
     return build_result(
         session_id=session_id,
@@ -567,6 +573,7 @@ def run_loop(
     interval: float,
     max_iterations: int | None,
     watched_pid: int | None,
+    auto_reply: bool = False,
     xml_output_fd: int | None = None,
     xml_output_path: Path | None = None,
     event_fifo: Path | None = None,
@@ -614,6 +621,7 @@ def run_loop(
             suppress_notify=suppress_notify,
             xml_output_fd=xml_output_fd,
             xml_output_path=xml_output_path,
+            auto_reply=auto_reply,
         )
 
         if event_fd >= 0:
@@ -747,6 +755,11 @@ def main(argv: list[str] | None = None) -> int:
         help="peek and render without draining or injecting",
     )
     parser.add_argument(
+        "--auto-reply",
+        action="store_true",
+        help="automatically acknowledge messages",
+    )
+    parser.add_argument(
         "--xml-output-fd",
         type=int,
         default=None,
@@ -829,6 +842,7 @@ def main(argv: list[str] | None = None) -> int:
                 interval=args.interval,
                 max_iterations=args.max_iterations,
                 watched_pid=watched_pid,
+                auto_reply=args.auto_reply,
                 xml_output_fd=args.xml_output_fd,
                 xml_output_path=args.xml_output_path,
                 event_fifo=args.event_fifo,
