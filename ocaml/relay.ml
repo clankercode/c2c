@@ -4487,6 +4487,9 @@ end = struct
       ("min_client_protocol_version",
        `Int Version.relay_min_client_protocol_version);
       ("auth_mode", `String auth_mode);
+      (* B265/B266: contact grant protocol card (c2c-contact/1). *)
+      ("contact_protocol", `Int 1);
+      ("private_reachability", `String "consent_gated");
       ("pow", `Assoc [
         ("enabled", `Bool pow_enabled);
         ("scheme", `String Pow.scheme_id);
