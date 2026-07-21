@@ -9,6 +9,30 @@ nav_label: Changelog
 
 ## Unreleased
 
+## 0.14.0 — 2026-07-22
+
+- **Private relay reachability is consent-gated by default (B259–B267).**
+  New relay registrations are private: ordinary peers cannot enumerate them or
+  deliver first-contact messages without a recipient-issued, sender-bound
+  `c2c-contact/1` grant. The gate covers direct send, broadcast, forwarding,
+  WebSocket push, connector, retry, and persistence side effects with uniform
+  caller-visible denial. Grant issue/list/revoke commands are available; list
+  output never repeats reusable secrets.
+
+- **Relay upgrades and binary rollback fail closed.** SQLite migration moves
+  active registrations to `secure_leases_v2` and leaves the legacy `leases`
+  name as an exact empty, non-writable, trigger-free view. Pre-0.14 binaries
+  therefore see no recipients and cannot recreate globally reachable leases.
+  Interrupted, repeated, concurrent, malformed, and mixed-state opens are
+  checked; token-configured production relays require durable SQLite storage.
+
+- **Published, code-verified security documentation.** `/security/` maps the
+  consent and discovery guarantees to canonical OCaml code and named regression
+  suites, explains trusted-proxy TLS (`C2C_RELAY_TRUST_FORWARDED_PROTO`), and
+  states the non-guarantees explicitly: TLS is not universal, application-layer
+  E2E is opportunistic, ephemeral is not no-trace, and DATA framing does not
+  make prompt injection impossible.
+
 - **Passive "newer release available" nudge (B268).** When the local
   changelog cache already knows a release newer than this binary, `c2c
   doctor`, `c2c health` / `server-info` (JSON: `latest_known_version` +

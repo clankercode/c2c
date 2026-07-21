@@ -71,6 +71,11 @@ they don't regress silently.
 | `coord_fallthrough_fired` | MED | coord-backup escalation | #437 / coord-backup-fallthrough |
 | `nudge_enqueue` | LOW | nudge diagnostic | #335 |
 | `nudge_tick` | LOW | nudge diagnostic | #335 |
+| `agy_drain_after_inject_failed` | HIGH | agy delivery integrity | #66 |
+| `agy_multi_workspace` | LOW | agy workspace routing diagnostic | #69 |
+| `agy_workspace_unresolved` | MED | agy workspace routing diagnostic | #69 |
+| `managed_name_not_alias` | LOW | managed Codex identity diagnostic | #34 |
+| `managed_registration_failed` | HIGH | managed-client delivery failure | #34 / #40 / #69 |
 | `dm_enqueue` | MED | delivery audit | #488 |
 | `json_cap_exceeded` | MED | JSON file-size cap diagnostic | Slice F follow-up |
 | `session_id_differs_from_alias` | MED | session_id≠alias diagnostic | #529 |
@@ -806,6 +811,157 @@ the nudge enqueue path is broken.
 **Cross-link**: #335.
 
 ---
+
+### `agy_drain_after_inject_failed`
+
+**Severity**: HIGH
+
+**Shape**:
+
+```json
+{
+  "event": "agy_drain_after_inject_failed",
+  "ts": <float>,
+  "label": "<drain-source>",
+  "detail": "<exception>"
+}
+```
+
+**Fires when**: agy agentapi injection succeeded but all three attempts to
+remove the delivered mail from the broker inbox raised. The message may be
+injected again at the next turn boundary.
+
+**File**: `ocaml/cli/c2c_agy_deliver.ml` `drain_after_inject`.
+
+**Operational meaning**: delivery reached the agent, but acknowledgement did
+not persist. Inspect the named drain and broker filesystem before retrying;
+repeated entries indicate a duplicate-delivery loop rather than message loss.
+
+**Cross-link**: agy delivery hardening #66.
+
+### `agy_multi_workspace`
+
+**Severity**: LOW
+
+**Shape**:
+
+```json
+{
+  "event": "agy_multi_workspace",
+  "ts": <float>,
+  "client": "agy",
+  "session_id": "<session-id>",
+  "broker_root": "<chosen-broker-root>",
+  "candidates": ["<workspace>", "..."],
+  "chosen": "<workspace-or-null>",
+  "detail": "<selection-rule>"
+}
+```
+
+**Fires when**: an agy hook supplies more than one `workspacePaths` candidate.
+The hook sorts the unordered set and prefers session affinity, otherwise the
+lexicographically first workspace.
+
+**File**: `ocaml/cli/c2c_hook_cmd.ml` agy hook registration.
+
+**Operational meaning**: diagnostic record of which repo broker owns a
+multi-root session. It is not itself a fault; use it to explain why peers in a
+non-chosen workspace cannot see the session.
+
+**Cross-link**: agy workspace routing #69.
+
+### `agy_workspace_unresolved`
+
+**Severity**: MED
+
+**Shape**:
+
+```json
+{
+  "event": "agy_workspace_unresolved",
+  "ts": <float>,
+  "client": "agy",
+  "session_id": "<session-id>",
+  "broker_root": "<resolved-broker-root>",
+  "workspace": "<workspace-or-null>",
+  "detail": "<resolution-reason>"
+}
+```
+
+**Fires when**: an unmanaged agy registration lands in the shared `default`
+broker without an explicit broker override, or changing into the supplied
+workspace failed. A non-repository workspace may legitimately resolve to
+`default`.
+
+**File**: `ocaml/cli/c2c_hook_cmd.ml` agy hook registration.
+
+**Operational meaning**: explains potentially surprising broker placement.
+Treat a failed `chdir` or unexpected repository workspace as actionable; an
+intentional non-repo workspace is informational.
+
+**Cross-link**: agy workspace routing #69.
+
+### `managed_name_not_alias`
+
+**Severity**: LOW
+
+**Shape**:
+
+```json
+{
+  "event": "managed_name_not_alias",
+  "ts": <float>,
+  "client": "codex",
+  "requested_name": "<instance-name>",
+  "alias": "<broker-alias>",
+  "detail": "<selection-explanation>"
+}
+```
+
+**Fires when**: managed Codex starts with an instance name that differs from
+the broker alias selected by an explicit alias flag or legacy role alias.
+
+**File**: `ocaml/c2c_start.ml` `managed_name_not_alias_record`, emitted by
+`ocaml/cli/c2c_managed_cmd.ml`.
+
+**Operational meaning**: peers must send to `alias`; lifecycle commands still
+use `requested_name`. This record makes that split durable after the terminal
+notice scrolls away.
+
+**Cross-link**: managed Codex alias hardening #34.
+
+### `managed_registration_failed`
+
+**Severity**: HIGH
+
+**Shape**:
+
+```json
+{
+  "event": "managed_registration_failed",
+  "ts": <float>,
+  "client": "<codex-app-server|kimi|agy>",
+  "name|instance": "<managed-name>",
+  "session_id": "<codex-session-id, when applicable>",
+  "alias": "<requested-alias>",
+  "reason": "<structured-reason, kimi/agy>",
+  "detail": "<human-readable-failure>"
+}
+```
+
+**Fires when**: a managed Codex app-server, Kimi, or agy launch cannot publish
+its authoritative broker registration. Client-specific optional fields are
+present as shown above.
+
+**File**: `ocaml/c2c_codex_session.ml` and `ocaml/c2c_start.ml` managed launch
+registration paths.
+
+**Operational meaning**: the managed UI may still launch, but peers cannot
+reliably address or deliver to it. Exit the client, resolve the alias/broker
+error, and restart; stderr alone is insufficient because full-screen TUIs
+paint over it.
+
+**Cross-link**: managed identity hardening #34, Kimi #40, agy #69.
 
 ## Out of scope (not broker.log)
 

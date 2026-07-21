@@ -17,6 +17,39 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.14.0 — 2026-07-22
+
+### Private relay reachability now requires recipient consent (B259–B267)
+summary: New relay registrations are private. Ordinary peers cannot list them or deliver a first-contact DM until the recipient issues a sender-bound `c2c-contact/1` grant. The gate covers direct send, broadcast, forwarding, WebSocket push, connector, retry, and persistence side effects. Use the contact lifecycle commands to issue, inspect, or revoke access; list output never repeats the reusable secret.
+setup: c2c relay contact --help
+audience: all
+
+### Relay upgrades and old-binary rollback fail closed
+summary: The first 0.14 SQLite open atomically moves active registrations to `secure_leases_v2` and leaves the old `leases` name as an empty, non-writable view. A pre-0.14 binary therefore sees no recipients and cannot recreate globally reachable registrations. Token-configured production relays now require durable SQLite storage; run doctor after upgrading before claiming consent-gated production reachability.
+setup: c2c doctor --relay
+audience: all
+
+### Code-verified public security guide
+summary: Read `/security/` for the exact properties c2c establishes, their canonical OCaml implementations and regression suites, trusted-proxy TLS configuration, trust boundaries, and explicit non-guarantees. Do not infer mandatory TLS, universal application-layer E2E, no-trace ephemeral delivery, anonymity, or impossible prompt injection.
+setup: c2c changelog
+audience: all
+
+### Passive newer-release nudge (B268)
+summary: When the local cache already knows about a newer c2c release, doctor, health/server-info, SessionStart, and `c2c --version` surface it without synchronous network work on hot paths. Offline and empty-cache operation stays silent.
+audience: all
+
+### MCP install is explicit and managed upgrades are safer
+summary: `c2c install <client>` keeps hooks, identity skills, plugins, and the CLI but writes MCP configuration only with `--with-mcp`; `c2c install all` is binary-only unless `--with-clients`. Managed sessions gain stale-binary relaunch and sidecar restart paths, while clients without idle wake print an explicit monitor/poll recipe instead of silently missing mail.
+audience: all
+
+### Agy, Kimi, Codex, and broker lifecycle hardening
+summary: Antigravity (agy) is a managed peer with agentapi idle wake; managed Kimi registers the correct session and REST notifier; managed Codex uses the requested alias and reports DEAF delivery loops; stale registrations and orphan inboxes can be diagnosed and reclaimed without weakening active sessions.
+audience: autonomous
+
+### `c2c install git-hook` is retired (breaking)
+summary: The inert per-checkout git-hook component is no longer an install or uninstall target. `git-shim` is unchanged. Remove any leftover `.git/hooks/pre-commit` manually if one remains.
+audience: all
+
 ## v0.13.0 — 2026-07-18
 
 ### Kimi is re-enabled with REST prompt-injection delivery (B146 revert)
