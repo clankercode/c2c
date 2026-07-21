@@ -13,7 +13,7 @@ Evidence finding: `.collab/findings/2026-07-20T02-21-09Z-e2e-waking-delivery.md`
 |---|---|---|---|
 | **codex** (managed/app-server) | GUARANTEED local | **PASS** | Inject + gated auto-turn; B098 negatives test-covered |
 | **kimi** (managed) | CONDITIONAL REST | **PASS** (wire) | Full model alias required; TUI not authoritative |
-| **agy** (managed) | CONDITIONAL agentapi | **BLOCKED — not PASS** | register+argv PASS after da3c29d1; agentapi/SessionStart/agy-env blocked (auth + hooks path) |
+| **agy** (managed) | CONDITIONAL agentapi | **FAIL (root-caused → #78)** | auth+agy-env+delivery all OK; agentapi `send-message` never runs a turn (idle never wakes) — likely upstream |
 | Cross-client topology | codex→kimi, agy→codex | **Deferred** | Wait for agy green |
 
 **Plan preconditions met:** `just install-all` / `just bi` and `c2c install agy` ran; harness used dedicated tmux `c2ce2e`.

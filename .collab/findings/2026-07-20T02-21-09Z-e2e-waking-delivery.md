@@ -194,3 +194,45 @@ codex sessions) or use a fresh thread; deferred as not worth mutating global sta
 ### Verdict after fix
 Infrastructure for registration + SessionStart-friendly argv: **PASS**.  
 End-to-end agentapi wake + model `WOKE-*`: **still FAIL / BLOCKED** until hooks fire + agy-env exists (auth + hook discovery).
+
+## agy (managed) — CONDITIONAL agentapi wake: **FAIL (root-caused, likely upstream)** — 2026-07-21
+
+Re-tested live after confirming the earlier "blocked on auth" was WRONG. Evidence chain,
+each step verified, on Antigravity CLI **1.1.5**, model Gemini 3.5 Flash:
+
+1. **Auth works.** `agy -p "..." --model "Gemini 3.5 Flash (Low)"` → clean reply, no auth error.
+2. **Managed launch is clean** (`c2c start agy -n e2e-agy2 --new-session`): single agy proc,
+   registers in the **repo broker** (`e2e-agy2 alive`), agentapi LS up (`127.0.0.1:41339`),
+   deliver-watch running.
+3. **agy-env resolves** (the ec8807b4 fix works): `~/.local/share/c2c/instances/e2e-agy2/agy-env.json`
+   = `{"ls_address":"127.0.0.1:41339","conversation_id":"17129850-…"}`.
+4. **Inbox delivery works**: `c2c send e2e-agy2` (repo broker) → deliver-watch drains it
+   (inbox `[]`, archived). NOTE a routing footgun: a first send resolved the alias to the
+   **cross-repo sessions broker** (`~/.c2c/sessions/broker`) where deliver-watch was NOT
+   watching → silently undelivered. Only an explicit repo-broker send reached the watcher.
+5. **THE WAKE FAILS at the agentapi inject.** Manual, direct:
+   `ANTIGRAVITY_LS_ADDRESS=… agy agentapi send-message --title="c2c inbound" <conv> "<probe>"`
+   returns `{"response":{"sendMessage":{"recipientId":"17129850…","content":"…"}}}`, RC=0 —
+   **but the idle agy TUI runs NO turn** (no nonce, no WOKE, context unchanged). Repeated with a
+   **TUI explicitly bound to that exact conversation** (`agy --conversation 17129850…`): same —
+   API accepts, session never wakes.
+
+**Root cause:** agy 1.1.5 `agentapi send-message` writes to the conversation store but has **no
+deliver-and-run-turn semantic** — it does not push into an attached interactive session nor
+trigger the idle model to act. So c2c's managed wake path (deliver-watch → agentapi send-message)
+cannot wake an idle agy session. Compounded by a fresh-start **conversation divergence**: the
+managed TUI launches as bare `agy` (its own conversation) while c2c injects into a *different*
+agentapi conversation (a tension from da3c29d1 "omit --conversation on fresh start") — but even
+removing that divergence (binding the TUI to the injected conversation) does not produce a wake.
+
+**Verdict: agy live waking delivery does NOT meet the wake bar.** Not auth, not agy-env, not
+connectivity — the agentapi verb c2c uses does not run a turn. This is most likely an **upstream
+agy/agentapi limitation** (analogous to #37 Grok: no local synthetic-turn semantic), or requires a
+different agy mechanism c2c has not yet found. The prior `WOKE-AG-AUTO*` replies were an *active*
+session polling its inbox (activity-triggered), which the wake bar explicitly does NOT count.
+
+**Actionable next steps (for the issue):** (a) determine whether any agy agentapi verb triggers a
+turn on an existing conversation (vs `new-conversation`, which runs its prompt but creates a NEW
+conversation); (b) if none, mark agy managed wake CONDITIONAL→NONE in docs until upstream adds one,
+and stop deliver-watch from draining-without-waking (silent loss); (c) fix the fresh-start
+conversation divergence and the sessions-vs-repo broker routing footgun regardless.
