@@ -57,3 +57,10 @@ Reuse existing auth/list/room/landing contract suites; do not treat the accident
 
 - Audit every key lookup, not only `/pubkey`: `enc_pubkey_of`, identity/signature metadata helpers, and any handler wrapper must respect private visibility or remain owner/admin-only. Add oracle tests for each exposed endpoint/caller.
 - InMemory visibility is volatile; production security claims must be tied to migration-enabled durable state/SQLite construction, with tokenless/test backends explicitly excluded from production guarantees.
+
+## Final verified evidence
+
+- Clean local-master branch merged as `75aa28ee`; contaminated stale-origin history was not merged.
+- Discovery suite 24/24, contact-grant regression 36/36, relay/B219 suite 54/54.
+- Added dual-backend `/send_all` regression: private aliases absent from both delivered and skipped results; fixes InMemory enumeration parity gap.
+- Covers private-by-default durable visibility, ordinary/admin list views, pubkey/key metadata filtering, uniform private send rejection/no content DLQ, room policy preservation, health/stats non-disclosure, alias normalization.
