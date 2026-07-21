@@ -82,10 +82,10 @@ module Make (B : BACKEND) = struct
     | Ok () -> ()
     | Error e -> Alcotest.failf "set vis: %s" e
 
-  let issue t ~recipient_pk ~delivery_alias ~sender_pk ~expires_at =
+  let issue t ~recipient_pk ~delivery_alias ~sender_pk ~expires_at ?now () =
     match
       B.issue_contact_grant t ~recipient_identity_pk:recipient_pk
-        ~delivery_alias ~sender_identity_pk:sender_pk ~expires_at ()
+        ~delivery_alias ~sender_identity_pk:sender_pk ~expires_at ?now ()
     with
     | Ok r -> r
     | Error e -> Alcotest.failf "issue: %s" e
@@ -151,7 +151,7 @@ module Make (B : BACKEND) = struct
       let now = Unix.gettimeofday () in
       let issued =
         issue t ~recipient_pk:pk_r ~delivery_alias:"zzrecv" ~sender_pk:pk_s
-          ~expires_at:(now +. 3600.)
+          ~expires_at:(now +. 3600.) ()
       in
       (match
          B.admit_contact_delivery t ~verified_sender_alias:"zzsend"
@@ -208,6 +208,226 @@ module Make (B : BACKEND) = struct
       in
       check bool "no private DM content in inbox (room join system msgs ok)" false has_dm)
 
+  let test_admit_wrong_sender_rejected () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_r = gen_pk () in
+      let pk_s = gen_pk () in
+      let pk_evil = gen_pk () in
+      let n_r, s_r = reg t ~alias:"zzwr" ~pk:pk_r in
+      let _ = reg t ~alias:"zzws" ~pk:pk_s in
+      let _ = reg t ~alias:"zzwe" ~pk:pk_evil in
+      set_vis t ~alias:"zzwr" Private;
+      let now = Unix.gettimeofday () in
+      let issued =
+        issue t ~recipient_pk:pk_r ~delivery_alias:"zzwr" ~sender_pk:pk_s
+          ~expires_at:(now +. 3600.) ()
+      in
+      (match
+         B.admit_contact_delivery t ~verified_sender_alias:"zzwe"
+           ~verified_sender_identity_pk:pk_evil ~grant_secret:issued.grant_secret
+           ~message_id:"mid-evil" ~content:"x" ()
+       with
+       | `Rejected -> ()
+       | `Accepted _ | `Duplicate _ -> Alcotest.fail "wrong sender must Rejected");
+      check int "no inbox" 0
+        (List.length (B.poll_inbox t ~node_id:n_r ~session_id:s_r)))
+
+  let test_admit_expired_rejected () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_r = gen_pk () in
+      let pk_s = gen_pk () in
+      let n_r, s_r = reg t ~alias:"zzexr" ~pk:pk_r in
+      let _ = reg t ~alias:"zzexs" ~pk:pk_s in
+      set_vis t ~alias:"zzexr" Private;
+      (* Issue with future expiry, then admit after expiry (issue rejects
+         expires_at <= now). *)
+      let now = 1_000_000. in
+      let issued =
+        issue t ~recipient_pk:pk_r ~delivery_alias:"zzexr" ~sender_pk:pk_s
+          ~expires_at:(now +. 10.) ~now ()
+      in
+      (match
+         B.admit_contact_delivery t ~verified_sender_alias:"zzexs"
+           ~verified_sender_identity_pk:pk_s ~grant_secret:issued.grant_secret
+           ~message_id:"mid-exp" ~content:"x" ~now:(now +. 11.) ()
+       with
+       | `Rejected -> ()
+       | _ -> Alcotest.fail "expired must Rejected");
+      check int "no inbox" 0
+        (List.length (B.poll_inbox t ~node_id:n_r ~session_id:s_r)))
+
+  let test_admit_revoked_rejected () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_r = gen_pk () in
+      let pk_s = gen_pk () in
+      let n_r, s_r = reg t ~alias:"zzrevr" ~pk:pk_r in
+      let _ = reg t ~alias:"zzrevs" ~pk:pk_s in
+      set_vis t ~alias:"zzrevr" Private;
+      let now = Unix.gettimeofday () in
+      let issued =
+        issue t ~recipient_pk:pk_r ~delivery_alias:"zzrevr" ~sender_pk:pk_s
+          ~expires_at:(now +. 3600.) ()
+      in
+      (match
+         B.revoke_contact_grant t ~recipient_identity_pk:pk_r
+           ~grant_id:issued.grant_id ~now ()
+       with
+       | Ok () -> ()
+       | Error e -> Alcotest.failf "revoke: %s" e);
+      (match
+         B.admit_contact_delivery t ~verified_sender_alias:"zzrevs"
+           ~verified_sender_identity_pk:pk_s ~grant_secret:issued.grant_secret
+           ~message_id:"mid-rev" ~content:"x" ()
+       with
+       | `Rejected -> ()
+       | _ -> Alcotest.fail "revoked must Rejected");
+      check int "no inbox" 0
+        (List.length (B.poll_inbox t ~node_id:n_r ~session_id:s_r)))
+
+  let test_admit_malformed_secret_rejected () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_r = gen_pk () in
+      let pk_s = gen_pk () in
+      let n_r, s_r = reg t ~alias:"zzmalr" ~pk:pk_r in
+      let _ = reg t ~alias:"zzmals" ~pk:pk_s in
+      set_vis t ~alias:"zzmalr" Private;
+      (match
+         B.admit_contact_delivery t ~verified_sender_alias:"zzmals"
+           ~verified_sender_identity_pk:pk_s ~grant_secret:"short"
+           ~message_id:"mid-mal" ~content:"x" ()
+       with
+       | `Rejected -> ()
+       | _ -> Alcotest.fail "malformed secret must Rejected");
+      check int "no inbox" 0
+        (List.length (B.poll_inbox t ~node_id:n_r ~session_id:s_r)))
+
+  (* Leaked grant secret alone is insufficient without bound sender key. *)
+  let test_leaked_secret_wrong_sender_rejected () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_r = gen_pk () in
+      let pk_s = gen_pk () in
+      let pk_leak = gen_pk () in
+      let n_r, s_r = reg t ~alias:"zzleakr" ~pk:pk_r in
+      let _ = reg t ~alias:"zzleaks" ~pk:pk_s in
+      let _ = reg t ~alias:"zzleakx" ~pk:pk_leak in
+      set_vis t ~alias:"zzleakr" Private;
+      let now = Unix.gettimeofday () in
+      let issued =
+        issue t ~recipient_pk:pk_r ~delivery_alias:"zzleakr" ~sender_pk:pk_s
+          ~expires_at:(now +. 3600.) ()
+      in
+      (* Attacker holds the secret but not the intended Ed25519 key. *)
+      (match
+         B.admit_contact_delivery t ~verified_sender_alias:"zzleakx"
+           ~verified_sender_identity_pk:pk_leak
+           ~grant_secret:issued.grant_secret ~message_id:"mid-leak"
+           ~content:"stolen" ()
+       with
+       | `Rejected -> ()
+       | _ -> Alcotest.fail "leaked secret + wrong signer must Rejected");
+      check int "no inbox" 0
+        (List.length (B.poll_inbox t ~node_id:n_r ~session_id:s_r)))
+
+  (* Wrong recipient: grant bound to recipient_identity_fp of pk_r; after unbind +
+     re-register under a different identity_pk the admit path must reject. *)
+  let test_wrong_recipient_identity_rejected () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_r = gen_pk () in
+      let pk_s = gen_pk () in
+      let pk_hijack = gen_pk () in
+      let _n_r, _s_r = reg t ~alias:"zzwrr" ~pk:pk_r in
+      let _ = reg t ~alias:"zzwrs" ~pk:pk_s in
+      set_vis t ~alias:"zzwrr" Private;
+      let now = Unix.gettimeofday () in
+      let issued =
+        issue t ~recipient_pk:pk_r ~delivery_alias:"zzwrr" ~sender_pk:pk_s
+          ~expires_at:(now +. 3600.) ()
+      in
+      (* Clear sticky identity binding so a different pk can take the alias. *)
+      let _ = B.unbind_alias t ~alias:"zzwrr" in
+      let st, _ =
+        B.register t ~node_id:"n-hij" ~session_id:"s-hij" ~alias:"zzwrr"
+          ~identity_pk:pk_hijack ()
+      in
+      check string "re-register after unbind" "ok" st;
+      set_vis t ~alias:"zzwrr" Private;
+      (match
+         B.admit_contact_delivery t ~verified_sender_alias:"zzwrs"
+           ~verified_sender_identity_pk:pk_s ~grant_secret:issued.grant_secret
+           ~message_id:"mid-wr" ~content:"x" ()
+       with
+       | `Rejected -> ()
+       | _ -> Alcotest.fail "wrong recipient identity must Rejected");
+      check int "no hijack inbox" 0
+        (List.length
+           (B.poll_inbox t ~node_id:"n-hij" ~session_id:"s-hij")))
+
+  (* Replay: same message_id at most one delivery (duplicate). *)
+  let test_replay_message_id_at_most_once () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_r = gen_pk () in
+      let pk_s = gen_pk () in
+      let n_r, s_r = reg t ~alias:"zzrepr" ~pk:pk_r in
+      let _ = reg t ~alias:"zzreps" ~pk:pk_s in
+      set_vis t ~alias:"zzrepr" Private;
+      let now = Unix.gettimeofday () in
+      let issued =
+        issue t ~recipient_pk:pk_r ~delivery_alias:"zzrepr" ~sender_pk:pk_s
+          ~expires_at:(now +. 3600.) ()
+      in
+      let admit mid =
+        B.admit_contact_delivery t ~verified_sender_alias:"zzreps"
+          ~verified_sender_identity_pk:pk_s ~grant_secret:issued.grant_secret
+          ~message_id:mid ~content:"once" ()
+      in
+      (match admit "mid-replay" with
+       | `Accepted _ -> ()
+       | _ -> Alcotest.fail "first admit must Accept");
+      (match admit "mid-replay" with
+       | `Duplicate _ -> ()
+       | `Accepted _ -> Alcotest.fail "replay must not Accept again"
+       | `Rejected -> Alcotest.fail "replay should Duplicate not Reject");
+      check int "exactly one inbox row" 1
+        (List.length (B.poll_inbox t ~node_id:n_r ~session_id:s_r)))
+
+  (* Cross-host style: bare R.send to private still fails closed (forward uses R.send). *)
+  let test_forward_path_private_no_side_effects () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let pk_from = gen_pk () in
+      let pk_to = gen_pk () in
+      let _ = reg t ~alias:"zzfwdfrom" ~pk:pk_from in
+      let n_to, s_to = reg t ~alias:"zzfwdto" ~pk:pk_to in
+      set_vis t ~alias:"zzfwdto" Private;
+      (match
+         B.send t ~from_alias:"peer@other-relay" ~to_alias:"zzfwdto"
+           ~content:"forwarded-body" ~message_id:(Some "m-fwd")
+           ~pow_difficulty:(-1)
+       with
+       | `Ok _ | `Duplicate _ -> Alcotest.fail "forwarded private send must fail"
+       | `Error _ -> ());
+      check int "no inbox" 0
+        (List.length (B.poll_inbox t ~node_id:n_to ~session_id:s_to));
+      let dl = B.dead_letter t in
+      let content_dlq =
+        List.exists
+          (function
+            | `Assoc f ->
+              (match List.assoc_opt "content" f with
+               | Some (`String "forwarded-body") -> true
+               | _ -> false)
+            | _ -> false)
+          dl
+      in
+      check bool "no content DLQ for forward-to-private" false content_dlq)
+
   let cases =
     [ ("send private: no inbox, no content DLQ", `Quick,
        test_send_private_no_inbox_no_content_dlq);
@@ -216,6 +436,19 @@ module Make (B : BACKEND) = struct
        test_admit_happy_and_duplicate);
       ("room co-membership does not open private DM", `Quick,
        test_room_does_not_open_private_dm);
+      ("admit wrong sender rejected", `Quick, test_admit_wrong_sender_rejected);
+      ("admit expired rejected", `Quick, test_admit_expired_rejected);
+      ("admit revoked rejected", `Quick, test_admit_revoked_rejected);
+      ("admit malformed secret rejected", `Quick,
+       test_admit_malformed_secret_rejected);
+      ("leaked secret + wrong sender rejected", `Quick,
+       test_leaked_secret_wrong_sender_rejected);
+      ("wrong recipient identity rejected", `Quick,
+       test_wrong_recipient_identity_rejected);
+      ("replay message_id at most once", `Quick,
+       test_replay_message_id_at_most_once);
+      ("forward-path private no side effects", `Quick,
+       test_forward_path_private_no_side_effects);
     ]
 end
 
