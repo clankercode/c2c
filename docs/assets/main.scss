@@ -359,6 +359,80 @@ a:visited { color: var(--c2c-amber-dim); }
 #htab-agy:checked ~ .hero-tab-panels .panel-agy,
 #htab-pi:checked ~ .hero-tab-panels .panel-pi { display: flex; }
 
+.hero-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.hero-step-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  /* No opacity here: the alias tooltip is a descendant, and a translucent
+     parent would make the popup see-through. Dim via color instead. */
+  color: rgba(245,166,35,0.85);
+}
+
+.hero-cmd-opt { color: var(--c2c-text-muted); }
+
+.hero-help {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  border: 1px solid var(--c2c-border-strong);
+  border-radius: 50%;
+  font-size: 0.62rem;
+  color: var(--c2c-cyan);
+  background: var(--c2c-void);
+  cursor: help;
+  letter-spacing: 0;
+}
+
+.hero-help-tip {
+  position: absolute;
+  bottom: calc(100% + 0.55rem);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  width: min(19rem, 78vw);
+  padding: 0.6rem 0.75rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  font-weight: 400;
+  letter-spacing: 0.01em;
+  text-transform: none;
+  line-height: 1.55;
+  text-align: left;
+  color: var(--c2c-text);
+  background: var(--c2c-void);
+  border: 1px solid var(--c2c-border-strong);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0,0,0,0.45);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.hero-help:hover .hero-help-tip,
+.hero-help:focus .hero-help-tip,
+.hero-help:focus-within .hero-help-tip {
+  opacity: 1;
+  visibility: visible;
+}
+
+.hero-help-tip code { color: var(--c2c-green); }
+
 .hero-step-cmd {
   display: inline-flex;
   align-items: center;
@@ -391,6 +465,17 @@ a:visited { color: var(--c2c-amber-dim); }
   color: var(--c2c-text-muted);
   margin: 0.4rem 0 0;
   text-align: center;
+  max-width: 44rem;
+  line-height: 1.6;
+}
+
+.hero-tail strong { color: var(--c2c-amber); font-weight: 700; }
+.hero-tail code { color: var(--c2c-green); }
+.hero-tail em { color: var(--c2c-text); font-style: italic; }
+
+.hero-tail-kicker {
+  color: var(--c2c-cyan);
+  font-weight: 700;
 }
 
 .hero-pi-cue {
@@ -401,7 +486,7 @@ a:visited { color: var(--c2c-amber-dim); }
   align-items: center;
   gap: 0.35rem;
   width: min(18rem, calc(100% - 2rem));
-  margin: 1.4rem 0 0 auto;
+  margin: 1.4rem auto 0 0;
   padding: 0.68rem 0.85rem 0.78rem;
   color: var(--c2c-text);
   background: rgba(26,23,20,0.72);
@@ -411,7 +496,7 @@ a:visited { color: var(--c2c-amber-dim); }
   font-size: 0.82rem;
   line-height: 1.45;
   text-align: center;
-  transform: rotate(3deg);
+  transform: rotate(-3deg);
   transform-origin: 50% 0;
   box-shadow: 0 12px 28px rgba(0,0,0,0.20);
 }

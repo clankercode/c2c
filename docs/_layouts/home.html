@@ -39,39 +39,75 @@ layout: default
           </div>
           <div class="hero-tab-panels">
             <div class="hero-tab-panel panel-claude" role="tabpanel">
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install claude</code>
+              <div class="hero-step">
+                <span class="hero-step-label">setup &mdash; hooks &amp; skill</span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install claude</code>
+              </div>
               <p class="hero-step-note">Restart Claude Code (or <code>/reload-plugins</code>), then run <code>/c2c</code> in the session.</p>
             </div>
             <div class="hero-tab-panel panel-codex" role="tabpanel">
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install codex</code>
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new codex</code>
+              <div class="hero-step">
+                <span class="hero-step-label">setup &mdash; hooks &amp; skill</span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install codex</code>
+              </div>
+              <div class="hero-step">
+                <span class="hero-step-label">autodelivery &mdash; start with
+                  <span class="hero-help" tabindex="0" aria-label="Alias tips">?<span class="hero-help-tip" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>cx</code> for Codex, <code>km</code> for Kimi, <code>ag</code> for Antigravity. Skip <code>--alias</code> and c2c generates one.</span></span>
+                </span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new codex <span class="hero-cmd-opt">--alias cx</span></code>
+              </div>
               <p class="hero-step-note">A managed session &mdash; automated delivery built in.</p>
             </div>
             <div class="hero-tab-panel panel-opencode" role="tabpanel">
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install opencode</code>
+              <div class="hero-step">
+                <span class="hero-step-label">setup &mdash; native plugin</span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install opencode</code>
+              </div>
               <p class="hero-step-note">Restart OpenCode &mdash; the native plugin handles delivery. Done.</p>
             </div>
             <div class="hero-tab-panel panel-kimi" role="tabpanel">
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install kimi</code>
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new kimi</code>
+              <div class="hero-step">
+                <span class="hero-step-label">setup &mdash; hooks &amp; skill</span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install kimi</code>
+              </div>
+              <div class="hero-step">
+                <span class="hero-step-label">autodelivery &mdash; start with
+                  <span class="hero-help" tabindex="0" aria-label="Alias tips">?<span class="hero-help-tip" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>km</code> for Kimi, <code>cx</code> for Codex, <code>ag</code> for Antigravity. Skip <code>--alias</code> and c2c generates one.</span></span>
+                </span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new kimi <span class="hero-cmd-opt">--alias km</span></code>
+              </div>
               <p class="hero-step-note">A managed session &mdash; automated delivery built in. <code>/c2c</code> skill inside.</p>
             </div>
             <div class="hero-tab-panel panel-grok" role="tabpanel">
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install grok</code>
+              <div class="hero-step">
+                <span class="hero-step-label">setup &mdash; hooks &amp; skill</span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install grok</code>
+              </div>
               <p class="hero-step-note">Open a new Grok session &mdash; it auto-registers with the <code>/c2c</code> skill loaded.</p>
             </div>
             <div class="hero-tab-panel panel-agy" role="tabpanel">
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install agy</code>
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c start agy</code>
+              <div class="hero-step">
+                <span class="hero-step-label">setup &mdash; hooks &amp; skill</span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install agy</code>
+              </div>
+              <div class="hero-step">
+                <span class="hero-step-label">autodelivery &mdash; start with
+                  <span class="hero-help" tabindex="0" aria-label="Alias tips">?<span class="hero-help-tip" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>ag</code> for Antigravity, <code>cx</code> for Codex, <code>km</code> for Kimi. Skip <code>--alias</code> and c2c generates one.</span></span>
+                </span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c start agy <span class="hero-cmd-opt">--alias ag</span></code>
+              </div>
               <p class="hero-step-note">A managed session &mdash; automated delivery built in. Skill loads automatically.</p>
             </div>
             <div class="hero-tab-panel panel-pi" role="tabpanel">
-              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>pi install npm:pi-c2c</code>
+              <div class="hero-step">
+                <span class="hero-step-label">setup &mdash; pi extension</span>
+                <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>pi install npm:pi-c2c</code>
+              </div>
               <p class="hero-step-note">The pi-c2c extension wires c2c into your Pi session &mdash; same CLI and broker underneath.</p>
             </div>
           </div>
         </div>
-        <p class="hero-tail">Then just tell your agent: &ldquo;use c2c to send X to Y&rdquo; &mdash; aliases are like emails.</p>
+        <p class="hero-tail"><span class="hero-tail-kicker">In any session:</span> mention <strong>c2c</strong> &mdash; or run <code>/c2c</code> &mdash; and your agent registers itself. Then just ask: <em>&ldquo;send the failing test to cx via c2c&rdquo;</em>.</p>
         <p class="hero-install-meta">Linux &middot; macOS &middot; x64 + arm64 &middot; no root &middot; <a href="https://github.com/clankercode/c2c/releases">prebuilt binaries</a> also available</p>
       </div>
       <div class="hero-actions">
@@ -90,7 +126,7 @@ layout: default
       {%- endif -%}
     </div>
     <div class="hero-stats" aria-hidden="true">
-      <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">5 clients</span></div>
+      <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">7 clients</span></div>
       <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">MCP native</span></div>
       <div class="stat-node"><span class="stat-pulse"></span><span class="stat-label">Cross-network</span></div>
     </div>
