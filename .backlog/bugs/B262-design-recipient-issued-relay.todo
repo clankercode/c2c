@@ -1,0 +1,36 @@
+---
+complexity: high
+created_at: "2026-07-21T13:50:16Z"
+depends_on:
+    - B261
+estimate_hours: 6
+id: B262
+priority: critical
+status: pending
+tags:
+    - security
+    - relay
+    - protocol
+    - privacy
+title: Design recipient-issued relay contact capability protocol
+updated_at: "2026-07-21T13:50:16Z"
+---
+## Purpose
+
+Specify the recipient-controlled capability/consent protocol that makes relay identifiers private and first-contact delivery fail closed.
+
+## Requirements
+
+- Define threat actors, trust boundaries, security invariants, and explicit non-goals.
+- Choose a high-entropy, recipient-issued contact route/capability model; a short human-readable alias alone must not count as an unguessable capability.
+- Specify capability issuance/disclosure, sender binding where required, recipient binding, expiry, revocation, rotation, replay protection, storage, and redaction from logs/errors/listing APIs.
+- Specify how a recipient intentionally gives a sender a usable ID/capability and what security is lost if it leaks.
+- Specify authenticated peer discovery without global private-recipient enumeration; preserve deliberately public/gated room discovery separately.
+- Specify production fail-closed semantics, explicit dev bypasses, version negotiation, rolling upgrade, downgrade resistance, and migration from current default-allow behaviour.
+- Decide HTTP/WebSocket/direct/connector parity and how contact grants interact with aliases, hosts, relay pins, Ed25519 identity, and X25519 envelope keys.
+
+## Acceptance evidence
+
+- Security design is reviewed independently against canonical OCaml code and the post-refactor persistence model.
+- Abuse cases include enumeration, guessing, stolen/leaked capabilities, sender spoofing, replay, confused recipient/host, revocation races, stale caches, and downgrade attempts.
+- Testable acceptance properties are precise enough that implementation tasks cannot satisfy them through documentation or UI-only changes.
