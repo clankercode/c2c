@@ -1,0 +1,36 @@
+---
+complexity: medium
+created_at: "2026-07-21T10:41:06Z"
+depends_on: []
+estimate_hours: 2
+id: B254
+priority: high
+status: pending
+tags:
+    - mcp
+    - install
+    - opt-in
+    - safety
+title: Ensure MCP is not configured by default for any client
+updated_at: "2026-07-21T10:41:06Z"
+---
+## Problem
+By default, no client should get MCP configured unless the user deliberately opts in.
+
+Related completed work: **B122** ("Require explicit MCP opt-in and retire user-facing Python MCP paths") is marked done. This task is a re-verify / residual-enforcement pass: make sure the policy still holds for every client path today (claude, codex, opencode, kimi, grok, agy, pi), including:
+
+- bare `c2c install` (interactive TUI defaults)
+- `c2c install all`
+- `c2c install <client>` without explicit MCP flags
+- `c2c init` / managed start / new paths that might re-write MCP config
+- docs/hero copy that might imply MCP is automatic
+
+## Acceptance criteria
+- No c2c install/init/start path enables client MCP unless the user makes an explicit opt-in choice.
+- Dry-run evidence for each client: `c2c install <client> --dry-run` (and `install all --dry-run`) does not configure MCP by default.
+- Plain CLI messaging remains usable without MCP.
+- If any residual path still auto-enables MCP, fix it and add a regression test.
+- Note any intentional exceptions (e.g. if a client *only* has MCP and has no CLI-only path) explicitly in the task notes.
+
+## Context
+Requested by Max after site/onboarding work. Policy north star matches B122: MCP is explicit opt-in only.

@@ -250,3 +250,4 @@ bugs:
     - file: B251-add-setup-hooks-skill-label-fo.todo
     - file: B252-site-hero-add-autodelivery-sta.todo
     - file: B253-site-hero-needs-statement-that.todo
+    - file: B254-ensure-mcp-is-not-configured-b.todo
