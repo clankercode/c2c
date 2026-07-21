@@ -50,4 +50,6 @@ Every substantive property must be verified against canonical OCaml implementati
 - `docs/security/trust-model.md`
 - `docs/security/pending-permissions.md`
 
-## Execution hold\n\nDo not claim or implement this page until B259 is complete and Max confirms the concurrent database refactor has landed. The intended no-unsolicited-first-contact wording is future state and must not be published before the corresponding code and regression tests exist.
+## Execution hold
+
+Do not claim or implement this page until B259 is complete and Max confirms the concurrent database refactor has landed. The intended no-unsolicited-first-contact wording is future state and must not be published before the corresponding code and regression tests exist.
