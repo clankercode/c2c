@@ -1,0 +1,91 @@
+---
+complexity: medium
+created_at: "2026-07-21T13:55:32Z"
+depends_on: []
+estimate_hours: 1
+id: B268
+priority: medium
+status: pending
+tags:
+    - version
+    - ux
+    - relay
+    - doctor
+title: Passive detection + surfacing of newer c2c release available upstream
+updated_at: "2026-07-21T13:55:32Z"
+---
+Passive detection + surfacing of a newer c2c release available upstream. Today
+upstream-release detection is PULL-ONLY via `c2c self-update --check-only` (hits
+the GitHub releases API synchronously); nothing tells an operator/agent that a
+newer release exists unless they run that command. Post-upgrade changelog
+auto-show (B126) and local stale-binary self-restart (I010/C2c_stale) are
+already automatic, but neither reports "a newer release is available upstream."
+
+GOAL: a low-cost, non-blocking, offline-safe "newer release available" nudge on
+the surfaces below. Never a synchronous network call on a hot path.
+
+VERSION SOURCE (decided): reuse the already-warmed remote changelog cache as the
+primary signal — the changelog machinery already background-fetches CHANGELOG.md
+(`C2c_changelog.spawn_background_fetch` / `cache_is_stale` from the SessionStart
+hook), and each release adds a versioned entry. "Newer version known" =
+`merged_entries` filtered by `compare_version e.version Version.version > 0` on
+remote-sourced entries. No new synchronous network path. Freshness is bounded by
+the existing background-fetch cadence. (GitHub releases API remains the
+authoritative asset source used by `self-update`; a cached daily releases-API
+check is a possible follow-up if changelog freshness proves insufficient, but is
+NOT required for v1.)
+
+ALSO detect newer RELAY versions (decided): the relay reports its version via
+`/health` (and `c2c doctor relay` already reads it). Compare the connected
+relay's reported version against (a) the client's own version and (b) the latest
+known version from the changelog cache, and surface when the relay you're talking
+to is behind the latest known release (informational — a client cannot upgrade a
+remote relay, but it flags "prod relay is stale, consider deploying"). Fail
+closed / silent when the relay is unreachable or reports no version.
+
+SURFACES (all decided in):
+1. `c2c doctor` — add a line: newer release X available (you're on Y); run
+   `c2c self-update`. Also a relay-version line when the relay is behind latest
+   known. Pull-only, zero hot-path cost. SAFEST first slice — do this first.
+2. `c2c health` / `server_info` — add `latest_known_version` +
+   `update_available:bool` (client) and a relay-version-vs-latest field, from the
+   cache only, so tooling/MCP callers can read it programmatically.
+3. SessionStart injection — piggyback the changelog auto-show path
+   (`c2c_hook_cmd.ml`): inject a one-line "newer release available" once per
+   version, rate-limited, marker-guarded exactly like changelog auto-show (never
+   regress marker; downgrade/equal = no-op; offline = silent). Keep it to ONE
+   line so it doesn't bloat session context.
+4. `c2c version` / `c2c --version` — MUST STAY FAST: read the cache ONLY, never
+   fetch. If the cache already knows a newer version, append a single trailing
+   line ("(newer release X available — run c2c self-update)"); otherwise print
+   version exactly as today. A network call here is forbidden — `--version` is
+   used in scripts and hot paths (e.g. `c2c_gui_cmd.ml` invokes `c2c --version`).
+
+HARD CONSTRAINTS:
+- No synchronous network I/O on `--version`, `version`, SessionStart hook, or any
+  other hot path. All reads come from the local changelog cache; the only network
+  activity is the EXISTING background fetch.
+- Offline / stale-cache / cache-missing = silent no-op everywhere (never an error,
+  never a warning that breaks scripts parsing `--version`).
+- Respect the existing marker/rate-limit discipline for the SessionStart nudge so
+  it shows at most once per version per client.
+- Agent-facing text stays terse (one line).
+
+IMPLEMENTATION SKETCH:
+- Add a small helper, e.g. `C2c_changelog.latest_known_newer ~current` returning
+  `string option` (highest remote-cached version strictly greater than current,
+  else None) — pure over the already-loaded cache, no I/O.
+- doctor / health / version / hook each call it and format per-surface.
+- Relay-behind check: `C2c_doctor_relay` (or health) compares relay `/health`
+  version to `latest_known` from the same helper.
+- Tests: hermetic — seed a changelog cache with a newer entry, assert each
+  surface reports it; assert offline/empty-cache = silent; assert `--version`
+  performs no network call (fixture-gate any network, or assert timing/paths).
+
+ACCEPTANCE:
+- With a newer version in the changelog cache: doctor, health JSON, SessionStart
+  (once/version), and `--version` all surface it.
+- Offline or no newer version: every surface is silent/normal; `--version` is
+  byte-identical to today except the optional trailing line.
+- Relay-behind-latest surfaced in doctor/health when applicable.
+- No new synchronous network path; `--version` timing unchanged.
