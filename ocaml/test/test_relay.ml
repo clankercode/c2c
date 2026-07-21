@@ -1173,11 +1173,34 @@ let test_effective_lease_ttl () =
 (* B219 (GH #79): the relay reuses ONE persistent SQLite connection under its
    mutex, and every prepared statement is finalized explicitly. The production
    crash was a use-after-free inside sqlite3_finalize under load, on the
-   check_request_nonce path. These hermetic tests cannot reproduce the
-   6876-peer production load, but they DO exercise the open-once +
-   finalize-all + shared-connection paths at a volume where the previous
-   per-op-connection + statement-leak behaviour would surface as an error or
-   crash. *)
+   check_request_nonce path. The nonce test below makes the open-once contract
+   deterministic on Linux by holding off GC and bounding /proc/self/fd growth;
+   it also verifies the generic exec_prepared bind-error cleanup path. *)
+
+let proc_fd_count () =
+  if Sys.file_exists "/proc/self/fd" then
+    Some (Array.length (Sys.readdir "/proc/self/fd"))
+  else None
+
+let assert_exec_prepared_finalizes_on_bind_error () =
+  let db = Sqlite3.db_open ":memory:" in
+  let closed = ref false in
+  Fun.protect
+    ~finally:(fun () ->
+      if not !closed then begin
+        Gc.full_major ();
+        ignore (Sqlite3.db_close db)
+      end)
+    (fun () ->
+      let raised =
+        try
+          ignore (Relay_sqlite_support.exec_prepared db "SELECT ?" [`Text "one"; `Text "too many"]);
+          false
+        with _ -> true
+      in
+      Alcotest.(check bool) "invalid bind raises" true raised;
+      closed := Sqlite3.db_close db;
+      Alcotest.(check bool) "bind-error statement is finalized before close" true !closed)
 
 (* Drive many sequential DB ops (send / heartbeat / request-nonce / poll / gc)
    on ONE relay t. Asserts every op succeeds and delivery is exact. *)
@@ -1217,10 +1240,31 @@ let test_relay_sqlite_persistent_connection_stress () =
     (match Relay.SqliteRelay.gc t with `Ok _ -> ()))
 
 (* Hammer check_request_nonce in isolation — the function whose finalize
-   SIGSEGV'd in the core dump. A per-call statement leak on the shared
-   connection would accumulate over 5000 iterations. *)
+   SIGSEGV'd in the core dump. Holding off GC makes the old per-operation
+   db_open implementation retain one or more file descriptors per call, while
+   the persistent connection stays within a small fixed descriptor budget. *)
 let test_relay_sqlite_request_nonce_no_leak_under_load () =
   with_sqlite_relay_tempdir (fun t ->
+    assert_exec_prepared_finalizes_on_bind_error ();
+    (match proc_fd_count () with
+     | None -> ()
+     | Some before ->
+       let gc_control = Gc.get () in
+       Fun.protect
+         ~finally:(fun () -> Gc.set gc_control)
+         (fun () ->
+           Gc.set { gc_control with
+                    minor_heap_size = max gc_control.minor_heap_size (4 * 1024 * 1024) };
+           for i = 0 to 63 do
+             let ts = Unix.gettimeofday () in
+             let nonce = Printf.sprintf "fd-probe-%d" i in
+             match Relay.SqliteRelay.check_request_nonce t ~nonce ~ts with
+             | Ok () -> ()
+             | Error e -> fail_fmt "fd probe %d should be accepted, got %s" i e
+           done;
+           let after = Option.get (proc_fd_count ()) in
+           if after > before + 8 then
+             fail_fmt "shared connection leaked file descriptors: before=%d after=%d" before after));
     let iters = 5000 in
     for i = 0 to iters - 1 do
       let ts = Unix.gettimeofday () in
