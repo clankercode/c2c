@@ -299,8 +299,7 @@ registration.
 
 **Install layout**: `c2c install agy` writes `~/.gemini/skills/c2c/SKILL.md` (the
 CLI-first cookbook) and merges hooks into `~/.gemini/config/hooks.json` for the
-`SessionStart`, `PostToolUse`, and `Stop` events, each running `c2c hook agy
-<Event>`.
+`SessionStart`, `PostToolUse`, and `Stop` events, each running `c2c hook agy <Event>`.
 
 **Session ID / identity**: SessionStart auto-registers (`registered_by=agy-hook`,
 `client_type=agy`) and always mints an `agy-*` alias. The alias rule is enforced:

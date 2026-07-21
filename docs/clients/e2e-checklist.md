@@ -55,7 +55,7 @@ c2c list --all
 
 ---
 
-## 1. Client attachment: <Client>
+## 1. Client attachment: `<Client>`
 
 - **Setup**:
   - MCP-managed clients: `c2c install <client>` (in a test repo)
@@ -78,7 +78,7 @@ c2c list --all
 
 ---
 
-## 2. Auto-delivery: <Client>
+## 2. Auto-delivery: `<Client>`
 
 - **Setup**:
   - Client running in tmux pane (from step 1)
@@ -177,7 +177,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 3. Send-out: <Client>
+## 3. Send-out: `<Client>`
 
 - **Setup**:
   - Two clients running in separate tmux panes
@@ -193,7 +193,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 4. Room support: <Client>
+## 4. Room support: `<Client>`
 
 - **Setup**:
   - Client running (from step 1)
@@ -215,7 +215,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 5. Ephemeral DM: <Client>
+## 5. Ephemeral DM: `<Client>`
 
 - **Setup**:
   - Two clients running in separate tmux panes
@@ -233,7 +233,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 6. Deferrable flag: <Client>
+## 6. Deferrable flag: `<Client>`
 
 - **Setup**:
   - Client running
@@ -253,7 +253,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 7. DND honoring: <Client>
+## 7. DND honoring: `<Client>`
 
 - **Setup**:
   - Client running
@@ -275,7 +275,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 8. Auto-register: <Client>
+## 8. Auto-register: `<Client>`
 
 - **Setup**:
   - MCP-managed clients: fresh alias via `c2c install <client>` with a named instance
@@ -296,7 +296,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 9. Auto-join `swarm-lounge`: <Client>
+## 9. Auto-join `swarm-lounge`: `<Client>`
 
 - **Setup**:
   - Client running (from step 1), verify `swarm-lounge` is a known room
@@ -312,7 +312,7 @@ SessionStart hook to arm a best-effort notifier (B238).
 
 ---
 
-## 10. Managed-instance lifecycle: <Client>
+## 10. Managed-instance lifecycle: `<Client>`
 
 Pi Agent is not a `c2c start` target; mark this row SKIP for Pi Agent and test
 the pi launcher / extension lifecycle separately. **Grok:** SKIP — no
@@ -335,7 +335,7 @@ the pi launcher / extension lifecycle separately. **Grok:** SKIP — no
 
 ---
 
-## 11. Permission/approval flow: <Client>
+## 11. Permission/approval flow: `<Client>`
 
 This is client-specific — different clients use different permission mechanisms.
 
@@ -391,7 +391,7 @@ This is client-specific — different clients use different permission mechanism
 
 ---
 
-## 12. broker_root resolution: <Client>
+## 12. broker_root resolution: `<Client>`
 
 - **Setup**: Client running
 - **Action**:
@@ -407,7 +407,7 @@ This is client-specific — different clients use different permission mechanism
 
 ---
 
-## 13. Inbox drain on init: <Client>
+## 13. Inbox drain on init: `<Client>`
 
 - **Setup**:
   - Client A running, client B is the test subject
