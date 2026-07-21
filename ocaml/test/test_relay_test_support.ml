@@ -1187,10 +1187,12 @@ let fixture_send_dup =
       ("ts", `Float 1700000002.0) ]
 
 let fixture_send_unknown =
+  (* B265: unknown and private first-contact denials are intentionally
+     indistinguishable at the production wire boundary. *)
   `Assoc
-    [ ("ok", `Bool false); ("error_code", `String "unknown_alias");
-      ("error",
-       `String (Printf.sprintf "no registration for alias %S" eq_ghost)) ]
+    [ ("ok", `Bool false);
+      ("error_code", `String "contact_unauthorised");
+      ("error", `String "contact unauthorised") ]
 
 let fixture_poll_full =
   `Assoc
@@ -1242,7 +1244,7 @@ let capture_fake () : (string * int * Yojson.Safe.t) list =
       S.route ~meth:"POST" ~path:"/send"
         [ S.response (body fixture_send_ok);
           S.response (body fixture_send_dup);
-          S.response (body fixture_send_unknown) ];
+          S.response ~status:401 (body fixture_send_unknown) ];
       S.route ~meth:"POST" ~path:"/poll_inbox"
         [ S.response (body fixture_poll_full);
           S.response (body fixture_poll_empty) ];

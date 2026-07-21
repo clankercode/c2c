@@ -167,18 +167,23 @@ Signed-off disposition: **PASS-WITH-NOTES** for plan item “Obtain incremental 
 
 ---
 
-## Clean-tip reaffirmation (6f313eea)
+## Rollback-floor follow-up review (`da636143`)
 
-Re-audited on local `master` after `feature/b265-clean` + `feature/b266-clean` merge and
-B264 public-list suite compatibility fix.
+A read-only independent review first rejected the B266 hardening for two majors:
+startup did not validate a pre-existing legacy compatibility object, and several
+migration tests inspected the compatibility view rather than the active table.
+Both were fixed and re-reviewed on the rebased tip `da636143`.
 
 | Gate | Result |
 |---|---|
-| Full monorepo `@runtest --force` | exit 0, 0 FAIL, ~3426 tests (tip `6f313eea`) |
-| Focused B263–B267 suites | grants 36, discovery 25, delivery 30, migration 5, matrix 15, doctor 12, relay 54 |
-| Dogfood isolated local | AUTH-OK inbox; unauth legacy unknown_alias; contact_unauthorised; cleartext refuse; health git_hash=6f313eea |
-| Residual M1 (old binary on migrated DB) | ops constraint — accepted; not a code defect on tip |
-| Residual optional WS push on contact Accepted | product note, not blocker |
-| Verdict | **PASS-WITH-NOTES** on clean master tip `6f313eea` |
+| Legacy compatibility object | Exact empty `leases` refusal view required; missing, table, altered-view, or triggered states fail closed |
+| Active schema evidence | Post-open migration and pubkey tests inspect `secure_leases_v2` |
+| Production discovery default | No `C2C_RELAY_DEFAULT_DISCOVERY` backend bypass; registrations hard-code private until an explicit policy mutation |
+| B265 delivery baseline | **37/37** handler tests retained |
+| Rollback-floor regressions | **8/8**, including secure+legacy-table, missing-view, and write-triggered-view rejection |
+| Independent verdict | **PASS** — no blocker or major within scope |
+| Integrated local master | Merge `db7bfbad` |
 
-Salvage branch `feature/b264-private-discovery` remains reference-only (plan Deviations).
+The salvage branch `feature/b264-private-discovery` and its receipts remain
+reference-only. Evidence that cites a 30-case delivery suite or accepts old-binary
+rollback as an operational residual is superseded by this review.
