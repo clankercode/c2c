@@ -722,6 +722,14 @@ let test_classify_error () =
   ] in
   Alcotest.(check string) "recipient_dead"
     "recipient_dead" (Conn.classify_error recipient_dead_json);
+  (* B265: consent denials must be permanent (same class path as unknown_alias). *)
+  let contact_unauth_json = `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "contact_unauthorised");
+    ("error", `String "contact unauthorised");
+  ] in
+  Alcotest.(check string) "contact_unauthorised"
+    "contact_unauthorised" (Conn.classify_error contact_unauth_json);
   let conn_err_json = `Assoc [
     ("ok", `Bool false);
     ("error_code", `String "connection_error");

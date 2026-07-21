@@ -101,6 +101,12 @@ end
 (* Global subscriber map *)
 let subscribers = SubscriberMap.create ()
 
+(* Test/ops instrumentation counts invocation even when no subscriber exists.
+   This proves rejected and duplicate contact deliveries cannot emit a push. *)
+let push_dm_count = Atomic.make 0
+let push_dm_invocations () = Atomic.get push_dm_count
+let reset_push_dm_count () = Atomic.set push_dm_count 0
+
 (* Parse JSON string, returning None on failure *)
 let json_of_string_opt s =
   try Some (Yojson.Safe.from_string s) with _ -> None
@@ -149,6 +155,7 @@ let validate_subscribe_auth
 (* Push a DM to all subscribers for the given alias.
    Non-blocking: spawns async sends. *)
 let push_dm ~to_alias ~from_alias ~body ~ts =
+  Atomic.incr push_dm_count;
   let subs = SubscriberMap.find subscribers ~alias:to_alias in
   let payload = Yojson.Safe.to_string (`Assoc [
     ("op", `String "dm");

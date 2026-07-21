@@ -1186,6 +1186,11 @@ let classify_error json =
   match member_or_null "error_code" json with
   | `String "unknown_alias" -> "unknown_alias"
   | `String "recipient_dead" -> "recipient_dead"
+  (* B265: contact-delivery / consent denials are permanent — never retry via
+     legacy /send. Private legacy /send already returns unknown_alias; this
+     covers explicit contact_unauthorised from /contact/v1/deliver or future
+     error-code alignment. *)
+  | `String "contact_unauthorised" -> "contact_unauthorised"
   | `String "connection_error" -> "connection_error"
   | `String _ -> "other"
   | _ -> "other"
@@ -2273,7 +2278,8 @@ let sync (t : t) : sync_result Lwt.t =
             obs_dlqs := { C2c_relay_alert.dlq_sender = entry.ob_from;
                           dlq_to = entry.ob_to; dlq_reason = reason } :: !obs_dlqs
           in
-          if err_class = "unknown_alias" || err_class = "recipient_dead" then
+          if err_class = "unknown_alias" || err_class = "recipient_dead"
+             || err_class = "contact_unauthorised" then
             (* Permanent error: immediate DLQ *)
             let () = append_dlq_entry t.broker_root entry ~reason:err_class in
             let () = note_dlq err_class in

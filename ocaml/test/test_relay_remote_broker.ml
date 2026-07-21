@@ -92,7 +92,15 @@ module Backend_http_tests (R : Relay.RELAY) = struct
       R.register relay ~node_id ~session_id ~alias
         ~identity_pk:identity.Relay_identity.public_key ()
     in
-    Alcotest.(check string) ("register " ^ alias) "ok" status
+    Alcotest.(check string) ("register " ^ alias) "ok" status;
+    (* This suite tests inbox ownership, not first-contact consent. Opt fixtures
+       into legacy/public delivery explicitly under B264 private-by-default. *)
+    match
+      R.set_peer_discovery_visibility relay ~alias
+        ~visibility:Relay_backend_contract.Public
+    with
+    | Ok () -> ()
+    | Error e -> Alcotest.failf "mark public %s: %s" alias e
 
   let prime_victim_inbox relay =
     let victim = Relay_identity.generate ~alias_hint:"victim" () in

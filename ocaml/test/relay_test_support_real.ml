@@ -54,7 +54,7 @@ let loopback_socket () =
    default (token = None) — pass [?token] for a token-configured
    (production auth mode) bracket, e.g. the B116 binding-revoke suite;
    optional caller-supplied rate limiter. *)
-let with_server ?token ?rate_limiter f =
+let with_server ?token ?rate_limiter ?(native_tls=false) f =
   Lwt_main.run
     (loopback_socket () >>= fun (fd, port) ->
      let relay = Relay.InMemoryRelay.create () in
@@ -66,7 +66,7 @@ let with_server ?token ?rate_limiter f =
      let stop, wake_stop = Lwt.wait () in
      let callback (conn, _) req body =
        RS.make_callback relay token conn req body ?broker_root:None
-         ~native_tls:false ~rate_limiter
+         ~native_tls ~rate_limiter
      in
      let spec = Cohttp_lwt_unix.Server.make ~callback () in
      let server =
@@ -96,7 +96,7 @@ let call ~base_url ~meth ~path ?(headers = []) ?(body = "") () =
     body_text = text;
     json }
 
-let call_json ~base_url ~meth ~path ?(body = `Assoc []) () =
+let call_json ~base_url ~meth ~path ?(headers = []) ?(body = `Assoc []) () =
   call ~base_url ~meth ~path
-    ~headers:[ ("Content-Type", "application/json") ]
+    ~headers:(("Content-Type", "application/json") :: headers)
     ~body:(Yojson.Safe.to_string body) ()
