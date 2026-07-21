@@ -4,6 +4,7 @@ import pytest
 
 from tests.e2e.framework.models import DEFAULT_MODELS, e2e_model
 
+_OPENCODE_GLM = "zai-coding-plan/glm-5-turbo"
 _MIMO = "xiaomi-token-plan-sgp/mimo-v2.5-pro"
 
 _ALL_ENV = ["C2C_E2E_MODEL", "C2C_E2E_OPENCODE_MODEL", "C2C_E2E_PI_MODEL"]
@@ -14,11 +15,11 @@ def _clear(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(var, raising=False)
 
 
-def test_defaults_are_mimo_for_opencode_and_pi(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_defaults_per_client(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear(monkeypatch)
-    assert e2e_model("opencode") == _MIMO
+    assert e2e_model("opencode") == _OPENCODE_GLM
     assert e2e_model("pi") == _MIMO
-    assert DEFAULT_MODELS["opencode"] == _MIMO
+    assert DEFAULT_MODELS["opencode"] == _OPENCODE_GLM
     assert DEFAULT_MODELS["pi"] == _MIMO
 
 

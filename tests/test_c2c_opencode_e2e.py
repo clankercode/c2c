@@ -17,7 +17,8 @@ from tests.e2e.framework.scenario import Scenario
 TMUX_BIN = shutil.which("tmux")
 OPENCODE_BIN = shutil.which("opencode")
 C2C_BIN = shutil.which("c2c")
-# Overridable per run: C2C_E2E_OPENCODE_MODEL > C2C_E2E_MODEL > default (mimo-v2.5-pro).
+# Overridable per run: C2C_E2E_OPENCODE_MODEL > C2C_E2E_MODEL > default
+# (zai-coding-plan/glm-5-turbo).
 OPENCODE_TEST_MODEL = e2e_model("opencode")
 
 pytestmark = pytest.mark.skipif(

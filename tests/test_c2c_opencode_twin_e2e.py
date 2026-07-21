@@ -33,10 +33,13 @@ from pathlib import Path
 
 import pytest
 
+from tests.e2e.framework.models import e2e_model
+
 TMUX_BIN = shutil.which("tmux")
 OC_BIN = shutil.which("opencode")
 C2C_BIN = shutil.which("c2c")
-OPENCODE_TEST_MODEL = "minimax-coding-plan/MiniMax-M2.7-highspeed"
+# Default: zai-coding-plan/glm-5-turbo (override via C2C_E2E_OPENCODE_MODEL).
+OPENCODE_TEST_MODEL = e2e_model("opencode")
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("C2C_TEST_OC_TWIN_E2E") != "1"

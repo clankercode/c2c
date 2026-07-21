@@ -14,22 +14,22 @@ Precedence (highest first):
 
 ``<CLIENT>`` is the client name upper-cased with ``-`` mapped to ``_``.
 
-Today's default for both opencode and pi is ``mimo-v2.5-pro``, which both
-clients expose under the same ``provider/id`` string
-(``xiaomi-token-plan-sgp/mimo-v2.5-pro``) — confirm availability with
-``opencode models`` and ``pi --list-models``.
+Defaults (confirm with ``opencode models`` / ``pi --list-models``):
+
+  * opencode — ``zai-coding-plan/glm-5-turbo`` (GLM-5-Turbo)
+  * pi       — ``xiaomi-token-plan-sgp/mimo-v2.5-pro``
 """
 from __future__ import annotations
 
 import os
 
-# Same provider/id string works for both opencode (`opencode models`) and pi
-# (`pi --list-models`), so a single shared C2C_E2E_MODEL override stays valid
-# across both clients.
+# OpenCode: full provider/model id from `opencode models` (zai-coding-plan).
+_OPENCODE_GLM_5_TURBO = "zai-coding-plan/glm-5-turbo"
+# Pi default (independent provider namespace).
 _MIMO_V25_PRO = "xiaomi-token-plan-sgp/mimo-v2.5-pro"
 
 DEFAULT_MODELS: dict[str, str] = {
-    "opencode": _MIMO_V25_PRO,
+    "opencode": _OPENCODE_GLM_5_TURBO,
     "pi": _MIMO_V25_PRO,
 }
 

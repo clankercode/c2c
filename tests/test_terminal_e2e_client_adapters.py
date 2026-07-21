@@ -162,7 +162,7 @@ def test_opencode_adapter_builds_managed_launch_command_with_model(tmp_path: Pat
         client="opencode",
         name="oc-a",
         role="worker",
-        model="minimax-coding-plan/MiniMax-M2.7-highspeed",
+        model="zai-coding-plan/glm-5-turbo",
     )
     scenario = mock.Mock(workdir=tmp_path / "work")
 
@@ -177,7 +177,7 @@ def test_opencode_adapter_builds_managed_launch_command_with_model(tmp_path: Pat
         "--agent",
         "worker",
         "--model",
-        "minimax-coding-plan/MiniMax-M2.7-highspeed",
+        "zai-coding-plan/glm-5-turbo",
     ]
 
 
