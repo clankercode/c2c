@@ -248,3 +248,20 @@ RPC") violation. So agy wake = terminal-injection = B098 trade-off. Decision for
 (see #78): (a) status quo inject-only/no-wake [B098-safe]; (b) gated terminal-injection
 wake mirroring the codex gate + explicit B098 carve-out; (c) wait for upstream agy
 B098-safe wake verb [rec, like #37]. NOT wired — deleting B098 for agy needs sign-off.
+
+### FINAL — agy automated waking delivery WORKS (2026-07-21, corrected)
+Reconciled with the earlier PASS (Max was right). agy managed wake WORKS via agentapi
+`send-message` to the TUI's **own live conversation**, B098-safe (DATA-framed, codex-like).
+Proven BOTH paths on e2e-agy5 (Gemini 3.5 Flash):
+- **Automated** (`c2c send e2e-agy5` → deliver-watch → send-message): receiver got `WOKE-AW7Q2`.
+- **Manual** (`agy agentapi send-message <conv>`): receiver got `WOKE-MAN8K4`.
+No human keystroke during the wake window. Latency higher than codex/kimi (~2+ min observed;
+agy turn + deliver cadence). Precondition: the TUI must own a live conversation (established here
+with one benign first turn "say hi"); agy-env then discovers it and deliver-watch injects to it.
+**My earlier FAIL was a cold-idle session where `ensure_agy_env` MINTED a headless conversation
+(agenticMode=false) instead of the TUI's live one — send-message to a minted conv never wakes.**
+That cold-start resolution bug is the sole remaining gap (→ #78), NOT an upstream limitation and
+NOT requiring terminal injection. Web-confirmed agy model: `agy`=new session, `-c`/`--conversation
+<id>`=resume, `send_message` targets a conversation by id.
+
+## VERDICT (all three): codex PASS · kimi PASS · agy PASS — full automated waking delivery works.
