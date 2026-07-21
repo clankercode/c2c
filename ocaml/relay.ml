@@ -1764,24 +1764,25 @@ module SqliteRelay : RELAY = struct
     | Some f -> f
     | None -> float_of_string (Sqlite3.Data.to_string_exn col)
 
+  (* B219: inner worker — lock-free, called under the lock (register/gc). *)
   let release_alias conn alias =
-    let old_key_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases WHERE alias = ?" in
-    Sqlite3.bind_text old_key_stmt 1 alias |> ignore;
-    (match Sqlite3.step old_key_stmt with
-     | Rc.ROW ->
-       let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column old_key_stmt 0) in
-       let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column old_key_stmt 1) in
-       let del_inbox = Sqlite3.prepare conn "DELETE FROM inboxes WHERE node_id = ? AND session_id = ?" in
-       Sqlite3.bind_text del_inbox 1 node_id |> ignore;
-       Sqlite3.bind_text del_inbox 2 session_id |> ignore;
-       Sqlite3.step del_inbox |> ignore
-     | _ -> ());
-    let del = Sqlite3.prepare conn "DELETE FROM leases WHERE alias = ?" in
-    Sqlite3.bind_text del 1 alias |> ignore;
-    Sqlite3.step del |> ignore;
-    let del_member = Sqlite3.prepare conn "DELETE FROM room_members WHERE alias = ?" in
-    Sqlite3.bind_text del_member 1 alias |> ignore;
-    Sqlite3.step del_member |> ignore
+    with_stmt conn "SELECT node_id, session_id FROM leases WHERE alias = ?" (fun old_key_stmt ->
+      Sqlite3.bind_text old_key_stmt 1 alias |> ignore;
+      (match Sqlite3.step old_key_stmt with
+       | Rc.ROW ->
+         let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column old_key_stmt 0) in
+         let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column old_key_stmt 1) in
+         with_stmt conn "DELETE FROM inboxes WHERE node_id = ? AND session_id = ?" (fun del_inbox ->
+           Sqlite3.bind_text del_inbox 1 node_id |> ignore;
+           Sqlite3.bind_text del_inbox 2 session_id |> ignore;
+           Sqlite3.step del_inbox |> ignore)
+       | _ -> ()));
+    with_stmt conn "DELETE FROM leases WHERE alias = ?" (fun del ->
+      Sqlite3.bind_text del 1 alias |> ignore;
+      Sqlite3.step del |> ignore);
+    with_stmt conn "DELETE FROM room_members WHERE alias = ?" (fun del_member ->
+      Sqlite3.bind_text del_member 1 alias |> ignore;
+      Sqlite3.step del_member |> ignore)
 
   let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(client_version="") ?(client_os="") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
@@ -1799,13 +1800,13 @@ module SqliteRelay : RELAY = struct
           let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
           if not has_row then `Unlisted
           else
-            let stmt = prepare conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" in
-            bind_text stmt 1 alias |> ignore;
-            let rc = step stmt in
-            if rc = ROW then
-              let pinned = Data.to_string_exn (column stmt 0) in
-              if submitted_b64 = pinned then `Allowed else `Mismatch
-            else `Unlisted
+            with_stmt conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" (fun stmt ->
+              bind_text stmt 1 alias |> ignore;
+              let rc = step stmt in
+              if rc = ROW then
+                let pinned = Data.to_string_exn (column stmt 0) in
+                if submitted_b64 = pinned then `Allowed else `Mismatch
+              else `Unlisted)
         else
           let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
           if not has_row then `Unlisted else `ListedNoPk
@@ -1819,7 +1820,7 @@ module SqliteRelay : RELAY = struct
         let conflict_lease = ref None in
         let existing_pk = ref "" in
         if has_row then (
-          let stmt = prepare conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" in
+          with_stmt conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM leases WHERE alias = ?" (fun stmt ->
           bind_text stmt 1 alias |> ignore;
           let rec check_existing () =
             let rc = step stmt in
@@ -1869,7 +1870,7 @@ module SqliteRelay : RELAY = struct
             ) else if rc <> DONE then
               failwith ("step error: " ^ Rc.to_string rc)
           in
-          check_existing ()
+          check_existing ())
         );
         match !conflict_lease with
         | Some lease -> (relay_err_alias_conflict, lease)
@@ -1895,7 +1896,7 @@ module SqliteRelay : RELAY = struct
             in
             (* B174: coalesce opaque_host_id — empty excluded must not wipe a
                previously stored host id (older clients re-registering). *)
-            let stmt = prepare conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" in
+            with_stmt conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" (fun stmt ->
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -1913,20 +1914,18 @@ module SqliteRelay : RELAY = struct
             bind_text stmt 14 client_os |> ignore;
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
-              failwith ("register insert failed: " ^ Rc.to_string rc);
+              failwith ("register insert failed: " ^ Rc.to_string rc));
             (* Read back coalesced host id so returned lease matches DB. *)
             let effective_ohid =
               match opaque_host_id with
               | Some s when s <> "" -> Some s
               | _ ->
-                let sel = prepare conn
-                  "SELECT opaque_host_id FROM leases WHERE alias = ?"
-                in
-                bind_text sel 1 alias |> ignore;
-                if step sel = ROW then
-                  let raw = Data.to_string_exn (column sel 0) in
-                  if raw = "" then None else Some raw
-                else None
+                with_stmt conn "SELECT opaque_host_id FROM leases WHERE alias = ?" (fun sel ->
+                  bind_text sel 1 alias |> ignore;
+                  if step sel = ROW then
+                    let raw = Data.to_string_exn (column sel 0) in
+                    if raw = "" then None else Some raw
+                  else None)
             in
             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:effective_ohid () in
             ("ok", lease)
@@ -2089,12 +2088,12 @@ module SqliteRelay : RELAY = struct
   let set_allowed_identity t ~alias ~identity_pk_b64 =
     with_lock t (fun () ->
       let conn = t.db in
-      let stmt = Sqlite3.prepare conn "INSERT INTO allowed_identities (alias, identity_pk_b64) VALUES (?, ?) ON CONFLICT(alias) DO UPDATE SET identity_pk_b64=excluded.identity_pk_b64" in
-      Sqlite3.bind_text stmt 1 alias |> ignore;
-      Sqlite3.bind_text stmt 2 identity_pk_b64 |> ignore;
-      let rc = Sqlite3.step stmt in
-      if not (Rc.is_success rc) && rc <> Rc.DONE then
-        failwith ("set_allowed_identity failed: " ^ Rc.to_string rc)
+      with_stmt conn "INSERT INTO allowed_identities (alias, identity_pk_b64) VALUES (?, ?) ON CONFLICT(alias) DO UPDATE SET identity_pk_b64=excluded.identity_pk_b64" (fun stmt ->
+        Sqlite3.bind_text stmt 1 alias |> ignore;
+        Sqlite3.bind_text stmt 2 identity_pk_b64 |> ignore;
+        let rc = Sqlite3.step stmt in
+        if not (Rc.is_success rc) && rc <> Rc.DONE then
+          failwith ("set_allowed_identity failed: " ^ Rc.to_string rc))
     )
 
   let allowed_identity_of t ~alias =
@@ -2103,13 +2102,13 @@ module SqliteRelay : RELAY = struct
       let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
       if not has_row then None
       else
-        let stmt = Sqlite3.prepare conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" in
-        Sqlite3.bind_text stmt 1 alias |> ignore;
-        let rc = Sqlite3.step stmt in
-        if rc = Rc.ROW then
-          let pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
-          Some pk
-        else None
+        with_stmt conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 alias |> ignore;
+          let rc = Sqlite3.step stmt in
+          if rc = Rc.ROW then
+            let pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+            Some pk
+          else None)
     )
 
   let check_allowlist t ~alias ~identity_pk_b64 =
@@ -2118,27 +2117,27 @@ module SqliteRelay : RELAY = struct
       let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
       if not has_row then `Unlisted
       else
-        let stmt = Sqlite3.prepare conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" in
-        Sqlite3.bind_text stmt 1 alias |> ignore;
-        let rc = Sqlite3.step stmt in
-        if rc = Rc.ROW then
-          let pinned = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
-          if identity_pk_b64 = pinned then `Allowed else `Mismatch
-        else `Unlisted
+        with_stmt conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 alias |> ignore;
+          let rc = Sqlite3.step stmt in
+          if rc = Rc.ROW then
+            let pinned = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+            if identity_pk_b64 = pinned then `Allowed else `Mismatch
+          else `Unlisted)
     )
 
   let unbind_alias t ~alias =
     with_lock t (fun () ->
       let conn = t.db in
       let before = ref false in
-      let stmt = Sqlite3.prepare conn "SELECT alias FROM leases WHERE alias = ?" in
-      Sqlite3.bind_text stmt 1 alias |> ignore;
-      let rc = Sqlite3.step stmt in
-      before := (rc = Rc.ROW);
+      with_stmt conn "SELECT alias FROM leases WHERE alias = ?" (fun stmt ->
+        Sqlite3.bind_text stmt 1 alias |> ignore;
+        let rc = Sqlite3.step stmt in
+        before := (rc = Rc.ROW));
       if !before then (
-        let del = Sqlite3.prepare conn "DELETE FROM leases WHERE alias = ?" in
-        Sqlite3.bind_text del 1 alias |> ignore;
-        Sqlite3.step del |> ignore
+        with_stmt conn "DELETE FROM leases WHERE alias = ?" (fun del ->
+          Sqlite3.bind_text del 1 alias |> ignore;
+          Sqlite3.step del |> ignore)
       );
       !before
     )
@@ -2170,16 +2169,16 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = t.db in
       let cutoff = ts -. 120.0 in
-      let del_stmt = Sqlite3.prepare conn "DELETE FROM request_nonces WHERE ts < ?" in
-      Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
-      Sqlite3.step del_stmt |> ignore;
+      with_stmt conn "DELETE FROM request_nonces WHERE ts < ?" (fun del_stmt ->
+        Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
+        Sqlite3.step del_stmt |> ignore);
       let has_row = exec_prepared conn "SELECT nonce FROM request_nonces WHERE nonce = ?" [`Text nonce] in
       if has_row then Res.Error relay_err_nonce_replay
       else (
-        let ins_stmt = Sqlite3.prepare conn "INSERT INTO request_nonces (nonce, ts) VALUES (?, ?)" in
-        Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
-        Sqlite3.bind_double ins_stmt 2 ts |> ignore;
-        Sqlite3.step ins_stmt |> ignore;
+        with_stmt conn "INSERT INTO request_nonces (nonce, ts) VALUES (?, ?)" (fun ins_stmt ->
+          Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
+          Sqlite3.bind_double ins_stmt 2 ts |> ignore;
+          Sqlite3.step ins_stmt |> ignore);
         Res.Ok ()
       )
     )
@@ -2192,16 +2191,16 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = t.db in
       let cutoff = ts -. 120.0 in
-      let del_stmt = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
-      Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
-      Sqlite3.step del_stmt |> ignore;
+      with_stmt conn "DELETE FROM revoke_nonces WHERE ts < ?" (fun del_stmt ->
+        Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
+        Sqlite3.step del_stmt |> ignore);
       let has_row = exec_prepared conn "SELECT nonce FROM revoke_nonces WHERE nonce = ?" [`Text nonce] in
       if has_row then Res.Error relay_err_nonce_replay
       else (
-        let ins_stmt = Sqlite3.prepare conn "INSERT INTO revoke_nonces (nonce, ts) VALUES (?, ?)" in
-        Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
-        Sqlite3.bind_double ins_stmt 2 ts |> ignore;
-        Sqlite3.step ins_stmt |> ignore;
+        with_stmt conn "INSERT INTO revoke_nonces (nonce, ts) VALUES (?, ?)" (fun ins_stmt ->
+          Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
+          Sqlite3.bind_double ins_stmt 2 ts |> ignore;
+          Sqlite3.step ins_stmt |> ignore);
         Res.Ok ()
       )
     )
@@ -2211,7 +2210,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       let now = Unix.gettimeofday () in
       let found_lease = ref None in
-      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM leases WHERE node_id = ? AND session_id = ?" in
+      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM leases WHERE node_id = ? AND session_id = ?" (fun stmt ->
       Sqlite3.bind_text stmt 1 node_id |> ignore;
       Sqlite3.bind_text stmt 2 session_id |> ignore;
       let rec find_lease () =
@@ -2260,7 +2259,7 @@ module SqliteRelay : RELAY = struct
         ) else if rc <> Rc.DONE then
           failwith ("heartbeat step failed: " ^ Rc.to_string rc)
       in
-      find_lease ();
+      find_lease ());
       match !found_lease with
       | None ->
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias:"_error" () in
@@ -2271,23 +2270,23 @@ module SqliteRelay : RELAY = struct
         (relay_err_unknown_alias, dummy)
       | Some lease ->
         (* B174: heal host id when the client reports one on heartbeat. *)
-        let up_stmt =
+        let up_sql =
           if opaque_host_id <> "" then
-            Sqlite3.prepare conn
-              "UPDATE leases SET last_seen = ?, \
-               opaque_host_id = CASE WHEN ? = '' THEN opaque_host_id ELSE ? END \
-               WHERE alias = ?"
+            "UPDATE leases SET last_seen = ?, \
+             opaque_host_id = CASE WHEN ? = '' THEN opaque_host_id ELSE ? END \
+             WHERE alias = ?"
           else
-            Sqlite3.prepare conn "UPDATE leases SET last_seen = ? WHERE alias = ?"
+            "UPDATE leases SET last_seen = ? WHERE alias = ?"
         in
-        Sqlite3.bind_double up_stmt 1 now |> ignore;
-        if opaque_host_id <> "" then begin
-          Sqlite3.bind_text up_stmt 2 opaque_host_id |> ignore;
-          Sqlite3.bind_text up_stmt 3 opaque_host_id |> ignore;
-          Sqlite3.bind_text up_stmt 4 (RegistrationLease.alias lease) |> ignore
-        end else
-          Sqlite3.bind_text up_stmt 2 (RegistrationLease.alias lease) |> ignore;
-        Sqlite3.step up_stmt |> ignore;
+        with_stmt conn up_sql (fun up_stmt ->
+          Sqlite3.bind_double up_stmt 1 now |> ignore;
+          if opaque_host_id <> "" then begin
+            Sqlite3.bind_text up_stmt 2 opaque_host_id |> ignore;
+            Sqlite3.bind_text up_stmt 3 opaque_host_id |> ignore;
+            Sqlite3.bind_text up_stmt 4 (RegistrationLease.alias lease) |> ignore
+          end else
+            Sqlite3.bind_text up_stmt 2 (RegistrationLease.alias lease) |> ignore;
+          Sqlite3.step up_stmt |> ignore);
         RegistrationLease.touch lease;
         RegistrationLease.set_opaque_host_id lease opaque_host_id;
         ("ok", lease)
@@ -2298,7 +2297,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       let now = Unix.gettimeofday () in
       let leases = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id, client_version, client_os FROM leases" in
+      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id, client_version, client_os FROM leases" (fun stmt ->
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
@@ -2354,7 +2353,7 @@ module SqliteRelay : RELAY = struct
         ) else if rc <> Rc.DONE then
           failwith ("list_peers step failed: " ^ Rc.to_string rc)
       in
-      loop ();
+      loop ());
       !leases
     )
 
@@ -2363,7 +2362,7 @@ module SqliteRelay : RELAY = struct
       let conn = t.db in
       let now = Unix.gettimeofday () in
       let expired_aliases = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl FROM leases" in
+      with_stmt conn "SELECT alias, last_seen, ttl FROM leases" (fun stmt ->
       let rec collect_expired () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
@@ -2383,12 +2382,12 @@ module SqliteRelay : RELAY = struct
         ) else if rc <> Rc.DONE then
           failwith ("gc collect step failed: " ^ Rc.to_string rc)
       in
-      collect_expired ();
+      collect_expired ());
       List.iter (fun alias ->
         release_alias conn alias
       ) !expired_aliases;
-      let live_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases" in
       let live_keys = ref [] in
+      with_stmt conn "SELECT node_id, session_id FROM leases" (fun live_stmt ->
       let rec collect_live () =
         let rc = Sqlite3.step live_stmt in
         if rc = Rc.ROW then (
@@ -2399,9 +2398,9 @@ module SqliteRelay : RELAY = struct
         ) else if rc <> Rc.DONE then
           failwith ("gc live step failed: " ^ Rc.to_string rc)
       in
-      collect_live ();
-      let inbox_stmt = Sqlite3.prepare conn "SELECT DISTINCT node_id, session_id FROM inboxes" in
+      collect_live ());
       let stale_keys = ref [] in
+      with_stmt conn "SELECT DISTINCT node_id, session_id FROM inboxes" (fun inbox_stmt ->
       let rec collect_stale () =
         let rc = Sqlite3.step inbox_stmt in
         if rc = Rc.ROW then (
@@ -2413,13 +2412,13 @@ module SqliteRelay : RELAY = struct
         ) else if rc <> Rc.DONE then
           failwith ("gc stale step failed: " ^ Rc.to_string rc)
       in
-      collect_stale ();
+      collect_stale ());
       let pruned = List.length !stale_keys in
       List.iter (fun (node_id, session_id) ->
-        let del = Sqlite3.prepare conn "DELETE FROM inboxes WHERE node_id = ? AND session_id = ?" in
-        Sqlite3.bind_text del 1 node_id |> ignore;
-        Sqlite3.bind_text del 2 session_id |> ignore;
-        Sqlite3.step del |> ignore
+        with_stmt conn "DELETE FROM inboxes WHERE node_id = ? AND session_id = ?" (fun del ->
+          Sqlite3.bind_text del 1 node_id |> ignore;
+          Sqlite3.bind_text del 2 session_id |> ignore;
+          Sqlite3.step del |> ignore)
       ) !stale_keys;
       (* B116: sweep expired revoke-proof nonces on a SERVER-time basis.
          check_revoke_nonce only self-cleans when another owner revoke
@@ -2427,14 +2426,14 @@ module SqliteRelay : RELAY = struct
          would accumulate durable rows. request_nonces/register_nonces
          self-clean on their frequent per-request hits, so this gc sweep is
          specific to the low-traffic revoke store. *)
-      let del_revoke = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
-      Sqlite3.bind_double del_revoke 1 (now -. request_nonce_ttl) |> ignore;
-      Sqlite3.step del_revoke |> ignore;
+      with_stmt conn "DELETE FROM revoke_nonces WHERE ts < ?" (fun del_revoke ->
+        Sqlite3.bind_double del_revoke 1 (now -. request_nonce_ttl) |> ignore;
+        Sqlite3.step del_revoke |> ignore);
       (* B147: drop message-event rows past the largest stats window; the
          stats_totals 'messages_ever' counter keeps the all-time count. *)
-      let del_stats = Sqlite3.prepare conn "DELETE FROM stats_message_events WHERE ts < ?" in
-      Sqlite3.bind_double del_stats 1 (now -. stats_event_retention_s) |> ignore;
-      Sqlite3.step del_stats |> ignore;
+      with_stmt conn "DELETE FROM stats_message_events WHERE ts < ?" (fun del_stats ->
+        Sqlite3.bind_double del_stats 1 (now -. stats_event_retention_s) |> ignore;
+        Sqlite3.step del_stats |> ignore);
       `Ok (List.rev !expired_aliases, pruned)
     )
 
@@ -2448,7 +2447,7 @@ module SqliteRelay : RELAY = struct
       if not has_row then
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
       else
-        let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" in
+        with_stmt conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 lookup_alias |> ignore;
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then
@@ -2468,13 +2467,13 @@ module SqliteRelay : RELAY = struct
           else if (last_seen +. ttl) < ts then
             `Error (relay_err_recipient_dead, Printf.sprintf "alias %S is registered but lease has expired" to_alias)
           else
-            let recv_stmt = Sqlite3.prepare conn "SELECT node_id, session_id FROM leases WHERE alias = ?" in
+            with_stmt conn "SELECT node_id, session_id FROM leases WHERE alias = ?" (fun recv_stmt ->
             Sqlite3.bind_text recv_stmt 1 lookup_alias |> ignore;
             let rc2 = Sqlite3.step recv_stmt in
             if rc2 = Rc.ROW then
               let recv_node_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 0) in
               let recv_session_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 1) in
-              let ins_stmt = Sqlite3.prepare conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" in
+              with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
               Sqlite3.bind_text ins_stmt 1 recv_node_id |> ignore;
               Sqlite3.bind_text ins_stmt 2 recv_session_id |> ignore;
               Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
@@ -2484,18 +2483,18 @@ module SqliteRelay : RELAY = struct
               Sqlite3.bind_double ins_stmt 7 ts |> ignore;
               Sqlite3.bind_int ins_stmt 8 pow_difficulty |> ignore;
               Sqlite3.step ins_stmt |> ignore;
-              `Ok ts
+              `Ok ts)
             else
-              `Error (relay_err_unknown_alias, "recipient lease not found")
+              `Error (relay_err_unknown_alias, "recipient lease not found"))
         else
-          `Error (relay_err_unknown_alias, "recipient lease not found")
+          `Error (relay_err_unknown_alias, "recipient lease not found"))
     )
 
   let poll_inbox t ~node_id ~session_id =
     with_lock t (fun () ->
       let conn = t.db in
       let msgs = ref [] in
-      let sel_stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
+      with_stmt conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" (fun sel_stmt ->
       Sqlite3.bind_text sel_stmt 1 node_id |> ignore;
       Sqlite3.bind_text sel_stmt 2 session_id |> ignore;
       let rec loop () =
@@ -2520,11 +2519,11 @@ module SqliteRelay : RELAY = struct
         ) else if rc <> Rc.DONE then
           failwith ("poll_inbox step failed: " ^ Rc.to_string rc)
       in
-      loop ();
-      let del_stmt = Sqlite3.prepare conn "DELETE FROM inboxes WHERE node_id = ? AND session_id = ?" in
-      Sqlite3.bind_text del_stmt 1 node_id |> ignore;
-      Sqlite3.bind_text del_stmt 2 session_id |> ignore;
-      Sqlite3.step del_stmt |> ignore;
+      loop ());
+      with_stmt conn "DELETE FROM inboxes WHERE node_id = ? AND session_id = ?" (fun del_stmt ->
+        Sqlite3.bind_text del_stmt 1 node_id |> ignore;
+        Sqlite3.bind_text del_stmt 2 session_id |> ignore;
+        Sqlite3.step del_stmt |> ignore);
       List.rev !msgs
     )
 
@@ -2532,7 +2531,7 @@ module SqliteRelay : RELAY = struct
     with_lock t (fun () ->
       let conn = t.db in
       let msgs = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
+      with_stmt conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" (fun stmt ->
       Sqlite3.bind_text stmt 1 node_id |> ignore;
       Sqlite3.bind_text stmt 2 session_id |> ignore;
       let rec loop () =
@@ -2557,7 +2556,7 @@ module SqliteRelay : RELAY = struct
         ) else if rc <> Rc.DONE then
           failwith ("peek_inbox step failed: " ^ Rc.to_string rc)
       in
-      loop ();
+      loop ());
       List.rev !msgs
     )
 
@@ -2568,7 +2567,7 @@ module SqliteRelay : RELAY = struct
       let sent_to = ref [] in
       let skipped = ref [] in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
-      let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl, node_id, session_id FROM leases WHERE alias != ?" in
+      with_stmt conn "SELECT alias, last_seen, ttl, node_id, session_id FROM leases WHERE alias != ?" (fun stmt ->
       Sqlite3.bind_text stmt 1 from_alias |> ignore;
       let rec loop () =
         let rc = Sqlite3.step stmt in
@@ -2588,15 +2587,15 @@ module SqliteRelay : RELAY = struct
           if alive then (
             let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 3) in
             let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 4) in
-            let ins_stmt = Sqlite3.prepare conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" in
-            Sqlite3.bind_text ins_stmt 1 node_id |> ignore;
-            Sqlite3.bind_text ins_stmt 2 session_id |> ignore;
-            Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
-            Sqlite3.bind_text ins_stmt 4 from_alias |> ignore;
-            Sqlite3.bind_text ins_stmt 5 alias |> ignore;
-            Sqlite3.bind_text ins_stmt 6 content |> ignore;
-            Sqlite3.bind_double ins_stmt 7 now |> ignore;
-            Sqlite3.step ins_stmt |> ignore;
+            with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
+              Sqlite3.bind_text ins_stmt 1 node_id |> ignore;
+              Sqlite3.bind_text ins_stmt 2 session_id |> ignore;
+              Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
+              Sqlite3.bind_text ins_stmt 4 from_alias |> ignore;
+              Sqlite3.bind_text ins_stmt 5 alias |> ignore;
+              Sqlite3.bind_text ins_stmt 6 content |> ignore;
+              Sqlite3.bind_double ins_stmt 7 now |> ignore;
+              Sqlite3.step ins_stmt |> ignore);
             sent_to := alias :: !sent_to
           ) else
             skipped := (alias, "not_alive") :: !skipped;
@@ -2604,7 +2603,7 @@ module SqliteRelay : RELAY = struct
         else if rc <> Rc.DONE then
           failwith ("send_all step failed: " ^ Rc.to_string rc)
       in
-      loop ();
+      loop ());
       `Ok (now, List.rev !sent_to, List.map fst (List.rev !skipped))
     )
 
@@ -2632,16 +2631,16 @@ module SqliteRelay : RELAY = struct
       (* B117: seed history_public from the creation visibility. Only applied
          on room creation (INSERT OR IGNORE); an existing room keeps its
          stored policy. *)
-      let room_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO rooms (room_id, visibility, history_public) VALUES (?, ?, ?)" in
-      Sqlite3.bind_text room_stmt 1 room_id |> ignore;
-      Sqlite3.bind_text room_stmt 2 visibility |> ignore;
-      Sqlite3.bind_int room_stmt 3
-        (if history_public_default_for_visibility visibility then 1 else 0) |> ignore;
-      Sqlite3.step room_stmt |> ignore;
-      let mem_stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO room_members (room_id, alias) VALUES (?, ?)" in
-      Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
-      Sqlite3.bind_text mem_stmt 2 alias |> ignore;
-      Sqlite3.step mem_stmt |> ignore;
+      with_stmt conn "INSERT OR IGNORE INTO rooms (room_id, visibility, history_public) VALUES (?, ?, ?)" (fun room_stmt ->
+        Sqlite3.bind_text room_stmt 1 room_id |> ignore;
+        Sqlite3.bind_text room_stmt 2 visibility |> ignore;
+        Sqlite3.bind_int room_stmt 3
+          (if history_public_default_for_visibility visibility then 1 else 0) |> ignore;
+        Sqlite3.step room_stmt |> ignore);
+      with_stmt conn "INSERT OR IGNORE INTO room_members (room_id, alias) VALUES (?, ?)" (fun mem_stmt ->
+        Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
+        Sqlite3.bind_text mem_stmt 2 alias |> ignore;
+        Sqlite3.step mem_stmt |> ignore);
       `Ok
       )
     )
@@ -2649,10 +2648,10 @@ module SqliteRelay : RELAY = struct
   let leave_room t ~alias ~room_id =
     with_lock t (fun () ->
       let conn = t.db in
-      let stmt = Sqlite3.prepare conn "DELETE FROM room_members WHERE room_id = ? AND alias = ?" in
-      Sqlite3.bind_text stmt 1 room_id |> ignore;
-      Sqlite3.bind_text stmt 2 alias |> ignore;
-      Sqlite3.step stmt |> ignore;
+      with_stmt conn "DELETE FROM room_members WHERE room_id = ? AND alias = ?" (fun stmt ->
+        Sqlite3.bind_text stmt 1 room_id |> ignore;
+        Sqlite3.bind_text stmt 2 alias |> ignore;
+        Sqlite3.step stmt |> ignore);
       `Ok
     )
 
@@ -2685,7 +2684,7 @@ module SqliteRelay : RELAY = struct
       else
       let delivered_to = ref [] in
       let skipped = ref [] in
-      let stmt = Sqlite3.prepare conn "SELECT alias FROM room_members WHERE room_id = ? AND alias != ?" in
+      with_stmt conn "SELECT alias FROM room_members WHERE room_id = ? AND alias != ?" (fun stmt ->
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 from_alias |> ignore;
       let rec loop () =
@@ -2697,16 +2696,16 @@ module SqliteRelay : RELAY = struct
         else if rc <> Rc.DONE then
           failwith ("send_room members step failed: " ^ Rc.to_string rc)
       in
-      loop ();
-      let hist_stmt = Sqlite3.prepare conn "INSERT INTO room_history (room_id, message_id, from_alias, content, ts) VALUES (?, ?, ?, ?, ?)" in
-      Sqlite3.bind_text hist_stmt 1 room_id |> ignore;
-      Sqlite3.bind_text hist_stmt 2 msg_id |> ignore;
-      Sqlite3.bind_text hist_stmt 3 from_alias |> ignore;
-      Sqlite3.bind_text hist_stmt 4 content |> ignore;
-      Sqlite3.bind_double hist_stmt 5 ts |> ignore;
-      Sqlite3.step hist_stmt |> ignore;
+      loop ());
+      with_stmt conn "INSERT INTO room_history (room_id, message_id, from_alias, content, ts) VALUES (?, ?, ?, ?, ?)" (fun hist_stmt ->
+        Sqlite3.bind_text hist_stmt 1 room_id |> ignore;
+        Sqlite3.bind_text hist_stmt 2 msg_id |> ignore;
+        Sqlite3.bind_text hist_stmt 3 from_alias |> ignore;
+        Sqlite3.bind_text hist_stmt 4 content |> ignore;
+        Sqlite3.bind_double hist_stmt 5 ts |> ignore;
+        Sqlite3.step hist_stmt |> ignore);
       List.iter (fun to_alias ->
-        let node_stmt = Sqlite3.prepare conn "SELECT node_id, session_id, last_seen, ttl FROM leases WHERE alias = ?" in
+        with_stmt conn "SELECT node_id, session_id, last_seen, ttl FROM leases WHERE alias = ?" (fun node_stmt ->
         Sqlite3.bind_text node_stmt 1 to_alias |> ignore;
         let rc = Sqlite3.step node_stmt in
         if rc = Rc.ROW then
@@ -2725,19 +2724,19 @@ module SqliteRelay : RELAY = struct
             | None -> float_of_string (Sqlite3.Data.to_string_exn col)
           in
           if last_seen +. ttl >= ts then (
-            let inbox_stmt = Sqlite3.prepare conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" in
-            Sqlite3.bind_text inbox_stmt 1 node_id |> ignore;
-            Sqlite3.bind_text inbox_stmt 2 session_id |> ignore;
-            Sqlite3.bind_text inbox_stmt 3 msg_id |> ignore;
-            Sqlite3.bind_text inbox_stmt 4 from_alias |> ignore;
-            Sqlite3.bind_text inbox_stmt 5 (to_alias ^ "#" ^ room_id) |> ignore;
-            Sqlite3.bind_text inbox_stmt 6 content |> ignore;
-            Sqlite3.bind_double inbox_stmt 7 ts |> ignore;
-            Sqlite3.step inbox_stmt |> ignore
+            with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" (fun inbox_stmt ->
+              Sqlite3.bind_text inbox_stmt 1 node_id |> ignore;
+              Sqlite3.bind_text inbox_stmt 2 session_id |> ignore;
+              Sqlite3.bind_text inbox_stmt 3 msg_id |> ignore;
+              Sqlite3.bind_text inbox_stmt 4 from_alias |> ignore;
+              Sqlite3.bind_text inbox_stmt 5 (to_alias ^ "#" ^ room_id) |> ignore;
+              Sqlite3.bind_text inbox_stmt 6 content |> ignore;
+              Sqlite3.bind_double inbox_stmt 7 ts |> ignore;
+              Sqlite3.step inbox_stmt |> ignore)
           ) else
             skipped := to_alias :: !skipped
         else
-          skipped := to_alias :: !skipped
+          skipped := to_alias :: !skipped)
       ) !delivered_to;
       let delivered =
         List.filter (fun alias -> not (List.mem alias !skipped)) !delivered_to
