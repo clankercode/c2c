@@ -54,7 +54,7 @@ let loopback_socket () =
    default (token = None) — pass [?token] for a token-configured
    (production auth mode) bracket, e.g. the B116 binding-revoke suite;
    optional caller-supplied rate limiter. *)
-let with_server ?token ?rate_limiter ?(native_tls=false) f =
+let with_server ?token ?(native_tls = false) ?rate_limiter f =
   Lwt_main.run
     (loopback_socket () >>= fun (fd, port) ->
      let relay = Relay.InMemoryRelay.create () in

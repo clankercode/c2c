@@ -4621,7 +4621,7 @@ end = struct
       ("stats", R.stats relay ~now);
     ])
 
-  let handle_register relay ~relay_url body =
+  let handle_register relay ~relay_url ~token body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
     let alias = get_string body "alias" in
@@ -4781,9 +4781,12 @@ end = struct
       if partial_proof then
         respond_register_bad_request (json_error_str relay_err_missing_proof_field
           "identity_pk, signature, nonce, and timestamp must all be present together")
-      else if pow_enabled && not has_proof_fields then
+      else if (pow_enabled || token <> None) && not has_proof_fields then
+        (* B267 review: token-configured (prod) relays must not accept unsigned
+           registration — it is a private-alias existence oracle and blocks
+           victims from claiming their alias. PoW still forces proofs too. *)
         respond_register_bad_request (json_error_str relay_err_missing_proof_field
-          "identity_pk, signature, nonce, and timestamp are required when C2C_RELAY_POW=1")
+          "identity_pk, signature, nonce, and timestamp are required on a token-configured relay (or when C2C_RELAY_POW=1)")
       else if has_proof_fields then
         (* Signed registration path — verify before binding. *)
         match decode_b64url identity_pk_b64 with
@@ -4923,9 +4926,11 @@ end = struct
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
       | None -> run_heartbeat ()
 
-  let handle_contact_deliver relay ~verified_alias ~token body =
+  let handle_contact_deliver relay ~verified_alias ~token ~confidential_transport body =
     (* B265: POST /contact/v1/deliver — recipient-issued grant admission.
        Tokenless (dev) relays refuse contact delivery (B262 §13.3).
+       Production contact delivery requires confidential transport (B262 §10):
+       native TLS or trusted X-Forwarded-Proto=https/wss.
        Side effects only on `Accepted (not Duplicate/Rejected).
        G6: all admission denials share one external shape (contact_unauthorised)
        — no distinct messages for unknown/malformed/expired/revoked/dev/protocol. *)
@@ -4934,6 +4939,7 @@ end = struct
         (json_error_str err_contact_unauthorised "contact unauthorised")
     in
     if token = None then deny ()
+    else if not confidential_transport then deny ()
     else
       match verified_alias with
       | None -> deny ()
@@ -4973,6 +4979,26 @@ end = struct
                    wake via poll/connector. WS push optional follow-up (M3). *)
                 respond_ok (`Assoc [ ("ok", `Bool true); ("ts", `Float ts) ])
 
+  (* G1 / B267: forward-path failures must not store message content.
+     Private-destination rejects and peer 4xx would otherwise content-DLQ
+     a guessed private alias without a grant. *)
+  let forward_out_dead_letter ~ts ~message_id ~from_alias ~to_alias ~reason
+      ~phase ?peer () =
+    let base =
+      [ ("ts", `Float ts);
+        ("message_id", `String message_id);
+        ("from_alias", `String from_alias);
+        ("to_alias", `String to_alias);
+        ("content", `String "");
+        ("content_redacted", `Bool true);
+        ("reason", `String reason);
+        ("phase", `String phase);
+      ]
+    in
+    match peer with
+    | Some p -> `Assoc (base @ [ ("peer", `String p) ])
+    | None -> `Assoc base
+
   let handle_send relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
     let to_alias = get_string body "to_alias" in
@@ -5010,15 +5036,11 @@ end = struct
          | None ->
              (* No known peer — write dead-letter and return synchronously. *)
              let ts = Unix.gettimeofday () in
-             let dl = `Assoc [
-               ("ts", `Float ts);
-               ("message_id", `String msg_id);
-               ("from_alias", `String from_alias);
-               ("to_alias", `String to_alias);
-               ("content", `String content);
-               ("reason", `String "cross_host_not_implemented");
-               ("phase", `String "forward_out");
-             ] in
+             let dl =
+               forward_out_dead_letter ~ts ~message_id:msg_id ~from_alias
+                 ~to_alias ~reason:"cross_host_not_implemented"
+                 ~phase:"forward_out" ()
+             in
              R.add_dead_letter relay dl;
              respond_not_found
                (json_error_str "cross_host_not_implemented"
@@ -5040,91 +5062,67 @@ end = struct
                  | Duplicate ts ->
                      respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
                  | Peer_unreachable reason ->
-                     let dl = `Assoc [
-                       ("ts", `Float (Unix.gettimeofday ()));
-                       ("message_id", `String msg_id);
-                       ("from_alias", `String from_alias);
-                       ("to_alias", `String to_alias);
-                       ("content", `String content);
-                       ("reason", `String "peer_unreachable");
-                       ("phase", `String "forward_out");
-                       ("peer", `String peer_name);
-                     ] in
+                     let dl =
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_unreachable"
+                         ~phase:"forward_out" ~peer:peer_name ()
+                     in
                      R.add_dead_letter relay dl;
                      respond_bad_gateway
                        (json_error_str "peer_unreachable"
                           (Printf.sprintf "peer relay %s unreachable: %s" peer_name reason))
                  | Peer_timeout ->
-                     let dl = `Assoc [
-                       ("ts", `Float (Unix.gettimeofday ()));
-                       ("message_id", `String msg_id);
-                       ("from_alias", `String from_alias);
-                       ("to_alias", `String to_alias);
-                       ("content", `String content);
-                       ("reason", `String "peer_timeout");
-                       ("phase", `String "forward_out");
-                       ("peer", `String peer_name);
-                     ] in
+                     let dl =
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_timeout"
+                         ~phase:"forward_out" ~peer:peer_name ()
+                     in
                      R.add_dead_letter relay dl;
                      respond_gateway_timeout
                        (json_error_str "peer_timeout"
                           (Printf.sprintf "peer relay %s did not respond within 5s" peer_name))
                  | Peer_5xx (st, body_excerpt) ->
-                     let dl = `Assoc [
-                       ("ts", `Float (Unix.gettimeofday ()));
-                       ("message_id", `String msg_id);
-                       ("from_alias", `String from_alias);
-                       ("to_alias", `String to_alias);
-                       ("content", `String content);
-                       ("reason", `String "peer_5xx");
-                       ("phase", `String "forward_out");
-                       ("peer", `String peer_name);
-                     ] in
+                     let dl =
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_5xx"
+                         ~phase:"forward_out" ~peer:peer_name ()
+                     in
                      R.add_dead_letter relay dl;
                      respond_bad_gateway
                        (json_error_str "peer_5xx"
                           (Printf.sprintf "peer relay %s returned %d: %s" peer_name st body_excerpt))
                  | Peer_4xx (st, body_excerpt) ->
-                     let dl = `Assoc [
-                       ("ts", `Float (Unix.gettimeofday ()));
-                       ("message_id", `String msg_id);
-                       ("from_alias", `String from_alias);
-                       ("to_alias", `String to_alias);
-                       ("content", `String content);
-                       ("reason", `String "peer_rejected");
-                       ("phase", `String "forward_out");
-                       ("peer", `String peer_name);
-                     ] in
+                     let dl =
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_rejected"
+                         ~phase:"forward_out" ~peer:peer_name ()
+                     in
                      R.add_dead_letter relay dl;
                      respond_not_found
                        (json_error_str "peer_rejected"
                           (Printf.sprintf "peer relay %s rejected request %d: %s" peer_name st body_excerpt))
                  | Peer_unauthorized ->
-                     let dl = `Assoc [
-                       ("ts", `Float (Unix.gettimeofday ()));
-                       ("message_id", `String msg_id);
-                       ("from_alias", `String from_alias);
-                       ("to_alias", `String to_alias);
-                       ("content", `String content);
-                       ("reason", `String "peer_unauthorized");
-                       ("phase", `String "forward_out");
-                       ("peer", `String peer_name);
-                     ] in
+                     let dl =
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_unauthorized"
+                         ~phase:"forward_out" ~peer:peer_name ()
+                     in
                      R.add_dead_letter relay dl;
                      respond_bad_gateway
                        (json_error_str "peer_unauthorized"
                           (Printf.sprintf "peer relay %s did not accept our identity" peer_name))
                  | Local_error err ->
-                     let dl = `Assoc [
-                       ("ts", `Float (Unix.gettimeofday ()));
-                       ("message_id", `String msg_id);
-                       ("from_alias", `String from_alias);
-                       ("to_alias", `String to_alias);
-                       ("content", `String content);
-                       ("reason", `String "forward_local_error");
-                       ("phase", `String "forward_out");
-                       ("peer", `String peer_name);
-                     ] in
+                     let dl =
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"forward_local_error"
+                         ~phase:"forward_out" ~peer:peer_name ()
+                     in
                      R.add_dead_letter relay dl;
                      respond_internal_error
                        (json_error_str "forward_local_error"
@@ -5192,8 +5190,11 @@ end = struct
         let message_id = get_opt_string body "message_id" in
         match R.send_all relay ~from_alias ~content ~message_id with
         | `Ok (ts, delivered, skipped) ->
-          (* B147: a broadcast counts as one message, not one per recipient. *)
-          R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts;
+          (* B147: a broadcast counts as one message, not one per recipient.
+             B267: private-only targets yield delivered=[]; do not bump stats
+             (G1 — no side effect without a successful public delivery). *)
+          (if delivered <> [] then
+             R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts);
           List.iter (fun to_alias ->
             match R.identity_pk_of relay ~alias:to_alias with
             | Some identity_pk ->
@@ -6546,6 +6547,14 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
          | Some s when s <> "" -> s
          | _ -> if native_tls then "https" else "http")
     in
+    (* B262 §10 / B267 review: grant secrets need confidential transport.
+       Trust native TLS or a reverse-proxy X-Forwarded-Proto of https/wss. *)
+    let confidential_transport =
+      native_tls
+      ||
+      (let s = String.lowercase_ascii (String.trim scheme) in
+       s = "https" || s = "wss")
+    in
     let relay_url =
       match host_header with
       | Some h when h <> "" -> Printf.sprintf "%s://%s" scheme h
@@ -6842,7 +6851,7 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_register relay ~relay_url j)
+         | Ok j -> handle_register relay ~relay_url ~token j)
 
       | `POST, "/heartbeat" ->
         let json = parse_body () in
@@ -6860,7 +6869,9 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
         let json = parse_body () in
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
-         | Ok j -> handle_contact_deliver relay ~verified_alias ~token j)
+         | Ok j ->
+           handle_contact_deliver relay ~verified_alias ~token
+             ~confidential_transport j)
 
       | `POST, "/send_all" ->
         let json = parse_body () in
