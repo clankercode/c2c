@@ -335,7 +335,8 @@ a:visited { color: var(--c2c-amber-dim); }
 #htab-opencode:checked ~ .hero-tab-bar label[for=htab-opencode],
 #htab-kimi:checked ~ .hero-tab-bar label[for=htab-kimi],
 #htab-grok:checked ~ .hero-tab-bar label[for=htab-grok],
-#htab-agy:checked ~ .hero-tab-bar label[for=htab-agy] {
+#htab-agy:checked ~ .hero-tab-bar label[for=htab-agy],
+#htab-pi:checked ~ .hero-tab-bar label[for=htab-pi] {
   color: var(--c2c-void);
   background: var(--c2c-amber);
   border-color: var(--c2c-amber);
@@ -355,7 +356,8 @@ a:visited { color: var(--c2c-amber-dim); }
 #htab-opencode:checked ~ .hero-tab-panels .panel-opencode,
 #htab-kimi:checked ~ .hero-tab-panels .panel-kimi,
 #htab-grok:checked ~ .hero-tab-panels .panel-grok,
-#htab-agy:checked ~ .hero-tab-panels .panel-agy { display: flex; }
+#htab-agy:checked ~ .hero-tab-panels .panel-agy,
+#htab-pi:checked ~ .hero-tab-panels .panel-pi { display: flex; }
 
 .hero-step-cmd {
   display: inline-flex;

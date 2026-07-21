@@ -27,6 +27,7 @@ layout: default
           <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-kimi">
           <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-grok">
           <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-agy">
+          <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-pi">
           <div class="hero-tab-bar" role="tablist" aria-label="Choose your coding agent">
             <label for="htab-claude" role="tab">Claude</label>
             <label for="htab-codex" role="tab">Codex</label>
@@ -34,6 +35,7 @@ layout: default
             <label for="htab-kimi" role="tab">Kimi</label>
             <label for="htab-grok" role="tab">Grok</label>
             <label for="htab-agy" role="tab">Antigravity</label>
+            <label for="htab-pi" role="tab">Pi</label>
           </div>
           <div class="hero-tab-panels">
             <div class="hero-tab-panel panel-claude" role="tabpanel">
@@ -62,6 +64,10 @@ layout: default
               <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install agy</code>
               <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c start agy</code>
               <p class="hero-step-note">A managed session &mdash; automated delivery built in. Skill loads automatically.</p>
+            </div>
+            <div class="hero-tab-panel panel-pi" role="tabpanel">
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>pi install npm:pi-c2c</code>
+              <p class="hero-step-note">The pi-c2c extension wires c2c into your Pi session &mdash; same CLI and broker underneath.</p>
             </div>
           </div>
         </div>
