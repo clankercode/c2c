@@ -613,6 +613,62 @@ let test_http_send_all_skips_private () =
       (List.length
          (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-fu" ~session_id:"s-fu")))
 
+(* Downgrade / wrong-version authority: unsupported protocol string is refused
+   with the same unauthorised class (no alias /send fallback). *)
+let test_http_contact_protocol_downgrade_refused () =
+  RTSR.with_server ~token:"b266-attack-token" (fun ~base_url ~relay ->
+    let open Lwt.Infix in
+    let pk_r = gen_pk () in
+    let pk_s = gen_pk () in
+    let _ =
+      Relay.InMemoryRelay.register relay ~node_id:"n-pd" ~session_id:"s-pd"
+        ~alias:"zzpdr" ~identity_pk:pk_r ()
+    in
+    let _ =
+      Relay.InMemoryRelay.register relay ~node_id:"n-ps" ~session_id:"s-ps"
+        ~alias:"zzpds" ~identity_pk:pk_s ()
+    in
+    ignore
+      (Relay.InMemoryRelay.set_peer_discovery_visibility relay ~alias:"zzpdr"
+         ~visibility:Private);
+    let now = Unix.gettimeofday () in
+    let issued =
+      match
+        Relay.InMemoryRelay.issue_contact_grant relay
+          ~recipient_identity_pk:pk_r ~delivery_alias:"zzpdr"
+          ~sender_identity_pk:pk_s ~expires_at:(now +. 3600.) ()
+      with
+      | Ok r -> r
+      | Error e -> failwith ("issue: " ^ e)
+    in
+    let secret_b64 =
+      Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet
+        issued.grant_secret
+    in
+    let body =
+      `Assoc
+        [ ("protocol", `String "c2c-contact/0");
+          ("grant_secret", `String secret_b64);
+          ("message_id", `String "mid-proto-down");
+          ("content", `String "should-not-deliver");
+          ("from_alias", `String "zzpds");
+        ]
+    in
+    (* Even on a token-configured relay, wrong protocol must not deliver.
+       Auth may still reject unsigned requests; either way body must not land. *)
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/contact/v1/deliver" ~body ()
+    >|= fun r ->
+    check bool "protocol downgrade not success-200-ok" true
+      (let code = RTSR.status_code r in
+       code <> 200
+       ||
+       match r.json with
+       | Some (`Assoc f) -> List.assoc_opt "ok" f <> Some (`Bool true)
+       | _ -> true);
+    check int "inbox empty after protocol downgrade" 0
+      (List.length
+         (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-pd" ~session_id:"s-pd")))
+
 let () =
   Random.self_init ();
   Alcotest.run "relay_contact_delivery_handlers"
@@ -625,5 +681,7 @@ let () =
             test_http_send_private_dev_unsigned_fails;
           test_case "POST /send_all skips private" `Quick
             test_http_send_all_skips_private;
+          test_case "contact protocol downgrade refused" `Quick
+            test_http_contact_protocol_downgrade_refused;
         ] );
     ]
