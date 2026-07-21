@@ -9,11 +9,7 @@ id: B266
 priority: critical
 started_at: null
 status: pending
-tags:
-    - security
-    - relay
-    - migration
-    - operations
+tags: []
 title: Migrate relay installations to private fail-closed reachability
 updated_at: "2026-07-21T13:50:18Z"
 ---
@@ -35,3 +31,7 @@ Ship a safe operator/user migration from current global authenticated-peer disco
 - Upgrade tests cover old state, mixed versions, interrupted migration, retry, rollback, and idempotence.
 - CLI/help/doctor output is tested and does not leak capabilities.
 - A production deployment cannot report healthy while retaining unintended global discovery/default-allow admission.
+
+## B261 post-B219 constraints
+
+Use checked durable idempotent migration state; `schema_version` currently exists but is not a general migration driver. Define a rollback/mixed-version compatibility floor so old binaries cannot silently reopen discovery or alias delivery; diagnostics must identify tokenless, incomplete, and insecure states.
