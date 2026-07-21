@@ -1632,7 +1632,7 @@ module InMemoryRelay : RELAY = struct
             expires_at;
             generation;
           }
-      end)
+        end)
 
   let list_contact_grants t ~recipient_identity_pk =
     with_lock t (fun () ->
@@ -3858,6 +3858,17 @@ module SqliteRelay : RELAY = struct
         else
         try
           with_tx_immediate conn (fun () ->
+            (* Owner binding: delivery_alias lease identity must match recipient. *)
+            let lease_pk = ref None in
+            with_stmt conn "SELECT identity_pk FROM leases WHERE alias = ?" (fun stmt ->
+              Sqlite3.bind_text stmt 1 delivery_alias |> ignore;
+              if Sqlite3.step stmt = Rc.ROW then
+                lease_pk := Some (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)));
+            (match !lease_pk with
+             | None -> Result.Error "contact_grant_unknown_delivery_alias"
+             | Some pk when pk = "" || pk <> recipient_identity_pk ->
+               Result.Error "contact_grant_not_owner"
+             | Some _ ->
             let recipient_fp = contact_fp_of_pk recipient_identity_pk in
             let sender_fp = contact_fp_of_pk sender_identity_pk in
             let generation =
@@ -3874,7 +3885,7 @@ module SqliteRelay : RELAY = struct
                 grant_id = contact_grant_id_of_verifier verifier;
                 expires_at;
                 generation;
-              })
+              }))
         with exn ->
           Result.Error ("contact_grant_issue_failed: " ^ Printexc.to_string exn))
 
@@ -4426,6 +4437,8 @@ end = struct
   let err_bad_request = "bad_request"
   let err_not_found = "not_found"
   let err_internal_error = "internal_error"
+  (* B265: uniform denial for private legacy send + contact deliver rejects. *)
+  let err_contact_unauthorised = "contact_unauthorised"
 
   let pow_required_json challenge =
     `Assoc [
@@ -4907,6 +4920,71 @@ end = struct
          | Some owner when owner = v -> run_heartbeat ()
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
       | None -> run_heartbeat ()
+
+  let handle_contact_deliver relay ~verified_alias ~token body =
+    (* B265: POST /contact/v1/deliver — recipient-issued grant admission.
+       Tokenless (dev) relays refuse contact delivery (B262 §13.3).
+       Side effects only on `Accepted (not Duplicate/Rejected). *)
+    if token = None then
+      respond_unauthorized
+        (json_error_str err_contact_unauthorised
+           "contact delivery requires a production (token-configured) relay")
+    else
+      match verified_alias with
+      | None ->
+        respond_unauthorized
+          (json_error_str err_unauthorized
+             "contact delivery requires verified Ed25519 peer auth")
+      | Some from_alias ->
+        let protocol = get_string body "protocol" in
+        let grant_secret_b64 = get_string body "grant_secret" in
+        let message_id = get_string body "message_id" in
+        let content = get_string body "content" in
+        if protocol <> "" && protocol <> "c2c-contact/1" then
+          respond_unauthorized
+            (json_error_str err_contact_unauthorised "unsupported contact protocol")
+        else if grant_secret_b64 = "" || message_id = "" then
+          respond_bad_request
+            (json_error_str err_bad_request "grant_secret and message_id are required")
+        else
+          match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet grant_secret_b64 with
+          | Error _ ->
+            respond_unauthorized
+              (json_error_str err_contact_unauthorised "invalid grant_secret")
+          | Ok grant_secret when String.length grant_secret <> 32 ->
+            respond_unauthorized
+              (json_error_str err_contact_unauthorised "invalid grant_secret")
+          | Ok grant_secret ->
+            match R.identity_pk_of relay ~alias:from_alias with
+            | None ->
+              respond_unauthorized
+                (json_error_str err_contact_unauthorised "sender identity unresolved")
+            | Some sender_pk ->
+              match
+                R.admit_contact_delivery relay
+                  ~verified_sender_alias:from_alias
+                  ~verified_sender_identity_pk:sender_pk
+                  ~grant_secret ~message_id ~content ()
+              with
+              | `Rejected ->
+                respond_unauthorized
+                  (json_error_str err_contact_unauthorised "contact unauthorised")
+              | `Duplicate ts ->
+                (* No second side effects (stricter than legacy /send). *)
+                respond_ok
+                  (`Assoc
+                     [ ("ok", `Bool true);
+                       ("duplicate", `Bool true);
+                       ("ts", `Float ts) ])
+              | `Accepted ts ->
+                R.stats_note_message relay
+                  ~from_alias:(stats_alias_key from_alias) ~ts;
+                (* Resolve delivery alias for push via grant is internal;
+                   push by scanning is avoided — use content-only short path
+                   when recipient pubkey known from sender's grant binding is
+                   not available here. Prefer push when we can resolve a
+                   public peer; private recipients still wake via inbox poll. *)
+                respond_ok (`Assoc [ ("ok", `Bool true); ("ts", `Float ts) ])
 
   let handle_send relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
@@ -6790,6 +6868,12 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
         (match json with
          | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j -> handle_send relay ~verified_alias j)
+
+      | `POST, "/contact/v1/deliver" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_contact_deliver relay ~verified_alias ~token j)
 
       | `POST, "/send_all" ->
         let json = parse_body () in
