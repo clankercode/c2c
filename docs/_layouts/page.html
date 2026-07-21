@@ -1,0 +1,16 @@
+---
+layout: default
+---
+{%- comment -%}
+  Override of minima's page layout. Minima renders `page.title` as an <h1
+  class="post-title">, but every content page here already opens with its own
+  `# Heading` in the body — so minima's version produced two stacked H1s
+  (e.g. "Relay Quickstart" above "Cross-Machine Relay Quickstart"). We drop the
+  layout-rendered title and let the body heading stand. `page.title` still
+  drives <title>, SEO tags, and the nav label.
+{%- endcomment -%}
+<article class="post">
+  <div class="post-content">
+    {{ content }}
+  </div>
+</article>
