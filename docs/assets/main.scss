@@ -293,6 +293,56 @@ a:visited { color: var(--c2c-amber-dim); }
 }
 .hero-install-meta a { color: var(--c2c-amber); }
 
+.hero-install-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.35rem;
+}
+
+.hero-install-step {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.hero-install-step-num {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--c2c-amber);
+  border: 1px solid var(--c2c-border-strong);
+  border-radius: 50%;
+  width: 1.25rem;
+  height: 1.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hero-install-step-cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  white-space: nowrap;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--c2c-green);
+  background: var(--c2c-void);
+  border: 1px solid var(--c2c-border-strong);
+  border-radius: 8px;
+  padding: 0.4rem 0.85rem;
+}
+
+.hero-install-step-note {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: var(--c2c-text-muted);
+}
+
 .hero-pi-cue {
   position: relative;
   z-index: 3;
@@ -409,6 +459,9 @@ a:visited { color: var(--c2c-amber-dim); }
     padding: 0.7rem 1rem;
   }
   .hero-install-meta { font-size: 0.72rem; }
+  .hero-install-step { flex-direction: column; gap: 0.3rem; }
+  .hero-install-step-cmd { font-size: 0.85rem; }
+  .hero-install-step-note { font-size: 0.68rem; }
   .hero-pi-cue { margin: 1.5rem auto 0; font-size: 0.8rem; transform: rotate(0deg); }
   .hero-pi-cue::before { display: none; }
 }
