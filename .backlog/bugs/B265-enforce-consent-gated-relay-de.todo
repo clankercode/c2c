@@ -54,3 +54,13 @@ Primary proposed suite: `ocaml/test/test_relay_contact_delivery_handlers.ml`, us
 ## Independent review findings requiring disposition
 
 `handle_contact_deliver` must collapse all post-JSON-parse failures—missing/malformed fields, unsupported protocol, secret decode/length, sender identity resolution, and backend rejection—to one identical `401 contact_unauthorised` status/code/body. Keep differentiated diagnostics internal, bounded, and redacted. Add table-driven HTTP tests proving response equality and zero side effects.
+
+## Final verified evidence
+
+- Clean local-master branch merged as `ed1da828` (feature tip `ae03f950`); contaminated stale-origin branch was not merged.
+- Exact post-review gates: delivery handlers 37/37; contact grants 36/36; private discovery 24/24; relay 54/54; connector 71/71; PoW 18/18; remote broker 37/37; auth matrix 45/45; forwarder 15/15; peer relay 11/11; client hints 10/10.
+- Signed production tests prove byte-identical 401 `contact_unauthorised` across private `/send`, valid peer `/forward`, contact protocol/auth/grant denials, including unresolved sender.
+- Signed production registration proves success/key binding and alias-substitution refusal.
+- Contact admission returns delivery alias atomically; accepted inbox/WS wake effects occur exactly once; duplicate/rejected paths produce no inbox/stats/DLQ/push effect.
+- Confidential transport requires native TLS or explicit `C2C_RELAY_TRUST_FORWARDED_PROTO` opt-in plus https; arbitrary forwarded header alone is refused.
+- Independent exact-tip rereview PASS: no blocker/major.
