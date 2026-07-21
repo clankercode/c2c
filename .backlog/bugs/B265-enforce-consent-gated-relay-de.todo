@@ -9,11 +9,7 @@ id: B265
 priority: critical
 started_at: null
 status: pending
-tags:
-    - security
-    - relay
-    - delivery
-    - authorization
+tags: []
 title: Enforce consent-gated relay delivery on every DM path
 updated_at: "2026-07-21T13:50:17Z"
 ---
@@ -36,3 +32,7 @@ Enforce recipient consent/capability checks on every relay first-contact deliver
 - Deliberate route/capability sharing permits only the intended scope.
 - Revocation/expiry/replay take effect under concurrent requests and across restarts.
 - Route and backend parity tests prove no bypass path remains.
+
+## B261 post-B219 constraints
+
+Gate direct send, `send_all`, and forwarded local delivery before inbox insertion. Secondary WebSocket/observer/short-queue/stats/dead-letter effects must depend on first accepted atomic admission. Connector filtering remains defence in depth.
