@@ -431,14 +431,14 @@ def test_pi_adapter_builds_launch_command_with_model_and_hermetic_env(tmp_path: 
     config = AgentConfig(
         client="pi",
         name="pi-a",
-        model="xiaomi-token-plan-sgp/mimo-v2.5-pro",
+        model="zai-coding-plan/glm-5-turbo",
     )
     broker_root = tmp_path / "broker"
     scenario = mock.Mock(workdir=tmp_path / "work", broker_root=lambda: broker_root)
 
     launch = adapter.build_launch(scenario, config)
 
-    assert launch["command"] == ["pi", "--model", "xiaomi-token-plan-sgp/mimo-v2.5-pro"]
+    assert launch["command"] == ["pi", "--model", "zai-coding-plan/glm-5-turbo"]
     assert launch["cwd"] == scenario.workdir
     assert launch["title"] == "pi-a"
     env = launch["env"]

@@ -17,20 +17,22 @@ Precedence (highest first):
 Defaults (confirm with ``opencode models`` / ``pi --list-models``):
 
   * opencode — ``zai-coding-plan/glm-5-turbo`` (GLM-5-Turbo)
-  * pi       — ``xiaomi-token-plan-sgp/mimo-v2.5-pro``
+  * pi       — ``zai-coding-plan/glm-5-turbo`` (same; no Xiaomi/mimo)
+
+Override with ``C2C_E2E_PI_MODEL`` / ``C2C_E2E_OPENCODE_MODEL`` or shared
+``C2C_E2E_MODEL`` (e.g. ``minimax-coding-plan/MiniMax-M2.7-highspeed``).
 """
 from __future__ import annotations
 
 import os
 
-# OpenCode: full provider/model id from `opencode models` (zai-coding-plan).
-_OPENCODE_GLM_5_TURBO = "zai-coding-plan/glm-5-turbo"
-# Pi default (independent provider namespace).
-_MIMO_V25_PRO = "xiaomi-token-plan-sgp/mimo-v2.5-pro"
+# Full provider/model id from `opencode models` (zai-coding-plan). Pi accepts
+# the same style via ``pi --model <provider/id>``.
+_GLM_5_TURBO = "zai-coding-plan/glm-5-turbo"
 
 DEFAULT_MODELS: dict[str, str] = {
-    "opencode": _OPENCODE_GLM_5_TURBO,
-    "pi": _MIMO_V25_PRO,
+    "opencode": _GLM_5_TURBO,
+    "pi": _GLM_5_TURBO,
 }
 
 

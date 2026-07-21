@@ -208,7 +208,7 @@ def test_pi_plays_over_relay_via_native_tools(relay, tmp_path: Path) -> None:
             "-e", f"C2C_MCP_BROKER_ROOT={workdir/'broker'}",
             "-e", f"C2C_BIN={CLIENT_C2C}",
             "bash", "-lc",
-            f"cd {workdir} && exec pi --model xiaomi-token-plan-sgp/mimo-v2.5-pro",
+            f"cd {workdir} && exec pi --model zai-coding-plan/glm-5-turbo",
         )
         # wait for pi to register on the relay
         deadline = time.monotonic() + 120
