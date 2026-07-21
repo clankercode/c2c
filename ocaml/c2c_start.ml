@@ -5675,6 +5675,89 @@ let run_outer_loop ~(name : string) ~(client : string)
                    (deliver_start_failure_warning ~name ~client));
           (* Idle-wake honesty once per managed launch (not every outer iter). *)
           C2c_wake_guidance.print_managed_start_receive_footer ~client ();
+          (* #78: managed agy cold-start — once the TUI is up, paste a minimal
+             operator kickoff so the TUI creates its own conversation; then
+             ensure_agy_env can bind agentapi wake. Never mint headless.
+             Opt out: C2C_AGY_SKIP_BOOTSTRAP_KICKOFF=1. Not peer DATA (B098). *)
+          (if client = "agy" then
+             let agy_name = name in
+             let agy_child = pid in
+             ignore
+               (Thread.create
+                  (fun () ->
+                    let skip =
+                      match Sys.getenv_opt "C2C_AGY_SKIP_BOOTSTRAP_KICKOFF" with
+                      | Some "1" | Some "true" | Some "TRUE" -> true
+                      | _ -> false
+                    in
+                    if skip then
+                      Printf.eprintf
+                        "[c2c-start/%s] #78 bootstrap kickoff skipped \
+                         (C2C_AGY_SKIP_BOOTSTRAP_KICKOFF)\n%!"
+                        agy_name
+                    else
+                      let timeout_s =
+                        match Sys.getenv_opt "C2C_AGY_BOOTSTRAP_TIMEOUT_S" with
+                        | Some s -> (try float_of_string s with _ -> 120.0)
+                        | None -> 120.0
+                      in
+                      let kickoff_after_s = 10.0 in
+                      let start_t = Unix.gettimeofday () in
+                      let kicked = ref false in
+                      let rec loop () =
+                        let elapsed = Unix.gettimeofday () -. start_t in
+                        if elapsed > timeout_s then
+                          Printf.eprintf
+                            "[c2c-start/%s] #78 bootstrap: timed out waiting \
+                             for TUI conversation (agentapi wake stays \
+                             CONDITIONAL until a first turn)\n%!"
+                            agy_name
+                        else if not (pid_alive agy_child) then
+                          ()
+                        else
+                          match
+                            C2c_agy_agentapi.classify_wake_env
+                              ~session_id:agy_name ~agy_pid:agy_child ()
+                          with
+                          | C2c_agy_agentapi.Env_ready _ ->
+                              Printf.eprintf
+                                "[c2c-start/%s] #78 bootstrap: agy-env ready \
+                                 (TUI-owned conversation)\n%!"
+                                agy_name
+                          | C2c_agy_agentapi.Waiting_for_ls ->
+                              Unix.sleepf 2.0;
+                              loop ()
+                          | C2c_agy_agentapi.Waiting_for_tui_conversation ->
+                              (if (not !kicked) && elapsed >= kickoff_after_s
+                              then
+                                match read_tmux_location_opt agy_name with
+                                | Some loc
+                                  when validate_tmux_target loc <> None ->
+                                    let text =
+                                      C2c_agy_agentapi
+                                      .managed_bootstrap_kickoff_text
+                                    in
+                                    if tmux_paste_and_submit loc text then begin
+                                      kicked := true;
+                                      Printf.eprintf
+                                        "[c2c-start/%s] #78 bootstrap: \
+                                         submitted TUI kickoff (creates \
+                                         wake-capable conversation)\n%!"
+                                        agy_name
+                                    end else
+                                      Printf.eprintf
+                                        "[c2c-start/%s] #78 bootstrap: \
+                                         tmux paste/submit failed\n%!"
+                                        agy_name
+                                | _ ->
+                                    (* No tmux target yet — retry; outer may
+                                       still write tmux.json. *)
+                                    ());
+                              Unix.sleepf 2.0;
+                              loop ()
+                      in
+                      loop ())
+                  ()));
           (if client = "opencode" then
              let startup_grace_s =
                match Sys.getenv_opt "C2C_OPENCODE_PLUGIN_GRACE_S" with

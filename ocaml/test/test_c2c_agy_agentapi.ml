@@ -24,13 +24,14 @@ let with_tmp_instances (f : string -> unit) =
       try rm dir with _ -> ())
     (fun () -> f dir)
 
-(** One-shot HTTP/1.0 200 server on a free loopback port. Returns (port, pid).
-    Child exits after one accept or ~3s. *)
-let spawn_healthz_once () : int * int =
+(** HTTP/1.0 200 healthz server on a free loopback port. Returns (port, pid).
+    Serves up to [max_accepts] requests (default 1) so multi-probe classify
+    paths can re-check liveness. Child exits after accepts or ~5s. *)
+let spawn_healthz ?(max_accepts = 1) () : int * int =
   let sock = Unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
   Unix.setsockopt sock Unix.SO_REUSEADDR true;
   Unix.bind sock (Unix.ADDR_INET (Unix.inet_addr_loopback, 0));
-  Unix.listen sock 1;
+  Unix.listen sock 8;
   let port =
     match Unix.getsockname sock with
     | Unix.ADDR_INET (_, p) -> p
@@ -40,15 +41,19 @@ let spawn_healthz_once () : int * int =
   if pid = 0 then begin
     (* child *)
     (try
-       ignore (Unix.alarm 3);
-       let client, _ = Unix.accept sock in
-       let buf = Bytes.create 512 in
-       ignore (Unix.read client buf 0 512);
-       let resp =
-         "HTTP/1.0 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}"
-       in
-       ignore (Unix.write_substring client resp 0 (String.length resp));
-       Unix.close client
+       ignore (Unix.alarm 5);
+       for _ = 1 to max_accepts do
+         try
+           let client, _ = Unix.accept sock in
+           let buf = Bytes.create 512 in
+           ignore (Unix.read client buf 0 512);
+           let resp =
+             "HTTP/1.0 200 OK\r\nContent-Length: 15\r\n\r\n{\"status\":\"ok\"}"
+           in
+           ignore (Unix.write_substring client resp 0 (String.length resp));
+           Unix.close client
+         with _ -> ()
+       done
      with _ -> ());
     (try Unix.close sock with _ -> ());
     Unix._exit 0
@@ -57,6 +62,8 @@ let spawn_healthz_once () : int * int =
     Unix.close sock;
     (port, pid)
   end
+
+let spawn_healthz_once () = spawn_healthz ~max_accepts:1 ()
 
 let reap pid =
   try ignore (Unix.waitpid [] pid) with _ -> ()
@@ -221,6 +228,80 @@ let test_ensure_writes_from_log_fixture () =
                   Alcotest.(check bool) "persisted" true
                     (Sys.file_exists (C2c_agy_agentapi.env_file_path "from-log")))))
 
+let test_managed_bootstrap_kickoff_text () =
+  let t = C2c_agy_agentapi.managed_bootstrap_kickoff_text in
+  Alcotest.(check bool) "non-empty" true (String.length t > 20);
+  Alcotest.(check bool) "mentions c2c" true (contains t "c2c");
+  Alcotest.(check bool) "not approval language" false (contains t "approve")
+
+let test_classify_waiting_for_tui_when_ls_only () =
+  (* classify probes LS more than once (ensure + resolve) — multi-accept. *)
+  let port, child = spawn_healthz ~max_accepts:8 () in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.kill child Sys.sigterm with _ -> ());
+      reap child)
+    (fun () ->
+      with_tmp_instances (fun _ ->
+          let log_dir = Filename.temp_file "agy-logdir-class" "" in
+          Sys.remove log_dir;
+          Unix.mkdir log_dir 0o755;
+          let log = log_dir // "cli-class.log" in
+          let oc = open_out log in
+          Printf.fprintf oc
+            "I0721 01:11:46.122163 9 server.go:546] Language server listening on \
+             random port at %d for HTTP\n"
+            port;
+          close_out oc;
+          Fun.protect
+            ~finally:(fun () ->
+              (try Sys.remove log with _ -> ());
+              (try Unix.rmdir log_dir with _ -> ()))
+            (fun () ->
+              match
+                C2c_agy_agentapi.classify_wake_env ~session_id:"class-ls"
+                  ~cli_log_dir:log_dir ?agy_pid:None ()
+              with
+              | C2c_agy_agentapi.Waiting_for_tui_conversation -> ()
+              | C2c_agy_agentapi.Waiting_for_ls ->
+                  Alcotest.fail "expected Waiting_for_tui (LS is live)"
+              | C2c_agy_agentapi.Env_ready _ ->
+                  Alcotest.fail "must not be Env_ready without TUI conversation")))
+
+let test_classify_ready_when_log_has_conversation () =
+  let port, child = spawn_healthz ~max_accepts:8 () in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.kill child Sys.sigterm with _ -> ());
+      reap child)
+    (fun () ->
+      with_tmp_instances (fun _ ->
+          let log_dir = Filename.temp_file "agy-logdir-ready" "" in
+          Sys.remove log_dir;
+          Unix.mkdir log_dir 0o755;
+          let log = log_dir // "cli-ready.log" in
+          let oc = open_out log in
+          Printf.fprintf oc
+            "I0721 01:11:46.122163 9 server.go:546] Language server listening on \
+             random port at %d for HTTP\n\
+             I0721 01:16:29.173570 9 server.go:903] Created conversation \
+             22222222-3333-4444-5555-666666666666\n"
+            port;
+          close_out oc;
+          Fun.protect
+            ~finally:(fun () ->
+              (try Sys.remove log with _ -> ());
+              (try Unix.rmdir log_dir with _ -> ()))
+            (fun () ->
+              match
+                C2c_agy_agentapi.classify_wake_env ~session_id:"class-ready"
+                  ~cli_log_dir:log_dir ?agy_pid:None ()
+              with
+              | C2c_agy_agentapi.Env_ready env ->
+                  Alcotest.(check string) "conv"
+                    "22222222-3333-4444-5555-666666666666" env.conversation_id
+              | _ -> Alcotest.fail "expected Env_ready")))
+
 (* #78 cold-start: ensure_agy_env must NEVER accept a c2c-minted headless
    conversation as the wake target. When the CLI log has a live HTTP LS but no
    TUI-owned "Created conversation" line, ensure must return None and must not
@@ -369,7 +450,13 @@ let () =
             test_ensure_writes_from_log_fixture
         ; Alcotest.test_case
             "#78 cold-start: no headless mint when log has LS only" `Quick
-            test_i78_ensure_does_not_mint_when_log_has_ls_only ] )
+            test_i78_ensure_does_not_mint_when_log_has_ls_only
+        ; Alcotest.test_case "classify Waiting_for_tui when LS only" `Quick
+            test_classify_waiting_for_tui_when_ls_only
+        ; Alcotest.test_case "classify Env_ready when log has conv" `Quick
+            test_classify_ready_when_log_has_conversation
+        ; Alcotest.test_case "managed bootstrap kickoff text" `Quick
+            test_managed_bootstrap_kickoff_text ] )
     ; ( "send",
         [ Alcotest.test_case "send-message argv" `Quick test_send_argv_shape
         ; Alcotest.test_case "new-conversation argv" `Quick

@@ -51,6 +51,27 @@ val ensure_agy_env :
     TUI-created conversation appears in the CLI log (first turn or managed
     kickoff). *)
 
+type wake_env_state =
+  | Env_ready of agy_env
+  | Waiting_for_ls
+  | Waiting_for_tui_conversation
+(** Readiness for agentapi wake without minting. *)
+
+val classify_wake_env :
+  session_id:string ->
+  ?cli_log_dir:string ->
+  ?agy_pid:int ->
+  unit ->
+  wake_env_state
+(** [Env_ready] when [ensure_agy_env] succeeds; [Waiting_for_ls] when no live
+    HTTP LS yet; [Waiting_for_tui_conversation] when LS is up but the CLI log
+    has no TUI-owned conversation (#78 cold-start). *)
+
+val managed_bootstrap_kickoff_text : string
+(** Minimal operator kickoff pasted into a managed agy TUI so the TUI creates
+    its own conversation (discoverable in the CLI log). Not peer DATA — managed
+    start setup only. Opt out: [C2C_AGY_SKIP_BOOTSTRAP_KICKOFF=1]. *)
+
 val with_ls_env : ls_address:string -> string array -> string array
 (** Return [env] with [ANTIGRAVITY_LS_ADDRESS]/[ANTIGRAVITY_PROJECT_ID] set to
     the given LS (default-cli-project), stripping any inherited stale copies —

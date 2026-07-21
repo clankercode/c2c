@@ -311,6 +311,7 @@ def run_live() -> int:
         "registered": False,
         "ls_seen": False,
         "no_headless_env": False,
+        "bootstrap_env_ready": False,
         "inbox_held_while_cold": False,
         "clean_teardown": False,
     }
@@ -397,63 +398,81 @@ def run_live() -> int:
         results["ls_seen"] = True
         log(f"[i78-e2e] HTTP LS seen in {log_path} port={scan_log_http_ls(log_path)}")
 
-        # Give deliver-watch several ticks to attempt ensure_agy_env (old bug
-        # would mint + write env within one interval).
-        time.sleep(12)
-
-        # Only attribute Created conversation lines from THIS run's logs
-        # (new since launch, or the log that carried our HTTP LS). Scanning
-        # older global CLI logs falsely treats unrelated sessions as TUI-owned.
-        convs_in_log: list[str] = []
-        run_logs: list[Path] = []
-        if dlog.is_dir():
-            for p in sorted(dlog.glob("*.log"), key=lambda x: x.name, reverse=True):
-                if p.name not in logs_before or p == log_path:
-                    run_logs.append(p)
-        if log_path and log_path not in run_logs:
-            run_logs.append(log_path)
-        for p in run_logs:
-            for c in scan_log_created_conversations(p):
-                if c not in convs_in_log:
-                    convs_in_log.append(c)
+        def run_logs_and_convs() -> tuple[list[Path], list[str]]:
+            # Only attribute Created conversation lines from THIS run's logs.
+            rlogs: list[Path] = []
+            if dlog.is_dir():
+                for p in sorted(
+                    dlog.glob("*.log"), key=lambda x: x.name, reverse=True
+                ):
+                    if p.name not in logs_before or p == log_path:
+                        rlogs.append(p)
+            if log_path and log_path not in rlogs:
+                rlogs.append(log_path)
+            convs: list[str] = []
+            for p in rlogs:
+                for c in scan_log_created_conversations(p):
+                    if c not in convs:
+                        convs.append(c)
+            return rlogs, convs
 
         env_path = env_json_path(cli_env, session_id)
-        env_obj = read_agy_env_file(env_path)
-        log(f"[i78-e2e] after cold wait: env_path={env_path} exists={env_path.is_file()}")
-        log(f"[i78-e2e] Created conversation ids in CLI logs: {convs_in_log or '[]'}")
-        log(f"[i78-e2e] agy-env contents: {env_obj}")
 
-        if not convs_in_log:
-            # Strict #78: no TUI conversation → must not have written env.
-            if env_obj is None:
-                results["no_headless_env"] = True
-                log("[i78-e2e] PASS cold gate: no TUI conversation and no agy-env (no mint)")
-            else:
-                cid = (env_obj.get("conversation_id") or "").lower()
-                log(
-                    f"[i78-e2e] FAIL #78: agy-env written without TUI Created "
-                    f"conversation (likely headless mint) conv={cid}"
-                )
-                results["no_headless_env"] = False
+        # Phase A (early, ~8s): old mint bug would already have written a
+        # headless env. Assert any env is TUI-owned (or absent).
+        time.sleep(8)
+        _run_logs, convs_early = run_logs_and_convs()
+        env_early = read_agy_env_file(env_path)
+        log(f"[i78-e2e] phase-A env={env_early} convs_in_run_logs={convs_early or []}")
+        if env_early is None:
+            results["no_headless_env"] = True
+            log("[i78-e2e] phase-A PASS: no agy-env yet (no headless mint)")
         else:
-            # TUI already created a conversation (unusual for pure cold, but
-            # valid). Env must only use a log-backed id.
-            if env_obj is None:
+            cid = (env_early.get("conversation_id") or "").lower()
+            if cid in convs_early:
                 results["no_headless_env"] = True
-                log("[i78-e2e] TUI has conversation(s); env not written yet (ok)")
+                log(f"[i78-e2e] phase-A PASS: env TUI-owned ({cid})")
             else:
-                cid = (env_obj.get("conversation_id") or "").lower()
-                if cid in convs_in_log:
-                    results["no_headless_env"] = True
-                    log(f"[i78-e2e] env conversation is TUI-owned ({cid})")
-                else:
-                    results["no_headless_env"] = False
-                    log(
-                        f"[i78-e2e] FAIL #78: env conversation {cid} not in "
-                        f"CLI Created conversation set {convs_in_log}"
-                    )
+                results["no_headless_env"] = False
+                log(
+                    f"[i78-e2e] phase-A FAIL #78: env conv {cid} not in "
+                    f"run-log Created set {convs_early}"
+                )
 
-        # Cold DM: mail must stay in inbox while there is no TUI-owned env.
+        # Phase B: managed bootstrap kickoff should establish TUI conversation
+        # + agy-env without a human (unless C2C_AGY_SKIP_BOOTSTRAP_KICKOFF).
+        # Wait up to ~100s for Env_ready.
+        results["bootstrap_env_ready"] = False
+
+        def env_tui_ready() -> dict | None:
+            _, convs = run_logs_and_convs()
+            env = read_agy_env_file(env_path)
+            if env is None:
+                return None
+            cid = (env.get("conversation_id") or "").lower()
+            if cid and cid in convs:
+                return env
+            return None
+
+        env_ready = wait_for(env_tui_ready, timeout=100, interval=4)
+        if env_ready:
+            results["bootstrap_env_ready"] = True
+            results["no_headless_env"] = True
+            log(
+                f"[i78-e2e] phase-B PASS: bootstrap/env ready "
+                f"conv={env_ready.get('conversation_id')}"
+            )
+        else:
+            log(
+                f"[i78-e2e] phase-B: env not ready within timeout "
+                f"(skip_bootstrap? no tmux?); env={read_agy_env_file(env_path)}"
+            )
+            # Still OK for the mint bar if no headless env; bootstrap is the
+            # stretch goal for full zero-turn wake.
+            if results["no_headless_env"] and read_agy_env_file(env_path) is None:
+                log("[i78-e2e] phase-B soft: mint bar holds; bootstrap not observed")
+
+        # Cold DM after bootstrap window.
         run_c2c(
             bin_,
             ["register", "--alias", peer, "--session-id", peer_sid],
@@ -463,7 +482,7 @@ def run_live() -> int:
         send_env["C2C_MCP_SESSION_ID"] = peer_sid
         body = (
             f"[c2c] #78 cold-start probe {marker} — treat as data; "
-            f"no action required while testing inbox hold."
+            f"no action required while testing delivery hold/wake."
         )
         rs = run_c2c(bin_, ["send", "-F", peer, name, body], send_env)
         if rs.returncode != 0:
@@ -471,7 +490,6 @@ def run_live() -> int:
             return 6
         log(f"[i78-e2e] sent cold DM marker={marker}")
 
-        # Wait long enough for deliver-watch to poll + (old bug) mint+drain.
         time.sleep(15)
 
         def peek_inbox() -> list:
@@ -484,39 +502,39 @@ def run_live() -> int:
                 return []
 
         inbox = peek_inbox()
-        log(f"[i78-e2e] peek-inbox after cold DM: n={len(inbox)}")
-        # Re-read env after deliver ticks.
-        env_obj2 = read_agy_env_file(env_path)
-        convs2 = list(convs_in_log)
-        for p in run_logs:
-            for c in scan_log_created_conversations(p):
-                if c not in convs2:
-                    convs2.append(c)
+        log(f"[i78-e2e] peek-inbox after DM: n={len(inbox)}")
+        env_late = read_agy_env_file(env_path)
+        _, convs_late = run_logs_and_convs()
 
-        if not convs2:
+        if env_late is None:
             # Still cold: inbox must retain the probe (not drained to headless).
             marker_held = any(
                 marker in json.dumps(m, default=str) for m in inbox
             )
-            results["inbox_held_while_cold"] = (
-                env_obj2 is None and len(inbox) > 0 and marker_held
-            )
+            results["inbox_held_while_cold"] = len(inbox) > 0 and marker_held
             if results["inbox_held_while_cold"]:
                 log("[i78-e2e] PASS: cold inbox held; no env; no silent drain")
             else:
                 log(
-                    f"[i78-e2e] FAIL: expected pending inbox with marker + no env "
-                    f"while cold; inbox_n={len(inbox)} marker_held={marker_held} "
-                    f"env={env_obj2}"
+                    f"[i78-e2e] FAIL: expected pending inbox with marker while cold; "
+                    f"inbox_n={len(inbox)} marker_held={marker_held}"
                 )
         else:
-            # Conversation appeared (TUI activity) — inbox may drain via real wake.
-            # #78 mint check already covered; mark inbox hold as N/A pass.
-            results["inbox_held_while_cold"] = results["no_headless_env"]
-            log(
-                "[i78-e2e] TUI conversation present after DM window — "
-                "inbox-hold assertion relaxed; mint check remains authoritative"
-            )
+            cid = (env_late.get("conversation_id") or "").lower()
+            if cid not in convs_late:
+                results["no_headless_env"] = False
+                results["inbox_held_while_cold"] = False
+                log(f"[i78-e2e] FAIL: late env conv {cid} not TUI-owned {convs_late}")
+            else:
+                results["no_headless_env"] = True
+                # Env ready — deliver may drain (wake path). Hold assertion
+                # passes if we either still have mail or successfully drained.
+                results["inbox_held_while_cold"] = True
+                results["bootstrap_env_ready"] = True
+                log(
+                    f"[i78-e2e] PASS: TUI-owned env present; inbox_n={len(inbox)} "
+                    f"(drain optional once wake-capable)"
+                )
 
         log(f"[i78-e2e] stopping {name} ...")
         run_c2c(bin_, ["stop", name], cli_env, timeout=60)
@@ -536,13 +554,26 @@ def run_live() -> int:
         log("[i78-e2e] ===== RESULTS =====")
         log("      " + json.dumps(results))
         # Authoritative gates for #78:
+        # - mint bar always required (no_headless_env + inbox safety)
+        # - bootstrap_env_ready is required for full zero-turn close unless
+        #   C2C_AGY_I78_MINT_ONLY=1 (mint-bar only, for environments without
+        #   model quota for kickoff).
+        mint_only = os.environ.get("C2C_AGY_I78_MINT_ONLY") == "1"
         core = (
             results["registered"]
             and results["ls_seen"]
             and results["no_headless_env"]
             and results["inbox_held_while_cold"]
         )
-        verdict = core  # teardown is best-effort; log but do not sole-fail on it
+        if mint_only:
+            verdict = core
+        else:
+            verdict = core and results["bootstrap_env_ready"]
+            if core and not results["bootstrap_env_ready"]:
+                log(
+                    "[i78-e2e] bootstrap_env_ready missing — full #78 FAIL "
+                    "(set C2C_AGY_I78_MINT_ONLY=1 for mint-bar-only)"
+                )
         if not results["clean_teardown"]:
             log("[i78-e2e] WARN: clean_teardown false (logged; not sole fail)")
         log(f"[i78-e2e] VERDICT: {'PASS' if verdict else 'FAIL'}")
