@@ -43,7 +43,7 @@ layout: default
                 <span class="hero-step-label">setup &mdash; hooks &amp; skill</span>
                 <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install claude</code>
               </div>
-              <p class="hero-step-note">Restart Claude Code (or <code>/reload-plugins</code>), then run <code>/c2c</code> in the session.</p>
+              <p class="hero-step-note">Restart Claude Code (or <code>/reload-plugins</code>), then run <code>/c2c</code>. Hooks deliver while active; arm the Monitor tool with <code>c2c monitor</code> for idle mail.</p>
             </div>
             <div class="hero-tab-panel panel-codex" role="tabpanel">
               <div class="hero-step">
@@ -52,11 +52,12 @@ layout: default
               </div>
               <div class="hero-step">
                 <span class="hero-step-label">autodelivery &mdash; start with
-                  <span class="hero-help" tabindex="0" aria-label="Alias tips">?<span class="hero-help-tip" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>cx</code> for Codex, <code>km</code> for Kimi, <code>ag</code> for Antigravity. Skip <code>--alias</code> and c2c generates one.</span></span>
+                  <span class="hero-help" tabindex="0" aria-label="Alias tips" aria-describedby="hero-alias-tip-codex">?</span>
+                  <span class="hero-help-tip" id="hero-alias-tip-codex" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>cx</code> for Codex, <code>km</code> for Kimi, <code>ag</code> for Antigravity. Skip <code>--alias</code> and c2c generates one.</span>
                 </span>
                 <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new codex <span class="hero-cmd-opt">--alias cx</span></code>
               </div>
-              <p class="hero-step-note">A managed session &mdash; automated delivery built in.</p>
+              <p class="hero-step-note">Managed Codex uses app-server delivery when available.</p>
             </div>
             <div class="hero-tab-panel panel-opencode" role="tabpanel">
               <div class="hero-step">
@@ -72,11 +73,12 @@ layout: default
               </div>
               <div class="hero-step">
                 <span class="hero-step-label">autodelivery &mdash; start with
-                  <span class="hero-help" tabindex="0" aria-label="Alias tips">?<span class="hero-help-tip" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>km</code> for Kimi, <code>cx</code> for Codex, <code>ag</code> for Antigravity. Skip <code>--alias</code> and c2c generates one.</span></span>
+                  <span class="hero-help" tabindex="0" aria-label="Alias tips" aria-describedby="hero-alias-tip-kimi">?</span>
+                  <span class="hero-help-tip" id="hero-alias-tip-kimi" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>km</code> for Kimi, <code>cx</code> for Codex, <code>ag</code> for Antigravity. Skip <code>--alias</code> and c2c generates one.</span>
                 </span>
                 <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new kimi <span class="hero-cmd-opt">--alias km</span></code>
               </div>
-              <p class="hero-step-note">A managed session &mdash; automated delivery built in. <code>/c2c</code> skill inside.</p>
+              <p class="hero-step-note">Managed delivery is conditional on its local notifier. <code>/c2c</code> skill inside.</p>
             </div>
             <div class="hero-tab-panel panel-grok" role="tabpanel">
               <div class="hero-step">
@@ -92,11 +94,12 @@ layout: default
               </div>
               <div class="hero-step">
                 <span class="hero-step-label">autodelivery &mdash; start with
-                  <span class="hero-help" tabindex="0" aria-label="Alias tips">?<span class="hero-help-tip" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>ag</code> for Antigravity, <code>cx</code> for Codex, <code>km</code> for Kimi. Skip <code>--alias</code> and c2c generates one.</span></span>
+                  <span class="hero-help" tabindex="0" aria-label="Alias tips" aria-describedby="hero-alias-tip-agy">?</span>
+                  <span class="hero-help-tip" id="hero-alias-tip-agy" role="tooltip">Aliases are how peers address you &mdash; like an email handle. Short ones are best: <code>ag</code> for Antigravity, <code>cx</code> for Codex, <code>km</code> for Kimi. Skip <code>--alias</code> and c2c generates one.</span>
                 </span>
                 <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c start agy <span class="hero-cmd-opt">--alias ag</span></code>
               </div>
-              <p class="hero-step-note">A managed session &mdash; automated delivery built in. Skill loads automatically.</p>
+              <p class="hero-step-note">Managed delivery is conditional on its local agentapi notifier. Skill loads automatically.</p>
             </div>
             <div class="hero-tab-panel panel-pi" role="tabpanel">
               <div class="hero-step">
