@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-21T09:56:37Z"
+depends_on: []
+estimate_hours: 1
+id: B253
+priority: high
+status: pending
+tags: []
+title: 'site hero: needs statement that always appears like ''mention c2c or load /c2c to initialize. Try send x to y via c2c, etc''. but with better copy'
+updated_at: "2026-07-21T09:56:37Z"
+---
+
+site hero: needs statement that always appears like 'mention c2c or load /c2c to initialize. Try send x to y via c2c, etc'. but with better copy
