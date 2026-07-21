@@ -164,6 +164,16 @@ codegen-changelog-check:
 codegen-llms-check:
     python3 tools/ci/codegen-llms.py --check
 
+# Serve the c2c.im docs site locally with live-reload (Jekyll).
+# Installs gems on first run; open http://127.0.0.1:4000.
+docs-serve:
+    cd docs && bundle install --quiet && bundle exec jekyll serve --livereload
+
+# One-off build of the docs site into docs/_site/ (gitignored —
+# GitHub Pages builds from source on push, never commit _site/).
+docs-build:
+    cd docs && bundle exec jekyll build
+
 # Regenerate ocaml/cli/role_designer_embedded.ml from the canonical builtin.
 # The binary embeds role-designer.md so `c2c agent refine` works in any
 # checkout (and gracefully ignores missing/relocated files). Dune refuses to
