@@ -266,6 +266,13 @@
  (libraries c2c_mcp relay_test_support_real alcotest yojson unix sqlite3
    lwt.unix cohttp cohttp-lwt-unix))
 
+; B267: consolidated private-reachability attack matrix (hermetic).
+(test
+ (name test_relay_private_reachability_matrix)
+ (modules test_relay_private_reachability_matrix)
+ (libraries c2c_mcp relay_test_support_real alcotest base64 yojson unix str
+   lwt.unix cohttp cohttp-lwt-unix))
+
 ; B265: consent-gated delivery handlers (send/send_all/admit/contact HTTP).
 (test
  (name test_relay_contact_delivery_handlers)
