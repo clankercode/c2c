@@ -251,3 +251,4 @@ bugs:
     - file: B252-site-hero-add-autodelivery-sta.todo
     - file: B253-site-hero-needs-statement-that.todo
     - file: B254-ensure-mcp-is-not-configured-b.todo
+    - file: B255-opencode-install-must-not-set.todo
