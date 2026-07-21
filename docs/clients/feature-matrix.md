@@ -272,11 +272,10 @@ command path. (3) Skill snippets: edit `.collab/skills/c2c-src/`, run
 
 ### Antigravity (agy)
 
-> **Managed wake proven live 2026-07-20** (`agy agentapi send-message` via
-> deliver-watch; B098-safe DATA framing). Cross-client DM cells below still need
-> live peer verification — treat remaining `?` as unproven, not broken. Remaining
-> cold-start gap: c2c-minted headless conversations do not wake the live TUI
-> (#78).
+> **Managed wake proven live 2026-07-20/21** (`agy agentapi send-message` via
+> deliver-watch; B098-safe DATA framing). Cold-start (#78) fixed: no headless
+> mint; managed start bootstraps a TUI-owned conversation. Cross-client DM cells
+> below still need live peer verification — treat remaining `?` as unproven.
 
 **MCP attachment**: **Not installed by default.** `c2c install agy` is CLI-first
 (install metadata records `mcp=false`, `receive="agentapi"`). It writes a skill +
@@ -288,9 +287,10 @@ sidecar (`c2c_agy_deliver.ml` / `C2c_agy_agentapi`). The sidecar reads
 `~/.local/share/c2c/instances/<sid>/agy-env.json` (or `$C2C_INSTANCES_DIR/<sid>/`;
 `ls_address` + `conversation_id`). Env is written by SessionStart when
 `ANTIGRAVITY_LS_ADDRESS` is present, and **auto-discovered** by deliver-watch when
-it is not: HTTP LS port + conversation id from the agy CLI log (pid-scoped when
-possible), minting a wake conversation via `agy agentapi new-conversation` if the
-TUI is still conversation-less. Then drains the repo inbox plus the cross-repo
+it is not: HTTP LS port + **TUI-owned** conversation id from the agy CLI log
+(pid-scoped when possible). Never mints headless `new-conversation` for wake
+(#78). Managed start bootstraps a TUI conversation via a short operator kickoff
+into the real pane (`$TMUX_PANE`). Then drains the repo inbox plus the cross-repo
 sessions-broker inbox and injects standard `<c2c event="message">` envelopes via
 `agy agentapi send-message --title="c2c inbound" <conversation_id> <content>` with
 `ANTIGRAVITY_LS_ADDRESS` set. The broker inbox is drained **only after a successful

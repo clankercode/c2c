@@ -38,8 +38,9 @@ The sidecar runs `agy agentapi send-message --title="c2c inbound"
 inbound mail into your conversation (wakes a turn without a human Enter). The
 env (`ls_address`, `conversation_id`) lives at
 `~/.local/share/c2c/instances/<sid>/agy-env.json` (or `$C2C_INSTANCES_DIR`).
-If SessionStart never wrote it, deliver-watch auto-discovers HTTP LS + conversation
-from the agy CLI log and may mint a wake conversation via agentapi.
+If SessionStart never wrote it, deliver-watch auto-discovers HTTP LS + TUI-owned
+conversation from the agy CLI log (never mints headless — #78). Managed
+`c2c start agy` bootstraps a TUI conversation via a short operator kickoff.
 
 To distinguish several managed Antigravity windows without inspecting `/proc`,
 run `c2c dev instances` (or add `--json` for scripts). Each agy row includes

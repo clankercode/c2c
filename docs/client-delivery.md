@@ -149,11 +149,11 @@ idle-gated native heartbeat.
   the `c2c start … deliver-watch` sidecar, which reads/ensures
   `agy-env.json` under the managed instances dir and calls
   `agy agentapi send-message`. SessionStart may write env when LS env vars are
-  present; deliver-watch auto-discovers HTTP LS + conversation from the CLI log
-  (and can mint a wake conversation) when hooks never wrote it. Hooks alone do
-  not wake an idle TUI. Managed via `c2c start agy`. Fallback:
-  `c2c poll-inbox` / `c2c monitor`. See [Antigravity (agy)](#antigravity-agy)
-  below.
+  present; deliver-watch auto-discovers HTTP LS + TUI-owned conversation from
+  the CLI log (never mints headless — #78). Managed `c2c start agy` bootstraps
+  a TUI conversation via operator kickoff when needed. Hooks alone do not wake
+  an idle TUI. Fallback: `c2c poll-inbox` / `c2c monitor`. See
+  [Antigravity (agy)](#antigravity-agy) below.
 - **Generic / unmanaged clients**: use MCP or CLI polling. Where available,
   `c2c-deliver-inbox --inotify --loop` can watch an inbox and bridge messages to
   a client-specific delivery mode, but the portable baseline is still
@@ -549,12 +549,11 @@ an idle TUI processes the message with no human Enter (proven live 2026-07-20).
 Content is DATA — the payload is explicitly framed as such and never resolves an
 approval (B098). Fallback: `c2c poll-inbox` / `c2c monitor`.
 
-> **`send-message` wakes only the TUI's *own* live conversation** — the one it
-> created on its first turn. If the session has never taken a turn, there is no
-> such conversation, and a c2c-*minted* one (`agy agentapi new-conversation`,
-> which comes up headless with `agenticMode=false`) does **not** wake the live
-> TUI. That cold-start case is the one known gap, tracked in
-> [#78](https://github.com/clankercode/c2c/issues/78).
+> **`send-message` wakes only the TUI's *own* live conversation.** c2c never
+> uses a headless `new-conversation` mint as the wake target (#78 fixed).
+> Managed start bootstraps a TUI-owned conversation (short operator kickoff into
+> the pane; opt out `C2C_AGY_SKIP_BOOTSTRAP_KICKOFF=1`). Until that conversation
+> exists, mail stays in the inbox (no silent drain).
 
 SessionStart runs `c2c hook agy` to auto-register (`registered_by=agy-hook`,
 `client_type=agy`) and write `agy-env.json` when LS env is present; hooks alone
