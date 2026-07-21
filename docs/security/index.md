@@ -92,8 +92,10 @@ You still intentionally share a grant (or mark an alias public) for first contac
 **Migration / ops (B266)**
 
 - Durable `schema_version=2` and `relay_features` markers; legacy DBs ALTER to private default.
-- `/health` advertises `contact_protocol: 1` and `private_reachability: "consent_gated"`.
-- CLI: `c2c relay contact issue|list|revoke` — secret printed **once** on issue; list never reprints secrets.
+- `/health` advertises `contact_protocol: 1` and `private_reachability`:
+  - SQLite / production-style backends: `"consent_gated"` (durable markers).
+  - In-memory process-local backends: `"process_local"` (same private defaults for the process lifetime; not a multi-process migration claim).
+- CLI: `c2c relay contact issue|list|revoke` — secret printed **once** on issue; list never reprints secrets. Backend `set_peer_discovery_visibility` exists for tests/ops; there is no separate public HTTP discovery-set route yet (intentional private default).
 - Doctor checks: `relay.auth_mode`, `relay.contact_protocol`, `relay.private_reachability`, `relay.transport_security`.
 
 ### 4. Local inbound policy
@@ -116,11 +118,12 @@ Each host can deny/allow senders, size, and rate **after** relay acceptance. Tha
 
 ## Configuration caveats
 
-1. **Production** means a token-configured relay (`auth_mode=prod`) with a migrated DB (private defaults + feature markers).
+1. **Production** means a token-configured relay (`auth_mode=prod`) with a **SQLite** migrated DB (private defaults + `consent_gated` feature markers). In-memory serve is process-local only.
 2. **Development** tokenless mode refuses contact delivery and fails doctor private-reachability production checks.
 3. Marking an alias **public** restores ordinary list/send for that alias — document it as intentional reachability, not consent-gated.
 4. Issue grants only over confidential transport in production (TLS URL or equivalent terminator).
 5. Upgrade both clients and relay together; mixed-version clients must not fall back from contact cards to alias `/send`.
+6. **Do not roll back the relay binary** past the private-reachability build while keeping a migrated SQLite DB. Pre-B264 binaries ignore `discovery_visibility` and contact grants, so they re-open global authenticated discovery and default-allow first contact against that DB. After any upgrade, run `c2c doctor` and require `contact_protocol` / `private_reachability` ads before claiming production consent-gated reachability. (Independent review finding M1.)
 
 ---
 
