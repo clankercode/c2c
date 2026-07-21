@@ -48,8 +48,8 @@ let with_temp_home f =
       try remove_tree dir with _ -> ())
     (fun () -> f ~home:dir ~claude_dir)
 
-let run_setup ~project_dir () =
-  C2c_setup.setup_claude ~output_mode:C2c_types.Human ~dry_run:false
+let run_setup ?(with_mcp=false) ~project_dir () =
+  C2c_setup.setup_claude ~with_mcp ~output_mode:C2c_types.Human ~dry_run:false
     ~root:"/fake/broker/root" ~alias_val:"claude-fixture-zz" ~alias_opt:None
     ~server_path:"/fake/bin/c2c_mcp_server.exe" ~mcp_command:"c2c-mcp-server"
     ~force:false ~channel_delivery:false ~global:false
@@ -226,6 +226,48 @@ let test_refresh_claude_skill_if_stale () =
     check bool "up-to-date skill not rewritten" true
       (mtime_before = mtime_after))
 
+(* B254: default install (with_mcp:false) writes NO .mcp.json, but still
+   installs hooks + skill. --with-mcp writes .mcp.json. *)
+let test_default_install_omits_mcp_json () =
+  with_temp_home (fun ~home ~claude_dir ->
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    let result = run_setup ~with_mcp:false ~project_dir () in
+    let mcp_json = project_dir // ".mcp.json" in
+    check bool ".mcp.json NOT written by default" false (Sys.file_exists mcp_json);
+    (* hooks + skill still land *)
+    let session_hook = claude_dir // "hooks" // "c2c-session-hook.sh" in
+    check bool "session hook script still written" true (Sys.file_exists session_hook);
+    let skill = claude_dir // "skills" // "c2c" // "SKILL.md" in
+    check bool "skill still written" true (Sys.file_exists skill);
+    (* No mcpServers shared-key artifact in the manifest. *)
+    check bool "no mcpServers artifact" false
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-key" && a.key = Some "mcpServers.c2c")
+         result.C2c_setup.artifacts);
+    check bool "extra_json reports mcp=false" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool false)
+         result.C2c_setup.extra_json))
+
+let test_with_mcp_writes_mcp_json () =
+  with_temp_home (fun ~home ~claude_dir:_ ->
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    let result = run_setup ~with_mcp:true ~project_dir () in
+    let mcp_json = project_dir // ".mcp.json" in
+    check bool ".mcp.json written with --with-mcp" true (Sys.file_exists mcp_json);
+    check bool "mcp.json mentions c2c" true
+      (contains ~haystack:(read_file mcp_json) ~needle:"c2c");
+    check bool "mcpServers artifact present" true
+      (List.exists
+         (fun (a : C2c_install_manifest.artifact) ->
+            a.kind = "shared-key" && a.key = Some "mcpServers.c2c")
+         result.C2c_setup.artifacts);
+    check bool "extra_json reports mcp=true" true
+      (List.exists (fun (k, v) -> k = "mcp" && v = `Bool true)
+         result.C2c_setup.extra_json))
+
 let () =
   Random.self_init ();
   run "c2c_setup_claude"
@@ -237,5 +279,9 @@ let () =
             test_uninstall_strips_session_hooks
         ; test_case "refresh claude skill if stale" `Quick
             test_refresh_claude_skill_if_stale
+        ; test_case "B254 default install omits .mcp.json" `Quick
+            test_default_install_omits_mcp_json
+        ; test_case "B254 --with-mcp writes .mcp.json" `Quick
+            test_with_mcp_writes_mcp_json
         ] )
     ]
