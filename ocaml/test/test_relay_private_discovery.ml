@@ -238,6 +238,41 @@ module Make_tests (B : BACKEND) = struct
       Alcotest.(check bool) "no content DLQ for private reject" false
         private_content_dlq)
 
+  let test_send_all_does_not_enumerate_private_in_results () =
+    let t, cleanup = B.fresh () in
+    Fun.protect ~finally:cleanup (fun () ->
+      let sender_pk = gen_pk () in
+      let private_pk = gen_pk () in
+      let public_pk = gen_pk () in
+      let _ = register t ~alias:"zzbroadcastsender" ~pk:sender_pk in
+      let private_node, private_session =
+        register t ~alias:"zzbroadcastprivate" ~pk:private_pk
+      in
+      let public_node, public_session =
+        register t ~alias:"zzbroadcastpublic" ~pk:public_pk
+      in
+      mark_public t ~alias:"zzbroadcastsender";
+      mark_private t ~alias:"zzbroadcastprivate";
+      mark_public t ~alias:"zzbroadcastpublic";
+      match
+        B.send_all t ~from_alias:"zzbroadcastsender" ~content:"broadcast"
+          ~message_id:(Some "b264-send-all")
+      with
+      | `Ok (_ts, delivered, skipped) ->
+        Alcotest.(check bool) "public recipient delivered" true
+          (List.mem "zzbroadcastpublic" delivered);
+        Alcotest.(check bool) "private recipient not delivered" false
+          (List.mem "zzbroadcastprivate" delivered);
+        Alcotest.(check bool) "private alias absent from skipped oracle" false
+          (List.mem "zzbroadcastprivate" skipped);
+        Alcotest.(check int) "private inbox empty" 0
+          (List.length
+             (B.poll_inbox t ~node_id:private_node
+                ~session_id:private_session));
+        Alcotest.(check int) "public inbox has broadcast" 1
+          (List.length
+             (B.poll_inbox t ~node_id:public_node ~session_id:public_session)))
+
   (* 7. Rooms: deliberate public/gated listing preserved; private room omitted. *)
   let test_rooms_policy_preserved () =
     let t, cleanup = B.fresh () in
@@ -324,6 +359,9 @@ module Make_tests (B : BACKEND) = struct
       ( "send private uniform error, no content DLQ",
         `Quick,
         test_send_private_uniform_no_content_dlq );
+      ( "send_all results do not enumerate private aliases",
+        `Quick,
+        test_send_all_does_not_enumerate_private_in_results );
       ( "rooms policy preserved",
         `Quick,
         test_rooms_policy_preserved );

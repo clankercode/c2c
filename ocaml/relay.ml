@@ -1500,7 +1500,9 @@ module InMemoryRelay : RELAY = struct
             | Some Public -> true
             | _ -> false
           in
-          if not is_public then skipped := alias :: !skipped
+          (* Private aliases are omitted entirely: returning them in [skipped]
+             turns broadcast into an authenticated directory oracle. *)
+          if not is_public then ()
           else begin
             delivered_to := alias :: !delivered_to;
             let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
