@@ -47,4 +47,6 @@ A relay peer must not be able to discover a recipient's contact identifier or de
 
 See `.collab/research/2026-07-21-security-page-claim-ledger.md` for exact symbols, named tests, caveats, and public-page red lines discovered before implementation.
 
-## Execution hold\n\nDo not claim or implement this bug until Max confirms the concurrent database refactor has landed and its migrations/backend changes are stable. The refactor's backlog ID was not identifiable from the current backlog search, so wire an explicit dependency before execution if/when its ID is known. Rebase the security design on the post-refactor persistence interfaces rather than competing with that work.
+## Execution hold
+
+Do not claim or implement this bug until Max confirms the concurrent database refactor has landed and its migrations/backend changes are stable. The refactor's backlog ID was not identifiable from the current backlog search, so wire an explicit dependency before execution if/when its ID is known. Rebase the security design on the post-refactor persistence interfaces rather than competing with that work.
