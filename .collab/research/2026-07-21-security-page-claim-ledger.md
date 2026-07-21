@@ -406,3 +406,17 @@ Implemented and regression-tested on branch `feature/b264-private-discovery` (bu
 | Owner CLI | `c2c relay contact issue\|list\|revoke` | manual help + secret-once issue path |
 
 **Still Do not claim:** mandatory TLS, universal E2E, absolute anonymity, no-trace ephemeral, prompt-injection impossibility, operator-blind routing.
+
+## Independent security review disposition (2026-07-22)
+
+**Report:** `.collab/evidence/B267/independent-security-review.md`  
+**Verdict:** PASS-WITH-NOTES — 0 blockers on G1/G2 in reviewed binary.
+
+| Finding | Class | Disposition |
+|---|---|---|
+| M1 pre-B264 binary + migrated DB reopens global reachability | MAJOR ops | Accepted deploy constraint; `/security/` caveat #6; doctor fails missing contact ads |
+| M2 no production public-discovery opt-in CLI | MAJOR product | Follow-up; does not weaken private default |
+| M3 contact Accepted lacks WS/short-queue wake | MINOR | Follow-up UX |
+| M4 grant deliver over cleartext HTTP still accepted | MINOR | Follow-up; doctor transport_security fails prod plaintext |
+
+Public claims on `/security/` remain conditional on production token mode, migration stamps, and **running a post-B266 binary** (never roll back binary against a migrated DB).

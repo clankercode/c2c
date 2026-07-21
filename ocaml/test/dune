@@ -286,6 +286,12 @@
  (modules test_relay_private_reachability_migration)
  (libraries c2c_mcp alcotest sqlite3 unix))
 
+; B266: pure doctor private-reachability diagnostics (Relay_doctor).
+(test
+ (name test_relay_doctor_private_reachability)
+ (modules test_relay_doctor_private_reachability)
+ (libraries c2c_mcp alcotest yojson))
+
 ; B147: relay usage stats (GET /stats) — windowed aggregation on both
 ; backends + anonymous route classification.
 (test

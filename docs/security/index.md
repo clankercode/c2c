@@ -53,7 +53,7 @@ You still intentionally share a grant (or mark an alias public) for first contac
 
 ### Is TLS required?
 
-**No.** HTTP/WS are supported. Doctor fails **production** plaintext URLs when private-reachability / grant confidentiality is claimed; deploy TLS at the edge for production grants.
+**No.** HTTP/WS are supported. Production `POST /contact/v1/deliver` refuses cleartext when the relay can detect it (no native TLS and no `X-Forwarded-Proto: https`). Doctor fails **production** `http://` URLs (`relay.transport_security`) when private-reachability claims are asserted; deploy TLS at the edge for production grants.
 
 ### Does “ephemeral” mean no logs?
 
