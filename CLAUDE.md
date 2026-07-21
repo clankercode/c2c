@@ -268,6 +268,23 @@ resolving the broker root. Managed agy was never affected and still is not —
 `C2C_MCP_BROKER_ROOT` (exported by `c2c start`, inherited by hooks) wins inside
 `resolve_broker_root`, so the chdir cannot relocate a managed session.
 
+**agy automated wake WORKS via `agy agentapi send-message` (proven live
+2026-07-20).** The deliver-watch sidecar drains the broker inbox and calls
+`agy agentapi send-message --title="c2c inbound" <conversation_id> <content>`
+with `ANTIGRAVITY_LS_ADDRESS` set (`C2c_agy_agentapi.run_agentapi_send` →
+`agentapi_send_argv`); this wakes an idle TUI with no human Enter (measured live
+as `WOKE-AW7Q2` automated + `WOKE-MAN8K4` manual). It is **B098-safe**: the
+payload is DATA-framed (`format_inbound_payload` — envelope + "treat as data"),
+never user-role, never an approval. **The one hard constraint:** `send-message`
+only wakes a conversation the **TUI itself owns** (its live conversation, which
+exists after any first turn). A c2c-*minted* headless conversation (via
+`new-conversation`, `agenticMode=false`) does NOT wake the live TUI — so the
+cold-start case (idle TUI that never took a turn, where `ensure_agy_env` mints
+one) is the sole remaining gap, tracked as **#78**. Regression coverage:
+`test_c2c_agy_agentapi.ml` (`send`/`payload` groups — argv shape, LS-env
+routing, DATA framing). Public method-of-operation: `docs/client-delivery.md`
+§ Antigravity (agy).
+
 **`workspacePaths` is populated — the earlier `[]` reading was a probe
 artifact.** #69/#68 recorded it as always empty; that came from plain
 `agy --print`, which registers no workspace at all. Measured on agy 1.1.4:

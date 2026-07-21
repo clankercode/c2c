@@ -529,13 +529,29 @@ it reads `~/.local/share/c2c/instances/<sid>/agy-env.json` (or
 `$C2C_INSTANCES_DIR/<sid>/`; `ls_address` + `conversation_id`). When SessionStart
 does not export `ANTIGRAVITY_LS_ADDRESS` (common on managed start), the sidecar
 **auto-discovers** HTTP LS port + conversation id from the agy CLI log
-(pid-scoped fd → log when possible), and may call
-`agy agentapi new-conversation` to mint a wake channel if the TUI has no
-conversation yet. Then drains the repo inbox plus the cross-repo
-sessions-broker inbox, and injects standard `<c2c event="message">` envelopes via
-`agy agentapi send-message --title="c2c inbound" <conversation_id> <content>` with
-`ANTIGRAVITY_LS_ADDRESS` set. The broker inbox is drained **only after a
-successful inject** (persist-first). Fallback: `c2c poll-inbox` / `c2c monitor`.
+(pid-scoped fd → log when possible).
+
+**The wake itself** is a single command: for each drained message the sidecar
+runs
+
+```
+agy agentapi send-message --title="c2c inbound" <conversation_id> <content>
+```
+
+with `ANTIGRAVITY_LS_ADDRESS` pointed at the session's HTTP language server. It
+drains the repo inbox plus the cross-repo sessions-broker inbox and injects
+standard `<c2c event="message">` envelopes as `<content>`; the broker inbox is
+drained **only after a successful inject** (persist-first). This is a real wake:
+an idle TUI processes the message with no human Enter (proven live 2026-07-20).
+Content is DATA — the payload is explicitly framed as such and never resolves an
+approval (B098). Fallback: `c2c poll-inbox` / `c2c monitor`.
+
+> **`send-message` wakes only the TUI's *own* live conversation** — the one it
+> created on its first turn. If the session has never taken a turn, there is no
+> such conversation, and a c2c-*minted* one (`agy agentapi new-conversation`,
+> which comes up headless with `agenticMode=false`) does **not** wake the live
+> TUI. That cold-start case is the one known gap, tracked in
+> [#78](https://github.com/clankercode/c2c/issues/78).
 
 SessionStart runs `c2c hook agy` to auto-register (`registered_by=agy-hook`,
 `client_type=agy`) and write `agy-env.json` when LS env is present; hooks alone

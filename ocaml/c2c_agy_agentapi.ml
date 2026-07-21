@@ -381,18 +381,25 @@ let with_ls_env ~(ls_address : string) (env : string array) : string array =
   :: l
   |> Array.of_list
 
+(* The wake command, built pure so tests can assert the exact argv without
+   spawning `agy`. [send-message] targets an EXISTING conversation by id, and
+   that id must be the TUI's OWN live conversation for the wake to land — a
+   c2c-minted (headless, [new-conversation]) conversation does not wake the live
+   TUI (cold-start gap #78). *)
+let agentapi_send_argv ~(conversation_id : string) ~(content : string) :
+    string array =
+  [| "agy"
+   ; "agentapi"
+   ; "send-message"
+   ; "--title=c2c inbound"
+   ; conversation_id
+   ; content
+  |]
+
 let run_agentapi_send ~(ls_address : string) ~(conversation_id : string)
     ~(content : string) : bool =
   let command = "agy" in
-  let argv =
-    [| "agy"
-     ; "agentapi"
-     ; "send-message"
-     ; "--title=c2c inbound"
-     ; conversation_id
-     ; content
-    |]
-  in
+  let argv = agentapi_send_argv ~conversation_id ~content in
   let env = with_ls_env ~ls_address (Unix.environment ()) in
   let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in
   Fun.protect
@@ -405,19 +412,21 @@ let run_agentapi_send ~(ls_address : string) ~(conversation_id : string)
         wait_child_bounded ~timeout:agentapi_send_timeout_s pid
       with _ -> false)
 
+let agentapi_new_conversation_argv ~(model : string) ~(title : string)
+    ~(prompt : string) : string array =
+  [| "agy"
+   ; "agentapi"
+   ; "new-conversation"
+   ; "--model=" ^ model
+   ; "--title=" ^ title
+   ; prompt
+  |]
+
 let run_agentapi_new_conversation ~(ls_address : string) ?(model = "flash_lite")
     ?(title = "c2c-wake") ~(prompt : string) () : string option =
   (* Capture stdout JSON: {"response":{"newConversation":{"conversationId":"..."}}} *)
   let command = "agy" in
-  let argv =
-    [| "agy"
-     ; "agentapi"
-     ; "new-conversation"
-     ; "--model=" ^ model
-     ; "--title=" ^ title
-     ; prompt
-    |]
-  in
+  let argv = agentapi_new_conversation_argv ~model ~title ~prompt in
   let env = with_ls_env ~ls_address (Unix.environment ()) in
   let stdout_r, stdout_w = Unix.pipe ~cloexec:true () in
   let devnull = Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0 in

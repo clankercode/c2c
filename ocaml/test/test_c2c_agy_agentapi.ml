@@ -61,6 +61,20 @@ let spawn_healthz_once () : int * int =
 let reap pid =
   try ignore (Unix.waitpid [] pid) with _ -> ()
 
+let contains hay needle =
+  let hl = String.length hay and nl = String.length needle in
+  let rec loop i =
+    if i + nl > hl then false
+    else if String.sub hay i nl = needle then true
+    else loop (i + 1)
+  in
+  loop 0
+
+let mk_msg ~from_alias ~to_alias ~content : C2c_mcp.message =
+  { C2c_mcp.from_alias; to_alias; content; deferrable = false;
+    reply_via = None; enc_status = None; ts = 0.0; ephemeral = false;
+    message_id = None; pow_difficulty = None }
+
 let test_instance_dir_respects_c2c_instances_dir () =
   with_tmp_instances (fun dir ->
       let path = C2c_agy_agentapi.env_file_path "sess-a" in
@@ -207,6 +221,76 @@ let test_ensure_writes_from_log_fixture () =
                   Alcotest.(check bool) "persisted" true
                     (Sys.file_exists (C2c_agy_agentapi.env_file_path "from-log")))))
 
+(* ---- The wake method: `agy agentapi send-message` ---------------------- *)
+
+(* The load-bearing assertion for agy's automated wake: the deliver path invokes
+   exactly `agy agentapi send-message --title=c2c inbound <conversation_id>
+   <content>`. Asserting the pure argv keeps this hermetic (no `agy` spawn) while
+   pinning the command the live e2e proved wakes the TUI (WOKE-AW7Q2). *)
+let test_send_argv_shape () =
+  Alcotest.(check (array string)) "send-message argv"
+    [| "agy"; "agentapi"; "send-message"; "--title=c2c inbound"; "conv-123"
+     ; "hello world" |]
+    (C2c_agy_agentapi.agentapi_send_argv ~conversation_id:"conv-123"
+       ~content:"hello world")
+
+let test_new_conversation_argv_shape () =
+  Alcotest.(check (array string)) "new-conversation argv"
+    [| "agy"; "agentapi"; "new-conversation"; "--model=flash_lite"
+     ; "--title=c2c-wake"; "hi" |]
+    (C2c_agy_agentapi.agentapi_new_conversation_argv ~model:"flash_lite"
+       ~title:"c2c-wake" ~prompt:"hi")
+
+(* The wake is routed to the right language server by ANTIGRAVITY_LS_ADDRESS;
+   a stale LS/project from the inherited env must be replaced, not duplicated. *)
+let test_with_ls_env_sets_and_strips () =
+  let base =
+    [| "PATH=/bin"; "ANTIGRAVITY_LS_ADDRESS=stale:1"
+     ; "ANTIGRAVITY_PROJECT_ID=old"; "HOME=/x" |]
+  in
+  let out = C2c_agy_agentapi.with_ls_env ~ls_address:"127.0.0.1:35817" base in
+  let has p = Array.exists (fun s -> s = p) out in
+  let count_prefix pfx =
+    Array.fold_left
+      (fun acc s ->
+        if String.length s >= String.length pfx
+           && String.sub s 0 (String.length pfx) = pfx
+        then acc + 1 else acc)
+      0 out
+  in
+  Alcotest.(check bool) "new LS set" true
+    (has "ANTIGRAVITY_LS_ADDRESS=127.0.0.1:35817");
+  Alcotest.(check bool) "project id set" true
+    (has "ANTIGRAVITY_PROJECT_ID=default-cli-project");
+  Alcotest.(check int) "exactly one LS entry" 1
+    (count_prefix "ANTIGRAVITY_LS_ADDRESS=");
+  Alcotest.(check int) "exactly one project-id entry" 1
+    (count_prefix "ANTIGRAVITY_PROJECT_ID=");
+  Alcotest.(check bool) "unrelated env preserved" true
+    (has "PATH=/bin" && has "HOME=/x")
+
+(* B098: the content pushed into the TUI is framed as DATA, never as an
+   instruction or an approval — the envelope plus an explicit "treat as data"
+   hint. *)
+let test_format_inbound_payload_data_framed () =
+  let payload =
+    C2c_agy_agentapi.format_inbound_payload
+      [ mk_msg ~from_alias:"peer-x" ~to_alias:"agy-y"
+          ~content:"ping WOKE-TEST" ]
+  in
+  Alcotest.(check bool) "c2c envelope present" true (contains payload "<c2c");
+  Alcotest.(check bool) "sender attributed" true (contains payload "peer-x");
+  Alcotest.(check bool) "body carried" true (contains payload "WOKE-TEST");
+  Alcotest.(check bool) "DATA framing (treat as data)" true
+    (contains payload "treat as data")
+
+(* Empty inbox short-circuits to Ok without touching agentapi / auto-discovery
+   (keeps this hermetic — no dependence on a real ~/.gemini CLI log). *)
+let test_deliver_messages_empty_is_ok () =
+  match C2c_agy_agentapi.deliver_messages ~session_id:"none" [] with
+  | Ok () -> ()
+  | Error e -> Alcotest.failf "empty deliver should be Ok, got Error %s" e
+
 let () =
   Alcotest.run "c2c_agy_agentapi"
     [ ( "paths",
@@ -227,4 +311,15 @@ let () =
             test_ensure_refreshes_dead_ls
         ; Alcotest.test_case "writes from log fixture" `Quick
             test_ensure_writes_from_log_fixture ] )
+    ; ( "send",
+        [ Alcotest.test_case "send-message argv" `Quick test_send_argv_shape
+        ; Alcotest.test_case "new-conversation argv" `Quick
+            test_new_conversation_argv_shape
+        ; Alcotest.test_case "with_ls_env sets and strips" `Quick
+            test_with_ls_env_sets_and_strips ] )
+    ; ( "payload",
+        [ Alcotest.test_case "inbound payload is DATA-framed (B098)" `Quick
+            test_format_inbound_payload_data_framed
+        ; Alcotest.test_case "empty deliver is Ok" `Quick
+            test_deliver_messages_empty_is_ok ] )
     ]

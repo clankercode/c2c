@@ -42,11 +42,28 @@ val ensure_agy_env :
   unit ->
   agy_env option
 (** Return existing env, else discover from CLI log (+ optional pid) and write.
-    Does not mint a conversation when none exists yet (needs a real agy
-    conversation id for agentapi send-message to the live TUI). *)
+    When the log yields an HTTP LS but no conversation yet (idle TUI before its
+    first user turn), it MINTS a headless conversation via
+    [run_agentapi_new_conversation]. That minted conversation does NOT wake the
+    live TUI — [send-message] only wakes a conversation the TUI itself owns — so
+    the cold-start case is the known gap tracked in #78. *)
+
+val with_ls_env : ls_address:string -> string array -> string array
+(** Return [env] with [ANTIGRAVITY_LS_ADDRESS]/[ANTIGRAVITY_PROJECT_ID] set to
+    the given LS (default-cli-project), stripping any inherited stale copies —
+    this is how the agentapi call is routed to the right language server. *)
+
+val agentapi_send_argv :
+  conversation_id:string -> content:string -> string array
+(** The exact argv for the wake command: [agy agentapi send-message
+    --title=c2c inbound <conversation_id> <content>]. Pure, so the wake method
+    can be asserted without spawning [agy]. *)
 
 val run_agentapi_send :
   ls_address:string -> conversation_id:string -> content:string -> bool
+
+val agentapi_new_conversation_argv :
+  model:string -> title:string -> prompt:string -> string array
 
 val run_agentapi_new_conversation :
   ls_address:string ->
