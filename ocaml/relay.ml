@@ -1853,6 +1853,9 @@ module InMemoryRelay : RELAY = struct
           let sb = RegistrationLease.sig_b64 lease in
           if sb = "" then None else Some sb
         | _ -> None)
+
+  let private_reachability_mode _t = "process_local"
+
 end
 
 (* --- SqliteRelay --- *)
@@ -4342,6 +4345,9 @@ module SqliteRelay : RELAY = struct
             let s = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
             if s <> "" then result := Some s);
         !result)
+
+  let private_reachability_mode _t = "consent_gated"
+
 end
 
 (* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
@@ -4527,7 +4533,7 @@ end = struct
       (c >= '0' && c <= '9') || c = '_' || c = '-') s
 
 
-  let handle_health ~auth_mode () =
+  let handle_health ~auth_mode ~private_reachability () =
     (* B216: read the once-memoized git hash instead of forking
        `git rev-parse` per request. Precedence unchanged: RAILWAY_GIT_COMMIT_SHA
        (7-char prefix) > `git rev-parse --short HEAD` > "unknown". *)
@@ -4536,6 +4542,7 @@ end = struct
     let pow_header =
       issue_pow_header ~route:"health" ~actor_id:"" ~difficulty:0
     in
+    let dev_mode = auth_mode = "dev" in
     respond_ok ~headers:[pow_header] (json_ok [
       ("version", `String Version.version);
       ("git_hash", `String git_hash);
@@ -4548,7 +4555,11 @@ end = struct
       ("auth_mode", `String auth_mode);
       (* B265/B266: contact grant protocol card (c2c-contact/1). *)
       ("contact_protocol", `Int 1);
-      ("private_reachability", `String "consent_gated");
+      (* B266: only durable SQLite backends claim consent_gated. *)
+      ("private_reachability", `String private_reachability);
+      ("dev_mode", `Bool dev_mode);
+      ("production_claims",
+       `Bool (auth_mode = "prod" && private_reachability = "consent_gated"));
       ("pow", `Assoc [
         ("enabled", `Bool pow_enabled);
         ("scheme", `String Pow.scheme_id);
@@ -6876,7 +6887,8 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
 
       | `GET, "/health" ->
         let auth_mode = if token = None then "dev" else "prod" in
-        handle_health ~auth_mode ()
+        let private_reachability = R.private_reachability_mode relay in
+        handle_health ~auth_mode ~private_reachability ()
 
       | `GET, "/stats" ->
         handle_stats relay

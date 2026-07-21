@@ -572,6 +572,23 @@ let check_private_reachability ~health =
                  "Tokenless/dev mode cannot substantiate private-reachability claims"
            ; fix_command = None
            ; docs_url = Some docs_url }
+       | `String "process_local" when mode = "prod" ->
+           { check_id = "relay.private_reachability"
+           ; status = Fail
+           ; message =
+               "private_reachability=process_local (in-memory; not durable production)"
+           ; detail =
+               Some "Serve with --storage sqlite for durable consent-gated reachability"
+           ; fix_command =
+               Some "c2c relay serve --storage sqlite --token <TOKEN> ..."
+           ; docs_url = Some docs_url }
+       | `String "process_local" ->
+           { check_id = "relay.private_reachability"
+           ; status = Inconclusive
+           ; message = "private_reachability=process_local (dev/in-memory)"
+           ; detail = None
+           ; fix_command = None
+           ; docs_url = Some docs_url }
        | `String other ->
            { check_id = "relay.private_reachability"
            ; status = Fail

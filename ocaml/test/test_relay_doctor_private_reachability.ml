@@ -95,6 +95,26 @@ let test_transport_dev_http_inconclusive () =
   status_eq "dev plaintext Inconclusive" true
     (r.status = Relay_doctor.Inconclusive)
 
+
+let test_private_reachability_process_local_prod_fail () =
+  let r =
+    Relay_doctor.check_private_reachability
+      ~health:
+        (Some
+           (health ~auth_mode:"prod" ~private_reachability:"process_local" ()))
+  in
+  status_eq "process_local prod Fail" true (r.status = Relay_doctor.Fail)
+
+let test_private_reachability_process_local_dev_inconclusive () =
+  let r =
+    Relay_doctor.check_private_reachability
+      ~health:
+        (Some
+           (health ~auth_mode:"dev" ~private_reachability:"process_local" ()))
+  in
+  status_eq "process_local dev Inconclusive" true
+    (r.status = Relay_doctor.Inconclusive)
+
 let () =
   Alcotest.run "relay_doctor_private_reachability"
     [ ( "B266 doctor checks",
@@ -111,6 +131,10 @@ let () =
             test_private_reachability_missing_fail;
           test_case "transport prod http Fail" `Quick
             test_transport_prod_http_fail;
+          test_case "private_reachability process_local prod Fail" `Quick
+            test_private_reachability_process_local_prod_fail;
+          test_case "private_reachability process_local dev Inconclusive" `Quick
+            test_private_reachability_process_local_dev_inconclusive;
           test_case "transport prod https Pass" `Quick
             test_transport_prod_https_pass;
           test_case "transport dev http Inconclusive" `Quick

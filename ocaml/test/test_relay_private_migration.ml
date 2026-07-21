@@ -290,9 +290,10 @@ let test_health_advertises_contact_and_private_reachability () =
         (List.assoc_opt "auth_mode" f = Some (`String "prod"));
       check bool "contact_protocol 1" true
         (List.assoc_opt "contact_protocol" f = Some (`Int 1));
-      check bool "private_reachability consent_gated" true
+      (* RTSR uses InMemoryRelay: durable claim is process_local, not consent_gated. *)
+      check bool "private_reachability process_local (in-memory)" true
         (List.assoc_opt "private_reachability" f
-         = Some (`String "consent_gated"))
+         = Some (`String "process_local"))
     | _ -> Alcotest.fail "health not object")
 
 let test_health_dev_mode_still_advertises_but_doctor_fails () =
@@ -322,7 +323,7 @@ let () =
             test_interrupted_retry_adds_missing_column;
         ] );
       ( "health ads",
-        [ test_case "prod health contact + private_reachability" `Quick
+        [ test_case "prod health contact + private_reachability (in-memory)" `Quick
             test_health_advertises_contact_and_private_reachability;
           test_case "dev health still ads protocol" `Quick
             test_health_dev_mode_still_advertises_but_doctor_fails;
