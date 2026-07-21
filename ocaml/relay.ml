@@ -1552,9 +1552,9 @@ module SqliteRelay : RELAY = struct
       ~finally:(fun () -> (try ignore (Sqlite3.finalize stmt) with _ -> ()))
       (fun () -> f stmt)
 
-  (* B219: best-effort shutdown close. No shutdown path calls this today, but
-     it is exposed so an operator/harness teardown can release the fd and
-     checkpoint the WAL. Never raises. *)
+  (* B219: best-effort lifecycle close. No shutdown path calls this today;
+     the persistent connection is process-lifetime owned. Keep this locked
+     hook for a future explicit teardown path. Never raises. *)
   let close t =
     with_lock t (fun () ->
       try ignore (Sqlite3.db_close t.db) with _ -> ())
