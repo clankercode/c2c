@@ -17,10 +17,11 @@ verification by an agent running inside that client — please update and PR.
 > which is the single source of truth for that question. Summary (2026-07-21):
 > **GUARANTEED** — OpenCode, Pi Agent, managed Codex (local mail).
 > **CONDITIONAL** — Kimi + agy (out-of-process poster); **Claude Code + Grok**
-> (and weak vanilla Codex) on an armed **`c2c monitor`** — without Monitor they
-> are NONE at true idle. All seven clients are first-class; wake tier differs.
+> on an armed **`c2c monitor`** (without Monitor → NONE at true idle); weak
+> vanilla Codex on **`c2c monitor`** or legacy `hooks+wake` (without either →
+> NONE). All seven clients are first-class; wake tier differs.
 
-Last updated: 2026-07-21 (Claude/Grok listed CONDITIONAL on monitor; full-bleed table)
+Last updated: 2026-07-21 (B258: delivery tier summary audited — monitor called out; monitor clients start normally like OpenCode/Pi)
 
 ## Quick reference
 
@@ -325,17 +326,40 @@ agy` does this) or fall back to `c2c poll-inbox` / `c2c monitor`.
 
 ## Delivery tier summary
 
+Authoritative wake labels: [Delivery & Wake Contract](/wake-contract/).
+Durability is always true; this table is about *how* mail reaches attention and
+how you start the client.
+
 | Client | Wake | Session ID source | Delivery mechanism | Notification | Restart / Launch |
 |--------|------|-------------------|--------------------|--------------|-----------------|
-| Claude Code | **CONDITIONAL** (`c2c monitor`); else NONE at idle | `$CLAUDE_SESSION_ID` | PostToolUse hook (auto) + Monitor for idle wake | Implicit (every tool); Monitor for idle | `c2c start claude` + arm Monitor |
-| Codex (managed app-server) | **GUARANTEED** (local mail) | Hook payload / deterministic session-id-derived alias | App-server inject + gated auto-turn (B131/B168); hooks fallback if app-server unavailable | Model-visible on arrival; auto-turn when idle + DND off | `c2c start codex` / `c2c new codex` |
-| Codex (vanilla hooks) | **CONDITIONAL** (`c2c monitor` / legacy `hooks+wake`); else NONE | Hook payload session / auto alias | `c2c hook codex` → `additionalContext` (hook-boundary) | UserPromptSubmit/PostToolUse; optional `hooks+wake` | plain `codex` or managed fallback |
-| Pi Agent | **GUARANTEED** | Extension session alias | `pi-c2c` → `c2c poll-inbox` → `pi.sendMessage` | `fs.watch` + 60s safety poll | n/a (`pi install npm:pi-c2c`) |
-| OpenCode | **GUARANTEED** | `$OPENCODE_SESSION_ID` | Native TS plugin + `promptAsync` | alias-scoped `c2c monitor --alias <session>` | `c2c start opencode` |
-| Kimi | **CONDITIONAL** | `session_<uuid>` from `~/.kimi-code/session_index.jsonl` | REST prompt injection (`C2c_kimi_notifier`) | REST POST (no tmux; composer nudge opt-in only) | `c2c start kimi` / `c2c new kimi` |
-| Grok | **CONDITIONAL** (`c2c monitor`); else NONE at idle | `$GROK_SESSION_ID` / `$GROK_AGENT` + `active_sessions.json` (B173) | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) + arm Monitor |
-| agy | **CONDITIONAL** | Hook payload / auto `agy-*` (`registered_by=agy-hook`) | agentapi inject via deliver-watch sidecar + Monitor fallback | agentapi wake / Monitor / `poll-inbox` | `c2c start agy` |
-| Cursor Agent | n/a | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134) | n/a (unofficial — no install/hooks) | n/a | labeling only (`client=cursor`, alias `cursor-…`) |
+| Claude Code | **CONDITIONAL** on armed **`c2c monitor`**; without it **NONE** at true idle (PostToolUse/Stop/SessionStart are activity-only) | `$CLAUDE_SESSION_ID` (hook payload `session_id` as fallback) | PostToolUse/Stop/SessionStart hooks (turn-boundary drain → `additionalContext`); idle wake = agent **Monitor** on `c2c monitor` | Hooks on tool/turn boundaries; **Monitor** lines when armed (full bodies, peek) | **Normal start:** `c2c start claude` or plain `claude` after `c2c install claude` (same pattern as OpenCode/Pi — no special launch flag) |
+| Codex (managed app-server) | **GUARANTEED** for local-broker mail; remote / `@host` / `#` **inject-only** (no auto-turn) | Launcher / hook payload; deterministic session-id-derived alias (B166/B172) | App-server `inject_items` + gated auto-turn when idle + DND off (B131/B168); falls back to hooks if app-server unavailable | Model-visible on arrival; auto-turn when eligible | **Normal start:** `c2c start codex` / `c2c new codex` |
+| Codex (vanilla hooks) | **CONDITIONAL** (weak): armed **`c2c monitor`**, or legacy `hooks+wake` tmux/herdr nudge; hooks alone = **NONE** at true idle | Hook payload session / auto alias | `c2c hook codex` → `additionalContext` (hook-boundary, not arrival-time) | UserPromptSubmit/PostToolUse/SessionStart; optional `hooks+wake` pane nudge | **Normal start:** plain `codex` (prefer managed app-server for a real guarantee) |
+| Pi Agent | **GUARANTEED** while `pi-c2c` is loaded | Extension-minted session alias (`C2C_PI_ALIAS` optional) | `pi-c2c`: `fs.watch` → `c2c poll-inbox` → `pi.sendMessage` (+ 60s safety poll) | In-process inotify + safety poll (no agent Monitor required) | **Normal start:** `pi` after `pi install npm:pi-c2c` (no `c2c start pi`) |
+| OpenCode | **GUARANTEED** while plugin is loaded | `$OPENCODE_SESSION_ID` (else project-derived) | In-process TS plugin → `promptAsync` | Plugin spawns **alias-scoped** `c2c monitor --alias <session>` subprocess (not the agent Monitor tool) | **Normal start:** `c2c start opencode` or plain `opencode` after install |
+| Kimi | **CONDITIONAL** on notifier + local Kimi server + resolvable session id (REST POST is the wake) | Broker: managed instance name / SessionStart hook; REST wake: `session_<uuid>` via workspace record + `session_index.jsonl` (B233 / #41) | REST prompt injection (`C2c_kimi_notifier` → `/api/v1/sessions/{id}/prompts`); unmanaged fallback `c2c monitor` / `poll-inbox` | REST inject (no tmux); optional composer nudge only with `C2C_KIMI_TMUX_COMPOSER_WAKE=1` | **Normal start:** `c2c start kimi` / `c2c new kimi` (arms notifier); plain `kimi` after install (SessionStart best-effort arms notifier — B238) |
+| Grok | **CONDITIONAL** on armed **`c2c monitor`**; without it **NONE** at true idle (SessionStart/skill only — no `additionalContext` inject) | `$GROK_SESSION_ID` or payload; else `$GROK_AGENT` + `~/.grok/active_sessions.json` (B173) | Agent **Monitor** on `c2c monitor` (preferred); SessionStart auto-register + `c2c-session` identity skill | Monitor line inject into conversation | **Normal start:** plain `grok` after `c2c install grok` (`c2c start grok` deferred — same “just start the client” pattern) |
+| agy | **CONDITIONAL** on deliver-watch sidecar + resolvable `agy-env` (LS + conversation; TUI-owned conversation only — cold-start gap #78) | Hook payload / auto `agy-*` (`registered_by=agy-hook`); managed env under instances dir | agentapi inject via deliver-watch (`agy agentapi send-message`); hooks alone do **not** idle-wake; fallback `c2c monitor` / `poll-inbox` | agentapi wake when sidecar alive | **Normal start:** `c2c start agy` (supervises CLI + deliver-watch); plain `agy` after install needs managed start or manual poll/monitor for idle wake |
+| Cursor Agent | n/a | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134) | n/a (unofficial — no install/hooks/delivery) | n/a | labeling only (`client=cursor`, alias `cursor-…`) |
+
+**How to read this table**
+
+- **Start vs wake:** Launch is always “start the client normally” (managed
+  `c2c start <client>` where it exists, else the plain CLI after install) —
+  same idea as OpenCode and Pi. Idle-wake helpers are *not* a special start
+  mode: OpenCode/Pi/managed Codex/Kimi/agy attach them in-process or via the
+  managed supervisor. **Claude Code and Grok** need an agent- or
+  operator-armed **`c2c monitor`** for idle wake; **vanilla Codex** needs
+  Monitor or legacy `hooks+wake`. `c2c poll-inbox` is a universal fallback
+  (model decision), not a wake. Do not invent a launch flag for Monitor.
+- **`c2c monitor` (two roles):** (1) **Agent Monitor tool** — Claude/Grok (and
+  weak vanilla Codex) arm
+  `Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })`
+  for CONDITIONAL idle wake. (2) **Plugin/subprocess** — OpenCode’s plugin
+  starts an alias-scoped `c2c monitor --alias <session>` itself; that is
+  GUARANTEED while the plugin runs and is not a model decision.
+- **Fallback everywhere:** `c2c poll-inbox` / `poll_inbox` is universal but
+  requires a model decision — not a wake guarantee.
 
 > **Cursor Agent (unofficial):** c2c does **not** ship install, hooks, or delivery for Cursor. B134 only ensures `c2c init` / client-type inference labels Cursor sessions as `cursor` (not `codex`) when `CURSOR_AGENT` or `CURSOR_INVOKED_AS=cursor-agent` is set. Prefer `c2c init --client …` if you need a different identity.
 

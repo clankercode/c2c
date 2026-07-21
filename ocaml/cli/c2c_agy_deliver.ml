@@ -13,8 +13,8 @@ type agy_env = C2c_agy_agentapi.agy_env = {
   conversation_id : string;
 }
 
+(** Re-exports for callers (hooks / instances) that still import this module. *)
 let read_agy_env = C2c_agy_agentapi.read_agy_env
-
 let write_agy_env = C2c_agy_agentapi.write_agy_env
 
 (* #66: `agy agentapi send-message` normally returns in well under a second, but
@@ -123,20 +123,19 @@ let deliver_loop
         Printf.printf "[c2c-agy-deliver] max iterations (%d) reached, stopping\n%!" m
     | _ ->
         incr iterations;
-        (* Auto-discover agy-env when hooks never wrote it (managed start). *)
+        (* Auto-discover agy-env when hooks never wrote it (managed start).
+           Only [ensure_agy_env] is authoritative (#78): it refuses headless
+           mints and returns None until a TUI-owned conversation is in the log.
+           Do not fall back to raw read_agy_env — that reuses a stale minted
+           conversation and silently "delivers" without waking. *)
         let env =
-          match
-            C2c_agy_agentapi.ensure_agy_env ~session_id
-              ?agy_pid:watched_pid ()
-          with
-          | Some e -> Some e
-          | None -> read_agy_env session_id
+          C2c_agy_agentapi.ensure_agy_env ~session_id ?agy_pid:watched_pid ()
         in
         (match env with
          | None ->
              Printf.printf
-               "[c2c-agy-deliver] iteration %d: agy-env not ready (discovering \
-                LS + conversation from CLI log)\n%!"
+               "[c2c-agy-deliver] iteration %d: agy-env not ready (waiting for \
+                TUI-owned conversation in CLI log — #78; no headless mint)\n%!"
                !iterations;
              flush stdout
          | Some env ->

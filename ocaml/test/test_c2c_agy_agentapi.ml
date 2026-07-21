@@ -221,6 +221,62 @@ let test_ensure_writes_from_log_fixture () =
                   Alcotest.(check bool) "persisted" true
                     (Sys.file_exists (C2c_agy_agentapi.env_file_path "from-log")))))
 
+(* #78 cold-start: ensure_agy_env must NEVER accept a c2c-minted headless
+   conversation as the wake target. When the CLI log has a live HTTP LS but no
+   TUI-owned "Created conversation" line, ensure must return None and must not
+   write agy-env.json — even if agentapi new-conversation would succeed
+   (forced here via C2C_AGY_NEW_CONVERSATION_FIXTURE). send-message only wakes
+   conversations the TUI itself owns. *)
+let test_i78_ensure_does_not_mint_when_log_has_ls_only () =
+  let fixture_conv = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" in
+  let port, child = spawn_healthz_once () in
+  let prev_fix = Sys.getenv_opt "C2C_AGY_NEW_CONVERSATION_FIXTURE" in
+  Unix.putenv "C2C_AGY_NEW_CONVERSATION_FIXTURE" fixture_conv;
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.kill child Sys.sigterm with _ -> ());
+      reap child;
+      match prev_fix with
+      | Some v -> Unix.putenv "C2C_AGY_NEW_CONVERSATION_FIXTURE" v
+      | None -> Unix.putenv "C2C_AGY_NEW_CONVERSATION_FIXTURE" "")
+    (fun () ->
+      with_tmp_instances (fun _ ->
+          let log_dir = Filename.temp_file "agy-logdir-i78" "" in
+          Sys.remove log_dir;
+          Unix.mkdir log_dir 0o755;
+          let log = log_dir // "cli-cold-start.log" in
+          let oc = open_out log in
+          (* Live LS only — no "Created conversation" (idle TUI, never turned). *)
+          Printf.fprintf oc
+            "I0721 01:11:46.122163 9 server.go:546] Language server listening on \
+             random port at %d for HTTP\n"
+            port;
+          close_out oc;
+          Fun.protect
+            ~finally:(fun () ->
+              (try Sys.remove log with _ -> ());
+              (try Unix.rmdir log_dir with _ -> ()))
+            (fun () ->
+              let sid = "cold-start-i78" in
+              let env_path = C2c_agy_agentapi.env_file_path sid in
+              (match
+                 C2c_agy_agentapi.ensure_agy_env ~session_id:sid
+                   ~cli_log_dir:log_dir ?agy_pid:None ()
+               with
+               | Some env when env.conversation_id = fixture_conv ->
+                   Alcotest.fail
+                     "#78: ensure_agy_env must not mint a headless conversation \
+                      (fixture id was accepted as wake target)"
+               | Some env ->
+                   Alcotest.failf
+                     "#78: expected None while waiting for TUI conversation, \
+                      got ls=%s conv=%s"
+                     env.ls_address env.conversation_id
+               | None -> ());
+              Alcotest.(check bool)
+                "#78: must not persist agy-env without TUI conversation" false
+                (Sys.file_exists env_path))))
+
 (* ---- The wake method: `agy agentapi send-message` ---------------------- *)
 
 (* The load-bearing assertion for agy's automated wake: the deliver path invokes
@@ -310,7 +366,10 @@ let () =
         ; Alcotest.test_case "refreshes dead LS" `Quick
             test_ensure_refreshes_dead_ls
         ; Alcotest.test_case "writes from log fixture" `Quick
-            test_ensure_writes_from_log_fixture ] )
+            test_ensure_writes_from_log_fixture
+        ; Alcotest.test_case
+            "#78 cold-start: no headless mint when log has LS only" `Quick
+            test_i78_ensure_does_not_mint_when_log_has_ls_only ] )
     ; ( "send",
         [ Alcotest.test_case "send-message argv" `Quick test_send_argv_shape
         ; Alcotest.test_case "new-conversation argv" `Quick

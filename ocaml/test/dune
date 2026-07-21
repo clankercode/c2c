@@ -627,6 +627,15 @@
  (modules test_c2c_agy_agentapi)
  (libraries c2c_mcp alcotest yojson unix))
 
+; #78 — gated live E2E for managed agy cold-start (no headless mint).
+; Default: skip live case. Opt-in: C2C_AGY_I78_LIVE=1 (must run from tmux).
+(test
+ (name test_c2c_agy_live_e2e)
+ (modules test_c2c_agy_live_e2e)
+ (libraries alcotest unix)
+ (deps %{project_root}/scripts/agy-i78-cold-start-e2e.py
+       %{project_root}/scripts/c2c_tmux.py))
+
 (test
  (name test_c2c_wake_guidance)
  (modules test_c2c_wake_guidance)
