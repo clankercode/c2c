@@ -49,6 +49,9 @@ let contact_decode_grant_id grant_id =
 
 let contact_scope_v1 = "dm-first-contact"
 
+(* B262 §7.4: retain grant + message_id rows until max(expires,revoked)+7d. *)
+let contact_grant_gc_grace_s = 7. *. 86_400.
+
 type contact_grant_rec = {
   verifier : string;
   recipient_identity_fp : string;
@@ -1552,6 +1555,25 @@ module InMemoryRelay : RELAY = struct
           ~seen_aliases:t.stats_seen_aliases
           ~seen_machines:t.stats_seen_machines)
         t.persist_dir;
+      (* B262/B266: GC expired/revoked contact grants past the replay window. *)
+      let drop_verifiers = ref [] in
+      Hashtbl.iter
+        (fun verifier g ->
+          let end_ts =
+            match g.revoked_at with
+            | Some r -> max g.expires_at r
+            | None -> g.expires_at
+          in
+          if now >= end_ts +. contact_grant_gc_grace_s then
+            drop_verifiers := verifier :: !drop_verifiers)
+        t.contact_grants;
+      List.iter
+        (fun verifier ->
+          Hashtbl.remove t.contact_grants verifier;
+          Hashtbl.filter_map_inplace
+            (fun (v, _mid) ts -> if v = verifier then None else Some ts)
+            t.contact_grant_mids)
+        !drop_verifiers;
       `Ok (List.rev !expired, pruned)
     )
 
@@ -2891,6 +2913,22 @@ module SqliteRelay : RELAY = struct
       with_stmt conn "DELETE FROM stats_message_events WHERE ts < ?" (fun del_stats ->
         Sqlite3.bind_double del_stats 1 (now -. stats_event_retention_s) |> ignore;
         Sqlite3.step del_stats |> ignore);
+      (* B262/B266: drop contact grants past max(expires,revoked)+grace. *)
+      with_stmt conn
+        "DELETE FROM contact_grant_message_ids WHERE verifier IN (
+           SELECT verifier FROM contact_grants
+            WHERE MAX(expires_at, COALESCE(revoked_at, expires_at)) + ? < ? )"
+        (fun del_mids ->
+          Sqlite3.bind_double del_mids 1 contact_grant_gc_grace_s |> ignore;
+          Sqlite3.bind_double del_mids 2 now |> ignore;
+          ignore (Sqlite3.step del_mids));
+      with_stmt conn
+        "DELETE FROM contact_grants
+          WHERE MAX(expires_at, COALESCE(revoked_at, expires_at)) + ? < ?"
+        (fun del_g ->
+          Sqlite3.bind_double del_g 1 contact_grant_gc_grace_s |> ignore;
+          Sqlite3.bind_double del_g 2 now |> ignore;
+          ignore (Sqlite3.step del_g));
       `Ok (List.rev !expired_aliases, pruned)
     )
 
