@@ -234,7 +234,6 @@ module type RELAY = sig
     | `Duplicate of float * string
     | `Rejected ]
   val private_reachability_mode : t -> string
-
 end
 
 (* --- B147: usage-stats window definitions shared by both backends --- *)

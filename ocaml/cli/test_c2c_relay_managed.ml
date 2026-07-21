@@ -94,19 +94,16 @@ let test_binary_discovers_two_repos_and_late_broker () =
   let connector_log = home // "connector.log" in
   write_registry repo_a ~session_id:"b200-sess-a" ~alias:"b200-alpha"
     ~client_type:"codex";
-  (* B264 private-by-default hides connector registrations from ordinary /list.
-     This suite asserts broker discovery via /list, so opt into public default. *)
-  let server_env = env_with [
-    "C2C_RELAY_DEFAULT_DISCOVERY", "public";
-  ] in
-  let server = spawn_to_log ~env:server_env binary
+  let server = spawn_to_log ~env:(Unix.environment ()) binary
       [ "relay"; "serve"; "--listen"; Printf.sprintf "127.0.0.1:%d" port;
         "--storage"; "memory" ] relay_log in
   Fun.protect ~finally:(fun () -> stop_and_wait server) @@ fun () ->
   let peers = home // "peers.json" in
   let fetch_peers alias =
-    Sys.command (Printf.sprintf "curl -sf %s/list > %s"
-      (Filename.quote url) (Filename.quote peers)) = 0
+    (* Admin/dead-inclusive view verifies connector registration without
+       weakening private-by-default peer discovery. Tokenless test relay only. *)
+    Sys.command (Printf.sprintf "curl -sf '%s/list?include_dead=true' > %s"
+      url (Filename.quote peers)) = 0
     && String.contains (read_file peers) (String.get alias 0)
     && let body = read_file peers in
        try ignore (Str.search_forward (Str.regexp_string alias) body 0); true
@@ -166,8 +163,6 @@ let test_binary_skips_historical_registrations () =
     "C2C_RELAY_IDENTITY_PATH", "";
     "C2C_RELAY_ALLOW_UNSIGNED_INBOX", "";
     "C2C_RELAY_POW", "";
-    (* B264: /list visibility proof for live-vs-history eligibility. *)
-    "C2C_RELAY_DEFAULT_DISCOVERY", "public";
   ] in
   let server = spawn_to_log ~env:server_env binary
       [ "relay"; "serve"; "--listen"; Printf.sprintf "127.0.0.1:%d" port;
@@ -189,7 +184,7 @@ let test_binary_skips_historical_registrations () =
     (connector_rc >= 0 && connector_rc < 128);
   let peers = home // "b201-peers.json" in
   check int "peer list fetched" 0 (Sys.command (Printf.sprintf
-    "curl -sf %s/list > %s" (Filename.quote url) (Filename.quote peers)));
+    "curl -sf '%s/list?include_dead=true' > %s" url (Filename.quote peers)));
   let body = read_file peers in
   check bool "live row registered" true
     (try ignore (Str.search_forward (Str.regexp_string "b201-live-alias") body 0); true

@@ -23,7 +23,7 @@ Evidence ledger (repo): `.collab/research/2026-07-21-security-page-claim-ledger.
 | Ed25519-authenticated relay requests (token-configured) | Guaranteed |
 | Private first-contact on production (token-configured) relay requires recipient-issued grant | Guaranteed on post-B266 binaries after migration |
 | Ordinary peer list omits private recipients | Guaranteed on post-B266 binaries after migration |
-| Pre-B266 binary reopening a migrated DB | **Not blocked by schema alone** — deploy must not run old binaries against post-migration DBs |
+| Pre-B266 binary reopening a migrated DB | **Fails closed after migration** — legacy `leases` is an empty, non-writable view; active rows live in `secure_leases_v2` |
 | TLS mandatory for all schemes | **No** |
 | Universal end-to-end encryption | **No** |
 | Absolute anonymity / no metadata | **No** |
@@ -54,7 +54,7 @@ You still intentionally share a grant (or mark an alias public) for first contac
 
 ### Is TLS required?
 
-**No.** HTTP/WS are supported. Production `POST /contact/v1/deliver` refuses cleartext when the relay can detect it (no native TLS and no `X-Forwarded-Proto: https`). Doctor fails **production** `http://` URLs (`relay.transport_security`) when private-reachability claims are asserted; deploy TLS at the edge for production grants.
+**No.** HTTP/WS are supported. Production `POST /contact/v1/deliver` requires native TLS, or an operator-trusted TLS terminator (`C2C_RELAY_TRUST_FORWARDED_PROTO=1` plus `X-Forwarded-Proto: https`). A client header alone is refused. Doctor fails **production** `http://` URLs (`relay.transport_security`) when private-reachability claims are asserted; deploy TLS at the edge for production grants.
 
 ### Does “ephemeral” mean no logs?
 
@@ -92,7 +92,7 @@ You still intentionally share a grant (or mark an alias public) for first contac
 
 **Migration / ops (B266)**
 
-- Durable `schema_version=2` and `relay_features` markers for **new binaries** and doctor/health; legacy DBs ALTER to private default. Markers are not a hard lock against an older binary that ignores them — keep pre-B266 binaries off migrated production DBs.
+- Durable `schema_version=2` and `relay_features` markers for new binaries and doctor/health. Migration atomically renames active registrations to `secure_leases_v2` and replaces legacy `leases` with an empty, non-writable compatibility view. Older binaries therefore see no recipients and cannot restore global registrations.
 - `/health` advertises `contact_protocol: 1` and `private_reachability`:
   - SQLite / production-style backends: `"consent_gated"` (durable markers).
   - In-memory process-local backends: `"process_local"` (same private defaults for the process lifetime; not a multi-process migration claim).
@@ -124,7 +124,7 @@ Each host can deny/allow senders, size, and rate **after** relay acceptance. Tha
 3. Marking an alias **public** restores ordinary list/send for that alias — document it as intentional reachability, not consent-gated.
 4. Issue grants only over confidential transport in production (TLS URL or equivalent terminator).
 5. Upgrade both clients and relay together; mixed-version clients must not fall back from contact cards to alias `/send`.
-6. **Do not roll back the relay binary** past the private-reachability build while keeping a migrated SQLite DB. Pre-B264 binaries ignore `discovery_visibility` and contact grants, so they re-open global authenticated discovery and default-allow first contact against that DB. After any upgrade, run `c2c doctor` and require `contact_protocol` / `private_reachability` ads before claiming production consent-gated reachability. (Independent review finding M1.)
+6. **Binary rollback fails closed, but still requires operator care.** After the first secure SQLite open, a pre-B266 binary sees an empty `leases` view and its registration writes fail; it cannot reopen global discovery/delivery. Use a current binary to recover service, then run `c2c doctor` and require `contact_protocol` / `private_reachability` ads before claiming production consent-gated reachability.
 
 ---
 

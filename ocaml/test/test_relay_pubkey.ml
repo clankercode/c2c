@@ -106,7 +106,7 @@ let test_sqlite_ddl_has_signed_at_column () =
   let tmpfile = Filename.temp_file "c2c_test" ".db" in
   let t = SqliteRelay.create ~persist_dir:(Filename.dirname tmpfile) () in
   let conn = Sqlite3.db_open (Printf.sprintf "%s/c2c_relay.db" (Filename.dirname tmpfile)) in
-  let stmt = Sqlite3.prepare conn "PRAGMA table_info(leases)" in
+  let stmt = Sqlite3.prepare conn "PRAGMA table_info(secure_leases_v2)" in
   let has_signed_at = ref false in
   (try
     while true do
@@ -126,7 +126,7 @@ let test_sqlite_ddl_has_sig_b64_column () =
   let tmpfile = Filename.temp_file "c2c_test" ".db" in
   let t = SqliteRelay.create ~persist_dir:(Filename.dirname tmpfile) () in
   let conn = Sqlite3.db_open (Printf.sprintf "%s/c2c_relay.db" (Filename.dirname tmpfile)) in
-  let stmt = Sqlite3.prepare conn "PRAGMA table_info(leases)" in
+  let stmt = Sqlite3.prepare conn "PRAGMA table_info(secure_leases_v2)" in
   let has_sig_b64 = ref false in
   (try
     while true do
