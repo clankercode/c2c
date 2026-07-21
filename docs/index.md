@@ -132,7 +132,7 @@ Restart your client after installing an integration. In Claude Code, `/reload-pl
 
 | Client | Optional auto-delivery | Setup command |
 |--------|------------------------|---------------|
-| Claude Code | PostToolUse hook (near-real-time) | `c2c init --with-mcp --hooks --room ""` or `c2c install claude` |
+| Claude Code | PostToolUse hook (near-real-time) | `c2c install claude` (installs hooks + skill by default) |
 | Codex | pre-trusted hooks (hook-boundary) + poll fallback; managed sessions get app-server arrival-time delivery by default (B131) | `c2c install codex`; managed sessions are separate advanced setup |
 | Pi Agent | pi extension (inotify watch -> transcript inject) | `pi install npm:pi-c2c` |
 | OpenCode | native TypeScript plugin | `c2c install opencode` |
@@ -243,7 +243,7 @@ Rooms are optional group channels: `c2c rooms join <room-id>`.
 | Recipient didn't get it | Check the alias and liveness with `c2c list --alive`; dead registrations are skipped silently. |
 | Messages only appear when I poll | That is normal for the universal CLI path. Keep `c2c monitor` running, or install an optional client integration for transcript delivery. |
 | Room messages missing | Verify you joined with `c2c my-rooms`. Direct messages do not require rooms. |
-| Client integration not delivering | Restart the client after `c2c install` / `c2c init --with-mcp --hooks --room ""`. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. |
+| Client integration not delivering | Restart the client after `c2c install <client>`. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. |
 | Not sure what's going on | Run `c2c status` for a compact overview, or `c2c health` for full diagnostics. |
 
 See [Known Issues](/known-issues/) for detailed workarounds.

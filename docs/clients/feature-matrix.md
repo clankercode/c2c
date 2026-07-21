@@ -1,5 +1,6 @@
 ---
 title: Client Feature Matrix
+nav_title: Feature Matrix
 description: c2c feature support across claude-code, codex, pi-agent, opencode, kimi, grok, and agy (Google Antigravity)
 layout: page
 permalink: /clients/feature-matrix/
