@@ -278,7 +278,8 @@ class CodexAgentImageTests(unittest.TestCase):
         # Verify key files are present in the image
         for binary, path in [
             ("c2c", "/usr/local/bin/c2c"),
-            ("c2c_deliver_inbox.py", "/usr/local/bin/c2c_deliver_inbox.py"),
+            # c2c_deliver_inbox.py deprecated during the OCaml migration; the
+            # canonical deliver daemon is the OCaml c2c-deliver-inbox binary.
             ("c2c-deliver-inbox shim", "/usr/local/bin/c2c-deliver-inbox"),
         ]:
             r = subprocess.run(
