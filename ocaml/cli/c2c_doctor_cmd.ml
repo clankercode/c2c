@@ -107,9 +107,17 @@ let doctor_cmd =
         in
         let hooks_r = C2c_doctor_hooks.check () in
         let codex_delivery_r = C2c_doctor_hooks.codex_delivery_report () in
+        (* B268: cache-only "newer release available" for degraded doctor. *)
+        let update_latest =
+          try C2c_changelog.latest_known_newer ~broker_root:broker_root_str ()
+          with _ -> None
+        in
         if json then begin
+          let update_fields =
+            C2c_changelog.update_status_json ~broker_root:broker_root_str ()
+          in
           print_json
-            (`Assoc [
+            (`Assoc ([
               ("degraded", `Bool true);
               ("reason", `String "not in c2c git repo");
               ("broker_root", `String broker_root_str);
@@ -121,13 +129,19 @@ let doctor_cmd =
               ("hooks", C2c_doctor_hooks.to_json hooks_r);
               ("codex_delivery",
                C2c_doctor_hooks.codex_delivery_report_to_json codex_delivery_r);
-            ])
+            ] @ update_fields))
         end else begin
           Printf.printf "c2c doctor (degraded — not in c2c git repo)\n\n";
           Printf.printf "  broker root: %s\n" broker_root_str;
           (match alias_opt with
            | Some a -> Printf.printf "  alias: %s\n" a
            | None -> Printf.printf "  alias: (not set — C2C_MCP_AUTO_REGISTER_ALIAS not found)\n");
+          (match update_latest with
+           | Some latest ->
+               Printf.printf
+                 "  update: newer release %s available (you're on %s) — run `c2c self-update`\n"
+                 latest Version.version
+           | None -> ());
           Printf.printf "\n";
           (* Schedule check — works without repo *)
           (match sched_r with

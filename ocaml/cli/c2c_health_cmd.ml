@@ -74,6 +74,9 @@ let check_authorizers () =
            (`Green, Printf.sprintf "authorizers: [%s] → primary: %s"
               (String.concat ", " names) first))
 
+(* Returns (color, human_line, optional reported relay version string).
+   The version option feeds B268's cache-only "relay behind latest known"
+   comparison — no second network probe. *)
 let check_relay_http () =
   let url = match Sys.getenv_opt "C2C_RELAY_URL" with Some v when v <> "" -> v | _ -> "https://relay.c2c.im" in
   try
@@ -83,19 +86,28 @@ let check_relay_http () =
     let git_hash = Yojson.Safe.Util.(result |> member "git_hash" |> to_string_option |> Option.value ~default:"?") in
     let auth_mode = Yojson.Safe.Util.(result |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown") in
     let ok = Yojson.Safe.Util.(result |> member "ok") = `Bool true in
+    let reported_version =
+      let open Yojson.Safe.Util in
+      match result |> member "version" |> to_string_option with
+      | Some v when String.trim v <> "" && v <> "?" -> Some v
+      | _ ->
+          (match result |> member "server_version" |> to_string_option with
+           | Some v when String.trim v <> "" && v <> "?" -> Some v
+           | _ -> None)
+    in
     (* B121: protocol skew is not "unreachable" — surface the upgrade text. *)
     if Relay.Relay_client.is_transport_error result then
       let err =
         Yojson.Safe.Util.(result |> member "error" |> to_string_option
                           |> Option.value ~default:"connection_error")
       in
-      (`Red, Printf.sprintf "relay: unreachable (%s) (%s)" err url)
+      (`Red, Printf.sprintf "relay: unreachable (%s) (%s)" err url, None)
     else if Relay.Relay_client.is_protocol_incompatible result then
       let err =
         Yojson.Safe.Util.(result |> member "error" |> to_string_option
                           |> Option.value ~default:"incompatible protocol")
       in
-      (`Red, Printf.sprintf "relay: incompatible — %s" err)
+      (`Red, Printf.sprintf "relay: incompatible — %s" err, reported_version)
     else if ok then
       let auth_str = match auth_mode with
         | "dev" -> " ⚠ dev mode (no auth)"
@@ -120,10 +132,12 @@ let check_relay_http () =
         end else ""
       in
       let color = if stale_warn <> "" then `Yellow else `Green in
-      (color, Printf.sprintf "relay: reachable — %s @ %s%s%s (%s)" version git_hash auth_str stale_warn url)
-    else (`Red, Printf.sprintf "relay: error response from %s" url)
+      (color,
+       Printf.sprintf "relay: reachable — %s @ %s%s%s (%s)" version git_hash auth_str stale_warn url,
+       reported_version)
+    else (`Red, Printf.sprintf "relay: error response from %s" url, reported_version)
   with exn ->
-    (`Red, Printf.sprintf "relay: unreachable (%s)" (Printexc.to_string exn))
+    (`Red, Printf.sprintf "relay: unreachable (%s)" (Printexc.to_string exn), None)
 
 let check_plugin_installs () =
   let home = try Sys.getenv "HOME" with Not_found -> "" in
@@ -365,9 +379,21 @@ let health_cmd =
   let stale_daemons = check_deprecated_daemons () in
   let supervisor_check = check_supervisor_config () in
   let authorizers_check = check_authorizers () in
-  let relay_check = check_relay_http () in
+  let (rel_col, rel_msg, relay_version_opt) = check_relay_http () in
   let plugin_checks = check_plugin_installs () in
   let legacy_broker = C2c_broker_root_check.is_legacy_broker_root root in
+  (* B268: client update + relay-behind from local changelog cache only.
+     Relay version string comes from the probe already done by check_relay_http
+     (no second network call). Cache miss / offline → silent. *)
+  let client_latest =
+    try C2c_changelog.latest_known_newer ~broker_root:root () with _ -> None
+  in
+  let relay_behind =
+    try
+      C2c_changelog.component_behind_latest ~reported:relay_version_opt
+        ~broker_root:root ()
+    with _ -> None
+  in
   (* #9 split-brain: an XDG-profile broker (pre-2026-07 resolution order, or
      written by a session with a per-profile XDG_STATE_HOME) that the resolver
      no longer selects. Registrations there are invisible to peers on the
@@ -390,10 +416,22 @@ let health_cmd =
       let color_str = function `Green -> "green" | `Yellow -> "yellow" | `Red -> "red" | `Gray -> "gray" in
       let plugin_json = `List (List.map (fun (c, msg) -> `Assoc [("status", `String (color_str c)); ("message", `String msg)]) plugin_checks) in
       let (sup_col, sup_msg) = supervisor_check in
-      let (rel_col, rel_msg) = relay_check in
+      let update_fields = C2c_changelog.update_status_json ~broker_root:root () in
+      let relay_version_fields =
+        match relay_behind with
+        | None ->
+            [ ("relay_behind_latest", `Bool false)
+            ; ("relay_version",
+               match relay_version_opt with Some v -> `String v | None -> `Null)
+            ; ("relay_latest_known_version", `Null) ]
+        | Some (reported, latest) ->
+            [ ("relay_behind_latest", `Bool true)
+            ; ("relay_version", `String reported)
+            ; ("relay_latest_known_version", `String latest) ]
+      in
       print_json
         (`Assoc
-          [ ("broker_root", `String root)
+          ([ ("broker_root", `String root)
           ; ("legacy_broker_warning", `Bool legacy_broker)
           ; ("migrate_hint",
              if legacy_broker || xdg_split_brain <> None
@@ -417,7 +455,9 @@ let health_cmd =
           ; ("authorizers", `Assoc [("status", `String (color_str (fst authorizers_check))); ("message", `String (snd authorizers_check))])
           ; ("relay", `Assoc [("status", `String (color_str rel_col)); ("message", `String rel_msg)])
           ; ("plugins", plugin_json)
-          ])
+          ]
+          @ update_fields
+          @ relay_version_fields))
   | Human ->
       let icon = function `Green -> "✓" | `Yellow -> "⚠" | `Red -> "✗" | `Gray -> "–" in
       if legacy_broker then
@@ -440,11 +480,24 @@ let health_cmd =
         (List.length regs) alive_count unknown_count dead_count;
       Printf.printf "rooms:          %d\n" (List.length rooms);
       Printf.printf "pty-inject cap: %s\n" pty_cap_str;
+      (match client_latest with
+       | Some latest ->
+           Printf.printf "%s %s\n" (icon `Yellow)
+             (Printf.sprintf
+                "update: newer release %s available (you're on %s) — run `c2c self-update`"
+                latest Version.version)
+       | None -> ());
+      (match relay_behind with
+       | Some (reported, latest) ->
+           Printf.printf "%s %s\n" (icon `Yellow)
+             (Printf.sprintf
+                "relay: version %s is behind latest known %s (informational — deploy the relay host)"
+                reported latest)
+       | None -> ());
       let (sup_col, sup_msg) = supervisor_check in
       Printf.printf "%s %s\n" (icon sup_col) sup_msg;
       let (auth_col, auth_msg) = authorizers_check in
       Printf.printf "%s %s\n" (icon auth_col) auth_msg;
-      let (rel_col, rel_msg) = relay_check in
       Printf.printf "%s %s\n" (icon rel_col) rel_msg;
       List.iter (fun (c, msg) -> Printf.printf "%s %s\n" (icon c) msg) plugin_checks;
       if stale_daemons = [] then
@@ -476,7 +529,7 @@ let connect_dashboard ~root ~broker ~output_mode =
   let alive_count = List.filter (( = ) C2c_mcp.Broker.Alive) liveness_counts |> List.length in
   let rooms = C2c_mcp.Broker.list_rooms broker in
   let plugin_checks = check_plugin_installs () in
-  let relay_check = check_relay_http () in
+  let (rel_col, rel_msg, _) = check_relay_http () in
   let whoami_result =
     match C2c_mcp.session_id_from_env () with
     | None -> None
@@ -538,7 +591,7 @@ let connect_dashboard ~root ~broker ~output_mode =
         ; ("whoami", match whoami_result with
           | Some (sid, alias) -> `Assoc [("session_id", `String sid); ("alias", `String alias)]
           | None -> `Null)
-        ; ("relay", `Assoc [("status", `String (color_str (fst relay_check))); ("message", `String (snd relay_check))])
+        ; ("relay", `Assoc [("status", `String (color_str rel_col)); ("message", `String rel_msg)])
         ; ("clients", `Assoc (List.map (fun c -> (c, client_status_json c)) supported_clients))
         ; ("next_action", `String next_action)
         ; ("plugins", `List (List.map (fun (c, msg) -> `Assoc [("status", `String (color_str c)); ("message", `String msg)]) plugin_checks))
@@ -555,7 +608,6 @@ let connect_dashboard ~root ~broker ~output_mode =
       (match whoami_result with
        | Some (_, alias) -> Printf.printf "your alias:   %s\n" alias
        | None -> Printf.printf "your alias:   (not registered in this session)\n");
-      let (rel_col, rel_msg) = relay_check in
       Printf.printf "%s %s\n" (icon rel_col) rel_msg;
       Printf.printf "\nclient status:\n";
       List.iter (fun (c, msg) -> Printf.printf "  %s %s\n" (icon c) msg) plugin_checks;

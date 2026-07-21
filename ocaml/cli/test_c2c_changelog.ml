@@ -107,18 +107,23 @@ let tmp_broker () =
 let read_marker root client =
   C2c_changelog.read_marker ~broker_root:root ~client
 
-let test_update_notice_uses_newest_cached_version () =
-  let root = tmp_broker () in
+let seed_remote_cache root md =
   let dir = C2c_changelog.broker_changelog_dir ~broker_root:root in
-  Unix.mkdir dir 0o700;
+  (try Unix.mkdir dir 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
   let cache = C2c_changelog.remote_cache_path ~broker_root:root in
   let oc = open_out cache in
-  output_string oc
+  output_string oc md;
+  close_out oc
+
+let test_update_notice_uses_newest_cached_version () =
+  let root = tmp_broker () in
+  seed_remote_cache root
     "## v900.1.0\n\n### First\nsummary: first.\n\n\
      ## v900.2.0\n\n### Latest\nsummary: latest.\n";
-  close_out oc;
   check (option string) "newest cached version is available" (Some "900.2.0")
     (C2c_changelog.update_available ~current:"900.0.0" ~broker_root:root ~now:0. ());
+  check (option string) "latest_known_newer matches" (Some "900.2.0")
+    (C2c_changelog.latest_known_newer ~current:"900.0.0" ~broker_root:root ());
   let notice =
     C2c_changelog.update_notice ~current:"900.0.0" ~broker_root:root ~now:0. ()
   in
@@ -128,6 +133,104 @@ let test_update_notice_uses_newest_cached_version () =
     (Option.fold ~none:false ~some:(fun s -> contains s "900.2.0") notice);
   check (option string) "current newest version stays silent" None
     (C2c_changelog.update_notice ~current:"900.2.0" ~broker_root:root ~now:0. ())
+
+(* B268: empty cache / offline = silent; no network attempted (fetch disabled). *)
+let test_latest_known_newer_empty_cache_silent () =
+  let root = tmp_broker () in
+  check (option string) "no cache → None"
+    None
+    (C2c_changelog.latest_known_newer ~current:"0.1.0" ~broker_root:root ());
+  check (option string) "update_notice silent" None
+    (C2c_changelog.update_notice ~current:"0.1.0" ~broker_root:root ~now:0. ());
+  check (option string) "update_nudge silent" None
+    (C2c_changelog.update_nudge_auto_show ~current:"0.1.0" ~broker_root:root
+       ~client:"claude" ~now:0. ())
+
+(* B268: SessionStart nudge once per newer release, never regresses. *)
+let test_update_nudge_once_per_release () =
+  let root = tmp_broker () in
+  seed_remote_cache root
+    "## v901.0.0\n\n### Nudge\nsummary: nudge me.\n";
+  let first =
+    C2c_changelog.update_nudge_auto_show ~current:"900.0.0" ~broker_root:root
+      ~client:"claude" ~now:0. ()
+  in
+  check bool "first SessionStart emits nudge" true
+    (Option.fold ~none:false ~some:(fun s -> contains s "901.0.0") first);
+  check bool "nudge names current version" true
+    (Option.fold ~none:false ~some:(fun s -> contains s "900.0.0") first);
+  let second =
+    C2c_changelog.update_nudge_auto_show ~current:"900.0.0" ~broker_root:root
+      ~client:"claude" ~now:0. ()
+  in
+  check (option string) "second SessionStart silent" None second;
+  (* Independent per client *)
+  let other =
+    C2c_changelog.update_nudge_auto_show ~current:"900.0.0" ~broker_root:root
+      ~client:"codex" ~now:0. ()
+  in
+  check bool "other client still gets nudge" true (Option.is_some other);
+  (* New newer release after marker was advanced → re-emit once *)
+  seed_remote_cache root
+    "## v901.0.0\n\n### Nudge\nsummary: nudge me.\n\n\
+     ## v902.0.0\n\n### Newer\nsummary: even newer.\n";
+  let third =
+    C2c_changelog.update_nudge_auto_show ~current:"900.0.0" ~broker_root:root
+      ~client:"claude" ~now:0. ()
+  in
+  check bool "new newer release re-emits" true
+    (Option.fold ~none:false ~some:(fun s -> contains s "902.0.0") third);
+  let fourth =
+    C2c_changelog.update_nudge_auto_show ~current:"900.0.0" ~broker_root:root
+      ~client:"claude" ~now:0. ()
+  in
+  check (option string) "fourth silent after re-emit" None fourth
+
+(* B268: relay/component behind-latest helper. *)
+let test_component_behind_latest () =
+  let root = tmp_broker () in
+  seed_remote_cache root
+    "## v902.0.0\n\n### Rel\nsummary: rel.\n";
+  check
+    (option (pair string string))
+    "behind when older"
+    (Some ("901.0.0", "902.0.0"))
+    (C2c_changelog.component_behind_latest ~reported:(Some "901.0.0")
+       ~broker_root:root ());
+  check (option (pair string string)) "equal silent" None
+    (C2c_changelog.component_behind_latest ~reported:(Some "902.0.0")
+       ~broker_root:root ());
+  check (option (pair string string)) "missing silent" None
+    (C2c_changelog.component_behind_latest ~reported:None ~broker_root:root ());
+  check (option (pair string string)) "unparseable silent" None
+    (C2c_changelog.component_behind_latest ~reported:(Some "?") ~broker_root:root ());
+  (* strip v-prefix and trailing junk *)
+  check
+    (option (pair string string))
+    "parses v-prefix"
+    (Some ("901.0.0", "902.0.0"))
+    (C2c_changelog.component_behind_latest ~reported:(Some "v901.0.0 deadbeef")
+       ~broker_root:root ())
+
+let test_update_status_json () =
+  let root = tmp_broker () in
+  seed_remote_cache root
+    "## v903.0.0\n\n### J\nsummary: j.\n";
+  let fields =
+    C2c_changelog.update_status_json ~current:"900.0.0" ~broker_root:root ()
+  in
+  check bool "update_available true" true
+    (List.assoc "update_available" fields = `Bool true);
+  check bool "latest_known_version set" true
+    (List.assoc "latest_known_version" fields = `String "903.0.0");
+  let empty_root = tmp_broker () in
+  let empty =
+    C2c_changelog.update_status_json ~current:"900.0.0" ~broker_root:empty_root ()
+  in
+  check bool "empty cache update_available false" true
+    (List.assoc "update_available" empty = `Bool false);
+  check bool "empty cache latest null" true
+    (List.assoc "latest_known_version" empty = `Null)
 
 let test_first_run_bootstraps_marker_no_output () =
   let root = tmp_broker () in
@@ -355,6 +458,12 @@ let () =
         ; test_case "entries_since" `Quick test_entries_since
         ; test_case "update notice uses newest cached release" `Quick
             test_update_notice_uses_newest_cached_version
+        ; test_case "latest_known_newer empty cache silent" `Quick
+            test_latest_known_newer_empty_cache_silent
+        ; test_case "update nudge once per release" `Quick
+            test_update_nudge_once_per_release
+        ; test_case "component behind latest" `Quick test_component_behind_latest
+        ; test_case "update status json" `Quick test_update_status_json
         ; test_case "client/audience filters" `Quick test_filters ] )
     ; ( "auto_show",
         [ test_case "first run bootstraps marker" `Quick

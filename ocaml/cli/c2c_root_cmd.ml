@@ -282,8 +282,22 @@ let fast_path_help () =
     prerr_endline ("c2c help: " ^ Unix.error_message err);
     exit 125
 
-let fast_path_server_info ~json () =
+(* B268: merge cache-only update fields into server_info JSON (no network). *)
+let server_info_with_update () =
   let info = C2c_mcp.server_info () in
+  let extra =
+    try
+      C2c_changelog.update_status_json
+        ~broker_root:(resolve_broker_root ()) ()
+    with _ ->
+      [ ("latest_known_version", `Null); ("update_available", `Bool false) ]
+  in
+  match info with
+  | `Assoc fields -> `Assoc (fields @ extra)
+  | other -> other
+
+let fast_path_server_info ~json () =
+  let info = server_info_with_update () in
   if json then
     print_json info
   else
@@ -292,6 +306,8 @@ let fast_path_server_info ~json () =
         List.iter (fun (k, v) ->
           match v with
           | `String s -> Printf.printf "%s: %s\n" k s
+          | `Bool b -> Printf.printf "%s: %s\n" k (if b then "true" else "false")
+          | `Null -> Printf.printf "%s: null\n" k
           | `List l -> Printf.printf "%s:\n" k; List.iter (fun item -> Printf.printf "  - %s\n" (Yojson.Safe.to_string item)) l
           | _ -> Printf.printf "%s: %s\n" k (Yojson.Safe.to_string v))
           fields
@@ -435,8 +451,20 @@ let try_fast_path () =
         done;
         if not !unknown then fast_path_get_tmux_location ~json:!json ()
     | "--version" when n = 2 ->
-        maybe_emit_update_notice ();
+        (* B268: cache-only trailing line on stdout (never network; scripts that
+           parse the first line keep working). No stderr notice here — that would
+           double-emit with the trailing line. *)
         Printf.printf "%s\n" (version_string ());
+        (try
+           match
+             C2c_changelog.latest_known_newer
+               ~broker_root:(resolve_broker_root ()) ()
+           with
+           | Some latest ->
+               Printf.printf
+                 "(newer release %s available — run c2c self-update)\n" latest
+           | None -> ()
+         with _ -> ());
         exit 0
     | _ -> ()
   end
