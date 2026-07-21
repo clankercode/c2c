@@ -130,6 +130,8 @@ module InMemoryRelay : RELAY = struct
     contact_grants : (string, contact_grant_rec) Hashtbl.t;
     contact_grant_mids : ((string * string), float) Hashtbl.t;
     contact_generation : (string, int) Hashtbl.t;
+    (* B264: peer discovery visibility per alias. Default Private. *)
+    discovery_visibility : (string, peer_discovery_visibility) Hashtbl.t;
   }
 
   let room_history_jsonl_path persist_dir room_id =
@@ -456,6 +458,7 @@ module InMemoryRelay : RELAY = struct
       contact_grants = Hashtbl.create 32;
       contact_grant_mids = Hashtbl.create 64;
       contact_generation = Hashtbl.create 16;
+      discovery_visibility = Hashtbl.create 64;
     }
 
   let with_lock t f =
@@ -611,6 +614,7 @@ module InMemoryRelay : RELAY = struct
      | None -> ());
     Hashtbl.remove t.leases alias;
     Hashtbl.remove t.bindings alias;
+    Hashtbl.remove t.discovery_visibility alias;
     Hashtbl.iter (fun room_id members ->
       Hashtbl.replace t.rooms room_id (List.filter ((<>) alias) members)
     ) t.rooms
@@ -696,6 +700,9 @@ module InMemoryRelay : RELAY = struct
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
               | _ -> ());
+             (* B264: new registrations default to Private discovery; re-register keeps prior. *)
+             if not (Hashtbl.mem t.discovery_visibility alias) then
+               Hashtbl.replace t.discovery_visibility alias Private;
              let key = inbox_key node_id session_id in
              if not (Hashtbl.mem t.inboxes key) then set_inbox t key [];
              if old_inbox_msgs <> [] then set_inbox t key (List.append old_inbox_msgs (get_inbox t key));
@@ -721,7 +728,10 @@ module InMemoryRelay : RELAY = struct
         match Hashtbl.find_opt t.leases alias with
         | Some lease
           when pk = identity_pk
-               && not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+               && not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease))
+               && (match Hashtbl.find_opt t.discovery_visibility alias with
+                   | Some Public -> true
+                   | _ -> false) ->
           result := Some alias
         | _ -> ()
       ) t.bindings;
@@ -922,12 +932,31 @@ module InMemoryRelay : RELAY = struct
          ("ok", lease)
     )
 
-  let list_peers t ?(include_dead = false) =
+  let list_peers_admin t ?(include_dead = false) =
     with_lock t (fun () ->
       let now = Unix.gettimeofday () in
       Hashtbl.fold (fun _ lease acc ->
         let last_seen = RegistrationLease.last_seen lease in
         if not (alias_released ~now ~last_seen)
+           && (include_dead || RegistrationLease.is_alive lease)
+        then
+          lease :: acc
+        else acc
+      ) t.leases []
+    )
+
+  let list_peers t ?(include_dead = false) =
+    with_lock t (fun () ->
+      let now = Unix.gettimeofday () in
+      Hashtbl.fold (fun alias lease acc ->
+        let last_seen = RegistrationLease.last_seen lease in
+        let vis =
+          match Hashtbl.find_opt t.discovery_visibility alias with
+          | Some v -> v
+          | None -> Private
+        in
+        if vis = Public
+           && not (alias_released ~now ~last_seen)
            && (include_dead || RegistrationLease.is_alive lease)
         then
           lease :: acc
@@ -958,6 +987,11 @@ module InMemoryRelay : RELAY = struct
          is registered. *)
       let bare_to_alias = bare_alias to_alias in
       let recipient = Hashtbl.find_opt t.leases bare_to_alias in
+      let is_public_recip alias =
+        match Hashtbl.find_opt t.discovery_visibility alias with
+        | Some Public -> true
+        | _ -> false
+      in
       match recipient with
       | None ->
         let dl = `Assoc [
@@ -966,6 +1000,9 @@ module InMemoryRelay : RELAY = struct
           ("content", `String content); ("reason", `String "unknown_alias");
         ] in
         Queue.add dl t.dead_letter;
+        `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
+      | Some _ when not (is_public_recip bare_to_alias) ->
+        (* B264: private recipient — uniform unauthorised vs unknown; no content DLQ. *)
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
       | Some lease when alias_released ~now:ts ~last_seen:(RegistrationLease.last_seen lease) ->
         let dl = `Assoc [
@@ -1457,13 +1494,24 @@ module InMemoryRelay : RELAY = struct
         if alias = from_alias then ()
         else if not (RegistrationLease.is_alive lease) then skipped := alias :: !skipped
         else begin
-          delivered_to := alias :: !delivered_to;
-          let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
-          let msg = `Assoc [
-            ("message_id", `String msg_id); ("from_alias", `String from_alias);
-            ("to_alias", `String alias); ("content", `String content); ("ts", `Float ts);
-          ] in
-          let inbox = get_inbox t key in set_inbox t key (msg :: inbox)
+          (* B264: private recipients are not broadcast targets. *)
+          let is_public =
+            match Hashtbl.find_opt t.discovery_visibility alias with
+            | Some Public -> true
+            | _ -> false
+          in
+          (* Private aliases are omitted entirely: returning them in [skipped]
+             turns broadcast into an authenticated directory oracle. *)
+          if not is_public then ()
+          else begin
+            delivered_to := alias :: !delivered_to;
+            let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
+            let msg = `Assoc [
+              ("message_id", `String msg_id); ("from_alias", `String from_alias);
+              ("to_alias", `String alias); ("content", `String content); ("ts", `Float ts);
+            ] in
+            let inbox = get_inbox t key in set_inbox t key (msg :: inbox)
+          end
         end
       ) t.leases;
       `Ok (ts, List.rev !delivered_to, List.rev !skipped)
@@ -1730,6 +1778,75 @@ module InMemoryRelay : RELAY = struct
                         (verifier, message_id) now;
                       `Accepted now
                     end)))
+
+  let peer_discovery_visibility_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.leases alias with
+      | None -> None
+      | Some _ ->
+        Some
+          (match Hashtbl.find_opt t.discovery_visibility alias with
+           | Some v -> v
+           | None -> Private))
+
+  let set_peer_discovery_visibility t ~alias ~visibility =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
+    with_lock t (fun () ->
+      if Hashtbl.mem t.leases alias then begin
+        Hashtbl.replace t.discovery_visibility alias visibility;
+        Result.Ok ()
+      end else Result.Error "unknown_alias")
+
+  let is_public_unlocked t ~alias =
+    match Hashtbl.find_opt t.discovery_visibility alias with
+    | Some Public -> true
+    | _ -> false
+
+  let peer_identity_pk_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
+    with_lock t (fun () ->
+      if not (is_public_unlocked t ~alias) then None
+      else
+        let now = Unix.gettimeofday () in
+        match Hashtbl.find_opt t.leases alias, Hashtbl.find_opt t.bindings alias with
+        | Some lease, Some pk
+          when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+          Some pk
+        | _ -> None)
+
+  let peer_enc_pubkey_of t ~alias =
+    with_lock t (fun () ->
+      if not (is_public_unlocked t ~alias) then None
+      else
+        let now = Unix.gettimeofday () in
+        match Hashtbl.find_opt t.leases alias with
+        | Some lease when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+          let ek = RegistrationLease.enc_pubkey lease in
+          if ek = "" then None else Some ek
+        | _ -> None)
+
+  let peer_signed_at_of t ~alias =
+    with_lock t (fun () ->
+      if not (is_public_unlocked t ~alias) then None
+      else
+        let now = Unix.gettimeofday () in
+        match Hashtbl.find_opt t.leases alias with
+        | Some lease when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+          let sa = RegistrationLease.signed_at lease in
+          if sa = 0.0 then None else Some sa
+        | _ -> None)
+
+  let peer_sig_b64_of t ~alias =
+    with_lock t (fun () ->
+      if not (is_public_unlocked t ~alias) then None
+      else
+        let now = Unix.gettimeofday () in
+        match Hashtbl.find_opt t.leases alias with
+        | Some lease when not (alias_released ~now ~last_seen:(RegistrationLease.last_seen lease)) ->
+          let sb = RegistrationLease.sig_b64 lease in
+          if sb = "" then None else Some sb
+        | _ -> None)
 end
 
 (* --- SqliteRelay --- *)
@@ -1804,6 +1921,12 @@ module SqliteRelay : RELAY = struct
       Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_version TEXT NOT NULL DEFAULT ''" |> ignore;
     if not (sqlite_table_has_column conn ~table:"leases" ~column:"client_os") then
       Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_os TEXT NOT NULL DEFAULT ''" |> ignore;
+    (* B264: peer discovery visibility. Existing leases default to private so
+       post-migration production state is fail-closed for enumeration. *)
+    if not (sqlite_table_has_column conn ~table:"leases" ~column:"discovery_visibility") then
+      Sqlite3.exec conn
+        "ALTER TABLE leases ADD COLUMN discovery_visibility TEXT NOT NULL DEFAULT 'private'"
+      |> ignore;
     if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
       Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
     (* B117: migrate older databases to the history_public column. Add it with
@@ -2184,7 +2307,7 @@ module SqliteRelay : RELAY = struct
             in
             (* B174: coalesce opaque_host_id — empty excluded must not wipe a
                previously stored host id (older clients re-registering). *)
-            with_stmt conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" (fun stmt ->
+            with_stmt conn "INSERT INTO leases (alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64, opaque_host_id, client_version, client_os, discovery_visibility) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'private') ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id, session_id=excluded.session_id, client_type=excluded.client_type, last_seen=excluded.last_seen, ttl=excluded.ttl, identity_pk=excluded.identity_pk, enc_pubkey=excluded.enc_pubkey, signed_at=excluded.signed_at, sig_b64=excluded.sig_b64, opaque_host_id=CASE WHEN excluded.opaque_host_id = '' THEN leases.opaque_host_id ELSE excluded.opaque_host_id END, client_version=excluded.client_version, client_os=excluded.client_os" (fun stmt ->
             bind_text stmt 1 alias |> ignore;
             bind_text stmt 2 node_id |> ignore;
             bind_text stmt 3 session_id |> ignore;
@@ -2235,7 +2358,9 @@ module SqliteRelay : RELAY = struct
   let alias_of_identity_pk t ~identity_pk =
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "SELECT alias, last_seen FROM leases WHERE identity_pk = ?" (fun stmt ->
+      (* B264: reverse identity oracle only for public discovery aliases. *)
+      with_stmt conn
+        "SELECT alias, last_seen FROM leases          WHERE identity_pk = ? AND discovery_visibility = 'public'" (fun stmt ->
       bind_text stmt 1 identity_pk |> ignore;
       let now = Unix.gettimeofday () in
       let rec loop () =
@@ -2556,12 +2681,11 @@ module SqliteRelay : RELAY = struct
         ("ok", lease)
     )
 
-  let list_peers t ?(include_dead=false) =
-    with_lock t (fun () ->
-      let conn = t.db in
-      let now = Unix.gettimeofday () in
-      let leases = ref [] in
-      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id, client_version, client_os FROM leases" (fun stmt ->
+  let list_peers_unlocked conn ~include_dead ~only_public =
+    let now = Unix.gettimeofday () in
+    let leases = ref [] in
+    with_stmt conn
+      "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl,               identity_pk, opaque_host_id, client_version, client_os, discovery_visibility          FROM leases" (fun stmt ->
       let rec loop () =
         let rc = Sqlite3.step stmt in
         if rc = Rc.ROW then (
@@ -2594,6 +2718,13 @@ module SqliteRelay : RELAY = struct
             match Sqlite3.Data.to_string (Sqlite3.column stmt 9) with Some s -> s | None -> "" in
           let client_os =
             match Sqlite3.Data.to_string (Sqlite3.column stmt 10) with Some s -> s | None -> "" in
+          let disc_vis =
+            let raw =
+              try Sqlite3.Data.to_string_exn (Sqlite3.column stmt 11)
+              with _ -> "private"
+            in
+            if raw = "public" then Public else Private
+          in
           let lease =
             RegistrationLease.make
               ~node_id
@@ -2610,7 +2741,8 @@ module SqliteRelay : RELAY = struct
               ()
           in
           let alive = (last_seen +. ttl) >= now in
-          if not (alias_released ~now ~last_seen)
+          if (not only_public || disc_vis = Public)
+             && not (alias_released ~now ~last_seen)
              && (include_dead || alive)
           then leases := lease :: !leases;
           loop ()
@@ -2618,8 +2750,15 @@ module SqliteRelay : RELAY = struct
           failwith ("list_peers step failed: " ^ Rc.to_string rc)
       in
       loop ());
-      !leases
-    )
+    !leases
+
+  let list_peers t ?(include_dead=false) =
+    with_lock t (fun () ->
+      list_peers_unlocked t.db ~include_dead ~only_public:true)
+
+  let list_peers_admin t ?(include_dead=false) =
+    with_lock t (fun () ->
+      list_peers_unlocked t.db ~include_dead ~only_public:false)
 
   let gc t =
     with_lock t (fun () ->
@@ -2735,10 +2874,23 @@ module SqliteRelay : RELAY = struct
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
       let lookup_alias, _ = normalize_relay_alias ~alias:to_alias ~opaque_host_id:None in
-      let has_row = exec_prepared conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" [`Text lookup_alias] in
-      if not has_row then
+      let disc_vis = ref None in
+      with_stmt conn
+        "SELECT discovery_visibility FROM leases WHERE alias = ?" (fun vstmt ->
+        Sqlite3.bind_text vstmt 1 lookup_alias |> ignore;
+        if Sqlite3.step vstmt = Rc.ROW then
+          let raw =
+            try Sqlite3.Data.to_string_exn (Sqlite3.column vstmt 0)
+            with _ -> "private"
+          in
+          disc_vis := Some (if raw = "public" then Public else Private));
+      match !disc_vis with
+      | None ->
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
-      else
+      | Some Private ->
+        (* B264: private recipient — uniform with unknown; no content DLQ. *)
+        `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
+      | Some Public ->
         with_stmt conn "SELECT alias, last_seen, ttl FROM leases WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 lookup_alias |> ignore;
         let rc = Sqlite3.step stmt in
@@ -2859,7 +3011,9 @@ module SqliteRelay : RELAY = struct
       let sent_to = ref [] in
       let skipped = ref [] in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
-      with_stmt conn "SELECT alias, last_seen, ttl, node_id, session_id FROM leases WHERE alias != ?" (fun stmt ->
+      (* B264: broadcast only to public discovery recipients. *)
+      with_stmt conn
+        "SELECT alias, last_seen, ttl, node_id, session_id FROM leases          WHERE alias != ? AND discovery_visibility = 'public'" (fun stmt ->
       Sqlite3.bind_text stmt 1 from_alias |> ignore;
       let rec loop () =
         let rc = Sqlite3.step stmt in
@@ -4015,6 +4169,128 @@ module SqliteRelay : RELAY = struct
                        end
                  end))
         with _ -> `Rejected)
+
+  let peer_discovery_visibility_of t ~alias =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
+    with_lock t (fun () ->
+      let conn = t.db in
+      let result = ref None in
+      with_stmt conn
+        "SELECT discovery_visibility FROM leases WHERE alias = ?" (fun stmt ->
+        Sqlite3.bind_text stmt 1 alias |> ignore;
+        if Sqlite3.step stmt = Rc.ROW then
+          let raw =
+            try Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
+            with _ -> "private"
+          in
+          result := Some (if raw = "public" then Public else Private));
+      !result)
+
+  let set_peer_discovery_visibility t ~alias ~visibility =
+    let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
+    with_lock t (fun () ->
+      let conn = t.db in
+      let vis =
+        match visibility with Private -> "private" | Public -> "public"
+      in
+      (* Do not use changes()>0: setting the same value yields 0 changes. *)
+      let exists = ref false in
+      with_stmt conn "SELECT 1 FROM leases WHERE alias = ?" (fun stmt ->
+        Sqlite3.bind_text stmt 1 alias |> ignore;
+        if Sqlite3.step stmt = Rc.ROW then exists := true);
+      if not !exists then Result.Error "unknown_alias"
+      else begin
+        with_stmt conn
+          "UPDATE leases SET discovery_visibility = ? WHERE alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 vis |> ignore;
+          Sqlite3.bind_text stmt 2 alias |> ignore;
+          let rc = Sqlite3.step stmt in
+          if rc <> Rc.DONE then
+            failwith ("set discovery_visibility failed: " ^ Rc.to_string rc));
+        Result.Ok ()
+      end)
+
+  let is_public_discovery_unlocked conn ~alias =
+    let is_public = ref false in
+    with_stmt conn
+      "SELECT discovery_visibility FROM leases WHERE alias = ?" (fun stmt ->
+      Sqlite3.bind_text stmt 1 alias |> ignore;
+      if Sqlite3.step stmt = Rc.ROW then
+        let raw =
+          try Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
+          with _ -> "private"
+        in
+        is_public := (raw = "public"));
+    !is_public
+
+  let peer_identity_pk_of t ~alias =
+    with_lock t (fun () ->
+      if not (is_public_discovery_unlocked t.db ~alias) then None
+      else
+        (* re-open via already-locked helpers: call identity path inline *)
+        let now = Unix.gettimeofday () in
+        let result = ref None in
+        with_stmt t.db
+          "SELECT identity_pk, last_seen, ttl FROM leases WHERE alias = ?"
+          (fun stmt ->
+            Sqlite3.bind_text stmt 1 alias |> ignore;
+            if Sqlite3.step stmt = Rc.ROW then begin
+              let pk = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+              let last_seen =
+                match Sqlite3.Data.to_float (Sqlite3.column stmt 1) with
+                | Some f -> f
+                | None ->
+                  float_of_string
+                    (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1))
+              in
+              let ttl =
+                match Sqlite3.Data.to_float (Sqlite3.column stmt 2) with
+                | Some f -> f
+                | None ->
+                  float_of_string
+                    (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2))
+              in
+              if not (alias_released ~now ~last_seen) && pk <> "" then
+                result := Some pk
+            end);
+        !result)
+
+  let peer_enc_pubkey_of t ~alias =
+    with_lock t (fun () ->
+      if not (is_public_discovery_unlocked t.db ~alias) then None
+      else
+        let result = ref None in
+        with_stmt t.db "SELECT enc_pubkey FROM leases WHERE alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 alias |> ignore;
+          if Sqlite3.step stmt = Rc.ROW then
+            let ek = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+            if ek <> "" then result := Some ek);
+        !result)
+
+  let peer_signed_at_of t ~alias =
+    with_lock t (fun () ->
+      if not (is_public_discovery_unlocked t.db ~alias) then None
+      else
+        let result = ref None in
+        with_stmt t.db "SELECT signed_at FROM leases WHERE alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 alias |> ignore;
+          if Sqlite3.step stmt = Rc.ROW then
+            match Sqlite3.Data.to_float (Sqlite3.column stmt 0) with
+            | Some f when f <> 0.0 -> result := Some f
+            | _ -> ());
+        !result)
+
+  let peer_sig_b64_of t ~alias =
+    with_lock t (fun () ->
+      if not (is_public_discovery_unlocked t.db ~alias) then None
+      else
+        let result = ref None in
+        with_stmt t.db "SELECT sig_b64 FROM leases WHERE alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 alias |> ignore;
+          if Sqlite3.step stmt = Rc.ROW then
+            let s = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
+            if s <> "" then result := Some s);
+        !result)
 end
 
 (* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
@@ -4217,6 +4493,9 @@ end = struct
       ("min_client_protocol_version",
        `Int Version.relay_min_client_protocol_version);
       ("auth_mode", `String auth_mode);
+      (* B265/B266: contact grant protocol card (c2c-contact/1). *)
+      ("contact_protocol", `Int 1);
+      ("private_reachability", `String "consent_gated");
       ("pow", `Assoc [
         ("enabled", `Bool pow_enabled);
         ("scheme", `String Pow.scheme_id);
@@ -4224,17 +4503,23 @@ end = struct
     ])
 
   let handle_list relay ~include_dead =
-    let peers = R.list_peers relay ~include_dead |> List.map RegistrationLease.to_json in
+    (* include_dead is the Bearer-admin directory path; include private leases. *)
+    let peers =
+      (if include_dead then R.list_peers_admin relay ~include_dead
+       else R.list_peers relay ~include_dead)
+      |> List.map RegistrationLease.to_json
+    in
     respond_ok (json_ok [ ("peers", `List peers) ])
 
   let handle_pubkey relay ~broker_root ~alias =
     if not (C2c_name.is_valid alias) then
       respond_bad_request (json_error_str err_bad_request ("invalid alias format: " ^ alias))
     else
-      let identity_pk = R.identity_pk_of relay ~alias in
-      let enc_pubkey = R.enc_pubkey_of relay ~alias in
-      let signed_at = R.signed_at_of relay ~alias in
-      let sig_b64 = R.sig_b64_of relay ~alias in
+      (* B264: peer-facing lookup; private aliases must look like unknown. *)
+      let identity_pk = R.peer_identity_pk_of relay ~alias in
+      let enc_pubkey = R.peer_enc_pubkey_of relay ~alias in
+      let signed_at = R.peer_signed_at_of relay ~alias in
+      let sig_b64 = R.peer_sig_b64_of relay ~alias in
       match identity_pk with
       | None ->
         respond_not_found (json_error_str err_not_found ("unknown alias: " ^ alias))

@@ -13,6 +13,23 @@
 
 module R = Relay
 
+(* B264_TEST_PUBLIC_REGISTER: fixtures opt into Public discovery (private is default). *)
+let _b264_reg_mem t ~node_id ~session_id ~alias ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at ?sig_b64 ?opaque_host_id () =
+  let status, lease =
+    R.InMemoryRelay.register t ~node_id ~session_id ~alias ?client_type ?client_version ?client_os ?ttl ?identity_pk ?enc_pubkey ?signed_at ?sig_b64 ?opaque_host_id ()
+  in
+  (match
+     status,
+     R.InMemoryRelay.set_peer_discovery_visibility t
+       ~alias:(R.RegistrationLease.alias lease)
+       ~visibility:Relay_backend_contract.Public
+   with
+   | "ok", Ok () -> ()
+   | "ok", Error e -> failwith ("B264 test set public: " ^ e)
+   | _ -> ());
+  (status, lease)
+
+
 let fail_fmt fmt = Printf.ksprintf (fun s -> failwith s) fmt
 
 let json_get_string json key =
@@ -76,9 +93,9 @@ let test_cross_host_alias_finish_positive () =
   let relay = R.InMemoryRelay.create ~self_host:(Some "hostA") () in
 
   (* Register sender "alice" and receiver "b" *)
-  let (_status_a, _lease_a) = R.InMemoryRelay.register relay
+  let (_status_a, _lease_a) = _b264_reg_mem relay
     ~node_id:"node-sender" ~session_id:"sess-sender" ~alias:"alice" () in
-  let (_status_b, _lease_b) = R.InMemoryRelay.register relay
+  let (_status_b, _lease_b) = _b264_reg_mem relay
     ~node_id:"node-receiver" ~session_id:"sess-receiver" ~alias:"b" () in
 
   (* Send from alice to b@hostA (hostA matches self_host) via simulated handle_send *)
@@ -116,9 +133,9 @@ let test_cross_host_alias_finish_negative () =
   let relay = R.InMemoryRelay.create ~self_host:(Some "hostA") () in
 
   (* Register sender "alice" and receiver "b" *)
-  let (_status_a, _lease_a) = R.InMemoryRelay.register relay
+  let (_status_a, _lease_a) = _b264_reg_mem relay
     ~node_id:"node-sender" ~session_id:"sess-sender" ~alias:"alice" () in
-  let (_status_b, _lease_b) = R.InMemoryRelay.register relay
+  let (_status_b, _lease_b) = _b264_reg_mem relay
     ~node_id:"node-receiver" ~session_id:"sess-receiver" ~alias:"b" () in
 
   (* Send from alice to b@hostZ (hostZ != self_host="hostA") via simulated handle_send *)

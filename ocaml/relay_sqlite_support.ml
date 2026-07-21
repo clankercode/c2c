@@ -21,7 +21,9 @@ CREATE TABLE IF NOT EXISTS leases (
     sig_b64 TEXT NOT NULL DEFAULT '',
     opaque_host_id TEXT NOT NULL DEFAULT '',
     client_version TEXT NOT NULL DEFAULT '',
-    client_os TEXT NOT NULL DEFAULT ''
+    client_os TEXT NOT NULL DEFAULT '',
+    -- B264: peer discovery visibility ("private" | "public"). Default private.
+    discovery_visibility TEXT NOT NULL DEFAULT 'private'
 );
 
 CREATE TABLE IF NOT EXISTS inboxes (
