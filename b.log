@@ -1,25 +1,4 @@
 dune-throttle: acquired build slot 1/2 (jobs<=4)
-File "ocaml/relay.ml", line 5661, characters 54-179:
-5661 |                                            let ts_b = match b with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) in
-                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-Here is an example of a case that is not matched:
-(`Bool _|`Intlit _|`Null|`List _|`Float _|`String _|`Int _)
-
-File "ocaml/relay.ml", lines 5580-5677, characters 24-37:
-5580 | ........................match msg with
-5581 |                         | None ->
-5582 |                           finally ();
-5583 |                           Lwt.return_unit
-5584 |                         | Some (`Ping) ->
-...
-5674 |                              loop ()
-5675 |                            | `Unknown ->
-5676 |                              Relay_ws_frame.Session.send_text session "observer_ack" >>= fun () ->
-5677 |                              loop ())
-Warning 8 [partial-match]: this pattern-matching is not exhaustive.
-Here is an example of a case that is not matched:
-Some `Pong
 File "ocaml/c2c_relay_connector.ml", lines 1918-1941, characters 56-23:
 1918 | ........................................................function
 1919 |       | None ->
@@ -54,3 +33,24 @@ Warning 8 [partial-match]: this pattern-matching is not exhaustive.
 Here is an example of a case that is not matched:
 (false, None, 1)
 (However, some guarded clause may match this value.)
+File "ocaml/relay.ml", line 5661, characters 54-179:
+5661 |                                            let ts_b = match b with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) in
+                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+(`Bool _|`Intlit _|`Null|`List _|`Float _|`String _|`Int _)
+
+File "ocaml/relay.ml", lines 5580-5677, characters 24-37:
+5580 | ........................match msg with
+5581 |                         | None ->
+5582 |                           finally ();
+5583 |                           Lwt.return_unit
+5584 |                         | Some (`Ping) ->
+...
+5674 |                              loop ()
+5675 |                            | `Unknown ->
+5676 |                              Relay_ws_frame.Session.send_text session "observer_ack" >>= fun () ->
+5677 |                              loop ())
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+Some `Pong
