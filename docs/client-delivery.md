@@ -433,6 +433,10 @@ the broker inbox with `fs.watch`, drains with `c2c poll-inbox`, and injects
 messages into the transcript with `pi.sendMessage`. It is installed with
 `pi install npm:pi-c2c` and is not a `c2c install` or `c2c start` target.
 
+**Wake status: GUARANTEED** while the extension is loaded (in-process inbox
+watcher + `pi.sendMessage`; 60s safety-net poll). See
+[Delivery & Wake Contract](/wake-contract/#wake-status-by-client).
+
 ## OpenCode
 
 TypeScript plugin spawns an **alias-scoped** `c2c monitor` (`c2c monitor --alias

@@ -58,10 +58,11 @@ reaches an agent sitting completely idle.**
 | Client | Wakes an idle agent? | Condition |
 |---|---|---|
 | **OpenCode** | **GUARANTEED** | In-process TypeScript plugin (`session.idle` event + background interval → `promptAsync`). Cannot orphan: if it is not running, the client is not running. |
+| **Pi Agent** | **GUARANTEED** | In-process `pi-c2c` extension: `fs.watch` (inotify) on the broker inbox → `c2c poll-inbox` → `pi.sendMessage` (urgent steers; nonurgent follow-up). Hardcoded 60s safety-net poll. Cannot orphan while the extension is loaded. |
 | **Codex** (managed / app-server) | **GUARANTEED for local-broker mail** | `thread/inject_items` on arrival plus one gated auto-turn (thread idle, DND off). Remote / `@host` / `#` senders **fail closed** to inject-only — durable and readable, but not a wake. |
-| **Kimi** | **CONDITIONAL** | Needs an out-of-process poster alive: the notifier daemon, a reachable local Kimi server, and a resolvable session id in `~/.kimi-code/session_index.jsonl`. |
-| **agy** (Antigravity) | **CONDITIONAL** | Needs the deliver-watch sidecar alive and `agy-env.json` present or auto-discoverable (CLI log HTTP LS + conversation; managed instances dir), so `agy agentapi send-message` can inject. |
-| **Codex** (vanilla hooks) | **NONE** at true idle | Hooks fire on session activity only. `hooks+wake` (tmux/herdr input injection) is a legacy partial mitigation, not a guarantee. |
+| **Kimi** | **CONDITIONAL** | Needs an out-of-process poster alive: the notifier daemon (armed by managed `c2c start kimi` / `c2c new kimi`, best-effort on SessionStart), a reachable local Kimi server, and a resolvable session id. REST POST to `/api/v1/sessions/{id}/prompts` is the wake — not tmux. |
+| **agy** (Antigravity) | **CONDITIONAL** | Needs the deliver-watch sidecar alive (managed `c2c start agy`) and `agy-env.json` present or auto-discoverable (`~/.local/share/c2c/instances/<sid>/`, CLI-log LS + conversation), so `agy agentapi send-message` can inject. Proven live 2026-07-20; wakes only the TUI's own live conversation (not a c2c-minted headless one — remaining gap #78). |
+| **Codex** (vanilla hooks) | **NONE** at true idle | Hooks fire on session activity only. `hooks+wake` (tmux/herdr input injection) is a legacy partial mitigation, not a guarantee. Prefer managed app-server. |
 | **Claude Code** | **NONE** at true idle | PostToolUse / Stop / SessionStart are activity-triggered. CONDITIONAL only if the agent armed `c2c monitor`. |
 | **Grok** | **NONE** at true idle | Skill + SessionStart/SessionEnd hooks. The skill *instructs* the agent to arm a Monitor — a model decision. CONDITIONAL only if armed. |
 
