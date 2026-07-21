@@ -69,7 +69,17 @@ jobs:
           just sync-skills
           just codegen-claude-skill
           just sync-skills-check
-          git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml
+          # Hard-fail on PRs so nothing merges with stale generated files. On a
+          # direct push to master the drift is advisory: the regen-and-commit
+          # job below regenerates and pushes a [skip ci] fixup, so master
+          # self-heals instead of staying red.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml
+          else
+            if ! git diff --exit-code -- .collab/skills .opencode/skills .codex/skills ocaml/cli/c2c_claude_skill_embedded.ml; then
+              echo "::warning::generated skill files drifted; regen-and-commit will push a fixup"
+            fi
+          fi
 
       - name: Build
         run: just build
@@ -81,3 +91,69 @@ jobs:
         env:
           DUNE_WATCHDOG_TIMEOUT: '180'
         run: just test-ocaml
+
+  # Keep generated files (synced skills, embedded .ml, role templates, opencode
+  # plugin) from ever going stale on master. Runs only on a direct push to
+  # master; regenerates every codegen output and, if anything drifted, pushes a
+  # single [skip ci] fixup commit back. The [skip ci] marker stops this from
+  # retriggering CI (no loop). PRs are unaffected — their hard drift gate above
+  # still forces the author to regenerate before merge. Does not run under the
+  # release workflow's ci-gate call (that fires on a tag ref, not refs/heads/master).
+  regen-and-commit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: >-
+      github.event_name == 'push'
+      && github.ref == 'refs/heads/master'
+      && !contains(github.event.head_commit.message, '[skip ci]')
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Install just
+        uses: taiki-e/install-action@just
+
+      - name: Regenerate all codegen outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          just codegen-role-designer
+          just codegen-role-templates
+          just codegen-opencode-plugin
+          just codegen-c2c-skills
+          just sync-skills
+          just sync-skills-check
+
+      - name: Commit and push if drift
+        shell: bash
+        env:
+          GENERATED_PATHS: ".c2c .collab/skills .claude/skills .opencode/skills .codex/skills ocaml/cli data/opencode-plugin"
+        run: |
+          set -euo pipefail
+          # Scope the add to codegen-owned paths only, so an unexpected change
+          # elsewhere can never be swept into an automated commit.
+          git add -A -- $GENERATED_PATHS
+          if git diff --cached --quiet; then
+            echo "generated files already in sync; nothing to commit"
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          echo "drifted generated files:"; git diff --cached --name-only
+          git commit -m "chore(codegen): regenerate stale generated files [skip ci]"
+          # Another push may have landed since checkout; rebase our single
+          # codegen commit on top and retry a couple of times.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:master; then
+              echo "pushed codegen fixup on attempt $attempt"; exit 0
+            fi
+            echo "push rejected (attempt $attempt); rebasing on origin/master"
+            git fetch origin master
+            git rebase origin/master || { git rebase --abort; exit 1; }
+          done
+          echo "::error::could not push codegen fixup after retries"; exit 1
