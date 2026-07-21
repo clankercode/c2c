@@ -9,7 +9,11 @@ id: B264
 priority: critical
 started_at: null
 status: pending
-tags: []
+tags:
+    - security
+    - relay
+    - privacy
+    - discovery
 title: Hide private relay recipients from authenticated peer discovery
 updated_at: "2026-07-21T13:50:17Z"
 ---
@@ -31,6 +35,9 @@ Remove global discovery of private relay recipients and operational metadata whi
 - Owners/admins and deliberately public surfaces retain only the intended visibility.
 - In-memory/SQLite and HTTP route-auth matrix tests cover the new policy.
 
-## B261 post-B219 constraints
+## Post-B219 seams (from B261)
 
-Implement explicit private/owner/admin/public discovery views at the backend/domain seam, covering `list_peers`, pubkey lookup, registration metadata, and route/error side channels. Do not rely on response-only redaction or alter deliberate room visibility beyond DM-route leakage.
+- Ordinary peer discovery: `R.list_peers` / `handle_list` / `RegistrationLease.to_json` — needs explicit private/owner/admin views at the backend, not only response redaction.
+- Existence oracle: `handle_pubkey` via `identity_pk_of` / enc / signed_at / sig.
+- Do not leak private destinations through room rosters/errors; keep deliberate public/gated/unlisted/private room semantics otherwise unchanged.
+- Design input: `.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`.

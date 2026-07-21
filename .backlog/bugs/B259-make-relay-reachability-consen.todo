@@ -52,6 +52,16 @@ A relay peer must not be able to discover a recipient's contact identifier or de
 
 See `.collab/research/2026-07-21-security-page-claim-ledger.md` for exact symbols, named tests, caveats, and public-page red lines discovered before implementation.
 
-## Execution hold
+## Execution hold (updated by B261)
 
-Do not claim or implement this bug until Max confirms the concurrent database refactor has landed and its migrations/backend changes are stable. The refactor's backlog ID was not identifiable from the current backlog search, so wire an explicit dependency before execution if/when its ID is known. Rebase the security design on the post-refactor persistence interfaces rather than competing with that work.
+B219 (GH #79 / lifecycle fix) is complete (`fdbb30d8`). It is **not** a grant schema refactor: one process-lifetime SQLite connection, non-reentrant mutex, exception-safe statement finalization, probe+ALTER migrations only.
+
+Implement B259 only after B261–B267 close in order. Canonical post-B219 design input:
+`.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`.
+
+Load-bearing constraints for this umbrella:
+- Extend `Relay_backend_contract.RELAY`; both `InMemoryRelay` and `SqliteRelay`.
+- Atomic admit+enqueue under one backend operation (mutex alone ≠ multi-process safety).
+- Gate `/send`, `/send_all`, and `/forward` local delivery; discovery via `list_peers`/`handle_list`/`handle_pubkey`.
+- Connector inbound policy is defence-in-depth only.
+- Preserve B219 lifecycle tests in `ocaml/test/test_relay.ml`.

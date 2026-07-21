@@ -9,7 +9,11 @@ id: B267
 priority: critical
 started_at: null
 status: pending
-tags: []
+tags:
+    - security
+    - relay
+    - testing
+    - dogfood
 title: Audit and prove private relay reachability end to end
 updated_at: "2026-07-21T13:50:19Z"
 ---
@@ -32,6 +36,9 @@ Prove the private-reachability invariant end to end and close bypasses before B2
 - Security review reports no unresolved blocker/major issue.
 - Evidence demonstrates both denial of unauthorised first contact and successful deliberately authorised contact.
 
-## B261 post-B219 constraints
+## Post-B219 audit requirements (from B261)
 
-Audit both backends across restart, concurrency, and migration interruption, and combine consent tests with final B219 lifecycle/finalization regressions. Explicitly test `send`, `send_all`, `forward`, and zero rejected push/stats/dead-letter side effects.
+- Both backends; `/send` + `/send_all` + `/forward`; discovery oracles; zero side effects on reject (inbox, push, stats, content DLQ, archives, wakes).
+- Concurrent revoke vs admit under the established lock; restart persistence; migration interruption/mixed versions.
+- Keep B219 lifecycle tests green: `test_relay_sqlite_persistent_connection_stress`, `test_relay_sqlite_request_nonce_no_leak_under_load`, `test_relay_sqlite_mixed_ops_on_shared_connection`.
+- Design input + seams: `.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`.

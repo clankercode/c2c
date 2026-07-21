@@ -1,18 +1,21 @@
 ---
-completed_at: null
+claimed_at: "2026-07-21T14:58:37Z"
+claimed_by: cli-user
+completed_at: "2026-07-21T14:58:37Z"
 complexity: high
 created_at: "2026-07-21T13:50:16Z"
 depends_on:
     - B261
     - B269
+duration_minutes: 0.012117299716666667
 estimate_hours: 6
 id: B262
 priority: critical
-started_at: null
-status: pending
+started_at: "2026-07-21T14:58:37Z"
+status: done
 tags: []
 title: Design recipient-issued relay contact capability protocol
-updated_at: "2026-07-21T13:50:16Z"
+updated_at: "2026-07-21T14:58:37Z"
 ---
 ## Purpose
 
@@ -30,10 +33,30 @@ Specify the recipient-controlled capability/consent protocol that makes relay id
 
 ## Acceptance evidence
 
-- Security design is reviewed independently against canonical OCaml code and the post-refactor persistence model.
+- Security design is reviewed independently against canonical OCaml code and the post-B219 persistence model documented in `.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`.
 - Abuse cases include enumeration, guessing, stolen/leaked capabilities, sender spoofing, replay, confused recipient/host, revocation races, stale caches, and downgrade attempts.
 - Testable acceptance properties are precise enough that implementation tasks cannot satisfy them through documentation or UI-only changes.
 
-## B261 post-B219 input
+## Spec deliverable
 
-Use the final B219 contract recorded in `.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`. Freeze a policy-shaped shared backend admission operation, choose explicit SQL atomicity/single-writer semantics, message-id retention, visibility views, rollback compatibility floor, `send_all`/`forward` behaviour, and the stable principal/device model before B263.
+`.collab/design/2026-07-22-b262-contact-grant-protocol.md`
+
+Frozen decisions: sender-bound 32-byte opaque grant; verifier SHA-256(secret);
+`POST /contact/v1/deliver`; atomic `admit_contact_delivery` with IMMEDIATE
+transaction; private-by-default discovery; close `/send`/`send_all`/`forward`;
+TLS for secrets; C1 E2E deferred; G1–G9 + abuse matrix §15.
+
+## Post-B219 interface constraints (from B261)
+
+B219 is a SQLite **connection lifecycle** fix, not a new persistence architecture. Design against these exact surfaces:
+
+- Contract: `ocaml/relay_backend_contract.ml::RELAY` — add shared grant domain ops; handlers authenticate/parse only.
+- SQLite ownership: `SqliteRelay.t.db` process-lifetime; public ops `with_lock` once; inner workers lock-free on `conn`; every prepare via `with_stmt` / `exec_prepared` / Fun.protect finalize.
+- Schema: fresh tables in `Relay_sqlite_support.sqlite_ddl`; create-time probe+ALTER only today; `schema_version` table exists but is **unused** as a migration driver.
+- Atomicity: no SQL `BEGIN`/`COMMIT` in relay today; mutex serialises one process only. Spec must choose single-writer enforcement **or** multi-connection-safe transactions for admit+idempotency+enqueue.
+- Do not copy `get_and_burn_pairing_token_db` (select then update) as one-time atomicity.
+- Idempotency: Sqlite `send` has no `` `Duplicate `` / no `seen_ids` use; greenfield grant message-id contract for both backends.
+- Bypass surfaces that must be specified closed: `handle_send` / `send`, `handle_send_all` / `send_all`, `handle_forward` → `send`; discovery: `handle_list` / `list_peers`, `handle_pubkey`.
+- Dead-letter asymmetry: InMemory local-send failures content-DLQ; Sqlite does not — rejected grants must never content-DLQ either path.
+- Rate limit is `Rate_limiter_inst` in the HTTP layer, not on `RELAY`.
+- Provisional protocol direction: B269 threat model Candidate B (sender-bound opaque grant).

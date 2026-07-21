@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-21T14:59:45Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-07-21T13:50:16Z"
@@ -7,31 +9,34 @@ depends_on:
 estimate_hours: 10
 id: B263
 priority: critical
-started_at: null
-status: pending
+started_at: "2026-07-21T14:59:45Z"
+status: in_progress
 tags: []
 title: Persist and manage recipient-owned relay contact grants
-updated_at: "2026-07-21T13:50:16Z"
+updated_at: "2026-07-21T14:59:45Z"
 ---
 ## Purpose
 
-Implement durable recipient-owned contact grants/capabilities using the post-refactor persistence architecture.
+Implement durable recipient-owned contact grants/capabilities on the post-B219 SQLite ownership model (lifecycle fix, not a new architecture).
 
 ## Work
 
-- Add the reviewed capability/grant data model and backend operations with in-memory/SQLite parity.
-- Implement cryptographically secure generation and constant-time validation where secret comparison applies.
-- Enforce recipient/sender/relay scoping, expiry, revocation, rotation, uniqueness, and atomic one-time/replay semantics required by the design.
-- Redact capability secrets from listings, logs, metrics, errors, registration leases, room metadata, and ordinary diagnostics.
-- Add safe schema migration, rolling-upgrade handling, rollback considerations, and startup validation; never silently downgrade to default-allow.
-- Add owner-authenticated management surfaces needed to issue, inspect safely, revoke, and rotate grants.
+- Extend `Relay_backend_contract.RELAY` once with shared grant domain types/ops; implement both `InMemoryRelay` and `SqliteRelay` (`ocaml/relay.ml`).
+- Fresh schema in `ocaml/relay_sqlite_support.ml::sqlite_ddl`; create-time migration in `SqliteRelay.create` with checked failures (do not ignore `Sqlite3.exec` results for security-critical migrations). `schema_version` is not currently a driver — activate it or add durable migration state.
+- All SQLite access: one public `with_lock`; lock-free inner workers on `t.db`; every prepare via `SqliteRelay.with_stmt` / `exec_prepared` / equivalent Fun.protect finalize. No nested mutex; no per-op `db_open`.
+- Atomic admit/idempotency/enqueue as one backend operation (not separate check then send). Mutex alone is not multi-process-safe; use SQL transactions/constraints or enforce single-writer.
+- Do not use orphaned `seen_ids` table or pairing-token burn as templates for grant atomicity.
+- Implement cryptographically secure generation and constant-time validation where secret comparison applies; store verifier only, never raw grant secrets in listings/logs/metrics/errors/leases/room metadata/diagnostics.
+- Owner-authenticated management surfaces for issue, safe inspect, revoke, rotate.
+- Preserve B219 lifecycle regressions in `ocaml/test/test_relay.ml`.
+
+## Design input
+
+`.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`
 
 ## Acceptance evidence
 
 - Backend parity and migration tests pass with two-thread limits.
 - Restart/persistence, concurrency, expiry, revocation, rollback, secret-redaction, and malformed-record tests pass.
 - Key/capability material has explicit file/database access controls and no `show` command prints reusable secrets by default.
-
-## B261 post-B219 constraints
-
-Extend `Relay_backend_contract.RELAY` once for both backends. SQLite uses the process-lifetime `SqliteRelay.t.db` connection under one non-reentrant `with_lock`; inner workers must not relock; every statement must finalize. Grant validation + idempotency + enqueue is one atomic backend operation. Add fresh schema to `sqlite_ddl` and checked fail-closed migration before publishing the backend.
+- Atomic admission tests cover concurrent revoke vs send under the established lock (and document multi-process posture).

@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-07-21T14:40:27Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-21T14:52:52Z"
 complexity: medium
 created_at: "2026-07-21T13:50:16Z"
 depends_on:
     - B219
+duration_minutes: 12.430484571616667
 estimate_hours: 2
 id: B261
 priority: critical
 started_at: "2026-07-21T14:40:27Z"
-status: in_progress
+status: done
 tags: []
 title: Reconcile private relay reachability with database refactor
-updated_at: "2026-07-21T14:40:27Z"
+updated_at: "2026-07-21T14:52:52Z"
 ---
 ## Purpose
 
@@ -35,3 +36,19 @@ Do not claim this item until B219 is complete and Max confirms its database refa
 - A short checked-in design input identifies exact post-refactor modules/schema surfaces and migration constraints.
 - Downstream tasks reference the actual interfaces rather than pre-refactor guesses.
 - B219 is complete, its database refactor is confirmed stable, and this task is rebased on the resulting persistence interfaces.
+## B261 completion (2026-07-22)
+
+Checked-in design input (no protocol behaviour implemented):
+
+`.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`
+
+Records final post-B219 (incl. review fixes) surfaces:
+- `Relay_backend_contract.RELAY`
+- `SqliteRelay.t` / `create` / `with_lock` / `with_stmt` / `close`
+- `Relay_sqlite_support.sqlite_ddl` / `exec_prepared`
+- In-memory parity gaps (dedup, dead-letter)
+- Path seams for send/send_all/forward/list/pubkey/inbox/rooms/rate/replay
+- Transaction / single-process assumptions
+- Lifecycle tests that must stay green
+
+Downstream assumption updates appended on B259, B262–B267 (exact interfaces, not pre-B219 guesses).
