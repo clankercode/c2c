@@ -460,3 +460,160 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
         (Printf.sprintf "connector bridge live (%s); last sync %s ago%s" evidence
            (age_str now st.C2c_relay_connector.cs_last_sync_ts) last_err)
         detail fix
+
+
+(* ---------------------------------------------------------------------------
+ * B266 private-reachability diagnostics (pure; hermetically testable)
+ * Shared by `c2c doctor --relay` via c2c_doctor_relay.ml.
+ * --------------------------------------------------------------------------- *)
+
+let auth_mode_of_health = function
+  | None -> "unknown"
+  | Some j ->
+      Yojson.Safe.Util.(j |> member "auth_mode" |> to_string_option)
+      |> Option.value ~default:"unknown"
+
+let check_auth_mode ~health =
+  match health with
+  | None ->
+      { check_id = "relay.auth_mode"
+      ; status = Inconclusive
+      ; message = "auth_mode check skipped (relay unreachable)"
+      ; detail = None
+      ; fix_command = None
+      ; docs_url = Some docs_url }
+  | Some j ->
+      let mode = auth_mode_of_health (Some j) in
+      if mode = "prod" then
+        { check_id = "relay.auth_mode"
+        ; status = Pass
+        ; message = "auth_mode=prod (token-configured)"
+        ; detail = None
+        ; fix_command = None
+        ; docs_url = Some docs_url }
+      else if mode = "dev" then
+        { check_id = "relay.auth_mode"
+        ; status = Fail
+        ; message =
+            "auth_mode=dev (tokenless): private-reachability claims do not apply; contact delivery is refused"
+        ; detail =
+            Some "Configure C2C_RELAY_TOKEN / c2c relay serve --token for production"
+        ; fix_command =
+            Some "c2c relay serve --token <TOKEN>   # or set C2C_RELAY_TOKEN"
+        ; docs_url = Some docs_url }
+      else
+        { check_id = "relay.auth_mode"
+        ; status = Inconclusive
+        ; message = Printf.sprintf "auth_mode=%s (unrecognised)" mode
+        ; detail = None
+        ; fix_command = None
+        ; docs_url = Some docs_url }
+
+let check_contact_protocol ~health =
+  match health with
+  | None ->
+      { check_id = "relay.contact_protocol"
+      ; status = Inconclusive
+      ; message = "contact_protocol check skipped (relay unreachable)"
+      ; detail = None
+      ; fix_command = None
+      ; docs_url = Some docs_url }
+  | Some j ->
+      (match Yojson.Safe.Util.member "contact_protocol" j with
+       | `Int 1 ->
+           { check_id = "relay.contact_protocol"
+           ; status = Pass
+           ; message = "contact_protocol=1 (c2c-contact/1)"
+           ; detail = None
+           ; fix_command = None
+           ; docs_url = Some docs_url }
+       | `Int n ->
+           { check_id = "relay.contact_protocol"
+           ; status = Fail
+           ; message = Printf.sprintf "unsupported contact_protocol=%d" n
+           ; detail = None
+           ; fix_command = Some "git pull && just install-all"
+           ; docs_url = Some docs_url }
+       | _ ->
+           { check_id = "relay.contact_protocol"
+           ; status = Fail
+           ; message =
+               "contact_protocol not advertised (pre-B265 relay; mixed-version risk)"
+           ; detail = Some "Upgrade relay to advertise contact_protocol:1"
+           ; fix_command = Some "deploy/upgrade c2c relay binary"
+           ; docs_url = Some docs_url })
+
+let check_private_reachability ~health =
+  match health with
+  | None ->
+      { check_id = "relay.private_reachability"
+      ; status = Inconclusive
+      ; message = "private_reachability check skipped (relay unreachable)"
+      ; detail = None
+      ; fix_command = None
+      ; docs_url = Some docs_url }
+  | Some j ->
+      let mode = auth_mode_of_health (Some j) in
+      (match Yojson.Safe.Util.member "private_reachability" j with
+       | `String "consent_gated" when mode = "prod" ->
+           { check_id = "relay.private_reachability"
+           ; status = Pass
+           ; message = "private_reachability=consent_gated (production)"
+           ; detail = None
+           ; fix_command = None
+           ; docs_url = Some docs_url }
+       | `String "consent_gated" ->
+           { check_id = "relay.private_reachability"
+           ; status = Inconclusive
+           ; message =
+               "private_reachability=consent_gated but auth_mode is not prod"
+           ; detail =
+               Some
+                 "Tokenless/dev mode cannot substantiate private-reachability claims"
+           ; fix_command = None
+           ; docs_url = Some docs_url }
+       | `String other ->
+           { check_id = "relay.private_reachability"
+           ; status = Fail
+           ; message = Printf.sprintf "unexpected private_reachability=%s" other
+           ; detail = None
+           ; fix_command = Some "upgrade c2c relay binary"
+           ; docs_url = Some docs_url }
+       | _ ->
+           { check_id = "relay.private_reachability"
+           ; status = Fail
+           ; message =
+               "private_reachability not advertised (legacy/global-discovery relay)"
+           ; detail = Some "Upgrade relay; do not claim consent-gated reachability"
+           ; fix_command = Some "deploy/upgrade c2c relay binary"
+           ; docs_url = Some docs_url })
+
+let check_transport_security ~url ~health =
+  let tls =
+    match Uri.scheme (Uri.of_string url) with
+    | Some ("https" | "wss") -> true
+    | _ -> false
+  in
+  let mode = auth_mode_of_health health in
+  if mode = "prod" && not tls then
+    { check_id = "relay.transport_security"
+    ; status = Fail
+    ; message =
+        "production relay URL is not TLS (grant secrets require confidential transport)"
+    ; detail = Some url
+    ; fix_command = Some "use https:// or wss:// relay URL behind TLS terminator"
+    ; docs_url = Some docs_url }
+  else if not tls then
+    { check_id = "relay.transport_security"
+    ; status = Inconclusive
+    ; message = "plaintext relay URL (acceptable only for local/dev)"
+    ; detail = Some url
+    ; fix_command = None
+    ; docs_url = Some docs_url }
+  else
+    { check_id = "relay.transport_security"
+    ; status = Pass
+    ; message = "TLS scheme on relay URL"
+    ; detail = None
+    ; fix_command = None
+    ; docs_url = Some docs_url }

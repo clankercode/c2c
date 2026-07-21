@@ -370,6 +370,44 @@ let test_http_health_prod_ads () =
          = Some (`String "consent_gated"))
     | _ -> fail "bad health")
 
+(* G1: handle_send only calls Relay_ws_server.push_dm on `Ok/`Duplicate.
+   Private reject is `Error`, so push_dm must not run. Count stays flat. *)
+let test_private_reject_never_invokes_ws_push () =
+  Relay_ws_server.reset_push_dm_count ();
+  let before = Relay_ws_server.push_dm_invocations () in
+  let dir =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-b267-ws-%d" (Random.bits ()))
+  in
+  Unix.mkdir dir 0o700;
+  let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  let pk_a =
+    let id = Relay_identity.generate () in
+    id.Relay_identity.public_key
+  in
+  let pk_b =
+    let id = Relay_identity.generate () in
+    id.Relay_identity.public_key
+  in
+  let reg ~alias ~pk =
+    let st, _ =
+      Relay.InMemoryRelay.register t ~node_id:("n-" ^ alias)
+        ~session_id:("s-" ^ alias) ~alias ~identity_pk:pk ()
+    in
+    Alcotest.(check string) ("reg " ^ alias) "ok" st
+  in
+  reg ~alias:"zzwsfrom" ~pk:pk_a;
+  reg ~alias:"zzwsto" ~pk:pk_b;
+  (match
+     Relay.InMemoryRelay.send t ~from_alias:"zzwsfrom" ~to_alias:"zzwsto"
+       ~content:"no-push" ~message_id:(Some "m-ws") ~pow_difficulty:(-1)
+   with
+   | `Error _ -> ()
+   | `Ok _ | `Duplicate _ -> Alcotest.fail "private send must fail");
+  let after = Relay_ws_server.push_dm_invocations () in
+  Alcotest.(check int) "push_dm not invoked on private reject" before after
+
 let () =
   Random.self_init ();
   Alcotest.run "relay_private_reachability_matrix"
@@ -380,5 +418,7 @@ let () =
             test_http_anonymous_probes_denied;
           test_case "prod health ads consent_gated" `Quick
             test_http_health_prod_ads;
+          test_case "private reject never invokes push_dm" `Quick
+            test_private_reject_never_invokes_ws_push;
         ] );
     ]

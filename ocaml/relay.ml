@@ -1715,7 +1715,7 @@ module InMemoryRelay : RELAY = struct
              if sender_fp <> g.sender_fp then `Rejected
              else
                match Hashtbl.find_opt t.contact_grant_mids (verifier, message_id) with
-               | Some ts -> `Duplicate ts
+               | Some ts -> `Duplicate (ts, g.delivery_alias)
                | None ->
                  (match Hashtbl.find_opt t.leases g.delivery_alias with
                   | None -> `Rejected
@@ -1760,7 +1760,7 @@ module InMemoryRelay : RELAY = struct
                       set_inbox t key (msg :: inbox);
                       Hashtbl.replace t.contact_grant_mids
                         (verifier, message_id) now;
-                      `Accepted now
+                      `Accepted (now, g.delivery_alias)
                     end)))
 
   let peer_discovery_visibility_of t ~alias =
@@ -4094,7 +4094,7 @@ module SqliteRelay : RELAY = struct
                                          (Sqlite3.column stmt 0)))
                                with _ -> None)));
                    match !prior with
-                   | Some ts -> `Duplicate ts
+                   | Some ts -> `Duplicate (ts, g.delivery_alias)
                    | None ->
                      let lease_info = ref None in
                      with_stmt conn
@@ -4178,7 +4178,7 @@ module SqliteRelay : RELAY = struct
                                failwith
                                  ("admit mid insert failed: "
                                   ^ Rc.to_string rc));
-                         `Accepted now
+                         `Accepted (now, g.delivery_alias)
                        end
                  end))
         with _ -> `Rejected)
@@ -4965,18 +4965,39 @@ end = struct
                   ~grant_secret ~message_id ~content ()
               with
               | `Rejected -> deny ()
-              | `Duplicate ts ->
+              | `Duplicate (ts, _delivery_alias) ->
                 (* No second side effects (stricter than legacy /send). *)
                 respond_ok
                   (`Assoc
                      [ ("ok", `Bool true);
                        ("duplicate", `Bool true);
                        ("ts", `Float ts) ])
-              | `Accepted ts ->
+              | `Accepted (ts, delivery_alias) ->
                 R.stats_note_message relay
                   ~from_alias:(stats_alias_key from_alias) ~ts;
-                (* Durable inbox is the admission effect; private recipients
-                   wake via poll/connector. WS push optional follow-up (M3). *)
+                (* G1 authorised path: push WS / short-queue / observer once. *)
+                Relay_ws_server.push_dm ~to_alias:delivery_alias ~from_alias
+                  ~body:content ~ts;
+                (match R.identity_pk_of relay ~alias:delivery_alias with
+                 | Some identity_pk ->
+                   (match
+                      binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk
+                    with
+                    | Some binding_id ->
+                      let sq_msg =
+                        {
+                          Relay_short_queue.ts;
+                          from_alias;
+                          to_alias = delivery_alias;
+                          room_id = None;
+                          content;
+                        }
+                      in
+                      Relay_short_queue.ShortQueue.push short_queue ~binding_id
+                        sq_msg;
+                      push_to_observers ~binding_id sq_msg
+                    | None -> ())
+                 | None -> ());
                 respond_ok (`Assoc [ ("ok", `Bool true); ("ts", `Float ts) ])
 
   (* G1 / B267: forward-path failures must not store message content.
