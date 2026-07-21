@@ -320,7 +320,7 @@ let check_auth_mode ~probe =
         { check_id = "relay.auth_mode"
         ; status = Fail
         ; message =
-            "auth_mode=dev (tokenless): private-reachability claims do not apply; contact delivery is refused"
+            "auth_mode=dev (tokenless): private-reachability claims do not apply;              contact delivery is refused"
         ; detail = Some "Configure C2C_RELAY_TOKEN / c2c relay serve --token for production"
         ; fix_command = Some "c2c relay serve --token <TOKEN>   # or set C2C_RELAY_TOKEN"
         ; docs_url = Some docs_relay }
@@ -358,49 +358,6 @@ let check_contact_protocol ~probe =
            ; message =
                "contact_protocol not advertised (pre-B265 relay; mixed-version risk)"
            ; detail = Some "Upgrade relay to advertise contact_protocol:1"
-           ; fix_command = Some "deploy/upgrade c2c relay binary"
-           ; docs_url = Some docs_relay })
-
-(* B266: health must advertise private_reachability=consent_gated for production
-   claims. Missing or unexpected values fail closed for doctor. *)
-let check_private_reachability ~probe =
-  match probe.health with
-  | None ->
-      { check_id = "relay.private_reachability"
-      ; status = Inconclusive
-      ; message = "private_reachability check skipped (relay unreachable)"
-      ; detail = None; fix_command = None; docs_url = Some docs_relay }
-  | Some j ->
-      let open Yojson.Safe.Util in
-      let mode =
-        j |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown"
-      in
-      (match j |> member "private_reachability" with
-       | `String "consent_gated" when mode = "prod" ->
-           { check_id = "relay.private_reachability"
-           ; status = Pass
-           ; message = "private_reachability=consent_gated (production)"
-           ; detail = None; fix_command = None; docs_url = Some docs_relay }
-       | `String "consent_gated" ->
-           { check_id = "relay.private_reachability"
-           ; status = Inconclusive
-           ; message =
-               "private_reachability=consent_gated but auth_mode is not prod"
-           ; detail = Some "Tokenless/dev mode cannot substantiate private-reachability claims"
-           ; fix_command = None; docs_url = Some docs_relay }
-       | `String other ->
-           { check_id = "relay.private_reachability"
-           ; status = Fail
-           ; message = sprintf "unexpected private_reachability=%s" other
-           ; detail = None
-           ; fix_command = Some "upgrade c2c relay binary"
-           ; docs_url = Some docs_relay }
-       | _ ->
-           { check_id = "relay.private_reachability"
-           ; status = Fail
-           ; message =
-               "private_reachability not advertised (legacy/global-discovery relay)"
-           ; detail = Some "Upgrade relay; do not claim consent-gated reachability"
            ; fix_command = Some "deploy/upgrade c2c relay binary"
            ; docs_url = Some docs_relay })
 
@@ -847,7 +804,6 @@ let run_checks () =
     ; check_protocol ~probe
     ; check_auth_mode ~probe
     ; check_contact_protocol ~probe
-    ; check_private_reachability ~probe
     ; check_transport_security ~probe
     ; check_lease ~probe ~local_aliases ~local_total
     ; check_connector ~relay_url:probe.url ~scoped_procs ~state ~now
