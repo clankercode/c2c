@@ -1,0 +1,35 @@
+---
+complexity: high
+created_at: "2026-07-21T13:50:18Z"
+depends_on:
+    - B265
+estimate_hours: 8
+id: B266
+priority: critical
+status: pending
+tags:
+    - security
+    - relay
+    - migration
+    - operations
+title: Migrate relay installations to private fail-closed reachability
+updated_at: "2026-07-21T13:50:18Z"
+---
+## Purpose
+
+Ship a safe operator/user migration from current global authenticated-peer discovery and default-allow inbound policy to private, consent-gated reachability.
+
+## Work
+
+- Define upgrade behaviour for existing registrations, outboxes, inboxes, policies, address books, pins, managed sessions, and remote aliases.
+- Default production to fail closed after the approved compatibility boundary; never silently preserve unsolicited first-contact reachability.
+- Provide explicit commands/configuration to issue/share/revoke/rotate contact routes and to audit current exposure without printing reusable secrets accidentally.
+- Make development bypasses explicit, noisy, and excluded from production security claims.
+- Update doctor/health diagnostics to detect legacy default-allow, missing migration, insecure endpoint schemes, stale grants, and mixed-version downgrade risk.
+- Document operational recovery and rollback without weakening the invariant.
+
+## Acceptance evidence
+
+- Upgrade tests cover old state, mixed versions, interrupted migration, retry, rollback, and idempotence.
+- CLI/help/doctor output is tested and does not leak capabilities.
+- A production deployment cannot report healthy while retaining unintended global discovery/default-allow admission.

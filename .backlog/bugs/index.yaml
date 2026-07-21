@@ -262,3 +262,4 @@ bugs:
     - file: B263-persist-and-manage-recipient-o.todo
     - file: B264-hide-private-relay-recipients.todo
     - file: B265-enforce-consent-gated-relay-de.todo
+    - file: B266-migrate-relay-installations-to.todo
