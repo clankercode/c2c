@@ -257,3 +257,4 @@ bugs:
     - file: B258-feature-matrix-delivery-tier-s.todo
     - file: B259-make-relay-reachability-consen.todo
     - file: B260-publish-code-verified-security.todo
+    - file: B261-reconcile-private-relay-reacha.todo

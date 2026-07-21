@@ -1,0 +1,36 @@
+---
+complexity: medium
+created_at: "2026-07-21T13:50:16Z"
+depends_on: []
+estimate_hours: 2
+id: B261
+priority: critical
+status: pending
+tags:
+    - security
+    - relay
+    - database
+    - blocked
+title: Reconcile private relay reachability with database refactor
+updated_at: "2026-07-21T13:50:16Z"
+---
+## Purpose
+
+Before designing or implementing relay reachability changes, reconcile this security work with the concurrent database refactor after it lands.
+
+## Execution hold
+
+Do not claim this item until Max confirms the database refactor has landed and is stable. Its backlog ID was not identifiable on 2026-07-21; add that ID as an explicit dependency when known.
+
+## Work
+
+- Rebase on the post-refactor branch and identify the canonical relay persistence interfaces and backend migration mechanism.
+- Map registration leases, inbox routing, identity keys, room discovery, rate state, and any new database ownership boundaries affected by private reachability/contact grants.
+- Record compatibility constraints for in-memory and SQLite backends, deployed relay data, rolling upgrades, rollback, and production/dev modes.
+- Update B259 and downstream tasks if the refactor changes their assumptions; do not implement the security protocol in this task.
+
+## Acceptance evidence
+
+- A short checked-in design input identifies exact post-refactor modules/schema surfaces and migration constraints.
+- Downstream tasks reference the actual interfaces rather than pre-refactor guesses.
+- The database-refactor backlog dependency is wired once its ID is known.
