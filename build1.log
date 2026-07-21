@@ -1,0 +1,56 @@
+dune-throttle: acquired build slot 1/2 (jobs<=4)
+File "ocaml/relay.ml", line 5666, characters 54-179:
+5666 |                                            let ts_b = match b with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) in
+                                                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+(`Bool _|`Intlit _|`Null|`List _|`Float _|`String _|`Int _)
+
+File "ocaml/relay.ml", lines 5585-5682, characters 24-37:
+5585 | ........................match msg with
+5586 |                         | None ->
+5587 |                           finally ();
+5588 |                           Lwt.return_unit
+5589 |                         | Some (`Ping) ->
+...
+5679 |                              loop ()
+5680 |                            | `Unknown ->
+5681 |                              Relay_ws_frame.Session.send_text session "observer_ack" >>= fun () ->
+5682 |                              loop ())
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+Some `Pong
+File "ocaml/c2c_relay_connector.ml", lines 1918-1941, characters 56-23:
+1918 | ........................................................function
+1919 |       | None ->
+1920 |           Printf.printf "[broker-ws] connection closed\n%!";
+1921 |           Lwt.return ()
+1922 |       | Some (`Ping) ->
+...
+1938 |           loop ()
+1939 |       | Some (`Close (code, reason)) ->
+1940 |           Printf.printf "[broker-ws] server closed: code=%d reason=%s\n%!" code reason;
+1941 |           Lwt.return ()
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+Some `Pong
+
+File "ocaml/c2c_relay_connector.ml", line 1231, characters 6-16:
+1231 |   let last_ok_ts = if ok then now else 0.0 in
+             ^^^^^^^^^^
+Warning 26 [unused-var]: unused variable last_ok_ts.
+File "ocaml/relay_doctor.ml", lines 356-462, characters 2-18:
+356 | ..match live, state, n_procs with
+357 |   | false, None, 0 ->
+358 |       base id Fail
+359 |         "no relay connector attributable to this broker root and no prior sync state"
+360 |         (Some
+...
+459 |       base id status
+460 |         (Printf.sprintf "connector bridge live (%s); last sync %s ago%s" evidence
+461 |            (age_str now st.C2c_relay_connector.cs_last_sync_ts) last_err)
+462 |         detail fix
+Warning 8 [partial-match]: this pattern-matching is not exhaustive.
+Here is an example of a case that is not matched:
+(false, None, 1)
+(However, some guarded clause may match this value.)

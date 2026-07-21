@@ -1455,6 +1455,15 @@ end
 module SqliteRelay : RELAY = struct
   type t = {
     db_path : string;
+    (* B219 (GH #79): ONE long-lived connection, opened once in [create] and
+       reused under [with_lock] for every DB op. Replaces the previous
+       per-op [t.db] (~50 sites) that was never closed
+       and whose statements were never finalized — under load the GC
+       finalizer backlog produced a use-after-free SIGSEGV inside
+       sqlite3_finalize. Every access to [db] MUST hold [mutex]; see the
+       "public locks / inner worker is lock-free" split below. [db_path] is
+       kept because tests/migrations still reference the file directly. *)
+    db : Sqlite3.db;
     dedup_window : int;
     mutex : Mutex.t;
     observer_bindings : ObserverBindings.t;
@@ -1525,11 +1534,30 @@ module SqliteRelay : RELAY = struct
       | Some p -> Relay_identity.load_or_create_at ~path:p ~alias_hint:(Option.value self_host ~default:"relay")
       | None -> Relay_identity.generate ~alias_hint:(Option.value self_host ~default:"relay") ()
     in
-    { db_path; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host; peer_relays; identity }
+    { db_path; db = conn; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host; peer_relays; identity }
 
   let with_lock t f =
     Mutex.lock t.mutex;
     Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
+
+  (* B219: prepare/finalize a statement around [f]. With the persistent
+     connection an unfinalized statement leaks for the process lifetime and
+     can hold locks / block WAL checkpoints, so EVERY ad-hoc prepare is routed
+     through this helper. The finalize runs in [~finally] so it fires even if
+     [f] raises. The caller MUST already hold [t.mutex] (the connection is
+     shared) — [with_stmt] does not lock. *)
+  let with_stmt conn sql f =
+    let stmt = Sqlite3.prepare conn sql in
+    Fun.protect
+      ~finally:(fun () -> (try ignore (Sqlite3.finalize stmt) with _ -> ()))
+      (fun () -> f stmt)
+
+  (* B219: best-effort shutdown close. No shutdown path calls this today, but
+     it is exposed so an operator/harness teardown can release the fd and
+     checkpoint the WAL. Never raises. *)
+  let close t =
+    (try ignore (Sqlite3.db_close t.db) with _ -> ())
+  let _ = close
 
   let self_host t = t.self_host
   (* #330 S2: relay identity for cross-relay signing *)
@@ -1563,7 +1591,7 @@ module SqliteRelay : RELAY = struct
 
   let stats_note_message t ~from_alias ~ts =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       exec_prepared conn "INSERT INTO stats_message_events (ts) VALUES (?)"
         [`Float ts] |> ignore;
       exec_prepared conn
@@ -1576,7 +1604,7 @@ module SqliteRelay : RELAY = struct
 
   let stats_note_activity t ~machine_id ?(retire_key = "") ~alias ~ts () =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       exec_prepared conn
         "INSERT INTO stats_seen_machines (machine_id, last_seen) VALUES (?, ?) \
          ON CONFLICT(machine_id) DO UPDATE SET last_seen = excluded.last_seen"
@@ -1652,7 +1680,7 @@ module SqliteRelay : RELAY = struct
 
   let stats t ~now =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       stats_json ~now
         ~messages_in_window:(fun ~cutoff ->
           count_query conn
@@ -1683,7 +1711,7 @@ module SqliteRelay : RELAY = struct
     let snapshot = stats t ~now in
     with_lock t (fun () ->
       try
-        let conn = Sqlite3.db_open t.db_path in
+        let conn = t.db in
         exec_prepared conn "INSERT INTO stats_snapshots (ts, json) VALUES (?, ?)"
           [`Float now; `Text (Yojson.Safe.to_string snapshot)]
         |> ignore
@@ -1758,7 +1786,7 @@ module SqliteRelay : RELAY = struct
   let register t ~node_id ~session_id ~alias ?(client_type="unknown") ?(client_version="") ?(client_os="") ?(ttl=default_lease_ttl) ?(identity_pk="") ?(enc_pubkey="") ?(signed_at=0.0) ?(sig_b64="") ?(opaque_host_id : string option = None) () =
     with_lock t (fun () ->
       let open Sqlite3 in
-      let conn = db_open t.db_path in
+      let conn = t.db in
       let now = Unix.gettimeofday () in
       if not (C2c_name.is_valid_with_opaque_host_id alias) then
         let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
@@ -1907,7 +1935,7 @@ module SqliteRelay : RELAY = struct
   let identity_pk_of t ~alias =
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = prepare conn "SELECT identity_pk, last_seen FROM leases WHERE alias = ?" in
       bind_text stmt 1 alias |> ignore;
       let result =
@@ -1923,7 +1951,7 @@ module SqliteRelay : RELAY = struct
 
   let alias_of_identity_pk t ~identity_pk =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = prepare conn "SELECT alias, last_seen FROM leases WHERE identity_pk = ?" in
       bind_text stmt 1 identity_pk |> ignore;
       let now = Unix.gettimeofday () in
@@ -1944,7 +1972,7 @@ module SqliteRelay : RELAY = struct
   let query_messages_since t ~alias ~since_ts =
     let query_alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let msgs = ref [] in
       let min_ts = max since_ts (Unix.gettimeofday () -. 86400.0) in
       let stmt = prepare conn
@@ -1993,7 +2021,7 @@ module SqliteRelay : RELAY = struct
   let enc_pubkey_of t ~alias =
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = prepare conn "SELECT enc_pubkey, last_seen FROM leases WHERE alias = ?" in
       bind_text stmt 1 alias |> ignore;
       let result =
@@ -2009,7 +2037,7 @@ module SqliteRelay : RELAY = struct
 
   let alias_of_session t ~node_id ~session_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = prepare conn "SELECT alias, last_seen FROM leases WHERE node_id = ? AND session_id = ? LIMIT 1" in
       bind_text stmt 1 node_id |> ignore;
       bind_text stmt 2 session_id |> ignore;
@@ -2027,7 +2055,7 @@ module SqliteRelay : RELAY = struct
   let signed_at_of t ~alias =
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = prepare conn "SELECT signed_at, last_seen FROM leases WHERE alias = ?" in
       bind_text stmt 1 alias |> ignore;
       let result =
@@ -2044,7 +2072,7 @@ module SqliteRelay : RELAY = struct
   let sig_b64_of t ~alias =
     let alias, _ = normalize_relay_alias ~alias ~opaque_host_id:None in
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = prepare conn "SELECT sig_b64, last_seen FROM leases WHERE alias = ?" in
       bind_text stmt 1 alias |> ignore;
       let result =
@@ -2060,7 +2088,7 @@ module SqliteRelay : RELAY = struct
 
   let set_allowed_identity t ~alias ~identity_pk_b64 =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "INSERT INTO allowed_identities (alias, identity_pk_b64) VALUES (?, ?) ON CONFLICT(alias) DO UPDATE SET identity_pk_b64=excluded.identity_pk_b64" in
       Sqlite3.bind_text stmt 1 alias |> ignore;
       Sqlite3.bind_text stmt 2 identity_pk_b64 |> ignore;
@@ -2071,7 +2099,7 @@ module SqliteRelay : RELAY = struct
 
   let allowed_identity_of t ~alias =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
       if not has_row then None
       else
@@ -2086,7 +2114,7 @@ module SqliteRelay : RELAY = struct
 
   let check_allowlist t ~alias ~identity_pk_b64 =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let has_row = exec_prepared conn "SELECT identity_pk_b64 FROM allowed_identities WHERE alias = ?" [`Text alias] in
       if not has_row then `Unlisted
       else
@@ -2101,7 +2129,7 @@ module SqliteRelay : RELAY = struct
 
   let unbind_alias t ~alias =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let before = ref false in
       let stmt = Sqlite3.prepare conn "SELECT alias FROM leases WHERE alias = ?" in
       Sqlite3.bind_text stmt 1 alias |> ignore;
@@ -2115,30 +2143,32 @@ module SqliteRelay : RELAY = struct
       !before
     )
 
-  let check_nonce db ~ttl ~nonce ~ts =
+  (* B219: inner worker — takes the shared connection and does NOT lock; its
+     only caller [check_register_nonce] already holds [t.mutex]. Adding a lock
+     here would nest inside that one (plain non-reentrant Mutex) and deadlock. *)
+  let check_nonce conn ~ttl ~nonce ~ts =
     let cutoff = ts -. ttl in
-    let conn = Sqlite3.db_open db in
-    let del_stmt = Sqlite3.prepare conn "DELETE FROM register_nonces WHERE ts < ?" in
-    Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
-    Sqlite3.step del_stmt |> ignore;
+    with_stmt conn "DELETE FROM register_nonces WHERE ts < ?" (fun del_stmt ->
+      Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
+      Sqlite3.step del_stmt |> ignore);
     let has_row = exec_prepared conn "SELECT nonce FROM register_nonces WHERE nonce = ?" [`Text nonce] in
     if has_row then Res.Error relay_err_nonce_replay
     else (
-      let ins_stmt = Sqlite3.prepare conn "INSERT INTO register_nonces (nonce, ts) VALUES (?, ?)" in
-      Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
-      Sqlite3.bind_double ins_stmt 2 ts |> ignore;
-      Sqlite3.step ins_stmt |> ignore;
+      with_stmt conn "INSERT INTO register_nonces (nonce, ts) VALUES (?, ?)" (fun ins_stmt ->
+        Sqlite3.bind_text ins_stmt 1 nonce |> ignore;
+        Sqlite3.bind_double ins_stmt 2 ts |> ignore;
+        Sqlite3.step ins_stmt |> ignore);
       Res.Ok ()
     )
 
   let check_register_nonce t ~nonce ~ts =
     with_lock t (fun () ->
-      check_nonce t.db_path ~ttl:600.0 ~nonce ~ts
+      check_nonce t.db ~ttl:600.0 ~nonce ~ts
     )
 
   let check_request_nonce t ~nonce ~ts =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let cutoff = ts -. 120.0 in
       let del_stmt = Sqlite3.prepare conn "DELETE FROM request_nonces WHERE ts < ?" in
       Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
@@ -2160,7 +2190,7 @@ module SqliteRelay : RELAY = struct
      here. *)
   let check_revoke_nonce t ~nonce ~ts =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let cutoff = ts -. 120.0 in
       let del_stmt = Sqlite3.prepare conn "DELETE FROM revoke_nonces WHERE ts < ?" in
       Sqlite3.bind_double del_stmt 1 cutoff |> ignore;
@@ -2178,7 +2208,7 @@ module SqliteRelay : RELAY = struct
 
   let heartbeat t ~node_id ~session_id ?(opaque_host_id = "") =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let now = Unix.gettimeofday () in
       let found_lease = ref None in
       let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM leases WHERE node_id = ? AND session_id = ?" in
@@ -2265,7 +2295,7 @@ module SqliteRelay : RELAY = struct
 
   let list_peers t ?(include_dead=false) =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let now = Unix.gettimeofday () in
       let leases = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id, client_version, client_os FROM leases" in
@@ -2330,7 +2360,7 @@ module SqliteRelay : RELAY = struct
 
   let gc t =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let now = Unix.gettimeofday () in
       let expired_aliases = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT alias, last_seen, ttl FROM leases" in
@@ -2410,7 +2440,7 @@ module SqliteRelay : RELAY = struct
 
   let send t ~from_alias ~to_alias ~content ?(message_id=None) ?(pow_difficulty = -1) =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
       let lookup_alias, _ = normalize_relay_alias ~alias:to_alias ~opaque_host_id:None in
@@ -2463,7 +2493,7 @@ module SqliteRelay : RELAY = struct
 
   let poll_inbox t ~node_id ~session_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let msgs = ref [] in
       let sel_stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
       Sqlite3.bind_text sel_stmt 1 node_id |> ignore;
@@ -2500,7 +2530,7 @@ module SqliteRelay : RELAY = struct
 
   let peek_inbox t ~node_id ~session_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let msgs = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts, pow_difficulty FROM inboxes WHERE node_id = ? AND session_id = ? ORDER BY id" in
       Sqlite3.bind_text stmt 1 node_id |> ignore;
@@ -2533,7 +2563,7 @@ module SqliteRelay : RELAY = struct
 
   let send_all t ~from_alias ~content ?(message_id=None) =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let now = Unix.gettimeofday () in
       let sent_to = ref [] in
       let skipped = ref [] in
@@ -2581,7 +2611,7 @@ module SqliteRelay : RELAY = struct
   let join_room t ?(visibility = "public") ~alias ~room_id () =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let lease_stmt = Sqlite3.prepare conn "SELECT last_seen FROM leases WHERE alias = ? LIMIT 1" in
       Sqlite3.bind_text lease_stmt 1 alias |> ignore;
       let active_alias =
@@ -2618,7 +2648,7 @@ module SqliteRelay : RELAY = struct
 
   let leave_room t ~alias ~room_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "DELETE FROM room_members WHERE room_id = ? AND alias = ?" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 alias |> ignore;
@@ -2628,7 +2658,7 @@ module SqliteRelay : RELAY = struct
 
   let send_room t ~from_alias ~room_id ~content ?(message_id=None) ?envelope () =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let msg_id = match message_id with Some id -> id | None -> Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
       let ts = Unix.gettimeofday () in
       let sender_stmt = Sqlite3.prepare conn "SELECT last_seen FROM leases WHERE alias = ? LIMIT 1" in
@@ -2717,7 +2747,7 @@ module SqliteRelay : RELAY = struct
 
   let room_history t ~room_id ?(limit=50) =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let msgs = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, content, ts FROM room_history WHERE room_id = ? ORDER BY id DESC LIMIT ?" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
@@ -2745,7 +2775,7 @@ module SqliteRelay : RELAY = struct
 
   let dead_letter t =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let msgs = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT message_id, from_alias, to_alias, content, ts, reason FROM dead_letter" in
       let rec loop () =
@@ -2773,7 +2803,7 @@ module SqliteRelay : RELAY = struct
 
   let add_dead_letter t msg =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let message_id = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "message_id" msg) in
       let from_alias = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "from_alias" msg) in
       let to_alias = Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "to_alias" msg) in
@@ -2792,7 +2822,7 @@ module SqliteRelay : RELAY = struct
 
   let list_rooms ?for_alias t =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let rooms = ref [] in
       (* Directory policy (B230 + B229):
          - anonymous: public + gated only.
@@ -2893,7 +2923,7 @@ module SqliteRelay : RELAY = struct
 
   let my_rooms t =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let rooms = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT DISTINCT room_id FROM room_members" in
       let rec loop () =
@@ -2937,7 +2967,7 @@ module SqliteRelay : RELAY = struct
 
   let room_visibility_of t ~room_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "SELECT visibility FROM rooms WHERE room_id = ?" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       let rc = Sqlite3.step stmt in
@@ -2948,7 +2978,7 @@ module SqliteRelay : RELAY = struct
 
   let room_exists t ~room_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "SELECT 1 FROM rooms WHERE room_id = ? LIMIT 1" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       let found = Sqlite3.step stmt = Rc.ROW in
@@ -2958,7 +2988,7 @@ module SqliteRelay : RELAY = struct
 
   let room_invites_of t ~room_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let invites = ref [] in
       let stmt = Sqlite3.prepare conn "SELECT identity_pk_b64 FROM room_invites WHERE room_id = ?" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
@@ -2977,7 +3007,7 @@ module SqliteRelay : RELAY = struct
 
   let is_invited t ~room_id ~identity_pk_b64 =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "SELECT 1 FROM room_invites WHERE room_id = ? AND identity_pk_b64 = ?" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 identity_pk_b64 |> ignore;
@@ -2988,7 +3018,7 @@ module SqliteRelay : RELAY = struct
   let set_room_visibility t ~room_id ~visibility =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       (* B117: on a downgrade to gated/private, atomically clear history_public
          (CASE forces 0). public/unlisted preserve the existing stored value
          (rooms.history_public), never silently re-opening a closed room. On
@@ -3009,7 +3039,7 @@ module SqliteRelay : RELAY = struct
      when the row/column is absent. *)
   let history_public_of t ~room_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "SELECT history_public, visibility FROM rooms WHERE room_id = ?" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       let rc = Sqlite3.step stmt in
@@ -3030,7 +3060,7 @@ module SqliteRelay : RELAY = struct
 
   let set_room_history_public t ~room_id ~history_public =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "UPDATE rooms SET history_public = ? WHERE room_id = ?" in
       Sqlite3.bind_int stmt 1 (if history_public then 1 else 0) |> ignore;
       Sqlite3.bind_text stmt 2 room_id |> ignore;
@@ -3039,7 +3069,7 @@ module SqliteRelay : RELAY = struct
 
   let invite_to_room t ~room_id ~identity_pk_b64 =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "INSERT OR IGNORE INTO room_invites (room_id, identity_pk_b64) VALUES (?, ?)" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 identity_pk_b64 |> ignore;
@@ -3048,7 +3078,7 @@ module SqliteRelay : RELAY = struct
 
   let uninvite_from_room t ~room_id ~identity_pk_b64 =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn "DELETE FROM room_invites WHERE room_id = ? AND identity_pk_b64 = ?" in
       Sqlite3.bind_text stmt 1 room_id |> ignore;
       Sqlite3.bind_text stmt 2 identity_pk_b64 |> ignore;
@@ -3057,7 +3087,7 @@ module SqliteRelay : RELAY = struct
 
   let room_knocks_of t ~room_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let knocks = ref [] in
       let stmt = Sqlite3.prepare conn
         "SELECT requester_alias, requester_identity_pk_b64, requested_at \
@@ -3082,7 +3112,7 @@ module SqliteRelay : RELAY = struct
 
   let remove_room_knock t ~room_id ~requester_pk =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let select_stmt = Sqlite3.prepare conn
         "SELECT requester_alias, requester_identity_pk_b64, requested_at \
          FROM room_knocks WHERE room_id = ? AND requester_identity_pk_b64 = ? LIMIT 1"
@@ -3115,7 +3145,7 @@ module SqliteRelay : RELAY = struct
 
   let knock_room t ~room_id ~requester_alias ~requester_pk =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let room_stmt =
         Sqlite3.prepare conn "SELECT visibility FROM rooms WHERE room_id = ? LIMIT 1"
       in
@@ -3198,7 +3228,7 @@ module SqliteRelay : RELAY = struct
 
   let is_room_member_alias t ~room_id ~alias =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       let stmt = Sqlite3.prepare conn
         "SELECT leases.last_seen \
          FROM room_members JOIN leases ON leases.alias = room_members.alias \
@@ -3220,13 +3250,13 @@ module SqliteRelay : RELAY = struct
   (* S5a: Pairing token management — delegates to module-level SQL helpers *)
   let store_pairing_token t ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       store_pairing_token_db conn ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at
     )
 
   let get_and_burn_pairing_token t ~binding_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       match get_and_burn_pairing_token_db conn ~binding_id with
       | Res.Ok opt -> opt
       | Res.Error _ -> None
@@ -3234,7 +3264,7 @@ module SqliteRelay : RELAY = struct
 
   let find_pairing_token t ~binding_id =
     with_lock t (fun () ->
-      let conn = Sqlite3.db_open t.db_path in
+      let conn = t.db in
       find_pairing_token_db conn ~binding_id
     )
 
