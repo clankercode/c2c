@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-21T14:12:44Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-21T14:40:04Z"
 complexity: high
 created_at: "2026-07-21T14:12:18Z"
 depends_on: []
+duration_minutes: 27.339612990766668
 estimate_hours: 6
 id: B269
 priority: critical
 started_at: "2026-07-21T14:12:44Z"
-status: in_progress
+status: done
 tags: []
 title: Draft private relay threat model and protocol options
-updated_at: "2026-07-21T14:12:44Z"
+updated_at: "2026-07-21T14:40:04Z"
 ---
 ## Purpose
 
