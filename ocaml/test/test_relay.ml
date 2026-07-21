@@ -1170,6 +1170,102 @@ let test_effective_lease_ttl () =
   (* above the cap -> capped *)
   assert (Relay.effective_lease_ttl ~client_ttl:1.0e9 = Relay.max_lease_ttl)
 
+(* B219 (GH #79): the relay reuses ONE persistent SQLite connection under its
+   mutex, and every prepared statement is finalized explicitly. The production
+   crash was a use-after-free inside sqlite3_finalize under load, on the
+   check_request_nonce path. These hermetic tests cannot reproduce the
+   6876-peer production load, but they DO exercise the open-once +
+   finalize-all + shared-connection paths at a volume where the previous
+   per-op-connection + statement-leak behaviour would surface as an error or
+   crash. *)
+
+(* Drive many sequential DB ops (send / heartbeat / request-nonce / poll / gc)
+   on ONE relay t. Asserts every op succeeds and delivery is exact. *)
+let test_relay_sqlite_persistent_connection_stress () =
+  with_sqlite_relay_tempdir (fun t ->
+    let (s1, _) =
+      Relay.SqliteRelay.register t ~node_id:"nStrA" ~session_id:"sStrA" ~alias:"zzstressa" ()
+    in
+    let (s2, _) =
+      Relay.SqliteRelay.register t ~node_id:"nStrB" ~session_id:"sStrB" ~alias:"zzstressb" ()
+    in
+    Alcotest.(check string) "register a ok" "ok" s1;
+    Alcotest.(check string) "register b ok" "ok" s2;
+    let n = 2000 in
+    for i = 0 to n - 1 do
+      (match Relay.SqliteRelay.send t ~from_alias:"zzstressa" ~to_alias:"zzstressb"
+               ~content:(Printf.sprintf "msg-%d" i) ~message_id:None ~pow_difficulty:(-1) with
+       | `Ok _ -> ()
+       | `Error (e, m) -> fail_fmt "send %d failed: %s %s" i e m
+       | _ -> fail_fmt "send %d unexpected result" i);
+      let (hb, _) =
+        Relay.SqliteRelay.heartbeat t ~node_id:"nStrB" ~session_id:"sStrB" ?opaque_host_id:None
+      in
+      Alcotest.(check string) "heartbeat stays ok" "ok" hb;
+      (* the exact crash path: prepare/step/finalize a request-nonce every op *)
+      let ts = Unix.gettimeofday () in
+      let nonce = Printf.sprintf "nonce-%d" i in
+      (match Relay.SqliteRelay.check_request_nonce t ~nonce ~ts with
+       | Ok () -> () | Error e -> fail_fmt "nonce %d first use should be Ok, got %s" i e);
+      (match Relay.SqliteRelay.check_request_nonce t ~nonce ~ts with
+       | Error _ -> () | Ok () -> fail_fmt "nonce %d replay should be rejected" i)
+    done;
+    let inbox = Relay.SqliteRelay.poll_inbox t ~node_id:"nStrB" ~session_id:"sStrB" in
+    Alcotest.(check int) "all messages delivered" n (List.length inbox);
+    let inbox2 = Relay.SqliteRelay.poll_inbox t ~node_id:"nStrB" ~session_id:"sStrB" in
+    Alcotest.(check int) "inbox drained (poll deletes)" 0 (List.length inbox2);
+    (match Relay.SqliteRelay.gc t with `Ok _ -> ()))
+
+(* Hammer check_request_nonce in isolation — the function whose finalize
+   SIGSEGV'd in the core dump. A per-call statement leak on the shared
+   connection would accumulate over 5000 iterations. *)
+let test_relay_sqlite_request_nonce_no_leak_under_load () =
+  with_sqlite_relay_tempdir (fun t ->
+    let iters = 5000 in
+    for i = 0 to iters - 1 do
+      let ts = Unix.gettimeofday () in
+      let nonce = Printf.sprintf "req-%d" i in
+      (match Relay.SqliteRelay.check_request_nonce t ~nonce ~ts with
+       | Ok () -> ()
+       | Error e -> fail_fmt "request nonce %d should be accepted, got %s" i e)
+    done;
+    let ts = Unix.gettimeofday () in
+    (match Relay.SqliteRelay.check_request_nonce t ~nonce:"req-fresh" ~ts with
+     | Ok () -> () | Error e -> fail_fmt "fresh nonce should be ok: %s" e);
+    (match Relay.SqliteRelay.check_request_nonce t ~nonce:"req-fresh" ~ts with
+     | Error _ -> () | Ok () -> fail_fmt "in-window replay should be rejected"))
+
+(* Register/heartbeat/gc churn plus room writes on one connection — exercises
+   the lease + room + inbox statement paths together so a finalize regression
+   in any of them surfaces. *)
+let test_relay_sqlite_mixed_ops_on_shared_connection () =
+  with_sqlite_relay_tempdir (fun t ->
+    for i = 0 to 199 do
+      let alias = Printf.sprintf "zzmix%d" i in
+      let (st, _) =
+        Relay.SqliteRelay.register t ~node_id:(Printf.sprintf "n%d" i)
+          ~session_id:(Printf.sprintf "s%d" i) ~alias ()
+      in
+      Alcotest.(check string) "register ok" "ok" st;
+      (match Relay.SqliteRelay.join_room t ~alias ~room_id:"zzmixroom" () with
+       | `Ok -> () | `Error (e, m) -> fail_fmt "join %d failed: %s %s" i e m);
+      let (hb, _) =
+        Relay.SqliteRelay.heartbeat t ~node_id:(Printf.sprintf "n%d" i)
+          ~session_id:(Printf.sprintf "s%d" i) ?opaque_host_id:None
+      in
+      Alcotest.(check string) "heartbeat ok" "ok" hb
+    done;
+    (* room fanout across all members, then a gc pass *)
+    (match Relay.SqliteRelay.send_room t ~from_alias:"zzmix0" ~room_id:"zzmixroom"
+             ~content:"hello room" () with
+     | `Ok _ -> () | `Error (e, m) -> fail_fmt "send_room failed: %s %s" e m);
+    let peers = Relay.SqliteRelay.list_peers t ~include_dead:false in
+    Alcotest.(check int) "all 200 peers listed" 200 (List.length peers);
+    (match Relay.SqliteRelay.gc t with `Ok _ -> ());
+    let rooms = Relay.SqliteRelay.list_rooms t in
+    Alcotest.(check bool) "room listed" true
+      (List.exists (fun r -> json_get_string r "room_id" = "zzmixroom") rooms))
+
 (* ---- Run tests ---- *)
 
 let tests = [
@@ -1224,6 +1320,10 @@ let tests = [
   "relay sqlite join visibility + set", test_relay_sqlite_join_visibility_and_set;
   "relay sqlite knock storage persists", test_relay_sqlite_knock_storage_persists;
   "relay sqlite alias retention warns and releases", test_relay_sqlite_alias_retention_warns_and_releases;
+  (* B219 (GH #79): persistent-connection lifecycle + finalize-all *)
+  "relay sqlite persistent connection stress", test_relay_sqlite_persistent_connection_stress;
+  "relay sqlite request_nonce no leak under load", test_relay_sqlite_request_nonce_no_leak_under_load;
+  "relay sqlite mixed ops on shared connection", test_relay_sqlite_mixed_ops_on_shared_connection;
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;
   "cross_host alias@matching self_host accepted", test_cross_host_alias_matching_self_host_accepted;
