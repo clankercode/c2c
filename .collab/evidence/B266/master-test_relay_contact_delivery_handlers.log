@@ -1,0 +1,36 @@
+Testing `relay_contact_delivery_handlers'.
+This run has ID `IKX59CO4'.
+
+  [OK]          InMemoryRelay          0   send private: no inbox, no content...
+  [OK]          InMemoryRelay          1   send_all skips private.
+  [OK]          InMemoryRelay          2   admit Accepted once; Duplicate no ...
+  [OK]          InMemoryRelay          3   room co-membership does not open p...
+  [OK]          InMemoryRelay          4   admit wrong sender rejected.
+  [OK]          InMemoryRelay          5   admit expired rejected.
+  [OK]          InMemoryRelay          6   admit revoked rejected.
+  [OK]          InMemoryRelay          7   admit malformed secret rejected.
+  [OK]          InMemoryRelay          8   leaked secret + wrong sender rejec...
+  [OK]          InMemoryRelay          9   wrong recipient identity rejected.
+  [OK]          InMemoryRelay         10   replay message_id at most once.
+  [OK]          InMemoryRelay         11   forward-path private no side effects.
+  [OK]          SqliteRelay            0   send private: no inbox, no content...
+  [OK]          SqliteRelay            1   send_all skips private.
+  [OK]          SqliteRelay            2   admit Accepted once; Duplicate no ...
+  [OK]          SqliteRelay            3   room co-membership does not open p...
+  [OK]          SqliteRelay            4   admit wrong sender rejected.
+  [OK]          SqliteRelay            5   admit expired rejected.
+  [OK]          SqliteRelay            6   admit revoked rejected.
+  [OK]          SqliteRelay            7   admit malformed secret rejected.
+  [OK]          SqliteRelay            8   leaked secret + wrong sender rejec...
+  [OK]          SqliteRelay            9   wrong recipient identity rejected.
+  [OK]          SqliteRelay           10   replay message_id at most once.
+  [OK]          SqliteRelay           11   forward-path private no side effects.
+  [OK]          HTTP                   0   contact/v1/deliver refuses tokenless.
+  [OK]          HTTP                   1   POST /send private fails (dev).
+  [OK]          HTTP                   2   POST /send_all skips private.
+  [OK]          HTTP                   3   cleartext contact deliver refused.
+  [OK]          HTTP                   4   contact protocol downgrade refused.
+  [OK]          HTTP                   5   contact protocol empty refused.
+
+Full test results in `~/src/c2c/_build/_tests/relay_contact_delivery_handlers'.
+Test Successful in 0.240s. 30 tests run.

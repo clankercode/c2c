@@ -1,0 +1,14 @@
+   .-.       .-.
+   |c| <-2-> |c|     relay-server v0.13.0
+   '-'       '-'     build=2026-07-21  git=8b700a64
+  listen=127.0.0.1:57749
+  relay-name=127.0.0.1
+  peer-relays: 0 configured
+storage: sqlite
+  persist-dir=/home/xertrov/src/c2c/
+  db-path=/tmp/c2c-b266-final.nOeEZg/relay.db
+c2c relay serving on http://127.0.0.1:57749
+auth: Bearer token required
+room ops: signed proofs + send envelopes required
+gc: disabled
+[relay] received signal SIGTERM, shutting down

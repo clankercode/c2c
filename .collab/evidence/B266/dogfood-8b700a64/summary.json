@@ -1,0 +1,32 @@
+{
+  "health": {
+    "ok": true,
+    "version": "0.13.0",
+    "git_hash": "8b700a64",
+    "protocol_version": 1,
+    "min_client_protocol_version": 1,
+    "auth_mode": "prod",
+    "contact_protocol": 1,
+    "private_reachability": "consent_gated",
+    "dev_mode": false,
+    "production_claims": true,
+    "pow": {
+      "enabled": false,
+      "scheme": "sha256-leading-zeros-v1"
+    }
+  },
+  "http_codes": {
+    "list": "401",
+    "send": "401"
+  },
+  "checks": {
+    "git_hash": true,
+    "auth_mode_prod": true,
+    "private_reachability": true,
+    "anonymous_list_401": true,
+    "anonymous_send_401": true,
+    "secure_table": false,
+    "legacy_view": false,
+    "legacy_no_triggers": true
+  }
+}

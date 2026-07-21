@@ -1,0 +1,1 @@
+{"ok":false,"error_code":"unauthorized","error":"peer route requires Ed25519 auth (spec §5.1)"}

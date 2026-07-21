@@ -1,0 +1,10 @@
+Testing `relay_private_reachability_migration'.
+This run has ID `0J68MX8Q'.
+
+  [OK]          SqliteRelay          0   fresh create stamps markers + tables.
+  [OK]          SqliteRelay          1   reopen idempotent + private default.
+  [OK]          SqliteRelay          2   legacy DB migrates to private.
+  [OK]          SqliteRelay          3   repeated migration idempotent.
+
+Full test results in `~/src/c2c/_build/_tests/relay_private_reachability_migration'.
+Test Successful in 0.050s. 4 tests run.

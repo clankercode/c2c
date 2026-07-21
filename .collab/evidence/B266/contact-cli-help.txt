@@ -1,0 +1,45 @@
+[4mC2C-RELAY-CONTACT[24m(1)               C2c Manual               [4mC2C-RELAY-CONTACT[24m(1)
+
+[1mNAME[0m
+     c2c-relay-contact - Recipient-owned contact grants (private reachability).
+
+[1mSYNOPSIS[0m
+     [1mc2c relay contact [4m[22mCOMMAND[24m …
+
+[1mCOMMANDS[0m
+     [1missue [22m[[4mOPTION[24m]…
+         Issue a sender-bound contact grant (prints secret once).
+
+     [1mlist [22m[[1m--json[22m] [[1m--persist-dir[22m=[4mDIR[24m] [1m--recipient-pk[22m=[4mB64URL[24m [[4mOPTION[24m]…
+         List grant metadata (never prints reusable secrets).
+
+     [1mrevoke --grant-id[22m=[4mID[24m [[1m--persist-dir[22m=[4mDIR[24m] [1m--recipient-pk[22m=[4mB64URL[24m [[4mOPTION[24m]…
+         Revoke a contact grant by id.
+
+[1mCOMMON OPTIONS[0m
+     [1m--help[22m[=[4mFMT[24m] (default=[1mauto[22m)
+         Show this help in format [4mFMT[24m. The value [4mFMT[24m must be one of [1mauto[22m, [1mpager[22m,
+         [1mgroff  [22mor  [1mplain[22m.  With [1mauto[22m, the format is [1mpager [22mor [1mplain [22mwhenever the
+         [1mTERM [22menv var is [1mdumb [22mor undefined.
+
+     [1m--version[0m
+         Show version information.
+
+[1mEXIT STATUS[0m
+     [1mc2c relay contact [22mexits with:
+
+     0   on success.
+
+     123
+         on indiscriminate errors reported on standard error.
+
+     124
+         on command line parsing errors.
+
+     125
+         on unexpected internal errors (bugs).
+
+[1mSEE ALSO[0m
+     c2c(1)
+
+C2c 0.13.0 459e13fc 2026-07-21T17:37...                     [4mC2C-RELAY-CONTACT[24m(1)

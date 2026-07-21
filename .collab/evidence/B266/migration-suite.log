@@ -1,0 +1,11 @@
+Testing `relay_private_migration'.
+This run has ID `ZPSR15CD'.
+
+  [OK]          sqlite migration          0   fresh markers + private default.
+  [OK]          sqlite migration          1   legacy ALTER defaults private, ...
+  [OK]          sqlite migration          2   interrupted retry recovers colu...
+  [OK]          health ads                0   prod health contact + private_r...
+  [OK]          health ads                1   dev health still ads protocol.
+
+Full test results in `~/src/c2c/.worktrees/b266-from-master/_build/_tests/relay_private_migration'.
+Test Successful in 0.045s. 5 tests run.

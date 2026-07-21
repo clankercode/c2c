@@ -1,0 +1,13 @@
+{
+  "objects": {
+    "secure_leases_v2": {
+      "type": "table",
+      "sql": "CREATE TABLE \"secure_leases_v2\" (\n    alias TEXT PRIMARY KEY,\n    node_id TEXT NOT NULL,\n    session_id TEXT NOT NULL,\n    client_type TEXT NOT NULL DEFAULT 'unknown',\n    registered_at REAL NOT NULL,\n    last_seen REAL NOT NULL,\n    ttl REAL NOT NULL,\n    identity_pk TEXT NOT NULL DEFAULT '',\n    enc_pubkey TEXT NOT NULL DEFAULT '',\n    signed_at REAL NOT NULL DEFAULT 0,\n    sig_b64 TEXT NOT NULL DEFAULT '',\n    opaque_host_id TEXT NOT NULL DEFAULT '',\n    client_version TEXT NOT NULL DEFAULT '',\n    client_os TEXT NOT NULL DEFAULT '',\n    -- B264: peer discovery visibility (\"private\" | \"public\"). Default private.\n    discovery_visibility TEXT NOT NULL DEFAULT 'private'\n)"
+    },
+    "leases": {
+      "type": "view",
+      "sql": "CREATE VIEW leases AS\n       SELECT alias, node_id, session_id, client_type, registered_at,\n              last_seen, ttl, identity_pk, enc_pubkey, signed_at, sig_b64,\n              opaque_host_id, client_version, client_os,\n              discovery_visibility\n         FROM secure_leases_v2 WHERE 0"
+    }
+  },
+  "legacy_triggers": []
+}

@@ -1,0 +1,18 @@
+Testing `relay_doctor_private_reachability'.
+This run has ID `TE5ECH5J'.
+
+  [OK]          B266 doctor checks          0   auth_mode prod Pass.
+  [OK]          B266 doctor checks          1   auth_mode dev Fail.
+  [OK]          B266 doctor checks          2   contact_protocol missing Fail.
+  [OK]          B266 doctor checks          3   contact_protocol 1 Pass.
+  [OK]          B266 doctor checks          4   private_reachability prod Pass.
+  [OK]          B266 doctor checks          5   private_reachability dev Inco...
+  [OK]          B266 doctor checks          6   private_reachability missing ...
+  [OK]          B266 doctor checks          7   process_local prod Fail.
+  [OK]          B266 doctor checks          8   process_local dev Inconclusive.
+  [OK]          B266 doctor checks          9   transport prod http Fail.
+  [OK]          B266 doctor checks         10   transport prod https Pass.
+  [OK]          B266 doctor checks         11   transport dev http Inconclusive.
+
+Full test results in `~/src/c2c/.worktrees/b266-from-master/_build/_tests/relay_doctor_private_reachability'.
+Test Successful in 0.001s. 12 tests run.
