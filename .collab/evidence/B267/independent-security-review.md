@@ -106,3 +106,18 @@ Contact path has own mid table; public `/send` Duplicate still triggers push (pr
 3. Optional harden M3/M4 before calling wake/TLS production-complete.
 
 **Coordinator disposition:** For B267 “independent review / no unresolved blocker-major on invariant”: **PASS-WITH-NOTES** if M1 is recorded as operational acceptance criterion and M2–M4 filed as non-blocking follow-ups. **FAIL** only if deploy cannot enforce “no old binary on stamped DB.”
+
+
+## Review resolution (2026-07-22, post-review fix)
+
+| Finding | Disposition |
+|---|---|
+| InMemory `send_all` private in `skipped` (G2 MAJOR) | **Fixed** — private omitted from skipped; tests assert |
+| Non-uniform contact deny messages (G6 MAJOR) | **Fixed** — single `contact_unauthorised` / "contact unauthorised" |
+| `with_tx_immediate` COMMIT fail no rollback (MINOR) | **Fixed** — rollback on commit failure |
+| Old binary on migrated DB (M1) | **Accepted ops** — deploy must not run pre-B264 binary on stamped DB |
+| No public opt-in CLI (M2) | **Follow-up** — private default is safer; track product CLI |
+| Contact Accepted no WS push (M3) | **Accepted note** — inbox + poll/connector wake |
+| TLS not in handler (M4) | **Accepted note** — doctor transport_security |
+
+**Final coordinator verdict after fixes: PASS-WITH-NOTES** (no open BLOCKER/MAJOR on G1/G2/G6 in new binary).
