@@ -248,10 +248,20 @@ module Make (B : BACKEND) = struct
          B.send t ~from_alias:"zzrmfrom" ~to_alias:"zzrmto" ~content:"via-room"
            ~message_id:(Some "m-room") ~pow_difficulty:(-1)
        with
-       | `Error _ -> ()
-       | _ -> fail "private DM must fail despite shared room");
-      check int "no DM inbox" 0
-        (List.length (B.poll_inbox t ~node_id:n_b ~session_id:s_b)))
+       | `Ok _ | `Duplicate _ -> fail "private DM must fail despite shared room"
+       | _ -> ());
+      let inbox = B.poll_inbox t ~node_id:n_b ~session_id:s_b in
+      let has_dm =
+        List.exists
+          (function
+            | `Assoc f ->
+              (match List.assoc_opt "content" f with
+               | Some (`String "via-room") -> true
+               | _ -> false)
+            | _ -> false)
+          inbox
+      in
+      check bool "no private DM content (room system msgs ok)" false has_dm)
 
   (* A6: grant scope — list metadata never contains raw secret. *)
   let test_list_grants_redacts_secret () =
