@@ -1,5 +1,5 @@
 ---
-claimed_at: "2026-07-21T14:59:45Z"
+claimed_at: "2026-07-21T15:25:53Z"
 claimed_by: cli-user
 completed_at: null
 complexity: high
@@ -9,11 +9,11 @@ depends_on:
 estimate_hours: 10
 id: B263
 priority: critical
-started_at: "2026-07-21T14:59:45Z"
+started_at: "2026-07-21T15:25:53Z"
 status: in_progress
 tags: []
 title: Persist and manage recipient-owned relay contact grants
-updated_at: "2026-07-21T14:59:45Z"
+updated_at: "2026-07-21T15:25:53Z"
 ---
 ## Purpose
 
@@ -50,3 +50,29 @@ Before completion, add and pass explicit tests that:
 3. Grant generation uses the existing `mirage-crypto-rng.unix` CSPRNG path, never `Random`.
 
 These are in addition to the existing `test_relay_contact_grants` RED matrix.
+
+## Verification evidence (completion pending)
+
+- Worktree: `.worktrees/b263-contact-grants`, branch `feature/b263-contact-grants`.
+- Behavioural RED: 23 failures / 24 tests against rejecting stubs.
+- First GREEN: 24/24 lifecycle tests.
+- Incremental RED: owner-to-alias issuance binding failed on both backends; SQLite at-rest probe was corrected to inspect the raw verifier rather than the base64url management ID.
+- Incremental GREEN: 28/28 tests, including foreign-owner issue rejection and direct SQLite byte inspection after issue/admit/restart/rotate/revoke.
+- Completion still requires focused diff review, accepted fixes, B219 lifecycle regression suite, rebase onto current master, post-rebase verification, commit and merge.
+
+## Additional lifecycle gaps found during focused diff inspection
+
+Before completion, add and pass:
+
+1. B262 §7.4 retention/GC: remove expired/revoked grant rows and their `contact_grant_message_ids` only after `max(expires_at, revoked_at) + 7 days`, under the same backend lock/transaction; preserve active/unexpired and still-within-retention grants. Test both backends and inspect SQLite rows.
+2. Malformed persisted grant rows fail closed without delivery side effects or crashes. Add a SQLite fixture with a known verifier but invalid scope/metadata and assert `admit_contact_delivery` rejects with no inbox/DLQ.
+3. Resolve the current no-op `verified_sender_alias` defence check: either enforce live alias→identity binding with a regression test, or remove/document it as deliberately key-only so misleading code cannot imply protection it does not provide.
+
+## Independent review findings requiring disposition
+
+- Grant management is currently a backend API taking caller-supplied `recipient_identity_pk`; it lacks an explicit verified caller/principal context. Before exposure through relay-facing management, define and enforce verified owner auth (alias + signing identity) at ingress, or explicitly freeze v1 as host-local/offline control plane and keep raw-key helpers private. Add tests for the chosen trust boundary.
+- Issue/rotate must require the mapped delivery alias to be live/non-released as specified, or the protocol must explicitly accept offline issuance. Rotation must not silently preserve a stale alias without a tested policy.
+- The optional `verified_sender_alias` check must be either removed/documented as key-only authority (B262 §7.2 says optional) or enforced consistently; no misleading no-op check.
+- Commit-failure rollback on the process-lifetime SQLite connection must be protected (coordinator fix pending verification).
+
+Do not mark B263 done until these are dispositioned and the 34+ test suite, B219 lifecycle, review, rebase, and merge gates pass.

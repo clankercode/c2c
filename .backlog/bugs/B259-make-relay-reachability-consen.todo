@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-21T16:04:04Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-07-21T13:46:38Z"
@@ -7,15 +9,11 @@ depends_on:
 estimate_hours: 2
 id: B259
 priority: critical
-started_at: null
-status: pending
-tags:
-    - security
-    - relay
-    - privacy
-    - umbrella
+started_at: "2026-07-21T16:04:04Z"
+status: in_progress
+tags: []
 title: Make relay reachability consent-gated and non-discoverable
-updated_at: "2026-07-21T13:46:38Z"
+updated_at: "2026-07-21T16:04:04Z"
 ---
 ## Security defect
 

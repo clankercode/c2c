@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-21T15:35:03Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-07-21T13:50:17Z"
@@ -7,15 +9,11 @@ depends_on:
 estimate_hours: 8
 id: B264
 priority: critical
-started_at: null
-status: pending
-tags:
-    - security
-    - relay
-    - privacy
-    - discovery
+started_at: "2026-07-21T15:35:03Z"
+status: in_progress
+tags: []
 title: Hide private relay recipients from authenticated peer discovery
-updated_at: "2026-07-21T13:50:17Z"
+updated_at: "2026-07-21T15:35:03Z"
 ---
 ## Purpose
 
@@ -41,3 +39,21 @@ Remove global discovery of private relay recipients and operational metadata whi
 - Existence oracle: `handle_pubkey` via `identity_pk_of` / enc / signed_at / sig.
 - Do not leak private destinations through room rosters/errors; keep deliberate public/gated/unlisted/private room semantics otherwise unchanged.
 - Design input: `.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`.
+
+## Incremental discovery/oracle TDD seam requirements
+
+B264 must add a dedicated failing suite (proposed `ocaml/test/test_relay_private_discovery.ml`) before implementation. Cover both backends and HTTP where applicable:
+
+- ordinary authenticated `/list` excludes private leases while owner/admin views remain explicit;
+- `/pubkey/<private-alias>` does not reveal existence/keys to unrelated peers;
+- registration/lease JSON, errors, health/stats, diagnostics, room directories/rosters/history/knocks cannot reconstruct a usable private DM route;
+- deliberate public/gated/unlisted/private room visibility remains unchanged except that roster aliases do not become DM authority;
+- unknown/private/unauthorised resolution responses are practically uniform;
+- alias visibility policy is stored at the backend/domain seam, not response-only redaction.
+
+Reuse existing auth/list/room/landing contract suites; do not treat the accidental unreviewed `.worktrees/b264-private-discovery` changes as accepted implementation. Preserved recovery seed exists only for coordinator evaluation.
+
+## Independent review findings requiring disposition
+
+- Audit every key lookup, not only `/pubkey`: `enc_pubkey_of`, identity/signature metadata helpers, and any handler wrapper must respect private visibility or remain owner/admin-only. Add oracle tests for each exposed endpoint/caller.
+- InMemory visibility is volatile; production security claims must be tied to migration-enabled durable state/SQLite construction, with tokenless/test backends explicitly excluded from production guarantees.

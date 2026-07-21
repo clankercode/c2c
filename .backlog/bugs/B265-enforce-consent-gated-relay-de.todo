@@ -50,3 +50,7 @@ B263 proves only backend grant lifecycle/atomic admit. B265 must separately prov
 8. Add route/auth contract tests for contact delivery and owner management.
 
 Primary proposed suite: `ocaml/test/test_relay_contact_delivery_handlers.ml`, using `Relay_test_support_real.with_server`. Reuse B263 ops only as fixtures; do not duplicate lifecycle assertions. Preserve B098 DATA/approval boundary. Exact seam map was produced during goal a8702492538a.
+
+## Independent review findings requiring disposition
+
+`handle_contact_deliver` must collapse all post-JSON-parse failures—missing/malformed fields, unsupported protocol, secret decode/length, sender identity resolution, and backend rejection—to one identical `401 contact_unauthorised` status/code/body. Keep differentiated diagnostics internal, bounded, and redacted. Add table-driven HTTP tests proving response equality and zero side effects.

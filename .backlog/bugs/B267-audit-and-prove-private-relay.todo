@@ -9,11 +9,7 @@ id: B267
 priority: critical
 started_at: null
 status: pending
-tags:
-    - security
-    - relay
-    - testing
-    - dogfood
+tags: []
 title: Audit and prove private relay reachability end to end
 updated_at: "2026-07-21T13:50:19Z"
 ---
@@ -42,3 +38,7 @@ Prove the private-reachability invariant end to end and close bypasses before B2
 - Concurrent revoke vs admit under the established lock; restart persistence; migration interruption/mixed versions.
 - Keep B219 lifecycle tests green: `test_relay_sqlite_persistent_connection_stress`, `test_relay_sqlite_request_nonce_no_leak_under_load`, `test_relay_sqlite_mixed_ops_on_shared_connection`.
 - Design input + seams: `.collab/research/2026-07-22-b261-private-reachability-persistence-reconciliation.md`.
+
+## Prepared attack-evidence requirements
+
+Map every B262 G1–G9 and B259 acceptance row to an exact suite/command before completion. Required integration matrix: both backends; HTTP peer auth; WebSocket subscribe/push; connector outbox/retry; CLI/contact-card flow; direct `/send`; `/send_all`; `/forward`; rooms/rosters; restart/concurrency; fresh/legacy/interrupted/mixed-version migration; tokenless development; zero inbox/push/wake/archive/DLQ/stats/log side effects on rejection; authorised exactly-once control. Co-run final B219 lifecycle tests. Dogfood only against an isolated local relay using canonical tmux helpers. Follow all eight anti-false-green rules in AGENTS.md and preserve exact commands/counts/exit codes in the goal evidence and claim ledger.

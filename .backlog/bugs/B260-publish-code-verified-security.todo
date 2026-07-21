@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-07-21T16:04:04Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-07-21T13:46:56Z"
@@ -7,14 +9,11 @@ depends_on:
 estimate_hours: 8
 id: B260
 priority: high
-started_at: null
-status: pending
-tags:
-    - security
-    - docs
-    - website
+started_at: "2026-07-21T16:04:04Z"
+status: in_progress
+tags: []
 title: Publish code-verified security properties page
-updated_at: "2026-07-21T13:46:56Z"
+updated_at: "2026-07-21T16:04:04Z"
 ---
 ## Security documentation deliverable
 
@@ -56,3 +55,11 @@ Every substantive property must be verified against canonical OCaml implementati
 ## Execution hold
 
 Do not claim or implement this page until B259 is complete and Max confirms the concurrent database refactor has landed. The intended no-unsolicited-first-contact wording is future state and must not be published before the corresponding code and regression tests exist.
+
+## Existing public-doc contradictions found during website preparation
+
+The B260 integration must also correct existing relay privacy copy, not only add `/security/`. In particular, `docs/connect.md` currently claims there is “no public directory” and users can only message aliases they already know. That is false for the current implementation: on a token-configured relay, authenticated peers can call ordinary `/list`, and connector inbound sender policy defaults to allow. Locate and rewrite the exact passage against the final B259 implementation/ledger.
+
+No private vulnerability-reporting channel or `SECURITY.md` was found; only public GitHub issues are evident. Before adding vulnerability-reporting guidance, choose and verify an actual supported private reporting mechanism, or state the available public path without implying confidentiality.
+
+Do not publish the intended consent-gated reachability wording until B259/B267 evidence is complete.
