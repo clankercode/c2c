@@ -2266,13 +2266,13 @@ let test_install_all_dry_run_skips_all_clients_by_default () =
       debug_install_failure "all-mcp-opt-in" cmd rc content;
       check int "install all exits 0" 0 rc;
       (* Clients on PATH must not be newly configured. They may show
-         "skipped; MCP opt-in" or "configured — up-to-date" (project cwd may
-         already have an install); either way, never "→ Configuring …". *)
+         "skipped; client setup is opt-in" or "configured — up-to-date" (project
+         cwd may already have an install); either way, never "→ Configuring …". *)
       check bool "codex is not newly configured" true
-        (string_contains content "codex: [skipped; MCP opt-in"
+        (string_contains content "codex: [skipped; client setup is opt-in"
          || string_contains content "codex: [configured");
       check bool "opencode is not newly configured" true
-        (string_contains content "opencode: [skipped; MCP opt-in"
+        (string_contains content "opencode: [skipped; client setup is opt-in"
          || string_contains content "opencode: [configured");
       (* B146 reverted: kimi is back in known_clients and `install all`
          configures it. Flag-aware: if the soft-disable toggle is flipped again,
@@ -2282,7 +2282,7 @@ let test_install_all_dry_run_skips_all_clients_by_default () =
           (string_contains content "Configuring kimi")
       else
         check bool "kimi is not newly configured" true
-          (string_contains content "kimi: [skipped; MCP opt-in"
+          (string_contains content "kimi: [skipped; client setup is opt-in"
            || string_contains content "kimi: [configured");
       check bool "no client setup previewed" false
         (string_contains content "Configuring ");
@@ -2330,8 +2330,8 @@ let test_install_all_with_clients_dry_run_configures () =
       check bool "configures codex when opted in" true
         (string_contains content "Configuring codex"
          || string_contains content "[DRY-RUN]");
-      check bool "does not claim mcp opt-in skip for codex" false
-        (string_contains content "codex: [skipped; MCP opt-in")))
+      check bool "does not claim opt-in skip for codex" false
+        (string_contains content "codex: [skipped; client setup is opt-in")))
 
 let test_interactive_install_default_skips_all_clients () =
   with_temp_dir (fun home ->
