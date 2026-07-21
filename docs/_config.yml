@@ -27,6 +27,7 @@ header_pages:
   - commands.md
   - reference/index.md
   - architecture.md
+  - security/index.md
   - relay-quickstart.md
   - client-delivery.md
   - wake-contract.md
@@ -55,6 +56,7 @@ github:
 # (See docs/CLAUDE.md for the rationale around the
 # Jekyll-publishes-everything default.)
 exclude:
+  - vendor/
   - CLAUDE.md
   # Internal planning artifacts (specs, plans, design notes) authored
   # before the docs/ vs .collab/ split was settled. Kept on disk for

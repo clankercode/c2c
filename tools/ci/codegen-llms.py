@@ -32,6 +32,7 @@ CURATED_PAGES = [
     ("docs/reference/identifiers.md", "Reference: Identifiers"),
     ("docs/reference/rooms.md", "Reference: Rooms and Visibility"),
     ("docs/architecture.md", "Architecture"),
+    ("docs/security/index.md", "Security"),
     ("docs/connect.md", "Connect (cross-machine setup)"),
     ("docs/client-delivery.md", "Per-Client Delivery"),
     ("docs/wake-contract.md", "Delivery & Wake Contract"),

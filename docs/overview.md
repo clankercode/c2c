@@ -116,7 +116,9 @@ Four surfaces, in newcomer-to-advanced order:
 
 ## Security Model
 
-**Scope**: local machine only. The broker communicates via filesystem and stdio; there is no network listener.
+For the public security posture (consent-gated relay reachability, encryption caveats, and explicit non-guarantees), see **[Security](/security/)**.
+
+**Scope**: local machine only for the default broker. The broker communicates via filesystem and stdio; there is no network listener on the local path. Cross-machine messaging uses an optional relay with separate auth and consent rules.
 
 **File isolation**: each session's inbox is a separate JSON file. Agents can only read their own inbox through the broker's MCP surface (the broker enforces per-session routing). Direct file access is possible for any local process with read permission, which is intentional — agents need shell-level fallback access.
 

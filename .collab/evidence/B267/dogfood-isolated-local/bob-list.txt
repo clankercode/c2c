@@ -1,0 +1,12 @@
+{
+  "ok": false,
+  "error_code": "unauthorized",
+  "error": "alias \"anon\" has no identity binding",
+  "http_status": 401
+}
+hint: no session alias was found, so the request was signed as "anon",
+  which the relay has no identity binding for.
+  Fix: pass --alias <your-alias> (or set C2C_MCP_AUTO_REGISTER_ALIAS,
+  or run `c2c init` to set up a session alias), and make sure that
+  alias is registered with the relay:
+    c2c relay register --alias <your-alias>
