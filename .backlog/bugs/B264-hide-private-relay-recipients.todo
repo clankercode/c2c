@@ -9,11 +9,7 @@ id: B264
 priority: critical
 started_at: null
 status: pending
-tags:
-    - security
-    - relay
-    - privacy
-    - discovery
+tags: []
 title: Hide private relay recipients from authenticated peer discovery
 updated_at: "2026-07-21T13:50:17Z"
 ---
@@ -34,3 +30,7 @@ Remove global discovery of private relay recipients and operational metadata whi
 - Authenticated unauthorised peers cannot list, resolve, or infer a private recipient through list, send errors, room APIs, lease metadata, or related endpoints.
 - Owners/admins and deliberately public surfaces retain only the intended visibility.
 - In-memory/SQLite and HTTP route-auth matrix tests cover the new policy.
+
+## B261 post-B219 constraints
+
+Implement explicit private/owner/admin/public discovery views at the backend/domain seam, covering `list_peers`, pubkey lookup, registration metadata, and route/error side channels. Do not rely on response-only redaction or alter deliberate room visibility beyond DM-route leakage.
