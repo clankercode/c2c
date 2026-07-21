@@ -3,6 +3,7 @@
 
 open Cmdliner.Term.Syntax
 open C2c_cli_helpers
+open Relay_backend_contract
 
 let ( // ) = Filename.concat
 
@@ -1992,6 +1993,214 @@ let relay_identity =
       ~doc:"Manage the local Ed25519 identity used for peer authentication.")
     [ relay_identity_init; relay_identity_show; relay_identity_fingerprint ]
 
+
+(* --- B266: contact grant lifecycle (owner CLI; secret once on issue) -------- *)
+
+let b64url_nopad s =
+  Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet s
+
+let decode_b64url_pk label s =
+  match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet s with
+  | Error (`Msg m) ->
+      Printf.eprintf "error: invalid %s base64url: %s\n%!" label m; exit 1
+  | Ok raw when String.length raw <> 32 ->
+      Printf.eprintf "error: %s must decode to 32 bytes\n%!" label; exit 1
+  | Ok raw -> raw
+
+let contact_local_backend ~persist_dir =
+  Relay.SqliteRelay.create ~persist_dir ()
+
+let relay_contact_issue_cmd =
+  let persist_dir =
+    Cmdliner.Arg.(
+      value & opt string "."
+      & info [ "persist-dir" ] ~docv:"DIR"
+          ~doc:"Relay SQLite persist dir (contains c2c_relay.db).")
+  in
+  let delivery_alias =
+    Cmdliner.Arg.(
+      required
+      & opt (some string) None
+      & info [ "delivery-alias" ] ~docv:"ALIAS"
+          ~doc:"Recipient delivery alias (must match recipient identity).")
+  in
+  let recipient_pk =
+    Cmdliner.Arg.(
+      required
+      & opt (some string) None
+      & info [ "recipient-pk" ] ~docv:"B64URL"
+          ~doc:"Recipient Ed25519 public key (base64url, 32 bytes).")
+  in
+  let sender_pk =
+    Cmdliner.Arg.(
+      required
+      & opt (some string) None
+      & info [ "sender-pk" ] ~docv:"B64URL"
+          ~doc:"Bound sender Ed25519 public key (base64url, 32 bytes).")
+  in
+  let expires_in =
+    Cmdliner.Arg.(
+      value & opt float 86400.
+      & info [ "expires-in" ] ~docv:"SECS"
+          ~doc:"Grant lifetime in seconds (default 86400).")
+  in
+  let label =
+    Cmdliner.Arg.(
+      value & opt (some string) None
+      & info [ "label" ] ~docv:"TEXT"
+          ~doc:"Optional non-secret owner label.")
+  in
+  let json = Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"JSON output.") in
+  let+ persist_dir = persist_dir
+  and+ delivery_alias = delivery_alias
+  and+ recipient_pk = recipient_pk
+  and+ sender_pk = sender_pk
+  and+ expires_in = expires_in
+  and+ label = label
+  and+ json = json in
+  let rpk = decode_b64url_pk "recipient-pk" recipient_pk in
+  let spk = decode_b64url_pk "sender-pk" sender_pk in
+  let t = contact_local_backend ~persist_dir in
+  let now = Unix.gettimeofday () in
+  match
+    Relay.SqliteRelay.issue_contact_grant t ~recipient_identity_pk:rpk
+      ~delivery_alias ~sender_identity_pk:spk ~expires_at:(now +. expires_in)
+      ?label ~now ()
+  with
+  | Error e ->
+      if json then
+        print_endline (Printf.sprintf {|{"ok":false,"error":%S}|} e)
+      else Printf.eprintf "error: %s\n%!" e;
+      exit 1
+  | Ok r ->
+      (* Secret printed ONCE on issue. List never re-prints it. *)
+      if json then
+        print_endline
+          (Yojson.Safe.to_string
+             (`Assoc
+                [ ("ok", `Bool true);
+                  ("grant_id", `String r.grant_id);
+                  ("grant_secret", `String (b64url_nopad r.grant_secret));
+                  ("expires_at", `Float r.expires_at);
+                  ("generation", `Int r.generation);
+                ]))
+      else begin
+        Printf.printf "grant_id:     %s\n" r.grant_id;
+        Printf.printf "grant_secret: %s\n" (b64url_nopad r.grant_secret);
+        Printf.printf "expires_at:   %.0f\n" r.expires_at;
+        Printf.printf "generation:   %d\n" r.generation;
+        Printf.eprintf
+          "note: grant_secret is shown once; store it out-of-band. \
+           `c2c relay contact list` never reprints it.\n%!"
+      end
+
+let relay_contact_list_cmd =
+  let persist_dir =
+    Cmdliner.Arg.(
+      value & opt string "."
+      & info [ "persist-dir" ] ~docv:"DIR" ~doc:"Relay SQLite persist dir.")
+  in
+  let recipient_pk =
+    Cmdliner.Arg.(
+      required
+      & opt (some string) None
+      & info [ "recipient-pk" ] ~docv:"B64URL"
+          ~doc:"Recipient Ed25519 public key (base64url).")
+  in
+  let json = Cmdliner.Arg.(value & flag & info [ "json" ] ~doc:"JSON output.") in
+  let+ persist_dir = persist_dir
+  and+ recipient_pk = recipient_pk
+  and+ json = json in
+  let rpk = decode_b64url_pk "recipient-pk" recipient_pk in
+  let t = contact_local_backend ~persist_dir in
+  let metas =
+    Relay.SqliteRelay.list_contact_grants t ~recipient_identity_pk:rpk
+  in
+  if json then
+    let items =
+      List.map
+        (fun m ->
+          `Assoc
+            [ ("grant_id", `String m.grant_id);
+              ("sender_fp_prefix", `String m.sender_fp_prefix);
+              ("delivery_alias", `String m.delivery_alias);
+              ("expires_at", `Float m.expires_at);
+              ( "revoked_at",
+                match m.revoked_at with
+                | None -> `Null
+                | Some f -> `Float f );
+              ("generation", `Int m.generation);
+              ( "label",
+                match m.label with None -> `Null | Some s -> `String s );
+            ])
+        metas
+    in
+    print_endline
+      (Yojson.Safe.to_string (`Assoc [ ("ok", `Bool true); ("grants", `List items) ]))
+  else if metas = [] then
+    print_endline "(no grants)"
+  else
+    List.iter
+      (fun m ->
+        Printf.printf "%s  sender=%s  alias=%s  exp=%.0f  gen=%d%s%s\n"
+          m.grant_id m.sender_fp_prefix m.delivery_alias m.expires_at m.generation
+          (match m.revoked_at with None -> "" | Some _ -> "  REVOKED")
+          (match m.label with None -> "" | Some s -> "  label=" ^ s))
+      metas
+
+let relay_contact_revoke_cmd =
+  let persist_dir =
+    Cmdliner.Arg.(
+      value & opt string "."
+      & info [ "persist-dir" ] ~docv:"DIR" ~doc:"Relay SQLite persist dir.")
+  in
+  let recipient_pk =
+    Cmdliner.Arg.(
+      required
+      & opt (some string) None
+      & info [ "recipient-pk" ] ~docv:"B64URL" ~doc:"Recipient Ed25519 pk.")
+  in
+  let grant_id =
+    Cmdliner.Arg.(
+      required
+      & opt (some string) None
+      & info [ "grant-id" ] ~docv:"ID" ~doc:"Grant id from list/issue.")
+  in
+  let+ persist_dir = persist_dir
+  and+ recipient_pk = recipient_pk
+  and+ grant_id = grant_id in
+  let rpk = decode_b64url_pk "recipient-pk" recipient_pk in
+  let t = contact_local_backend ~persist_dir in
+  match
+    Relay.SqliteRelay.revoke_contact_grant t ~recipient_identity_pk:rpk
+      ~grant_id ()
+  with
+  | Ok () -> print_endline "ok"
+  | Error e -> Printf.eprintf "error: %s\n%!" e; exit 1
+
+let relay_contact_issue =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "issue"
+       ~doc:"Issue a sender-bound contact grant (prints secret once).")
+    relay_contact_issue_cmd
+
+let relay_contact_list =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "list"
+       ~doc:"List grant metadata (never prints reusable secrets).")
+    relay_contact_list_cmd
+
+let relay_contact_revoke =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "revoke" ~doc:"Revoke a contact grant by id.")
+    relay_contact_revoke_cmd
+
+let relay_contact =
+  Cmdliner.Cmd.group
+    (Cmdliner.Cmd.info "contact"
+       ~doc:"Recipient-owned contact grants (private reachability).")
+    [ relay_contact_issue; relay_contact_list; relay_contact_revoke ]
+
 let relay_setup =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "setup"
@@ -2035,7 +2244,7 @@ let relay_subscribe_daemon = C2c_relay_subscribe_daemon.subscribe_daemon_cmd
     Printf.sprintf
       "Cross-machine relay (default: %s). \
        Subcommands: serve, connect, setup, status, list, rooms, gc, \
-       dead-letter, identity, register, dm, mobile-pair, subscribe."
+       dead-letter, identity, contact, register, dm, mobile-pair, subscribe."
       default_public_relay_url
   in
   let group_man =
@@ -2058,6 +2267,6 @@ let relay_subscribe_daemon = C2c_relay_subscribe_daemon.subscribe_daemon_cmd
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
     (Cmdliner.Cmd.info "relay" ~doc:group_doc ~man:group_man)
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_register; relay_dm; relay_mobile_pair; relay_subscribe; relay_subscribe_daemon ]
+    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_contact; relay_register; relay_dm; relay_mobile_pair; relay_subscribe; relay_subscribe_daemon ]
 
 (* --- mesh ------------------------------------------------------------------- *)

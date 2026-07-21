@@ -298,6 +298,145 @@ let check_reachable ~probe =
 
 (* B121: wire protocol compatibility. Distinct from reachability — the relay
    can be up while this client is too old (or too new) for its wire version. *)
+(* B266: production private-reachability diagnostics. *)
+let check_auth_mode ~probe =
+  match probe.health with
+  | None ->
+      { check_id = "relay.auth_mode"
+      ; status = Inconclusive
+      ; message = "auth_mode check skipped (relay unreachable)"
+      ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  | Some j ->
+      let open Yojson.Safe.Util in
+      let mode =
+        j |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown"
+      in
+      if mode = "prod" then
+        { check_id = "relay.auth_mode"
+        ; status = Pass
+        ; message = "auth_mode=prod (token-configured)"
+        ; detail = None; fix_command = None; docs_url = Some docs_relay }
+      else if mode = "dev" then
+        { check_id = "relay.auth_mode"
+        ; status = Fail
+        ; message =
+            "auth_mode=dev (tokenless): private-reachability claims do not apply; contact delivery is refused"
+        ; detail = Some "Configure C2C_RELAY_TOKEN / c2c relay serve --token for production"
+        ; fix_command = Some "c2c relay serve --token <TOKEN>   # or set C2C_RELAY_TOKEN"
+        ; docs_url = Some docs_relay }
+      else
+        { check_id = "relay.auth_mode"
+        ; status = Inconclusive
+        ; message = sprintf "auth_mode=%s (unrecognised)" mode
+        ; detail = None; fix_command = None; docs_url = Some docs_relay }
+
+let check_contact_protocol ~probe =
+  match probe.health with
+  | None ->
+      { check_id = "relay.contact_protocol"
+      ; status = Inconclusive
+      ; message = "contact_protocol check skipped (relay unreachable)"
+      ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  | Some j ->
+      let open Yojson.Safe.Util in
+      (match j |> member "contact_protocol" with
+       | `Int 1 ->
+           { check_id = "relay.contact_protocol"
+           ; status = Pass
+           ; message = "contact_protocol=1 (c2c-contact/1)"
+           ; detail = None; fix_command = None; docs_url = Some docs_relay }
+       | `Int n ->
+           { check_id = "relay.contact_protocol"
+           ; status = Fail
+           ; message = sprintf "unsupported contact_protocol=%d" n
+           ; detail = None
+           ; fix_command = Some "git pull && just install-all"
+           ; docs_url = Some docs_relay }
+       | _ ->
+           { check_id = "relay.contact_protocol"
+           ; status = Fail
+           ; message =
+               "contact_protocol not advertised (pre-B265 relay; mixed-version risk)"
+           ; detail = Some "Upgrade relay to advertise contact_protocol:1"
+           ; fix_command = Some "deploy/upgrade c2c relay binary"
+           ; docs_url = Some docs_relay })
+
+(* B266: health must advertise private_reachability=consent_gated for production
+   claims. Missing or unexpected values fail closed for doctor. *)
+let check_private_reachability ~probe =
+  match probe.health with
+  | None ->
+      { check_id = "relay.private_reachability"
+      ; status = Inconclusive
+      ; message = "private_reachability check skipped (relay unreachable)"
+      ; detail = None; fix_command = None; docs_url = Some docs_relay }
+  | Some j ->
+      let open Yojson.Safe.Util in
+      let mode =
+        j |> member "auth_mode" |> to_string_option |> Option.value ~default:"unknown"
+      in
+      (match j |> member "private_reachability" with
+       | `String "consent_gated" when mode = "prod" ->
+           { check_id = "relay.private_reachability"
+           ; status = Pass
+           ; message = "private_reachability=consent_gated (production)"
+           ; detail = None; fix_command = None; docs_url = Some docs_relay }
+       | `String "consent_gated" ->
+           { check_id = "relay.private_reachability"
+           ; status = Inconclusive
+           ; message =
+               "private_reachability=consent_gated but auth_mode is not prod"
+           ; detail = Some "Tokenless/dev mode cannot substantiate private-reachability claims"
+           ; fix_command = None; docs_url = Some docs_relay }
+       | `String other ->
+           { check_id = "relay.private_reachability"
+           ; status = Fail
+           ; message = sprintf "unexpected private_reachability=%s" other
+           ; detail = None
+           ; fix_command = Some "upgrade c2c relay binary"
+           ; docs_url = Some docs_relay }
+       | _ ->
+           { check_id = "relay.private_reachability"
+           ; status = Fail
+           ; message =
+               "private_reachability not advertised (legacy/global-discovery relay)"
+           ; detail = Some "Upgrade relay; do not claim consent-gated reachability"
+           ; fix_command = Some "deploy/upgrade c2c relay binary"
+           ; docs_url = Some docs_relay })
+
+let check_transport_security ~probe =
+  let url = probe.url in
+  let tls =
+    match Uri.scheme (Uri.of_string url) with
+    | Some ("https" | "wss") -> true
+    | _ -> false
+  in
+  let mode =
+    match probe.health with
+    | Some j ->
+        Yojson.Safe.Util.(j |> member "auth_mode" |> to_string_option)
+        |> Option.value ~default:"unknown"
+    | None -> "unknown"
+  in
+  if mode = "prod" && not tls then
+    { check_id = "relay.transport_security"
+    ; status = Fail
+    ; message =
+        "production relay URL is not TLS (grant secrets require confidential transport)"
+    ; detail = Some url
+    ; fix_command = Some "use https:// or wss:// relay URL behind TLS terminator"
+    ; docs_url = Some docs_relay }
+  else if not tls then
+    { check_id = "relay.transport_security"
+    ; status = Inconclusive
+    ; message = "plaintext relay URL (acceptable only for local/dev)"
+    ; detail = Some url; fix_command = None; docs_url = Some docs_relay }
+  else
+    { check_id = "relay.transport_security"
+    ; status = Pass
+    ; message = "TLS scheme on relay URL"
+    ; detail = None; fix_command = None; docs_url = Some docs_relay }
+
 let check_protocol ~probe =
   match probe.health with
   | None ->
@@ -706,6 +845,10 @@ let run_checks () =
     [ check_configured ~probe
     ; check_reachable ~probe
     ; check_protocol ~probe
+    ; check_auth_mode ~probe
+    ; check_contact_protocol ~probe
+    ; check_private_reachability ~probe
+    ; check_transport_security ~probe
     ; check_lease ~probe ~local_aliases ~local_total
     ; check_connector ~relay_url:probe.url ~scoped_procs ~state ~now
     ; check_outbox ~broker_root

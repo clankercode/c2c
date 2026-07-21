@@ -532,12 +532,48 @@ let test_http_health_and_stats_no_private_alias () =
     Alcotest.(check bool) "health has auth_mode" true
       (json_string_contains h.RTSR.body_text "auth_mode"))
 
+
+let test_schema_version_stamp_present () =
+  let dir =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-b266-stamp-%d" (Random.bits ()))
+  in
+  Unix.mkdir dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      Array.iter
+        (fun n -> try Sys.remove (Filename.concat dir n) with _ -> ())
+        (try Sys.readdir dir with _ -> [||]);
+      try Unix.rmdir dir with _ -> ())
+    (fun () ->
+      let _t1 = Relay.SqliteRelay.create ~persist_dir:dir () in
+      let _t2 = Relay.SqliteRelay.create ~persist_dir:dir () in
+      let db = Filename.concat dir "c2c_relay.db" in
+      let conn = Sqlite3.db_open ~mode:`READONLY db in
+      Fun.protect
+        ~finally:(fun () -> ignore (Sqlite3.db_close conn))
+        (fun () ->
+          let found = ref false in
+          let stmt =
+            Sqlite3.prepare conn
+              "SELECT version FROM schema_version WHERE version = 2"
+          in
+          Fun.protect
+            ~finally:(fun () -> ignore (Sqlite3.finalize stmt))
+            (fun () ->
+              if Sqlite3.step stmt = Sqlite3.Rc.ROW then found := true);
+          Alcotest.(check bool) "schema_version=2 stamped" true !found))
+
 let () =
   Random.self_init ();
   Alcotest.run "relay_private_discovery"
     [
       ("InMemoryRelay", Mem_tests.cases);
       ("SqliteRelay", Sqlite_tests.cases);
+      ( "B266 migration",
+        [ Alcotest.test_case "schema_version=2 stamped on create/reopen" `Quick
+            test_schema_version_stamp_present ] );
       ( "HTTP oracles",
         [
           Alcotest.test_case "prod unsigned /list does not disclose private"
