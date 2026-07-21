@@ -254,3 +254,4 @@ bugs:
     - file: B255-opencode-install-must-not-set.todo
     - file: B256-claude-install-should-not-set.todo
     - file: B257-do-an-audit-of-all-the-install.todo
+    - file: B258-feature-matrix-delivery-tier-s.todo
