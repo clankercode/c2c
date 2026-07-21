@@ -1417,11 +1417,31 @@ let normalize_model_override_for_client ~(client : string) (raw : string)
   else
     match client with
     | "opencode" ->
+        (* Accept either c2c pmodel form (provider:model) or the OpenCode
+           native id (provider/model) from `opencode models`. Bare model
+           names are still rejected — OpenCode needs an explicit provider. *)
         (match parse_pmodel value with
          | Ok p -> Ok (p.provider ^ "/" ^ p.model)
-         | Error e ->
-             Error (Printf.sprintf
-                      "opencode --model requires provider:model input (%s)" e))
+         | Error _ ->
+             (match String.index_opt value '/' with
+              | Some i when i > 0 && i < String.length value - 1 ->
+                  let provider = String.sub value 0 i in
+                  let model =
+                    String.sub value (i + 1) (String.length value - i - 1)
+                  in
+                  if String.contains provider '/' || String.trim model = "" then
+                    Error
+                      (Printf.sprintf
+                         "opencode --model requires provider:model or \
+                          provider/model input (got %S)"
+                         value)
+                  else Ok (provider ^ "/" ^ model)
+              | _ ->
+                  Error
+                    (Printf.sprintf
+                       "opencode --model requires provider:model or \
+                        provider/model input (got %S)"
+                       value)))
     | "claude" | "codex" | "codex-headless" | "kimi" | "crush" ->
         if String.contains value ':' then
           (match parse_pmodel value with

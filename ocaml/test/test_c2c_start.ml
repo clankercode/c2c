@@ -193,6 +193,16 @@ let test_normalize_model_override_for_opencode_rewrites_provider_model () =
      | Ok model -> model
      | Error msg -> fail msg)
 
+let test_normalize_model_override_for_opencode_accepts_slash_form () =
+  check string "native opencode id preserved"
+    "zai-coding-plan/glm-5-turbo"
+    (match C2c_start.normalize_model_override_for_client
+             ~client:"opencode"
+             "zai-coding-plan/glm-5-turbo"
+     with
+     | Ok model -> model
+     | Error msg -> fail msg)
+
 let test_normalize_model_override_for_claude_accepts_plain_model () =
   check string "plain model preserved"
     "claude-sonnet-4-7"
@@ -4977,6 +4987,8 @@ let () =
             `Quick, test_normalize_model_override_for_opencode_requires_provider )
         ; ( "normalize_model_override_for_opencode_rewrites_provider_model",
             `Quick, test_normalize_model_override_for_opencode_rewrites_provider_model )
+        ; ( "normalize_model_override_for_opencode_accepts_slash_form",
+            `Quick, test_normalize_model_override_for_opencode_accepts_slash_form )
         ; ( "normalize_model_override_for_claude_accepts_plain_model",
             `Quick, test_normalize_model_override_for_claude_accepts_plain_model )
         ; ( "normalize_model_override_for_claude_discards_provider_prefix",
