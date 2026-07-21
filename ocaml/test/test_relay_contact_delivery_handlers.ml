@@ -543,21 +543,13 @@ let test_http_send_private_dev_unsigned_fails () =
         ]
     in
     RTSR.call_json ~base_url ~meth:`POST ~path:"/send" ~body () >|= fun r ->
-    (* Dev mode may return 200 ok=false or 4xx; must not deliver. *)
-    let delivered =
-      match r.json with
-      | Some (`Assoc f) ->
-        (match List.assoc_opt "ok" f, List.assoc_opt "result" f with
-         | Some (`Bool true), Some (`String "ok") -> true
-         | Some (`Bool true), None ->
-           (* ok true without error *)
-           (match List.assoc_opt "error_code" f with
-            | Some _ -> false
-            | None -> true)
-         | _ -> false)
-      | _ -> false
-    in
-    check bool "HTTP send private must not deliver" false delivered;
+    check int "private legacy send uses uniform HTTP 401" 401
+      (RTSR.status_code r);
+    check string "private legacy send uses uniform code"
+      "contact_unauthorised" (error_code_of r.json);
+    check string "private legacy send canonical body"
+      "{\"ok\":false,\"error_code\":\"contact_unauthorised\",\"error\":\"contact unauthorised\"}"
+      r.body_text;
     check int "inbox empty" 0
       (List.length
          (Relay.InMemoryRelay.poll_inbox relay ~node_id:"n-t" ~session_id:"s-t")))
@@ -699,6 +691,51 @@ let test_signed_contact_cleartext_and_untrusted_proxy_refused () =
       (Relay_ws_server.push_dm_invocations ());
     Lwt.return_unit)
 
+let test_signed_private_send_matches_contact_denial () =
+  RTSR.with_server ~token:"b265-send-uniform" ~native_tls:true
+    (fun ~base_url ~relay ->
+      let open Lwt.Infix in
+      let sender = Relay_identity.generate ~alias_hint:"zzus-s" () in
+      let recipient = Relay_identity.generate ~alias_hint:"zzus-r" () in
+      let _ = register_with_identity relay ~alias:"zzus-s" sender in
+      let rn, rs = register_with_identity relay ~alias:"zzus-r" recipient in
+      let send_body =
+        `Assoc
+          [ ("from_alias", `String "zzus-s");
+            ("to_alias", `String "zzus-r");
+            ("content", `String "unauthorised-send");
+            ("message_id", `String "m-uniform-send") ]
+      in
+      let send_body_str = Yojson.Safe.to_string send_body in
+      let send_auth =
+        Relay_signed_ops.sign_request sender ~alias:"zzus-s" ~meth:"POST"
+          ~path:"/send" ~body_str:send_body_str ()
+      in
+      RTSR.call ~base_url ~meth:`POST ~path:"/send"
+        ~headers:[ ("Content-Type", "application/json");
+                   ("Authorization", send_auth) ]
+        ~body:send_body_str ()
+      >>= fun send_denial ->
+      let contact_body =
+        `Assoc
+          [ ("protocol", `String "c2c-contact/1");
+            ("grant_secret", `String (secret_b64 "short"));
+            ("message_id", `String "m-uniform-contact");
+            ("content", `String "unauthorised-contact") ]
+      in
+      signed_contact_call ~base_url ~identity:sender ~alias:"zzus-s"
+        ~body:contact_body ()
+      >>= fun contact_denial ->
+      check int "signed private send 401" 401
+        (RTSR.status_code send_denial);
+      check int "contact denial 401" 401 (RTSR.status_code contact_denial);
+      check string "signed send/contact byte-identical denial"
+        contact_denial.body_text send_denial.body_text;
+      check int "signed private send leaves inbox empty" 0
+        (List.length
+           (Relay.InMemoryRelay.peek_inbox relay ~node_id:rn ~session_id:rs));
+      Lwt.return_unit)
+
 let test_signed_contact_accept_once_and_duplicate () =
   Relay_ws_server.reset_push_dm_count ();
   RTSR.with_server ~token:"b265-signed-contact" ~native_tls:true
@@ -817,6 +854,10 @@ let test_signed_contact_denial_shapes_identical () =
         signed_contact_call ~base_url ~identity:sender ~alias:"zzu-s" ~body ()
       in
       signed (`Assoc []) >>= fun missing ->
+      let unregistered = Relay_identity.generate ~alias_hint:"zzu-unknown" () in
+      signed_contact_call ~base_url ~identity:unregistered
+        ~alias:"zzu-unknown" ~body:(body ()) ()
+      >>= fun unresolved_sender ->
       signed (body ~grant_secret:"not-base64!" ()) >>= fun bad_b64 ->
       signed (body ~grant_secret:(secret_b64 "short") ()) >>= fun short ->
       let unknown_secret =
@@ -838,7 +879,8 @@ let test_signed_contact_denial_shapes_identical () =
         ~body:malformed_body ()
       >>= fun malformed ->
       let responses =
-        [ ("missing", missing); ("bad b64", bad_b64); ("short", short);
+        [ ("missing", missing); ("unresolved sender", unresolved_sender);
+          ("bad b64", bad_b64); ("short", short);
           ("backend reject", rejected); ("malformed json", malformed) ]
       in
       let reference = missing.body_text in
@@ -895,28 +937,76 @@ let test_signed_contact_wrong_sender_denied () =
     Lwt.return_unit)
 
 
-(* B267: token-configured relay rejects unsigned /register (existence oracle). *)
-let test_http_prod_unsigned_register_refused () =
-  RTSR.with_server ~token:"b267-reg-token" (fun ~base_url ~relay ->
+let test_http_prod_registration_proofs () =
+  RTSR.with_server ~token:"b265-reg-token" (fun ~base_url ~relay ->
     let open Lwt.Infix in
-    let body =
+    let signed_body ~node_id ~session_id ~alias proof =
+      `Assoc
+        [ ("node_id", `String node_id);
+          ("session_id", `String session_id);
+          ("alias", `String alias);
+          ("ttl", `Int 3600);
+          ("identity_pk", `String proof.Relay_signed_ops.identity_pk_b64);
+          ("signature", `String proof.Relay_signed_ops.sig_b64);
+          ("nonce", `String proof.Relay_signed_ops.nonce);
+          ("timestamp", `String proof.Relay_signed_ops.ts) ]
+    in
+    let valid_identity = Relay_identity.generate ~alias_hint:"zzreg-valid" () in
+    let valid_proof =
+      Relay_signed_ops.sign_register valid_identity ~alias:"zzreg-valid"
+        ~relay_url:base_url
+    in
+    let valid_body =
+      signed_body ~node_id:"n-reg-valid" ~session_id:"s-reg-valid"
+        ~alias:"zzreg-valid" valid_proof
+    in
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/register" ~body:valid_body ()
+    >>= fun valid ->
+    check int "valid signed production register succeeds" 200
+      (RTSR.status_code valid);
+    check bool "valid register response ok" true
+      (match valid.json with
+       | Some (`Assoc fields) -> List.assoc_opt "ok" fields = Some (`Bool true)
+       | _ -> false);
+    check bool "valid register binds signer key" true
+      (Relay.InMemoryRelay.identity_pk_of relay ~alias:"zzreg-valid"
+       = Some valid_identity.Relay_identity.public_key);
+    let tampered_identity =
+      Relay_identity.generate ~alias_hint:"zzreg-original" ()
+    in
+    let tampered_proof =
+      Relay_signed_ops.sign_register tampered_identity ~alias:"zzreg-original"
+        ~relay_url:base_url
+    in
+    let tampered_body =
+      signed_body ~node_id:"n-reg-tampered" ~session_id:"s-reg-tampered"
+        ~alias:"zzreg-substituted" tampered_proof
+    in
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/register"
+      ~body:tampered_body ()
+    >>= fun tampered ->
+    check int "alias-substituted register proof refused" 401
+      (RTSR.status_code tampered);
+    check bool "tampered alias creates no lease" true
+      (Relay.InMemoryRelay.identity_pk_of relay ~alias:"zzreg-substituted"
+       = None);
+    let unsigned_body =
       `Assoc
         [ ("node_id", `String "n-unreg");
           ("session_id", `String "s-unreg");
           ("alias", `String "zzunreg-private-guess");
-          ("ttl", `Int 3600);
-        ]
+          ("ttl", `Int 3600) ]
     in
-    RTSR.call_json ~base_url ~meth:`POST ~path:"/register" ~body ()
-    >|= fun r ->
+    RTSR.call_json ~base_url ~meth:`POST ~path:"/register"
+      ~body:unsigned_body ()
+    >|= fun unsigned ->
     check bool "unsigned prod register not ok" true
-      (match r.json with
+      (match unsigned.json with
        | Some (`Assoc f) -> List.assoc_opt "ok" f <> Some (`Bool true)
        | _ -> true);
     check bool "no lease created for unsigned" true
-      (Relay.InMemoryRelay.list_peers_admin relay ~include_dead:true
-       |> List.for_all (fun l ->
-            Relay.RegistrationLease.alias l <> "zzunreg-private-guess")))
+      (Relay.InMemoryRelay.identity_pk_of relay
+         ~alias:"zzunreg-private-guess" = None))
 
 (* B267: private-only send_all must not bump message stats at handler rule. *)
 let test_send_all_private_only_no_stats () =
@@ -1008,13 +1098,13 @@ let test_signed_forward_does_not_bypass_private_consent () =
                  ("Authorization", authorization) ]
       ~body:body_str ()
     >|= fun response ->
-    if RTSR.status_code response <> 400 then
-      failf "valid source relay private denial expected 400, got %d body=%s"
-        (RTSR.status_code response) response.body_text;
-    check int "valid source relay still denied private target" 400
+    check int "valid source relay still denied private target" 401
       (RTSR.status_code response);
-    check string "private target matches unknown error" "unknown_alias"
+    check string "forward uses uniform contact denial" "contact_unauthorised"
       (error_code_of response.json);
+    check string "forward denial canonical body"
+      "{\"ok\":false,\"error_code\":\"contact_unauthorised\",\"error\":\"contact unauthorised\"}"
+      response.body_text;
     check int "signed forward leaves inbox empty" 0
       (List.length
          (Relay.InMemoryRelay.peek_inbox relay ~node_id:"n-fwd-r"
@@ -1075,6 +1165,8 @@ let () =
             test_http_send_all_skips_private;
           test_case "signed cleartext + spoofed proxy refused" `Quick
             test_signed_contact_cleartext_and_untrusted_proxy_refused;
+          test_case "signed private send matches contact denial" `Quick
+            test_signed_private_send_matches_contact_denial;
           test_case "signed contact accept once + duplicate" `Quick
             test_signed_contact_accept_once_and_duplicate;
           test_case "signed contact protocol variants denied" `Quick
@@ -1083,8 +1175,8 @@ let () =
             test_signed_contact_denial_shapes_identical;
           test_case "signed contact wrong sender denied" `Quick
             test_signed_contact_wrong_sender_denied;
-          test_case "prod unsigned register refused" `Quick
-            test_http_prod_unsigned_register_refused;
+          test_case "production registration proof contract" `Quick
+            test_http_prod_registration_proofs;
           test_case "send_all private-only no stats bump" `Quick
             test_send_all_private_only_no_stats;
           test_case "signed /forward does not confer consent" `Quick

@@ -5192,7 +5192,11 @@ end = struct
                 | None -> ())
              | None -> ())
           | `Error _ -> ());
-        respond_ok (json_of_send_result result)
+        (match result with
+         | `Error (code, _) when code = relay_err_unknown_alias ->
+           respond_unauthorized
+             (json_error_str err_contact_unauthorised "contact unauthorised")
+         | _ -> respond_ok (json_of_send_result result))
 
   let handle_send_all relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
@@ -5323,6 +5327,11 @@ end = struct
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts])
                             | `Duplicate ts ->
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
+                            | `Error (code, _)
+                              when code = relay_err_unknown_alias ->
+                              respond_unauthorized
+                                (json_error_str err_contact_unauthorised
+                                   "contact unauthorised")
                             | `Error (code, msg) ->
                               respond_bad_request (json_error_str code msg)
                     end
@@ -6602,16 +6611,23 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified
     in
     if not auth_ok then
-      let code, msg = match ed25519_err with
-        | Some (c, m) -> c, m
-        | None ->
-          let m = match auth_err_msg with
-            | Some m -> m
-            | None -> "missing or invalid auth"
-          in
-          err_unauthorized, m
-      in
-      respond_unauthorized (json_error_str code msg)
+      if path = "/contact/v1/deliver" then
+        (* Contact-route auth failures must not disclose whether a claimed
+           sender alias exists or has a current binding. Signature enforcement
+           still happens above; only the external denial is collapsed. *)
+        respond_unauthorized
+          (json_error_str err_contact_unauthorised "contact unauthorised")
+      else
+        let code, msg = match ed25519_err with
+          | Some (c, m) -> c, m
+          | None ->
+            let m = match auth_err_msg with
+              | Some m -> m
+              | None -> "missing or invalid auth"
+            in
+            err_unauthorized, m
+        in
+        respond_unauthorized (json_error_str code msg)
     else
       let parse_body () =
         try Res.Ok (Yojson.Safe.from_string body_str)
