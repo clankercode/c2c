@@ -40,3 +40,13 @@ Implement durable recipient-owned contact grants/capabilities on the post-B219 S
 - Restart/persistence, concurrency, expiry, revocation, rollback, secret-redaction, and malformed-record tests pass.
 - Key/capability material has explicit file/database access controls and no `show` command prints reusable secrets by default.
 - Atomic admission tests cover concurrent revoke vs send under the established lock (and document multi-process posture).
+
+## Incremental coverage gaps found during B263 RED review
+
+Before completion, add and pass explicit tests that:
+
+1. `issue_contact_grant` rejects a `recipient_identity_pk` that does not own the requested `delivery_alias`; owner enforcement only at revoke time is insufficient.
+2. SQLite persistence contains no raw grant secret (binary or base64url form) after issue, restart, admit, rotate, or revoke. Inspect the DB bytes/rows directly; list-output redaction alone is insufficient.
+3. Grant generation uses the existing `mirage-crypto-rng.unix` CSPRNG path, never `Random`.
+
+These are in addition to the existing `test_relay_contact_grants` RED matrix.
