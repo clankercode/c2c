@@ -2443,7 +2443,35 @@ let replay_pending_orphan_inbox ~(broker_root : string) ~(session_id : string) :
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   C2c_mcp.Broker.replay_pending_orphan_inbox broker ~session_id
 
-(* Capture tmux session name if running inside a tmux session.
+(* Resolve the tmux send-keys target for *this* process's pane.
+   Prefer $TMUX_PANE (the pane we actually run in). Bare `tmux display -p`
+   without `-t` uses the *active client* pane — wrong for detached e2e windows
+   and multi-pane sessions (#78: bootstrap kickoff was sent to fish, not agy). *)
+let resolve_own_tmux_send_target () : string option =
+  let capture cmd =
+    try
+      let ic = Unix.open_process_in cmd in
+      Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
+        (fun () ->
+          let line = String.trim (input_line ic) in
+          if line = "" then None else Some line)
+    with _ -> None
+  in
+  match Sys.getenv_opt "TMUX_PANE" with
+  | Some p when String.trim p <> "" ->
+      let pane = String.trim p in
+      (match
+         capture
+           (Printf.sprintf "tmux display -p -t %s '#S:#I.#P'" (Filename.quote pane))
+       with
+       | Some loc -> Some loc
+       | None -> Some pane)
+  | _ ->
+      (match capture "tmux display -p '#{pane_id}'" with
+       | Some p -> Some p
+       | None -> capture "tmux display -p '#S:#I.#P'")
+
+(* Capture tmux location if running inside a tmux session.
    Writes {session} to tmux_info_path. Silently skips if $TMUX is not set
    or tmux commands fail. Only 'session' is read back by read_tmux_location_opt;
    pane_pid and captured_at were dead fields (#523). *)
@@ -2452,25 +2480,17 @@ let capture_and_write_tmux_location name =
   | None -> ()
   | Some _ ->
       let tmux_info_file = tmux_info_path name in
-      let capture cmd =
-        try
-          let ic = Unix.open_process_in cmd in
-          Fun.protect ~finally:(fun () -> ignore (Unix.close_process_in ic))
-            (fun () -> Some (input_line ic))
-        with _ -> None
-      in
-      match capture "tmux display -p '#S:#I.#P'", capture "tmux display -p '#{pane_pid}'" with
-      | Some session, Some _pane_pid ->
+      match resolve_own_tmux_send_target () with
+      | Some session ->
           (try
-            let tmux_json =
-              Printf.sprintf "{\n  \"session\": \"%s\"\n}\n"
-                (String.trim session)
-            in
-            let oc = open_out tmux_info_file in
-            Fun.protect ~finally:(fun () -> close_out oc)
-              (fun () -> output_string oc tmux_json)
-          with _ -> ())
-      | _ -> ()
+             let tmux_json =
+               Printf.sprintf "{\n  \"session\": \"%s\"\n}\n" session
+             in
+             let oc = open_out tmux_info_file in
+             Fun.protect ~finally:(fun () -> close_out oc)
+               (fun () -> output_string oc tmux_json)
+           with _ -> ())
+      | None -> ()
 
 (* Read the tmux session:window.pane from the per-instance tmux.json file,
    written by [capture_and_write_tmux_location] at session start. Returns
@@ -5723,7 +5743,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                       in
                       let kickoff_after_s = 12.0 in
                       let start_t = Unix.gettimeofday () in
-                      let kicked = ref false in
+                      let kicked_at = ref None in
                       let rec loop () =
                         let elapsed = Unix.gettimeofday () -. start_t in
                         if elapsed > timeout_s then
@@ -5745,32 +5765,64 @@ let run_outer_loop ~(name : string) ~(client : string)
                               Unix.sleepf 2.0;
                               loop ()
                           | C2c_agy_agentapi.Waiting_for_tui_conversation ->
-                              (if (not !kicked) && elapsed >= kickoff_after_s
-                              then
-                                match read_tmux_location_opt agy_name with
-                                | Some loc
-                                  when validate_tmux_target loc <> None ->
-                                    let text =
-                                      C2c_agy_agentapi
-                                      .managed_bootstrap_kickoff_text
-                                    in
-                                    let ok =
-                                      run_process "tmux"
-                                        [ "send-keys"; "-t"; loc; "-l"; text ]
-                                      &&
-                                      (Unix.sleepf 0.4;
-                                       tmux_send_enter loc)
-                                    in
-                                    if ok then begin
-                                      kicked := true;
-                                      blog
-                                        "#78 bootstrap: submitted TUI \
-                                         kickoff via send-keys -l"
-                                    end else
-                                      blog
-                                        "#78 bootstrap: tmux send-keys/submit \
-                                         failed"
-                                | _ -> ());
+                              let should_kick =
+                                match !kicked_at with
+                                | None -> elapsed >= kickoff_after_s
+                                | Some t0 ->
+                                    (* Retry once if first kick did not produce
+                                       a conversation within 25s (wrong pane /
+                                       missed Enter). *)
+                                    elapsed -. t0 >= 25.0
+                                    && elapsed < t0 +. 30.0
+                              in
+                              (if should_kick then
+                                 let loc_opt =
+                                   match read_tmux_location_opt agy_name with
+                                   | Some loc
+                                     when validate_tmux_target loc <> None ->
+                                       Some loc
+                                   | _ ->
+                                       (* Refresh tmux.json from this process's
+                                          real pane ($TMUX_PANE). *)
+                                       capture_and_write_tmux_location agy_name;
+                                       (match read_tmux_location_opt agy_name with
+                                        | Some loc
+                                          when validate_tmux_target loc <> None
+                                          ->
+                                            Some loc
+                                        | _ -> None)
+                                 in
+                                 match loc_opt with
+                                 | Some loc ->
+                                     let text =
+                                       C2c_agy_agentapi
+                                       .managed_bootstrap_kickoff_text
+                                     in
+                                     blog
+                                       "#78 bootstrap: send-keys -l target=%s \
+                                        text=%S"
+                                       loc text;
+                                     let ok =
+                                       run_process "tmux"
+                                         [ "send-keys"; "-t"; loc; "-l"; text ]
+                                       &&
+                                       (Unix.sleepf 0.5;
+                                        tmux_send_enter loc)
+                                     in
+                                     if ok then begin
+                                       kicked_at := Some elapsed;
+                                       blog
+                                         "#78 bootstrap: submitted TUI \
+                                          kickoff via send-keys -l"
+                                     end else
+                                       blog
+                                         "#78 bootstrap: tmux send-keys/submit \
+                                          failed target=%s"
+                                         loc
+                                 | None ->
+                                     blog
+                                       "#78 bootstrap: no valid tmux target \
+                                        yet");
                               Unix.sleepf 2.0;
                               loop ()
                       in

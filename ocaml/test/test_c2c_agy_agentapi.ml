@@ -230,8 +230,9 @@ let test_ensure_writes_from_log_fixture () =
 
 let test_managed_bootstrap_kickoff_text () =
   let t = C2c_agy_agentapi.managed_bootstrap_kickoff_text in
-  Alcotest.(check bool) "non-empty" true (String.length t > 20);
-  Alcotest.(check bool) "mentions c2c" true (contains t "c2c");
+  Alcotest.(check bool) "non-empty" true (String.length (String.trim t) > 0);
+  Alcotest.(check bool) "short (TUI paste-friendly)" true
+    (String.length t <= 80);
   Alcotest.(check bool) "not approval language" false (contains t "approve")
 
 let test_classify_waiting_for_tui_when_ls_only () =

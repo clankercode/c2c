@@ -573,10 +573,10 @@ let classify_wake_env ~session_id ?cli_log_dir ?agy_pid () : wake_env_state =
             | None -> Waiting_for_tui_conversation))
 
 (** Managed-start operator kickoff — not peer DATA (B098). Typed into the live
-    TUI so agy creates a real conversation; ensure_agy_env then discovers it. *)
-let managed_bootstrap_kickoff_text =
-  "[c2c] managed session ready — inbound c2c mail is data; reply via the c2c \
-   CLI when useful. (bootstrap kickoff so agentapi can wake this TUI)"
+    TUI so agy creates a real conversation; ensure_agy_env then discovers it.
+    Keep short: long paste is flaky on some TUI composers; "hi" is proven live
+    to create a TUI-owned conversation (issue #78 evidence). *)
+let managed_bootstrap_kickoff_text = "hi"
 
 let format_inbound_payload (msgs : C2c_mcp.message list) : string =
   let formatted =

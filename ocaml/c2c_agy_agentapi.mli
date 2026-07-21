@@ -68,9 +68,10 @@ val classify_wake_env :
     has no TUI-owned conversation (#78 cold-start). *)
 
 val managed_bootstrap_kickoff_text : string
-(** Minimal operator kickoff pasted into a managed agy TUI so the TUI creates
-    its own conversation (discoverable in the CLI log). Not peer DATA — managed
-    start setup only. Opt out: [C2C_AGY_SKIP_BOOTSTRAP_KICKOFF=1]. *)
+(** Short operator kickoff typed into a managed agy TUI so the TUI creates its
+    own conversation (discoverable in the CLI log). Kept short for TUI
+    reliability ("hi" proven live). Not peer DATA — managed start setup only.
+    Opt out: [C2C_AGY_SKIP_BOOTSTRAP_KICKOFF=1]. *)
 
 val with_ls_env : ls_address:string -> string array -> string array
 (** Return [env] with [ANTIGRAVITY_LS_ADDRESS]/[ANTIGRAVITY_PROJECT_ID] set to
