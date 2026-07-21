@@ -23,6 +23,8 @@ Last updated: 2026-07-21 (wake row + agy live wake; Pi GUARANTEED; Kimi REST pri
 
 ## Quick reference
 
+<div class="feature-matrix-wide" markdown="block">
+
 | Feature | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | agy |
 |---------|-------------|-------|----------|----------|------|------|-----|
 | **Wake from idle** | **NONE** (activity hooks only; CONDITIONAL if agent arms `c2c monitor`) | **Managed app-server: GUARANTEED for local mail** (remote/`@host`/`#` inject-only). **Vanilla hooks: NONE** at true idle (`hooks+wake` = legacy tmux/herdr nudge) | **GUARANTEED** (`pi-c2c` in-process: `fs.watch` → `poll-inbox` → `pi.sendMessage` + 60s safety poll) | **GUARANTEED** (in-process plugin: idle event + interval → `promptAsync`) | **CONDITIONAL** (notifier + local Kimi server + session id; REST POST is the wake) | **NONE** (SessionStart/skill only; CONDITIONAL if agent arms `c2c monitor`) | **CONDITIONAL** (managed deliver-watch + `agy-env.json` / auto-discover → `agentapi send-message`; proven live 2026-07-20) |
@@ -40,6 +42,8 @@ Last updated: 2026-07-21 (wake row + agy live wake; Pi GUARANTEED; Kimi REST pri
 | Install path | `<project>/.mcp.json` (default) or `~/.claude.json` (`--global`) + `~/.claude/settings.json` + `~/.claude/hooks/` | `~/.codex/config.toml` | `pi install npm:pi-c2c` (pi extension; not via `c2c install`) | `<project>/.opencode/opencode.json` + `<project>/.opencode/c2c-plugin.json` + `<project>/.opencode/plugins/c2c.ts` | `~/.kimi-code/mcp.json` + `~/.kimi-code/config.toml` + `~/.kimi-code/skills/c2c/SKILL.md` | `~/.grok/skills/c2c/SKILL.md` + `~/.grok/hooks/c2c-session.json` | `~/.gemini/skills/c2c/SKILL.md` + `~/.gemini/config/hooks.json` |
 | deliver daemon | ✅ via PostToolUse hook (hook IS the daemon) | ✅ app-server deliver loop (managed default) + pre-trusted Codex hooks (vanilla/fallback); hook-mode sidecar runs the wake-inject watcher (`C2c_wake_inject`, never drains); vanilla: `c2c deliver wake-watch` | ✅ inotify `fs.watch` + hardcoded 60s safety-net poll | ✅ `c2c.ts` alias-scoped `c2c monitor` subprocess | ✅ `C2c_kimi_notifier` REST prompt POST (no tmux; opt-in composer nudge via `C2C_KIMI_TMUX_COMPOSER_WAKE=1`) | Agent-armed **Monitor** on `c2c monitor` (peek, full bodies) | ✅ agentapi deliver-watch sidecar (`c2c start … deliver-watch`, `c2c_agy_deliver.ml`) |
 | Known footguns | PostToolUse ECHILD race (fixed via bash wrapper) | Hook block / trust-hash drift (run `c2c doctor hooks`, refresh with `c2c install codex`); codex < 0.144 → `app-server-unavailable` (upgrade codex); never run a bare (unauthenticated) app-server listener | needs pi ≥0.79; bundled npm binary may need `C2C_BIN` override; subagents register as distinct peers | Plugin symlink drift (use `c2c doctor opencode-plugin-drift`) | Unmanaged sessions go deaf without notifier/Monitor (B238: SessionStart arms notifier + skill nudge; `c2c doctor hooks` flags DEAF); `C2C_MCP_SESSION_ID` inheritance from parent; Kimi Code 0.23+ does not resume arbitrary `--session` ids (managed start launches without one) | No hook transcript inject; Claude-compat may load a **stale** MCP `c2c` from `~/.claude.json` — prefer CLI | Alias-prefix hijack — alias must stay `agy-*` (skill aborts sends otherwise; `c2c doctor` flags a live agy session whose alias lacks the `agy-` prefix); no MCP |
+
+</div>
 
 ---
 

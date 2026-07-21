@@ -782,6 +782,117 @@ a:visited { color: var(--c2c-amber-dim); }
   line-height: 1.5;
 }
 
+/* ---- Feature matrix: full-bleed quick-reference table ----
+   Breaks out of the 900px content wrapper so the 8-column matrix can use
+   nearly the full viewport on ~16:9. Caps width on ultra-wide so cells
+   don't become unreadable; keeps horizontal scroll as a last resort. */
+.feature-matrix-wide {
+  /* 900px wrapper + 2rem side padding each side = 900 + 4rem */
+  width: min(100vw - 2rem, 1600px);
+  max-width: none;
+  margin-left: calc(50% - min(50vw - 1rem, 800px));
+  margin-right: calc(50% - min(50vw - 1rem, 800px));
+  margin-top: 1.25rem;
+  margin-bottom: 1.75rem;
+  box-sizing: border-box;
+}
+
+.feature-matrix-wide > table {
+  width: 100%;
+  table-layout: fixed;
+  font-size: 0.76rem;
+  margin: 0;
+  /* overflow:hidden kills position:sticky on descendants in some browsers */
+  overflow: visible;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.feature-matrix-wide th,
+.feature-matrix-wide td {
+  padding: 0.5em 0.5em;
+  font-size: 0.76rem;
+  line-height: 1.35;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+}
+
+/* Sticky header row under the site chrome (sticky header ~58px) */
+.feature-matrix-wide thead th {
+  position: sticky;
+  top: 58px;
+  z-index: 3;
+  text-align: center;
+  vertical-align: bottom;
+  white-space: nowrap;
+  background: var(--c2c-surface-elev);
+  box-shadow: 0 1px 0 var(--c2c-border);
+}
+
+/* Sticky first column (Feature labels) for horizontal scan */
+.feature-matrix-wide th:first-child,
+.feature-matrix-wide td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--c2c-surface-elev);
+  min-width: 7.5rem;
+  width: 9%;
+  box-shadow: 1px 0 0 var(--c2c-border);
+  text-align: left;
+}
+
+/* Corner cell: both sticky axes */
+.feature-matrix-wide thead th:first-child {
+  z-index: 4;
+  left: 0;
+  top: 58px;
+  background: var(--c2c-surface-elev);
+}
+
+.feature-matrix-wide tbody td {
+  text-align: left;
+  background: var(--c2c-surface);
+}
+
+.feature-matrix-wide tbody tr:hover td {
+  background: rgba(245, 166, 35, 0.04);
+}
+
+.feature-matrix-wide tbody tr:hover td:first-child {
+  background: var(--c2c-surface-elev);
+}
+
+/* Horizontal scroll shell for narrow viewports / extreme aspect ratios */
+@media (max-width: 1100px) {
+  .feature-matrix-wide {
+    width: 100%;
+    max-width: 100%;
+    margin-left: 0;
+    margin-right: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 8px;
+    border: 1px solid var(--c2c-border);
+  }
+
+  .feature-matrix-wide > table {
+    min-width: 1100px;
+    border: none;
+    border-radius: 0;
+  }
+}
+
+/* Ultra-wide: keep a readable max so columns don't become newspaper-wide */
+@media (min-width: 1800px) {
+  .feature-matrix-wide {
+    width: min(100vw - 4rem, 1600px);
+    margin-left: calc(50% - min(50vw - 2rem, 800px));
+    margin-right: calc(50% - min(50vw - 2rem, 800px));
+  }
+}
+
 /* ---- Tables ---- */
 table {
   width: 100%;
