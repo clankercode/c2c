@@ -31,8 +31,13 @@ concurrency:
 jobs:
   ci-gate:
     uses: ./.github/workflows/ci.yml
+    # The reusable CI workflow declares a master-only regen-and-commit job
+    # with contents:write. GitHub validates the caller's permission ceiling
+    # before evaluating that job's tag-ref condition, so read-only here causes
+    # the entire release workflow to fail at startup with zero jobs.
+    # On release tags the write-capable job remains conditionally disabled.
     permissions:
-      contents: read
+      contents: write
 
   validate:
     needs: ci-gate

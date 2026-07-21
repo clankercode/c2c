@@ -2,9 +2,11 @@
 # #407 S2 — cross-broker DM smoke via the relay.
 #
 # Boots the e2e multi-agent topology (relay + 4 agents across 2 broker
-# volumes), sends a DM from agent-a1 (broker A) to agent-b1 (broker B),
-# and verifies receipt on b1 within 10s. Cross-broker delivery MUST go
-# via the relay container — the two volumes are independent.
+# volumes), attempts an unsolicited DM from agent-a1 (broker A) to private
+# agent-b1 (broker B), and proves the relay rejects it without delivery.
+# Cross-broker traffic MUST go via the relay container — the two volumes are
+# independent. Authorised contact delivery is covered by the grant/handler
+# matrix suites; this smoke pins the containerised private-by-default boundary.
 #
 # Modes:
 #   00-smoke-cross-container.sh                 # full up + send + assert + down
@@ -14,7 +16,7 @@
 #   00-smoke-cross-container.sh --skip-build    # assume images pre-built (CI)
 #
 # Idempotent: cleanup trap always runs unless --no-teardown is passed.
-# Exits 0 only on actual receipt verification.
+# Exits 0 only when the private first-contact denial and non-delivery are verified.
 #
 # Run from repo root.
 
@@ -121,26 +123,30 @@ docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-a1 \
 docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-b1 \
   c2c relay register --alias agent-b1 --relay-url "${RELAY_URL}" >/dev/null
 
-echo "[smoke] agent-a1 -> agent-b1 (via relay): ${MSG}"
-docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-a1 \
-  c2c relay dm send agent-b1 "${MSG}" --alias agent-a1 --relay-url "${RELAY_URL}"
+echo "[smoke] unsolicited agent-a1 -> private agent-b1 (via relay): ${MSG}"
+set +e
+send_out=$(docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-a1 \
+  c2c relay dm send agent-b1 "${MSG}" --alias agent-a1 \
+    --relay-url "${RELAY_URL}" 2>&1)
+send_rc=$?
+set -e
+printf '%s\n' "${send_out}"
+if [[ "${send_rc}" == "0" ]]; then
+  echo "[smoke] FAIL — unsolicited private DM unexpectedly succeeded" >&2
+  exit 1
+fi
+if ! printf '%s' "${send_out}" | grep -q 'contact_unauthorised'; then
+  echo "[smoke] FAIL — private denial was not contact_unauthorised (rc=${send_rc})" >&2
+  exit 1
+fi
 
-echo "[smoke] polling agent-b1 relay inbox (up to 10s)..."
-out=""
-for _ in $(seq 1 10); do
-  out=$(docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-b1 \
-        c2c relay dm poll --alias agent-b1 --relay-url "${RELAY_URL}" 2>/dev/null || echo "")
-  if printf '%s' "${out}" | grep -q "${MSG}"; then
-    echo "[smoke] PASS — agent-b1 received '${MSG}' via relay"
-    exit 0
-  fi
-  sleep 1
-done
+echo "[smoke] confirming rejected content never reached agent-b1..."
+out=$(docker exec -e C2C_CLI_FORCE=1 c2c-e2e-agent-b1 \
+      c2c relay dm poll --alias agent-b1 --relay-url "${RELAY_URL}" 2>/dev/null || echo "")
+if printf '%s' "${out}" | grep -q "${MSG}"; then
+  echo "[smoke] FAIL — rejected private DM appeared in agent-b1 inbox" >&2
+  exit 1
+fi
 
-echo "[smoke] FAIL — agent-b1 did not receive '${MSG}' within 10s" >&2
-echo "[smoke] last poll output: ${out}" >&2
-echo "[smoke] relay logs (tail 50):" >&2
-docker logs --tail 50 c2c-e2e-relay 2>&1 || true
-echo "[smoke] agent-a1 logs (tail 30):" >&2
-docker logs --tail 30 c2c-e2e-agent-a1 2>&1 || true
-exit 1
+echo "[smoke] PASS — unsolicited private cross-broker DM was denied and not delivered"
+exit 0

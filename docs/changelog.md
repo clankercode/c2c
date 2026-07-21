@@ -9,7 +9,13 @@ nav_label: Changelog
 
 ## Unreleased
 
-## 0.14.0 — 2026-07-22
+## 0.14.1 — 2026-07-22
+
+- **Release workflow startup repair.** The reusable CI gate now receives the
+  permission ceiling its master-only codegen repair job declares. That job is
+  still disabled on tags; without the caller permission, GitHub rejected the
+  entire v0.14.0 workflow before creating any jobs. The v0.14.0 Git tag exists,
+  but no GitHub Release, release artifacts, or npm packages were published.
 
 - **Private relay reachability is consent-gated by default (B259–B267).**
   New relay registrations are private: ordinary peers cannot enumerate them or

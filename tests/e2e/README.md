@@ -52,18 +52,19 @@ Builds the relay + agent images. Does NOT bring the stack up. Useful
 to pre-warm before the full smoke or to confirm Docker layer caching
 works.
 
-### Full smoke (up + send + assert + down)
+### Full smoke (up + private-denial assert + down)
 
 ```bash
 bash tests/e2e/00-smoke-cross-container.sh
 ```
 
-It will: build the images, `up -d --wait --wait-timeout 60` so docker
-itself blocks until the relay healthcheck passes, register `agent-a1`
-and `agent-b1`, send a timestamped DM from a1 → b1, poll b1's inbox
-for up to 10s, and PASS only when the message appears. The cleanup
-trap always tears down (`-v` wipes broker volumes) unless
-`--no-teardown` is passed and the smoke passed.
+It will: build the images, `up -d --wait --wait-timeout 60` so Docker
+itself blocks until the relay healthcheck passes, register private
+`agent-a1` and `agent-b1` on independent broker volumes, attempt an
+unsolicited timestamped DM from a1 → b1, require the uniform
+`contact_unauthorised` denial, and poll b1 once to prove rejected content
+was not delivered. The cleanup trap always tears down (`-v` wipes broker
+volumes) unless `--no-teardown` is passed and the smoke passed.
 
 Manual control:
 
@@ -77,12 +78,16 @@ docker compose -f docker-compose.e2e-multi-agent.yml down -v
 
 - Relay container builds and reports healthy on `/health`.
 - Two-volume broker isolation is real (a1 cannot see b1 via local broker).
-- Cross-broker DM delivery flows through the relay (a1 → relay → b1).
-- The CLI surface inside the agent image (`c2c register`, `c2c send`,
-  `c2c poll-inbox --json`) is wired up correctly.
+- Cross-broker first contact reaches the relay security boundary and is
+  denied without recipient consent.
+- Rejected private content never appears in the recipient relay inbox.
+- The relay identity/register/dm-send/dm-poll CLI surface inside the agent
+  image is wired up correctly.
 
-It does **not** yet exercise rooms, broadcast, ephemeral DMs, or
-push/channel delivery. Those are follow-ups in S3+.
+It does **not** exercise authorised contact-grant delivery, rooms,
+broadcast, ephemeral DMs, or push/channel delivery. Authorised grant flow
+is covered by the hermetic grant/handler/matrix suites; the remaining paths
+are follow-ups.
 
 ## Dependencies
 
@@ -91,30 +96,22 @@ push/channel delivery. Those are follow-ups in S3+.
 - `grep`, `sed` (smoke uses GNU host tools; in-container greps go through
   busybox-compatible flags only)
 
-`jq` is **not** required: `c2c poll-inbox --json` output is matched with
-`grep` against the timestamped message string.
+`jq` is **not** required: the denial and poll output are matched with
+`grep` against the error code and timestamped message string.
 
 ## Known limitations
 
-- **No live `up` validation in CI.** Per #330 probe scope, this slice
-  ships syntactic validation (`--validate`) and a runnable smoke, but
-  does NOT auto-run the full stack against the dev swarm — bringing up
-  4 agent containers + a relay during a slice landing would compete with
-  live work for resources. Operators run the full smoke manually when
-  changing relay/broker code paths.
+- **CI runs the live stack.** `.github/workflows/e2e-docker.yml` builds the
+  images and runs the private-denial smoke on pushes and pull requests.
+  Local operators can still use `--validate` for syntax-only checks.
 - **First-run build is slow.** Both `Dockerfile` and `Dockerfile.test`
   do a full opam install + dune build; expect 10-15min cold, ~1min warm
   via BuildKit cache.
-- **Polling, not push.** The smoke uses `poll-inbox` rather than channel
-  push or PostToolUse hooks; that's intentional for a baseline
-  cross-container smoke (no MCP client involved). Push-path smokes belong
-  in a later slice once a managed-client image exists (#407 S3).
-- **No retries on the relay path.** If the relay drops the message
-  silently, the smoke surfaces a 10s timeout failure with a tail of relay
-  + agent-a1 logs but no per-hop tracing. Improve diagnostics in S3 if
-  flakes appear.
-- **No signing keys provisioned.** Cross-broker delivery in this smoke
-  uses unsigned envelopes. Signed-message verification is #407 S5.
+- **Polling, not push.** The smoke polls once only to prove a rejected
+  message is absent; no MCP or managed-client push path is involved.
+- **No authorised control in this Docker script.** Signed registration is
+  exercised, but sender-bound grant issuance/delivery is covered by the
+  hermetic security suites rather than duplicated here.
 
 ## See also
 

@@ -22,7 +22,7 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
-## v0.14.0 — 2026-07-22
+## v0.14.1 — 2026-07-22
 
 ### Private relay reachability now requires recipient consent (B259–B267)
 summary: New relay registrations are private. Ordinary peers cannot list them or deliver a first-contact DM until the recipient issues a sender-bound `c2c-contact/1` grant. The gate covers direct send, broadcast, forwarding, WebSocket push, connector, retry, and persistence side effects. Use the contact lifecycle commands to issue, inspect, or revoke access; list output never repeats the reusable secret.

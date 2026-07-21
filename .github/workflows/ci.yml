@@ -135,9 +135,15 @@ jobs:
           GENERATED_PATHS: ".c2c .collab/skills .claude/skills .opencode/skills .codex/skills ocaml/cli data/opencode-plugin"
         run: |
           set -euo pipefail
-          # Scope the add to codegen-owned paths only, so an unexpected change
-          # elsewhere can never be swept into an automated commit.
-          git add -A -- $GENERATED_PATHS
+          # Scope staging to already-tracked codegen outputs. Some listed
+          # parent directories are ignored or absent in a fresh checkout, so
+          # passing the directory path itself to `git add` fails. Resolve the
+          # pathspecs through the index first, then stage that exact NUL-safe
+          # file array. This can never sweep in an unexpected untracked file.
+          mapfile -d '' generated_files < <(git ls-files -z -- $GENERATED_PATHS)
+          if [ "${#generated_files[@]}" -gt 0 ]; then
+            git add -u -- "${generated_files[@]}"
+          fi
           if git diff --cached --quiet; then
             echo "generated files already in sync; nothing to commit"
             exit 0

@@ -77,7 +77,6 @@ they don't regress silently.
 | `managed_name_not_alias` | LOW | managed Codex identity diagnostic | #34 |
 | `managed_registration_failed` | HIGH | managed-client delivery failure | #34 / #40 / #69 |
 | `dm_enqueue` | MED | delivery audit | #488 |
-| `json_cap_exceeded` | MED | JSON file-size cap diagnostic | Slice F follow-up |
 | `session_id_differs_from_alias` | MED | session_id≠alias diagnostic | #529 |
 | `relay_pin_delete` | MED | operator pin management | #432 Slice D |
 | `relay_pin_rotate` | MED | operator pin management | #432 Slice D |
@@ -1037,39 +1036,6 @@ investigation.
 
 ---
 
-### `json_cap_exceeded`
-
-**Severity**: MED
-
-**Shape**:
-
-```json
-{
-  "ts": <float>,
-  "event": "json_cap_exceeded",
-  "file": "<path-to-rejected-file>",
-  "max_bytes": <int>
-}
-```
-
-**Fires when**: a JSON file read is rejected because its size exceeds the
-read cap (64 KiB for registration/state files, 64 KiB for relay pin files).
-The read returns a default/empty value and the event is emitted so operators
-have visibility into cap triggers.
-
-**File**: `ocaml/c2c_broker.ml`:
-- ~line 37 (`log_json_cap_exceeded` helper definition)
-- ~line 67 (registration/state JSON cap, 64 KiB)
-- ~line 685 (relay pin JSON cap, 64 KiB)
-
-**Operational meaning**: cap triggers are expected when relay state files
-grow large, but can also indicate misconfiguration or an adversarial peer
-writing oversized artifacts to the shared relay directory.
-
-**Cross-link**: Slice F follow-up (fern non-blocking note).
-
----
-
 ### `session_id_differs_from_alias`
 
 **Severity**: MED
@@ -1159,37 +1125,6 @@ delete, rotate also bumps the epoch so the broker can distinguish
 (MITM) within a broker lifetime. The epoch is reset to 0 on broker restart.
 
 **Cross-link**: `relay_pin_delete` (targeted single-axis deletion).
-
----
-
-### `json_cap_exceeded`
-
-**Severity**: MED
-
-**Shape**:
-
-```json
-{
-  "ts": <float>,
-  "event": "json_cap_exceeded",
-  "file": "<path-to-file>",
-  "max_bytes": <int>
-}
-```
-
-**Fires when**: a JSON file read via `read_json_file` exceeds the 64 KiB
-cap and the read returns the default value instead. This is a defensive
-measure against operator-controlled but potentially attacker-adjacent files
-(registration blobs, relay state, config) that could be written with
-unbounded size.
-
-**File**: `ocaml/c2c_broker.ml` `log_json_cap_exceeded` (~line 43).
-
-**Operational meaning**: operators need observability when the cap triggers
-to distinguish "read returned default" from "read actually succeeded with
-a large but valid file." One line per capped read.
-
-**Cross-link**: Slice F follow-up.
 
 ---
 
