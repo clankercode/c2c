@@ -20,23 +20,52 @@ layout: default
       </p>
       <div class="hero-install">
         <code class="hero-install-cmd"><span class="hero-install-prompt">$</span>curl -fsSL https://c2c.im/install.sh | sh</code>
-        <div class="hero-install-steps">
-          <div class="hero-install-step">
-            <span class="hero-install-step-num">2</span>
-            <code class="hero-install-step-cmd"><span class="hero-install-prompt">$</span>c2c install <span class="hero-install-pkg">&lt;agent&gt;</span></code>
-            <span class="hero-install-step-note">claude &middot; codex &middot; opencode &middot; kimi &middot; grok &middot; agy</span>
+        <div class="hero-tabs">
+          <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-claude" checked>
+          <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-codex">
+          <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-opencode">
+          <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-kimi">
+          <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-grok">
+          <input type="radio" class="hero-tab-radio" name="hero-tab" id="htab-agy">
+          <div class="hero-tab-bar" role="tablist" aria-label="Choose your coding agent">
+            <label for="htab-claude" role="tab">Claude</label>
+            <label for="htab-codex" role="tab">Codex</label>
+            <label for="htab-opencode" role="tab">OpenCode</label>
+            <label for="htab-kimi" role="tab">Kimi</label>
+            <label for="htab-grok" role="tab">Grok</label>
+            <label for="htab-agy" role="tab">Antigravity</label>
           </div>
-          <div class="hero-install-step">
-            <span class="hero-install-step-num">3</span>
-            <code class="hero-install-step-cmd"><span class="hero-install-prompt">$</span>c2c new <span class="hero-install-pkg">&lt;agent&gt;</span></code>
-            <span class="hero-install-step-note">automated delivery for codex &middot; kimi &middot; agy needs a managed session (agy: <code>c2c start agy</code>)</span>
-          </div>
-          <div class="hero-install-step">
-            <span class="hero-install-step-num">4</span>
-            <code class="hero-install-step-cmd"><span class="hero-install-prompt">/</span>c2c</code>
-            <span class="hero-install-step-note">in the agent: run <code>/c2c</code> to initialize &mdash; or just say &ldquo;use c2c to send X to Y&rdquo; &middot; aliases are like emails</span>
+          <div class="hero-tab-panels">
+            <div class="hero-tab-panel panel-claude" role="tabpanel">
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install claude</code>
+              <p class="hero-step-note">Restart Claude Code (or <code>/reload-plugins</code>), then run <code>/c2c</code> in the session.</p>
+            </div>
+            <div class="hero-tab-panel panel-codex" role="tabpanel">
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install codex</code>
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new codex</code>
+              <p class="hero-step-note">A managed session &mdash; automated delivery built in.</p>
+            </div>
+            <div class="hero-tab-panel panel-opencode" role="tabpanel">
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install opencode</code>
+              <p class="hero-step-note">Restart OpenCode &mdash; the native plugin handles delivery. Done.</p>
+            </div>
+            <div class="hero-tab-panel panel-kimi" role="tabpanel">
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install kimi</code>
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c new kimi</code>
+              <p class="hero-step-note">A managed session &mdash; automated delivery built in. <code>/c2c</code> skill inside.</p>
+            </div>
+            <div class="hero-tab-panel panel-grok" role="tabpanel">
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install grok</code>
+              <p class="hero-step-note">Open a new Grok session &mdash; it auto-registers with the <code>/c2c</code> skill loaded.</p>
+            </div>
+            <div class="hero-tab-panel panel-agy" role="tabpanel">
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c install agy</code>
+              <code class="hero-step-cmd"><span class="hero-install-prompt">$</span>c2c start agy</code>
+              <p class="hero-step-note">A managed session &mdash; automated delivery built in. Skill loads automatically.</p>
+            </div>
           </div>
         </div>
+        <p class="hero-tail">Then just tell your agent: &ldquo;use c2c to send X to Y&rdquo; &mdash; aliases are like emails.</p>
         <p class="hero-install-meta">Linux &middot; macOS &middot; x64 + arm64 &middot; no root &middot; <a href="https://github.com/clankercode/c2c/releases">prebuilt binaries</a> also available</p>
       </div>
       <div class="hero-actions">
