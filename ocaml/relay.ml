@@ -48,7 +48,9 @@ let contact_decode_grant_id grant_id =
   | _ -> None
 
 let contact_scope_v1 = "dm-first-contact"
-let contact_replay_retention_s = 7. *. 86_400.
+
+(* B262 §7.4: retain grant + message_id rows until max(expires,revoked)+7d. *)
+let contact_grant_gc_grace_s = 7. *. 86_400.
 
 type contact_grant_rec = {
   verifier : string;
@@ -405,7 +407,7 @@ module InMemoryRelay : RELAY = struct
     let room_visibility = Hashtbl.create 16 in
     let room_history_public = Hashtbl.create 16 in
     Option.iter (fun d -> load_room_meta_from_disk d room_visibility room_history_public) persist_dir;
-    (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
+
     let identity_path = Option.map (fun d -> Filename.concat d "relay-server-identity.json") persist_dir in
     let identity =
       match identity_path with
@@ -1492,17 +1494,17 @@ module InMemoryRelay : RELAY = struct
       let skipped = ref [] in
       Hashtbl.iter (fun alias lease ->
         if alias = from_alias then ()
-        else if not (RegistrationLease.is_alive lease) then skipped := alias :: !skipped
         else begin
-          (* B264: private recipients are not broadcast targets. *)
+          (* B264/G2: private recipients are invisible to broadcast — omit from
+             both delivered and skipped so skipped cannot enumerate private aliases. *)
           let is_public =
             match Hashtbl.find_opt t.discovery_visibility alias with
             | Some Public -> true
             | _ -> false
           in
-          (* Private aliases are omitted entirely: returning them in [skipped]
-             turns broadcast into an authenticated directory oracle. *)
           if not is_public then ()
+          else if not (RegistrationLease.is_alive lease) then
+            skipped := alias :: !skipped
           else begin
             delivered_to := alias :: !delivered_to;
             let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
@@ -1545,30 +1547,6 @@ module InMemoryRelay : RELAY = struct
       t.stats_message_events <-
         List.filter (fun ts -> ts >= now -. stats_event_retention_s)
           t.stats_message_events;
-      (* B262 §7.4: retain expired/revoked grants and replay ids for seven
-         days, then remove both under this backend lock. Generation state is
-         separate and deliberately survives grant-row GC. *)
-      let stale_grant_verifiers = ref [] in
-      Hashtbl.iter
-        (fun verifier g ->
-          let terminal_at =
-            match g.revoked_at with
-            | Some revoked_at -> max g.expires_at revoked_at
-            | None -> g.expires_at
-          in
-          if now >= terminal_at +. contact_replay_retention_s then
-            stale_grant_verifiers := verifier :: !stale_grant_verifiers)
-        t.contact_grants;
-      List.iter
-        (fun verifier ->
-          Hashtbl.remove t.contact_grants verifier;
-          let stale_mids = ref [] in
-          Hashtbl.iter
-            (fun ((mid_verifier, message_id) as key) _ ->
-              if mid_verifier = verifier then stale_mids := key :: !stale_mids)
-            t.contact_grant_mids;
-          List.iter (Hashtbl.remove t.contact_grant_mids) !stale_mids)
-        !stale_grant_verifiers;
       (* B148: compact the persisted jsonl to a bounded state snapshot so it
          doesn't grow unboundedly (gc already holds the lock). *)
       Option.iter (fun d ->
@@ -1577,6 +1555,25 @@ module InMemoryRelay : RELAY = struct
           ~seen_aliases:t.stats_seen_aliases
           ~seen_machines:t.stats_seen_machines)
         t.persist_dir;
+      (* B262/B266: GC expired/revoked contact grants past the replay window. *)
+      let drop_verifiers = ref [] in
+      Hashtbl.iter
+        (fun verifier g ->
+          let end_ts =
+            match g.revoked_at with
+            | Some r -> max g.expires_at r
+            | None -> g.expires_at
+          in
+          if now >= end_ts +. contact_grant_gc_grace_s then
+            drop_verifiers := verifier :: !drop_verifiers)
+        t.contact_grants;
+      List.iter
+        (fun verifier ->
+          Hashtbl.remove t.contact_grants verifier;
+          Hashtbl.filter_map_inplace
+            (fun (v, _mid) ts -> if v = verifier then None else Some ts)
+            t.contact_grant_mids)
+        !drop_verifiers;
       `Ok (List.rev !expired, pruned)
     )
 
@@ -1592,15 +1589,15 @@ module InMemoryRelay : RELAY = struct
       else if expires_at <= now then
         Result.Error "contact_grant_expires_in_past"
       else
-        let recipient_fp = contact_fp_of_pk recipient_identity_pk in
+        (* Owner binding: delivery_alias must be registered to recipient_identity_pk. *)
         match Hashtbl.find_opt t.leases delivery_alias with
-        | None -> Result.Error "contact_grant_not_owner"
-        | Some lease
-          when RegistrationLease.identity_pk lease = ""
-               || contact_fp_of_pk (RegistrationLease.identity_pk lease)
-                  <> recipient_fp ->
+        | None -> Result.Error "contact_grant_unknown_delivery_alias"
+        | Some lease when RegistrationLease.identity_pk lease = ""
+                          || RegistrationLease.identity_pk lease
+                             <> recipient_identity_pk ->
           Result.Error "contact_grant_not_owner"
         | Some _ -> begin
+        let recipient_fp = contact_fp_of_pk recipient_identity_pk in
         let sender_fp = contact_fp_of_pk sender_identity_pk in
         let prev_gen =
           match Hashtbl.find_opt t.contact_generation recipient_fp with
@@ -1755,9 +1752,18 @@ module InMemoryRelay : RELAY = struct
                        || contact_fp_of_pk lease_pk <> g.recipient_identity_fp
                     then `Rejected
                     else begin
-                      (* B262 G3 authority is the verified Ed25519 key fingerprint.
-                         [verified_sender_alias] is delivery metadata only; v1 does
-                         not require a live sender lease (design §7.2 step 7). *)
+                      (* optional defence-in-depth: live sender alias matches key *)
+                      (match Hashtbl.find_opt t.leases verified_sender_alias with
+                       | Some slease
+                         when RegistrationLease.is_alive slease
+                              && not
+                                   (alias_released ~now
+                                      ~last_seen:
+                                        (RegistrationLease.last_seen slease))
+                              && RegistrationLease.identity_pk slease
+                                 = verified_sender_identity_pk ->
+                         ()
+                       | _ -> ());
                       let key =
                         inbox_key (RegistrationLease.node_id lease)
                           (RegistrationLease.session_id lease)
@@ -1847,6 +1853,9 @@ module InMemoryRelay : RELAY = struct
           let sb = RegistrationLease.sig_b64 lease in
           if sb = "" then None else Some sb
         | _ -> None)
+
+  let private_reachability_mode _t = "process_local"
+
 end
 
 (* --- SqliteRelay --- *)
@@ -1894,18 +1903,12 @@ module SqliteRelay : RELAY = struct
     let db_path = Filename.concat persist_dir "c2c_relay.db" in
     let mutex = Mutex.create () in
     let conn = Sqlite3.db_open db_path in
-    let pragmas_rc =
-      Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;"
-    in
-    if not (Rc.is_success pragmas_rc) then begin
-      ignore (Sqlite3.db_close conn);
-      failwith ("relay sqlite pragma setup failed: " ^ Rc.to_string pragmas_rc)
-    end;
-    let ddl_rc = Sqlite3.exec conn sqlite_ddl in
-    if not (Rc.is_success ddl_rc) then begin
-      ignore (Sqlite3.db_close conn);
-      failwith ("relay sqlite schema setup failed: " ^ Rc.to_string ddl_rc)
-    end;
+    (let rc = Sqlite3.exec conn "PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;" in
+     if not (Sqlite3.Rc.is_success rc) then
+       failwith ("sqlite pragma failed: " ^ Sqlite3.Rc.to_string rc));
+    (let rc = Sqlite3.exec conn sqlite_ddl in
+     if not (Sqlite3.Rc.is_success rc) then
+       failwith ("sqlite_ddl failed (B266 security-critical): " ^ Sqlite3.Rc.to_string rc));
     (* #586 (slice 1): migrate older databases to the opaque_host_id
        column. `CREATE TABLE IF NOT EXISTS` does not add new columns
        to an existing leases table, so we probe pragma_table_info and
@@ -1921,12 +1924,70 @@ module SqliteRelay : RELAY = struct
       Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_version TEXT NOT NULL DEFAULT ''" |> ignore;
     if not (sqlite_table_has_column conn ~table:"leases" ~column:"client_os") then
       Sqlite3.exec conn "ALTER TABLE leases ADD COLUMN client_os TEXT NOT NULL DEFAULT ''" |> ignore;
-    (* B264: peer discovery visibility. Existing leases default to private so
-       post-migration production state is fail-closed for enumeration. *)
-    if not (sqlite_table_has_column conn ~table:"leases" ~column:"discovery_visibility") then
-      Sqlite3.exec conn
-        "ALTER TABLE leases ADD COLUMN discovery_visibility TEXT NOT NULL DEFAULT 'private'"
-      |> ignore;
+    (* B264/B266: peer discovery visibility. Existing leases default to private
+       so post-migration production state is fail-closed for enumeration.
+       Migration failures raise — do not ignore security-critical ALTERs. *)
+    if not (sqlite_table_has_column conn ~table:"leases" ~column:"discovery_visibility") then begin
+      let rc =
+        Sqlite3.exec conn
+          "ALTER TABLE leases ADD COLUMN discovery_visibility TEXT NOT NULL DEFAULT 'private'"
+      in
+      if not (Sqlite3.Rc.is_success rc) then
+        failwith
+          ("B266 migration failed: add discovery_visibility: " ^ Sqlite3.Rc.to_string rc)
+    end;
+    (* B266: feature marker table (idempotent). *)
+    (let rc =
+       Sqlite3.exec conn
+         "CREATE TABLE IF NOT EXISTS relay_features (
+            feature TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            set_at REAL NOT NULL)"
+     in
+     if not (Sqlite3.Rc.is_success rc) then
+       failwith
+         ("B266 migration failed: create relay_features: " ^ Sqlite3.Rc.to_string rc));
+    (* Require contact grant tables for consent-gated mode. *)
+    let table_exists name =
+      let st =
+        Sqlite3.prepare conn
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?"
+      in
+      Fun.protect
+        ~finally:(fun () -> ignore (Sqlite3.finalize st))
+        (fun () ->
+          Sqlite3.bind_text st 1 name |> ignore;
+          Sqlite3.step st = Sqlite3.Rc.ROW)
+    in
+    List.iter
+      (fun name ->
+        if not (table_exists name) then
+          failwith
+            (Printf.sprintf
+               "B266: %s table missing after DDL — refuse insecure open" name))
+      [ "contact_grants"; "contact_grant_message_ids"; "relay_features" ];
+    (* Upsert durable feature markers (idempotent). *)
+    let marker_now = Unix.gettimeofday () in
+    List.iter
+      (fun (feature, value) ->
+        let st =
+          Sqlite3.prepare conn
+            "INSERT INTO relay_features (feature, value, set_at) VALUES (?, ?, ?)
+             ON CONFLICT(feature) DO UPDATE SET value=excluded.value, set_at=excluded.set_at"
+        in
+        Fun.protect
+          ~finally:(fun () -> ignore (Sqlite3.finalize st))
+          (fun () ->
+            Sqlite3.bind_text st 1 feature |> ignore;
+            Sqlite3.bind_text st 2 value |> ignore;
+            Sqlite3.bind_double st 3 marker_now |> ignore;
+            let rc = Sqlite3.step st in
+            if rc <> Sqlite3.Rc.DONE then
+              failwith
+                ("B266 feature marker upsert failed: " ^ Sqlite3.Rc.to_string rc)))
+      [ ("private_reachability", "consent_gated");
+        ("contact_protocol", "1");
+      ];
     if not (sqlite_table_has_column conn ~table:"rooms" ~column:"visibility") then
       Sqlite3.exec conn "ALTER TABLE rooms ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'" |> ignore;
     (* B117: migrate older databases to the history_public column. Add it with
@@ -1944,6 +2005,24 @@ module SqliteRelay : RELAY = struct
        sqlite_ddl). *)
     if not (sqlite_table_has_column conn ~table:"inboxes" ~column:"pow_difficulty") then
       Sqlite3.exec conn "ALTER TABLE inboxes ADD COLUMN pow_difficulty INTEGER NOT NULL DEFAULT -1" |> ignore;
+    (* B266: durable feature/migration stamp. schema_version.version = 2 marks
+       private-reachability schema (discovery_visibility + contact grants).
+       Checked insert; old binaries that ignore grants must refuse or be blocked
+       operationally (floor is the presence of this stamp + private default). *)
+    (let rc =
+       Sqlite3.exec conn
+         "INSERT INTO schema_version (version) VALUES (2)           ON CONFLICT(version) DO NOTHING"
+     in
+     if not (Sqlite3.Rc.is_success rc) then
+       failwith ("schema_version stamp failed: " ^ Sqlite3.Rc.to_string rc));
+    (let has = ref false in
+     let stmt = Sqlite3.prepare conn "SELECT version FROM schema_version WHERE version = 2" in
+     Fun.protect
+       ~finally:(fun () -> try ignore (Sqlite3.finalize stmt) with _ -> ())
+       (fun () ->
+         if Sqlite3.step stmt = Sqlite3.Rc.ROW then has := true);
+     if not !has then
+       failwith "schema_version stamp missing after insert (B266 fail-closed)");
     (* #330 S2: load or generate this relay's Ed25519 identity for cross-relay signing *)
     let identity_path = if persist_dir = "" then None else Some (Filename.concat persist_dir "relay-server-identity.json") in
     let identity =
@@ -2837,34 +2916,22 @@ module SqliteRelay : RELAY = struct
       with_stmt conn "DELETE FROM stats_message_events WHERE ts < ?" (fun del_stats ->
         Sqlite3.bind_double del_stats 1 (now -. stats_event_retention_s) |> ignore;
         Sqlite3.step del_stats |> ignore);
-      (* B262 §7.4: cascade message-id replay state before deleting terminal
-         grants. The generation table is intentionally retained. *)
+      (* B262/B266: drop contact grants past max(expires,revoked)+grace. *)
       with_stmt conn
-        "DELETE FROM contact_grant_message_ids
-          WHERE verifier IN (
-            SELECT verifier FROM contact_grants
-             WHERE ? >= (CASE
-               WHEN revoked_at IS NULL THEN expires_at
-               WHEN revoked_at > expires_at THEN revoked_at
-               ELSE expires_at END) + ?)"
+        "DELETE FROM contact_grant_message_ids WHERE verifier IN (
+           SELECT verifier FROM contact_grants
+            WHERE MAX(expires_at, COALESCE(revoked_at, expires_at)) + ? < ? )"
         (fun del_mids ->
-          Sqlite3.bind_double del_mids 1 now |> ignore;
-          Sqlite3.bind_double del_mids 2 contact_replay_retention_s |> ignore;
-          let rc = Sqlite3.step del_mids in
-          if rc <> Rc.DONE then
-            failwith ("contact message-id gc failed: " ^ Rc.to_string rc));
+          Sqlite3.bind_double del_mids 1 contact_grant_gc_grace_s |> ignore;
+          Sqlite3.bind_double del_mids 2 now |> ignore;
+          ignore (Sqlite3.step del_mids));
       with_stmt conn
         "DELETE FROM contact_grants
-          WHERE ? >= (CASE
-            WHEN revoked_at IS NULL THEN expires_at
-            WHEN revoked_at > expires_at THEN revoked_at
-            ELSE expires_at END) + ?"
-        (fun del_grants ->
-          Sqlite3.bind_double del_grants 1 now |> ignore;
-          Sqlite3.bind_double del_grants 2 contact_replay_retention_s |> ignore;
-          let rc = Sqlite3.step del_grants in
-          if rc <> Rc.DONE then
-            failwith ("contact grant gc failed: " ^ Rc.to_string rc));
+          WHERE MAX(expires_at, COALESCE(revoked_at, expires_at)) + ? < ?"
+        (fun del_g ->
+          Sqlite3.bind_double del_g 1 contact_grant_gc_grace_s |> ignore;
+          Sqlite3.bind_double del_g 2 now |> ignore;
+          ignore (Sqlite3.step del_g));
       `Ok (List.rev !expired_aliases, pruned)
     )
 
@@ -3703,36 +3770,28 @@ module SqliteRelay : RELAY = struct
   let with_tx_immediate conn f =
     sql_begin_immediate conn;
     match (try Ok (f ()) with exn -> Error exn) with
-    | Error exn ->
-      sql_rollback conn;
-      raise exn
     | Ok v ->
-      (try
-         sql_commit conn;
-         v
-       with exn ->
-         (* If COMMIT failed while the transaction is still active, clear it
-            before returning the shared process-lifetime connection. ROLLBACK
-            is best-effort because SQLite may already have ended the tx. *)
+      (try sql_commit conn; v
+       with commit_exn ->
          sql_rollback conn;
-         raise exn)
+         raise commit_exn)
+    | Error exn -> sql_rollback conn; raise exn
 
   let next_generation_for_recipient conn ~recipient_fp =
+    let gen = ref 0 in
     with_stmt conn
-      "INSERT INTO contact_grant_generations (recipient_identity_fp, generation)
-       VALUES (?, 1)
-       ON CONFLICT(recipient_identity_fp)
-       DO UPDATE SET generation = generation + 1
-       RETURNING generation"
+      "SELECT COALESCE(MAX(generation), 0) FROM contact_grants WHERE recipient_identity_fp = ?"
       (fun stmt ->
         Sqlite3.bind_blob stmt 1 recipient_fp |> ignore;
         let rc = Sqlite3.step stmt in
-        if rc <> Rc.ROW then
-          failwith ("contact generation step failed: " ^ Rc.to_string rc);
-        match Sqlite3.Data.to_int (Sqlite3.column stmt 0) with
-        | Some i -> i
-        | None ->
-          int_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)))
+        if rc = Rc.ROW then
+          gen :=
+            (match Sqlite3.Data.to_int (Sqlite3.column stmt 0) with
+             | Some i -> i
+             | None ->
+               (try int_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0))
+                with _ -> 0)));
+    !gen + 1
 
   let insert_contact_grant_row conn ~verifier ~recipient_fp ~delivery_alias
       ~sender_fp ~generation ~created_at ~expires_at ~label =
@@ -3840,22 +3899,6 @@ module SqliteRelay : RELAY = struct
       else if expires_at <= now then
         Result.Error "contact_grant_expires_in_past"
       else
-        let owns_alias = ref false in
-        with_stmt conn
-          "SELECT identity_pk FROM leases WHERE alias = ?"
-          (fun stmt ->
-            Sqlite3.bind_text stmt 1 delivery_alias |> ignore;
-            if Sqlite3.step stmt = Rc.ROW then
-              let stored_pk =
-                try Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0)
-                with _ -> ""
-              in
-              owns_alias :=
-                stored_pk <> ""
-                && contact_fp_of_pk stored_pk
-                   = contact_fp_of_pk recipient_identity_pk);
-        if not !owns_alias then Result.Error "contact_grant_not_owner"
-        else
         try
           with_tx_immediate conn (fun () ->
             (* Owner binding: delivery_alias lease identity must match recipient. *)
@@ -4302,6 +4345,9 @@ module SqliteRelay : RELAY = struct
             let s = Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0) in
             if s <> "" then result := Some s);
         !result)
+
+  let private_reachability_mode _t = "consent_gated"
+
 end
 
 (* --- Relay_server HTTP layer (functor over RELAY backend) --- *)
@@ -4487,7 +4533,7 @@ end = struct
       (c >= '0' && c <= '9') || c = '_' || c = '-') s
 
 
-  let handle_health ~auth_mode () =
+  let handle_health ~auth_mode ~private_reachability () =
     (* B216: read the once-memoized git hash instead of forking
        `git rev-parse` per request. Precedence unchanged: RAILWAY_GIT_COMMIT_SHA
        (7-char prefix) > `git rev-parse --short HEAD` > "unknown". *)
@@ -4496,6 +4542,7 @@ end = struct
     let pow_header =
       issue_pow_header ~route:"health" ~actor_id:"" ~difficulty:0
     in
+    let dev_mode = auth_mode = "dev" in
     respond_ok ~headers:[pow_header] (json_ok [
       ("version", `String Version.version);
       ("git_hash", `String git_hash);
@@ -4508,7 +4555,11 @@ end = struct
       ("auth_mode", `String auth_mode);
       (* B265/B266: contact grant protocol card (c2c-contact/1). *)
       ("contact_protocol", `Int 1);
-      ("private_reachability", `String "consent_gated");
+      (* B266: only durable SQLite backends claim consent_gated. *)
+      ("private_reachability", `String private_reachability);
+      ("dev_mode", `Bool dev_mode);
+      ("production_claims",
+       `Bool (auth_mode = "prod" && private_reachability = "consent_gated"));
       ("pow", `Assoc [
         ("enabled", `Bool pow_enabled);
         ("scheme", `String Pow.scheme_id);
@@ -4780,8 +4831,9 @@ end = struct
         respond_register_bad_request (json_error_str relay_err_missing_proof_field
           "identity_pk, signature, nonce, and timestamp must all be present together")
       else if (pow_enabled || token <> None) && not has_proof_fields then
-        (* Production registration is an alias-claim and existence surface;
-           require the body-level Ed25519 proof whenever a token is configured. *)
+        (* B267 review: token-configured (prod) relays must not accept unsigned
+           registration — it is a private-alias existence oracle and blocks
+           victims from claiming their alias. PoW still forces proofs too. *)
         respond_register_bad_request (json_error_str relay_err_missing_proof_field
           "identity_pk, signature, nonce, and timestamp are required on a token-configured relay (or when C2C_RELAY_POW=1)")
       else if has_proof_fields then
@@ -4923,19 +4975,20 @@ end = struct
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
       | None -> run_heartbeat ()
 
-  let handle_contact_deliver relay ~verified_alias ~token
-      ~confidential_transport body =
+  let handle_contact_deliver relay ~verified_alias ~token ~confidential_transport body =
     (* B265: POST /contact/v1/deliver — recipient-issued grant admission.
-       The reusable grant secret is accepted only over authenticated
-       confidential transport. Tokenless relays, cleartext transport, malformed
-       fields, unsupported/missing protocol versions, unresolved senders and
-       backend rejects deliberately share one external denial shape.
-       Side effects happen only on [Accepted], never [Duplicate]/[Rejected]. *)
+       Tokenless (dev) relays refuse contact delivery (B262 §13.3).
+       Production contact delivery requires confidential transport (B262 §10):
+       native TLS or trusted X-Forwarded-Proto=https/wss.
+       Side effects only on `Accepted (not Duplicate/Rejected).
+       G6: all admission denials share one external shape (contact_unauthorised)
+       — no distinct messages for unknown/malformed/expired/revoked/dev/protocol. *)
     let deny () =
       respond_unauthorized
         (json_error_str err_contact_unauthorised "contact unauthorised")
     in
-    if token = None || not confidential_transport then deny ()
+    if token = None then deny ()
+    else if not confidential_transport then deny ()
     else
       match verified_alias with
       | None -> deny ()
@@ -4944,13 +4997,10 @@ end = struct
         let grant_secret_b64 = get_string body "grant_secret" in
         let message_id = get_string body "message_id" in
         let content = get_string body "content" in
-        if protocol <> "c2c-contact/1" || grant_secret_b64 = ""
-           || message_id = "" || content = "" then deny ()
+        if protocol <> "" && protocol <> "c2c-contact/1" then deny ()
+        else if grant_secret_b64 = "" || message_id = "" then deny ()
         else
-          match
-            Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet
-              grant_secret_b64
-          with
+          match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet grant_secret_b64 with
           | Error _ -> deny ()
           | Ok grant_secret when String.length grant_secret <> 32 -> deny ()
           | Ok grant_secret ->
@@ -4965,6 +5015,7 @@ end = struct
               with
               | `Rejected -> deny ()
               | `Duplicate (ts, _delivery_alias) ->
+                (* No second side effects (stricter than legacy /send). *)
                 respond_ok
                   (`Assoc
                      [ ("ok", `Bool true);
@@ -4973,6 +5024,7 @@ end = struct
               | `Accepted (ts, delivery_alias) ->
                 R.stats_note_message relay
                   ~from_alias:(stats_alias_key from_alias) ~ts;
+                (* G1 authorised path: push WS / short-queue / observer once. *)
                 Relay_ws_server.push_dm ~to_alias:delivery_alias ~from_alias
                   ~body:content ~ts;
                 (match R.identity_pk_of relay ~alias:delivery_alias with
@@ -4982,11 +5034,13 @@ end = struct
                     with
                     | Some binding_id ->
                       let sq_msg =
-                        { Relay_short_queue.ts;
+                        {
+                          Relay_short_queue.ts;
                           from_alias;
                           to_alias = delivery_alias;
                           room_id = None;
-                          content }
+                          content;
+                        }
                       in
                       Relay_short_queue.ShortQueue.push short_queue ~binding_id
                         sq_msg;
@@ -4995,12 +5049,12 @@ end = struct
                  | None -> ());
                 respond_ok (`Assoc [ ("ok", `Bool true); ("ts", `Float ts) ])
 
-  (* Forward failures are operational metadata, not a durable copy of the
-     payload. Redact content so capability-bearing or private probe bodies do
-     not survive rejection in the DLQ. *)
+  (* G1 / B267: forward-path failures must not store message content.
+     Private-destination rejects and peer 4xx would otherwise content-DLQ
+     a guessed private alias without a grant. *)
   let forward_out_dead_letter ~ts ~message_id ~from_alias ~to_alias ~reason
       ~phase ?peer () =
-    let fields =
+    let base =
       [ ("ts", `Float ts);
         ("message_id", `String message_id);
         ("from_alias", `String from_alias);
@@ -5008,12 +5062,12 @@ end = struct
         ("content", `String "");
         ("content_redacted", `Bool true);
         ("reason", `String reason);
-        ("phase", `String phase) ]
+        ("phase", `String phase);
+      ]
     in
-    `Assoc
-      (match peer with
-       | Some name -> fields @ [ ("peer", `String name) ]
-       | None -> fields)
+    match peer with
+    | Some p -> `Assoc (base @ [ ("peer", `String p) ])
+    | None -> `Assoc base
 
   let handle_send relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
@@ -5079,10 +5133,10 @@ end = struct
                      respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
                  | Peer_unreachable reason ->
                      let dl =
-                       forward_out_dead_letter ~ts:(Unix.gettimeofday ())
-                         ~message_id:msg_id ~from_alias ~to_alias
-                         ~reason:"peer_unreachable" ~phase:"forward_out"
-                         ~peer:peer_name ()
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_unreachable"
+                         ~phase:"forward_out" ~peer:peer_name ()
                      in
                      R.add_dead_letter relay dl;
                      respond_bad_gateway
@@ -5090,10 +5144,10 @@ end = struct
                           (Printf.sprintf "peer relay %s unreachable: %s" peer_name reason))
                  | Peer_timeout ->
                      let dl =
-                       forward_out_dead_letter ~ts:(Unix.gettimeofday ())
-                         ~message_id:msg_id ~from_alias ~to_alias
-                         ~reason:"peer_timeout" ~phase:"forward_out"
-                         ~peer:peer_name ()
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_timeout"
+                         ~phase:"forward_out" ~peer:peer_name ()
                      in
                      R.add_dead_letter relay dl;
                      respond_gateway_timeout
@@ -5101,10 +5155,10 @@ end = struct
                           (Printf.sprintf "peer relay %s did not respond within 5s" peer_name))
                  | Peer_5xx (st, body_excerpt) ->
                      let dl =
-                       forward_out_dead_letter ~ts:(Unix.gettimeofday ())
-                         ~message_id:msg_id ~from_alias ~to_alias
-                         ~reason:"peer_5xx" ~phase:"forward_out"
-                         ~peer:peer_name ()
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_5xx"
+                         ~phase:"forward_out" ~peer:peer_name ()
                      in
                      R.add_dead_letter relay dl;
                      respond_bad_gateway
@@ -5112,10 +5166,10 @@ end = struct
                           (Printf.sprintf "peer relay %s returned %d: %s" peer_name st body_excerpt))
                  | Peer_4xx (st, body_excerpt) ->
                      let dl =
-                       forward_out_dead_letter ~ts:(Unix.gettimeofday ())
-                         ~message_id:msg_id ~from_alias ~to_alias
-                         ~reason:"peer_rejected" ~phase:"forward_out"
-                         ~peer:peer_name ()
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_rejected"
+                         ~phase:"forward_out" ~peer:peer_name ()
                      in
                      R.add_dead_letter relay dl;
                      respond_not_found
@@ -5123,10 +5177,10 @@ end = struct
                           (Printf.sprintf "peer relay %s rejected request %d: %s" peer_name st body_excerpt))
                  | Peer_unauthorized ->
                      let dl =
-                       forward_out_dead_letter ~ts:(Unix.gettimeofday ())
-                         ~message_id:msg_id ~from_alias ~to_alias
-                         ~reason:"peer_unauthorized" ~phase:"forward_out"
-                         ~peer:peer_name ()
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"peer_unauthorized"
+                         ~phase:"forward_out" ~peer:peer_name ()
                      in
                      R.add_dead_letter relay dl;
                      respond_bad_gateway
@@ -5134,10 +5188,10 @@ end = struct
                           (Printf.sprintf "peer relay %s did not accept our identity" peer_name))
                  | Local_error err ->
                      let dl =
-                       forward_out_dead_letter ~ts:(Unix.gettimeofday ())
-                         ~message_id:msg_id ~from_alias ~to_alias
-                         ~reason:"forward_local_error" ~phase:"forward_out"
-                         ~peer:peer_name ()
+                       forward_out_dead_letter
+                         ~ts:(Unix.gettimeofday ()) ~message_id:msg_id
+                         ~from_alias ~to_alias ~reason:"forward_local_error"
+                         ~phase:"forward_out" ~peer:peer_name ()
                      in
                      R.add_dead_letter relay dl;
                      respond_internal_error
@@ -5192,11 +5246,7 @@ end = struct
                 | None -> ())
              | None -> ())
           | `Error _ -> ());
-        (match result with
-         | `Error (code, _) when code = relay_err_unknown_alias ->
-           respond_unauthorized
-             (json_error_str err_contact_unauthorised "contact unauthorised")
-         | _ -> respond_ok (json_of_send_result result))
+        respond_ok (json_of_send_result result)
 
   let handle_send_all relay ~verified_alias body =
     let from_alias = get_string body "from_alias" in
@@ -5210,11 +5260,11 @@ end = struct
         let message_id = get_opt_string body "message_id" in
         match R.send_all relay ~from_alias ~content ~message_id with
         | `Ok (ts, delivered, skipped) ->
-          (* B147/B265: a broadcast counts once only when at least one visible
-             recipient accepted it. A private-only fanout has no side effects. *)
-          if delivered <> [] then
-            R.stats_note_message relay ~from_alias:(stats_alias_key from_alias)
-              ~ts;
+          (* B147: a broadcast counts as one message, not one per recipient.
+             B267: private-only targets yield delivered=[]; do not bump stats
+             (G1 — no side effect without a successful public delivery). *)
+          (if delivered <> [] then
+             R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts);
           List.iter (fun to_alias ->
             match R.identity_pk_of relay ~alias:to_alias with
             | Some identity_pk ->
@@ -5327,11 +5377,6 @@ end = struct
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts])
                             | `Duplicate ts ->
                               respond_ok (`Assoc ["ok", `Bool true; "ts", `Float ts; "duplicate", `Bool true])
-                            | `Error (code, _)
-                              when code = relay_err_unknown_alias ->
-                              respond_unauthorized
-                                (json_error_str err_contact_unauthorised
-                                   "contact unauthorised")
                             | `Error (code, msg) ->
                               respond_bad_request (json_error_str code msg)
                     end
@@ -6572,6 +6617,14 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
          | Some s when s <> "" -> s
          | _ -> if native_tls then "https" else "http")
     in
+    (* B262 §10 / B267 review: grant secrets need confidential transport.
+       Trust native TLS or a reverse-proxy X-Forwarded-Proto of https/wss. *)
+    let confidential_transport =
+      native_tls
+      ||
+      (let s = String.lowercase_ascii (String.trim scheme) in
+       s = "https" || s = "wss")
+    in
     let relay_url =
       match host_header with
       | Some h when h <> "" -> Printf.sprintf "%s://%s" scheme h
@@ -6592,13 +6645,8 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     let body_sha256 = body_sha256_b64 body_str in
     let query = sorted_query_string uri in
     let ed25519_result =
-      (* /forward is Self_auth and has a route-specific peer-relay verifier.
-         Do not consume its nonce here and again in [handle_forward]. *)
-      if path = "/forward" then Ok None
-      else
-        try_verify_ed25519_request relay ~auth_header
-          ~meth:(meth_to_string meth) ~path ~query
-          ~body_sha256_b64:body_sha256
+      try_verify_ed25519_request relay ~auth_header
+        ~meth:(meth_to_string meth) ~path ~query ~body_sha256_b64:body_sha256
     in
     let include_dead = query_bool "include_dead" in
     let verified_alias, ed25519_verified, ed25519_err =
@@ -6611,23 +6659,16 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       auth_decision ~path ~include_dead ~token ~auth_header ~ed25519_verified
     in
     if not auth_ok then
-      if path = "/contact/v1/deliver" then
-        (* Contact-route auth failures must not disclose whether a claimed
-           sender alias exists or has a current binding. Signature enforcement
-           still happens above; only the external denial is collapsed. *)
-        respond_unauthorized
-          (json_error_str err_contact_unauthorised "contact unauthorised")
-      else
-        let code, msg = match ed25519_err with
-          | Some (c, m) -> c, m
-          | None ->
-            let m = match auth_err_msg with
-              | Some m -> m
-              | None -> "missing or invalid auth"
-            in
-            err_unauthorized, m
-        in
-        respond_unauthorized (json_error_str code msg)
+      let code, msg = match ed25519_err with
+        | Some (c, m) -> c, m
+        | None ->
+          let m = match auth_err_msg with
+            | Some m -> m
+            | None -> "missing or invalid auth"
+          in
+          err_unauthorized, m
+      in
+      respond_unauthorized (json_error_str code msg)
     else
       let parse_body () =
         try Res.Ok (Yojson.Safe.from_string body_str)
@@ -6846,7 +6887,8 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
 
       | `GET, "/health" ->
         let auth_mode = if token = None then "dev" else "prod" in
-        handle_health ~auth_mode ()
+        let private_reachability = R.private_reachability_mode relay in
+        handle_health ~auth_mode ~private_reachability ()
 
       | `GET, "/stats" ->
         handle_stats relay
@@ -6897,21 +6939,8 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       | `POST, "/contact/v1/deliver" ->
         let json = parse_body () in
         (match json with
-         | Error _ ->
-           respond_unauthorized
-             (json_error_str err_contact_unauthorised "contact unauthorised")
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
          | Ok j ->
-           (* A forwarded scheme is security evidence only when the operator
-              explicitly trusts its TLS terminator. Client-supplied
-              X-Forwarded-Proto alone must never unlock reusable grants. *)
-           let trust_forwarded_proto =
-             match Sys.getenv_opt "C2C_RELAY_TRUST_FORWARDED_PROTO" with
-             | Some ("1" | "true" | "TRUE" | "yes") -> true
-             | Some _ | None -> false
-           in
-           let confidential_transport =
-             native_tls || (trust_forwarded_proto && scheme = "https")
-           in
            handle_contact_deliver relay ~verified_alias ~token
              ~confidential_transport j)
 

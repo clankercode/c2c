@@ -1,0 +1,16 @@
+{
+  "ok": false,
+  "error_code": "signature_invalid",
+  "error": "Ed25519 request signature does not verify (alias=zzbob, bound_pk=SHA256:pCpKGyDJ7Nc-atAaE7yN_0XQ-tmaaLbIi8vRi6GprHs, meth=POST, path=/send, query=\"\", body_sha256=yfzA0VxJhM_Z...). If you just renamed/re-registered, re-run: c2c relay register --alias zzbob (same machine identity as c2c relay identity show)",
+  "http_status": 401
+}
+hint: relay rejected the Ed25519 request signature for alias "zzbob".
+  Common causes after rename/register:
+    1. Local identity differs from the key bound on the relay
+       (check: c2c relay identity show — then re-register)
+    2. Stale lease under the old alias (register the new alias)
+  If the error says "does not own session", a live connector already
+  holds the lease — do NOT re-register (see session-ownership hint).
+  Fix (true signature mismatch only):  c2c relay register --alias zzbob
+  Then: c2c whoami --relay
+  If it still fails, the error detail names bound_pk / path / body_sha256.

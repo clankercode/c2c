@@ -530,6 +530,79 @@ let test_scope_rejects_substring_only_broker_mention () =
   Alcotest.(check int) "only the real connector for this broker is scoped" 1
     (List.length scoped)
 
+
+(* ---- B266 private-reachability doctor pure checks ---------------------- *)
+
+let health_prod_consent =
+  `Assoc
+    [ ("ok", `Bool true);
+      ("auth_mode", `String "prod");
+      ("contact_protocol", `Int 1);
+      ("private_reachability", `String "consent_gated");
+    ]
+
+let health_dev_consent =
+  `Assoc
+    [ ("ok", `Bool true);
+      ("auth_mode", `String "dev");
+      ("contact_protocol", `Int 1);
+      ("private_reachability", `String "consent_gated");
+    ]
+
+let health_legacy =
+  `Assoc [ ("ok", `Bool true); ("auth_mode", `String "prod") ]
+
+let test_check_auth_mode_dev_fails () =
+  let c = Relay_doctor.check_auth_mode ~health:(Some health_dev_consent) in
+  Alcotest.(check bool) "dev auth_mode is Fail" true
+    (c.Relay_doctor.status = Relay_doctor.Fail);
+  Alcotest.(check string) "id" "relay.auth_mode" c.Relay_doctor.check_id
+
+let test_check_auth_mode_prod_passes () =
+  let c = Relay_doctor.check_auth_mode ~health:(Some health_prod_consent) in
+  Alcotest.(check bool) "prod auth_mode is Pass" true
+    (c.Relay_doctor.status = Relay_doctor.Pass)
+
+let test_check_contact_protocol_missing_fails () =
+  let c = Relay_doctor.check_contact_protocol ~health:(Some health_legacy) in
+  Alcotest.(check bool) "missing contact_protocol Fail" true
+    (c.Relay_doctor.status = Relay_doctor.Fail)
+
+let test_check_private_reachability_prod_pass () =
+  let c =
+    Relay_doctor.check_private_reachability ~health:(Some health_prod_consent)
+  in
+  Alcotest.(check bool) "prod consent_gated Pass" true
+    (c.Relay_doctor.status = Relay_doctor.Pass)
+
+let test_check_private_reachability_dev_inconclusive () =
+  let c =
+    Relay_doctor.check_private_reachability ~health:(Some health_dev_consent)
+  in
+  Alcotest.(check bool) "dev consent_gated Inconclusive" true
+    (c.Relay_doctor.status = Relay_doctor.Inconclusive)
+
+let test_check_private_reachability_legacy_fails () =
+  let c = Relay_doctor.check_private_reachability ~health:(Some health_legacy) in
+  Alcotest.(check bool) "legacy missing private_reachability Fail" true
+    (c.Relay_doctor.status = Relay_doctor.Fail)
+
+let test_check_transport_security_prod_http_fails () =
+  let c =
+    Relay_doctor.check_transport_security ~url:"http://relay.example"
+      ~health:(Some health_prod_consent)
+  in
+  Alcotest.(check bool) "prod plaintext Fail" true
+    (c.Relay_doctor.status = Relay_doctor.Fail)
+
+let test_check_transport_security_https_pass () =
+  let c =
+    Relay_doctor.check_transport_security ~url:"https://relay.example"
+      ~health:(Some health_prod_consent)
+  in
+  Alcotest.(check bool) "https Pass" true
+    (c.Relay_doctor.status = Relay_doctor.Pass)
+
 let () =
   Alcotest.run "c2c_doctor_capabilities"
     [ ( "B210 duplicate-connector",
@@ -583,4 +656,19 @@ let () =
         [ Alcotest.test_case "docs link target" `Quick test_docs_link_target ] );
       ( "public-smoke",
         [ Alcotest.test_case "public read-only smoke (env-gated)" `Quick test_public_smoke ] );
+      ( "B266-private-reachability-doctor",
+        [ Alcotest.test_case "auth_mode dev Fail" `Quick test_check_auth_mode_dev_fails;
+          Alcotest.test_case "auth_mode prod Pass" `Quick test_check_auth_mode_prod_passes;
+          Alcotest.test_case "contact_protocol missing Fail" `Quick
+            test_check_contact_protocol_missing_fails;
+          Alcotest.test_case "private_reachability prod Pass" `Quick
+            test_check_private_reachability_prod_pass;
+          Alcotest.test_case "private_reachability dev Inconclusive" `Quick
+            test_check_private_reachability_dev_inconclusive;
+          Alcotest.test_case "private_reachability legacy Fail" `Quick
+            test_check_private_reachability_legacy_fails;
+          Alcotest.test_case "transport prod http Fail" `Quick
+            test_check_transport_security_prod_http_fails;
+          Alcotest.test_case "transport https Pass" `Quick
+            test_check_transport_security_https_pass ] );
     ]

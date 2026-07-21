@@ -1,7 +1,7 @@
 ---
 title: "Security page claim ledger: code-backed statements and red lines"
 date: 2026-07-21
-status: final
+status: updated-2026-07-22-private-reachability
 scope: canonical OCaml implementation and OCaml tests
 ---
 
@@ -11,7 +11,7 @@ scope: canonical OCaml implementation and OCaml tests
 
 This ledger is the source of truth for claims suitable for a public c2c security page. It is based only on the canonical OCaml implementation and OCaml tests. Documentation and older research were not treated as evidence.
 
-No test suite was executed for this research pass; named tests below are static implementation evidence and regression coverage present in the tree.
+Named tests below are implementation evidence. As of B263–B267 on feature/b264-private-discovery, the consent-gated suites have been **executed** (exit 0) — see goal evidence `run-*.log` / `2026-07-22-fresh-suite-summary.txt` and dogfood-final.
 
 Labels:
 
@@ -23,7 +23,7 @@ Labels:
 
 The most accurate short description is:
 
-> c2c is a local-first message bus with host-local approval authority, signed relay requests, optional TLS transport, and opportunistic application-layer encryption. Peer messages are framed as untrusted DATA. Security-sensitive details are deliberately configuration- and path-dependent: not all messages are encrypted, TLS is not mandatory, relay discovery exposes operational metadata to authenticated peers, and local ephemeral delivery means “skip c2c archive,” not “leave no trace.”
+> c2c is a local-first message bus with host-local approval authority, signed relay requests, optional TLS transport, and opportunistic application-layer encryption. Peer messages are framed as untrusted DATA. On a production (token-configured) relay after private-reachability migration, ordinary peer discovery and first-contact delivery are consent-gated: private registrations are omitted from ordinary `/list` and `/pubkey`, and legacy `/send`/`/send_all`/`/forward` cannot enqueue to private recipients without a recipient-issued, sender-bound contact grant. Security-sensitive details remain configuration- and path-dependent: not all messages are encrypted, TLS is not mandatory, and local ephemeral delivery means “skip c2c archive,” not “leave no trace.”
 
 ## Claim ledger
 
@@ -50,22 +50,40 @@ The most accurate short description is:
   - `/list?include_dead=true` is an operator Bearer-admin route, not a peer route.
   - This is authentication, not secrecy of the directory from all relay participants.
 
-#### Supported: peer listing exposes substantial operational metadata to authorised callers
+#### Conditional: ordinary peer listing is private-by-default after consent-gated migration
 
-- **Plain-English claim:** The relay peer directory can disclose node/session identifiers, alias, client type, lease timing and liveness, public identity/encryption keys, opaque host ID, and client version/OS where supplied.
-- **Code:** `ocaml/relay.ml`: `handle_list`; `ocaml/relay_registration_lease.ml`: `to_json`.
-- **Caveat:** These fields are public-key/operational metadata, but node/session IDs and timing data are still sensitive correlation material. The local `metadata_opt_out` field is not propagated into relay registration and does not redact this response.
+- **Plain-English claim:** On a post-B264/B266 production relay, new and migrated registrations default to **private** discovery. Ordinary `list_peers` / `GET /list` omit private aliases and their operational metadata; Bearer-admin `list_peers_admin` / `include_dead` retains operator visibility. Explicitly public registrations still serialise lease metadata via `RegistrationLease.to_json`.
+- **Code:**
+  - `ocaml/relay_backend_contract.ml`: `peer_discovery_visibility`, `list_peers`, `list_peers_admin`, `peer_*` lookups.
+  - `ocaml/relay.ml`: `SqliteRelay`/`InMemoryRelay` discovery_visibility default `Private`; `handle_list`, `handle_pubkey` use peer-facing lookups.
+  - `ocaml/relay_sqlite_support.ml`: `leases.discovery_visibility`, `relay_features`, `schema_version`.
+- **Tests:** `ocaml/test/test_relay_private_discovery.ml` (ordinary list omits private; admin includes; peer pubkey oracles; HTTP /list+/pubkey); migration suites `test_relay_private_migration.ml`, `test_relay_private_reachability_migration.ml`.
+- **Caveats:**
+  - Tokenless (`auth_mode=dev`) is not a production private-reachability claim; doctor fails `relay.auth_mode` in that mode.
+  - Public opt-in aliases remain metadata-rich to authenticated peers.
+  - Room directories may still show presentation addresses for public rooms; that is not a private DM route (G1).
 
-#### Do not claim: “Strangers cannot send unsolicited relay messages unless you first disclose your address”
+#### Supported: private first-contact delivery requires a recipient-issued, sender-bound contact grant
 
-Canonical code does not establish this as a general guarantee:
+- **Plain-English claim:** Without a valid current recipient-issued grant bound to the verified sender Ed25519 key, no direct, broadcast, or local-forward path may create a relay inbox row (or content-bearing dead letter) for a **private** recipient. Authorised delivery uses `admit_contact_delivery` / `POST /contact/v1/deliver`.
+- **Code:**
+  - `ocaml/relay.ml`: `issue_contact_grant`, `admit_contact_delivery`, private gate in `send`/`send_all`, `handle_contact_deliver`, private reject on forward→`R.send`.
+  - Design freeze: `.collab/design/2026-07-22-b262-contact-grant-protocol.md` (G1–G9).
+- **Tests:**
+  - `ocaml/test/test_relay_contact_grants.ml` — issue/list/revoke/rotate/admit, restart, concurrency, redaction.
+  - `ocaml/test/test_relay_contact_delivery_handlers.ml` — private send no content DLQ, send_all skip private, wrong-sender/expired/revoked/malformed/replay, tokenless contact refuse, protocol downgrade.
+  - `ocaml/test/test_relay_private_reachability_matrix.ml` — guessed alias uniformity, stats zero-side-effect, restart admit, HTTP anonymous probes.
+- **Caveats:**
+  - Production contact delivery refuses tokenless relays.
+  - TLS is still not mandatory for all schemes; doctor fails plaintext **production** URLs for grant confidentiality.
+  - Grant secret alone is insufficient without the bound sender key (G3).
+  - Connector inbound allow remains defence-in-depth, not the security boundary.
 
-- `ocaml/relay.ml`: `handle_register` supports a legacy unsigned registration path unless relay PoW is enabled; a newly registered identity can sign peer requests.
-- `ocaml/relay_server_auth.ml`: authenticated peers can call `/list` on a token-configured relay; tokenless development mode permits unsigned peer routes.
-- `ocaml/relay.ml`: `handle_list` reveals aliases and `handle_send` accepts delivery to a known alias after request auth/body binding.
-- `ocaml/c2c_relay_connector.ml`: the default inbound sender action is `Inbound_allow`.
+#### Do not claim (narrowed): absolute anonymity or “no metadata ever”
 
-A narrower claim is supportable: **an unauthenticated caller cannot use `/list` or `/send` on a token-configured relay, and an operator can configure local inbound deny/allow policy.** That is not equivalent to an undiscoverable or consent-only address model.
+- Operator/admin views, public opt-in aliases, room presentation addresses, and aggregate `/stats` still exist.
+- Tokenless development mode is explicitly insecure for private-reachability claims.
+- The claim is **consent-gated first contact on a migrated production relay**, not universal anonymity or traffic-analysis resistance.
 
 ### 2. Authentication, identities, and key material
 
@@ -313,8 +331,8 @@ A safe statement is **content-bearing files are individually created with restri
 5. **The relay cannot read message content.** It can read ordinary/plain content and forwarding preserves supplied content.
 6. **Every message has an end-to-end signature.** Plain/raw content bypasses envelope-signature verification.
 7. **Relay registration verifies the X25519 key binding.** The current signed registration blob excludes the advertised encryption-key binding fields.
-8. **Nobody can discover or message you until you share an address.** Authenticated peer listing plus default-allow inbound policy contradict a blanket claim.
-9. **The relay peer list is anonymous or metadata-free.** Normal `/list` is authenticated in production, but its rows are metadata-rich.
+8. **Nobody can discover or message you until you share an address — without caveats.** On a migrated production relay, private recipients are consent-gated, but public opt-in aliases, operator admin views, tokenless dev mode, and room presentation addresses still exist. Do not claim absolute anonymity.
+9. **The relay peer list is anonymous or metadata-free.** Ordinary private-by-default listing omits private peers; public peers and admin views remain metadata-rich.
 10. **Metadata opt-out prevents capture or is universally enforced.** cwd remains captured, and no broad read-side enforcement was found.
 11. **All broker files/directories are private.** The root may be `0755`; several sidecars are `0644`.
 12. **Ephemeral means no trace.** Local ephemeral skips the c2c archive only; it is persisted before drain and can appear in transcripts/host surfaces. Remote ephemeral is not implemented.
@@ -328,7 +346,7 @@ A safe statement is **content-bearing files are individually created with restri
 
 A compact, defensible security-page core:
 
-> c2c treats every peer message as untrusted data, never as an approval or remote procedure call. Security-sensitive approvals remain host-local. Relay peers authenticate requests with Ed25519 signatures covering the request body and routing fields, with timestamp and nonce replay checks. HTTPS/WSS and signed, X25519-encrypted envelopes are supported, but encryption is opportunistic rather than universal: local messages and some cross-host paths can be plaintext. Each host can apply inbound sender, recipient, size, and rate policy. Content-bearing broker files use owner-only modes, while local ephemeral delivery specifically skips c2c’s recipient archive rather than promising that no trace can exist.
+> c2c treats every peer message as untrusted data, never as an approval or remote procedure call. Security-sensitive approvals remain host-local. Relay peers authenticate requests with Ed25519 signatures covering the request body and routing fields, with timestamp and nonce replay checks. On a production, token-configured relay after private-reachability migration, ordinary peer discovery and first-contact delivery are consent-gated: private registrations are not listed to ordinary peers, and first private DMs require a recipient-issued, sender-bound contact grant (`c2c-contact/1`). HTTPS/WSS and signed, X25519-encrypted envelopes are supported, but encryption is opportunistic rather than universal. Each host can apply inbound sender, recipient, size, and rate policy. Content-bearing broker files use owner-only modes, while local ephemeral delivery specifically skips c2c’s recipient archive rather than promising that no trace can exist.
 
 ## Source index
 
@@ -373,3 +391,32 @@ Primary regression suites:
 - `ocaml/test/test_c2c_codex_ingress.ml`
 - `ocaml/cli/test_c2c_await_reply.ml`
 - `ocaml/cli/test_c2c_codex_autoturn_b098.ml`
+
+## Addendum 2026-07-22 — private reachability (B261–B267)
+
+Implemented and regression-tested on branch `feature/b264-private-discovery` (builds on B263 contact grants).
+
+| Property | Symbols | Named suites |
+|---|---|---|
+| Private-by-default discovery | `list_peers`, `list_peers_admin`, `peer_discovery_visibility_*`, `peer_*` lookups, `handle_list`, `handle_pubkey` | `test_relay_private_discovery` |
+| Contact grant lifecycle | `issue_contact_grant`, `list_contact_grants`, `revoke_contact_grant`, `rotate_contact_grant`, `admit_contact_delivery` | `test_relay_contact_grants` |
+| Delivery admission | private `send`/`send_all` gates, `handle_contact_deliver`, forward→private reject | `test_relay_contact_delivery_handlers`, `test_relay_private_reachability_matrix` |
+| Migration fail-closed | `schema_version=2`, `relay_features`, `discovery_visibility` ALTER default private | `test_relay_private_migration`, `test_relay_private_reachability_migration` |
+| Doctor/health | `/health` `contact_protocol`/`private_reachability`; doctor `relay.auth_mode`, `relay.contact_protocol`, `relay.transport_security` | doctor pure checks + health HTTP cases |
+| Owner CLI | `c2c relay contact issue\|list\|revoke` | manual help + secret-once issue path |
+
+**Still Do not claim:** mandatory TLS, universal E2E, absolute anonymity, no-trace ephemeral, prompt-injection impossibility, operator-blind routing.
+
+## Independent security review disposition (2026-07-22)
+
+**Report:** `.collab/evidence/B267/independent-security-review.md`  
+**Verdict:** PASS-WITH-NOTES — 0 blockers on G1/G2 in reviewed binary.
+
+| Finding | Class | Disposition |
+|---|---|---|
+| M1 pre-B264 binary + migrated DB reopens global reachability | MAJOR ops | Accepted deploy constraint; `/security/` caveat #6; doctor fails missing contact ads |
+| M2 no production public-discovery opt-in CLI | MAJOR product | Follow-up; does not weaken private default |
+| M3 contact Accepted WS/short-queue wake | MINOR | **FIXED** — `handle_contact_deliver` `Accepted` calls `push_dm` + short-queue/observer when binding known |
+| M4 grant deliver over cleartext HTTP | MINOR | **FIXED** — `handle_contact_deliver` requires `confidential_transport` (native TLS or `X-Forwarded-Proto` https/wss); suite `cleartext contact deliver refused` |
+
+Public claims on `/security/` remain conditional on production token mode, migration stamps, and **running a post-B266 binary** (never roll back binary against a migrated DB).

@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "result": "ok",
+  "lease": {
+    "node_id": "cli-zzbob",
+    "session_id": "cli-zzbob",
+    "alias": "zzbob",
+    "client_type": "cli",
+    "registered_at": 1784652808.081197,
+    "last_seen": 1784652808.081197,
+    "ttl": 86400.0,
+    "alive": true,
+    "alias_reserved": true,
+    "alias_warning_since": 1792428808.081197,
+    "alias_release_at": 1815756808.081197,
+    "alias_release_warning": false,
+    "identity_pk": "PNcmbnTr9LxdWJrUtkqGmtJP66RepnLCbaCAXvf4e4k",
+    "opaque_host_id": "3d08761ae3f3",
+    "client_version": "0.13.0",
+    "client_os": "linux"
+  },
+  "receipt": {
+    "alias": "zzbob",
+    "client_identity_pk": "PNcmbnTr9LxdWJrUtkqGmtJP66RepnLCbaCAXvf4e4k",
+    "relay_identity_pk": "_P2wE2FLKNc4zf_b6yBHYbWuUu0lNweBMApkVIgsDCc",
+    "ts": "2026-07-21T16:53:28Z",
+    "nonce": "bHj4Zz3pVGuki6Cx_SIvpA",
+    "sig": "RmRtePtg9LsCwfCqbk0UTEr-UItWZK127wq8UXZU0rS2bGJMUEdiojqIhbcUotOAbVuQjaHBpn69-BLfTiQoDQ"
+  }
+}

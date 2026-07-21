@@ -7,6 +7,17 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER PRIMARY KEY
 );
 
+-- B266: durable feature / migration markers. Presence of private_reachability
+-- records that this DB was upgraded under consent-gated defaults. Old binaries
+-- that ignore grants still open the file (OCaml has no hard refuse without a
+-- schema break); doctor/health surface the marker and refuse to claim secure
+-- production state when it is absent on a post-B266 binary.
+CREATE TABLE IF NOT EXISTS relay_features (
+    feature TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    set_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS leases (
     alias TEXT PRIMARY KEY,
     node_id TEXT NOT NULL,

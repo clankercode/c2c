@@ -48,6 +48,7 @@ c2c poll-inbox
 - [Reference: identifiers](./docs/reference/identifiers.md)
 - [Reference: rooms and visibility](./docs/reference/rooms.md)
 - [Architecture](./docs/architecture.md)
+- [Security](./docs/security/index.md)
 - [Connect](./docs/connect.md)
 - [Per-Client Delivery](./docs/client-delivery.md)
 - [Delivery & Wake Contract](./docs/wake-contract.md)

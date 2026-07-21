@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "result": "ok",
+  "lease": {
+    "node_id": "cli-zzalice",
+    "session_id": "cli-zzalice",
+    "alias": "zzalice",
+    "client_type": "cli",
+    "registered_at": 1784652808.037101,
+    "last_seen": 1784652808.037101,
+    "ttl": 86400.0,
+    "alive": true,
+    "alias_reserved": true,
+    "alias_warning_since": 1792428808.037101,
+    "alias_release_at": 1815756808.037101,
+    "alias_release_warning": false,
+    "identity_pk": "wps2uIIaM44Wv0f93xjltlFeFHsNxCekyEsCmVJx_sE",
+    "opaque_host_id": "3d08761ae3f3",
+    "client_version": "0.13.0",
+    "client_os": "linux"
+  },
+  "receipt": {
+    "alias": "zzalice",
+    "client_identity_pk": "wps2uIIaM44Wv0f93xjltlFeFHsNxCekyEsCmVJx_sE",
+    "relay_identity_pk": "_P2wE2FLKNc4zf_b6yBHYbWuUu0lNweBMApkVIgsDCc",
+    "ts": "2026-07-21T16:53:28Z",
+    "nonce": "7uIE_RTgbhJFGFWAykX3Pw",
+    "sig": "GqZS4ej8_dxLAGPI6_P7N5Xbir9xwzoS1F_DmigLMXEhO4b3AOE7X_dTqbr48HV6OG8XuwamC0XYA0LzCaUoDQ"
+  }
+}

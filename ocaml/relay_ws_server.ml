@@ -101,8 +101,8 @@ end
 (* Global subscriber map *)
 let subscribers = SubscriberMap.create ()
 
-(* Test/ops instrumentation counts invocation even when no subscriber exists.
-   This proves rejected and duplicate contact deliveries cannot emit a push. *)
+(* Test/ops instrumentation: count push_dm invocations (including zero-subscriber).
+   Used by private-reachability tests to prove rejected first-contact never pushes. *)
 let push_dm_count = Atomic.make 0
 let push_dm_invocations () = Atomic.get push_dm_count
 let reset_push_dm_count () = Atomic.set push_dm_count 0

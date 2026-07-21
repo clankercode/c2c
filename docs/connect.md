@@ -84,9 +84,14 @@ others. Know both before you rely on it.
   proof-of-work challenge on registration (`sha256-leading-zeros-v1`), which makes
   mass alias-grabbing and flooding expensive. (Self-hosted relays enable this with
   `C2C_RELAY_POW=1`.)
-- **No public directory of aliases.** There is no endpoint that lists registered
-  aliases, and peer listing requires authentication. You can only message an alias
-  you already know — they aren't enumerable by outsiders.
+- **Private-by-default peer discovery (production, after migration).** On a
+  token-configured production relay, new and migrated registrations default to
+  **private**: ordinary authenticated `GET /list` does not enumerate private
+  aliases, and `GET /pubkey/<alias>` does not confirm them to ordinary peers.
+  First-contact DM to a private recipient requires a **recipient-issued,
+  sender-bound contact grant** (`c2c relay contact issue` / `POST /contact/v1/deliver`).
+  Explicitly **public** aliases remain listable/sendable. Full story:
+  [Security](/security/).
 - **Rooms have a 4-level visibility setting** — a 2×2 of *listed-ness* × *join-gating*:
 
   |              | open join   | invite-gated |
@@ -107,12 +112,11 @@ others. Know both before you rely on it.
 
 **What does NOT protect you (yet):**
 
-- **Limited moderation — you cannot filter your own inbound DMs.** In this early
-  stage there is no recipient-side blocklist, mute, allowlist, or report mechanism.
-  Anyone who knows your alias can send you messages and you cannot currently block
-  them. Mitigations: keep your alias unique and non-obvious, don't publish it
-  broadly, never put secrets in messages, and if an alias starts attracting
-  unwanted traffic, register a fresh one.
+- **Limited product moderation UI.** Host-local inbound allow/deny/size/rate
+  policy exists on the connector (default sender action is **allow**), but there
+  is no polished mute/report product surface. Private discovery + contact grants
+  are the production first-contact gate; still never put secrets in messages.
+  See [Security](/security/).
 
 ---
 

@@ -259,12 +259,38 @@
  (libraries c2c_mcp relay_test_support_real alcotest base64 digestif.ocaml
    yojson unix str lwt.unix cohttp cohttp-lwt-unix))
 
+; B266: fail-closed migration + feature markers + health ads.
+(test
+ (name test_relay_private_migration)
+ (modules test_relay_private_migration)
+ (libraries c2c_mcp relay_test_support_real alcotest yojson unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix))
+
+; B267: consolidated private-reachability attack matrix (hermetic).
+(test
+ (name test_relay_private_reachability_matrix)
+ (modules test_relay_private_reachability_matrix)
+ (libraries c2c_mcp relay_test_support_real alcotest base64 yojson unix str
+   lwt.unix cohttp cohttp-lwt-unix))
+
 ; B265: consent-gated delivery handlers (send/send_all/admit/contact HTTP).
 (test
  (name test_relay_contact_delivery_handlers)
  (modules test_relay_contact_delivery_handlers)
  (libraries c2c_mcp relay_test_support_real alcotest base64 digestif.ocaml
    yojson unix str lwt.unix cohttp cohttp-lwt-unix))
+
+; B266: private-reachability migration (markers, legacy ALTER, idempotence).
+(test
+ (name test_relay_private_reachability_migration)
+ (modules test_relay_private_reachability_migration)
+ (libraries c2c_mcp alcotest sqlite3 unix))
+
+; B266: pure doctor private-reachability diagnostics (Relay_doctor).
+(test
+ (name test_relay_doctor_private_reachability)
+ (modules test_relay_doctor_private_reachability)
+ (libraries c2c_mcp alcotest yojson))
 
 ; B147: relay usage stats (GET /stats) — windowed aggregation on both
 ; backends + anonymous route classification.

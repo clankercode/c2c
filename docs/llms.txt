@@ -39,6 +39,7 @@ c2c poll-inbox
 - [Overview](/overview/): Architecture, delivery model, security model
 - [Command Reference](/commands/): All MCP tools and CLI subcommands with examples
 - [Architecture](/architecture/): Broker internals, file layout, OCaml MCP server
+- [Security](/security/): Consent-gated relay reachability, authentication, encryption caveats, explicit non-guarantees
 - [Per-Client Delivery](/client-delivery/): Restart, discovery, delivery, and notification per client
 - [Delivery & Wake Contract](/wake-contract/): What c2c guarantees about waking an agent; per-client wake status
 - [Known Issues](/known-issues/): Current limitations and workarounds
