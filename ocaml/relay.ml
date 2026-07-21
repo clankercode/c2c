@@ -1491,15 +1491,17 @@ module InMemoryRelay : RELAY = struct
       let skipped = ref [] in
       Hashtbl.iter (fun alias lease ->
         if alias = from_alias then ()
-        else if not (RegistrationLease.is_alive lease) then skipped := alias :: !skipped
         else begin
-          (* B264: private recipients are not broadcast targets. *)
+          (* B264/G2: private recipients are invisible to broadcast — omit from
+             both delivered and skipped so skipped cannot enumerate private aliases. *)
           let is_public =
             match Hashtbl.find_opt t.discovery_visibility alias with
             | Some Public -> true
             | _ -> false
           in
-          if not is_public then skipped := alias :: !skipped
+          if not is_public then ()
+          else if not (RegistrationLease.is_alive lease) then
+            skipped := alias :: !skipped
           else begin
             delivered_to := alias :: !delivered_to;
             let key = inbox_key (RegistrationLease.node_id lease) (RegistrationLease.session_id lease) in
@@ -3727,7 +3729,11 @@ module SqliteRelay : RELAY = struct
   let with_tx_immediate conn f =
     sql_begin_immediate conn;
     match (try Ok (f ()) with exn -> Error exn) with
-    | Ok v -> sql_commit conn; v
+    | Ok v ->
+      (try sql_commit conn; v
+       with commit_exn ->
+         sql_rollback conn;
+         raise commit_exn)
     | Error exn -> sql_rollback conn; raise exn
 
   let next_generation_for_recipient conn ~recipient_fp =
@@ -4920,41 +4926,31 @@ end = struct
   let handle_contact_deliver relay ~verified_alias ~token body =
     (* B265: POST /contact/v1/deliver — recipient-issued grant admission.
        Tokenless (dev) relays refuse contact delivery (B262 §13.3).
-       Side effects only on `Accepted (not Duplicate/Rejected). *)
-    if token = None then
+       Side effects only on `Accepted (not Duplicate/Rejected).
+       G6: all admission denials share one external shape (contact_unauthorised)
+       — no distinct messages for unknown/malformed/expired/revoked/dev/protocol. *)
+    let deny () =
       respond_unauthorized
-        (json_error_str err_contact_unauthorised
-           "contact delivery requires a production (token-configured) relay")
+        (json_error_str err_contact_unauthorised "contact unauthorised")
+    in
+    if token = None then deny ()
     else
       match verified_alias with
-      | None ->
-        respond_unauthorized
-          (json_error_str err_unauthorized
-             "contact delivery requires verified Ed25519 peer auth")
+      | None -> deny ()
       | Some from_alias ->
         let protocol = get_string body "protocol" in
         let grant_secret_b64 = get_string body "grant_secret" in
         let message_id = get_string body "message_id" in
         let content = get_string body "content" in
-        if protocol <> "" && protocol <> "c2c-contact/1" then
-          respond_unauthorized
-            (json_error_str err_contact_unauthorised "unsupported contact protocol")
-        else if grant_secret_b64 = "" || message_id = "" then
-          respond_bad_request
-            (json_error_str err_bad_request "grant_secret and message_id are required")
+        if protocol <> "" && protocol <> "c2c-contact/1" then deny ()
+        else if grant_secret_b64 = "" || message_id = "" then deny ()
         else
           match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet grant_secret_b64 with
-          | Error _ ->
-            respond_unauthorized
-              (json_error_str err_contact_unauthorised "invalid grant_secret")
-          | Ok grant_secret when String.length grant_secret <> 32 ->
-            respond_unauthorized
-              (json_error_str err_contact_unauthorised "invalid grant_secret")
+          | Error _ -> deny ()
+          | Ok grant_secret when String.length grant_secret <> 32 -> deny ()
           | Ok grant_secret ->
             match R.identity_pk_of relay ~alias:from_alias with
-            | None ->
-              respond_unauthorized
-                (json_error_str err_contact_unauthorised "sender identity unresolved")
+            | None -> deny ()
             | Some sender_pk ->
               match
                 R.admit_contact_delivery relay
@@ -4962,9 +4958,7 @@ end = struct
                   ~verified_sender_identity_pk:sender_pk
                   ~grant_secret ~message_id ~content ()
               with
-              | `Rejected ->
-                respond_unauthorized
-                  (json_error_str err_contact_unauthorised "contact unauthorised")
+              | `Rejected -> deny ()
               | `Duplicate ts ->
                 (* No second side effects (stricter than legacy /send). *)
                 respond_ok
@@ -4975,11 +4969,8 @@ end = struct
               | `Accepted ts ->
                 R.stats_note_message relay
                   ~from_alias:(stats_alias_key from_alias) ~ts;
-                (* Resolve delivery alias for push via grant is internal;
-                   push by scanning is avoided — use content-only short path
-                   when recipient pubkey known from sender's grant binding is
-                   not available here. Prefer push when we can resolve a
-                   public peer; private recipients still wake via inbox poll. *)
+                (* Durable inbox is the admission effect; private recipients
+                   wake via poll/connector. WS push optional follow-up (M3). *)
                 respond_ok (`Assoc [ ("ok", `Bool true); ("ts", `Float ts) ])
 
   let handle_send relay ~verified_alias body =
