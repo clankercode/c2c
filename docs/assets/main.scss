@@ -220,6 +220,36 @@ a:visited { color: var(--c2c-amber-dim); }
   }
 }
 
+/* ---- Content tables (security matrix, dense docs) ---- */
+.post-content table,
+.page-content table,
+article table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-collapse: collapse;
+}
+.post-content table th,
+.post-content table td,
+.page-content table th,
+.page-content table td,
+article table th,
+article table td {
+  word-break: normal;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+  white-space: normal;
+  vertical-align: top;
+}
+.post-content code,
+.page-content code,
+article code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 /* ---- Hero ---- */
 .hero {
   position: relative;
