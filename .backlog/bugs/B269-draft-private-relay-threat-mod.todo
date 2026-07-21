@@ -1,0 +1,48 @@
+---
+complexity: high
+created_at: "2026-07-21T14:12:18Z"
+depends_on: []
+estimate_hours: 6
+id: B269
+priority: critical
+status: pending
+tags:
+    - security
+    - relay
+    - protocol
+    - research
+title: Draft private relay threat model and protocol options
+updated_at: "2026-07-21T14:12:18Z"
+---
+## Purpose
+
+Do B219-independent security analysis needed by B262 while B219 remains in review. This is a bounded research/design-input task, not the final protocol design or implementation.
+
+## Scope
+
+- Define the current relay threat model: unauthenticated internet actor, authenticated relay peer, malicious/compromised peer, curious relay operator, compromised same-UID host process, leaked contact route, and public/gated/unlisted room participants.
+- State the desired private-reachability invariants as binary, testable properties.
+- Map all current discovery and first-contact ingress surfaces from canonical OCaml code: peer list, registration lease, direct send, connector sync/outbox, WebSocket subscription/delivery, rooms, pairing, identifiers, errors, logs, and operational endpoints.
+- Compare 2–3 recipient-controlled contact-authorisation models without committing to database mechanics: opaque recipient capability; sender-bound invitation/grant; private alias/route derivation or another viable design.
+- For each model, analyse disclosure, sender/recipient/relay binding, entropy, expiry, revocation, rotation, replay, leak consequences, enumeration resistance, usability, multi-device use, recovery, and downgrade/mixed-version behaviour.
+- Recommend one non-refuted protocol direction or explicitly identify unresolved questions requiring B261’s post-B219 persistence reconciliation.
+- Produce an attack/test matrix that B262–B267 can consume.
+
+## Boundaries
+
+- Do not modify `ocaml/relay.ml`, persistence schemas, backend contracts, CLI behaviour, or public documentation.
+- Do not claim or complete B261/B262.
+- Treat B219’s merged connection lifecycle as known, but defer persistence/transaction design and final protocol acceptance until B261.
+- Verify current-state claims against canonical OCaml code and named tests; documentation is only a lead.
+
+## Deliverable
+
+Write `.collab/research/2026-07-22-relay-private-reachability-threat-model.md` with exact code/test citations, explicit assumptions, candidate protocol comparison, known errors, and open questions.
+
+## Acceptance evidence
+
+- Every current-state claim maps to exact code symbols and named tests or is labelled as an uncovered gap.
+- The desired invariants are binary and implementation-testable.
+- Candidate designs are evaluated against the same goals/context, with decisive failures stated rather than scored.
+- An independent security reviewer finds no unsupported current-state claim or unaddressed blocker in the recommended direction.
+- No product/source/site behaviour changes are made.
