@@ -365,9 +365,10 @@ let test_http_health_prod_ads () =
         (List.assoc_opt "auth_mode" f = Some (`String "prod"));
       check bool "contact_protocol" true
         (List.assoc_opt "contact_protocol" f = Some (`Int 1));
-      check bool "private_reachability" true
+      (* InMemory RTSR backend: process_local (not durable consent_gated). *)
+      check bool "private_reachability process_local" true
         (List.assoc_opt "private_reachability" f
-         = Some (`String "consent_gated"))
+         = Some (`String "process_local"))
     | _ -> fail "bad health")
 
 (* G1: handle_send only calls Relay_ws_server.push_dm on `Ok/`Duplicate.
