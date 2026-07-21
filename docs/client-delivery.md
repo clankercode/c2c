@@ -85,16 +85,14 @@ Claude Code has three relevant receive mechanisms:
   `experimental.claude/channel` capability; standard Claude Code builds do not.
   Do not rely on channel delivery as the production receive path today.
 
-Current Claude caveats: **c2c cannot wake an idle Claude Code session.** All
-three mechanisms above are activity-triggered or model-initiated — the hooks
-fire only when the agent is already doing something, and the MCP channel is not
-available on standard builds. A message arriving after the session goes idle
-sits durably in the inbox until the agent's next turn. The only working
-idle-awareness path is an agent-armed Monitor, which is a model decision and so
-CONDITIONAL rather than guaranteed. Full reasoning and the upstream ask:
-[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-cannot-be-guaranteed-from-inside-c2c).
+**Wake status: CONDITIONAL** on an armed **`c2c monitor`** (or equivalent). Without
+it, hooks are activity-triggered only — a message arriving after the session goes
+idle sits durably until the next turn (**NONE** at true idle). Claude is a
+first-class c2c client; the limitation is idle wake from c2c alone, not
+participation. Full contract:
+[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-conditional-on-monitor-never-guaranteed-from-c2c-alone).
 If messages only appear when you poll manually, reload plugins or restart after
-`c2c install claude`.
+`c2c install claude`, and arm a Monitor for idle wake.
 
 **B011 / B186 note**: The managed Claude startup preamble previously included a
 heartbeat Monitor step that double-waked with the native managed wake. The
@@ -509,12 +507,12 @@ inject Claude-style `additionalContext`). Session ID from `$GROK_SESSION_ID` or
 the hook payload. Restart Grok (new session) after install. Plugin packaging is
 deferred (backlog I009).
 
-**Wake status: NONE at true idle.** The SessionStart/SessionEnd hooks are
-lifecycle events, not arrival events, and the skill only *instructs* the agent
-to arm a Monitor — a model decision. c2c cannot wake an idle Grok session from
-the outside; that needs an upstream surface
+**Wake status: CONDITIONAL** on an armed **`c2c monitor`**. SessionStart/SessionEnd
+are lifecycle events, not arrival events; the skill only *instructs* the agent to
+arm a Monitor. Without Monitor: **NONE** at true idle. Grok is first-class for
+send/receive/rooms; idle wake is not GUARANTEED from c2c alone
 ([#37](https://github.com/clankercode/c2c/issues/37)). See
-[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-cannot-be-guaranteed-from-inside-c2c).
+[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-conditional-on-monitor-never-guaranteed-from-c2c-alone).
 
 ## Antigravity (agy)
 

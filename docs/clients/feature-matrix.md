@@ -15,11 +15,12 @@ verification by an agent running inside that client — please update and PR.
 > not a statement of guarantee. For whether a client can be **woken from idle**,
 > and under what condition, see [Delivery & Wake Contract](/wake-contract/),
 > which is the single source of truth for that question. Summary (2026-07-21):
-> OpenCode, Pi Agent, and managed Codex (local mail) are **GUARANTEED**; Kimi and
-> agy are **CONDITIONAL** on an out-of-process helper; Claude Code, Grok, and
-> vanilla-hook Codex have **NO** idle wake unless the agent arms `c2c monitor`.
+> **GUARANTEED** — OpenCode, Pi Agent, managed Codex (local mail).
+> **CONDITIONAL** — Kimi + agy (out-of-process poster); **Claude Code + Grok**
+> (and weak vanilla Codex) on an armed **`c2c monitor`** — without Monitor they
+> are NONE at true idle. All seven clients are first-class; wake tier differs.
 
-Last updated: 2026-07-21 (wake row + agy live wake; Pi GUARANTEED; Kimi REST primary)
+Last updated: 2026-07-21 (Claude/Grok listed CONDITIONAL on monitor; full-bleed table)
 
 ## Quick reference
 
@@ -27,7 +28,7 @@ Last updated: 2026-07-21 (wake row + agy live wake; Pi GUARANTEED; Kimi REST pri
 
 | Feature | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | agy |
 |---------|-------------|-------|----------|----------|------|------|-----|
-| **Wake from idle** | **NONE** (activity hooks only; CONDITIONAL if agent arms `c2c monitor`) | **Managed app-server: GUARANTEED for local mail** (remote/`@host`/`#` inject-only). **Vanilla hooks: NONE** at true idle (`hooks+wake` = legacy tmux/herdr nudge) | **GUARANTEED** (`pi-c2c` in-process: `fs.watch` → `poll-inbox` → `pi.sendMessage` + 60s safety poll) | **GUARANTEED** (in-process plugin: idle event + interval → `promptAsync`) | **CONDITIONAL** (notifier + local Kimi server + session id; REST POST is the wake) | **NONE** (SessionStart/skill only; CONDITIONAL if agent arms `c2c monitor`) | **CONDITIONAL** (managed deliver-watch + `agy-env.json` / auto-discover → `agentapi send-message`; proven live 2026-07-20) |
+| **Wake from idle** | **CONDITIONAL** on armed **`c2c monitor`**; without it **NONE** at true idle (activity hooks only) | **Managed app-server: GUARANTEED** for local mail (remote/`@host`/`#` inject-only). **Vanilla: CONDITIONAL** on `c2c monitor` or legacy `hooks+wake` | **GUARANTEED** (`pi-c2c` in-process: `fs.watch` → `poll-inbox` → `pi.sendMessage` + 60s safety poll) | **GUARANTEED** (in-process plugin: idle event + interval → `promptAsync`) | **CONDITIONAL** (notifier + local Kimi server + session id; REST POST is the wake) | **CONDITIONAL** on armed **`c2c monitor`**; without it **NONE** at true idle (SessionStart/skill only) | **CONDITIONAL** (managed deliver-watch + `agy-env.json` / auto-discover → `agentapi send-message`; proven live 2026-07-20) |
 | MCP attachment | ✅ stdio JSON-RPC (project `.mcp.json` by default; not auto for bare install of other clients) | ✅ stdio JSON-RPC | ⚠️ CLI-based (pi extension shells to `c2c`, not MCP) | ✅ stdio JSON-RPC | ✅ stdio JSON-RPC | ❌ **not by default** (CLI-first; no MCP written by install) | ❌ **not by default** (CLI-first; no MCP written by install) |
 | Auto-delivery mechanism | PostToolUse hook (`c2c-inbox-hook-ocaml`) — turn-boundary, not idle wake | **Managed (supported Codex ≥ 0.144): app-server** delivery stack (`c2c start codex` / `c2c new codex` — authenticated loopback injection on arrival, draft-safe, gated auto-turn for eligible local mail; idle auto-turn immediate, failed inject/auto-turn re-batch ~2m — B131/B168). **Vanilla / fallback:** Codex hooks (`c2c hook codex` via UserPromptSubmit/PostToolUse/SessionStart/SessionEnd) — hook-boundary, not arrival-time; optional idle wake via tmux/herdr nudge **input injection** (`delivery_mode=hooks+wake`); otherwise explicit polling | `pi-c2c` extension: `fs.watch` (inotify) on broker inbox → `c2c poll-inbox` → `pi.sendMessage` | c2c.ts plugin → `promptAsync` | REST prompt injection (`C2c_kimi_notifier` POSTs `<c2c event="message">` envelopes to the Kimi Code local server's `/api/v1/sessions/{id}/prompts`); managed `c2c new/start kimi` arms notifier; fallback `c2c monitor` | **Monitor + `c2c monitor`** (preferred). SessionStart auto-registers + writes `c2c-session` identity skill. No `additionalContext` inject | **agentapi inject** via the `c2c start … deliver-watch` sidecar (`c2c_agy_deliver.ml`) — drains repo + cross-repo sessions-broker inbox and injects standard `<c2c event="message">` envelopes via `agy agentapi send-message` (persist-first; broker drained only after a successful inject). Fallback: `c2c poll-inbox` / `c2c monitor`. Hooks alone do NOT wake an idle TUI |
 | MCP restart-self | ❌ `restart-self` kills outer loop | ❌ same | n/a (no MCP) | ❌ same | ❌ same | n/a (no MCP default) | n/a (no MCP default) |
@@ -327,13 +328,13 @@ agy` does this) or fall back to `c2c poll-inbox` / `c2c monitor`.
 
 | Client | Wake | Session ID source | Delivery mechanism | Notification | Restart / Launch |
 |--------|------|-------------------|--------------------|--------------|-----------------|
-| Claude Code | **NONE** | `$CLAUDE_SESSION_ID` | PostToolUse hook (auto) | Implicit (every tool) | `c2c start claude` |
+| Claude Code | **CONDITIONAL** (`c2c monitor`); else NONE at idle | `$CLAUDE_SESSION_ID` | PostToolUse hook (auto) + Monitor for idle wake | Implicit (every tool); Monitor for idle | `c2c start claude` + arm Monitor |
 | Codex (managed app-server) | **GUARANTEED** (local mail) | Hook payload / deterministic session-id-derived alias | App-server inject + gated auto-turn (B131/B168); hooks fallback if app-server unavailable | Model-visible on arrival; auto-turn when idle + DND off | `c2c start codex` / `c2c new codex` |
-| Codex (vanilla hooks) | **NONE** | Hook payload session / auto alias | `c2c hook codex` → `additionalContext` (hook-boundary) | UserPromptSubmit/PostToolUse; optional `hooks+wake` tmux/herdr nudge | plain `codex` or managed fallback |
+| Codex (vanilla hooks) | **CONDITIONAL** (`c2c monitor` / legacy `hooks+wake`); else NONE | Hook payload session / auto alias | `c2c hook codex` → `additionalContext` (hook-boundary) | UserPromptSubmit/PostToolUse; optional `hooks+wake` | plain `codex` or managed fallback |
 | Pi Agent | **GUARANTEED** | Extension session alias | `pi-c2c` → `c2c poll-inbox` → `pi.sendMessage` | `fs.watch` + 60s safety poll | n/a (`pi install npm:pi-c2c`) |
 | OpenCode | **GUARANTEED** | `$OPENCODE_SESSION_ID` | Native TS plugin + `promptAsync` | alias-scoped `c2c monitor --alias <session>` | `c2c start opencode` |
 | Kimi | **CONDITIONAL** | `session_<uuid>` from `~/.kimi-code/session_index.jsonl` | REST prompt injection (`C2c_kimi_notifier`) | REST POST (no tmux; composer nudge opt-in only) | `c2c start kimi` / `c2c new kimi` |
-| Grok | **NONE** | `$GROK_SESSION_ID` / `$GROK_AGENT` + `active_sessions.json` (B173) | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) |
+| Grok | **CONDITIONAL** (`c2c monitor`); else NONE at idle | `$GROK_SESSION_ID` / `$GROK_AGENT` + `active_sessions.json` (B173) | Monitor + `c2c monitor` (preferred); SessionStart identity skill | Monitor line inject | TUI restart / new session (`c2c install grok`) + arm Monitor |
 | agy | **CONDITIONAL** | Hook payload / auto `agy-*` (`registered_by=agy-hook`) | agentapi inject via deliver-watch sidecar + Monitor fallback | agentapi wake / Monitor / `poll-inbox` | `c2c start agy` |
 | Cursor Agent | n/a | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134) | n/a (unofficial — no install/hooks) | n/a | labeling only (`client=cursor`, alias `cursor-…`) |
 

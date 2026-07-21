@@ -63,39 +63,46 @@ reaches an agent sitting completely idle.**
 | **Codex** (managed / app-server) | **GUARANTEED for local-broker mail** | `thread/inject_items` on arrival plus one gated auto-turn (thread idle, DND off). Remote / `@host` / `#` senders **fail closed** to inject-only — durable and readable, but not a wake. |
 | **Kimi** | **CONDITIONAL** | Needs an out-of-process poster alive: the notifier daemon (armed by managed `c2c start kimi` / `c2c new kimi`, best-effort on SessionStart), a reachable local Kimi server, and a resolvable session id. REST POST to `/api/v1/sessions/{id}/prompts` is the wake — not tmux. |
 | **agy** (Antigravity) | **CONDITIONAL** | Needs the deliver-watch sidecar alive (managed `c2c start agy`) and `agy-env.json` present or auto-discoverable (`~/.local/share/c2c/instances/<sid>/`, CLI-log LS + conversation), so `agy agentapi send-message` can inject. Proven live 2026-07-20; wakes only the TUI's own live conversation (not a c2c-minted headless one — remaining gap #78). |
-| **Codex** (vanilla hooks) | **NONE** at true idle | Hooks fire on session activity only. `hooks+wake` (tmux/herdr input injection) is a legacy partial mitigation, not a guarantee. Prefer managed app-server. |
-| **Claude Code** | **NONE** at true idle | PostToolUse / Stop / SessionStart are activity-triggered. CONDITIONAL only if the agent armed `c2c monitor`. |
-| **Grok** | **NONE** at true idle | Skill + SessionStart/SessionEnd hooks. The skill *instructs* the agent to arm a Monitor — a model decision. CONDITIONAL only if armed. |
+| **Claude Code** | **CONDITIONAL** | Idle wake only while a live **`c2c monitor`** (or equivalent) is armed — typically by the agent. Without it: **NONE** at true idle (PostToolUse / Stop / SessionStart are activity-triggered only). Mail is still durable. |
+| **Grok** | **CONDITIONAL** | Idle wake only while a live **`c2c monitor`** is armed. SessionStart + skill *instruct* the agent to arm one — that is a model decision, so c2c cannot guarantee it. Without Monitor: **NONE** at true idle. |
+| **Codex** (vanilla hooks) | **CONDITIONAL** (weak) | Hooks alone: **NONE** at true idle. Idle wake if the agent arms **`c2c monitor`**, or (legacy) `hooks+wake` tmux/herdr nudge when a wake target is registered. Prefer managed app-server for a real guarantee. |
 
 **GUARANTEED** = c2c pushes it, no model decision, works at full idle.
-**CONDITIONAL** = it works, but only while the named condition holds; the
-condition can fail silently, so treat it as best-effort and diagnose with
-`c2c doctor hooks`.
-**NONE** = c2c cannot wake this client from idle today. Mail is still durable
-and is seen at the agent's next turn.
+**CONDITIONAL** = it works, but only while the named condition holds (out-of-process
+poster, agent-armed Monitor, etc.); the condition can fail silently, so treat it
+as best-effort and diagnose with `c2c doctor hooks` / a live monitor process.
+**NONE** (used inside CONDITIONAL rows) = without that condition, c2c cannot wake
+this client from idle. Mail is still durable and is seen at the agent's next turn.
 
-### Claude Code and Grok cannot be guaranteed from inside c2c
+### Claude Code and Grok: CONDITIONAL on Monitor, never GUARANTEED from c2c alone
 
-This is a genuine limitation, not a bug we are hiding. Neither client exposes
-a local control surface that accepts a synthetic user turn on a running
-session — the shape Kimi has (REST `/api/v1/sessions/{id}/prompts`), Codex has
-(the app-server), and OpenCode has (the plugin API). The three paths that
-exist are all disqualified as guarantees:
+These clients are **first-class** for c2c (install, send/receive, rooms, durability).
+They appear in the table as **CONDITIONAL**, not missing — the condition is an
+agent-armed (or operator-armed) **`c2c monitor`**. That is the same *tier label*
+as Kimi/agy (helper must be alive), with a different helper: Monitor instead of
+REST/agentapi.
 
-- `c2c monitor` must be armed *by the agent* — a model decision.
+They cannot be **GUARANTEED** from inside c2c: neither exposes a local control
+surface that accepts a synthetic user turn on a running session — the shape Kimi
+has (REST `/api/v1/sessions/{id}/prompts`), Codex has (the app-server), OpenCode
+has (the plugin API), and Pi has (`pi.sendMessage`). Paths that exist but are not
+guarantees:
+
+- `c2c monitor` must be armed *by the agent or operator* — not auto-started by
+  `c2c install claude` / `c2c install grok`.
 - The experimental MCP notification channel sits behind an approval-gated
   client capability that standard builds do not declare.
 - PTY / tmux keystroke injection is deprecated and too fragile to found a
   guarantee on.
 
-Closing this needs an upstream surface from those clients (a local
-authenticated endpoint that accepts an injected user turn, or a hook event
-that fires on external file change and can resume an idle session). Tracked
-in [#37](https://github.com/clankercode/c2c/issues/37); the machine-wide
-delivery-service design that covers the CONDITIONAL clients is
-[#35](https://github.com/clankercode/c2c/issues/35).
+Closing the GUARANTEED gap needs an upstream surface from those clients (a local
+authenticated endpoint that accepts an injected user turn, or a hook event that
+fires on external file change and can resume an idle session). Tracked in
+[#37](https://github.com/clankercode/c2c/issues/37); the machine-wide
+delivery-service design is [#35](https://github.com/clankercode/c2c/issues/35).
 
-Until then, the honest advice for Claude Code and Grok is: **arm a Monitor.**
+**Operator advice for Claude Code and Grok:** treat wake as CONDITIONAL — arm a
+Monitor (or keep one armed in the session template):
 
 ```text
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
