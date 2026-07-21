@@ -190,22 +190,23 @@ let exec_many_rows db sql =
 
 let exec_prepared db sql params =
   let stmt = Sqlite3.prepare db sql in
-  List.iteri (fun idx param ->
-    let idx' = idx + 1 in
-    let rc = match param with
-      | `Text s -> Sqlite3.bind_text stmt idx' s
-      | `Int i -> Sqlite3.bind_int stmt idx' i
-      | `Float f -> Sqlite3.bind_double stmt idx' f
-      | `Null -> Sqlite3.bind stmt idx' Sqlite3.Data.NULL
-    in
-    if not (Rc.is_success rc) then failwith ("bind failed: " ^ Rc.to_string rc)
-  ) params;
-  let rec loop () =
-    let rc = Sqlite3.step stmt in
-    if rc = Rc.ROW then true
-    else if rc = Rc.DONE then false
-    else failwith ("step failed: " ^ Rc.to_string rc)
-  in
-  let has_row = loop () in
-  (try Sqlite3.finalize stmt |> ignore with _ -> ());
-  has_row
+  Fun.protect
+    ~finally:(fun () -> (try ignore (Sqlite3.finalize stmt) with _ -> ()))
+    (fun () ->
+      List.iteri (fun idx param ->
+        let idx' = idx + 1 in
+        let rc = match param with
+          | `Text s -> Sqlite3.bind_text stmt idx' s
+          | `Int i -> Sqlite3.bind_int stmt idx' i
+          | `Float f -> Sqlite3.bind_double stmt idx' f
+          | `Null -> Sqlite3.bind stmt idx' Sqlite3.Data.NULL
+        in
+        if not (Rc.is_success rc) then failwith ("bind failed: " ^ Rc.to_string rc)
+      ) params;
+      let rec loop () =
+        let rc = Sqlite3.step stmt in
+        if rc = Rc.ROW then true
+        else if rc = Rc.DONE then false
+        else failwith ("step failed: " ^ Rc.to_string rc)
+      in
+      loop ())
