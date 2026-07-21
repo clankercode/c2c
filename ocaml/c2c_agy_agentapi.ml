@@ -424,6 +424,11 @@ let agentapi_new_conversation_argv ~(model : string) ~(title : string)
 
 let run_agentapi_new_conversation ~(ls_address : string) ?(model = "flash_lite")
     ?(title = "c2c-wake") ~(prompt : string) () : string option =
+  (* Test seam: force a minted conversation id without spawning `agy`.
+     Used only to prove #78 does NOT accept headless mints as wake targets. *)
+  (match Sys.getenv_opt "C2C_AGY_NEW_CONVERSATION_FIXTURE" with
+   | Some id when is_uuid_like id -> Some (String.trim id)
+   | Some _ | None ->
   (* Capture stdout JSON: {"response":{"newConversation":{"conversationId":"..."}}} *)
   let command = "agy" in
   let argv = agentapi_new_conversation_argv ~model ~title ~prompt in
@@ -468,6 +473,7 @@ let run_agentapi_new_conversation ~(ls_address : string) ?(model = "flash_lite")
             | _ -> None
           with _ -> None
       with _ -> None)
+  )
 
 let ls_address_of_port p = Printf.sprintf "127.0.0.1:%d" p
 
@@ -529,20 +535,13 @@ let ensure_agy_env ~session_id ?cli_log_dir ?agy_pid () : agy_env option =
     | Some (ls, Some conv) ->
         write_agy_env session_id ~ls_address:ls ~conversation_id:conv;
         read_agy_env session_id
-    | Some (ls, None) ->
-        (* Idle TUI: mint a wake conversation via agentapi so deliver can
-           inject without a human first turn. *)
-        (match
-           run_agentapi_new_conversation ~ls_address:ls
-             ~prompt:
-               "[c2c] managed wake channel — reply to inbound c2c messages via \
-                c2c CLI when you receive them."
-             ()
-         with
-         | None -> None
-         | Some conv ->
-             write_agy_env session_id ~ls_address:ls ~conversation_id:conv;
-             read_agy_env session_id)
+    | Some (_, None) ->
+        (* #78 cold-start: live LS but no TUI-owned conversation yet.
+           Do NOT mint via agentapi new-conversation — that creates a headless
+           (agenticMode=false) conversation that send-message never wakes the
+           live TUI with. Wait until the TUI creates its own conversation
+           (first turn or managed kickoff) and it appears in the CLI log. *)
+        None
   in
   match read_agy_env session_id with
   | Some env when env_ls_alive env -> Some env

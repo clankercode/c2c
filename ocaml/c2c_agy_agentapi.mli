@@ -5,7 +5,8 @@
     [ANTIGRAVITY_LS_ADDRESS] + conversation id; managed starts often never
     do. [ensure_agy_env] discovers LS HTTP port + conversation from the
     agy CLI log (and optional pid listeners) and persists the env under the
-    managed instances dir so deliver-watch can inject without a human turn.
+    managed instances dir so deliver-watch can inject. It never mints a
+    headless conversation (#78) — only TUI-owned conversation ids wake.
 *)
 
 type agy_env = {
@@ -43,10 +44,12 @@ val ensure_agy_env :
   agy_env option
 (** Return existing env, else discover from CLI log (+ optional pid) and write.
     When the log yields an HTTP LS but no conversation yet (idle TUI before its
-    first user turn), it MINTS a headless conversation via
-    [run_agentapi_new_conversation]. That minted conversation does NOT wake the
-    live TUI — [send-message] only wakes a conversation the TUI itself owns — so
-    the cold-start case is the known gap tracked in #78. *)
+    first user turn), returns [None] and does not write [agy-env.json] (#78).
+    We never mint via [run_agentapi_new_conversation] for the wake target: a
+    c2c-minted headless conversation does not wake the live TUI — [send-message]
+    only wakes a conversation the TUI itself owns. Delivery retries once a
+    TUI-created conversation appears in the CLI log (first turn or managed
+    kickoff). *)
 
 val with_ls_env : ls_address:string -> string array -> string array
 (** Return [env] with [ANTIGRAVITY_LS_ADDRESS]/[ANTIGRAVITY_PROJECT_ID] set to
@@ -72,8 +75,11 @@ val run_agentapi_new_conversation :
   prompt:string ->
   unit ->
   string option
-(** [Some conversation_id] on success. Used when log has HTTP LS but no
-    conversation yet (idle TUI before first user turn). *)
+(** [Some conversation_id] on success. Spawns [agy agentapi new-conversation].
+    Not used by [ensure_agy_env] for wake targets (#78 — headless mints do not
+    wake the live TUI). Retained for tooling / tests; set
+    [C2C_AGY_NEW_CONVERSATION_FIXTURE=<uuid>] in tests to force a return id
+    without spawning [agy]. *)
 
 val format_inbound_payload : C2c_mcp.message list -> string
 
