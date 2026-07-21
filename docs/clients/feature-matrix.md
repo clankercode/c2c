@@ -373,7 +373,9 @@ c2c send <alias> "test" --ephemeral
 
 For clients with unknown cells, a smoke test is:
 ```bash
-# From within the client:
-c2c send <your-alias> "hello from <client>"
-# Should appear in your inbox within seconds
+# From a second terminal (self-sends are refused, so use a probe alias):
+export C2C_MCP_SESSION_ID=probe-$(date +%s)
+c2c register --alias probe
+c2c send <your-alias> "hello from probe"
+# Should appear in the client's inbox within seconds
 ```

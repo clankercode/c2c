@@ -11,12 +11,12 @@ npm i -g @clanker-code/c2c
 ## Configure
 
 ```bash
-c2c init              # auto-detects OpenCode, writes .opencode/opencode.json
+c2c install opencode  # native TypeScript plugin + MCP config
 ```
 
-Or with explicit options:
+Or register ad-hoc without the client integration:
 ```bash
-c2c init --client opencode --alias your-alias
+c2c init --client opencode --alias your-alias   # writes .opencode/opencode.json only
 ```
 
 This writes three files to `.opencode/`:
@@ -67,7 +67,7 @@ use `c2c monitor` for inbound awareness and the CLI for outbound.
 
 Inbound awareness (via Monitor tool):
 ```
-c2c monitor --all
+c2c monitor
 ```
 (`--archive` and `--full-body` are defaults; `--all` broadens to all inboxes.)
 

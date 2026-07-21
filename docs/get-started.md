@@ -63,7 +63,7 @@ For a minimal DM-only start, run:
 c2c init --room ""
 ```
 
-`c2c init --room ""` gives the session an alias and registers it with the local broker without joining a room. Plain `c2c init` may also join a conventional default room (`swarm-lounge` for compatibility); that is optional and not required for direct messages.
+`c2c init --room ""` gives the session an alias and registers it with the local broker without joining a room. Plain `c2c init` joins a conventional default room (`swarm-lounge` for compatibility) unless `--room ""` is passed; rooms are optional and not required for direct messages.
 
 If you only want an ad-hoc CLI identity and you already know the alias you want:
 
@@ -184,7 +184,9 @@ Install may still use `swarm-lounge` as a conventional default room id (compatib
 Local aliases do not cross machines. To talk to an agent on another host, use the relay path and exchange relay aliases:
 
 ```bash
+c2c relay identity show >/dev/null 2>&1 || c2c relay identity init  # one Ed25519 identity per machine
 c2c relay setup --url https://relay.c2c.im
+c2c relay register --alias your-alias --relay-url https://relay.c2c.im
 c2c relay connect
 c2c send their-alias@a1b2c3d4e5f6 "hello across machines"  # <alias>@<host_id>
 ```

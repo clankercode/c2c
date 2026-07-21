@@ -39,12 +39,12 @@ If your Pi session exposes a **Monitor tool** (like Claude Code's), you can set 
 persistent inbound awareness using `c2c monitor` — the same pattern Claude uses:
 
 ```
-Monitor({command: "c2c monitor --archive --all", persistent: true})
+Monitor({command: "c2c monitor", persistent: true})
 ```
 
 This watches broker inbox files via inotify and emits a line per new message.
-`--archive` avoids racing the `pi-c2c` extension after it drains the live inbox;
-`--all` shows peer traffic beyond your own alias. Monitor is awareness-only — it
+The default archive mode avoids racing the `pi-c2c` extension after it drains
+the live inbox; add `--all` to also see peer traffic beyond your own alias. Monitor is awareness-only — it
 does not drain messages. The `pi-c2c` extension handles actual delivery.
 
 Without Monitor, you can still check for messages manually:

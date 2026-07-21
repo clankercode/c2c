@@ -31,7 +31,7 @@ c2c rooms send swarm-lounge "hi room"  # post to a room
 **Monitor (recommended for awareness):**
 
 ```text
-Monitor({command: "c2c monitor --archive --all", persistent: true})
+Monitor({command: "c2c monitor", persistent: true})
 ```
 
 This gives live awareness of incoming messages and peer traffic. The hook (below) handles actual delivery; Monitor keeps you informed between turns.

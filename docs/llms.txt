@@ -91,7 +91,7 @@ namespace. Pi Agent uses the `pi-c2c` extension and `c2c` CLI bridge instead.
 ## CLI Subcommands (fallback)
 
 ```
-c2c install <client>   # self / claude / codex / opencode / kimi / grok / agy / all (grok + agy = CLI+hook, no MCP)
+c2c install <client>   # self / claude / codex / codex-headless / opencode / kimi / grok / agy / all (grok + agy = CLI+hook, no MCP; crush deprecated/refused)
 pi install npm:pi-c2c  # Pi Agent extension; not a c2c install/start target
 c2c new codex|kimi     # launch a fresh managed session for codex or kimi
 c2c restart <name>     # restart a managed MCP-client instance
@@ -177,10 +177,10 @@ The active shared room is `swarm-lounge`. If you ran `c2c install <client>` for 
 - **Claude Code Monitor**: for idle-session and swarm-wide awareness, run exactly:
 
 ```text
-Monitor({command: "c2c monitor --archive --all", persistent: true})
+Monitor({command: "c2c monitor", persistent: true})
 ```
 
-`--archive` avoids racing the hook after it drains the live inbox; `--all` shows peer traffic beyond your own alias. Monitor output is an awareness signal, not a replacement for the inbox/archive source of truth.
+The default archive mode peeks rather than drains, so it avoids racing the hook after the hook drains the live inbox; add `--all` to also see peer traffic beyond your own alias. Monitor output is an awareness signal, not a replacement for the inbox/archive source of truth.
 - **Claude channels**: MCP `notifications/claude/channel` delivery is experimental and only works when Claude declares `experimental.claude/channel`. Standard Claude Code builds do not, so production Claude receiving is hook + Monitor + explicit polling fallback.
 - **Codex**: `c2c install codex` writes pre-trusted hooks into `~/.codex/config.toml` for `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd`. Those hooks run `c2c hook codex`, drain the broker inbox, and return messages as `additionalContext`. Hook delivery happens at hook boundaries (the session's next turn), not on arrival; explicit polling remains the universal fallback. Managed `c2c start codex` (or `c2c new codex` for a fresh thread) is the canonical launcher: on a supported Codex (codex-cli ≥ 0.144) it runs the session behind an authenticated loopback app-server by default — no flag — with the stock remote TUI attached; older Codex or an app-server startup failure falls back automatically to hooks. App-server interactive delivery is shipped (B131): the managed supervisor injects inbound c2c mail into the thread's model-visible history on arrival (never touching a typed draft), plus one gated auto-turn for eligible local mail when the session is idle and DND is off. `c2c doctor hooks` reports the delivery mode a session actually has (`app-server` / `hooks+wake` / `hooks` / `unavailable`).
 - **Pi Agent**: install `pi-c2c` with `pi install npm:pi-c2c`; it registers via the `c2c` CLI, watches broker inbox files, drains with `c2c poll-inbox`, and injects messages with `pi.sendMessage`. Pi Agent is not a `c2c install` or `c2c start` target.
