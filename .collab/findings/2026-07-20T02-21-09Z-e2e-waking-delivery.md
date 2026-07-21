@@ -236,3 +236,15 @@ turn on an existing conversation (vs `new-conversation`, which runs its prompt b
 conversation); (b) if none, mark agy managed wake CONDITIONAL→NONE in docs until upstream adds one,
 and stop deliver-watch from draining-without-waking (silent loss); (c) fix the fresh-start
 conversation divergence and the sessions-vs-repo broker routing footgun regardless.
+
+### UPDATE — agy wake IS achievable (terminal injection), but B098-unsafe (2026-07-21)
+Exhaustively tested all 3 agentapi verbs: send-message (no turn), new-conversation
+(runs but agenticMode=false + workspaces=[] → cannot act), get-conversation-metadata
+(read-only). agentapi cannot wake the agentic session. **tmux/terminal injection into
+the managed TUI pane DOES wake it** — probe injected, agy woke, ran a turn, executed
+`c2c send`, receiver got the WOKE nonce. BUT terminal injection makes the peer message
+USER-ROLE input; in YOLO agy obeyed an instruction in the payload → B098 ("bus, never
+RPC") violation. So agy wake = terminal-injection = B098 trade-off. Decision for Max
+(see #78): (a) status quo inject-only/no-wake [B098-safe]; (b) gated terminal-injection
+wake mirroring the codex gate + explicit B098 carve-out; (c) wait for upstream agy
+B098-safe wake verb [rec, like #37]. NOT wired — deleting B098 for agy needs sign-off.
