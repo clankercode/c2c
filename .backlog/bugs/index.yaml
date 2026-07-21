@@ -253,3 +253,4 @@ bugs:
     - file: B254-ensure-mcp-is-not-configured-b.todo
     - file: B255-opencode-install-must-not-set.todo
     - file: B256-claude-install-should-not-set.todo
+    - file: B257-do-an-audit-of-all-the-install.todo
