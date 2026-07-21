@@ -22,74 +22,13 @@ let read_role ~alias =
     Some role
   with Sys_error _ -> None
 
-let yaml_scalar s =
-  if s = "" || String.length s > 0 && (String.contains s ':' || String.contains s '#' ||
-     String.contains s '"' || String.contains s '\'') then
-    "\"" ^ String.escaped s ^ "\""
-  else s
-
-let write_role ~alias ~(role : C2c_role.t) =
-  let dir = roles_dir () in
-  C2c_utils.mkdir_p dir;
-  let path = role_file_path ~alias in
-  let fm =
-    Printf.sprintf
-      "---\n\
-       description: %s\n\
-       role: %s\n\
-       ---\n\
-       %s\n"
-      (yaml_scalar role.C2c_role.description)
-      role.C2c_role.role
-      role.C2c_role.body
-  in
-  let oc = open_out path in
-  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-    output_string oc fm)
-
-let prompt_for_role ~alias =
-  if Unix.isatty Unix.stdin then begin
-    Printf.eprintf "\n[c2c start] No role file found for alias '%s'.\n" alias;
-    Printf.eprintf "  What is this agent's role? (e.g. coder, planner, coordinator — press Enter to skip)\n";
-    Printf.eprintf "  > %!";
-    let line = try input_line stdin with End_of_file -> "" in
-    let trimmed = String.trim line in
-    if trimmed <> "" then begin
-      (* If the input matches a known role class, expand the full template
-         body so the agent gets first-5-turns + heartbeat block + peer-PASS
-         sentence without the operator needing to write it manually.
-         Fall back to using the raw input as a simple body. *)
-      let body =
-        match Role_templates.render ~role_class:trimmed ~alias ~display_name_hint:"" with
-        | Some rendered -> rendered
-        | None -> trimmed
-      in
-      let role = { C2c_role.
-        description = "";
-        role = "subagent";
-        model = None;
-        pmodel = None;
-        role_class = None;
-        pronouns = None;
-        coordinator = None;
-        c2c_alias = None;
-        c2c_auto_join_rooms = [];
-        c2c_heartbeat = [];
-        c2c_heartbeats = [];
-        include_ = [];
-        compatible_clients = [];
-        required_capabilities = [];
-        opencode = [];
-        claude = [];
-        codex = [];
-        kimi = [];
-        body;
-      } in
-      write_role ~alias ~role;
-      Printf.eprintf "[c2c start] Role saved to .c2c/roles/%s.md\n%!" alias;
-      Some role
-    end else None
-  end else None
+(* Role files are a deprecated, unused feature (Max, 2026-07-21): [c2c start] no
+   longer interactively prompts for a role when none is configured. This is a
+   no-op returning [None] so every call site and its fall-through to the default
+   no-role kickoff is unchanged. The old body wrote a .c2c/roles/<alias>.md file
+   from a TTY prompt (via [write_role]/[yaml_scalar], now removed); an operator
+   who genuinely wants a role file still creates one with `c2c agent new`. *)
+let prompt_for_role ~alias:_ = None
 
 (* Render the kickoff prompt (#341): take the [swarm] restart_intro
    template (or the built-in fallback) and substitute {name}, {alias},

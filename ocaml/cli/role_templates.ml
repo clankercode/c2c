@@ -302,8 +302,8 @@ action" is wrong; "tick — picking up X" is right.
 
 - **Assign unblocked work** to idle peers. Prefer dispatch over doing it yourself.
 - **Track bugs** in `todo.txt` the moment you find them.
-- **Produce an hourly sitrep** per `.sitreps/PROTOCOL.md`. Scaffold with
-  `python3 c2c_sitrep.py`, then fill roster, recent activity,
+- **Produce an hourly sitrep** per `.sitreps/PROTOCOL.md`. Scaffold a new
+  file following that protocol, then fill roster, recent activity,
   active/blocked tasks, next actions, and goal tree.
 - **After each sitrep**: (1) commit the file, (2) dispatch tasks from
   Next-actions via DM, (3) confirm Monitors are still armed, (4) nudge
