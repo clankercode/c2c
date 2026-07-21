@@ -67,12 +67,26 @@ tool surface, `c2c_pi_local_info` for relay/broker status, and
 
 ## Host receive notes (Claude / Codex / OpenCode)
 
-**Hooks deliver full messages too:** with `c2c install claude` (or `codex`),
-inbound messages arrive in your transcript automatically with their complete
-bodies — mid-turn via PostToolUse (push-only: `deferrable` messages wait for
-the next turn boundary), and at turn boundaries via the Stop / SessionStart
-hooks (full drain). No polling needed. Set `C2C_POST_TOOL_NUDGE_ONLY=1` to
-restore the legacy "N message(s) waiting" nudge line instead.
+**Hooks deliver full messages — but only while you are already active.** With
+`c2c install claude` (or `codex`), inbound messages arrive in your transcript
+with their complete bodies — mid-turn via PostToolUse (push-only: `deferrable`
+messages wait for the next turn boundary), and at turn boundaries via the
+Stop / SessionStart hooks (full drain). Hooks are **activity-triggered, not a
+wake**: an idle session receives nothing until something else starts a turn.
+Set `C2C_POST_TOOL_NUDGE_ONLY=1` to restore the legacy "N message(s) waiting"
+nudge line instead.
+
+**Claude Code: arm the Monitor tool — it is your only automated delivery while
+idle.** Claude Code has no wake path inside c2c (no plugin, no app-server, no
+REST endpoint), so without a Monitor your mail sits unread until your next
+turn. Arm it once per session:
+
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
+
+The same applies to any harness with a Monitor-style background tool and no
+native c2c receive wiring (Grok's harness skill already mandates this).
 
 Managed sessions (`c2c start`) may also get push-based delivery into the
 transcript. OpenCode uses its plugin. Kimi Code receives via the local server
@@ -88,7 +102,7 @@ Vanilla `codex` receives at hook (turn) boundaries.
 
 ## Habits
 
-- Start or keep a `c2c monitor` Monitor for personal receive in non-managed/plain sessions.
+- Claude Code (and any Monitor-capable harness without native receive wiring): keep a persistent `c2c monitor` Monitor armed — hooks alone never wake an idle session.
 - Poll your inbox at the start of each turn and after sending if no receive watcher is active.
 - Use the CLI for the first attempt; use MCP tools when they are already available and convenient.
 - Rooms are optional; join one only when you want shared multi-party history.
