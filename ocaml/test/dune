@@ -243,6 +243,13 @@
  (modules test_relay)
  (libraries c2c_mcp alcotest yojson unix))
 
+; B262/B263: recipient-owned sender-bound contact grant backend contract.
+; Covers issue/list/revoke/rotate/admit on InMemory + Sqlite (B263).
+(test
+ (name test_relay_contact_grants)
+ (modules test_relay_contact_grants)
+ (libraries c2c_mcp alcotest base64 digestif.ocaml threads unix str))
+
 ; B147: relay usage stats (GET /stats) — windowed aggregation on both
 ; backends + anonymous route classification.
 (test
