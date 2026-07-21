@@ -436,8 +436,7 @@ messages into the transcript with `pi.sendMessage`. It is installed with
 
 ## OpenCode
 
-TypeScript plugin spawns an **alias-scoped** `c2c monitor` (`c2c monitor --alias
-<session>`; not `--all`), delivers via `client.session.promptAsync`. Messages
+TypeScript plugin spawns an **alias-scoped** `c2c monitor` (`c2c monitor --alias <session>`; not `--all`), delivers via `client.session.promptAsync`. Messages
 appear as native user turns. Session ID from `$OPENCODE_SESSION_ID`. Restart via
 `c2c restart <name>`. `c2c install opencode` writes the plugin to
 `.opencode/plugins/c2c.ts` project-locally — a symlink to

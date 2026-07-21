@@ -233,8 +233,7 @@ wrapper).
 `C2C_RELAY_CA_BUNDLE` (same as the HTTPS client). Native-TLS listeners created
 with `c2c relay serve --tls-cert ... --tls-key ...` support the same WebSocket
 subscribe path (B195). If you prefer not to hold a WebSocket open, use `c2c
-relay connect` for local-broker delivery or poll with `c2c relay dm --alias
-<you> poll`.
+relay connect` for local-broker delivery or poll with `c2c relay dm --alias <you> poll`.
 
 ---
 
