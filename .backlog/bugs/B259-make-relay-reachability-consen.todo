@@ -1,16 +1,17 @@
 ---
 claimed_at: "2026-07-21T17:58:10Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-21T17:58:10Z"
 complexity: high
 created_at: "2026-07-21T13:46:38Z"
 depends_on:
     - B267
+duration_minutes: 0.00477607975
 estimate_hours: 2
 id: B259
 priority: critical
 started_at: "2026-07-21T17:58:10Z"
-status: in_progress
+status: done
 tags: []
 title: Make relay reachability consent-gated and non-discoverable
 updated_at: "2026-07-21T17:58:10Z"
