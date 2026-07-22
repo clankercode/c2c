@@ -167,7 +167,7 @@ codegen-llms-check:
 # Serve the c2c.im docs site locally with live-reload (Jekyll).
 # Installs gems on first run; open http://127.0.0.1:4000.
 docs-serve:
-    cd docs && bundle install --quiet && bundle exec jekyll serve --livereload
+    cd docs && bundle install --quiet && bundle exec jekyll serve --livereload --port 4141
 
 # One-off build of the docs site into docs/_site/ (gitignored —
 # GitHub Pages builds from source on push, never commit _site/).
