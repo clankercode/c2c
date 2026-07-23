@@ -1,0 +1,44 @@
+---
+complexity: medium
+created_at: "2026-07-23T10:34:20Z"
+depends_on: []
+estimate_hours: 2
+id: B284
+priority: medium
+status: pending
+tags:
+    - cursor
+    - identity
+    - session-resolve
+    - B187
+title: Detect Cursor Agent sessions for identity/session resolution
+updated_at: "2026-07-23T10:34:20Z"
+---
+## Symptom
+Bare `/c2c` (or `c2c whoami` / `c2c init`) inside Cursor Agent fails to resolve a usable session identity.
+
+Live receipt (2026-07-23, Cursor Agent on host xsm, repo c2c):
+
+1. Env is clearly Cursor: `CURSOR_AGENT=1`, `CURSOR_INVOKED_AS=cursor-agent`, askpass socket under `/tmp/cursor-askpass-<id>.sock`.
+2. No native session key is resolved → `c2c whoami` / `peek-inbox` exit with `error: no session ID could be resolved`.
+3. `c2c init` falls back to sticky `<broker>/default-session.json`, which still held a prior **grok** session (`grok-arctic-pave-jpvf` / `019f8dfe-…`). Init "succeeds" by reusing that row and rewriting `client` to `cursor` while keeping the `grok-*` alias.
+4. Subsequent `whoami` with that sid hits **B187**: refuses borrowed/cross-client identity (`cursor` shell + `grok-` alias prefix).
+5. Recovery required manual `c2c register --alias cursor-… --session-id …` + `export C2C_MCP_SESSION_ID=…` + rewriting `default-session.json`.
+
+Related but distinct from **B134** (done): B134 was wrong *client label / alias prefix* (`codex-` for Cursor). This bug is: Cursor Agent still has **no first-class session-id resolution path**, so init/whoami cannot mint an honest Cursor identity without operator surgery.
+
+## Expected
+- When `CURSOR_AGENT=1` (or `CURSOR_INVOKED_AS=cursor-agent`), treat as client `cursor`.
+- Resolve or mint a stable per-conversation/session id from Cursor-native signals if available (investigate askpass socket id, any Cursor conversation/session env, otherwise a durable init fallback that does **not** inherit a foreign alias).
+- `c2c init` / `whoami` in a Cursor Agent shell should yield a `cursor-*` alias and succeed without exporting `C2C_MCP_SESSION_ID` by hand.
+- Sticky `default-session.json` must not silently re-bind a Cursor shell to another client's alias (fail closed / mint new / rename path), consistent with B187.
+
+## Acceptance
+- [ ] Cursor Agent shell with `CURSOR_AGENT=1` → `c2c whoami` resolves without manual `C2C_MCP_SESSION_ID`.
+- [ ] Fresh Cursor init does not reuse a foreign (e.g. `grok-*` / `codex-*`) sticky fallback alias.
+- [ ] Alias prefix / registration `client` is `cursor` (not `codex` / `grok`).
+- [ ] Regression test for Cursor env detect + session resolve; document Cursor as best-effort (no install/hooks parity required).
+- [ ] B187 still fires if an explicit foreign sid is forced.
+
+## Discovery
+Dogfood `/c2c` in Cursor Agent 2026-07-23 after B134 fix; session resolve still broken → manual register required before monitor could arm.
