@@ -11,6 +11,7 @@ let respond_ok ?(headers = []) body = respond_json ~headers ~status:`OK body
 let respond_bad_request ?(headers = []) body = respond_json ~headers ~status:`Bad_request body
 let respond_unauthorized ?(headers = []) body = respond_json ~headers ~status:`Unauthorized body
 let respond_too_many_requests ?(headers = []) body = respond_json ~headers ~status:`Too_many_requests body
+let respond_service_unavailable ?(headers = []) body = respond_json ~headers ~status:`Service_unavailable body
 let respond_not_found ?(headers = []) body = respond_json ~headers ~status:`Not_found body
 let respond_conflict ?(headers = []) body = respond_json ~headers ~status:`Conflict body
 let respond_internal_error ?(headers = []) body = respond_json ~headers ~status:`Internal_server_error body
