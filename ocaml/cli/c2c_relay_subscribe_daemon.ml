@@ -101,6 +101,10 @@ module Reconnect_circuit = struct
     t.cool_until <- 0.0
 end
 
+(* B275: max concurrent in-flight /ws/subscribe connects defaults to
+   C2c_ws_connect_gate.default_max_inflight; overridable via
+   C2C_RELAY_SUBSCRIBE_MAX_INFLIGHT. *)
+
 (* === IPC Protocol === *)
 
 type register_request = {
@@ -236,12 +240,29 @@ type daemon_state = {
   relay_endpoint : Relay_ws_client.endpoint;
   (* B273: shared cool-down when many aliases fail together. *)
   circuit : Reconnect_circuit.t;
+  (* B275: global cap on concurrent in-flight /ws/subscribe handshakes.
+     Live sessions do not hold a slot — only connect/handshake does. *)
+  connect_gate : C2c_ws_connect_gate.t;
 }
 
 (* === WebSocket Connection Management (non-blocking Lwt) === *)
 
 let create_ws_session_lwt ~endpoint ~alias ~identity =
   Relay_ws_client.connect_subscribe ~endpoint ~alias ~identity ()
+
+(* Connect under the global in-flight gate (B275). Slot is held only for the
+   handshake — released as soon as connect returns (ok or error) so other
+   aliases can proceed while this one reads frames. Re-check stop after
+   acquiring in case we waited in the queue while deregister fired. *)
+let stop_while_queued_msg = "subscribe-daemon: stop requested while queued for connect"
+
+let connect_with_gate (state : daemon_state) (conn : alias_conn) =
+  C2c_ws_connect_gate.with_slot state.connect_gate (fun () ->
+      if conn.stop_requested then
+        Lwt.fail (Failure stop_while_queued_msg)
+      else
+        create_ws_session_lwt ~endpoint:state.relay_endpoint
+          ~alias:conn.alias ~identity:state.identity)
 
 (* Run a single alias WS connection: connects, reads frames, forwards DMs.
    Handles reconnection with full-jitter expo backoff + stable-session reset
@@ -256,8 +277,7 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
       in
       Lwt.catch
         (fun () ->
-           create_ws_session_lwt ~endpoint:state.relay_endpoint
-             ~alias:conn.alias ~identity:state.identity
+           connect_with_gate state conn
            >>= fun (session, close) ->
            conn.ws_session := Some session;
            conn.session_alive <- true;
@@ -346,8 +366,12 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
                 Lwt.catch close (fun _ -> Lwt.return_unit)))
         (fun exn ->
            outcome := `Connect_failed;
-           Printf.eprintf "[subscribe-daemon] WS connect failed for %s: %s\n%!"
-             conn.alias (Printexc.to_string exn);
+           (* Quiet on intentional stop-while-queued; still log real failures. *)
+           (match exn with
+            | Failure msg when msg = stop_while_queued_msg -> ()
+            | _ ->
+              Printf.eprintf "[subscribe-daemon] WS connect failed for %s: %s\n%!"
+                conn.alias (Printexc.to_string exn));
            Lwt.return_unit)
       >>= fun () ->
       if conn.stop_requested || client.client_closed then
@@ -652,8 +676,11 @@ let start_daemon_cmd =
     exit 1
   | Ok identity ->
     let scheme = if endpoint.Relay_ws_client.use_tls then "wss" else "ws" in
-    Printf.eprintf "[subscribe-daemon] starting (relay=%s://%s:%d socket=%s)\n%!"
-      scheme endpoint.Relay_ws_client.host endpoint.Relay_ws_client.port socket_path;
+    let connect_gate = C2c_ws_connect_gate.create () in
+    Printf.eprintf
+      "[subscribe-daemon] starting (relay=%s://%s:%d socket=%s max_inflight_connects=%d)\n%!"
+      scheme endpoint.Relay_ws_client.host endpoint.Relay_ws_client.port socket_path
+      (C2c_ws_connect_gate.capacity connect_gate);
     (* B273: seed jitter so concurrent daemons / multi-alias loops desync. *)
     Random.self_init ();
     let state = {
@@ -661,6 +688,7 @@ let start_daemon_cmd =
       shutdown_waker = None; lock_fd = None;
       socket_path; identity; relay_endpoint = endpoint;
       circuit = Reconnect_circuit.create ();
+      connect_gate;
     } in
     let handle_signal _sig =
       state.shutdown_requested <- true;

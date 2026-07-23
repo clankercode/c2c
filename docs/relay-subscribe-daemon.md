@@ -50,6 +50,12 @@ Options:
 
 The daemon opens WebSocket connections on behalf of aliases registered over the Unix socket IPC. TLS (`https://` / `wss://`) is supported for edge-terminated public relays (B189) and native-TLS `c2c relay serve --tls-cert ... --tls-key ...` listeners (B195); self-signed relays need `C2C_RELAY_CA_BUNDLE`. Polling (`c2c relay dm --alias <you> poll`) remains a valid alternative when you do not want a long-lived WebSocket.
 
+**In-flight connect cap (B275).** Concurrent `/ws/subscribe` handshakes are
+capped (default **8**) so an outage cannot open one connect per registered
+alias in parallel. Live sessions do not consume a slot — only the connect
+handshake does; further aliases queue. Override with
+`C2C_RELAY_SUBSCRIBE_MAX_INFLIGHT` (positive integer; invalid/empty → default).
+
 ## Manage aliases
 
 ```bash
