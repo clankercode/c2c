@@ -1,0 +1,33 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:19:44Z"
+depends_on: []
+estimate_hours: 1
+id: B272
+priority: high
+status: pending
+tags:
+    - relay
+    - ws
+    - client
+    - B270
+title: 'relay WS client: hard timeout on /ws/subscribe connect+handshake'
+updated_at: "2026-07-23T08:19:44Z"
+---
+## Problem
+`Relay_ws_client.connect_subscribe` / `open_channels` have **no** connect, TLS, or HTTP-upgrade timeout. When the Railway/Cloudflare edge holds TCP/TLS open waiting for a dead origin (B215-style 502 hang), the client stays ESTAB and blocked in `Lwt_io.read_line` until the edge closes.
+
+With many aliases this produces large concurrent hung sockets (measured: 100+ ESTAB growth in 10s on one subscribe-daemon during a 502 outage).
+
+## Solution
+1. Wrap connect + TLS + upgrade handshake in a hard timeout (e.g. 5–10s) via `Lwt_unix.with_timeout` (or equivalent).
+2. On timeout: close channels/socket, surface a clear error, let reconnect backoff run.
+3. Hermetic tests: simulated hung peer does not leave FD growth; timeout fires.
+
+## Files
+- `ocaml/relay_ws_client.ml`
+- `ocaml/cli/c2c_relay_subscribe_daemon.ml` (consumer)
+- tests under `ocaml/test/`
+
+## Related
+B270 umbrella. Pairs with client backoff + cancel-safe close bugs.
