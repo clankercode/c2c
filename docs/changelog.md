@@ -9,6 +9,17 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **WS subscribe clients honour server Retry-After (B279).** Failed
+  `/ws/subscribe` upgrades that return **429** (rate limit) or **503**
+  (concurrent subscriber cap) surface `Upgrade_rejected` with optional
+  `retry_after_s` from the `Retry-After` header or JSON `retry_after` body.
+  `c2c relay subscribe-daemon` reconnect sleep is
+  `max(local_jitter, circuit_cool_down, server_retry_after)` so local backoff
+  never undercuts the relay meter; expo base still grows and does not reset
+  to 1s while the origin is rate-limiting. Server 429 responses now include a
+  `Retry-After` header (in addition to the B237 JSON envelope). Documented
+  compose order: token-bucket → auth → ConnectionCap.
+
 ## 0.14.3 — 2026-07-23
 
 - **One c2c child can publish state for many identities.** The new internal
