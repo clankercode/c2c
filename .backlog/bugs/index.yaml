@@ -279,3 +279,4 @@ bugs:
     - file: B280-relay-cap-concurrent-observer.todo
     - file: B281-subscribe-daemon-never-prunes.todo
     - file: B282-relay-re-enable-or-schedule-le.todo
+    - file: B283-relay-heartbeat-wire-stmts-to.todo

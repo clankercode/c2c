@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:42:22Z"
+depends_on: []
+estimate_hours: 1
+id: B283
+priority: high
+status: pending
+tags: []
+title: 'Relay heartbeat: wire stmts= to SqliteRelay.cached_stmt_count (B271 field stays -1 without backend hook)'
+updated_at: "2026-07-23T08:42:22Z"
+---
+
+Relay heartbeat: wire stmts= to SqliteRelay.cached_stmt_count (B271 field stays -1 without backend hook)
