@@ -277,3 +277,4 @@ bugs:
     - file: B278-subscribe-daemon-list-is-per-i.todo
     - file: B279-relay-ws-proper-end-to-end-rat.todo
     - file: B280-relay-cap-concurrent-observer.todo
+    - file: B281-subscribe-daemon-never-prunes.todo
