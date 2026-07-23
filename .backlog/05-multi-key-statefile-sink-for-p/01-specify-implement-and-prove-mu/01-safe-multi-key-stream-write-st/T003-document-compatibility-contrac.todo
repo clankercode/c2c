@@ -1,18 +1,21 @@
 ---
+claimed_at: "2026-07-23T11:33:02Z"
+claimed_by: pi-d94259
+completed_at: "2026-07-23T11:33:02Z"
 complexity: low
 created_at: "2026-07-23T10:46:45Z"
 depends_on:
     - P5.M1.E1.T002
+duration_minutes: 0.008674701766666666
 estimate_hours: 1.5
 id: P5.M1.E1.T003
 priority: medium
-status: pending
-tags:
-    - docs
-    - statefile
-    - pi-c2c
-    - dual-repo
+started_at: "2026-07-23T11:33:02Z"
+status: done
+tags: []
 title: Document compatibility contract and complete dual-repo handoff
-updated_at: "2026-07-23T10:46:45Z"
+updated_at: "2026-07-23T11:33:02Z"
 ---
 Update command/help and relevant docs with exact envelope, validation/failure semantics, unchanged path, and legacy compatibility. c2c fans out snapshots; pi-c2c owns parent multiplexing, lifecycle, full-snapshot generation, and old-c2c fallback/version detection. Link pi-c2c P1.M1.E2.T001-T004 and c2c P5. Dogfood two temporary safe keys, verify via c2c statefile --instance, clean files, then exchange review requests over c2c and fix until both pass.
+
+Implemented and reviewed in commit 591b0deb, merged to master. Contract coordinated with pi-c2c P1.M1.E2; focused build and 3-test suite pass; two-key raw statefile dogfood pass; independent gpt-5.6-terra review PASS after fixes.

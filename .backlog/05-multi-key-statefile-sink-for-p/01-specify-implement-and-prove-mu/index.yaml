@@ -9,9 +9,9 @@ epics:
       locked: false
       name: Safe multi-key stream-write-statefiles command
       path: 01-safe-multi-key-stream-write-st
-      status: pending
+      status: done
 estimate_hours: 8
 id: P5.M1
 locked: false
 name: Specify, implement, and prove multi-key sink
-status: pending
+status: done

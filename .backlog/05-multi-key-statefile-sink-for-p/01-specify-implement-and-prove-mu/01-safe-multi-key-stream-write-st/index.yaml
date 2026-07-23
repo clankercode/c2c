@@ -4,7 +4,7 @@ estimate_hours: 8
 id: P5.M1.E1
 locked: false
 name: Safe multi-key stream-write-statefiles command
-status: pending
+status: done
 tasks:
     - complexity: medium
       depends_on: []
@@ -12,7 +12,7 @@ tasks:
       file: T001-specify-multi-key-jsonl-envelo.todo
       id: T001
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Specify multi-key JSONL envelope and path-safety contract
     - complexity: high
@@ -22,7 +22,8 @@ tasks:
       file: T002-implement-multi-key-statefile.todo
       id: T002
       priority: high
-      status: pending
+      status: done
+      tags: []
       title: Implement multi-key statefile sink with hermetic tests
     - complexity: low
       depends_on:
@@ -31,5 +32,6 @@ tasks:
       file: T003-document-compatibility-contrac.todo
       id: T003
       priority: medium
-      status: pending
+      status: done
+      tags: []
       title: Document compatibility contract and complete dual-repo handoff

@@ -48,11 +48,11 @@ phases:
       description: 'Implement c2c''s half of pi-c2c I001/P1: one c2c process accepts identity-keyed snapshots and atomically maintains the existing host-global per-instance files. Preserve the one-key sink and c2c statefile --instance compatibility; coordinate landing and cross-review with pi-c2c over c2c.'
       estimate_hours: 8
       id: P5
-      locked: false
+      locked: true
       name: Multi-key statefile sink for pi-c2c writer multiplexing
       path: 05-multi-key-statefile-sink-for-p
       priority: medium
-      status: pending
+      status: done
       weeks: 1
 project: c2c
 stats:

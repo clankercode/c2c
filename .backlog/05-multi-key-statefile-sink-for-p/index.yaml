@@ -2,7 +2,7 @@ complexity: medium
 depends_on: []
 estimate_hours: 8
 id: P5
-locked: false
+locked: true
 milestones:
     - complexity: medium
       depends_on: []
@@ -12,7 +12,7 @@ milestones:
       locked: false
       name: Specify, implement, and prove multi-key sink
       path: 01-specify-implement-and-prove-mu
-      status: pending
+      status: done
 name: Multi-key statefile sink for pi-c2c writer multiplexing
-status: pending
+status: done
 weeks: 1
