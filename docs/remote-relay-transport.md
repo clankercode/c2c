@@ -127,6 +127,7 @@ The compiled defaults (source of truth: `classify_endpoint` in
 | `/register` | 10 | 0.5/s (30/min) |
 | `/pubkey` | 100 | 10/s |
 | `/observer` | 20 | 20/min |
+| `/ws/subscribe` | 10 | 10/min |
 | `/mobile-pair` | 10 | 10/min |
 | `/device-pair` | 5 | 5/min |
 

@@ -83,6 +83,10 @@ let classify_endpoint path =
     Some ("device-pair", 5.0, 0.083)   (* strict: 5/min ≈ 0.083/s *)
   else if starts_with "/observer" path then
     Some ("observer", 20.0, 0.333)  (* strict: 20/min ≈ 0.333/s *)
+  else if starts_with "/ws/subscribe" path then
+    (* B276: WS upgrade is long-lived (Expert + ping/recv). Meter reconnect
+       storms after 502; stricter than /observer (20 burst, 20/min). *)
+    Some ("ws_subscribe", 10.0, 0.167)  (* strict: 10 burst, 10/min ≈ 0.167/s *)
   else if starts_with "/register" path then
     Some ("register", 10.0, 0.5)    (* moderate: 10 burst, 30/min ≈ 0.5/s *)
   else if starts_with "/send_all" path then
