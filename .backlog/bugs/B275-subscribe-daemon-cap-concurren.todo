@@ -1,0 +1,31 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:19:45Z"
+depends_on: []
+estimate_hours: 1
+id: B275
+priority: high
+status: pending
+tags:
+    - relay
+    - ws
+    - client
+    - B270
+title: 'subscribe-daemon: cap concurrent in-flight /ws/subscribe connects'
+updated_at: "2026-07-23T08:19:45Z"
+---
+## Problem
+Subscribe-daemon opens one reconnect loop per alias with no global limit on concurrent in-flight `/ws/subscribe` attempts. Under outage, all aliases connect in parallel → FD/thread pressure on the client and thundering herd on the server.
+
+Live: one daemon hit ~200 ESTAB + 464 threads + 531MB RSS during a 502 window.
+
+## Solution
+1. Cap concurrent in-flight WS connects per daemon (queue remaining aliases).
+2. Optionally cap total live WS sessions if product allows (or document multi-alias expected cost).
+3. Tests: with N aliases and hung peer, concurrent connects ≤ cap.
+
+## Files
+- `ocaml/cli/c2c_relay_subscribe_daemon.ml`
+
+## Related
+B270. Server-side caps are a separate bug; both should land.

@@ -271,3 +271,4 @@ bugs:
     - file: B272-relay-ws-client-hard-timeout-o.todo
     - file: B273-subscribe-daemon-jittered-reco.todo
     - file: B274-subscribe-daemon-ws-client-can.todo
+    - file: B275-subscribe-daemon-cap-concurren.todo
