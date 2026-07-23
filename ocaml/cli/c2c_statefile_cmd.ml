@@ -338,6 +338,69 @@ let oc_plugin_stream_write_statefile_cmd =
       done
     with End_of_file | Sys_error _ -> ())) $ Cmdliner.Term.const ())
 
+(* Multi-key variant used by clients that multiplex several logical identities
+   through one long-lived c2c child.  The routing key is deliberately a
+   conservative filesystem component; it is removed before the unchanged
+   state.snapshot envelope is persisted. *)
+let valid_statefile_instance_key key =
+  let length = String.length key in
+  let valid_first = function
+    | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' -> true
+    | _ -> false
+  in
+  let valid_rest = function
+    | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9' | '.' | '_' | '-' -> true
+    | _ -> false
+  in
+  length >= 1 && length <= 128
+  && key <> "." && key <> ".."
+  && valid_first key.[0]
+  && String.for_all valid_rest key
+
+let oc_plugin_stream_write_statefiles_cmd =
+  Cmdliner.Term.(const (fun () ->
+    let home = Sys.getenv_opt "HOME" |> Option.value ~default:"/tmp" in
+    let instances_dir = Filename.concat home ".local/share/c2c/instances" in
+    let write_snapshot key snapshot =
+      let instance_dir = Filename.concat instances_dir key in
+      C2c_mcp.mkdir_p ~mode:0o700 instance_dir;
+      let statefile = Filename.concat instance_dir "oc-plugin-state.json" in
+      let tmp, oc =
+        Filename.open_temp_file ~temp_dir:instance_dir
+          ~mode:[Open_wronly; Open_creat; Open_excl; Open_binary]
+          ~perms:0o600 "oc-plugin-state.json." ".tmp"
+      in
+      try
+        Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+          output_string oc (Yojson.Safe.to_string snapshot);
+          output_char oc '\n');
+        Unix.rename tmp statefile
+      with _ ->
+        close_out_noerr oc;
+        (try Sys.remove tmp with _ -> ())
+    in
+    let process_line line =
+      let trimmed = String.trim line in
+      if trimmed <> "" then
+        match (try Some (Yojson.Safe.from_string trimmed) with _ -> None) with
+        | Some (`Assoc fields) ->
+            (match List.assoc_opt "instance_key" fields,
+                   List.assoc_opt "event" fields,
+                   List.assoc_opt "ts" fields,
+                   List.assoc_opt "state" fields with
+             | Some (`String key), Some (`String "state.snapshot"),
+               Some (`String ts), Some (`Assoc _)
+                 when valid_statefile_instance_key key && String.trim ts <> "" ->
+                 let snapshot =
+                   `Assoc (List.filter (fun (name, _) -> name <> "instance_key") fields)
+                 in
+                 write_snapshot key snapshot
+             | _ -> ())
+        | _ -> ()
+    in
+    try while true do process_line (input_line stdin) done
+    with End_of_file | Sys_error _ -> ()) $ Cmdliner.Term.const ())
+
 let oc_plugin_message_json (msg : C2c_mcp.message) =
   `Assoc
     [ ("from_alias", `String msg.from_alias)
@@ -424,6 +487,10 @@ let oc_plugin_group =
                  ~/.local/share/c2c/instances/NAME/oc-plugin-state.json when \
                  C2C_INSTANCE_NAME is set, else ~/.local/share/c2c/oc-plugin-state.json.")
         oc_plugin_stream_write_statefile_cmd
+    ; Cmdliner.Cmd.v
+        (Cmdliner.Cmd.info "stream-write-statefiles"
+           ~doc:"Read identity-keyed JSON state snapshots from stdin and fan them out atomically to unchanged per-instance statefiles. Each line is a complete state.snapshot object with a safe top-level instance_key.")
+        oc_plugin_stream_write_statefiles_cmd
     ; Cmdliner.Cmd.v
         (Cmdliner.Cmd.info "drain-inbox-to-spool"
            ~doc:"Drain broker inbox messages into the OpenCode spool file before delivery.")

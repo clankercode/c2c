@@ -96,7 +96,8 @@ let commands_by_safety_cmd =
   let tier4 = [
     ("serve", "Run the MCP server (JSON-RPC over stdio)");
     ("mcp", "Alias for serve");
-    ("oc-plugin stream-write-statefile", "[internal] Stream statefile writes");
+    ("oc-plugin stream-write-statefile", "[internal] Stream one instance's statefile writes");
+    ("oc-plugin stream-write-statefiles", "[internal] Fan out multi-instance statefile writes");
     ("oc-plugin drain-inbox-to-spool", "[internal] Drain inbox to spool");
     ("cc-plugin write-statefile", "[internal] Write Claude Code statefile");
     ("statefile", "Read/write broker statefile");
@@ -281,7 +282,8 @@ let fast_path_commands () =
   let tier4 = [
     ("serve", "Run the MCP server (JSON-RPC over stdio)");
     ("mcp", "Alias for serve");
-    ("oc-plugin stream-write-statefile", "[internal] Stream statefile writes");
+    ("oc-plugin stream-write-statefile", "[internal] Stream one instance's statefile writes");
+    ("oc-plugin stream-write-statefiles", "[internal] Fan out multi-instance statefile writes");
     ("oc-plugin drain-inbox-to-spool", "[internal] Drain inbox to spool");
     ("cc-plugin write-statefile", "[internal] Write Claude Code statefile");
     ("statefile", "Read/write broker statefile");
