@@ -1,0 +1,37 @@
+---
+complexity: high
+created_at: "2026-07-23T08:19:44Z"
+depends_on: []
+estimate_hours: 2
+id: B271
+priority: critical
+status: pending
+tags:
+    - relay
+    - crash
+    - B219
+    - B270
+title: Relay residual SIGSEGV post-B219 on production (e4a988e still status=139)
+updated_at: "2026-07-23T08:19:44Z"
+---
+## Problem
+Production relay (`relay.c2c.im`, Railway, v0.14.1 git=e4a988e) still dies with SIGSEGV (`child_signaled status=139 signal_number=11 core_dumped=1`) every ~4–8 minutes despite the B219 persistent-SQLite fix being an ancestor of the deployed SHA.
+
+Observed heartbeat just before death (2026-07-23): `uptime≈240s peers=0 heap_kb≈33k rss_kb≈51k`, then signal 11. Edge appears as 502/timeout (same surface as B215).
+
+This residual crash is the **primer** for the B270 reconnect DoS loop.
+
+## Evidence
+- Railway logs on deployment 1bf9b7f5 / git=e4a988e: repeated `child_signaled status=139`
+- B219 fix claimed merged + deployed; GH #79 closed
+- Finding: `.collab/findings/2026-07-23T08-05-00Z-b270-ws-subscribe-dos-after-502.md`
+- Prior: B219, B215, GH #79
+
+## Solution
+1. SSH into live container after next crash; symbolize the latest core under `/data/relay-diagnostics/cores/` against `/usr/local/bin/c2c`.
+2. Identify remaining `sqlite3_finalize` / other UAF or a new crash site (heap grows with peers=0 — may not be lease-path).
+3. Fix + hermetic regression; deploy (relay-critical).
+4. Acceptance: multi-hour production window with no `child_signaled status=139`; `/health` stays 200.
+
+## Related
+Umbrella / amplifier: B270. Client reconnect storm bugs depend on this for full production stability but can ship independently.
