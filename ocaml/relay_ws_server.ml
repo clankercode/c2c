@@ -108,14 +108,17 @@ let push_dm_invocations () = Atomic.get push_dm_count
 let reset_push_dm_count () = Atomic.set push_dm_count 0
 
 (* ---------------------------------------------------------------------------
-   B277: process-wide + per-IP caps on concurrent WS subscriber *connections*
-   (not alias registrations). After a 502 recovery, thundering-herd clients
-   must not open unbounded long-lived Expert sessions.
+   B277 / B280: process-wide + per-IP caps on concurrent WS *connections*.
+
+   B277: /ws/subscribe Expert upgrades (subscriber slots).
+   B280: /observer/<binding> upgrades (observer slots) — sibling budget so an
+   observer flood cannot starve subscribers and vice versa.
 
    - Cap is on unique connections (one slot per upgraded socket).
    - Dynamic multi-alias subscribe/unsubscribe on an existing connection does
      not consume additional slots.
-   - Limits are env-tunable; tests call [set_connection_limits].
+   - Limits are env-tunable; tests call [set_connection_limits] /
+     [set_observer_limits].
    --------------------------------------------------------------------------- *)
 
 type cap_denial = Cap_global | Cap_per_ip
@@ -129,9 +132,36 @@ type acquire_result =
   | Acquired of slot
   | Denied of { reason : cap_denial; retry_after_s : float }
 
+type cap_config = {
+  env_max_total : string;
+  env_max_per_ip : string;
+  env_retry_after : string;
+  default_max_total : int;
+  default_max_per_ip : int;
+  default_retry_after_s : float;
+}
+
 let default_max_total = 1024
 let default_max_per_ip = 32
 let default_retry_after_s = 30.0
+
+let subscriber_cap_config = {
+  env_max_total = "C2C_RELAY_WS_MAX_SUBSCRIBERS";
+  env_max_per_ip = "C2C_RELAY_WS_MAX_SUBSCRIBERS_PER_IP";
+  env_retry_after = "C2C_RELAY_WS_CAP_RETRY_AFTER";
+  default_max_total;
+  default_max_per_ip;
+  default_retry_after_s;
+}
+
+let observer_cap_config = {
+  env_max_total = "C2C_RELAY_WS_MAX_OBSERVERS";
+  env_max_per_ip = "C2C_RELAY_WS_MAX_OBSERVERS_PER_IP";
+  env_retry_after = "C2C_RELAY_WS_OBSERVER_CAP_RETRY_AFTER";
+  default_max_total;
+  default_max_per_ip;
+  default_retry_after_s;
+}
 
 let env_positive name default =
   match Sys.getenv_opt name with
@@ -151,7 +181,7 @@ let env_float_positive name default =
 
 module ConnectionCap : sig
   type t
-  val create : unit -> t
+  val create : cap_config -> t
   val try_acquire : t -> client_ip:string -> acquire_result
   val release : t -> slot -> unit
   val active : t -> int
@@ -166,6 +196,7 @@ module ConnectionCap : sig
   val reset : t -> unit
 end = struct
   type t = {
+    config : cap_config;
     mutex : Mutex.t;
     mutable max_total : int;
     mutable max_per_ip : int;
@@ -176,13 +207,14 @@ end = struct
     mutable denied_per_ip : int;
   }
 
-  let create () = {
+  let create config = {
+    config;
     mutex = Mutex.create ();
-    max_total = env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS" default_max_total;
+    max_total = env_positive config.env_max_total config.default_max_total;
     max_per_ip =
-      env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS_PER_IP" default_max_per_ip;
+      env_positive config.env_max_per_ip config.default_max_per_ip;
     retry_after_s =
-      env_float_positive "C2C_RELAY_WS_CAP_RETRY_AFTER" default_retry_after_s;
+      env_float_positive config.env_retry_after config.default_retry_after_s;
     total = 0;
     per_ip = Hashtbl.create 64;
     denied_global = 0;
@@ -256,14 +288,16 @@ end = struct
       t.denied_global <- 0;
       t.denied_per_ip <- 0;
       t.max_total <-
-        env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS" default_max_total;
+        env_positive t.config.env_max_total t.config.default_max_total;
       t.max_per_ip <-
-        env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS_PER_IP" default_max_per_ip;
+        env_positive t.config.env_max_per_ip t.config.default_max_per_ip;
       t.retry_after_s <-
-        env_float_positive "C2C_RELAY_WS_CAP_RETRY_AFTER" default_retry_after_s)
+        env_float_positive t.config.env_retry_after t.config.default_retry_after_s)
 end
 
-let connection_cap = ConnectionCap.create ()
+(* --- B277: /ws/subscribe subscriber connection cap --- *)
+
+let connection_cap = ConnectionCap.create subscriber_cap_config
 
 let try_acquire_slot ~client_ip =
   ConnectionCap.try_acquire connection_cap ~client_ip
@@ -300,6 +334,47 @@ let connection_cap_stats_json () =
   `Assoc [
     ("subscribers", `Int (active_connection_count ()));
     ("max_subscribers", `Int max_total);
+    ("max_per_ip", `Int max_per_ip);
+    ("retry_after_s", `Float retry_after_s);
+    ("denied_global", `Int denied_global);
+    ("denied_per_ip", `Int denied_per_ip);
+  ]
+
+(* --- B280: /observer/* concurrent session cap (sibling budget) --- *)
+
+let observer_cap = ConnectionCap.create observer_cap_config
+
+let try_acquire_observer_slot ~client_ip =
+  ConnectionCap.try_acquire observer_cap ~client_ip
+
+let release_observer_slot slot = ConnectionCap.release observer_cap slot
+
+let active_observer_count () = ConnectionCap.active observer_cap
+
+let per_ip_observer_count ~client_ip =
+  ConnectionCap.per_ip observer_cap ~client_ip
+
+let observer_limits () =
+  ( ConnectionCap.max_total observer_cap
+  , ConnectionCap.max_per_ip observer_cap
+  , ConnectionCap.retry_after_s observer_cap )
+
+let set_observer_limits ?max_total ?max_per_ip ?retry_after_s () =
+  ConnectionCap.set_limits observer_cap ?max_total ?max_per_ip ?retry_after_s ()
+
+let reset_observer_cap () = ConnectionCap.reset observer_cap
+
+let observer_cap_denied_counts () =
+  ( ConnectionCap.denied_global observer_cap
+  , ConnectionCap.denied_per_ip observer_cap )
+
+(** JSON fragment for /stats — observer concurrent sessions (B280). *)
+let observer_cap_stats_json () =
+  let max_total, max_per_ip, retry_after_s = observer_limits () in
+  let denied_global, denied_per_ip = observer_cap_denied_counts () in
+  `Assoc [
+    ("observers", `Int (active_observer_count ()));
+    ("max_observers", `Int max_total);
     ("max_per_ip", `Int max_per_ip);
     ("retry_after_s", `Float retry_after_s);
     ("denied_global", `Int denied_global);
