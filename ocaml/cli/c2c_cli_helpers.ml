@@ -119,6 +119,9 @@ let session_statefile_path = C2c_identity_candidates.session_statefile_path
 
 let read_session_statefile = C2c_identity_candidates.read_session_statefile
 
+let read_session_statefile_info =
+  C2c_identity_candidates.read_session_statefile_info
+
 (* Best-effort, non-fatal: identity persistence must never break init. *)
 let write_session_statefile ~broker_root ~session_id ~alias ~client =
   let path = session_statefile_path ~broker_root in
@@ -143,6 +146,72 @@ let statefile_session_registered ~broker_root sid =
       (C2c_mcp.Broker.list_registrations broker)
   with _ -> false
 
+(** Normalize client labels so codex-app-server / codex-headless compare equal
+    to the codex- reserved alias prefix. *)
+let normalize_client_kind s =
+  match String.lowercase_ascii (String.trim s) with
+  | "codex-app-server" | "codex-headless" -> "codex"
+  | other -> other
+
+(** If [alias] starts with a reserved client prefix (e.g. "codex-"), return the
+    client kind without the trailing hyphen ("codex"). *)
+let alias_reserved_client_kind alias =
+  let a = String.lowercase_ascii (String.trim alias) in
+  let rec loop = function
+    | [] -> None
+    | p :: rest ->
+        if String.starts_with ~prefix:p a then
+          let kind = String.sub p 0 (String.length p - 1) in
+          Some kind
+        else loop rest
+  in
+  loop C2c_blocklist.reserved_client_prefixes
+
+(* B284: refuse sticky default-session.json when its recorded / registered
+   client clearly belongs to a different host client than the one we just
+   detected (Cursor shell must not inherit a grok-* / codex-* sticky row). *)
+let statefile_compatible_with_intended ~broker_root ~intended sid =
+  match intended with
+  | None -> true
+  | Some want_raw ->
+      let want = normalize_client_kind want_raw in
+      let info_client =
+        match read_session_statefile_info ~broker_root with
+        | Some info when info.session_id = sid ->
+            Option.map normalize_client_kind info.client
+        | _ -> None
+      in
+      let reg_client, reg_alias_kind =
+        try
+          let broker = C2c_mcp.Broker.create ~root:broker_root in
+          match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+              (C2c_mcp.Broker.list_registrations broker)
+          with
+          | Some r ->
+              ( Option.map normalize_client_kind r.client_type
+              , alias_reserved_client_kind r.alias )
+          | None -> (None, None)
+        with _ -> (None, None)
+      in
+      let conflict_info =
+        match info_client with
+        | Some have when have <> want -> true
+        | _ -> false
+      in
+      let conflict_reg =
+        match reg_client with
+        | Some have when have <> want -> true
+        | _ -> false
+      in
+      let conflict_alias =
+        match reg_alias_kind with
+        | Some have when have <> want -> true
+        | _ -> false
+      in
+      not (conflict_info || conflict_reg || conflict_alias)
+
 let session_fallback_note_emitted = ref false
 
 (* Resolve the persisted fallback session, validated against the broker
@@ -153,7 +222,11 @@ let session_id_from_statefile () =
   match read_session_statefile ~broker_root with
   | None -> None
   | Some sid ->
-      if statefile_session_registered ~broker_root sid then begin
+      if
+        statefile_session_registered ~broker_root sid
+        && statefile_compatible_with_intended ~broker_root
+             ~intended:(C2c_mcp.inferred_client_type_from_env ()) sid
+      then begin
         if not !session_fallback_note_emitted then begin
           session_fallback_note_emitted := true;
           Printf.eprintf "note: session resolved from %s (c2c init fallback)\n%!"
@@ -163,7 +236,8 @@ let session_id_from_statefile () =
       end else begin
         if debug_enabled then
           Printf.eprintf
-            "[DEBUG session_id_from_statefile] stale statefile (session %s not in registry) — ignored\n%!"
+            "[DEBUG session_id_from_statefile] stale or foreign-client statefile \
+             (session %s) — ignored\n%!"
             sid;
         None
       end
@@ -187,7 +261,10 @@ let session_id_from_statefile () =
    silent multi-session case now fails closed. The escape hatch
    [C2C_ALLOW_DEFAULT_SESSION] restores the old silent-if-registered behaviour. *)
 let resolve_statefile_session_gated ~broker_root :
-    [ `Sole of string | `Ambiguous of C2c_mcp.registration list | `Stale ] =
+    [ `Sole of string
+    | `Client_matched of string
+    | `Ambiguous of C2c_mcp.registration list
+    | `Stale ] =
   match read_session_statefile ~broker_root with
   | None -> `Stale
   | Some sid ->
@@ -201,19 +278,44 @@ let resolve_statefile_session_gated ~broker_root :
         List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs
       in
       if not sid_registered then `Stale
+      else if
+        not
+          (statefile_compatible_with_intended ~broker_root
+             ~intended:(C2c_mcp.inferred_client_type_from_env ()) sid)
+      then begin
+        (* B284: foreign-client sticky — treat as absent so Cursor/Grok shells
+           do not silently adopt another client's sole registration. *)
+        if debug_enabled then
+          Printf.eprintf
+            "[DEBUG resolve_statefile_session_gated] foreign-client statefile \
+             sid=%s — failing closed\n%!"
+            sid;
+        `Stale
+      end
       else begin
         (* Deliberately LIVENESS-BLIND: any other registration → ambiguous.
            Do NOT "fix" this to exclude dead/stale others — liveness is an
            unreliable gate signal (pidless/CLI regs report alive; most stale
            rows are Unknown, not dead), so excluding them would resurrect the
            #26 silent-misattribution. Liveness is surfaced in the candidate
-           printout only; C2C_ALLOW_DEFAULT_SESSION is the escape hatch. *)
+           printout only; C2C_ALLOW_DEFAULT_SESSION is the escape hatch.
+
+           B284 exception: when the ambient client is known AND the statefile
+           is compatible with that client, the sticky row is an intentional
+           pin for *this* shell (e.g. Cursor init beside a leftover grok
+           registration). Prefer it over fail-closed ambiguity so whoami
+           works without a manual C2C_MCP_SESSION_ID. *)
         let others =
           List.filter
             (fun (r : C2c_mcp.registration) -> r.session_id <> sid)
             regs
         in
-        match others with [] -> `Sole sid | _ -> `Ambiguous others
+        match others with
+        | [] -> `Sole sid
+        | _ ->
+            (match C2c_mcp.inferred_client_type_from_env () with
+             | Some _ -> `Client_matched sid
+             | None -> `Ambiguous others)
       end
 
 let allow_default_session_env () =
@@ -336,7 +438,7 @@ let env_session_id () =
   | None ->
       (* #26: last-resort default-session.json fallback. Escape hatch restores
          the OLD silent-if-registered behaviour; otherwise fail closed on
-         ambiguity and only corroborated-sole succeeds (loudly). *)
+         ambiguity and only corroborated-sole / client-matched succeeds. *)
       if allow_default_session_env () then
         (match session_id_from_statefile () with
          | Some s ->
@@ -363,6 +465,19 @@ let env_session_id () =
             if debug_enabled then
               Printf.eprintf "[DEBUG env_session_id] returning sole statefile fallback=%s\n%!" sid;
             Some sid
+        | `Client_matched sid ->
+            if not !session_fallback_note_emitted then begin
+              session_fallback_note_emitted := true;
+              Printf.eprintf
+                "WARN: session resolved from %s (c2c init fallback; matched detected client). \
+                 Set C2C_MCP_SESSION_ID or a client-native session key to make this explicit.\n%!"
+                (session_statefile_path ~broker_root)
+            end;
+            if debug_enabled then
+              Printf.eprintf
+                "[DEBUG env_session_id] returning client-matched statefile fallback=%s\n%!"
+                sid;
+            Some sid
         | `Ambiguous _ ->
             (* Do NOT silently adopt the statefile: another registration exists
                and picking one would misattribute authorship. Return None; the
@@ -388,27 +503,6 @@ let env_client_type () =
   | _ -> None
 
 (* --- B187: honest identity (no borrowed / cross-client success) ----------- *)
-
-(** Normalize client labels so codex-app-server / codex-headless compare equal
-    to the codex- reserved alias prefix. *)
-let normalize_client_kind s =
-  match String.lowercase_ascii (String.trim s) with
-  | "codex-app-server" | "codex-headless" -> "codex"
-  | other -> other
-
-(** If [alias] starts with a reserved client prefix (e.g. "codex-"), return the
-    client kind without the trailing hyphen ("codex"). *)
-let alias_reserved_client_kind alias =
-  let a = String.lowercase_ascii (String.trim alias) in
-  let rec loop = function
-    | [] -> None
-    | p :: rest ->
-        if String.starts_with ~prefix:p a then
-          let kind = String.sub p 0 (String.length p - 1) in
-          Some kind
-        else loop rest
-  in
-  loop C2c_blocklist.reserved_client_prefixes
 
 let intended_client_kind () =
   match C2c_mcp.inferred_client_type_from_env () with

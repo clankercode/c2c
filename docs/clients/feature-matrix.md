@@ -340,7 +340,7 @@ how you start the client.
 | Kimi | **CONDITIONAL** on notifier + local Kimi server + resolvable session id (REST POST is the wake) | Broker: managed instance name / SessionStart hook; REST wake: `session_<uuid>` via workspace record + `session_index.jsonl` (B233 / #41) | REST prompt injection (`C2c_kimi_notifier` → `/api/v1/sessions/{id}/prompts`); unmanaged fallback `c2c monitor` / `poll-inbox` | REST inject (no tmux); optional composer nudge only with `C2C_KIMI_TMUX_COMPOSER_WAKE=1` | **Normal start:** `c2c start kimi` / `c2c new kimi` (arms notifier); plain `kimi` after install (SessionStart best-effort arms notifier — B238) |
 | Grok | **CONDITIONAL** on armed **`c2c monitor`**; without it **NONE** at true idle (SessionStart/skill only — no `additionalContext` inject) | `$GROK_SESSION_ID` or payload; else `$GROK_AGENT` + `~/.grok/active_sessions.json` (B173) | Agent **Monitor** on `c2c monitor` (preferred); SessionStart auto-register + `c2c-session` identity skill | Monitor line inject into conversation | **Normal start:** plain `grok` after `c2c install grok` (`c2c start grok` deferred — same “just start the client” pattern) |
 | agy | **CONDITIONAL** on deliver-watch sidecar + resolvable `agy-env` (LS + **TUI-owned** conversation; managed bootstrap kickoff; #78 fixed) | Hook payload / auto `agy-*` (`registered_by=agy-hook`); managed env under instances dir | agentapi inject via deliver-watch (`agy agentapi send-message`); hooks alone do **not** idle-wake; fallback `c2c monitor` / `poll-inbox` | agentapi wake when sidecar alive | **Normal start:** `c2c start agy` (supervises CLI + deliver-watch + bootstrap kickoff); plain `agy` after install needs managed start or manual poll/monitor for idle wake |
-| Cursor Agent | n/a | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent` (B134) | n/a (unofficial — no install/hooks/delivery) | n/a | labeling only (`client=cursor`, alias `cursor-…`) |
+| Cursor Agent | n/a (best-effort CLI identity only) | `$CURSOR_AGENT` / `$CURSOR_INVOKED_AS=cursor-agent`; session id from `$CURSOR_ASKPASS_SOCKET` → `cursor-askpass-<token>` when present (B284), else `c2c init` fallback that refuses foreign sticky aliases | n/a (unofficial — no install/hooks/delivery) | n/a | best-effort identity (`client=cursor`, alias `cursor-…`); run `c2c init` once in the Cursor shell |
 
 **How to read this table**
 
@@ -361,7 +361,7 @@ how you start the client.
 - **Fallback everywhere:** `c2c poll-inbox` / `poll_inbox` is universal but
   requires a model decision — not a wake guarantee.
 
-> **Cursor Agent (unofficial):** c2c does **not** ship install, hooks, or delivery for Cursor. B134 only ensures `c2c init` / client-type inference labels Cursor sessions as `cursor` (not `codex`) when `CURSOR_AGENT` or `CURSOR_INVOKED_AS=cursor-agent` is set. Prefer `c2c init --client …` if you need a different identity.
+> **Cursor Agent (unofficial / best-effort):** c2c does **not** ship install, hooks, or delivery for Cursor. B134 labels Cursor as `client=cursor` (not `codex`) when `CURSOR_AGENT` or `CURSOR_INVOKED_AS=cursor-agent` is set. B284 resolves a stable session id from `CURSOR_ASKPASS_SOCKET` when present, and `c2c init` refuses to reuse a foreign (`grok-*` / `codex-*`) sticky `default-session.json`. Prefer `c2c init` once in the Cursor shell, then `c2c whoami` / `c2c monitor`.
 
 ## Cross-client DM matrix
 

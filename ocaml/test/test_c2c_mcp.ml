@@ -14,7 +14,7 @@ let () =
     [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_MCP_SESSION_ID"
     ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID"
     ; "GROK_SESSION_ID"; "GROK_AGENT"; "C2C_GROK_ACTIVE_SESSIONS"
-    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS" ]
+    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"; "CURSOR_ASKPASS_SOCKET" ]
 
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
@@ -2189,7 +2189,7 @@ let with_scrubbed_client_env f =
     ; "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_OPENCODE_SESSION_ID"
     ; "GROK_SESSION_ID"; "GROK_AGENT"; "C2C_GROK_ACTIVE_SESSIONS"
     ; "KIMI_SESSION_ID"; "KIMI_CODE_HOME"
-    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"
+    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"; "CURSOR_ASKPASS_SOCKET"
     ; "ANTIGRAVITY_CONVERSATION_ID"; "ANTIGRAVITY_HOOK_EVENT"; "ANTIGRAVITY_LS_ADDRESS"
     ]
   in
@@ -2335,6 +2335,24 @@ let test_inferred_client_type_cursor_not_codex_without_codex_env () =
         (C2c_mcp.inferred_client_type_from_env ());
       check bool "not Some \"codex\"" true
         (C2c_mcp.inferred_client_type_from_env () <> Some "codex"))
+
+let test_session_id_from_env_cursor_askpass () =
+  (* B284: Cursor Agent resolves a stable sid from CURSOR_ASKPASS_SOCKET. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_AGENT" "1";
+      Unix.putenv "CURSOR_ASKPASS_SOCKET" "/tmp/cursor-askpass-cc2f0d47-6.sock";
+      check (option string) "CURSOR_AGENT → cursor" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "askpass socket → cursor-askpass-*" (Some "cursor-askpass-cc2f0d47-6")
+        (C2c_mcp.session_id_from_env ());
+      check (option string) "direct askpass helper" (Some "cursor-askpass-cc2f0d47-6")
+        (C2c_mcp.session_id_from_cursor_askpass ()))
+
+let test_session_id_from_env_cursor_without_askpass_is_none () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_AGENT" "1";
+      check (option string) "cursor client without askpass → no sid" None
+        (C2c_mcp.session_id_from_env ()))
 
 let test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing ()
     =
@@ -16897,6 +16915,10 @@ let () =
              test_inferred_client_type_codex_wins_over_cursor
          ; test_case "inferred_client_type_from_env: cursor is not codex (B134)" `Quick
              test_inferred_client_type_cursor_not_codex_without_codex_env
+         ; test_case "session_id_from_env: CURSOR_ASKPASS_SOCKET (B284)" `Quick
+             test_session_id_from_env_cursor_askpass
+         ; test_case "session_id_from_env: cursor without askpass is None (B284)" `Quick
+             test_session_id_from_env_cursor_without_askpass_is_none
          ; test_case "tools/call register uses CODEX_THREAD_ID when C2C session id missing" `Quick
              test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing
          ; test_case "tools/call register uses managed CODEX_THREAD_ID when C2C session id missing" `Quick
