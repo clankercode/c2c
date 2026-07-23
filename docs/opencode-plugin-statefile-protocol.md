@@ -30,6 +30,39 @@ This protocol does not define the OCaml statefile format on disk.
 The plugin starts one long-lived subprocess and keeps stdin open for the lifetime
 of the OpenCode process.
 
+### Multi-identity transport
+
+Clients that own several logical identities may instead start one sibling sink:
+
+```text
+c2c oc-plugin stream-write-statefiles
+```
+
+Each JSONL line is a complete `state.snapshot` object with an additional top-level
+`instance_key` string:
+
+```json
+{"instance_key":"pi-0123456789abcdef0123","event":"state.snapshot","ts":"2026-07-23T10:00:00Z","state":{"c2c_alias":"pi-example"}}
+```
+
+The sink validates `instance_key` against
+`[A-Za-z0-9][A-Za-z0-9._-]{0,127}` and also rejects `.` and `..`. Invalid JSON,
+unsafe keys, missing fields, and event types other than `state.snapshot` are
+ignored independently; a rejected line does not terminate the stream. The
+routing field is removed before persistence, so the on-disk snapshot schema is
+unchanged.
+
+A valid line atomically replaces:
+
+```text
+$HOME/.local/share/c2c/instances/<instance_key>/oc-plugin-state.json
+```
+
+The legacy one-key command remains supported and unchanged. Multiplexing clients
+must feature-detect the sibling command and may fall back to one legacy writer
+per identity. c2c owns validation and atomic fan-out; the client owns identity
+selection, lifecycle, complete-snapshot generation, and fallback policy.
+
 ## Resync Semantics
 
 The plugin emits two event types:
