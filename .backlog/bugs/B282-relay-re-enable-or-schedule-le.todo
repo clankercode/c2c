@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:42:22Z"
+depends_on: []
+estimate_hours: 1
+id: B282
+priority: high
+status: pending
+tags: []
+title: 'Relay: re-enable or schedule lease GC on production (7662 private leases, gc:disabled; peers=0 heartbeat hides load)'
+updated_at: "2026-07-23T08:42:22Z"
+---
+
+Relay: re-enable or schedule lease GC on production (7662 private leases, gc:disabled; peers=0 heartbeat hides load)
