@@ -15,6 +15,9 @@
    B272: connect + TLS + HTTP upgrade share one hard wall-clock timeout
    (default 10s). On timeout/cancel, registered channel close runs so
    ESTAB sockets do not accumulate under a hung edge (B270).
+
+   B274: open_channels uses Lwt.finalize (not Lwt.catch alone) so
+   Lwt.pick cancel mid-connect always closes the TCP FD.
 *)
 
 open Lwt.Infix
@@ -114,42 +117,34 @@ let make_socket_close sock =
       Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit)
     end
 
+(* B274: Lwt.catch does NOT run on cancellation; Lwt.finalize does.
+   Own the socket until [transferred]; cancel mid-connect always closes. *)
 let open_channels (ep : endpoint) ?ca_bundle ?(on_close = fun _ -> ()) () =
-  if not ep.use_tls then
-    resolve_inet ep.host ep.port >>= fun ai_addr ->
-    let sock =
-      Lwt_unix.socket (Unix.domain_of_sockaddr ai_addr) Unix.SOCK_STREAM 0
-    in
-    let close = make_socket_close sock in
-    on_close close;
-    Lwt.catch
-      (fun () ->
-         Lwt_unix.connect sock ai_addr >>= fun () ->
+  resolve_inet ep.host ep.port >>= fun ai_addr ->
+  let sock =
+    Lwt_unix.socket (Unix.domain_of_sockaddr ai_addr) Unix.SOCK_STREAM 0
+  in
+  let close_sock = make_socket_close sock in
+  on_close close_sock;
+  let transferred = ref false in
+  Lwt.finalize
+    (fun () ->
+       Lwt_unix.connect sock ai_addr >>= fun () ->
+       if not ep.use_tls then begin
          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input sock in
          let oc = Lwt_io.of_fd ~mode:Lwt_io.Output sock in
-         Lwt.return (ic, oc, close))
-      (fun e -> close () >>= fun () -> Lwt.fail e)
-  else begin
-    Mirage_crypto_rng_unix.use_default ();
-    match resolve_authenticator ?ca_bundle () with
-    | Error (`Msg m) -> Lwt.fail_with m
-    | Ok authenticator ->
-        let peer_name = peer_name_of_host ep.host in
-        (match Tls.Config.client ~authenticator ?peer_name () with
-         | Error (`Msg m) -> Lwt.fail_with ("TLS client config: " ^ m)
-         | Ok cfg ->
-             (* Own the TCP socket so timeout/cancel can close mid-TLS
-                (Tls_lwt.connect_ext hides the fd until handshake completes). *)
-             resolve_inet ep.host ep.port >>= fun ai_addr ->
-             let sock =
-               Lwt_unix.socket
-                 (Unix.domain_of_sockaddr ai_addr) Unix.SOCK_STREAM 0
-             in
-             let close_sock = make_socket_close sock in
-             on_close close_sock;
-             Lwt.catch
-               (fun () ->
-                  Lwt_unix.connect sock ai_addr >>= fun () ->
+         transferred := true;
+         Lwt.return (ic, oc, close_sock)
+       end else begin
+         Mirage_crypto_rng_unix.use_default ();
+         match resolve_authenticator ?ca_bundle () with
+         | Error (`Msg m) -> Lwt.fail_with m
+         | Ok authenticator ->
+             let peer_name = peer_name_of_host ep.host in
+             (match Tls.Config.client ~authenticator ?peer_name () with
+              | Error (`Msg m) -> Lwt.fail_with ("TLS client config: " ^ m)
+              | Ok cfg ->
+                  (* Own FD (not Tls_lwt.connect_ext) so cancel can close mid-TLS. *)
                   Tls_lwt.Unix.client_of_fd cfg ?host:peer_name sock
                   >>= fun tls ->
                   let close () =
@@ -159,9 +154,11 @@ let open_channels (ep : endpoint) ?ca_bundle ?(on_close = fun _ -> ()) () =
                   in
                   on_close close;
                   let ic, oc = Tls_lwt.of_t ~close tls in
+                  transferred := true;
                   Lwt.return (ic, oc, close))
-               (fun e -> close_sock () >>= fun () -> Lwt.fail e))
-  end
+       end)
+    (fun () ->
+       if !transferred then Lwt.return_unit else close_sock ())
 
 let auth_headers ~alias ~identity =
   let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
