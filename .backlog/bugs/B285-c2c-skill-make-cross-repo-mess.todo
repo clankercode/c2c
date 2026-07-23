@@ -1,0 +1,32 @@
+---
+complexity: low
+created_at: "2026-07-23T10:56:16Z"
+depends_on: []
+estimate_hours: 1
+id: B285
+priority: medium
+status: pending
+tags:
+    - docs
+    - skill
+    - cross-repo
+title: 'c2c skill: make --cross-repo messaging more obvious'
+updated_at: "2026-07-23T10:56:16Z"
+---
+## Symptom
+The c2c skill (`SKILL.md` / using-c2c) does not make it obvious how to send to peers on another local repo broker via `--cross-repo`.
+
+Agents reading the skill default to same-repo `c2c send <alias> <msg>` and miss the cross-repo sessions broker path (`c2c send --cross-repo …`, also `list` / `register` / `monitor` with `--cross-repo`). Discovery and addressing for machine-local, other-repo peers is easy to overlook.
+
+## Expected
+- Skill core flow (send / discover / list) explicitly documents `--cross-repo` (and `C2C_SESSIONS_BROKER_ROOT` override) as the way to reach peers registered on the machine sessions broker rather than this repo's broker.
+- Short example: `c2c list --cross-repo` then `c2c send --cross-repo <alias> <msg>`.
+- Clarify that bare `<alias>` without `--cross-repo` is same-repo only; cross-host remains `<alias>@<host_id>` via relay (distinct concern).
+
+## Acceptance
+- [ ] Skill tables / habits mention `--cross-repo` next to send/list/register/monitor.
+- [ ] At least one concrete CLI example for cross-repo DM.
+- [ ] Distinguishes same-repo / same-host (`--cross-repo`) / relay (`alias@host`) in one short note.
+
+## Discovery
+Operator request 2026-07-23: skill should make cross-repo messaging more obvious.

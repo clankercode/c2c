@@ -281,3 +281,4 @@ bugs:
     - file: B282-relay-re-enable-or-schedule-le.todo
     - file: B283-relay-heartbeat-wire-stmts-to.todo
     - file: B284-detect-cursor-agent-sessions-f.todo
+    - file: B285-c2c-skill-make-cross-repo-mess.todo
