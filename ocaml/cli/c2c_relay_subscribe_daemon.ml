@@ -595,15 +595,31 @@ let handle_list ~(all : bool) (state : daemon_state) (client : client_conn) =
     resp_summary = Some summary;
   }
 
-let cleanup_client (client : client_conn) =
+(** B281: drop [client] from the daemon client list by physical equality.
+    Pure helper so unit tests can cover the prune without Lwt FDs. Under Lwt
+    cooperative scheduling the read-filter-assign is a single non-yielding
+    step, so it does not race with accept's prepend. *)
+let remove_client_from_list (client : 'a) (clients : 'a list) : 'a list =
+  List.filter (fun c -> c != client) clients
+
+(** Mark [client] closed, stop its aliases, prune it from [state.clients], and
+    close IPC channels. Idempotent: a second call is a no-op prune. B281. *)
+let cleanup_client (state : daemon_state) (client : client_conn) =
+  let first = not client.client_closed in
   client.client_closed <- true;
-  List.iter (fun (_alias, conn) -> request_alias_stop conn) client.client_aliases;
-  client.client_aliases <- [];
-  (* Close IPC channels *)
-  Lwt.async (fun () ->
-      Lwt.catch (fun () -> Lwt_io.close client.client_ic) (fun _ -> Lwt.return_unit) >>= fun () ->
-      Lwt.catch (fun () -> Lwt_io.close client.client_oc) (fun _ -> Lwt.return_unit) >>= fun () ->
-      Lwt.catch (fun () -> Lwt_unix.close client.client_fd) (fun _ -> Lwt.return_unit))
+  if first then begin
+    List.iter (fun (_alias, conn) -> request_alias_stop conn) client.client_aliases;
+    client.client_aliases <- []
+  end;
+  (* Always prune — keeps the list consistent if a prior path set
+     client_closed without removing (legacy) or races re-enter cleanup. *)
+  state.clients <- remove_client_from_list client state.clients;
+  if first then
+    (* Close IPC channels *)
+    Lwt.async (fun () ->
+        Lwt.catch (fun () -> Lwt_io.close client.client_ic) (fun _ -> Lwt.return_unit) >>= fun () ->
+        Lwt.catch (fun () -> Lwt_io.close client.client_oc) (fun _ -> Lwt.return_unit) >>= fun () ->
+        Lwt.catch (fun () -> Lwt_unix.close client.client_fd) (fun _ -> Lwt.return_unit))
 
 let handle_client (state : daemon_state) (client : client_conn) =
   let rec loop () =
@@ -614,7 +630,7 @@ let handle_client (state : daemon_state) (client : client_conn) =
            Lwt_io.read_line_opt client.client_ic >>= fun line ->
            match line with
            | None ->
-             cleanup_client client;
+             cleanup_client state client;
              Lwt.return_unit
            | Some raw ->
              (match json_of_string_opt raw with
@@ -641,7 +657,7 @@ let handle_client (state : daemon_state) (client : client_conn) =
                   (empty_response ~ok:false ~error:"invalid JSON" ())
                 >>= fun () -> loop ()))
         (fun _ ->
-           cleanup_client client;
+           cleanup_client state client;
            Lwt.return_unit)
   in
   loop ()
@@ -697,7 +713,9 @@ let accept_connections (state : daemon_state) =
   Lwt.return (result, shutdown_waker)
 
 let cleanup_daemon (state : daemon_state) =
-  List.iter (fun client -> cleanup_client client) state.clients;
+  (* Snapshot: cleanup_client mutates state.clients (B281 prune). List.iter
+     holds the original cons cells, so every client is visited once. *)
+  List.iter (fun client -> cleanup_client state client) state.clients;
   (match state.listen_sock with
    | Some sock -> Lwt.async (fun () -> Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit))
    | None -> ());
