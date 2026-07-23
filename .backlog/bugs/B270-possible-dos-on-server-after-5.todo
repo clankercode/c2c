@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-23T07:52:37Z"
 depends_on: []
 estimate_hours: 1
 id: B270
 priority: high
+started_at: null
 status: pending
 tags: []
 title: Possible DoS on server after 502 error /ws/subscribe
@@ -12,3 +14,32 @@ updated_at: "2026-07-23T07:52:37Z"
 ---
 
 Possible DoS on server after 502 error /ws/subscribe
+
+
+## Investigation (2026-07-23, grok) — see finding
+
+Finding: `.collab/findings/2026-07-23T08-05-00Z-b270-ws-subscribe-dos-after-502.md`
+
+### Live evidence
+- Production relay.c2c.im currently crash-looping: SIGSEGV status=139 every ~4–8 min on deployed v0.14.1 git=e4a988e (B219 fix IS in that SHA — residual crash remains). Edge appears as 502/timeout.
+- Local `c2c relay subscribe-daemon` (pid 3838462, ~1d16h old) while origin hung:
+  - 464 threads, ~531 MB RSS, FDSize 1024
+  - ESTAB TCP to CF edge grew 105 → 193 in 10s (FD 596 → 693) — active reconnect storm
+  - ~495 Unix IPC clients on relay-subscribe.sock
+
+### Root model
+502 (from residual SIGSEGV) primes the loop; unmetered `/ws/subscribe` + no client handshake timeout + short reconnect backoff amplify into a client/server DoS feedback loop.
+
+### Code gaps
+1. Server: `/ws/subscribe` NOT in `Relay_ratelimit.classify_endpoint` (unmetered). No max concurrent subscribers.
+2. Client: `Relay_ws_client.connect_subscribe` has no connect/handshake timeout; hung edge holds ESTAB forever.
+3. Client: subscribe-daemon backoff 1s→30s, no jitter; resets to 1s on any success; multi-alias = multi-storm.
+4. Cancel/in-flight connect may leak FDs under `Lwt.pick` cancel.
+
+### Fix order
+1. Client: handshake timeout + jittered backoff + in-flight connect cap + cancel-safe close (local, no Railway).
+2. Server: rate-limit + subscriber cap on `/ws/subscribe` (relay deploy).
+3. Separate: re-open residual SIGSEGV post-B219 (pull core on e4a988e).
+
+### Ops
+Kill/restart runaway pid 3838462 when ready: `c2c relay subscribe-daemon shutdown`.
