@@ -26,8 +26,80 @@ let default_socket_dir =
   let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
   Filename.concat home ".c2c"
 let default_socket_name = "relay-subscribe.sock"
+
+(* === B273: reconnect backoff (full jitter + stable-session reset) ===
+ *
+ * Pre-B273: expo 1s→30s, no jitter, reset to 1s on any successful upgrade.
+ * That thunders when origin recovers and re-hammers on multi-minute crash
+ * loops (SIGSEGV every 4–8 min kept aliases near the short end).
+ *
+ * Policy:
+ * 1. Full jitter: delay ∈ [0, base] (base capped at reconnect_backoff_max).
+ * 2. Base doubles after each non-stable attempt, never above max.
+ * 3. Reset base only after a *stable* session — connected ≥ stable_session_secs
+ *    OR a keepalive frame (Ping/Pong) proved liveness — not on mere 101.
+ * 4. Daemon-level circuit: many near-simultaneous failures share a cool-down.
+ *
+ * Pure helpers below are unit-tested; [rand] is injectable for determinism.
+ *)
+
 let reconnect_backoff_initial = 1.0
 let reconnect_backoff_max = 30.0
+(** Wall-clock seconds a session must survive before backoff fully resets. *)
+let stable_session_secs = 45.0
+
+(** Full-jitter delay: uniform sample in [0, min(base, max_backoff)].
+    [rand x] must return a float in [0, x) (same contract as [Random.float]). *)
+let full_jitter_delay ~base ~max_backoff ?(rand = Random.float) () =
+  let cap = Float.min max_backoff (Float.max 0.0 base) in
+  if cap <= 0.0 then 0.0 else rand cap
+
+(** Grow the expo base after a failed / unstable attempt. *)
+let grow_backoff ~base ~max_backoff =
+  Float.min max_backoff (Float.max reconnect_backoff_initial (base *. 2.0))
+
+(** Whether a finished session earned a full backoff reset.
+    [got_keepalive] is true if the client saw a WS Ping or Pong (liveness). *)
+let should_reset_backoff ~session_duration_s ~got_keepalive
+    ?(stable_secs = stable_session_secs) () =
+  got_keepalive || session_duration_s >= stable_secs
+
+(** Daemon-wide cool-down when many aliases fail together (origin unhealthy). *)
+module Reconnect_circuit = struct
+  type t = {
+    mutable failures : float list;
+    mutable cool_until : float;
+  }
+
+  let failure_threshold = 5
+  let window_s = 15.0
+  let cool_down_s = 30.0
+
+  let create () = { failures = []; cool_until = 0.0 }
+
+  let remaining_cool (t : t) ~now =
+    Float.max 0.0 (t.cool_until -. now)
+
+  let is_open (t : t) ~now = remaining_cool t ~now > 0.0
+
+  (** Record one alias-level connect/session failure. Trips a shared cool-down
+      once [failure_threshold] failures land inside [window_s]. *)
+  let record_failure (t : t) ~now =
+    let cutoff = now -. window_s in
+    let recent = List.filter (fun t0 -> t0 >= cutoff) t.failures in
+    let recent = now :: recent in
+    t.failures <- recent;
+    if List.length recent >= failure_threshold then begin
+      t.cool_until <- Float.max t.cool_until (now +. cool_down_s);
+      t.failures <- []
+    end
+
+  let cool_until (t : t) = t.cool_until
+
+  let reset (t : t) =
+    t.failures <- [];
+    t.cool_until <- 0.0
+end
 
 (* === IPC Protocol === *)
 
@@ -125,7 +197,8 @@ let string_of_json j = Yojson.Safe.to_string j
 (* === Alias Connection State === *)
 
 (* stop_requested: user called deregister or client disconnected — no reconnect.
-   session_alive: currently connected to relay WS. Set false on WS error/close. *)
+   session_alive: currently connected to relay WS. Set false on WS error/close.
+   ws_backoff: expo base for full-jitter reconnect delay (B273). *)
 type alias_conn = {
   alias : string;
   ws_session : Relay_ws_frame.Client_session.t option ref;
@@ -161,6 +234,8 @@ type daemon_state = {
   socket_path : string;
   identity : Relay_identity.t;
   relay_endpoint : Relay_ws_client.endpoint;
+  (* B273: shared cool-down when many aliases fail together. *)
+  circuit : Reconnect_circuit.t;
 }
 
 (* === WebSocket Connection Management (non-blocking Lwt) === *)
@@ -169,11 +244,16 @@ let create_ws_session_lwt ~endpoint ~alias ~identity =
   Relay_ws_client.connect_subscribe ~endpoint ~alias ~identity ()
 
 (* Run a single alias WS connection: connects, reads frames, forwards DMs.
-   Handles reconnection with exponential backoff. *)
+   Handles reconnection with full-jitter expo backoff + stable-session reset
+   (B273). *)
 let run_alias_connection (state : daemon_state) (client : client_conn) (conn : alias_conn) =
   let rec connect_and_loop () =
     if conn.stop_requested then Lwt.return_unit
     else begin
+      (* Outcome of this attempt — drives backoff reset vs grow + circuit. *)
+      let outcome : [ `Stable | `Unstable | `Connect_failed ] ref =
+        ref `Connect_failed
+      in
       Lwt.catch
         (fun () ->
            create_ws_session_lwt ~endpoint:state.relay_endpoint
@@ -181,8 +261,10 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
            >>= fun (session, close) ->
            conn.ws_session := Some session;
            conn.session_alive <- true;
-           conn.ws_backoff <- reconnect_backoff_initial;
+           (* B273: do NOT reset backoff on mere upgrade 101 — only after a
+              stable session (duration or keepalive). *)
            conn.ws_started_at <- Unix.gettimeofday ();
+           let got_keepalive = ref false in
            (* Send connected state to client *)
            let msg = `Assoc [
              ("type", `String "state");
@@ -229,8 +311,13 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
                               end else
                                 read_loop ()
                             | _ -> read_loop ())
-                         | Some `Ping -> read_loop ()
-                         | Some `Pong -> read_loop ()
+                         | Some `Ping ->
+                           (* Keepalive proves the session is live (B273). *)
+                           got_keepalive := true;
+                           read_loop ()
+                         | Some `Pong ->
+                           got_keepalive := true;
+                           read_loop ()
                          | Some (`Close (_, _)) ->
                            conn.session_alive <- false;
                            Lwt.return_unit
@@ -244,6 +331,13 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
                 in
                 read_loop ())
              (fun () ->
+                (* Classify session before tearing down resources. *)
+                let duration = Unix.gettimeofday () -. conn.ws_started_at in
+                outcome :=
+                  if should_reset_backoff ~session_duration_s:duration
+                       ~got_keepalive:!got_keepalive ()
+                  then `Stable
+                  else `Unstable;
                 (* Always close WS resources on exit *)
                 conn.ws_session := None;
                 conn.session_alive <- false;
@@ -251,6 +345,7 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
                 >>= fun () ->
                 Lwt.catch close (fun _ -> Lwt.return_unit)))
         (fun exn ->
+           outcome := `Connect_failed;
            Printf.eprintf "[subscribe-daemon] WS connect failed for %s: %s\n%!"
              conn.alias (Printexc.to_string exn);
            Lwt.return_unit)
@@ -258,11 +353,35 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
       if conn.stop_requested || client.client_closed then
         Lwt.return_unit
       else begin
-        (* Reconnect with backoff *)
-        Printf.eprintf "[subscribe-daemon] reconnecting %s in %.1fs...\n%!"
-          conn.alias conn.ws_backoff;
-        Lwt_unix.sleep conn.ws_backoff >>= fun () ->
-        conn.ws_backoff <- min (conn.ws_backoff *. 2.0) reconnect_backoff_max;
+        (* B273: full-jitter delay; reset only after stable; circuit cool-down. *)
+        let now = Unix.gettimeofday () in
+        (match !outcome with
+         | `Stable ->
+           conn.ws_backoff <- reconnect_backoff_initial
+         | `Unstable | `Connect_failed ->
+           Reconnect_circuit.record_failure state.circuit ~now);
+        let delay =
+          full_jitter_delay ~base:conn.ws_backoff
+            ~max_backoff:reconnect_backoff_max ()
+        in
+        let circuit_wait = Reconnect_circuit.remaining_cool state.circuit ~now in
+        let wait = Float.max delay circuit_wait in
+        Printf.eprintf
+          "[subscribe-daemon] reconnecting %s in %.1fs (base=%.1fs circuit=%.1fs outcome=%s)...\n%!"
+          conn.alias wait conn.ws_backoff circuit_wait
+          (match !outcome with
+           | `Stable -> "stable"
+           | `Unstable -> "unstable"
+           | `Connect_failed -> "connect_failed");
+        Lwt_unix.sleep wait >>= fun () ->
+        (match !outcome with
+         | `Stable ->
+           (* Leave base at initial so the next cycle starts clean. *)
+           ()
+         | `Unstable | `Connect_failed ->
+           conn.ws_backoff <-
+             grow_backoff ~base:conn.ws_backoff
+               ~max_backoff:reconnect_backoff_max);
         connect_and_loop ()
       end
     end
@@ -518,10 +637,13 @@ let start_daemon_cmd =
     let scheme = if endpoint.Relay_ws_client.use_tls then "wss" else "ws" in
     Printf.eprintf "[subscribe-daemon] starting (relay=%s://%s:%d socket=%s)\n%!"
       scheme endpoint.Relay_ws_client.host endpoint.Relay_ws_client.port socket_path;
+    (* B273: seed jitter so concurrent daemons / multi-alias loops desync. *)
+    Random.self_init ();
     let state = {
       clients = []; shutdown_requested = false; listen_sock = None;
       shutdown_waker = None; lock_fd = None;
       socket_path; identity; relay_endpoint = endpoint;
+      circuit = Reconnect_circuit.create ();
     } in
     let handle_signal _sig =
       state.shutdown_requested <- true;
