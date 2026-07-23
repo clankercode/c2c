@@ -3,6 +3,7 @@
       flicker non-reset, daemon-level circuit breaker cool-down
     - B278: list parse (default per-client; all/scope/list_all → global),
       alias_state_string / summarize_alias_infos, response_to_json summary
+    - B281: remove_client_from_list prunes by physical equality (idempotent)
 *)
 
 module D = C2c_relay_subscribe_daemon
@@ -311,6 +312,37 @@ let test_non_list_response_omits_summary () =
       (List.mem_assoc "aliases" fields)
   | _ -> fail "not object"
 
+(* ── B281: prune closed clients from state.clients ────────────────────── *)
+
+let test_remove_client_from_list_prunes_phys () =
+  (* Physical equality: distinct refs with equal contents are different. *)
+  let a = ref 1 and b = ref 1 and c = ref 2 in
+  let clients = [ a; b; c ] in
+  let after = D.remove_client_from_list b clients in
+  check int "length after prune" 2 (List.length after);
+  check bool "a remains" true (List.exists (( == ) a) after);
+  check bool "b removed" false (List.exists (( == ) b) after);
+  check bool "c remains" true (List.exists (( == ) c) after);
+  (* Value-equal but distinct ref still present *)
+  check bool "value-equal peer kept" true (List.exists (( == ) a) after)
+
+let test_remove_client_from_list_idempotent () =
+  let a = ref "x" and b = ref "y" in
+  let once = D.remove_client_from_list a [ a; b ] in
+  check int "once" 1 (List.length once);
+  let twice = D.remove_client_from_list a once in
+  check int "twice still 1" 1 (List.length twice);
+  check bool "b still there" true (List.exists (( == ) b) twice);
+  (* Missing client is a no-op *)
+  let ghost = ref "z" in
+  let noop = D.remove_client_from_list ghost [ a; b ] in
+  check int "ghost prune no-op" 2 (List.length noop)
+
+let test_remove_client_from_list_empty_and_only () =
+  let a = ref 0 in
+  check int "empty" 0 (List.length (D.remove_client_from_list a []));
+  check int "only element" 0 (List.length (D.remove_client_from_list a [ a ]))
+
 let () =
   Alcotest.run "c2c_relay_subscribe_daemon"
     [
@@ -368,5 +400,14 @@ let () =
             test_response_json_list_with_aliases;
           test_case "non-list omits summary" `Quick
             test_non_list_response_omits_summary;
+        ] );
+      ( "prune_clients",
+        [
+          test_case "remove_client_from_list physical" `Quick
+            test_remove_client_from_list_prunes_phys;
+          test_case "remove_client_from_list idempotent" `Quick
+            test_remove_client_from_list_idempotent;
+          test_case "remove_client_from_list empty/only" `Quick
+            test_remove_client_from_list_empty_and_only;
         ] );
     ]
