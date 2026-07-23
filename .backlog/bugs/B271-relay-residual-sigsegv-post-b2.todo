@@ -35,3 +35,25 @@ This residual crash is the **primer** for the B270 reconnect DoS loop.
 
 ## Related
 Umbrella / amplifier: B270. Client reconnect storm bugs depend on this for full production stability but can ship independently.
+
+## B271 work (2026-07-23) — fix landed, not yet deployed
+
+### Core symbolized (production e4a988e)
+- Still SIGSEGV in sqlite3_finalize <- caml_sqlite3_stmt_finalize <- exec_prepared finally <- register lease SELECT (relay.ml:2417)
+- stmtw->stmt dangling/unmapped; sql buffer partially overwritten → UAF of stmt_wrap after high-churn prepare/finalize
+- integrity_check ok; 7662 private leases (peers=0 is public-filter artifact); gc disabled
+
+### Fix (branch fix/b271, hermetic tests green)
+1. Process-lifetime stmt cache: reset instead of finalize under with_lock (Relay_sqlite_support + SqliteRelay)
+2. db_open ~mutex:`FULL
+3. Pairing SQL uses shared with_stmt
+4. Heartbeat leases=/stmts= diagnostics
+5. Supervisor core_file ledger name cores_* (safe_id strip)
+6. Regression: test_relay_sqlite_b271_stmt_cache_survives_gc_pressure
+
+Finding: .collab/findings/2026-07-23T08-45-00Z-b271-residual-sigsegv-stmt-cache.md
+
+### Residual
+- Needs relay deploy for acceptance (multi-hour no status=139)
+- Ephemeral finalize path remains for rare reentry/migrations
+- Lease table growth with gc:disabled filed separately
