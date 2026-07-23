@@ -43,3 +43,20 @@ Finding: `.collab/findings/2026-07-23T08-05-00Z-b270-ws-subscribe-dos-after-502.
 
 ### Ops
 Kill/restart runaway pid 3838462 when ready: `c2c relay subscribe-daemon shutdown`.
+
+
+## Decomposed bugs (from investigation)
+
+| ID | Scope | Pri |
+|----|--------|-----|
+| **B271** | Residual SIGSEGV post-B219 (502 primer) | critical |
+| **B272** | Client: hard timeout on connect+handshake | high |
+| **B273** | Client: jittered backoff + stable-session reset + circuit breaker | high |
+| **B274** | Client: cancel mid-connect must close FDs | high |
+| **B275** | Client: cap concurrent in-flight connects | high |
+| **B276** | Server: meter `/ws/subscribe` (was unmetered) | high |
+| **B277** | Server: cap concurrent subscribers / per-IP upgrades | high |
+| **B278** | Ops: `list` is per-IPC-client only (footgun) | medium |
+| **B279** | **Proper end-to-end rate limiting** (server policy + client Retry-After; depends B276/B277) | high |
+
+B270 remains the umbrella / incident narrative; close when the DoS feedback loop is broken (client storm controls + server meter/caps + no residual crash preferred).
