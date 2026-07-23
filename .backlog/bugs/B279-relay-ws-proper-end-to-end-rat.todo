@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-07-23T08:21:10Z"
 depends_on:
@@ -7,15 +8,9 @@ depends_on:
 estimate_hours: 2
 id: B279
 priority: high
+started_at: null
 status: pending
-tags:
-    - relay
-    - ws
-    - ratelimit
-    - server
-    - client
-    - B270
-    - B276
+tags: []
 title: 'relay WS: proper end-to-end rate limiting for /ws/subscribe (server policy + client Retry-After)'
 updated_at: "2026-07-23T08:21:10Z"
 ---
@@ -59,3 +54,5 @@ After a 502/outage, clients reconnect to `GET /ws/subscribe` in a thundering her
 
 ## Deploy
 Relay-critical for server half; client half is local install (`just bi` / install-all). Prefer shipping client Retry-After respect with or before tight server limits so dogfood hosts don't spin.
+
+Depends on B276 (path meter) + B277 (connection caps). Finding: .collab/findings/2026-07-23T08-05-00Z-b270-ws-subscribe-dos-after-502.md
