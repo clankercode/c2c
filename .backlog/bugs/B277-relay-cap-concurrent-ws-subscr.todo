@@ -1,18 +1,18 @@
 ---
+claimed_at: "2026-07-23T08:21:44Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-23T08:19:45Z"
 depends_on: []
 estimate_hours: 1.5
 id: B277
 priority: high
-status: pending
-tags:
-    - relay
-    - ws
-    - server
-    - B270
+started_at: "2026-07-23T08:21:44Z"
+status: in_progress
+tags: []
 title: 'relay: cap concurrent WS subscribers / per-IP upgrades'
-updated_at: "2026-07-23T08:19:45Z"
+updated_at: "2026-07-23T08:21:44Z"
 ---
 ## Problem
 `Relay_ws_server.SubscriberMap` allows unbounded multi-connection multi-alias registration. Successful auth upgrades via Cohttp `` `Expert `` with no global or per-IP cap on concurrent subscribers or concurrent upgrade attempts. After a 502 recovery, thundering-herd clients can open unbounded long-lived sessions.
