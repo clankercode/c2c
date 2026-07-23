@@ -1,0 +1,24 @@
+---
+complexity: low
+created_at: "2026-07-23T08:33:05Z"
+depends_on: []
+estimate_hours: 1
+id: B280
+priority: medium
+status: pending
+tags: []
+title: 'relay: cap concurrent /observer/* WS sessions (no B277-style limit)'
+updated_at: "2026-07-23T08:33:05Z"
+---
+## Problem
+B277 caps `/ws/subscribe` Expert upgrades (global + per-IP). The older `/observer/<binding>` WS path still upgrades with no process-wide or per-IP concurrent-session limit (dup fd + async loop in relay.ml). A flood of observer handshakes can still hold unbounded long-lived connections.
+
+## Solution
+Reuse or mirror `Relay_ws_server.ConnectionCap` (or a sibling ObserverCap) for observer sessions: acquire before upgrade, free on `ObserverSessions.remove`, reject with 503 + Retry-After. Surface count in heartbeat/stats if cheap.
+
+## Files
+- ocaml/relay.ml (observer upgrade ~6820)
+- tests
+
+## Related
+B277, B270
