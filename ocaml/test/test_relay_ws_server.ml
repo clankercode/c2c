@@ -160,6 +160,184 @@ let test_parse_endpoint_tls_defaults () =
   Alcotest.(check string) "host header keeps non-default port"
     "relay.example:8443" (Relay_ws_client.host_header custom)
 
+(* ---- B272: hard timeout on connect + HTTP upgrade handshake -------------- *)
+
+let count_fds () =
+  let dir = "/proc/self/fd" in
+  if not (Sys.file_exists dir) then None
+  else
+    let d = Unix.opendir dir in
+    let rec loop n =
+      match Unix.readdir d with
+      | exception End_of_file ->
+          Unix.closedir d;
+          Some n
+      | _ -> loop (n + 1)
+    in
+    loop 0
+
+(** Accept TCP connections and never speak — simulates a hung Railway/CF edge
+    that leaves ESTAB sockets parked in [Lwt_io.read_line]. *)
+let with_hung_peer (f : int -> unit Lwt.t) : unit Lwt.t =
+  let open Lwt.Infix in
+  let listen_fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  Lwt_unix.setsockopt listen_fd Unix.SO_REUSEADDR true;
+  Lwt_unix.bind listen_fd (Unix.ADDR_INET (Unix.inet_addr_loopback, 0))
+  >>= fun () ->
+  Lwt_unix.listen listen_fd 16;
+  let port =
+    match Lwt_unix.getsockname listen_fd with
+    | Unix.ADDR_INET (_, p) -> p
+    | _ -> failwith "hung peer: expected IPv4 bound port"
+  in
+  let clients : Lwt_unix.file_descr list ref = ref [] in
+  let rec accept_loop () =
+    Lwt.catch
+      (fun () ->
+         Lwt_unix.accept listen_fd >>= fun (c, _) ->
+         clients := c :: !clients;
+         (* Park without reading or writing. *)
+         accept_loop ())
+      (function
+        | Unix.Unix_error ((Unix.EBADF | Unix.EINVAL), _, _) -> Lwt.return_unit
+        | Lwt.Canceled -> Lwt.return_unit
+        | _ -> Lwt.return_unit)
+  in
+  let acceptor = accept_loop () in
+  Lwt.finalize
+    (fun () -> f port)
+    (fun () ->
+       Lwt.cancel acceptor;
+       Lwt_list.iter_p
+         (fun c ->
+            Lwt.catch (fun () -> Lwt_unix.close c) (fun _ -> Lwt.return_unit))
+         !clients
+       >>= fun () ->
+       Lwt.catch (fun () -> Lwt_unix.close listen_fd) (fun _ -> Lwt.return_unit))
+
+let hung_endpoint port : Relay_ws_client.endpoint =
+  { Relay_ws_client.host = "127.0.0.1"
+  ; port
+  ; use_tls = false
+  ; path = "/ws/subscribe"
+  }
+
+let test_connect_subscribe_times_out_on_hung_peer () =
+  let open Lwt.Infix in
+  Lwt_main.run
+    (with_hung_peer (fun port ->
+       let id = Relay_identity.generate ~alias_hint:"b272" () in
+       let endpoint = hung_endpoint port in
+       let t0 = Unix.gettimeofday () in
+       Lwt.catch
+         (fun () ->
+            Relay_ws_client.connect_subscribe
+              ~endpoint ~alias:"b272@deadbeefcaf0" ~identity:id ~timeout:0.25 ()
+            >>= fun _ ->
+            Alcotest.fail "expected connect/handshake timeout on hung peer")
+         (function
+           | Failure msg ->
+               let elapsed = Unix.gettimeofday () -. t0 in
+               Alcotest.(check bool) "error mentions timed out" true
+                 (String.is_substring ~substring:"timed out" msg);
+               Alcotest.(check bool) "error mentions WebSocket subscribe" true
+                 (String.is_substring ~substring:"WebSocket subscribe" msg);
+               Alcotest.(check bool) "returns near the timeout budget" true
+                 (elapsed < 2.0 && elapsed >= 0.15);
+               Lwt.return_unit
+           | e ->
+               Alcotest.fail
+                 (Printf.sprintf "expected Failure timeout, got: %s"
+                    (Printexc.to_string e)))))
+
+let test_connect_subscribe_timeout_does_not_grow_fds () =
+  let open Lwt.Infix in
+  Lwt_main.run
+    (with_hung_peer (fun port ->
+       match count_fds () with
+       | None ->
+           (* Non-Linux / no /proc — skip the FD-growth assertion. *)
+           Lwt.return_unit
+       | Some baseline ->
+           let id = Relay_identity.generate ~alias_hint:"b272fd" () in
+           let endpoint = hung_endpoint port in
+           let rec storm n =
+             if n <= 0 then Lwt.return_unit
+             else
+               Lwt.catch
+                 (fun () ->
+                    Relay_ws_client.connect_subscribe
+                      ~endpoint ~alias:"b272fd@deadbeefcaf1" ~identity:id
+                      ~timeout:0.15 ()
+                    >>= fun _ -> Lwt.return_unit)
+                 (function Failure _ -> Lwt.return_unit | e -> Lwt.fail e)
+               >>= fun () -> storm (n - 1)
+           in
+           storm 8 >>= fun () ->
+           (* Give cancelled closes a tick to settle. *)
+           Lwt.pause () >>= fun () ->
+           Lwt.pause () >>= fun () ->
+           (match count_fds () with
+            | None -> Lwt.return_unit
+            | Some after ->
+                (* Acceptor may hold a handful of accepted FDs; client must not
+                   leave one ESTAB per attempt. Allow small slack for noise. *)
+                let growth = after - baseline in
+                Alcotest.(check bool)
+                  (Printf.sprintf
+                     "FD growth bounded (baseline=%d after=%d growth=%d)"
+                     baseline after growth)
+                  true (growth <= 12);
+                Lwt.return_unit)))
+
+let test_connect_subscribe_succeeds_within_timeout () =
+  let open Lwt.Infix in
+  Lwt_main.run
+    (let listen_fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+     Lwt_unix.setsockopt listen_fd Unix.SO_REUSEADDR true;
+     Lwt_unix.bind listen_fd (Unix.ADDR_INET (Unix.inet_addr_loopback, 0))
+     >>= fun () ->
+     Lwt_unix.listen listen_fd 1;
+     let port =
+       match Lwt_unix.getsockname listen_fd with
+       | Unix.ADDR_INET (_, p) -> p
+       | _ -> failwith "expected IPv4"
+     in
+     let serve =
+       Lwt_unix.accept listen_fd >>= fun (c, _) ->
+       let ic = Lwt_io.of_fd ~mode:Lwt_io.Input c in
+       let oc = Lwt_io.of_fd ~mode:Lwt_io.Output c in
+       (* Drain request headers. *)
+       let rec drain () =
+         Lwt_io.read_line ic >>= fun line ->
+         if line = "" then Lwt.return_unit else drain ()
+       in
+       drain () >>= fun () ->
+       Lwt_io.write oc
+         "HTTP/1.1 101 Switching Protocols\r\n\
+          Upgrade: websocket\r\n\
+          Connection: Upgrade\r\n\
+          Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\
+          \r\n"
+       >>= fun () ->
+       Lwt_io.flush oc >>= fun () ->
+       (* Keep the socket open until the client owns the session. *)
+       Lwt_unix.sleep 0.5 >>= fun () ->
+       Lwt.catch (fun () -> Lwt_unix.close c) (fun _ -> Lwt.return_unit)
+     in
+     let id = Relay_identity.generate ~alias_hint:"b272ok" () in
+     let endpoint = hung_endpoint port in
+     Lwt.finalize
+       (fun () ->
+          serve
+          <&>
+          (Relay_ws_client.connect_subscribe
+             ~endpoint ~alias:"b272ok@deadbeefcaf2" ~identity:id ~timeout:2.0 ()
+           >>= fun (_session, close) ->
+           close ()))
+       (fun () ->
+          Lwt.catch (fun () -> Lwt_unix.close listen_fd) (fun _ -> Lwt.return_unit)))
+
 let () =
   Alcotest.run "Relay WS Server"
     [ ( "auth",
@@ -184,4 +362,13 @@ let () =
         [ Alcotest.test_case "parse endpoint tls defaults (B189)" `Quick
             test_parse_endpoint_tls_defaults
         ] )
+    ; ( "ws_client_connect_timeout",
+        [ Alcotest.test_case "hung peer times out (B272)" `Quick
+            test_connect_subscribe_times_out_on_hung_peer
+        ; Alcotest.test_case "timeout storm does not grow FDs (B272)" `Quick
+            test_connect_subscribe_timeout_does_not_grow_fds
+        ; Alcotest.test_case "successful upgrade within timeout (B272)" `Quick
+            test_connect_subscribe_succeeds_within_timeout
+        ] )
     ]
+
