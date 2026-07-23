@@ -1,0 +1,33 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:19:45Z"
+depends_on: []
+estimate_hours: 1
+id: B276
+priority: high
+status: pending
+tags:
+    - relay
+    - ws
+    - server
+    - ratelimit
+    - B270
+title: 'relay: rate-limit /ws/subscribe (currently unmetered)'
+updated_at: "2026-07-23T08:19:45Z"
+---
+## Problem
+`Relay_ratelimit.classify_endpoint` has **no** class for `/ws/subscribe` — the path is unmetered (`None` → always `Allow`). By contrast `/peek_inbox` was rate-limited specifically to stop peek-loop DoS (B096). WS upgrade is heavier (long-lived Expert connection + ping/recv loops) and is the reconnect surface after 502.
+
+## Solution
+1. Add an endpoint class for `/ws/subscribe` (and prefix match) with a strict token bucket (small burst, low refill — comparable to or stricter than `/observer`).
+2. Emit structured log on deny (`ws_subscribe` / `rate_limit_denied`).
+3. Return 429 with standard `ok:false` / `error_code=rate_limit_exceeded` + `retry_after` (B237 envelope).
+4. Hermetic tests in `test_relay_ratelimit` + request-path test.
+
+## Files
+- `ocaml/relay_ratelimit.ml`
+- `ocaml/relay.ml` (already calls `Rate_limiter_inst.check` for all paths)
+- `ocaml/test/test_relay_ratelimit.ml`
+
+## Related
+B270. Deploy is relay-critical. Pair with max-subscriber cap.
