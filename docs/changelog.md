@@ -9,7 +9,20 @@ nav_label: Changelog
 
 ## Unreleased
 
-- **c2c skill: make `--cross-repo` messaging obvious (B285).** Core flow tables
+## 0.14.3 — 2026-07-23
+
+- **One c2c child can publish state for many identities.** The new internal
+  `c2c oc-plugin stream-write-statefiles` JSONL sink validates and atomically
+  fans complete snapshots out to the existing per-instance files. This lets
+  pi-c2c collapse hundreds of per-subagent writer processes into one shared
+  child while preserving `c2c statefile --instance` and the legacy one-key
+  command.
+
+- **Cursor Agent sessions resolve to their own identity (B284).** Session
+  discovery recognises Cursor Agent's environment and process metadata rather
+  than reusing a foreign sticky session identity.
+
+- **c2c skill makes `--cross-repo` messaging obvious (B285).** Core flow tables
   and harness habits document `--cross-repo` on `send` / `list` / `register` /
   `monitor` (sessions broker `~/.c2c/sessions/broker`, override
   `C2C_SESSIONS_BROKER_ROOT`), with a concrete DM example and a short note
