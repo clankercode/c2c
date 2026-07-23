@@ -1,0 +1,33 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:19:45Z"
+depends_on: []
+estimate_hours: 1
+id: B273
+priority: high
+status: pending
+tags:
+    - relay
+    - ws
+    - client
+    - B270
+title: 'subscribe-daemon: jittered reconnect backoff + stable-session reset + circuit breaker'
+updated_at: "2026-07-23T08:19:45Z"
+---
+## Problem
+`c2c relay subscribe-daemon` reconnect uses exponential backoff 1s → 30s but:
+- **No jitter** → synchronized thundering herd across aliases/hosts when origin recovers.
+- **Resets to 1s on any successful connect** → during a multi-minute crash loop (SIGSEGV every 4–8 min), many aliases stay near the short end and re-hammer `/ws/subscribe` on each flicker.
+- Per-alias loops; N aliases = N independent storms in one process.
+
+## Solution
+1. Add full-jitter (or equal-jitter) to reconnect delay.
+2. Do not fully reset backoff until a **stable** session (e.g. connected for ≥30–60s or successful pong), not merely upgrade 101.
+3. Optional circuit breaker: when many aliases fail together (origin unhealthy), share a daemon-level cool-down before any reconnect.
+4. Tests for jitter bounds + non-reset-on-flicker.
+
+## Files
+- `ocaml/cli/c2c_relay_subscribe_daemon.ml` (`reconnect_backoff_*`, `run_alias_connection`)
+
+## Related
+B270. Works with handshake timeout + in-flight connect cap.

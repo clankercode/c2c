@@ -269,3 +269,4 @@ bugs:
     - file: B270-possible-dos-on-server-after-5.todo
     - file: B271-relay-residual-sigsegv-post-b2.todo
     - file: B272-relay-ws-client-hard-timeout-o.todo
+    - file: B273-subscribe-daemon-jittered-reco.todo
