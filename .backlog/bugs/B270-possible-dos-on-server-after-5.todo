@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T08:21:44Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T08:51:31Z"
 complexity: medium
 created_at: "2026-07-23T07:52:37Z"
 depends_on: []
+duration_minutes: 29.7953876835
 estimate_hours: 1
 id: B270
 priority: high
 started_at: "2026-07-23T08:21:44Z"
-status: in_progress
+status: done
 tags: []
 title: Possible DoS on server after 502 error /ws/subscribe
-updated_at: "2026-07-23T08:21:44Z"
+updated_at: "2026-07-23T08:51:31Z"
 ---
 
 Possible DoS on server after 502 error /ws/subscribe

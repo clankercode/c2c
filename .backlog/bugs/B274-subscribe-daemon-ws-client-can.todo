@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T08:21:44Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T08:51:31Z"
 complexity: medium
 created_at: "2026-07-23T08:19:45Z"
 depends_on: []
+duration_minutes: 29.795494448066666
 estimate_hours: 1.5
 id: B274
 priority: high
 started_at: "2026-07-23T08:21:44Z"
-status: in_progress
+status: done
 tags: []
 title: 'subscribe-daemon/WS client: cancel mid-connect must close sockets (FD leak under 502)'
-updated_at: "2026-07-23T08:21:44Z"
+updated_at: "2026-07-23T08:51:31Z"
 ---
 ## Problem
 Registration uses `Lwt.pick [ run_alias_connection; conn_cancel ]`. If cancel wins while `create_ws_session_lwt` is mid-TLS or mid-`read_line`, the fiber is cancelled. It is not proven that `Tls_lwt` / `Lwt_io` always free the underlying FD; live measurement (FD 596→693 and ESTAB 105→193 in 10s under 502) is consistent with leaked or overlapping in-flight connects.

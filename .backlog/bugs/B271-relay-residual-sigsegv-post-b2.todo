@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T08:21:44Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T08:51:31Z"
 complexity: high
 created_at: "2026-07-23T08:19:44Z"
 depends_on: []
+duration_minutes: 29.795412512433334
 estimate_hours: 2
 id: B271
 priority: critical
 started_at: "2026-07-23T08:21:44Z"
-status: in_progress
+status: done
 tags: []
 title: Relay residual SIGSEGV post-B219 on production (e4a988e still status=139)
-updated_at: "2026-07-23T08:21:44Z"
+updated_at: "2026-07-23T08:51:31Z"
 ---
 ## Problem
 Production relay (`relay.c2c.im`, Railway, v0.14.1 git=e4a988e) still dies with SIGSEGV (`child_signaled status=139 signal_number=11 core_dumped=1`) every ~4–8 minutes despite the B219 persistent-SQLite fix being an ancestor of the deployed SHA.

@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T08:21:44Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T08:51:31Z"
 complexity: medium
 created_at: "2026-07-23T08:19:45Z"
 depends_on: []
+duration_minutes: 29.79554209533333
 estimate_hours: 1
 id: B276
 priority: high
 started_at: "2026-07-23T08:21:44Z"
-status: in_progress
+status: done
 tags: []
 title: 'relay: rate-limit /ws/subscribe (currently unmetered)'
-updated_at: "2026-07-23T08:21:44Z"
+updated_at: "2026-07-23T08:51:31Z"
 ---
 ## Problem
 `Relay_ratelimit.classify_endpoint` has **no** class for `/ws/subscribe` — the path is unmetered (`None` → always `Allow`). By contrast `/peek_inbox` was rate-limited specifically to stop peek-loop DoS (B096). WS upgrade is heavier (long-lived Expert connection + ping/recv loops) and is the reconnect surface after 502.
