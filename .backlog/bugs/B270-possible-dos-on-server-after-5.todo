@@ -62,3 +62,31 @@ Kill/restart runaway pid 3838462 when ready: `c2c relay subscribe-daemon shutdow
 | **B279** | **Proper end-to-end rate limiting** (server policy + client Retry-After; depends B276/B277) | high |
 
 B270 remains the umbrella / incident narrative; close when the DoS feedback loop is broken (client storm controls + server meter/caps + no residual crash preferred).
+
+
+## Umbrella glue shipped (2026-07-23)
+
+Not duplicating B271–B278 concrete fixes. B270 adds operator/visibility glue:
+
+1. **Doctor warning** — `check_id=relay.subscribe_daemon_storm`
+   - Pure: `Relay_doctor.classify_subscribe_daemon_storm` + `subscribe_daemon_storm_check`
+   - Live: samples `~/.c2c/relay-subscribe.sock.pid` + `/proc/<pid>/{fd,status}`
+   - Fail when metrics match 2026-07-23 incident (FD≥400 / socket_fds≥100 / threads≥200 / rss≥300MB)
+   - Inconclusive when elevated; omitted when quiet or no daemon
+2. **Hermetic tests** — `ocaml/test/test_c2c_doctor_capabilities.ml` group `B270 subscribe-daemon storm` (4 cases, including locked B271–B279 map)
+3. **Public runbook** — `docs/relay-subscribe-daemon.md` reconnect-storm section + mitigations table
+
+### Mitigations map status
+
+| ID | Role | Status at umbrella ship |
+|----|------|-------------------------|
+| B271 | SIGSEGV primer | sibling / open |
+| B272–B275 | client storm controls | sibling |
+| B276–B277 | server meter/caps | sibling |
+| B278 | ops list footgun | sibling |
+| B279 | e2e Retry-After | sibling (depends B276/B277) |
+| **B270 glue** | doctor + docs + regression map | **this commit** |
+
+No NEW bugs beyond B271–B279 during umbrella pass.
+
+Close B270 when client storm controls + server meter/caps land (residual crash preferred fixed via B271).
