@@ -510,6 +510,15 @@ Selects the relay-connect backend: `python` (legacy) vs the native OCaml
 connector (`ocaml/c2c_relay_connector.ml`). Operator-facing knob for
 `c2c relay connect` / `c2c start relay-connect` (`c2c_relay_cmd.ml`).
 
+### `C2C_RELAY_SUBSCRIBE_MAX_INFLIGHT` (B275)
+
+Max concurrent in-flight `/ws/subscribe` handshakes in
+`c2c relay subscribe-daemon`. Default `8`. Positive integer only; empty,
+zero, negative, or non-numeric values fall back to the default. Live
+sessions do not hold a slot — only connect/handshake does, so remaining
+aliases queue instead of thundering-herding a down/slow relay.
+(`ocaml/cli/c2c_ws_connect_gate.ml`, used by `c2c_relay_subscribe_daemon.ml`.)
+
 ### `C2C_SUPERVISOR_STALE_THRESHOLD_S`
 
 Supervisor stale threshold in seconds; default 300
