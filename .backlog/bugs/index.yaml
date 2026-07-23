@@ -273,3 +273,4 @@ bugs:
     - file: B274-subscribe-daemon-ws-client-can.todo
     - file: B275-subscribe-daemon-cap-concurren.todo
     - file: B276-relay-rate-limit-ws-subscribe.todo
+    - file: B277-relay-cap-concurrent-ws-subscr.todo

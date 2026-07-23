@@ -1,0 +1,33 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:19:45Z"
+depends_on: []
+estimate_hours: 1.5
+id: B277
+priority: high
+status: pending
+tags:
+    - relay
+    - ws
+    - server
+    - B270
+title: 'relay: cap concurrent WS subscribers / per-IP upgrades'
+updated_at: "2026-07-23T08:19:45Z"
+---
+## Problem
+`Relay_ws_server.SubscriberMap` allows unbounded multi-connection multi-alias registration. Successful auth upgrades via Cohttp `` `Expert `` with no global or per-IP cap on concurrent subscribers or concurrent upgrade attempts. After a 502 recovery, thundering-herd clients can open unbounded long-lived sessions.
+
+## Solution
+1. Cap total active subscribers (process-wide).
+2. Cap concurrent upgrades and/or active sessions per client IP (and optionally per alias).
+3. Reject excess with 503 + `Retry-After` (or 429 if preferred consistency with rate-limit).
+4. Surface `subs=` / upgrade counters in relay heartbeat or `/stats`.
+5. Hermetic tests for cap enforcement + cleanup on disconnect freeing slots.
+
+## Files
+- `ocaml/relay_ws_server.ml`
+- `ocaml/relay.ml` (upgrade path ~6991 / Expert handler ~7322)
+- tests
+
+## Related
+B270. Complements rate-limit on `/ws/subscribe`.
