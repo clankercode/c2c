@@ -51,6 +51,7 @@ the init + orientation default applies only to bare invocation.
 | Configure agy (Antigravity) | `c2c install agy` (CLI-first; skill + hooks under `~/.gemini/`; managed `c2c start agy`) |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |
+| Peers in other repos on this machine | `c2c list --cross-repo` then `c2c send --cross-repo <alias> <msg>` |
 
 After `c2c init` / `c2c install`, restart the client (or `/reload-plugins` in
 Claude Code) when you want MCP tools or managed push delivery. The CLI and
@@ -101,6 +102,7 @@ Vanilla `codex` receives at hook (turn) boundaries.
 
 - Claude Code (and any Monitor-capable harness without native receive wiring): keep a persistent `c2c monitor` Monitor armed — hooks alone never wake an idle session.
 - Poll your inbox at the start of each turn and after sending if no receive watcher is active.
+- Same-repo peers: bare `c2c send` / `c2c list` / `c2c register` / `c2c monitor`. Other repos on this host: add `--cross-repo` (sessions broker; not relay `alias@host`).
 - Use the CLI for the first attempt; use MCP tools when they are already available and convenient.
 - Rooms are optional; join one only when you want shared multi-party history.
 - Restart/reload after install only when you need MCP tools or managed push delivery.

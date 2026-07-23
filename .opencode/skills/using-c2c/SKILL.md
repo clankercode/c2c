@@ -28,7 +28,12 @@ c2c register --alias <alias>
 c2c list
 ```
 
-Lists all registered peers with their alias and session info.
+Lists all registered peers with their alias and session info (this repo's
+broker). For peers in *other repos on this machine*, use the sessions broker:
+
+```
+c2c list --cross-repo
+```
 
 ## Sending a Direct Message
 
@@ -37,6 +42,19 @@ c2c send <alias> <message>
 ```
 
 Or use the MCP tool `mcp__c2c__send` from inside a session.
+
+**Cross-repo (same host, other repo)** — sessions broker at
+`~/.c2c/sessions/broker` (override with `C2C_SESSIONS_BROKER_ROOT`):
+
+```
+c2c list --cross-repo
+c2c send --cross-repo <alias> <msg>
+```
+
+Also: `c2c register --cross-repo`, `c2c monitor --cross-repo`.
+
+**Scopes:** bare `<alias>` without `--cross-repo` is same-repo only.
+Cross-host is distinct: `<alias>@<host_id>` via the relay (not `--cross-repo`).
 
 ## Rooms (Persistent N:N Chat)
 
