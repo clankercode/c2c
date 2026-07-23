@@ -184,10 +184,42 @@ let test_reconnect_wait_takes_max_of_jitter_and_circuit () =
       ~rand:(fun _ -> 0.1) ()
   in
   let circuit_wait = C.remaining_cool c ~now in
-  let wait = Float.max delay circuit_wait in
+  let wait =
+    D.reconnect_wait ~local_delay:delay ~circuit_wait
+      ~server_retry_after:None ()
+  in
   Alcotest.(check bool) "circuit dominates small jitter" true (wait >= 29.0);
   Alcotest.(check bool) "wait is circuit cool-down" true
     (abs_float (wait -. C.cool_down_s) < 0.01)
+
+(* ── B279: server Retry-After must not be undercut by local jitter ───── *)
+
+let test_reconnect_wait_honours_server_retry_after () =
+  let wait =
+    D.reconnect_wait ~local_delay:0.5 ~circuit_wait:1.0
+      ~server_retry_after:(Some 12.0) ()
+  in
+  Alcotest.(check (float eps)) "server ra wins" 12.0 wait;
+  let wait2 =
+    D.reconnect_wait ~local_delay:20.0 ~circuit_wait:1.0
+      ~server_retry_after:(Some 12.0) ()
+  in
+  Alcotest.(check (float eps)) "local can still be larger" 20.0 wait2;
+  let wait3 =
+    D.reconnect_wait ~local_delay:2.0 ~circuit_wait:5.0
+      ~server_retry_after:(Some 3.0) ()
+  in
+  Alcotest.(check (float eps)) "circuit over local and small server" 5.0 wait3;
+  let wait4 =
+    D.reconnect_wait ~local_delay:1.0 ~circuit_wait:0.0
+      ~server_retry_after:None ()
+  in
+  Alcotest.(check (float eps)) "none server ra falls back" 1.0 wait4;
+  let wait5 =
+    D.reconnect_wait ~local_delay:1.0 ~circuit_wait:0.0
+      ~server_retry_after:(Some (-1.0)) ()
+  in
+  Alcotest.(check (float eps)) "negative server ra ignored" 1.0 wait5
 
 (* ── B278: list parse / summary / response JSON ───────────────────────── *)
 
@@ -375,6 +407,8 @@ let () =
             test_circuit_window_prunes_old_failures;
           Alcotest.test_case "wait_max_jitter_circuit" `Quick
             test_reconnect_wait_takes_max_of_jitter_and_circuit;
+          Alcotest.test_case "wait_honours_server_retry_after (B279)" `Quick
+            test_reconnect_wait_honours_server_retry_after;
         ] );
       ( "parse",
         [

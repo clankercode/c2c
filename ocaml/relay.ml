@@ -6751,8 +6751,14 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
           ();
         (* B237: emit the standard ok:false / error_code envelope so clients
            do not hit the schema-dishonest path ("body did not report
-           ok:false") on rate limits. retry_after stays a peer field. *)
+           ok:false") on rate limits. retry_after stays a peer field.
+           B279: also set Retry-After so raw HTTP clients (WS upgrade path)
+           can honour the wait without parsing the body. *)
+        let retry_hdr =
+          string_of_int (int_of_float (Float.ceil retry_after))
+        in
         respond_too_many_requests
+          ~headers:[("Retry-After", retry_hdr)]
           (json_error "rate_limit_exceeded" "rate_limit_exceeded"
              [ ("retry_after", `Float retry_after) ])
     | `Allow ->
