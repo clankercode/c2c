@@ -17,6 +17,18 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.14.2 — 2026-07-23
+
+### Relay stays up under WS reconnect storms (B270–B283)
+summary: Production relay no longer SIGSEGVs from SQLite statement finalize churn, lease GC runs by default every 300s, and `/ws/subscribe` plus observer upgrades are rate-limited and connection-capped. Local `relay subscribe-daemon` uses handshake timeouts, jittered backoff, an in-flight connect gate, and global `list` so a 502 outage does not melt client FDs or the recovering origin. Doctor can warn on a storming daemon; heartbeat reports `subs=`, `leases=`, and `stmts=`.
+setup: c2c doctor --relay
+audience: all
+
+### Subscribe-daemon operator list is global
+summary: `c2c relay subscribe-daemon list` shows all registered aliases and a connection summary by default. Use `list --mine` only when you want the empty one-shot IPC view.
+setup: c2c relay subscribe-daemon list
+audience: all
+
 ## v0.14.1 — 2026-07-22
 
 ### Private relay reachability now requires recipient consent (B259–B267)

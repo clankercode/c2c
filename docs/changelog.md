@@ -9,21 +9,43 @@ nav_label: Changelog
 
 ## Unreleased
 
-- **Relay lease GC defaults ON again (B282).** `c2c relay serve` without
-  `--gc-interval` previously mapped to `0` (disabled) in the OCaml server
-  while docs/Python still said 300s — production Docker never passed the
-  flag, so private leases accumulated (`gc: disabled`, heartbeat
-  `peers=0` under private-by-default). Default is 300s again; `--gc-interval 0`
-  or `C2C_RELAY_GC_INTERVAL=0` disables. GC reaps aliases past the 12-month
-  reservation window including private rows.
+## 0.14.2 — 2026-07-23
 
-- **`relay subscribe-daemon list` is daemon-global by default (B278).** The
-  operator CLI no longer opens a fresh IPC socket and lists only that
-  connection's (empty) aliases. Bare `list` returns every open client's
-  aliases plus a `summary` (`clients`, `aliases`, `connected` /
-  `connecting` / `stopped`). Harness IPC `{"cmd":"list"}` stays per-client;
-  pass `"all":true` or `list_all` for the global view. Use `list --mine`
-  for the one-shot per-connection view.
+Relay hardening after the B270 `/ws/subscribe` reconnect-DoS investigation
+and residual production SIGSEGV (B271). Deployed to `relay.c2c.im` as
+`git=1c64cb0` before the tag; heartbeat now reports `subs=` / `leases=` /
+`stmts=` with `gc: running every 300s`.
+
+- **Residual relay SIGSEGV fixed (B271).** Production still crashed in
+  `sqlite3_finalize` after the B219 persistent-connection fix. Process-
+  lifetime statement cache now **resets** hot-path stmts instead of
+  finalize-churn under load. Heartbeat surfaces `leases=` and `stmts=`.
+
+- **Relay lease GC defaults ON again (B282).** `c2c relay serve` without
+  `--gc-interval` previously mapped to `0` (disabled) while docs said 300s —
+  production Docker never passed the flag, so private leases accumulated.
+  Default is 300s; `--gc-interval 0` or `C2C_RELAY_GC_INTERVAL=0` disables.
+
+- **`/ws/subscribe` is rate-limited and connection-capped (B276, B277).**
+  Token bucket (burst 10, ~10/min per IP class) plus process-wide and per-IP
+  concurrent subscriber caps (defaults 1024 / 32). Excess upgrades get 429 or
+  503 with `Retry-After`. `/stats` exposes `ws{}` and deny counters.
+
+- **Observer WebSocket sessions capped the same way (B280).** Independent
+  budget via `C2C_RELAY_WS_MAX_OBSERVERS*` env vars; `/stats` has `observer{}`.
+
+- **Subscribe-daemon no longer storms a 502 origin (B272–B275, B281).** Hard
+  10s connect/handshake timeout; cancel-safe FD close; full-jitter backoff
+  with stable-session reset + shared circuit breaker; max 8 concurrent
+  in-flight handshakes (`C2C_RELAY_SUBSCRIBE_MAX_INFLIGHT`); closed IPC
+  clients are pruned from daemon state.
+
+- **`relay subscribe-daemon list` is daemon-global by default (B278).** Bare
+  `list` returns every client's aliases plus `summary`. Harness IPC stays
+  per-client; use `list --mine` for the one-shot view.
+
+- **Doctor storm warning (B270).** `c2c doctor --relay` can flag a runaway
+  subscribe-daemon (high FD/thread/RSS signature) and points at the runbook.
 
 ## 0.14.1 — 2026-07-22
 
