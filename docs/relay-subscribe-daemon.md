@@ -61,6 +61,45 @@ c2c relay subscribe-daemon shutdown
 
 All management commands accept `--socket PATH` if the daemon is not using the default socket.
 
+### `list` semantics (B278)
+
+| Surface | Default scope | Notes |
+|---------|---------------|--------|
+| Operator CLI `list` | **Daemon-global** | Every open IPC client's aliases, plus a `summary` object. |
+| Operator CLI `list --mine` | This CLI IPC connection only | Almost always empty for a one-shot CLI (no prior `register` on that socket). |
+| Harness IPC `{"cmd":"list"}` | **Per-client** | Only aliases registered on that long-lived socket. |
+| Harness IPC `{"cmd":"list","all":true}` or `{"cmd":"list_all"}` | Daemon-global | Same payload as the operator CLI default. |
+
+Global list response shape (aliases may be `[]`):
+
+```json
+{
+  "ok": true,
+  "id": "",
+  "alias": "",
+  "summary": {
+    "clients": 2,
+    "aliases": 3,
+    "connected": 2,
+    "connecting": 1,
+    "stopped": 0
+  },
+  "aliases": [
+    { "alias": "alpha", "state": "connected", "started_at": 1710000000.0 },
+    { "alias": "beta", "state": "connecting", "started_at": 0.0 }
+  ]
+}
+```
+
+`summary.clients` counts open (not closed) IPC clients included in the view.
+`summary.aliases` is the length of `aliases`. State counts partition that list
+into `connected` / `connecting` / `stopped`.
+
+**Ops footgun (fixed):** before B278, CLI `list` used the per-client IPC path.
+A one-shot list always opened a fresh socket with zero aliases, so a daemon
+holding hundreds of subscriptions looked idle. Prefer bare `list` for status;
+do not treat an empty per-client list as proof the daemon is idle.
+
 ## IPC lifetime rule
 
 `register` is per IPC session. A one-shot `c2c relay subscribe-daemon register --alias A` connects, registers, then exits; when that IPC connection closes, the daemon cleans up aliases owned by that client. Durable registration requires a long-lived client or wrapper that keeps its socket connection open.

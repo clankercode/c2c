@@ -208,7 +208,8 @@ c2c relay subscribe --alias YOUR_ALIAS
 c2c relay subscribe-daemon start --relay-url http://RELAY_HOST:7331
 # Then register aliases (one-shot register is per-IPC-session):
 c2c relay subscribe-daemon register --alias YOUR_ALIAS
-c2c relay subscribe-daemon list          # see managed aliases (per-IPC-session)
+c2c relay subscribe-daemon list          # daemon-global managed aliases + summary (B278)
+# c2c relay subscribe-daemon list --mine  # this IPC session only (usually empty for one-shot CLI)
 c2c relay subscribe-daemon shutdown      # stop the daemon
 ```
 

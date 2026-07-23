@@ -41,6 +41,12 @@
  (libraries c2c_mcp alcotest yojson str unix)
  (deps c2c.exe))
 
+; B278: subscribe-daemon list scope (per-client vs daemon-global) + summary.
+(test
+ (name test_c2c_relay_subscribe_daemon)
+ (modules test_c2c_relay_subscribe_daemon c2c_relay_subscribe_daemon)
+ (libraries c2c_mcp alcotest cmdliner yojson unix lwt.unix cohttp-lwt-unix))
+
 ; #35 phase 1: machine-wide deliver-service scaffold (lock/pidfile/doctor stub).
 (test
  (name test_c2c_deliver_managed)
