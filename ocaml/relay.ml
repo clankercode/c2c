@@ -1858,14 +1858,15 @@ module InMemoryRelay : RELAY = struct
 
   let private_reachability_mode _t = "process_local"
 
+  (* B283: no SQLite stmt cache on the in-memory backend. *)
+  let cached_stmt_count _t = -1
+
 end
 
 (* --- SqliteRelay --- *)
 
 module SqliteRelay : sig
   include RELAY
-  (** B271: number of process-lifetime cached prepared statements. *)
-  val cached_stmt_count : t -> int
   (** B271: finalize cached statements then close the connection. *)
   val close : t -> unit
 end = struct
@@ -7321,7 +7322,9 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
 
   (* B219: periodic heartbeat so the logs carry a resource trend (memory /
      lease count / uptime) before a silent death. Best-effort — a failure to
-     read counts must never kill the loop. Mirrors the gc/stats loop style. *)
+     read counts must never kill the loop. Mirrors the gc/stats loop style.
+     B283: [stmts=] comes from [R.cached_stmt_count] (SqliteRelay real cache
+     size; other backends -1). *)
   let rec heartbeat_loop relay ~start_time =
     Lwt_unix.sleep heartbeat_interval_s >>= fun () ->
     (try
@@ -7337,12 +7340,15 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
        let lease_count =
          try List.length (R.list_peers_admin relay ~include_dead:true) with _ -> -1
        in
+       let stmt_cache =
+         try R.cached_stmt_count relay with _ -> -1
+       in
        let gc = Gc.quick_stat () in
        let rss_kb = heartbeat_rss_kb () in
        Printf.eprintf "%s\n%!"
          (format_heartbeat_line ~uptime_s ~peer_count ~ws_subs
             ~heap_words:gc.Gc.heap_words ~rss_kb
-            ~lease_count ())
+            ~lease_count ~stmt_cache ())
      with _ -> ());
     heartbeat_loop relay ~start_time
 
