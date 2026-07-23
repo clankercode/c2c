@@ -234,6 +234,10 @@ module type RELAY = sig
     | `Duplicate of float * string
     | `Rejected ]
   val private_reachability_mode : t -> string
+  (** B283/B271: process-lifetime prepared-statement cache size for the
+      heartbeat [stmts=] field. SqliteRelay returns the real cache size;
+      backends without a stmt cache return [-1] (unknown / N/A). *)
+  val cached_stmt_count : t -> int
 end
 
 (* --- B147: usage-stats window definitions shared by both backends --- *)

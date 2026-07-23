@@ -4,7 +4,9 @@
    prefix) > git fallback > "unknown".
    B219: [Relay.format_heartbeat_line] shape.
    B271: leases=/stmts= optional fields.
-   B277: subs= WS subscriber connection count. *)
+   B277: subs= WS subscriber connection count.
+   B283: production heartbeat wires stmts= via RELAY.cached_stmt_count
+   (SqliteRelay real size; InMemoryRelay -1). *)
 
 (* local substring check (avoid extra deps) *)
 let contains ~sub s =
@@ -76,7 +78,63 @@ let t_heartbeat_line_no_rss () =
   in
   Alcotest.(check bool) "rss unknown shown as ?" true (contains ~sub:"rss_kb=?" line);
   Alcotest.(check bool) "subs=0 present" true (contains ~sub:"subs=0" line);
-  Alcotest.(check bool) "default leases=-1" true (contains ~sub:"leases=-1" line)
+  Alcotest.(check bool) "default leases=-1" true (contains ~sub:"leases=-1" line);
+  Alcotest.(check bool) "default stmts=-1 (B271/B283)" true
+    (contains ~sub:"stmts=-1" line)
+
+(* --- B283: RELAY.cached_stmt_count hooks for heartbeat stmts= --- *)
+
+let rm_rf path =
+  let rec walk p =
+    if Sys.file_exists p then
+      if Sys.is_directory p then begin
+        Array.iter (fun name -> walk (Filename.concat p name)) (Sys.readdir p);
+        try Unix.rmdir p with _ -> ()
+      end else
+        try Sys.remove p with _ -> ()
+  in
+  walk path
+
+let with_tmp_dir prefix f =
+  let dir =
+    Filename.concat
+      (Filename.get_temp_dir_name ())
+      (Printf.sprintf "%s-%d-%d" prefix (Unix.getpid ()) (Random.bits ()))
+  in
+  Unix.mkdir dir 0o700;
+  Fun.protect ~finally:(fun () -> rm_rf dir) (fun () -> f dir)
+
+let t_inmemory_stmt_cache_na () =
+  let t = Relay.InMemoryRelay.create () in
+  Alcotest.(check int) "InMemoryRelay has no stmt cache" (-1)
+    (Relay.InMemoryRelay.cached_stmt_count t)
+
+let t_sqlite_stmt_cache_wired_into_heartbeat_line () =
+  with_tmp_dir "c2c-b283-stmt" (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    Fun.protect
+      ~finally:(fun () -> try Relay.SqliteRelay.close t with _ -> ())
+      (fun () ->
+        Alcotest.(check int) "cache empty before traffic" 0
+          (Relay.SqliteRelay.cached_stmt_count t);
+        let status, _ =
+          Relay.SqliteRelay.register t ~node_id:"n-b283" ~session_id:"s-b283"
+            ~alias:"zzb283" ~client_type:"test" ~client_version:"0"
+            ~client_os:"linux" ()
+        in
+        Alcotest.(check string) "register ok" "ok" status;
+        let n = Relay.SqliteRelay.cached_stmt_count t in
+        Alcotest.(check bool) "cache populated after register" true (n > 0);
+        (* Same value the production heartbeat_loop passes as ~stmt_cache. *)
+        let line =
+          Relay.format_heartbeat_line ~uptime_s:1. ~peer_count:0 ~ws_subs:0
+            ~heap_words:0 ~rss_kb:None ~lease_count:1 ~stmt_cache:n ()
+        in
+        let expected = Printf.sprintf "stmts=%d" n in
+        Alcotest.(check bool) "heartbeat line carries real stmt cache size" true
+          (contains ~sub:expected line);
+        Alcotest.(check bool) "not the B271 default -1" false
+          (contains ~sub:"stmts=-1" line)))
 
 let () =
   Alcotest.run "relay_instrumentation" [
@@ -92,5 +150,10 @@ let () =
     "heartbeat_line", [
       Alcotest.test_case "line with rss" `Quick t_heartbeat_line_with_rss;
       Alcotest.test_case "line without rss" `Quick t_heartbeat_line_no_rss;
+    ];
+    "b283_stmt_cache_hook", [
+      Alcotest.test_case "InMemoryRelay returns -1" `Quick t_inmemory_stmt_cache_na;
+      Alcotest.test_case "SqliteRelay count wired into heartbeat line" `Quick
+        t_sqlite_stmt_cache_wired_into_heartbeat_line;
     ];
   ]
