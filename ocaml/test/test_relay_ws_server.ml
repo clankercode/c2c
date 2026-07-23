@@ -612,6 +612,110 @@ let test_connect_subscribe_succeeds_within_timeout () =
        (fun () ->
           Lwt.catch (fun () -> Lwt_unix.close listen_fd) (fun _ -> Lwt.return_unit)))
 
+(* ── B279: Retry-After parsing + Upgrade_rejected ─────────────────────── *)
+
+let test_parse_http_status_code () =
+  Alcotest.(check (option int)) "429"
+    (Some 429)
+    (Relay_ws_client.parse_http_status_code "HTTP/1.1 429 Too Many Requests");
+  Alcotest.(check (option int)) "503"
+    (Some 503)
+    (Relay_ws_client.parse_http_status_code "HTTP/1.1 503 Service Unavailable");
+  Alcotest.(check (option int)) "101"
+    (Some 101)
+    (Relay_ws_client.parse_http_status_code "HTTP/1.1 101 Switching Protocols");
+  Alcotest.(check (option int)) "garbage" None
+    (Relay_ws_client.parse_http_status_code "not-http")
+
+let test_resolve_retry_after () =
+  let eps = 1e-9 in
+  let ra =
+    Relay_ws_client.resolve_retry_after
+      ~headers:[("retry-after", "15")] ~body:""
+  in
+  Alcotest.(check (option (float eps))) "header wins" (Some 15.0) ra;
+  let ra2 =
+    Relay_ws_client.resolve_retry_after ~headers:[]
+      ~body:{|{"ok":false,"error_code":"rate_limit_exceeded","retry_after":7.5}|}
+  in
+  Alcotest.(check (option (float eps))) "json body" (Some 7.5) ra2;
+  let ra3 =
+    Relay_ws_client.resolve_retry_after
+      ~headers:[("retry-after", "3")]
+      ~body:{|{"retry_after":99}|}
+  in
+  Alcotest.(check (option (float eps))) "header over body" (Some 3.0) ra3;
+  let ra4 =
+    Relay_ws_client.resolve_retry_after ~headers:[] ~body:"not-json"
+  in
+  Alcotest.(check (option (float eps))) "no ra" None ra4
+
+let test_connect_subscribe_429_raises_upgrade_rejected () =
+  let open Lwt.Infix in
+  Lwt_main.run
+    (let listen_fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+     Lwt_unix.setsockopt listen_fd Unix.SO_REUSEADDR true;
+     Lwt_unix.bind listen_fd
+       (Unix.ADDR_INET (Unix.inet_addr_loopback, 0))
+     >>= fun () ->
+     Lwt_unix.listen listen_fd 8;
+     let port =
+       match Lwt_unix.getsockname listen_fd with
+       | Unix.ADDR_INET (_, p) -> p
+       | _ -> Alcotest.fail "expected ADDR_INET"
+     in
+     let serve =
+       Lwt_unix.accept listen_fd >>= fun (c, _) ->
+       let oc = Lwt_io.of_fd ~mode:Lwt_io.Output c in
+       (* Drain request lines until blank. *)
+       let ic = Lwt_io.of_fd ~mode:Lwt_io.Input c in
+       let rec drain () =
+         Lwt_io.read_line ic >>= fun line ->
+         if line = "" then Lwt.return_unit else drain ()
+       in
+       drain () >>= fun () ->
+       let body =
+         {|{"ok":false,"error_code":"rate_limit_exceeded","retry_after":9.0}|}
+       in
+       let resp =
+         Printf.sprintf
+           "HTTP/1.1 429 Too Many Requests\r\n\
+            Content-Type: application/json\r\n\
+            Retry-After: 9\r\n\
+            Content-Length: %d\r\n\
+            \r\n\
+            %s"
+           (String.length body) body
+       in
+       Lwt_io.write oc resp >>= fun () ->
+       Lwt_io.flush oc >>= fun () ->
+       Lwt.catch (fun () -> Lwt_unix.close c) (fun _ -> Lwt.return_unit)
+     in
+     let id = Relay_identity.generate ~alias_hint:"b279" () in
+     let endpoint = hung_endpoint port in
+     Lwt.finalize
+       (fun () ->
+          serve
+          <&>
+          Lwt.catch
+            (fun () ->
+               Relay_ws_client.connect_subscribe
+                 ~endpoint ~alias:"b279@deadbeefcaf9" ~identity:id
+                 ~timeout:2.0 ()
+               >>= fun _ ->
+               Alcotest.fail "expected Upgrade_rejected on 429")
+            (function
+              | Relay_ws_client.Upgrade_rejected err ->
+                Alcotest.(check int) "status 429" 429 err.status_code;
+                Alcotest.(check (option (float 1e-6))) "retry_after 9"
+                  (Some 9.0) err.retry_after_s;
+                Lwt.return_unit
+              | e ->
+                Alcotest.fail
+                  (Printf.sprintf "wrong exn: %s" (Printexc.to_string e))))
+       (fun () ->
+          Lwt.catch (fun () -> Lwt_unix.close listen_fd) (fun _ -> Lwt.return_unit)))
+
 let test_cancel_mid_connect_no_fd_growth () =
   match count_fds () with
   | None -> ()
@@ -775,6 +879,13 @@ let () =
             test_connect_subscribe_succeeds_within_timeout
         ; Alcotest.test_case "cancel mid-connect no FD growth (B274)" `Quick
             test_cancel_mid_connect_no_fd_growth
+        ] )
+    ; ( "ws_client_retry_after_b279",
+        [ Alcotest.test_case "parse status code" `Quick test_parse_http_status_code
+        ; Alcotest.test_case "resolve retry_after header and json" `Quick
+            test_resolve_retry_after
+        ; Alcotest.test_case "429 response raises Upgrade_rejected with ra" `Quick
+            test_connect_subscribe_429_raises_upgrade_rejected
         ] )
     ]
 

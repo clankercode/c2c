@@ -157,6 +157,33 @@ c2c doctor --relay
 | B278 | Ops | Global `list` so operators see real load |
 | B279 | E2E | Server policy + client honor of `Retry-After` |
 
+### HTTP 429 / 503 on `/ws/subscribe` (B279)
+
+The relay meters upgrades **before** auth (token bucket per IP class) and
+caps concurrent live sessions **after** auth (process-wide + per-IP). Denial
+shapes:
+
+| Status | Meaning | Client wait |
+|--------|---------|-------------|
+| **429** | Rate-limit (`error_code=rate_limit_exceeded`) | Honour `Retry-After` header **and** JSON `retry_after` |
+| **503** | Concurrent subscriber cap (`error_code=ws_subscriber_limit`) | Same — honour `Retry-After` / JSON `retry_after` |
+
+**Policy (server, deliberate):** burst 10 / refill ~10 per minute per IP for
+`/ws/subscribe` (stricter than `/observer`). A healthy single-host
+multi-alias daemon stays under budget via B273 jitter + B275 in-flight cap
+(default 8) + honouring Retry-After; tight reconnect loops and multi-host
+storms get 429/503.
+
+**Client (this daemon):** on `Upgrade_rejected` with `retry_after_s`, the
+reconnect sleep is
+`max(local_jitter, circuit_cool_down, server_retry_after)` so local backoff
+never undercuts the relay meter. Local expo base still grows on connect
+failure and does **not** reset to 1s while the origin is rate-limiting.
+
+If you see sustained 429s on a NAT-shared fleet, back off host-wide (kill
+duplicate daemons / connectors) rather than tightening the local sleep
+alone — same lesson as B244 chronic 429s on HTTP poll paths.
+
 B270 is the umbrella incident narrative. Close it when client storm controls and server meter/caps are in place (residual crash preferred fixed separately).
 
 ## See also

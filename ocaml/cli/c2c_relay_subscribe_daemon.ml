@@ -72,6 +72,18 @@ let should_reset_backoff ~session_duration_s ~got_keepalive
     ?(stable_secs = stable_session_secs) () =
   got_keepalive || session_duration_s >= stable_secs
 
+(** B279: reconnect sleep must honour the server's [retry_after] (429/503)
+    and must not undercut it with a shorter local jitter delay. *)
+let reconnect_wait ~local_delay ~circuit_wait ?(server_retry_after = None) () =
+  let local = Float.max 0.0 local_delay in
+  let circuit = Float.max 0.0 circuit_wait in
+  let server =
+    match server_retry_after with
+    | Some ra when ra > 0.0 && Float.is_finite ra -> ra
+    | _ -> 0.0
+  in
+  Float.max local (Float.max circuit server)
+
 (** Daemon-wide cool-down when many aliases fail together (origin unhealthy). *)
 module Reconnect_circuit = struct
   type t = {
@@ -358,6 +370,8 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
       let outcome : [ `Stable | `Unstable | `Connect_failed ] ref =
         ref `Connect_failed
       in
+      (* B279: server-supplied wait from 429/503 Retry-After / retry_after. *)
+      let server_retry_after : float option ref = ref None in
       Lwt.catch
         (fun () ->
            connect_with_gate state conn
@@ -452,6 +466,15 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
            (* Quiet on intentional stop-while-queued; still log real failures. *)
            (match exn with
             | Failure msg when msg = stop_while_queued_msg -> ()
+            | Relay_ws_client.Upgrade_rejected err ->
+              server_retry_after := err.Relay_ws_client.retry_after_s;
+              Printf.eprintf
+                "[subscribe-daemon] WS upgrade rejected for %s: status=%d retry_after=%s — %s\n%!"
+                conn.alias err.status_code
+                (match err.retry_after_s with
+                 | Some ra -> Printf.sprintf "%.1fs" ra
+                 | None -> "none")
+                err.message
             | _ ->
               Printf.eprintf "[subscribe-daemon] WS connect failed for %s: %s\n%!"
                 conn.alias (Printexc.to_string exn));
@@ -460,7 +483,8 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
       if conn.stop_requested || client.client_closed then
         Lwt.return_unit
       else begin
-        (* B273: full-jitter delay; reset only after stable; circuit cool-down. *)
+        (* B273 + B279: full-jitter delay; max with circuit cool-down and
+           server retry_after so we never undercut the relay meter. *)
         let now = Unix.gettimeofday () in
         (match !outcome with
          | `Stable ->
@@ -472,10 +496,16 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
             ~max_backoff:reconnect_backoff_max ()
         in
         let circuit_wait = Reconnect_circuit.remaining_cool state.circuit ~now in
-        let wait = Float.max delay circuit_wait in
+        let wait =
+          reconnect_wait ~local_delay:delay ~circuit_wait
+            ~server_retry_after:!server_retry_after ()
+        in
         Printf.eprintf
-          "[subscribe-daemon] reconnecting %s in %.1fs (base=%.1fs circuit=%.1fs outcome=%s)...\n%!"
+          "[subscribe-daemon] reconnecting %s in %.1fs (base=%.1fs circuit=%.1fs server_ra=%s outcome=%s)...\n%!"
           conn.alias wait conn.ws_backoff circuit_wait
+          (match !server_retry_after with
+           | Some ra -> Printf.sprintf "%.1f" ra
+           | None -> "-")
           (match !outcome with
            | `Stable -> "stable"
            | `Unstable -> "unstable"
@@ -486,6 +516,7 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
            (* Leave base at initial so the next cycle starts clean. *)
            ()
          | `Unstable | `Connect_failed ->
+           (* B279: never reset to 1s while the origin is rate-limiting us. *)
            conn.ws_backoff <-
              grow_backoff ~base:conn.ws_backoff
                ~max_backoff:reconnect_backoff_max);

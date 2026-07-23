@@ -18,6 +18,11 @@
 
    B274: open_channels uses Lwt.finalize (not Lwt.catch alone) so
    Lwt.pick cancel mid-connect always closes the TCP FD.
+
+   B279: non-101 upgrades surface [Upgrade_rejected] with optional
+   [retry_after_s] from the Retry-After header or JSON body so clients
+   (subscribe-daemon) can honour the server meter instead of undercutting
+   it with local 1s backoff.
 *)
 
 open Lwt.Infix
@@ -31,6 +36,63 @@ type endpoint = {
 
 (** Default wall-clock budget for DNS + TCP connect + TLS + HTTP upgrade. *)
 let default_connect_timeout_s = 10.0
+
+(** Failed HTTP upgrade (not 101). [status_code] is 0 when unparseable.
+    [retry_after_s] is the server's wait hint when present (429/503). *)
+type upgrade_error = {
+  status_code : int;
+  retry_after_s : float option;
+  message : string;
+}
+
+exception Upgrade_rejected of upgrade_error
+
+(** Parse "HTTP/1.1 429 Too Many Requests" → Some 429. *)
+let parse_http_status_code status_line =
+  (* Split on whitespace; expect at least "HTTP/x.y" and a status code. *)
+  match String.split_on_char ' ' status_line |> List.filter (fun s -> s <> "") with
+  | _http :: code :: _ ->
+    (try Some (int_of_string code) with Failure _ -> None)
+  | _ -> None
+
+(** Header name match is case-insensitive (headers stored lowercased). *)
+let header_get headers name =
+  let name = String.lowercase_ascii name in
+  List.assoc_opt name headers
+
+(** Parse Retry-After as delta-seconds (RFC 7231). Ignore HTTP-date form. *)
+let parse_retry_after_header_value s =
+  let s = String.trim s in
+  try
+    let n = float_of_string s in
+    if n >= 0.0 && Float.is_finite n then Some n else None
+  with Failure _ -> None
+
+(** Pull [retry_after] from a JSON body (float or int). *)
+let parse_retry_after_json body =
+  try
+    match Yojson.Safe.from_string body with
+    | `Assoc fields ->
+      (match List.assoc_opt "retry_after" fields with
+       | Some (`Float f) when f >= 0.0 && Float.is_finite f -> Some f
+       | Some (`Int i) when i >= 0 -> Some (float_of_int i)
+       | Some (`Intlit s) ->
+         (try
+            let i = int_of_string s in
+            if i >= 0 then Some (float_of_int i) else None
+          with Failure _ -> None)
+       | _ -> None)
+    | _ -> None
+  with _ -> None
+
+(** Prefer header Retry-After, fall back to JSON body field. *)
+let resolve_retry_after ~headers ~body =
+  match header_get headers "retry-after" with
+  | Some v ->
+    (match parse_retry_after_header_value v with
+     | Some _ as s -> s
+     | None -> parse_retry_after_json body)
+  | None -> parse_retry_after_json body
 
 let scheme_is_tls = function
   | Some "https" | Some "wss" -> true
@@ -183,12 +245,28 @@ let make_upgrade_request ~ep ~alias ~ts ~sig_b64 ~ws_key =
      \r\n"
     ep.path (host_header ep) ws_key alias ts sig_b64
 
-let skip_headers ic =
-  let rec loop () =
+(** Read response headers until the blank line. Returns (name, value) pairs
+    with names lowercased. *)
+let read_headers ic =
+  let rec loop acc =
     Lwt_io.read_line ic >>= fun line ->
-    if line = "" then Lwt.return_unit else loop ()
+    if line = "" then Lwt.return (List.rev acc)
+    else
+      match String.index_opt line ':' with
+      | None -> loop acc
+      | Some i ->
+        let name =
+          String.lowercase_ascii (String.trim (String.sub line 0 i))
+        in
+        let value =
+          String.trim
+            (String.sub line (i + 1) (String.length line - i - 1))
+        in
+        loop ((name, value) :: acc)
   in
-  loop ()
+  loop []
+
+let skip_headers ic = read_headers ic >>= fun _ -> Lwt.return_unit
 
 let timeout_error ~timeout ~(endpoint : endpoint) =
   Failure
@@ -196,6 +274,21 @@ let timeout_error ~timeout ~(endpoint : endpoint) =
        "WebSocket subscribe connect/handshake timed out after %.1fs (%s:%d%s)"
        timeout endpoint.host endpoint.port
        (if endpoint.use_tls then ", tls" else ""))
+
+let fail_upgrade ~status_line ~headers ~body =
+  let status_code =
+    match parse_http_status_code status_line with
+    | Some c -> c
+    | None -> 0
+  in
+  let retry_after_s = resolve_retry_after ~headers ~body in
+  let message =
+    Printf.sprintf "WebSocket upgrade failed: %s%s"
+      status_line
+      (if body = "" then "" else "\n" ^ body)
+  in
+  Lwt.fail
+    (Upgrade_rejected { status_code; retry_after_s; message })
 
 let connect_subscribe ~(endpoint : endpoint) ~alias ~identity ?ca_bundle
     ?(timeout = default_connect_timeout_s) () =
@@ -229,18 +322,17 @@ let connect_subscribe ~(endpoint : endpoint) ~alias ~identity ?ca_bundle
                 && String.sub status_line 0 12 = "HTTP/1.1 101"
               in
               if not ok then
-                (* Drain a bit of body for diagnostics, then fail. *)
+                (* B279: drain headers + a bit of body so Retry-After /
+                   JSON retry_after can drive client backoff. *)
                 Lwt.catch
                   (fun () ->
-                     skip_headers ic >>= fun () ->
+                     read_headers ic >>= fun headers ->
                      Lwt_io.read ~count:512 ic >>= fun body ->
-                     Lwt.fail_with
-                       (Printf.sprintf "WebSocket upgrade failed: %s%s"
-                          status_line
-                          (if body = "" then "" else "\n" ^ body)))
-                  (fun _ ->
-                     Lwt.fail_with
-                       (Printf.sprintf "WebSocket upgrade failed: %s" status_line))
+                     fail_upgrade ~status_line ~headers ~body)
+                  (function
+                    | Upgrade_rejected _ as e -> Lwt.fail e
+                    | _ ->
+                      fail_upgrade ~status_line ~headers:[] ~body:"")
               else
                 skip_headers ic >>= fun () ->
                 let masking_key =

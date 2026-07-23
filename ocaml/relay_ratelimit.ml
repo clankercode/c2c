@@ -84,9 +84,17 @@ let classify_endpoint path =
   else if starts_with "/observer" path then
     Some ("observer", 20.0, 0.333)  (* strict: 20/min ≈ 0.333/s *)
   else if starts_with "/ws/subscribe" path then
-    (* B276: WS upgrade is long-lived (Expert + ping/recv). Meter reconnect
-       storms after 502; stricter than /observer (20 burst, 20/min). *)
-    Some ("ws_subscribe", 10.0, 0.167)  (* strict: 10 burst, 10/min ≈ 0.167/s *)
+    (* B276/B279: WS upgrade is long-lived (Expert + ping/recv).
+       Policy (deliberate, B244-aware):
+         - burst 10 / refill 10 per min per IP class — blocks tight reconnect
+           loops and multi-host storms after 502
+         - a healthy single-host multi-alias daemon reconnects via B273 jitter
+           + B275 in-flight cap (default 8) + B279 Retry-After honour, so it
+           stays under this budget after a cool-down rather than chronic-429
+         - compose order on the server: token-bucket (here) FIRST, then
+           auth, then ConnectionCap (B277). 429 = rate; 503 = concurrent slots
+       Stricter than /observer (20 burst, 20/min). *)
+    Some ("ws_subscribe", 10.0, 0.167)  (* 10 burst, 10/min ≈ 0.167/s *)
   else if starts_with "/register" path then
     Some ("register", 10.0, 0.5)    (* moderate: 10 burst, 30/min ≈ 0.5/s *)
   else if starts_with "/send_all" path then

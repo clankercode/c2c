@@ -135,9 +135,18 @@ Unmetered paths (e.g. `/health`, `/`, `/list_rooms`) are not rate-limited.
 
 When a bucket is exhausted the relay responds **HTTP 429** with an `ok:false`
 error envelope whose `error` is `rate_limit_exceeded` and which carries a
-`retry_after` field (seconds to wait, float). Since B237 this is a single clean
-client-facing error rather than a schema-dishonest response, so relay clients
-surface it uniformly.
+`retry_after` field (seconds to wait, float), plus a **`Retry-After`** HTTP
+header (B279, integer ceil seconds) so raw clients (including the WS upgrade
+path) can honour the wait without parsing the body. Since B237 this is a single
+clean client-facing error rather than a schema-dishonest response.
+
+**`/ws/subscribe` compose order (B276/B277/B279):** token-bucket rate limit →
+Ed25519 auth → concurrent ConnectionCap (global + per-IP). Rate denials are
+**429**; concurrent-slot denials are **503** with the same `retry_after` /
+`Retry-After` shape (`error_code=ws_subscriber_limit`).
+`c2c relay subscribe-daemon` sleeps
+`max(local_jitter, circuit_cool_down, server_retry_after)` so local backoff
+never undercuts the meter.
 
 **NAT'd fleets share a bucket.** The bucket key is the client's *public* IP, so
 many agents behind one NAT / egress IP share each endpoint's bucket. The
