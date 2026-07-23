@@ -270,3 +270,4 @@ bugs:
     - file: B271-relay-residual-sigsegv-post-b2.todo
     - file: B272-relay-ws-client-hard-timeout-o.todo
     - file: B273-subscribe-daemon-jittered-reco.todo
+    - file: B274-subscribe-daemon-ws-client-can.todo
