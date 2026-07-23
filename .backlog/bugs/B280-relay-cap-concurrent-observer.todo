@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T08:47:14Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T09:01:06Z"
 complexity: low
 created_at: "2026-07-23T08:33:05Z"
 depends_on: []
+duration_minutes: 13.869076845866667
 estimate_hours: 1
 id: B280
 priority: medium
 started_at: "2026-07-23T08:47:14Z"
-status: in_progress
+status: done
 tags: []
 title: 'relay: cap concurrent /observer/* WS sessions (no B277-style limit)'
-updated_at: "2026-07-23T08:47:14Z"
+updated_at: "2026-07-23T09:01:06Z"
 ---
 ## Problem
 B277 caps `/ws/subscribe` Expert upgrades (global + per-IP). The older `/observer/<binding>` WS path still upgrades with no process-wide or per-IP concurrent-session limit (dup fd + async loop in relay.ml). A flood of observer handshakes can still hold unbounded long-lived connections.

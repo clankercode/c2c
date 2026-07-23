@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T08:47:14Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T09:01:06Z"
 complexity: medium
 created_at: "2026-07-23T08:42:22Z"
 depends_on: []
+duration_minutes: 13.869130795633334
 estimate_hours: 1
 id: B282
 priority: high
 started_at: "2026-07-23T08:47:14Z"
-status: in_progress
+status: done
 tags: []
 title: 'Relay: re-enable or schedule lease GC on production (7662 private leases, gc:disabled; peers=0 heartbeat hides load)'
-updated_at: "2026-07-23T08:47:14Z"
+updated_at: "2026-07-23T09:01:06Z"
 ---
 
 Relay: re-enable or schedule lease GC on production (7662 private leases, gc:disabled; peers=0 heartbeat hides load)

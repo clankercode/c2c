@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T08:47:14Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T09:01:06Z"
 complexity: low
 created_at: "2026-07-23T08:33:39Z"
 depends_on: []
+duration_minutes: 13.869103146966667
 estimate_hours: 0.5
 id: B281
 priority: low
 started_at: "2026-07-23T08:47:14Z"
-status: in_progress
+status: done
 tags: []
 title: subscribe-daemon never prunes closed clients from state.clients
-updated_at: "2026-07-23T08:47:14Z"
+updated_at: "2026-07-23T09:01:06Z"
 ---
 ## Problem
 `cleanup_client` sets `client_closed <- true` and clears aliases, but never removes the `client_conn` from `daemon_state.clients`. High IPC churn (`list`, one-shot `register`, health probes) leaves dead records forever.
