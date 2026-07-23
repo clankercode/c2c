@@ -113,6 +113,116 @@ let detect_connector_processes () =
        lines)
     patterns
 
+(* ---------------------------------------------------------------------------
+ * B270: sample live subscribe-daemon resource pressure (/proc)
+ *
+ * Pure classification lives in Relay_doctor; this only reads pidfile + /proc.
+ * Missing /proc (non-Linux) or absent daemon → None (no check surfaced).
+ * --------------------------------------------------------------------------- *)
+
+let default_subscribe_daemon_socket_path () =
+  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+  Filename.concat (Filename.concat home ".c2c") "relay-subscribe.sock"
+
+let read_pidfile path =
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        match input_line ic with
+        | line -> int_of_string_opt (String.trim line)
+        | exception End_of_file -> None)
+  with _ -> None
+
+let pid_alive pid =
+  if pid <= 0 then false
+  else try Unix.kill pid 0; true with _ -> false
+
+let count_dir_entries dir =
+  try
+    let dh = Unix.opendir dir in
+    Fun.protect ~finally:(fun () -> Unix.closedir dh) (fun () ->
+        let n = ref 0 in
+        (try
+           while true do
+             let name = Unix.readdir dh in
+             if name <> "." && name <> ".." then incr n
+           done
+         with End_of_file -> ());
+        Some !n)
+  with _ -> None
+
+let count_socket_fds pid =
+  let dir = sprintf "/proc/%d/fd" pid in
+  try
+    let dh = Unix.opendir dir in
+    Fun.protect ~finally:(fun () -> Unix.closedir dh) (fun () ->
+        let n = ref 0 in
+        (try
+           while true do
+             let name = Unix.readdir dh in
+             if name <> "." && name <> ".." then
+               try
+                 let target = Unix.readlink (Filename.concat dir name) in
+                 if String.length target >= 7
+                    && String.sub target 0 7 = "socket:"
+                 then incr n
+               with _ -> ()
+           done
+         with End_of_file -> ());
+        Some !n)
+  with _ -> None
+
+let read_proc_status_int_fields pid =
+  let path = sprintf "/proc/%d/status" pid in
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        let threads = ref None in
+        let rss_kb = ref None in
+        (try
+           while true do
+             let line = input_line ic in
+             if String.length line > 8 && String.sub line 0 8 = "Threads:" then
+               threads := int_of_string_opt (String.trim (String.sub line 8 (String.length line - 8)))
+             else if String.length line > 6 && String.sub line 0 6 = "VmRSS:" then begin
+               (* "VmRSS:\t530960 kB" *)
+               let rest = String.trim (String.sub line 6 (String.length line - 6)) in
+               let tok =
+                 match String.split_on_char ' ' rest with
+                 | t :: _ -> t
+                 | [] -> rest
+               in
+               rss_kb := int_of_string_opt tok
+             end
+           done
+         with End_of_file -> ());
+        (!threads, !rss_kb))
+  with _ -> (None, None)
+
+let sample_subscribe_daemon_metrics ?socket_path () :
+    Relay_doctor.subscribe_daemon_metrics option =
+  let socket =
+    match socket_path with
+    | Some p -> p
+    | None -> default_subscribe_daemon_socket_path ()
+  in
+  let pidfile = socket ^ ".pid" in
+  match read_pidfile pidfile with
+  | None -> None
+  | Some pid when not (pid_alive pid) -> None
+  | Some pid ->
+      let fd_count = count_dir_entries (sprintf "/proc/%d/fd" pid) in
+      let socket_fd_count = count_socket_fds pid in
+      let threads, rss_kb = read_proc_status_int_fields pid in
+      Some
+        {
+          Relay_doctor.pid = pid;
+          fd_count;
+          socket_fd_count;
+          threads;
+          rss_kb;
+        }
+
 let identity_opt () =
   (* Mirrors relay_connect_cmd's resolution: C2C_RELAY_IDENTITY_PATH env wins,
      else the default path if it exists. *)
@@ -834,6 +944,12 @@ let run_checks () =
     Relay_doctor.duplicate_connector_check
       ~pids:(Relay_doctor.persistent_connector_pids all_connector_procs)
   in
+  (* B270: surface runaway subscribe-daemon reconnect storms (FD/socket blow-up
+     after relay 502). Omitted when quiet / no daemon — same pattern as B210. *)
+  let subscribe_storm_check =
+    Relay_doctor.subscribe_daemon_storm_check
+      ~metrics:(sample_subscribe_daemon_metrics ())
+  in
   let scoped_procs =
     Relay_doctor.scope_connector_lines ~broker_root all_connector_procs
   in
@@ -871,6 +987,7 @@ let run_checks () =
     ; check_relay_version ~probe ~broker_root
     ]
     @ (match duplicate_check with Some c -> [ of_rd c ] | None -> [])
+    @ (match subscribe_storm_check with Some c -> [ of_rd c ] | None -> [])
   in
   (broker_root, probe, checks)
 

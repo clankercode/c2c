@@ -441,6 +441,87 @@ let test_duplicate_check_fail_when_multiple () =
       Alcotest.(check bool) "has fix command" true (c.Relay_doctor.fix_command <> None)
   | None -> Alcotest.fail "expected duplicate-connector FAIL for 3 pids"
 
+(* B270: subscribe-daemon reconnect-storm classifier + mitigations map.
+   Locks the incident signature and stable check_id so doctor still surfaces
+   the DoS feedback loop after sibling concrete fixes land. *)
+let test_b270_incident_metrics_are_storm () =
+  (* Measured 2026-07-23 on pid 3838462 during production 502 hang. *)
+  let incident : Relay_doctor.subscribe_daemon_metrics =
+    {
+      pid = 3838462;
+      fd_count = Some 693;
+      socket_fd_count = Some 193;
+      threads = Some 464;
+      rss_kb = Some 530960;
+    }
+  in
+  Alcotest.(check bool) "live incident → Storm" true
+    (Relay_doctor.classify_subscribe_daemon_storm incident = Relay_doctor.Storm);
+  (match Relay_doctor.subscribe_daemon_storm_check ~metrics:(Some incident) with
+   | Some c ->
+       Alcotest.(check string) "check_id stable"
+         "relay.subscribe_daemon_storm" c.Relay_doctor.check_id;
+       Alcotest.(check bool) "FAIL" true (c.Relay_doctor.status = Relay_doctor.Fail);
+       Alcotest.(check bool) "fix_command present" true
+         (c.Relay_doctor.fix_command <> None);
+       Alcotest.(check bool) "docs point at subscribe-daemon page" true
+         (match c.Relay_doctor.docs_url with
+          | Some u ->
+              Relay_doctor.string_contains ~needle:"relay-subscribe-daemon" u
+          | None -> false)
+   | None -> Alcotest.fail "expected storm FAIL for incident metrics")
+
+let test_b270_healthy_daemon_is_quiet () =
+  let healthy : Relay_doctor.subscribe_daemon_metrics =
+    {
+      pid = 42;
+      fd_count = Some 18;
+      socket_fd_count = Some 4;
+      threads = Some 6;
+      rss_kb = Some 45000;
+    }
+  in
+  Alcotest.(check bool) "healthy → Quiet" true
+    (Relay_doctor.classify_subscribe_daemon_storm healthy = Relay_doctor.Quiet);
+  Alcotest.(check bool) "quiet metrics omit check" true
+    (Relay_doctor.subscribe_daemon_storm_check ~metrics:(Some healthy) = None);
+  Alcotest.(check bool) "no daemon → omit check" true
+    (Relay_doctor.subscribe_daemon_storm_check ~metrics:None = None)
+
+let test_b270_elevated_is_inconclusive () =
+  let elevated : Relay_doctor.subscribe_daemon_metrics =
+    {
+      pid = 99;
+      fd_count = Some 250;
+      socket_fd_count = Some 60;
+      threads = Some 40;
+      rss_kb = Some 120000;
+    }
+  in
+  Alcotest.(check bool) "elevated level" true
+    (Relay_doctor.classify_subscribe_daemon_storm elevated = Relay_doctor.Elevated);
+  (match Relay_doctor.subscribe_daemon_storm_check ~metrics:(Some elevated) with
+   | Some c ->
+       Alcotest.(check bool) "Inconclusive (warn)" true
+         (c.Relay_doctor.status = Relay_doctor.Inconclusive);
+       Alcotest.(check string) "same check_id"
+         "relay.subscribe_daemon_storm" c.Relay_doctor.check_id
+   | None -> Alcotest.fail "expected elevated Inconclusive check")
+
+let test_b270_mitigations_map_locked () =
+  let ids = List.map fst Relay_doctor.b270_mitigation_siblings in
+  Alcotest.(check (list string)) "sibling decomposition B271–B279"
+    [ "B271"; "B272"; "B273"; "B274"; "B275"; "B276"; "B277"; "B278"; "B279" ]
+    ids;
+  Alcotest.(check int) "nine sibling slices" 9
+    (List.length Relay_doctor.b270_mitigation_siblings);
+  (* Every sibling title must be non-empty (docs surface for operators). *)
+  List.iter
+    (fun (id, title) ->
+      if String.trim title = "" then
+        Alcotest.fail (Printf.sprintf "%s has empty title" id))
+    Relay_doctor.b270_mitigation_siblings
+
 (* B218: is_real_connector_line — classify pgrep "PID cmdline" lines by the
    ACTUAL executable + subcommand, not substring presence. The false-positive
    lines below all embed "c2c relay connect" yet must NOT count as connectors;
@@ -612,6 +693,15 @@ let () =
             test_duplicate_check_none_when_singleton;
           Alcotest.test_case ">1 connector → FAIL+fix" `Quick
             test_duplicate_check_fail_when_multiple ] );
+      ( "B270 subscribe-daemon storm",
+        [ Alcotest.test_case "incident metrics → Storm FAIL" `Quick
+            test_b270_incident_metrics_are_storm;
+          Alcotest.test_case "healthy daemon quiet" `Quick
+            test_b270_healthy_daemon_is_quiet;
+          Alcotest.test_case "elevated → Inconclusive" `Quick
+            test_b270_elevated_is_inconclusive;
+          Alcotest.test_case "mitigations map B271–B279 locked" `Quick
+            test_b270_mitigations_map_locked ] );
       ( "B218 connector-line classifier",
         [ Alcotest.test_case "accepts real OCaml + Python connectors" `Quick
             test_is_real_connector_accepts_real;

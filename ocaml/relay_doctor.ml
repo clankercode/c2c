@@ -634,3 +634,146 @@ let check_transport_security ~url ~health =
     ; detail = None
     ; fix_command = None
     ; docs_url = Some docs_url }
+
+
+(* ---------------------------------------------------------------------------
+ * B270: subscribe-daemon reconnect-storm detection
+ *
+ * After a relay 502 / residual SIGSEGV crash-loop, clients reconnect to
+ * GET /ws/subscribe without handshake timeout, jitter, or concurrent-connect
+ * caps. Live evidence (2026-07-23): one long-lived
+ * `c2c relay subscribe-daemon` hit FD 596→720, ESTAB 105→208, 464 threads,
+ * ~531 MB RSS in tens of seconds while the origin hung — amplifying recovery
+ * into a thundering herd (umbrella B270; concrete slices B271–B279).
+ *
+ * Doctor surfaces this as [relay.subscribe_daemon_storm] when process metrics
+ * match the storm signature. Classification is pure/hermetic; /proc sampling
+ * lives in c2c_doctor_relay.ml.
+ * --------------------------------------------------------------------------- *)
+
+type subscribe_daemon_metrics = {
+  pid : int;
+  fd_count : int option;         (* open FDs under /proc/<pid>/fd *)
+  socket_fd_count : int option;  (* subset whose readlink is socket:[...] *)
+  threads : int option;
+  rss_kb : int option;
+}
+
+type storm_level =
+  | Quiet     (* no problem signal — omit the doctor check *)
+  | Elevated  (* rising pressure; warn *)
+  | Storm     (* matches the 2026-07-23 reconnect-storm signature *)
+
+(* Thresholds calibrated from the B270 incident. Healthy multi-alias daemon:
+   tens of FDs / few sockets. Storm: hundreds of sockets + FDs. *)
+let subscribe_daemon_fd_elevated = 200
+let subscribe_daemon_fd_storm = 400
+let subscribe_daemon_socket_elevated = 50
+let subscribe_daemon_socket_storm = 100
+let subscribe_daemon_threads_storm = 200
+let subscribe_daemon_rss_kb_storm = 300_000
+
+let docs_subscribe_daemon = "https://c2c.im/relay-subscribe-daemon/"
+
+let classify_subscribe_daemon_storm (m : subscribe_daemon_metrics) : storm_level =
+  let fd = Option.value m.fd_count ~default:0 in
+  let socks = Option.value m.socket_fd_count ~default:0 in
+  let thr = Option.value m.threads ~default:0 in
+  let rss = Option.value m.rss_kb ~default:0 in
+  let is_storm =
+    fd >= subscribe_daemon_fd_storm
+    || socks >= subscribe_daemon_socket_storm
+    || thr >= subscribe_daemon_threads_storm
+    || rss >= subscribe_daemon_rss_kb_storm
+  in
+  let is_elevated =
+    fd >= subscribe_daemon_fd_elevated
+    || socks >= subscribe_daemon_socket_elevated
+  in
+  if is_storm then Storm else if is_elevated then Elevated else Quiet
+
+let format_subscribe_daemon_metrics (m : subscribe_daemon_metrics) =
+  let opt_i = function None -> "?" | Some n -> string_of_int n in
+  Printf.sprintf "pid=%d fds=%s socket_fds=%s threads=%s rss_kb=%s"
+    m.pid
+    (opt_i m.fd_count)
+    (opt_i m.socket_fd_count)
+    (opt_i m.threads)
+    (opt_i m.rss_kb)
+
+(* B270 sibling mitigation map (umbrella narrative). Kept as a pure list so
+   doctor tests can lock the decomposition without depending on sibling
+   branches that own the concrete fixes. *)
+let b270_mitigation_siblings =
+  [ ("B271", "Residual SIGSEGV post-B219 (502 primer)")
+  ; ("B272", "Client: hard timeout on /ws/subscribe connect+handshake")
+  ; ("B273", "Client: jittered backoff + stable-session reset + circuit breaker")
+  ; ("B274", "Client: cancel mid-connect must close FDs")
+  ; ("B275", "Client: cap concurrent in-flight /ws/subscribe connects")
+  ; ("B276", "Server: meter /ws/subscribe (was unmetered)")
+  ; ("B277", "Server: cap concurrent subscribers / per-IP upgrades")
+  ; ("B278", "Ops: subscribe-daemon list is per-IPC-client only")
+  ; ("B279", "Proper end-to-end rate limiting (server policy + client Retry-After)")
+  ]
+
+(* Returns None when quiet / no daemon metrics — same pattern as
+   [duplicate_connector_check]: only surface when the operator must act. *)
+let subscribe_daemon_storm_check ~(metrics : subscribe_daemon_metrics option) =
+  match metrics with
+  | None -> None
+  | Some m ->
+      (match classify_subscribe_daemon_storm m with
+       | Quiet -> None
+       | Elevated ->
+           Some
+             {
+               check_id = "relay.subscribe_daemon_storm";
+               status = Inconclusive;
+               message =
+                 Printf.sprintf
+                   "subscribe-daemon pid %d has elevated FD/socket pressure \
+                    (possible /ws/subscribe reconnect storm — B270)"
+                   m.pid;
+               detail =
+                 Some
+                   (Printf.sprintf
+                      "%s. During a relay 502/outage the daemon can pile up \
+                       hung ESTAB sockets. Prefer `c2c relay subscribe-daemon \
+                       list` only with a long-lived IPC client (per-client list \
+                       is empty from a new connection — B278). Mitigations: \
+                       B272–B275 client, B276–B277/B279 server."
+                      (format_subscribe_daemon_metrics m));
+               fix_command =
+                 Some
+                   "c2c relay subscribe-daemon shutdown   # stop the storming \
+                    daemon; restart after client mitigations (B272–B275) are installed";
+               docs_url = Some docs_subscribe_daemon;
+             }
+       | Storm ->
+           Some
+             {
+               check_id = "relay.subscribe_daemon_storm";
+               status = Fail;
+               message =
+                 Printf.sprintf
+                   "subscribe-daemon pid %d is reconnect-storming /ws/subscribe \
+                    (B270)"
+                   m.pid;
+               detail =
+                 Some
+                   (Printf.sprintf
+                      "%s. Live incident signature: hundreds of FDs/sockets + \
+                       high threads/RSS while origin returns 502. This client \
+                       storm amplifies relay recovery into a thundering herd. \
+                       Shutdown now; do not leave a storming daemon against a \
+                       crash-looping origin. Sibling fixes: %s."
+                      (format_subscribe_daemon_metrics m)
+                      (String.concat ", "
+                         (List.map (fun (id, _) -> id) b270_mitigation_siblings)));
+               fix_command =
+                 Some
+                   "c2c relay subscribe-daemon shutdown\n\
+                    # if socket unresponsive: kill <pid>  # from check detail\n\
+                    # then: c2c relay subscribe-daemon start --relay-url <URL>";
+               docs_url = Some docs_subscribe_daemon;
+             })

@@ -70,6 +70,50 @@ For transparent local broker bridging, use `c2c relay connect` (or managed
 payloads to connected clients; it does not by itself enqueue messages into
 the local broker or inject a transcript turn.
 
+## Reconnect storms after relay 502 (B270)
+
+When the public relay (or any origin) returns **502 / hangs** — for example a residual crash-loop — every alias managed by this daemon will retry `GET /ws/subscribe`. Without client timeouts, jittered backoff, and connect caps, one process can open **hundreds of ESTAB sockets**, grow FDs toward the process limit, and amplify recovery into a thundering herd on the origin.
+
+**Feedback loop (simplified):**
+
+```
+origin SIGSEGV / hang → edge 502
+  → subscribe handshakes hang or fail
+  → daemon reconnects (short backoff, multi-alias)
+  → client FD/ESTAB explosion
+  → origin recovers → concurrent WS upgrades
+  → more load → more 502 → loop
+```
+
+### Ops response
+
+```bash
+# Prefer graceful shutdown over kill when the IPC socket still answers:
+c2c relay subscribe-daemon shutdown
+
+# Doctor surfaces the storm when metrics match the incident signature:
+c2c doctor --relay
+# look for check_id: relay.subscribe_daemon_storm
+```
+
+**Do not trust a one-shot `list` as idle.** `c2c relay subscribe-daemon list` opens a **new** IPC connection and only lists aliases for *that* connection, so it often prints empty while the daemon still holds hundreds of sockets (B278). Prefer process metrics (`/proc/<pid>/fd`, RSS, threads) or the doctor check above.
+
+### Mitigations map (sibling bugs)
+
+| ID | Layer | What it breaks in the loop |
+|----|--------|----------------------------|
+| B271 | Origin | Residual SIGSEGV (502 primer) |
+| B272 | Client | Hard timeout on connect+handshake |
+| B273 | Client | Jittered backoff + stable-session reset + circuit breaker |
+| B274 | Client | Cancel mid-connect closes sockets (FD leak) |
+| B275 | Client | Cap concurrent in-flight connects |
+| B276 | Server | Rate-limit `/ws/subscribe` (was unmetered) |
+| B277 | Server | Cap concurrent subscribers / per-IP upgrades |
+| B278 | Ops | Global `list` so operators see real load |
+| B279 | E2E | Server policy + client honor of `Retry-After` |
+
+B270 is the umbrella incident narrative. Close it when client storm controls and server meter/caps are in place (residual crash preferred fixed separately).
+
 ## See also
 
 - [Connect](/connect/) — public relay setup for two agents.
