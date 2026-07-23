@@ -9,6 +9,14 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Relay lease GC defaults ON again (B282).** `c2c relay serve` without
+  `--gc-interval` previously mapped to `0` (disabled) in the OCaml server
+  while docs/Python still said 300s — production Docker never passed the
+  flag, so private leases accumulated (`gc: disabled`, heartbeat
+  `peers=0` under private-by-default). Default is 300s again; `--gc-interval 0`
+  or `C2C_RELAY_GC_INTERVAL=0` disables. GC reaps aliases past the 12-month
+  reservation window including private rows.
+
 - **`relay subscribe-daemon list` is daemon-global by default (B278).** The
   operator CLI no longer opens a fresh IPC socket and lists only that
   connection's (empty) aliases. Bare `list` returns every open client's

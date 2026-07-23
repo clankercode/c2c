@@ -7348,7 +7348,10 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
 
   (* --- Server startup --- *)
 
-  let start_server ~host ~port ~relay ~token ?(verbose=false) ?(gc_interval=0.0) ?tls ?(allowlist=[]) ?broker_root () =
+  (* B282: default GC interval is [default_gc_interval_s] (300s), not 0.
+     Callers that need a disabled loop must pass ~gc_interval:0.0 explicitly. *)
+  let start_server ~host ~port ~relay ~token ?(verbose=false)
+      ?(gc_interval=default_gc_interval_s) ?tls ?(allowlist=[]) ?broker_root () =
     (* B219: make exceptions carry backtraces so the top-level serve guard can
        log them (relay deaths were previously silent — no exn, no backtrace). *)
     Printexc.record_backtrace true;
@@ -7449,7 +7452,10 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     if gc_interval > 0.0 then
       Printf.printf "gc: running every %.0fs\n%!" gc_interval
     else
-      Printf.printf "gc: disabled\n%!";
+      Printf.printf
+        "gc: disabled (--gc-interval 0 or C2C_RELAY_GC_INTERVAL=0; \
+         default is %.0fs)\n%!"
+        default_gc_interval_s;
     let spec = Cohttp_lwt_unix.Server.make_response_action ~callback () in
     let server_promise =
       match tls with

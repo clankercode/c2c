@@ -57,6 +57,30 @@ let alias_released ~now ~last_seen = alias_release_at ~last_seen <= now
 let alias_release_warning ~now ~last_seen =
   now >= alias_warning_since ~last_seen && not (alias_released ~now ~last_seen)
 
+(* Background lease GC loop period for [c2c relay serve]. Matches the
+   historical Python argparse default and the CLI flag doc ("default: 300").
+   0.0 disables the loop; aliases still release lazily on re-register after
+   [alias_release_after_s]. GC walks all leases (private and public) and only
+   hard-deletes rows past the 12-month reservation window — safe for prod. *)
+let default_gc_interval_s = 300.0
+
+(** Resolve the GC loop interval in seconds (B282).
+    Precedence: explicit [cli] int option > [env] string > [default_gc_interval_s].
+    [Some 0] / env ["0"] disables (returns 0.0). Negative CLI values are
+    rejected by callers; negative/unparseable env falls through to the default
+    so a typo cannot silently disable GC. *)
+let resolve_gc_interval_s ?cli ?env () : float =
+  match cli with
+  | Some i when i >= 0 -> float_of_int i
+  | Some _ -> default_gc_interval_s
+  | None ->
+      (match env with
+       | None -> default_gc_interval_s
+       | Some s ->
+           (match int_of_string_opt (String.trim s) with
+            | Some i when i >= 0 -> float_of_int i
+            | _ -> default_gc_interval_s))
+
 (* Layer 4 room ops (spec §4.1/§4.2): use the register ts window + nonce TTL. *)
 let room_join_sign_ctx = "c2c/v1/room-join"
 let room_leave_sign_ctx = "c2c/v1/room-leave"

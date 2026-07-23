@@ -37,7 +37,10 @@ let relay_serve_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "db-path" ] ~docv:"PATH" ~doc:"SQLite database path (use with --storage sqlite).")
   in
   let gc_interval =
-    Cmdliner.Arg.(value & opt (some int) None & info [ "gc-interval" ] ~docv:"SECONDS" ~doc:"GC interval in seconds (default: 300).")
+    Cmdliner.Arg.(value & opt (some int) None & info [ "gc-interval" ] ~docv:"SECONDS"
+      ~doc:"Seconds between automatic lease GC runs (default: 300; 0 disables). \
+            Also settable via C2C_RELAY_GC_INTERVAL. Releases aliases past the \
+            12-month reservation window, including private leases.")
   in
   let verbose =
     Cmdliner.Arg.(value & flag & info [ "verbose"; "v" ] ~doc:"Enable verbose output.")
@@ -138,10 +141,20 @@ let relay_serve_cmd =
                   exit 1)
          | None -> None)
   in
-  (* Convert gc_interval from int option to float (0.0 = disabled) *)
-  let gc_interval = match gc_interval with
-    | Some i -> float_of_int i
-    | None -> 0.0
+  (* B282: default ON (300s), matching CLI docs + historical Python default.
+     Production Docker never passed --gc-interval, so None→0.0 left GC
+     permanently disabled and private leases accumulated (thousands). Explicit
+     0 still disables; C2C_RELAY_GC_INTERVAL is the env override. *)
+  (match gc_interval with
+   | Some i when i < 0 ->
+       Printf.eprintf "error: --gc-interval must be >= 0 (got %d)\n%!" i;
+       exit 1
+   | _ -> ());
+  let gc_interval =
+    Relay.resolve_gc_interval_s
+      ?cli:gc_interval
+      ?env:(Sys.getenv_opt "C2C_RELAY_GC_INTERVAL")
+      ()
   in
   (* Storage backend selection. InMemoryRelay is the default. SqliteRelay is
      planned (OCaml-native, replacing the deprecated Python fallback). *)

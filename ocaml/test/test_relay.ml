@@ -478,6 +478,37 @@ let test_relay_gc_preserves_reserved_expired_leases () =
       if List.length peers <> 2 then fail_fmt "alice should remain visible with --dead while reserved"
   | _ -> fail_fmt "gc should return Ok"
 
+(* B282: GC must reap private leases past the 12-month window — production
+   heartbeats show peers=0 (public filter) while thousands of private rows
+   accumulate when the GC loop is disabled. Direct register keeps Private. *)
+let test_relay_gc_reaps_private_leases_after_release_window () =
+  let t = Relay.InMemoryRelay.create () in
+  let (status, lease) =
+    Relay.InMemoryRelay.register t ~node_id:"n-priv" ~session_id:"s-priv"
+      ~alias:"zzprivgc" ~identity_pk:"pk-priv" ()
+  in
+  if status <> "ok" then fail_fmt "private register should succeed, got %s" status;
+  (match Relay.InMemoryRelay.peer_discovery_visibility_of t ~alias:"zzprivgc" with
+   | Some Relay_backend_contract.Private -> ()
+   | Some _ -> fail_fmt "fresh registration must be private by default"
+   | None -> fail_fmt "visibility missing for private lease");
+  if Relay.InMemoryRelay.list_peers t ~include_dead:true <> [] then
+    fail_fmt "ordinary list_peers must omit private lease";
+  if not (List.exists (fun l -> Relay.RegistrationLease.alias l = "zzprivgc")
+            (Relay.InMemoryRelay.list_peers_admin t ~include_dead:true)) then
+    fail_fmt "admin list must see private lease before gc";
+  Relay.RegistrationLease.set_last_seen lease
+    (Unix.gettimeofday () -. Relay.alias_release_after_s -. 60.0);
+  (match Relay.InMemoryRelay.gc t with
+   | `Ok (released, _pruned) ->
+       if not (List.mem "zzprivgc" released) then
+         fail_fmt "gc must release private lease past 12-month window, got [%s]"
+           (String.concat "," released)
+   | _ -> fail_fmt "gc should return Ok");
+  if List.exists (fun l -> Relay.RegistrationLease.alias l = "zzprivgc")
+       (Relay.InMemoryRelay.list_peers_admin t ~include_dead:true) then
+    fail_fmt "admin list must not retain private lease after gc release"
+
 let test_relay_list_rooms_shows_all_with_counts () =
   let t = make_test_relay () in
   let (_status, _lease) = _b264_reg_mem t ~node_id:"n1" ~session_id:"s1" ~alias:"alice" () in
@@ -1447,6 +1478,8 @@ let tests = [
   "alias retention policy boundaries", test_alias_retention_policy_boundaries;
   "relay released alias hides identity before gc", test_relay_released_alias_hides_identity_before_gc;
   "relay gc preserves reserved expired", test_relay_gc_preserves_reserved_expired_leases;
+  "relay gc reaps private leases after release window (B282)",
+    test_relay_gc_reaps_private_leases_after_release_window;
   "relay list_rooms with counts", test_relay_list_rooms_shows_all_with_counts;
   (* room visibility: public / unlisted / gated / private (4-level) *)
   "relay canonical_visibility normalizes", test_relay_canonical_visibility_normalizes;

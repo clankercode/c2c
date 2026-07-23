@@ -424,6 +424,19 @@ already ran.
 
 ## E2E / Relay
 
+### `C2C_RELAY_GC_INTERVAL` (B282)
+
+Seconds between automatic lease GC runs in `c2c relay serve`. Default when
+unset and `--gc-interval` is omitted: `300`. Set to `0` to disable the GC
+loop (aliases still release lazily on re-register after the 12-month
+reservation window). CLI `--gc-interval` wins over this env when both are
+set. Invalid or negative env values fall back to the 300s default so a typo
+cannot silently disable GC.
+
+GC walks **all** leases (private and public) and only hard-deletes rows past
+`alias_release_after_s` (12×30-day months). Delivery-TTL expiry alone does
+not drop the row — that is intentional alias reservation.
+
 ### Relay supervisor diagnostics (B219)
 
 The Railway/OCI image runs `c2c relay serve` under the process-external

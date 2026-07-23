@@ -4,7 +4,8 @@
    prefix) > git fallback > "unknown".
    B219: [Relay.format_heartbeat_line] shape.
    B271: leases=/stmts= optional fields.
-   B277: subs= WS subscriber connection count. *)
+   B277: subs= WS subscriber connection count.
+   B282: [Relay.resolve_gc_interval_s] default ON (300s); 0 disables. *)
 
 (* local substring check (avoid extra deps) *)
 let contains ~sub s =
@@ -78,6 +79,41 @@ let t_heartbeat_line_no_rss () =
   Alcotest.(check bool) "subs=0 present" true (contains ~sub:"subs=0" line);
   Alcotest.(check bool) "default leases=-1" true (contains ~sub:"leases=-1" line)
 
+(* --- B282: GC interval resolution (safe default ON) --- *)
+
+let t_gc_interval_default_on () =
+  Alcotest.(check (float 1e-9)) "no cli/env → 300s default"
+    Relay.default_gc_interval_s
+    (Relay.resolve_gc_interval_s ())
+
+let t_gc_interval_cli_zero_disables () =
+  Alcotest.(check (float 1e-9)) "cli 0 disables" 0.0
+    (Relay.resolve_gc_interval_s ~cli:0 ())
+
+let t_gc_interval_cli_explicit () =
+  Alcotest.(check (float 1e-9)) "cli 60" 60.0
+    (Relay.resolve_gc_interval_s ~cli:60 ())
+
+let t_gc_interval_env_when_no_cli () =
+  Alcotest.(check (float 1e-9)) "env 120 when cli absent" 120.0
+    (Relay.resolve_gc_interval_s ~env:"120" ())
+
+let t_gc_interval_cli_wins_over_env () =
+  Alcotest.(check (float 1e-9)) "cli wins over env" 45.0
+    (Relay.resolve_gc_interval_s ~cli:45 ~env:"999" ())
+
+let t_gc_interval_env_zero_disables () =
+  Alcotest.(check (float 1e-9)) "env 0 disables" 0.0
+    (Relay.resolve_gc_interval_s ~env:"0" ())
+
+let t_gc_interval_bad_env_falls_to_default () =
+  Alcotest.(check (float 1e-9)) "garbage env → default"
+    Relay.default_gc_interval_s
+    (Relay.resolve_gc_interval_s ~env:"nope" ());
+  Alcotest.(check (float 1e-9)) "negative env → default"
+    Relay.default_gc_interval_s
+    (Relay.resolve_gc_interval_s ~env:"-1" ())
+
 let () =
   Alcotest.run "relay_instrumentation" [
     "git_hash_precedence", [
@@ -92,5 +128,14 @@ let () =
     "heartbeat_line", [
       Alcotest.test_case "line with rss" `Quick t_heartbeat_line_with_rss;
       Alcotest.test_case "line without rss" `Quick t_heartbeat_line_no_rss;
+    ];
+    "gc_interval_resolve_b282", [
+      Alcotest.test_case "default ON 300s" `Quick t_gc_interval_default_on;
+      Alcotest.test_case "cli 0 disables" `Quick t_gc_interval_cli_zero_disables;
+      Alcotest.test_case "cli explicit" `Quick t_gc_interval_cli_explicit;
+      Alcotest.test_case "env when no cli" `Quick t_gc_interval_env_when_no_cli;
+      Alcotest.test_case "cli wins over env" `Quick t_gc_interval_cli_wins_over_env;
+      Alcotest.test_case "env 0 disables" `Quick t_gc_interval_env_zero_disables;
+      Alcotest.test_case "bad env falls to default" `Quick t_gc_interval_bad_env_falls_to_default;
     ];
   ]
