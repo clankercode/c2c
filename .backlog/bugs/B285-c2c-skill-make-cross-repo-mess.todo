@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-23T10:56:56Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T11:01:42Z"
 complexity: low
 created_at: "2026-07-23T10:56:16Z"
 depends_on: []
+duration_minutes: 4.769654487316666
 estimate_hours: 1
 id: B285
 priority: medium
 started_at: "2026-07-23T10:56:56Z"
-status: in_progress
+status: done
 tags: []
 title: 'c2c skill: make --cross-repo messaging more obvious'
-updated_at: "2026-07-23T10:56:56Z"
+updated_at: "2026-07-23T11:01:42Z"
 ---
 ## Symptom
 The c2c skill (`SKILL.md` / using-c2c) does not make it obvious how to send to peers on another local repo broker via `--cross-repo`.
