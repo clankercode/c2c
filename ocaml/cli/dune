@@ -41,6 +41,12 @@
  (libraries c2c_mcp alcotest yojson str unix)
  (deps c2c.exe))
 
+; B273: subscribe-daemon full-jitter reconnect + stable-session reset + circuit.
+(test
+ (name test_c2c_relay_subscribe_daemon)
+ (modules test_c2c_relay_subscribe_daemon c2c_relay_subscribe_daemon)
+ (libraries c2c_mcp alcotest yojson unix lwt.unix cmdliner))
+
 ; #35 phase 1: machine-wide deliver-service scaffold (lock/pidfile/doctor stub).
 (test
  (name test_c2c_deliver_managed)
