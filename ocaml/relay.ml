@@ -4519,12 +4519,15 @@ let heartbeat_rss_kb () =
     | _ -> None
   with _ -> None
 
-(* Pure heartbeat-line formatter (B219) so its shape is unit-testable. *)
-let format_heartbeat_line ~uptime_s ~peer_count ~heap_words ~rss_kb =
+(* Pure heartbeat-line formatter (B219) so its shape is unit-testable.
+   B277: [ws_subs] is the process-wide active WS subscriber *connection* count
+   (not alias registrations). *)
+let format_heartbeat_line ~uptime_s ~peer_count ~ws_subs ~heap_words ~rss_kb =
   let rss_str = match rss_kb with Some kb -> string_of_int kb | None -> "?" in
   Printf.sprintf
-    "[relay] heartbeat uptime=%.0fs peers=%d gc_heap_words=%d gc_heap_kb=%d rss_kb=%s"
-    uptime_s peer_count heap_words (heap_words * (Sys.word_size / 8) / 1024) rss_str
+    "[relay] heartbeat uptime=%.0fs peers=%d subs=%d gc_heap_words=%d gc_heap_kb=%d rss_kb=%s"
+    uptime_s peer_count ws_subs heap_words
+    (heap_words * (Sys.word_size / 8) / 1024) rss_str
 
 module Relay_server(R : RELAY) : sig
   val make_callback :
@@ -4584,7 +4587,9 @@ end = struct
 
   include Relay_server_auth
 
-  exception Ws_subscribe_upgrade of string * string
+  (* B277: third component is the acquired connection-cap slot; Expert path
+     must free it via handle_subscriber_channels ~slot on disconnect. *)
+  exception Ws_subscribe_upgrade of string * string * Relay_ws_server.slot
   include Relay_server_json
   include Relay_server_response
   include Relay_server_html
@@ -4766,7 +4771,9 @@ end = struct
     else alias
 
   (* B147: public usage stats — aggregate counts only; no aliases, machine
-     ids, or message content are exposed. *)
+     ids, or message content are exposed.
+     B277: [ws] surfaces process-wide subscriber connection caps/counters
+     (no IPs, no aliases). *)
   let handle_stats relay =
     let now = Unix.gettimeofday () in
     let generated_at = now in
@@ -4778,6 +4785,7 @@ end = struct
       ("generated_at", `Float generated_at);
       ("generated_ago", `String (Relay_common.humanize_ago (now -. generated_at)));
       ("stats", R.stats relay ~now);
+      ("ws", Relay_ws_server.connection_cap_stats_json ());
     ])
 
   let handle_register relay ~relay_url ~token body =
@@ -7016,7 +7024,30 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
                    ~result:"auth_failed" ();
                  respond_unauthorized (json_error_str "auth_failed" msg)
                | Relay_ws_server.Auth_ok validated_alias ->
-                 raise (Ws_subscribe_upgrade (ws_key, validated_alias))))
+                 (* B277: acquire a process-wide / per-IP connection slot before
+                    the Expert upgrade. Denied upgrades never open a long-lived
+                    session. Cleanup on disconnect frees the slot. *)
+                 (match Relay_ws_server.try_acquire_slot ~client_ip with
+                  | Relay_ws_server.Denied { reason; retry_after_s } ->
+                    let limit = Relay_ws_server.cap_denial_label reason in
+                    Relay_ratelimit.structured_log
+                      ~event:"ws_subscribe"
+                      ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                      ~result:"cap_denied"
+                      ~reason:(Printf.sprintf "limit=%s retry_after=%.1f" limit retry_after_s)
+                      ();
+                    let retry_hdr =
+                      string_of_int (int_of_float (Float.ceil retry_after_s))
+                    in
+                    respond_service_unavailable
+                      ~headers:[("Retry-After", retry_hdr)]
+                      (json_error "ws_subscriber_limit"
+                         "too many concurrent websocket subscribers"
+                         [ ("retry_after", `Float retry_after_s)
+                         ; ("limit", `String limit)
+                         ])
+                  | Relay_ws_server.Acquired slot ->
+                    raise (Ws_subscribe_upgrade (ws_key, validated_alias, slot)))))
          | _ ->
            respond_bad_request (json_error_str "websocket_upgrade_required" "Upgrade: websocket header required"))
 
@@ -7279,10 +7310,13 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
        let peer_count =
          try List.length (R.list_peers relay ~include_dead:true) with _ -> -1
        in
+       let ws_subs =
+         try Relay_ws_server.active_connection_count () with _ -> -1
+       in
        let gc = Gc.quick_stat () in
        let rss_kb = heartbeat_rss_kb () in
        Printf.eprintf "%s\n%!"
-         (format_heartbeat_line ~uptime_s ~peer_count
+         (format_heartbeat_line ~uptime_s ~peer_count ~ws_subs
             ~heap_words:gc.Gc.heap_words ~rss_kb)
      with _ -> ());
     heartbeat_loop relay ~start_time
@@ -7322,7 +7356,7 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
              ~native_tls:(tls <> None)
            >|= fun response -> `Response response)
         (function
-          | Ws_subscribe_upgrade (ws_key, validated_alias) ->
+          | Ws_subscribe_upgrade (ws_key, validated_alias, slot) ->
               let accept = Relay_ws_frame.websocket_accept ws_key in
               let headers =
                 Cohttp.Header.init_with "Upgrade" "websocket"
@@ -7333,13 +7367,21 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
                 Cohttp.Response.make ~status:`Switching_protocols ~headers ()
               in
               let io_handler ic oc =
-                Relay_ratelimit.structured_log
-                  ~event:"ws_subscribe"
-                  ~source_ip_prefix:(Relay_ratelimit.prefix8 (get_client_ip conn))
-                  ~result:"upgraded" ();
-                let lookup_pk ~alias = R.identity_pk_of relay ~alias in
-                Relay_ws_server.handle_subscriber_channels
-                  ~aliases:[validated_alias] ~ic ~oc ~lookup_pk
+                (* Always free the B277 slot if the session handler aborts
+                   before its own finalize can run. handle_subscriber_channels
+                   also releases on normal disconnect (idempotent). *)
+                Lwt.finalize
+                  (fun () ->
+                    Relay_ratelimit.structured_log
+                      ~event:"ws_subscribe"
+                      ~source_ip_prefix:(Relay_ratelimit.prefix8 (get_client_ip conn))
+                      ~result:"upgraded" ();
+                    let lookup_pk ~alias = R.identity_pk_of relay ~alias in
+                    Relay_ws_server.handle_subscriber_channels
+                      ~aliases:[validated_alias] ~ic ~oc ~lookup_pk ~slot ())
+                  (fun () ->
+                    Relay_ws_server.release_slot slot;
+                    Lwt.return_unit)
               in
               Lwt.return (`Expert (response, io_handler))
           | e -> Lwt.fail e)

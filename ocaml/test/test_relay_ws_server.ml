@@ -98,6 +98,150 @@ let test_push_dm_no_subscribers () =
     ~ts:(Unix.gettimeofday ());
   Alcotest.(check bool) "push didn't crash" true true
 
+(* --- B277: connection-cap enforcement + cleanup frees slots --- *)
+
+let with_cap_limits ~max_total ~max_per_ip ?(retry_after_s = 7.0) f =
+  Relay_ws_server.reset_connection_cap ();
+  Relay_ws_server.set_connection_limits ~max_total ~max_per_ip ~retry_after_s ();
+  Fun.protect
+    ~finally:(fun () -> Relay_ws_server.reset_connection_cap ())
+    f
+
+let acquire_or_fail ~client_ip =
+  match Relay_ws_server.try_acquire_slot ~client_ip with
+  | Relay_ws_server.Acquired slot -> slot
+  | Relay_ws_server.Denied _ -> Alcotest.fail "expected Acquired"
+
+let test_cap_global_limit () =
+  with_cap_limits ~max_total:2 ~max_per_ip:100 (fun () ->
+    let s1 = acquire_or_fail ~client_ip:"10.0.0.1" in
+    let s2 = acquire_or_fail ~client_ip:"10.0.0.2" in
+    Alcotest.(check int) "active=2" 2 (Relay_ws_server.active_connection_count ());
+    (match Relay_ws_server.try_acquire_slot ~client_ip:"10.0.0.3" with
+     | Relay_ws_server.Acquired _ -> Alcotest.fail "expected global cap deny"
+     | Relay_ws_server.Denied { reason; retry_after_s } ->
+         Alcotest.(check bool) "Cap_global"
+           true (reason = Relay_ws_server.Cap_global);
+         Alcotest.(check (float 0.01)) "retry_after" 7.0 retry_after_s;
+         Alcotest.(check string) "label" "global"
+           (Relay_ws_server.cap_denial_label reason));
+    let denied_g, denied_ip = Relay_ws_server.cap_denied_counts () in
+    Alcotest.(check int) "denied_global=1" 1 denied_g;
+    Alcotest.(check int) "denied_per_ip=0" 0 denied_ip;
+    Relay_ws_server.release_slot s1;
+    Alcotest.(check int) "active after release=1" 1
+      (Relay_ws_server.active_connection_count ());
+    let s3 = acquire_or_fail ~client_ip:"10.0.0.3" in
+    Alcotest.(check int) "active refilled=2" 2
+      (Relay_ws_server.active_connection_count ());
+    Relay_ws_server.release_slot s2;
+    Relay_ws_server.release_slot s3)
+
+let test_cap_per_ip_limit () =
+  with_cap_limits ~max_total:100 ~max_per_ip:2 (fun () ->
+    let s1 = acquire_or_fail ~client_ip:"192.0.2.10" in
+    let s2 = acquire_or_fail ~client_ip:"192.0.2.10" in
+    Alcotest.(check int) "per-ip count=2" 2
+      (Relay_ws_server.per_ip_connection_count ~client_ip:"192.0.2.10");
+    (match Relay_ws_server.try_acquire_slot ~client_ip:"192.0.2.10" with
+     | Relay_ws_server.Acquired _ -> Alcotest.fail "expected per-ip deny"
+     | Relay_ws_server.Denied { reason; _ } ->
+         Alcotest.(check bool) "Cap_per_ip"
+           true (reason = Relay_ws_server.Cap_per_ip);
+         Alcotest.(check string) "label" "per_ip"
+           (Relay_ws_server.cap_denial_label reason));
+    (* Other IPs still allowed under global headroom. *)
+    let s_other = acquire_or_fail ~client_ip:"192.0.2.99" in
+    Alcotest.(check int) "other ip count=1" 1
+      (Relay_ws_server.per_ip_connection_count ~client_ip:"192.0.2.99");
+    Relay_ws_server.release_slot s1;
+    Alcotest.(check int) "per-ip after release=1" 1
+      (Relay_ws_server.per_ip_connection_count ~client_ip:"192.0.2.10");
+    let s3 = acquire_or_fail ~client_ip:"192.0.2.10" in
+    Relay_ws_server.release_slot s2;
+    Relay_ws_server.release_slot s3;
+    Relay_ws_server.release_slot s_other;
+    Alcotest.(check int) "active drained" 0
+      (Relay_ws_server.active_connection_count ()))
+
+let test_cap_release_idempotent () =
+  with_cap_limits ~max_total:1 ~max_per_ip:1 (fun () ->
+    let s = acquire_or_fail ~client_ip:"127.0.0.1" in
+    Relay_ws_server.release_slot s;
+    Relay_ws_server.release_slot s;
+    Relay_ws_server.release_slot s;
+    Alcotest.(check int) "active still 0 after double free" 0
+      (Relay_ws_server.active_connection_count ());
+    let s2 = acquire_or_fail ~client_ip:"127.0.0.1" in
+    Relay_ws_server.release_slot s2)
+
+let test_cap_stats_json () =
+  with_cap_limits ~max_total:5 ~max_per_ip:3 ~retry_after_s:11.0 (fun () ->
+    let s = acquire_or_fail ~client_ip:"203.0.113.1" in
+    ignore (Relay_ws_server.try_acquire_slot ~client_ip:"203.0.113.1");
+    ignore (Relay_ws_server.try_acquire_slot ~client_ip:"203.0.113.1");
+    ignore (Relay_ws_server.try_acquire_slot ~client_ip:"203.0.113.1");
+    (* max_per_ip=3: third acquire above fills to 3, fourth denies.
+       We already have s, plus two more Acquired, then deny. *)
+    let j = Relay_ws_server.connection_cap_stats_json () in
+    match j with
+    | `Assoc fields ->
+        let get_int k =
+          match List.assoc_opt k fields with
+          | Some (`Int n) -> n
+          | _ -> Alcotest.fail ("missing int " ^ k)
+        in
+        let get_float k =
+          match List.assoc_opt k fields with
+          | Some (`Float f) -> f
+          | Some (`Int n) -> float_of_int n
+          | _ -> Alcotest.fail ("missing float " ^ k)
+        in
+        Alcotest.(check int) "subscribers" 3 (get_int "subscribers");
+        Alcotest.(check int) "max_subscribers" 5 (get_int "max_subscribers");
+        Alcotest.(check int) "max_per_ip" 3 (get_int "max_per_ip");
+        Alcotest.(check (float 0.01)) "retry_after_s" 11.0
+          (get_float "retry_after_s");
+        Alcotest.(check bool) "denied_per_ip >= 1" true
+          (get_int "denied_per_ip" >= 1);
+        Relay_ws_server.release_slot s
+    | _ -> Alcotest.fail "expected Assoc")
+
+let test_session_cleanup_releases_slot () =
+  let open Lwt.Infix in
+  with_cap_limits ~max_total:2 ~max_per_ip:2 (fun () ->
+    Lwt_main.run (
+      let slot = acquire_or_fail ~client_ip:"198.51.100.1" in
+      Alcotest.(check int) "held before session" 1
+        (Relay_ws_server.active_connection_count ());
+      let raw_ic, raw_oc = Lwt_io.pipe () in
+      let _sink_ic, sink_oc = Lwt_io.pipe () in
+      let cohttp_ic = Cohttp_lwt_unix.Private.Input_channel.create raw_ic in
+      let session =
+        Relay_ws_frame.Session.of_cohttp_channels cohttp_ic sink_oc
+      in
+      (* Close the write side so recv sees EOF and the session ends. *)
+      let closer =
+        Lwt_unix.sleep 0.05 >>= fun () ->
+        Lwt_io.close raw_oc
+      in
+      let handler =
+        Relay_ws_server.handle_subscriber_session
+          ~aliases:["cleanup-alias@abcdef012345"]
+          ~session
+          ~lookup_pk:(fun ~alias:_ -> None)
+          ~slot
+          ()
+      in
+      Lwt.pick [handler; closer] >>= fun () ->
+      (* Give finalize a tick if pick cancelled the handler path. *)
+      Lwt_unix.sleep 0.05 >>= fun () ->
+      (* Explicit release is idempotent if finalize already ran. *)
+      Relay_ws_server.release_slot slot;
+      Alcotest.(check int) "slot freed after session end" 0
+        (Relay_ws_server.active_connection_count ());
+      Lwt.return_unit))
+
 let test_client_session_recv_replies_to_ping_with_masked_pong () =
   let open Lwt.Infix in
   Lwt_main.run (
@@ -349,6 +493,14 @@ let () =
     ; ( "subscriber_map",
         [ Alcotest.test_case "map operations" `Quick test_subscriber_map_ops
         ; Alcotest.test_case "push with no subscribers" `Quick test_push_dm_no_subscribers
+        ] )
+    ; ( "connection_cap_b277",
+        [ Alcotest.test_case "global cap + free on release" `Quick test_cap_global_limit
+        ; Alcotest.test_case "per-ip cap independent IPs" `Quick test_cap_per_ip_limit
+        ; Alcotest.test_case "release is idempotent" `Quick test_cap_release_idempotent
+        ; Alcotest.test_case "stats json fields" `Quick test_cap_stats_json
+        ; Alcotest.test_case "session cleanup frees slot" `Quick
+            test_session_cleanup_releases_slot
         ] )
     ; ( "client_session",
         [ Alcotest.test_case "recv replies to ping with masked pong" `Quick

@@ -52,23 +52,25 @@ let t_memo_forces () =
 
 let t_heartbeat_line_with_rss () =
   let line =
-    Relay.format_heartbeat_line ~uptime_s:123.7 ~peer_count:5
+    Relay.format_heartbeat_line ~uptime_s:123.7 ~peer_count:5 ~ws_subs:12
       ~heap_words:131072 ~rss_kb:(Some 28000)
   in
   Alcotest.(check bool) "has heartbeat tag" true
     (contains ~sub:"[relay] heartbeat" line);
   Alcotest.(check bool) "uptime rounded" true (contains ~sub:"uptime=124s" line);
   Alcotest.(check bool) "peers present" true (contains ~sub:"peers=5" line);
+  Alcotest.(check bool) "subs present (B277)" true (contains ~sub:"subs=12" line);
   Alcotest.(check bool) "heap words present" true
     (contains ~sub:"gc_heap_words=131072" line);
   Alcotest.(check bool) "rss present" true (contains ~sub:"rss_kb=28000" line)
 
 let t_heartbeat_line_no_rss () =
   let line =
-    Relay.format_heartbeat_line ~uptime_s:0. ~peer_count:0
+    Relay.format_heartbeat_line ~uptime_s:0. ~peer_count:0 ~ws_subs:0
       ~heap_words:0 ~rss_kb:None
   in
-  Alcotest.(check bool) "rss unknown shown as ?" true (contains ~sub:"rss_kb=?" line)
+  Alcotest.(check bool) "rss unknown shown as ?" true (contains ~sub:"rss_kb=?" line);
+  Alcotest.(check bool) "subs=0 present" true (contains ~sub:"subs=0" line)
 
 let () =
   Alcotest.run "relay_instrumentation" [

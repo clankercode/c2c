@@ -107,6 +107,205 @@ let push_dm_count = Atomic.make 0
 let push_dm_invocations () = Atomic.get push_dm_count
 let reset_push_dm_count () = Atomic.set push_dm_count 0
 
+(* ---------------------------------------------------------------------------
+   B277: process-wide + per-IP caps on concurrent WS subscriber *connections*
+   (not alias registrations). After a 502 recovery, thundering-herd clients
+   must not open unbounded long-lived Expert sessions.
+
+   - Cap is on unique connections (one slot per upgraded socket).
+   - Dynamic multi-alias subscribe/unsubscribe on an existing connection does
+     not consume additional slots.
+   - Limits are env-tunable; tests call [set_connection_limits].
+   --------------------------------------------------------------------------- *)
+
+type cap_denial = Cap_global | Cap_per_ip
+
+type slot = {
+  client_ip : string;
+  mutable released : bool;
+}
+
+type acquire_result =
+  | Acquired of slot
+  | Denied of { reason : cap_denial; retry_after_s : float }
+
+let default_max_total = 1024
+let default_max_per_ip = 32
+let default_retry_after_s = 30.0
+
+let env_positive name default =
+  match Sys.getenv_opt name with
+  | None -> default
+  | Some s ->
+    (match int_of_string_opt (String.trim s) with
+     | Some n when n > 0 -> n
+     | _ -> default)
+
+let env_float_positive name default =
+  match Sys.getenv_opt name with
+  | None -> default
+  | Some s ->
+    (match float_of_string_opt (String.trim s) with
+     | Some n when n > 0. && Float.is_finite n -> n
+     | _ -> default)
+
+module ConnectionCap : sig
+  type t
+  val create : unit -> t
+  val try_acquire : t -> client_ip:string -> acquire_result
+  val release : t -> slot -> unit
+  val active : t -> int
+  val per_ip : t -> client_ip:string -> int
+  val max_total : t -> int
+  val max_per_ip : t -> int
+  val retry_after_s : t -> float
+  val denied_global : t -> int
+  val denied_per_ip : t -> int
+  val set_limits :
+    t -> ?max_total:int -> ?max_per_ip:int -> ?retry_after_s:float -> unit -> unit
+  val reset : t -> unit
+end = struct
+  type t = {
+    mutex : Mutex.t;
+    mutable max_total : int;
+    mutable max_per_ip : int;
+    mutable retry_after_s : float;
+    mutable total : int;
+    per_ip : (string, int) Hashtbl.t;
+    mutable denied_global : int;
+    mutable denied_per_ip : int;
+  }
+
+  let create () = {
+    mutex = Mutex.create ();
+    max_total = env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS" default_max_total;
+    max_per_ip =
+      env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS_PER_IP" default_max_per_ip;
+    retry_after_s =
+      env_float_positive "C2C_RELAY_WS_CAP_RETRY_AFTER" default_retry_after_s;
+    total = 0;
+    per_ip = Hashtbl.create 64;
+    denied_global = 0;
+    denied_per_ip = 0;
+  }
+
+  let with_lock t f =
+    Mutex.lock t.mutex;
+    Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
+
+  let try_acquire t ~client_ip =
+    with_lock t (fun () ->
+      let ip_count =
+        match Hashtbl.find_opt t.per_ip client_ip with
+        | Some n -> n
+        | None -> 0
+      in
+      if t.total >= t.max_total then begin
+        t.denied_global <- t.denied_global + 1;
+        Denied { reason = Cap_global; retry_after_s = t.retry_after_s }
+      end else if ip_count >= t.max_per_ip then begin
+        t.denied_per_ip <- t.denied_per_ip + 1;
+        Denied { reason = Cap_per_ip; retry_after_s = t.retry_after_s }
+      end else begin
+        t.total <- t.total + 1;
+        Hashtbl.replace t.per_ip client_ip (ip_count + 1);
+        Acquired { client_ip; released = false }
+      end)
+
+  let release t slot =
+    if slot.released then ()
+    else
+      with_lock t (fun () ->
+        if not slot.released then begin
+          slot.released <- true;
+          t.total <- max 0 (t.total - 1);
+          match Hashtbl.find_opt t.per_ip slot.client_ip with
+          | Some n when n <= 1 -> Hashtbl.remove t.per_ip slot.client_ip
+          | Some n -> Hashtbl.replace t.per_ip slot.client_ip (n - 1)
+          | None -> ()
+        end)
+
+  let active t = with_lock t (fun () -> t.total)
+  let per_ip t ~client_ip =
+    with_lock t (fun () ->
+      match Hashtbl.find_opt t.per_ip client_ip with
+      | Some n -> n
+      | None -> 0)
+  let max_total t = with_lock t (fun () -> t.max_total)
+  let max_per_ip t = with_lock t (fun () -> t.max_per_ip)
+  let retry_after_s t = with_lock t (fun () -> t.retry_after_s)
+  let denied_global t = with_lock t (fun () -> t.denied_global)
+  let denied_per_ip t = with_lock t (fun () -> t.denied_per_ip)
+
+  let set_limits t ?max_total ?max_per_ip ?retry_after_s () =
+    with_lock t (fun () ->
+      (match max_total with
+       | Some n when n > 0 -> t.max_total <- n
+       | _ -> ());
+      (match max_per_ip with
+       | Some n when n > 0 -> t.max_per_ip <- n
+       | _ -> ());
+      (match retry_after_s with
+       | Some n when n > 0. && Float.is_finite n -> t.retry_after_s <- n
+       | _ -> ()))
+
+  let reset t =
+    with_lock t (fun () ->
+      t.total <- 0;
+      Hashtbl.clear t.per_ip;
+      t.denied_global <- 0;
+      t.denied_per_ip <- 0;
+      t.max_total <-
+        env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS" default_max_total;
+      t.max_per_ip <-
+        env_positive "C2C_RELAY_WS_MAX_SUBSCRIBERS_PER_IP" default_max_per_ip;
+      t.retry_after_s <-
+        env_float_positive "C2C_RELAY_WS_CAP_RETRY_AFTER" default_retry_after_s)
+end
+
+let connection_cap = ConnectionCap.create ()
+
+let try_acquire_slot ~client_ip =
+  ConnectionCap.try_acquire connection_cap ~client_ip
+
+let release_slot slot = ConnectionCap.release connection_cap slot
+
+let active_connection_count () = ConnectionCap.active connection_cap
+
+let per_ip_connection_count ~client_ip =
+  ConnectionCap.per_ip connection_cap ~client_ip
+
+let connection_limits () =
+  ( ConnectionCap.max_total connection_cap
+  , ConnectionCap.max_per_ip connection_cap
+  , ConnectionCap.retry_after_s connection_cap )
+
+let set_connection_limits ?max_total ?max_per_ip ?retry_after_s () =
+  ConnectionCap.set_limits connection_cap ?max_total ?max_per_ip ?retry_after_s ()
+
+let reset_connection_cap () = ConnectionCap.reset connection_cap
+
+let cap_denied_counts () =
+  ( ConnectionCap.denied_global connection_cap
+  , ConnectionCap.denied_per_ip connection_cap )
+
+let cap_denial_label = function
+  | Cap_global -> "global"
+  | Cap_per_ip -> "per_ip"
+
+(** JSON fragment for /stats and ops surfaces. *)
+let connection_cap_stats_json () =
+  let max_total, max_per_ip, retry_after_s = connection_limits () in
+  let denied_global, denied_per_ip = cap_denied_counts () in
+  `Assoc [
+    ("subscribers", `Int (active_connection_count ()));
+    ("max_subscribers", `Int max_total);
+    ("max_per_ip", `Int max_per_ip);
+    ("retry_after_s", `Float retry_after_s);
+    ("denied_global", `Int denied_global);
+    ("denied_per_ip", `Int denied_per_ip);
+  ]
+
 (* Parse JSON string, returning None on failure *)
 let json_of_string_opt s =
   try Some (Yojson.Safe.from_string s) with _ -> None
@@ -351,8 +550,11 @@ let recv_loop ~(lookup_pk : alias:string -> string option) (sub : subscriber) =
 (* Handle an upgraded WebSocket connection for subscription.
    Called after HTTP upgrade is complete.
    ~aliases: initial set of aliases to subscribe (from HTTP headers)
-   ~lookup_pk: function to validate Ed25519 signatures for dynamic subscribe *)
-let handle_subscriber_session ~aliases ~session ~lookup_pk =
+   ~lookup_pk: function to validate Ed25519 signatures for dynamic subscribe
+   ~slot: optional B277 connection-cap slot; released on disconnect so the
+     global/per-IP budget frees for new upgrades. Production Expert path always
+     passes a slot acquired before the 101 response. *)
+let handle_subscriber_session ~aliases ~session ~lookup_pk ?slot () =
   let sub = {
     aliases = StringSet.of_list aliases;
     session;
@@ -361,11 +563,14 @@ let handle_subscriber_session ~aliases ~session ~lookup_pk =
   } in
   (* Register for all initial aliases *)
   List.iter (fun alias -> SubscriberMap.add subscribers ~alias sub) aliases;
-  (* Cleanup on exit — remove from all aliases *)
+  (* Cleanup on exit — remove from all aliases + free connection slot *)
   let cleanup () =
     sub.closed <- true;
     StringSet.iter (fun alias -> SubscriberMap.remove subscribers ~alias sub) sub.aliases;
     sub.aliases <- StringSet.empty;
+    (match slot with
+     | Some s -> release_slot s
+     | None -> ());
     (* Close the WS session/fd *)
     Lwt.catch (fun () -> Relay_ws_frame.Session.close_with ~code:close_normal ~reason:"cleanup" () sub.session)
       (fun _ -> Lwt.return_unit)
@@ -379,17 +584,17 @@ let handle_subscriber_session ~aliases ~session ~lookup_pk =
     (fun () ->
       cleanup ())
 
-let handle_subscriber ~aliases ~fd ~lookup_pk =
+let handle_subscriber ~aliases ~fd ~lookup_pk ?slot () =
   handle_subscriber_session ~aliases
-    ~session:(Relay_ws_frame.Session.of_fd fd) ~lookup_pk
+    ~session:(Relay_ws_frame.Session.of_fd fd) ~lookup_pk ?slot ()
 
-let handle_subscriber_channels ~aliases ~ic ~oc ~lookup_pk =
+let handle_subscriber_channels ~aliases ~ic ~oc ~lookup_pk ?slot () =
   handle_subscriber_session ~aliases
-    ~session:(Relay_ws_frame.Session.of_cohttp_channels ic oc) ~lookup_pk
+    ~session:(Relay_ws_frame.Session.of_cohttp_channels ic oc) ~lookup_pk ?slot ()
 
 (* Backward-compatible: handle a single-alias subscriber (Phase 1 behavior) *)
 let handle_subscriber_single ~alias ~fd =
-  handle_subscriber ~aliases:[alias] ~fd ~lookup_pk:(fun ~alias:_ -> None)
+  handle_subscriber ~aliases:[alias] ~fd ~lookup_pk:(fun ~alias:_ -> None) ()
 
 (* Build WS upgrade response headers *)
 let make_upgrade_response ws_key =
