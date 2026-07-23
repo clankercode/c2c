@@ -1,0 +1,18 @@
+complexity: medium
+depends_on: []
+estimate_hours: 8
+id: P5
+locked: false
+milestones:
+    - complexity: medium
+      depends_on: []
+      description: Lock the JSONL envelope and safety contract, implement the sibling sink, prove compatibility, and document the c2c/pi-c2c boundary.
+      estimate_hours: 8
+      id: M1
+      locked: false
+      name: Specify, implement, and prove multi-key sink
+      path: 01-specify-implement-and-prove-mu
+      status: pending
+name: Multi-key statefile sink for pi-c2c writer multiplexing
+status: pending
+weeks: 1

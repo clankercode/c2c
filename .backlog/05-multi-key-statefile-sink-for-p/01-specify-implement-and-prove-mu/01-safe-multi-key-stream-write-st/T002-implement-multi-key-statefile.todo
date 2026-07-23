@@ -1,0 +1,18 @@
+---
+complexity: high
+created_at: "2026-07-23T10:46:45Z"
+depends_on:
+    - P5.M1.E1.T001
+estimate_hours: 5
+id: P5.M1.E1.T002
+priority: high
+status: pending
+tags:
+    - perf
+    - statefile
+    - pi-c2c
+    - ocaml
+title: Implement multi-key statefile sink with hermetic tests
+updated_at: "2026-07-23T10:46:45Z"
+---
+Implement c2c oc-plugin stream-write-statefiles as a sibling of the existing one-key sink. Parse independent JSONL envelopes, validate instance key before path construction, create mode-0700 instance directories, and atomically write complete state.snapshot payloads to unchanged per-instance filenames. Factor persistence narrowly without changing legacy semantics. Test two interleaved keys, repeated updates, raw c2c statefile --instance readability, unsafe/invalid keys, malformed envelopes, continuation after rejection, and old-command regression. Build target explicitly before tests via repository dune wrapper, max two threads. This is prerequisite for pi-c2c P1.M1.E2.T002.
