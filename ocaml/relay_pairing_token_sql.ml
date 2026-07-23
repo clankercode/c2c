@@ -2,16 +2,10 @@ open Sqlite3
 
 (* S5a: Pairing token SQL helpers *)
 
-(* B219 (GH #79): the relay now reuses ONE persistent connection, so every
-   prepared statement must be finalized explicitly — an unfinalized statement
-   leaks for the process lifetime and can hold locks / block WAL checkpoints.
-   [with_stmt] finalizes in [~finally] so it fires even if [f] raises. The
-   caller already serialises DB access under the relay mutex. *)
-let with_stmt db sql f =
-  let stmt = Sqlite3.prepare db sql in
-  Fun.protect
-    ~finally:(fun () -> (try ignore (Sqlite3.finalize stmt) with _ -> ()))
-    (fun () -> f stmt)
+(* B271: use Relay_sqlite_support.with_stmt so pairing paths share the
+   process-lifetime statement cache when the relay mutex has activated it.
+   Outside that window (tests) the helper falls back to ephemeral finalize. *)
+let with_stmt db sql f = Relay_sqlite_support.with_stmt db sql f
 
 let store_pairing_token_db db ~binding_id ~token_b64 ~machine_ed25519_pubkey ~expires_at =
   let sql = "INSERT OR REPLACE INTO pairing_tokens (binding_id, token_b64, machine_ed25519_pubkey, used, expires_at) VALUES (?, ?, ?, 0, ?)" in

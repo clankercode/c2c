@@ -431,7 +431,8 @@ if [ "$wait_kind" = signal ]; then
         -newer "$ACTIVE_RUN" -printf '%f\n' 2>/dev/null | head -n 1 || true)
     if [ -n "$core_file" ]; then
         durable_sync "$CORE_DIR/$core_file"
-        emit_string_event core_file file "cores/$core_file"
+        # safe_id strips '/'; keep a ledger-safe name without losing the cores/ prefix intent.
+        emit_string_event core_file file "cores_${core_file}"
         prune_cores
     elif [ "$core_dumped" = 1 ]; then
         emit_event core_file_missing

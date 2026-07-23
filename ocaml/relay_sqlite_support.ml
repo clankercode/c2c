@@ -232,25 +232,110 @@ let exec_many_rows db sql =
   if Rc.is_success rc then Ok (List.rev !results)
   else Error (Printf.sprintf "exec failed: %s" (Rc.to_string rc))
 
-let exec_prepared db sql params =
+(* --- B271: process-lifetime prepared-statement cache --------------------
+   Production cores on e4a988e (post-B219 persistent connection) still died in
+   sqlite3_finalize with a dangling stmt pointer and a partially-overwritten
+   sql buffer — classic use-after-free of the ocaml-sqlite3 stmt_wrap after a
+   high-churn prepare/finalize cycle under register+WS load.
+
+   Strategy: while a relay holds its mutex, route every prepare through a
+   per-relay cache. Cached statements are OCaml-rooted for the process
+   lifetime and only reset between uses; finalize is deferred to explicit
+   teardown. Same-SQL re-entry while a statement is busy still needs a
+   second handle (ephemeral prepare/finalize). Outside the active-cache
+   window (migrations, unit tests) we keep the B219 Fun.protect finalize. *)
+
+type stmt_cache = {
+  by_sql : (string, Sqlite3.stmt) Hashtbl.t;
+  busy : (string, int) Hashtbl.t;
+}
+
+let make_stmt_cache ?(size = 64) () = {
+  by_sql = Hashtbl.create size;
+  busy = Hashtbl.create 16;
+}
+
+let stmt_cache_size cache = Hashtbl.length cache.by_sql
+
+let active_stmt_cache : stmt_cache option ref = ref None
+let active_stmt_db : Sqlite3.db option ref = ref None
+
+let with_active_stmt_cache cache db f =
+  let prev_c = !active_stmt_cache in
+  let prev_d = !active_stmt_db in
+  active_stmt_cache := Some cache;
+  active_stmt_db := Some db;
+  Fun.protect
+    ~finally:(fun () ->
+      active_stmt_cache := prev_c;
+      active_stmt_db := prev_d)
+    f
+
+let finalize_stmt_cache cache =
+  Hashtbl.iter
+    (fun _ stmt -> try ignore (Sqlite3.finalize stmt) with _ -> ())
+    cache.by_sql;
+  Hashtbl.clear cache.by_sql;
+  Hashtbl.clear cache.busy
+
+let with_stmt_ephemeral db sql f =
   let stmt = Sqlite3.prepare db sql in
   Fun.protect
     ~finally:(fun () -> (try ignore (Sqlite3.finalize stmt) with _ -> ()))
-    (fun () ->
-      List.iteri (fun idx param ->
-        let idx' = idx + 1 in
-        let rc = match param with
-          | `Text s -> Sqlite3.bind_text stmt idx' s
-          | `Int i -> Sqlite3.bind_int stmt idx' i
-          | `Float f -> Sqlite3.bind_double stmt idx' f
-          | `Null -> Sqlite3.bind stmt idx' Sqlite3.Data.NULL
-        in
-        if not (Rc.is_success rc) then failwith ("bind failed: " ^ Rc.to_string rc)
-      ) params;
-      let rec loop () =
-        let rc = Sqlite3.step stmt in
-        if rc = Rc.ROW then true
-        else if rc = Rc.DONE then false
-        else failwith ("step failed: " ^ Rc.to_string rc)
+    (fun () -> f stmt)
+
+let with_stmt db sql f =
+  let cache_opt =
+    match !active_stmt_cache, !active_stmt_db with
+    | Some cache, Some active when active == db -> Some cache
+    | _ -> None
+  in
+  match cache_opt with
+  | None -> with_stmt_ephemeral db sql f
+  | Some cache ->
+    let busy =
+      match Hashtbl.find_opt cache.busy sql with Some n -> n | None -> 0
+    in
+    if busy > 0 then
+      (* Nested use of the same SQL string while the outer handle is live —
+         SQLite needs a distinct statement object. *)
+      with_stmt_ephemeral db sql f
+    else
+      let stmt =
+        match Hashtbl.find_opt cache.by_sql sql with
+        | Some s ->
+          (try ignore (Sqlite3.reset s) with _ -> ());
+          (try ignore (Sqlite3.clear_bindings s) with _ -> ());
+          s
+        | None ->
+          let s = Sqlite3.prepare db sql in
+          Hashtbl.add cache.by_sql sql s;
+          s
       in
-      loop ())
+      Hashtbl.replace cache.busy sql 1;
+      Fun.protect
+        ~finally:(fun () ->
+          Hashtbl.remove cache.busy sql;
+          (try ignore (Sqlite3.reset stmt) with _ -> ());
+          (try ignore (Sqlite3.clear_bindings stmt) with _ -> ()))
+        (fun () -> f stmt)
+
+let exec_prepared db sql params =
+  with_stmt db sql (fun stmt ->
+    List.iteri (fun idx param ->
+      let idx' = idx + 1 in
+      let rc = match param with
+        | `Text s -> Sqlite3.bind_text stmt idx' s
+        | `Int i -> Sqlite3.bind_int stmt idx' i
+        | `Float f -> Sqlite3.bind_double stmt idx' f
+        | `Null -> Sqlite3.bind stmt idx' Sqlite3.Data.NULL
+      in
+      if not (Rc.is_success rc) then failwith ("bind failed: " ^ Rc.to_string rc)
+    ) params;
+    let rec loop () =
+      let rc = Sqlite3.step stmt in
+      if rc = Rc.ROW then true
+      else if rc = Rc.DONE then false
+      else failwith ("step failed: " ^ Rc.to_string rc)
+    in
+    loop ())
