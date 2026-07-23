@@ -1218,12 +1218,15 @@ let test_effective_lease_ttl () =
   (* above the cap -> capped *)
   assert (Relay.effective_lease_ttl ~client_ttl:1.0e9 = Relay.max_lease_ttl)
 
-(* B219 (GH #79): the relay reuses ONE persistent SQLite connection under its
-   mutex, and every prepared statement is finalized explicitly. The production
-   crash was a use-after-free inside sqlite3_finalize under load, on the
-   check_request_nonce path. The nonce test below makes the open-once contract
-   deterministic on Linux by holding off GC and bounding /proc/self/fd growth;
-   it also verifies the generic exec_prepared bind-error cleanup path. *)
+(* B219 (GH #79) + B271: the relay reuses ONE persistent SQLite connection
+   under its mutex. B219 finalized every prepared statement explicitly; B271
+   (residual production SIGSEGV on e4a988e) keeps hot statements in a
+   process-lifetime cache and resets them instead — cores showed dangling
+   stmt pointers inside sqlite3_finalize on the /register path. The nonce
+   test below makes the open-once contract deterministic on Linux by holding
+   off GC and bounding /proc/self/fd growth; it also verifies the generic
+   exec_prepared bind-error cleanup path (ephemeral finalize when no cache
+   is active). *)
 
 let proc_fd_count () =
   if Sys.file_exists "/proc/self/fd" then
@@ -1358,6 +1361,55 @@ let test_relay_sqlite_mixed_ops_on_shared_connection () =
     Alcotest.(check bool) "room listed" true
       (List.exists (fun r -> json_get_string r "room_id" = "zzmixroom") rooms))
 
+(* B271: residual production SIGSEGV was still inside sqlite3_finalize on the
+   /register lease-lookup path after B219. The fix keeps prepared statements
+   rooted in a process-lifetime cache (reset, not finalize). This test:
+   - drives the exact register + request-nonce hot path under forced major GC
+   - asserts the cache populates and stays bounded (no per-op prepare leak)
+   - keeps succeeding after many full_major passes (UAF would SIGSEGV here) *)
+let test_relay_sqlite_b271_stmt_cache_survives_gc_pressure () =
+  with_sqlite_relay_tempdir (fun t ->
+    let before = Relay.SqliteRelay.cached_stmt_count t in
+    Alcotest.(check int) "cache empty before first op" 0 before;
+    for i = 0 to 499 do
+      let alias = Printf.sprintf "zzb271-%d" i in
+      let (st, _) =
+        _b264_reg_sql t ~node_id:(Printf.sprintf "nb271-%d" i)
+          ~session_id:(Printf.sprintf "sb271-%d" i) ~alias ()
+      in
+      Alcotest.(check string) "register ok under GC pressure" "ok" st;
+      let ts = Unix.gettimeofday () in
+      let nonce = Printf.sprintf "b271-nonce-%d" i in
+      (match Relay.SqliteRelay.check_request_nonce t ~nonce ~ts with
+       | Ok () -> ()
+       | Error e -> fail_fmt "nonce %d should be Ok, got %s" i e);
+      (match Relay.SqliteRelay.check_request_nonce t ~nonce ~ts with
+       | Error _ -> ()
+       | Ok () -> fail_fmt "nonce %d replay should be Error" i);
+      if i land 15 = 0 then Gc.full_major ()
+    done;
+    Gc.full_major ();
+    let after = Relay.SqliteRelay.cached_stmt_count t in
+    Alcotest.(check bool) "cache populated after register/nonce traffic"
+      true (after > 0);
+    (* A second register wave must not grow the cache unboundedly — hot SQL
+       is static, so size should stay within a small multiple of the first wave. *)
+    let mid = after in
+    for i = 500 to 699 do
+      let alias = Printf.sprintf "zzb271-%d" i in
+      let (st, _) =
+        _b264_reg_sql t ~node_id:(Printf.sprintf "nb271-%d" i)
+          ~session_id:(Printf.sprintf "sb271-%d" i) ~alias ()
+      in
+      Alcotest.(check string) "register still ok" "ok" st;
+      if i land 31 = 0 then Gc.full_major ()
+    done;
+    let final_count = Relay.SqliteRelay.cached_stmt_count t in
+    if final_count > mid + 8 then
+      fail_fmt "stmt cache grew too much on static SQL: mid=%d final=%d" mid final_count;
+    (* close path finalizes the cache without raising *)
+    Relay.SqliteRelay.close t)
+
 (* ---- Run tests ---- *)
 
 let tests = [
@@ -1416,6 +1468,9 @@ let tests = [
   "relay sqlite persistent connection stress", test_relay_sqlite_persistent_connection_stress;
   "relay sqlite request_nonce no leak under load", test_relay_sqlite_request_nonce_no_leak_under_load;
   "relay sqlite mixed ops on shared connection", test_relay_sqlite_mixed_ops_on_shared_connection;
+  (* B271: stmt cache survives GC pressure (residual finalize SIGSEGV) *)
+  "relay sqlite B271 stmt cache survives GC pressure",
+    test_relay_sqlite_b271_stmt_cache_survives_gc_pressure;
   (* #330 V1 cross_host_not_implemented error-path seam tests *)
   "cross_host bare alias works when self_host is set", test_cross_host_bare_alias_works_when_self_host_is_set;
   "cross_host alias@matching self_host accepted", test_cross_host_alias_matching_self_host_accepted;

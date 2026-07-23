@@ -1862,7 +1862,13 @@ end
 
 (* --- SqliteRelay --- *)
 
-module SqliteRelay : RELAY = struct
+module SqliteRelay : sig
+  include RELAY
+  (** B271: number of process-lifetime cached prepared statements. *)
+  val cached_stmt_count : t -> int
+  (** B271: finalize cached statements then close the connection. *)
+  val close : t -> unit
+end = struct
   type t = {
     db_path : string;
     (* B219 (GH #79): ONE long-lived connection, opened once in [create] and
@@ -1874,6 +1880,10 @@ module SqliteRelay : RELAY = struct
        "public locks / inner worker is lock-free" split below. [db_path] is
        kept because tests/migrations still reference the file directly. *)
     db : Sqlite3.db;
+    (* B271: process-lifetime prepared-statement cache. Activated for every
+       [with_lock] critical section so [with_stmt]/[exec_prepared] reset
+       instead of finalize (see Relay_sqlite_support). *)
+    stmt_cache : stmt_cache;
     dedup_window : int;
     mutex : Mutex.t;
     observer_bindings : ObserverBindings.t;
@@ -1979,7 +1989,11 @@ module SqliteRelay : RELAY = struct
   let create ?(dedup_window=10000) ?(persist_dir="") ?(self_host=None) ?(peer_relays=Hashtbl.create 2) () =
     let db_path = Filename.concat persist_dir "c2c_relay.db" in
     let mutex = Mutex.create () in
-    let conn = Sqlite3.db_open db_path in
+    (* B271: FULLMUTEX so any accidental concurrent sqlite API use (GC
+       finalizer of an ephemeral stmt, Lwt worker edge) cannot corrupt the
+       connection the way multi-threaded NOMUTEX access would. *)
+    let conn = Sqlite3.db_open ~mutex:`FULL db_path in
+    let stmt_cache = make_stmt_cache () in
     (let rc = Sqlite3.exec conn "PRAGMA busy_timeout = 5000" in
      if not (Sqlite3.Rc.is_success rc) then
        failwith ("sqlite busy_timeout pragma failed: " ^ Sqlite3.Rc.to_string rc));
@@ -2138,31 +2152,31 @@ module SqliteRelay : RELAY = struct
       | Some p -> Relay_identity.load_or_create_at ~path:p ~alias_hint:(Option.value self_host ~default:"relay")
       | None -> Relay_identity.generate ~alias_hint:(Option.value self_host ~default:"relay") ()
     in
-    { db_path; db = conn; dedup_window; mutex; observer_bindings = ObserverBindings.create (); self_host; peer_relays; identity }
+    { db_path; db = conn; stmt_cache; dedup_window; mutex;
+      observer_bindings = ObserverBindings.create (); self_host; peer_relays; identity }
 
+  (* B271: activate the process-lifetime statement cache for the duration of
+     the critical section so included [with_stmt]/[exec_prepared] reset
+     rather than finalize. Nesting restores the previous active cache. *)
   let with_lock t f =
     Mutex.lock t.mutex;
-    Fun.protect ~finally:(fun () -> Mutex.unlock t.mutex) f
-
-  (* B219: prepare/finalize a statement around [f]. With the persistent
-     connection an unfinalized statement leaks for the process lifetime and
-     can hold locks / block WAL checkpoints, so EVERY ad-hoc prepare is routed
-     through this helper. The finalize runs in [~finally] so it fires even if
-     [f] raises. The caller MUST already hold [t.mutex] (the connection is
-     shared) — [with_stmt] does not lock. *)
-  let with_stmt conn sql f =
-    let stmt = Sqlite3.prepare conn sql in
     Fun.protect
-      ~finally:(fun () -> (try ignore (Sqlite3.finalize stmt) with _ -> ()))
-      (fun () -> f stmt)
+      ~finally:(fun () -> Mutex.unlock t.mutex)
+      (fun () -> with_active_stmt_cache t.stmt_cache t.db f)
 
-  (* B219: best-effort lifecycle close. No shutdown path calls this today;
-     the persistent connection is process-lifetime owned. Keep this locked
-     hook for a future explicit teardown path. Never raises. *)
+  (* B219 + B271: [with_stmt] lives in Relay_sqlite_support (included above).
+     Under [with_lock] it serves from [t.stmt_cache]; callers MUST already
+     hold [t.mutex]. Migration probes in [create] run before the cache is
+     active and still finalize ephemerally. *)
+
+  (* B219/B271: best-effort lifecycle close. Finalize cached statements first
+     so db_close is not busy; process-lifetime ownership otherwise. Never raises. *)
   let close t =
     with_lock t (fun () ->
+      finalize_stmt_cache t.stmt_cache;
       try ignore (Sqlite3.db_close t.db) with _ -> ())
-  let _ = close
+
+  let cached_stmt_count t = Relay_sqlite_support.stmt_cache_size t.stmt_cache
 
   let self_host t = t.self_host
   (* #330 S2: relay identity for cross-relay signing *)
@@ -4519,15 +4533,20 @@ let heartbeat_rss_kb () =
     | _ -> None
   with _ -> None
 
-(* Pure heartbeat-line formatter (B219) so its shape is unit-testable.
+(* Pure heartbeat-line formatter (B219/B271/B277) so its shape is unit-testable.
    B277: [ws_subs] is the process-wide active WS subscriber *connection* count
-   (not alias registrations). *)
-let format_heartbeat_line ~uptime_s ~peer_count ~ws_subs ~heap_words ~rss_kb =
+   (not alias registrations).
+   B271 adds leases= (total secure_leases_v2 rows, including private/dead) and
+   stmts= (cached prepared statements) so peers=0 is no longer misleading when
+   discovery_visibility defaults to private. Optional args are last so partial
+   application is not forced at call sites that omit them. *)
+let format_heartbeat_line ~uptime_s ~peer_count ~ws_subs ~heap_words ~rss_kb
+    ?(lease_count = -1) ?(stmt_cache = -1) () =
   let rss_str = match rss_kb with Some kb -> string_of_int kb | None -> "?" in
   Printf.sprintf
-    "[relay] heartbeat uptime=%.0fs peers=%d subs=%d gc_heap_words=%d gc_heap_kb=%d rss_kb=%s"
-    uptime_s peer_count ws_subs heap_words
-    (heap_words * (Sys.word_size / 8) / 1024) rss_str
+    "[relay] heartbeat uptime=%.0fs peers=%d subs=%d leases=%d stmts=%d gc_heap_words=%d gc_heap_kb=%d rss_kb=%s"
+    uptime_s peer_count ws_subs lease_count stmt_cache
+    heap_words (heap_words * (Sys.word_size / 8) / 1024) rss_str
 
 module Relay_server(R : RELAY) : sig
   val make_callback :
@@ -7307,17 +7326,23 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     Lwt_unix.sleep heartbeat_interval_s >>= fun () ->
     (try
        let uptime_s = Unix.gettimeofday () -. start_time in
+       (* peers = public discovery set (may be 0 under private-default B264).
+          leases = admin/total rows when the backend exposes them via list_peers_admin. *)
        let peer_count =
          try List.length (R.list_peers relay ~include_dead:true) with _ -> -1
        in
        let ws_subs =
          try Relay_ws_server.active_connection_count () with _ -> -1
        in
+       let lease_count =
+         try List.length (R.list_peers_admin relay ~include_dead:true) with _ -> -1
+       in
        let gc = Gc.quick_stat () in
        let rss_kb = heartbeat_rss_kb () in
        Printf.eprintf "%s\n%!"
          (format_heartbeat_line ~uptime_s ~peer_count ~ws_subs
-            ~heap_words:gc.Gc.heap_words ~rss_kb)
+            ~heap_words:gc.Gc.heap_words ~rss_kb
+            ~lease_count ())
      with _ -> ());
     heartbeat_loop relay ~start_time
 
