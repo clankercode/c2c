@@ -72,10 +72,14 @@ TOKEN=$(head -c 16 /dev/urandom | xxd -p)
 echo "$TOKEN"
 
 # Start the relay (background it with nohup / systemd for production)
-# --gc-interval 300: release 12-month-unseen aliases every 5 minutes automatically
-c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN" --gc-interval 300
+# GC defaults ON: every 300s release aliases past the 12-month reservation window
+# (private + public). Override with --gc-interval N or C2C_RELAY_GC_INTERVAL;
+# pass 0 to disable. (B282 fixed a regression where omitted --gc-interval
+# silently disabled GC in the OCaml server.)
+c2c relay serve --listen 127.0.0.1:7331 --token "$TOKEN"
 
 # Useful serve-time flags:
+#   --gc-interval SECONDS                 lease GC period (default 300; 0 off)
 #   --storage sqlite --db-path PATH       persist relay state in SQLite
 #   --persist-dir DIR                     persist room history JSONL
 #   --relay-name NAME                     well-known host name for alias@host routing
