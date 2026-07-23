@@ -242,6 +242,136 @@ let test_session_cleanup_releases_slot () =
         (Relay_ws_server.active_connection_count ());
       Lwt.return_unit))
 
+(* --- B280: observer connection-cap (sibling budget to B277) --- *)
+
+let with_observer_cap_limits ~max_total ~max_per_ip ?(retry_after_s = 7.0) f =
+  Relay_ws_server.reset_observer_cap ();
+  Relay_ws_server.set_observer_limits ~max_total ~max_per_ip ~retry_after_s ();
+  Fun.protect
+    ~finally:(fun () -> Relay_ws_server.reset_observer_cap ())
+    f
+
+let acquire_observer_or_fail ~client_ip =
+  match Relay_ws_server.try_acquire_observer_slot ~client_ip with
+  | Relay_ws_server.Acquired slot -> slot
+  | Relay_ws_server.Denied _ -> Alcotest.fail "expected observer Acquired"
+
+let test_observer_cap_global_limit () =
+  with_observer_cap_limits ~max_total:2 ~max_per_ip:100 (fun () ->
+    let s1 = acquire_observer_or_fail ~client_ip:"10.0.0.1" in
+    let s2 = acquire_observer_or_fail ~client_ip:"10.0.0.2" in
+    Alcotest.(check int) "active observers=2" 2
+      (Relay_ws_server.active_observer_count ());
+    (match Relay_ws_server.try_acquire_observer_slot ~client_ip:"10.0.0.3" with
+     | Relay_ws_server.Acquired _ -> Alcotest.fail "expected global observer cap deny"
+     | Relay_ws_server.Denied { reason; retry_after_s } ->
+         Alcotest.(check bool) "Cap_global"
+           true (reason = Relay_ws_server.Cap_global);
+         Alcotest.(check (float 0.01)) "retry_after" 7.0 retry_after_s;
+         Alcotest.(check string) "label" "global"
+           (Relay_ws_server.cap_denial_label reason));
+    let denied_g, denied_ip = Relay_ws_server.observer_cap_denied_counts () in
+    Alcotest.(check int) "denied_global=1" 1 denied_g;
+    Alcotest.(check int) "denied_per_ip=0" 0 denied_ip;
+    Relay_ws_server.release_observer_slot s1;
+    Alcotest.(check int) "active after release=1" 1
+      (Relay_ws_server.active_observer_count ());
+    let s3 = acquire_observer_or_fail ~client_ip:"10.0.0.3" in
+    Alcotest.(check int) "active refilled=2" 2
+      (Relay_ws_server.active_observer_count ());
+    Relay_ws_server.release_observer_slot s2;
+    Relay_ws_server.release_observer_slot s3)
+
+let test_observer_cap_per_ip_limit () =
+  with_observer_cap_limits ~max_total:100 ~max_per_ip:2 (fun () ->
+    let s1 = acquire_observer_or_fail ~client_ip:"192.0.2.10" in
+    let s2 = acquire_observer_or_fail ~client_ip:"192.0.2.10" in
+    Alcotest.(check int) "per-ip count=2" 2
+      (Relay_ws_server.per_ip_observer_count ~client_ip:"192.0.2.10");
+    (match Relay_ws_server.try_acquire_observer_slot ~client_ip:"192.0.2.10" with
+     | Relay_ws_server.Acquired _ -> Alcotest.fail "expected per-ip observer deny"
+     | Relay_ws_server.Denied { reason; _ } ->
+         Alcotest.(check bool) "Cap_per_ip"
+           true (reason = Relay_ws_server.Cap_per_ip);
+         Alcotest.(check string) "label" "per_ip"
+           (Relay_ws_server.cap_denial_label reason));
+    let s_other = acquire_observer_or_fail ~client_ip:"192.0.2.99" in
+    Alcotest.(check int) "other ip count=1" 1
+      (Relay_ws_server.per_ip_observer_count ~client_ip:"192.0.2.99");
+    Relay_ws_server.release_observer_slot s1;
+    Alcotest.(check int) "per-ip after release=1" 1
+      (Relay_ws_server.per_ip_observer_count ~client_ip:"192.0.2.10");
+    let s3 = acquire_observer_or_fail ~client_ip:"192.0.2.10" in
+    Relay_ws_server.release_observer_slot s2;
+    Relay_ws_server.release_observer_slot s3;
+    Relay_ws_server.release_observer_slot s_other;
+    Alcotest.(check int) "active drained" 0
+      (Relay_ws_server.active_observer_count ()))
+
+let test_observer_cap_release_idempotent () =
+  with_observer_cap_limits ~max_total:1 ~max_per_ip:1 (fun () ->
+    let s = acquire_observer_or_fail ~client_ip:"127.0.0.1" in
+    Relay_ws_server.release_observer_slot s;
+    Relay_ws_server.release_observer_slot s;
+    Relay_ws_server.release_observer_slot s;
+    Alcotest.(check int) "active still 0 after double free" 0
+      (Relay_ws_server.active_observer_count ());
+    let s2 = acquire_observer_or_fail ~client_ip:"127.0.0.1" in
+    Relay_ws_server.release_observer_slot s2)
+
+let test_observer_cap_stats_json () =
+  with_observer_cap_limits ~max_total:5 ~max_per_ip:3 ~retry_after_s:11.0 (fun () ->
+    let s = acquire_observer_or_fail ~client_ip:"203.0.113.1" in
+    ignore (Relay_ws_server.try_acquire_observer_slot ~client_ip:"203.0.113.1");
+    ignore (Relay_ws_server.try_acquire_observer_slot ~client_ip:"203.0.113.1");
+    ignore (Relay_ws_server.try_acquire_observer_slot ~client_ip:"203.0.113.1");
+    let j = Relay_ws_server.observer_cap_stats_json () in
+    match j with
+    | `Assoc fields ->
+        let get_int k =
+          match List.assoc_opt k fields with
+          | Some (`Int n) -> n
+          | _ -> Alcotest.fail ("missing int " ^ k)
+        in
+        let get_float k =
+          match List.assoc_opt k fields with
+          | Some (`Float f) -> f
+          | Some (`Int n) -> float_of_int n
+          | _ -> Alcotest.fail ("missing float " ^ k)
+        in
+        Alcotest.(check int) "observers" 3 (get_int "observers");
+        Alcotest.(check int) "max_observers" 5 (get_int "max_observers");
+        Alcotest.(check int) "max_per_ip" 3 (get_int "max_per_ip");
+        Alcotest.(check (float 0.01)) "retry_after_s" 11.0
+          (get_float "retry_after_s");
+        Alcotest.(check bool) "denied_per_ip >= 1" true
+          (get_int "denied_per_ip" >= 1);
+        Relay_ws_server.release_observer_slot s
+    | _ -> Alcotest.fail "expected Assoc")
+
+let test_observer_and_subscriber_caps_are_independent () =
+  (* Sibling budgets: filling one must not deny the other. *)
+  with_cap_limits ~max_total:1 ~max_per_ip:1 (fun () ->
+    with_observer_cap_limits ~max_total:1 ~max_per_ip:1 (fun () ->
+      let sub = acquire_or_fail ~client_ip:"198.51.100.50" in
+      (match Relay_ws_server.try_acquire_slot ~client_ip:"198.51.100.50" with
+       | Relay_ws_server.Denied { reason = Relay_ws_server.Cap_global; _ } -> ()
+       | _ -> Alcotest.fail "subscriber cap should be full");
+      let obs = acquire_observer_or_fail ~client_ip:"198.51.100.50" in
+      Alcotest.(check int) "subscriber active=1" 1
+        (Relay_ws_server.active_connection_count ());
+      Alcotest.(check int) "observer active=1" 1
+        (Relay_ws_server.active_observer_count ());
+      (match Relay_ws_server.try_acquire_observer_slot ~client_ip:"198.51.100.99" with
+       | Relay_ws_server.Denied { reason = Relay_ws_server.Cap_global; _ } -> ()
+       | _ -> Alcotest.fail "observer cap should be full");
+      Relay_ws_server.release_slot sub;
+      Relay_ws_server.release_observer_slot obs;
+      Alcotest.(check int) "subscriber drained" 0
+        (Relay_ws_server.active_connection_count ());
+      Alcotest.(check int) "observer drained" 0
+        (Relay_ws_server.active_observer_count ())))
+
 let test_client_session_recv_replies_to_ping_with_masked_pong () =
   let open Lwt.Infix in
   Lwt_main.run (
@@ -612,6 +742,17 @@ let () =
         ; Alcotest.test_case "stats json fields" `Quick test_cap_stats_json
         ; Alcotest.test_case "session cleanup frees slot" `Quick
             test_session_cleanup_releases_slot
+        ] )
+    ; ( "observer_cap_b280",
+        [ Alcotest.test_case "global cap + free on release" `Quick
+            test_observer_cap_global_limit
+        ; Alcotest.test_case "per-ip cap independent IPs" `Quick
+            test_observer_cap_per_ip_limit
+        ; Alcotest.test_case "release is idempotent" `Quick
+            test_observer_cap_release_idempotent
+        ; Alcotest.test_case "stats json fields" `Quick test_observer_cap_stats_json
+        ; Alcotest.test_case "independent of subscriber cap" `Quick
+            test_observer_and_subscriber_caps_are_independent
         ] )
     ; ( "client_session",
         [ Alcotest.test_case "recv replies to ping with masked pong" `Quick

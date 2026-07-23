@@ -4792,7 +4792,8 @@ end = struct
   (* B147: public usage stats — aggregate counts only; no aliases, machine
      ids, or message content are exposed.
      B277: [ws] surfaces process-wide subscriber connection caps/counters
-     (no IPs, no aliases). *)
+     (no IPs, no aliases).
+     B280: [observer] surfaces concurrent /observer/* session caps/counters. *)
   let handle_stats relay =
     let now = Unix.gettimeofday () in
     let generated_at = now in
@@ -4805,6 +4806,7 @@ end = struct
       ("generated_ago", `String (Relay_common.humanize_ago (now -. generated_at)));
       ("stats", R.stats relay ~now);
       ("ws", Relay_ws_server.connection_cap_stats_json ());
+      ("observer", Relay_ws_server.observer_cap_stats_json ());
     ])
 
   let handle_register relay ~relay_url ~token body =
@@ -6889,131 +6891,172 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
                     ~result:"no_fd" ();
                   respond_json ~status:`Internal_server_error (json_error_str "internal_error" "Could not extract connection fd")
                 | Some orig_fd ->
-                  let ws_accept = Relay_ws_frame.make_handshake_response ws_key in
-                  let fd_dup = Lwt_unix.unix_file_descr orig_fd |> Unix.dup in
-                  let fd_dup_lwt = Lwt_unix.of_unix_file_descr fd_dup in
-                  let (_:int) = Unix.write (Lwt_unix.unix_file_descr orig_fd) (Bytes.of_string ws_accept) 0 (String.length ws_accept) in
-                  Unix.close (Lwt_unix.unix_file_descr orig_fd);
-                  Relay_ratelimit.structured_log
-                    ~event:"observer_handshake"
-                    ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
-                    ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
-                    ~result:"upgraded" ();
-                  Lwt.async (fun () ->
-                    Lwt.catch (fun () ->
-                      let session = Relay_ws_frame.Session.of_fd fd_dup_lwt in
-                      ObserverSessions.register observer_sessions ~binding_id session;
-                      let finally () =
-                        ObserverSessions.remove observer_sessions ~binding_id session
-                      in
-                      let rec loop () =
-                        Relay_ws_frame.Session.recv session >>= fun msg ->
-                        match msg with
-                        | None ->
-                          finally ();
-                          Lwt.return_unit
-                        | Some (`Ping) ->
-                          Relay_ws_frame.Session.send_text session "observer_pong" >>= fun () ->
-                          loop ()
-                        | Some (`Close (_, _)) ->
-                          finally ();
-                          Relay_ws_frame.Session.close_with ~code:1000 ~reason:"normal" () session
-                        | Some (`Text raw) | Some (`Binary raw) ->
-                          (match parse_observer_ws_msg raw with
-                           | `Reconnect (since_ts, sig_b64) ->
-                             let valid_sig =
-                               match sig_b64 with
-                               | Some sig_val ->
-                                  (match get_observer_binding ~binding_id with
-                                   | Some (phone_pk, _, _, _) ->
-                                    (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_val with
-                                     | Ok sig_raw ->
-                                       (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet phone_pk with
-                                        | Ok pk_raw ->
-                                          Relay_identity.verify ~pk:pk_raw ~msg:binding_id ~sig_:sig_raw
-                                        | Error _ -> false)
-                                     | Error _ -> false)
-                                  | None -> false)
-                               | None -> false
-                             in
-                             if not valid_sig then
-                               (finally ();
-                                Relay_ws_frame.Session.close_with ~code:4001 ~reason:"invalid_signature" () session >>= fun () ->
-                                Lwt.return_unit)
-                             else
-                               (let sq_msgs = Relay_short_queue.ShortQueue.get_after short_queue ~binding_id ~since_ts in
-                                let sq_json_msgs = List.map (fun (m : Relay_short_queue.message) ->
-                                  `Assoc (
-                                    ["ts", `Float m.ts;
-                                     "from_alias", `String m.from_alias;
-                                     "to_alias", `String m.to_alias]
-                                      @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
-                                      @ ["content", `String m.content])
-                                ) sq_msgs in
-                                let gap = match Relay_short_queue.ShortQueue.oldest_ts short_queue ~binding_id with
-                                  | Some oldest -> since_ts < oldest
-                                  | None -> false
+                  (* B280: acquire process-wide / per-IP observer slot before the
+                     long-lived dup-fd upgrade. Denied upgrades never open a
+                     session. Cleanup on ObserverSessions.remove frees the slot. *)
+                  (match Relay_ws_server.try_acquire_observer_slot ~client_ip with
+                   | Relay_ws_server.Denied { reason; retry_after_s } ->
+                     let limit = Relay_ws_server.cap_denial_label reason in
+                     Relay_ratelimit.structured_log
+                       ~event:"observer_handshake"
+                       ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                       ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+                       ~result:"cap_denied"
+                       ~reason:(Printf.sprintf "limit=%s retry_after=%.1f" limit retry_after_s)
+                       ();
+                     let retry_hdr =
+                       string_of_int (int_of_float (Float.ceil retry_after_s))
+                     in
+                     respond_service_unavailable
+                       ~headers:[("Retry-After", retry_hdr)]
+                       (json_error "observer_session_limit"
+                          "too many concurrent observer websocket sessions"
+                          [ ("retry_after", `Float retry_after_s)
+                          ; ("limit", `String limit)
+                          ])
+                   | Relay_ws_server.Acquired slot ->
+                     let release_slot_safe () =
+                       Relay_ws_server.release_observer_slot slot
+                     in
+                     (try
+                        let ws_accept = Relay_ws_frame.make_handshake_response ws_key in
+                        let fd_dup = Lwt_unix.unix_file_descr orig_fd |> Unix.dup in
+                        let fd_dup_lwt = Lwt_unix.of_unix_file_descr fd_dup in
+                        let (_:int) = Unix.write (Lwt_unix.unix_file_descr orig_fd) (Bytes.of_string ws_accept) 0 (String.length ws_accept) in
+                        Unix.close (Lwt_unix.unix_file_descr orig_fd);
+                        Relay_ratelimit.structured_log
+                          ~event:"observer_handshake"
+                          ~source_ip_prefix:(Relay_ratelimit.prefix8 client_ip)
+                          ~binding_id_prefix:(Relay_ratelimit.prefix8 binding_id)
+                          ~result:"upgraded" ();
+                        Lwt.async (fun () ->
+                          Lwt.finalize
+                            (fun () ->
+                              Lwt.catch (fun () ->
+                                let session = Relay_ws_frame.Session.of_fd fd_dup_lwt in
+                                ObserverSessions.register observer_sessions ~binding_id session;
+                                let finally () =
+                                  (* B280: free slot together with session table removal. *)
+                                  ObserverSessions.remove observer_sessions ~binding_id session;
+                                  release_slot_safe ()
                                 in
-                                let backfill_msgs, gap_flag =
-                                  if gap then
-                                    match get_observer_binding ~binding_id with
-                                    | Some (phone_pk, _, _, _) ->
-                                      (match R.alias_of_identity_pk relay ~identity_pk:phone_pk with
-                                       | Some alias ->
-                                         let direct_msgs = R.query_messages_since relay ~alias ~since_ts in
-                                         let room_msgs =
-                                           let all_rooms = R.list_rooms relay in
-                                           List.fold_left (fun (acc : Yojson.Safe.t list) room ->
-                                             match room with
-                                             | `Assoc fields ->
-                                               (match List.assoc_opt "room_id" fields with
-                                                | Some (`String room_id) ->
-                                                  if R.is_room_member_alias relay ~room_id ~alias then
-                                                    let hist = R.room_history relay ~room_id ~limit:100 in
-                                                    let since_float = since_ts in
-                                                    let filtered = List.filter (fun (msg : Yojson.Safe.t) ->
-                                                      match msg with
-                                                      | `Assoc f ->
-                                                        (match List.assoc_opt "ts" f with
-                                                         | Some (`Float t) -> t > since_float
-                                                         | Some (`Int i) -> float_of_int i > since_float
-                                                         | _ -> false)
-                                                      | _ -> false
-                                                    ) hist in
-                                                    filtered @ acc
-                                                  else acc
-                                                | _ -> acc)
-                                             | _ -> acc
-                                           ) [] all_rooms
-                                         in
-                                         let all_msgs = direct_msgs @ room_msgs in
-                                         (List.sort (fun (a : Yojson.Safe.t) (b : Yojson.Safe.t) ->
-                                           let ts_a = match a with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) | _ -> 0.0 in
-                                           let ts_b = match b with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) in
-                                           compare ts_a ts_b
-                                         ) all_msgs, [("gap", `Bool true)])
-                                       | None -> ([], [("gap", `Bool true)]))
-                                    | None -> ([], [("gap", `Bool true)])
-                                  else ([], [])
+                                let rec loop () =
+                                  Relay_ws_frame.Session.recv session >>= fun msg ->
+                                  match msg with
+                                  | None ->
+                                    finally ();
+                                    Lwt.return_unit
+                                  | Some (`Ping) ->
+                                    Relay_ws_frame.Session.send_text session "observer_pong" >>= fun () ->
+                                    loop ()
+                                  | Some (`Close (_, _)) ->
+                                    finally ();
+                                    Relay_ws_frame.Session.close_with ~code:1000 ~reason:"normal" () session
+                                  | Some (`Text raw) | Some (`Binary raw) ->
+                                    (match parse_observer_ws_msg raw with
+                                     | `Reconnect (since_ts, sig_b64) ->
+                                       let valid_sig =
+                                         match sig_b64 with
+                                         | Some sig_val ->
+                                            (match get_observer_binding ~binding_id with
+                                             | Some (phone_pk, _, _, _) ->
+                                              (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_val with
+                                               | Ok sig_raw ->
+                                                 (match Base64.decode ~pad:false ~alphabet:Base64.uri_safe_alphabet phone_pk with
+                                                  | Ok pk_raw ->
+                                                    Relay_identity.verify ~pk:pk_raw ~msg:binding_id ~sig_:sig_raw
+                                                  | Error _ -> false)
+                                               | Error _ -> false)
+                                            | None -> false)
+                                         | None -> false
+                                       in
+                                       if not valid_sig then
+                                         (finally ();
+                                          Relay_ws_frame.Session.close_with ~code:4001 ~reason:"invalid_signature" () session >>= fun () ->
+                                          Lwt.return_unit)
+                                       else
+                                         (let sq_msgs = Relay_short_queue.ShortQueue.get_after short_queue ~binding_id ~since_ts in
+                                          let sq_json_msgs = List.map (fun (m : Relay_short_queue.message) ->
+                                            `Assoc (
+                                              ["ts", `Float m.ts;
+                                               "from_alias", `String m.from_alias;
+                                               "to_alias", `String m.to_alias]
+                                                @ (match m.room_id with Some r -> ["room_id", `String r] | None -> [])
+                                                @ ["content", `String m.content])
+                                          ) sq_msgs in
+                                          let gap = match Relay_short_queue.ShortQueue.oldest_ts short_queue ~binding_id with
+                                            | Some oldest -> since_ts < oldest
+                                            | None -> false
+                                          in
+                                          let backfill_msgs, gap_flag =
+                                            if gap then
+                                              match get_observer_binding ~binding_id with
+                                              | Some (phone_pk, _, _, _) ->
+                                                (match R.alias_of_identity_pk relay ~identity_pk:phone_pk with
+                                                 | Some alias ->
+                                                   let direct_msgs = R.query_messages_since relay ~alias ~since_ts in
+                                                   let room_msgs =
+                                                     let all_rooms = R.list_rooms relay in
+                                                     List.fold_left (fun (acc : Yojson.Safe.t list) room ->
+                                                       match room with
+                                                       | `Assoc fields ->
+                                                         (match List.assoc_opt "room_id" fields with
+                                                          | Some (`String room_id) ->
+                                                            if R.is_room_member_alias relay ~room_id ~alias then
+                                                              let hist = R.room_history relay ~room_id ~limit:100 in
+                                                              let since_float = since_ts in
+                                                              let filtered = List.filter (fun (msg : Yojson.Safe.t) ->
+                                                                match msg with
+                                                                | `Assoc f ->
+                                                                  (match List.assoc_opt "ts" f with
+                                                                   | Some (`Float t) -> t > since_float
+                                                                   | Some (`Int i) -> float_of_int i > since_float
+                                                                   | _ -> false)
+                                                                | _ -> false
+                                                              ) hist in
+                                                              filtered @ acc
+                                                            else acc
+                                                          | _ -> acc)
+                                                       | _ -> acc
+                                                     ) [] all_rooms
+                                                   in
+                                                   let all_msgs = direct_msgs @ room_msgs in
+                                                   (List.sort (fun (a : Yojson.Safe.t) (b : Yojson.Safe.t) ->
+                                                     let ts_a = match a with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) | _ -> 0.0 in
+                                                     let ts_b = match b with `Assoc f -> (match List.assoc_opt "ts" f with Some (`Float t) -> t | Some (`Int i) -> float_of_int i | _ -> 0.0) in
+                                                     compare ts_a ts_b
+                                                   ) all_msgs, [("gap", `Bool true)])
+                                                 | None -> ([], [("gap", `Bool true)]))
+                                              | None -> ([], [("gap", `Bool true)])
+                                            else ([], [])
+                                          in
+                                          let all_msgs = sq_json_msgs @ backfill_msgs in
+                                          let response = `Assoc (["type", `String "replay"; "messages", `List all_msgs] @ gap_flag) in
+                                          Relay_ws_frame.Session.send_text session (Yojson.Safe.to_string response) >>= fun () ->
+                                          loop ())
+                                     | `Ping ->
+                                       Relay_ws_frame.Session.send_text session "observer_pong" >>= fun () ->
+                                       loop ()
+                                     | `Unknown ->
+                                       Relay_ws_frame.Session.send_text session "observer_ack" >>= fun () ->
+                                       loop ())
                                 in
-                                let all_msgs = sq_json_msgs @ backfill_msgs in
-                                let response = `Assoc (["type", `String "replay"; "messages", `List all_msgs] @ gap_flag) in
-                                Relay_ws_frame.Session.send_text session (Yojson.Safe.to_string response) >>= fun () ->
-                                loop ())
-                           | `Ping ->
-                             Relay_ws_frame.Session.send_text session "observer_pong" >>= fun () ->
-                             loop ()
-                           | `Unknown ->
-                             Relay_ws_frame.Session.send_text session "observer_ack" >>= fun () ->
-                             loop ())
-                      in
-                      Lwt.catch loop (fun e -> finally (); Lwt.return_unit)
-                    ) (function
-                      | End_of_file -> Lwt.return_unit
-                      | e -> Lwt.return_unit
-                    )
-                  );
-                  respond_ok (`Assoc ["ok", `Bool true; "msg", `String "websocket_session_started"]))
+                                Lwt.catch loop (fun _e -> finally (); Lwt.return_unit)
+                              ) (function
+                                | End_of_file -> Lwt.return_unit
+                                | _e -> Lwt.return_unit
+                              )
+                            )
+                            (fun () ->
+                              (* Idempotent: covers paths that never reached
+                                 ObserverSessions.register / finally. *)
+                              release_slot_safe ();
+                              Lwt.return_unit)
+                        );
+                        respond_ok (`Assoc ["ok", `Bool true; "msg", `String "websocket_session_started"])
+                      with exn ->
+                        release_slot_safe ();
+                        raise exn)))
          | _ ->
            respond_bad_request (json_error_str "observer_upgrade_required" "Upgrade: websocket header required"))
 
