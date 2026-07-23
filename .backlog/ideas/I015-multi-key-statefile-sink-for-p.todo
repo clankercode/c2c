@@ -1,0 +1,17 @@
+---
+complexity: medium
+created_at: "2026-07-23T10:45:22Z"
+depends_on: []
+estimate_hours: 8
+id: I015
+priority: medium
+status: pending
+tags:
+    - perf
+    - statefile
+    - pi-c2c
+    - dual-repo
+title: Multi-key statefile sink for parent-owned writer multiplexing
+updated_at: "2026-07-23T10:45:22Z"
+---
+Dual-repo follow-on to pi-c2c I001. Add a sibling c2c oc-plugin multi-key JSONL sink so one parent-owned process can atomically maintain existing per-instance statefiles. Preserve the one-key command and raw c2c statefile --instance compatibility. Validate every per-line instance key as a safe single path component; retain complete-snapshot semantics. Ingest into a concrete phase/task hierarchy, then coordinate implementation and cross-review with pi-c2c over c2c.
