@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-23T15:03:10Z"
+depends_on: []
+estimate_hours: 1
+id: B287
+priority: high
+status: pending
+tags: []
+title: if c2c --version shows the current time, it should probably show the build time instead. if it shows the current time, it should be off to the side and visually demarcated.
+updated_at: "2026-07-23T15:03:10Z"
+---
+
+if c2c --version shows the current time, it should probably show the build time instead. if it shows the current time, it should be off to the side and visually demarcated.
