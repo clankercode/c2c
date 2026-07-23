@@ -1,20 +1,21 @@
 ---
 claimed_at: "2026-07-23T12:50:08Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-23T12:55:36Z"
 complexity: medium
 created_at: "2026-07-23T08:21:10Z"
 depends_on:
     - B276
     - B277
+duration_minutes: 5.4712961727
 estimate_hours: 2
 id: B279
 priority: high
 started_at: "2026-07-23T12:50:08Z"
-status: in_progress
+status: done
 tags: []
 title: 'relay WS: proper end-to-end rate limiting for /ws/subscribe (server policy + client Retry-After)'
-updated_at: "2026-07-23T12:50:08Z"
+updated_at: "2026-07-23T12:55:36Z"
 ---
 ## Problem
 After a 502/outage, clients reconnect to `GET /ws/subscribe` in a thundering herd. B276 adds a missing meter for that path; "proper" rate limiting needs more than bolting a token bucket onto `classify_endpoint`:
