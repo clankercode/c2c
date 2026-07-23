@@ -17,7 +17,7 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
-## Unreleased
+## v0.14.4 — 2026-07-23
 
 ### Subscribe reconnects honour relay Retry-After (B279)
 summary: When `/ws/subscribe` is denied with HTTP 429 (rate limit) or 503 (subscriber cap), the daemon waits at least the server's `Retry-After` / JSON `retry_after` before retrying — `max(local_jitter, circuit_cool_down, server_retry_after)`. Local expo backoff still grows and does not reset to 1s under sustained throttling, so multi-alias reconnects do not fight the relay meter after an outage.

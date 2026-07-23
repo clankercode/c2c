@@ -9,6 +9,8 @@ nav_label: Changelog
 
 ## Unreleased
 
+## 0.14.4 — 2026-07-23
+
 - **WS subscribe clients honour server Retry-After (B279).** Failed
   `/ws/subscribe` upgrades that return **429** (rate limit) or **503**
   (concurrent subscriber cap) surface `Upgrade_rejected` with optional
