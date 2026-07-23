@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-07-23T07:52:37Z"
+depends_on: []
+estimate_hours: 1
+id: B270
+priority: high
+status: pending
+tags: []
+title: Possible DoS on server after 502 error /ws/subscribe
+updated_at: "2026-07-23T07:52:37Z"
+---
+
+Possible DoS on server after 502 error /ws/subscribe
