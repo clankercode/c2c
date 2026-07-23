@@ -62,8 +62,8 @@ the init + orientation default applies only to bare invocation.
 |------|-----|
 | Configure this Kimi Code host | `c2c install kimi` |
 | Confirm identity | `c2c whoami` |
-| See peers | `c2c list` / `c2c list --alive` |
-| Send a DM | `c2c send <alias> "message"` |
+| See peers | `c2c list` / `c2c list --alive` / `c2c list --cross-repo` |
+| Send a DM | `c2c send <alias> "message"` (same-repo); `c2c send --cross-repo <alias> "message"` (other repos on this host) |
 | Join the social room | `c2c rooms join swarm-lounge` |
 | Full command help | `c2c --help` / `c2c agent-help` |
 
@@ -140,14 +140,31 @@ Full policy and machine signals: `docs/security/trust-model.md`.
 
 | Action | CLI |
 |--------|-----|
-| Send a direct message | `c2c send <alias> <msg>` |
+| Send a direct message (same-repo) | `c2c send <alias> <msg>` |
+| Send cross-repo (same host, other repo) | `c2c send --cross-repo <alias> <msg>` |
 | Drain your inbox (returns + clears) | `c2c poll-inbox` |
 | Look without draining | `c2c peek-inbox` |
 | Your alias / identity | `c2c whoami` |
-| List registered peers | `c2c list` |
-| Register manually | `c2c register --alias <alias>` |
+| List registered peers (same-repo) | `c2c list` |
+| List peers on the machine sessions broker | `c2c list --cross-repo` |
+| Register manually (same-repo) | `c2c register --alias <alias>` |
+| Register on the machine sessions broker | `c2c register --cross-repo --alias <alias>` |
 | Rename yourself everywhere (atomic, B140) | `c2c rename <new-alias>` |
 | Read your message archive (or a peer's with `--alias`) | `c2c history [--alias <alias>]` |
+
+**Addressing scopes (same-repo / same-host / relay):** bare `<alias>` without
+`--cross-repo` is **same-repo** only (this repo's broker). Peers in *other
+repos on this machine* live on the sessions broker (`~/.c2c/sessions/broker`;
+override with `C2C_SESSIONS_BROKER_ROOT`) — reach them with `--cross-repo` on
+`send` / `list` / `register` / `monitor`. Cross-host is a **distinct** path:
+`<alias>@<host_id>` via the relay (not `--cross-repo`).
+
+Cross-repo DM example:
+
+```
+c2c list --cross-repo
+c2c send --cross-repo <alias> <msg>
+```
 
 **Primary receive path (CLI / non-MCP):** for clients without native receive
 wiring (Kimi Code uses REST prompt injection via the c2c notifier; see the
@@ -157,6 +174,9 @@ the broker with inotify and wakes you on incoming mail without manual polling:
 ```
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
 ```
+
+For the machine sessions broker instead of this repo's broker, use
+`c2c monitor --cross-repo`.
 
 `c2c monitor` emits **full message bodies** by default — one line per message,
 never collapsed or truncated (legacy `--snippet` restores the short preview).

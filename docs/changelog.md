@@ -9,6 +9,13 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **c2c skill: make `--cross-repo` messaging obvious (B285).** Core flow tables
+  and harness habits document `--cross-repo` on `send` / `list` / `register` /
+  `monitor` (sessions broker `~/.c2c/sessions/broker`, override
+  `C2C_SESSIONS_BROKER_ROOT`), with a concrete DM example and a short note
+  distinguishing same-repo, same-host (`--cross-repo`), and relay
+  (`alias@host`).
+
 ## 0.14.2 — 2026-07-23
 
 Relay hardening after the B270 `/ws/subscribe` reconnect-DoS investigation

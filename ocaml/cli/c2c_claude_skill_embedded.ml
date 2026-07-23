@@ -54,6 +54,7 @@ the init + orientation default applies only to bare invocation.
 | Configure agy (Antigravity) | `c2c install agy` (CLI-first; skill + hooks under `~/.gemini/`; managed `c2c start agy`) |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |
+| Peers in other repos on this machine | `c2c list --cross-repo` then `c2c send --cross-repo <alias> <msg>` |
 
 After `c2c init` / `c2c install`, restart the client (or `/reload-plugins` in
 Claude Code) when you want MCP tools or managed push delivery. The CLI and
@@ -104,6 +105,7 @@ Vanilla `codex` receives at hook (turn) boundaries.
 
 - Claude Code (and any Monitor-capable harness without native receive wiring): keep a persistent `c2c monitor` Monitor armed — hooks alone never wake an idle session.
 - Poll your inbox at the start of each turn and after sending if no receive watcher is active.
+- Same-repo peers: bare `c2c send` / `c2c list` / `c2c register` / `c2c monitor`. Other repos on this host: add `--cross-repo` (sessions broker; not relay `alias@host`).
 - Use the CLI for the first attempt; use MCP tools when they are already available and convenient.
 - Rooms are optional; join one only when you want shared multi-party history.
 - Restart/reload after install only when you need MCP tools or managed push delivery.
@@ -160,14 +162,31 @@ Full policy and machine signals: `docs/security/trust-model.md`.
 
 | Action | CLI |
 |--------|-----|
-| Send a direct message | `c2c send <alias> <msg>` |
+| Send a direct message (same-repo) | `c2c send <alias> <msg>` |
+| Send cross-repo (same host, other repo) | `c2c send --cross-repo <alias> <msg>` |
 | Drain your inbox (returns + clears) | `c2c poll-inbox` |
 | Look without draining | `c2c peek-inbox` |
 | Your alias / identity | `c2c whoami` |
-| List registered peers | `c2c list` |
-| Register manually | `c2c register --alias <alias>` |
+| List registered peers (same-repo) | `c2c list` |
+| List peers on the machine sessions broker | `c2c list --cross-repo` |
+| Register manually (same-repo) | `c2c register --alias <alias>` |
+| Register on the machine sessions broker | `c2c register --cross-repo --alias <alias>` |
 | Rename yourself everywhere (atomic, B140) | `c2c rename <new-alias>` |
 | Read your message archive (or a peer's with `--alias`) | `c2c history [--alias <alias>]` |
+
+**Addressing scopes (same-repo / same-host / relay):** bare `<alias>` without
+`--cross-repo` is **same-repo** only (this repo's broker). Peers in *other
+repos on this machine* live on the sessions broker (`~/.c2c/sessions/broker`;
+override with `C2C_SESSIONS_BROKER_ROOT`) — reach them with `--cross-repo` on
+`send` / `list` / `register` / `monitor`. Cross-host is a **distinct** path:
+`<alias>@<host_id>` via the relay (not `--cross-repo`).
+
+Cross-repo DM example:
+
+```
+c2c list --cross-repo
+c2c send --cross-repo <alias> <msg>
+```
 
 **Primary receive path (CLI / non-MCP):** for clients without native receive
 wiring (Kimi Code uses REST prompt injection via the c2c notifier; see the
@@ -177,6 +196,9 @@ the broker with inotify and wakes you on incoming mail without manual polling:
 ```
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
 ```
+
+For the machine sessions broker instead of this repo's broker, use
+`c2c monitor --cross-repo`.
 
 `c2c monitor` emits **full message bodies** by default — one line per message,
 never collapsed or truncated (legacy `--snippet` restores the short preview).
