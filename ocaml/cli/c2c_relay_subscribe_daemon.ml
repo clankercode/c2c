@@ -282,6 +282,22 @@ let send_response (client : client_conn) (resp : ipc_response) =
   end else
     Lwt.return_unit
 
+(* B274: cancel may already be woken (double deregister / cleanup race). *)
+let request_alias_stop (conn : alias_conn) =
+  conn.stop_requested <- true;
+  (try Lwt.wakeup_later conn.cancel () with Invalid_argument _ -> ())
+
+(* B274: if pick/cancel races past the session finalize, still drop the WS. *)
+let close_alias_session (conn : alias_conn) =
+  conn.session_alive <- false;
+  match !(conn.ws_session) with
+  | None -> Lwt.return_unit
+  | Some session ->
+      conn.ws_session := None;
+      Lwt.catch
+        (fun () -> Relay_ws_frame.Client_session.close session)
+        (fun _ -> Lwt.return_unit)
+
 let handle_register (state : daemon_state) (client : client_conn) (req : register_request) =
   if List.mem_assoc req.reg_alias client.client_aliases then begin
     send_response client {
@@ -300,11 +316,16 @@ let handle_register (state : daemon_state) (client : client_conn) (req : registe
       cancel;
     } in
     client.client_aliases <- (req.reg_alias, conn) :: client.client_aliases;
+    (* B274: wrap pick so cancel always runs session cleanup after the fiber
+       dies — mid-connect FD close is owned by Relay_ws_client finalize. *)
     Lwt.async (fun () ->
-        Lwt.pick [
-          run_alias_connection state client conn;
-          conn_cancel;
-        ]);
+        Lwt.finalize
+          (fun () ->
+             Lwt.pick [
+               run_alias_connection state client conn;
+               (conn_cancel >>= fun () -> Lwt.return_unit);
+             ])
+          (fun () -> close_alias_session conn));
     send_response client {
       resp_ok = true; resp_id = req.reg_id; resp_alias = req.reg_alias;
       resp_error = None; resp_aliases = [];
@@ -314,8 +335,7 @@ let handle_register (state : daemon_state) (client : client_conn) (req : registe
 let handle_deregister (client : client_conn) (req : deregister_request) =
   match List.assoc_opt req.dereg_alias client.client_aliases with
   | Some conn ->
-    conn.stop_requested <- true;
-    Lwt.wakeup_later conn.cancel ();
+    request_alias_stop conn;
     client.client_aliases <- List.filter (fun (a, _) -> a <> req.dereg_alias) client.client_aliases;
     send_response client {
       resp_ok = true; resp_id = req.dereg_id; resp_alias = req.dereg_alias;
@@ -342,10 +362,7 @@ let handle_list (client : client_conn) =
 
 let cleanup_client (client : client_conn) =
   client.client_closed <- true;
-  List.iter (fun (_alias, conn) ->
-      conn.stop_requested <- true;
-      Lwt.wakeup_later conn.cancel ();
-    ) client.client_aliases;
+  List.iter (fun (_alias, conn) -> request_alias_stop conn) client.client_aliases;
   client.client_aliases <- [];
   (* Close IPC channels *)
   Lwt.async (fun () ->

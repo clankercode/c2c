@@ -89,47 +89,61 @@ let peer_name_of_host host =
        | Ok h -> Some h
        | Error _ -> None)
 
+(* B274: open TCP (and optional TLS) with cancel-safe cleanup.
+   [Lwt.catch] does NOT run on cancellation; [Lwt.finalize] does. We own the
+   socket until [transferred] is set, then the caller owns [close]. Cancel or
+   exception before transfer always closes the underlying FD — including mid
+   [Lwt_unix.connect] / TLS handshake under [Lwt.pick] cancel. *)
 let open_channels (ep : endpoint) ?ca_bundle () =
-  if not ep.use_tls then
-    Lwt_unix.getaddrinfo ep.host (string_of_int ep.port)
-      [ Unix.AI_FAMILY Unix.PF_INET; Unix.AI_SOCKTYPE Unix.SOCK_STREAM ]
-    >>= function
-    | [] ->
-        Lwt.fail_with (Printf.sprintf "DNS lookup failed for %s" ep.host)
-    | addr :: _ ->
-        let sock = Lwt_unix.socket
-            (Unix.domain_of_sockaddr addr.Unix.ai_addr)
-            Unix.SOCK_STREAM 0
-        in
-        Lwt.catch
-          (fun () ->
-             Lwt_unix.connect sock addr.Unix.ai_addr >>= fun () ->
+  Lwt_unix.getaddrinfo ep.host (string_of_int ep.port)
+    [ Unix.AI_FAMILY Unix.PF_INET; Unix.AI_SOCKTYPE Unix.SOCK_STREAM ]
+  >>= function
+  | [] ->
+      Lwt.fail_with (Printf.sprintf "DNS lookup failed for %s" ep.host)
+  | addr :: _ ->
+      let sock =
+        Lwt_unix.socket
+          (Unix.domain_of_sockaddr addr.Unix.ai_addr)
+          Unix.SOCK_STREAM 0
+      in
+      let transferred = ref false in
+      let close_sock () =
+        Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit)
+      in
+      Lwt.finalize
+        (fun () ->
+           Lwt_unix.connect sock addr.Unix.ai_addr >>= fun () ->
+           if not ep.use_tls then begin
              let ic = Lwt_io.of_fd ~mode:Lwt_io.Input sock in
              let oc = Lwt_io.of_fd ~mode:Lwt_io.Output sock in
-             let close () =
-               Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit)
-             in
-             Lwt.return (ic, oc, close))
-          (fun e ->
-             Lwt.catch (fun () -> Lwt_unix.close sock) (fun _ -> Lwt.return_unit)
-             >>= fun () -> Lwt.fail e)
-  else begin
-    Mirage_crypto_rng_unix.use_default ();
-    match resolve_authenticator ?ca_bundle () with
-    | Error (`Msg m) -> Lwt.fail_with m
-    | Ok authenticator ->
-        let peer_name = peer_name_of_host ep.host in
-        (match Tls.Config.client ~authenticator ?peer_name () with
-         | Error (`Msg m) -> Lwt.fail_with ("TLS client config: " ^ m)
-         | Ok cfg ->
-             Tls_lwt.connect_ext cfg (ep.host, ep.port) >>= fun (ic, oc) ->
-             let close () =
-               Lwt.catch
-                 (fun () -> Lwt_io.close ic >>= fun () -> Lwt_io.close oc)
-                 (fun _ -> Lwt.return_unit)
-             in
-             Lwt.return (ic, oc, close))
-  end
+             transferred := true;
+             Lwt.return (ic, oc, close_sock)
+           end else begin
+             Mirage_crypto_rng_unix.use_default ();
+             match resolve_authenticator ?ca_bundle () with
+             | Error (`Msg m) -> Lwt.fail_with m
+             | Ok authenticator ->
+                 let peer_name = peer_name_of_host ep.host in
+                 (match Tls.Config.client ~authenticator ?peer_name () with
+                  | Error (`Msg m) ->
+                      Lwt.fail_with ("TLS client config: " ^ m)
+                  | Ok cfg ->
+                      (* Own the FD ourselves rather than [Tls_lwt.connect_ext],
+                         whose internal [Lwt.catch] also skips cancel cleanup. *)
+                      Tls_lwt.Unix.client_of_fd cfg ?host:peer_name sock
+                      >>= fun tls ->
+                      let ic, oc = Tls_lwt.of_t tls in
+                      let close () =
+                        Lwt.catch
+                          (fun () ->
+                             Lwt_io.close ic >>= fun () -> Lwt_io.close oc)
+                          (fun _ -> Lwt.return_unit)
+                      in
+                      transferred := true;
+                      Lwt.return (ic, oc, close))
+           end)
+        (fun () ->
+           if !transferred then Lwt.return_unit else close_sock ())
 
 let auth_headers ~alias ~identity =
   let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
@@ -161,10 +175,13 @@ let skip_headers ic =
   in
   loop ()
 
+(* B274: HTTP upgrade handshake must also be cancel-safe. Ownership of [close]
+   transfers to the caller only after a successful 101 + session create;
+   cancel/timeout/failure before that always invokes [close]. *)
 let connect_subscribe ~(endpoint : endpoint) ~alias ~identity ?ca_bundle () =
   open_channels endpoint ?ca_bundle () >>= fun (ic, oc, close) ->
-  let handshake_ok = ref false in
-  Lwt.catch
+  let transferred = ref false in
+  Lwt.finalize
     (fun () ->
        let ts, sig_b64 = auth_headers ~alias ~identity in
        let ws_key =
@@ -195,17 +212,17 @@ let connect_subscribe ~(endpoint : endpoint) ~alias ~identity ?ca_bundle () =
                 (Printf.sprintf "WebSocket upgrade failed: %s" status_line))
        else
          skip_headers ic >>= fun () ->
-         handshake_ok := true;
          let masking_key =
            String.init 4 (fun _ -> Char.chr (Random.int 256))
          in
          let session =
            Relay_ws_frame.Client_session.create ic oc masking_key
          in
+         transferred := true;
          Lwt.return (session, close))
-    (fun e ->
-       (if not !handshake_ok then close () else Lwt.return_unit) >>= fun () ->
-       Lwt.fail e)
+    (fun () ->
+       if !transferred then Lwt.return_unit
+       else Lwt.catch close (fun _ -> Lwt.return_unit))
 
 let connect_subscribe_url ~url ~alias ~identity ?ca_bundle () =
   let endpoint = parse_endpoint url in

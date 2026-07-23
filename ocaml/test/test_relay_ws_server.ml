@@ -160,6 +160,125 @@ let test_parse_endpoint_tls_defaults () =
   Alcotest.(check string) "host header keeps non-default port"
     "relay.example:8443" (Relay_ws_client.host_header custom)
 
+let proc_fd_count () =
+  if Sys.file_exists "/proc/self/fd" then
+    Some (Array.length (Sys.readdir "/proc/self/fd"))
+  else None
+
+(* B274: cancel mid-connect (Lwt.pick) must not leak FDs / ESTAB sockets.
+   Peer accepts and holds without answering the WS upgrade so the client sits
+   in read_line; the cancel arm of pick then wins. Without finalize-on-cancel,
+   each iteration left an open socket (live: FD 596→693 under 502). *)
+let test_cancel_mid_connect_no_fd_growth () =
+  match proc_fd_count () with
+  | None -> ()
+  | Some _ ->
+      let open Lwt.Infix in
+      Lwt_main.run
+        (let listen_fd = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+         Lwt_unix.setsockopt listen_fd Unix.SO_REUSEADDR true;
+         Lwt_unix.bind listen_fd
+           (Unix.ADDR_INET (Unix.inet_addr_loopback, 0))
+         >>= fun () ->
+         Lwt_unix.listen listen_fd 128;
+         let port =
+           match Lwt_unix.getsockname listen_fd with
+           | Unix.ADDR_INET (_, p) -> p
+           | _ -> Alcotest.fail "expected ADDR_INET"
+         in
+         let held : Lwt_unix.file_descr list ref = ref [] in
+         let close_held () =
+           let fds = !held in
+           held := [];
+           Lwt_list.iter_s
+             (fun fd ->
+                Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit))
+             fds
+         in
+         let accept_loop_stop = ref false in
+         let rec accept_loop () =
+           if !accept_loop_stop then Lwt.return_unit
+           else
+             Lwt.catch
+               (fun () ->
+                  Lwt_unix.accept listen_fd >>= fun (fd, _) ->
+                  (* Hold without answering so the client blocks in upgrade read. *)
+                  held := fd :: !held;
+                  accept_loop ())
+               (fun _ -> Lwt.return_unit)
+         in
+         let acceptor = accept_loop () in
+         let endpoint =
+           {
+             Relay_ws_client.host = "127.0.0.1";
+             port;
+             use_tls = false;
+             path = "/ws/subscribe";
+           }
+         in
+         let identity = Relay_identity.generate ~alias_hint:"b274" () in
+         let alias = "b274cancel@3d08761ae3f3" in
+         let rec pause_n n =
+           if n = 0 then Lwt.return_unit
+           else Lwt.pause () >>= fun () -> pause_n (n - 1)
+         in
+         (* Warm once so DNS/RNG one-shots don't inflate the baseline. *)
+         let warm =
+           Lwt.pick
+             [
+               (Relay_ws_client.connect_subscribe ~endpoint ~alias ~identity ()
+               >>= fun _ -> Lwt.return_unit);
+               (Lwt_unix.sleep 0.05 >>= fun () -> Lwt.return_unit);
+             ]
+         in
+         Lwt.catch (fun () -> warm) (fun _ -> Lwt.return_unit) >>= fun () ->
+         pause_n 4 >>= fun () ->
+         close_held () >>= fun () ->
+         pause_n 4 >>= fun () ->
+         let before = Option.get (proc_fd_count ()) in
+         let iterations = 40 in
+         let rec iter n =
+           if n = 0 then Lwt.return_unit
+           else
+             Lwt.catch
+               (fun () ->
+                  Lwt.pick
+                    [
+                      (Relay_ws_client.connect_subscribe ~endpoint ~alias
+                         ~identity ()
+                      >>= fun (_session, close) ->
+                       (* Should not win often: peer never sends 101. *)
+                       close ());
+                      (* Cancel while hung in upgrade read (or still connecting). *)
+                      (Lwt_unix.sleep 0.01 >>= fun () -> Lwt.return_unit);
+                    ])
+               (function
+                 | Lwt.Canceled -> Lwt.return_unit | _ -> Lwt.return_unit)
+             >>= fun () ->
+             (* Drop the peer FD so only a client-side leak shows in the count. *)
+             pause_n 2 >>= fun () ->
+             close_held () >>= fun () ->
+             pause_n 2 >>= fun () ->
+             iter (n - 1)
+         in
+         iter iterations >>= fun () ->
+         pause_n 8 >>= fun () ->
+         close_held () >>= fun () ->
+         pause_n 4 >>= fun () ->
+         let after = Option.get (proc_fd_count ()) in
+         accept_loop_stop := true;
+         Lwt.cancel acceptor;
+         Lwt.catch (fun () -> Lwt_unix.close listen_fd) (fun _ -> Lwt.return_unit)
+         >>= fun () ->
+         (* Allow a few straggler FDs (listen/accept timing), not O(iterations). *)
+         if after > before + 8 then
+           Alcotest.fail
+             (Printf.sprintf
+                "B274 cancel mid-connect leaked FDs: before=%d after=%d \
+                 (iterations=%d)"
+                before after iterations);
+         Lwt.return_unit)
+
 let () =
   Alcotest.run "Relay WS Server"
     [ ( "auth",
@@ -183,5 +302,7 @@ let () =
     ; ( "ws_client_endpoint",
         [ Alcotest.test_case "parse endpoint tls defaults (B189)" `Quick
             test_parse_endpoint_tls_defaults
+        ; Alcotest.test_case "cancel mid-connect no FD growth (B274)" `Quick
+            test_cancel_mid_connect_no_fd_growth
         ] )
     ]
