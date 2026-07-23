@@ -9,6 +9,14 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **`relay subscribe-daemon list` is daemon-global by default (B278).** The
+  operator CLI no longer opens a fresh IPC socket and lists only that
+  connection's (empty) aliases. Bare `list` returns every open client's
+  aliases plus a `summary` (`clients`, `aliases`, `connected` /
+  `connecting` / `stopped`). Harness IPC `{"cmd":"list"}` stays per-client;
+  pass `"all":true` or `list_all` for the global view. Use `list --mine`
+  for the one-shot per-connection view.
+
 ## 0.14.1 — 2026-07-22
 
 - **Release workflow startup repair.** The reusable CI gate now receives the

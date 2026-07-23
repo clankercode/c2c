@@ -13,8 +13,16 @@
  *   c2c relay subscribe-daemon                           # start daemon
  *   c2c relay subscribe-daemon register --alias ALIAS    # register alias
  *   c2c relay subscribe-daemon deregister --alias ALIAS  # deregister alias
- *   c2c relay subscribe-daemon list                      # list aliases
+ *   c2c relay subscribe-daemon list                      # daemon-global list (B278)
+ *   c2c relay subscribe-daemon list --mine               # this IPC client only
  *   c2c relay subscribe-daemon shutdown                  # stop daemon
+ *
+ * List semantics (B278):
+ * - IPC {"cmd":"list"} — per-client aliases (harness session view).
+ * - IPC {"cmd":"list","all":true} / {"cmd":"list_all"} — daemon-global view
+ *   of every open client's aliases plus a summary (clients, aliases,
+ *   connected/connecting/stopped). Operator CLI defaults to global so a
+ *   one-shot `list` no longer prints empty while the daemon is busy.
  *)
 
 open Lwt.Infix
@@ -117,11 +125,21 @@ type deregister_request = {
   dereg_id : string;
 }
 
+(** [List { all }] — [all=false] is the calling IPC client's aliases only;
+    [all=true] is daemon-global (every open client). B278. *)
 type ipc_request =
   | Register of register_request
   | Deregister of deregister_request
-  | List
+  | List of { all : bool }
   | Shutdown
+
+type list_summary = {
+  sum_clients : int;
+  sum_aliases : int;
+  sum_connected : int;
+  sum_connecting : int;
+  sum_stopped : int;
+}
 
 type ipc_response = {
   resp_ok : bool;
@@ -129,6 +147,8 @@ type ipc_response = {
   resp_alias : string;
   resp_error : string option;
   resp_aliases : alias_info list;
+  (** Present on list responses (always for global list; also for per-client). *)
+  resp_summary : list_summary option;
 }
 
 and alias_info = {
@@ -136,6 +156,47 @@ and alias_info = {
   info_state : string;
   info_started_at : float;
 }
+
+let empty_response ?(ok = true) ?(id = "") ?(alias = "") ?error () : ipc_response =
+  { resp_ok = ok; resp_id = id; resp_alias = alias;
+    resp_error = error; resp_aliases = []; resp_summary = None }
+
+(** Map connection flags to a stable state string for IPC/CLI. *)
+let alias_state_string ~stop_requested ~session_alive =
+  if stop_requested then "stopped"
+  else if session_alive then "connected"
+  else "connecting"
+
+(** Count alias states for the summary block. [clients] is the number of
+    open IPC clients included in the view (1 for --mine, N for --all). *)
+let summarize_alias_infos ~(clients : int) (aliases : alias_info list) : list_summary =
+  let connected = ref 0 and connecting = ref 0 and stopped = ref 0 in
+  List.iter (fun a ->
+      match a.info_state with
+      | "connected" -> incr connected
+      | "stopped" -> incr stopped
+      | _ -> incr connecting) aliases;
+  { sum_clients = clients;
+    sum_aliases = List.length aliases;
+    sum_connected = !connected;
+    sum_connecting = !connecting;
+    sum_stopped = !stopped }
+
+(** True when [list] should return the daemon-global view. Accepts
+    [all:true], [scope:"all"|"global"], or cmd [list_all]. *)
+let list_request_wants_all (fields : (string * Yojson.Safe.t) list) : bool =
+  match List.assoc_opt "all" fields with
+  | Some (`Bool b) -> b
+  | Some (`String s) ->
+    let s = String.lowercase_ascii (String.trim s) in
+    s = "true" || s = "1" || s = "yes" || s = "all"
+  | Some (`Int n) -> n <> 0
+  | _ ->
+    match List.assoc_opt "scope" fields with
+    | Some (`String s) ->
+      let s = String.lowercase_ascii (String.trim s) in
+      s = "all" || s = "global" || s = "daemon"
+    | _ -> false
 
 (* Parse a JSON-line IPC request *)
 let parse_request (json : Yojson.Safe.t) : ipc_request option =
@@ -156,10 +217,27 @@ let parse_request (json : Yojson.Safe.t) : ipc_request option =
        (match get_string fields "alias", get_string fields "id" with
         | Some a, Some i -> Some (Deregister { dereg_alias = a; dereg_id = i })
         | _ -> None)
-     | Some "list" -> Some List
+     | Some "list" -> Some (List { all = list_request_wants_all fields })
+     | Some "list_all" -> Some (List { all = true })
      | Some "shutdown" -> Some Shutdown
      | _ -> None)
   | _ -> None
+
+let alias_info_to_json (a : alias_info) : Yojson.Safe.t =
+  `Assoc [
+    ("alias", `String a.info_alias);
+    ("state", `String a.info_state);
+    ("started_at", `Float a.info_started_at);
+  ]
+
+let summary_to_json (s : list_summary) : Yojson.Safe.t =
+  `Assoc [
+    ("clients", `Int s.sum_clients);
+    ("aliases", `Int s.sum_aliases);
+    ("connected", `Int s.sum_connected);
+    ("connecting", `Int s.sum_connecting);
+    ("stopped", `Int s.sum_stopped);
+  ]
 
 let response_to_json (r : ipc_response) : Yojson.Safe.t =
   let base = [
@@ -171,16 +249,21 @@ let response_to_json (r : ipc_response) : Yojson.Safe.t =
     | Some e -> ("error", `String e) :: base
     | None -> base
   in
-  if r.resp_aliases <> [] then
+  (* List responses always include aliases + summary (even when empty) so
+     operators can distinguish "daemon idle" from a missing field (B278). *)
+  match r.resp_summary with
+  | Some summary ->
     `Assoc (
-      ("aliases", `List (List.map (fun a ->
-        `Assoc [
-          ("alias", `String a.info_alias);
-          ("state", `String a.info_state);
-          ("started_at", `Float a.info_started_at);
-        ]) r.resp_aliases)) :: with_error)
-  else
-    `Assoc with_error
+      ("summary", summary_to_json summary)
+      :: ("aliases", `List (List.map alias_info_to_json r.resp_aliases))
+      :: with_error)
+  | None ->
+    if r.resp_aliases <> [] then
+      `Assoc (
+        ("aliases", `List (List.map alias_info_to_json r.resp_aliases))
+        :: with_error)
+    else
+      `Assoc with_error
 
 let dm_to_json ~to_alias ~from_alias ~body ~ts : Yojson.Safe.t =
   `Assoc [
@@ -443,10 +526,7 @@ let close_alias_session (conn : alias_conn) =
 
 let handle_register (state : daemon_state) (client : client_conn) (req : register_request) =
   if List.mem_assoc req.reg_alias client.client_aliases then begin
-    send_response client {
-      resp_ok = true; resp_id = req.reg_id; resp_alias = req.reg_alias;
-      resp_error = None; resp_aliases = [];
-    }
+    send_response client (empty_response ~id:req.reg_id ~alias:req.reg_alias ())
   end else begin
     let conn_cancel, cancel = Lwt.wait () in
     let conn = {
@@ -469,10 +549,7 @@ let handle_register (state : daemon_state) (client : client_conn) (req : registe
                (conn_cancel >>= fun () -> Lwt.return_unit);
              ])
           (fun () -> close_alias_session conn));
-    send_response client {
-      resp_ok = true; resp_id = req.reg_id; resp_alias = req.reg_alias;
-      resp_error = None; resp_aliases = [];
-    }
+    send_response client (empty_response ~id:req.reg_id ~alias:req.reg_alias ())
   end
 
 let handle_deregister (client : client_conn) (req : deregister_request) =
@@ -480,27 +557,42 @@ let handle_deregister (client : client_conn) (req : deregister_request) =
   | Some conn ->
     request_alias_stop conn;
     client.client_aliases <- List.filter (fun (a, _) -> a <> req.dereg_alias) client.client_aliases;
-    send_response client {
-      resp_ok = true; resp_id = req.dereg_id; resp_alias = req.dereg_alias;
-      resp_error = None; resp_aliases = [];
-    }
+    send_response client (empty_response ~id:req.dereg_id ~alias:req.dereg_alias ())
   | None ->
-    send_response client {
-      resp_ok = false; resp_id = req.dereg_id; resp_alias = req.dereg_alias;
-      resp_error = Some "alias not registered"; resp_aliases = [];
-    }
+    send_response client
+      (empty_response ~ok:false ~id:req.dereg_id ~alias:req.dereg_alias
+         ~error:"alias not registered" ())
 
-let handle_list (client : client_conn) =
-  let aliases = List.map (fun (alias, conn) ->
-      let state_str =
-        if conn.stop_requested then "stopped"
-        else if conn.session_alive then "connected"
-        else "connecting" in
-      { info_alias = alias; info_state = state_str; info_started_at = conn.ws_started_at })
-      client.client_aliases in
+let alias_info_of_conn (alias : string) (conn : alias_conn) : alias_info =
+  { info_alias = alias;
+    info_state = alias_state_string
+        ~stop_requested:conn.stop_requested
+        ~session_alive:conn.session_alive;
+    info_started_at = conn.ws_started_at }
+
+let aliases_of_client (client : client_conn) : alias_info list =
+  List.map (fun (alias, conn) -> alias_info_of_conn alias conn) client.client_aliases
+
+(** Collect aliases from every open IPC client (daemon-global view, B278). *)
+let collect_all_aliases (state : daemon_state) : int * alias_info list =
+  let open_clients =
+    List.filter (fun c -> not c.client_closed) state.clients in
+  let aliases =
+    List.concat_map aliases_of_client open_clients in
+  (List.length open_clients, aliases)
+
+let handle_list ~(all : bool) (state : daemon_state) (client : client_conn) =
+  let clients_n, aliases =
+    if all then collect_all_aliases state
+    else
+      let n = if client.client_closed then 0 else 1 in
+      (n, aliases_of_client client)
+  in
+  let summary = summarize_alias_infos ~clients:clients_n aliases in
   send_response client {
     resp_ok = true; resp_id = ""; resp_alias = "";
     resp_error = None; resp_aliases = aliases;
+    resp_summary = Some summary;
   }
 
 let cleanup_client (client : client_conn) =
@@ -532,27 +624,22 @@ let handle_client (state : daemon_state) (client : client_conn) =
                    handle_register state client req >>= fun () -> loop ()
                  | Some (Deregister req) ->
                    handle_deregister client req >>= fun () -> loop ()
-                 | Some List ->
-                   handle_list client >>= fun () -> loop ()
+                 | Some (List { all }) ->
+                   handle_list ~all state client >>= fun () -> loop ()
                  | Some Shutdown ->
                    state.shutdown_requested <- true;
                    (match state.shutdown_waker with
                     | Some waker -> Lwt.wakeup_later waker ()
                     | None -> ());
-                   send_response client {
-                     resp_ok = true; resp_id = ""; resp_alias = "";
-                     resp_error = None; resp_aliases = [];
-                   }
+                   send_response client (empty_response ())
                  | None ->
-                   send_response client {
-                     resp_ok = false; resp_id = ""; resp_alias = "";
-                     resp_error = Some "invalid request"; resp_aliases = [];
-                   } >>= fun () -> loop ())
+                   send_response client
+                     (empty_response ~ok:false ~error:"invalid request" ())
+                   >>= fun () -> loop ())
               | None ->
-                send_response client {
-                  resp_ok = false; resp_id = ""; resp_alias = "";
-                  resp_error = Some "invalid JSON"; resp_aliases = [];
-                } >>= fun () -> loop ()))
+                send_response client
+                  (empty_response ~ok:false ~error:"invalid JSON" ())
+                >>= fun () -> loop ()))
         (fun _ ->
            cleanup_client client;
            Lwt.return_unit)
@@ -784,8 +871,18 @@ let deregister_cmd =
   )
 
 let list_cmd =
-  let socket = socket_path_arg () in
-  let+ socket = socket in
+  (* B278: operator default is daemon-global. A one-shot CLI list opens a
+     fresh IPC connection with zero aliases of its own — listing only that
+     client always printed empty and hid a busy daemon. --mine keeps the
+     per-session view for harness debugging. *)
+  let mine =
+    Cmdliner.Arg.(value & flag & info [ "mine" ]
+      ~doc:"List only aliases registered on this IPC connection (per-client \
+            view). Default is daemon-global: every open client's aliases \
+            plus a summary (clients, aliases, connected/connecting/stopped).")
+  and socket = socket_path_arg () in
+  let+ mine = mine
+  and+ socket = socket in
   let socket_path = resolve_socket_path socket in
   Lwt_main.run (
     let fd = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
@@ -794,7 +891,10 @@ let list_cmd =
          Lwt_unix.connect fd (Unix.ADDR_UNIX socket_path) >>= fun () ->
          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd in
          let oc = Lwt_io.of_fd ~mode:Lwt_io.Output fd in
-         let req = `Assoc [("cmd", `String "list")] in
+         let req =
+           if mine then `Assoc [("cmd", `String "list")]
+           else `Assoc [("cmd", `String "list"); ("all", `Bool true)]
+         in
          Lwt_io.write_line oc (Yojson.Safe.to_string req) >>= fun () ->
          Lwt_io.flush oc >>= fun () ->
          Lwt_io.read_line ic >>= fun resp_line ->
@@ -846,7 +946,8 @@ let subscribe_daemon_deregister =
 
 let subscribe_daemon_list =
   Cmdliner.Cmd.v
-    (Cmdliner.Cmd.info "list" ~doc:"List registered aliases.")
+    (Cmdliner.Cmd.info "list"
+       ~doc:"List managed aliases (daemon-global by default; --mine for this IPC client only).")
     list_cmd
 
 let subscribe_daemon_shutdown =
@@ -863,5 +964,6 @@ let subscribe_daemon_cmd =
             ; `P "$(b,c2c relay subscribe-daemon) manages WebSocket connections to the c2c relay for multiple aliases in a single process."
             ; `P "Client harnesses (pi-c2c, opencode, etc.) register aliases via the Unix socket IPC. The daemon opens and manages the WS connections, forwarding DMs back to clients."
             ; `P "Default socket: ~/.c2c/relay-subscribe.sock"
+            ; `P "$(b,list) is daemon-global by default (every open IPC client's aliases plus a summary). Harness IPC $(b,{\"cmd\":\"list\"}) remains per-client; pass $(b,all:true) or use $(b,list_all) for the global view. Operator CLI: $(b,list) global, $(b,list --mine) per-client."
             ])
     [ subscribe_daemon_start; subscribe_daemon_register; subscribe_daemon_deregister; subscribe_daemon_list; subscribe_daemon_shutdown ]

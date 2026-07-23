@@ -47,11 +47,12 @@
  (libraries c2c_mcp alcotest yojson str unix)
  (deps c2c.exe))
 
-; B273: subscribe-daemon full-jitter reconnect + stable-session reset + circuit.
+; B273+B278: subscribe-daemon reconnect jitter/circuit + global list/summary.
+; B275: c2c_ws_connect_gate is a module dep of the daemon (connect_with_gate).
 (test
  (name test_c2c_relay_subscribe_daemon)
  (modules test_c2c_relay_subscribe_daemon c2c_relay_subscribe_daemon c2c_ws_connect_gate)
- (libraries c2c_mcp alcotest yojson unix lwt.unix cmdliner))
+ (libraries c2c_mcp alcotest cmdliner yojson unix lwt.unix cohttp-lwt-unix))
 
 ; #35 phase 1: machine-wide deliver-service scaffold (lock/pidfile/doctor stub).
 (test
