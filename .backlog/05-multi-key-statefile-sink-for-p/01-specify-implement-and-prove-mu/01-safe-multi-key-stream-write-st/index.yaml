@@ -12,7 +12,8 @@ tasks:
       file: T001-specify-multi-key-jsonl-envelo.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Specify multi-key JSONL envelope and path-safety contract
     - complexity: high
       depends_on:
