@@ -13,16 +13,42 @@
 let session_statefile_path ~broker_root =
   Filename.concat broker_root "default-session.json"
 
-let read_session_statefile ~broker_root =
+(** Full default-session.json payload (B284): callers that must refuse
+    foreign-client sticky reuse need [client] / [alias], not only [session_id]. *)
+type session_statefile_info =
+  { session_id : string
+  ; alias : string option
+  ; client : string option
+  }
+
+let read_session_statefile_info ~broker_root =
   let path = session_statefile_path ~broker_root in
   if not (Sys.file_exists path) then None
   else
     match (try Some (Yojson.Safe.from_file path) with _ -> None) with
     | Some (`Assoc fields) ->
         (match List.assoc_opt "session_id" fields with
-         | Some (`String sid) when String.trim sid <> "" -> Some (String.trim sid)
+         | Some (`String sid) when String.trim sid <> "" ->
+             let alias =
+               match List.assoc_opt "alias" fields with
+               | Some (`String a) when String.trim a <> "" ->
+                   Some (String.trim a)
+               | _ -> None
+             in
+             let client =
+               match List.assoc_opt "client" fields with
+               | Some (`String c) when String.trim c <> "" ->
+                   Some (String.trim c)
+               | _ -> None
+             in
+             Some { session_id = String.trim sid; alias; client }
          | _ -> None)
     | _ -> None
+
+let read_session_statefile ~broker_root =
+  match read_session_statefile_info ~broker_root with
+  | Some info -> Some info.session_id
+  | None -> None
 
 (* Enumerate broker registrations as identity candidates: (alias, session_id,
    client, registered_by, liveness). Used to fail closed with an actionable

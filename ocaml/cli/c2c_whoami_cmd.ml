@@ -41,6 +41,7 @@ let whoami_cmd =
            ; "Codex: CODEX_THREAD_ID / `c2c install codex` / managed `c2c new codex`"
            ; "Grok: GROK_SESSION_ID (hooks) or GROK_AGENT + active_sessions / `c2c install grok`"
            ; "Agy: ANTIGRAVITY_CONVERSATION_ID / `c2c install agy`"
+           ; "Cursor Agent (best-effort): CURSOR_AGENT / CURSOR_ASKPASS_SOCKET — run `c2c init` once"
            ; "Advanced: export C2C_MCP_SESSION_ID=<your-session>"
            ; "c2c whoami   # re-check before send"
            ]

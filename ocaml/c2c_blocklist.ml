@@ -12,13 +12,14 @@ let banned_aliases =
   ; "crush"
   ; "grok"
   ; "agy"
+  ; "cursor"
   ]
 
 (** Human-readable reserved client prefixes (include trailing hyphen). Keep in
     sync with [banned_aliases] client names so register/rename rejections name
     the full set operators hit in the wild (B182). *)
 let reserved_client_prefixes =
-  [ "claude-"; "codex-"; "opencode-"; "kimi-"; "crush-"; "grok-"; "agy-" ]
+  [ "claude-"; "codex-"; "opencode-"; "kimi-"; "crush-"; "grok-"; "agy-"; "cursor-" ]
 
 let alias_casefold s = String.lowercase_ascii s
 

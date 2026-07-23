@@ -141,19 +141,34 @@ let init_cmd =
 
   (* B046: Resolve session_id BEFORE alias so we can look up existing
      registrations and reuse the alias when --alias is not given.
-     Resolution order (#10): env (C2C_MCP_SESSION_ID or a client-native key
-     such as CLAUDE_CODE_SESSION_ID) > persisted init-fallback statefile
-     (validated against the registry) > synthesize a fresh id. When the id
-     was NOT env-derived it is persisted to <broker_root>/default-session.json
-     after registration so later env-less `c2c` invocations in the same
-     context resolve the same identity. *)
+     Resolution order (#10 / B284): env (C2C_MCP_SESSION_ID, client-native
+     keys, or Cursor askpass socket) > persisted init-fallback statefile
+     (validated against the registry AND compatible with the detected client)
+     > synthesize a fresh id. When the id was NOT env-derived it is persisted
+     to <broker_root>/default-session.json after registration so later
+     env-less `c2c` invocations in the same context resolve the same
+     identity. Foreign-client sticky rows (e.g. grok-* under a Cursor shell)
+     are refused — mint new rather than silently rebind (B284 / B187). *)
   let env_derived_session_id = C2c_mcp.session_id_from_env () in
   let session_id =
     match env_derived_session_id with
     | Some s -> s
     | None ->
         (match session_id_from_statefile () with
-         | Some s -> s
+         | Some s
+           when statefile_compatible_with_intended ~broker_root:root
+                  ~intended:client_resolved s ->
+             s
+         | Some s ->
+             (* session_id_from_statefile already gates on inferred env client;
+                re-check against init's resolved client (includes --client)
+                and mint fresh on mismatch so we never reuse a foreign sticky. *)
+             Printf.eprintf
+               "[c2c init] ignoring default-session.json session_id=%s \
+                (incompatible with detected client %s); minting a fresh session\n%!"
+               s
+               (match client_resolved with Some c -> c | None -> "?");
+             C2c_setup.generate_session_id ()
          | None -> C2c_setup.generate_session_id ())
   in
 

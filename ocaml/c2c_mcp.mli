@@ -936,7 +936,15 @@ val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers
     explicit c2c-managed ids and falls back to harness-native ids when safe.
     For [client_type=kimi] without [KIMI_SESSION_ID], falls back to the most
-    recent [~/.kimi-code/session_index.jsonl] entry for this process cwd (B233). *)
+    recent [~/.kimi-code/session_index.jsonl] entry for this process cwd (B233).
+    For Cursor Agent ([CURSOR_AGENT] / [CURSOR_INVOKED_AS]), falls back to a
+    stable id derived from [CURSOR_ASKPASS_SOCKET] when present (B284;
+    best-effort — no install/hooks parity). *)
+
+val session_id_from_cursor_askpass : unit -> string option
+(** [session_id_from_cursor_askpass ()] parses [CURSOR_ASKPASS_SOCKET]
+    ([/tmp/cursor-askpass-<token>.sock]) into [cursor-askpass-<token>].
+    Exposed for B284 tests; production callers use [session_id_from_env]. *)
 
 val session_id_from_kimi_session_index :
   ?workdir:string -> unit -> string option

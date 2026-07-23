@@ -717,7 +717,7 @@ let native_session_id_env_keys = function
   (* Kimi Code: managed `c2c start kimi` exports KIMI_SESSION_ID; unmanaged
      sessions usually lack it and resolve via session_index (B233). *)
   | "kimi" -> [ "KIMI_SESSION_ID" ]
-  | "crush" | "codex-headless" -> []
+  | "crush" | "codex-headless" | "cursor" -> []
   | _ -> []
 
 let truthy_env_flag = function
@@ -726,15 +726,42 @@ let truthy_env_flag = function
       v <> "" && not (List.mem v [ "0"; "false"; "no" ])
   | None -> false
 
-(* Cursor Agent (unofficial / best-effort labeling only — B134): not a
-   first-class install/hooks client, but must not be mislabeled as Codex when
-   CURSOR_AGENT / CURSOR_INVOKED_AS markers are present. *)
+(* Cursor Agent (unofficial / best-effort — B134 labeling + B284 session id):
+   not a first-class install/hooks client, but must not be mislabeled as Codex
+   when CURSOR_AGENT / CURSOR_INVOKED_AS markers are present, and should resolve
+   a stable session id from Cursor-native signals when available. *)
 let cursor_agent_env_present () =
   truthy_env_flag (Sys.getenv_opt "CURSOR_AGENT")
   ||
   match Sys.getenv_opt "CURSOR_INVOKED_AS" with
   | Some v when String.lowercase_ascii (String.trim v) = "cursor-agent" -> true
   | _ -> false
+
+(* Parse CURSOR_ASKPASS_SOCKET=/tmp/cursor-askpass-<token>.sock → <token>.
+   Live Cursor Agent shells export this; the token is stable for the agent
+   conversation and is the best native session key we have (B284). *)
+let cursor_askpass_token_from_socket_path path =
+  let base = Filename.basename (String.trim path) in
+  let prefix = "cursor-askpass-" in
+  let suffix = ".sock" in
+  let bl = String.length base in
+  let pl = String.length prefix in
+  let sl = String.length suffix in
+  if bl > pl + sl
+     && String.sub base 0 pl = prefix
+     && String.sub base (bl - sl) sl = suffix
+  then
+    let token = String.sub base pl (bl - pl - sl) in
+    if token = "" then None else Some token
+  else None
+
+let session_id_from_cursor_askpass () =
+  match Sys.getenv_opt "CURSOR_ASKPASS_SOCKET" with
+  | Some path when String.trim path <> "" ->
+      (match cursor_askpass_token_from_socket_path path with
+       | Some token -> Some ("cursor-askpass-" ^ token)
+       | None -> None)
+  | _ -> None
 
 (* Grok Build TUI tool shells export GROK_AGENT (often "1") but do NOT export
    GROK_SESSION_ID — that key is hook-process-only. Treat any non-falsey
@@ -960,7 +987,16 @@ let session_id_from_env ?client_type () =
                | Some "kimi" -> true
                | _ -> false
              in
-             if want_kimi then session_id_from_kimi_session_index () else None)
+             if want_kimi then session_id_from_kimi_session_index ()
+             else
+               (* B284: Cursor Agent has no harness session env; derive from
+                  CURSOR_ASKPASS_SOCKET when present. *)
+               let want_cursor =
+                 match resolved_client_type with
+                 | Some "cursor" -> true
+                 | _ -> cursor_agent_env_present ()
+               in
+               if want_cursor then session_id_from_cursor_askpass () else None)
 
 let current_session_id () =
   session_id_from_env ()

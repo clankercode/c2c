@@ -67,6 +67,7 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "C2C_GROK_ACTIVE_SESSIONS="
   ; "CURSOR_AGENT="
   ; "CURSOR_INVOKED_AS="
+  ; "CURSOR_ASKPASS_SOCKET="
   ; "ANTIGRAVITY_CONVERSATION_ID="
   ; "ANTIGRAVITY_HOOK_EVENT="
   ; "ANTIGRAVITY_LS_ADDRESS="
@@ -664,9 +665,11 @@ let test_b187_whoami_refuses_agy_shell_borrowing_codex_statefile () =
   let combined = out ^ "\n" ^ err in
   check bool "does not print codex alias as success identity" false
     (string_contains out ("alias:     " ^ codex_alias));
-  check bool "error mentions cross-client / borrowed" true
+  (* B284 tightened statefile gating: foreign sticky may fail as "no session ID"
+     before the older B187 cross-client message; either is fail-closed. *)
+  check bool "error mentions cross-client / borrowed / no session / B187" true
     (string_contains combined "borrowed" || string_contains combined "cross-client"
-     || string_contains combined "B187");
+     || string_contains combined "B187" || string_contains combined "no session ID");
   check bool "error includes how to fix (init/register/whoami)" true
     (string_contains combined "c2c init" || string_contains combined "c2c register");
   check bool "error mentions whoami re-check" true (string_contains combined "c2c whoami")
@@ -703,10 +706,17 @@ let test_b187_whoami_json_error_has_fix_steps () =
   in
   check bool "error field present" true
     (match json_str_member "error" json with Some s -> s <> "" | None -> false);
-  check bool "candidate names codex alias" true
-    (match json_str_member "candidate" json with
-     | Some c -> string_contains c codex_alias || c = codex_alias
-     | None -> false);
+  (* B284: foreign sticky may fail closed before adopting the candidate alias. *)
+  let err_txt = Option.value (json_str_member "error" json) ~default:"" in
+  let cand = json_str_member "candidate" json in
+  check bool "error or candidate names the conflict" true
+    (string_contains err_txt "no session ID"
+     || string_contains err_txt "B187"
+     || string_contains err_txt "borrowed"
+     || string_contains err_txt "cross-client"
+     || (match cand with
+         | Some c -> string_contains c codex_alias || c = codex_alias
+         | None -> false));
   let steps = Option.value (json_string_list_member "fix_steps" json) ~default:[] in
   check bool "fix_steps non-empty" true (steps <> []);
   check bool "fix_steps mention whoami or init" true
@@ -1050,6 +1060,155 @@ let test_init_detects_cursor_agent_not_codex () =
     (string_contains statefile "\"client\": \"cursor\""
      || string_contains statefile "\"client\":\"cursor\"")
 
+let test_init_cursor_refuses_foreign_grok_statefile () =
+  (* B284: Cursor init must not reuse a sticky grok-* default-session.json. *)
+  with_temp_env @@ fun tmp ->
+  let grok_alias = Printf.sprintf "grok-sticky-b284-%04x" (Random.bits () land 0xffff) in
+  let grok_sid = Printf.sprintf "grok-b284-sid-%d" (Unix.getpid ()) in
+  let rc, _, err =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", grok_sid
+        ; "C2C_MCP_CLIENT_TYPE", "grok"
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", grok_alias
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "register" ]
+  in
+  check int ("register grok exits 0: " ^ err) 0 rc;
+  write_file (tmp // "broker" // "default-session.json")
+    (Printf.sprintf
+       {|{"session_id":%S,"alias":%S,"client":"grok","created_at":"2026-07-23T00:00:00Z"}|}
+       grok_sid grok_alias);
+  let askpass_sock = tmp // "cursor-askpass-b284token-1.sock" in
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:
+        [ "CURSOR_AGENT", "1"
+        ; "CURSOR_INVOKED_AS", "cursor-agent"
+        ; "CURSOR_ASKPASS_SOCKET", askpass_sock
+        ]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("cursor init exits 0: " ^ err) 0 rc;
+  let alias =
+    match Yojson.Safe.from_string out |> json_assoc_string "alias" with
+    | Some a -> a
+    | None -> failf "init --json missing alias: %s" out
+  in
+  let sid =
+    match Yojson.Safe.from_string out |> json_assoc_string "session_id" with
+    | Some s -> s
+    | None -> failf "init --json missing session_id: %s" out
+  in
+  check bool ("alias starts with cursor-: " ^ alias) true
+    (String.starts_with ~prefix:"cursor-" alias);
+  check bool "did not reuse grok alias" false (alias = grok_alias);
+  check bool "did not reuse grok session_id" false (sid = grok_sid);
+  check bool "askpass-derived session_id" true
+    (sid = "cursor-askpass-b284token-1");
+  check (option string) "registration client_type=cursor" (Some "cursor")
+    (registration_client_type ~broker:tmp ~session_id:sid);
+  (* whoami in the same Cursor env must resolve without C2C_MCP_SESSION_ID. *)
+  let rc, who_out, who_err =
+    run_c2c_status_split
+      ~env:
+        [ "CURSOR_AGENT", "1"
+        ; "CURSOR_INVOKED_AS", "cursor-agent"
+        ; "CURSOR_ASKPASS_SOCKET", askpass_sock
+        ]
+      ~home:tmp ~broker:tmp
+      ["whoami"]
+  in
+  check int ("whoami exits 0: " ^ who_err) 0 rc;
+  check bool "whoami prints cursor alias" true (string_contains who_out alias)
+
+let test_init_cursor_no_askpass_whoami_beside_foreign () =
+  (* B284: without CURSOR_ASKPASS_SOCKET, init mints a fresh cursor identity
+     (refusing grok sticky) and whoami still resolves via client-matched
+     statefile even while the foreign registration remains. *)
+  with_temp_env @@ fun tmp ->
+  let grok_alias = Printf.sprintf "grok-noask-b284-%04x" (Random.bits () land 0xffff) in
+  let grok_sid = Printf.sprintf "grok-noask-sid-%d" (Unix.getpid ()) in
+  let rc, _, err =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", grok_sid
+        ; "C2C_MCP_CLIENT_TYPE", "grok"
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", grok_alias
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "register" ]
+  in
+  check int ("register grok exits 0: " ^ err) 0 rc;
+  write_file (tmp // "broker" // "default-session.json")
+    (Printf.sprintf
+       {|{"session_id":%S,"alias":%S,"client":"grok","created_at":"2026-07-23T00:00:00Z"}|}
+       grok_sid grok_alias);
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "CURSOR_AGENT", "1"; "CURSOR_INVOKED_AS", "cursor-agent" ]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("cursor init exits 0: " ^ err) 0 rc;
+  let alias =
+    match Yojson.Safe.from_string out |> json_assoc_string "alias" with
+    | Some a -> a
+    | None -> failf "init --json missing alias: %s" out
+  in
+  check bool ("alias starts with cursor-: " ^ alias) true
+    (String.starts_with ~prefix:"cursor-" alias);
+  check bool "did not reuse grok alias" false (alias = grok_alias);
+  let rc, who_out, who_err =
+    run_c2c_status_split
+      ~env:[ "CURSOR_AGENT", "1"; "CURSOR_INVOKED_AS", "cursor-agent" ]
+      ~home:tmp ~broker:tmp
+      ["whoami"]
+  in
+  check int ("whoami exits 0 beside foreign reg: " ^ who_err) 0 rc;
+  check bool "whoami prints cursor alias" true (string_contains who_out alias);
+  check bool "whoami does not print grok alias as success" false
+    (string_contains who_out ("alias:     " ^ grok_alias))
+
+let test_b187_whoami_refuses_cursor_forced_foreign_sid () =
+  (* B284: forcing an explicit foreign sid in a Cursor shell still trips B187. *)
+  with_temp_env @@ fun tmp ->
+  let grok_alias = Printf.sprintf "grok-forced-b284-%04x" (Random.bits () land 0xffff) in
+  let grok_sid = Printf.sprintf "grok-forced-sid-%d" (Unix.getpid ()) in
+  let rc, _, err =
+    run_c2c_status_split
+      ~env:
+        [ "C2C_MCP_SESSION_ID", grok_sid
+        ; "C2C_MCP_CLIENT_TYPE", "grok"
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS", grok_alias
+        ; "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", "1"
+        ]
+      ~home:tmp ~broker:tmp
+      [ "register" ]
+  in
+  check int ("register grok exits 0: " ^ err) 0 rc;
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:
+        [ "CURSOR_AGENT", "1"
+        ; "CURSOR_INVOKED_AS", "cursor-agent"
+        ; "C2C_MCP_SESSION_ID", grok_sid
+        ]
+      ~home:tmp ~broker:tmp
+      ["whoami"]
+  in
+  check bool "whoami fails closed for cursor→grok forced sid" true (rc <> 0);
+  let combined = out ^ "\n" ^ err in
+  check bool "does not print grok alias as success" false
+    (string_contains out ("alias:     " ^ grok_alias));
+  check bool "error mentions B187 / cross-client" true
+    (string_contains combined "borrowed" || string_contains combined "cross-client"
+     || string_contains combined "B187")
+
 let test_init_codex_thread_id_still_codex () =
   (* Regression: genuine Codex detection must remain unchanged. *)
   with_temp_env @@ fun tmp ->
@@ -1085,6 +1244,10 @@ let () =
         ; test_case "init GROK_SESSION_ID → grok client/alias (B134)" `Quick test_init_detects_grok_from_env
         ; test_case "init GROK_AGENT=1 → grok alias (B173)" `Quick test_init_detects_grok_from_agent_flag
         ; test_case "init CURSOR_AGENT → cursor not codex (B134)" `Quick test_init_detects_cursor_agent_not_codex
+        ; test_case "init Cursor refuses foreign grok sticky (B284)" `Quick
+            test_init_cursor_refuses_foreign_grok_statefile
+        ; test_case "init Cursor no-askpass whoami beside foreign (B284)" `Quick
+            test_init_cursor_no_askpass_whoami_beside_foreign
         ; test_case "init CODEX_THREAD_ID still codex (B134)" `Quick test_init_codex_thread_id_still_codex
         ] )
     ; ( "relay_identity",
@@ -1120,6 +1283,8 @@ let () =
             test_b187_send_refuses_borrowed_auto_register_alias
         ; test_case "B187 whoami matching agy client still ok" `Quick
             test_b187_whoami_matching_client_still_ok
+        ; test_case "B187 whoami refuses Cursor + forced grok sid (B284)" `Quick
+            test_b187_whoami_refuses_cursor_forced_foreign_sid
         ] )
     ; ( "json_schema_v1",
         [ test_case "send/peek/poll --json emit schema-v1 + legacy keys" `Quick test_send_poll_peek_json_schema_v1
