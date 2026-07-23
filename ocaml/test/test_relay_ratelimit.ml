@@ -64,6 +64,9 @@ let test_policy_matching () =
   Alcotest.(check bool) "/observer allowed (first)"
     true
     (is_allow (M.check limiter ~key:"ip4" ~cost:1 ~path:"/observer/binding123"));
+  Alcotest.(check bool) "/ws/subscribe allowed (first)"
+    true
+    (is_allow (M.check limiter ~key:"ip6" ~cost:1 ~path:"/ws/subscribe"));
   Alcotest.(check bool) "unknown path: no limiting"
     true
     (is_allow (M.check limiter ~key:"ip5" ~cost:1 ~path:"/other/path"))
@@ -182,6 +185,8 @@ let test_endpoint_class_of_path () =
     (Some "peek_inbox") (RL.endpoint_class_of_path "/peek_inbox");
   Alcotest.(check (option string)) "poll_inbox"
     (Some "poll_inbox") (RL.endpoint_class_of_path "/poll_inbox");
+  Alcotest.(check (option string)) "ws_subscribe"
+    (Some "ws_subscribe") (RL.endpoint_class_of_path "/ws/subscribe");
   Alcotest.(check (option string)) "unmetered"
     None (RL.endpoint_class_of_path "/health")
 
@@ -301,6 +306,119 @@ let test_b243_deny_retry_after_uses_class_refill () =
   Alcotest.(check bool) "pubkey refills faster than send (independent rates)"
     true (pubkey_wait < send_wait *. 0.5)
 
+(* --- B276: /ws/subscribe is metered (was unmetered) ---------------------- *)
+
+let contains_sub ~sub s =
+  let n = String.length s and m = String.length sub in
+  let rec loop i =
+    if i + m > n then false
+    else if String.sub s i m = sub then true
+    else loop (i + 1)
+  in
+  loop 0
+
+let test_b276_ws_subscribe_class_and_params () =
+  (* Class label + frozen capacity/refill: 10 burst, 10/min ≈ 0.167/s. *)
+  Alcotest.(check (option string)) "class label"
+    (Some "ws_subscribe") (RL.endpoint_class_of_path "/ws/subscribe");
+  Alcotest.(check (option string)) "prefix match"
+    (Some "ws_subscribe") (RL.endpoint_class_of_path "/ws/subscribe/extra");
+  let module M = RL.Make() in
+  let limiter = M.create ~gc_interval:300.0 () in
+  let ip = "192.0.2.176" in
+  ignore (M.check limiter ~key:ip ~cost:1 ~path:"/ws/subscribe");
+  match M.find_bucket limiter ~key:ip ~path:"/ws/subscribe" with
+  | None -> Alcotest.fail "missing ws_subscribe bucket"
+  | Some b ->
+      Alcotest.(check (float 1e-9)) "capacity 10"
+        10.0 (RL.TokenBucket.capacity b);
+      Alcotest.(check (float 1e-9)) "refill 0.167/s"
+        0.167 (RL.TokenBucket.refill_rate b)
+
+let test_b276_ws_subscribe_burst_then_deny () =
+  let module M = RL.Make() in
+  let limiter = M.create ~gc_interval:300.0 () in
+  let check = M.check limiter in
+  let ip = "192.0.2.177" in
+  Alcotest.(check int) "10-token burst"
+    10 (count_allows check ~key:ip ~path:"/ws/subscribe" ~n:10);
+  Alcotest.(check bool) "11th denied"
+    true (is_deny (check ~key:ip ~cost:1 ~path:"/ws/subscribe"));
+  match check ~key:ip ~cost:1 ~path:"/ws/subscribe" with
+  | `Allow -> Alcotest.fail "expected deny with retry_after"
+  | `Deny retry_after ->
+      (* 1/0.167 ≈ 6s; allow wall-clock refill slack. *)
+      Alcotest.(check bool) "retry_after near 1/refill(0.167/s)"
+        true (retry_after > 3.0 && retry_after <= 6.5)
+
+let test_b276_ws_subscribe_independent_of_observer () =
+  (* Exhaust /observer must not starve /ws/subscribe (B243 class isolation). *)
+  let module M = RL.Make() in
+  let limiter = M.create ~gc_interval:300.0 () in
+  let check = M.check limiter in
+  let ip = "192.0.2.178" in
+  exhaust_bucket check ~key:ip ~path:"/observer/binding-x";
+  Alcotest.(check bool) "observer exhausted"
+    true (is_deny (check ~key:ip ~cost:1 ~path:"/observer/binding-x"));
+  Alcotest.(check int) "ws_subscribe still has full 10-token burst"
+    10 (count_allows check ~key:ip ~path:"/ws/subscribe" ~n:10);
+  Alcotest.(check bool) "ws_subscribe then denies at capacity"
+    true (is_deny (check ~key:ip ~cost:1 ~path:"/ws/subscribe"));
+  Alcotest.(check int) "two independent buckets"
+    2 (M.bucket_count limiter)
+
+let test_b276_ws_subscribe_stricter_than_observer () =
+  (* Policy intent: burst 10 < observer 20, refill 10/min < observer 20/min. *)
+  let module M = RL.Make() in
+  let limiter = M.create ~gc_interval:300.0 () in
+  let check = M.check limiter in
+  let ip = "192.0.2.179" in
+  Alcotest.(check int) "ws_subscribe burst is 10 not 20"
+    10 (count_allows check ~key:ip ~path:"/ws/subscribe" ~n:30);
+  let ip2 = "192.0.2.180" in
+  Alcotest.(check int) "observer burst remains 20"
+    20 (count_allows check ~key:ip2 ~path:"/observer/b" ~n:30)
+
+let test_b276_ws_subscribe_structured_log_on_deny () =
+  (* Request-path style: deny log uses event=ws_subscribe, result=rate_limit_denied
+     (mirrors relay.ml rate-limit deny arm for /ws/subscribe). *)
+  let captured_buf = Buffer.create 256 in
+  let fmt = Format.formatter_of_buffer captured_buf in
+  let reporter = Logs.format_reporter ~app:fmt ~dst:fmt () in
+  let old_level = Logs.level () in
+  Logs.set_reporter reporter;
+  Logs.set_level (Some Logs.Info);
+  RL.structured_log
+    ~event:"ws_subscribe"
+    ~source_ip_prefix:"203.0.11"
+    ~result:"rate_limit_denied"
+    ~reason:"/ws/subscribe retry_after=5.988"
+    ();
+  Logs.set_level old_level;
+  let captured = Buffer.contents captured_buf in
+  let trimmed = String.trim captured in
+  let json_start = try String.index trimmed '{' with Not_found -> -1 in
+  Alcotest.(check bool) "emits JSON" true (json_start >= 0);
+  if json_start >= 0 then
+    let json_str =
+      String.sub trimmed json_start (String.length trimmed - json_start)
+    in
+    match Yojson.Safe.from_string json_str with
+    | exception Yojson.Json_error _ ->
+        Alcotest.failf "invalid JSON: %s" trimmed
+    | parsed ->
+        let str name =
+          match Yojson.Safe.Util.member name parsed with
+          | `Null -> Alcotest.failf "missing %s" name
+          | v -> Yojson.Safe.Util.to_string v
+        in
+        Alcotest.(check string) "event" "ws_subscribe" (str "event");
+        Alcotest.(check string) "result" "rate_limit_denied" (str "result");
+        Alcotest.(check bool) "reason mentions path" true
+          (contains_sub ~sub:"/ws/subscribe" (str "reason"));
+        Alcotest.(check bool) "reason mentions retry_after" true
+          (contains_sub ~sub:"retry_after" (str "reason"))
+
 let () =
   Alcotest.run "relay_ratelimit" [
     "unit", [
@@ -324,5 +442,15 @@ let () =
         test_b243_send_family_classes_are_distinct;
       Alcotest.test_case "b243-deny-retry-after-uses-class-refill" `Quick
         test_b243_deny_retry_after_uses_class_refill;
+      Alcotest.test_case "b276-ws-subscribe-class-and-params" `Quick
+        test_b276_ws_subscribe_class_and_params;
+      Alcotest.test_case "b276-ws-subscribe-burst-then-deny" `Quick
+        test_b276_ws_subscribe_burst_then_deny;
+      Alcotest.test_case "b276-ws-subscribe-independent-of-observer" `Quick
+        test_b276_ws_subscribe_independent_of_observer;
+      Alcotest.test_case "b276-ws-subscribe-stricter-than-observer" `Quick
+        test_b276_ws_subscribe_stricter_than_observer;
+      Alcotest.test_case "b276-ws-subscribe-structured-log-on-deny" `Slow
+        test_b276_ws_subscribe_structured_log_on_deny;
     ];
   ]

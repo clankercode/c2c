@@ -6704,6 +6704,9 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
     let rate_limit_event, rate_limit_binding_prefix =
       if String.length path > 10 && String.sub path 0 10 = "/observer/" then
         ("observer_handshake", Some (Relay_ratelimit.prefix8 (String.sub path 10 (String.length path - 10))))
+      else if String.length path >= 13 && String.sub path 0 13 = "/ws/subscribe" then
+        (* B276: same event name as auth path; result=rate_limit_denied. *)
+        ("ws_subscribe", None)
       else
         ("rate_limit_denied", None)
     in
