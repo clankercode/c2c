@@ -275,3 +275,4 @@ bugs:
     - file: B276-relay-rate-limit-ws-subscribe.todo
     - file: B277-relay-cap-concurrent-ws-subscr.todo
     - file: B278-subscribe-daemon-list-is-per-i.todo
+    - file: B279-relay-ws-proper-end-to-end-rat.todo

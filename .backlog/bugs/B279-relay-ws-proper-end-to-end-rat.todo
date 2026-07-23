@@ -1,0 +1,61 @@
+---
+complexity: medium
+created_at: "2026-07-23T08:21:10Z"
+depends_on:
+    - B276
+    - B277
+estimate_hours: 2
+id: B279
+priority: high
+status: pending
+tags:
+    - relay
+    - ws
+    - ratelimit
+    - server
+    - client
+    - B270
+    - B276
+title: 'relay WS: proper end-to-end rate limiting for /ws/subscribe (server policy + client Retry-After)'
+updated_at: "2026-07-23T08:21:10Z"
+---
+## Problem
+After a 502/outage, clients reconnect to `GET /ws/subscribe` in a thundering herd. B276 adds a missing meter for that path; "proper" rate limiting needs more than bolting a token bucket onto `classify_endpoint`:
+
+1. **Server** — `/ws/subscribe` is currently unmetered (`Relay_ratelimit.classify_endpoint` → `None`). Upgrade is expensive (auth + Expert WS + long-lived ping/recv). A naïve high refill still allows reconnect storms; a naïve low refill chronic-429s legitimate multi-alias daemons on shared NAT (B244 lesson).
+2. **Server** — request-rate alone is insufficient for long-lived connections; concurrent session/upgrade caps (B277) must compose with the token bucket (deny order, honest 429/503 envelopes, `retry_after`).
+3. **Client** — subscribe-daemon / `relay subscribe` do not honor `429` + `retry_after` (or 503) on upgrade failure; they use local exponential backoff only, so they fight the server meter and re-amplify load.
+4. **Policy** — no documented / tested budget for "one host, N aliases, one daemon" under normal vs outage conditions; risk of repeating B244 chronic 429s or leaving the door open to DoS (B270).
+
+## Solution (acceptance)
+
+### Server
+- [ ] `/ws/subscribe` classified and metered (B276 concrete slice).
+- [ ] Policy chosen deliberately: burst + refill that tolerates a healthy single-host multi-alias reconnect **after** backoff, but rejects tight reconnect loops and multi-host storms. Document numbers in code comment + env override if useful (`C2C_RELAY_WS_SUBSCRIBE_*` only if needed — YAGNI default constants first).
+- [ ] Compose with concurrent subscriber / per-IP caps (B277): rate-limit first or cap first — pick one order, test both denial shapes; envelopes stay B237-honest (`ok:false`, `error_code`, `retry_after`).
+- [ ] Structured logs: allow/deny with `source_ip_prefix`, reason, retry_after.
+- [ ] Hermetic tests: unmetered→metered regression; burst then deny; refill allows again; envelope shape.
+
+### Client
+- [ ] On upgrade response `429` / `503` (and parseable `retry_after` / `Retry-After`), subscribe-daemon waits **at least** that long (plus jitter) before retry — do not undercut the server.
+- [ ] Local backoff still applies for timeouts/5xx without retry_after; never reset to 1s while origin is signaling rate-limit.
+- [ ] Tests: mock 429 with retry_after=N → next attempt ≥ N seconds later.
+
+### Ops / docs
+- [ ] Short note in relay runbook or doctor: what 429 on subscribe means; how to back off.
+- [ ] Optional: heartbeat/stats expose ws upgrade deny counts (helps validate prod policy).
+
+## Non-goals
+- Full redesign of all relay endpoint meters (B243/B244 already shipped for HTTP API).
+- PoW on WS upgrade (out of scope unless crash investigation demands it).
+
+## Related
+- **B270** umbrella DoS-after-502
+- **B276** minimal server classify for `/ws/subscribe` (implement first or fold into this)
+- **B277** concurrent subscriber / per-IP caps
+- **B273** client jittered backoff (compose, don't fight)
+- **B244** NAT fleet chronic 429 — do not regress
+- Finding: `.collab/findings/2026-07-23T08-05-00Z-b270-ws-subscribe-dos-after-502.md`
+
+## Deploy
+Relay-critical for server half; client half is local install (`just bi` / install-all). Prefer shipping client Retry-After respect with or before tight server limits so dogfood hosts don't spin.
