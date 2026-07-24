@@ -21,6 +21,30 @@ let git_sha = Version_git_sha.git_sha
 
 let build_date = Version_build_date.build_date
 
+(* B287: the primary version identity uses BUILD time (a compile-time
+   constant), never the wall clock at invocation. The old `--version` line
+   embedded [C2c_time.now_iso8601_utc ()] as its trailing timestamp, so the
+   "version" of the binary appeared to change every time you asked for it —
+   a wall-clock echo masquerading as build metadata.
+
+   Layout keeps the leading tokens stable and parseable for scripts:
+     <version> [<git-sha>] (built <build-date>)
+   e.g. "0.14.4 a1b2c3d4 (built 2026-07-24)". The git sha is omitted when
+   unknown (source-tarball / sandboxed build). *)
+let build_identity () =
+  match git_sha with
+  | "unknown" | "" -> Printf.sprintf "%s (built %s)" version build_date
+  | h -> Printf.sprintf "%s %s (built %s)" version h build_date
+
+(* B287: optional diagnostic wall clock. The bug allows keeping a "now" clock
+   only if it is secondary and visually demarcated off to the side — the
+   PRIMARY timestamp must be the build date above. This appends the current
+   UTC instant in a bracketed, labelled segment so it can never be mistaken
+   for the build metadata. [now] is injectable for deterministic tests. *)
+let display_with_clock ?now () =
+  let now = match now with Some n -> n | None -> C2c_time.now_iso8601_utc () in
+  Printf.sprintf "%s   [now: %s]" (build_identity ()) now
+
 let banner ~role ~git_hash =
   Printf.eprintf
     "   .-.       .-.\n\

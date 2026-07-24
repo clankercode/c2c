@@ -454,7 +454,7 @@ let try_fast_path () =
         (* B268: cache-only trailing line on stdout (never network; scripts that
            parse the first line keep working). No stderr notice here — that would
            double-emit with the trailing line. *)
-        Printf.printf "%s\n" (version_string ());
+        Printf.printf "%s\n" (version_line_with_clock ());
         (try
            match
              C2c_changelog.latest_known_newer

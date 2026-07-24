@@ -76,16 +76,16 @@ let git_shorthash () =
   | Some line when int_of_string_opt line = None -> Some line
   | _ -> None
 
-let version_string () =
-  let base = Version.version in
-  let ts = C2c_time.now_iso8601_utc () in
-  (* #420: use the SHA embedded at compile time rather than shelling
-     out to `git rev-parse` on every invocation. The shell-out cost
-     was ~1s wall-clock and fired even on slate's #418 fast-path,
-     undercutting that slice's startup-latency win. *)
-  match Version.git_sha with
-  | "unknown" | "" -> Printf.sprintf "%s %s" base ts
-  | h -> Printf.sprintf "%s %s %s" base h ts
+(* B287: the parseable, primary version identity — BUILD time, not the wall
+   clock at invocation. Used by Cmdliner's [~version], the bare-`c2c` landing,
+   and (via [version_line_with_clock]) the human `--version` output. The
+   compile-time git SHA is embedded (#420: no per-invocation `git rev-parse`
+   shell-out). B289 should reuse these helpers so `c2c version` matches. *)
+let version_string () = Version.build_identity ()
+
+(* B287: `c2c --version` line — build-time identity plus a demarcated,
+   secondary "now" clock (kept for clock-skew diagnostics, off to the side). *)
+let version_line_with_clock () = Version.display_with_clock ()
 
 let find_python_script script =
   match git_repo_toplevel () with
