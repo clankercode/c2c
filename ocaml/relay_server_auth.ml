@@ -52,7 +52,8 @@ type route_class =
    the handler applies per-room visibility: public and unlisted rooms remain
    open-read, while gated/private rooms require a verified Ed25519 member alias. *)
 let anonymous_read_routes =
-  ["/"; "/health"; "/stats"; "/list_rooms"; "/room_history"; "/device-login"]
+  ["/"; "/health"; "/stats"; "/stats/history"; "/list_rooms"; "/room_history";
+   "/device-login"]
 
 (* /register uses body-level Ed25519 proof (identity_pk + signature + nonce
    + timestamp in the JSON body). This is the bootstrap route — the alias
