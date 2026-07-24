@@ -456,6 +456,188 @@ let test_sqlite_persistence () =
   let stats = Relay.SqliteRelay.stats t2 ~now in
   check_window stats ~window:"ever" ~messages:1 ~aliases:1 ~machines:1
 
+(* B286: helper — read the "ts" float from a {"ts":..,"stats":..} snapshot. *)
+let snapshot_ts j =
+  match assoc "ts" j with
+  | `Float f -> f
+  | `Int i -> float_of_int i
+  | _ -> Alcotest.fail "snapshot ts is not a number"
+
+(* B286 (memory backend): query_stats_snapshots reads back recorded snapshots
+   ascending by ts, honours the since filter and keeps the most-recent [limit]. *)
+let test_mem_stats_history_query () =
+  let dir = fresh_tmp_dir () in
+  let real_now = Unix.gettimeofday () in
+  let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  Relay.InMemoryRelay.record_stats_snapshot t ~now:real_now;
+  Relay.InMemoryRelay.record_stats_snapshot t ~now:(real_now +. 3600.);
+  Relay.InMemoryRelay.record_stats_snapshot t ~now:(real_now +. 7200.);
+  let all = Relay.InMemoryRelay.query_stats_snapshots t () in
+  Alcotest.(check int) "three snapshots" 3 (List.length all);
+  Alcotest.(check bool) "ascending ts + oldest first" true
+    (snapshot_ts (List.nth all 0) = real_now
+     && snapshot_ts (List.nth all 1) = real_now +. 3600.
+     && snapshot_ts (List.nth all 2) = real_now +. 7200.);
+  (* each element embeds a full /stats-shaped object. *)
+  ignore (count (assoc "stats" (List.hd all)) ~window:"ever" ~field:"messages");
+  let since =
+    Relay.InMemoryRelay.query_stats_snapshots t ~since:(real_now +. 3600.) ()
+  in
+  Alcotest.(check int) "since keeps 2" 2 (List.length since);
+  Alcotest.(check bool) "since lower bound" true
+    (snapshot_ts (List.hd since) = real_now +. 3600.);
+  let lim = Relay.InMemoryRelay.query_stats_snapshots t ~limit:1 () in
+  Alcotest.(check int) "limit 1" 1 (List.length lim);
+  Alcotest.(check bool) "limit keeps most recent" true
+    (snapshot_ts (List.hd lim) = real_now +. 7200.)
+
+(* B286 (memory backend): non-monotonic snapshot ts (clock rollback / backfill)
+   must still come back ascending by ts, and limit must keep the ts-most-recent
+   (not the file-most-recent). limit=0 returns nothing. *)
+let test_mem_stats_history_nonmonotonic () =
+  let dir = fresh_tmp_dir () in
+  let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  (* Write in file order 100, 300, 200 — deliberately out of ts order. *)
+  List.iter
+    (fun ts -> Relay.InMemoryRelay.record_stats_snapshot t ~now:ts)
+    [ 100.; 300.; 200. ];
+  let all = Relay.InMemoryRelay.query_stats_snapshots t () in
+  Alcotest.(check (list (float 0.))) "ascending by ts, not file order"
+    [ 100.; 200.; 300. ]
+    (List.map snapshot_ts all);
+  let lim = Relay.InMemoryRelay.query_stats_snapshots t ~limit:1 () in
+  Alcotest.(check int) "limit 1 count" 1 (List.length lim);
+  Alcotest.(check (float 0.)) "limit 1 keeps ts-most-recent" 300.
+    (snapshot_ts (List.hd lim));
+  Alcotest.(check int) "limit 0 yields empty" 0
+    (List.length (Relay.InMemoryRelay.query_stats_snapshots t ~limit:0 ()))
+
+(* B286 (memory backend): the ts-most-recent snapshot must survive selection
+   even when it appears FIRST in file order and there are more rows than
+   [limit] — a FIFO/last-N-by-file-order window would wrongly evict it. *)
+let test_mem_stats_history_ring_boundary () =
+  let dir = fresh_tmp_dir () in
+  let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+  (* Largest ts (500) is written FIRST; four smaller ts follow. With limit=2
+     the correct top-2 by ts is {13, 500}, not the last two file rows {12,13}. *)
+  List.iter
+    (fun ts -> Relay.InMemoryRelay.record_stats_snapshot t ~now:ts)
+    [ 500.; 10.; 11.; 12.; 13. ];
+  let lim2 = Relay.InMemoryRelay.query_stats_snapshots t ~limit:2 () in
+  Alcotest.(check (list (float 0.)))
+    "top-2 by ts keeps early large ts across the ring boundary"
+    [ 13.; 500. ]
+    (List.map snapshot_ts lim2)
+
+(* B286 (sqlite): same non-monotonic + limit contract as the memory backend. *)
+let test_sqlite_stats_history_nonmonotonic () =
+  let dir = fresh_tmp_dir () in
+  let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+  List.iter
+    (fun ts -> Relay.SqliteRelay.record_stats_snapshot t ~now:ts)
+    [ 100.; 300.; 200. ];
+  let all = Relay.SqliteRelay.query_stats_snapshots t () in
+  Alcotest.(check (list (float 0.))) "ascending by ts, not insert order"
+    [ 100.; 200.; 300. ]
+    (List.map snapshot_ts all);
+  let lim = Relay.SqliteRelay.query_stats_snapshots t ~limit:1 () in
+  Alcotest.(check int) "limit 1 count" 1 (List.length lim);
+  Alcotest.(check (float 0.)) "limit 1 keeps ts-most-recent" 300.
+    (snapshot_ts (List.hd lim));
+  Alcotest.(check int) "limit 0 yields empty" 0
+    (List.length (Relay.SqliteRelay.query_stats_snapshots t ~limit:0 ()))
+
+(* B286 (memory backend, no persist_dir): history query is empty, never raises. *)
+let test_mem_stats_history_no_persist () =
+  let t = Relay.InMemoryRelay.create () in
+  Alcotest.(check int) "no persist_dir yields empty history" 0
+    (List.length (Relay.InMemoryRelay.query_stats_snapshots t ()))
+
+(* B286 (sqlite): query_stats_snapshots mirrors the memory backend — ascending
+   ts, since filter, most-recent limit, and survives a reopen. *)
+let test_sqlite_stats_history_query () =
+  let dir = fresh_tmp_dir () in
+  let real_now = Unix.gettimeofday () in
+  let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+  Relay.SqliteRelay.record_stats_snapshot t ~now:real_now;
+  Relay.SqliteRelay.record_stats_snapshot t ~now:(real_now +. 3600.);
+  Relay.SqliteRelay.record_stats_snapshot t ~now:(real_now +. 7200.);
+  let all = Relay.SqliteRelay.query_stats_snapshots t () in
+  Alcotest.(check int) "three snapshots" 3 (List.length all);
+  Alcotest.(check bool) "ascending ts + oldest first" true
+    (snapshot_ts (List.nth all 0) = real_now
+     && snapshot_ts (List.nth all 1) = real_now +. 3600.
+     && snapshot_ts (List.nth all 2) = real_now +. 7200.);
+  ignore (count (assoc "stats" (List.hd all)) ~window:"ever" ~field:"messages");
+  let since =
+    Relay.SqliteRelay.query_stats_snapshots t ~since:(real_now +. 3600.) ()
+  in
+  Alcotest.(check int) "since keeps 2" 2 (List.length since);
+  Alcotest.(check bool) "since lower bound" true
+    (snapshot_ts (List.hd since) = real_now +. 3600.);
+  let lim = Relay.SqliteRelay.query_stats_snapshots t ~limit:1 () in
+  Alcotest.(check int) "limit 1" 1 (List.length lim);
+  Alcotest.(check bool) "limit keeps most recent" true
+    (snapshot_ts (List.hd lim) = real_now +. 7200.);
+  (* Reopen: rows persist in the stats_snapshots table. *)
+  let t2 = Relay.SqliteRelay.create ~persist_dir:dir () in
+  Alcotest.(check int) "history survives reopen" 3
+    (List.length (Relay.SqliteRelay.query_stats_snapshots t2 ()))
+
+(* B286: /stats/history is anonymously readable — pin the classification. *)
+let test_stats_history_route_is_anonymous () =
+  (match
+     Relay_server_auth.classify_route ~path:"/stats/history" ~include_dead:false
+   with
+   | Relay_server_auth.Anonymous_read -> ()
+   | _ -> Alcotest.fail "/stats/history must classify as Anonymous_read");
+  let allow, err =
+    Relay_server_auth.auth_decision ~path:"/stats/history" ~include_dead:false
+      ~token:(Some "prod-token") ~auth_header:None ~ed25519_verified:false
+  in
+  Alcotest.(check bool) "/stats/history allowed without credentials" true allow;
+  Alcotest.(check (option string)) "/stats/history no auth error" None err
+
+(* B286 (cross-backend, reviewer P1): two snapshots share ts=100 but differ in
+   content (message count); a third at ts=200 is newest. With limit=2 the
+   selection at the tied boundary must be deterministic AND identical across
+   backends — the later-INSERTED ts=100 row (the one with the message, seq/rowid
+   higher) survives, the earlier ts=100 row is evicted, and the series comes back
+   ascending. A ts-only tie-break would pick an arbitrary/backend-specific row. *)
+let history_ts_msg_pairs snapshots =
+  List.map
+    (fun e ->
+      (snapshot_ts e, count (assoc "stats" e) ~window:"ever" ~field:"messages"))
+    snapshots
+
+let test_stats_history_tie_break_cross_backend () =
+  let mem () =
+    let dir = fresh_tmp_dir () in
+    let t = Relay.InMemoryRelay.create ~persist_dir:dir () in
+    Relay.InMemoryRelay.record_stats_snapshot t ~now:100.;
+    Relay.InMemoryRelay.stats_note_message t ~from_alias:"zq-tie-sender" ~ts:50.;
+    Relay.InMemoryRelay.record_stats_snapshot t ~now:100.;
+    Relay.InMemoryRelay.record_stats_snapshot t ~now:200.;
+    history_ts_msg_pairs (Relay.InMemoryRelay.query_stats_snapshots t ~limit:2 ())
+  in
+  let sql () =
+    let dir = fresh_tmp_dir () in
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    Relay.SqliteRelay.record_stats_snapshot t ~now:100.;
+    Relay.SqliteRelay.stats_note_message t ~from_alias:"zq-tie-sender" ~ts:50.;
+    Relay.SqliteRelay.record_stats_snapshot t ~now:100.;
+    Relay.SqliteRelay.record_stats_snapshot t ~now:200.;
+    history_ts_msg_pairs (Relay.SqliteRelay.query_stats_snapshots t ~limit:2 ())
+  in
+  let expected = [ (100., 1); (200., 1) ] in
+  let testable = Alcotest.(list (pair (float 0.) int)) in
+  Alcotest.check testable
+    "memory keeps later-inserted equal-ts row (msgs=1), ascending" expected
+    (mem ());
+  Alcotest.check testable
+    "sqlite keeps later-inserted equal-ts row (msgs=1), ascending" expected
+    (sql ())
+
 (* /stats is anonymously readable — pin the route classification so it can't
    silently regress to peer/admin auth. *)
 let test_stats_route_is_anonymous () =
@@ -483,6 +665,14 @@ let () =
               test_mem_snapshot_history;
             Alcotest.test_case "snapshot without persist_dir is a no-op" `Quick
               test_mem_snapshot_no_persist_dir;
+            Alcotest.test_case "stats history query (since/limit/order)" `Quick
+              test_mem_stats_history_query;
+            Alcotest.test_case "stats history non-monotonic + limit" `Quick
+              test_mem_stats_history_nonmonotonic;
+            Alcotest.test_case "stats history ring-boundary top-k by ts" `Quick
+              test_mem_stats_history_ring_boundary;
+            Alcotest.test_case "stats history empty without persist_dir" `Quick
+              test_mem_stats_history_no_persist;
           ] );
       ( "sqlite",
         Sql_tests.cases
@@ -493,13 +683,24 @@ let () =
               test_sqlite_snapshot_history;
             Alcotest.test_case "pre-B149 db migrates version columns" `Quick
               test_sqlite_migration_adds_version_columns;
+            Alcotest.test_case "stats history query (since/limit/order)" `Quick
+              test_sqlite_stats_history_query;
+            Alcotest.test_case "stats history non-monotonic + limit" `Quick
+              test_sqlite_stats_history_nonmonotonic;
           ] );
       ( "humanize-ago",
         [ Alcotest.test_case "humanize_ago boundaries" `Quick test_humanize_ago ]
       );
+      ( "history-cross-backend",
+        [
+          Alcotest.test_case "equal-ts tie-break agrees across backends" `Quick
+            test_stats_history_tie_break_cross_backend;
+        ] );
       ( "route-auth",
         [
           Alcotest.test_case "/stats is anonymous" `Quick
             test_stats_route_is_anonymous;
+          Alcotest.test_case "/stats/history is anonymous" `Quick
+            test_stats_history_route_is_anonymous;
         ] );
     ]

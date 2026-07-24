@@ -577,6 +577,114 @@ module InMemoryRelay : RELAY = struct
          close_out oc
        with _ -> ())
 
+  (* B286: read back the jsonl history for GET /stats/history. Parses each
+     {"ts":..,"stats":..} line, filters ts >= since, then returns the most
+     recent [limit] snapshots (the [limit] largest ts values) in ASCENDING ts
+     order (contract §B286). Selection is by embedded ts, NOT file/insertion
+     order, so a clock rollback or a backfilled line can't scramble the series
+     or evict a genuinely-recent snapshot. A bounded min-heap of size [limit]
+     keeps memory at O(limit) regardless of how large the history file grows
+     (the HTTP handler caps limit at [stats_history_max_limit]). Best-effort —
+     malformed lines and a missing file yield []; never raises. *)
+  let query_stats_snapshots t ?(since = 0.) ?(limit = stats_history_default_limit) () =
+    match t.persist_dir with
+    | None -> []
+    | Some d ->
+      let limit = if limit < 0 then 0 else limit in
+      if limit = 0 then []
+      else begin
+        let path = Filename.concat d "stats-history.jsonl" in
+        if not (Sys.file_exists path) then []
+        else begin
+          (* Min-heap capped at [limit], keyed on the COMPOUND key (ts, seq)
+             where [seq] is the row's insertion order (file line index). The
+             sqlite backend tie-breaks equal ts by rowid (also insertion order),
+             so ordering the two backends by (ts, seq) makes them return the
+             same rows in the same order for identical inputs — including at a
+             [limit] boundary where several rows share a ts (B286 reviewer P1).
+             Root = smallest retained key; a new row displaces the root only
+             when its key is strictly greater, so the heap holds the [limit]
+             greatest-key rows seen so far. *)
+          let key_gt (t1, s1) (t2, s2) =
+            t1 > t2 || (t1 = t2 && s1 > s2)
+          in
+          let key_lt (t1, s1) (t2, s2) =
+            t1 < t2 || (t1 = t2 && s1 < s2)
+          in
+          let heap = Array.make limit ((neg_infinity, 0), `Null) in
+          let size = ref 0 in
+          let swap i j =
+            let tmp = heap.(i) in heap.(i) <- heap.(j); heap.(j) <- tmp
+          in
+          let sift_up start =
+            let i = ref start in
+            let continue = ref true in
+            while !continue && !i > 0 do
+              let p = (!i - 1) / 2 in
+              if key_gt (fst heap.(p)) (fst heap.(!i)) then (swap !i p; i := p)
+              else continue := false
+            done
+          in
+          let sift_down () =
+            let i = ref 0 in
+            let continue = ref true in
+            while !continue do
+              let l = (2 * !i) + 1 and r = (2 * !i) + 2 in
+              let smallest = ref !i in
+              if l < !size && key_lt (fst heap.(l)) (fst heap.(!smallest)) then smallest := l;
+              if r < !size && key_lt (fst heap.(r)) (fst heap.(!smallest)) then smallest := r;
+              if !smallest <> !i then (swap !i !smallest; i := !smallest)
+              else continue := false
+            done
+          in
+          let consider key j =
+            if !size < limit then begin
+              heap.(!size) <- (key, j);
+              incr size;
+              sift_up (!size - 1)
+            end
+            else if key_gt key (fst heap.(0)) then begin
+              heap.(0) <- (key, j);
+              sift_down ()
+            end
+          in
+          (try
+             let ic = open_in path in
+             Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+               (* [seq] increments for every physical line so it mirrors the
+                  file's insertion order regardless of the [since] filter. *)
+               let seq = ref 0 in
+               try
+                 while true do
+                   let raw = input_line ic in
+                   let this_seq = !seq in
+                   incr seq;
+                   let line = String.trim raw in
+                   if line <> "" then
+                     (try
+                        let j = Yojson.Safe.from_string line in
+                        let ts =
+                          match Yojson.Safe.Util.member "ts" j with
+                          | `Float f -> Some f
+                          | `Int i -> Some (float_of_int i)
+                          | _ -> None
+                        in
+                        (match ts with
+                         | Some ts when Float.is_finite ts && ts >= since ->
+                           consider (ts, this_seq) j
+                         | _ -> ())
+                      with _ -> ())
+                 done
+               with End_of_file -> ())
+           with _ -> ());
+          Array.sub heap 0 !size
+          |> Array.to_list
+          |> List.stable_sort (fun (ka, _) (kb, _) ->
+                 if key_lt ka kb then -1 else if key_gt ka kb then 1 else 0)
+          |> List.map snd
+        end
+      end
+
   let generate_uuid () =
     let random_hex n =
       let chars = "0123456789abcdef" in
@@ -2329,6 +2437,51 @@ end = struct
           [`Float now; `Text (Yojson.Safe.to_string snapshot)]
         |> ignore
       with _ -> ())
+
+  (* B286: read back stats_snapshots rows for GET /stats/history. Selects the
+     most recent [limit] rows with ts >= since (DESC + LIMIT), then reverses to
+     ascending ts. Ties on ts break by [rowid] (insertion order) so equal-ts
+     rows at a [limit] boundary are selected/ordered identically to the memory
+     backend's (ts, seq) key (B286 reviewer P1). Each row becomes
+     {"ts":..,"stats":<json>} matching the memory backend's shape. Best-effort
+     — never raises; a corrupt json column is skipped. *)
+  let query_stats_snapshots t ?(since = 0.) ?(limit = stats_history_default_limit) () =
+    let limit = if limit < 0 then 0 else limit in
+    with_lock t (fun () ->
+      try
+        let conn = t.db in
+        with_stmt conn
+          "SELECT ts, json FROM stats_snapshots WHERE ts >= ? \
+           ORDER BY ts DESC, rowid DESC LIMIT ?"
+          (fun stmt ->
+            Sqlite3.bind_double stmt 1 since |> ignore;
+            Sqlite3.bind_int stmt 2 limit |> ignore;
+            let rows = ref [] in
+            let rec loop () =
+              if Sqlite3.step stmt = Sqlite3.Rc.ROW then begin
+                (try
+                   let ts =
+                     match Sqlite3.Data.to_float (Sqlite3.column stmt 0) with
+                     | Some f -> f
+                     | None ->
+                       float_of_string
+                         (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 0))
+                   in
+                   let json_text =
+                     Sqlite3.Data.to_string_exn (Sqlite3.column stmt 1)
+                   in
+                   let stats = Yojson.Safe.from_string json_text in
+                   rows :=
+                     `Assoc [ ("ts", `Float ts); ("stats", stats) ] :: !rows
+                 with _ -> ());
+                loop ()
+              end
+            in
+            loop ();
+            (* DESC selection accumulated newest-first via prepend, so [!rows]
+               is already ascending by ts. *)
+            !rows)
+      with _ -> [])
 
   let get_lease_row_fields row =
     match row with
@@ -4810,6 +4963,36 @@ end = struct
       ("observer", Relay_ws_server.observer_cap_stats_json ());
     ])
 
+  (* B286: public historical /stats API for graphing on the relay site.
+     Anonymous-read, aggregates only (each snapshot's embedded stats carries no
+     aliases / PII — same posture as GET /stats). [since] (unix seconds) filters
+     to snapshots recorded at/after that time; [limit] caps the number of
+     returned snapshots to the most recent N (default
+     [stats_history_default_limit], hard-capped at [stats_history_max_limit]).
+     Snapshots are returned oldest-first for direct plotting. *)
+  let handle_stats_history relay ~since ~limit =
+    let now = Unix.gettimeofday () in
+    let limit =
+      let l = match limit with Some l -> l | None -> stats_history_default_limit in
+      let l = if l < 0 then 0 else l in
+      min l stats_history_max_limit
+    in
+    (* Non-finite since would fail JSON serialization when echoed below; the
+       query parser already drops nan/inf, but clamp defensively so a direct
+       caller can't 500 the endpoint. *)
+    let since =
+      match since with Some s when Float.is_finite s -> s | _ -> 0.
+    in
+    let snapshots = R.query_stats_snapshots relay ~since ~limit () in
+    respond_ok (json_ok [
+      ("generated_at", `Float now);
+      ("generated_ago", `String (Relay_common.humanize_ago 0.));
+      ("since", `Float since);
+      ("limit", `Int limit);
+      ("count", `Int (List.length snapshots));
+      ("snapshots", `List snapshots);
+    ])
+
   let handle_register relay ~relay_url ~token body =
     let node_id = get_string body "node_id" in
     let session_id = get_string body "session_id" in
@@ -6800,6 +6983,24 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
       | Some v -> let v = String.lowercase_ascii v in v = "1" || v = "true" || v = "yes"
       | None -> false
     in
+    (* B286: optional numeric query params for /stats/history (malformed values
+       fall back to None so the handler applies its defaults). *)
+    let query_float name =
+      match Uri.get_query_param uri name with
+      | Some v ->
+        (try
+           let f = float_of_string (String.trim v) in
+           (* Reject nan/inf: they'd later fail Yojson serialization when the
+              handler echoes the value, turning a bad query into a 500. *)
+           if Float.is_finite f then Some f else None
+         with _ -> None)
+      | None -> None
+    in
+    let query_int name =
+      match Uri.get_query_param uri name with
+      | Some v -> (try Some (int_of_string (String.trim v)) with _ -> None)
+      | None -> None
+    in
 
     (* Auth check — L2/4 hard cut (spec §5.1, approved 2026-04-21).
        Peer routes require Ed25519 per-request signature; admin routes
@@ -7130,6 +7331,10 @@ If you just renamed/re-registered, re-run: c2c relay register --alias %s \
 
       | `GET, "/stats" ->
         handle_stats relay
+
+      | `GET, "/stats/history" ->
+        handle_stats_history relay ~since:(query_float "since")
+          ~limit:(query_int "limit")
 
       | `GET, "/list" ->
         handle_list relay ~include_dead:(query_bool "include_dead")

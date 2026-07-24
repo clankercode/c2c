@@ -183,6 +183,17 @@ module type RELAY = sig
      backend appends a line to <persist_dir>/stats-history.jsonl (no-op
      without persist_dir). Driven hourly by the server loop. Never raises. *)
   val record_stats_snapshot : t -> now:float -> unit
+  (* B286: read back the historical snapshots recorded by
+     [record_stats_snapshot] for the public GET /stats/history graphing API.
+     Returns a list of [{"ts": <float>, "stats": <stats-object>}] elements in
+     ASCENDING ts order (oldest first, natural for plotting). [since] filters
+     to snapshots with ts >= since (default 0., i.e. all); [limit] caps the
+     result to the most recent [limit] matching snapshots (still returned
+     ascending). Aggregates only — the embedded stats object carries no
+     aliases / PII, same posture as GET /stats. Never raises; a backend
+     without persistence returns []. *)
+  val query_stats_snapshots :
+    t -> ?since:float -> ?limit:int -> unit -> Yojson.Safe.t list
   (* B262/B263: recipient-owned, sender-bound contact grants. See
      .collab/design/2026-07-22-b262-contact-grant-protocol.md.
 
@@ -243,6 +254,16 @@ end
 (* --- B147: usage-stats window definitions shared by both backends --- *)
 
 let stats_windows = [ ("1d", 86_400.); ("7d", 7. *. 86_400.); ("28d", 28. *. 86_400.) ]
+
+(* --- B286: GET /stats/history response bounds. [stats_history_default_limit]
+   is applied by both the HTTP handler and the backends' query_stats_snapshots
+   when the caller omits [limit].    [stats_history_max_limit] is the hard cap the
+   HTTP handler clamps the requested limit to; since the memory backend's
+   in-flight retention is O(limit), that cap also bounds its per-request
+   memory. Direct backend callers are trusted and are only guarded against a
+   negative limit. *)
+let stats_history_default_limit = 2000
+let stats_history_max_limit = 10_000
 
 (* B174: resolve the machine key used by unique_machines / connected.machines.
    Prefer the client-reported opaque host id (stable per physical/VM host via

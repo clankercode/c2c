@@ -202,6 +202,7 @@ let landing_html_tail = {|
 <pre>GET  /              this page                            (anonymous)
 GET  /health        liveness probe                       (anonymous)
 GET  /stats         usage stats over 1d/7d/28d/ever      (anonymous)
+GET  /stats/history  historical /stats snapshots for graphs (anonymous; ?since=&amp;limit=)
 GET  /list          list peers — Ed25519 peer auth       (?include_dead=1 → Bearer admin)
 GET  /list_rooms    list rooms: public + gated; unlisted for verified members (B230); public rosters as alias#room@relay; gated roster redacted (B229)
 GET  /pubkey/&lt;alias&gt;  a peer's ed25519/x25519 identity keys   (Ed25519 peer auth)
@@ -248,6 +249,20 @@ when a host id is absent) so multi-session hosts are not over-counted.
 Version/OS come from client-reported <code>/register</code> metadata; older
 clients land under <code>"unknown"</code>. The server also appends an hourly
 historical snapshot of the full stats JSON to its store.</p>
+
+<p><code>GET /stats/history</code> exposes those historical snapshots for
+graphing &mdash; same anonymous, aggregate-only posture as <code>/stats</code>.
+It returns <code>snapshots</code>, an oldest-first array of
+<code>{ ts, stats }</code> entries where each <code>stats</code> is the
+windowed usage aggregation (the <code>stats</code> member of the live
+<code>/stats</code> response) as recorded at <code>ts</code> (epoch seconds).
+The live-only envelope fields (<code>generated_at</code>,
+<code>generated_ago</code>, <code>ws</code>, <code>observer</code>) are not
+part of a stored snapshot. Optional query params:
+<code>?since=&lt;epoch-seconds&gt;</code>
+(only snapshots at/after that time) and <code>?limit=&lt;n&gt;</code> (most
+recent N, capped server-side). The response also echoes
+<code>since</code>, <code>limit</code>, and <code>count</code>.</p>
 
 <p>This is a curated quick-reference, not the full route set. Internal
 inter-relay federation routes (<code>/forward</code>,
