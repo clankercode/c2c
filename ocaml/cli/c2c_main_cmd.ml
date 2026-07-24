@@ -108,6 +108,7 @@ let all_cmds =
   ; C2c_agent_help.agent_help
   ; C2c_watch.watch_cmd
   ; C2c_root_cmd.help
+  ; C2c_root_cmd.version
   ]
 
 let run () =
