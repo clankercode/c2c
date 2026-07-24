@@ -47,6 +47,30 @@ let path_detectable_clients =
   ; ("cursor", [ "cursor-agent" ])
   ]
 
+(* Is [name] resolvable on the current PATH? *)
+let has_bin_on_path name =
+  let path = try Sys.getenv "PATH" with Not_found -> "" in
+  List.exists (fun d -> Sys.file_exists (d // name))
+    (String.split_on_char ':' path)
+
+(* Clients from [path_detectable_clients] whose identifying binary is on PATH.
+   Shared by [detect_client] and `c2c dev detect-agent-type` so the PATH signal
+   stays in lockstep (B134). More than one distinct client means the PATH
+   evidence is ambiguous and callers must fail closed (B102). *)
+let path_detected_clients () =
+  List.filter
+    (fun (_client, bins) -> List.exists has_bin_on_path bins)
+    path_detectable_clients
+  |> List.map fst
+
+(* The managed c2c session-id prefix that matches [sid], if any (B134). *)
+let session_id_prefix_match sid =
+  List.find_opt
+    (fun c ->
+      let cl = String.length c in
+      String.length sid >= cl && String.sub sid 0 cl = c)
+    C2c_setup.detect_client_prefixes
+
 let detect_client () =
   (* A shell commonly has several agent CLIs on PATH.  Picking the first one
      makes the result depend on an arbitrary list order (B102: a Claude Code
@@ -58,28 +82,14 @@ let detect_client () =
   | Some _ as client -> client
   | None ->
       (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-       | Some sid ->
-           List.find_opt (fun c ->
-             let cl = String.length c in
-             String.length sid >= cl && String.sub sid 0 cl = c)
-             C2c_setup.detect_client_prefixes
+       | Some sid -> session_id_prefix_match sid
        | None -> None)
       |> (function
           | Some _ as client -> client
           | None ->
-              let has_bin name =
-                let path = try Sys.getenv "PATH" with Not_found -> "" in
-                List.exists (fun d -> Sys.file_exists (d // name))
-                  (String.split_on_char ':' path)
-              in
-              match
-                List.filter
-                  (fun (_client, bins) -> List.exists has_bin bins)
-                  path_detectable_clients
-                |> List.map fst
-              with
-              | [ client ] -> Some client
-              | _ -> None)
+              (match path_detected_clients () with
+               | [ client ] -> Some client
+               | _ -> None))
 
 let init_cmd =
   let open Cmdliner in

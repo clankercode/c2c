@@ -1346,6 +1346,64 @@ let test_init_codex_thread_id_beats_cursor_ancestry () =
     (registration_client_type ~broker:tmp ~session_id:sid)
 
 (* ---------------------------------------------------------------- *)
+(* B288: `c2c dev detect-agent-type` reports the detected client + signals. *)
+
+let test_dev_detect_agent_type_cursor_ancestry_json () =
+  (* A cursor-agent process ancestor with no CURSOR_* env: the command must
+     report detected_client=cursor, alias_prefix=cursor, the ancestry signal,
+     and echo the ancestor chain — reusing the SAME detector as init. *)
+  with_temp_env @@ fun tmp ->
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "C2C_DETECT_ANCESTOR_COMMS", "bash:cursor-agent:node" ]
+      ~home:tmp ~broker:tmp
+      [ "dev"; "detect-agent-type"; "--json" ]
+  in
+  check int ("dev detect-agent-type exits 0: " ^ err) 0 rc;
+  let json =
+    try Yojson.Safe.from_string out
+    with _ -> failf "expected JSON, got: %s" out
+  in
+  check (option string) "detected_client=cursor" (Some "cursor")
+    (json_str_member "detected_client" json);
+  check (option string) "alias_prefix=cursor" (Some "cursor")
+    (json_str_member "alias_prefix" json);
+  check (option bool) "cursor_agent_ancestor=true" (Some true)
+    (json_bool_member "cursor_agent_ancestor" json);
+  let ancestry =
+    Option.value (json_string_list_member "process_ancestry" json) ~default:[]
+  in
+  check bool "process_ancestry lists cursor-agent" true
+    (List.mem "cursor-agent" ancestry);
+  (* configurable_clients is always present and non-empty. *)
+  let configurable =
+    Option.value
+      (json_string_list_member "configurable_clients" json)
+      ~default:[]
+  in
+  check bool "configurable_clients non-empty" true (configurable <> [])
+
+let test_dev_detect_agent_type_codex_env_human () =
+  (* CODEX_THREAD_ID set: human output names codex and surfaces the env marker.
+     Ancestry neutralized so the env marker is unambiguously the winning signal. *)
+  with_temp_env @@ fun tmp ->
+  let sid = Printf.sprintf "codex-detect-%d" (Unix.getpid ()) in
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "CODEX_THREAD_ID", sid
+           ; "C2C_DETECT_ANCESTOR_COMMS", "test-runner-neutral" ]
+      ~home:tmp ~broker:tmp
+      [ "dev"; "detect-agent-type" ]
+  in
+  check int ("dev detect-agent-type exits 0: " ^ err) 0 rc;
+  check bool "human output names codex" true
+    (string_contains out "Detected client:   codex");
+  check bool "human output shows CODEX_THREAD_ID marker" true
+    (string_contains out ("CODEX_THREAD_ID=" ^ sid));
+  check bool "human output labels no cursor ancestor" true
+    (string_contains out "cursor-agent ancestor: no")
+
+(* ---------------------------------------------------------------- *)
 (* Alcotest registration *)
 
 let () =
@@ -1373,6 +1431,12 @@ let () =
             test_init_detects_cursor_from_process_ancestry
         ; test_case "init CODEX_THREAD_ID beats cursor ancestry (B288)" `Quick
             test_init_codex_thread_id_beats_cursor_ancestry
+        ] )
+    ; ( "dev_detect_agent_type",
+        [ test_case "dev detect-agent-type reports cursor ancestry (B288)" `Quick
+            test_dev_detect_agent_type_cursor_ancestry_json
+        ; test_case "dev detect-agent-type reports codex env marker (B288)" `Quick
+            test_dev_detect_agent_type_codex_env_human
         ] )
     ; ( "relay_identity",
         [ test_case "relay identity show parses identity.json" `Quick test_relay_identity_show
