@@ -726,6 +726,101 @@ let truthy_env_flag = function
       v <> "" && not (List.mem v [ "0"; "false"; "no" ])
   | None -> false
 
+(* --- process ancestry --------------------------------------------------- *)
+
+let read_ppid pid =
+  try
+    let ic = open_in (Printf.sprintf "/proc/%d/status" pid) in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      let rec loop () =
+        match input_line ic with
+        | line when String.length line >= 5 && String.sub line 0 5 = "PPid:" ->
+            int_of_string_opt (String.trim (String.sub line 5 (String.length line - 5)))
+        | _ -> loop ()
+        | exception End_of_file -> None
+      in
+      loop ())
+  with _ -> None
+
+let ancestor_pids ?(max_depth = 32) start_pid =
+  let rec walk pid depth acc =
+    if depth <= 0 || pid <= 1 then List.rev acc
+    else
+      match read_ppid pid with
+      | None -> List.rev (pid :: acc)
+      | Some ppid -> walk ppid (depth - 1) (pid :: acc)
+  in
+  walk start_pid max_depth []
+
+(* /proc/<pid>/comm is the 15-char-truncated process name; "cursor-agent"
+   (12 chars) survives truncation. *)
+let read_proc_comm pid =
+  try
+    let ic = open_in (Printf.sprintf "/proc/%d/comm" pid) in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      match input_line ic with
+      | line -> Some (String.trim line)
+      | exception End_of_file -> None)
+  with _ -> None
+
+(* /proc/<pid>/cmdline is NUL-separated argv; in_channel_length reports 0 for
+   procfs, so read the bytes directly and take the basename of argv0. This
+   recovers the real program name when comm was rewritten (e.g. a node-based
+   cursor-agent whose comm is "node"). *)
+let proc_cmdline_argv0_basename pid =
+  try
+    let ic = open_in_bin (Printf.sprintf "/proc/%d/cmdline" pid) in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+      let buf = Buffer.create 256 in
+      let chunk = Bytes.create 4096 in
+      let rec loop () =
+        let n = input ic chunk 0 4096 in
+        if n > 0 then (Buffer.add_subbytes buf chunk 0 n; loop ())
+      in
+      loop ();
+      let content = Buffer.contents buf in
+      let argv0 =
+        match String.index_opt content '\000' with
+        | Some i -> String.sub content 0 i
+        | None -> content
+      in
+      let argv0 = String.trim argv0 in
+      if argv0 = "" then None else Some (Filename.basename argv0))
+  with _ -> None
+
+(* Ancestor process command names, most-recent-first. Test seam: when
+   C2C_DETECT_ANCESTOR_COMMS is set (colon-separated), it stands in for the
+   walked ancestor names so process-based detection is hermetic (mirrors the
+   C2C_GROK_ACTIVE_SESSIONS override pattern). *)
+let ancestor_command_names () =
+  match Sys.getenv_opt "C2C_DETECT_ANCESTOR_COMMS" with
+  | Some s when String.trim s <> "" ->
+      String.split_on_char ':' s
+      |> List.filter_map (fun x ->
+             let x = String.trim x in
+             if x = "" then None else Some x)
+  | _ ->
+      let pids = ancestor_pids (Unix.getpid ()) in
+      List.concat_map
+        (fun pid ->
+          (match read_proc_comm pid with Some c -> [ c ] | None -> [])
+          @ (match proc_cmdline_argv0_basename pid with Some b -> [ b ] | None -> []))
+        pids
+
+(* B288: some cursor-agent invocation contexts do not export CURSOR_* env
+   markers (measured live: PATH-visible cursor-agent, no CURSOR_AGENT), so env
+   inference alone mislabels the session. The parent process chain still names
+   cursor-agent — specific, unambiguous evidence that wins even when several
+   agent CLIs share the PATH (where PATH-uniqueness must fail closed). Match the
+   basename "cursor-agent" exactly (not bare "cursor", which would also catch
+   the unrelated Cursor editor binary). *)
+let cursor_agent_process_ancestor () =
+  List.exists
+    (fun name ->
+      let b = Filename.basename (String.trim name) in
+      b = "cursor-agent")
+    (ancestor_command_names ())
+
 (* Cursor Agent (unofficial / best-effort — B134 labeling + B284 session id):
    not a first-class install/hooks client, but must not be mislabeled as Codex
    when CURSOR_AGENT / CURSOR_INVOKED_AS markers are present, and should resolve
@@ -790,6 +885,10 @@ let inferred_client_type_from_env () =
       else if grok_agent_env_present () then Some "grok"
       else if agy_env_present () then Some "agy"
       else if cursor_agent_env_present () then Some "cursor"
+      (* B288: no env marker matched — fall back to process ancestry so a
+         cursor-agent session with no CURSOR_* env still self-labels cursor.
+         Kept last so every genuine harness-native marker wins first. *)
+      else if cursor_agent_process_ancestor () then Some "cursor"
       else None
 
 (* Grok tool shells lack GROK_SESSION_ID. Resolve the live session by matching
@@ -801,30 +900,6 @@ let grok_active_sessions_path () =
   | _ ->
       let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
       Filename.concat home (Filename.concat ".grok" "active_sessions.json")
-
-let read_ppid pid =
-  try
-    let ic = open_in (Printf.sprintf "/proc/%d/status" pid) in
-    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
-      let rec loop () =
-        match input_line ic with
-        | line when String.length line >= 5 && String.sub line 0 5 = "PPid:" ->
-            int_of_string_opt (String.trim (String.sub line 5 (String.length line - 5)))
-        | _ -> loop ()
-        | exception End_of_file -> None
-      in
-      loop ())
-  with _ -> None
-
-let ancestor_pids ?(max_depth = 32) start_pid =
-  let rec walk pid depth acc =
-    if depth <= 0 || pid <= 1 then List.rev acc
-    else
-      match read_ppid pid with
-      | None -> List.rev (pid :: acc)
-      | Some ppid -> walk ppid (depth - 1) (pid :: acc)
-  in
-  walk start_pid max_depth []
 
 let session_id_from_grok_active_sessions () =
   let path = grok_active_sessions_path () in

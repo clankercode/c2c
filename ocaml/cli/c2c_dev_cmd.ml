@@ -15,6 +15,7 @@ let dev_group =
     ; C2c_worktree.worktree_group
     ; C2c_sitrep.sitrep_group
     ; C2c_peer_pass.peer_pass_group
+    ; C2c_detect_agent_cmd.detect_agent_type
     ]
   in
   let tier3_subs =

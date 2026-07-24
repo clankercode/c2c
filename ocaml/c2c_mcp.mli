@@ -929,8 +929,22 @@ val inferred_client_type_from_env : unit -> string option
     [C2C_MCP_CLIENT_TYPE], then harness-native session keys ([CODEX_THREAD_ID],
     Claude, OpenCode, [GROK_SESSION_ID]), then [GROK_AGENT], Antigravity
     ([ANTIGRAVITY_CONVERSATION_ID] / hook / LS markers), then unofficial Cursor
-    Agent markers ([CURSOR_AGENT] / [CURSOR_INVOKED_AS=cursor-agent]) —
+    Agent markers ([CURSOR_AGENT] / [CURSOR_INVOKED_AS=cursor-agent]), and
+    finally process ancestry (a [cursor-agent] parent process; B288) —
     best-effort labeling only (B134/B187); not install/hooks parity. *)
+
+val ancestor_command_names : unit -> string list
+(** Command names (comm + cmdline argv0 basename) of this process's ancestor
+    chain, most-recent-first. Test seam: [C2C_DETECT_ANCESTOR_COMMS]
+    (colon-separated) stands in for the walked chain so ancestry-based
+    detection is hermetic (B288). Exposed for [c2c dev detect-agent-type] and
+    ancestry tests. *)
+
+val cursor_agent_process_ancestor : unit -> bool
+(** [true] when an ancestor process's command basename is exactly
+    [cursor-agent] (not bare [cursor]). Specific, env-independent evidence that
+    the session is a Cursor Agent, used as the last branch of
+    [inferred_client_type_from_env] (B288). *)
 
 val session_id_from_env : ?client_type:string -> unit -> string option
 (** Resolve the current broker session id from the ambient client env. Prefers

@@ -32,10 +32,44 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
    in lockstep so GROK_SESSION_ID / Cursor markers are not silently dropped. *)
 let native_client_type_from_env () = C2c_mcp.inferred_client_type_from_env ()
 
-(* PATH uniqueness candidates (B102/B134). Include grok; do NOT include Cursor
-   (no reliable PATH binary — Cursor uses env markers only). When more than one
-   of these is present, fail closed (None) rather than silently picking Codex. *)
-let path_detectable_binaries = [ "opencode"; "claude"; "codex"; "kimi"; "grok" ]
+(* PATH uniqueness candidates (B102/B134/B288). Each client maps to the binary
+   name(s) that identify it on PATH — usually the client name itself, but Cursor
+   ships as `cursor-agent`. When more than one distinct client is present, fail
+   closed (None) rather than silently picking one. Cursor is detected primarily
+   by env markers / process ancestry (native_client_type_from_env); this PATH
+   entry only fires when cursor-agent is the *sole* agent CLI on PATH. *)
+let path_detectable_clients =
+  [ ("opencode", [ "opencode" ])
+  ; ("claude", [ "claude" ])
+  ; ("codex", [ "codex" ])
+  ; ("kimi", [ "kimi" ])
+  ; ("grok", [ "grok" ])
+  ; ("cursor", [ "cursor-agent" ])
+  ]
+
+(* Is [name] resolvable on the current PATH? *)
+let has_bin_on_path name =
+  let path = try Sys.getenv "PATH" with Not_found -> "" in
+  List.exists (fun d -> Sys.file_exists (d // name))
+    (String.split_on_char ':' path)
+
+(* Clients from [path_detectable_clients] whose identifying binary is on PATH.
+   Shared by [detect_client] and `c2c dev detect-agent-type` so the PATH signal
+   stays in lockstep (B134). More than one distinct client means the PATH
+   evidence is ambiguous and callers must fail closed (B102). *)
+let path_detected_clients () =
+  List.filter
+    (fun (_client, bins) -> List.exists has_bin_on_path bins)
+    path_detectable_clients
+  |> List.map fst
+
+(* The managed c2c session-id prefix that matches [sid], if any (B134). *)
+let session_id_prefix_match sid =
+  List.find_opt
+    (fun c ->
+      let cl = String.length c in
+      String.length sid >= cl && String.sub sid 0 cl = c)
+    C2c_setup.detect_client_prefixes
 
 let detect_client () =
   (* A shell commonly has several agent CLIs on PATH.  Picking the first one
@@ -48,23 +82,14 @@ let detect_client () =
   | Some _ as client -> client
   | None ->
       (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
-       | Some sid ->
-           List.find_opt (fun c ->
-             let cl = String.length c in
-             String.length sid >= cl && String.sub sid 0 cl = c)
-             C2c_setup.detect_client_prefixes
+       | Some sid -> session_id_prefix_match sid
        | None -> None)
       |> (function
           | Some _ as client -> client
           | None ->
-              let has_bin name =
-                let path = try Sys.getenv "PATH" with Not_found -> "" in
-                List.exists (fun d -> Sys.file_exists (d // name))
-                  (String.split_on_char ':' path)
-              in
-              match List.filter has_bin path_detectable_binaries with
-              | [ client ] -> Some client
-              | _ -> None)
+              (match path_detected_clients () with
+               | [ client ] -> Some client
+               | _ -> None))
 
 let init_cmd =
   let open Cmdliner in
