@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-24T07:38:58Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-24T07:33:27Z"
 depends_on: []
 estimate_hours: 1
 id: B289
 priority: high
-status: pending
+started_at: "2026-07-24T07:38:58Z"
+status: in_progress
 tags: []
 title: c2c version should be the same as c2c --version (or more detailed, that's fine too, including update check status / version status)
-updated_at: "2026-07-24T07:33:27Z"
+updated_at: "2026-07-24T07:38:58Z"
 ---
 
 c2c version should be the same as c2c --version (or more detailed, that's fine too, including update check status / version status)

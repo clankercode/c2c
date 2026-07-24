@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-07-24T07:38:58Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-07-23T14:58:50Z"
 depends_on: []
 estimate_hours: 1
 id: B286
 priority: high
-status: pending
+started_at: "2026-07-24T07:38:58Z"
+status: in_progress
 tags: []
 title: should save historical /stats to db and expose them via API so that we can show graphs on https://relay.c2c.im/
-updated_at: "2026-07-23T14:58:50Z"
+updated_at: "2026-07-24T07:38:58Z"
 ---
 
 should save historical /stats to db and expose them via API so that we can show graphs on https://relay.c2c.im/
