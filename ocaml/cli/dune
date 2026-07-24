@@ -274,6 +274,15 @@
  (libraries alcotest unix)
  (deps c2c.exe))
 
+; B287: `c2c --version` must report BUILD time, not the wall clock. Pure
+; assertions on Version.build_identity / display_with_clock plus an
+; end-to-end smoke test that shells out to the compiled binary.
+(test
+ (name test_c2c_version)
+ (modules test_c2c_version)
+ (libraries c2c_mcp alcotest unix)
+ (deps c2c.exe))
+
 ; #157 slice 1: c2c await-reply CLI subcommand (kimi PreToolUse hook backend).
 (test
  (name test_c2c_await_reply)
