@@ -285,3 +285,4 @@ bugs:
     - file: B286-should-save-historical-stats-t.todo
     - file: B287-if-c2c-version-shows-the-curre.todo
     - file: B288-the-list-of-detected-clients-f.todo
+    - file: B289-c2c-version-should-be-the-same.todo
