@@ -32,10 +32,20 @@ let valid_strategies = [ "first-alive"; "round-robin"; "broadcast" ]
    in lockstep so GROK_SESSION_ID / Cursor markers are not silently dropped. *)
 let native_client_type_from_env () = C2c_mcp.inferred_client_type_from_env ()
 
-(* PATH uniqueness candidates (B102/B134). Include grok; do NOT include Cursor
-   (no reliable PATH binary — Cursor uses env markers only). When more than one
-   of these is present, fail closed (None) rather than silently picking Codex. *)
-let path_detectable_binaries = [ "opencode"; "claude"; "codex"; "kimi"; "grok" ]
+(* PATH uniqueness candidates (B102/B134/B288). Each client maps to the binary
+   name(s) that identify it on PATH — usually the client name itself, but Cursor
+   ships as `cursor-agent`. When more than one distinct client is present, fail
+   closed (None) rather than silently picking one. Cursor is detected primarily
+   by env markers / process ancestry (native_client_type_from_env); this PATH
+   entry only fires when cursor-agent is the *sole* agent CLI on PATH. *)
+let path_detectable_clients =
+  [ ("opencode", [ "opencode" ])
+  ; ("claude", [ "claude" ])
+  ; ("codex", [ "codex" ])
+  ; ("kimi", [ "kimi" ])
+  ; ("grok", [ "grok" ])
+  ; ("cursor", [ "cursor-agent" ])
+  ]
 
 let detect_client () =
   (* A shell commonly has several agent CLIs on PATH.  Picking the first one
@@ -62,7 +72,12 @@ let detect_client () =
                 List.exists (fun d -> Sys.file_exists (d // name))
                   (String.split_on_char ':' path)
               in
-              match List.filter has_bin path_detectable_binaries with
+              match
+                List.filter
+                  (fun (_client, bins) -> List.exists has_bin bins)
+                  path_detectable_clients
+                |> List.map fst
+              with
               | [ client ] -> Some client
               | _ -> None)
 

@@ -47,7 +47,7 @@ let c2c_binary =
   let dir = Filename.dirname exe in
   Filename.concat dir "c2c.exe"
 
-let c2c_base_env ~home ~broker ?(env=[]) () =
+let c2c_base_env ~home ~broker ?(env=[]) ?path () =
   let home_dir = home in
   let broker_dir = Filename.concat broker "broker" in
   mkdir_p home_dir;
@@ -78,9 +78,15 @@ let c2c_base_env ~home ~broker ?(env=[]) () =
   ; "C2C_MCP_CLIENT_TYPE="
   ; "C2C_MCP_AUTO_REGISTER_ALIAS="
   ; "C2C_INSTANCE_NAME="
+  (* B288: neutralize process-ancestry cursor detection by default so tests are
+     deterministic regardless of the host session that runs the suite (e.g. a
+     developer running from inside a Cursor terminal). Tests that exercise
+     ancestry detection override this via the [env] list (last assignment
+     wins under `env`). *)
+  ; "C2C_DETECT_ANCESTOR_COMMS=test-runner-neutral"
   ]
   @ List.map (fun (k,v) -> k ^ "=" ^ v) env
-  @ [ "PATH=" ^ Sys.getenv "PATH" ]
+  @ [ "PATH=" ^ (match path with Some p -> p | None -> Sys.getenv "PATH") ]
 
 (** Run c2c with a given HOME + broker root, capture exit code + combined output. *)
 let run_c2c ?(env=[]) ~home ~broker args =
@@ -100,7 +106,7 @@ let decode_sys_command_status = function
   | n when n > 0 && n land 0x7f = 0 -> n lsr 8
   | n -> n
 
-let run_c2c_status_split ?(env=[]) ~home ~broker args =
+let run_c2c_status_split ?(env=[]) ?path ~home ~broker args =
   let binary =
     if Sys.file_exists c2c_binary then c2c_binary else "c2c"
   in
@@ -111,7 +117,7 @@ let run_c2c_status_split ?(env=[]) ~home ~broker args =
       (try Sys.remove out_file with _ -> ());
       (try Sys.remove err_file with _ -> ()))
     (fun () ->
-      let env_str = String.concat " " (c2c_base_env ~home ~broker ~env ()) in
+      let env_str = String.concat " " (c2c_base_env ~home ~broker ~env ?path ()) in
       let args_str = String.concat " " (List.map Filename.quote args) in
       let cmd = Printf.sprintf "env %s %s %s >%s 2>%s"
         env_str (Filename.quote binary) args_str
@@ -1229,6 +1235,116 @@ let test_init_codex_thread_id_still_codex () =
   check (option string) "registration client_type=codex" (Some "codex")
     (registration_client_type ~broker:tmp ~session_id:sid)
 
+(* B288: detection inventory must exceed the installable-client set. A
+   cursor-agent session that does NOT export CURSOR_* env must still yield a
+   cursor- alias — via PATH (cursor-agent the sole agent CLI) or process
+   ancestry — while genuinely ambiguous multi-CLI PATHs still fail closed. *)
+
+let make_fake_bin dir name =
+  mkdir_p dir;
+  let path = dir // name in
+  let oc = open_out path in
+  output_string oc "#!/bin/sh\nexit 0\n";
+  close_out oc;
+  Unix.chmod path 0o755
+
+let alias_of_init_json out =
+  match Yojson.Safe.from_string out |> json_assoc_string "alias" with
+  | Some a -> a
+  | None -> failf "init --json missing alias: %s" out
+
+let test_init_detects_cursor_from_path_binary_no_env () =
+  (* cursor-agent is the only agent CLI on PATH and no CURSOR_* env is set:
+     PATH-based detection must still pick cursor (not the None → agent-
+     fallback). Ancestry neutralized so PATH is the sole signal. *)
+  with_temp_env @@ fun tmp ->
+  let bindir = tmp // "fakebin" in
+  make_fake_bin bindir "cursor-agent";
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "C2C_DETECT_ANCESTOR_COMMS", "test-runner-neutral" ]
+      ~path:(bindir ^ ":/usr/bin:/bin")
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias = alias_of_init_json out in
+  check bool ("alias starts with cursor-: " ^ alias) true
+    (String.starts_with ~prefix:"cursor-" alias);
+  let sid =
+    match Yojson.Safe.from_string out |> json_assoc_string "session_id" with
+    | Some s -> s
+    | None -> failf "init --json missing session_id: %s" out
+  in
+  check (option string) "registration client_type=cursor" (Some "cursor")
+    (registration_client_type ~broker:tmp ~session_id:sid)
+
+let test_init_multi_path_agents_fail_closed () =
+  (* Two distinct agent CLIs on PATH (cursor-agent + claude), no env, no
+     ancestry evidence: detection must fail closed to the generic agent-
+     prefix rather than guess cursor or claude (B102). *)
+  with_temp_env @@ fun tmp ->
+  let bindir = tmp // "fakebin" in
+  make_fake_bin bindir "cursor-agent";
+  make_fake_bin bindir "claude";
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "C2C_DETECT_ANCESTOR_COMMS", "test-runner-neutral" ]
+      ~path:(bindir ^ ":/usr/bin:/bin")
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias = alias_of_init_json out in
+  check bool ("alias starts with agent- (fail closed): " ^ alias) true
+    (String.starts_with ~prefix:"agent-" alias);
+  check bool ("alias not cursor-: " ^ alias) false
+    (String.starts_with ~prefix:"cursor-" alias);
+  check bool ("alias not claude-: " ^ alias) false
+    (String.starts_with ~prefix:"claude-" alias)
+
+let test_init_detects_cursor_from_process_ancestry () =
+  (* Real (multi-CLI) PATH where uniqueness fails, no CURSOR_* env: a
+     cursor-agent process ancestor is specific evidence and must win, yielding
+     a cursor- alias. *)
+  with_temp_env @@ fun tmp ->
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "C2C_DETECT_ANCESTOR_COMMS", "bash:cursor-agent:node" ]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias = alias_of_init_json out in
+  check bool ("alias starts with cursor-: " ^ alias) true
+    (String.starts_with ~prefix:"cursor-" alias);
+  let sid =
+    match Yojson.Safe.from_string out |> json_assoc_string "session_id" with
+    | Some s -> s
+    | None -> failf "init --json missing session_id: %s" out
+  in
+  check (option string) "registration client_type=cursor" (Some "cursor")
+    (registration_client_type ~broker:tmp ~session_id:sid)
+
+let test_init_codex_thread_id_beats_cursor_ancestry () =
+  (* B134: a genuine harness-native marker (CODEX_THREAD_ID) must beat a
+     cursor-agent process ancestor — env evidence outranks ancestry. *)
+  with_temp_env @@ fun tmp ->
+  let sid = Printf.sprintf "codex-b288-%d" (Unix.getpid ()) in
+  let rc, out, err =
+    run_c2c_status_split
+      ~env:[ "CODEX_THREAD_ID", sid
+           ; "C2C_DETECT_ANCESTOR_COMMS", "cursor-agent" ]
+      ~home:tmp ~broker:tmp
+      ["init"; "--no-setup"; "--room"; ""; "--json"]
+  in
+  check int ("init exits 0: " ^ err) 0 rc;
+  let alias = alias_of_init_json out in
+  check bool ("alias starts with codex-: " ^ alias) true
+    (String.starts_with ~prefix:"codex-" alias);
+  check (option string) "registration client_type=codex" (Some "codex")
+    (registration_client_type ~broker:tmp ~session_id:sid)
+
 (* ---------------------------------------------------------------- *)
 (* Alcotest registration *)
 
@@ -1249,6 +1365,14 @@ let () =
         ; test_case "init Cursor no-askpass whoami beside foreign (B284)" `Quick
             test_init_cursor_no_askpass_whoami_beside_foreign
         ; test_case "init CODEX_THREAD_ID still codex (B134)" `Quick test_init_codex_thread_id_still_codex
+        ; test_case "init cursor-agent via PATH (no env) → cursor (B288)" `Quick
+            test_init_detects_cursor_from_path_binary_no_env
+        ; test_case "init multi-agent PATH fails closed to agent- (B288)" `Quick
+            test_init_multi_path_agents_fail_closed
+        ; test_case "init cursor via process ancestry (no env) → cursor (B288)" `Quick
+            test_init_detects_cursor_from_process_ancestry
+        ; test_case "init CODEX_THREAD_ID beats cursor ancestry (B288)" `Quick
+            test_init_codex_thread_id_beats_cursor_ancestry
         ] )
     ; ( "relay_identity",
         [ test_case "relay identity show parses identity.json" `Quick test_relay_identity_show

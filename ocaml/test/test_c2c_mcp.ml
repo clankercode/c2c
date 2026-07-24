@@ -2194,7 +2194,16 @@ let with_scrubbed_client_env f =
     ]
   in
   List.iter (fun k -> Unix.putenv k "") keys;
-  Fun.protect ~finally:(fun () -> List.iter (fun k -> Unix.putenv k "") keys) f
+  (* B288: neutralize process-ancestry cursor detection to a non-cursor
+     sentinel (an empty value means "walk /proc", which is non-deterministic
+     when the suite runs from inside a Cursor terminal). Tests that exercise
+     ancestry set this explicitly. *)
+  Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "test-runner-neutral";
+  Fun.protect
+    ~finally:(fun () ->
+      List.iter (fun k -> Unix.putenv k "") keys;
+      Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "")
+    f
 
 let test_inferred_client_type_from_env_grok () =
   with_scrubbed_client_env (fun () ->
@@ -2353,6 +2362,34 @@ let test_session_id_from_env_cursor_without_askpass_is_none () =
       Unix.putenv "CURSOR_AGENT" "1";
       check (option string) "cursor client without askpass → no sid" None
         (C2c_mcp.session_id_from_env ()))
+
+let test_inferred_client_type_cursor_from_process_ancestry () =
+  (* B288: a cursor-agent process ancestor labels the session cursor even with
+     no CURSOR_* env markers. Session id stays None (no askpass) so init mints
+     a fresh cursor identity. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "bash:cursor-agent:node";
+      check (option string) "cursor-agent ancestor → cursor" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "no askpass sid even via ancestry" None
+        (C2c_mcp.session_id_from_env ()))
+
+let test_inferred_client_type_no_ancestry_no_env_is_none () =
+  (* B288: without any env marker and without a cursor-agent ancestor,
+     inference stays None (unchanged behavior). *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "bash:node:zsh";
+      check (option string) "no cursor evidence → None" None
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_codex_env_beats_cursor_ancestry () =
+  (* B288/B134: genuine harness-native CODEX_THREAD_ID outranks a cursor-agent
+     process ancestor. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CODEX_THREAD_ID" "codex-thread-b288";
+      Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "cursor-agent";
+      check (option string) "CODEX_THREAD_ID beats cursor ancestry" (Some "codex")
+        (C2c_mcp.inferred_client_type_from_env ()))
 
 let test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing ()
     =
@@ -16919,6 +16956,12 @@ let () =
              test_session_id_from_env_cursor_askpass
          ; test_case "session_id_from_env: cursor without askpass is None (B284)" `Quick
              test_session_id_from_env_cursor_without_askpass_is_none
+         ; test_case "inferred_client_type_from_env: cursor via process ancestry (B288)" `Quick
+             test_inferred_client_type_cursor_from_process_ancestry
+         ; test_case "inferred_client_type_from_env: no ancestry no env → None (B288)" `Quick
+             test_inferred_client_type_no_ancestry_no_env_is_none
+         ; test_case "inferred_client_type_from_env: CODEX_THREAD_ID beats cursor ancestry (B288)" `Quick
+             test_inferred_client_type_codex_env_beats_cursor_ancestry
          ; test_case "tools/call register uses CODEX_THREAD_ID when C2C session id missing" `Quick
              test_tools_call_register_uses_codex_thread_id_when_c2c_session_id_missing
          ; test_case "tools/call register uses managed CODEX_THREAD_ID when C2C session id missing" `Quick
