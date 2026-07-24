@@ -75,10 +75,15 @@ let test_display_clock_is_secondary_and_demarcated () =
 
 (* --- end-to-end: the compiled binary's `--version` is wired the same way --- *)
 
-let c2c_binary = "./c2c.exe"
+(* Dune may launch this test from the source root (via [dune exec]) or the
+   build directory (via [dune runtest]); the sibling binary is reliable in
+   both cases, unlike a cwd-relative ["./c2c.exe"]. *)
+let c2c_binary = Filename.concat (Filename.dirname Sys.executable_name) "c2c.exe"
 
 let read_first_line_of_version () =
-  let ic = Unix.open_process_in (c2c_binary ^ " --version 2>/dev/null") in
+  let ic =
+    Unix.open_process_in (Filename.quote c2c_binary ^ " --version 2>/dev/null")
+  in
   Fun.protect
     ~finally:(fun () -> ignore (Unix.close_process_in ic))
     (fun () -> try input_line ic with End_of_file -> "")
@@ -93,7 +98,11 @@ let test_binary_version_reports_build_date () =
   Alcotest.(check bool)
     (Printf.sprintf "`c2c --version` first line %S must demarcate build date" line)
     true
-    (contains ~needle:"(built " line)
+    (contains ~needle:"(built " line);
+  Alcotest.(check bool)
+    (Printf.sprintf "`c2c --version` first line %S must label its optional now clock" line)
+    true
+    (contains ~needle:"[now:" line)
 
 let () =
   Alcotest.run "c2c_version"
