@@ -48,6 +48,7 @@ let commands_by_safety_cmd =
     ("open-pending-reply", "Open a pending permission reply slot");
     ("check-pending-reply", "Check if a permission reply is valid");
     ("agent-help", "Show the MCP tool-call + CLI example for each capability");
+    ("version", "Print the c2c version (same as --version)");
   ] in
   let tier2 = [
     ("start", "Start a managed c2c instance");
@@ -149,6 +150,7 @@ let commands_man is_agent =
          $(b,open-pending-reply) $(b,check-pending-reply) \
          $(b,rooms) $(b,register) $(b,refresh-peer) \
          $(b,instances) $(b,doctor) $(b,verify) $(b,status) \
+         $(b,version) \
          $(b,monitor) $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (use with care) =="
     ; `P "$(b,start) $(b,stop) $(b,restart) $(b,reset-thread) — manage c2c instances"
@@ -169,7 +171,7 @@ let commands_man is_agent =
          $(b,register), $(b,refresh-peer), $(b,tail-log), $(b,my-rooms), \
          $(b,dead-letter), $(b,prune-rooms), $(b,set-compact), $(b,clear-compact), \
          $(b,open-pending-reply), $(b,check-pending-reply), \
-         $(b,instances), $(b,doctor), $(b,rooms), $(b,monitor), $(b,screen)"
+         $(b,instances), $(b,doctor), $(b,rooms), $(b,version), $(b,monitor), $(b,screen)"
     ; `P "== TIER 2: LIFECYCLE AND SETUP (safe with care) =="
     ; `P "$(b,start), $(b,stop), $(b,restart), $(b,reset-thread), $(b,init), $(b,install), $(b,self-update), \
          $(b,agent), $(b,roles), $(b,compile), $(b,roles-validate), \
@@ -234,6 +236,7 @@ let fast_path_commands () =
     ("open-pending-reply", "Open a pending permission reply slot");
     ("check-pending-reply", "Check if a permission reply is valid");
     ("agent-help", "Show the MCP tool-call + CLI example for each capability");
+    ("version", "Print the c2c version (same as --version)");
   ] in
   let tier2 = [
     ("start", "Start a managed c2c instance");

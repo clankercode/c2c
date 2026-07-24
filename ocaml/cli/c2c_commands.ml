@@ -67,6 +67,7 @@ let command_tier_map () : (string * safety) list =
   ; "status", Tier1
   ; "sessions", Tier1
   ; "commands", Tier1
+  ; "version", Tier1      (* B289: read-only build identity — same as `--version` *)
   ; "agent-help", Tier1   (* agent-oriented MCP+CLI example help — safe everywhere *)
   ; "monitor", Tier1      (* read-only inbox/archive event stream — required by agent recovery-snippet *)
   (* forward-agent-log (B193): read-only transcript tail + ordinary sends via

@@ -185,6 +185,45 @@ let default_term =
   let+ () = Cmdliner.Term.const () in
   print_enriched_landing ()
 
+(* B289: shared body for `c2c --version` and the `c2c version` subcommand, so
+   the two stay byte-identical. The primary line is the parseable build-time
+   identity (with a demarcated, secondary [now:] clock per B287); the optional
+   trailing line comes from the local changelog cache only (never network on
+   the hot path) and goes to stdout so first-line version parsers keep working. *)
+let print_version_output () =
+  Printf.printf "%s\n" (version_line_with_clock ());
+  try
+    match
+      C2c_changelog.latest_known_newer ~broker_root:(resolve_broker_root ()) ()
+    with
+    | Some latest ->
+        Printf.printf "(newer release %s available — run c2c self-update)\n"
+          latest
+    | None -> ()
+  with _ -> ()
+
+(* B289: `c2c version` — a real subcommand that mirrors `c2c --version`. Kept
+   discoverable in `--help` / `c2c commands`, and short-circuited in the fast
+   path below so it never pays the heavy Cmdliner manpage setup. *)
+let version_cmd =
+  let+ () = Cmdliner.Term.const () in
+  print_version_output ()
+
+let version : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "version"
+       ~doc:"Print the c2c version (same as --version)."
+       ~man:
+         [ `S "DESCRIPTION"
+         ; `P
+             "Prints the c2c build identity — identical to $(b,c2c --version). \
+              The primary line is the parseable build-time identity, with a \
+              demarcated secondary $(b,[now:]) clock for skew diagnostics. A \
+              trailing line notes a newer release when the local changelog \
+              cache already knows of one (cache-only; no network on this path)."
+         ])
+    version_cmd
+
 (* A few top-level commands are used as lightweight orientation/status probes:
    they are a natural place to surface a non-blocking update hint.  The hint is
    deliberately emitted to stderr, preserving stdout for --json consumers and
@@ -453,18 +492,26 @@ let try_fast_path () =
     | "--version" when n = 2 ->
         (* B268: cache-only trailing line on stdout (never network; scripts that
            parse the first line keep working). No stderr notice here — that would
-           double-emit with the trailing line. *)
-        Printf.printf "%s\n" (version_line_with_clock ());
-        (try
-           match
-             C2c_changelog.latest_known_newer
-               ~broker_root:(resolve_broker_root ()) ()
-           with
-           | Some latest ->
-               Printf.printf
-                 "(newer release %s available — run c2c self-update)\n" latest
-           | None -> ()
-         with _ -> ());
+           double-emit with the trailing line. B289: shared with `c2c version`. *)
+        print_version_output ();
         exit 0
+    | "version" ->
+        (* B289: `c2c version` mirrors bare `c2c --version` byte-for-byte,
+           including `c2c version --version` — which would otherwise reach
+           Cmdliner's built-in root `--version` (just [version_string], no
+           [now:] clock and no update line) and diverge. Only the intended
+           no-arg and `--version` shapes are fast-pathed; anything else (help,
+           unknown flags, stray positionals) falls through to the Cmdliner
+           subcommand so its help renders and invalid input still errors. *)
+        let only_version_forms =
+          let rec loop i =
+            i >= n || (argv.(i) = "--version" && loop (i + 1))
+          in
+          loop 2
+        in
+        if only_version_forms then begin
+          print_version_output ();
+          exit 0
+        end
     | _ -> ()
   end
