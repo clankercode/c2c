@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-07-24T07:38:58Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-07-24T08:22:07Z"
 complexity: medium
 created_at: "2026-07-23T15:03:10Z"
 depends_on: []
+duration_minutes: 43.15769087133334
 estimate_hours: 1
 id: B287
 priority: high
 started_at: "2026-07-24T07:38:58Z"
-status: in_progress
+status: done
 tags: []
 title: if c2c --version shows the current time, it should probably show the build time instead. if it shows the current time, it should be off to the side and visually demarcated.
-updated_at: "2026-07-24T07:38:58Z"
+updated_at: "2026-07-24T08:22:07Z"
 ---
 
 if c2c --version shows the current time, it should probably show the build time instead. if it shows the current time, it should be off to the side and visually demarcated.
