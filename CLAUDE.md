@@ -185,7 +185,7 @@ the canonical framing.)
   UNCONDITIONAL" committed as "The old arm's  was UNCONDITIONAL"). Use
   `git commit -F <file>`.
 - **`c2c uninstall <component>`** removes what `c2c install` wrote.
-  Components: `claude|codex|kimi|opencode|grok|agy|self|git-shim|all`.
+  Components: `claude|codex|kimi|opencode|grok|agy|hermes|self|git-shim|all`.
   Uses the install manifest with known-path fallback; shared files are
   stripped surgically. `--dry-run` to preview.
 - **Document problems as you hit them.** Routing bugs, stale binaries,
