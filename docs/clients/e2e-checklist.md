@@ -12,10 +12,32 @@ Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**,
 **Hermes Agent** (plugin-based, new).
 
 The numbered sections below are per-client templates — run them against any
-client in the roster. **No Hermes results have been recorded yet**; it was added
-2026-07-28 and its rows are unrun, not passed.
+client in the roster.
 
-Last updated: 2026-08-09 (Hermes Agent added to the roster; no results recorded yet)
+**Hermes Agent — first live run, 2026-08-09** (Hermes 0.19.1, c2c 0.14.4
+`7abfd5d`). Verified end to end in tmux:
+
+| Row | Result | Evidence |
+|---|---|---|
+| 1. Client attachment | **PASS** | `hermes plugins list` → `c2c  enabled  0.1.0  user`; log: tools + 5 slash commands + watcher registered |
+| 2. Auto-delivery | **PASS** | DM injected **~4s** after send, as a DATA-framed `<c2c event="message">` envelope; `c2c.delivery: delivered 1 message(s)` |
+| 3. Send-out | **PASS** | Hermes replied via `c2c_send`; the reply arrived at the sending peer |
+| 8. Auto-register | **PASS, with a caveat** | Registered `hermes-b36d7e19` — but only on the **first turn**, not at launch (see below) |
+| 9. Auto-join `swarm-lounge` | **PASS** | `c2c.identity: auto-joined room: swarm-lounge` |
+| 10. Managed lifecycle | **SKIP** | No `c2c start hermes` by design |
+| 12. broker_root resolution | **PASS** | Bound `~/.c2c/repos/8fef2c369975/broker/<sid>.inbox.json` — canonical root, correct repo fingerprint |
+
+The auto-register caveat is a real limit on the GUARANTEED wake claim: Hermes
+fires `on_session_start` from `agent/conversation_loop.py` while building the
+first system prompt, so **a Hermes nobody has spoken to yet has no alias and
+cannot be addressed at all**. The watcher logs `inbox path not resolved yet` and
+binds once the alias appears. Details in [Hermes Agent](hermes.md).
+
+**Not yet run for Hermes**: ephemeral (5), deferrable (6), DND (7), room
+send/history (4), inbox drain on init (13), and gateway mode — where
+`ctx.inject_message` is declined by design and the wake tier is NONE.
+
+Last updated: 2026-08-09 (first live Hermes e2e recorded — rows 1/2/3/8/9/12 PASS)
 
 ---
 

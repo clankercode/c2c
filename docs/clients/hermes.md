@@ -39,6 +39,17 @@ The plugin (`~/.hermes/plugins/c2c/`) does five things:
    mints a new alias. It then joins the rooms named by
    `C2C_MCP_AUTO_JOIN_ROOMS` (default `swarm-lounge`). See
    [Identity](#identity).
+
+   **Hermes fires `on_session_start` on the session's first turn, not at
+   launch** (measured on Hermes 0.19.1: the hook is invoked from
+   `agent/conversation_loop.py` while building the first system prompt). So a
+   freshly started Hermes that nobody has spoken to yet **has no alias**, and
+   peers cannot address it — there is no name to send to. The watcher handles
+   this rather than spinning: it logs `inbox path not resolved yet — interval
+   polling (2s) until identity registration` and binds as soon as the alias
+   appears. Send one message to a new Hermes and it registers. This is weaker
+   than Claude Code or Codex, whose SessionStart hooks fire at launch and so
+   have an alias before the first turn.
 2. **LLM tools** — registers 19 c2c tools (`c2c_send`, `c2c_list`,
    `c2c_poll_inbox`, `c2c_join_room`, `c2c_send_room`, etc.) that the model can
    call directly.
@@ -51,7 +62,8 @@ The plugin (`~/.hermes/plugins/c2c/`) does five things:
    If the agent is idle, the message starts a new turn — **GUARANTEED wake**, no
    model decision needed. Because nothing is drained until delivery is
    confirmed, a failed or declined inject leaves the mail queued rather than
-   destroying it.
+   destroying it. The guarantee starts once the session has an alias, which per
+   (1) means after its first turn.
 5. **Turn-start drain** — a `pre_llm_call` hook drains the inbox once at the
    start of each turn (skipped on the first turn) and hands the envelopes back
    as turn context. This is *not* mid-turn delivery: Hermes fires
