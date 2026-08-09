@@ -1436,7 +1436,13 @@ let hook_grok_cmd =
           with
           | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
           | None -> ());
-         C2c_setup.remove_grok_session_identity_skill ();
+         (* #82: deliberately do NOT remove the c2c-session identity skill here.
+            The path is global, and Grok re-announces its whole ~59 KB skill
+            catalogue to every other live session whenever the discovered skill
+            set changes — so removing on end (and re-creating on the next start)
+            billed every concurrent session twice per session lifecycle. The
+            body is identity-agnostic, so leaving it costs nothing and names no
+            dead session. `c2c uninstall grok` still removes it. *)
          exit 0
        end;
        (* SessionStart identity resolution (CLI-first; no MCP required):

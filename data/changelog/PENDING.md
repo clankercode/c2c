@@ -8,3 +8,8 @@ CHANGELOG.md, and a premature version heading confuses "what's new since last
 binary" surfaces (observed 2026-07-13 during B140). Note B268's passive
 `update_available` / `latest_known_newer` read the *remote* cache only, not
 the embedded file — still keep unreleased headings out of CHANGELOG.md.
+
+### c2c no longer burns Grok context on skill-catalogue churn (#82)
+summary: `c2c hook grok` wrote its `c2c-session` identity skill on every SessionStart and deleted it on every SessionEnd, at a path shared by every Grok session on the machine. Grok re-announces its entire skill catalogue to each live session whenever the set of skills it can see changes, so that one 331-byte file appearing and disappearing cost every *other* concurrent Grok session a ~59 KB (~14.7k token) re-announcement — 178x amplification, and 30.5% of all recorded session history across 232 measured sessions. The skill is now written only when its contents actually differ and is never removed at session end, so the skill set stays constant and concurrent Grok sessions keep their context for their work. `c2c uninstall grok` still removes it. No action needed beyond updating c2c.
+clients: grok
+audience: all

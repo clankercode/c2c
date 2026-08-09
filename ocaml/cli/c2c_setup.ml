@@ -137,7 +137,21 @@ let refresh_kimi_skill_if_stale () =
    NO concrete identity — only a behavioural hint that tells the agent to learn
    its identity from `c2c whoami` (the source of truth) and never trust a cached
    alias. The content is byte-identical across every session, so the clobber is
-   a harmless no-op. *)
+   a harmless no-op.
+
+   #82: that same shared path makes every *appearance or disappearance* of the
+   file expensive. Grok re-announces its ENTIRE skill catalogue to every live
+   session whenever the discovered skill set changes — measured at 168 entries /
+   ~59 KB (~14.7k tokens) for a 331-byte delta (178x amplification), adding up
+   to 30.5% of all recorded session history across 232 sessions. So this skill
+   is written only when the content actually differs, and is NEVER removed on
+   SessionEnd: the entry has to stay continuously present so the set never
+   changes. Because the body carries no identity, a file that outlives its
+   session names nothing stale — which is what makes "leave it in place" correct
+   here, rather than the session-scoped path also floated in #82 (that would
+   mutate the set on every start AND every end, with a unique entry each time —
+   strictly more flapping). `c2c uninstall grok` still removes it via the
+   install manifest (`recompute_grok_artifacts`). *)
 let grok_session_identity_skill_body =
   String.concat ""
     [ "---\n"
@@ -166,22 +180,18 @@ let grok_session_identity_skill_body =
        other's identity. Always trust `c2c whoami`.\n"
     ]
 
+(* #82: rewrite only on drift. The body is a compile-time constant, so the
+   steady state is a single read + compare and the file's mtime never moves —
+   nothing perturbs the skill set the other live Grok sessions are watching.
+   Never raises and never prints (the hook contract forbids both). *)
 let write_grok_session_identity_skill () =
-  try
-    let dir = grok_session_skill_dir () in
-    C2c_mcp.mkdir_p dir;
-    let path = dir // "SKILL.md" in
-    let oc = open_out_bin (path ^ ".tmp") in
-    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-      output_string oc grok_session_identity_skill_body);
-    Unix.rename (path ^ ".tmp") path
-  with _ -> ()
+  refresh_skill_if_stale ~content:grok_session_identity_skill_body
+    ~skill_dir:(grok_session_skill_dir ()) ()
 
-let remove_grok_session_identity_skill () =
-  try
-    let path = grok_session_skill_dir () // "SKILL.md" in
-    if Sys.file_exists path then Sys.remove path
-  with _ -> ()
+(* #82: there is deliberately no remove_grok_session_identity_skill. Nothing in
+   the session lifecycle may delete this file — see the note above. Removal
+   belongs to `c2c uninstall grok`, which owns the path through the install
+   manifest (`recompute_grok_artifacts`). *)
 
 (* B238: Kimi Code also lacks Claude/Codex-style additionalContext inject on
    SessionStart. Managed sessions get a c2c notifier daemon from `c2c start

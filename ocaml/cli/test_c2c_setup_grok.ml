@@ -90,7 +90,7 @@ let test_refresh_grok_skill_if_stale () =
     check bool "drifted refreshed" true
       (read_file skill = C2c_grok_skill_embedded.content))
 
-let test_session_identity_skill_write_remove () =
+let test_session_identity_skill_write_only_on_drift () =
   with_temp_home (fun home ->
     (* #22: the identity skill is identity-agnostic — it must NOT embed any
        concrete alias/session_id, and must point the agent at `c2c whoami`. *)
@@ -105,10 +105,22 @@ let test_session_identity_skill_write_remove () =
     check bool "no concrete session id embedded" false
       (contains ~haystack:body ~needle:"019f4fb9-3c7a-7720-96c2-5cacb719d951");
     (* Two writes produce byte-identical content (clobber is a no-op). *)
+    let ino_after_first = (Unix.stat path).st_ino in
     C2c_setup.write_grok_session_identity_skill ();
     check string "byte-stable across writes" body (read_file path);
-    C2c_setup.remove_grok_session_identity_skill ();
-    check bool "identity skill removed" false (Sys.file_exists path))
+    (* #82: unchanged content must not rewrite the file at all. write_c2c_skill
+       is tmp+rename, so a real write always lands a NEW inode — an unchanged
+       inode is proof no write happened, at a resolution mtime cannot give us.
+       This is the whole fix: Grok re-announces its ~59 KB skill catalogue to
+       every live session whenever the skill set it discovers changes. *)
+    check bool "unchanged content does not rewrite the file" true
+      (ino_after_first = (Unix.stat path).st_ino);
+    (* ...but genuine drift still self-heals (an old/corrupt body is replaced). *)
+    write_file path "stale body from an older c2c\n";
+    C2c_setup.write_grok_session_identity_skill ();
+    check string "drifted content is rewritten" body (read_file path);
+    check bool "rewrite landed a new inode" true
+      (ino_after_first <> (Unix.stat path).st_ino))
 
 let () =
   Random.self_init ();
@@ -118,7 +130,7 @@ let () =
             test_install_writes_skill_and_hooks_no_mcp
         ; test_case "refresh_grok_skill_if_stale" `Quick
             test_refresh_grok_skill_if_stale
-        ; test_case "session identity skill write/remove" `Quick
-            test_session_identity_skill_write_remove
+        ; test_case "session identity skill writes only on drift (#82)" `Quick
+            test_session_identity_skill_write_only_on_drift
         ] )
     ]

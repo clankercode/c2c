@@ -218,8 +218,51 @@ let test_session_end_deregisters () =
     let id_skill =
       ctx.home // ".grok" // "skills" // "c2c-session" // "SKILL.md"
     in
-    check bool "identity skill removed on SessionEnd" false
+    (* #82: SessionEnd must NOT remove the identity skill. Its path is global,
+       and Grok re-announces its entire ~59 KB skill catalogue to every other
+       live session whenever the discovered skill set changes — so a
+       remove-on-end / create-on-next-start cycle billed every concurrent
+       session twice per session lifecycle. Deregistration still happens; only
+       the file survives. *)
+    check bool "identity skill survives SessionEnd" true
       (Sys.file_exists id_skill))
+
+(* #82 regression, end to end: across a full start -> end -> start lifecycle the
+   skill file must exist continuously AND never be rewritten, so the skill set
+   Grok discovers never changes. Inode identity is the assertion because
+   write_c2c_skill is tmp+rename: any real write lands a new inode, at a
+   resolution mtime seconds cannot resolve. *)
+let test_identity_skill_never_flaps_across_lifecycle () =
+  with_ctx (fun ctx ->
+    let id_skill =
+      ctx.home // ".grok" // "skills" // "c2c-session" // "SKILL.md"
+    in
+    let sid2 = "019bbbbb-2222-7333-8444-555566667777" in
+    let rc1, _, _ =
+      run_hook ctx ~payload:session_start_payload
+        ~extra_env:[ ("GROK_SESSION_ID", session_id) ]
+    in
+    check int "start1 exit 0" 0 rc1;
+    check bool "skill present after start1" true (Sys.file_exists id_skill);
+    let ino1 = (Unix.stat id_skill).st_ino in
+    let rc2, _, _ =
+      run_hook ctx ~payload:session_end_payload
+        ~extra_env:[ ("GROK_SESSION_ID", session_id) ]
+    in
+    check int "end exit 0" 0 rc2;
+    check bool "skill still present after SessionEnd" true
+      (Sys.file_exists id_skill);
+    check bool "SessionEnd did not rewrite the skill" true
+      (ino1 = (Unix.stat id_skill).st_ino);
+    let rc3, _, _ =
+      run_hook ctx ~payload:(session_start_payload_for sid2)
+        ~extra_env:[ ("GROK_SESSION_ID", sid2) ]
+    in
+    check int "start2 exit 0" 0 rc3;
+    check bool "skill still present after next SessionStart" true
+      (Sys.file_exists id_skill);
+    check bool "next SessionStart did not rewrite the skill" true
+      (ino1 = (Unix.stat id_skill).st_ino))
 
 let test_malformed_payload_exits_0 () =
   with_ctx (fun ctx ->
@@ -237,6 +280,8 @@ let () =
             test_identity_skill_byte_stable_across_sessions
         ; test_case "SessionEnd deregisters" `Quick
             test_session_end_deregisters
+        ; test_case "identity skill never flaps across lifecycle (#82)" `Quick
+            test_identity_skill_never_flaps_across_lifecycle
         ; test_case "malformed payload exit 0" `Quick
             test_malformed_payload_exits_0
         ] )
