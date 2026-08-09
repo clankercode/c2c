@@ -368,6 +368,87 @@ let test_install_script_dry_run_no_write () =
     (Sys.file_exists (dest_subdir // C2c_kimi_hook.approval_hook_filename))
 
 (* ------------------------------------------------------------------ *)
+(* #80: empty [[hooks]] tables.                                        *)
+(*                                                                     *)
+(* c2c does not write these — verified below by scanning c2c's own     *)
+(* rendered block — but it appends to the file that has them, so it    *)
+(* gets blamed for the resulting `kimi doctor` failure. The scanner    *)
+(* exists to name the real cause.                                      *)
+(* ------------------------------------------------------------------ *)
+
+let empty_hooks content = C2c_kimi_hook.find_empty_hook_tables ~content
+
+let check_lines msg expected content =
+  Alcotest.(check (list int)) msg expected (empty_hooks content)
+
+let test_empty_hooks_clean () =
+  check_lines "well-formed entries are not flagged" []
+    "model = \"k2\"\n\n[[hooks]]\nevent = \"SessionStart\"\ncommand = \"x\"\n"
+
+(* The shape from the issue: the operator's file ends on a bare header, and
+   c2c's comment block lands immediately after it. Built from a line list so
+   the expected line number is countable rather than asserted. *)
+let test_empty_hooks_trailing () =
+  let lines =
+    [ "model = \"k2\""      (* 1 *)
+    ; ""                    (* 2 *)
+    ; "[[hooks]]"           (* 3 *)
+    ; "event = \"S\""       (* 4 *)
+    ; "command = \"x\""     (* 5 *)
+    ; ""                    (* 6 *)
+    ; "[[hooks]]"           (* 7 — bare, this is the one *) ]
+  in
+  check_lines "trailing bare header at line 7" [ 7 ]
+    (String.concat "\n" lines ^ "\n")
+
+let test_empty_hooks_midfile () =
+  check_lines "bare header at line 1, closed by the next table" [ 1 ]
+    "[[hooks]]\n\n[[hooks]]\nevent = \"S\"\ncommand = \"x\"\n"
+
+(* Comments are exactly what the c2c block is made of, so they must not read
+   as keys — otherwise the scanner would call every real problem clean. *)
+let test_empty_hooks_comments_only () =
+  check_lines "a header followed only by comments is empty" [ 1 ]
+    "[[hooks]]\n# event = \"S\"\n# command = \"x\"\n"
+
+let test_empty_hooks_multiple () =
+  check_lines "both reported, ascending" [ 1; 3 ]
+    "[[hooks]]\n\n[[hooks]]\n\n[providers.x]\nkey = 1\n"
+
+(* Only `[[hooks]]` is in scope; an empty table elsewhere is not c2c's business
+   and not what kimi rejects. *)
+let test_empty_hooks_ignores_non_hooks () =
+  check_lines "empty [providers.x] is not reported" []
+    "[providers.x]\n\n[[hooks]]\nevent = \"S\"\ncommand = \"x\"\n"
+
+(* The load-bearing claim of the fix: c2c's own block contributes no empty
+   entry. If a future edit uncomments a header in the template, this fails. *)
+let test_empty_hooks_c2c_block_is_clean () =
+  let block = C2c_kimi_hook.render_toml_block ~hook_path:"/tmp/hook.sh" in
+  check_lines "c2c's approval block adds no empty hooks entry" [] block;
+  let session = C2c_kimi_hook.session_start_toml_block_template in
+  check_lines "c2c's session-start block adds no empty hooks entry" [] session
+
+let test_empty_hooks_warning_text () =
+  match
+    C2c_kimi_hook.empty_hook_tables_warning ~config_path:"/tmp/config.toml"
+      ~content:"[[hooks]]\n"
+  with
+  | None -> Alcotest.fail "expected a warning"
+  | Some w ->
+      let contains needle =
+        let nl = String.length needle and wl = String.length w in
+        let rec loop i =
+          i + nl <= wl && (String.sub w i nl = needle || loop (i + 1))
+        in
+        loop 0
+      in
+      Alcotest.(check bool) "names the file" true (contains "/tmp/config.toml");
+      Alcotest.(check bool) "names the line" true (contains "line 1");
+      Alcotest.(check bool) "disclaims authorship" true
+        (contains "c2c did not write these");
+      Alcotest.(check bool) "promises not to edit" true
+        (contains "will not delete")
 
 let () =
   Random.self_init ();
@@ -439,5 +520,23 @@ let () =
             test_script_allows_jq
         ; Alcotest.test_case "is_safe_command called before authorizers" `Quick
             test_script_calls_is_safe_before_authorizers
+        ] )
+    ; ( "empty-hook-tables (#80)",
+        [ Alcotest.test_case "clean config reports nothing" `Quick
+            test_empty_hooks_clean
+        ; Alcotest.test_case "trailing bare header is found" `Quick
+            test_empty_hooks_trailing
+        ; Alcotest.test_case "bare header mid-file is found" `Quick
+            test_empty_hooks_midfile
+        ; Alcotest.test_case "comments do not count as keys" `Quick
+            test_empty_hooks_comments_only
+        ; Alcotest.test_case "several are all reported, in order" `Quick
+            test_empty_hooks_multiple
+        ; Alcotest.test_case "other empty tables are out of scope" `Quick
+            test_empty_hooks_ignores_non_hooks
+        ; Alcotest.test_case "c2c's own installed block is clean" `Quick
+            test_empty_hooks_c2c_block_is_clean
+        ; Alcotest.test_case "warning names lines and disclaims authorship" `Quick
+            test_empty_hooks_warning_text
         ] )
     ]

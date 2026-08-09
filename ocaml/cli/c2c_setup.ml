@@ -958,6 +958,18 @@ let setup_kimi ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~al
   let hook_path =
     C2c_kimi_hook.install_approval_hook_script ~dest_dir:hook_install_dir ~dry_run
   in
+  (* #80: c2c appends to this file, so if it already contains an empty
+     `[[hooks]]` entry the operator sees `kimi doctor` fail right after a c2c
+     install and reasonably blames c2c. Name the real cause; never repair it
+     (same report-don't-act rule as #84's file modes). Checked BEFORE the
+     append so the reported line numbers match what the operator is looking
+     at, and printed to stderr so it survives `--json`. *)
+  (match
+     C2c_kimi_hook.empty_hook_tables_warning ~config_path:toml_config_path
+       ~content:(C2c_io.read_file_opt toml_config_path)
+   with
+  | Some warning -> prerr_string warning
+  | None -> ());
   let hook_block_status =
     C2c_kimi_hook.append_toml_block
       ~config_path:toml_config_path ~hook_path ~dry_run ()

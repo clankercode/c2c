@@ -24,3 +24,8 @@ audience: all
 summary: c2c writes config files you own by writing a temp file and renaming it into place. A rename replaces the file rather than editing it, so two things quietly changed every time: your file's permissions were reset to the default (a 0600 config came back 0644), and if the path was a symlink — a common dotfiles setup — the link was replaced by a regular file, silently detaching it from wherever it pointed. c2c now reads the existing permissions and reapplies them before the rename, and follows symlinks so the link survives and its destination is what gets rewritten. c2c will not tighten a file it did not create, so if a shared config is world-writable `c2c health` now reports it (`shared_config_modes`) and leaves the decision to you.
 clients: all
 audience: all
+
+### `c2c install kimi` now tells you when your config has an empty hooks entry (#80)
+summary: A `[[hooks]]` entry with no `event`/`command` makes kimi reject your whole config — `kimi doctor` reports `hooks[N].event` / `hooks[N].command` errors. c2c does not write these (its hook template has always been fully commented, and a clean install produces valid TOML), but because `c2c install kimi` appends to that same file, a pre-existing empty entry surfaced right after a c2c install and looked like c2c's doing. The install now names the offending line numbers and says plainly that c2c did not write them. It does not edit or delete them — that is your config, not c2c's.
+clients: kimi
+audience: all

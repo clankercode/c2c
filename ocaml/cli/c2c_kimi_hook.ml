@@ -544,6 +544,81 @@ let envelope_block ~block_id body =
     body
     (toml_block_end_marker ~block_id)
 
+(* #80: find `[[hooks]]` tables that carry no keys.
+
+   kimi-cli's schema requires every hook entry to have `event` and `command`,
+   so a bare `[[hooks]]` header deserializes as `{}` and `kimi doctor` rejects
+   the whole file:
+
+     hooks[10].event: Invalid option: expected one of "PreToolUse"|...
+     hooks[10].command: Invalid input: expected string, received undefined
+
+   c2c does NOT write these — the approval-hook template has been fully
+   commented in every revision, and a clean `c2c install kimi` produces valid
+   TOML. But c2c appends to this file, so when the operator already has one,
+   the install lands right after it and c2c is the last thing to have touched
+   the config. Reporting the real cause turns a misattributed bug into a
+   one-line fix.
+
+   Deliberately detect-and-report, never repair: deleting a table from a config
+   c2c does not own is the same class of unasked-for helpfulness that #84
+   refused for file modes.
+
+   The scan is intentionally conservative — a table counts as empty only when
+   it contains no assignment at all — because a false "your config is broken"
+   is worse than missing an exotic shape. Returns 1-based line numbers. *)
+let find_empty_hook_tables ~(content : string) : int list =
+  let lines = String.split_on_char '\n' content in
+  let is_table_header s =
+    let t = String.trim s in
+    String.length t > 0 && t.[0] = '['
+  in
+  let is_hooks_header s = String.trim s = "[[hooks]]" in
+  let is_assignment s =
+    let t = String.trim s in
+    if t = "" || (String.length t > 0 && t.[0] = '#') then false
+    else String.contains t '='
+  in
+  (* Walk with an explicit "line number of the open hooks table, and whether it
+     has seen an assignment yet" so a header is only judged once its extent is
+     known (next table header or EOF). *)
+  let rec go n rest open_hooks seen_assign acc =
+    let close acc =
+      match open_hooks with
+      | Some ln when not seen_assign -> ln :: acc
+      | _ -> acc
+    in
+    match rest with
+    | [] -> List.rev (close acc)
+    | line :: tl ->
+        if is_hooks_header line then go (n + 1) tl (Some n) false (close acc)
+        else if is_table_header line then go (n + 1) tl None false (close acc)
+        else if is_assignment line && open_hooks <> None then
+          go (n + 1) tl open_hooks true acc
+        else go (n + 1) tl open_hooks seen_assign acc
+  in
+  go 1 lines None false []
+
+(* Human-facing advisory for [find_empty_hook_tables]; [None] when clean. *)
+let empty_hook_tables_warning ~(config_path : string) ~(content : string) :
+    string option =
+  match find_empty_hook_tables ~content with
+  | [] -> None
+  | lines ->
+      Some
+        (Printf.sprintf
+           "[c2c WARNING] %s has %d `[[hooks]]` entr%s with no event/command \
+            (line%s %s).\n\
+           \    kimi rejects the whole file for this — `kimi doctor` will \
+            report hooks[N].event / hooks[N].command errors.\n\
+           \    c2c did not write these and will not delete them from your \
+            config. Remove or complete the empty entr%s to fix it.\n"
+           config_path (List.length lines)
+           (if List.length lines = 1 then "y" else "ies")
+           (if List.length lines = 1 then "" else "s")
+           (String.concat ", " (List.map string_of_int lines))
+           (if List.length lines = 1 then "y" else "ies"))
+
 (* Append the rendered [[hooks]] block to [config_path]. Idempotent —
    no-op if a block with the same [block_id] is already present (or
    the legacy single-sentinel marker for the approval-hook block).
