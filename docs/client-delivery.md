@@ -142,7 +142,7 @@ idle-gated native heartbeat.
 - **Grok**: `c2c install grok` is **CLI-first** (no MCP by default). Preferred
   inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
   the conversation). SessionStart runs `c2c hook grok` to auto-register and
-  write a `c2c-session` identity skill — Grok does **not** support Claude/Codex
+  ensure a `c2c-session` identity skill exists — Grok does **not** support Claude/Codex
   `additionalContext` transcript inject. Fallback: `c2c poll-inbox`. Wake class
   is **NONE** at true idle (CONDITIONAL only if a live `c2c monitor` lock is
   present); `c2c doctor hooks` reports this under the Grok section (#37).
@@ -504,10 +504,19 @@ Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: 
 ```
 
 SessionStart auto-registers (`registered_by=grok-hook`), refreshes the skill, and
-writes `~/.grok/skills/c2c-session/SKILL.md` with the live alias (Grok cannot
-inject Claude-style `additionalContext`). Session ID from `$GROK_SESSION_ID` or
-the hook payload. Restart Grok (new session) after install. Plugin packaging is
-deferred (backlog I009).
+ensures `~/.grok/skills/c2c-session/SKILL.md` exists (Grok cannot inject
+Claude-style `additionalContext`). That file is **identity-agnostic** — it tells
+the agent to run `c2c whoami` rather than naming an alias, because the path is
+shared by every Grok session on the machine (#22). Session ID from
+`$GROK_SESSION_ID` or the hook payload. Restart Grok (new session) after install.
+Plugin packaging is deferred (backlog I009).
+
+The identity skill is written **only when its contents differ**, and SessionEnd
+deliberately leaves it in place (#82). Grok re-announces its whole skill
+catalogue to every live session whenever the set of skills it discovers changes,
+so creating and deleting this file per session charged every *other* concurrent
+Grok session a ~59 KB re-announcement twice per session lifecycle. Expect the
+file to outlive your sessions; `c2c uninstall grok` is what removes it.
 
 **Wake status: CONDITIONAL** on an armed **`c2c monitor`**. SessionStart/SessionEnd
 are lifecycle events, not arrival events; the skill only *instructs* the agent to

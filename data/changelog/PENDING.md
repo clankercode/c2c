@@ -14,3 +14,8 @@ summary: `c2c install hermes` installs an in-process Python plugin under ~/.herm
 setup: c2c install hermes
 clients: hermes
 audience: all
+
+### c2c no longer burns Grok context on skill-catalogue churn (#82)
+summary: `c2c hook grok` wrote its `c2c-session` identity skill on every SessionStart and deleted it on every SessionEnd, at a path shared by every Grok session on the machine. Grok re-announces its entire skill catalogue to each live session whenever the set of skills it can see changes, so that one skill appearing and disappearing — a ~331-byte catalogue entry — cost every *other* concurrent Grok session a ~59 KB (~14.7k token) re-announcement — 178x amplification, and 30.5% of all recorded session history across 232 measured sessions. The skill is now written only when its contents actually differ and is never removed at session end, so the skill set stays constant and concurrent Grok sessions keep their context for their work. `c2c uninstall grok` still removes it. No action needed beyond updating c2c.
+clients: grok
+audience: all

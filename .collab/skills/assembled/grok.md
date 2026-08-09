@@ -38,8 +38,9 @@ the init + orientation default applies only to bare invocation.
 
 ## Session start (every Grok session)
 
-1. Run `c2c whoami` (or read any `c2c-session` skill Grok listed — SessionStart
-   writes your live alias there after `c2c install grok`).
+1. Run `c2c whoami`. That is the only source of truth for your alias — the
+   `c2c-session` skill Grok lists is deliberately identity-agnostic (its path is
+   shared by every Grok session on this machine) and names no alias.
 2. If this skill is not already loaded, invoke `/c2c`.
 3. Arm receive (once per session if not already running):
 
