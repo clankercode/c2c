@@ -194,6 +194,166 @@ let test_server_format_string_in_sync () =
   Alcotest.(check bool) "session-ownership needle matches server format" true
     (contains ~needle:"does not own session" own_msg)
 
+(* --- contact_unauthorised (#81) ----------------------------------------- *)
+
+(* Byte-for-byte the relay's uniform admission denial. relay.ml builds it in
+   four places (handle_send's unknown_alias arm, handle_contact_deliver's
+   deny, the /contact/v1/deliver auth gate, and the forward-in arm) and every
+   one goes through json_error_str err_contact_unauthorised, so one literal
+   covers all four. *)
+let contact_unauthorised_response : Yojson.Safe.t =
+  `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "contact_unauthorised");
+    ("error", `String "contact unauthorised");
+  ]
+
+let test_detects_contact_unauthorised () =
+  Alcotest.(check bool) "uniform denial detected" true
+    (Relay_client_hints.is_contact_unauthorised contact_unauthorised_response);
+  Alcotest.(check bool) "success not matched" false
+    (Relay_client_hints.is_contact_unauthorised (`Assoc [ ("ok", `Bool true) ]));
+  Alcotest.(check bool) "other error code not matched" false
+    (Relay_client_hints.is_contact_unauthorised
+       (`Assoc [
+          ("ok", `Bool false);
+          ("error_code", `String "unauthorized");
+          ("error", `String "contact unauthorised");
+        ]));
+  Alcotest.(check bool) "non-object not matched" false
+    (Relay_client_hints.is_contact_unauthorised (`String "nope"))
+
+(* The denial is NOT a peer rejection and the hint must say so — reading it
+   as an ACL block is the whole reported failure mode in #81. *)
+let test_contact_hint_denies_the_acl_reading () =
+  let hint =
+    match
+      Relay_client_hints.hint_for_response
+        ~alias_source:(Relay_client_hints.Explicit "pi-dcd88e")
+        contact_unauthorised_response
+    with
+    | Some h -> h
+    | None -> Alcotest.fail "expected a hint for contact_unauthorised"
+  in
+  Alcotest.(check bool) "says it is uniform" true
+    (contains ~needle:"UNIFORM" hint);
+  Alcotest.(check bool) "denies the blocked-by-peer reading" true
+    (contains ~needle:"does NOT mean the peer" hint);
+  (* All three locally-checkable classes, each with its command. *)
+  Alcotest.(check bool) "class 1: recipient not registered" true
+    (contains ~needle:"c2c relay register --alias" hint);
+  Alcotest.(check bool) "class 2: no contact grant" true
+    (contains ~needle:"c2c relay contact" hint);
+  Alcotest.(check bool) "class 3: own binding" true
+    (contains ~needle:"c2c whoami --relay" hint);
+  Alcotest.(check bool) "class 3: own connector/lease" true
+    (contains ~needle:"c2c status --relay" hint)
+
+let test_contact_hint_without_recipient_context () =
+  let hint =
+    match
+      Relay_client_hints.hint_for_response
+        ~alias_source:Relay_client_hints.Anon_fallback
+        contact_unauthorised_response
+    with
+    | Some h -> h
+    | None -> Alcotest.fail "expected a hint"
+  in
+  (* No recipient known: the generic three classes still render, with a
+     placeholder rather than a fabricated alias, and no local-reachability
+     claim in either direction. *)
+  Alcotest.(check bool) "placeholder recipient" true
+    (contains ~needle:"<recipient>" hint);
+  Alcotest.(check bool) "signer named" true (contains ~needle:"anon" hint);
+  Alcotest.(check bool) "no local-reachability claim" false
+    (contains ~needle:"alive on a broker on THIS machine" hint);
+  Alcotest.(check bool) "no absence claim either" false
+    (contains ~needle:"is not alive on any broker" hint)
+
+(* The payload of the fix: a peer that is alive locally never needed the
+   relay, so the hint must redirect to a bare-alias send instead of sending
+   the operator off to fix a relay registration. *)
+let test_contact_hint_redirects_when_peer_is_local () =
+  let hint =
+    match
+      Relay_client_hints.hint_for_response
+        ~contact:
+          { Relay_client_hints.recipient = "grok-sugar-vesi-x6tv";
+            recipient_live_locally = Some true }
+        ~alias_source:(Relay_client_hints.Explicit "pi-dcd88e")
+        contact_unauthorised_response
+    with
+    | Some h -> h
+    | None -> Alcotest.fail "expected a hint"
+  in
+  Alcotest.(check bool) "names the recipient" true
+    (contains ~needle:"grok-sugar-vesi-x6tv" hint);
+  Alcotest.(check bool) "says the relay hop was unnecessary" true
+    (contains ~needle:"the relay hop was not required at all" hint);
+  Alcotest.(check bool) "gives the local send command" true
+    (contains ~needle:"c2c send grok-sugar-vesi-x6tv" hint)
+
+let test_contact_hint_confirms_relay_is_right_when_peer_absent () =
+  let hint =
+    match
+      Relay_client_hints.hint_for_response
+        ~contact:
+          { Relay_client_hints.recipient = "far-peer";
+            recipient_live_locally = Some false }
+        ~alias_source:(Relay_client_hints.Explicit "me")
+        contact_unauthorised_response
+    with
+    | Some h -> h
+    | None -> Alcotest.fail "expected a hint"
+  in
+  Alcotest.(check bool) "confirms relay is the right transport" true
+    (contains ~needle:"so the relay\n  is the right transport here" hint);
+  Alcotest.(check bool) "does not suggest a local send" false
+    (contains ~needle:"c2c send far-peer" hint)
+
+(* An unreadable broker scan must render as "I did not look", never as
+   "the peer is not here" — the latter sends someone chasing a relay
+   registration that was never the problem. *)
+let test_contact_hint_stays_silent_when_liveness_unknown () =
+  let hint =
+    match
+      Relay_client_hints.hint_for_response
+        ~contact:
+          { Relay_client_hints.recipient = "unknown-peer";
+            recipient_live_locally = None }
+        ~alias_source:(Relay_client_hints.Explicit "me")
+        contact_unauthorised_response
+    with
+    | Some h -> h
+    | None -> Alcotest.fail "expected a hint"
+  in
+  Alcotest.(check bool) "names the recipient in the three classes" true
+    (contains ~needle:"unknown-peer" hint);
+  Alcotest.(check bool) "claims no local presence" false
+    (contains ~needle:"alive on a broker on THIS machine" hint);
+  Alcotest.(check bool) "claims no local absence" false
+    (contains ~needle:"is not alive on any broker" hint)
+
+(* Precedence guard: the codes are disjoint, so an auth failure on a route
+   that also carries a recipient must still get the binding hint. *)
+let test_contact_context_does_not_shadow_binding_hint () =
+  let hint =
+    match
+      Relay_client_hints.hint_for_response
+        ~contact:
+          { Relay_client_hints.recipient = "peer";
+            recipient_live_locally = Some true }
+        ~alias_source:(Relay_client_hints.Explicit "me")
+        (missing_binding_response "me")
+    with
+    | Some h -> h
+    | None -> Alcotest.fail "expected a hint"
+  in
+  Alcotest.(check bool) "still the missing-binding hint" true
+    (contains ~needle:"has no identity binding for alias" hint);
+  Alcotest.(check bool) "not the contact hint" false
+    (contains ~needle:"UNIFORM" hint)
+
 let () =
   Alcotest.run "relay_client_hints"
     [
@@ -212,5 +372,22 @@ let () =
           Alcotest.test_case "signature_invalid hint" `Quick test_signature_invalid_hint;
           Alcotest.test_case "session ownership hint (B231)" `Quick test_session_ownership_hint;
           Alcotest.test_case "server format in sync" `Quick test_server_format_string_in_sync;
+        ] );
+      ( "contact_unauthorised (#81)",
+        [
+          Alcotest.test_case "detects the uniform denial" `Quick
+            test_detects_contact_unauthorised;
+          Alcotest.test_case "denies the ACL reading, names all three classes"
+            `Quick test_contact_hint_denies_the_acl_reading;
+          Alcotest.test_case "generic form without a recipient" `Quick
+            test_contact_hint_without_recipient_context;
+          Alcotest.test_case "redirects to a local send when peer is local"
+            `Quick test_contact_hint_redirects_when_peer_is_local;
+          Alcotest.test_case "confirms relay transport when peer is absent"
+            `Quick test_contact_hint_confirms_relay_is_right_when_peer_absent;
+          Alcotest.test_case "silent when local liveness is unknown" `Quick
+            test_contact_hint_stays_silent_when_liveness_unknown;
+          Alcotest.test_case "does not shadow the missing-binding hint" `Quick
+            test_contact_context_does_not_shadow_binding_hint;
         ] );
     ]

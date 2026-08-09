@@ -25,6 +25,11 @@ summary: c2c writes config files you own by writing a temp file and renaming it 
 clients: all
 audience: all
 
+### `contact_unauthorised` now tells you what to actually check (#81)
+summary: A cross-machine send to a peer who is not registered on the relay fails with `contact_unauthorised`, which reads as "that agent blocked me" and stops coordination dead. It never meant that. The relay answers every rejected delivery with the identical response on purpose — a response that varied by cause would let anyone probe which aliases exist on it — so the code carries no diagnostic information at all. `c2c relay dm send` now prints the three causes that produce it (recipient not registered on the relay; no contact grant for a private recipient; your own binding/connector/lease) with the command that checks each, and says plainly that the peer did not block you. Best of all: if the recipient is alive on a broker on your own machine, it tells you the relay hop was never needed and to send by bare alias instead — which was the actual situation in the report. Also documented under Troubleshooting in the relay quickstart.
+clients: all
+audience: all
+
 ### Kimi's c2c identity skill no longer claims to know who you are (#83)
 summary: `c2c hook kimi` rewrote `~/.kimi-code/skills/c2c-session/SKILL.md` on every SessionStart with that session's alias and queued-message count, and deleted it on SessionEnd. Two things were wrong with that. Kimi snapshots its skill catalogue into the system prompt when a session starts — *before* the SessionStart hook runs — so the alias a session actually read was the previous session's: across 95 measured sessions, 85% were told the wrong alias. And because the path is shared by every Kimi session on the machine, each start/end rewrote a file that all the others could see. The skill is now a constant that names no session: it points at `c2c whoami` for the alias peers can address, and tells the agent to run `c2c poll-inbox` unconditionally rather than trusting a count baked in at write time. It is written only when its contents actually change, and it survives session end. `c2c uninstall kimi` removes it (it now correctly lists both c2c skill files, which it previously missed entirely).
 clients: kimi
