@@ -1704,7 +1704,11 @@ let hook_kimi_cmd =
               (try C2c_kimi_notifier.stop_daemon ~alias:r.alias with _ -> ());
               ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
           | None -> ());
-         C2c_setup.remove_kimi_session_identity_skill ();
+         (* #83: the c2c-session skill is NOT removed at SessionEnd. Its body
+            is identity-agnostic now, so a file that outlives its session names
+            nothing stale — and the path is shared by every Kimi session on the
+            host, so deleting it here used to yank it out from under any
+            concurrent session. `c2c uninstall kimi` still removes it. *)
          exit 0
        end;
        (* SessionStart: ensure the session is registered FIRST (the durable,

@@ -166,11 +166,21 @@ let test_session_start_auto_registers_from_env_alias () =
     check string "alias from env" "kimi-env-alias" alias;
     if String.trim stderr <> "" && contains ~haystack:stderr ~needle:"failed"
     then failf "unexpected stderr: %s" stderr;
-    (* B238: identity skill with receive-path nudge *)
+    (* B238: identity skill with receive-path nudge.
+
+       #83 inverted the identity assertion. This file lives at a path shared by
+       every Kimi session on the host, and Kimi snapshots its skill catalogue
+       into the system prompt BEFORE `c2c hook kimi` runs — so the catalogue
+       captures whatever the previous session left behind. Measured across 95
+       recorded sessions, 57 of the 67 carrying this skill (85%) were told they
+       were a different agent. Naming an alias here is therefore not a feature
+       to preserve; it is the bug. The body points at `c2c whoami` instead. *)
     let skill = read_file (identity_skill_path ctx) in
     check bool "identity skill written" true (String.length skill > 0);
-    check bool "skill names alias" true
+    check bool "skill does NOT name an alias" false
       (contains ~haystack:skill ~needle:"kimi-env-alias");
+    check bool "skill points at c2c whoami instead" true
+      (contains ~haystack:skill ~needle:"c2c whoami");
     check bool "skill mentions receive path" true
       (contains ~haystack:skill ~needle:"Monitor"
        || contains ~haystack:skill ~needle:"poll-inbox"
@@ -212,7 +222,11 @@ let test_session_end_deregisters () =
     check int "end exit 0" 0 rc2;
     check bool "deregistered after end" false
       (List.mem "kimi-end-test" (list_aliases ctx.broker_root));
-    check bool "identity skill removed on end" false
+    (* #83: the skill SURVIVES SessionEnd. Its body is identity-agnostic, so a
+       file outliving its session names nothing stale — and the path is shared,
+       so deleting it here yanked it out from under concurrent sessions.
+       Removal belongs to `c2c uninstall kimi`, which now lists it. *)
+    check bool "identity skill survives session end" true
       (Sys.file_exists (identity_skill_path ctx)))
 
 let test_malformed_payload_exits_0 () =
@@ -231,8 +245,19 @@ let register_session ctx ~session_id ~alias =
     ~from_auto_gen:true ();
   b
 
-(* #12: SessionStart must surface pre-startup backlog in the identity skill so
-   a fresh Kimi session sees mail that arrived before it started. *)
+(* #12 asked SessionStart to surface pre-startup backlog in the identity skill,
+   so a fresh Kimi session sees mail that arrived before it started.
+
+   #83 keeps the GOAL and drops the mechanism. A live count cannot work from
+   this file: Kimi snapshots the skill catalogue before `c2c hook kimi` runs,
+   and the path is shared by every Kimi session on the host, so any number
+   written here is read by somebody else, one session late. It was not a stale
+   number, it was another agent's number.
+
+   The body now tells every session to run `c2c poll-inbox` unconditionally,
+   which drains the same backlog without asserting a count that cannot be
+   right. These two tests pin that: the instruction is always present, and no
+   per-session count is claimed either way. *)
 let test_session_start_surfaces_queued_backlog () =
   with_ctx (fun ctx ->
     let b = register_session ctx ~session_id ~alias:"zz-kimi-backlog-sess" in
@@ -249,18 +274,20 @@ let test_session_start_surfaces_queued_backlog () =
     check int "exit 0" 0 rc;
     let skill = read_file (identity_skill_path ctx) in
     check bool "identity skill written" true (String.length skill > 0);
-    check bool "skill names session alias" true
+    check bool "skill does NOT name the session alias" false
       (contains ~haystack:skill ~needle:"zz-kimi-backlog-sess");
-    check bool "skill reports queued count" true
+    check bool "skill does NOT claim a queued count" false
       (contains ~haystack:skill ~needle:"2 c2c message");
-    check bool "skill flags pre-startup backlog" true
-      (contains ~haystack:skill ~needle:"already queued");
-    (* Discriminating: the callout's own read-now phrasing, absent from the
-       base template's delivery line (which also mentions poll-inbox). *)
-    check bool "callout tells the agent to read the backlog now" true
-      (contains ~haystack:skill ~needle:"Read them now with `c2c poll-inbox`"))
+    (* The goal #12 was after, kept: drain the backlog at session start. *)
+    check bool "skill tells the agent to drain the inbox" true
+      (contains ~haystack:skill ~needle:"c2c poll-inbox");
+    check bool "and says why (mail may predate the session)" true
+      (contains ~haystack:skill ~needle:"queued before this"))
 
-(* Zero backlog must not produce a false queued nudge. *)
+(* The drain instruction is unconditional, so an empty inbox must still not
+   produce a count-shaped claim. Same assertion as the backlog case, from the
+   other side: the body says the same thing either way, which is what makes it
+   safe to share between sessions. *)
 let test_session_start_no_backlog_no_false_nudge () =
   with_ctx (fun ctx ->
     ignore (register_session ctx ~session_id ~alias:"zz-kimi-empty-sess");
@@ -312,10 +339,16 @@ let test_i40_hook_adopts_managed_session_instead_of_minting () =
     check string "managed session_id preserved" "zz-i40-managed" sid;
     check bool "adoption is logged" true
       (contains ~haystack:stderr ~needle:"adopting managed session");
-    (* Identity skill must name the alias peers can actually address. *)
+    (* The adoption is established above by the registry rows and the log line.
+       Since #83 the skill names no alias — it cannot, correctly, because Kimi
+       reads it before the hook writes it and the path is shared across
+       sessions. The agent gets its addressable alias from `c2c whoami`. *)
     let skill = read_file (identity_skill_path ctx) in
-    check bool "skill names the managed alias" true
-      (contains ~haystack:skill ~needle:"zz-i40-managed"))
+    check bool "identity skill written" true (String.length skill > 0);
+    check bool "and names no alias" false
+      (contains ~haystack:skill ~needle:"zz-i40-managed");
+    check bool "points at c2c whoami for the addressable alias" true
+      (contains ~haystack:skill ~needle:"c2c whoami"))
 
 let test_i40_hook_bails_loudly_on_ambiguous_managed_cwd () =
   with_ctx (fun ctx ->
@@ -443,8 +476,12 @@ let test_i47_torn_down_managed_row_is_reclaimed_not_shadowed () =
     check string "sticky managed session_id preserved" "zz-i47-torn" sid;
     check bool "reclaim is logged, not silent" true
       (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    (* The reclaim itself is established above by the registry rows and the log
+       line. Since #83 the skill names no alias at all, so it can no longer
+       corroborate WHICH alias was reclaimed — only that one was written. *)
     let skill = read_file (identity_skill_path ctx) in
-    check bool "identity skill names the reclaimed alias" true
+    check bool "identity skill written" true (String.length skill > 0);
+    check bool "and names no alias" false
       (contains ~haystack:skill ~needle:"zz-i47-torn"))
 
 (* A LIVE managed row must still win over a torn-down one — reclaim is the

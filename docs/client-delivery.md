@@ -134,8 +134,8 @@ idle-gated native heartbeat.
   body is the canonical `<c2c event="message">` envelope — data-only, never an
   approval (B098). A SessionStart hook (`c2c hook kimi`) auto-registers the
   session, best-effort arms a per-alias notifier (so unmanaged sessions are not
-  left deaf — B238), and writes a `c2c-session` identity skill with a
-  receive-path nudge. For unmanaged/serverless setups without a live notifier
+  left deaf — B238), and ensures an identity-agnostic `c2c-session` skill exists
+  with a receive-path nudge. For unmanaged/serverless setups without a live notifier
   the fallback is `c2c monitor` (e.g. under a Monitor); `c2c doctor hooks`
   flags registered Kimi sessions with undelivered inbox and no notifier. No
   PTY injection is used for the production path.
@@ -479,10 +479,17 @@ deprecated.
 **Unmanaged plain `kimi` (B238):** SessionStart still auto-registers
 (`registered_by=kimi-hook`) and calls `ensure_daemon` for the resolved alias so
 a host-local notifier can deliver via REST when the Kimi server is available.
-It also writes `~/.kimi-code/skills/c2c-session/SKILL.md` telling the agent to
-arm Monitor if the notifier could not start. Prefer managed start when
-arrival-time delivery matters. Diagnose deaf sessions with
-`c2c doctor hooks` (Kimi delivery section).
+It also ensures `~/.kimi-code/skills/c2c-session/SKILL.md` exists, telling the
+agent to arm Monitor if the notifier could not start. That file is
+**identity-agnostic** — it tells the agent to run `c2c whoami` rather than
+naming an alias — because Kimi snapshots its skill catalogue into the system
+prompt at session start, *before* the SessionStart hook runs, so any alias
+written there would be the previous session's (#83). For the same reason it
+tells the agent to run `c2c poll-inbox` unconditionally instead of quoting a
+queued count fixed at write time. It is written only when its contents differ,
+and SessionEnd leaves it in place; `c2c uninstall kimi` is what removes it.
+Prefer managed start when arrival-time delivery matters. Diagnose deaf sessions
+with `c2c doctor hooks` (Kimi delivery section).
 
 **Wake status: CONDITIONAL.** Kimi's wake depends on an out-of-process poster
 — the notifier daemon must be alive, the local Kimi server reachable, and the

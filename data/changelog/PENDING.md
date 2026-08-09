@@ -19,3 +19,18 @@ audience: all
 summary: `c2c hook grok` wrote its `c2c-session` identity skill on every SessionStart and deleted it on every SessionEnd, at a path shared by every Grok session on the machine. Grok re-announces its entire skill catalogue to each live session whenever the set of skills it can see changes, so that one skill appearing and disappearing — a ~331-byte catalogue entry — cost every *other* concurrent Grok session a ~59 KB (~14.7k token) re-announcement — 178x amplification, and 30.5% of all recorded session history across 232 measured sessions. The skill is now written only when its contents actually differ and is never removed at session end, so the skill set stays constant and concurrent Grok sessions keep their context for their work. `c2c uninstall grok` still removes it. No action needed beyond updating c2c.
 clients: grok
 audience: all
+
+### c2c no longer changes the permissions or symlinks of your config files (#84)
+summary: c2c writes config files you own by writing a temp file and renaming it into place. A rename replaces the file rather than editing it, so two things quietly changed every time: your file's permissions were reset to the default (a 0600 config came back 0644), and if the path was a symlink — a common dotfiles setup — the link was replaced by a regular file, silently detaching it from wherever it pointed. c2c now reads the existing permissions and reapplies them before the rename, and follows symlinks so the link survives and its destination is what gets rewritten. c2c will not tighten a file it did not create, so if a shared config is world-writable `c2c health` now reports it (`shared_config_modes`) and leaves the decision to you.
+clients: all
+audience: all
+
+### Kimi's c2c identity skill no longer claims to know who you are (#83)
+summary: `c2c hook kimi` rewrote `~/.kimi-code/skills/c2c-session/SKILL.md` on every SessionStart with that session's alias and queued-message count, and deleted it on SessionEnd. Two things were wrong with that. Kimi snapshots its skill catalogue into the system prompt when a session starts — *before* the SessionStart hook runs — so the alias a session actually read was the previous session's: across 95 measured sessions, 85% were told the wrong alias. And because the path is shared by every Kimi session on the machine, each start/end rewrote a file that all the others could see. The skill is now a constant that names no session: it points at `c2c whoami` for the alias peers can address, and tells the agent to run `c2c poll-inbox` unconditionally rather than trusting a count baked in at write time. It is written only when its contents actually change, and it survives session end. `c2c uninstall kimi` removes it (it now correctly lists both c2c skill files, which it previously missed entirely).
+clients: kimi
+audience: all
+
+### `c2c install kimi` now tells you when your config has an empty hooks entry (#80)
+summary: A `[[hooks]]` entry with no `event`/`command` makes kimi reject your whole config — `kimi doctor` reports `hooks[N].event` / `hooks[N].command` errors. c2c does not write these (its hook template has always been fully commented, and a clean install produces valid TOML), but because `c2c install kimi` appends to that same file, a pre-existing empty entry surfaced right after a c2c install and looked like c2c's doing. The install now names the offending line numbers and says plainly that c2c did not write them. It does not edit or delete them — that is your config, not c2c's.
+clients: kimi
+audience: all

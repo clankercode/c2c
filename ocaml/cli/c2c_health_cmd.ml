@@ -74,6 +74,12 @@ let check_authorizers () =
            (`Green, Printf.sprintf "authorizers: [%s] → primary: %s"
               (String.concat ", " names) first))
 
+(* #84: report world-writable shared configs; never silently change a mode.
+   Logic and rationale live in C2c_config_modes — this is presentation only. *)
+let check_shared_config_modes () : [ `Green | `Yellow | `Gray ] * string * string list =
+  let v = C2c_config_modes.check () in
+  (C2c_config_modes.color v, C2c_config_modes.message v, C2c_config_modes.offenders v)
+
 (* Returns (color, human_line, optional reported relay version string).
    The version option feeds B268's cache-only "relay behind latest known"
    comparison — no second network probe. *)
@@ -396,6 +402,7 @@ let health_cmd =
   let stale_daemons = check_deprecated_daemons () in
   let supervisor_check = check_supervisor_config () in
   let authorizers_check = check_authorizers () in
+  let (mode_col, mode_msg, mode_offenders) = check_shared_config_modes () in
   let (rel_col, rel_msg, relay_version_opt) = check_relay_http () in
   let plugin_checks = check_plugin_installs () in
   let legacy_broker = C2c_broker_root_check.is_legacy_broker_root root in
@@ -470,6 +477,11 @@ let health_cmd =
           ; ("stale_deprecated_daemons", stale_json)
           ; ("supervisor", `Assoc [("status", `String (color_str sup_col)); ("message", `String sup_msg)])
           ; ("authorizers", `Assoc [("status", `String (color_str (fst authorizers_check))); ("message", `String (snd authorizers_check))])
+          ; ("shared_config_modes",
+             `Assoc
+               [ ("status", `String (color_str mode_col))
+               ; ("message", `String mode_msg)
+               ; ("world_writable", `List (List.map (fun p -> `String p) mode_offenders)) ])
           ; ("relay", `Assoc [("status", `String (color_str rel_col)); ("message", `String rel_msg)])
           ; ("plugins", plugin_json)
           ]
@@ -515,6 +527,8 @@ let health_cmd =
       Printf.printf "%s %s\n" (icon sup_col) sup_msg;
       let (auth_col, auth_msg) = authorizers_check in
       Printf.printf "%s %s\n" (icon auth_col) auth_msg;
+      Printf.printf "%s %s\n" (icon mode_col) mode_msg;
+      List.iter (fun p -> Printf.printf "    %s\n" p) mode_offenders;
       Printf.printf "%s %s\n" (icon rel_col) rel_msg;
       List.iter (fun (c, msg) -> Printf.printf "%s %s\n" (icon c) msg) plugin_checks;
       if stale_daemons = [] then

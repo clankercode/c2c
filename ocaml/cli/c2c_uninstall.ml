@@ -412,11 +412,22 @@ let recompute_kimi_artifacts () =
   let end_marker =
     C2c_kimi_hook.toml_block_end_marker ~block_id:C2c_kimi_hook.approval_hook_block_id
   in
+  (* Both skills are owned files, mirroring grok. The c2c-session one was
+     missing here because the SessionEnd hook used to delete it; since #83 it
+     persists deliberately, so uninstall is now the only thing that removes it
+     and leaving it off this list would leak the file forever. *)
+  let skill = home // ".kimi-code" // "skills" // "c2c" // "SKILL.md" in
+  let session_skill =
+    home // ".kimi-code" // "skills" // "c2c-session" // "SKILL.md"
+  in
   ([ C2c_install_manifest.shared_key ~path:config ~key:"mcpServers.c2c" ~format:"json"
    ; C2c_install_manifest.shared_block ~path:toml ~begin_marker ~end_marker
        ~legacy_marker:C2c_kimi_hook.toml_block_legacy_marker ()
    ],
-   C2c_install_manifest.owned_file hook :: deliver_watch_artifacts "kimi",
+   C2c_install_manifest.owned_file hook
+   :: C2c_install_manifest.owned_file skill
+   :: C2c_install_manifest.owned_file session_skill
+   :: deliver_watch_artifacts "kimi",
    None)
 
 let recompute_opencode_artifacts ~target_dir =
