@@ -247,8 +247,14 @@ stdio server manually later; it is not part of the vanilla install path.
 There is **no** Claude/Codex-style `hookSpecificOutput.additionalContext` path —
 passive hook stdout is ignored by Grok. SessionStart (`c2c hook grok`)
 auto-registers (`registered_by=grok-hook`), refreshes `~/.grok/skills/c2c/`, and
-writes `~/.grok/skills/c2c-session/SKILL.md` with the live alias in the skill
-description so the model can discover identity without transcript inject.
+ensures `~/.grok/skills/c2c-session/SKILL.md` exists so the model is nudged
+toward c2c without transcript inject. That skill is **identity-agnostic** — it
+points the agent at `c2c whoami` rather than naming an alias, because its path is
+shared by every Grok session on the machine (#22). It is written only when the
+content differs and is never removed at SessionEnd (#82): Grok re-announces its
+whole skill catalogue to every live session whenever the skill set changes, so a
+per-session create/delete charged every *other* concurrent session ~59 KB twice
+per session lifecycle. `c2c uninstall grok` removes it.
 
 **Session ID**: `$GROK_SESSION_ID` (hook runner only) or payload `session_id` /
 `sessionId`. Tool shells typically export **`GROK_AGENT=1` without

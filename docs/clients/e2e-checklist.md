@@ -384,8 +384,10 @@ This is client-specific — different clients use different permission mechanism
 
 - **Setup**: Grok TUI after `c2c install grok`; SessionStart fired
 - **Action**: N/A for MCP permission prompts (CLI-first; no MCP by default)
-- **Expected**: Mark SKIP for MCP approval; optional: confirm SessionStart wrote
-  `~/.grok/skills/c2c-session/SKILL.md` with live alias
+- **Expected**: Mark SKIP for MCP approval; optional: confirm
+  `~/.grok/skills/c2c-session/SKILL.md` exists and matches the embedded body. Do
+  NOT expect a write on every SessionStart — it is written only on drift, and is
+  never removed at SessionEnd (#82)
 - **Failure modes**: Expecting Claude/Codex-style hook body delivery
 - **Repro time**: ~15s
 

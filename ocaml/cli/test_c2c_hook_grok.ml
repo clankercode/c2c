@@ -244,12 +244,18 @@ let test_identity_skill_never_flaps_across_lifecycle () =
     in
     check int "start1 exit 0" 0 rc1;
     check bool "skill present after start1" true (Sys.file_exists id_skill);
+    let alias1 = first_alias ctx.broker_root in
     let ino1 = (Unix.stat id_skill).st_ino in
     let rc2, _, _ =
       run_hook ctx ~payload:session_end_payload
         ~extra_env:[ ("GROK_SESSION_ID", session_id) ]
     in
     check int "end exit 0" 0 rc2;
+    (* Prove the SessionEnd arm was actually REACHED. Without this, an event
+       string the hook stopped recognising would early-exit 0 and every
+       assertion below would still pass — a test that proves nothing. *)
+    check bool "deregistered after end" false
+      (List.mem alias1 (list_aliases ctx.broker_root));
     check bool "skill still present after SessionEnd" true
       (Sys.file_exists id_skill);
     check bool "SessionEnd did not rewrite the skill" true
