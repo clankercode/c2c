@@ -66,6 +66,101 @@ let broker_root_from_env () =
   | Some path when String.trim path <> "" -> Some path
   | _ -> None
 
+(** Scan all known broker roots (per-repo + sessions broker) to find which
+    broker(s) contain a registration matching [alias] (case-insensitive).
+    Returns [(broker_root, registration)] pairs. Excludes [exclude_root]
+    (the primary broker that was already checked).
+    Also scans C2C_BROKER_SCAN_DIRS (colon-separated extra broker root dirs).
+
+    Lives here rather than in c2c_send_cmd so the relay path can answer
+    "is this peer reachable without the relay at all?" (#81) off the same
+    scan the send path uses — two scans that could disagree would be worse
+    than none. *)
+let find_alias_in_all_broots ~exclude_root alias =
+  let target = String.lowercase_ascii alias in
+  let seen = Hashtbl.create 8 in
+  let results = ref [] in
+  let scan_root root =
+    if root = exclude_root then ()
+    else if Hashtbl.mem seen root then ()
+    else begin
+      Hashtbl.add seen root ();
+      try
+        let broker = C2c_mcp.Broker.create ~root in
+        let regs = C2c_mcp.Broker.list_registrations broker in
+        let matches =
+          List.filter
+            (fun (r : C2c_mcp.registration) ->
+              String.lowercase_ascii r.alias = target)
+            regs
+        in
+        List.iter (fun r -> results := (root, r) :: !results) matches
+      with _ -> ()  (* skip brokers we can't read *)
+    end
+  in
+  (* Scan the cross-repo sessions broker *)
+  (try scan_root (Repo_fp.resolve_sessions_broker_root ()) with _ -> ());
+  (* Scan per-repo brokers under ~/.c2c/repos/*/broker and XDG *)
+  (try
+     List.iter (fun (_fp, root) -> scan_root root)
+       (C2c_repo_fp.list_all_broker_roots ())
+   with _ -> ());
+  (* Scan C2C_BROKER_SCAN_DIRS env (colon-separated extra broker root paths) *)
+  (match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
+   | Some dirs when String.trim dirs <> "" ->
+       String.split_on_char ':' (String.trim dirs)
+       |> List.iter (fun d -> let d = String.trim d in if d <> "" then scan_root d)
+   | _ -> ());
+  (* Also scan sibling broker dirs: if primary broker is under a repos/ layout,
+     scan siblings. If it's an arbitrary path, scan its parent for subdirs
+     containing registry.json — this handles temp broker dirs in tests. *)
+  (try
+     let parent = Filename.dirname exclude_root in
+     if Sys.file_exists parent && Sys.is_directory parent then
+       Array.iter (fun entry ->
+         let candidate = Filename.concat parent entry in
+         if candidate <> exclude_root
+            && Sys.is_directory candidate
+            && Sys.file_exists (Filename.concat candidate "registry.json")
+         then scan_root candidate
+       ) (Sys.readdir parent)
+   with _ -> ());
+  List.rev !results
+
+(** Same as above but also check the sessions broker root explicitly
+    (it may already be in the list but this ensures coverage). *)
+let find_alias_in_all_brokers ~primary_root alias =
+  find_alias_in_all_broots ~exclude_root:primary_root alias
+
+(** #81: is [alias] alive on ANY broker on this host — the primary one plus
+    every root [find_alias_in_all_broots] reaches? Used to tell an operator
+    that a relay send failed for a peer they could have reached locally.
+
+    Returns [None], never an exception, if the scan itself fails: the caller
+    renders "I did not look" rather than the false "peer is not here", which
+    would send someone chasing a relay registration they do not need. *)
+let alias_live_on_any_local_broker alias =
+  try
+    let primary_root = resolve_broker_root () in
+    let alive_in_primary =
+      try
+        let broker = C2c_mcp.Broker.create ~root:primary_root in
+        List.exists
+          (fun (r : C2c_mcp.registration) ->
+            String.lowercase_ascii r.alias = String.lowercase_ascii alias
+            && C2c_mcp.Broker.registration_is_alive r)
+          (C2c_mcp.Broker.list_registrations broker)
+      with _ -> false
+    in
+    if alive_in_primary then Some true
+    else
+      Some
+        (List.exists
+           (fun (_root, (r : C2c_mcp.registration)) ->
+             C2c_mcp.Broker.registration_is_alive r)
+           (find_alias_in_all_broots ~exclude_root:primary_root alias))
+  with _ -> None
+
 let git_repo_toplevel () =
   match Git_helpers.git_repo_toplevel () with
   | Some line when Sys.is_directory line -> Some line

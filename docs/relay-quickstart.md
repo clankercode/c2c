@@ -808,3 +808,31 @@ c2c relay gc --once
 | `unknown scheme` on `relay status` against HTTP relay | Stale Docker image built from an older commit | Rebuild from current master: `docker build -f Dockerfile -t c2c-relay:e2e .`. The `c2c relay status` HTTP client requires the same conduit resolver setup as other relay subcommands; if an older image had a linking or initialization issue, rebuilding picks up the current source. |
 | `ECONNREFUSED` on `relay status` | Relay server not running or wrong port | Check the relay is up and the URL port matches `PORT` in the relay container |
 | HTTP 429 / `rate_limit_exceeded` (with `retry_after`) | A per-`(IP, endpoint-class)` token bucket was exhausted — often a NAT'd fleet sharing one public IP | The connector / `c2c monitor` back off automatically (B244); reduce poll cadence (`--interval`) or spread source IPs. See [Remote Relay Transport → Rate limiting](/remote-relay-transport/#rate-limiting) for the per-endpoint burst/refill defaults |
+| `contact_unauthorised` on send | **Not** a block by the peer — see below | `c2c relay dm send` prints the three candidate causes and how to tell them apart |
+
+### `contact_unauthorised` is a uniform denial, not an ACL rejection
+
+The relay answers every rejected delivery with the identical
+`{"ok":false,"error_code":"contact_unauthorised"}`. That is deliberate: a
+response that varied by cause would let anyone probe which aliases exist on
+the relay. The consequence is that the code carries no diagnostic
+information at all, and reading it as "that peer blocked me" is wrong.
+
+Three causes produce it. Only the client can tell them apart, so
+`c2c relay dm send` prints them on stderr when the denial fires:
+
+1. **The recipient has no live registration on the relay.** The most common
+   cause. Only they can fix it, from their own machine —
+   `c2c relay register --alias <them>`. `c2c relay list` shows who is
+   currently reachable.
+2. **Their reachability is private and you hold no contact grant.** Grants
+   are recipient-issued; see `c2c relay contact`.
+3. **Your own side cannot send** — no identity binding, no connector, or an
+   expired lease. `c2c whoami --relay` and `c2c status --relay` report all
+   three, as does `c2c doctor relay`.
+
+If the peer is alive on a broker on **your own machine**, none of the above
+applies and the relay hop was never needed: send by bare alias
+(`c2c send <alias> "…"`). The relay carries cross-machine mail only, addressed
+`<alias>@<host_id>`. `c2c relay dm send` checks this for you and says so
+([#81](https://github.com/clankercode/c2c/issues/81)).

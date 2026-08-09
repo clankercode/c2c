@@ -4,66 +4,9 @@ open C2c_mcp
 open C2c_types
 open C2c_utils
 
-(** Scan all known broker roots (per-repo + sessions broker) to find which
-    broker(s) contain a registration matching [alias] (case-insensitive).
-    Returns [(broker_root, registration)] pairs. Excludes [exclude_root]
-    (the primary broker that was already checked).
-    Also scans C2C_BROKER_SCAN_DIRS (colon-separated extra broker root dirs). *)
-let find_alias_in_all_broots ~exclude_root alias =
-  let target = String.lowercase_ascii alias in
-  let seen = Hashtbl.create 8 in
-  let results = ref [] in
-  let scan_root root =
-    if root = exclude_root then ()
-    else if Hashtbl.mem seen root then ()
-    else begin
-      Hashtbl.add seen root ();
-      try
-        let broker = C2c_mcp.Broker.create ~root in
-        let regs = C2c_mcp.Broker.list_registrations broker in
-        let matches =
-          List.filter
-            (fun (r : C2c_mcp.registration) ->
-              String.lowercase_ascii r.alias = target)
-            regs
-        in
-        List.iter (fun r -> results := (root, r) :: !results) matches
-      with _ -> ()  (* skip brokers we can't read *)
-    end
-  in
-  (* Scan the cross-repo sessions broker *)
-  (try scan_root (Repo_fp.resolve_sessions_broker_root ()) with _ -> ());
-  (* Scan per-repo brokers under ~/.c2c/repos/*/broker and XDG *)
-  (try
-     List.iter (fun (_fp, root) -> scan_root root)
-       (C2c_repo_fp.list_all_broker_roots ())
-   with _ -> ());
-  (* Scan C2C_BROKER_SCAN_DIRS env (colon-separated extra broker root paths) *)
-  (match Sys.getenv_opt "C2C_BROKER_SCAN_DIRS" with
-   | Some dirs when String.trim dirs <> "" ->
-       String.split_on_char ':' (String.trim dirs)
-       |> List.iter (fun d -> let d = String.trim d in if d <> "" then scan_root d)
-   | _ -> ());
-  (* Also scan sibling broker dirs: if primary broker is under a repos/ layout,
-     scan siblings. If it's an arbitrary path, scan its parent for subdirs
-     containing registry.json — this handles temp broker dirs in tests. *)
-  (try
-     let parent = Filename.dirname exclude_root in
-     if Sys.file_exists parent && Sys.is_directory parent then
-       Array.iter (fun entry ->
-         let candidate = Filename.concat parent entry in
-         if candidate <> exclude_root
-            && Sys.is_directory candidate
-            && Sys.file_exists (Filename.concat candidate "registry.json")
-         then scan_root candidate
-       ) (Sys.readdir parent)
-   with _ -> ());
-  List.rev !results
-
-(** Same as above but also check the sessions broker root explicitly
-    (it may already be in the list but this ensures coverage). *)
-let find_alias_in_all_brokers ~primary_root alias =
-  find_alias_in_all_broots ~exclude_root:primary_root alias
+(* find_alias_in_all_broots / find_alias_in_all_brokers moved to
+   C2c_cli_helpers (opened above) so the relay path can reuse the same scan
+   — see #81. *)
 
 let env_truthy name =
   match Sys.getenv_opt name with

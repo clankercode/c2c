@@ -421,8 +421,15 @@ let register_alias_signed ~url ?token ~alias ~identity () =
    exact registration command is printed to stderr. Pass [~alias_source] for
    any request that was (or may have been) signed with an alias; omit it for
    unsigned/admin requests and for `relay register` itself (hinting "run
-   c2c relay register" at a failing register would be circular). *)
-let print_result_and_exit ?alias_source result =
+   c2c relay register" at a failing register would be circular).
+
+   Pass [~recipient] on routes that name one (#81) so a contact_unauthorised
+   denial — which the relay deliberately makes uniform and therefore
+   uninformative — can be annotated with what the client can still check
+   locally, including whether the peer was reachable without the relay at
+   all. The multi-broker liveness scan that answers that runs only when the
+   denial actually fires, so the success path never pays for it. *)
+let print_result_and_exit ?alias_source ?recipient result =
   print_endline (Yojson.Safe.pretty_to_string result);
   let ok = match result with
     | `Assoc fields ->
@@ -444,7 +451,15 @@ let print_result_and_exit ?alias_source result =
     end;
     (match alias_source with
      | Some src ->
-         (match Relay_client_hints.hint_for_response ~alias_source:src result with
+         let contact =
+           match recipient with
+           | Some r when Relay_client_hints.is_contact_unauthorised result ->
+               Some
+                 { Relay_client_hints.recipient = r;
+                   recipient_live_locally = alias_live_on_any_local_broker r }
+           | _ -> None
+         in
+         (match Relay_client_hints.hint_for_response ?contact ~alias_source:src result with
           | Some hint -> Printf.eprintf "%s%!" hint
           | None -> ())
      | None -> ());
@@ -1277,7 +1292,7 @@ let relay_dm_cmd =
                   C2c_utils.adapt_relay_dm_send_result ~from_alias ~to_alias
                     ~content result
                 in
-                print_result_and_exit
+                print_result_and_exit ~recipient:to_alias
                   ~alias_source:(Relay_client_hints.Explicit from_alias) result)
        | "poll" ->
            let from_alias = match alias with

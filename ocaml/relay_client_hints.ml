@@ -23,6 +23,23 @@ type alias_source =
          with the "anon" placeholder alias (which no relay in practice has a
          binding for). *)
 
+(* #81: what the CLIENT knows about a `contact_unauthorised` rejection.
+
+   The relay cannot tell us which of the admission checks failed — G6
+   (relay.ml handle_contact_deliver) makes every denial share one external
+   shape on purpose, so the code cannot be used to enumerate which aliases
+   exist. That privacy property is not negotiable, so the disambiguation has
+   to happen client-side, from facts the client can check locally.
+
+   [recipient_live_locally] is the one that resolves the reported confusion:
+   a peer alive on a local broker needs no relay hop at all. The caller
+   computes it (this module stays pure and hermetically testable); [None]
+   means the caller did not look, not that the peer is absent. *)
+type contact_context = {
+  recipient : string;
+  recipient_live_locally : bool option;
+}
+
 let contains_substring ~needle haystack =
   let nlen = String.length needle and hlen = String.length haystack in
   if nlen = 0 then true
@@ -159,15 +176,97 @@ let signature_invalid_hint = function
       \  Fix: pass --alias <your-alias> or set C2C_MCP_AUTO_REGISTER_ALIAS,\n\
       \  then: c2c relay register --alias <your-alias>\n"
 
-(* [hint_for_response ~alias_source json] returns the hint to print on
-   stderr when [json] is a missing-identity-binding auth error, a
-   session-ownership signature_invalid (B231), or a generic
-   signature_invalid error (B184), or None for every other response
-   (including success). Precedence: missing-binding > session-ownership >
-   generic signature_invalid. *)
-let hint_for_response ~alias_source (json : Yojson.Safe.t) =
+(* #81: True when [json] is the relay's uniform admission denial. On /send
+   this is emitted when the RECIPIENT alias has no live registration on the
+   relay (handle_send maps relay_err_unknown_alias to it); on
+   /contact/v1/deliver it also covers unknown/malformed/expired/revoked
+   grants, dev-mode relays and non-confidential transport. The client cannot
+   tell those apart from the response, by design (G6). *)
+let is_contact_unauthorised (json : Yojson.Safe.t) =
+  match json with
+  | `Assoc fields ->
+      let ok =
+        match List.assoc_opt "ok" fields with
+        | Some (`Bool b) -> b
+        | _ -> false
+      in
+      let code_matches =
+        match List.assoc_opt "error_code" fields with
+        | Some (`String "contact_unauthorised") -> true
+        | _ -> false
+      in
+      (not ok) && code_matches
+  | _ -> false
+
+(* The single most useful thing to say about a contact_unauthorised: if the
+   peer is alive on a broker on THIS machine, the relay hop was never needed.
+   That is #81's whole reported symptom — "recipient is healthy locally but
+   the relay says unauthorised" reads as an ACL rejection when it is really a
+   routing mistake. Rendered only when the caller actually resolved the
+   recipient's local liveness. *)
+let contact_local_reachability_note = function
+  | None -> ""
+  | Some { recipient; recipient_live_locally = Some true } ->
+      Printf.sprintf
+        "\n\
+        \  BUT: that peer is alive on a broker on THIS machine, so none of\n\
+        \  the above needs fixing — the relay hop was not required at all.\n\
+        \  Send locally instead:\n\
+        \    c2c send %s \"...\"\n\
+        \  The relay carries CROSS-MACHINE mail only (<alias>@<host_id>).\n"
+        recipient
+  | Some { recipient_live_locally = Some false; _ } ->
+      "\n\
+      \  (That peer is not alive on any broker on this machine, so the relay\n\
+      \  is the right transport here — one of (1)-(3) applies.)\n"
+  | Some { recipient_live_locally = None; _ } -> ""
+
+let contact_unauthorised_hint ~alias_source ~contact =
+  let signer =
+    match alias_source with
+    | Explicit a -> a
+    | Anon_fallback -> "anon"
+  in
+  let recipient =
+    match contact with Some { recipient; _ } -> recipient | None -> "<recipient>"
+  in
+  Printf.sprintf
+    "hint: the relay answered \"contact unauthorised\". That is its UNIFORM\n\
+    \  admission-denial code: every rejected delivery gets the identical\n\
+    \  response on purpose, so that nobody can use it to discover which\n\
+    \  aliases exist on the relay. It therefore does NOT mean the peer\n\
+    \  blocked you, and it cannot tell you which of these applies. Check\n\
+    \  them locally, most likely first:\n\
+    \    1. The recipient has no live registration on the relay. Only\n\
+    \       they can fix that, from their own machine:\n\
+    \         c2c relay register --alias %s\n\
+    \       See who is currently reachable:\n\
+    \         c2c relay list\n\
+    \    2. Their reachability is private and you hold no contact grant.\n\
+    \       Grants are recipient-issued:\n\
+    \         c2c relay contact\n\
+    \    3. Your own side cannot send as %S: no identity binding, no\n\
+    \       connector, or an expired lease.\n\
+    \         c2c whoami --relay     (your alias to identity binding)\n\
+    \         c2c status --relay     (connector and lease state)\n\
+     %s"
+    recipient signer
+    (contact_local_reachability_note contact)
+
+(* [hint_for_response ?contact ~alias_source json] returns the hint to print
+   on stderr when [json] is a missing-identity-binding auth error, a
+   session-ownership signature_invalid (B231), a generic signature_invalid
+   error (B184), or a contact_unauthorised admission denial (#81) — and None
+   for every other response (including success). Precedence: missing-binding
+   > session-ownership > generic signature_invalid > contact_unauthorised.
+   The codes are disjoint, so the order is documentation rather than a
+   tie-break. [?contact] sharpens the contact_unauthorised text and is
+   ignored for the others. *)
+let hint_for_response ?contact ~alias_source (json : Yojson.Safe.t) =
   if is_missing_identity_binding json then Some (missing_binding_hint alias_source)
   else if is_session_ownership_failure json then
     Some (session_ownership_hint alias_source)
   else if is_signature_invalid json then Some (signature_invalid_hint alias_source)
+  else if is_contact_unauthorised json then
+    Some (contact_unauthorised_hint ~alias_source ~contact)
   else None
