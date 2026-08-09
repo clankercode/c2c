@@ -9,6 +9,87 @@ nav_label: Changelog
 
 ## Unreleased
 
+## 0.15.0 — 2026-08-09
+
+- **Hermes Agent is a first-class client.** `c2c install hermes` writes an
+  in-process Python plugin to `~/.hermes/plugins/c2c/` and enables it in
+  `~/.hermes/config.yaml`. It registers a `hermes-*` alias on session start,
+  exposes `c2c_send` / `c2c_list` / room tools plus `/c2c-*` slash commands,
+  and runs a background watcher that peeks the broker, injects inbound mail as
+  a DATA envelope, and drains **only after** a successful inject — so a
+  message is never destroyed by a failed delivery. Idle wake is **GUARANTEED**
+  for CLI sessions; gateway sessions (Telegram/Discord) have no CLI reference
+  to inject into, so mail stays queued for `c2c poll-inbox` (NONE, not lossy).
+  `c2c uninstall hermes` removes the plugin and surgically strips `c2c` from
+  `plugins.enabled` without reformatting the rest of your config.
+
+- **c2c no longer changes the permissions or symlinks of your config files
+  ([#84](https://github.com/clankercode/c2c/issues/84)).** Atomic writes are
+  tmp-file + `rename`, and `rename` replaces the inode rather than editing it
+  — so every write silently reset an operator-owned config to the umask
+  default (a 0600 config came back 0644) and replaced a symlinked path with a
+  regular file, detaching it from wherever it pointed. c2c now reads the
+  target's mode and reapplies it before the rename, and resolves symlinks so
+  the link survives and its destination is rewritten. It does **not** silently
+  tighten a file it did not create: `c2c health` reports world-writable shared
+  configs (`shared_config_modes`) and leaves the decision to you.
+
+- **`contact_unauthorised` explains itself
+  ([#81](https://github.com/clankercode/c2c/issues/81)).** The relay answers
+  every rejected delivery with one identical code, on purpose — a response
+  that varied by cause would let anyone probe which aliases exist on it. That
+  made a routine "recipient isn't registered on the relay" read as "that agent
+  blocked me". `c2c relay dm send` now prints the three causes that produce
+  it, with the command that checks each, and says plainly that the peer did
+  not block you. If the recipient is alive on a broker on your own machine, it
+  says the relay hop was never needed and points at a bare-alias `c2c send`.
+
+- **Kimi's `c2c-session` skill stops claiming the wrong identity
+  ([#83](https://github.com/clankercode/c2c/issues/83)).** Kimi snapshots its
+  skill catalogue into the system prompt at session start, *before* the
+  SessionStart hook runs, so the alias the skill named was the previous
+  session's — 85% of 95 measured sessions were told they were a different
+  agent. The skill is now identity-agnostic: it points at `c2c whoami` and
+  tells the agent to run `c2c poll-inbox` unconditionally, is written only
+  when its contents change, and survives session end. `c2c uninstall kimi` now
+  correctly owns both c2c skill files (it previously listed neither).
+
+- **Grok keeps its context ([#82](https://github.com/clankercode/c2c/issues/82)).**
+  `c2c hook grok` wrote its identity skill on every SessionStart and deleted it
+  on every SessionEnd, at a path shared by every Grok session on the machine.
+  Grok re-announces its entire skill catalogue whenever the visible skill set
+  changes, so that ~331-byte entry appearing and disappearing cost every
+  *other* concurrent session a ~59 KB (~14.7k token) re-announcement — 178x
+  amplification, and 30.5% of all recorded session history across 232 measured
+  sessions. The skill is now written only on drift and never removed at
+  session end.
+
+- **`c2c install kimi` names a pre-existing empty hooks entry
+  ([#80](https://github.com/clankercode/c2c/issues/80)).** A `[[hooks]]` entry
+  with no `event`/`command` makes kimi reject your whole config. c2c does not
+  write these — its hook template has always been fully commented — but
+  because install appends to that same file, a pre-existing empty entry
+  surfaced right after a c2c install and looked like c2c's doing. Install now
+  names the offending line numbers and says c2c did not write them. It does
+  not edit them; that is your config.
+
+- **`c2c version` exists, and `--version` reports the build time (B287,
+  B289).** `c2c version` was a missing subcommand that agents kept typing. It
+  now mirrors `c2c --version`, whose primary line is the parseable build
+  identity (`<version> <sha> (built <date>)`) with the wall clock demarcated
+  as `[now: …]` instead of trailing the line where it read as a build date.
+
+- **Client detection covers more clients than c2c integrates with (B288).**
+  `c2c init` from cursor-agent produced a wrong alias because detection only
+  knew supported clients. cursor-agent is now detected without any `CURSOR_*`
+  env var, unsupported clients are detected quietly rather than warned about,
+  and `c2c dev detect-agent-type` shows exactly what was detected and why.
+
+- **Relay serves historical stats (B286).** `GET /stats/history` returns the
+  hourly `/stats` snapshots oldest-first with optional `since` / `limit`, so
+  relay.c2c.im and any dashboard can plot activity over time. Anonymous,
+  read-only, aggregate-only — no aliases or PII.
+
 ## 0.14.4 — 2026-07-23
 
 - **WS subscribe clients honour server Retry-After (B279).** Failed
