@@ -390,9 +390,20 @@ blind to this whole class).
   **Known limits:** two managed kimi instances in one directory are
   indistinguishable to the hook (it bails loudly rather than guess), and a
   *co-located vanilla* kimi TUI in a managed directory is adopted too — it
-  never registers its own alias and its identity skill names the managed alias.
+  never registers its own alias, so `c2c whoami` there names the managed alias.
   Delivery is unaffected (the REST layer is workdir-keyed); nothing in the hook
-  payload can distinguish these cases. **The adoption is unbounded in time**:
+  payload can distinguish these cases.
+  **The `c2c-session` skill is identity-agnostic and must stay that way (#83).**
+  Kimi snapshots its skill catalogue into the system prompt at session *start*,
+  before `c2c hook kimi` runs — the same lag as #41's `session_index.jsonl` — so
+  anything session-specific written there is read by the *next* session, not
+  this one (measured: 85% of 95 sessions were told the previous session's
+  alias). The file is also shared by every kimi session on the machine. It
+  therefore names no alias and quotes no queued count: it points at
+  `c2c whoami` and tells the agent to run `c2c poll-inbox` unconditionally. It
+  is written only on drift and is NOT removed at SessionEnd (same reasoning as
+  grok/#82), so `c2c uninstall kimi` is the only remover — both skill files are
+  now listed in `recompute_kimi_artifacts`, which previously omitted them. **The adoption is unbounded in time**:
   since #47 the hook also reclaims a *torn-down* managed row (`pid = None`), and
   nothing expires it — a managed row from months ago still captures every future
   kimi SessionStart in that directory, including a deliberate plain `kimi` after
