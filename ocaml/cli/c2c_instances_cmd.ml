@@ -443,7 +443,7 @@ let clean_stale_cmd =
       value
       & opt (some string) None
       & info [ "instances-dir" ] ~docv:"PATH"
-        ~doc:"Operate on a specific instances directory (default: ~/.local/share/c2c/instances). Useful for inspecting alternate locations without changing the default."
+        ~doc:"Deprecated and refused — it never scoped this command. Use C2C_INSTANCES_DIR=PATH instead."
     )
   in
   let+ json = json_flag
@@ -451,15 +451,39 @@ let clean_stale_cmd =
   and+ include_named = include_named
   and+ instances_dir_override = instances_dir_override in
   let output_mode = if json then Json else Human in
-  (* Override C2C_INSTANCES_DIR for the duration of this command so
-     read_managed_instances uses the correct dir. *)
-  let instances_dir =
-    match instances_dir_override with
-    | Some d ->
-        Unix.putenv "C2C_INSTANCES_DIR" d;
-        d
-    | None -> instances_dir ()
-  in
+  (* --instances-dir never worked, and failed in a way that could DELETE a
+     running instance.
+
+     It tried to scope the command with `Unix.putenv "C2C_INSTANCES_DIR"`, but
+     [C2c_start.instances_dir] is a module-level value resolved at module
+     initialisation — before any cmdliner term body runs — so the putenv was
+     always too late. The command therefore enumerated the DEFAULT directory
+     while removing from the flag's directory: names and staleness verdicts came
+     from one place, deletions went to another. A stale instance in the default
+     directory would delete a same-named instance in the target directory
+     regardless of whether that one was running.
+
+     Scoping it properly means threading the directory through the instance
+     view AND through the pid-identity checks that compute `running` (which
+     resolve meta.json / outer.pid via the same global). Until that is done,
+     refusing is the only safe behaviour for a command that removes
+     directories. C2C_INSTANCES_DIR is resolved before module init and works
+     correctly today — every other test in this area relies on it. *)
+  (match instances_dir_override with
+   | Some d ->
+       let msg =
+         Printf.sprintf
+           "--instances-dir is refused: it never scoped this command and could \
+            delete a running instance in %s. Use: C2C_INSTANCES_DIR=%s c2c dev \
+            instances clean-stale"
+           d d
+       in
+       (match output_mode with
+        | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+        | Human -> Printf.eprintf "error: %s\n%!" msg);
+       exit 2
+   | None -> ());
+  let instances_dir = instances_dir () in
   let now = Unix.gettimeofday () in
   let all_instances = C2c_health_cmd.read_managed_instances () in
   (* Candidate = anything with a non-empty reason list AND status != running.

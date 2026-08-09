@@ -45,6 +45,23 @@ nav_label: Changelog
   than signalling, and `c2c dev instances` no longer reports the instance as
   alive. Clear such instances with `c2c dev instances clean-stale`.
 
+- **`c2c dev instances clean-stale --instances-dir=PATH` is now refused
+  ([#86](https://github.com/clankercode/c2c/issues/86)).** The flag never
+  scoped the command. `C2c_start.instances_dir` is resolved at module
+  initialisation, so the `putenv` the flag relied on always ran too late: the
+  command enumerated the **default** directory and removed from **PATH**. With
+  no same-named instances in PATH it deleted nothing while reporting every
+  default-directory candidate as removed; with same-named instances it deleted
+  them on the *other* directory's staleness verdict — including running ones.
+
+  Scoping it correctly requires threading the directory through the instance
+  view *and* the pid-identity checks that compute `running`, which resolve
+  `meta.json` / `outer.pid` through the same global; a partial fix that
+  corrects only enumeration still deletes a running instance. Until that lands,
+  a command that removes directories fails closed. Use
+  `C2C_INSTANCES_DIR=PATH c2c dev instances clean-stale`, which is resolved
+  before module init and works correctly.
+
 ## 0.15.0 — 2026-08-09
 
 - **Hermes Agent is a first-class client.** `c2c install hermes` writes an

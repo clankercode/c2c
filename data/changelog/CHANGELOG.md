@@ -24,6 +24,11 @@ summary: If you left a managed instance behind, its recorded pid eventually got 
 setup: c2c dev instances clean-stale
 audience: all
 
+### `clean-stale --instances-dir` is refused instead of deleting the wrong thing (#86)
+summary: That flag never scoped the command. It listed instances from the DEFAULT directory but deleted from the directory you named, so it either reported removals it never made or — if both directories held an instance of the same name — deleted the one in your target directory based on the other directory's staleness, running or not. It now refuses with an error and points you at the environment variable, which resolves early enough to work correctly. Use that instead; it is what the command's own tests have always used.
+setup: C2C_INSTANCES_DIR=/path/to/instances c2c dev instances clean-stale --dry-run
+audience: all
+
 ## v0.15.0 — 2026-08-09
 
 ### `c2c version` works, and `--version` stops reporting the wrong time (B287, B289)

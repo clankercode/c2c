@@ -4044,6 +4044,36 @@ let run_clean_stale_and_capture_json ~instances_dir ~extra_args =
   Sys.remove stdout_path;
   Yojson.Safe.from_string raw
 
+let contains_substring haystack needle =
+  let nl = String.length needle and hl = String.length haystack in
+  let rec go i =
+    if i + nl > hl then false
+    else if String.sub haystack i nl = needle then true
+    else go (i + 1)
+  in
+  nl = 0 || go 0
+
+(* Run clean-stale with the env var and the --instances-dir flag naming DIFFERENT
+   populated directories. Returns (exit code, stdout) without asserting on the
+   code, because the point of these tests is that the command must refuse. *)
+let run_clean_stale_env_vs_flag ~env_dir ~flag_dir ~extra_args =
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    Alcotest.failf "expected built CLI at %s — run `dune build` first" bin;
+  let stdout_path = Filename.temp_file "c2c-clean-stale-scope" ".json" in
+  let cmd =
+    Printf.sprintf
+      "C2C_INSTANCES_DIR=%s %s instances clean-stale --json --instances-dir=%s \
+       %s > %s 2>/dev/null"
+      (Filename.quote env_dir) (Filename.quote bin) (Filename.quote flag_dir)
+      extra_args
+      (Filename.quote stdout_path)
+  in
+  let rc = Sys.command cmd in
+  let raw = read_all_file stdout_path in
+  Sys.remove stdout_path;
+  (rc, raw)
+
 let dir_entries dir =
   if Sys.file_exists dir && Sys.is_directory dir
   then Array.to_list (Sys.readdir dir) |> List.sort String.compare
@@ -4095,6 +4125,66 @@ let test_clean_stale_dry_run_reports_candidates () =
     (* All 3 instance dirs still on disk *)
     check int "all 3 instances still present"
       3 (List.length (dir_entries dir)))
+
+(* --instances-dir never scoped this command, and failed in a way that could
+   DELETE a running instance.
+
+   C2c_start.instances_dir is a module-level value resolved at module
+   initialisation, so clean-stale's `Unix.putenv "C2C_INSTANCES_DIR"` always ran
+   too late. The command enumerated the DEFAULT directory while removing from
+   the flag's: names and staleness verdicts came from one place, deletions went
+   to another. Scoping it properly means threading the directory through the
+   instance view AND the pid-identity checks that compute `running`, so until
+   that lands the flag is refused rather than silently mis-scoped.
+
+   Every other clean-stale test sets the env var, which is why none of them
+   caught this. These deliberately set env and flag to different directories. *)
+let test_clean_stale_instances_dir_flag_is_refused () =
+  with_temp_dir (fun env_dir ->
+    with_temp_dir (fun flag_dir ->
+      build_named_instances_fixture
+        [ ("env-dir-stale-aaa", false); ("env-dir-stale-bbb", false) ] env_dir;
+      build_named_instances_fixture [ ("flag-dir-stale-ccc", false) ] flag_dir;
+      List.iter
+        (fun name -> age_instance_dir ~instances_dir:env_dir ~name ~age_seconds:200000.0)
+        [ "env-dir-stale-aaa"; "env-dir-stale-bbb" ];
+      age_instance_dir ~instances_dir:flag_dir ~name:"flag-dir-stale-ccc"
+        ~age_seconds:200000.0;
+      let rc, raw =
+        run_clean_stale_env_vs_flag ~env_dir ~flag_dir ~extra_args:"--dry-run"
+      in
+      check bool "exits non-zero" true (rc <> 0);
+      let fields = match Yojson.Safe.from_string raw with
+        | `Assoc f -> f
+        | _ -> Alcotest.fail "expected a JSON envelope"
+      in
+      check bool "ok = false" false (bool_field fields "ok");
+      let err = match List.assoc_opt "error" fields with
+        | Some (`String s) -> s
+        | _ -> Alcotest.fail "expected an error field"
+      in
+      check bool "names the working alternative" true
+        (contains_substring err "C2C_INSTANCES_DIR");
+      (* Refusing must not have listed the wrong directory as candidates. *)
+      check bool "no candidates reported" true
+        (List.assoc_opt "candidates" fields = None)))
+
+(* And the refusal is what protects the directories: nothing is removed from
+   either side, including the running instance the old code would have deleted
+   on the OTHER directory's staleness verdict. *)
+let test_clean_stale_instances_dir_flag_removes_nothing () =
+  with_temp_dir (fun env_dir ->
+    with_temp_dir (fun flag_dir ->
+      build_named_instances_fixture [ ("shared-name-zzz", false) ] env_dir;
+      build_named_instances_fixture [ ("shared-name-zzz", true) ] flag_dir;
+      age_instance_dir ~instances_dir:env_dir ~name:"shared-name-zzz"
+        ~age_seconds:200000.0;
+      let rc, _ = run_clean_stale_env_vs_flag ~env_dir ~flag_dir ~extra_args:"" in
+      check bool "exits non-zero" true (rc <> 0);
+      check (list string) "the running instance survives"
+        [ "shared-name-zzz" ] (dir_entries flag_dir);
+      check (list string) "and the env directory is untouched"
+        [ "shared-name-zzz" ] (dir_entries env_dir)))
 
 let test_clean_stale_removes_zombies_only () =
   with_temp_dir (fun dir ->
@@ -5482,6 +5572,10 @@ let () =
             `Quick, test_clean_stale_removes_zombies_only )
         ; ( "test_clean_stale_protected_named_aliases",
             `Quick, test_clean_stale_protected_named_aliases )
+        ; ( "test_clean_stale_instances_dir_flag_is_refused",
+            `Quick, test_clean_stale_instances_dir_flag_is_refused )
+        ; ( "test_clean_stale_instances_dir_flag_removes_nothing",
+            `Quick, test_clean_stale_instances_dir_flag_removes_nothing )
         ] )
     ; ( "instances_gc_b031",
         [ ( "test_gc_dry_run_reports_candidates",

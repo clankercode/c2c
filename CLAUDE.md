@@ -554,6 +554,21 @@ archive append. Full caveats: `.collab/runbooks/ephemeral-dms.md`.
   open-codes a kill beside it. Regression tests:
   `ocaml/test/test_c2c_pid_identity.ml` (real procfs — this test process as the
   ours case, a thread of it as the recycled case).
+- **`putenv` at command time cannot redirect a module-level value (#86).**
+  `C2c_start.instances_dir` is a `let`-bound VALUE, resolved once at module
+  init — before any cmdliner term body runs. `c2c dev instances clean-stale
+  --instances-dir=PATH` set `C2C_INSTANCES_DIR` and assumed that scoped it; it
+  did not. The command enumerated the DEFAULT dir and removed from `PATH`, so a
+  stale instance in one dir deleted a same-named instance in the other,
+  **running or not**. The flag now fails closed; `C2C_INSTANCES_DIR=PATH` in the
+  environment works because it is read before module init (this is why every
+  existing `clean-stale` test passed — they all use the env var). A real fix
+  must thread the dir through the instance view AND the pid-identity checks that
+  compute `running`, which resolve `meta.json`/`outer.pid` via the same global —
+  fixing only enumeration still deletes a running instance (measured).
+  **Regression-test shape matters here:** a fixture with a stale same-named
+  instance in BOTH dirs does not discriminate — the broken code deletes the
+  target dir's copy and passes. Use stale-in-one, running-in-the-other.
 - **Test fixtures**: external effects gated by env vars
   (`C2C_SEND_MESSAGE_FIXTURE=1`, `C2C_SESSIONS_FIXTURE`, `C2C_REGISTRY_PATH`,
   etc.). New external interactions need fixture gates.
