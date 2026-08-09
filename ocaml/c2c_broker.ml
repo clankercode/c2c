@@ -5776,13 +5776,20 @@ open C2c_mcp_helpers
                                    "rollback refused to overwrite changed source key %s"
                                    src)
                             else
-                              match C2c_io.write_file_atomic src source with
+                              (* ~perm, not a chmod after the rename: this
+                                 restores KEY MATERIAL to a path that does not
+                                 exist yet, so there is no mode to preserve and
+                                 the post-rename chmod left the key briefly
+                                 readable at the umask default (#84). *)
+                              match
+                                C2c_io.write_file_atomic ~perm:source_mode src source
+                              with
                               | Error e ->
                                   failwith
                                     (Printf.sprintf
                                        "could not restore source key %s: %s"
                                        src e)
-                              | Ok () -> Unix.chmod src source_mode
+                              | Ok () -> ()
                           in
                           if dst_exists then
                             if source = C2c_io.read_file dst then begin

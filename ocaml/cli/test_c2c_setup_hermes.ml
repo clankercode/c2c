@@ -514,11 +514,16 @@ let test_atomic_write_perm () =
     check int "mode carried across the rename" 0o600
       ((Unix.stat path).Unix.st_perm);
     check string "content replaced" "new\n" (read_file path);
-    (* Without ?perm the new inode takes umask, which is the widening bug. *)
+    (* ?perm is optional, and since #84 omitting it PRESERVES the mode rather
+       than resetting it to the umask default. The general contract lives in
+       test_c2c_io_modes.ml; asserted here because ~/.hermes/config.yaml is the
+       0600 config that motivated it. *)
     check bool "?perm really is optional" true
       (match C2c_io.write_file_atomic path "newer\n" with
        | Ok () -> true
-       | Error _ -> false))
+       | Error _ -> false);
+    check int "mode still 0600 with ?perm omitted" 0o600
+      ((Unix.stat path).Unix.st_perm))
 
 let test_atomic_write_no_stray_tmp () =
   with_temp_dir (fun dir ->

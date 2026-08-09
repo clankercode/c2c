@@ -417,6 +417,11 @@
 ; c2c makes, and it edits a large shared operator config. A structurally-wrong
 ; merge does not fail at install time — PyYAML raises on the next hermes start.
 (test
+ (name test_c2c_io_modes)
+ (modules test_c2c_io_modes)
+ (libraries c2c_mcp alcotest yojson unix))
+
+(test
  (name test_c2c_setup_hermes)
  (modules test_c2c_setup_hermes c2c_setup c2c_claude_hook_scripts c2c_grok_skill_embedded c2c_kimi_skill_embedded c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_hermes_plugin_embedded c2c_hermes_config c2c_claude_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest yojson unix digestif.ocaml))

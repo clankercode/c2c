@@ -492,6 +492,25 @@ archive append. Full caveats: `.collab/runbooks/ephemeral-dms.md`.
   subset); embed via `just codegen-alias-words` — edit data files, never the
   `.ml`. Alias comparisons are case-insensitive. Avoid real word combos in
   tests to reduce collisions with live peers.
+- **Atomic writes preserve mode and follow symlinks (#84).**
+  `C2c_io.write_file_atomic` is tmp + `rename`, and `rename` swaps the inode —
+  so it used to reset every operator-owned config to the umask default and
+  replace symlinks with regular files. It now reads the target's mode and
+  reapplies it to the temp **before** the rename, and resolves symlinks first
+  so the link survives and its destination is rewritten. `?perm` still pins a
+  mode explicitly and wins — use it only for files **c2c owns** (key material,
+  a config c2c creates itself); for operator files, preserving beats asserting.
+  Consequence: c2c preserves an over-permissive mode as faithfully as a
+  restrictive one. It does **not** silently tighten a file it did not create;
+  `c2c health` reports world-writable shared configs (`C2c_config_modes`,
+  manifest-driven, `shared_config_modes` in JSON) and the operator decides.
+  Regression tests: `test_c2c_io_modes.ml`.
+  **Measuring modes: use `stat -L` (or `os.stat`), never bare `stat`.** A
+  symlink is always `lrwxrwxrwx`, so bare `stat` reports 0777 for a link
+  pointing at a 0600 file — that artifact produced a wrong "0777 config"
+  reading during #84. On this machine `~/.codex/config.toml` and
+  `~/.codex/AGENTS.md` are symlinks into `~/.codex-shared/`, which is exactly
+  the setup the old behaviour silently broke.
 - **Test fixtures**: external effects gated by env vars
   (`C2C_SEND_MESSAGE_FIXTURE=1`, `C2C_SESSIONS_FIXTURE`, `C2C_REGISTRY_PATH`,
   etc.). New external interactions need fixture gates.

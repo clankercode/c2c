@@ -19,3 +19,8 @@ audience: all
 summary: `c2c hook grok` wrote its `c2c-session` identity skill on every SessionStart and deleted it on every SessionEnd, at a path shared by every Grok session on the machine. Grok re-announces its entire skill catalogue to each live session whenever the set of skills it can see changes, so that one skill appearing and disappearing — a ~331-byte catalogue entry — cost every *other* concurrent Grok session a ~59 KB (~14.7k token) re-announcement — 178x amplification, and 30.5% of all recorded session history across 232 measured sessions. The skill is now written only when its contents actually differ and is never removed at session end, so the skill set stays constant and concurrent Grok sessions keep their context for their work. `c2c uninstall grok` still removes it. No action needed beyond updating c2c.
 clients: grok
 audience: all
+
+### c2c no longer changes the permissions or symlinks of your config files (#84)
+summary: c2c writes config files you own by writing a temp file and renaming it into place. A rename replaces the file rather than editing it, so two things quietly changed every time: your file's permissions were reset to the default (a 0600 config came back 0644), and if the path was a symlink — a common dotfiles setup — the link was replaced by a regular file, silently detaching it from wherever it pointed. c2c now reads the existing permissions and reapplies them before the rename, and follows symlinks so the link survives and its destination is what gets rewritten. c2c will not tighten a file it did not create, so if a shared config is world-writable `c2c health` now reports it (`shared_config_modes`) and leaves the decision to you.
+clients: all
+audience: all

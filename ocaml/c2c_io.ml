@@ -66,23 +66,83 @@ let write_file (path : string) (content : string) : unit =
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     output_string oc content)
 
+(** [resolve_symlink path] follows a symlink chain and returns the real file it
+    names; returns [path] unchanged when it is not a symlink.
+
+    Needed because an atomic write is a [rename] onto the target, and [rename]
+    replaces the LINK rather than writing through it. Without this, editing a
+    config that the operator had symlinked into a dotfiles repo silently
+    replaces the link with a regular file and their repo stops tracking it
+    (#84). Following the chain first means the link survives and its
+    destination is what gets rewritten — the same thing an ordinary
+    open/truncate write would have done.
+
+    A dangling link still resolves to its (missing) destination, matching
+    [open_out]'s behaviour of creating the target. A symlink LOOP cannot be
+    resolved at all, so after [max_hops] the original [path] is returned and
+    the historical replace-the-link behaviour applies: a loop is a broken
+    filesystem state, not a case worth inventing a destination for. *)
+let resolve_symlink (path : string) : string =
+  let max_hops = 32 in
+  let rec go current hops =
+    if hops <= 0 then path
+    else
+      match Unix.lstat current with
+      | exception _ -> current
+      | { Unix.st_kind = Unix.S_LNK; _ } -> (
+          match Unix.readlink current with
+          | exception _ -> current
+          | dest ->
+              let next =
+                if Filename.is_relative dest then
+                  Filename.concat (Filename.dirname current) dest
+                else dest
+              in
+              go next (hops - 1))
+      | _ -> current
+  in
+  go path max_hops
+
+(** [existing_perm path] is [path]'s current permission bits, or [None] if it
+    does not exist or cannot be stat'd. *)
+let existing_perm (path : string) : int option =
+  match Unix.stat path with
+  | st -> Some (st.Unix.st_perm land 0o7777)
+  | exception _ -> None
+
 (** [write_file_atomic ?perm path content] writes [content] to a temp file then
     atomically renames it to [path] (Unix rename is atomic on POSIX).
     Returns [Ok ()] on success, [Error msg] on I/O error.
 
-    [?perm] sets the mode of the TEMP file, before the rename, so the content is
-    never observable at a wider mode than the caller asked for. Omitting it
-    keeps the historical behaviour: the new file takes [open_out]'s
-    [0o666 land lnot umask]. That is a silent WIDENING for any file the
-    operator had restricted — rename swaps the inode, taking its mode with it —
-    so a caller editing a config it does not own should read the existing mode
-    and pass it through. (Same shape as [C2c_relay_enc]'s chmod-before-rename.)
+    Symlinks are followed first (see [resolve_symlink]), so the link survives
+    and its destination is rewritten.
+
+    {b Mode is preserved by default} (#84). [rename] swaps the inode and takes
+    its mode with it, so a naive atomic write resets the target to
+    [open_out]'s [0o666 land lnot umask] — silently WIDENING any file the
+    operator had restricted. When [path] already exists its current mode is
+    read and reapplied to the temp file BEFORE the rename, so the content is
+    never observable at a wider mode than it had. New files still take the
+    umask default.
+
+    [?perm] pins the mode explicitly and overrides the preserved one — use it
+    when c2c OWNS the file and its mode is part of the contract (key material,
+    a config c2c creates itself). For a file the operator owns, prefer the
+    default: preserving beats asserting.
+
+    Note this preserves an over-permissive mode as faithfully as a restrictive
+    one — c2c does not silently tighten a file it did not create. [c2c health]
+    reports world-writable client configs instead, so the operator decides.
 
     Callers: use when crash-safety matters and the content is raw text/bytes.
     For JSON, prefer [C2c_utils.atomic_write_json] which adds the canonical
     newline terminator. #388 *)
 let write_file_atomic ?perm (path : string) (content : string) : (unit, string) result =
-  let tmp = path ^ ".tmp" in
+  let target = resolve_symlink path in
+  let tmp = target ^ ".tmp" in
+  let effective_perm =
+    match perm with Some _ as explicit -> explicit | None -> existing_perm target
+  in
   (* The open is bound separately so the cleanup below can only ever touch a
      temp file THIS call created. Unlinking on an open failure would delete a
      pre-existing `<path>.tmp` that belongs to someone else — on the very path
@@ -93,8 +153,8 @@ let write_file_atomic ?perm (path : string) (content : string) : (unit, string) 
       try
         Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
           output_string oc content);
-        (match perm with Some p -> Unix.chmod tmp p | None -> ());
-        Unix.rename tmp path;
+        (match effective_perm with Some p -> Unix.chmod tmp p | None -> ());
+        Unix.rename tmp target;
         Ok ()
       with e ->
         (* The temp file is ours and the rename did not happen; leaving it
@@ -109,22 +169,33 @@ let write_file_atomic ?perm (path : string) (content : string) : (unit, string) 
     Uses [Unix.lockf F_LOCK / F_ULOCK] — same pattern as [c2c_broker.ml]'s
     relay-pins lock and [broker_log.ml]'s log write lock. #388 *)
 let write_file_atomic_locked (path : string) (content : string) : (unit, string) result =
-  let tmp = path ^ ".tmp" in
+  let target = resolve_symlink path in
+  let tmp = target ^ ".tmp" in
   try
     (* Lock the target file — concurrent writers block here until we release.
-       The lock is held for the entire write + rename sequence. *)
-    let fd = Unix.openfile path [Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC] 0o600 in
+       The lock is held for the entire write + rename sequence.
+
+       No O_TRUNC: the lock open must not destroy the file it is protecting.
+       Truncating here meant that dying between the open and the rename left
+       the target EMPTY, which is precisely the crash window the atomic write
+       exists to close. *)
+    let fd = Unix.openfile target [Unix.O_WRONLY; Unix.O_CREAT] 0o600 in
     Unix.lockf fd Unix.F_LOCK 0;
     Fun.protect ~finally:(fun () ->
       (* Explicitly unlock before closing — best practice so the lock
          is released as soon as possible, not waiting for GC. *)
       (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
       Unix.close fd) (fun () ->
+      (* Mode is read AFTER the lock open so a file this call just created
+         reports the 0o600 it was created with, rather than None. Same
+         preserve-don't-reset contract as [write_file_atomic] (#84). *)
+      let effective_perm = match existing_perm target with Some p -> p | None -> 0o600 in
       let oc = open_out_gen [Open_wronly; Open_creat; Open_trunc; Open_text] 0o600 tmp in
       Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
         output_string oc content);
       close_out oc;
-      Unix.rename tmp path;
+      Unix.chmod tmp effective_perm;
+      Unix.rename tmp target;
       Ok ())
   with e -> Error (Printexc.to_string e)
 
