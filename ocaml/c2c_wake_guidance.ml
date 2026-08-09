@@ -126,6 +126,27 @@ let advice ~(client : string) ~(context : [ `Install | `Managed_start ]) :
              persistent: true }) or poll with `c2c poll-inbox`."
           ]
       }
+  (* Hermes ships an in-process Python plugin whose background watcher drains
+     the broker and calls ctx.inject_message — a real external push, so CLI
+     sessions are GUARANTEED and need no poll/monitor. Gateway sessions
+     (Telegram/Discord/...) have no CLI reference, inject_message returns
+     False there, and wake is NONE — stated as a warning rather than folded
+     into the class, because the operator picks the mode, not c2c. *)
+  | "hermes", _ ->
+      { client = c
+      ; wake = Guaranteed
+      ; primary =
+          "in-process plugin watcher (BrokerWatcher -> c2c poll-inbox -> \
+           ctx.inject_message), CLI mode"
+      ; manual_inbox_required = false
+      ; warning_lines =
+          [ "[c2c WARNING] Hermes idle wake is CLI-mode only."
+          ; "  In gateway mode (Telegram/Discord/...) there is no CLI \
+             reference, inject_message fails, and idle wake is NONE."
+          ; "  For gateway sessions: c2c poll-inbox, or arm \
+             Monitor({ command: \"c2c monitor\", persistent: true })"
+          ]
+      }
   | "grok", _ ->
       { client = c
       ; wake = None_idle

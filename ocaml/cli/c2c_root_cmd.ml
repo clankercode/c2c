@@ -146,6 +146,14 @@ let print_enriched_landing () =
         | false, _ -> "not on PATH"
         | true, true -> "configured (CLI + hooks ready)"
         | true, false -> "on PATH, not configured — run 'c2c install grok'"
+      else if c = "hermes" then
+        (* Hermes is plugin-first: install writes the Python plugin and
+           enables it in config.yaml, never MCP. Saying "c2c MCP ready" here
+           would be a plain lie about what was installed. *)
+        match on_path, configured with
+        | false, _ -> "not on PATH"
+        | true, true -> "configured (plugin + skill ready)"
+        | true, false -> "on PATH, not configured — run 'c2c install hermes'"
       else
         match on_path, configured with
         | false, _ -> "not on PATH"

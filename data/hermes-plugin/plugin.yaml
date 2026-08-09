@@ -1,0 +1,3 @@
+name: c2c
+version: "0.1.0"
+description: "c2c messaging for Hermes — send/list/rooms tools, auto-delivery, idle wake"

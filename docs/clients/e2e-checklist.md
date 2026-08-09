@@ -8,9 +8,14 @@ layout: page
 
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
 Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**,
-**Grok** (CLI-first), **agy** (Google Antigravity, CLI-first, new).
+**Grok** (CLI-first), **agy** (Google Antigravity, CLI-first),
+**Hermes Agent** (plugin-based, new).
 
-Last updated: 2026-07-17 (kimi re-enabled: B146 reverted; REST delivery)
+The numbered sections below are per-client templates — run them against any
+client in the roster. **No Hermes results have been recorded yet**; it was added
+2026-07-28 and its rows are unrun, not passed.
+
+Last updated: 2026-08-09 (Hermes Agent added to the roster; no results recorded yet)
 
 ---
 
@@ -25,7 +30,13 @@ rows SKIP for Grok. For **agy** (Google Antigravity, CLI-first, new): `c2c
 install agy`, then launch the Antigravity CLI; `c2c start agy` is available as a
 managed path. Verify `c2c whoami` shows an `agy-*` alias and SessionStart
 registered with `registered_by=agy-hook`. Auto-delivery is agentapi inject on
-wake — verify via a follow-up turn, not by scraping the pane. Capture results
+wake — verify via a follow-up turn, not by scraping the pane. For **Hermes
+Agent**: `c2c install hermes`, then launch `hermes` yourself — there is **no**
+`c2c start hermes` (Hermes runs its own loop), so mark managed-lifecycle rows
+SKIP. Restart Hermes after install so the plugin loads. Auto-delivery is the
+in-process watcher calling `ctx.inject_message`, so verify in a **CLI-mode**
+session — in gateway mode (Telegram/Discord) the inject is declined by design
+and the mail stays queued for `c2c poll-inbox`. Capture results
 with `./scripts/c2c_tmux.py peek <pane-name>` when the client is tmux-managed.
 
 Use ephemeral test aliases (e.g. `test-claude-$(date +%s)`). Clean up
@@ -387,6 +398,17 @@ This is client-specific — different clients use different permission mechanism
 - **Expected**: Mark SKIP for MCP approval; optional: confirm SessionStart wrote
   `~/.grok/skills/c2c-session/SKILL.md` with live alias
 - **Failure modes**: Expecting Claude/Codex-style hook body delivery
+- **Repro time**: ~15s
+
+### Hermes Agent
+
+- **Setup**: `hermes` after `c2c install hermes` (restart so the plugin loads)
+- **Action**: N/A for MCP permission prompts (plugin-based; no MCP, and no
+  `--with-mcp` path)
+- **Expected**: Mark SKIP for MCP approval; optional: confirm the plugin
+  registered its tools and skill (`/c2c-whoami` returns an identity)
+- **Failure modes**: Expecting an MCP tool surface; testing in gateway mode,
+  where `ctx.inject_message` is declined by design
 - **Repro time**: ~15s
 
 ---

@@ -9,7 +9,8 @@ open C2c_types
 open Cmdliner.Term.Syntax
 
 let known_components =
-  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "self"; "git-shim"; "all" ]
+  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "hermes"; "self"
+  ; "git-shim"; "all" ]
 
 let home_dir () = try Sys.getenv "HOME" with Not_found -> ""
 
@@ -56,6 +57,37 @@ let remove_shared_key ~dry_run path key =
         write_json_atomic path cleaned;
         Some path
       end
+
+(* The only YAML shared key c2c writes is `plugins.enabled.c2c` in
+   ~/.hermes/config.yaml. The surgical edit lives in [C2c_hermes_config] so
+   install and uninstall share one parser (a second, divergent YAML parser is
+   how a "shared file" cleanup corrupts an operator's config). Any other YAML
+   key is left untouched rather than guessed at. *)
+let remove_shared_yaml_key ~dry_run path key =
+  if key <> "plugins.enabled." ^ C2c_hermes_config.plugin_name then None
+  else if not (Sys.file_exists path) then None
+  else
+    let content = C2c_utils.read_file_opt path in
+    if content = "" then None
+    else
+      match C2c_hermes_config.disable content with
+      | Error _ -> None
+      | Ok updated ->
+          if updated = content then None
+          else if dry_run then Some path
+          else begin
+            (* Same mode-preservation rule as the install side: uninstall must
+               not be the step that leaves a 0600 config at 0644. *)
+            let perm =
+              match Unix.stat path with
+              | st -> st.Unix.st_perm
+              | exception _ -> 0o600
+            in
+            (match C2c_utils.write_file_atomic ~perm path updated with
+             | Ok () -> ()
+             | Error _ -> ());
+            Some path
+          end
 
 let strip_toml_sections ~section_prefix content =
   let lines = String.split_on_char '\n' content in
@@ -259,7 +291,11 @@ let safe_remove_owned ~dry_run path =
            if Array.length entries = 0 then Unix.rmdir path
        | _ -> Unix.unlink path
      with Unix.Unix_error _ -> ());
-    Some path
+    (* Report only what actually went away. A non-empty directory is left in
+       place by design (and a failed unlink is swallowed above), so claiming
+       "removed" regardless turned the uninstall receipt into a lie and hid
+       leftovers from the operator. *)
+    if Sys.file_exists path then None else Some path
   end
 
 (* -------------------------------------------------------------------------- *)
@@ -417,6 +453,32 @@ let recompute_agy_artifacts () =
   , [ C2c_install_manifest.owned_file skill ]
   , None )
 
+(* Hermes: `c2c install hermes` writes the embedded Python plugin tree under
+   ~/.hermes/plugins/c2c/ and adds `c2c` to plugins.enabled in
+   ~/.hermes/config.yaml. The owned list is derived from the embedded file
+   list, so a plugin file added to data/hermes-plugin/ can never be left
+   behind by uninstall. Directories come last and deepest-first —
+   [safe_remove_owned] only rmdir's an EMPTY directory, so a live
+   __pycache__/ (hermes byte-compiles the plugin on import) simply leaves the
+   dir in place; it is inert once plugin.yaml and the sources are gone. *)
+let recompute_hermes_artifacts () =
+  let home = home_dir () in
+  let plugin_dir = home // ".hermes" // "plugins" // "c2c" in
+  let config = home // ".hermes" // "config.yaml" in
+  let files =
+    List.map
+      (fun (rel, _) -> C2c_install_manifest.owned_file (plugin_dir // rel))
+      C2c_hermes_plugin_embedded.files
+  in
+  let dirs =
+    List.map C2c_install_manifest.owned_file
+      [ plugin_dir // "skills" // "c2c"; plugin_dir // "skills"; plugin_dir ]
+  in
+  ( [ C2c_install_manifest.shared_key ~path:config
+        ~key:("plugins.enabled." ^ C2c_hermes_config.plugin_name) ~format:"yaml" ]
+  , files @ dirs
+  , None )
+
 let recompute_self_artifacts () =
   let home = home_dir () in
   let bin = home // ".local" // "bin" in
@@ -460,6 +522,7 @@ let recompute_artifacts_for_component ~component ~target_dir =
   | "crush" -> recompute_crush_artifacts ()
   | "grok" -> recompute_grok_artifacts ()
   | "agy" -> recompute_agy_artifacts ()
+  | "hermes" -> recompute_hermes_artifacts ()
   | "git-shim" -> ([], recompute_git_shim_artifacts (), None)
   | _ -> ([], [], None)
 
@@ -472,9 +535,10 @@ let remove_artifact ~dry_run a =
   | "owned-file" | "symlink" | "binary" | "schedule" ->
       safe_remove_owned ~dry_run a.path
   | "shared-key" ->
-      (match a.key with
-       | Some key -> remove_shared_key ~dry_run a.path key
-       | None -> None)
+      (match a.key, a.format with
+       | Some key, Some "yaml" -> remove_shared_yaml_key ~dry_run a.path key
+       | Some key, _ -> remove_shared_key ~dry_run a.path key
+       | None, _ -> None)
   | "shared-block" ->
       (match a.begin_marker, a.end_marker with
        | Some b, Some e ->
@@ -615,7 +679,7 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
     exit 124
   end;
   if component = "all" then begin
-    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "crush"; "git-shim" ] in
+    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "hermes"; "crush"; "git-shim" ] in
     let target_dir = resolve_target_dir target_dir_opt in
     let all_removed = ref [] in
     List.iter

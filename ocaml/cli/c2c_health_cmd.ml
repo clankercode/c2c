@@ -255,6 +255,23 @@ let check_plugin_installs () =
    else
      add (`Gray, "agy: not configured (run: c2c install agy)"));
 
+  (* Hermes: plugin-first — the Python plugin under ~/.hermes/plugins/c2c/
+     plus the `plugins.enabled` entry in ~/.hermes/config.yaml (no MCP). Both
+     halves are probed separately: the plugin files present but not enabled is
+     the state in which install "succeeded" and nothing ever loads. *)
+  let hermes_plugin = home // ".hermes" // "plugins" // "c2c" // "plugin.yaml" in
+  let hermes_config = home // ".hermes" // "config.yaml" in
+  let hermes_enabled =
+    Sys.file_exists hermes_config
+    && C2c_hermes_config.is_enabled (C2c_utils.read_file_opt hermes_config)
+  in
+  (if Sys.file_exists hermes_plugin && hermes_enabled then
+     add (`Green, "hermes: plugin installed and enabled (CLI-first, no MCP)")
+   else if Sys.file_exists hermes_plugin then
+     add (`Yellow, "hermes: plugin installed but not in plugins.enabled (run: c2c install hermes)")
+   else
+     add (`Gray, "hermes: not configured (run: c2c install hermes)"));
+
   List.rev !results
 
 (* Scan for running deprecated PTY-based wake daemons.
@@ -518,7 +535,7 @@ let health_cmd =
 
 (* --- subcommand: connect -------------------------------------------------- *)
 
-let supported_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy" ]
+let supported_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy"; "hermes" ]
 
 let connect_dashboard ~root ~broker ~output_mode =
   let broker_root = root in

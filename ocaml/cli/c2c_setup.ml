@@ -385,6 +385,18 @@ let json_write_file_or_dryrun dry_run path json =
   else
     json_write_file path json
 
+(* Atomic text write with dry-run semantics — the non-JSON sibling of
+   [json_write_file_or_dryrun]. Raises [Failure] on I/O error so a partial
+   install fails loudly instead of reporting artifacts it never wrote. *)
+let write_file_or_dryrun dry_run path content =
+  if dry_run then
+    Printf.printf "[DRY-RUN] would write %d bytes to %s\n%!"
+      (String.length content) path
+  else
+    match C2c_io.write_file_atomic path content with
+    | Ok () -> ()
+    | Error e -> raise (Failure (Printf.sprintf "write_file_or_dryrun %s: %s" path e))
+
 let mkdir_or_dryrun dry_run dir =
   if dry_run then
     Printf.printf "[DRY-RUN] would create directory %s\n%!" dir
@@ -1907,7 +1919,7 @@ let canonical_install_client client =
 
 (* pi is NOT here: pi agents use the npm:pi-c2c extension, not `c2c install`.
    pi is shown in the landing page via a synthetic entry (print_enriched_landing). *)
-let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy" ]
+let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "hermes" ]
 (* B122: client MCP / host integrations are never installed by default.
    Convenience paths (`c2c install`, `c2c install all`) stay binary-only
    unless the operator names a client or passes --with-clients. Keep every
@@ -1915,12 +1927,12 @@ let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "
    works. *)
 (* crush remains recognized so it routes to the deprecation guard (helpful
    banner) instead of a generic unknown-command error. *)
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "crush" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "hermes"; "crush" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
-let init_configurable_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy" ]
+let init_configurable_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy"; "hermes" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
-let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "agy"; "cursor"; "crush" ]
+let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "agy"; "hermes"; "cursor"; "crush" ]
 let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "agy"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
 
@@ -2162,6 +2174,146 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
    | Json -> ());
   { artifacts; extra_json = extra }
 
+(* --- setup: Hermes plugin ----------------------------------------------- *)
+(* CLI-first install (no MCP). Writes the Python plugin files + skill to
+   ~/.hermes/plugins/c2c/, then enables the plugin in ~/.hermes/config.yaml.
+   The plugin's background BrokerWatcher is the wake mechanism (receive =
+   "plugin"). C2C_MCP_CLIENT_TYPE=hermes is pinned at runtime by the plugin
+   itself (c2c_cli.py / identity.py).
+
+   The config.yaml merge lives in [C2c_hermes_config] — it is the only edit c2c
+   makes to a large shared operator file, so it is a separately tested pure
+   function rather than inline string surgery. *)
+let hermes_plugins_dir home = home // ".hermes" // "plugins" // "c2c"
+let hermes_config_path home = home // ".hermes" // "config.yaml"
+
+(* The outcome of the config.yaml merge. [Config_failed] is a REAL outcome, not
+   an internal detail: the plugin files land either way, so an operator whose
+   config we refused has a half-installed client and must be told, in both
+   output modes. *)
+type hermes_config_outcome =
+  | Config_enabled of C2c_install_manifest.artifact
+  | Config_failed of string
+
+(* Add "c2c" to plugins.enabled (and strip it from plugins.disabled).
+   Yields the manifest artifact only when c2c really does own that key — we
+   must never claim an artifact we did not write. *)
+let merge_hermes_config ~dry_run ~config_path =
+  let owned () =
+    Config_enabled
+      (C2c_install_manifest.shared_key ~path:config_path
+         ~key:"plugins.enabled.c2c" ~format:"yaml")
+  in
+  let existing = if Sys.file_exists config_path then C2c_io.read_file config_path else "" in
+  match C2c_hermes_config.enable existing with
+  | Error msg -> Config_failed msg
+  | Ok updated ->
+      if updated = existing then
+        (* Already enabled: nothing to write, but c2c does own the key. *)
+        owned ()
+      else if dry_run then begin
+        Printf.printf "[DRY-RUN] would merge plugins.enabled.c2c into %s\n%!" config_path;
+        owned ()
+      end
+      else begin
+        mkdir_p dry_run (Filename.dirname config_path);
+        (* Carry the operator's mode across the rename. ~/.hermes/config.yaml
+           holds the provider/stt/browser block and the schema permits inline
+           API keys, so a 0600 config must not come back 0644 (rename replaces
+           the inode, mode included) — and one we create ourselves starts
+           private rather than inheriting the umask. *)
+        let perm =
+          match Unix.stat config_path with
+          | st -> st.Unix.st_perm
+          | exception _ -> 0o600
+        in
+        match C2c_io.write_file_atomic ~perm config_path updated with
+        | Ok () -> owned ()
+        | Error e -> Config_failed (Printf.sprintf "write failed: %s" e)
+      end
+
+let setup_hermes ~output_mode ~dry_run ~root:_ ~alias_val ~alias_from_auto_gen =
+  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+  let plugins_dir = hermes_plugins_dir home in
+  let skills_dir = plugins_dir // "skills" // "c2c" in
+  let config_path = hermes_config_path home in
+  mkdir_p dry_run plugins_dir;
+  mkdir_p dry_run skills_dir;
+  (* Write all embedded plugin files. *)
+  let artifacts =
+    List.map (fun (rel, content) ->
+      let dst = plugins_dir // rel in
+      mkdir_p dry_run (Filename.dirname dst);
+      write_file_or_dryrun dry_run dst content;
+      C2c_install_manifest.owned_file dst
+    ) C2c_hermes_plugin_embedded.files
+  in
+  (* Directories are owned too, so a manifest-driven uninstall can take the
+     tree back; deepest-first because [safe_remove_owned] only rmdir's an
+     already-empty directory. *)
+  let artifacts =
+    artifacts
+    @ List.map C2c_install_manifest.owned_file
+        [ skills_dir; plugins_dir // "skills"; plugins_dir ]
+  in
+  let config_outcome = merge_hermes_config ~dry_run ~config_path in
+  let artifacts =
+    match config_outcome with
+    | Config_enabled a -> artifacts @ [ a ]
+    | Config_failed _ -> artifacts
+  in
+  let skill_path = skills_dir // "SKILL.md" in
+  let extra =
+    [ ("plugin_path", `String plugins_dir)
+    ; ("skill_path", `String skill_path)
+    ; ("config_path", `String config_path)
+    ; ("mcp", `Bool false)
+    ; ("receive", `String "plugin")
+    ; ("alias", `String alias_val)
+    ; ("alias_from_auto_gen", `Bool alias_from_auto_gen)
+    ; ("config_enabled", `Bool (match config_outcome with
+                                | Config_enabled _ -> true
+                                | Config_failed _ -> false))
+    ]
+    (* Same singular "warning" key the send/room receipts use for an
+       otherwise-successful result with a caveat. `ok` stays true: the plugin
+       files really were installed. *)
+    @ (match config_outcome with
+       | Config_enabled _ -> []
+       | Config_failed msg ->
+           [ ("warning",
+              `String (Printf.sprintf
+                         "%s not updated: %s — add `c2c` to plugins.enabled by hand"
+                         config_path msg)) ])
+  in
+  (match output_mode with
+   | Human ->
+       Printf.printf "Installed c2c for Hermes (plugin + skill + auto-delivery; no MCP).\n";
+       Printf.printf "  plugin: %s\n" plugins_dir;
+       Printf.printf "  skill: %s\n" skill_path;
+       (match config_outcome with
+        | Config_enabled _ ->
+            Printf.printf "  config: %s (plugins.enabled += c2c)\n" config_path
+        | Config_failed msg ->
+            Printf.printf "  config: %s (NOT enabled - %s)\n" config_path msg);
+       Printf.printf "  alias hint: %s\n" alias_val;
+       Printf.printf "  receive: plugin background watcher (BrokerWatcher daemon thread)\n";
+       (match config_outcome with
+        | Config_enabled _ ->
+            Printf.printf "  Restart Hermes so the plugin loads.\n%!"
+        | Config_failed msg ->
+            (* Loud, and on stderr as well, because the install summary that
+               follows this block prints an unqualified success banner. *)
+            Printf.printf
+              "  ACTION REQUIRED: add `c2c` to plugins.enabled in %s, then restart Hermes.\n%!"
+              config_path;
+            Printf.eprintf
+              "[c2c WARNING] could not enable the c2c plugin in %s: %s\n%!"
+              config_path msg)
+       (* Shared WARN footer is printed by do_install_client after the summary. *)
+   | Json -> ());
+  { artifacts; extra_json = extra }
+
 let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=true) ?(skip_summary=false) ?(skip_hooks=false) ?(with_mcp=false) ~output_mode ~dry_run ~client ~alias_opt ~no_nonce ~broker_root_opt ~target_dir_opt ~force () =
   let client = canonical_install_client client in
   let root =
@@ -2207,6 +2359,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
     | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
     | "grok" -> setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | "agy" -> setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
+    | "hermes" -> setup_hermes ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | _ ->
         let msg = Printf.sprintf "unknown client '%s'. Use: %s" client install_client_error_list in
         (match output_mode with
@@ -2341,6 +2494,10 @@ let client_mcp_configured client =
                 | _ -> false)
            | _ -> false
          with _ -> false)
+  (* Hermes never gets an MCP config: `c2c install hermes` ships an in-process
+     Python plugin instead. Explicit so a future `install all --with-mcp` reads
+     as "nothing to do", not "detection not implemented yet". *)
+  | "hermes" -> false
   | _ -> false
 
 let file_contains path needle =
@@ -2386,6 +2543,13 @@ let client_integration_configured client =
       Sys.file_exists (opencode_dir // "plugins" // "c2c.ts")
       || Sys.file_exists (opencode_dir // "c2c-sidecar.sh")
   | "grok" | "agy" -> client_mcp_configured client
+  | "hermes" ->
+      (* Hermes is plugin-first: the installed plugin manifest is the marker.
+         config.yaml's plugins.enabled is deliberately NOT consulted — an
+         operator may legitimately disable the plugin without uninstalling it,
+         and "configured" here means "c2c wrote its integration", not "the
+         plugin is currently loaded". *)
+      Sys.file_exists (hermes_plugins_dir home // "plugin.yaml")
   | "crush" -> client_mcp_configured client
   | _ -> false
 

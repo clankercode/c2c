@@ -125,6 +125,7 @@ jobs:
           just codegen-role-designer
           just codegen-role-templates
           just codegen-opencode-plugin
+          just codegen-hermes-plugin
           just codegen-c2c-skills
           just sync-skills
           just sync-skills-check
@@ -132,7 +133,7 @@ jobs:
       - name: Commit and push if drift
         shell: bash
         env:
-          GENERATED_PATHS: ".c2c .collab/skills .claude/skills .opencode/skills .codex/skills ocaml/cli data/opencode-plugin"
+          GENERATED_PATHS: ".c2c .collab/skills .claude/skills .opencode/skills .codex/skills ocaml/cli data/opencode-plugin data/hermes-plugin"
         run: |
           set -euo pipefail
           # Scope staging to already-tracked codegen outputs. Some listed

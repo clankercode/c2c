@@ -44,6 +44,7 @@ let path_detectable_clients =
   ; ("codex", [ "codex" ])
   ; ("kimi", [ "kimi" ])
   ; ("grok", [ "grok" ])
+  ; ("hermes", [ "hermes" ])
   ; ("cursor", [ "cursor-agent" ])
   ]
 

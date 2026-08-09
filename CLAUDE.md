@@ -49,13 +49,15 @@ even when the immediate task is narrower.
   - CLI self-configuration: `c2c` should turn on automatic delivery on any
     host client that supports it — operators should not need to hand-edit
     settings files.
-- **Reach**: Codex, Claude Code, OpenCode, Kimi, Grok, and agy as first-class
-  peers (Grok is CLI-first: skill + SessionStart hooks + Monitor; managed
-  `c2c start grok` is deferred. agy / Antigravity is CLI-first: skill + hooks
-  under `~/.gemini/`; managed `c2c start agy` is real via `AgyAdapter` +
-  agentapi wake). Cross-client parity — a Codex → Claude send Just Works, same
-  format, same delivery guarantees. Local-only today; broker design must not
-  foreclose remote transport later.
+- **Reach**: Codex, Claude Code, OpenCode, Kimi, Grok, agy, and Hermes as
+  first-class peers (Grok is CLI-first: skill + SessionStart hooks + Monitor;
+  managed `c2c start grok` is deferred. agy / Antigravity is CLI-first: skill +
+  hooks under `~/.gemini/`; managed `c2c start agy` is real via `AgyAdapter` +
+  agentapi wake. Hermes is plugin-first: an in-process Python plugin under
+  `~/.hermes/plugins/c2c/`; no MCP path and no `c2c start hermes` — Hermes runs
+  its own loop, like Pi Agent). Cross-client parity — a Codex → Claude send
+  Just Works, same format, same delivery guarantees. Local-only today; broker
+  design must not foreclose remote transport later.
 - **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms:
   `join_room`, `send_room`, `room_history`, `my_rooms`, `list_rooms`,
   `leave_room`, `knock_room`, `list_room_knocks`, `approve_room_knock`,
@@ -239,6 +241,7 @@ wake requirement above and #35). Do not over-claim these in docs or to users:
 |---|---|
 | OpenCode | **GUARANTEED** (in-process plugin; idle event + interval) |
 | Pi Agent | **GUARANTEED** (`pi-c2c` extension: `fs.watch` → `poll-inbox` → `pi.sendMessage`) |
+| Hermes | **GUARANTEED** (CLI mode) — Hermes plugin: background watcher → `c2c poll-inbox` → `ctx.inject_message`; **NONE** in gateway mode (no CLI reference) |
 | Codex (managed/app-server) | **GUARANTEED for local mail** (inject + gated auto-turn); remote/`@host`/`#` fails closed to inject-only |
 | Kimi, agy | **CONDITIONAL** — out-of-process poster alive (REST POST / agentapi) |
 | Claude Code, Grok | **CONDITIONAL** — idle wake only while **`c2c monitor`** is armed; without it NONE at true idle (activity hooks only). First-class clients; never GUARANTEED from c2c alone |
@@ -249,7 +252,24 @@ wake requirement above and #35). Do not over-claim these in docs or to users:
 
 Claude Code and Grok cannot be guaranteed from inside c2c: neither exposes a
 local endpoint accepting a synthetic user turn (Kimi has REST, Codex the
-app-server, OpenCode the plugin API). That is an upstream ask, not our bug.
+app-server, OpenCode the plugin API, Hermes `ctx.inject_message`). That is an
+upstream ask, not our bug.
+
+**Hermes delivery order is load-bearing: peek → inject → drain-on-success.**
+`drain_and_inject` (`data/hermes-plugin/delivery.py`) peeks with
+`c2c peek-inbox`, injects, and only then drains with `c2c poll-inbox` — the same
+persist-first contract as the agy sidecar. Gateway mode (Telegram/Discord) has
+no CLI reference, so `ctx.inject_message` **always** returns `False` there;
+because nothing has been drained yet, the mail stays in the broker inbox and
+`c2c poll-inbox` still delivers it. Gateway mode is therefore **NONE, not
+lossy**.
+
+Do not "simplify" this into drain-first (poll destructively, inject from its
+return value). It looks like it closes the peek/poll race, but it makes the
+gateway path eat every inbound DM silently and forever — and `--ephemeral` mail
+has no archive copy, so that loss is unrecoverable. The race is instead repaired
+at the end of the function: anything that landed between the peek and the drain
+comes back in the drain's return value and is injected immediately.
 
 **agy's CONDITIONAL was aspirational until 2026-07-19, and vanilla agy is
 still not there.** Two defects made the row false rather than optimistic:

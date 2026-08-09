@@ -60,6 +60,8 @@ reaches an agent sitting completely idle.**
 |---|---|---|
 | **OpenCode** | **GUARANTEED** | In-process TypeScript plugin (`session.idle` event + background interval → `promptAsync`). Cannot orphan: if it is not running, the client is not running. |
 | **Pi Agent** | **GUARANTEED** | In-process `pi-c2c` extension: `fs.watch` (inotify) on the broker inbox → `c2c poll-inbox` → `pi.sendMessage` (urgent steers; nonurgent follow-up). Hardcoded 60s safety-net poll. Cannot orphan while the extension is loaded. |
+| **Hermes Agent** (CLI mode) | **GUARANTEED** | In-process Python plugin: a daemon thread stats the broker inbox every 2s (plus a 10s safety-net cycle) → `c2c peek-inbox` → `ctx.inject_message` → `c2c poll-inbox` only on a successful inject. Cannot orphan while the plugin is loaded. |
+| **Hermes Agent** (gateway mode) | **NONE** | `ctx.inject_message` returns `False` when there is no CLI reference (Telegram/Discord and other gateways), so the watcher has nowhere to inject. Nothing has been drained at that point, so the mail stays in the inbox and `c2c poll-inbox` still delivers it — NONE, not lossy. Gateway delivery is unimplemented. |
 | **Codex** (managed / app-server) | **GUARANTEED for local-broker mail** | `thread/inject_items` on arrival plus one gated auto-turn (thread idle, DND off). Remote / `@host` / `#` senders **fail closed** to inject-only — durable and readable, but not a wake. |
 | **Kimi** | **CONDITIONAL** | Needs an out-of-process poster alive: the notifier daemon (armed by managed `c2c start kimi` / `c2c new kimi`, best-effort on SessionStart), a reachable local Kimi server, and a resolvable session id. REST POST to `/api/v1/sessions/{id}/prompts` is the wake — not tmux. |
 | **agy** (Antigravity) | **CONDITIONAL** | Needs the deliver-watch sidecar alive (managed `c2c start agy`) and `agy-env.json` with a **TUI-owned** conversation (CLI-log discovery; managed start bootstraps via operator kickoff — #78 fixed, never headless mint). `agy agentapi send-message` injects. Proven live 2026-07-20/21. |
@@ -71,8 +73,9 @@ reaches an agent sitting completely idle.**
 **CONDITIONAL** = it works, but only while the named condition holds (out-of-process
 poster, agent-armed Monitor, etc.); the condition can fail silently, so treat it
 as best-effort and diagnose with `c2c doctor hooks` / a live monitor process.
-**NONE** (used inside CONDITIONAL rows) = without that condition, c2c cannot wake
-this client from idle. Mail is still durable and is seen at the agent's next turn.
+**NONE** (a row of its own, or inside a CONDITIONAL row when the condition fails)
+= c2c cannot wake this client from idle. Mail is still durable and is seen at the
+agent's next turn.
 
 ### Claude Code and Grok: CONDITIONAL on Monitor, never GUARANTEED from c2c alone
 

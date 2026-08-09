@@ -66,21 +66,41 @@ let write_file (path : string) (content : string) : unit =
   Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
     output_string oc content)
 
-(** [write_file_atomic path content] writes [content] to a temp file then
+(** [write_file_atomic ?perm path content] writes [content] to a temp file then
     atomically renames it to [path] (Unix rename is atomic on POSIX).
     Returns [Ok ()] on success, [Error msg] on I/O error.
+
+    [?perm] sets the mode of the TEMP file, before the rename, so the content is
+    never observable at a wider mode than the caller asked for. Omitting it
+    keeps the historical behaviour: the new file takes [open_out]'s
+    [0o666 land lnot umask]. That is a silent WIDENING for any file the
+    operator had restricted — rename swaps the inode, taking its mode with it —
+    so a caller editing a config it does not own should read the existing mode
+    and pass it through. (Same shape as [C2c_relay_enc]'s chmod-before-rename.)
+
     Callers: use when crash-safety matters and the content is raw text/bytes.
     For JSON, prefer [C2c_utils.atomic_write_json] which adds the canonical
     newline terminator. #388 *)
-let write_file_atomic (path : string) (content : string) : (unit, string) result =
+let write_file_atomic ?perm (path : string) (content : string) : (unit, string) result =
   let tmp = path ^ ".tmp" in
-  try
-    let oc = open_out tmp in
-    Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
-      output_string oc content);
-    Unix.rename tmp path;
-    Ok ()
-  with e -> Error (Printexc.to_string e)
+  (* The open is bound separately so the cleanup below can only ever touch a
+     temp file THIS call created. Unlinking on an open failure would delete a
+     pre-existing `<path>.tmp` that belongs to someone else — on the very path
+     where we already declined to write anything. *)
+  match open_out tmp with
+  | exception e -> Error (Printexc.to_string e)
+  | oc -> (
+      try
+        Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+          output_string oc content);
+        (match perm with Some p -> Unix.chmod tmp p | None -> ());
+        Unix.rename tmp path;
+        Ok ()
+      with e ->
+        (* The temp file is ours and the rename did not happen; leaving it
+           drops a stray `<path>.tmp` next to the operator's file. *)
+        (try Unix.unlink tmp with _ -> ());
+        Error (Printexc.to_string e))
 
 (** [write_file_atomic_locked path content] acquires an exclusive POSIX lock on
     [path] before writing, then releases the lock. Use for multi-process

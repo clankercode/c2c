@@ -12,6 +12,7 @@ let banned_aliases =
   ; "crush"
   ; "grok"
   ; "agy"
+  ; "hermes"
   ; "cursor"
   ]
 
@@ -19,7 +20,8 @@ let banned_aliases =
     sync with [banned_aliases] client names so register/rename rejections name
     the full set operators hit in the wild (B182). *)
 let reserved_client_prefixes =
-  [ "claude-"; "codex-"; "opencode-"; "kimi-"; "crush-"; "grok-"; "agy-"; "cursor-" ]
+  [ "claude-"; "codex-"; "opencode-"; "kimi-"; "crush-"; "grok-"; "agy-"
+  ; "hermes-"; "cursor-" ]
 
 let alias_casefold s = String.lowercase_ascii s
 
