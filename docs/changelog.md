@@ -9,6 +9,42 @@ nav_label: Changelog
 
 ## Unreleased
 
+## 0.15.1 — 2026-08-09
+
+- **`c2c stop` could kill an unrelated process, and did
+  ([#85](https://github.com/clankercode/c2c/issues/85)).** A managed
+  instance's directory outlives the process it describes, and the operating
+  system recycles pids. Nothing checked that the pid recorded in `outer.pid`
+  was still the process c2c recorded — only that *some* process had that
+  number — so a stale instance eventually pointed at a stranger. On
+  2026-08-09 a 21-day-old instance's recorded pid had become a **thread** of
+  Signal Desktop; `c2c stop` SIGTERMed it, Signal exited, and c2c reported
+  `Instance '…': stopped` with exit code 0. (`kill(2)` delivers to the thread
+  *group*, and `/proc/<tid>` exists for threads, so every liveness check c2c
+  had said "running" — while `ps -p <tid>` showed nothing, since `ps` lists
+  only thread-group leaders.)
+
+  c2c now proves identity before signalling. Two independent signals: a
+  recorded pid whose `/proc/<pid>/status` `Tgid` differs from the pid names a
+  thread inside another process and is categorically not ours (this needs no
+  recorded state, so it protects instances written by older versions), and
+  the process start time from `/proc` is checked against the spawn timestamp
+  in `meta.json` — or, for records that have no spawn timestamp, against the
+  pidfile's own mtime as a one-sided bound, since a process that started
+  after the file naming it was written cannot be the process it names.
+
+  The guard is applied at every site that reads a pid off disk and signals
+  it: `c2c stop`, `c2c restart` (which signals the inner pid's whole process
+  *group*), the MCP `stop_self` tool, the relay and deliver-service
+  supervisors, the `c2c agent` idle watchdog, and monitor lock displacement.
+  The two separate `stop` implementations — only one of which was reachable
+  — are collapsed into one, so a future surface cannot bypass the check by
+  open-coding a kill.
+
+  When a pid has been recycled, `c2c stop` now refuses and says why rather
+  than signalling, and `c2c dev instances` no longer reports the instance as
+  alive. Clear such instances with `c2c dev instances clean-stale`.
+
 ## 0.15.0 — 2026-08-09
 
 - **Hermes Agent is a first-class client.** `c2c install hermes` writes an

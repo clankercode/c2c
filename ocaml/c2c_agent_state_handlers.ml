@@ -158,6 +158,13 @@ let stop_self ~broker ~session_id_override ~arguments =
               let line = try input_line ic with End_of_file -> "" in
               close_in_noerr ic;
               match int_of_string_opt (String.trim line) with
+              (* #85: outer.pid outlives the process it names, and pids are
+                 recycled. Never signal a number that /proc says is no longer
+                 ours — this handler is MCP-reachable, so an unguarded SIGTERM
+                 here is a stranger's process killed by remote request. *)
+              | Some pid
+                when not (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:pid_path ~pid) ->
+                false, false
               | Some pid ->
                 (try Unix.kill pid Sys.sigterm; true, false
                  with Unix.Unix_error _ -> false, false)

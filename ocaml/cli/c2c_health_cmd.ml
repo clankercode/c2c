@@ -828,9 +828,17 @@ let read_managed_instances () =
              in
              match int_of_string_opt pid_s with
              | Some pid ->
+                 (* #85: a bare kill(pid,0) answers "is this number in use",
+                    not "is this still our process". outer.pid outlives the
+                    instance by design, so a recycled pid made dead instances
+                    read "running" indefinitely — which also blocked
+                    `instances clean-stale` (it only reaps non-running rows)
+                    and pointed `c2c stop` at a stranger. *)
                  (try
                     ignore (Unix.kill pid 0);
-                    ("running", Some pid)
+                    if C2c_start.outer_pid_is_ours name ~pid then
+                      ("running", Some pid)
+                    else ("stopped", Some pid)
                   with Unix.Unix_error _ -> ("stopped", Some pid))
              | None -> ("unknown", None)
            end

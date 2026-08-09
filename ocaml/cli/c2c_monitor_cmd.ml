@@ -425,6 +425,14 @@ let monitor_cmd =
             (match holder with
              | Some p when pid_alive p && not force_displace ->
                  None
+             | Some p
+               when pid_alive p
+                    && not
+                         (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:lock_path ~pid:p) ->
+                 (* #85: the lock file names a pid that has been recycled. The
+                    lock is genuinely held (we got EAGAIN) but not by that
+                    process, so displacing it must not signal the stranger. *)
+                 if retry > 0 then acquire ~retry:(retry - 1) else None
              | Some p when pid_alive p (* && force_displace *) ->
                  (try Unix.kill p Sys.sigterm with _ -> ());
                  let deadline = Unix.gettimeofday () +. 2.0 in
