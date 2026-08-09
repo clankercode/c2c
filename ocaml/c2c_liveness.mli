@@ -18,7 +18,11 @@ val state : C2c_mcp.registration -> liveness_state
 val is_alive_for : purpose -> C2c_mcp.registration -> bool
 
 val pid_alive : int -> bool
-(** Shared /proc liveness for doctor (replaces local kimi_pid_alive mirrors). *)
+(** Re-export of {!C2c_pid_identity.pid_alive}.
+
+    Answers "does a process with this number exist", NOT "is this still ours".
+    Before signalling a pid that came off disk, use
+    {!C2c_pid_identity.pidfile_pid_is_ours} instead (#85). *)
 
 val purpose_to_string : purpose -> string
 val state_to_string : liveness_state -> string

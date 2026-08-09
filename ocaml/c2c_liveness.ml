@@ -34,8 +34,12 @@ let is_alive_for (purpose : purpose) (reg : C2c_mcp.registration) : bool =
   | Nudge | Doctor -> state reg = Alive
   | Delivery | List | Sweep -> C2c_mcp.Broker.registration_is_alive reg
 
-let pid_alive (pid : int) : bool =
-  pid > 0 && Sys.file_exists (Printf.sprintf "/proc/%d" pid)
+(* Process-identity helpers live in the leaf module C2c_pid_identity so that
+   layers below the registry (C2c_agent_state_handlers) can reach them without
+   a dependency cycle. Re-exported here because doctor-side callers already
+   reach for C2c_liveness for pid questions. *)
+let pid_alive = C2c_pid_identity.pid_alive
+
 
 let purpose_to_string = function
   | Delivery -> "delivery"

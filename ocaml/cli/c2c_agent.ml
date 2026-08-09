@@ -584,6 +584,13 @@ let run_ephemeral_agent
               if Unix.gettimeofday () < boot_grace_deadline then loop ()
               else exit 0
           | Some pid when not (C2c_start.pid_alive pid) -> exit 0
+          (* #85: this watchdog outlives its instance by design (it waits for an
+             idle timeout). If the instance died and its pid was recycled, the
+             SIGTERM below would land on whatever inherited the number. *)
+          | Some pid
+            when not
+                   (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:outer_pid_path ~pid) ->
+              exit 0
           | Some pid ->
               let last = max_mtime () in
               let effective = if last > 0.0 then last else start_time in

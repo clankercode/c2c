@@ -522,6 +522,38 @@ archive append. Full caveats: `.collab/runbooks/ephemeral-dms.md`.
   reading during #84. On this machine `~/.codex/config.toml` and
   `~/.codex/AGENTS.md` are symlinks into `~/.codex-shared/`, which is exactly
   the setup the old behaviour silently broke.
+- **Never signal a pid you read off disk without `C2c_pid_identity` (#85).**
+  A recorded pid outlives the process it named — instance dirs and pidfiles are
+  durable — and the OS recycles pids. `pid_alive` answers "does this number
+  exist", NOT "is this ours". On 2026-08-09 a 21-day-old instance's recorded
+  outer pid had become a **thread** of Signal Desktop; `c2c stop` SIGTERMed it,
+  Signal died, and c2c printed `stopped` / exit 0. `kill(2)` delivers to the
+  thread *group*, and `/proc/<tid>` exists for threads, so every liveness check
+  read "running" — while `ps -p <tid>` showed nothing, because `ps` lists only
+  thread-group leaders. **`ps` disagreeing with `kill -0` is the signature of
+  this bug, not a `ps` quirk.**
+  Call `C2c_pid_identity.pidfile_pid_is_ours ~pidfile ~pid` (or
+  `C2c_start.outer_pid_is_ours` / `inner_pid_is_ours`) before **any**
+  SIGTERM/SIGKILL of a disk-sourced pid. Two independent signals: thread-group
+  leadership (`Tgid <> pid` ⇒ never ours; needs no recorded state, so it covers
+  instances written by older versions) and start time from `/proc/<pid>/stat`
+  field 22 + `/proc/stat` btime, compared against `meta.json`'s `start_ts`
+  (`Started_at`) or, absent one, the pidfile's own mtime as a **one-sided**
+  upper bound (`Recorded_at` — a process that started after the record naming
+  it cannot be the process it names). `Pid_unverifiable` counts as ours on
+  purpose: absent evidence of reuse, preserve prior behaviour. Ambiguity that
+  *can* be resolved resolves toward "not ours" — refusing to stop a live
+  instance is an annoyance, signalling a stranger is not.
+  It is a LEAF module (no c2c deps) specifically so `C2c_agent_state_handlers`
+  can reach it; putting it in `C2c_liveness` created a dependency cycle
+  (`Relay_nudge → C2c_mcp → C2c_agent_state_handlers → C2c_liveness → C2c_mcp`).
+  **The second half of #85 is the structural lesson:** there were TWO stop
+  implementations and the guarded one (`C2c_start.cmd_stop`) was never wired
+  up, while `C2c_managed_cmd.stop_cmd` open-coded its own kill loop. They are
+  now one function (`C2c_start.stop_instance`); do not add a stop surface that
+  open-codes a kill beside it. Regression tests:
+  `ocaml/test/test_c2c_pid_identity.ml` (real procfs — this test process as the
+  ours case, a thread of it as the recycled case).
 - **Test fixtures**: external effects gated by env vars
   (`C2C_SEND_MESSAGE_FIXTURE=1`, `C2C_SESSIONS_FIXTURE`, `C2C_REGISTRY_PATH`,
   etc.). New external interactions need fixture gates.

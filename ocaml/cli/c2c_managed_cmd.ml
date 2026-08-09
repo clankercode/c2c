@@ -799,37 +799,28 @@ let stop_cmd =
      | Human -> Printf.eprintf "error: instance '%s' not found.\n%!" name);
     exit 1
   end;
-  let outer_pid_path = inst_path // "outer.pid" in
-  let result =
-    if Sys.file_exists outer_pid_path then begin
-      let pid_s =
-        let ic = open_in outer_pid_path in
-        Fun.protect ~finally:(fun () -> close_in ic) (fun () ->
-          let s = input_line ic in String.trim s)
-      in
-      match int_of_string_opt pid_s with
-      | Some pid ->
-          (try
-             Unix.kill pid Sys.sigterm;
-             let stopped = ref false in
-             for _ = 1 to 10 do
-               if not !stopped then begin
-                 (try ignore (Unix.kill pid 0) with Unix.Unix_error _ -> stopped := true);
-                 if not !stopped then Unix.sleepf 0.5
-               end
-             done;
-             if not !stopped then
-               (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
-             "stopped"
-           with Unix.Unix_error _ -> "stopped")
-      | None -> "no pid found"
-    end else "not running"
+  (* #85: this used to open-code its own SIGTERM/SIGKILL of outer.pid, which is
+     the path that actually ran (C2c_start.cmd_stop was never wired up). A
+     21-day-old instance's recorded pid had been recycled onto a thread of an
+     unrelated desktop application, and `c2c stop` killed it — reporting
+     "stopped", exit 0. There is now exactly one implementation. *)
+  let outcome = C2c_start.stop_instance name in
+  let status = C2c_start.stop_outcome_message ~name outcome in
+  (* Stopping an already-stopped instance stays a success, as it has always
+     been here — only the new refusal is an error, and nothing can depend on
+     that exit code yet. *)
+  let ok = match outcome with
+    | C2c_start.Stop_stopped | C2c_start.Stop_not_running -> true
+    | C2c_start.Stop_refused_foreign_pid _ -> false
   in
-  match output_mode with
-  | Json ->
-      print_json (`Assoc [ ("ok", `Bool true); ("name", `String name); ("status", `String result) ])
-  | Human ->
-      Printf.printf "Instance '%s': %s\n" name result
+  (match output_mode with
+   | Json ->
+       print_json
+         (`Assoc [ ("ok", `Bool ok); ("name", `String name); ("status", `String status) ])
+   | Human ->
+       if ok then Printf.printf "Instance '%s': %s\n" name status
+       else Printf.eprintf "error: %s\n%!" status);
+  if not ok then exit 1
 
 let stop : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop" ~doc:"Stop a managed c2c instance.") stop_cmd

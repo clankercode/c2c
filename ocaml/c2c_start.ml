@@ -3083,6 +3083,58 @@ let persist_headless_thread_id ~(name : string) ~(thread_id : string) : unit =
 let pid_alive (pid : int) : bool =
   try Unix.kill pid 0; true with Unix.Unix_error _ -> false
 
+(* #85: the spawn wall clock recorded in meta.json, used to prove a recorded
+   outer pid has not been recycled onto a stranger's process.
+
+   Only returned when meta.json's own "pid" agrees with [pid]. meta.json
+   describes one specific launch; if its pid names something else the start_ts
+   belongs to that other launch and comparing against it would be worse than
+   having no evidence at all. *)
+let recorded_outer_start_ts (name : string) ~(pid : int) : float option =
+  try
+    match Yojson.Safe.from_file (meta_json_path name) with
+    | `Assoc fields ->
+        let meta_pid =
+          match List.assoc_opt "pid" fields with
+          | Some (`Int p) -> Some p
+          | _ -> None
+        in
+        if meta_pid <> Some pid then None
+        else (
+          match List.assoc_opt "start_ts" fields with
+          | Some (`Float f) -> Some f
+          | Some (`Int i) -> Some (float_of_int i)
+          | _ -> None)
+    | _ -> None
+  with _ -> None
+
+(* #85: is this instance's recorded outer pid still OUR process? Distinct from
+   [pid_alive], which only asks whether the number is in use — a recycled pid
+   passes that and made dead instances read "running" forever, with `c2c stop`
+   then signalling whatever inherited the number. *)
+let outer_pid_identity (name : string) ~(pid : int) : C2c_pid_identity.pid_identity =
+  let expect =
+    match recorded_outer_start_ts name ~pid with
+    | Some ts -> C2c_pid_identity.Started_at ts
+    | None ->
+        (* Older instances predate start_ts in meta.json. outer.pid's own mtime
+           is still an upper bound on when the recorded process can have
+           started, so they are not left with only the leadership check. *)
+        C2c_pid_identity.pidfile_expectation (outer_pid_path name)
+  in
+  C2c_pid_identity.classify_pid_identity ~pid ~expect
+
+let outer_pid_is_ours (name : string) ~(pid : int) : bool =
+  C2c_pid_identity.pid_identity_is_ours (outer_pid_identity name ~pid)
+
+(* #85, inner half. No spawn timestamp is recorded for the inner child, so the
+   evidence is inner.pid's own mtime plus thread-group leadership. The stakes
+   are higher here than for the outer: restart signals the inner's whole process
+   GROUP (kill(-pid)), so a recycled pid takes out every process that happens to
+   share the group it landed in. *)
+let inner_pid_is_ours (name : string) ~(pid : int) : bool =
+  C2c_pid_identity.pidfile_pid_is_ours ~pidfile:(inner_pid_path name) ~pid
+
 let read_pid (path : string) : int option =
   try
     let ic = open_in path in
@@ -6762,6 +6814,15 @@ let cmd_restart_self ?(name : string option) () : int =
              "error: inner pid %d for '%s' not alive (outer may be \
               relaunching).\n%!" pid name;
            1
+       | Some pid when not (inner_pid_is_ours name ~pid) ->
+           (* #85: alive, but the number was recycled onto another process. *)
+           Printf.eprintf
+             "error: recorded inner pid %d for '%s' is no longer ours: %s.\n%!"
+             pid name
+             (C2c_pid_identity.pid_identity_reason ~pid
+                (C2c_pid_identity.classify_pid_identity ~pid
+                   ~expect:(C2c_pid_identity.pidfile_expectation (inner_pid_path name))));
+           1
        | Some pid when pid = Unix.getpid () ->
            Printf.eprintf "error: refusing to signal our own pid\n%!"; 1
        | Some pid ->
@@ -6773,7 +6834,18 @@ let cmd_restart_self ?(name : string option) () : int =
               Printf.eprintf "kill failed: %s\n%!" (Unix.error_message e);
               1))
 
-let cmd_stop (name : string) : int =
+(* The outcome of stopping an instance, so the human and --json CLI surfaces
+   can share ONE implementation. They used to be two: this function and a
+   thinner copy inside the `stop` subcommand, and only the copy was wired up.
+   The copy signalled the recorded pid unconditionally, which is how #85
+   SIGTERMed an unrelated desktop application while the guard sat in unreachable
+   code. Anything that stops an instance goes through [stop_instance]. *)
+type stop_outcome =
+  | Stop_stopped
+  | Stop_not_running
+  | Stop_refused_foreign_pid of int * string  (* pid, human-readable reason *)
+
+let stop_instance (name : string) : stop_outcome =
   (* B145: the outer's SIGTERM handler (cleanup_and_exit) already tears down
      the detached kimi notifier, but if the outer is SIGKILLed (never runs its
      handler) the notifier would orphan. Belt-and-braces: kill it by its own
@@ -6790,7 +6862,7 @@ let cmd_stop (name : string) : int =
     | _ -> ()
   in
   match read_pid (outer_pid_path name) with
-  | Some pid when pid_alive pid ->
+  | Some pid when pid_alive pid && outer_pid_is_ours name ~pid ->
       (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
       let deadline = Unix.gettimeofday () +. 10.0 in
         while Unix.gettimeofday () < deadline && pid_alive pid do
@@ -6799,12 +6871,33 @@ let cmd_stop (name : string) : int =
       if pid_alive pid then
         (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
       stop_kimi_notifier ();
-      0
+      Stop_stopped
+  | Some pid when pid_alive pid ->
+      (* #85: the number is in use, but by something that is not this instance.
+         Signalling it would SIGTERM (then SIGKILL) a stranger's process — the
+         reported case sent it at a desktop application that had inherited the
+         pid. Refuse, explain, and still sweep our own notifier. *)
+      let reason =
+        C2c_pid_identity.pid_identity_reason ~pid (outer_pid_identity name ~pid)
+      in
+      stop_kimi_notifier ();
+      Stop_refused_foreign_pid (pid, reason)
   | _ ->
       (* Even with no live outer, sweep any orphaned notifier for this alias. *)
       stop_kimi_notifier ();
-      Printf.eprintf "error: instance '%s' is not running.\n%!" name;
-      1
+      Stop_not_running
+
+(* Short status phrase, sized to fit both "Instance '<name>': <msg>" and a
+   bare error line. *)
+let stop_outcome_message ~(name : string) : stop_outcome -> string = function
+  | Stop_stopped -> "stopped"
+  | Stop_not_running -> "not running"
+  | Stop_refused_foreign_pid (pid, reason) ->
+      Printf.sprintf
+        "refusing to signal pid %d for instance '%s': %s. The instance is not \
+         running; its recorded pid now belongs to another process. Remove the \
+         stale instance with: c2c dev instances clean-stale"
+        pid name reason
 
 let read_kickoff_prompt_opt (name : string) : string option =
   let path = instance_dir name // "kickoff-prompt.txt" in
@@ -6924,6 +7017,15 @@ let cmd_restart ?(session_id_override : string option)
   let inner_pid = read_pid (inner_pid_path name) in
   let outer_pid = read_pid (outer_pid_path name) in
   (match inner_pid with
+   | Some pid when pid_alive pid && not (inner_pid_is_ours name ~pid) ->
+       (* #85 *)
+       Printf.printf
+         "[c2c restart] recorded inner pid %d for '%s' is no longer ours (%s); \
+          not signalling\n%!"
+         pid name
+         (C2c_pid_identity.pid_identity_reason ~pid
+            (C2c_pid_identity.classify_pid_identity ~pid
+               ~expect:(C2c_pid_identity.pidfile_expectation (inner_pid_path name))))
    | Some pid when pid_alive pid ->
        let target_pid = if cfg.client = "codex-headless" then pid else -pid in
        Printf.printf "[c2c restart] signalling inner pid %d (pgid=%s) for '%s'\n%!"
@@ -7065,7 +7167,9 @@ let cmd_restart_sidecar (name : string) (kind_s : string) : int =
                   ref may lag — acceptable for operator repair; next full stop
                   still reaps via pidfile cleanup). *)
                (match read_pid pid_path with
-                | Some p when pid_alive p ->
+                | Some p
+                  when pid_alive p
+                       && C2c_pid_identity.pidfile_pid_is_ours ~pidfile:pid_path ~pid:p ->
                     Printf.printf
                       "[c2c restart-sidecar] stopping %s pid %d for '%s'\n%!"
                       (sidecar_kind_to_string kind) p name;

@@ -22,6 +22,13 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.15.1 — 2026-08-09
+
+### `c2c stop` no longer kills a stranger's process (#85)
+summary: If you left a managed instance behind, its recorded pid eventually got recycled onto an unrelated process — and `c2c stop` SIGTERMed it, printed `stopped`, and exited 0. This really happened: a 21-day-old instance's pid had become a thread of a desktop application, and stopping the instance killed the application. `c2c` now proves a recorded pid is still the process it recorded (thread-group leadership plus start time) before signalling anything, at every site that reads a pid off disk — `stop`, `restart`, `stop_self`, the relay and deliver supervisors, the agent idle watchdog. A recycled pid is refused with an explanation instead of killed, and `c2c dev instances` stops reporting such instances as alive. If a stop now refuses, the instance is genuinely dead: clear it with the command below.
+setup: c2c dev instances clean-stale
+audience: all
+
 ## v0.15.0 — 2026-08-09
 
 ### `c2c version` works, and `--version` stops reporting the wrong time (B287, B289)

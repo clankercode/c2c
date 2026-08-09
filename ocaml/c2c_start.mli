@@ -924,7 +924,22 @@ val persist_headless_thread_id : name:string -> thread_id:string -> unit
 (** {1 Process utilities} *)
 
 val pid_alive : int -> bool
-(** [pid_alive pid] returns true if the process is running. *)
+(** [pid_alive pid] returns true if a process with this pid exists.
+
+    This is NOT "is this still our process" — pids are recycled. For a managed
+    instance's recorded outer pid use {!outer_pid_is_ours} (#85). *)
+
+val recorded_outer_start_ts : string -> pid:int -> float option
+(** [recorded_outer_start_ts name ~pid] is the spawn wall clock meta.json
+    recorded for instance [name], or [None] when meta.json is missing,
+    unreadable, or describes a different pid. *)
+
+val outer_pid_identity : string -> pid:int -> C2c_pid_identity.pid_identity
+(** Classify whether [pid] is still instance [name]'s outer process. *)
+
+val outer_pid_is_ours : string -> pid:int -> bool
+(** [outer_pid_is_ours name ~pid] is false when the pid was recycled onto
+    another process — signalling it would hit a stranger. *)
 
 val read_pid : string -> int option
 (** [read_pid path] reads a PID from a pidfile; returns [None] if invalid. *)
@@ -1065,8 +1080,21 @@ val filter_env_for_restart : unit -> string array
     from seeing the parent's session and hitting the "cannot run from inside a
     c2c session" guard (c2c.ml:8499). *)
 
-val cmd_stop : string -> int
-(** [cmd_stop name] stops a running instance. Returns 0. *)
+(** Outcome of {!stop_instance}. [Stop_refused_foreign_pid] carries the pid and
+    a human-readable reason. *)
+type stop_outcome =
+  | Stop_stopped
+  | Stop_not_running
+  | Stop_refused_foreign_pid of int * string
+
+val stop_instance : string -> stop_outcome
+(** [stop_instance name] is the single implementation behind every surface that
+    stops a managed instance. It refuses to signal a recorded pid that has been
+    recycled onto another process (#85) — do not open-code a kill of
+    [outer.pid] beside it. *)
+
+val stop_outcome_message : name:string -> stop_outcome -> string
+(** One-line rendering, shared by the human and [--json] surfaces. *)
 
 val cmd_restart :
   ?session_id_override:string ->

@@ -365,6 +365,11 @@ let read_managed_config ~name : managed_config option =
 let stop_supervisor ~name ~timeout_s : bool =
   let pid_path = instances_dir () // name // "outer.pid" in
   match read_pidfile pid_path with
+  | Some pid when pid_alive pid
+                  && not (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:pid_path ~pid) ->
+      (* #85: the number is live but was recycled onto another process. There is
+         no supervisor to stop, and signalling it would hit a stranger. *)
+      true
   | Some pid when pid_alive pid ->
       (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
       let deadline = Unix.gettimeofday () +. timeout_s in
