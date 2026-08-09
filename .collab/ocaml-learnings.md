@@ -83,4 +83,25 @@ use a single-module executable.
 
 ---
 
+## A new module under `ocaml/cli/` breaks *other* tests, not its own (2026-08-09)
+
+`(modules ...)` is an exhaustive whitelist, not a hint. So when you add a module
+that an already-widely-depended-on module references — the Hermes work added
+`c2c_hermes_plugin_embedded` and made `c2c_setup` reference it — every test
+stanza that lists `c2c_setup` must also list the new module, or it fails with
+`Unbound module`. Six stanzas needed it here.
+
+**Why this is worth its own entry:** the failure lands nowhere near the change.
+The new module's own test compiles fine (you listed it there), the feature works,
+and the branch looks green if you only build the targets you touched. The break
+shows up in unrelated suites, so it is easy to push a branch that builds for you
+and breaks `dune build @all` for everyone.
+
+**Rule**: after adding a module under `ocaml/cli/`, run
+`dune build @all` (not just your own targets) before believing the branch. If it
+fails, `grep -n '<the-module-it-was-added-to>' ocaml/cli/dune` lists exactly the
+stanzas that need the new name.
+
+---
+
 *To add an entry: create a new top-level `##` section with date, issue number, and description.*
