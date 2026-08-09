@@ -149,13 +149,13 @@ let refresh_kimi_skill_if_stale () =
    #82: that same shared path makes every *appearance or disappearance* of the
    file expensive. Grok re-announces its ENTIRE skill catalogue to every live
    session whenever the discovered skill set changes — measured at 168 entries /
-   ~59 KB (~14.7k tokens) re-announced for a ONE-ENTRY delta whose catalogue
-   entry is ~331 bytes (178x amplification; the SKILL.md file itself is ~1.2 KB,
-   do not confuse the two), adding up to 30.5% of all recorded session history
-   across 232 sessions. So this skill
-   is written only when the content actually differs, and is NEVER removed on
-   SessionEnd: the entry has to stay continuously present so the set never
-   changes. Because the body carries no identity, a file that outlives its
+   ~59 KB (~14.7k tokens) re-announced for a ONE-ENTRY delta of ~331 bytes
+   (178x amplification), adding up to 30.5% of all recorded session history
+   across 232 sessions. #82 calls those 331 bytes "the flapping file"; it is
+   really the catalogue ENTRY — the SKILL.md itself is ~1.2 KB, and only the
+   entry reading makes 58970/331 = 178 come out. So this skill is written only
+   when the content actually differs, and is NEVER removed on SessionEnd: the
+   entry has to stay continuously present so the set never changes. Because the body carries no identity, a file that outlives its
    session names nothing stale — which is what makes "leave it in place" correct
    here, rather than the session-scoped path also floated in #82 (that would
    mutate the set on every start AND every end, with a unique entry each time —

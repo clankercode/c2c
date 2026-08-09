@@ -140,7 +140,7 @@ idle-gated native heartbeat.
 - **Grok**: `c2c install grok` is **CLI-first** (no MCP by default). Preferred
   inbound is a persistent Monitor on `c2c monitor` (Grok injects each line into
   the conversation). SessionStart runs `c2c hook grok` to auto-register and
-  write a `c2c-session` identity skill — Grok does **not** support Claude/Codex
+  ensure a `c2c-session` identity skill exists — Grok does **not** support Claude/Codex
   `additionalContext` transcript inject. Fallback: `c2c poll-inbox`. Wake class
   is **NONE** at true idle (CONDITIONAL only if a live `c2c monitor` lock is
   present); `c2c doctor hooks` reports this under the Grok section (#37).

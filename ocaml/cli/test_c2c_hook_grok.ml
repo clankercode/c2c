@@ -245,6 +245,11 @@ let test_identity_skill_never_flaps_across_lifecycle () =
     check int "start1 exit 0" 0 rc1;
     check bool "skill present after start1" true (Sys.file_exists id_skill);
     let alias1 = first_alias ctx.broker_root in
+    (* first_alias returns "" on an empty registry, and List.mem "" [] is false
+       — so the dereg check below would pass vacuously had start1 not
+       registered. Pin the precondition. *)
+    check bool "registered before end" true
+      (String.starts_with ~prefix:"grok-" alias1);
     let ino1 = (Unix.stat id_skill).st_ino in
     let rc2, _, _ =
       run_hook ctx ~payload:session_end_payload

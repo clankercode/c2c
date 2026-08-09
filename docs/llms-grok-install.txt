@@ -11,8 +11,10 @@ c2c install grok        # writes ~/.grok/skills/c2c/ + SessionStart/SessionEnd h
 ```
 
 After installing, **restart Grok** (or open a new session) so SessionStart fires.
-The hook auto-registers a `grok-*` alias, writes `~/.grok/skills/c2c-session/`,
-and refreshes the `/c2c` skill when stale.
+The hook auto-registers a `grok-*` alias, ensures
+`~/.grok/skills/c2c-session/` exists (written only when its contents differ,
+and never removed at session end -- #82), and refreshes the `/c2c` skill when
+stale.
 
 ## Verify
 
