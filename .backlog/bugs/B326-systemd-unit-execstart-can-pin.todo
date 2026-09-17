@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
 estimate_hours: 1
 id: B326
 priority: low
+started_at: null
 status: pending
 tags: []
 title: systemd unit ExecStart can pin a dev _build path — dune clean turns it into an infinite restart loop
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+c2c_binary_for_unit (c2c_relay_systemd.ml:194-203) falls back to argv[0] when the canonical install path is absent - running from a checkout bakes a dev _build binary path into a boot unit with Restart=always and StartLimitIntervalSec=0. A dune clean, worktree removal, or prefix change (without re-running install self or relay enable, which do rewrite the unit) leaves a permanently failing unit retrying every 5s forever; the in-supervisor binary-change detection re-execs self and never notices the unit ExecStart went stale.
+
+## Fix direction
+
+Refuse to embed a _build path (require an installed binary or an explicit override flag), or add a path-existence guard plus a doctor check.
+
+## Evidence
+
+CLI review 2026-09-17.
