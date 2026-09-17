@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
 estimate_hours: 1
 id: B310
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: c2c relay enable ignores ambient C2C_RELAY_URL and activates the public relay instead
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+c2c relay enable ignores an ambient C2C_RELAY_URL: chosen = match url with Some u -> u | _ -> default_public_relay_url (c2c_relay_cmd.ml:693-696). An operator with C2C_RELAY_URL=https://private.example exported who runs c2c relay enable gets the PUBLIC relay written to relay.json, and since machine_relay_config_has_url then holds, no Environment= pin is added - the systemd connector boots onto relay.c2c.im while the shell commands all used the private relay. Traffic silently splits across two relays. Env-over-config precedence is honored by every other activation surface (B300).
+
+## Fix direction
+
+chosen should fall back through Relay_activation.url () (flag > env > existing config) before the public default.
+
+## Evidence
+
+CLI review 2026-09-17; verified in source by coordinator.
