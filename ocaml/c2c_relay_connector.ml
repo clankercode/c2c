@@ -1791,32 +1791,54 @@ let connector_owns_alias ~broker_root ~alias ~now : string option =
     prior last_ok_ts so the doctor check can still report staleness. *)
 let write_connector_state_error broker_root ~op ~detail =
   let now = Unix.gettimeofday () in
-  let prev_ok_ts =
+  let prev_fields =
     match C2c_io.read_json_opt (connector_state_path broker_root) with
-    | Some (`Assoc fs) ->
+    | Some (`Assoc fs) -> Some fs
+    | _ -> None
+  in
+  let prev_ok_ts =
+    match prev_fields with
+    | Some fs ->
         (match List.assoc_opt "last_ok_ts" fs with
          | Some (`Float f) -> f
          | Some (`Int i) -> float_of_int i
          | _ -> 0.0)
-    | _ -> 0.0
+    | None -> 0.0
   in
   (* B292: this writer rebuilds the file, so carry the wedge record over —
      an exception while a root is parked in cooldown must not erase the
      cooldown's persisted basis. *)
   let wedge_assoc =
-    match C2c_io.read_json_opt (connector_state_path broker_root) with
-    | Some (`Assoc fs) ->
+    match prev_fields with
+    | Some fs ->
         List.filter
           (fun (k, _) ->
              List.mem k [ "wedged_since"; "wedge_reason"; "wedge_count" ])
           fs
-    | _ -> []
+    | None -> []
+  in
+  (* B316: carry the ownership evidence over the same way — registered,
+     node_id and sessions are the B294 register guard's and B231 peek-key
+     resolution's only durable evidence, so one transient sync exception
+     must not erase them (pre-fix the file was rebuilt with registered
+     empty and no node_id/sessions keys until the next good pass). *)
+  let ownership_assoc =
+    let kept =
+      match prev_fields with
+      | Some fs ->
+          List.filter
+            (fun (k, _) -> List.mem k [ "registered"; "node_id"; "sessions" ])
+            fs
+      | None -> []
+    in
+    match List.assoc_opt "registered" kept with
+    | Some _ -> kept
+    | None -> [ ("registered", `List []) ] @ kept
   in
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float prev_ok_ts)
     ; ("pid", `Int (Unix.getpid ()))
-    ; ("registered", `List [])
     ; ("outbox_forwarded", `Int 0)
     ; ("outbox_failed", `Int 0)
     ; ("outbox_dlqed", `Int 0)
@@ -1826,7 +1848,7 @@ let write_connector_state_error broker_root ~op ~detail =
     ; ("last_error_op", `String op)
     ; ("last_error_detail", `String detail)
     ; ("last_error_ts", `Float now)
-    ] @ wedge_assoc) in
+    ] @ wedge_assoc @ ownership_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
