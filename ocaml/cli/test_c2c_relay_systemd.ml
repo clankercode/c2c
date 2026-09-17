@@ -281,11 +281,51 @@ let test_c2c_binary_for_unit_prefers_installed () =
     let bin = home // ".local" // "bin" // "c2c" in
     write bin "#!/bin/sh\n";
     Unix.chmod bin 0o755;
-    check string "installed binary wins" bin (C2c_relay_systemd.c2c_binary_for_unit ());
-    Unix.unlink bin;
-    let resolved = C2c_relay_systemd.c2c_binary_for_unit () in
-    check bool "falls back to absolute argv[0]" true
-      (String.length resolved > 0 && resolved.[0] = '/'))
+    check string "installed binary wins" bin
+      (match C2c_relay_systemd.c2c_binary_for_unit () with
+       | C2c_relay_systemd.Binary_ok p -> p
+       | C2c_relay_systemd.Binary_dev_build p -> p);
+    Unix.unlink bin)
+
+(* B326: without a canonical install, a dev _build argv[0] must be refused,
+   not embedded into a Restart=always unit. *)
+let test_c2c_binary_for_unit_refuses_dev_build () =
+  with_isolated_home (fun _ ->
+    (* The test exe itself runs from _build — the exact argv[0] shape this
+       fix exists for. *)
+    check bool "argv[0] under _build is refused" true
+      (match C2c_relay_systemd.c2c_binary_for_unit () with
+       | C2c_relay_systemd.Binary_dev_build p ->
+           contains ~haystack:p ~needle:"/_build/"
+       | C2c_relay_systemd.Binary_ok p ->
+           failf "expected Binary_dev_build, got Binary_ok %s" p);
+    (* Explicit override always wins, even relative (made absolute). *)
+    check string "override wins" "/opt/c2c/bin/c2c"
+      (match C2c_relay_systemd.c2c_binary_for_unit ~override:"/opt/c2c/bin/c2c" () with
+       | C2c_relay_systemd.Binary_ok p -> p
+       | C2c_relay_systemd.Binary_dev_build p -> p);
+    (match C2c_relay_systemd.c2c_binary_for_unit ~override:"rel/c2c" () with
+     | C2c_relay_systemd.Binary_ok p ->
+         check bool "relative override made absolute" true
+           (String.length p > 0 && p.[0] = '/' && Filename.basename p = "c2c")
+     | C2c_relay_systemd.Binary_dev_build p ->
+         failf "relative override must resolve, got Binary_dev_build %s" p);
+    (* A durable non-_build fallback is still allowed. *)
+    check string "non-_build argv[0] is allowed" "/usr/bin/c2c"
+      (match C2c_relay_systemd.c2c_binary_for_unit ~executable:"/usr/bin/c2c" () with
+       | C2c_relay_systemd.Binary_ok p -> p
+       | C2c_relay_systemd.Binary_dev_build p -> p);
+    (* _build detection sees the directory component anywhere in the path. *)
+    check bool "nested _build detected" true
+      (match C2c_relay_systemd.c2c_binary_for_unit
+               ~executable:"/home/dev/proj/_build/default/cli/c2c.exe" () with
+       | C2c_relay_systemd.Binary_dev_build _ -> true
+       | C2c_relay_systemd.Binary_ok p -> failf "expected dev build, got %s" p);
+    check bool "adjacent-but-different name is not _build" true
+      (match C2c_relay_systemd.c2c_binary_for_unit
+               ~executable:"/opt/_builder/c2c" () with
+       | C2c_relay_systemd.Binary_ok _ -> true
+       | C2c_relay_systemd.Binary_dev_build p -> failf "false positive on %s" p))
 
 (* --- default runner is fixture-gated ---------------------------------------- *)
 
@@ -366,7 +406,7 @@ let read_file_all path =
     close_in ic; s
   end
 
-(* Returns (home, stdout+stderr, systemctl capture). *)
+(* Returns (exit code, home, stdout+stderr, systemctl capture). *)
 let run_isolated_in ~home args =
   let out = home // "out.txt" in
   let cap = home // "systemctl.log" in
@@ -380,18 +420,26 @@ let run_isolated_in ~home args =
       (Filename.quote cap)
       (Filename.quote c2c_exe) args (Filename.quote out)
   in
-  ignore (Sys.command env_cmd);
-  (home, read_file_all out, read_file_all cap)
+  let code = Sys.command env_cmd in
+  (code, home, read_file_all out, read_file_all cap)
 
 let run_isolated args =
   let home = tmpdir "c2c-relay-e2e" in
   run_isolated_in ~home args
 
+(* A stable binary at the canonical install path: c2c_binary_for_unit must
+   pin THIS into ExecStart, never the dev _build exe the tests run. *)
+let seed_canonical_binary home =
+  write (home // ".local" // "bin" // "c2c") "#!/bin/sh\n";
+  Unix.chmod (home // ".local" // "bin" // "c2c") 0o755
+
 let test_e2e_relay_enable_installs_unit () =
-  let home, out, cap = run_isolated "relay enable" in
+  let home = tmpdir "c2c-relay-e2e" in
+  seed_canonical_binary home;
   Fun.protect
     ~finally:(fun () -> try remove_tree home with _ -> ())
     (fun () ->
+       let _, _, out, cap = run_isolated_in ~home "relay enable" in
        check bool "enable succeeded" true (contains ~haystack:out ~needle:"relay activated");
        let unit = expected_unit_path home in
        check bool "unit file written by relay enable" true (Sys.file_exists unit);
@@ -404,12 +452,14 @@ let test_e2e_relay_enable_installs_unit () =
             ~needle:"systemctl --user enable --now c2c-relay-connect.service"))
 
 let test_e2e_relay_disable_keeps_unit () =
-  let home, _, _ = run_isolated "relay enable" in
+  let home = tmpdir "c2c-relay-e2e" in
+  seed_canonical_binary home;
   Fun.protect
     ~finally:(fun () -> try remove_tree home with _ -> ())
     (fun () ->
+       let _ = run_isolated_in ~home "relay enable" in
        (* Second phase must reuse the same isolated home. *)
-       let _, out, cap = run_isolated_in ~home "relay disable" in
+       let _, _, out, cap = run_isolated_in ~home "relay disable" in
        check bool "disable succeeded" true
          (contains ~haystack:out ~needle:"relay deactivated");
        check bool "unit disabled via systemctl" true
@@ -417,6 +467,70 @@ let test_e2e_relay_disable_keeps_unit () =
             ~needle:"systemctl --user disable --now c2c-relay-connect.service");
        check bool "unit file kept after disable" true
          (Sys.file_exists (expected_unit_path home)))
+
+(* --- B326: a dev _build binary must never be pinned into the unit ---------- *)
+
+let test_e2e_relay_enable_refuses_dev_build () =
+  let home = tmpdir "c2c-relay-e2e-devbuild" in
+  Fun.protect
+    ~finally:(fun () -> try remove_tree home with _ -> ())
+    (fun () ->
+       (* No canonical install: the tests' own c2c.exe IS a _build path, the
+          exact checkout scenario. Under the fixture runner systemd answers,
+          so enable would install a unit pinned to _build/default/... — a
+          `dune clean` then leaves Restart=always restarting a missing
+          binary forever. It must refuse loudly instead. *)
+       let code, _, out, _ =
+         run_isolated_in ~home
+           (Printf.sprintf "relay enable --url %s" (Filename.quote "https://r.b326.example"))
+       in
+       check bool "enable exits non-zero" true (code <> 0);
+       check bool "error names the dev _build refusal" true
+         (contains ~haystack:out ~needle:"_build");
+       check bool "guidance names the install fix" true
+         (contains ~haystack:out ~needle:"install self");
+       check bool "guidance names the override flag" true
+         (contains ~haystack:out ~needle:"--unit-binary");
+       check bool "no unit written" true
+         (not (Sys.file_exists (expected_unit_path home)));
+       check bool "no partial relay.json (fails before mutating)" true
+         (not (Sys.file_exists (home // ".config" // "c2c" // "relay.json"))))
+
+let test_e2e_relay_enable_unit_binary_override () =
+  let home = tmpdir "c2c-relay-e2e-override" in
+  Fun.protect
+    ~finally:(fun () -> try remove_tree home with _ -> ())
+    (fun () ->
+       let bin = "/opt/c2c-b326/bin/c2c" in
+       let code, _, out, _ =
+         run_isolated_in ~home
+           (Printf.sprintf "relay enable --unit-binary %s --url %s"
+              (Filename.quote bin) (Filename.quote "https://r.b326.example"))
+       in
+       check bool ("enable exits 0: " ^ out) true (code = 0);
+       let text = read_file_all (expected_unit_path home) in
+       check bool "unit ExecStart uses the override" true
+         (contains ~haystack:text
+            ~needle:("ExecStart=" ^ bin ^ " start relay-connect --foreground")))
+
+let test_e2e_relay_enable_pins_canonical_over_dev_build () =
+  let home = tmpdir "c2c-relay-e2e-canonical" in
+  seed_canonical_binary home;
+  Fun.protect
+    ~finally:(fun () -> try remove_tree home with _ -> ())
+    (fun () ->
+       let code, _, out, _ =
+         run_isolated_in ~home
+           (Printf.sprintf "relay enable --url %s" (Filename.quote "https://r.b326.example"))
+       in
+       check bool ("enable exits 0: " ^ out) true (code = 0);
+       let canonical = home // ".local" // "bin" // "c2c" in
+       let text = read_file_all (expected_unit_path home) in
+       check bool "canonical install wins over the dev argv[0]" true
+         (contains ~haystack:text
+            ~needle:("ExecStart=" ^ canonical ^ " start relay-connect --foreground"));
+       check bool "dev _build path absent from the unit" true
+         (not (contains ~haystack:text ~needle:"_build")))
 
 let test_e2e_install_self_gated_on_activation () =
   let home = tmpdir "c2c-relay-e2e-self" in
@@ -426,7 +540,7 @@ let test_e2e_install_self_gated_on_activation () =
        let dest = home // "bin" in
        (* Local-only host: no unit, even though the fixture runner reports a
           healthy systemd --user session (it answers every call with ok). *)
-       let _, _, cap_local =
+       let _, _, _, cap_local =
          run_isolated_in ~home (Printf.sprintf "install self --dest %s" (Filename.quote dest))
        in
        check bool "local-only install self: no unit" true
@@ -437,7 +551,7 @@ let test_e2e_install_self_gated_on_activation () =
           just-installed binary. *)
        let cfg = home // ".config" // "c2c" // "relay.json" in
        write cfg {|{"url":"https://r.example","enabled":true}|};
-       let _, out, cap_active =
+       let _, _, out, cap_active =
          run_isolated_in ~home (Printf.sprintf "install self --dest %s" (Filename.quote dest))
        in
        check bool "activated install self: unit written" true
@@ -471,6 +585,7 @@ let () =
         ] )
     ; ( "paths / runner"
       , [ test_case "c2c_binary_for_unit prefers ~/.local/bin/c2c" `Quick test_c2c_binary_for_unit_prefers_installed
+        ; test_case "c2c_binary_for_unit refuses a dev _build path (B326)" `Quick test_c2c_binary_for_unit_refuses_dev_build
         ; test_case "default systemctl runner is fixture-gated" `Quick test_default_runner_inert_under_fixture
         ] )
     ; ( "uninstall"
@@ -481,6 +596,9 @@ let () =
         ] )
     ; ( "end-to-end (fixture-gated systemctl)"
       , [ test_case "relay enable installs + enables the unit" `Quick test_e2e_relay_enable_installs_unit
+        ; test_case "relay enable refuses a dev _build binary (B326)" `Quick test_e2e_relay_enable_refuses_dev_build
+        ; test_case "relay enable --unit-binary overrides ExecStart (B326)" `Quick test_e2e_relay_enable_unit_binary_override
+        ; test_case "relay enable pins the canonical install over dev argv[0] (B326)" `Quick test_e2e_relay_enable_pins_canonical_over_dev_build
         ; test_case "relay disable disables but keeps the unit" `Quick test_e2e_relay_disable_keeps_unit
         ; test_case "install self installs the unit only when activated" `Quick test_e2e_install_self_gated_on_activation
         ] )

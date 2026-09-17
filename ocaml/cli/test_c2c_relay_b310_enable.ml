@@ -68,10 +68,24 @@ let relay_json_enabled path =
   | Some (`Bool b) -> Some b
   | _ -> None
 
+(* B326: enable refuses a dev _build binary when no canonical install exists.
+   These tests exercise URL selection, so seed the canonical install the
+   enable flow prefers. *)
+let seed_canonical_binary home =
+  let bin = home // ".local" // "bin" // "c2c" in
+  (try Unix.mkdir (home // ".local") 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Unix.mkdir (home // ".local" // "bin") 0o755;
+  let oc = open_out_bin bin in
+  output_string oc "#!/bin/sh\n";
+  close_out oc;
+  Unix.chmod bin 0o755
+
 let with_home f =
   let home = tmpdir "c2c-b310-enable" in
   Fun.protect ~finally:(fun () -> try remove_tree home with _ -> ())
-    (fun () -> f home)
+    (fun () ->
+      seed_canonical_binary home;
+      f home)
 
 (* Run `c2c relay <args>` in an isolated HOME under the systemctl fixture;
    [extra_env] rows are appended verbatim (env -i guarantees everything else

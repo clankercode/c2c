@@ -754,8 +754,39 @@ let relay_enable_cmd =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN"
       ~doc:"Bearer token for a token-protected relay.")
   in
-  let+ url = url and+ token = token in
+  let unit_binary =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "unit-binary" ] ~docv:"PATH"
+      ~doc:"Binary pinned into the boot unit's ExecStart. Default: the \
+            canonical install (~/.local/bin/c2c) when present, else this \
+            executable. A dev $(b,_build) binary is refused — install a \
+            stable build first ($(b,just install-all) / $(b,c2c install \
+            self)) or pass this override explicitly.")
+  in
+  let+ url = url and+ token = token and+ unit_binary = unit_binary in
   warn_non_machine_relay_config "enable";
+  (* B326: resolve the unit binary BEFORE any state change, so refusing a dev
+     _build path leaves relay.json untouched. Refuse only when a unit would
+     actually be installed: enable itself activates the relay (writes
+     enabled:true + a URL), so the only remaining condition is a systemd
+     --user session. Without one the unit is skipped anyway, and the dev
+     path is never embedded. *)
+  let unit_c2c_path =
+    match C2c_relay_systemd.c2c_binary_for_unit ?override:unit_binary () with
+    | C2c_relay_systemd.Binary_ok p -> p
+    | C2c_relay_systemd.Binary_dev_build p ->
+        if C2c_relay_systemd.systemd_user_available () then begin
+          Printf.eprintf
+            "error: refusing to pin a dev build into the boot unit.\n\
+            \  ExecStart would name %s (a dune _build tree): a `dune clean`,\n\
+            \  worktree removal or prefix change leaves a Restart=always unit\n\
+            \  restarting a missing binary forever.\n\
+            \  Install a stable binary first:  just install-all  (or: c2c install self)\n\
+            \  Or override explicitly:  c2c relay enable --unit-binary <PATH>\n%!"
+            p;
+          exit 1
+        end
+        else p
+  in
   (* B310: activation precedence matches every other surface (B300):
      --url > C2C_RELAY_URL > an already-saved URL — only a host with none of
      those gets the public relay. Previously the ambient env (and any saved
@@ -798,7 +829,7 @@ let relay_enable_cmd =
   let unit_lines =
     match
       C2c_relay_systemd.install_and_enable_if_active ~pre_start:handover
-        ~c2c_path:(C2c_relay_systemd.c2c_binary_for_unit ()) ()
+        ~c2c_path:unit_c2c_path ()
     with
     | Unit_enabled unit_path ->
         Printf.sprintf

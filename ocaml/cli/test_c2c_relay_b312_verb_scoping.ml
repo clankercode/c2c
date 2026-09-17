@@ -304,11 +304,29 @@ let broker_scoped_env ~home ~broker ~state =
 
 let repo_local_relay_json broker = broker // "relay.json"
 
+(* B326: enable refuses a dev _build binary when no canonical install
+   exists; seed one so these scoping tests exercise URL selection, not the
+   binary-source refusal. *)
+let seed_canonical_binary home =
+  let rec mkdir_p p =
+    if p = "" || p = "/" || Sys.file_exists p then ()
+    else (
+      mkdir_p (Filename.dirname p);
+      try Unix.mkdir p 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+  in
+  let bin = home // ".local" // "bin" // "c2c" in
+  mkdir_p (Filename.dirname bin);
+  let oc = open_out_bin bin in
+  output_string oc "#!/bin/sh\n";
+  close_out oc;
+  Unix.chmod bin 0o755
+
 let test_enable_broker_scoped_warns_names_file () =
   with_temp_dir @@ fun root ->
   let home = root // "home" in
   let broker = root // "broker" in
   let state = root // "state" in
+  seed_canonical_binary home;
   let env = broker_scoped_env ~home ~broker ~state in
   let out, code =
     spawn_to_log ~env
@@ -330,6 +348,7 @@ let test_disable_broker_scoped_warns_names_file () =
   let home = root // "home" in
   let broker = root // "broker" in
   let state = root // "state" in
+  seed_canonical_binary home;
   let env = broker_scoped_env ~home ~broker ~state in
   let _, code1 =
     spawn_to_log ~env

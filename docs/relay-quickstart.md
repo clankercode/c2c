@@ -205,6 +205,13 @@ systemctl --user restart c2c-relay-connect.service   # what `c2c restart relay-c
 c2c relay disable                                    # stop + disable for good (unit file is kept)
 ```
 
+The unit's `ExecStart` pins the canonical install (`~/.local/bin/c2c`) when it
+exists. Running `c2c relay enable` straight from a checkout (no canonical
+install) is **refused** rather than pinning a dev `_build` binary — a
+`dune clean` would leave the unit restarting a missing binary forever (B326).
+Install first (`just install-all` / `c2c install self`) or pass
+`--unit-binary <PATH>` explicitly.
+
 A plain supervisor kill would be reverted within ~5s by `Restart=always`, so
 c2c refuses to do that silently. If the unit is enabled but a *rogue*
 non-systemd supervisor holds the machine singleton (the restart-loop incident

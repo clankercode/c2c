@@ -291,19 +291,42 @@ let rec mkdir_p path =
     try Unix.mkdir path 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
-(* The absolute c2c path for ExecStart. Prefers the canonical install
+(* The absolute c2c path for ExecStart (B326). Prefers the canonical install
    location (~/.local/bin/c2c) when it exists: `c2c relay enable` run from a
    dev checkout must not pin a _build path into a boot unit. Falls back to
-   this process's argv[0], made absolute. *)
-let c2c_binary_for_unit () =
-  let installed =
-    (try Sys.getenv "HOME" with Not_found -> ".") // ".local" // "bin" // "c2c"
-  in
-  if Sys.file_exists installed then installed
-  else begin
-    let exe = Sys.executable_name in
-    if Filename.is_relative exe then Sys.getcwd () // exe else exe
-  end
+   this process's argv[0], made absolute — UNLESS that resolves under a dune
+   [_build] tree: a Restart=always unit pinned into _build turns the first
+   [dune clean] / worktree removal into an infinite restart loop
+   (StartLimitIntervalSec=0), so the caller must refuse and demand either an
+   installed binary or an explicit [--unit-binary] override. *)
+type unit_binary =
+  | Binary_ok of string
+      (** A durable absolute path safe to embed in ExecStart. *)
+  | Binary_dev_build of string
+      (** The offending _build path; callers must fail loudly with guidance. *)
+
+let is_dev_build_path p =
+  (* "/" ^ p normalizes a leading "_build/…" so it matches too. *)
+  let s = "/" ^ p in
+  let n = String.length s and m = String.length "/_build/" in
+  let rec go i = i + m <= n && (String.sub s i m = "/_build/" || go (i + 1)) in
+  go 0
+
+let c2c_binary_for_unit ?override ?executable () =
+  match override with
+  | Some o when String.trim o <> "" ->
+      let p = String.trim o in
+      Binary_ok (if Filename.is_relative p then Sys.getcwd () // p else p)
+  | _ ->
+      let installed =
+        (try Sys.getenv "HOME" with Not_found -> ".") // ".local" // "bin" // "c2c"
+      in
+      if Sys.file_exists installed then Binary_ok installed
+      else begin
+        let exe = match executable with Some e -> e | None -> Sys.executable_name in
+        let exe = if Filename.is_relative exe then Sys.getcwd () // exe else exe in
+        if is_dev_build_path exe then Binary_dev_build exe else Binary_ok exe
+      end
 
 (* B300 gate for `c2c install self`: the unit exists only on relay-activated
    hosts. Local-only installs never get an enabled connector unit. *)
