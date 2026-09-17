@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:06Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T20:20:56Z"
 complexity: low
 created_at: "2026-09-17T07:56:12Z"
 depends_on: []
+duration_minutes: 298.84072167641665
 estimate_hours: 1
 id: B316
 priority: medium
 started_at: "2026-09-17T15:22:06Z"
-status: in_progress
+status: done
 tags: []
 title: write_connector_state_error wipes registered/sessions/node_id — reopens B294 register-theft window and breaks B231 peek keys
-updated_at: "2026-09-17T15:22:06Z"
+updated_at: "2026-09-17T20:20:56Z"
 ---
 
 # write_connector_state_error wipes registered/sessions/node_id — reopens B294 register-theft window and breaks B231 peek keys
