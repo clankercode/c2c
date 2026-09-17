@@ -439,6 +439,11 @@
  (libraries c2c_mcp relay_test_support alcotest yojson unix lwt.unix))
 
 (test
+ (name test_c2c_relay_b322_error_detail_cap)
+ (modules test_c2c_relay_b322_error_detail_cap)
+ (libraries c2c_mcp alcotest yojson unix))
+
+(test
  (name test_c2c_relay_b316_state_preserve)
  (modules test_c2c_relay_b316_state_preserve)
  (libraries c2c_mcp alcotest yojson unix))

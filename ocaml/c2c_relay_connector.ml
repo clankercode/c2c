@@ -2338,7 +2338,10 @@ let summarize_pass_errors (errs : pass_error list) :
   let last_error = match errs with
     | [] -> None
     | e :: _ ->
-        Some { err_op = e.pe_op; err_detail = e.pe_detail;
+        (* B322: same B297 cap as the summary entries — the raw pe_detail is
+           a full relay response body, and last_error is what the state
+           writer emits verbatim ("last_error_detail") and doctor renders. *)
+        Some { err_op = e.pe_op; err_detail = truncate_error_detail e.pe_detail;
                err_ts = Unix.gettimeofday ();
                err_alias = e.pe_alias; err_session_id = e.pe_session_id;
                err_code = e.pe_code }
