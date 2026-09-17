@@ -1,0 +1,106 @@
+---
+complexity: high
+created_at: "2026-09-17T02:45:47Z"
+depends_on: []
+estimate_hours: 4
+id: B295
+priority: high
+status: pending
+tags:
+    - relay
+    - server
+    - needs-railway-logs
+title: relay /register returns ok:true but the lease is not moved for specific aliases (alias_of_session then returns None)
+updated_at: "2026-09-17T02:45:47Z"
+---
+## Symptom
+
+For a specific subset of aliases, `POST /register` returns `ok:true` and the
+connector counts the registration as successful, but the relay's
+`alias_of_session ~node_id ~session_id` does **not** resolve to that alias
+immediately afterwards — so the very next `poll_inbox` / `heartbeat` in the same
+sync pass is rejected `signature_invalid`.
+
+This is a distinct defect from the "missing lease reported as signature_invalid"
+bug: here the client did everything right, the server said yes, and the lease
+still did not move.
+
+## Deterministic repro (xsm, broker root `e0eb9c317019`)
+
+```
+$ c2c relay connect --once --broker-root ~/.c2c/repos/e0eb9c317019/broker \
+    --relay-url https://relay.c2c.im
+[relay-connector] sync: registered=6 heartbeated=0 ... alerts=0
+  [poll_inbox: {"ok":false,"error_code":"signature_invalid","error":"verified signer \"codex-mi...]
+```
+
+`connector-state.json` written by that same pass lists all six aliases as
+registered, including the two that then fail:
+
+```
+registered: ['codex-cosmic-regal-bvzv', 'codex-weft-cactus-yljc',
+             'codex-midst-vial-6nx9', 'codex-soft-troy-k9gm',
+             'codex-uranium-woad-cyml', 'grok-auru-vapor-csg5']
+```
+
+Peeking each alias immediately after that pass:
+
+```
+codex-cosmic-regal-bvzv   ok:true
+codex-weft-cactus-yljc    ok:true
+codex-midst-vial-6nx9     ok:false  signature_invalid
+codex-soft-troy-k9gm      ok:true
+codex-uranium-woad-cyml   ok:false  signature_invalid
+grok-auru-vapor-csg5      ok:true
+```
+
+4 of 6 work; the same 2 fail every time.
+
+## What has been ruled out
+
+- **Replica split-brain.** The identical signed read was repeated 8 times and
+  returned the identical failure each time, naming the same
+  `(3d08761ae3f3, 01a084dc-c411-7d63-b80f-1081f0637d57)`.
+- **Local session_id / alias collision.** A scan of all 241 broker registries
+  (2,749 registrations) shows exactly one row for this alias and one for this
+  session_id. 6 colliding session_ids exist machine-wide, none of them these.
+- **Another alias owning the contested session.** Signing as each of six other
+  aliases in the same root with the node/session pinned to the contested pair
+  returns `signature_invalid` or `unauthorized` for all of them — i.e.
+  `alias_of_session` is returning `None`, nobody owns it.
+- **Case-variant lease rows.** `CODEX-MIDST-VIAL-6NX9` and
+  `Codex-Midst-Vial-6nx9` both return "alias has no identity binding", so there
+  is no second row differing only in case. (Worth noting anyway:
+  `is_lease_refresh` compares aliases with `String.lowercase_ascii` while
+  `handle_heartbeat` / `handle_inbox_read` compare `owner = v` case-sensitively —
+  an inconsistency that should be tidied regardless.)
+- **A masked register error.** `last_error` is derived as
+  `reg_errors @ send_errors @ poll_errors` (`c2c_relay_connector.ml:2366`), so a
+  register failure would have been reported ahead of the `poll_inbox` one. It was
+  not, and `registered=6` counts only responses with `ok:true`.
+
+## Why this should not be possible
+
+Every relay code path that skips the `secure_leases_v2` upsert returns
+`ok:false` — `invalid_alias`, `alias_not_allowed`, `alias_conflict`,
+`alias_identity_mismatch` — and `json_of_register_result` sets `ok:false` for any
+non-`"ok"` status. The upsert itself explicitly updates the keys:
+
+```
+ON CONFLICT(alias) DO UPDATE SET node_id=excluded.node_id,
+                                 session_id=excluded.session_id, ...
+```
+
+So `ok:true` should imply the row now carries the submitted `(node_id,
+session_id)`. Observed behaviour contradicts that.
+
+## Next step (blocked)
+
+Needs the relay's own logs to see what the server did with these two register
+calls. `railway whoami` currently returns `Unauthorized` — run `railway login`
+first, then `railway logs` for the `vigilant-laughter` project
+(`~/.railway/config.json` maps `/home/xertrov/src/c2c`).
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`

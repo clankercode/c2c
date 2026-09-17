@@ -291,3 +291,4 @@ bugs:
     - file: B292-one-wedged-broker-root-exit-3s.todo
     - file: B293-relay-reports-missing-expired.todo
     - file: B294-c2c-relay-register-steals-the.todo
+    - file: B295-relay-register-returns-ok-true.todo
