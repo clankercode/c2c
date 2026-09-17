@@ -589,10 +589,46 @@ open C2c_mcp_helpers
       with _ -> ()
     end
 
+  (* B299: a writer that hard-exits between temp creation and rename
+     (watchdog kill, Unix.exit) orphans its registry.json.tmp.<pid> forever.
+     Swept here after each successful save, under the registry lock the
+     caller already holds. Unlink only a <digits> temp whose pid is dead or
+     whose mtime is older than 1h: an in-flight temp lives milliseconds, so
+     alive+fresh is left alone. Plain pid_alive, not the full
+     C2c_pid_identity evidence check — a temp filename records no identity
+     (start time, pidfile) to verify against, and the mtime guard bounds
+     the pid-recycling error that check exists to catch (#85). *)
+  let sweep_registry_tmps ~root =
+    let prefix = "registry.json.tmp." in
+    let now = Unix.gettimeofday () in
+    let entries = try Sys.readdir root |> Array.to_list with _ -> [] in
+    List.iter
+      (fun name ->
+         let suffix_len = String.length name - String.length prefix in
+         if
+           suffix_len > 0
+           && String.starts_with ~prefix name
+           && String.for_all
+                (fun c -> c >= '0' && c <= '9')
+                (String.sub name (String.length prefix) suffix_len)
+         then
+           match int_of_string_opt (String.sub name (String.length prefix) suffix_len) with
+           | None -> () (* digit overflow: conservatively keep *)
+           | Some pid ->
+             let path = Filename.concat root name in
+             let dead = not (C2c_pid_identity.pid_alive pid) in
+             let stale =
+               try (Unix.stat path).Unix.st_mtime < now -. 3600.0
+               with _ -> false
+             in
+             if dead || stale then (try Unix.unlink path with _ -> ()))
+      entries
+
   let save_registrations t regs =
     ensure_root t;
     check_alias_casefold_invariant t regs;
-    write_json_file (registry_path t) (`List (List.map registration_to_json regs))
+    write_json_file (registry_path t) (`List (List.map registration_to_json regs));
+    sweep_registry_tmps ~root:t.root
 
   let pending_permissions_path t = Filename.concat t.root "pending_permissions.json"
 
