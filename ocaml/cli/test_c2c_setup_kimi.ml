@@ -783,6 +783,20 @@ let test_claude_hook_merges_multiple_context_outputs () =
 (* Stop hook tests (P1)                                                  *)
 (* ------------------------------------------------------------------ *)
 
+(* OCaml quoted strings include the newline after the opener. A shebang
+   that sits on the next source line becomes a leading blank in the
+   installed script, so the kernel never honors it. *)
+let assert_starts_with_shebang ~name script =
+  let prefix = "#!/bin/bash" in
+  let plen = String.length prefix in
+  Alcotest.(check bool) (name ^ " starts with #!/bin/bash") true
+    (String.length script >= plen && String.sub script 0 plen = prefix)
+
+let test_claude_hook_scripts_start_with_shebang () =
+  assert_starts_with_shebang ~name:"inbox" C2c_setup.claude_hook_script;
+  assert_starts_with_shebang ~name:"stop" C2c_setup.claude_stop_hook_script;
+  assert_starts_with_shebang ~name:"session" C2c_setup.claude_session_hook_script
+
 let test_stop_hook_script_prefers_ocaml_binary () =
   let script = C2c_setup.claude_stop_hook_script in
   Alcotest.(check bool) "prefers installed stop hook"
@@ -945,7 +959,9 @@ let () =
             test_claude_hook_merges_multiple_context_outputs
         ] )
     ; ("stop-hook",
-        [ Alcotest.test_case "stop hook script prefers OCaml binary" `Quick
+        [ Alcotest.test_case "claude hook scripts start with shebang" `Quick
+            test_claude_hook_scripts_start_with_shebang
+        ; Alcotest.test_case "stop hook script prefers OCaml binary" `Quick
             test_stop_hook_script_prefers_ocaml_binary
         ; Alcotest.test_case "stop hook returns non-error feedback when messages exist" `Quick
             test_stop_hook_returns_non_error_feedback_when_messages

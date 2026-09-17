@@ -3,10 +3,13 @@
    Extracted from c2c_setup so both the installer (c2c_setup) and the
    self-healing `c2c doctor hooks --fix` (c2c_doctor_hooks) share ONE source
    of truth for the PostToolUse / Stop / SessionStart-End hook scripts.
-   Dependency-free: pure string data. *)
+   Dependency-free: pure string data.
 
-let claude_hook_script = {|
-#!/bin/bash
+   Shebang must sit on the same line as the quoted-string opener — OCaml
+   includes the newline after the opener in the string, which would put a
+   blank line before `#!/bin/bash` and the kernel would ignore the shebang. *)
+
+let claude_hook_script = {|#!/bin/bash
 # c2c-inbox-check.sh — PostToolUse hook for c2c auto-delivery in Claude Code
 #
 # Calls c2c-inbox-hook-ocaml which drains inboxes and emits any cold-boot
@@ -42,8 +45,7 @@ fi
 exit 0
 |}
 
-let claude_stop_hook_script = {|
-#!/bin/bash
+let claude_stop_hook_script = {|#!/bin/bash
 # c2c-stop-deliver.sh — Stop hook for c2c auto-delivery in Claude Code
 #
 # Delivers queued c2c messages on text-only turns (no tool call).
@@ -86,8 +88,7 @@ fi
    both events: `c2c hook claude` dispatches on the payload's hook_event_name.
    SessionStart delivers onboarding/wake text + cold-boot / post-compact
    context + queued messages; SessionEnd deregisters hook auto-registrations. *)
-let claude_session_hook_script = {|
-#!/bin/bash
+let claude_session_hook_script = {|#!/bin/bash
 # c2c-session-hook.sh — SessionStart/SessionEnd hook for c2c in Claude Code
 #
 # Runs `c2c hook claude`, which reads the Claude hook payload (JSON) on stdin
