@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:10Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T19:26:04Z"
 complexity: low
 created_at: "2026-09-17T07:59:37Z"
 depends_on: []
+duration_minutes: 243.90786774446667
 estimate_hours: 1
 id: B338
 priority: low
 started_at: "2026-09-17T15:22:10Z"
-status: in_progress
+status: done
 tags: []
 title: dev-mode (unsigned) heartbeat missing-lease returns 200 unknown_alias, not 404 lease_not_found - connector repair never triggers on dev relays
-updated_at: "2026-09-17T15:22:10Z"
+updated_at: "2026-09-17T19:26:04Z"
 ---
 
 # dev-mode (unsigned) heartbeat missing-lease returns 200 unknown_alias, not 404 lease_not_found - connector repair never triggers on dev relays
