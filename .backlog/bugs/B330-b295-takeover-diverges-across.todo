@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
 estimate_hours: 1
 id: B330
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: 'B295 takeover diverges across backends: sqlite drops identity binding/reservation; conflict-vs-mismatch precedence differs'
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+B295 pair-takeover diverges across storage backends. The sqlite shadow-DELETE (relay.ml:2703-2711) removes the whole secure_leases_v2 row - which is also where the identity pk and the 12-month anti-squat reservation live - while the in-memory shadow-removal (813-823) removes only t.leases and deliberately leaves t.bindings (only release_alias clears bindings). After a rename takeover, sqlite lets ANY identity claim the old alias immediately (fresh BindNew); in-memory rejects a different pk with alias_identity_mismatch - prod is weaker than the tested behavior. Separately, for a row with pk1 submitted with pk2 from a different node: in-memory returns alias_identity_mismatch (binding check first, 763-781) while sqlite returns alias_conflict (conflict scan first, 2652-2669) - distinct failure modes collapse differently per backend, violating the B293 goal across backends.
+
+## Fix direction
+
+Keep a binding/reservation record that survives pair takeover in sqlite (separate table or soft-delete), and pick one precedence for both backends.
+
+## Evidence
+
+Server-core review 2026-09-17.
