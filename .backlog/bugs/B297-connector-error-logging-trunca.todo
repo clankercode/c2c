@@ -70,3 +70,5 @@ them either.
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane: relay-core, serial (see B293 note); runs last. Decision: raise cap to 240 chars; one log line per distinct (op, error_code, alias) per pass; keep last_error as the connector-state summary and add an errors array with counts.
