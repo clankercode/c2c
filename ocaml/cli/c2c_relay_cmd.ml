@@ -680,21 +680,133 @@ let relay_config_fields () =
 let set_config_field fields key v =
   (key, v) :: List.filter (fun (k, _) -> k <> key) fields
 
+(* B312: enable/disable write through Relay_activation.config_location,
+   which honors C2C_RELAY_CONFIG / C2C_MCP_BROKER_ROOT. Inside a
+   broker-scoped session that silently lands activation in a repo-local
+   relay.json, while a later plain-shell disable flips the MACHINE file —
+   one scope stays active while the operator believes the relay is off
+   (relay status/monitor/dm in that repo keep using it). Warn-not-refuse:
+   repo-scoped relay config is a legitimate deliberate configuration
+   (per-repo opt-in), so the verb proceeds, but the exact file and the
+   split-brain risk must be impossible to miss. *)
+let warn_non_machine_relay_config verb =
+  match relay_config_location () with
+  | Relay_state.Relay_config_machine _ -> ()
+  | loc ->
+      let path = Relay_state.relay_config_path_of loc in
+      Printf.eprintf
+        "warning: `relay %s` is writing %s — NOT the machine-wide config.\n\
+        \  C2C_RELAY_CONFIG / C2C_MCP_BROKER_ROOT scope relay.json per repo,\n\
+        \  so the same verb from a plain shell reads a DIFFERENT file\n\
+        \  (split-brain: this scope flips while the machine-wide config stays \
+         as it was).\n\
+        \  Pass C2C_RELAY_CONFIG explicitly to make the target unambiguous.\n%!"
+        verb path
+
+(* Same active predicate as Relay_activation (url set, not parked by
+   enabled:false) but for an explicit path. *)
+let relay_json_resolves_active path =
+  if not (Sys.file_exists path) then false
+  else
+    match Yojson.Safe.from_file path with
+    | `Assoc fields ->
+        let url =
+          match List.assoc_opt "url" fields with
+          | Some (`String u) -> String.trim u <> ""
+          | _ -> false
+        in
+        let parked =
+          match List.assoc_opt "enabled" fields with
+          | Some (`Bool false) -> true
+          | _ -> false
+        in
+        url && not parked
+    | _ -> false
+
+(* B312: `relay disable` flips the file [config_location] resolves — usually
+   the machine config. A repo-local relay.json written by an earlier
+   broker-scoped enable still resolves active afterwards. Name the file and
+   the sanctioned way to turn that scope off too. *)
+let warn_repo_local_relay_still_active written_path =
+  let broker_root =
+    try C2c_repo_fp.resolve_broker_root_canonical () with _ -> ""
+  in
+  if broker_root <> "" then
+    let repo_local = broker_root // "relay.json" in
+    if repo_local <> written_path && relay_json_resolves_active repo_local then
+      Printf.eprintf
+        "warning: repo-local relay config %s is still ACTIVE (url set, not \
+         disabled).\n\
+        \  The machine-wide config was disabled here, but relay \
+         status/monitor/dm in that repo keep using the relay.\n\
+        \  Turn that scope off too: C2C_RELAY_CONFIG=%s c2c relay disable\n%!"
+        repo_local repo_local
+
 let relay_enable_cmd =
   let url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "url" ] ~docv:"URL"
-      ~doc:(Printf.sprintf
-              "Relay to activate. Defaults to the public relay (%s); pass a \
-               URL to use a private relay instead."
-              default_public_relay_url))
+      ~doc:"Relay to activate. Precedence: this flag, then $(b,C2C_RELAY_URL), \
+            then a URL already saved in relay.json (including one parked by \
+            $(b,c2c relay disable)); the public relay is used only when none \
+            of those is set.")
   in
   let token =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN"
       ~doc:"Bearer token for a token-protected relay.")
   in
-  let+ url = url and+ token = token in
-  let chosen = match url with Some u when String.trim u <> "" -> String.trim u
-                            | _ -> default_public_relay_url in
+  let unit_binary =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "unit-binary" ] ~docv:"PATH"
+      ~doc:"Binary pinned into the boot unit's ExecStart. Default: the \
+            canonical install (~/.local/bin/c2c) when present, else this \
+            executable. A dev $(b,_build) binary is refused — install a \
+            stable build first ($(b,just install-all) / $(b,c2c install \
+            self)) or pass this override explicitly.")
+  in
+  let+ url = url and+ token = token and+ unit_binary = unit_binary in
+  warn_non_machine_relay_config "enable";
+  (* B326: resolve the unit binary BEFORE any state change, so refusing a dev
+     _build path leaves relay.json untouched. Refuse only when a unit would
+     actually be installed: enable itself activates the relay (writes
+     enabled:true + a URL), so the only remaining condition is a systemd
+     --user session. Without one the unit is skipped anyway, and the dev
+     path is never embedded. *)
+  let unit_c2c_path =
+    match C2c_relay_systemd.c2c_binary_for_unit ?override:unit_binary () with
+    | C2c_relay_systemd.Binary_ok p -> p
+    | C2c_relay_systemd.Binary_dev_build p ->
+        if C2c_relay_systemd.systemd_user_available () then begin
+          Printf.eprintf
+            "error: refusing to pin a dev build into the boot unit.\n\
+            \  ExecStart would name %s (a dune _build tree): a `dune clean`,\n\
+            \  worktree removal or prefix change leaves a Restart=always unit\n\
+            \  restarting a missing binary forever.\n\
+            \  Install a stable binary first:  just install-all  (or: c2c install self)\n\
+            \  Or override explicitly:  c2c relay enable --unit-binary <PATH>\n%!"
+            p;
+          exit 1
+        end
+        else p
+  in
+  (* B310: activation precedence matches every other surface (B300):
+     --url > C2C_RELAY_URL > an already-saved URL — only a host with none of
+     those gets the public relay. Previously the ambient env (and any saved
+     URL) was ignored and enable silently activated the public relay while
+     the shell kept using the private one: traffic split across two relays. *)
+  let chosen =
+    match url with
+    | Some u when String.trim u <> "" -> String.trim u
+    | _ ->
+        let from_env_or_config =
+          match Relay_activation.url () with
+          | Some u -> Some u
+          (* Relay_activation treats a URL parked by `relay disable` as off
+             (B300: enabled:false means inactive), but for enable that URL is
+             still the configured relay to restore — disable's own output
+             promises `c2c relay enable` restores it. *)
+          | None -> relay_config_string_field "url"
+        in
+        Option.value from_env_or_config ~default:default_public_relay_url
+  in
   let fields = relay_config_fields () in
   let fields = set_config_field fields "url" (`String chosen) in
   let fields = set_config_field fields "enabled" (`Bool true) in
@@ -717,7 +829,7 @@ let relay_enable_cmd =
   let unit_lines =
     match
       C2c_relay_systemd.install_and_enable_if_active ~pre_start:handover
-        ~c2c_path:(C2c_relay_systemd.c2c_binary_for_unit ()) ()
+        ~c2c_path:unit_c2c_path ()
     with
     | Unit_enabled unit_path ->
         Printf.sprintf
@@ -741,6 +853,7 @@ let relay_enable_cmd =
 
 let relay_disable_cmd =
   let+ () = Cmdliner.Term.const () in
+  warn_non_machine_relay_config "disable";
   let fields = relay_config_fields () in
   let had_url = List.assoc_opt "url" fields <> None in
   let fields = set_config_field fields "enabled" (`Bool false) in
@@ -748,15 +861,47 @@ let relay_disable_cmd =
   (* B296: stop+disable the boot-supervision unit (the file is kept, so a
      later `c2c relay enable` re-enables it cheaply). *)
   C2c_relay_systemd.stop_and_disable ();
+  (* B309: a subscribe-daemon that resolved the relay before this disable
+     would keep retrying the parked URL forever — send it the shutdown IPC
+     command it already understands. Best-effort; the printed line reports
+     the outcome. The remaining lingering consumers — `c2c monitor` relay
+     watchers that hold their startup-resolved URL — can only be fixed by
+     restarting them, so they are named here either way. *)
+  let consumers_line =
+    let daemon_part =
+      match
+        C2c_relay_subscribe_daemon.send_shutdown_best_effort
+          ~socket_path:
+            (C2c_relay_subscribe_daemon.resolve_socket_path None)
+          ()
+      with
+      | C2c_relay_subscribe_daemon.Shutdown_stopped ->
+          "subscribe-daemon stopped (shutdown sent)"
+      | C2c_relay_subscribe_daemon.Shutdown_no_daemon ->
+          "no subscribe-daemon running"
+      | C2c_relay_subscribe_daemon.Shutdown_error e ->
+          Printf.sprintf
+            "subscribe-daemon shutdown FAILED (%s) — stop it with: c2c \
+             relay subscribe-daemon shutdown"
+            e
+    in
+    Printf.sprintf
+      "lingering relay consumers: %s; any running `c2c monitor` relay \
+       watcher keeps its startup-resolved URL until restarted"
+      daemon_part
+  in
+  warn_repo_local_relay_still_active path;
   Printf.printf
     "relay deactivated (enabled: false)\n\
      wrote %s\n\
      %s\n\
      c2c is now local-only: same-machine DMs, rooms and broadcast still work.\n\
-     Stop any running connector with: c2c stop relay-connect\n"
+     Stop any running connector with: c2c stop relay-connect\n\
+     %s\n"
     path
     (if had_url then "The configured URL is kept, so `c2c relay enable` restores it."
-     else "No URL was configured.");
+     else "No URL was configured.")
+    consumers_line;
   exit 0
 
 let relay_status_cmd =

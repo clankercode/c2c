@@ -28,10 +28,14 @@ let relay_config_string_field key =
        | _ -> None)
   | _ -> None
 
-let resolve_relay_url () =
-  match Sys.getenv_opt "C2C_RELAY_URL" with
-  | Some v when v <> "" -> Some v
-  | _ -> relay_config_string_field "url"
+(* B303: the relay is opt-in (B300) — rename routes through the single
+   source of truth, Relay_activation. A URL parked by `c2c relay disable`
+   (enabled:false) resolves to None exactly like no config at all: no
+   network call, rebind reports skipped. The previous local copy (env ->
+   config url) ignored enabled:false and made `c2c rename` POST a signed
+   /register to a relay the operator had turned off — the fourth drifted
+   copy of URL resolution, the failure B301 was written to end. *)
+let resolve_relay_url () = Relay_activation.url ()
 
 let resolve_relay_token () =
   match Sys.getenv_opt "C2C_RELAY_TOKEN" with
@@ -104,6 +108,20 @@ let ok_json ~old_alias ~new_alias ~relay_url =
            remains until TTL expiry (dual-bind window)" )
     ]
 
+(* The skipped reason distinguishes "operator turned the relay off" from
+   "never configured", so rename output cannot read as a rename bug when
+   the rebind is correctly inert (B303). *)
+let skipped_for_activation ~new_alias =
+  match Relay_activation.resolve () with
+  | Relay_activation.Relay_disabled path ->
+      skipped_json
+        ~reason:
+          (Printf.sprintf "relay disabled on this host (enabled: false in %s)"
+             path)
+        ~new_alias
+  | Relay_activation.Relay_inactive | Relay_activation.Relay_active _ ->
+      skipped_json ~reason:"no relay URL configured" ~new_alias
+
 let rebind_lwt ?relay_url ?token ~old_alias ~new_alias () =
   let new_alias = String.trim new_alias in
   let old_alias = String.trim old_alias in
@@ -121,8 +139,7 @@ let rebind_lwt ?relay_url ?token ~old_alias ~new_alias () =
       | _ -> resolve_relay_url ()
     with
     | None ->
-        Lwt.return
-          (skipped_json ~reason:"no relay URL configured" ~new_alias)
+        Lwt.return (skipped_for_activation ~new_alias)
     | Some url ->
         let token =
           match token with
