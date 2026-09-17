@@ -5479,8 +5479,13 @@ end = struct
          local-delivery binding check, so an authenticated peer could spoof
          the sender on a cross-relay delivery (relay-to-relay trust
          substitutes for sender binding at the peer). *)
+      (* B334: casefolded compare, matching the B293 family (heartbeat /
+         register are case-insensitive); the outer identity_pk_of lookup
+         still keys by exact case, so only the body/header case skew is
+         forgiven. *)
       match verified_alias with
-      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | Some v when String.lowercase_ascii v <> String.lowercase_ascii (from_alias_signer_name from_alias) ->
+        reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
       (* #379: split alias@host for cross-relay routing. A 12-16 lowercase
          hex host is the relay opaque-host reply route, not a cross-relay
@@ -5661,8 +5666,9 @@ end = struct
     if from_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias and content are required")
     else
+      (* B334: casefolded signer binding, same as handle_send. *)
       match verified_alias with
-      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | Some v when String.lowercase_ascii v <> String.lowercase_ascii (from_alias_signer_name from_alias) -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
         match R.send_all relay ~from_alias ~content ~message_id with

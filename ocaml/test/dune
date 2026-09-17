@@ -539,6 +539,15 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B334: /send and /send_all bind body from_alias to the verified signer
+; case-insensitively, matching the B293 family (heartbeat/register). Real
+; loopback sqlite relay.
+(test
+ (name test_relay_b334_send_alias_case)
+ (modules test_relay_b334_send_alias_case)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 ; B293: "no live lease" is lease_not_found (not signature_invalid), and the
 ; connector drops a dead cached registration instead of retrying the dead
 ; lease forever. Real loopback sqlite server for the code split; scripted
