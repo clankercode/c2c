@@ -82,3 +82,5 @@ into everything it generates.
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane: install-supervision, serial with B290 in one worktree (.worktrees/b296-b290-install) — both touch install surfaces. Decisions: unit ships under data/; installed+enabled by c2c relay enable and by c2c install self ONLY when Relay_activation resolves active (B300 — never auto-start on a local-only host); ExecStart uses the absolute c2c path; no remediation string anywhere recommends backgrounding with &; hosts without systemd skip gracefully; uninstall removes it.
