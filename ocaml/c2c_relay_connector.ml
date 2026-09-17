@@ -4089,8 +4089,13 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       last_pass_s = 0.0;
     } in
     if once then begin
-      match Lwt_main.run (sync t) with
-      | result ->
+      (* B321: route through run_sync_once like the machine --once path —
+         bare Lwt_main.run (sync t) had no SIGALRM watchdog, so a hung relay
+         blocked one-shot syncs (scripts/CI) forever. The handler still
+         force-exits 3 on the deadline; the [`Watchdog] arm below is only
+         reachable via an injected sync_once seam. *)
+      match run_sync_once t with
+      | Ok result ->
           write_connector_state ~node_id:t.node_id t.broker_root result;
           print_sync_result result;
           (* B087: never exit 0 when the sync pass recorded a relay-level
@@ -4103,7 +4108,12 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
            | Some e ->
                Printf.eprintf "[relay-connector] sync completed with errors: %s\n%!" e.err_op;
                2)
-      | exception exn ->
+      | Error (`Watchdog detail) ->
+          write_connector_state_error t.broker_root ~op:"sync_watchdog"
+            ~detail;
+          Printf.eprintf "[relay-connector] %s\n%!" detail;
+          3
+      | Error (`Exn exn) ->
           write_connector_state_error t.broker_root ~op:"sync"
             ~detail:(Printexc.to_string exn);
           Printf.eprintf "[relay-connector] sync exception: %s\n%!" (Printexc.to_string exn);
