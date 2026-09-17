@@ -3353,6 +3353,18 @@ end = struct
       `Ok (List.rev !expired_aliases, pruned)
     )
 
+  (* B337: parity with InMemoryRelay — sqlite dead-letters DM sends to
+     unknown/dead recipients. Same row shape as add_dead_letter's. *)
+  let insert_dead_letter_row conn ~message_id ~from_alias ~to_alias ~content ~ts ~reason =
+    with_stmt conn "INSERT INTO dead_letter (message_id, from_alias, to_alias, content, ts, reason) VALUES (?, ?, ?, ?, ?, ?)" (fun dl_stmt ->
+      Sqlite3.bind_text dl_stmt 1 message_id |> ignore;
+      Sqlite3.bind_text dl_stmt 2 from_alias |> ignore;
+      Sqlite3.bind_text dl_stmt 3 to_alias |> ignore;
+      Sqlite3.bind_text dl_stmt 4 content |> ignore;
+      Sqlite3.bind_double dl_stmt 5 ts |> ignore;
+      Sqlite3.bind_text dl_stmt 6 reason |> ignore;
+      ignore (Sqlite3.step dl_stmt))
+
   let send t ~from_alias ~to_alias ~content ?(message_id=None) ?(pow_difficulty = -1) =
     with_lock t (fun () ->
       let conn = t.db in
@@ -3371,6 +3383,9 @@ end = struct
           disc_vis := Some (if raw = "public" then Public else Private));
       match !disc_vis with
       | None ->
+        (* B337: dead-letter the DM, mirroring InMemoryRelay.send. *)
+        insert_dead_letter_row conn ~message_id:msg_id ~from_alias ~to_alias
+          ~content ~ts ~reason:"unknown_alias";
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
       | Some Private ->
         (* B264: private recipient — uniform with unknown; no content DLQ. *)
@@ -3391,10 +3406,20 @@ end = struct
             | Some f -> f
             | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2))
           in
-          if alias_released ~now:ts ~last_seen then
+          if alias_released ~now:ts ~last_seen then (
+            (* B337: released alias dead-letters like an unknown one, as the
+               in-memory backend does. *)
+            insert_dead_letter_row conn ~message_id:msg_id ~from_alias ~to_alias
+              ~content ~ts ~reason:"unknown_alias";
             `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
-          else if (last_seen +. ttl) < ts then
+          )
+          else if (last_seen +. ttl) < ts then (
+            (* B337: expired recipient dead-letters with reason
+               recipient_dead, mirroring InMemoryRelay.send. *)
+            insert_dead_letter_row conn ~message_id:msg_id ~from_alias ~to_alias
+              ~content ~ts ~reason:"recipient_dead";
             `Error (relay_err_recipient_dead, Printf.sprintf "alias %S is registered but lease has expired" to_alias)
+          )
           else
             with_stmt conn "SELECT node_id, session_id FROM secure_leases_v2 WHERE alias = ?" (fun recv_stmt ->
             Sqlite3.bind_text recv_stmt 1 lookup_alias |> ignore;
@@ -3568,6 +3593,55 @@ end = struct
       `Ok (now, List.rev !sent_to, List.map fst (List.rev !skipped))
     )
 
+  (* B337: parity with InMemoryRelay.join_room/leave_room — the room system
+     message is one room_history row plus an inbox fan-out to every member
+     (to_alias "<alias>#<room>"); a member with no lease or an expired lease
+     is dead-lettered with reason recipient_dead instead. *)
+  let emit_room_system_message conn ~room_id ~message_id ~content ~ts =
+    with_stmt conn "INSERT INTO room_history (room_id, message_id, from_alias, content, ts) VALUES (?, ?, ?, ?, ?)" (fun hist_stmt ->
+      Sqlite3.bind_text hist_stmt 1 room_id |> ignore;
+      Sqlite3.bind_text hist_stmt 2 message_id |> ignore;
+      Sqlite3.bind_text hist_stmt 3 room_system_alias |> ignore;
+      Sqlite3.bind_text hist_stmt 4 content |> ignore;
+      Sqlite3.bind_double hist_stmt 5 ts |> ignore;
+      ignore (Sqlite3.step hist_stmt));
+    with_stmt conn "SELECT alias FROM room_members WHERE room_id = ?" (fun sel_stmt ->
+      Sqlite3.bind_text sel_stmt 1 room_id |> ignore;
+      let rec loop () =
+        match Sqlite3.step sel_stmt with
+        | Sqlite3.Rc.ROW ->
+          let member_alias = Sqlite3.Data.to_string_exn (Sqlite3.column sel_stmt 0) in
+          (with_stmt conn "SELECT node_id, session_id, last_seen, ttl FROM secure_leases_v2 WHERE alias = ?" (fun lease_stmt ->
+             Sqlite3.bind_text lease_stmt 1 member_alias |> ignore;
+             match Sqlite3.step lease_stmt with
+             | Sqlite3.Rc.ROW ->
+               let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column lease_stmt 0) in
+               let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column lease_stmt 1) in
+               let last_seen = data_to_float_default (Sqlite3.column lease_stmt 2) in
+               let ttl = data_to_float_default (Sqlite3.column lease_stmt 3) in
+               if last_seen +. ttl >= ts then
+                 with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
+                   Sqlite3.bind_text ins_stmt 1 node_id |> ignore;
+                   Sqlite3.bind_text ins_stmt 2 session_id |> ignore;
+                   Sqlite3.bind_text ins_stmt 3 message_id |> ignore;
+                   Sqlite3.bind_text ins_stmt 4 room_system_alias |> ignore;
+                   Sqlite3.bind_text ins_stmt 5 (member_alias ^ "#" ^ room_id) |> ignore;
+                   Sqlite3.bind_text ins_stmt 6 content |> ignore;
+                   Sqlite3.bind_double ins_stmt 7 ts |> ignore;
+                   ignore (Sqlite3.step ins_stmt))
+               else
+                 insert_dead_letter_row conn ~message_id ~from_alias:room_system_alias
+                   ~to_alias:(member_alias ^ "#" ^ room_id) ~content ~ts
+                   ~reason:"recipient_dead"
+             | _ ->
+               insert_dead_letter_row conn ~message_id ~from_alias:room_system_alias
+                 ~to_alias:(member_alias ^ "#" ^ room_id) ~content ~ts
+                 ~reason:"recipient_dead"));
+          loop ()
+        | _ -> ()
+      in
+      loop ())
+
   let join_room t ?(visibility = "public") ~alias ~room_id () =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
@@ -3599,6 +3673,16 @@ end = struct
         Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
         Sqlite3.bind_text mem_stmt 2 alias |> ignore;
         Sqlite3.step mem_stmt |> ignore);
+      (* B337: a NEW member emits the c2c-system join message (history +
+         fan-out), mirroring InMemoryRelay.join_room. changes()=0 ⇒ the row
+         already existed (re-join): silent, like the in-memory
+         already_member guard. *)
+      if Sqlite3.changes conn > 0 then begin
+        let ts = Unix.gettimeofday () in
+        let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
+        emit_room_system_message conn ~room_id ~message_id:msg_id
+          ~content:(room_join_content alias room_id) ~ts
+      end;
       `Ok
       )
     )
@@ -3606,10 +3690,36 @@ end = struct
   let leave_room t ~alias ~room_id =
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "DELETE FROM room_members WHERE room_id = ? AND alias = ?" (fun stmt ->
-        Sqlite3.bind_text stmt 1 room_id |> ignore;
-        Sqlite3.bind_text stmt 2 alias |> ignore;
-        Sqlite3.step stmt |> ignore);
+      let removed =
+        with_stmt conn "DELETE FROM room_members WHERE room_id = ? AND alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 room_id |> ignore;
+          Sqlite3.bind_text stmt 2 alias |> ignore;
+          Sqlite3.step stmt |> ignore;
+          Sqlite3.changes conn > 0)
+      in
+      (* B337: a real departure that leaves other members behind emits the
+         c2c-system leave message; leaving an empty room (or a room you were
+         not in) stays silent, mirroring InMemoryRelay.leave_room. *)
+      if removed then begin
+        let remaining =
+          with_stmt conn "SELECT COUNT(*) FROM room_members WHERE room_id = ?" (fun cnt_stmt ->
+            Sqlite3.bind_text cnt_stmt 1 room_id |> ignore;
+            match Sqlite3.step cnt_stmt with
+            | Sqlite3.Rc.ROW ->
+              (* COUNT comes back as INT; data_to_float_default cannot
+                 parse INT columns (TEXT/BLOB only). *)
+              (match Sqlite3.Data.to_int (Sqlite3.column cnt_stmt 0) with
+               | Some n -> float_of_int n
+               | None -> data_to_float_default (Sqlite3.column cnt_stmt 0))
+            | _ -> 0.0)
+        in
+        if remaining > 0.0 then begin
+          let ts = Unix.gettimeofday () in
+          let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
+          emit_room_system_message conn ~room_id ~message_id:msg_id
+            ~content:(room_leave_content alias room_id) ~ts
+        end
+      end;
       `Ok
     )
 
