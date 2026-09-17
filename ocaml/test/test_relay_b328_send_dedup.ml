@@ -147,6 +147,95 @@ let test_inmemory_send_replay_is_duplicate () =
     | `Duplicate _ -> ()
     | _ -> fail "in-memory replay after drain must still be Duplicate")
 
+
+(* Review follow-ups (B328): pin the claims the first round left implicit. *)
+
+let test_sqlite_failed_send_does_not_consume_id () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    reg_sql_public t ~node_id:"n-b328-a" ~session_id:"s-b328-a" ~alias:"b328-a";
+    let mid = "b328-failed-first" in
+    (* Recipient does not exist yet: the send is rejected and must NOT
+       consume the id. *)
+    (match
+       sql_send t ~from_alias:"b328-a" ~to_alias:"b328-late" ~content:"x"
+         ~message_id:mid
+     with
+     | `Error _ -> ()
+     | _ -> fail "send to unknown alias should Error");
+    reg_sql_public t ~node_id:"n-b328-late" ~session_id:"s-b328-late"
+      ~alias:"b328-late";
+    (match
+       sql_send t ~from_alias:"b328-a" ~to_alias:"b328-late" ~content:"x"
+         ~message_id:mid
+     with
+     | `Ok _ -> ()
+     | `Duplicate _ -> fail "rejected send must not consume the id"
+     | `Error (c, m) -> failf "re-send errored: %s %s" c m))
+
+let test_sqlite_dedup_survives_restart () =
+  with_temp_dir (fun dir ->
+    let mid = "b328-across-restart" in
+    let send t =
+      sql_send t ~from_alias:"b328-a" ~to_alias:"b328-b" ~content:"hello"
+        ~message_id:mid
+    in
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    reg_sql_public t ~node_id:"n-b328-a" ~session_id:"s-b328-a" ~alias:"b328-a";
+    reg_sql_public t ~node_id:"n-b328-b" ~session_id:"s-b328-b" ~alias:"b328-b";
+    (match send t with `Ok _ -> () | _ -> fail "first send should be Ok");
+    (* Deliberate divergence from the in-memory arm: seen_ids rows live in
+       the sqlite file, so a replay is still a duplicate after the relay is
+       re-created on the same persist_dir. *)
+    let t2 = Relay.SqliteRelay.create ~persist_dir:dir () in
+    (match send t2 with
+     | `Duplicate _ -> ()
+     | `Ok _ -> fail "replay after restart must still be Duplicate"
+     | `Error (c, m) -> failf "replay after restart errored: %s %s" c m))
+
+let test_sqlite_send_all_with_message_id_delivers_to_all () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    reg_sql_public t ~node_id:"n-b328-a" ~session_id:"s-b328-a" ~alias:"b328-a";
+    reg_sql_public t ~node_id:"n-b328-b" ~session_id:"s-b328-b" ~alias:"b328-b";
+    reg_sql_public t ~node_id:"n-b328-c" ~session_id:"s-b328-c" ~alias:"b328-c";
+    (* Broadcast does NOT dedup per recipient (same as the in-memory arm):
+       a shared id must not degrade the fan-out to a unicast. *)
+    (match
+       Relay.SqliteRelay.send_all t ~from_alias:"b328-a" ~content:"b"
+         ~message_id:(Some "b328-broadcast-1")
+     with
+     | `Ok (_, delivered, _skipped) ->
+       check int "broadcast reaches both other recipients" 2
+         (List.length delivered)
+     | _ -> fail "send_all should be Ok");
+    let got node session =
+      List.length
+        (Relay.SqliteRelay.poll_inbox t ~node_id:node ~session_id:session)
+    in
+    check int "b328-b got the broadcast" 1 (got "n-b328-b" "s-b328-b");
+    check int "b328-c got the broadcast" 1 (got "n-b328-c" "s-b328-c"))
+
+let test_sqlite_two_sends_without_message_id_both_deliver () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    reg_sql_public t ~node_id:"n-b328-a" ~session_id:"s-b328-a" ~alias:"b328-a";
+    reg_sql_public t ~node_id:"n-b328-b" ~session_id:"s-b328-b" ~alias:"b328-b";
+    (* Omitted ids mint fresh UUIDs (never a fixed sentinel): two id-less
+       sends must both deliver. *)
+    (match
+       Relay.SqliteRelay.send t ~from_alias:"b328-a" ~to_alias:"b328-b"
+         ~content:"one" ~message_id:None ~pow_difficulty:(-1)
+     with `Ok _ -> () | _ -> fail "first id-less send should be Ok");
+    (match
+       Relay.SqliteRelay.send t ~from_alias:"b328-a" ~to_alias:"b328-b"
+         ~content:"two" ~message_id:None ~pow_difficulty:(-1)
+     with `Ok _ -> () | _ -> fail "second id-less send should be Ok");
+    let inbox =
+      Relay.SqliteRelay.poll_inbox t ~node_id:"n-b328-b" ~session_id:"s-b328-b"
+    in
+    check int "both id-less sends delivered" 2 (List.length inbox))
+
 (* --- e2e: /forward replay answers duplicate:true against sqlite ---------- *)
 
 module RS = Relay.Relay_server (Relay.SqliteRelay)
@@ -179,7 +268,7 @@ let with_sqlite_server f =
        Lwt.pause () >>= fun () ->
        let base_url = Printf.sprintf "http://127.0.0.1:%d" port in
        Lwt.finalize
-         (fun () -> f ~base_url ~relay)
+         (fun () -> f ~base_url ~relay ~dir)
          (fun () ->
             Lwt.wakeup_later wake_stop ();
             server)))
@@ -215,8 +304,7 @@ let post_forward ~base_url ~origin_id ~alias ~body_str =
   | exception Yojson.Json_error m -> Lwt.fail_with ("invalid json: " ^ m)
 
 let test_e2e_forward_replay_answers_duplicate () =
-  with_temp_dir (fun dir ->
-    with_sqlite_server (fun ~base_url ~relay ->
+  with_sqlite_server (fun ~base_url ~relay ~dir ->
       let victim_id =
         Relay_identity.load_or_create_at
           ~path:(Filename.concat dir "id-victim.json")
@@ -276,7 +364,7 @@ let test_e2e_forward_replay_answers_duplicate () =
       in
       check int "forward replay delivered exactly one copy" 1
         (List.length inbox);
-      Lwt.return_unit))
+      Lwt.return_unit)
 
 let () =
   run "B328 sqlite send message-id dedup"
@@ -286,6 +374,14 @@ let () =
           test_sqlite_dedup_window_prunes_fifo ])
     ; ("in-memory parity", [ test_case "replay is Duplicate, one copy" `Quick
           test_inmemory_send_replay_is_duplicate ])
+    ; ("sqlite rejected send", [ test_case "does not consume the id" `Quick
+          test_sqlite_failed_send_does_not_consume_id ])
+    ; ("sqlite dedup persistence", [ test_case "replay still Duplicate after restart" `Quick
+          test_sqlite_dedup_survives_restart ])
+    ; ("sqlite send_all", [ test_case "shared id fans out to all" `Quick
+          test_sqlite_send_all_with_message_id_delivers_to_all ])
+    ; ("sqlite id-less sends", [ test_case "two id-less sends both deliver" `Quick
+          test_sqlite_two_sends_without_message_id_both_deliver ])
     ; ("e2e sqlite /forward replay", [ test_case "replay answers duplicate:true" `Quick
           test_e2e_forward_replay_answers_duplicate ])
     ]

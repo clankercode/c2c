@@ -192,6 +192,36 @@ let test_forward_out_with_matching_alias_still_delivers () =
      | [] -> ());
     Lwt.return_unit)
 
+
+(* The relay-address form <name>@<opaque host id> is a legitimate
+   from_alias: the binding strips the opaque host tag before comparing, so
+   address-shaped senders still forward (the tag rides along in the
+   delivered name). *)
+let test_forward_out_with_opaque_host_tagged_sender () =
+  with_two_servers (fun ~base_a ~base_b ~relay_a ~relay_b ~dir ->
+    setup ~base_a ~base_b ~relay_a ~relay_b ~dir >>= fun alice_id ->
+    let body_json =
+      `Assoc
+        [ ("from_alias", `String "b329-alice@3d08761ae3f3")
+        ; ("to_alias", `String "b329-victim@b329-host-b")
+        ; ("content", `String "address-shaped cross-relay hello") ]
+    in
+    post_send_signed ~base:base_a ~id:alice_id ~alias:"b329-alice" ~body_json
+    >>= fun (_status, json) ->
+    if json_field "ok" json <> "true" then
+      print_endline ("addressed forward response: " ^ Yojson.Safe.to_string json);
+    check string "opaque-host-tagged from_alias forwards" "true"
+      (json_field "ok" json);
+    let inbox = victim_inbox relay_b in
+    check int "victim received the addressed message" 1 (List.length inbox);
+    (match inbox with
+     | msg :: _ ->
+       check string "delivered with the address-shaped sender"
+         "b329-alice@3d08761ae3f3@b329-host-a"
+         (json_field "from_alias" msg)
+     | [] -> ());
+    Lwt.return_unit)
+
 let () =
   run "B329 forward-out binds from_alias to the verified signer"
     [ ("spoofed cross-relay send",
@@ -200,4 +230,7 @@ let () =
     ; ("matching cross-relay send",
        [ test_case "still delivers" `Quick
            test_forward_out_with_matching_alias_still_delivers ])
+    ; ("opaque-host-tagged sender",
+       [ test_case "address-shaped from_alias still forwards" `Quick
+           test_forward_out_with_opaque_host_tagged_sender ])
     ]

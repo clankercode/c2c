@@ -3305,21 +3305,29 @@ end = struct
                  INSERT OR IGNORE + changes()=0 means the id was already
                  accepted within the dedup window -> Duplicate, no second
                  inbox row. Recorded only on the success path so rejected
-                 sends (unknown/dead/private alias) do not consume ids. *)
+                 sends (unknown/dead/private alias) do not consume ids.
+                 Unlike the in-memory FIFO, sqlite rows persist across a
+                 relay restart — dedup outlives the process (deliberate). *)
               let fresh =
                 with_stmt conn "INSERT OR IGNORE INTO seen_ids (message_id, ts) VALUES (?, ?)" (fun seen_stmt ->
                 Sqlite3.bind_text seen_stmt 1 msg_id |> ignore;
                 Sqlite3.bind_double seen_stmt 2 ts |> ignore;
-                Sqlite3.step seen_stmt |> ignore;
-                Sqlite3.changes conn > 0)
+                (* The step must have completed for changes() to mean
+                   "ignored as a duplicate"; a failed step would otherwise
+                   inherit a stale count from an earlier statement. *)
+                match Sqlite3.step seen_stmt with
+                | Rc.DONE -> Sqlite3.changes conn > 0
+                | rc -> failwith (Printf.sprintf "seen_ids insert step failed: %s" (Rc.to_string rc)))
               in
               if not fresh then `Duplicate ts
               else begin
                 (* FIFO prune: keep only the newest dedup_window ids, so a
                    pruned id may be accepted again (same semantics as the
-                   in-memory seen_ids_fifo). *)
+                   in-memory seen_ids_fifo). Clamp the bound: LIMIT 0 would
+                   drop the id just recorded and a negative LIMIT is
+                   unbounded in SQLite. *)
                 (with_stmt conn "DELETE FROM seen_ids WHERE rowid NOT IN (SELECT rowid FROM seen_ids ORDER BY rowid DESC LIMIT ?)" (fun del_stmt ->
-                 Sqlite3.bind_int del_stmt 1 t.dedup_window |> ignore;
+                 Sqlite3.bind_int del_stmt 1 (max 1 t.dedup_window) |> ignore;
                  Sqlite3.step del_stmt |> ignore));
                 with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
                 Sqlite3.bind_text ins_stmt 1 recv_node_id |> ignore;
@@ -5631,6 +5639,25 @@ end = struct
       else
         let message_id = get_opt_string body "message_id" in
         let deliver_to_alias = if opaque_host_route then to_alias else stripped_to_alias in
+        (* B334: deliver under the verified signer's case when the claim
+           differs only by case, so recipients replying to the delivered
+           name hit the exact-case lease lookup. An opaque host tag on the
+           claim is reply-route metadata and is kept verbatim. *)
+        let deliver_from_alias =
+          match verified_alias with
+          | Some v ->
+            let claim_name, claim_host =
+              C2c_name.split_opaque_host_id from_alias
+            in
+            if claim_name <> v
+               && String.lowercase_ascii claim_name = String.lowercase_ascii v
+            then
+              (match claim_host with
+               | Some h -> v ^ "@" ^ h
+               | None -> v)
+            else from_alias
+          | None -> from_alias
+        in
         (* B014: record the sender's current PoW difficulty (leading-zero bits)
            as sibling metadata on the delivered message. The policy keys cost by
            identity pubkey (b64url, same normalization as the register handler),
@@ -5640,7 +5667,7 @@ end = struct
            accrue send-route cost here (no [record_route]). *)
         let pow_difficulty =
           let sender_actor_id =
-            match R.identity_pk_of relay ~alias:from_alias with
+            match R.identity_pk_of relay ~alias:deliver_from_alias with
             | Some pk when String.length pk = 32 -> b64url_nopad_encode pk
             | _ -> ""
           in
@@ -5648,23 +5675,23 @@ end = struct
             pow_difficulty_for_actor ~enabled:true ~actor_id:sender_actor_id
           else Relay_pow_challenge.pow_difficulty_unrecorded
         in
-        let result = R.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~pow_difficulty ~message_id in
+        let result = R.send relay ~from_alias:deliver_from_alias ~to_alias:deliver_to_alias ~content ~pow_difficulty ~message_id in
         (* B147: count relay-accepted DMs (duplicate replays excluded). *)
         (match result with
          | `Ok ts ->
-           R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts
+           R.stats_note_message relay ~from_alias:(stats_alias_key deliver_from_alias) ~ts
          | _ -> ());
         (match result with
          | `Ok ts | `Duplicate ts ->
            (* Push to WS subscribers (slice 2) *)
-           Relay_ws_server.push_dm ~to_alias:stripped_to_alias ~from_alias ~body:content ~ts;
+           Relay_ws_server.push_dm ~to_alias:stripped_to_alias ~from_alias:deliver_from_alias ~body:content ~ts;
            (match R.identity_pk_of relay ~alias:stripped_to_alias with
             | Some identity_pk ->
               (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
                | Some binding_id ->
                   let sq_msg = {
                     Relay_short_queue.ts;
-                    from_alias;
+                    from_alias = deliver_from_alias;
                     to_alias;
                     room_id = None;
                     content;
@@ -5691,13 +5718,30 @@ end = struct
       | Some v when String.lowercase_ascii v <> String.lowercase_ascii (from_alias_signer_name from_alias) -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
-        match R.send_all relay ~from_alias ~content ~message_id with
+        (* B334: deliver under the verified signer's case when the claim
+           differs only by case (see handle_send). *)
+        let deliver_from_alias =
+          match verified_alias with
+          | Some v ->
+            let claim_name, claim_host =
+              C2c_name.split_opaque_host_id from_alias
+            in
+            if claim_name <> v
+               && String.lowercase_ascii claim_name = String.lowercase_ascii v
+            then
+              (match claim_host with
+               | Some h -> v ^ "@" ^ h
+               | None -> v)
+            else from_alias
+          | None -> from_alias
+        in
+        match R.send_all relay ~from_alias:deliver_from_alias ~content ~message_id with
         | `Ok (ts, delivered, skipped) ->
           (* B147: a broadcast counts as one message, not one per recipient.
              B267: private-only targets yield delivered=[]; do not bump stats
              (G1 — no side effect without a successful public delivery). *)
           (if delivered <> [] then
-             R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts);
+             R.stats_note_message relay ~from_alias:(stats_alias_key deliver_from_alias) ~ts);
           List.iter (fun to_alias ->
             match R.identity_pk_of relay ~alias:to_alias with
             | Some identity_pk ->
@@ -5705,7 +5749,7 @@ end = struct
                | Some binding_id ->
                   let sq_msg = {
                     Relay_short_queue.ts;
-                    from_alias;
+                    from_alias = deliver_from_alias;
                     to_alias;
                     room_id = None;
                     content;

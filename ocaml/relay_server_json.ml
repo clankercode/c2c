@@ -47,8 +47,15 @@ let json_of_register_result ?(receipt = `Null) (status, lease) =
     let fields = if receipt = `Null then fields else fields @ [("receipt", receipt)] in
     json_ok fields
   else
-    json_error status (register_error_message status)
-      [ ("existing_lease", RegistrationLease.to_json lease) ]
+    (* B335 review: only a genuine conflict holds a foreign lease worth
+       echoing; the other statuses carry a dummy lease that would suggest a
+       conflict that does not exist. *)
+    let fields =
+      if status = relay_err_alias_conflict
+      then [ ("existing_lease", RegistrationLease.to_json lease) ]
+      else []
+    in
+    json_error status (register_error_message status) fields
 
 let json_of_heartbeat_result (status, lease) =
   if status = "ok" then

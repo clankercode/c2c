@@ -220,6 +220,14 @@ let test_room_op_retry_after_failed_verify_reuses_nonce () =
       print_endline ("room op retry response: " ^ Yojson.Safe.to_string retry);
     check string "room op retry with same nonce succeeds" "true"
       (json_field "ok" retry);
+    (* attempt 3: the nonce was consumed by the verified retry - reuse is a
+       replay again (security half of the contract). *)
+    let ts3 = Relay_signed_ops.now_rfc3339_utc () in
+    join_room_proof ~base_url ~id ~alias ~room_id ~ts:ts3 ~nonce
+      ~sig_b64:(mk_sig ts3)
+    >>= fun third ->
+    check string "room op replay after verified use rejected" "nonce_replay"
+      (json_field "error_code" third);
     Lwt.return_unit)
 
 let env_nonce env =
@@ -301,6 +309,25 @@ let test_room_send_retry_after_failed_verify_reuses_nonce () =
       print_endline ("room send retry response: " ^ Yojson.Safe.to_string retry);
     check string "room send retry with same nonce succeeds" "true"
       (json_field "ok" retry);
+    (* attempt 3: same nonce after the verified use -> replay. *)
+    let ts3 = Relay_signed_ops.now_rfc3339_utc () in
+    let blob3 =
+      Relay_identity.canonical_msg ~ctx:Relay_signed_ops.room_send_sign_ctx
+        [ room_id; alias; pk_b64; "none"; ct_hash; ts3; env_nonce env ]
+    in
+    let env3 =
+      match env with
+      | `Assoc fields ->
+        `Assoc (List.map (fun (k, v) ->
+            match k with
+            | "ts" -> (k, `String ts3)
+            | "sig" -> (k, `String (b64url_nopad (Relay_identity.sign id blob3)))
+            | _ -> (k, v)) fields)
+      | other -> other
+    in
+    post_send env3 >>= fun third ->
+    check string "room send replay after verified use rejected" "nonce_replay"
+      (json_field "error_code" third);
     Lwt.return_unit)
 
 let () =

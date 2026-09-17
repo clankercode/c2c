@@ -140,6 +140,28 @@ let test_send_accepts_case_variant_of_verified_signer () =
         ~session_id:"s-b334-bob"
     in
     check int "delivered to the victim" 1 (List.length inbox);
+    (* Delivered under the verified lease's case so a recipient replying to
+       the delivered name hits the exact-case lease lookup (review round). *)
+    (match inbox with
+     | msg :: _ ->
+       check string "delivered from_alias is the canonical lease case"
+         stored_alias (json_field "from_alias" msg)
+     | [] -> ());
+    (* And the reply to the canonical name is deliverable (alice must be
+       publicly reachable for bob's send to pass B264). *)
+    (match
+       Relay.SqliteRelay.set_peer_discovery_visibility relay
+         ~alias:stored_alias ~visibility:Relay_backend_contract.Public
+     with
+     | Ok () -> ()
+     | Error e -> failf "mark alice public: %s" e);
+    (match
+       Relay.SqliteRelay.send relay ~from_alias:"b334-bob"
+         ~to_alias:stored_alias ~content:"reply" ~message_id:(Some "b334-reply")
+         ~pow_difficulty:(-1)
+     with
+     | `Ok _ -> ()
+     | _ -> fail "reply to the canonical alias should deliver");
     Lwt.return_unit)
 
 let test_send_still_rejects_different_name () =
