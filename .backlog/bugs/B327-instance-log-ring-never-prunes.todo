@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:14Z"
 depends_on: []
 estimate_hours: 1
 id: B327
 priority: low
+started_at: null
 status: pending
 tags: []
 title: instance-log ring never prunes numbered strays beyond keep+16 after a C2C_INSTANCE_LOG_KEEP reduction
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+C2c_instance_log.rotate (c2c_instance_log.ml:69-76) removes only log.<n> through log.<n+16>; a host that previously ran a larger C2C_INSTANCE_LOG_KEEP (say 50) and is later reduced to 3 keeps log.20 through log.50 forever - the shift never touches them and the live-path cap never fires on them. Bounded disk leak.
+
+## Fix direction
+
+Sweep all log.<digits> with index >= keep at rotation (readdir-based, not a fixed +16 window).
+
+## Evidence
+
+CLI review 2026-09-17 (B298 self-review gap).
