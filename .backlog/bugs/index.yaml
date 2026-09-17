@@ -287,3 +287,4 @@ bugs:
     - file: B288-the-list-of-detected-clients-f.todo
     - file: B289-c2c-version-should-be-the-same.todo
     - file: B290-c2c-should-always-add-mcp-serv.todo
+    - file: B291-relay-connector-staleness-watc.todo

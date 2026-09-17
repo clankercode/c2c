@@ -1,0 +1,93 @@
+---
+complexity: high
+created_at: "2026-09-17T02:44:16Z"
+depends_on: []
+estimate_hours: 4
+id: B291
+priority: critical
+status: pending
+tags:
+    - relay
+    - connector
+    - crashloop
+title: relay connector staleness watchdog (180s) is shorter than one full multi-root sync pass (208s) -> permanent crash loop
+updated_at: "2026-09-17T02:44:16Z"
+---
+## Symptom
+
+The machine-wide relay connector on xsm is in a permanent crash loop: it starts,
+runs for ~180s, declares itself "wedged", `exit 3`s, and the supervisor restarts
+it 1s later. Forever.
+
+Measured in `~/.local/share/c2c/instances/relay-connect/log` (849 MB, unrotated,
+first written 2026-07-15):
+
+| metric | value |
+|---|---|
+| `starting machine service` (restarts) | 9,300 |
+| `wedged: no successful sync ...` | 9,073 |
+| `connector exited 3; retrying in 1s` | 9,340 |
+
+The relay is healthy throughout — `GET https://relay.c2c.im/health` returns
+`ok:true, version 0.15.1, git_hash 52f96dd`.
+
+## Root cause
+
+`C2c_relay_connector.stale_exit_threshold_s ~interval` returns
+`max(180.0, interval *. 6.0)` = **180 s** at the default 30 s interval. The
+threshold is derived from the *poll interval alone* and takes no account of how
+much work a single pass performs.
+
+Since the machine service was introduced, one pass iterates **every** broker root
+on the host. On xsm that is **241** roots under `~/.c2c/repos/*/broker`.
+
+Measured full pass duration:
+
+```
+c2c relay connect --once --all-brokers --relay-url https://relay.c2c.im
+-> ELAPSED=208s, 186 roots synced (~1.1 s/root)
+```
+
+208 s > 180 s, so the threshold is structurally unreachable on this host.
+
+The mechanism inside `start_machine_impl`:
+
+- `last_progress_for root` seeds `progress[root]` at the root's **first** sync.
+- `check_all_known_roots_stale ()` re-checks **every** seeded root after each
+  root's sync and during each sleep slice.
+- Roots synced early in a pass therefore cross 180 s of "no progress" while the
+  same pass is still walking the tail of the root list.
+- `check_root_stale_exit` then calls `exit 3`, terminating the whole process.
+
+## Consequences
+
+1. Broker roots that sort after the ~180 s mark are **never synced at all** —
+   their inbound relay DMs are never polled. This is the user-visible
+   "clients cannot stay connected to the relay" symptom.
+2. Roots early in sort order are **fully re-registered every ~3 minutes**,
+   because a fresh process starts with an empty `t.registered`. That request
+   storm is self-inflicted load on the relay: during this investigation the
+   relay's PoW difficulty was observed rising from 0 to 12
+   (`Relay PoW difficulty increased to 12 (was 0)`).
+3. The wedge line names whichever root was seeded first
+   (observed: `0c7c9894233f` 1893x, `8d68f5dbe89f` 1608x), **not** the root that
+   is actually erroring. This has repeatedly misdirected diagnosis toward a
+   per-repo problem.
+
+## Fix direction
+
+Make the staleness window a function of observed pass duration rather than of
+`interval` — e.g. track the duration of the last completed full pass and use
+`max(180, 3 * last_full_pass_duration)`. Additionally:
+
+- skip broker roots with zero eligible registrations before paying per-root cost
+  (most of the 241 roots on xsm have `registered: []`);
+- consider capping roots synced per pass, or pruning long-dead broker roots.
+
+Related: the blast-radius bug (one root's `exit 3` kills the connector for all
+roots) and the per-alias wedge that makes a root report no-progress in the first
+place are filed separately.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
