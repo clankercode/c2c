@@ -43,6 +43,25 @@ let write_empty_registry broker =
   output_string oc "[]\n";
   close_out oc
 
+(* B291: a root the machine loop will actually SYNC needs an eligible
+   registration; a bare/empty-registry root is gated as a no-op and never
+   reaches sync_once. *)
+let write_eligible_registry broker =
+  mkdir_p broker;
+  let pid = Unix.getpid () in
+  let start =
+    match Conn.read_pid_start_time_local pid with
+    | Some n -> n
+    | None -> Alcotest.fail "current process must have a readable start time"
+  in
+  let oc = open_out (Filename.concat broker "registry.json") in
+  Yojson.Safe.to_channel oc
+    (`List [ `Assoc [ "session_id", `String "fixture-live";
+                      "alias", `String "fixture-alias";
+                      "pid", `Int pid;
+                      "pid_start_time", `Int start ] ]);
+  close_out oc
+
 let test_machine_broker_discovery_is_dynamic () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
@@ -1286,11 +1305,11 @@ let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error ()
 let test_stale_exit_default_threshold () =
   (* B228: default = max(180, interval*6); 30s interval -> 180s, 60s -> 360s. *)
   Alcotest.(check (float 1e-9)) "30s interval -> 180s floor" 180.0
-    (Conn.stale_exit_threshold_s ~interval:30.0);
+    (Conn.stale_exit_threshold_s ~interval:30.0 ());
   Alcotest.(check (float 1e-9)) "60s interval -> 6x" 360.0
-    (Conn.stale_exit_threshold_s ~interval:60.0);
+    (Conn.stale_exit_threshold_s ~interval:60.0 ());
   Alcotest.(check (float 1e-9)) "10s interval still floors at 180s" 180.0
-    (Conn.stale_exit_threshold_s ~interval:10.0)
+    (Conn.stale_exit_threshold_s ~interval:10.0 ())
 
 let test_should_exit_stale_predicate () =
   let now = 10_000.0 in
@@ -1307,6 +1326,93 @@ let test_should_exit_stale_predicate () =
   (* just under threshold -> keep running *)
   Alcotest.(check bool) "just under threshold -> no exit" false
     (Conn.should_exit_stale ~now ~last_progress:(now -. 179.9) ~threshold)
+
+let test_stale_threshold_scales_with_pass_work () =
+  (* B291: a 208s machine pass over 241 roots must widen the staleness window
+     past the 180s floor — the fixed floor was structurally unreachable and
+     crash-looped the connector. *)
+  Alcotest.(check (float 1e-9)) "208s pass -> 624s window" 624.0
+    (Conn.stale_exit_threshold_s ~pass_work_s:208.0 ~interval:30.0 ());
+  Alcotest.(check (float 1e-9)) "short pass keeps the 180s floor" 180.0
+    (Conn.stale_exit_threshold_s ~pass_work_s:50.0 ~interval:30.0 ());
+  Alcotest.(check (float 1e-9)) "6x interval still respected" 720.0
+    (Conn.stale_exit_threshold_s ~pass_work_s:100.0 ~interval:120.0 ())
+
+let test_machine_stale_threshold_seeding () =
+  (* B291 seeding: with no completed pass yet the window grows with the
+     in-flight pass's elapsed time, so a first-pass false trip is impossible
+     (a root checked T seconds into the pass cannot exceed 3xT). *)
+  Alcotest.(check (float 1e-9)) "in-flight elapsed widens the window" 300.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:None
+       ~in_flight_s:100.0);
+  Alcotest.(check (float 1e-9)) "no observation -> floor" 180.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:None
+       ~in_flight_s:0.0);
+  Alcotest.(check (float 1e-9)) "completed pass dominates when longer" 900.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:(Some 300.0)
+       ~in_flight_s:10.0);
+  Alcotest.(check (float 1e-9)) "in-flight pass overtakes stale estimate" 600.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:(Some 100.0)
+       ~in_flight_s:200.0)
+
+let test_machine_root_sync_is_noop () =
+  (* B291: zero ELIGIBLE registrations + no pending work -> the pass would
+     make zero relay calls; dead history rows must NOT force a sync, but a
+     pending outbox entry (relay /send needs no sender lease) or a mobile
+     WS binding must. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let write_registry rows =
+    let oc = open_out (Filename.concat tmp "registry.json") in
+    Yojson.Safe.to_channel oc (`List rows);
+    close_out oc
+  in
+  let live_pid = Unix.getpid () in
+  let live_start =
+    match Conn.read_pid_start_time_local live_pid with
+    | Some n -> n
+    | None -> Alcotest.fail "current process must have a readable start time"
+  in
+  write_empty_registry tmp;
+  Alcotest.(check bool) "empty root is a no-op" true
+    (Conn.machine_root_sync_is_noop tmp);
+  write_registry
+    [ `Assoc [ "session_id", `String "dead-1"; "alias", `String "dead-alias";
+              "pid", `Int 900_001; "pid_start_time", `Int 1 ] ];
+  Alcotest.(check bool) "dead history rows are still a no-op" true
+    (Conn.machine_root_sync_is_noop tmp);
+  write_registry
+    [ `Assoc [ "session_id", `String "live-1"; "alias", `String "live-alias";
+              "pid", `Int live_pid; "pid_start_time", `Int live_start ] ];
+  Alcotest.(check bool) "eligible registration is not a no-op" false
+    (Conn.machine_root_sync_is_noop tmp);
+  write_registry [];
+  let oc = open_out (Filename.concat tmp "remote-outbox.jsonl") in
+  output_string oc
+    "{\"from_alias\":\"a\",\"to_alias\":\"b\",\"content\":\"c\"}\n";
+  close_out oc;
+  Alcotest.(check bool) "pending outbox entry is not a no-op" false
+    (Conn.machine_root_sync_is_noop tmp);
+  (try Sys.remove (Filename.concat tmp "remote-outbox.jsonl") with _ -> ());
+  let oc = open_out (Filename.concat tmp "mobile_bindings.json") in
+  output_string oc
+    ("[{\"binding_id\":\"b1\",\"created_at\":"
+     ^ string_of_float (Unix.gettimeofday ()) ^ "}]\n");
+  close_out oc;
+  Alcotest.(check bool) "mobile binding is not a no-op" false
+    (Conn.machine_root_sync_is_noop tmp)
+
+let test_register_failure_pass_is_no_progress () =
+  (* B293 handoff note: in-pass lease repair records no error, so a FAILING
+     register is the loudest genuine no-progress signal — it must keep
+     feeding the staleness watchdog. *)
+  Alcotest.(check bool) "failed register pass is NOT progress" false
+    (Conn.sync_made_progress
+       (mk_result
+          ~last_error:{ Conn.err_op = "register";
+                        err_detail =
+                          "{\"ok\":false,\"error_code\":\"connection_error\"}";
+                        err_ts = 0.0 } ()))
 
 let test_sync_made_progress () =
   (* ok pass (no error) is progress; rate-limited pass is progress (relay up,
@@ -1342,9 +1448,68 @@ let connector_state_has_watchdog broker_root =
   C2c_io.read_file_opt (Conn.connector_state_path broker_root)
   |> fun raw -> contains_sub ~needle:"sync_watchdog" raw
 
+let test_machine_loop_skips_noop_roots () =
+  (* B291: a no-op root must never reach sync_once (zero relay work); the
+     healthy root still syncs. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let noop_root = Filename.concat tmp "noop-broker" in
+  let live_root = Filename.concat tmp "live-broker" in
+  write_empty_registry noop_root;
+  (* live_root needs an ELIGIBLE registration or the B291 gate skips it too. *)
+  write_eligible_registry live_root;
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      let sync_once _shutdown t =
+        if t.Conn.broker_root = noop_root then Unix._exit 9;
+        ignore (Unix.write_substring call_w "S" 0 1);
+        Ok (mk_result ())
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; noop_root; live_root ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:live_root ~node_id:"b291-noop-test"
+          ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false ~once:true
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      (match waitpid_until ~timeout_s:3.0 pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | Some (Unix.WEXITED 9) ->
+           Alcotest.fail "no-op root must not reach sync_once (B291)"
+       | Some status ->
+           Alcotest.failf "machine --once exited abnormally: %s"
+             (match status with
+              | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+              | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+              | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "machine --once did not finish within 3s");
+      let saw_sync = Bytes.create 1 in
+      Alcotest.(check int) "live root synced" 1
+        (Unix.read call_r saw_sync 0 1);
+      Unix.close call_r;
+      (* The no-op path must still record fresh connector state (doctor
+         freshness semantics unchanged) and count as progress. *)
+      match Conn.read_connector_state noop_root with
+      | Some st ->
+          Alcotest.(check bool) "no-op root state written with ok sync" true
+            (st.Conn.cs_last_ok_ts > 0.0)
+      | None -> Alcotest.fail "no-op root must still get connector state"
+
 let test_signal_bounds_blocked_sync ~machine ~signal_name signal () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  (* B291: the machine loop skips zero-work roots, so a machine-mode test
+     that needs sync_once to run must give the root an eligible session. *)
+  if machine then write_eligible_registry tmp;
   let ready_r, ready_w = Unix.pipe () in
   match Unix.fork () with
   | 0 ->
@@ -1508,6 +1673,10 @@ let test_touch_connector_last_sync_preserves_last_ok () =
 let test_machine_graceful_completion_stops_remaining_roots () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  (* B291: both roots need eligible sessions or the no-op gate skips them
+     before sync_once — the shutdown-skip this test pins happens IN sync_root. *)
+  write_eligible_registry tmp;
+  write_eligible_registry (tmp ^ "-second");
   let call_r, call_w = Unix.pipe () in
   let release_r, release_w = Unix.pipe () in
   match Unix.fork () with
@@ -1819,10 +1988,22 @@ let () =
         test_should_exit_stale_predicate;
       Alcotest.test_case "ok/rate-limited count as progress, errors do not"
         `Quick test_sync_made_progress;
+      Alcotest.test_case "failed register pass is no progress (B293 handoff)"
+        `Quick test_register_failure_pass_is_no_progress;
       Alcotest.test_case "touch last_sync preserves last_ok (B228)" `Quick
         test_touch_connector_last_sync_preserves_last_ok;
       Alcotest.test_case "run loop stale-exits on always-error (B228)" `Quick
         test_run_loop_stale_exit_force_exits;
+    ];
+    "B291 pass-duration-aware staleness", [
+      Alcotest.test_case "threshold scales with observed pass work" `Quick
+        test_stale_threshold_scales_with_pass_work;
+      Alcotest.test_case "machine threshold seeds from in-flight pass" `Quick
+        test_machine_stale_threshold_seeding;
+      Alcotest.test_case "no-op root gate: eligible/outbox/bindings" `Quick
+        test_machine_root_sync_is_noop;
+      Alcotest.test_case "machine loop skips no-op roots" `Quick
+        test_machine_loop_skips_noop_roots;
     ];
     "B217 bounded SIGTERM shutdown", [
       Alcotest.test_case "bare connector SIGTERM" `Quick

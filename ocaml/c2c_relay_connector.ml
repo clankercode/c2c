@@ -2719,19 +2719,51 @@ let rate_limit_backoff ~base ~strikes ?(retry_after = 0.) () =
    would just re-hit the 429). When no progress has been made for
    [stale_exit_threshold_s], the connector is wedged: log an actionable line
    and exit 3 so a supervisor (managed `c2c start relay-connect`) restarts it.
-   Default threshold (B228) is max(180, interval×6) so self-heal trails the
-   doctor 120s liveness window by a small margin, not by ~10 minutes.
    Unsupervised, the exit makes whoami/doctor report `absent`/`stale` with the
    documented `c2c restart relay-connect` remediation instead of a silently
-   wedged live PID. Both predicates are pure so they are unit-testable. *)
-let stale_exit_threshold_s ~interval =
+   wedged live PID. Both predicates are pure so they are unit-testable.
+
+   B291: the window must also cover the WORK one pass performs. One machine
+   pass walks every broker root on the host (241 on xsm, ~1.1s/root, 208s
+   measured), so a floor derived from [interval] alone (180s at the default
+   30s poll) is structurally unreachable there and the connector crash-looped
+   ~9,300 times. The window is therefore
+     max(180, 6x interval, 3 x pass_work_s)
+   where [pass_work_s] is the observed pass duration. 3x so a pass up to three
+   times slower than the last observed one still cannot false-trip roots
+   synced early in the walk; growth faster than 3x per pass requires the root
+   set (or per-root cost) to triple within one interval. Capping roots per
+   pass was considered and rejected: it would stretch the effective poll
+   interval past the heartbeat TTL for later roots, changing delivery and
+   lease semantics rather than fixing the threshold. *)
+let stale_exit_threshold_s ?pass_work_s ~interval () =
   match Option.bind (Sys.getenv_opt "C2C_RELAY_CONNECTOR_STALE_EXIT_S")
           float_of_string_opt with
   | Some v when v > 0.0 -> v
   | _ ->
       (* B228: self-heal soon after doctor marks the bridge dead (120s
          freshness). Floor 180s / 6×interval → 3 min at the default 30s poll. *)
-      Float.max 180.0 (interval *. 6.0)
+      let base = Float.max 180.0 (interval *. 6.0) in
+      (match pass_work_s with
+       | Some w when w > 0.0 -> Float.max base (3.0 *. w)
+       | _ -> base)
+
+(* B291: the machine loop's staleness window, from observed pass work.
+   [last_pass_s] is the last completed full pass's duration; [in_flight_s] is
+   the current pass's elapsed time (0 between passes). Seeding: before any
+   pass has completed the window grows with the in-flight elapsed, so a
+   root checked T seconds into the very first pass can never exceed the 3xT
+   window — a first-pass false trip is structurally impossible. Pure so it is
+   unit-testable; the machine loop feeds it real timers. *)
+let machine_stale_threshold ~interval ~last_pass_s ~in_flight_s =
+  let in_flight = Float.max 0.0 in_flight_s in
+  let observed =
+    match last_pass_s with
+    | Some d -> Float.max d in_flight
+    | None -> in_flight
+  in
+  if observed > 0.0 then stale_exit_threshold_s ~pass_work_s:observed ~interval ()
+  else stale_exit_threshold_s ~interval ()
 
 (* [true] when the connector has made no forward progress for at least
    [threshold] wall-clock seconds and should exit so a supervisor restarts it.
@@ -2865,7 +2897,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
      rate-limited). Seeded to process start so a connector that NEVER succeeds
      still exits after the staleness threshold. *)
   let last_progress = ref (Unix.gettimeofday ()) in
-  let stale_threshold = stale_exit_threshold_s ~interval:t.interval in
+  let stale_threshold = stale_exit_threshold_s ~interval:t.interval () in
   let check_stale_exit () =
     if not !shutdown
        && should_exit_stale ~now:(Unix.gettimeofday ())
@@ -2975,7 +3007,10 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              else "");
         sleep_interruptibly_until ~slice_s:5.0
           ~should_stop:(fun () ->
-            check_stale_exit ();
+            (* B291: skip the staleness check mid-429-backoff — a rate-limited
+               pass counts as progress and the backoff sleep can exceed the
+               180s floor (see the machine-loop twin of this guard). *)
+            if !rl_strikes = 0 then check_stale_exit ();
             !shutdown)
           delay;
         loop ()
@@ -3054,6 +3089,30 @@ let print_sync_result ?broker_root result =
        | Some ra -> Printf.sprintf " retry_after=%.1fs" ra
        | None -> "")
 
+(* B291: a pass result for a root with no relay work (zero eligible
+   registrations, empty outbox, no WS bindings). Mirrors exactly what [sync]
+   returns for such a root today, so the skip path is observationally
+   identical to running the pass. *)
+let no_work_sync_result () : sync_result =
+  { registered = []; registered_sessions = []; heartbeated = [];
+    outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
+    inbound_delivered = 0; inbound_rejected = 0; inbound_rejected_note = None;
+    alerts_emitted = 0; rate_limited = false; retry_after_s = None;
+    last_error = None }
+
+(* B291: would a full [sync] on this broker root make any relay call?
+   Heartbeat/register and poll iterate ELIGIBLE registrations (dead history
+   rows are skipped by [relay_registration_is_eligible] — the same predicate
+   sync applies, so the gate cannot disagree with the pass it gates); the
+   outbox forwards even with zero live registrations (relay /send checks the
+   RECIPIENT's lease, not the sender's); mobile bindings need WS maintenance.
+   Roots with eligible-but-idle registrations are never no-ops — heartbeat +
+   poll IS their periodic sync. Costs only local file reads. *)
+let machine_root_sync_is_noop broker_root =
+  read_local_registrations broker_root = []
+  && read_outbox broker_root = []
+  && read_mobile_bindings broker_root = []
+
 let start_machine_impl ~sync_once ~discover_roots
     ~relay_url ~token ~identity ~primary_broker_root ~node_id
     ~(heartbeat_ttl : float) ~(interval : float) ~(verbose : bool)
@@ -3069,7 +3128,20 @@ let start_machine_impl ~sync_once ~discover_roots
     (* B211: per-root wall-clock epoch of the last progress-making pass; seeded
        lazily to service start so a root that never succeeds still exits. *)
     let progress = Hashtbl.create 8 in
-    let stale_threshold = stale_exit_threshold_s ~interval in
+    (* B291: per-pass work observation. One machine pass walks every broker
+       root; the staleness window must scale with how long that walk actually
+       takes (see [machine_stale_threshold]). [walk_started_at] is 0. between
+       passes so the in-flight term does not keep growing through the sleep. *)
+    let walk_started_at = ref 0.0 in
+    let last_pass_s = ref None in
+    let current_stale_threshold () =
+      let in_flight =
+        if !walk_started_at = 0.0 then 0.0
+        else Unix.gettimeofday () -. !walk_started_at
+      in
+      machine_stale_threshold ~interval ~last_pass_s:!last_pass_s
+        ~in_flight_s:in_flight
+    in
     (* Seed a root's progress window the first time it is synced (NOT at service
        start): a broker root discovered hours later must get a fresh staleness
        window, or an erroring first pass on a late-joining repo would trip the
@@ -3085,14 +3157,16 @@ let start_machine_impl ~sync_once ~discover_roots
     let check_root_stale_exit root =
       if not !shutdown
          && should_exit_stale ~now:(Unix.gettimeofday ())
-           ~last_progress:(last_progress_for root) ~threshold:stale_threshold
+           ~last_progress:(last_progress_for root)
+           ~threshold:(current_stale_threshold ())
       then begin
         Printf.eprintf
           "[relay-connector %s] wedged: no successful sync for %.0fs (>= %.0fs \
            threshold) though the process is alive — exiting so a supervisor \
            can restart (B211/B228). Recover manually with: c2c restart \
            relay-connect\n%!"
-          root (Unix.gettimeofday () -. last_progress_for root) stale_threshold;
+          root (Unix.gettimeofday () -. last_progress_for root)
+          (current_stale_threshold ());
         exit 3
       end
     in
@@ -3117,6 +3191,19 @@ let start_machine_impl ~sync_once ~discover_roots
     let rl_seen = ref false in
     let rl_retry_after = ref 0. in
     let sync_root root =
+      if machine_root_sync_is_noop root then begin
+        (* B291: zero eligible registrations, empty outbox, no WS bindings —
+           a full sync here would make ZERO relay calls and only pay local
+           plumbing (policy load, outbox flock round-trip, WS scan, Lwt +
+           SIGALRM setup). Record it as progress with a fresh ok state so
+           doctor's freshness semantics are unchanged from a real pass. *)
+        Hashtbl.replace progress root (Unix.gettimeofday ());
+        let noop = no_work_sync_result () in
+        write_connector_state ~node_id root noop;
+        print_sync_result ~broker_root:root noop;
+        true
+      end
+      else begin
       let t = state_for root in
       let outcome =
         match sync_once shutdown t with
@@ -3151,14 +3238,19 @@ let start_machine_impl ~sync_once ~discover_roots
       (* B211/B228: terminate a persistently-wedged (alive-but-erroring) root. *)
       check_root_stale_exit root;
       outcome
+      end
     in
     let identity_tag = match identity with Some _ -> "Ed25519-signed" | None -> "token-only" in
     Printf.printf
       "[relay-connector] starting machine service — relay=%s node=%s auth=%s interval=%.0fs\n%!"
       relay_url node_id identity_tag interval;
     if once then begin
+      walk_started_at := Unix.gettimeofday ();
       let roots = discover_roots ~primary:primary_broker_root in
-      if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2
+      let code = if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2 in
+      last_pass_s := Some (Unix.gettimeofday () -. !walk_started_at);
+      walk_started_at := 0.0;
+      code
     end else begin
       (* B210: seed jitter per-process (see [run]). *)
       Random.self_init ();
@@ -3167,9 +3259,12 @@ let start_machine_impl ~sync_once ~discover_roots
         if not !shutdown then begin
           rl_seen := false;
           rl_retry_after := 0.;
+          walk_started_at := Unix.gettimeofday ();
           discover_roots ~primary:primary_broker_root
           |> List.iter (fun root ->
                if not !shutdown then ignore (sync_root root));
+          last_pass_s := Some (Unix.gettimeofday () -. !walk_started_at);
+          walk_started_at := 0.0;
           check_all_known_roots_stale ();
           if !rl_seen then incr rl_strikes
           else begin
@@ -3191,7 +3286,12 @@ let start_machine_impl ~sync_once ~discover_roots
                  else "");
             sleep_interruptibly_until ~slice_s:5.0
               ~should_stop:(fun () ->
-                check_all_known_roots_stale ();
+                (* B291: a rate-limited pass already counted as progress for
+                   every root it throttled; the 429 backoff can sleep up to
+                   [rate_limit_backoff_cap_s] (300s), past the 180s floor.
+                   Checking staleness mid-backoff would wedge/exit a connector
+                   the relay is deliberately throttling. *)
+                if !rl_strikes = 0 then check_all_known_roots_stale ();
                 !shutdown)
               delay;
             loop ()
