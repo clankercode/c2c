@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-09-17T15:22:04Z"
+claimed_by: cli-user
 completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:10Z"
@@ -6,11 +8,11 @@ depends_on: []
 estimate_hours: 1
 id: B304
 priority: high
-started_at: null
-status: pending
+started_at: "2026-09-17T15:22:04Z"
+status: in_progress
 tags: []
 title: doctor relay fix_commands still recommend pattern-killing and backgrounding the connector (B296 incomplete)
-updated_at: "2026-09-17T07:56:10Z"
+updated_at: "2026-09-17T15:22:04Z"
 ---
 
 # doctor relay fix_commands still recommend pattern-killing and backgrounding the connector (B296 incomplete)
