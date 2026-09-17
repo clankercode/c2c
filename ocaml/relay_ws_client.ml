@@ -335,7 +335,12 @@ let fetch_challenge_nonce ~(ep : endpoint) ?ca_bundle () =
   Lwt.catch
     (fun () ->
        open_channels ?ca_bundle ep () >>= request_challenge)
-    (fun _ -> Lwt.return_none)
+    (function
+      (* Cancellation (the caller's timeout fired) must propagate — falling
+         back here would leave a zombie connection sequence running after
+         connect_subscribe already failed. *)
+      | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+      | _ -> Lwt.return_none)
 
 let timeout_error ~timeout ~(endpoint : endpoint) =
   Failure

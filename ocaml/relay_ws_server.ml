@@ -440,8 +440,8 @@ end = struct
   let create () = { tbl = Hashtbl.create 256; mutex = Mutex.create () }
 
   let random_nonce () =
-    let b = String.init 32 (fun _ -> Char.chr (Random.int 256)) in
-    Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet b
+    (* CSPRNG, same generator as the other relay nonces. *)
+    Relay_signed_ops.random_nonce_b64 ()
 
   let issue ?(now = Unix.gettimeofday ()) t =
     Mutex.lock t.mutex;
