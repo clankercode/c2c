@@ -33,6 +33,19 @@ let request_ts_past_window = 30.0
 let request_ts_future_window = 5.0
 let request_nonce_ttl = 120.0
 
+(* B339: dead-letter retention, pruned by the gc sweep in both backends.
+   Age-based at 30 days (content-bearing failure feed; the closest gc-loop
+   convention, stats_event_retention_s, keeps 28d+1d grace) AND a hard
+   count cap so a dead-letter storm is bounded independent of age. Under
+   the cap the NEWEST entries are kept. *)
+let dead_letter_retention_s = 30.0 *. 86_400.0
+let dead_letter_max_entries = 10_000
+
+(* B339: mobile-pair replay-nonce window pruned by the gc sweep. Pairing
+   tokens are server-capped at 300s TTL, so 1h bounds the process-global
+   cache while giving 12x replay-window headroom. *)
+let mobile_pair_nonce_window_s = 3600.0
+
 (* Registration lease lifetime -- single canonical default, referenced
    everywhere a lease ttl default is needed. Bumped from 300s to 24h
    (2026-06-11) so agents don't have to re-register every few minutes.

@@ -2,8 +2,9 @@ module NonceCache : sig
   type t
   val create : unit -> t
   val is_seen : t -> phone_pubkey:string -> nonce:string -> bool
-  val record : t -> phone_pubkey:string -> nonce:string -> unit
-  val cleanup : t -> older_than:float -> int
+  (* [?now] is a test seam; production callers record at wall-clock time. *)
+  val record : ?now:float -> t -> phone_pubkey:string -> nonce:string -> unit
+  val cleanup : ?now:float -> t -> older_than:float -> int
 end = struct
   type t = {
     cache : (string * string, float) Hashtbl.t;
@@ -18,14 +19,13 @@ end = struct
     Mutex.unlock t.mutex;
     seen
 
-  let record t ~phone_pubkey ~nonce =
+  let record ?(now = Unix.gettimeofday ()) t ~phone_pubkey ~nonce =
     Mutex.lock t.mutex;
-    Hashtbl.replace t.cache (phone_pubkey, nonce) (Unix.gettimeofday ());
+    Hashtbl.replace t.cache (phone_pubkey, nonce) now;
     Mutex.unlock t.mutex
 
-  let cleanup t ~older_than =
+  let cleanup ?(now = Unix.gettimeofday ()) t ~older_than =
     Mutex.lock t.mutex;
-    let now = Unix.gettimeofday () in
     let to_remove = ref [] in
     Hashtbl.iter
       (fun (pk, nonce) seen_at ->
@@ -39,5 +39,5 @@ end
 
 let nonce_cache = NonceCache.create ()
 let is_nonce_seen ~phone_pubkey ~nonce = NonceCache.is_seen nonce_cache ~phone_pubkey ~nonce
-let record_nonce ~phone_pubkey ~nonce = NonceCache.record nonce_cache ~phone_pubkey ~nonce
-let cleanup_nonce_cache ~older_than = NonceCache.cleanup nonce_cache ~older_than
+let record_nonce ?now ~phone_pubkey ~nonce = NonceCache.record ?now nonce_cache ~phone_pubkey ~nonce
+let cleanup_nonce_cache ?now ~older_than = NonceCache.cleanup ?now nonce_cache ~older_than

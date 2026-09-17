@@ -1708,6 +1708,26 @@ module InMemoryRelay : RELAY = struct
             (fun (v, _mid) ts -> if v = verifier then None else Some ts)
             t.contact_grant_mids)
         !drop_verifiers;
+      (* B339: dead-letter retention — age-based (30d), then the hard count
+         cap with the newest entries kept. Rows without a parseable ts are
+         kept (never silently destroy an unknown shape). *)
+      let cutoff = now -. dead_letter_retention_s in
+      let kept = Queue.create () in
+      Queue.iter
+        (fun dl ->
+           match Yojson.Safe.Util.member "ts" dl |> Yojson.Safe.Util.to_number_option with
+           | Some ts when ts < cutoff -> ()
+           | _ -> Queue.add dl kept)
+        t.dead_letter;
+      let excess = Queue.length kept - dead_letter_max_entries in
+      if excess > 0 then
+        for _ = 1 to excess do ignore (Queue.pop kept) done;
+      Queue.clear t.dead_letter;
+      Queue.iter (fun dl -> Queue.add dl t.dead_letter) kept;
+      (* B339: the mobile-pair replay nonce cache is process-global and had
+         no pruner; ride the gc cadence. ?now:None applies the trailing
+         optional so the call actually runs instead of building a closure. *)
+      ignore (cleanup_nonce_cache ?now:None ~older_than:mobile_pair_nonce_window_s);
       `Ok (List.rev !expired, pruned)
     )
 
@@ -3350,6 +3370,18 @@ end = struct
           Sqlite3.bind_double del_g 1 contact_grant_gc_grace_s |> ignore;
           Sqlite3.bind_double del_g 2 now |> ignore;
           ignore (Sqlite3.step del_g));
+      (* B339: dead-letter retention — age-based (30d), then the hard count
+         cap with the newest entries kept (ties break toward the higher
+         rowid, i.e. the later insert). *)
+      with_stmt conn "DELETE FROM dead_letter WHERE ts < ?" (fun del_dl ->
+        Sqlite3.bind_double del_dl 1 (now -. dead_letter_retention_s) |> ignore;
+        ignore (Sqlite3.step del_dl));
+      with_stmt conn "DELETE FROM dead_letter WHERE rowid NOT IN (SELECT rowid FROM dead_letter ORDER BY ts DESC, rowid DESC LIMIT ?)" (fun cap_dl ->
+        Sqlite3.bind_int cap_dl 1 dead_letter_max_entries |> ignore;
+        ignore (Sqlite3.step cap_dl));
+      (* B339: mobile-pair replay nonce cache (process-global); see the
+         in-memory arm for the ?now:None note. *)
+      ignore (cleanup_nonce_cache ?now:None ~older_than:mobile_pair_nonce_window_s);
       `Ok (List.rev !expired_aliases, pruned)
     )
 

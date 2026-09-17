@@ -824,6 +824,15 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B339: unbounded-store retention — the gc sweep prunes dead_letter in both
+; backends (30-day age + 10k cap, newest kept) and finally calls the never-
+; invoked mobile-pair nonce cache cleanup (3600s window).
+(test
+ (name test_relay_b339_gc_retention)
+ (modules test_relay_b339_gc_retention)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 ; B337: sqlite parity with the in-memory contract — join/leave emit the
 ; c2c-system room message (room_history row + inbox fan-out, dead members
 ; dead-lettered) and sqlite send records unknown_alias/recipient_dead
