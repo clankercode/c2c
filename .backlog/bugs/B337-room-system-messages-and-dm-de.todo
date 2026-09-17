@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
 estimate_hours: 1
 id: B337
 priority: low
+started_at: null
 status: pending
 tags: []
 title: room system messages and DM dead-lettering exist only in the in-memory backend - tests describe behavior prod does not have
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Room join/leave system messages and DM dead-lettering exist only in the in-memory backend. InMemoryRelay emits joined/left fan-out + history entries (relay.ml:1226-1310) and writes dead-letter rows for unknown/dead DM recipients (1124-1148); SqliteRelay join/leave are bare INSERT/DELETE with no system message, and sqlite send never records dead_letter at all (the table only grows via cross-relay forward failures). Tests asserting system messages or DLQ contents pass in-memory and describe behavior prod does not have; the sqlite dead_letter surface silently under-reports.
+
+## Fix direction
+
+Pick one contract and implement it in both backends (or delete the in-memory system-message path if it was never a product promise).
+
+## Evidence
+
+Server-core review 2026-09-17.
