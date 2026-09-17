@@ -1,0 +1,138 @@
+---
+complexity: medium
+created_at: "2026-09-17T02:50:12Z"
+depends_on: []
+estimate_hours: 5
+id: B300
+priority: high
+status: pending
+tags:
+    - relay
+    - privacy
+    - defaults
+    - opt-in
+title: c2c contacts the public relay by default; relay should be opt-in and only needed for cross-machine messaging
+updated_at: "2026-09-17T02:50:12Z"
+---
+## Requested behaviour (Max, 2026-09-17)
+
+> change the default c2c behavior to not contact the relay. It should require
+> explicit activation and only be required when seeking c2c messaging between
+> machines.
+
+## Current behaviour (measured, not assumed)
+
+With a **completely clean `HOME`** — no `relay.json`, no identity, no config of
+any kind — c2c still reaches out to `relay.c2c.im`:
+
+```
+$ env HOME=$TMP/fakehome c2c doctor
+⚠ relay: reachable — 0.15.1 @ 52f96dd prod mode ... (https://relay.c2c.im)
+
+$ ls $TMP/fakehome/.config/c2c/     # nothing was ever configured
+(empty)
+```
+
+`c2c health` does the same, and is worse — it **hardcodes** the URL and does not
+consult `relay.json` at all (`ocaml/cli/c2c_health_cmd.ml:89`):
+
+```
+let url = match Sys.getenv_opt "C2C_RELAY_URL" with
+          | Some v when v <> "" -> v
+          | _ -> "https://relay.c2c.im"
+```
+
+`c2c doctor` gets there via an explicit fallback
+(`ocaml/cli/c2c_doctor_relay.ml:65-66`):
+
+```
+| Some v -> (v, "c2c relay setup config (relay.json)")
+| None   -> (C2c_relay_cmd.default_public_relay_url, "default (public relay)")
+```
+
+So the phone-home is not incidental — it is a deliberate default that predates
+the opt-in posture we want.
+
+### What is already correctly opt-in (do not change)
+
+- `c2c install` / `c2c install self` never touch the relay — no relay refs in
+  the install path at all.
+- `c2c init` attaches the relay **only** when `--relay URL` is passed
+  (`c2c_init_cmd.ml:431`).
+- `c2c relay connect` / `c2c start relay-connect` already refuse without a
+  resolvable URL (`c2c_managed_cmd.ml:363`).
+- `resolve_relay_url` (`c2c_relay_cmd.ml:371`) already returns `None` when
+  nothing is configured — the defect is purely in the callers that substitute
+  the public default for `None`.
+- `c2c send alias@host` makes no network call; it queues to the local
+  remote-outbox and the connector ships it.
+- `c2c status`, `c2c whoami`, `c2c list` are local-only today.
+
+## Proposed design
+
+**Invariant: c2c makes no relay network call unless the relay is explicitly
+activated.**
+
+Activation is any one of, in precedence order:
+
+1. `--relay-url URL` on the command,
+2. `C2C_RELAY_URL` in the environment,
+3. `relay.json` carrying a `url` (broker-root first, then
+   `~/.config/c2c/relay.json`), with `enabled` not set to `false`.
+
+If none resolve, the relay is **inactive** and:
+
+- `c2c doctor` and `c2c health` report `relay: not activated (local-only)` as an
+  informational/grey line, make **zero** network calls, and raise no warning —
+  an unactivated relay is a valid, healthy configuration, not a degradation.
+- `c2c relay <subcommand>` exits with an activation hint rather than silently
+  using the public relay.
+- `c2c send alias@host` behaves as today (queue locally) but the warning names
+  activation as the fix.
+- `c2c status` prints `relay: not activated` instead of displaying a default URL
+  the user never chose.
+
+### Work items
+
+1. Remove the implicit public-relay fallback at every **behavioural** site —
+   `c2c_doctor_relay.ml:66`, `c2c_health_cmd.ml:89`. Retain
+   `default_public_relay_url` only as (a) help text and (b) the value
+   `c2c relay setup` uses when invoked without `--url`.
+2. Audit the remaining network-capable entry points for the same gate. Sites
+   that construct a relay HTTP client outside the `relay` subcommand group:
+   `c2c_health_cmd.ml`, `c2c_doctor_relay.ml`, `c2c_doctor_cmd.ml:377`,
+   `c2c_monitor_cmd.ml:875`, `c2c_monitor_relay_preflight.ml:17,51`,
+   `c2c_mesh_cmd.ml:29`, `c2c_relay_state.ml:133`, `relay_rename_rebind.ml:133`.
+   Each must no-op when the relay is inactive.
+3. Add `c2c relay enable [--url URL]` (defaults to the public relay) and
+   `c2c relay disable`, so activation is a deliberate, discoverable verb rather
+   than a side effect of `setup`. Honour an `enabled: false` field in
+   `relay.json` so `disable` need not delete a configured URL.
+4. Update docs / `c2c relay --help` / the website: the relay is opt-in and is
+   only needed for cross-machine messaging. Same-machine DMs, rooms, broadcast,
+   hooks and delivery all work with the relay off.
+5. Regression test: with a hermetic clean `HOME`, assert that `doctor`, `health`,
+   `status`, `whoami`, `list` and `send` issue **zero** HTTP requests. This is
+   the test that would have caught the current behaviour.
+
+### Open decision — migration
+
+An existing `relay.json` with a `url` is proposed to count as already activated
+(grandfathered). Nothing writes that file except `c2c relay setup`,
+`c2c init --relay`, or the operator, so treating it as consent is defensible and
+nobody's working setup breaks.
+
+The stricter alternative is to require every host to run `c2c relay enable` once,
+including hosts that are currently connected. **Needs Max's call.** Defaulting to
+grandfathering unless told otherwise.
+
+## Secondary benefit
+
+This also bounds the blast radius of B291/B292/B296: a host that never activates
+the relay cannot start a connector, so it cannot enter the crash loop or sit
+silently relay-dark. It removes the failure mode rather than only repairing it.
+
+## Evidence
+
+Behaviour probed on xsm 2026-09-17 with `env HOME=<tmp> c2c doctor|health|status|whoami|list`.
+Related: B291-B299.
