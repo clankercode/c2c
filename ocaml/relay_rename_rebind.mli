@@ -15,10 +15,13 @@
     automatic rebind cannot run or fails. *)
 val next_step_command : new_alias:string -> string
 
-(** Resolve the configured relay URL the same way as [c2c relay register]
-    (flag not available here): [C2C_RELAY_URL], else [C2C_RELAY_CONFIG] /
-    broker-root [relay.json] / [~/.config/c2c/relay.json] [url] field.
-    Does NOT invent a default public URL — no config means skip rebind. *)
+(** Resolve the configured relay URL through [Relay_activation] (B300/B301
+    single source of truth — this local copy was the fourth drift): env
+    [C2C_RELAY_URL] first, else the [url] in [C2C_RELAY_CONFIG] /
+    broker-root [relay.json] / [~/.config/c2c/relay.json]. A relay parked
+    by [c2c relay disable] ([enabled: false]) resolves to [None]: rename
+    makes no network call and reports skipped. Does NOT invent a default
+    public URL — no config means skip rebind. *)
 val resolve_relay_url : unit -> string option
 
 (** Resolve optional bearer token: [C2C_RELAY_TOKEN], else config [token]. *)
