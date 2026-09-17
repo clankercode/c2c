@@ -176,6 +176,28 @@ let test_legacy_unsigned_foreign_register_still_conflicts () =
     expect_status ~what:"in-memory: unsigned foreign register still conflicts"
       ~expected:Relay.relay_err_alias_conflict status)
 
+(* Review follow-up (B330): unbind is the sanctioned binding-clearer. With
+   alias_reservations in place, sqlite unbind_alias must clear the
+   reservation too, or no foreign identity could ever reclaim the alias —
+   the escape hatch in-memory's unbind provides ("after unbind, a different
+   pk can claim"). *)
+let test_sqlite_unbind_clears_reservation () =
+  with_temp_dir (fun dir ->
+    let t = Relay.SqliteRelay.create ~persist_dir:dir () in
+    let s1, _ =
+      Relay.SqliteRelay.register t ~node_id:"b330-n1" ~session_id:"b330-s1"
+        ~alias:"b330-ub" ~identity_pk:pk_owner ()
+    in
+    expect_status ~what:"bound lease registered" ~expected:"ok" s1;
+    check bool "unbind reports removed" true
+      (Relay.SqliteRelay.unbind_alias t ~alias:"b330-ub");
+    let status, _ =
+      Relay.SqliteRelay.register t ~node_id:"b330-n2" ~session_id:"b330-s2"
+        ~alias:"b330-ub" ~identity_pk:pk_attacker ()
+    in
+    expect_status ~what:"foreign identity can claim after unbind" ~expected:"ok"
+      status)
+
 (* Migration: a pre-B330 database has no alias_reservations table. Simulated
    by creating the DB with the current schema and dropping the new table —
    exactly the on-disk shape an older binary leaves — then reopening. *)
@@ -217,6 +239,8 @@ let () =
     ; ("guards", [
         test_case "legacy unsigned foreign register still conflicts" `Quick
           test_legacy_unsigned_foreign_register_still_conflicts;
+        test_case "unbind clears the reservation" `Quick
+          test_sqlite_unbind_clears_reservation;
         test_case "pre-B330 database opens cleanly" `Quick
           test_pre_b330_database_opens_cleanly;
       ])

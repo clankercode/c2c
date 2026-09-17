@@ -3006,7 +3006,18 @@ end = struct
           Sqlite3.bind_text del 1 alias |> ignore;
           Sqlite3.step del |> ignore)
       );
-      !before
+      (* B330: unbind is the sanctioned binding-clearer (in-memory unbind_alias
+         removes t.bindings), so the durable reservation goes too — otherwise
+         no foreign identity could ever reclaim the alias. Reservation-only
+         rows count as removed, matching in-memory's binding-existence return. *)
+      let had_reservation = ref false in
+      with_stmt conn "SELECT alias FROM alias_reservations WHERE alias = ?" (fun stmt ->
+        Sqlite3.bind_text stmt 1 alias |> ignore;
+        had_reservation := (Sqlite3.step stmt = Rc.ROW));
+      with_stmt conn "DELETE FROM alias_reservations WHERE alias = ?" (fun del_res ->
+        Sqlite3.bind_text del_res 1 alias |> ignore;
+        Sqlite3.step del_res |> ignore);
+      !before || !had_reservation
     )
 
   (* B219: inner worker — takes the shared connection and does NOT lock; its
