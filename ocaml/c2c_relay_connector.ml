@@ -41,6 +41,35 @@ type sync_error = {
   err_op : string;
   err_detail : string;
   err_ts : float;
+  (* B297: explicit identity fields for the failing op. The relay's error
+     prose buries the alias ~90 chars in ("verified signer \"<alias>\" does
+     not own session..."), so an 80-char detail cap cut mid-alias on every
+     logged line. Callers that know the alias/session record them directly. *)
+  err_alias : string option;
+  err_session_id : string option;
+  err_code : string option;
+}
+
+(* B297: one error observation inside a sync pass, before deduplication.
+   Alias/session are known at the register/heartbeat/poll call sites; the
+   outbox send arm knows only the sender alias. *)
+type pass_error = {
+  pe_op : string;
+  pe_code : string option;
+  pe_alias : string option;
+  pe_session_id : string option;
+  pe_detail : string;
+}
+
+(* B297: a pass's errors deduplicated per (op, code, alias) with a count.
+   Drives the per-pass log lines and the connector-state errors array. *)
+type sync_error_summary = {
+  es_op : string;
+  es_code : string option;
+  es_alias : string option;
+  es_session_id : string option;
+  es_count : int;
+  es_detail : string;
 }
 
 type sync_result = {
@@ -75,6 +104,9 @@ type sync_result = {
      refill instead of being re-hit every base interval. *)
   retry_after_s : float option;
   last_error : sync_error option;
+  (* B297: every DISTINCT error this pass (deduplicated per (op, code,
+     alias), with counts), where [last_error] keeps only the first one. *)
+  errors : sync_error_summary list;
 }
 
 (* B196: relay ingress is untrusted.  These limits are enforced locally,
@@ -1210,6 +1242,16 @@ let classify_error json =
 
 let connector_state_path broker_root = broker_root // "connector-state.json"
 
+(* B297: one entry of the connector-state errors array. *)
+type connector_state_error = {
+  cse_op : string;
+  cse_code : string option;
+  cse_alias : string option;
+  cse_session_id : string option;
+  cse_count : int;
+  cse_detail : string;
+}
+
 type connector_state = {
   cs_last_sync_ts : float;
   cs_last_ok_ts : float;
@@ -1232,6 +1274,17 @@ type connector_state = {
   (* #62: last sync's drop summary. Additive/optional — absent in state files
      written before the fault/accounting split, and [None] there. *)
   cs_inbound_rejected_note : string option;
+  (* B292: per-root wedge bookkeeping (machine connector). [cs_wedged_since]
+     is the epoch of the most recent wedge event, [cs_wedge_reason] a short
+     cause string, [cs_wedge_count] the consecutive-wedge count driving the
+     doubling cooldown schedule. Cleared by the next real sync write;
+     additive/optional so older readers and state files ignore them. *)
+  cs_wedged_since : float option;
+  cs_wedge_reason : string option;
+  cs_wedge_count : int;
+  (* B297: last sync's errors, deduplicated per (op, code, alias) with
+     counts — [cs_last_error_*] keeps only the first. Additive/optional. *)
+  cs_errors : connector_state_error list;
 }
 
 let write_connector_state ?node_id broker_root (result : sync_result) =
@@ -1299,6 +1352,28 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
        match result.inbound_rejected_note with
        | Some note -> `String note
        | None -> `Null)
+    (* B292: a real sync write means the root is being actively worked again —
+       clear the wedge record (a cooldown root is never synced, so this
+       cannot race the cooldown itself). *)
+    ; ("wedged_since", `Null)
+    ; ("wedge_reason", `Null)
+    ; ("wedge_count", `Int 0)
+    ; ("errors", `List
+          (List.map (fun (e : sync_error_summary) ->
+               `Assoc
+                 ([ ("op", `String e.es_op)
+                  ; ("count", `Int e.es_count)
+                  ; ("detail", `String e.es_detail) ]
+                  @ (match e.es_code with
+                     | Some c -> [ ("code", `String c) ]
+                     | None -> [])
+                  @ (match e.es_alias with
+                     | Some a -> [ ("alias", `String a) ]
+                     | None -> [])
+                  @ (match e.es_session_id with
+                     | Some s -> [ ("session_id", `String s) ]
+                     | None -> [])))
+             result.errors))
     ] @ rl_assoc @ node_id_assoc @ sessions_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
@@ -1327,6 +1402,31 @@ let read_connector_state broker_root : connector_state option =
       in
       let last_sync_ts = Option.value (get_float "last_sync_ts") ~default:0.0 in
       let last_ok_ts = Option.value (get_float "last_ok_ts") ~default:0.0 in
+      (* B292: wedge fields are additive/optional (absent in older files). *)
+      let wedge_count = match json |> member "wedge_count" with
+        | `Int i -> i
+        | _ -> 0
+      in
+      (* B297: additive/optional errors array (absent in older files). *)
+      let errors = match json |> member "errors" with
+        | `List entries ->
+            List.filter_map
+              (function
+                | `Assoc fields ->
+                    let f k = List.assoc_opt k fields in
+                    let str k = match f k with Some (`String s) -> s | _ -> "" in
+                    let opt k = match f k with Some (`String s) -> Some s | _ -> None in
+                    let int k = match f k with Some (`Int i) -> i | _ -> 0 in
+                    if str "op" = "" then None
+                    else
+                      Some { cse_op = str "op"; cse_code = opt "code";
+                             cse_alias = opt "alias";
+                             cse_session_id = opt "session_id";
+                             cse_count = int "count"; cse_detail = str "detail" }
+                | _ -> None)
+              entries
+        | _ -> []
+      in
       let registered = match json |> member "registered" with
         | `List xs -> List.filter_map (function `String s -> Some s | _ -> None) xs
         | _ -> []
@@ -1355,6 +1455,10 @@ let read_connector_state broker_root : connector_state option =
         cs_inbound_delivered = get_int "inbound_delivered";
         cs_inbound_rejected = get_int "inbound_rejected";
         cs_inbound_rejected_note = get_str "inbound_rejected_note";
+        cs_wedged_since = get_float "wedged_since";
+        cs_wedge_reason = get_str "wedge_reason";
+        cs_wedge_count = wedge_count;
+        cs_errors = errors;
       }
 
 (** B209: the authoritative relay peek key for a connector-managed [alias].
@@ -1401,6 +1505,77 @@ let connector_peek_key (cs : connector_state) ~alias
 let cli_inbox_key alias : string * string =
   let k = Printf.sprintf "cli-%s" alias in
   (k, k)
+
+(* B292: cooldown schedule for a wedged broker root in the machine connector.
+   10min base, doubling per consecutive wedge, capped at 2h: a root that
+   wedges every pass is retried at most once per window (it cannot starve
+   the other roots) and is never dropped forever. A successful sync resets
+   the count. Base is env-overridable (C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S)
+   for tests and operators. *)
+let wedge_cooldown_cap_s = 7200.0
+
+let wedge_cooldown_s ~count =
+  let base =
+    match Option.bind
+            (Sys.getenv_opt "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S")
+            float_of_string_opt with
+    | Some v when v > 0.0 -> v
+    | _ -> 600.0
+  in
+  if count <= 1 then Float.min base wedge_cooldown_cap_s
+  else
+    Float.min wedge_cooldown_cap_s
+      (base *. (2.0 ** float_of_int (count - 1)))
+
+(** B292: record a wedge event in this root's connector-state.json.
+
+    Read-modify-write preserving every other field (registered aliases,
+    sessions, timestamps — the B294 guard and doctor read them), so a wedged
+    root keeps its identity evidence. Returns [(wedged_since, count)] so the
+    machine loop can compute the cooldown deadline from the same numbers a
+    restarted process will read back.
+
+    [?prev_count]: the consecutive-wedge count is read from the file by
+    default (correct across restarts), but a live machine loop MUST pass its
+    in-memory count — a re-admitted root's failed sync runs
+    [write_connector_state] first, which CLEARS the file's count before this
+    wedge event lands. Without the override the doubling schedule would
+    restart at 1 on every cooldown cycle. *)
+let mark_connector_wedged ?prev_count broker_root ~reason =
+  let now = Unix.gettimeofday () in
+  let prev_count =
+    match prev_count with
+    | Some n -> n
+    | None ->
+        (match read_connector_state broker_root with
+         | Some st -> st.cs_wedge_count
+         | None -> 0)
+  in
+  let count = prev_count + 1 in
+  let kept =
+    match C2c_io.read_json_opt (connector_state_path broker_root) with
+    | Some (`Assoc fs) ->
+        List.filter
+          (fun (k, _) ->
+             not (List.mem k [ "wedged_since"; "wedge_reason"; "wedge_count" ]))
+          fs
+    | _ -> []
+  in
+  let json =
+    `Assoc
+      (kept
+       @ [ ("wedged_since", `Float now); ("wedge_reason", `String reason);
+           ("wedge_count", `Int count) ])
+  in
+  let path = connector_state_path broker_root in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+       Yojson.Safe.to_channel oc json ~std:false;
+       close_out oc;
+       Unix.rename tmp path);
+  (now, count)
 
 (** B294: (node_id, session_id) for `c2c relay register`.
 
@@ -1546,6 +1721,18 @@ let write_connector_state_error broker_root ~op ~detail =
          | _ -> 0.0)
     | _ -> 0.0
   in
+  (* B292: this writer rebuilds the file, so carry the wedge record over —
+     an exception while a root is parked in cooldown must not erase the
+     cooldown's persisted basis. *)
+  let wedge_assoc =
+    match C2c_io.read_json_opt (connector_state_path broker_root) with
+    | Some (`Assoc fs) ->
+        List.filter
+          (fun (k, _) ->
+             List.mem k [ "wedged_since"; "wedge_reason"; "wedge_count" ])
+          fs
+    | _ -> []
+  in
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float prev_ok_ts)
@@ -1560,7 +1747,7 @@ let write_connector_state_error broker_root ~op ~detail =
     ; ("last_error_op", `String op)
     ; ("last_error_detail", `String detail)
     ; ("last_error_ts", `Float now)
-    ]) in
+    ] @ wedge_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
@@ -1924,6 +2111,69 @@ let response_error_code json =
 
 let response_is_lease_not_found json =
   response_error_code json = Some "lease_not_found"
+
+(* B297: 240 fits the relay's error body far enough to include the
+   error_code plus the alias/session identifiers in the prose; the old
+   80-char cap cut mid-alias on every line. *)
+let error_detail_cap = 240
+
+let truncate_error_detail detail =
+  if String.length detail > error_detail_cap then
+    String.sub detail 0 error_detail_cap ^ "..."
+  else detail
+
+(* B297: collapse a pass's error observations into (summary error,
+   deduplicated entries). Dedup key is (op, code, alias); first occurrence
+   order is preserved and the count aggregates repeats, so a pass where
+   register, send and poll all failed reports all of them instead of only
+   the one [last_error] keeps. *)
+let summarize_pass_errors (errs : pass_error list) :
+    sync_error option * sync_error_summary list =
+  let same_key (s : sync_error_summary) (e : pass_error) =
+    s.es_op = e.pe_op && s.es_code = e.pe_code && s.es_alias = e.pe_alias
+  in
+  let entries =
+    List.fold_left
+      (fun acc (e : pass_error) ->
+         let matches, others = List.partition (fun s -> same_key s e) acc in
+         let total =
+           1 + List.fold_left (fun n (s : sync_error_summary) -> n + s.es_count) 0 matches
+         in
+         let base = match matches with
+           | s :: _ -> s
+           | [] ->
+               { es_op = e.pe_op; es_code = e.pe_code; es_alias = e.pe_alias;
+                 es_session_id = e.pe_session_id; es_count = 0;
+                 es_detail = truncate_error_detail e.pe_detail }
+         in
+         others @ [ { base with es_count = total } ])
+      [] errs
+  in
+  let last_error = match errs with
+    | [] -> None
+    | e :: _ ->
+        Some { err_op = e.pe_op; err_detail = e.pe_detail;
+               err_ts = Unix.gettimeofday ();
+               err_alias = e.pe_alias; err_session_id = e.pe_session_id;
+               err_code = e.pe_code }
+  in
+  (last_error, entries)
+
+(* B297: one log line per distinct (op, code, alias) error, with explicit
+   alias/session fields instead of relying on the server's prose. *)
+let format_pass_errors ?(prefix = "[relay-connector]") (result : sync_result) :
+    string list =
+  List.map
+    (fun (e : sync_error_summary) ->
+       Printf.sprintf "%s error: op=%s%s%s%s count=%d detail=%s"
+         prefix e.es_op
+         (match e.es_code with Some c -> " code=" ^ c | None -> "")
+         (match e.es_alias with Some a -> " alias=" ^ a | None -> "")
+         (match e.es_session_id with Some s -> " session=" ^ s | None -> "")
+         e.es_count
+         (truncate_error_detail e.es_detail))
+    result.errors
+
 
 let response_is_owner_mismatch json =
   response_error_code json = Some "signature_invalid"
@@ -2347,6 +2597,11 @@ let sync (t : t) : sync_result Lwt.t =
      this intersection, a process that dies after the first pass is still
      heartbeated and polled forever even though it disappeared from [regs]. *)
   t.registered <- retain_eligible_registered regs t.registered;
+  (* B297: errors carry explicit alias/session/code (see [pass_error]). *)
+  let mk_reg_err ?code op ~alias ~session_id detail : pass_error =
+    { pe_op = op; pe_code = code; pe_alias = Some alias;
+      pe_session_id = Some session_id; pe_detail = detail }
+  in
   let registered, heartbeated, new_registered, reg_errors =
     List.fold_left (fun (registered, heartbeated, reg_list, errs) (session_id, alias, client_type) ->
       if !abort_on_rate_limit then
@@ -2373,7 +2628,11 @@ let sync (t : t) : sync_result Lwt.t =
             (alias :: registered, heartbeated, reg_list, errs)
           else
             let detail = Yojson.Safe.to_string reg in
-            (registered, heartbeated, reg_list, ("register", detail) :: errs)
+            ( registered
+            , heartbeated
+            , reg_list
+            , mk_reg_err ?code:(response_error_code reg) "register"
+                ~alias ~session_id detail :: errs )
         end
         else if response_is_owner_mismatch json then begin
           owner_mismatched_pass := session_id :: !owner_mismatched_pass;
@@ -2389,14 +2648,23 @@ let sync (t : t) : sync_result Lwt.t =
             ( registered
             , heartbeated
             , List.filter (fun s -> s <> session_id) reg_list
-            , ("heartbeat", detail) :: errs )
+            , mk_reg_err ?code:(response_error_code json) "heartbeat"
+                ~alias ~session_id detail :: errs )
           end
           else
-            (registered, heartbeated, reg_list, ("heartbeat", detail) :: errs)
+            ( registered
+            , heartbeated
+            , reg_list
+            , mk_reg_err ?code:(response_error_code json) "heartbeat"
+                ~alias ~session_id detail :: errs )
         end
         else
           let detail = Yojson.Safe.to_string json in
-          (registered, heartbeated, reg_list, ("heartbeat", detail) :: errs)
+          ( registered
+          , heartbeated
+          , reg_list
+          , mk_reg_err ?code:(response_error_code json) "heartbeat"
+              ~alias ~session_id detail :: errs )
       else
         let json = Lwt_main.run (Relay_client.register client
           ~node_id:t.node_id ~session_id ~alias ~client_type ~ttl:t.heartbeat_ttl ()) in
@@ -2405,7 +2673,11 @@ let sync (t : t) : sync_result Lwt.t =
           (alias :: registered, heartbeated, session_id :: reg_list, errs)
         else
           let detail = Yojson.Safe.to_string json in
-          (registered, heartbeated, reg_list, ("register", detail) :: errs)
+          ( registered
+          , heartbeated
+          , reg_list
+          , mk_reg_err ?code:(response_error_code json) "register"
+              ~alias ~session_id detail :: errs )
     ) ([], [], t.registered, []) regs
   in
   t.registered <- new_registered;
@@ -2418,6 +2690,12 @@ let sync (t : t) : sync_result Lwt.t =
   let outbox_forwarded, outbox_failed, remaining_outbox, dlqed, send_errors =
     with_outbox_lock t.broker_root (fun () ->
       let outbox = read_outbox t.broker_root in
+      (* B297: the send arm knows the sender alias even though the relay's
+         /send does not require the sender's lease. *)
+      let mk_send_err ?code ~from detail : pass_error =
+        { pe_op = "send"; pe_code = code; pe_alias = Some from;
+          pe_session_id = None; pe_detail = detail }
+      in
       List.fold_left (fun (fwd, failed, remaining, dlqed, errs) entry ->
         if !abort_on_rate_limit then
           (* Keep the entry for the next pass; do not burn attempts on 429. *)
@@ -2435,7 +2713,9 @@ let sync (t : t) : sync_result Lwt.t =
           (* B244: rate-limit is not a permanent/attempt failure — keep the
              entry unchanged so we do not burn attempt budget while throttled. *)
           (fwd, failed, entry :: remaining, dlqed,
-           ("send", "rate_limit_exceeded: " ^ Yojson.Safe.to_string json) :: errs)
+           mk_send_err ~from:entry.ob_from
+             ?code:(response_error_code json)
+             ("rate_limit_exceeded: " ^ Yojson.Safe.to_string json) :: errs)
         else
           let err_class = classify_error json in
           let now = Unix.gettimeofday () in
@@ -2452,17 +2732,23 @@ let sync (t : t) : sync_result Lwt.t =
             (* Permanent error: immediate DLQ *)
             let () = append_dlq_entry t.broker_root entry ~reason:err_class in
             let () = note_dlq err_class in
-            (fwd, failed + 1, remaining, dlqed + 1, ("send", err_class ^ ": " ^ detail) :: errs)
+            (fwd, failed + 1, remaining, dlqed + 1,
+             mk_send_err ~from:entry.ob_from ?code:(response_error_code json)
+               (err_class ^ ": " ^ detail) :: errs)
           else if over_attempts || too_old then
             (* Backstop reached: DLQ *)
             let dlq_reason = if over_attempts then "max_attempts" else "max_age" in
             let () = append_dlq_entry t.broker_root { entry with ob_last_error = Some err_class } ~reason:dlq_reason in
             let () = note_dlq dlq_reason in
-            (fwd, failed + 1, remaining, dlqed + 1, ("send", dlq_reason ^ ": " ^ detail) :: errs)
+            (fwd, failed + 1, remaining, dlqed + 1,
+             mk_send_err ~from:entry.ob_from ?code:(response_error_code json)
+               (dlq_reason ^ ": " ^ detail) :: errs)
           else
             (* Retry: increment attempts, update last_error, keep in outbox *)
             let updated = { entry with ob_attempts = entry.ob_attempts + 1; ob_last_error = Some err_class } in
-            (fwd, failed + 1, updated :: remaining, dlqed, ("send", err_class ^ ": " ^ detail) :: errs)
+            (fwd, failed + 1, updated :: remaining, dlqed,
+             mk_send_err ~from:entry.ob_from ?code:(response_error_code json)
+               (err_class ^ ": " ^ detail) :: errs)
         end
       ) (0, 0, [], 0, []) outbox
     )
@@ -2476,10 +2762,13 @@ let sync (t : t) : sync_result Lwt.t =
      the local inbox. Partial-batch delivery: valid rows in a batch with
      invalid siblings still deliver. B244: skip remaining polls once the
      pass is already rate-limited. *)
-  let initial_poll_errors =
+  let initial_poll_errors : pass_error list =
     match inbound_policy with
     | Ok _ -> []
-    | Error detail -> [ ("inbound_policy", detail ^ "; inbound delivery denied") ]
+    | Error detail ->
+        [ { pe_op = "inbound_policy"; pe_code = None; pe_alias = None;
+            pe_session_id = None;
+            pe_detail = detail ^ "; inbound delivery denied" } ]
   in
   let inbound_delivered, inbound_rejected, inbound_notes, poll_errors =
     List.fold_left (fun (delivered, rejected, notes, errs) (session_id, alias, _) ->
@@ -2499,7 +2788,14 @@ let sync (t : t) : sync_result Lwt.t =
             classify_poll_outcome ~alias ~polled:(List.length msgs)
               ~rate_state_error rejection_reasons
           in
-          let errs = List.rev_append acc.pa_errors errs in
+          let errs =
+            List.rev_append
+              (List.map (fun (op, detail) : pass_error ->
+                   { pe_op = op; pe_code = None; pe_alias = Some alias;
+                     pe_session_id = Some session_id; pe_detail = detail })
+                  acc.pa_errors)
+              errs
+          in
           let notes = match acc.pa_note with
             | None -> notes
             | Some note -> note :: notes
@@ -2531,7 +2827,9 @@ let sync (t : t) : sync_result Lwt.t =
           dropped_in_pass := session_id :: !dropped_in_pass;
           t.registered <- List.filter (fun s -> s <> session_id) t.registered;
           let detail = Yojson.Safe.to_string json in
-          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+              ~alias ~session_id detail in
+          delivered, rejected, notes, mk :: errs
         end
         else if response_is_owner_mismatch json then begin
           owner_mismatched_pass := session_id :: !owner_mismatched_pass;
@@ -2544,11 +2842,15 @@ let sync (t : t) : sync_result Lwt.t =
             t.registered <- List.filter (fun s -> s <> session_id) t.registered
           end;
           let detail = Yojson.Safe.to_string json in
-          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+              ~alias ~session_id detail in
+          delivered, rejected, notes, mk :: errs
         end
         else
           let detail = Yojson.Safe.to_string json in
-          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+              ~alias ~session_id detail in
+          delivered, rejected, notes, mk :: errs
       else
         delivered, rejected, notes, errs
     ) (0, 0, [], initial_poll_errors) regs
@@ -2573,10 +2875,10 @@ let sync (t : t) : sync_result Lwt.t =
     List.filter (fun (sid, _) -> List.mem sid !owner_mismatched_pass)
       t.owner_mismatch_strikes;
 
-  let last_error = match reg_errors @ send_errors @ poll_errors with
-    | [] -> None
-    | (op, detail) :: _ ->
-        Some { err_op = op; err_detail = detail; err_ts = Unix.gettimeofday () }
+  (* B297: keep [last_error] as the single summary (connector-state and the
+     sync line), but ALSO carry every distinct error with counts. *)
+  let last_error, pass_error_summaries =
+    summarize_pass_errors (reg_errors @ send_errors @ poll_errors)
   in
 
   (* #62: keeping drops out of [last_error] must not lose them. They stay
@@ -2663,6 +2965,7 @@ let sync (t : t) : sync_result Lwt.t =
     rate_limited = !obs_rate_limited;
     retry_after_s = !obs_retry_after;
     last_error;
+    errors = pass_error_summaries;
   }
 
 (* ---------------------------------------------------------------------------
@@ -2719,19 +3022,51 @@ let rate_limit_backoff ~base ~strikes ?(retry_after = 0.) () =
    would just re-hit the 429). When no progress has been made for
    [stale_exit_threshold_s], the connector is wedged: log an actionable line
    and exit 3 so a supervisor (managed `c2c start relay-connect`) restarts it.
-   Default threshold (B228) is max(180, interval×6) so self-heal trails the
-   doctor 120s liveness window by a small margin, not by ~10 minutes.
    Unsupervised, the exit makes whoami/doctor report `absent`/`stale` with the
    documented `c2c restart relay-connect` remediation instead of a silently
-   wedged live PID. Both predicates are pure so they are unit-testable. *)
-let stale_exit_threshold_s ~interval =
+   wedged live PID. Both predicates are pure so they are unit-testable.
+
+   B291: the window must also cover the WORK one pass performs. One machine
+   pass walks every broker root on the host (241 on xsm, ~1.1s/root, 208s
+   measured), so a floor derived from [interval] alone (180s at the default
+   30s poll) is structurally unreachable there and the connector crash-looped
+   ~9,300 times. The window is therefore
+     max(180, 6x interval, 3 x pass_work_s)
+   where [pass_work_s] is the observed pass duration. 3x so a pass up to three
+   times slower than the last observed one still cannot false-trip roots
+   synced early in the walk; growth faster than 3x per pass requires the root
+   set (or per-root cost) to triple within one interval. Capping roots per
+   pass was considered and rejected: it would stretch the effective poll
+   interval past the heartbeat TTL for later roots, changing delivery and
+   lease semantics rather than fixing the threshold. *)
+let stale_exit_threshold_s ?pass_work_s ~interval () =
   match Option.bind (Sys.getenv_opt "C2C_RELAY_CONNECTOR_STALE_EXIT_S")
           float_of_string_opt with
   | Some v when v > 0.0 -> v
   | _ ->
       (* B228: self-heal soon after doctor marks the bridge dead (120s
          freshness). Floor 180s / 6×interval → 3 min at the default 30s poll. *)
-      Float.max 180.0 (interval *. 6.0)
+      let base = Float.max 180.0 (interval *. 6.0) in
+      (match pass_work_s with
+       | Some w when w > 0.0 -> Float.max base (3.0 *. w)
+       | _ -> base)
+
+(* B291: the machine loop's staleness window, from observed pass work.
+   [last_pass_s] is the last completed full pass's duration; [in_flight_s] is
+   the current pass's elapsed time (0 between passes). Seeding: before any
+   pass has completed the window grows with the in-flight elapsed, so a
+   root checked T seconds into the very first pass can never exceed the 3xT
+   window — a first-pass false trip is structurally impossible. Pure so it is
+   unit-testable; the machine loop feeds it real timers. *)
+let machine_stale_threshold ~interval ~last_pass_s ~in_flight_s =
+  let in_flight = Float.max 0.0 in_flight_s in
+  let observed =
+    match last_pass_s with
+    | Some d -> Float.max d in_flight
+    | None -> in_flight
+  in
+  if observed > 0.0 then stale_exit_threshold_s ~pass_work_s:observed ~interval ()
+  else stale_exit_threshold_s ~interval ()
 
 (* [true] when the connector has made no forward progress for at least
    [threshold] wall-clock seconds and should exit so a supervisor restarts it.
@@ -2865,7 +3200,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
      rate-limited). Seeded to process start so a connector that NEVER succeeds
      still exits after the staleness threshold. *)
   let last_progress = ref (Unix.gettimeofday ()) in
-  let stale_threshold = stale_exit_threshold_s ~interval:t.interval in
+  let stale_threshold = stale_exit_threshold_s ~interval:t.interval () in
   let check_stale_exit () =
     if not !shutdown
        && should_exit_stale ~now:(Unix.gettimeofday ())
@@ -2899,9 +3234,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              | None -> ""
              | Some e ->
                  Printf.sprintf " [%s: %s]" e.err_op
-                   (if String.length e.err_detail > 80 then
-                     String.sub e.err_detail 0 80 ^ "..."
-                   else e.err_detail)
+                   (truncate_error_detail e.err_detail)
            in
            let rl_tag =
              if result.rate_limited then
@@ -2930,6 +3263,10 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              err_str
              drop_tag
              rl_tag;
+           (* B297: one line per distinct (op, code, alias) error this pass. *)
+           List.iter
+             (fun line -> Printf.eprintf "%s\n%!" line)
+             (format_pass_errors result);
            if result.rate_limited then
              Printf.eprintf
                "[relay-connector] RATE_LIMITED (HTTP 429) this sync — remaining \
@@ -2975,7 +3312,10 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              else "");
         sleep_interruptibly_until ~slice_s:5.0
           ~should_stop:(fun () ->
-            check_stale_exit ();
+            (* B291: skip the staleness check mid-429-backoff — a rate-limited
+               pass counts as progress and the backoff sleep can exceed the
+               180s floor (see the machine-loop twin of this guard). *)
+            if !rl_strikes = 0 then check_stale_exit ();
             !shutdown)
           delay;
         loop ()
@@ -3020,10 +3360,7 @@ let print_sync_result ?broker_root result =
   let err_str = match result.last_error with
     | None -> ""
     | Some e ->
-        Printf.sprintf " [%s: %s]" e.err_op
-          (if String.length e.err_detail > 80 then
-             String.sub e.err_detail 0 80 ^ "..."
-           else e.err_detail)
+        Printf.sprintf " [%s: %s]" e.err_op (truncate_error_detail e.err_detail)
   in
   let rl_tag =
     if result.rate_limited then
@@ -3045,6 +3382,10 @@ let print_sync_result ?broker_root result =
     result.outbox_forwarded result.outbox_failed result.outbox_dlqed
     result.inbound_delivered result.inbound_rejected result.alerts_emitted
     err_str drop_tag rl_tag;
+  (* B297: one line per distinct (op, code, alias) error this pass. *)
+  List.iter
+    (fun line -> Printf.eprintf "%s\n%!" line)
+    (format_pass_errors ~prefix result);
   if result.rate_limited then
     Printf.eprintf
       "%s RATE_LIMITED (HTTP 429) this sync — remaining heartbeat/poll/send \
@@ -3053,6 +3394,30 @@ let print_sync_result ?broker_root result =
       (match result.retry_after_s with
        | Some ra -> Printf.sprintf " retry_after=%.1fs" ra
        | None -> "")
+
+(* B291: a pass result for a root with no relay work (zero eligible
+   registrations, empty outbox, no WS bindings). Mirrors exactly what [sync]
+   returns for such a root today, so the skip path is observationally
+   identical to running the pass. *)
+let no_work_sync_result () : sync_result =
+  { registered = []; registered_sessions = []; heartbeated = [];
+    outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
+    inbound_delivered = 0; inbound_rejected = 0; inbound_rejected_note = None;
+    alerts_emitted = 0; rate_limited = false; retry_after_s = None;
+    last_error = None; errors = [] }
+
+(* B291: would a full [sync] on this broker root make any relay call?
+   Heartbeat/register and poll iterate ELIGIBLE registrations (dead history
+   rows are skipped by [relay_registration_is_eligible] — the same predicate
+   sync applies, so the gate cannot disagree with the pass it gates); the
+   outbox forwards even with zero live registrations (relay /send checks the
+   RECIPIENT's lease, not the sender's); mobile bindings need WS maintenance.
+   Roots with eligible-but-idle registrations are never no-ops — heartbeat +
+   poll IS their periodic sync. Costs only local file reads. *)
+let machine_root_sync_is_noop broker_root =
+  read_local_registrations broker_root = []
+  && read_outbox broker_root = []
+  && read_mobile_bindings broker_root = []
 
 let start_machine_impl ~sync_once ~discover_roots
     ~relay_url ~token ~identity ~primary_broker_root ~node_id
@@ -3069,7 +3434,20 @@ let start_machine_impl ~sync_once ~discover_roots
     (* B211: per-root wall-clock epoch of the last progress-making pass; seeded
        lazily to service start so a root that never succeeds still exits. *)
     let progress = Hashtbl.create 8 in
-    let stale_threshold = stale_exit_threshold_s ~interval in
+    (* B291: per-pass work observation. One machine pass walks every broker
+       root; the staleness window must scale with how long that walk actually
+       takes (see [machine_stale_threshold]). [walk_started_at] is 0. between
+       passes so the in-flight term does not keep growing through the sleep. *)
+    let walk_started_at = ref 0.0 in
+    let last_pass_s = ref None in
+    let current_stale_threshold () =
+      let in_flight =
+        if !walk_started_at = 0.0 then 0.0
+        else Unix.gettimeofday () -. !walk_started_at
+      in
+      machine_stale_threshold ~interval ~last_pass_s:!last_pass_s
+        ~in_flight_s:in_flight
+    in
     (* Seed a root's progress window the first time it is synced (NOT at service
        start): a broker root discovered hours later must get a fresh staleness
        window, or an erroring first pass on a late-joining repo would trip the
@@ -3082,25 +3460,69 @@ let start_machine_impl ~sync_once ~discover_roots
           Hashtbl.replace progress root now;
           now
     in
+    (* B292: per-root wedge cooldown. A wedged root is DROPPED from the
+       discovery set for [wedge_cooldown_s] (10min base, doubling to a 2h cap,
+       reset by a successful sync) instead of killing the process — the old
+       per-root `exit 3` had a machine-wide blast radius (all 241 roots on
+       xsm taken down by one repo). The cooldown basis lives in that root's
+       connector-state.json ([mark_connector_wedged]), so a supervisor that
+       restarts the connector every second cannot re-wedge a parked root on
+       every pass; [cooldowns]/[wedge_counts] seed from the state file on
+       first sight. *)
+    let cooldowns = Hashtbl.create 8 in
+    let wedge_counts = Hashtbl.create 8 in
+    let in_cooldown root =
+      match Hashtbl.find_opt cooldowns root with
+      | Some until_ -> Unix.gettimeofday () < until_
+      | None ->
+          (* First sight this process: adopt any persisted wedge record. *)
+          let until_ =
+            match read_connector_state root with
+            | Some st when st.cs_wedged_since <> None ->
+                let count = max 1 st.cs_wedge_count in
+                Hashtbl.replace wedge_counts root count;
+                Option.value st.cs_wedged_since ~default:0.0
+                +. wedge_cooldown_s ~count
+            | _ -> 0.0
+          in
+          Hashtbl.replace cooldowns root until_;
+          Unix.gettimeofday () < until_
+    in
+    let wedge_root root ~reason =
+      let prev = Option.value ~default:0 (Hashtbl.find_opt wedge_counts root) in
+      let since, count =
+        mark_connector_wedged root ~reason ~prev_count:prev
+      in
+      Hashtbl.replace wedge_counts root count;
+      Hashtbl.replace cooldowns root (since +. wedge_cooldown_s ~count);
+      count
+    in
+    (* B292: a per-root staleness trip wedges THAT root (cooldown + state
+       record + log naming the stalled root). It never exits the process:
+       staleness is a timer observation about this root, not a claim about
+       which root caused the relay errors. *)
     let check_root_stale_exit root =
       if not !shutdown
          && should_exit_stale ~now:(Unix.gettimeofday ())
-           ~last_progress:(last_progress_for root) ~threshold:stale_threshold
+           ~last_progress:(last_progress_for root)
+           ~threshold:(current_stale_threshold ())
       then begin
+        let stalled_for =
+          Unix.gettimeofday () -. last_progress_for root
+        in
+        let window = current_stale_threshold () in
+        let reason =
+          Printf.sprintf "staleness: no successful sync for %.0fs (window %.0fs)"
+            stalled_for window
+        in
+        let count = wedge_root root ~reason in
         Printf.eprintf
-          "[relay-connector %s] wedged: no successful sync for %.0fs (>= %.0fs \
-           threshold) though the process is alive — exiting so a supervisor \
-           can restart (B211/B228). Recover manually with: c2c restart \
-           relay-connect\n%!"
-          root (Unix.gettimeofday () -. last_progress_for root) stale_threshold;
-        exit 3
+          "[relay-connector %s] wedged-by-timer: no successful sync of THIS \
+           root for %.0fs (window %.0fs) — this names the stalled root, not \
+           necessarily the one erroring. Dropping it for %.0fs cooldown \
+           (wedge #%d); other roots continue, process stays up (B292)\n%!"
+          root stalled_for window (wedge_cooldown_s ~count) count
       end
-    in
-    (* B228: also re-check every root we have ever synced (progress table), not
-       only the roots discovered this pass — a root that drops out of discovery
-       must still self-exit rather than leave a wedged state file forever. *)
-    let check_all_known_roots_stale () =
-      Hashtbl.iter (fun root _ -> check_root_stale_exit root) progress
     in
     let state_for root =
       match Hashtbl.find_opt states root with
@@ -3117,6 +3539,19 @@ let start_machine_impl ~sync_once ~discover_roots
     let rl_seen = ref false in
     let rl_retry_after = ref 0. in
     let sync_root root =
+      if machine_root_sync_is_noop root then begin
+        (* B291: zero eligible registrations, empty outbox, no WS bindings —
+           a full sync here would make ZERO relay calls and only pay local
+           plumbing (policy load, outbox flock round-trip, WS scan, Lwt +
+           SIGALRM setup). Record it as progress with a fresh ok state so
+           doctor's freshness semantics are unchanged from a real pass. *)
+        Hashtbl.replace progress root (Unix.gettimeofday ());
+        let noop = no_work_sync_result () in
+        write_connector_state ~node_id root noop;
+        print_sync_result ~broker_root:root noop;
+        true
+      end
+      else begin
       let t = state_for root in
       let outcome =
         match sync_once shutdown t with
@@ -3128,8 +3563,12 @@ let start_machine_impl ~sync_once ~discover_roots
                | Some ra -> rl_retry_after := Float.max !rl_retry_after ra
                | None -> ())
             end;
-            if sync_made_progress result then
+            if sync_made_progress result then begin
               Hashtbl.replace progress root (Unix.gettimeofday ());
+              (* B292: progress resets the doubling schedule. *)
+              Hashtbl.remove wedge_counts root;
+              Hashtbl.remove cooldowns root
+            end;
             write_connector_state ~node_id t.broker_root result;
             print_sync_result ~broker_root:root result;
             (match result.last_error with None -> true | Some _ -> false)
@@ -3138,7 +3577,21 @@ let start_machine_impl ~sync_once ~discover_roots
             Hashtbl.replace strikes root n;
             write_connector_state_error root ~op:"sync_watchdog" ~detail;
             Printf.eprintf "[relay-connector %s] %s (strike %d/3)\n%!" root detail n;
-            if n >= 3 then exit 3;
+            if n >= 3 then begin
+              (* B292: 3 consecutive hangs on THIS root wedge it; the
+                 process keeps serving the other roots. (A hang that trips
+                 the SIGALRM handler still force-exits 3 there — the
+                 reserved process-level path.) *)
+              let count =
+                wedge_root root ~reason:"3 consecutive sync watchdog timeouts"
+              in
+              Hashtbl.replace strikes root 0;
+              Printf.eprintf
+                "[relay-connector %s] wedged: %d consecutive sync watchdog \
+                 timeouts on THIS root — dropping it for %.0fs cooldown \
+                 (wedge #%d); other roots continue, process stays up (B292)\n%!"
+                root n (wedge_cooldown_s ~count) count
+            end;
             false
         | Error (`Exn exn) ->
             Hashtbl.replace strikes root 0;
@@ -3148,17 +3601,43 @@ let start_machine_impl ~sync_once ~discover_roots
               root (Printexc.to_string exn);
             false
       in
-      (* B211/B228: terminate a persistently-wedged (alive-but-erroring) root. *)
+      (* B211/B228/B292: a persistently no-progress root wedges into cooldown. *)
       check_root_stale_exit root;
       outcome
+      end
+    in
+    (* B292: exit 3 is reserved for the machine-wide wedge — every discovered
+       root parked in cooldown at once means there is nothing left to sync
+       (typically a host-wide network/relay outage), which is exactly the
+       "a fresh process might help" case a supervisor restart addresses.
+       A root that merely left discovery does NOT count: it is usually a
+       deleted broker dir, and wedging (or exiting) on its frozen progress
+       marker would resurrect the crash loop for a root that no longer
+       exists. *)
+    let check_all_roots_wedged roots =
+      if not !shutdown && roots <> [] && List.for_all in_cooldown roots
+      then begin
+        Printf.eprintf
+          "[relay-connector] every discovered root is wedged (%d/%d) — \
+           nothing left to sync; exiting so a supervisor can restart \
+           (B292/B211). Recover manually with: c2c restart relay-connect\n%!"
+          (List.length roots) (List.length roots);
+        exit 3
+      end
     in
     let identity_tag = match identity with Some _ -> "Ed25519-signed" | None -> "token-only" in
     Printf.printf
       "[relay-connector] starting machine service — relay=%s node=%s auth=%s interval=%.0fs\n%!"
       relay_url node_id identity_tag interval;
     if once then begin
+      (* B292: --once is an explicit operator request — cooldowns are
+         ignored so every discovered root gets exactly one attempt. *)
+      walk_started_at := Unix.gettimeofday ();
       let roots = discover_roots ~primary:primary_broker_root in
-      if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2
+      let code = if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2 in
+      last_pass_s := Some (Unix.gettimeofday () -. !walk_started_at);
+      walk_started_at := 0.0;
+      code
     end else begin
       (* B210: seed jitter per-process (see [run]). *)
       Random.self_init ();
@@ -3167,10 +3646,17 @@ let start_machine_impl ~sync_once ~discover_roots
         if not !shutdown then begin
           rl_seen := false;
           rl_retry_after := 0.;
-          discover_roots ~primary:primary_broker_root
+          walk_started_at := Unix.gettimeofday ();
+          let discovered = discover_roots ~primary:primary_broker_root in
+          (* B292: skip roots parked in a wedge cooldown; the pass continues
+             with the remaining roots. *)
+          discovered
+          |> List.filter (fun root -> not (in_cooldown root))
           |> List.iter (fun root ->
                if not !shutdown then ignore (sync_root root));
-          check_all_known_roots_stale ();
+          last_pass_s := Some (Unix.gettimeofday () -. !walk_started_at);
+          walk_started_at := 0.0;
+          check_all_roots_wedged discovered;
           if !rl_seen then incr rl_strikes
           else begin
             rl_strikes := 0;
@@ -3191,7 +3677,11 @@ let start_machine_impl ~sync_once ~discover_roots
                  else "");
             sleep_interruptibly_until ~slice_s:5.0
               ~should_stop:(fun () ->
-                check_all_known_roots_stale ();
+                (* B291/B292: no staleness checks mid-sleep — wedge detection
+                   happens at post-sync checks, and a rate-limited pass
+                   already counted as progress for every root it throttled
+                   (the 429 backoff can sleep past the 180s floor; checking
+                   there would wedge a deliberately-throttled connector). *)
                 !shutdown)
               delay;
             loop ()

@@ -43,6 +43,25 @@ let write_empty_registry broker =
   output_string oc "[]\n";
   close_out oc
 
+(* B291: a root the machine loop will actually SYNC needs an eligible
+   registration; a bare/empty-registry root is gated as a no-op and never
+   reaches sync_once. *)
+let write_eligible_registry broker =
+  mkdir_p broker;
+  let pid = Unix.getpid () in
+  let start =
+    match Conn.read_pid_start_time_local pid with
+    | Some n -> n
+    | None -> Alcotest.fail "current process must have a readable start time"
+  in
+  let oc = open_out (Filename.concat broker "registry.json") in
+  Yojson.Safe.to_channel oc
+    (`List [ `Assoc [ "session_id", `String "fixture-live";
+                      "alias", `String "fixture-alias";
+                      "pid", `Int pid;
+                      "pid_start_time", `Int start ] ]);
+  close_out oc
+
 let test_machine_broker_discovery_is_dynamic () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
@@ -1051,7 +1070,7 @@ let sync_result_with_sessions sessions : Conn.sync_result =
     alerts_emitted = 0;
     rate_limited = false;
     retry_after_s = None;
-    last_error = None }
+    last_error = None; errors = [] }
 
 (* Round-trip: write_connector_state persists [sessions]; read_connector_state
    recovers the alias -> session_id map (cs_sessions). *)
@@ -1094,7 +1113,9 @@ let test_connector_peek_key_uses_recorded_session_when_local_unresolved () =
       cs_pid = None;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
-      cs_inbound_rejected_note = None }
+      cs_inbound_rejected_note = None;
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
+      cs_errors = [] }
   in
   (match
      Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1140,7 +1161,9 @@ let test_connector_peek_key_backward_compat_fallback () =
       cs_pid = None;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
-      cs_inbound_rejected_note = None }
+      cs_inbound_rejected_note = None;
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
+      cs_errors = [] }
   in
   match
     Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1173,7 +1196,9 @@ let test_resolve_cli_dm_inbox_key_prefers_connector () =
       cs_pid = Some 4242;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
-      cs_inbound_rejected_note = None }
+      cs_inbound_rejected_note = None;
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
+      cs_errors = [] }
   in
   let node_id, session_id =
     Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
@@ -1276,21 +1301,21 @@ let test_response_is_rate_limited_shapes () =
                ; ("error_code", `String "connection_error") ]))
 
 (* B211: staleness-exit watchdog for the alive-but-erroring wedge. *)
-let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error ()
-  : Conn.sync_result =
+let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error
+    ?(errors = []) () : Conn.sync_result =
   { registered = []; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
     inbound_delivered = 0; inbound_rejected = 0; inbound_rejected_note = None;
-    alerts_emitted = 0; rate_limited; retry_after_s; last_error }
+    alerts_emitted = 0; rate_limited; retry_after_s; last_error; errors }
 
 let test_stale_exit_default_threshold () =
   (* B228: default = max(180, interval*6); 30s interval -> 180s, 60s -> 360s. *)
   Alcotest.(check (float 1e-9)) "30s interval -> 180s floor" 180.0
-    (Conn.stale_exit_threshold_s ~interval:30.0);
+    (Conn.stale_exit_threshold_s ~interval:30.0 ());
   Alcotest.(check (float 1e-9)) "60s interval -> 6x" 360.0
-    (Conn.stale_exit_threshold_s ~interval:60.0);
+    (Conn.stale_exit_threshold_s ~interval:60.0 ());
   Alcotest.(check (float 1e-9)) "10s interval still floors at 180s" 180.0
-    (Conn.stale_exit_threshold_s ~interval:10.0)
+    (Conn.stale_exit_threshold_s ~interval:10.0 ())
 
 let test_should_exit_stale_predicate () =
   let now = 10_000.0 in
@@ -1308,6 +1333,96 @@ let test_should_exit_stale_predicate () =
   Alcotest.(check bool) "just under threshold -> no exit" false
     (Conn.should_exit_stale ~now ~last_progress:(now -. 179.9) ~threshold)
 
+let test_stale_threshold_scales_with_pass_work () =
+  (* B291: a 208s machine pass over 241 roots must widen the staleness window
+     past the 180s floor — the fixed floor was structurally unreachable and
+     crash-looped the connector. *)
+  Alcotest.(check (float 1e-9)) "208s pass -> 624s window" 624.0
+    (Conn.stale_exit_threshold_s ~pass_work_s:208.0 ~interval:30.0 ());
+  Alcotest.(check (float 1e-9)) "short pass keeps the 180s floor" 180.0
+    (Conn.stale_exit_threshold_s ~pass_work_s:50.0 ~interval:30.0 ());
+  Alcotest.(check (float 1e-9)) "6x interval still respected" 720.0
+    (Conn.stale_exit_threshold_s ~pass_work_s:100.0 ~interval:120.0 ())
+
+let test_machine_stale_threshold_seeding () =
+  (* B291 seeding: with no completed pass yet the window grows with the
+     in-flight pass's elapsed time, so a first-pass false trip is impossible
+     (a root checked T seconds into the pass cannot exceed 3xT). *)
+  Alcotest.(check (float 1e-9)) "in-flight elapsed widens the window" 300.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:None
+       ~in_flight_s:100.0);
+  Alcotest.(check (float 1e-9)) "no observation -> floor" 180.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:None
+       ~in_flight_s:0.0);
+  Alcotest.(check (float 1e-9)) "completed pass dominates when longer" 900.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:(Some 300.0)
+       ~in_flight_s:10.0);
+  Alcotest.(check (float 1e-9)) "in-flight pass overtakes stale estimate" 600.0
+    (Conn.machine_stale_threshold ~interval:30.0 ~last_pass_s:(Some 100.0)
+       ~in_flight_s:200.0)
+
+let test_machine_root_sync_is_noop () =
+  (* B291: zero ELIGIBLE registrations + no pending work -> the pass would
+     make zero relay calls; dead history rows must NOT force a sync, but a
+     pending outbox entry (relay /send needs no sender lease) or a mobile
+     WS binding must. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let write_registry rows =
+    let oc = open_out (Filename.concat tmp "registry.json") in
+    Yojson.Safe.to_channel oc (`List rows);
+    close_out oc
+  in
+  let live_pid = Unix.getpid () in
+  let live_start =
+    match Conn.read_pid_start_time_local live_pid with
+    | Some n -> n
+    | None -> Alcotest.fail "current process must have a readable start time"
+  in
+  write_empty_registry tmp;
+  Alcotest.(check bool) "empty root is a no-op" true
+    (Conn.machine_root_sync_is_noop tmp);
+  write_registry
+    [ `Assoc [ "session_id", `String "dead-1"; "alias", `String "dead-alias";
+              "pid", `Int 900_001; "pid_start_time", `Int 1 ] ];
+  Alcotest.(check bool) "dead history rows are still a no-op" true
+    (Conn.machine_root_sync_is_noop tmp);
+  write_registry
+    [ `Assoc [ "session_id", `String "live-1"; "alias", `String "live-alias";
+              "pid", `Int live_pid; "pid_start_time", `Int live_start ] ];
+  Alcotest.(check bool) "eligible registration is not a no-op" false
+    (Conn.machine_root_sync_is_noop tmp);
+  write_registry [];
+  let oc = open_out (Filename.concat tmp "remote-outbox.jsonl") in
+  output_string oc
+    "{\"from_alias\":\"a\",\"to_alias\":\"b\",\"content\":\"c\"}\n";
+  close_out oc;
+  Alcotest.(check bool) "pending outbox entry is not a no-op" false
+    (Conn.machine_root_sync_is_noop tmp);
+  (try Sys.remove (Filename.concat tmp "remote-outbox.jsonl") with _ -> ());
+  (* Serialize with Yojson: string_of_float renders integral floats with a
+     trailing dot ("1789627440."), which is invalid JSON and intermittently
+     (integral-second timestamps) broke this fixture. *)
+  let oc = open_out (Filename.concat tmp "mobile_bindings.json") in
+  Yojson.Safe.to_channel oc
+    (`List [ `Assoc [ ("binding_id", `String "b1");
+                      ("created_at", `Float (Unix.gettimeofday ())) ] ]);
+  close_out oc;
+  Alcotest.(check bool) "mobile binding is not a no-op" false
+    (Conn.machine_root_sync_is_noop tmp)
+
+let test_register_failure_pass_is_no_progress () =
+  (* B293 handoff note: in-pass lease repair records no error, so a FAILING
+     register is the loudest genuine no-progress signal — it must keep
+     feeding the staleness watchdog. *)
+  Alcotest.(check bool) "failed register pass is NOT progress" false
+    (Conn.sync_made_progress
+       (mk_result
+          ~last_error:{ Conn.err_op = "register";
+                        err_detail =
+                          "{\"ok\":false,\"error_code\":\"connection_error\"}";
+                        err_ts = 0.0; err_alias = None; err_session_id = None; err_code = None } (())))
+
 let test_sync_made_progress () =
   (* ok pass (no error) is progress; rate-limited pass is progress (relay up,
      throttling — restarting would not help); a plain errored pass is NOT. *)
@@ -1318,12 +1433,13 @@ let test_sync_made_progress () =
        (mk_result ~rate_limited:true
           ~last_error:{ Conn.err_op = "poll_inbox";
                         err_detail = "rate_limit_exceeded";
-                        err_ts = 0.0 } ()));
+                        err_ts = 0.0; err_alias = None;
+                        err_session_id = None; err_code = None } ()));
   Alcotest.(check bool) "errored pass (request_timeout) is NOT progress" false
     (Conn.sync_made_progress
        (mk_result ~last_error:{ Conn.err_op = "poll_inbox";
                                 err_detail = "request_timeout";
-                                err_ts = 0.0 } ()))
+                                err_ts = 0.0; err_alias = None; err_session_id = None; err_code = None } (())))
 
 let waitpid_until ~timeout_s pid =
   let deadline = Unix.gettimeofday () +. timeout_s in
@@ -1342,9 +1458,539 @@ let connector_state_has_watchdog broker_root =
   C2c_io.read_file_opt (Conn.connector_state_path broker_root)
   |> fun raw -> contains_sub ~needle:"sync_watchdog" raw
 
+let test_machine_loop_skips_noop_roots () =
+  (* B291: a no-op root must never reach sync_once (zero relay work); the
+     healthy root still syncs. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let noop_root = Filename.concat tmp "noop-broker" in
+  let live_root = Filename.concat tmp "live-broker" in
+  write_empty_registry noop_root;
+  (* live_root needs an ELIGIBLE registration or the B291 gate skips it too. *)
+  write_eligible_registry live_root;
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      let sync_once _shutdown t =
+        if t.Conn.broker_root = noop_root then Unix._exit 9;
+        ignore (Unix.write_substring call_w "S" 0 1);
+        Ok (mk_result ())
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; noop_root; live_root ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:live_root ~node_id:"b291-noop-test"
+          ~heartbeat_ttl:300.0 ~interval:30.0 ~verbose:false ~once:true
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      (match waitpid_until ~timeout_s:3.0 pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | Some (Unix.WEXITED 9) ->
+           Alcotest.fail "no-op root must not reach sync_once (B291)"
+       | Some status ->
+           Alcotest.failf "machine --once exited abnormally: %s"
+             (match status with
+              | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+              | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+              | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "machine --once did not finish within 3s");
+      let saw_sync = Bytes.create 1 in
+      Alcotest.(check int) "live root synced" 1
+        (Unix.read call_r saw_sync 0 1);
+      Unix.close call_r;
+      (* The no-op path must still record fresh connector state (doctor
+         freshness semantics unchanged) and count as progress. *)
+      match Conn.read_connector_state noop_root with
+      | Some st ->
+          Alcotest.(check bool) "no-op root state written with ok sync" true
+            (st.Conn.cs_last_ok_ts > 0.0)
+      | None -> Alcotest.fail "no-op root must still get connector state"
+
+(* --- B292: one wedged root must not kill the machine connector ------------ *)
+
+let test_wedge_cooldown_schedule () =
+  (* 10min base, doubling, capped at 2h; a permanently-wedged root is retried
+     at most once per cooldown window (no starvation) and never dropped
+     forever (cap). *)
+  Alcotest.(check (float 1e-9)) "first wedge -> 10min" 600.0
+    (Conn.wedge_cooldown_s ~count:1);
+  Alcotest.(check (float 1e-9)) "second -> 20min" 1200.0
+    (Conn.wedge_cooldown_s ~count:2);
+  Alcotest.(check (float 1e-9)) "third -> 40min" 2400.0
+    (Conn.wedge_cooldown_s ~count:3);
+  Alcotest.(check (float 1e-9)) "capped at 2h" 7200.0
+    (Conn.wedge_cooldown_s ~count:8);
+  Alcotest.(check (float 1e-9)) "stays at cap" 7200.0
+    (Conn.wedge_cooldown_s ~count:30)
+
+let test_wedge_state_persistence () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  Conn.write_connector_state ~node_id:"n1" tmp (mk_result ());
+  let since1, count1 = Conn.mark_connector_wedged tmp ~reason:"staleness: test" in
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check (float 1e-9)) "wedged_since round-trips" since1
+         (Option.value st.Conn.cs_wedged_since ~default:0.0);
+       Alcotest.(check int) "first wedge count" 1 count1;
+       Alcotest.(check int) "count read back" 1 st.Conn.cs_wedge_count;
+       Alcotest.(check bool) "reason round-trips" true
+         (st.Conn.cs_wedge_reason = Some "staleness: test")
+   | None -> Alcotest.fail "state missing after mark_connector_wedged");
+  let _since2, count2 = Conn.mark_connector_wedged tmp ~reason:"again" in
+  Alcotest.(check int) "second wedge doubles the count" 2 count2;
+  (* A real sync clears the wedge: the root is being actively worked again. *)
+  Conn.write_connector_state ~node_id:"n1" tmp (mk_result ());
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check bool) "successful sync clears wedged_since" true
+         (st.Conn.cs_wedged_since = None);
+       Alcotest.(check bool) "successful sync clears reason" true
+         (st.Conn.cs_wedge_reason = None);
+       Alcotest.(check int) "successful sync resets count" 0 st.Conn.cs_wedge_count
+   | None -> Alcotest.fail "state missing after clear");
+  (* The exception writer must preserve wedge fields (it rebuilds the file). *)
+  let _ = Conn.mark_connector_wedged tmp ~reason:"kept" in
+  Conn.write_connector_state_error tmp ~op:"sync_watchdog" ~detail:"d";
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check bool) "error writer preserves wedged_since" true
+         (st.Conn.cs_wedged_since <> None);
+       Alcotest.(check bool) "error writer preserves reason" true
+         (st.Conn.cs_wedge_reason = Some "kept")
+   | None -> Alcotest.fail "state missing after error writer");
+  (* Backward compat: an old state file with no wedge fields reads clean. *)
+  let oc = open_out (Filename.concat tmp "connector-state.json") in
+  Yojson.Safe.to_channel oc
+    (`Assoc [ "last_sync_ts", `Float 1.0; "last_ok_ts", `Float 1.0 ]);
+  close_out oc;
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check bool) "old file: no wedged_since" true
+         (st.Conn.cs_wedged_since = None);
+       Alcotest.(check int) "old file: count 0" 0 st.Conn.cs_wedge_count
+   | None -> Alcotest.fail "old-shape state must still parse")
+
+(* Drains sync markers from a nonblocking pipe until [deadline_s] elapses. *)
+let drain_until fd ~deadline_s =
+  Unix.set_nonblock fd;
+  let buf = Buffer.create 32 in
+  let chunk = Bytes.create 64 in
+  let deadline = Unix.gettimeofday () +. deadline_s in
+  while Unix.gettimeofday () < deadline do
+    (match Unix.read fd chunk 0 64 with
+     | n -> Buffer.add_subbytes buf chunk 0 n
+     | exception Unix.Unix_error (Unix.EAGAIN, _, _) -> ());
+    Unix.sleepf 0.05
+  done;
+  Buffer.contents buf
+
+let count_char c s =
+  String.to_seq s |> Seq.filter (fun x -> x = c) |> Seq.length
+
+let expect_machine_exit pid ~timeout_s ~allowed_exit =
+  match waitpid_until ~timeout_s pid with
+  | Some (Unix.WEXITED code) when code = allowed_exit -> code
+  | Some (Unix.WEXITED 3) ->
+      Alcotest.fail "one wedged root exit-3'd the whole machine connector (B292)"
+  | Some status ->
+      Alcotest.failf "machine connector exited abnormally: %s"
+        (match status with
+         | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+         | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+         | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+  | None ->
+      Unix.kill pid Sys.sigkill;
+      ignore (Unix.waitpid [] pid);
+      Alcotest.fail "machine connector did not exit in time"
+
+let test_machine_wedged_root_dropped_not_process () =
+  (* B292: an always-erroring root wedges into a cooldown; the healthy root
+     keeps syncing and the process survives. Re-admission after the cooldown
+     re-wedges with a doubled count (schedule survives in connector-state). *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let bad = Filename.concat tmp "bad-broker" in
+  let good = Filename.concat tmp "good-broker" in
+  write_eligible_registry bad;
+  write_eligible_registry good;
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      Unix.putenv "C2C_RELAY_CONNECTOR_STALE_EXIT_S" "0.3";
+      Unix.putenv "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S" "0.4";
+      let err =
+        { Conn.err_op = "register"; err_detail = "connection_error";
+          err_ts = 0.0; err_alias = None; err_session_id = None;
+          err_code = None }
+      in
+      let sync_once _shutdown t =
+        let byte = if t.Conn.broker_root = bad then "A" else "B" in
+        ignore (Unix.write_substring call_w byte 0 1);
+        if t.Conn.broker_root = bad then Ok (mk_result ~last_error:err ())
+        else Ok (mk_result ())
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; bad; good ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:good ~node_id:"b292-wedge-test"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      let marks = drain_until call_r ~deadline_s:2.5 in
+      Unix.close call_r;
+      Unix.kill pid Sys.sigterm;
+      ignore (expect_machine_exit pid ~timeout_s:3.0 ~allowed_exit:0);
+      Alcotest.(check bool) "healthy root kept syncing through the wedge" true
+        (count_char 'B' marks >= 5);
+      (match Conn.read_connector_state bad with
+       | Some st ->
+           Alcotest.(check bool) "wedged root recorded in its own state" true
+             (st.Conn.cs_wedged_since <> None);
+           Alcotest.(check bool) "root re-admitted and re-wedged (doubled)" true
+             (st.Conn.cs_wedge_count >= 2)
+       | None -> Alcotest.fail "wedged root must have connector state")
+
+let test_machine_all_roots_wedged_exits_3 () =
+  (* B292: exit 3 is reserved for the machine-wide wedge (and the SIGALRM
+   hang path); with every discovered root wedged there is nothing to sync. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let bad = Filename.concat tmp "bad-broker" in
+  write_eligible_registry bad;
+  match Unix.fork () with
+  | 0 ->
+      Unix.putenv "C2C_RELAY_CONNECTOR_STALE_EXIT_S" "0.3";
+      Unix.putenv "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S" "0.4";
+      let err =
+        { Conn.err_op = "register"; err_detail = "connection_error";
+          err_ts = 0.0; err_alias = None; err_session_id = None;
+          err_code = None }
+      in
+      let sync_once _shutdown _t = Ok (mk_result ~last_error:err ()) in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; bad ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:bad ~node_id:"b292-all-wedged"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix._exit code
+  | pid ->
+      (match waitpid_until ~timeout_s:5.0 pid with
+       | Some (Unix.WEXITED 3) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "expected machine-wide exit 3, got exit %d" code
+       | Some status ->
+           Alcotest.failf "expected machine-wide exit 3, got %s"
+             (match status with
+              | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+              | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+              | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "all-wedged machine connector did not exit 3 in 5s")
+
+let test_machine_watchdog_strikes_wedge_not_exit () =
+  (* B292: 3 consecutive sync watchdog timeouts on ONE root wedge that root;
+     the process keeps serving the other roots. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let bad = Filename.concat tmp "bad-broker" in
+  let good = Filename.concat tmp "good-broker" in
+  write_eligible_registry bad;
+  write_eligible_registry good;
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      let sync_once _shutdown t =
+        if t.Conn.broker_root = bad then Error (`Watchdog "simulated hang")
+        else begin
+          ignore (Unix.write_substring call_w "B" 0 1);
+          Ok (mk_result ())
+        end
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; bad; good ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:good ~node_id:"b292-watchdog-test"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      let marks = drain_until call_r ~deadline_s:1.5 in
+      Unix.close call_r;
+      Unix.kill pid Sys.sigterm;
+      ignore (expect_machine_exit pid ~timeout_s:3.0 ~allowed_exit:0);
+      Alcotest.(check bool) "healthy root survived 3 watchdog strikes elsewhere"
+        true
+        (count_char 'B' marks >= 3);
+      (match Conn.read_connector_state bad with
+       | Some st ->
+           Alcotest.(check bool) "watchdog wedge recorded" true
+             (match st.Conn.cs_wedge_reason with
+              | Some r -> String.length r > 0 && true
+              | None -> false)
+       | None -> Alcotest.fail "wedged root must have connector state")
+
+let test_machine_cooldown_survives_restart () =
+  (* B292: the cooldown lives in connector-state.json, so a fresh process
+     (e.g. a supervisor restarting every second) does not re-wedge a parked
+     root on its next pass. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let parked = Filename.concat tmp "parked-broker" in
+  let good = Filename.concat tmp "good-broker" in
+  write_eligible_registry parked;
+  write_eligible_registry good;
+  ignore (Conn.mark_connector_wedged parked ~reason:"staleness: prior run");
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      let sync_once _shutdown t =
+        if t.Conn.broker_root = parked then Unix._exit 9;
+        ignore (Unix.write_substring call_w "B" 0 1);
+        Ok (mk_result ())
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; parked; good ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:good ~node_id:"b292-restart-test"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      let first = Bytes.create 1 in
+      Alcotest.(check int) "good root synced" 1 (Unix.read call_r first 0 1);
+      Unix.sleepf 0.3;
+      Unix.close call_r;
+      Unix.kill pid Sys.sigterm;
+      ignore (expect_machine_exit pid ~timeout_s:3.0 ~allowed_exit:0)
+
+(* --- B297: error logging must keep the alias and every distinct error ------ *)
+
+module RTS = Relay_test_support
+
+let test_error_detail_truncated_at_240 () =
+  (* The relay's error body puts the alias ~90 chars in; an 80-char cap cut
+     mid-alias on every line (12,593 lines, none naming the failing alias). *)
+  let short = String.make 100 'x' in
+  let long = String.make 300 'y' in
+  Alcotest.(check int) "at or under cap unchanged" 100
+    (String.length (Conn.truncate_error_detail short));
+  Alcotest.(check bool) "over cap: first 240 chars + ellipsis" true
+    (Conn.truncate_error_detail long = String.make 240 'y' ^ "...")
+
+let test_pass_errors_deduped_with_counts () =
+  let pe ?(op = "poll_inbox") ?(code = Some "signature_invalid")
+      ?(alias = Some "alpha") ?(session_id = Some "s1") ~detail () :
+      Conn.pass_error =
+    { Conn.pe_op = op; pe_code = code; pe_alias = alias;
+      pe_session_id = session_id; pe_detail = detail }
+  in
+  let errs =
+    [ pe ~detail:"d1" ();
+      pe ~detail:"d2" ();  (* same (op,code,alias): deduped, counted *)
+      pe ~alias:(Some "beta") ~detail:"d3" ();  (* distinct alias: own entry *)
+      pe ~op:"register" ~code:None ~alias:None ~session_id:None
+        ~detail:"d4" () ]
+  in
+  let last_error, summaries = Conn.summarize_pass_errors errs in
+  Alcotest.(check int) "3 distinct (op,code,alias) entries" 3
+    (List.length summaries);
+  (match List.find_opt (fun e -> e.Conn.es_alias = Some "alpha") summaries with
+   | Some e ->
+       Alcotest.(check int) "same-key errors counted" 2 e.Conn.es_count;
+       Alcotest.(check string) "detail kept from first occurrence" "d1"
+         e.Conn.es_detail
+   | None -> Alcotest.fail "alpha entry missing");
+  (match last_error with
+   | Some e ->
+       Alcotest.(check string) "last_error keeps the head error" "poll_inbox"
+         e.Conn.err_op;
+       Alcotest.(check bool) "last_error carries the alias" true
+         (e.Conn.err_alias = Some "alpha");
+       Alcotest.(check bool) "last_error carries the code" true
+         (e.Conn.err_code = Some "signature_invalid")
+   | None -> Alcotest.fail "last_error missing")
+
+let test_format_pass_errors_names_alias () =
+  let summary : Conn.sync_error_summary =
+    { Conn.es_op = "poll_inbox"; es_code = Some "signature_invalid";
+      es_alias = Some "grok-nomad"; es_session_id = Some "sess-1";
+      es_count = 2; es_detail = "{\"ok\":false}" }
+  in
+  let result = { (mk_result ()) with Conn.errors = [ summary ] } in
+  let lines = Conn.format_pass_errors result in
+  Alcotest.(check int) "one line per distinct error" 1 (List.length lines);
+  let line = List.hd lines in
+  Alcotest.(check bool) "line names the op" true (contains_sub ~needle:"op=poll_inbox" line);
+  Alcotest.(check bool) "line names the code" true
+    (contains_sub ~needle:"code=signature_invalid" line);
+  Alcotest.(check bool) "line names the alias explicitly" true
+    (contains_sub ~needle:"alias=grok-nomad" line);
+  Alcotest.(check bool) "line names the session" true
+    (contains_sub ~needle:"session=sess-1" line);
+  Alcotest.(check bool) "line carries the count" true
+    (contains_sub ~needle:"count=2" line)
+
+let test_connector_state_errors_roundtrip () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let summary : Conn.sync_error_summary =
+    { Conn.es_op = "heartbeat"; es_code = Some "signature_invalid";
+      es_alias = Some "alpha"; es_session_id = Some "s1";
+      es_count = 3; es_detail = "{\"ok\":false,\"error_code\":...}" }
+  in
+  let result =
+    { (mk_result ()) with
+      Conn.errors = [ summary ];
+      last_error = Some { Conn.err_op = "heartbeat";
+                          err_detail = "{\"ok\":false}";
+                          err_ts = 0.0; err_alias = Some "alpha";
+                          err_session_id = Some "s1";
+                          err_code = Some "signature_invalid" } }
+  in
+  Conn.write_connector_state ~node_id:"n1" tmp result;
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       (match st.Conn.cs_errors with
+        | [ e ] ->
+            Alcotest.(check string) "errors[0].op" "heartbeat" e.Conn.cse_op;
+            Alcotest.(check bool) "errors[0].code" true
+              (e.Conn.cse_code = Some "signature_invalid");
+            Alcotest.(check bool) "errors[0].alias" true
+              (e.Conn.cse_alias = Some "alpha");
+            Alcotest.(check int) "errors[0].count" 3 e.Conn.cse_count;
+            Alcotest.(check bool) "errors[0].detail present" true
+              (String.length e.Conn.cse_detail > 0)
+        | _ -> Alcotest.fail "expected exactly one errors entry")
+   | None -> Alcotest.fail "state missing after write");
+  (* Backward compat: an old state file without the errors key reads []. *)
+  let oc = open_out (Filename.concat tmp "connector-state.json") in
+  Yojson.Safe.to_channel oc
+    (`Assoc [ "last_sync_ts", `Float 1.0; "last_ok_ts", `Float 1.0 ]);
+  close_out oc;
+  (match Conn.read_connector_state tmp with
+   | Some st -> Alcotest.(check int) "old file: no errors" 0 (List.length st.Conn.cs_errors)
+   | None -> Alcotest.fail "old-shape state must still parse")
+
+let test_sync_collects_errors_with_alias_fields () =
+  (* Integration through the real [sync] against a scripted relay: each
+     failing op must land in [errors] with explicit alias/session fields
+     (B297: prefer explicit fields over the server's prose), deduplicated
+     per (op, code, alias). Runs in a forked child: the in-process
+     Lwt/cohttp server installs signal machinery that otherwise EINTRs the
+     suite's later fork/waitpid-based tests. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      let exit_code =
+        try
+          let owner_mismatch =
+            {|{"ok":false,"error_code":"signature_invalid","error":"verified signer \"x\" does not own session (n, s)"}|}
+          and lease_gone =
+            {|{"ok":false,"error_code":"lease_not_found","error":"no live lease for session"}|}
+          and unknown_alias =
+            {|{"ok":false,"error_code":"unknown_alias","error":"no registration for alias \"dst\""}|}
+          and reg_ok = {|{"ok":true,"result":"ok"}|} in
+          let routes =
+            [ RTS.route ~meth:"POST" ~path:"/heartbeat"
+                [ RTS.response owner_mismatch ];
+              RTS.route ~meth:"POST" ~path:"/register" [ RTS.response reg_ok ];
+              RTS.route ~meth:"POST" ~path:"/poll_inbox"
+                [ RTS.response lease_gone ];
+              RTS.route ~meth:"POST" ~path:"/send"
+                [ RTS.response unknown_alias ] ]
+          in
+          RTS.with_server ~routes (fun srv ->
+              write_eligible_registry tmp;
+              let oc = open_out (Filename.concat tmp "remote-outbox.jsonl") in
+              output_string oc
+                "{\"from_alias\":\"out-sender\",\"to_alias\":\"dst\",\"content\":\"c\"}\n";
+              close_out oc;
+              let t =
+                Conn.make_state ~relay_url:(RTS.url srv) ~token:None
+                  ~identity:None ~broker_root:tmp ~node_id:"b297-test"
+                  ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false
+              in
+              t.Conn.registered <- [ "fixture-live" ];
+              let r = Lwt_main.run (Conn.sync t) in
+              let find_op op =
+                List.find_opt
+                  (fun (e : Conn.sync_error_summary) -> e.Conn.es_op = op)
+                  r.Conn.errors
+              in
+              (match find_op "heartbeat" with
+               | Some e ->
+                   if e.Conn.es_code <> Some "signature_invalid"
+                      || e.Conn.es_alias <> Some "fixture-alias"
+                      || e.Conn.es_session_id <> Some "fixture-live"
+                   then 21
+                   else
+                     (match find_op "poll_inbox" with
+                      | Some e ->
+                          if e.Conn.es_code <> Some "lease_not_found"
+                             || e.Conn.es_alias <> Some "fixture-alias"
+                          then 22
+                          else
+                            (match find_op "send" with
+                             | Some e ->
+                                 if e.Conn.es_alias <> Some "out-sender"
+                                    || e.Conn.es_code <> Some "unknown_alias"
+                                 then 23
+                                 else 0
+                             | None -> 24)
+                      | None -> 25)
+               | None -> 26))
+        with _ -> 27
+      in
+      Unix._exit exit_code
+  | pid ->
+      (match waitpid_until ~timeout_s:10.0 pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "sync errors missing expected fields (exit %d)" code
+       | Some status ->
+           Alcotest.failf "errors integration child died: %s"
+             (match status with
+              | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+              | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+              | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "errors integration child did not finish in 10s")
+
 let test_signal_bounds_blocked_sync ~machine ~signal_name signal () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  (* B291: the machine loop skips zero-work roots, so a machine-mode test
+     that needs sync_once to run must give the root an eligible session. *)
+  if machine then write_eligible_registry tmp;
   let ready_r, ready_w = Unix.pipe () in
   match Unix.fork () with
   | 0 ->
@@ -1457,7 +2103,8 @@ let test_run_loop_stale_exit_force_exits () =
       in
       let err =
         { Conn.err_op = "poll_inbox"; err_detail = "request_timeout";
-          err_ts = 0.0 }
+          err_ts = 0.0; err_alias = None; err_session_id = None;
+          err_code = None }
       in
       let sync_once _shutdown _t =
         Ok (mk_result ~last_error:err ())
@@ -1484,7 +2131,7 @@ let test_touch_connector_last_sync_preserves_last_ok () =
       outbox_forwarded = 1; outbox_failed = 0; outbox_dlqed = 0;
       inbound_delivered = 2; inbound_rejected = 0; inbound_rejected_note = None;
       alerts_emitted = 0; rate_limited = false; retry_after_s = None;
-      last_error = None }
+      last_error = None; errors = [] }
   in
   Conn.write_connector_state ~node_id:"n1" tmp ok_result;
   let before =
@@ -1508,6 +2155,10 @@ let test_touch_connector_last_sync_preserves_last_ok () =
 let test_machine_graceful_completion_stops_remaining_roots () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  (* B291: both roots need eligible sessions or the no-op gate skips them
+     before sync_once — the shutdown-skip this test pins happens IN sync_root. *)
+  write_eligible_registry tmp;
+  write_eligible_registry (tmp ^ "-second");
   let call_r, call_w = Unix.pipe () in
   let release_r, release_w = Unix.pipe () in
   match Unix.fork () with
@@ -1633,7 +2284,8 @@ let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
     | [] -> None
     | (op, detail) :: _ ->
         Some { Conn.err_op = op; err_detail = detail;
-               err_ts = Unix.gettimeofday () }
+               err_ts = Unix.gettimeofday (); err_alias = None;
+               err_session_id = None; err_code = None }
   in
   { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
@@ -1644,7 +2296,7 @@ let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
        | [] -> None
        | notes -> Some (String.concat "; " notes));
     alerts_emitted = 0;
-    rate_limited = false; retry_after_s = None; last_error }
+    rate_limited = false; retry_after_s = None; last_error; errors = [] }
 
 let health_of_result result =
   let tmp = make_tmpdir () in
@@ -1819,10 +2471,48 @@ let () =
         test_should_exit_stale_predicate;
       Alcotest.test_case "ok/rate-limited count as progress, errors do not"
         `Quick test_sync_made_progress;
+      Alcotest.test_case "failed register pass is no progress (B293 handoff)"
+        `Quick test_register_failure_pass_is_no_progress;
       Alcotest.test_case "touch last_sync preserves last_ok (B228)" `Quick
         test_touch_connector_last_sync_preserves_last_ok;
       Alcotest.test_case "run loop stale-exits on always-error (B228)" `Quick
         test_run_loop_stale_exit_force_exits;
+    ];
+    "B291 pass-duration-aware staleness", [
+      Alcotest.test_case "threshold scales with observed pass work" `Quick
+        test_stale_threshold_scales_with_pass_work;
+      Alcotest.test_case "machine threshold seeds from in-flight pass" `Quick
+        test_machine_stale_threshold_seeding;
+      Alcotest.test_case "no-op root gate: eligible/outbox/bindings" `Quick
+        test_machine_root_sync_is_noop;
+      Alcotest.test_case "machine loop skips no-op roots" `Quick
+        test_machine_loop_skips_noop_roots;
+    ];
+    "B292 per-root wedge cooldown", [
+      Alcotest.test_case "cooldown schedule: 10min doubling to 2h cap" `Quick
+        test_wedge_cooldown_schedule;
+      Alcotest.test_case "wedge fields persist / clear / survive old files"
+        `Quick test_wedge_state_persistence;
+      Alcotest.test_case "wedged root dropped, process stays up" `Quick
+        test_machine_wedged_root_dropped_not_process;
+      Alcotest.test_case "all roots wedged -> machine exit 3" `Quick
+        test_machine_all_roots_wedged_exits_3;
+      Alcotest.test_case "watchdog strikes wedge one root, not the process"
+        `Quick test_machine_watchdog_strikes_wedge_not_exit;
+      Alcotest.test_case "cooldown survives process restart" `Quick
+        test_machine_cooldown_survives_restart;
+    ];
+    "B297 per-error logging", [
+      Alcotest.test_case "err_detail cap is 240" `Quick
+        test_error_detail_truncated_at_240;
+      Alcotest.test_case "pass errors deduped with counts" `Quick
+        test_pass_errors_deduped_with_counts;
+      Alcotest.test_case "log line names op/code/alias/session/count" `Quick
+        test_format_pass_errors_names_alias;
+      Alcotest.test_case "connector-state errors array round-trips" `Quick
+        test_connector_state_errors_roundtrip;
+      Alcotest.test_case "sync collects errors with alias fields" `Quick
+        test_sync_collects_errors_with_alias_fields;
     ];
     "B217 bounded SIGTERM shutdown", [
       Alcotest.test_case "bare connector SIGTERM" `Quick

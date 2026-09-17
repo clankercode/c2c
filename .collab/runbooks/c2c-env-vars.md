@@ -494,7 +494,7 @@ outbound sync continue. See
 `.collab/runbooks/cross-machine-relay-proof.md` under "Local inbound controls"
 for the schema and override examples.
 
-### `C2C_RELAY_CONNECTOR_STALE_EXIT_S` (B211, tightened B228)
+### `C2C_RELAY_CONNECTOR_STALE_EXIT_S` (B211, tightened B228, B291/B292)
 
 Wall-clock seconds the native relay connector may go without a *progress-making*
 sync pass before it declares itself wedged and exits 3 so a supervisor
@@ -507,19 +507,36 @@ PIDs wedged under nested Lwt/Cohttp), whereas this timer catches the
 *completes-but-always-errors* wedge (each pass returns quickly with
 `request_timeout` / `connection_error`, so the strike counter keeps resetting
 and the process would otherwise stay alive indefinitely with a stale bridge).
-Unset/invalid/non-positive uses the default `max(180, interval × 6)` seconds
-(3 min at the default 30s poll interval) — intentionally close to the doctor
-120s liveness window so a whoami `wedged` is not an 8-minute operator wait
-before self-heal (B228). Unsupervised, the exit turns a silently wedged live
+Unset/invalid/non-positive uses the default
+`max(180, interval × 6, 3 × observed-pass-duration)` seconds — B291 made the
+window track the WORK one machine pass performs (one pass walks every broker
+root; 241 roots on xsm measured 208s, past the old fixed 180s floor, so the
+machine connector crash-looped ~9,300 times). Staleness is not checked during
+429 backoff sleeps. Unsupervised, the exit turns a silently wedged live
 PID into an honest `absent`/`stale` status that `c2c whoami` /
 `c2c doctor --relay` report with the `c2c restart relay-connect` remediation.
 Applies to both single-broker (`run`) and machine (`start_machine`) connector
-loops. On the machine service, **any** broker root that stays past the
-threshold exits the whole process (supervisor restarts all roots together) —
-a permanently broken secondary root can flap healthy peers every ~threshold;
-prefer fixing that root or isolating it rather than lengthening the default.
-Pure predicates + a forked run-loop exit covered by `test_c2c_relay_connector.ml`
-("B211/B228 staleness-exit watchdog").
+loops. On the machine service a root past the threshold is **wedged into a
+per-root cooldown** (B292) — dropped from discovery for a doubling cooldown,
+wedge recorded in that root's connector-state.json — and the process keeps
+serving the other roots; `exit 3` there is reserved for every discovered root
+wedged simultaneously (and the SIGALRM hang path). The single-root `run` loop
+keeps the exit-3 behavior (process == root). Pure predicates + forked loop
+tests in `test_c2c_relay_connector.ml` ("B211/B228 staleness-exit watchdog",
+"B291 pass-duration-aware staleness", "B292 per-root wedge cooldown").
+
+### `C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S` (B292)
+
+Base seconds of the machine connector's per-root wedge cooldown. A broker root
+that stays past the staleness window (or hits 3 consecutive sync watchdog
+timeouts) is dropped from discovery for `min(base × 2^(n-1), 7200)` seconds,
+where `n` is the consecutive-wedge count recorded in that root's
+connector-state.json (`wedged_since` / `wedge_reason` / `wedge_count`; a
+successful sync resets the schedule). Default `600` (10 min); positive floats
+only. The cap (2h) bounds both directions: a root that wedges every pass gets
+one attempt per window at most (it cannot starve the other roots) and is never
+dropped forever. Overriding this is mainly for tests; the persisted basis means
+the cooldown survives connector restarts.
 
 ### `C2C_RELAY_CONNECTOR_BACKEND` (B235/B242)
 
