@@ -1768,7 +1768,16 @@ let connector_pid_alive (st : connector_state) : bool =
     recorded pid is alive or the last successful sync is inside doctor's
     120s freshness window ([Relay_doctor.connector_stale_threshold_s],
     inlined here because Relay_doctor depends on this module). Returns the
-    evidence label for the refusal message. *)
+    evidence label for the refusal message.
+
+    B324: pid-alive is DEMOTED below last_ok freshness when the recorded
+    [last_error_op] is register — an alive connector whose register arm
+    fails on every pass (identity binding drift after a rename) is not
+    evidence that it owns the alias, and refusing the documented repair
+    (CLI relay register) while it cycles wedge cooldowns deadlocks the
+    alias. A connector with a fresh last_ok — its register succeeding, or
+    the recorded failure being an op that does not bear on the identity —
+    keeps pid-alive as authoritative evidence. *)
 let connector_owns_alias ~broker_root ~alias ~now : string option =
   match read_connector_state broker_root with
   | None -> None
@@ -1779,8 +1788,13 @@ let connector_owns_alias ~broker_root ~alias ~now : string option =
         List.exists (fun a -> casefold a = alias_cf) st.cs_registered
         || List.exists (fun (a, _) -> casefold a = alias_cf) st.cs_sessions
       in
+      let register_arm_failing =
+        st.cs_last_error_op = Some "register"
+        && now -. st.cs_last_ok_ts >= 120.0
+      in
       if not managed then None
-      else if connector_pid_alive st then Some "pid alive in connector-state.json"
+      else if connector_pid_alive st && not register_arm_failing then
+        Some "pid alive in connector-state.json"
       else if now -. st.cs_last_ok_ts < 120.0 then
         Some "connector synced this broker root within 120s"
       else None

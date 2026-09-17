@@ -42,8 +42,10 @@ let write_file path s =
 
 (* [managed]: alias recorded in "sessions" (and "registered" — the two
    spellings of connector-managed, the latter empty in steady state).
-   [age]: how old last_ok_ts / last_sync_ts are. [pid]: recorded pid. *)
-let write_connector_state ~dir ~managed ~age ~pid =
+   [age]: how old last_ok_ts / last_sync_ts are. [pid]: recorded pid.
+   [last_error_op]: the op recorded in the file's last_error_op field
+   (B324: register vs other ops discriminates the alive-but-failing case). *)
+let write_connector_state ~(last_error_op : string option) ~dir ~managed ~age ~pid =
   let now = Unix.gettimeofday () in
   let ts = now -. age in
   (* Both spellings of "connector manages this alias": sessions (the
@@ -69,6 +71,10 @@ let write_connector_state ~dir ~managed ~age ~pid =
           ; ("inbound_delivered", `Int 0)
           ; ("inbound_rejected", `Int 0)
           ; ("inbound_rejected_note", `Null)
+          ; ("last_error_op",
+             match last_error_op with
+             | Some op -> `String op
+             | None -> `Null)
           ; ("sessions", sessions)
           ]))
 
@@ -115,7 +121,7 @@ let test_register_key_resolution () =
 let test_connector_owns_alias_evidence () =
   with_temp_dir "c2c_b294_own" (fun dir ->
     let owns ~managed ~age ~pid =
-      write_connector_state ~dir ~managed ~age ~pid;
+      write_connector_state ~dir ~managed ~age ~pid ~last_error_op:None;
       C2c_relay_connector.connector_owns_alias ~broker_root:dir
         ~alias:"b294-probe" ~now:(Unix.gettimeofday ())
     in
@@ -143,6 +149,48 @@ let test_connector_owns_alias_evidence () =
        with
        | Some _ -> true
        | None -> false))
+
+(* B324: pid-alive is DEMOTED below last_ok freshness when the recorded
+   last_error_op is register. An alive connector whose register arm fails
+   on every pass (identity binding drift after a rename) is not evidence
+   of ownership: the documented repair (CLI relay register) must stay
+   available while the connector cycles wedge cooldowns. A healthy
+   connector — fresh last_ok, or failing at an op that does not bear on
+   the identity — keeps pid-alive as authoritative evidence. *)
+let test_connector_owns_alias_alive_but_register_failing () =
+  with_temp_dir "c2c_b324_own" (fun dir ->
+    let owns ~last_error_op ~age =
+      write_connector_state ~dir ~managed:true ~age
+        ~pid:(Some (Unix.getpid ())) ~last_error_op;
+      C2c_relay_connector.connector_owns_alias ~broker_root:dir
+        ~alias:"b294-probe" ~now:(Unix.gettimeofday ())
+    in
+    check (option string)
+      "live pid + register failing + stale last_ok -> NOT owned" None
+      (owns ~last_error_op:(Some "register") ~age:3600.0);
+    check bool
+      "live pid + register failing + FRESH last_ok -> owned (healthy)" true
+      (owns ~last_error_op:(Some "register") ~age:10.0 <> None);
+    check bool
+      "live pid + OTHER op failing + stale last_ok -> still owned" true
+      (owns ~last_error_op:(Some "heartbeat") ~age:3600.0 <> None);
+    check bool
+      "live pid + no recorded error + stale last_ok -> still owned" true
+      (owns ~last_error_op:None ~age:3600.0 <> None);
+    (* dead pid + register failing + stale last_ok: neither arm fires *)
+    write_connector_state ~dir ~managed:true ~age:3600.0
+      ~pid:(Some dead_pid) ~last_error_op:(Some "register");
+    check (option string)
+      "dead pid + register failing + stale last_ok -> NOT owned" None
+      (C2c_relay_connector.connector_owns_alias ~broker_root:dir
+         ~alias:"b294-probe" ~now:(Unix.gettimeofday ()));
+    (* dead pid + register failing + fresh last_ok: freshness still owns *)
+    write_connector_state ~dir ~managed:true ~age:10.0
+      ~pid:(Some dead_pid) ~last_error_op:(Some "register");
+    check bool
+      "dead pid + register failing + fresh last_ok -> owned" true
+      (C2c_relay_connector.connector_owns_alias ~broker_root:dir
+         ~alias:"b294-probe" ~now:(Unix.gettimeofday ()) <> None))
 
 (* --- binary: refusal + key override against a scripted relay ------------ *)
 
@@ -209,7 +257,7 @@ let with_relay_server f =
    is refused before any request leaves the machine. *)
 let test_register_refuses_when_connector_owns_alias () =
   with_temp_dir "c2c_b294_refuse" (fun dir ->
-    write_connector_state ~dir ~managed:true ~age:5.0 ~pid:(Some dead_pid);
+    write_connector_state ~dir ~managed:true ~age:5.0 ~pid:(Some dead_pid) ~last_error_op:None;
     with_relay_server (fun srv ->
         let status, _out, err = run_c2c dir (Filename.concat dir "id.json")
             [ "relay"; "register"; "--alias"; "b294-probe";
@@ -226,7 +274,7 @@ let test_register_refuses_when_connector_owns_alias () =
 
 let test_register_force_overrides () =
   with_temp_dir "c2c_b294_force" (fun dir ->
-    write_connector_state ~dir ~managed:true ~age:5.0 ~pid:(Some dead_pid);
+    write_connector_state ~dir ~managed:true ~age:5.0 ~pid:(Some dead_pid) ~last_error_op:None;
     with_relay_server (fun srv ->
         let status, _out, err = run_c2c dir (Filename.concat dir "id.json")
             [ "relay"; "register"; "--alias"; "b294-probe";
@@ -241,7 +289,7 @@ let test_register_force_overrides () =
 let test_register_allows_when_connector_state_stale () =
   with_temp_dir "c2c_b294_stale" (fun dir ->
     (* past the 120s window and no live pid: nothing to protect *)
-    write_connector_state ~dir ~managed:true ~age:600.0 ~pid:(Some dead_pid);
+    write_connector_state ~dir ~managed:true ~age:600.0 ~pid:(Some dead_pid) ~last_error_op:None;
     with_relay_server (fun srv ->
         let status, _out, _err = run_c2c dir (Filename.concat dir "id.json")
             [ "relay"; "register"; "--alias"; "b294-probe";
@@ -261,7 +309,7 @@ let test_register_explicit_keys_and_env () =
   with_temp_dir "c2c_b294_keys" (fun dir ->
     (* explicit keys are a deliberate choice: even a connector-owned alias
        is not blocked — handing the lease BACK is the supported repair *)
-    write_connector_state ~dir ~managed:true ~age:5.0 ~pid:(Some dead_pid);
+    write_connector_state ~dir ~managed:true ~age:5.0 ~pid:(Some dead_pid) ~last_error_op:None;
     with_relay_server (fun srv ->
         let status, _out, _err =
           run_c2c ~extra_env:"C2C_RELAY_NODE_ID=env-n C2C_RELAY_SESSION_ID=env-s"
@@ -424,7 +472,10 @@ let () =
            test_register_key_resolution ])
     ; ("connector ownership evidence",
        [ test_case "fresh vs stale vs unmanaged vs live pid" `Quick
-           test_connector_owns_alias_evidence ])
+           test_connector_owns_alias_evidence
+       ; test_case "alive-but-register-failing demotes pid-alive (B324)" `Quick
+           test_connector_owns_alias_alive_but_register_failing
+       ])
     ; ("c2c relay register binary",
        [ test_case "refuses when connector owns the alias" `Quick
            test_register_refuses_when_connector_owns_alias
