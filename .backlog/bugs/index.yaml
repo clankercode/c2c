@@ -320,3 +320,4 @@ bugs:
     - file: B321-single-root-relay-connect-once.todo
     - file: B322-last-error-detail-stored-untru.todo
     - file: B323-owner-mismatch-strikes-can-dou.todo
+    - file: B324-b294-register-guard-refuses-th.todo
