@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
 estimate_hours: 1
 id: B334
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: send/send_all alias binding is case-sensitive while heartbeat/register compares are case-insensitive
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Alias case handling is inconsistent across the B293 family: heartbeat/inbox_read owner compares and registers is_lease_refresh are case-insensitive, but /send and /send_all compare the signer against the body from_alias byte-exactly (relay.ml:5577-5579, 5637-5639). A client whose Authorization-header alias casing differs from its body from_alias gets 403 signature_invalid on send while heartbeat succeeds. Note the outer verifier (identity_pk_of, relay.ml:6897) still keys by exact case, so case-insensitivity only helps when the header matches the stored case.
+
+## Fix direction
+
+Use the lowercase compare in the send-family binding too, and normalize the binding lookup.
+
+## Evidence
+
+Server-core review 2026-09-17.
