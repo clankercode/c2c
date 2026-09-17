@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:12Z"
 depends_on: []
 estimate_hours: 1
 id: B319
 priority: low
+started_at: null
 status: pending
 tags: []
 title: noop path records progress but never resets wedge/cooldown tables — stale counts survive idle epochs
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+The noop path records progress but never resets the in-memory wedge_counts/cooldowns (c2c_relay_connector.ml:3544-3556 vs the progress branch Hashtbl.remove pair at 3566-3571). A root that wedged at count 3, goes idle (registrations die, root becomes a noop), then re-registers and errors again resumes at count 4: up to a 2h cooldown for what is a first wedge of the new epoch, and the file and in-memory counts disagree until the next wedge.
+
+## Fix direction
+
+Perform the same Hashtbl.remove pair in the noop branch (or route both through one shared progress-reset helper).
+
+## Evidence
+
+Connector review 2026-09-17.
