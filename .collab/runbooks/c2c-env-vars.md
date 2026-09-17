@@ -538,6 +538,18 @@ one attempt per window at most (it cannot starve the other roots) and is never
 dropped forever. Overriding this is mainly for tests; the persisted basis means
 the cooldown survives connector restarts.
 
+### `C2C_RELAY_CONNECTOR_SYNC_WATCHDOG_S` (B307)
+
+Wall-clock deadline for ONE sync pass's SIGALRM watchdog (B181/B228). Unset or
+non-positive uses `max(90, interval × 4, 3 × last-pass-duration)` seconds —
+B307 made the alarm scale with observed pass work (B291-style) so a
+slow-but-alive pass is not killed at the interval-derived floor. When the
+deadline fires, the handler persists a B292-compatible hang-wedge for the
+syncing root (`wedged_since` / `wedge_count` / `wedge_reason` in that root's
+connector-state.json) before the force-exit 3, so the restarted connector
+applies the escalating cooldown instead of retrying the hung root at base
+cadence. Mainly a test knob; positive floats only.
+
 ### `C2C_RELAY_CONNECTOR_BACKEND` (B235/B242)
 
 Selects the relay-connect backend: `python` (legacy) vs the native OCaml

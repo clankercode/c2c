@@ -830,6 +830,10 @@ type t = {
      in [sync] — see [owner_mismatch_drop_threshold]. *)
   mutable owner_mismatch_strikes : (string * int) list;
   mutable alert_state : C2c_relay_alert.state;  (* B010: edge-trigger dedup *)
+  (* B307: duration of the last completed sync pass feeding this state (0.0
+     until one completes). The SIGALRM deadline scales with it (B291-style) so
+     a slow-but-alive pass is not killed at the interval-derived floor. *)
+  mutable last_pass_s : float;
 }
 
 (* ---------------------------------------------------------------------------
@@ -3283,15 +3287,64 @@ let sync_made_progress (result : sync_result) =
    live PID with a dead bridge (the observed B228 wedge). On timeout we
    force-exit 3 so a supervisor restarts (first hang; no multi-strike wait).
    The [Error `Watchdog] path remains only for injected/mock sync_once
-   failures that return that variant without going through the real alarm. *)
-let sync_watchdog_s (t : t) =
-  max 90.0 (t.interval *. 4.0)
+   failures that return that variant without going through the real alarm.
+
+   B307: the deadline scales with observed pass work — [pass_work_s] is the
+   last completed pass's duration, and the window becomes
+   max(base, 3 x pass_work_s), mirroring [stale_exit_threshold_s]: a
+   slow-but-alive pass (many roots, high-latency TLS) must not be
+   SIGALRM-killed at the interval-derived floor, while a deadline that grows
+   slower than 3x per pass still bounds a genuine hang. The env override
+   wins for tests and operators. On timeout the handler persists a
+   B292-compatible hang-wedge for the root before exiting (see
+   [persist_hang_wedge]) so the restarted connector applies the escalating
+   cooldown instead of retrying at base cadence. *)
+let sync_watchdog_s ?pass_work_s (t : t) =
+  match Option.bind
+          (Sys.getenv_opt "C2C_RELAY_CONNECTOR_SYNC_WATCHDOG_S")
+          float_of_string_opt with
+  | Some v when v > 0.0 -> v
+  | _ ->
+      let base = max 90.0 (t.interval *. 4.0) in
+      (match pass_work_s with
+       | Some w when w > 0.0 -> max base (3.0 *. w)
+       | _ -> base)
+
+(* The deadline the loops actually arm: [t.last_pass_s] feeds the observed
+   pass work (0.0 before the first completed pass). *)
+let current_sync_watchdog_s (t : t) =
+  sync_watchdog_s
+    ?pass_work_s:(if t.last_pass_s > 0.0 then Some t.last_pass_s else None)
+    t
 
 exception Sync_watchdog of string
 
+(* B307: a REAL hang reaches the SIGALRM handler, which force-exits 3 (B228).
+   A bare exit loses every wedge/strike table, so the restarted connector
+   retried the hung root at base cadence — a deterministic hang was an
+   infinite crash loop with zero learning. Persist a B292-compatible wedge
+   record (wedged_since / wedge_count / wedge_reason in connector-state.json)
+   for the hung root BEFORE exiting: the restarted process's cooldown reader
+   adopts it and applies the escalating schedule (base 600s, cap 7200s).
+   Signal-handler constraints: the handler runs as ordinary OCaml code at an
+   allocation point, so allocation and file IO are fine — but it must NOT
+   take a lock, because the interrupted sync may hold the registry or outbox
+   lock. [mark_connector_wedged] is a lock-free tmp+rename RMW, and its
+   file-read prev_count is what makes the count compound across restarts.
+   Best-effort: a root deleted mid-service must not turn the hang into a
+   crash inside the handler. *)
+let persist_hang_wedge broker_root ~deadline_i =
+  try
+    ignore
+      (mark_connector_wedged broker_root
+         ~reason:(Printf.sprintf
+             "sync hang: wall-clock exceeded %ds (SIGALRM force-exit)"
+             deadline_i))
+  with _ -> ()
+
 let run_sync_once ?shutdown ?(sync_fn = sync) (t : t) :
     (sync_result, [ `Exn of exn | `Watchdog of string ]) result =
-  let deadline = sync_watchdog_s t in
+  let deadline = current_sync_watchdog_s t in
   let deadline_i =
     int_of_float (Float.ceil deadline) |> max 1
   in
@@ -3308,8 +3361,11 @@ let run_sync_once ?shutdown ?(sync_fn = sync) (t : t) :
         (Sys.Signal_handle
            (fun _ ->
               match shutdown with
+              (* B307: a requested shutdown is not a wedge — exit 0 before
+                 any wedge bookkeeping. *)
               | Some requested when !requested -> Unix._exit 0
               | _ ->
+                  persist_hang_wedge t.broker_root ~deadline_i;
                   (try
                      Printf.eprintf
                        "[relay-connector] wedged: sync wall-clock exceeded %ds \
@@ -3409,6 +3465,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
   in
   let rec loop () =
     if !shutdown then () else (
+      let pass_started_at = Unix.gettimeofday () in
       (match sync_once shutdown t with
        | Ok result ->
            watchdog_strikes := 0;
@@ -3487,6 +3544,9 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              ~detail:(Printexc.to_string exn);
            Printf.eprintf "[relay-connector] sync exception: %s\n%!"
              (Printexc.to_string exn));
+      (* B307: feed the observed pass work to the alarm deadline, so the next
+         pass's watchdog scales with what a pass actually costs here. *)
+      t.last_pass_s <- Unix.gettimeofday () -. pass_started_at;
       (* B211/B228: an alive-but-erroring connector never advances last_progress;
          terminate once it has been wedged past the threshold. *)
       check_stale_exit ();
@@ -3543,7 +3603,8 @@ let make_state ~relay_url ~token ~identity ~broker_root ~node_id
     heartbeat_ttl; interval; verbose;
     registered = []; active_ws_bindings = [];
     owner_mismatch_strikes = [];
-    alert_state = C2c_relay_alert.initial_state }
+    alert_state = C2c_relay_alert.initial_state;
+    last_pass_s = 0.0 }
 
 let print_sync_result ?broker_root result =
   let prefix = match broker_root with
@@ -3746,6 +3807,9 @@ let start_machine_impl ~sync_once ~discover_roots
       end
       else begin
       let t = state_for root in
+      (* B307: the alarm deadline scales with the last completed pass's
+         observed work (B291-style). *)
+      t.last_pass_s <- Option.value !last_pass_s ~default:0.0;
       let outcome =
         match sync_once shutdown t with
         | Ok result ->
@@ -3920,6 +3984,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       active_ws_bindings = [];
       owner_mismatch_strikes = [];
       alert_state = C2c_relay_alert.initial_state;
+      last_pass_s = 0.0;
     } in
     if once then begin
       match Lwt_main.run (sync t) with
