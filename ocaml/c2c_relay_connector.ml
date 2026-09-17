@@ -2118,25 +2118,59 @@ module Relay_client = struct
 
   (* B314: build a custom Net.ctx from a PEM CA bundle path for self-signed
      certs. Port of relay_client.net_ctx_of_bundle (kept byte-equivalent so
-     doctor and the connector trust exactly the same anchors). *)
+     doctor and the connector trust exactly the same anchors).
+     B342 (port of relay_client's B325 memoization): parse the CA PEM into a
+     TLS ctx once per bundle path, not once per request — the connector's
+     poll loop re-paid a file read + X509 decode on every op. Re-parse only
+     when the file's mtime moves (bundle rotation). If the file disappears
+     after a successful parse, the cached ctx keeps working (the anchors are
+     in memory); a failed parse is never cached, so a garbage bundle keeps
+     failing loudly on every request as before. Lookup and populate happen
+     synchronously between awaits (same as relay_client), so concurrent
+     first requests share one entry — race-free despite the connector's
+     loops. Known tradeoff (recorded at B325 too): the key is path + mtime,
+     so content swapped in place without the mtime moving serves stale until
+     the mtime moves. *)
+  type bundle_entry = {
+    mtime : float;
+    ctx : Cohttp_lwt_unix.Client.ctx Lwt.t;
+  }
+
+  let bundle_ctx_cache : (string, bundle_entry) Hashtbl.t = Hashtbl.create 4
+
   let net_ctx_of_bundle path =
-    let pem =
-      let ic = open_in path in
-      let n = in_channel_length ic in
-      let buf = Bytes.create n in
-      really_input ic buf 0 n;
-      close_in ic;
-      Bytes.to_string buf
+    let compute () =
+      let pem =
+        let ic = open_in path in
+        let n = in_channel_length ic in
+        let buf = Bytes.create n in
+        really_input ic buf 0 n;
+        close_in ic;
+        Bytes.to_string buf
+      in
+      let certs = match X509.Certificate.decode_pem_multiple pem with
+        | Ok cs -> cs
+        | Error (`Msg m) -> failwith ("C2C_RELAY_CA_BUNDLE parse error: " ^ m)
+      in
+      let auth = X509.Authenticator.chain_of_trust
+        ~time:(fun () -> Some (Ptime_clock.now ())) certs
+      in
+      Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
+      Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
     in
-    let certs = match X509.Certificate.decode_pem_multiple pem with
-      | Ok cs -> cs
-      | Error (`Msg m) -> failwith ("C2C_RELAY_CA_BUNDLE parse error: " ^ m)
+    let mtime_opt =
+      match Unix.stat path with
+      | { Unix.st_mtime; _ } -> Some st_mtime
+      | exception _ -> None
     in
-    let auth = X509.Authenticator.chain_of_trust
-      ~time:(fun () -> Some (Ptime_clock.now ())) certs
-    in
-    Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
-    Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
+    match Hashtbl.find_opt bundle_ctx_cache path with
+    | Some e when mtime_opt = Some e.mtime || mtime_opt = None -> e.ctx
+    | _ ->
+        let ctx = compute () in
+        (match mtime_opt with
+         | Some m -> Hashtbl.replace bundle_ctx_cache path { mtime = m; ctx }
+         | None -> ());
+        ctx
 
   let connection_error msg =
     `Assoc [

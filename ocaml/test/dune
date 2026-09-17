@@ -433,6 +433,14 @@
  (modules test_c2c_relay_b325_relay_client)
  (libraries c2c_mcp relay_test_support alcotest yojson unix lwt.unix))
 
+; B342: the connector's INLINE HTTP client must memoize the CA bundle ctx
+; per path (B325 port) — scripted loopback over plain http; ctx-build
+; success is observed via request arrival, failure via connection_error.
+(test
+ (name test_c2c_relay_b342_connector_ctx_cache)
+ (modules test_c2c_relay_b342_connector_ctx_cache)
+ (libraries c2c_mcp relay_test_support alcotest yojson unix lwt.unix))
+
 (test
  (name test_c2c_relay_b315_root_unavailable)
  (modules test_c2c_relay_b315_root_unavailable)
