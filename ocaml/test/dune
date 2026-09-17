@@ -506,6 +506,16 @@
  (libraries c2c_mcp relay_test_support_real alcotest yojson str unix
    lwt.unix cohttp))
 
+; B295: /register ok:true must move the (node_id, session_id) lease key —
+; register releases other aliases' rows holding the submitted pair; sqlite
+; alias_of_session must not stop at the first (oldest/released) matching row.
+; Sqlite module-level + real loopback server with sqlite storage.
+(test
+ (name test_relay_b295_pair_takeover)
+ (modules test_relay_b295_pair_takeover)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 ; #586 slice 3: canonical_alias deprecation flag gates the leaky repo@host form
 ; vs the opaque host id form on local-broker registrations.
 (test

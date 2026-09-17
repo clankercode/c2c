@@ -807,6 +807,17 @@ module InMemoryRelay : RELAY = struct
              in
              let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:opaque_host_id () in
              Hashtbl.replace t.leases alias lease;
+             (* B295: the (node_id, session_id) pair is one session's inbox
+               key — drop other aliases' lease entries holding it (same
+               takeover the sqlite register enforces), or alias_of_session
+               keeps resolving the pair to a pre-rename alias. Lease entry
+               only; the shared inbox belongs to the session. *)
+             Hashtbl.iter (fun other other_lease ->
+               if other <> alias
+                  && RegistrationLease.node_id other_lease = node_id
+                  && RegistrationLease.session_id other_lease = session_id then
+                 Hashtbl.remove t.leases other
+             ) t.leases;
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
               | _ -> ());
@@ -2683,6 +2694,19 @@ end = struct
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc));
+            (* B295: the (node_id, session_id) pair is one session's inbox
+               key — the registering alias takes it over. Without this, a
+               pre-rename/pre-rebind row under another alias keeps the pair
+               (upsert conflicts on alias only) and alias_of_session's
+               oldest-first scan shadows this fresh row forever: register
+               returns ok while every later heartbeat/poll under the
+               registering alias fails signature_invalid. Lease row only —
+               the pair's inbox belongs to the session and must survive. *)
+            with_stmt conn "DELETE FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?" (fun del ->
+              bind_text del 1 node_id |> ignore;
+              bind_text del 2 session_id |> ignore;
+              bind_text del 3 alias |> ignore;
+              step del |> ignore);
             (* Read back coalesced host id so returned lease matches DB. *)
             let effective_ohid =
               match opaque_host_id with
@@ -2795,14 +2819,25 @@ end = struct
   let alias_of_session t ~node_id ~session_id =
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "SELECT alias, last_seen FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? LIMIT 1" (fun stmt ->
+      (* B295: legacy DBs can hold several rows for one pair (pre-fix
+         register upserted by alias only). Scan freshest-first and skip
+         released rows — the previous LIMIT 1 pinned resolution to the
+         oldest row and returned None whenever that row was released,
+         even with a live row matching right behind it. *)
+      with_stmt conn "SELECT alias, last_seen FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? ORDER BY last_seen DESC" (fun stmt ->
       bind_text stmt 1 node_id |> ignore;
       bind_text stmt 2 session_id |> ignore;
-      if step stmt = Rc.ROW then
-        let alias = Data.to_string_exn (column stmt 0) in
-        let last_seen = data_to_float_default (column stmt 1) in
-        if alias_released ~now:(Unix.gettimeofday ()) ~last_seen then None else Some alias
-      else None)
+      let rec loop () =
+        match step stmt with
+        | Rc.ROW ->
+          let alias = Data.to_string_exn (column stmt 0) in
+          let last_seen = data_to_float_default (column stmt 1) in
+          if alias_released ~now:(Unix.gettimeofday ()) ~last_seen then
+            loop ()
+          else Some alias
+        | _ -> None
+      in
+      loop ())
     )
 
   let signed_at_of t ~alias =
@@ -5294,7 +5329,7 @@ end = struct
       match verified_alias with
       | Some v ->
         (match R.alias_of_session relay ~node_id ~session_id with
-         | Some owner when owner = v -> run_heartbeat ()
+         | Some owner when String.lowercase_ascii owner = String.lowercase_ascii v -> run_heartbeat ()
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
       | None -> run_heartbeat ()
 
@@ -5747,7 +5782,7 @@ end = struct
       match verified_alias with
       | Some v ->
         (match R.alias_of_session relay ~node_id ~session_id with
-         | Some owner when owner = v ->
+         | Some owner when String.lowercase_ascii owner = String.lowercase_ascii v ->
            let msgs = read relay ~node_id ~session_id in
            respond_ok (json_ok [ ("messages", `List msgs) ])
          | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
