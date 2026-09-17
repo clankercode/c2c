@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
 estimate_hours: 1
 id: B309
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: c2c relay disable leaves subscribe-daemon and monitor watchers retrying the parked relay forever
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+c2c relay disable (c2c_relay_cmd.ml:743-762) writes enabled:false and stops the systemd unit - but a subscribe-daemon started before disable keeps retrying the parked URL forever (backoff capped at 30s, c2c_relay_subscribe_daemon.ml:365-527; a shutdown command exists but is not invoked or mentioned), and running c2c monitor relay watchers keep their startup-resolved URL. User-visible: continued connections from this host to the supposedly-off relay; the doctor storm check can fire on the daemon.
+
+## Fix direction
+
+relay disable best-effort sends shutdown to the subscribe-daemon socket and prints a line naming both classes of lingering consumers; longer term the daemon and monitor re-check Relay_activation each retry cycle.
+
+## Evidence
+
+CLI review 2026-09-17; verified in source by coordinator.
