@@ -541,7 +541,7 @@
  (modules test_relay_b294_register_guard)
  (libraries c2c_mcp relay_test_support alcotest yojson unix sqlite3
    lwt.unix cohttp cohttp-lwt-unix)
- (deps c2c.exe))
+ (deps ../cli/c2c.exe))
 
 
 ; #586 slice 3: canonical_alias deprecation flag gates the leaky repo@host form
