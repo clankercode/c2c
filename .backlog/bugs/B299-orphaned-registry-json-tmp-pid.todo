@@ -1,0 +1,58 @@
+---
+complexity: low
+created_at: "2026-09-17T02:46:53Z"
+depends_on: []
+estimate_hours: 1
+id: B299
+priority: medium
+status: pending
+tags:
+    - broker
+    - registry
+    - cleanup
+title: orphaned registry.json.tmp.<pid> files accumulate in broker roots (297 on xsm) - atomic-write temps never swept after hard exits
+updated_at: "2026-09-17T02:46:53Z"
+---
+## Symptom
+
+**297** leaked `registry.json.tmp.<pid>` files across broker roots on xsm:
+
+```
+$ ls ~/.c2c/repos/*/broker/registry.json.tmp.* | wc -l
+297
+```
+
+One broker root (`8d68f5dbe89f`) alone holds ~60 of them, e.g.
+`registry.json.tmp.1161737`, `registry.json.tmp.4177006`, ...
+
+## Root cause
+
+The registry uses the documented atomic-write pattern — write `registry.json.tmp.<pid>`,
+`fsync`, `rename` into place, under flock on `registry.json.lock`. If the process
+dies between "create temp" and "rename", the temp file is orphaned. Nothing ever
+sweeps them.
+
+This is normally rare. It is not rare here because the relay connector has hard-exited
+**9,300 times** (`exit 3` from the staleness watchdog) and `exit`/`Unix._exit` runs no
+cleanup for an in-flight temp file. The two bugs compound: the crash loop manufactures
+the leak, the leak is then permanent.
+
+## Impact
+
+- Unbounded inode/file growth in every broker root on a host running the connector.
+- Makes broker dirs noisy to inspect (`ls` of a broker root is dominated by temps).
+- Risk of confusion for any tooling that globs `registry.json*`.
+
+## Fix direction
+
+- Sweep stale `registry.json.tmp.*` under the registry lock at startup and/or on each
+  successful atomic write: a temp whose `<pid>` is not alive (verify with
+  `C2c_pid_identity`, not bare `pid_alive` — see #85) is safe to unlink.
+- Prefer `mkstemp`-style unique temps in a subdirectory, or unlink-on-open where
+  the platform allows, so an abrupt exit cannot leak.
+- Have `c2c health` / `c2c doctor` report a broker root with more than a handful of
+  orphaned temps.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
