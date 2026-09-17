@@ -60,3 +60,5 @@ while the fd is open or the space will not be reclaimed.
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane: solo (.worktrees/b298-instance-log-rotation). Decision: rotate at supervisor start AND on size via C2C_INSTANCE_LOG_MAX_BYTES / C2C_INSTANCE_LOG_KEEP (defaults 10 MiB / 3). Doctor oversized-log reporting deliberately out of scope here (doctor files are lane-S/B296 territory) — noted as follow-up.
