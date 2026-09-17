@@ -6917,7 +6917,14 @@ end = struct
                        (* B184: include which bound key + which signed fields
                           failed so operators can distinguish key drift after
                           rename/register from body/path/query mismatches
-                          (empty-vs-"{}" body was a common intermittent cause). *)
+                          (empty-vs-"{}" body was a common intermittent cause).
+                          B294: the recovery pointer must never be
+                          `c2c relay register` — on a machine where
+                          relay-connect owns the alias that command takes the
+                          lease from the connector and the two fight over it,
+                          which is exactly the wedge this message is
+                          reacting to. Rename rebind happens through the
+                          connector's own re-register. *)
                        let pk_fp = Relay_identity.fingerprint_of_pk pk in
                        let body_tok =
                          if body_sha256_b64 = "" then "empty"
@@ -6929,9 +6936,12 @@ end = struct
                          Printf.sprintf
                            "Ed25519 request signature does not verify \
 (alias=%s, bound_pk=%s, meth=%s, path=%s, query=%S, body_sha256=%s). \
-If you just renamed/re-registered, re-run: c2c relay register --alias %s \
-(same machine identity as c2c relay identity show)"
-                           alias pk_fp meth path query body_tok alias))
+Key drift after rename/re-register: restart relay-connect \
+(c2c restart relay-connect, or c2c start relay-connect) so it re-registers \
+under the current identity (local key: c2c relay identity show); read-only \
+probe: c2c relay dm peek --alias %s. Do NOT run c2c relay register --alias %s \
+while relay-connect may own the alias — it takes the lease and delivery wedges."
+                           alias pk_fp meth path query body_tok alias alias))
 
   let get_client_ip (flow:Conduit_lwt_unix.flow) =
     match flow with

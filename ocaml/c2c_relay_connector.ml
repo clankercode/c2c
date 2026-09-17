@@ -1402,6 +1402,45 @@ let cli_inbox_key alias : string * string =
   let k = Printf.sprintf "cli-%s" alias in
   (k, k)
 
+(** B294: (node_id, session_id) for `c2c relay register`.
+
+    Deliberately NOT [resolve_cli_dm_inbox_key]: that one PREFERS a
+    connector-managed key, while register's default must stay the CLI's own
+    cli-<alias> binding — silently re-keying the connector's lease is the
+    alias theft B294 refuses. Explicit keys (--node-id/--session-id, or
+    C2C_RELAY_NODE_ID/C2C_RELAY_SESSION_ID, flags winning over env) are the
+    supported way to hand a lease to a chosen pair, e.g. the connector's.
+    A node id alone implies node/node (the documented `c2c monitor
+    --relay-node-id` convention); a session id alone is rejected because
+    (cli-<alias>, <other-session>) is a key neither side can use.
+    Returns [Error advice] for the session-only case. Pure so it is
+    unit-testable. *)
+let resolve_register_inbox_key ~alias
+    ~(flag_node_id : string option)
+    ~(flag_session_id : string option)
+    ~(env_node_id : string option)
+    ~(env_session_id : string option)
+    : (string * string, string) result =
+  let pick flag env =
+    match flag with
+    | Some v when v <> "" -> Some v
+    | _ ->
+        (match env with
+         | Some v when v <> "" -> Some v
+         | _ -> None)
+  in
+  let node_id = pick flag_node_id env_node_id in
+  let session_id = pick flag_session_id env_session_id in
+  match node_id, session_id with
+  | Some n, Some s -> Ok (n, s)
+  | Some n, None -> Ok (n, n)
+  | None, Some _ ->
+      Error
+        "--session-id (or C2C_RELAY_SESSION_ID) needs --node-id (or \
+         C2C_RELAY_NODE_ID): a session id alone would register under a \
+         half-cli key neither the CLI nor relay-connect can use"
+  | None, None -> Ok (cli_inbox_key alias)
+
 (** B231: resolve the (node_id, session_id) for CLI `relay dm poll` / `peek`.
 
     The relay lease is one-row-per-alias and SESSION-scoped. When
@@ -1467,6 +1506,30 @@ let connector_pid_alive (st : connector_state) : bool =
       | Unix.Unix_error (Unix.ESRCH, _, _) -> false
       | Unix.Unix_error (Unix.EPERM, _, _) -> true (* exists, not signalable *)
       | _ -> false
+
+(** B294: does a live machine connector own [alias] on this broker root?
+
+    READ-ONLY evidence from connector-state.json (no pid signalling — repo
+    rule #85): the alias appears in [sessions]/[registered] AND either the
+    recorded pid is alive or the last successful sync is inside doctor's
+    120s freshness window ([Relay_doctor.connector_stale_threshold_s],
+    inlined here because Relay_doctor depends on this module). Returns the
+    evidence label for the refusal message. *)
+let connector_owns_alias ~broker_root ~alias ~now : string option =
+  match read_connector_state broker_root with
+  | None -> None
+  | Some st ->
+      let casefold = String.lowercase_ascii in
+      let alias_cf = casefold alias in
+      let managed =
+        List.exists (fun a -> casefold a = alias_cf) st.cs_registered
+        || List.exists (fun (a, _) -> casefold a = alias_cf) st.cs_sessions
+      in
+      if not managed then None
+      else if connector_pid_alive st then Some "pid alive in connector-state.json"
+      else if now -. st.cs_last_ok_ts < 120.0 then
+        Some "connector synced this broker root within 120s"
+      else None
 
 (** Write a minimal connector-state.json recording that a sync raised an
     exception (B093). Lets `c2c doctor --relay` report the last error even
