@@ -1,0 +1,71 @@
+---
+complexity: low
+created_at: "2026-09-17T02:46:37Z"
+depends_on: []
+estimate_hours: 1
+id: B297
+priority: medium
+status: pending
+tags:
+    - relay
+    - connector
+    - diagnosability
+title: connector error logging truncates err_detail at 80 chars (cuts off the alias) and drops all but one error per sync pass
+updated_at: "2026-09-17T02:46:37Z"
+---
+## Symptom
+
+When the connector reports a relay error, the single most useful field — which
+alias failed — is cut off, and any additional errors in the same pass are
+discarded. Both made this investigation much slower than it needed to be.
+
+### 1. err_detail truncated at exactly the wrong place
+
+`print_sync_result` / the `run` loop truncate `err_detail` to 80 characters:
+
+```
+let err_str = match result.last_error with
+  | Some e -> Printf.sprintf " [%s: %s]" e.err_op
+      (if String.length e.err_detail > 80 then String.sub e.err_detail 0 80 ^ "..." else e.err_detail)
+```
+
+The relay's error payload is
+`{"ok":false,"error_code":"signature_invalid","error":"verified signer \"<alias>\" does not own session (<node>, <session>)"}`
+— which means 80 chars lands mid-alias, every time:
+
+```
+[heartbeat: {"ok":false,"error_code":"signature_invalid","error":"verified signer \"grok-nom...]
+[poll_inbox: {"ok":false,"error_code":"signature_invalid","error":"verified signer \"codex-mi...]
+```
+
+12,593 log lines, none of which name the alias or the session that failed. The
+alias had to be recovered by cross-referencing `connector-state.json` and then
+re-running the request by hand through the CLI.
+
+### 2. Only one error per pass survives
+
+`sync` collects `reg_errors`, `send_errors` and `poll_errors`, then keeps a
+single `last_error` (`ocaml/c2c_relay_connector.ml:2366`):
+
+```
+let last_error = match reg_errors @ send_errors @ poll_errors with ...
+```
+
+A pass where register, send and poll all failed reports one of them. The rest are
+never logged and never reach `connector-state.json`, so `c2c doctor` cannot see
+them either.
+
+## Fix direction
+
+- Raise the truncation cap to something that fits the relay's error shape
+  (~240 chars), or truncate the JSON *body* while always preserving
+  `error_code` plus the alias/session identifiers.
+- Better: log the failing `(alias, node_id, session_id)` as explicit fields
+  rather than relying on the server's prose.
+- Emit one log line per distinct failing op per pass (deduplicated by
+  `error_code` + alias) instead of collapsing to one; keep `last_error` as the
+  summary field for `connector-state.json` but add an `errors` array with counts.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`

@@ -293,3 +293,4 @@ bugs:
     - file: B294-c2c-relay-register-steals-the.todo
     - file: B295-relay-register-returns-ok-true.todo
     - file: B296-relay-connect-has-no-boot-supe.todo
+    - file: B297-connector-error-logging-trunca.todo
