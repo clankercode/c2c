@@ -2560,6 +2560,13 @@ end = struct
     with_stmt conn "DELETE FROM secure_leases_v2 WHERE alias = ?" (fun del ->
       Sqlite3.bind_text del 1 alias |> ignore;
       Sqlite3.step del |> ignore);
+    (* B330: release_alias is the only reservation clearer — mirror of the
+       in-memory release_alias removing t.bindings. The 12-month anti-squat
+       window keeps the reservation alive while the lease is merely expired;
+       once the alias is released, the identity claim goes with it. *)
+    with_stmt conn "DELETE FROM alias_reservations WHERE alias = ?" (fun del_res ->
+      Sqlite3.bind_text del_res 1 alias |> ignore;
+      Sqlite3.step del_res |> ignore);
     with_stmt conn "DELETE FROM room_members WHERE alias = ?" (fun del_member ->
       Sqlite3.bind_text del_member 1 alias |> ignore;
       Sqlite3.step del_member |> ignore)
@@ -2659,24 +2666,38 @@ end = struct
           in
           check_existing ())
         );
-        match !conflict_lease with
-        | Some lease -> (relay_err_alias_conflict, lease)
-        | None ->
-          let binding_state =
-            if identity_pk <> "" then
-              if !existing_pk <> "" && !existing_pk <> identity_pk then `Mismatch
-              else `Matches
-            else
-              if !existing_pk <> "" then `Preserve
-              else `NoPkNoBinding
-          in
-          match binding_state with
-          | `Mismatch ->
-            let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
-            (relay_err_alias_identity_mismatch, dummy)
-          | _ ->
+        (* B330: the binding check precedes the conflict scan — the in-memory
+           order, and the safer contract. A live alias bound to a different
+           key is a key-drift rebind attempt (alias_identity_mismatch), not a
+           plain collision with someone else's lease. binding_pk falls back to
+           the durable reservation row for the shadowed-alias case, where the
+           lease row is already gone but the identity claim survives (in-memory
+           keeps t.bindings across the takeover shadow-removal). *)
+        let binding_pk =
+          if !existing_pk <> "" then !existing_pk
+          else
+            with_stmt conn "SELECT identity_pk FROM alias_reservations WHERE alias = ?" (fun stmt ->
+              bind_text stmt 1 alias |> ignore;
+              if step stmt = ROW then Data.to_string_exn (column stmt 0) else "")
+        in
+        let binding_state =
+          if identity_pk <> "" then
+            if binding_pk <> "" && binding_pk <> identity_pk then `Mismatch
+            else `Matches
+          else
+            if binding_pk <> "" then `Preserve
+            else `NoPkNoBinding
+        in
+        match binding_state with
+        | `Mismatch ->
+          let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+          (relay_err_alias_identity_mismatch, dummy)
+        | _ ->
+          (match !conflict_lease with
+          | Some lease -> (relay_err_alias_conflict, lease)
+          | None ->
             let effective_pk = match binding_state with
-              | `Preserve -> !existing_pk
+              | `Preserve -> binding_pk
               | `Matches -> identity_pk
               | `NoPkNoBinding -> ""
               | `Mismatch -> assert false
@@ -2724,6 +2745,14 @@ end = struct
                  bind_text carry 4 old_session |> ignore;
                  step carry |> ignore)
              | _ -> ());
+            (* B330: keep the durable reservation in step with the lease's
+               identity. Unbound registers write nothing (in-memory BindNew
+               only fires for a submitted pk). *)
+            if effective_pk <> "" then
+              with_stmt conn "INSERT INTO alias_reservations (alias, identity_pk) VALUES (?, ?) ON CONFLICT(alias) DO UPDATE SET identity_pk=excluded.identity_pk" (fun res ->
+                bind_text res 1 alias |> ignore;
+                bind_text res 2 effective_pk |> ignore;
+                step res |> ignore);
             (* B295: the (node_id, session_id) pair is one session's inbox
                key — the registering alias takes it over. Without this, a
                pre-rename/pre-rebind row under another alias keeps the pair
@@ -2731,7 +2760,15 @@ end = struct
                oldest-first scan shadows this fresh row forever: register
                returns ok while every later heartbeat/poll under the
                registering alias fails signature_invalid. Lease row only —
-               the pair's inbox belongs to the session and must survive. *)
+               the pair's inbox belongs to the session and must survive.
+               B330: the shadowed alias's identity reservation is preserved
+               first, so a rename takeover cannot hand the old alias to a
+               foreign identity (in-memory keeps t.bindings here). *)
+            with_stmt conn "INSERT INTO alias_reservations (alias, identity_pk) SELECT alias, identity_pk FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ? AND identity_pk <> '' ON CONFLICT(alias) DO UPDATE SET identity_pk=excluded.identity_pk" (fun preserve ->
+              bind_text preserve 1 node_id |> ignore;
+              bind_text preserve 2 session_id |> ignore;
+              bind_text preserve 3 alias |> ignore;
+              step preserve |> ignore);
             with_stmt conn "DELETE FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?" (fun del ->
               bind_text del 1 node_id |> ignore;
               bind_text del 2 session_id |> ignore;
@@ -2750,7 +2787,7 @@ end = struct
                   else None)
             in
             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:effective_ohid () in
-            ("ok", lease)
+            ("ok", lease))
     )
 
   let identity_pk_of t ~alias =

@@ -804,3 +804,22 @@
  (name test_c2c_wake_guidance)
  (modules test_c2c_wake_guidance)
  (libraries c2c_mcp alcotest))
+
+; B330: pair-takeover parity — sqlite keeps a binding reservation for
+; shadowed aliases (alias_reservations table) and both backends agree that
+; alias_identity_mismatch outranks alias_conflict. Includes a pre-B330 DB
+; open test (additive CREATE TABLE IF NOT EXISTS migration).
+(test
+ (name test_relay_b330_takeover_parity)
+ (modules test_relay_b330_takeover_parity)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B332: pair takeover removes the shadowed aliases from room_members in both
+; backends (release_alias semantics) — no ghost members feeding per-message
+; recipient_dead dead-letter rows.
+(test
+ (name test_relay_b332_takeover_room_roster)
+ (modules test_relay_b332_takeover_room_roster)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))

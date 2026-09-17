@@ -178,10 +178,9 @@ let test_identity_mismatch_is_403_with_real_message () =
       print_endline ("first register response: " ^ Yojson.Safe.to_string ok_reg);
     check bool "first register ok" true (json_field "ok" ok_reg = "true");
     (* Key drift on the same (node_id, session_id): a different key for the
-       same pair. (A different node_id would trip sqlite's alias_conflict
-       arm first — sqlite orders conflict before binding mismatch; the
-       in-memory backend orders them the other way. Pre-existing divergence
-       outside this ticket.) *)
+       same pair. (A different node_id now also yields alias_identity_mismatch
+       on both backends: B330 made the binding check precede the conflict scan
+       everywhere; sqlite used to answer alias_conflict there.) *)
     signed_register ~base_url ~alias:"b335-bound" ~id:second
       ~node_id:"n-b335-first" ~session_id:"s-b335-first"
     >>= fun json ->
