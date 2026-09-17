@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-09-17T15:22:06Z"
+claimed_by: cli-user
 completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:12Z"
@@ -6,11 +8,11 @@ depends_on: []
 estimate_hours: 1
 id: B319
 priority: low
-started_at: null
-status: pending
+started_at: "2026-09-17T15:22:06Z"
+status: in_progress
 tags: []
 title: noop path records progress but never resets wedge/cooldown tables — stale counts survive idle epochs
-updated_at: "2026-09-17T07:56:12Z"
+updated_at: "2026-09-17T15:22:06Z"
 ---
 
 # noop path records progress but never resets wedge/cooldown tables — stale counts survive idle epochs
