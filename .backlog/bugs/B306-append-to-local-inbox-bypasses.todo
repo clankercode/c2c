@@ -1,0 +1,26 @@
+---
+complexity: medium
+created_at: "2026-09-17T07:56:10Z"
+depends_on: []
+estimate_hours: 1
+id: B306
+priority: high
+status: pending
+tags: []
+title: append_to_local_inbox bypasses the broker per-inbox lock — inbound relay DMs duplicated or silently lost
+updated_at: "2026-09-17T07:56:10Z"
+---
+
+# append_to_local_inbox bypasses the broker per-inbox lock — inbound relay DMs duplicated or silently lost
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior

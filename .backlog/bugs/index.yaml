@@ -302,3 +302,4 @@ bugs:
     - file: B303-c2c-rename-still-phones-a-disa.todo
     - file: B304-doctor-relay-fix-commands-stil.todo
     - file: B305-outbox-toctou-write-outbox-run.todo
+    - file: B306-append-to-local-inbox-bypasses.todo
