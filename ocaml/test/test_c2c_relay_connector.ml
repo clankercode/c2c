@@ -1400,10 +1400,13 @@ let test_machine_root_sync_is_noop () =
   Alcotest.(check bool) "pending outbox entry is not a no-op" false
     (Conn.machine_root_sync_is_noop tmp);
   (try Sys.remove (Filename.concat tmp "remote-outbox.jsonl") with _ -> ());
+  (* Serialize with Yojson: string_of_float renders integral floats with a
+     trailing dot ("1789627440."), which is invalid JSON and intermittently
+     (integral-second timestamps) broke this fixture. *)
   let oc = open_out (Filename.concat tmp "mobile_bindings.json") in
-  output_string oc
-    ("[{\"binding_id\":\"b1\",\"created_at\":"
-     ^ string_of_float (Unix.gettimeofday ()) ^ "}]\n");
+  Yojson.Safe.to_channel oc
+    (`List [ `Assoc [ ("binding_id", `String "b1");
+                      ("created_at", `Float (Unix.gettimeofday ())) ] ]);
   close_out oc;
   Alcotest.(check bool) "mobile binding is not a no-op" false
     (Conn.machine_root_sync_is_noop tmp)
