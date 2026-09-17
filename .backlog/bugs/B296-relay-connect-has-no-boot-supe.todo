@@ -1,0 +1,84 @@
+---
+complexity: medium
+created_at: "2026-09-17T02:46:09Z"
+depends_on: []
+estimate_hours: 3
+id: B296
+priority: high
+status: pending
+tags:
+    - relay
+    - connector
+    - install
+    - systemd
+title: relay-connect has no boot supervision; exit-3 assumes a supervisor that does not survive reboot (x-left relay-dark 55 days)
+updated_at: "2026-09-17T02:46:09Z"
+---
+## Symptom
+
+x-left has had **no relay connectivity for 55 days** and nothing noticed.
+
+- Every `connector-state.json` under `~/.c2c/repos/*/broker` on x-left records
+  `last_sync_ts == last_ok_ts == 1784814085` = **2026-07-23T13:41:25Z**, with
+  `last_error_* = null` and `registered: []`.
+- The host rebooted **2026-08-07** (`uptime -s`). Nothing restarted the connector.
+- `c2c doctor` printed the following **1,175 times** across
+  `~/.grok/sessions/**/terminal/*.log`:
+  `state: registered_unreachable - prior connector sync state exists but the
+   connector is down (stale last_sync - restart connect; ...)`
+  plus ~700 `connector: down (last sync NN.Nd ago ...)` lines ranging from 25.8d
+  to 54.8d.
+
+## Root cause
+
+The connector's `exit 3` is documented as "exiting so a supervisor can restart it
+(B211/B228)". The only supervisor that exists is `C2c_relay_managed.supervise`,
+i.e. the parent process created by `c2c start relay-connect`. There is:
+
+- **no systemd unit on either host** — `systemctl --user list-unit-files | grep c2c`
+  returns nothing on xsm and on x-left; `~/.config/systemd/user/` contains no c2c
+  unit;
+- **no boot hook** of any other kind.
+
+So the supervision story terminates at the first reboot, OOM, or logout. On
+x-left the supervisor itself died on 2026-07-23 (the instance log ends mid-normal-sync
+with no shutdown line after 10 starts / 9 `connector exited 3` restarts) and the
+machine has been relay-dark ever since.
+
+## Aggravating factor: the documented fallback is unsupervised
+
+`c2c doctor`'s own remediation string is:
+
+```
+c2c start relay-connect 2>/dev/null || c2c relay connect &
+```
+
+The fallback arm is a **background child of the calling agent's shell**. It dies
+with the tool call / session that spawned it, which reproduces the exact failure
+the hint is meant to fix. `C2c_relay_managed.unsupervised_warning` already warns
+about this (B235) — the doctor should not be recommending it.
+
+## Fix direction
+
+- Ship a `systemd --user` unit for `relay-connect` (`Restart=always`,
+  `StartLimitIntervalSec=0`, `WantedBy=default.target`) and install/enable it from
+  `c2c install self`; add it to the uninstall manifest.
+- On hosts without systemd, fall back to a documented supervisor rather than
+  `&`.
+- Stop emitting `c2c relay connect &` as a remediation anywhere; point at
+  `c2c start relay-connect` only.
+- Make prolonged connector-down an escalation rather than a line reprinted 1,175
+  times: after N consecutive doctor runs reporting `registered_unreachable`,
+  surface it as a blocking health failure.
+
+## Related host issue
+
+`c2c` is not on the PATH of a non-login shell on x-left (`ssh x-left c2c` ->
+`command not found`), although `~/.local/bin/c2c` exists (0.15.1, built
+2026-08-09). Any hook or supervisor invoked from a non-login shell there would
+fail to find the binary. Worth confirming `c2c install` writes an absolute path
+into everything it generates.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
