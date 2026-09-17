@@ -61,6 +61,16 @@
  (modules test_c2c_relay_subscribe_daemon c2c_relay_subscribe_daemon c2c_ws_connect_gate)
  (libraries c2c_mcp alcotest cmdliner yojson unix lwt.unix cohttp-lwt-unix))
 
+; B310: `c2c relay enable` must honor ambient C2C_RELAY_URL and an already-
+; saved (or parked) relay.json URL before the public default — B300 flag >
+; env > config precedence, end-to-end through the real binary under
+; C2C_SYSTEMCTL_FIXTURE=1 (systemctl recorded, never executed).
+(test
+ (name test_c2c_relay_b310_enable)
+ (modules test_c2c_relay_b310_enable)
+ (libraries alcotest yojson unix)
+ (deps c2c.exe))
+
 ; #35 phase 1: machine-wide deliver-service scaffold (lock/pidfile/doctor stub).
 (test
  (name test_c2c_deliver_managed)

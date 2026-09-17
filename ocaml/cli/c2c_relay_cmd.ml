@@ -683,18 +683,36 @@ let set_config_field fields key v =
 let relay_enable_cmd =
   let url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "url" ] ~docv:"URL"
-      ~doc:(Printf.sprintf
-              "Relay to activate. Defaults to the public relay (%s); pass a \
-               URL to use a private relay instead."
-              default_public_relay_url))
+      ~doc:"Relay to activate. Precedence: this flag, then $(b,C2C_RELAY_URL), \
+            then a URL already saved in relay.json (including one parked by \
+            $(b,c2c relay disable)); the public relay is used only when none \
+            of those is set.")
   in
   let token =
     Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN"
       ~doc:"Bearer token for a token-protected relay.")
   in
   let+ url = url and+ token = token in
-  let chosen = match url with Some u when String.trim u <> "" -> String.trim u
-                            | _ -> default_public_relay_url in
+  (* B310: activation precedence matches every other surface (B300):
+     --url > C2C_RELAY_URL > an already-saved URL — only a host with none of
+     those gets the public relay. Previously the ambient env (and any saved
+     URL) was ignored and enable silently activated the public relay while
+     the shell kept using the private one: traffic split across two relays. *)
+  let chosen =
+    match url with
+    | Some u when String.trim u <> "" -> String.trim u
+    | _ ->
+        let from_env_or_config =
+          match Relay_activation.url () with
+          | Some u -> Some u
+          (* Relay_activation treats a URL parked by `relay disable` as off
+             (B300: enabled:false means inactive), but for enable that URL is
+             still the configured relay to restore — disable's own output
+             promises `c2c relay enable` restores it. *)
+          | None -> relay_config_string_field "url"
+        in
+        Option.value from_env_or_config ~default:default_public_relay_url
+  in
   let fields = relay_config_fields () in
   let fields = set_config_field fields "url" (`String chosen) in
   let fields = set_config_field fields "enabled" (`Bool true) in
