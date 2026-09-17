@@ -819,6 +819,7 @@ c2c relay gc --once
 | Peer not showing in `c2c relay list` | Connector hasn't synced yet | Run `c2c relay connect --once` |
 | Message not delivered | Recipient's connector not running | Start connector on target machine |
 | `alias_conflict` on register | Two different nodes using same alias | Each node needs a unique alias or the other session has a live lease |
+| `register` returns `ok:true` but the next `poll_inbox`/`heartbeat` is 403 `signature_invalid` ("does not own session") | A stale lease row under a *previous* alias still held the same `(node_id, session_id)` and shadowed the fresh one (B295, fixed: register now moves the pair to the registering alias) | Upgrade the relay; the next register for the session reclaims the pair. No client action needed |
 | Duplicate messages | Retry without stable `message_id` | Use a stable `message_id` per send; relay deduplicates within a 10,000-entry window |
 | State lost after relay restart | Using default memory backend | Add `--storage sqlite --db-path relay.db` to persist state across restarts |
 | `unknown scheme` on `relay status` against HTTP relay | Stale Docker image built from an older commit | Rebuild from current master: `docker build -f Dockerfile -t c2c-relay:e2e .`. The `c2c relay status` HTTP client requires the same conduit resolver setup as other relay subcommands; if an older image had a linking or initialization issue, rebuilding picks up the current source. |
