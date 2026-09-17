@@ -1807,9 +1807,14 @@ let append_outbox_entry broker_root ~from_alias ~to_alias ~content ?message_id (
     @ msg_id_assoc
   ) in
   let line = Yojson.Safe.to_string json ^ "\n" in
-  let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o644 path in
-  Fun.protect ~finally:(fun () -> close_out oc)
-    (fun () -> output_string oc line)
+  (* B305: the enqueue path used to append with no lock, so an entry landing
+     inside sync's read→rewrite window was truncated away by write_outbox.
+     Same sidecar and Unix.lockf primitive as with_outbox_lock; fcntl record
+     locks are per-process, so same-process re-acquisition cannot deadlock. *)
+  with_outbox_lock broker_root (fun () ->
+    let oc = open_out_gen [Open_text; Open_append; Open_creat] 0o644 path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc line))
 
 (* ---------------------------------------------------------------------------
  * HTTP client (inline — minimal, matches Relay_client in relay.ml)
@@ -2687,7 +2692,7 @@ let sync (t : t) : sync_result Lwt.t =
      HTTP sends → write_outbox (trunc). Without the lock, a concurrent
      append between read and write is silently lost. Lock is exclusive so we
      also serialise with any other outbox reader/writer. *)
-  let outbox_forwarded, outbox_failed, remaining_outbox, dlqed, send_errors =
+  let outbox_forwarded, outbox_failed, _remaining_outbox, dlqed, send_errors =
     with_outbox_lock t.broker_root (fun () ->
       let outbox = read_outbox t.broker_root in
       (* B297: the send arm knows the sender alias even though the relay's
@@ -2696,6 +2701,7 @@ let sync (t : t) : sync_result Lwt.t =
         { pe_op = "send"; pe_code = code; pe_alias = Some from;
           pe_session_id = None; pe_detail = detail }
       in
+      let fwd, failed, remaining, dlqed, errs =
       List.fold_left (fun (fwd, failed, remaining, dlqed, errs) entry ->
         if !abort_on_rate_limit then
           (* Keep the entry for the next pass; do not burn attempts on 429. *)
@@ -2751,9 +2757,15 @@ let sync (t : t) : sync_result Lwt.t =
                (err_class ^ ": " ^ detail) :: errs)
         end
       ) (0, 0, [], 0, []) outbox
+      in
+      (* B305: the rewrite stays inside the same lock window as the read.
+         Releasing the lock before write_outbox let a concurrent
+         append_outbox_entry land between unlock and the truncating rewrite
+         and be silently deleted. *)
+      write_outbox t.broker_root (List.rev remaining);
+      (fwd, failed, remaining, dlqed, errs)
     )
   in
-  write_outbox t.broker_root (List.rev remaining_outbox);
 
   (* 3. Poll inbound for registered sessions. H9: validate each row against
      the minimum broker-inbox contract BEFORE it touches the local inbox
