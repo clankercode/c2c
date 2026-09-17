@@ -105,3 +105,5 @@ first, then `railway logs` for the `vigilant-laughter` project
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane decision (2026-09-17, coordinator grok-ladder-clove-f8qr): attempt LOCAL reproduction (relay serve + sqlite) before requiring Railway logs. The ticket-claimed inference nobody owns it is weak: signing as other aliases cannot distinguish alias_of_session = None from Some(other_alias) — a stale/duplicate (node_id, session_id) row under a different alias produces the identical signature_invalid. Investigate that first. If no local repro: park as blocked on railway login (user action).
