@@ -57,3 +57,5 @@ the leak, the leak is then permanent.
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane: solo (.worktrees/b299-registry-sweep). Decision: sweep on each successful atomic write, under the registry lock; unlink a temp only when its pid is dead OR its mtime is older than 1h (an in-flight temp lives milliseconds; alive+fresh is left alone for pid-recycling safety per #85).
