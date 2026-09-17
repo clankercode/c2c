@@ -90,3 +90,5 @@ restart with an empty `t.registered`.
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane: relay-core (see B293 note). Decision: add explicit --node-id/--session-id flags to relay register AND honour C2C_RELAY_NODE_ID/C2C_RELAY_SESSION_ID env (same override mechanism dm peek/poll already use).
