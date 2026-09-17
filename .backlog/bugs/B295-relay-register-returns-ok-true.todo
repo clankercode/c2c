@@ -1,17 +1,18 @@
 ---
+claimed_at: "2026-09-17T04:06:16Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 created_at: "2026-09-17T02:45:47Z"
 depends_on: []
 estimate_hours: 4
 id: B295
 priority: high
-status: pending
-tags:
-    - relay
-    - server
-    - needs-railway-logs
+started_at: "2026-09-17T04:06:16Z"
+status: in_progress
+tags: []
 title: relay /register returns ok:true but the lease is not moved for specific aliases (alias_of_session then returns None)
-updated_at: "2026-09-17T02:45:47Z"
+updated_at: "2026-09-17T04:06:16Z"
 ---
 ## Symptom
 

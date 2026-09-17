@@ -1,17 +1,18 @@
 ---
+claimed_at: "2026-09-17T04:06:16Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T02:44:37Z"
 depends_on: []
 estimate_hours: 3
 id: B292
 priority: critical
-status: pending
-tags:
-    - relay
-    - connector
-    - crashloop
+started_at: "2026-09-17T04:06:16Z"
+status: in_progress
+tags: []
 title: one wedged broker root exit-3s the whole machine relay connector (blast radius = all 241 roots)
-updated_at: "2026-09-17T02:44:37Z"
+updated_at: "2026-09-17T04:06:16Z"
 ---
 ## Symptom
 
