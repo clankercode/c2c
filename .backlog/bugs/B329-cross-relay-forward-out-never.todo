@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
 estimate_hours: 1
 id: B329
 priority: high
+started_at: null
 status: pending
 tags: []
 title: cross-relay forward-out never binds from_alias to the verified signer - authenticated peers can spoof the sender cross-relay
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Cross-relay forwarded sends never bind from_alias to the verified signer. The verified_alias versus from_alias check exists only in the local-delivery else branch (relay.ml:5577-5579; the forward-out path responds before reaching it). When to_alias carries a non-local host and a peer relay is configured, the request is signed with THIS relays identity and forwarded with the body from_alias verbatim: any authenticated peer (verified as alice) can send to victim@peer2 with from_alias bob, and the peer relay delivers it as bob because relay-to-relay trust substitutes for sender binding. Local sends enforce the binding; the forward-out path omits it.
+
+## Fix direction
+
+Hoist the alias-mismatch rejection above the host-routing branch so it applies to forwarded sends too.
+
+## Evidence
+
+Server-core review 2026-09-17; verified in source by coordinator (check at 5578 is inside the local else arm only).
