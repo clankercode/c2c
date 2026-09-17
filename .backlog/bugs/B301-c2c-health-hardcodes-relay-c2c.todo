@@ -1,0 +1,62 @@
+---
+complexity: low
+created_at: "2026-09-17T02:50:26Z"
+depends_on: []
+estimate_hours: 1
+id: B301
+priority: medium
+status: pending
+tags:
+    - relay
+    - health
+    - config
+title: c2c health hardcodes relay.c2c.im and ignores relay.json, so private-relay hosts get a health line about the wrong server
+updated_at: "2026-09-17T02:50:26Z"
+---
+## Symptom
+
+`c2c health`'s relay probe ignores the machine's relay configuration entirely and
+hardcodes the public relay URL.
+
+`ocaml/cli/c2c_health_cmd.ml:89`:
+
+```
+let check_relay_http () =
+  let url = match Sys.getenv_opt "C2C_RELAY_URL" with
+            | Some v when v <> "" -> v
+            | _ -> "https://relay.c2c.im" in
+  ...
+```
+
+It consults `C2C_RELAY_URL` and then falls back to a **string literal**. It never
+calls `C2c_relay_cmd.resolve_relay_url`, so it never reads `relay.json`.
+
+## Consequences
+
+1. **A private-relay operator is told the wrong thing.** If a host is configured
+   via `c2c relay setup --url https://my-private-relay`, `c2c health` still
+   probes `relay.c2c.im` and reports *that* relay's reachability and version.
+   The line is confidently wrong: it describes a relay this host does not use.
+2. **Unconditional phone-home.** Because the fallback is a literal rather than
+   `resolve_relay_url`'s `None`, `c2c health` contacts the public relay on every
+   invocation on every host, even one with no c2c configuration at all.
+   Reproduced with a clean `HOME`.
+3. It is a second, independent copy of URL-resolution logic that has already
+   drifted from the canonical one (`resolve_relay_url`, `c2c_relay_cmd.ml:371`),
+   which correctly handles flag -> env -> broker-root `relay.json` ->
+   machine-wide `relay.json`.
+
+## Fix
+
+Replace the bespoke resolution with `C2c_relay_cmd.resolve_relay_url None` and
+skip the probe entirely when it returns `None`. Report
+`relay: not activated (local-only)` in that case.
+
+Filed separately from the opt-in behaviour change (B300) because it is a
+self-contained correctness fix worth landing on its own: even with the relay
+deliberately activated, `c2c health` is currently reporting on the wrong server
+for any private-relay user.
+
+## Evidence
+
+Related: B300 (relay should be opt-in). Behaviour probed on xsm 2026-09-17.
