@@ -793,6 +793,25 @@ type t = {
 let local_inbox_path broker_root session_id =
   broker_root // (session_id ^ ".inbox.json")
 
+(* B306: same sidecar path and Unix.lockf primitive the broker uses for
+   every enqueue/drain (c2c_broker.ml with_inbox_lock), so the connector's
+   inbound merge is serialized against broker drains on the same file. *)
+let local_inbox_lock_path broker_root session_id =
+  broker_root // (session_id ^ ".inbox.lock")
+
+let with_local_inbox_lock broker_root session_id f =
+  let fd =
+    Unix.openfile (local_inbox_lock_path broker_root session_id)
+      [ O_RDWR; O_CREAT ] 0o644
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.lockf fd Unix.F_ULOCK 0 with _ -> ());
+      (try Unix.close fd with _ -> ()))
+    (fun () ->
+      Unix.lockf fd Unix.F_LOCK 0;
+      f ())
+
 type local_registration = {
   lr_session_id : string;
   lr_alias : string;
@@ -909,23 +928,28 @@ let retain_eligible_registered regs registered =
 let append_to_local_inbox broker_root session_id messages =
   if messages = [] then 0
   else
-    let path = local_inbox_path broker_root session_id in
-    let existing_json =
-      match C2c_io.read_json_opt path with
-      | None -> `List []
-      | Some json -> json in
-    let existing = match existing_json with
-      | `List lst -> lst
-      | _ -> [] in
-    let merged_json = `List (existing @ messages) in
-    let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
-    let oc = open_out tmp in
-    Fun.protect ~finally:(fun () -> close_out oc)
-      (fun () ->
-        Yojson.Safe.to_channel oc merged_json ~std:false;
-        close_out oc;
-        Unix.rename tmp path);
-    List.length messages
+    (* B306: hold the broker's inbox lock across the whole read-merge-write
+       window; unlocked, a concurrent broker drain could archive the read
+       rows and save an empty file between read and rename, re-delivering or
+       silently dropping rows. *)
+    with_local_inbox_lock broker_root session_id (fun () ->
+      let path = local_inbox_path broker_root session_id in
+      let existing_json =
+        match C2c_io.read_json_opt path with
+        | None -> `List []
+        | Some json -> json in
+      let existing = match existing_json with
+        | `List lst -> lst
+        | _ -> [] in
+      let merged_json = `List (existing @ messages) in
+      let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+      let oc = open_out tmp in
+      Fun.protect ~finally:(fun () -> close_out oc)
+        (fun () ->
+          Yojson.Safe.to_channel oc merged_json ~std:false;
+          close_out oc;
+          Unix.rename tmp path);
+      List.length messages)
 
 (* ---------------------------------------------------------------------------
  * S5c Phase B: Pseudo-registration storage (separate from registry.json)
