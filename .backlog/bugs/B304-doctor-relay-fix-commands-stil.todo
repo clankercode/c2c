@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:10Z"
 depends_on: []
 estimate_hours: 1
 id: B304
 priority: high
+started_at: null
 status: pending
 tags: []
 title: doctor relay fix_commands still recommend pattern-killing and backgrounding the connector (B296 incomplete)
@@ -24,3 +26,5 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom\n\nB296 killed the backgrounding remediation in relay_state.ml but Relay_doctor.fix_restart_connect / fix_start_connect (ocaml/relay_doctor.ml:324-335) still emit shell recipes whose fallback arms (1) kill the connector process by command-line pattern — which under systemd only kills the supervisor child, restarted in 1s — and (2) background c2c relay connect with a trailing ampersand, i.e. a child of the doctor-calling shell that dies with it (the exact 55-days-dark failure B296 cites). Every FAIL arm of doctor relay connector prints one of these as the copy-paste fix. c2c restart relay-connect in the same recipes now also fights the systemd unit (B302).\n\n## Fix direction\n\nReplace both with the B296-compliant c2c start/restart relay-connect forms, systemd-aware per B302. Update any test asserting the old strings.\n\n## Evidence\n\nRead-only relay review 2026-09-17 (verified in source by coordinator: lines 324-335).
