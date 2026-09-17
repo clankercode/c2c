@@ -5260,19 +5260,23 @@ end = struct
                   (Printf.sprintf "timestamp skew %.1fs outside [-%.0f, +%.0f]"
                      skew register_ts_past_window register_ts_future_window))
               else
-                match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
-                | Error code ->
-                  respond_register_bad_request (json_error_str code "nonce already seen within TTL")
-                | Ok () ->
-                  let signed =
-                    Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
-                      [ alias; String.lowercase_ascii relay_url;
-                        identity_pk_b64; timestamp_str; nonce_b64 ]
-                  in
-                  if not (Relay_identity.verify ~pk:identity_pk ~msg:signed ~sig_) then
-                    respond_register_unauthorized (json_error_str relay_err_signature_invalid
-                      "Ed25519 signature does not verify against identity_pk")
-                  else
+                (* B336: verify the signature BEFORE consuming the nonce — a
+                   failed verification must not poison the nonce for the
+                   legitimate retry. A nonce reused after a VERIFIED attempt
+                   is still rejected (replay protection unchanged). *)
+                let signed =
+                  Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
+                    [ alias; String.lowercase_ascii relay_url;
+                      identity_pk_b64; timestamp_str; nonce_b64 ]
+                in
+                if not (Relay_identity.verify ~pk:identity_pk ~msg:signed ~sig_) then
+                  respond_register_unauthorized (json_error_str relay_err_signature_invalid
+                    "Ed25519 signature does not verify against identity_pk")
+                else
+                  match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+                  | Error code ->
+                    respond_register_bad_request (json_error_str code "nonce already seen within TTL")
+                  | Ok () ->
                     let result =
                       R.register relay ~node_id ~session_id ~alias
                         ~client_type ~client_version ~client_os ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
@@ -5928,35 +5932,38 @@ end = struct
               Error (relay_err_timestamp_out_of_window,
                 Printf.sprintf "ts skew %.1fs outside window" skew)
             else
-              match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
-              | Error code -> Error (code, "nonce already seen within TTL")
-              | Ok () ->
-                (* B114 (review finding 1): the proof only AUTHENTICATES the
-                   alias if [identity_pk] is the key already bound to it. A
-                   self-signed proof for an alias with no registered binding
-                   is meaningless (any attacker key would "verify"), so an
-                   absent binding is rejected — there is no first-proof TOFU
-                   pinning. The alias must have registered a signed identity
-                   first (register_signed binds the key). *)
-                (match R.identity_pk_of relay ~alias with
-                 | Some bound when bound <> identity_pk ->
-                   Error (relay_err_alias_identity_mismatch,
-                     "identity_pk does not match registered binding")
-                 | None ->
-                   Error (relay_err_alias_identity_mismatch,
-                     "alias has no registered identity binding; register a \
-                      signed identity before signing room ops")
-                 | Some _ ->
-                           let blob =
-                             Relay_identity.canonical_msg ~ctx:sign_ctx
-                               ([ room_id; alias ] @ extra_signed_fields
-                                @ [ identity_pk_b64; timestamp_str; nonce_b64 ])
-                           in
-                   if Relay_identity.verify ~pk:identity_pk ~msg:blob ~sig_ then
-                     Ok ()
-                   else
-                     Error (relay_err_signature_invalid,
-                       "Ed25519 signature does not verify"))
+              (* B336: binding check and signature verification happen BEFORE
+                 the nonce is consumed, so a failed verification does not
+                 burn the nonce for the legitimate retry; a nonce reused
+                 after a VERIFIED attempt is still rejected. *)
+              (* B114 (review finding 1): the proof only AUTHENTICATES the
+                 alias if [identity_pk] is the key already bound to it. A
+                 self-signed proof for an alias with no registered binding
+                 is meaningless (any attacker key would "verify"), so an
+                 absent binding is rejected — there is no first-proof TOFU
+                 pinning. The alias must have registered a signed identity
+                 first (register_signed binds the key). *)
+              (match R.identity_pk_of relay ~alias with
+               | Some bound when bound <> identity_pk ->
+                 Error (relay_err_alias_identity_mismatch,
+                   "identity_pk does not match registered binding")
+               | None ->
+                 Error (relay_err_alias_identity_mismatch,
+                   "alias has no registered identity binding; register a \
+                    signed identity before signing room ops")
+               | Some _ ->
+                         let blob =
+                           Relay_identity.canonical_msg ~ctx:sign_ctx
+                             ([ room_id; alias ] @ extra_signed_fields
+                              @ [ identity_pk_b64; timestamp_str; nonce_b64 ])
+                         in
+                 if not (Relay_identity.verify ~pk:identity_pk ~msg:blob ~sig_) then
+                   Error (relay_err_signature_invalid,
+                     "Ed25519 signature does not verify")
+                 else
+                   match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+                   | Error code -> Error (code, "nonce already seen within TTL")
+                   | Ok () -> Ok ())
 
   let handle_join_room relay ~require_signed body =
     let alias = get_string body "alias" in
@@ -6351,15 +6358,16 @@ end = struct
                     Error (relay_err_timestamp_out_of_window,
                       Printf.sprintf "ts skew %.1fs outside window" skew)
                   else
-                    match R.check_register_nonce relay ~nonce ~ts:ts_client with
-                    | Error code -> Error (code, "nonce already seen within TTL")
-                    | Ok () ->
-                      (* B114 (review finding 1): as with room ops, the
-                         envelope only authenticates [from_alias] when
-                         [sender_pk] is the key bound to it. An absent binding
-                         is rejected (no first-proof TOFU) — the sender must
-                         have registered a signed identity. *)
-                      (match R.identity_pk_of relay ~alias:from_alias with
+                    (* B336: binding check and signature verification happen
+                       BEFORE the nonce is consumed (same rationale as the
+                       register path and room-op proofs); replay protection
+                       after a verified use is unchanged. *)
+                    (* B114 (review finding 1): as with room ops, the
+                       envelope only authenticates [from_alias] when
+                       [sender_pk] is the key bound to it. An absent binding
+                       is rejected (no first-proof TOFU) — the sender must
+                       have registered a signed identity. *)
+                    (match R.identity_pk_of relay ~alias:from_alias with
                        | Some bound when bound <> sender_pk ->
                          Error (relay_err_alias_identity_mismatch,
                            "sender_pk does not match registered binding")
@@ -6375,11 +6383,13 @@ end = struct
                              [ room_id; from_alias; sender_pk_b64; enc;
                                ct_hash; ts; nonce ]
                          in
-                         if Relay_identity.verify ~pk:sender_pk ~msg:blob ~sig_ then
-                           Ok ()
-                         else
+                         if not (Relay_identity.verify ~pk:sender_pk ~msg:blob ~sig_) then
                            Error (relay_err_signature_invalid,
-                             "Ed25519 envelope signature does not verify"))
+                             "Ed25519 envelope signature does not verify")
+                         else
+                           match R.check_register_nonce relay ~nonce ~ts:ts_client with
+                           | Error code -> Error (code, "nonce already seen within TTL")
+                           | Ok () -> Ok ())
 
   let handle_send_room relay ~require_signed body =
     let from_alias = get_string body "from_alias" in

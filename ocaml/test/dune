@@ -558,6 +558,16 @@
  (libraries c2c_mcp alcotest yojson base64 unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B336: nonces are consumed only AFTER signature verification succeeds — a
+; failed verification must not poison the nonce for the legitimate retry;
+; replay protection after a verified use is unchanged. Register, room-op
+; proof, and signed room-send envelope; real loopback sqlite relay.
+(test
+ (name test_relay_b336_nonce_after_verify)
+ (modules test_relay_b336_nonce_after_verify)
+ (libraries c2c_mcp alcotest yojson base64 digestif.ocaml unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix))
+
 ; B293: "no live lease" is lease_not_found (not signature_invalid), and the
 ; connector drops a dead cached registration instead of retrying the dead
 ; lease forever. Real loopback sqlite server for the code split; scripted
