@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:12Z"
 depends_on: []
 estimate_hours: 1
 id: B315
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: deleted/unwritable broker root crashes the machine connector; deleted primary = permanent crash loop
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+A broker root deleted or made unwritable mid-service crashes the machine connector with an unhandled Sys_error: machine_root_sync_is_noop tolerates a missing dir, but the noop branch write_connector_state (c2c_relay_connector.ml:3549) and write_connector_state_error (3598) do bare open_out on a tmp path under the root. discover_machine_broker_roots always conses the primary, so a deleted PRIMARY repo dir is a permanent crash loop at every pass until operator action.
+
+## Fix direction
+
+Pre-check existence/writability (or catch Sys_error) at the state-writer call sites and skip the root with a left-discovery log line.
+
+## Evidence
+
+Connector review 2026-09-17.
