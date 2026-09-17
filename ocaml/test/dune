@@ -824,6 +824,16 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B340: WS subscribe handshake gets a server-issued single-use challenge
+; nonce (signed alias||ts||nonce; legacy alias||ts accepted for a recorded
+; transition, C2C_RELAY_WS_REQUIRE_NONCE ends it), and WS subscribers are
+; evicted when the alias's lease is taken over or released (B295).
+(test
+ (name test_relay_b340_ws_nonce_eviction)
+ (modules test_relay_b340_ws_nonce_eviction)
+ (libraries c2c_mcp alcotest base64 mirage-crypto-ec str yojson unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix))
+
 ; B339: unbounded-store retention — the gc sweep prunes dead_letter in both
 ; backends (30-day age + 10k cap, newest kept) and finally calls the never-
 ; invoked mobile-pair nonce cache cleanup (3600s window).

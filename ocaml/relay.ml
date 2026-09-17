@@ -717,6 +717,10 @@ module InMemoryRelay : RELAY = struct
     Hashtbl.replace t.inboxes key msgs
 
   let release_alias t alias =
+    (* B340: a released lease stops receiving push_dm — drop the alias's WS
+       subscribers so sockets authenticated under the old identity cannot
+       outlive it (B295). *)
+    ignore (Relay_ws_server.evict_subscribers ~alias);
     (match Hashtbl.find_opt t.leases alias with
      | Some lease ->
        Hashtbl.remove t.inboxes
@@ -821,6 +825,12 @@ module InMemoryRelay : RELAY = struct
                  shadowed := other :: !shadowed
              ) t.leases;
              List.iter (Hashtbl.remove t.leases) !shadowed;
+             (* B340: the shadowed aliases' leases are gone — their WS
+                subscribers must not keep receiving push_dm under the old
+                identity (B295). *)
+             List.iter (fun ghost ->
+               ignore (Relay_ws_server.evict_subscribers ~alias:ghost))
+               !shadowed;
              (* B332: shadowed aliases lose their lease with the takeover —
                 release their room membership too (release_alias semantics),
                 or they linger as ghosts no one can remove: leave_room is
@@ -1019,6 +1029,8 @@ module InMemoryRelay : RELAY = struct
 
   let unbind_alias t ~alias =
     with_lock t (fun () ->
+      (* B340: unbind drops the lease — its WS subscribers go with it. *)
+      ignore (Relay_ws_server.evict_subscribers ~alias);
       let had = Hashtbl.mem t.bindings alias in
       Hashtbl.remove t.bindings alias;
       Hashtbl.remove t.leases alias;
@@ -1726,8 +1738,12 @@ module InMemoryRelay : RELAY = struct
       Queue.iter (fun dl -> Queue.add dl t.dead_letter) kept;
       (* B339: the mobile-pair replay nonce cache is process-global and had
          no pruner; ride the gc cadence. ?now:None applies the trailing
-         optional so the call actually runs instead of building a closure. *)
+         optional so the call actually runs instead of building a closure.
+         B340: the WS subscribe-challenge store (same module-global shape)
+         is swept with its own TTL. *)
       ignore (cleanup_nonce_cache ?now:None ~older_than:mobile_pair_nonce_window_s);
+      ignore (Relay_ws_server.challenge_cleanup ?now:None
+                ~older_than:Relay_ws_server.ws_challenge_ttl ());
       `Ok (List.rev !expired, pruned)
     )
 
@@ -2576,6 +2592,8 @@ end = struct
 
   (* B219: inner worker — lock-free, called under the lock (register/gc). *)
   let release_alias conn alias =
+    (* B340: drop the alias's WS subscribers — see the in-memory arm. *)
+    ignore (Relay_ws_server.evict_subscribers ~alias);
     with_stmt conn "SELECT node_id, session_id FROM secure_leases_v2 WHERE alias = ?" (fun old_key_stmt ->
       Sqlite3.bind_text old_key_stmt 1 alias |> ignore;
       (match Sqlite3.step old_key_stmt with
@@ -2808,6 +2826,24 @@ end = struct
               bind_text del_members 2 session_id |> ignore;
               bind_text del_members 3 alias |> ignore;
               step del_members |> ignore);
+            (* B340: evict the WS subscribers of the shadowed aliases BEFORE
+               the rows go — a subscriber authenticated under the old
+               identity must not keep receiving push_dm after the takeover
+               (B295). *)
+            let shadowed_ws = ref [] in
+            with_stmt conn "SELECT alias FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?" (fun sel_shadow ->
+              bind_text sel_shadow 1 node_id |> ignore;
+              bind_text sel_shadow 2 session_id |> ignore;
+              bind_text sel_shadow 3 alias |> ignore;
+              let rec loop () =
+                match step sel_shadow with
+                | ROW -> shadowed_ws := Data.to_string_exn (column sel_shadow 0) :: !shadowed_ws; loop ()
+                | _ -> ()
+              in
+              loop ());
+            List.iter (fun ghost ->
+              ignore (Relay_ws_server.evict_subscribers ~alias:ghost))
+              !shadowed_ws;
             with_stmt conn "DELETE FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?" (fun del ->
               bind_text del 1 node_id |> ignore;
               bind_text del 2 session_id |> ignore;
@@ -3016,6 +3052,8 @@ end = struct
   let unbind_alias t ~alias =
     with_lock t (fun () ->
       let conn = t.db in
+      (* B340: unbind drops the lease — its WS subscribers go with it. *)
+      ignore (Relay_ws_server.evict_subscribers ~alias);
       let before = ref false in
       with_stmt conn "SELECT alias FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 alias |> ignore;
@@ -3380,8 +3418,10 @@ end = struct
         Sqlite3.bind_int cap_dl 1 dead_letter_max_entries |> ignore;
         ignore (Sqlite3.step cap_dl));
       (* B339: mobile-pair replay nonce cache (process-global); see the
-         in-memory arm for the ?now:None note. *)
+         in-memory arm for the ?now:None note. B340: WS challenge store. *)
       ignore (cleanup_nonce_cache ?now:None ~older_than:mobile_pair_nonce_window_s);
+      ignore (Relay_ws_server.challenge_cleanup ?now:None
+                ~older_than:Relay_ws_server.ws_challenge_ttl ());
       `Ok (List.rev !expired_aliases, pruned)
     )
 
@@ -7693,12 +7733,26 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
            respond_bad_request (json_error_str "observer_upgrade_required" "Upgrade: websocket header required"))
 
       (* === Slice 2: WebSocket push subscription endpoint === *)
+      (* === B340: server-issued challenge nonce for the WS subscribe
+         handshake. Self-auth class (see relay_server_auth): the nonce is
+         unauthenticated by design — it is a single-use, short-TTL random
+         the client must sign over, not a capability. Bounded store; swept
+         by the gc arm. === *)
+      | `GET, "/ws/subscribe-challenge" ->
+        let nonce = Relay_ws_server.challenge_issue () in
+        respond_ok (`Assoc [
+          ("nonce", `String nonce);
+          ("ts", `Float (Unix.gettimeofday ()));
+        ])
+
       | `GET, "/ws/subscribe" ->
         let upgrade = Header.get (Request.headers req) "Upgrade" in
         let sec_websocket_key = Header.get (Request.headers req) "Sec-WebSocket-Key" in
         let c2c_alias = Header.get (Request.headers req) "X-C2C-Alias" in
         let c2c_ts = Header.get (Request.headers req) "X-C2C-Timestamp" in
         let c2c_sig = Header.get (Request.headers req) "X-C2C-Signature" in
+        (* B340: server-issued challenge nonce (optional during transition). *)
+        let c2c_nonce = Header.get (Request.headers req) "X-C2C-Nonce" in
         let client_ip = get_client_ip conn in
         (match upgrade with
          | Some u when String.lowercase_ascii u = "websocket" ->
@@ -7710,7 +7764,7 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
             | Some ws_key, Some alias, Some ts_str, Some sig_b64 ->
               (* Validate auth *)
               let lookup_pk ~alias = R.identity_pk_of relay ~alias in
-              (match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64 with
+              (match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64 ~nonce:c2c_nonce with
                | Relay_ws_server.Auth_error msg ->
                  Relay_ratelimit.structured_log
                    ~event:"ws_subscribe"

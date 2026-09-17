@@ -27,7 +27,7 @@ let test_validate_auth_valid () =
     Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_
   in
   let lookup_pk ~alias:_ = Some pk in
-  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 with
+  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 ~nonce:None with
   | Relay_ws_server.Auth_ok validated_alias ->
       Alcotest.(check string) "alias matches" alias validated_alias
   | Relay_ws_server.Auth_error msg ->
@@ -43,7 +43,7 @@ let test_validate_auth_invalid_sig () =
     Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_
   in
   let lookup_pk ~alias:_ = Some pk in
-  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 with
+  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 ~nonce:None with
   | Relay_ws_server.Auth_ok _ -> Alcotest.fail "expected Auth_error, got Auth_ok"
   | Relay_ws_server.Auth_error msg ->
       Alcotest.(check bool) "got auth error" true (String.length msg > 0);
@@ -55,7 +55,7 @@ let test_validate_auth_unknown_alias () =
   let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
   let sig_b64 = "fakesig123456" in
   let lookup_pk ~alias:_ = None in
-  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 with
+  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 ~nonce:None with
   | Relay_ws_server.Auth_ok _ -> Alcotest.fail "expected Auth_error, got Auth_ok"
   | Relay_ws_server.Auth_error msg ->
       Alcotest.(check bool) "got auth error" true (String.length msg > 0);
@@ -74,7 +74,7 @@ let test_validate_auth_expired_ts () =
     Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_
   in
   let lookup_pk ~alias:_ = Some pk in
-  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 with
+  match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str:ts ~sig_b64 ~nonce:None with
   | Relay_ws_server.Auth_ok _ -> Alcotest.fail "expected Auth_error, got Auth_ok"
   | Relay_ws_server.Auth_error msg ->
       Alcotest.(check bool) "got auth error" true (String.length msg > 0);
@@ -554,14 +554,15 @@ let test_connect_subscribe_timeout_does_not_grow_fds () =
            (match count_fds () with
             | None -> Lwt.return_unit
             | Some after ->
-                (* Acceptor may hold a handful of accepted FDs; client must not
-                   leave one ESTAB per attempt. Allow small slack for noise. *)
+                (* B340: each attempt now opens up to TWO sockets (challenge
+                   pre-flight + upgrade), so the budget scales per attempt.
+                   A per-attempt LEAK would still show as ~2/attempt growth. *)
                 let growth = after - baseline in
                 Alcotest.(check bool)
                   (Printf.sprintf
                      "FD growth bounded (baseline=%d after=%d growth=%d)"
                      baseline after growth)
-                  true (growth <= 12);
+                  true (growth <= 2 * 8 + 8);
                 Lwt.return_unit)))
 
 let test_connect_subscribe_succeeds_within_timeout () =
@@ -577,11 +578,31 @@ let test_connect_subscribe_succeeds_within_timeout () =
        | Unix.ADDR_INET (_, p) -> p
        | _ -> failwith "expected IPv4"
      in
-     let serve =
+     (* B340: the client pre-flights /ws/subscribe-challenge on one
+        connection, then upgrades on a second. Serve both: a 200 JSON
+        challenge first, then the 101 upgrade. *)
+     let serve_challenge =
        Lwt_unix.accept listen_fd >>= fun (c, _) ->
        let ic = Lwt_io.of_fd ~mode:Lwt_io.Input c in
        let oc = Lwt_io.of_fd ~mode:Lwt_io.Output c in
-       (* Drain request headers. *)
+       let rec drain () =
+         Lwt_io.read_line ic >>= fun line ->
+         if line = "" then Lwt.return_unit else drain ()
+       in
+       drain () >>= fun () ->
+       let body = {|{"nonce":"c2ctestnonce123","ts":1}|} in
+       Lwt_io.write oc
+         (Printf.sprintf
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s"
+            (String.length body) body)
+       >>= fun () ->
+       Lwt_io.flush oc >>= fun () ->
+       Lwt.catch (fun () -> Lwt_unix.close c) (fun _ -> Lwt.return_unit)
+     in
+     let serve_upgrade =
+       Lwt_unix.accept listen_fd >>= fun (c, _) ->
+       let ic = Lwt_io.of_fd ~mode:Lwt_io.Input c in
+       let oc = Lwt_io.of_fd ~mode:Lwt_io.Output c in
        let rec drain () =
          Lwt_io.read_line ic >>= fun line ->
          if line = "" then Lwt.return_unit else drain ()
@@ -603,12 +624,16 @@ let test_connect_subscribe_succeeds_within_timeout () =
      let endpoint = hung_endpoint port in
      Lwt.finalize
        (fun () ->
-          serve
+          (* Both servers must run concurrently with the client: it opens
+             the challenge connection first, then the upgrade connection. *)
+          serve_challenge
           <&>
-          (Relay_ws_client.connect_subscribe
-             ~endpoint ~alias:"b272ok@deadbeefcaf2" ~identity:id ~timeout:2.0 ()
-           >>= fun (_session, close) ->
-           close ()))
+          (serve_upgrade
+           <&>
+           (Relay_ws_client.connect_subscribe
+              ~endpoint ~alias:"b272ok@deadbeefcaf2" ~identity:id ~timeout:2.0 ()
+            >>= fun (_session, close) ->
+            close ())))
        (fun () ->
           Lwt.catch (fun () -> Lwt_unix.close listen_fd) (fun _ -> Lwt.return_unit)))
 
@@ -664,11 +689,10 @@ let test_connect_subscribe_429_raises_upgrade_rejected () =
        | Unix.ADDR_INET (_, p) -> p
        | _ -> Alcotest.fail "expected ADDR_INET"
      in
-     let serve =
-       Lwt_unix.accept listen_fd >>= fun (c, _) ->
+     let respond_429 c =
        let oc = Lwt_io.of_fd ~mode:Lwt_io.Output c in
-       (* Drain request lines until blank. *)
        let ic = Lwt_io.of_fd ~mode:Lwt_io.Input c in
+       (* Drain request lines until blank. *)
        let rec drain () =
          Lwt_io.read_line ic >>= fun line ->
          if line = "" then Lwt.return_unit else drain ()
@@ -690,6 +714,14 @@ let test_connect_subscribe_429_raises_upgrade_rejected () =
        Lwt_io.write oc resp >>= fun () ->
        Lwt_io.flush oc >>= fun () ->
        Lwt.catch (fun () -> Lwt_unix.close c) (fun _ -> Lwt.return_unit)
+     in
+     (* B340: the client pre-flights the challenge first (also 429 here,
+        so it falls back), then the real upgrade gets the metered 429. *)
+     let serve =
+       Lwt_unix.accept listen_fd >>= fun (c, _) ->
+       respond_429 c >>= fun () ->
+       Lwt_unix.accept listen_fd >>= fun (c2, _) ->
+       respond_429 c2
      in
      let id = Relay_identity.generate ~alias_hint:"b279" () in
      let endpoint = hung_endpoint port in
