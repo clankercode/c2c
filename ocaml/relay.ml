@@ -3077,7 +3077,12 @@ end = struct
       let conn = t.db in
       let now = Unix.gettimeofday () in
       let found_lease = ref None in
-      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM secure_leases_v2 WHERE node_id = ? AND session_id = ?" (fun stmt ->
+      (* B333: same treatment as alias_of_session's B295 fix — scan
+         freshest-first and skip released rows. Last-row-wins with no ORDER BY
+         let a legacy released shadow row (higher rowid than the live row)
+         win the scan, so a heartbeat whose handler pre-check passed released
+         the shadow and failed unknown_alias. *)
+      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? ORDER BY last_seen DESC" (fun stmt ->
       Sqlite3.bind_text stmt 1 node_id |> ignore;
       Sqlite3.bind_text stmt 2 session_id |> ignore;
       let rec find_lease () =
@@ -3122,7 +3127,10 @@ end = struct
               ()
           in
           found_lease := Some lease;
-          find_lease ()
+          if alias_released ~now ~last_seen then find_lease ()
+            (* B333: released row — skip it, keep scanning for a live one. *)
+          else ()
+            (* Freshest live row wins: stop scanning (no last-row-wins). *)
         ) else if rc <> Rc.DONE then
           failwith ("heartbeat step failed: " ^ Rc.to_string rc)
       in

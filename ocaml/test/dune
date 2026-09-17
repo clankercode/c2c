@@ -823,3 +823,12 @@
  (modules test_relay_b332_takeover_room_roster)
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
+
+; B333: sqlite heartbeat pair scan (find_lease) gets the B295 treatment —
+; ORDER BY last_seen DESC and released-skip — so a legacy released shadow row
+; at a higher rowid cannot make a live heartbeat fail with unknown_alias.
+(test
+ (name test_relay_b333_heartbeat_pair_scan)
+ (modules test_relay_b333_heartbeat_pair_scan)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
