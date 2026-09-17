@@ -68,6 +68,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?last_error_op
     cs_inbound_rejected_note = None;
     cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
     cs_errors = [];
+    cs_rate_limited = false; cs_retry_after_s = None;
   }
 
 (* --- acceptance state: Unconfigured ---------------------------------------- *)
@@ -922,6 +923,82 @@ let test_whoami_json_human_parity_unconfigured () =
   check bool "unconfigured whoami keeps neutral local-session note" true
     (string_contains ~needle:"local session alias" out_h)
 
+(* --- B320: rate_limited / retry_after_s surfaced from connector-state -------
+
+   B244 has the connector WRITE rate_limited/retry_after_s into
+   connector-state.json, but the typed reader had no such fields and every
+   consumer (doctor, Relay_state.connector_info, send, monitor) reads the
+   typed record — so the only 429 visibility was connector stdout. The
+   reader must parse both fields (absent -> false/None, backward compatible)
+   and connector_json/connector_human must surface them so doctor/status
+   shows chronic 429s. Exercised through the full stack: state FILE ->
+   typed read -> connector_info -> human/JSON. *)
+
+let write_state_file ?(rate_limited = false) ?retry_after_s ~dir () =
+  let now = Unix.gettimeofday () in
+  let oc = open_out (Filename.concat dir "connector-state.json") in
+  Yojson.Safe.to_channel oc
+    (`Assoc
+       [ ("last_sync_ts", `Float now)
+       ; ("last_ok_ts", `Float now)
+       ; ("pid", `Int (Unix.getpid ()))
+       ; ("registered", `List [])
+       ; ("rate_limited", `Bool rate_limited)
+       ; ( "retry_after_s",
+           match retry_after_s with
+           | Some ra -> `Float ra
+           | None -> `Null )
+       ]);
+  close_out oc
+
+let json_member key j =
+  match j with
+  | `Assoc fields -> List.assoc_opt key fields
+  | _ -> None
+
+(* Write a state file, run the typed reader, build the connector_info the
+   status/doctor surfaces render from. The match is parenthesized so its
+   arms cannot swallow the Fun.protect closing sequence. *)
+let info_of_state_file ?rate_limited ?retry_after_s () =
+  let dir = mkdtemp () in
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command ("rm -rf " ^ Filename.quote dir)))
+    (fun () ->
+       write_state_file ?rate_limited ?retry_after_s ~dir ();
+       (match C2c_relay_connector.read_connector_state dir with
+        | None -> failwith "connector-state file did not parse"
+        | Some st ->
+            connector_info ~state:(Some st) ~now:(Unix.gettimeofday ()) ()))
+
+let test_connector_rate_limited_rendered () =
+  let info = info_of_state_file ~rate_limited:true ~retry_after_s:30.0 () in
+  let human = connector_human info in
+  check bool "human line mentions the rate limit" true
+    (string_contains ~needle:"rate limited" human);
+  check bool "human line carries retry_after" true
+    (string_contains ~needle:"retry_after=30s" human);
+  let j = connector_json info in
+  check bool "json carries rate_limited=true" true
+    (json_member "rate_limited" j = Some (`Bool true));
+  check bool "json carries retry_after_s" true
+    (json_member "retry_after_s" j = Some (`Float 30.0))
+
+let test_connector_rate_limited_without_retry_after () =
+  let info = info_of_state_file ~rate_limited:true () in
+  check bool "human line mentions the rate limit without retry_after" true
+    (string_contains ~needle:"rate limited" (connector_human info));
+  check bool "json retry_after_s is null when absent" true
+    (json_member "retry_after_s" (connector_json info) = Some `Null)
+
+let test_connector_not_rate_limited_is_silent () =
+  (* Backward compatibility: older state files have no rate fields at all;
+     the typed read defaults them and neither surface claims a rate limit. *)
+  let info = info_of_state_file () in
+  check bool "human line silent when not rate limited" false
+    (string_contains ~needle:"rate limited" (connector_human info));
+  check bool "json rate_limited defaults to false" true
+    (json_member "rate_limited" (connector_json info) = Some (`Bool false))
+
 (* --- runner ------------------------------------------------------------------ *)
 
 let () =
@@ -995,4 +1072,11 @@ let () =
       ( "whoami end-to-end",
         [ test_case "json/human parity (unconfigured)" `Quick
             test_whoami_json_human_parity_unconfigured ] );
+      ( "B320 rate limiting",
+        [ test_case "rate_limited + retry_after surfaced" `Quick
+            test_connector_rate_limited_rendered;
+          test_case "rate_limited without retry_after" `Quick
+            test_connector_rate_limited_without_retry_after;
+          test_case "absent fields default and stay silent" `Quick
+            test_connector_not_rate_limited_is_silent ] );
     ]

@@ -1364,6 +1364,12 @@ type connector_state = {
   (* B297: last sync's errors, deduplicated per (op, code, alias) with
      counts — [cs_last_error_*] keeps only the first. Additive/optional. *)
   cs_errors : connector_state_error list;
+  (* B244/B320: the last sync observed a relay rate-limit (HTTP 429 /
+     error_code=rate_limit_exceeded), and the retry_after the relay
+     advertised when present. Additive/optional — older state files without
+     the fields read false/None. *)
+  cs_rate_limited : bool;
+  cs_retry_after_s : float option;
 }
 
 let write_connector_state ?node_id broker_root (result : sync_result) =
@@ -1538,6 +1544,11 @@ let read_connector_state broker_root : connector_state option =
         cs_wedge_reason = get_str "wedge_reason";
         cs_wedge_count = wedge_count;
         cs_errors = errors;
+        cs_rate_limited =
+          (match json |> member "rate_limited" with
+           | `Bool b -> b
+           | _ -> false);
+        cs_retry_after_s = get_float "retry_after_s";
       }
 
 (** B209: the authoritative relay peek key for a connector-managed [alias].

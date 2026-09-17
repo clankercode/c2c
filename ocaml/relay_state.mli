@@ -232,6 +232,15 @@ type connector_info = {
           ("policy-rejected" = this host's own B196 filtering;
           "relay-contract-violating" = the relay served an undeliverable or
           misaddressed row). [None] when the last sync dropped nothing. *)
+  conn_rate_limited : bool;
+      (** B320: the connector's LAST sync of this root observed a relay
+          rate limit (HTTP 429). [false] on older state files without the
+          field. Not an input to [conn_health] — throttling is the relay
+          pushing back, not this host failing — but chronic 429s must be
+          visible beyond connector stdout. *)
+  conn_retry_after_s : float option;
+      (** B320: retry_after the relay advertised on that 429, when present.
+          [None] when not rate limited or no retry_after was advertised. *)
 }
 
 (** Derive connector info from the broker-owned connector-state file (already

@@ -42,6 +42,7 @@ let conn_state ?(last_sync = 0.0) ?(last_ok = 0.0) ?err_op ?err_detail ?err_ts
     cs_inbound_rejected_note = None;
     cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
     cs_errors = [];
+    cs_rate_limited = false; cs_retry_after_s = None;
   }
 
 let has_needle ~needle haystack = string_contains ~needle haystack

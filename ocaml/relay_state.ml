@@ -261,6 +261,13 @@ type connector_info = {
      LAST sync, not a running total. *)
   conn_inbound_rejected : int;
   conn_inbound_rejected_note : string option;
+  (* B320/B244: the connector's last sync of this broker root was rate
+     limited (HTTP 429), and the retry_after the relay advertised when
+     present. Chronic 429s were previously visible only on connector
+     stdout; these surface them in status/doctor. Not health — a 429 is
+     the relay throttling, not this host failing. *)
+  conn_rate_limited : bool;
+  conn_retry_after_s : float option;
 }
 
 (* B296: never recommend backgrounding. The old fallback arms
@@ -380,6 +387,14 @@ let connector_info ?(process_present = false)
       (match state with
        | Some st -> st.C2c_relay_connector.cs_inbound_rejected_note
        | None -> None);
+    conn_rate_limited =
+      (match state with
+       | Some st -> st.C2c_relay_connector.cs_rate_limited
+       | None -> false);
+    conn_retry_after_s =
+      (match state with
+       | Some st -> st.C2c_relay_connector.cs_retry_after_s
+       | None -> None);
   }
 
 let connector_json (c : connector_info) : Yojson.Safe.t =
@@ -413,6 +428,12 @@ let connector_json (c : connector_info) : Yojson.Safe.t =
     ; ( "inbound_rejected_note",
         match c.conn_inbound_rejected_note with
         | Some s -> `String s
+        | None -> `Null )
+    (* B320: chronic 429s surface here, not only on connector stdout. *)
+    ; ("rate_limited", `Bool c.conn_rate_limited)
+    ; ( "retry_after_s",
+        match c.conn_retry_after_s with
+        | Some a -> `Float a
         | None -> `Null )
     ]
 
@@ -499,11 +520,23 @@ let connector_human (c : connector_info) =
           Printf.sprintf "; last sync dropped %d inbound row(s)"
             c.conn_inbound_rejected
   in
+  (* B320: the last sync of this broker root was throttled (429) — chronic
+     rate limiting is invisible everywhere else once stdout scrolls. Silent
+     when not rate limited, like drops_bit; carries retry_after when the
+     relay advertised one. Rendered inside the evidence group so it cannot
+     displace the remediation command. *)
+  let rl_bit =
+    if not c.conn_rate_limited then ""
+    else
+      match c.conn_retry_after_s with
+      | Some ra -> Printf.sprintf "; rate limited (retry_after=%.0fs)" ra
+      | None -> "; rate limited"
+  in
   match c.conn_health with
   | Health_ok ->
-      Printf.sprintf "live (%s%s%s%s)" age_bit ok_bit
+      Printf.sprintf "live (%s%s%s%s%s)" age_bit ok_bit
         (if c.conn_process_present then "; process present" else "")
-        drops_bit
+        drops_bit rl_bit
   | Health_absent ->
       Printf.sprintf
         "none (no connector sync state — start with 'c2c relay connect')%s"
@@ -515,14 +548,14 @@ let connector_human (c : connector_info) =
   | Health_wedged ->
       Printf.sprintf
         "wedged (%s%s; process present but bridge not live — process≠bridge \
-         health)%s"
-        age_bit ok_bit rem_bit
+         health%s%s)"
+        age_bit ok_bit rl_bit rem_bit
   | Health_stale ->
-      Printf.sprintf "down (%s%s; no attributable process)%s" age_bit ok_bit
-        rem_bit
+      Printf.sprintf "down (%s%s; no attributable process)%s%s" age_bit ok_bit
+        rl_bit rem_bit
   | Health_erroring ->
-      Printf.sprintf "erroring (%s%s%s%s%s)%s" age_bit ok_bit proc_bit err_bit
-        drops_bit rem_bit
+      Printf.sprintf "erroring (%s%s%s%s%s%s)%s" age_bit ok_bit proc_bit err_bit
+        drops_bit rl_bit rem_bit
 
 (* The rendered `connector:` line: health plus its scope marker. *)
 let connector_line (c : connector_info) =
