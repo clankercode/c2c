@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
 estimate_hours: 1
 id: B331
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: undelivered inbox stranded then GC-deleted on sqlite session re-register (in-memory carries it; prod loses mail sent during a restart)
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Undelivered inbox content is carried across a same-alias session re-register only in memory. InMemoryRelay.register, when the existing lease is alive under a different session_id, moves the old keys undelivered messages to the new key (relay.ml:782-790). SqliteRelay.register (2681-2722) has no equivalent: after a session restart re-registers the alias under a new session id, mail that arrived while the session was down sits under the old (node_id, session_id), unreachable (poll reads the new leases key), and the gc loops stale-inbox sweep (relay.ml:3200-3221, every 300s) destroys it. Mail sent during a restart is delivered after re-register in the test world and silently deleted on prod.
+
+## Fix direction
+
+Mirror the move in sqlite register (copy inboxes rows from the old key to the new one inside the upsert path), or make the inbox key alias-scoped.
+
+## Evidence
+
+Server-core review 2026-09-17.
