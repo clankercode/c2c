@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:56:10Z"
 depends_on: []
 estimate_hours: 1
 id: B308
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: 'relay dm poll/peek key resolution: prefers dead connector key with no liveness check, lone-node-id semantics diverge from register, no flags'
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Three traps in CLI relay DM key resolution (c2c_relay_connector.ml:1593-1667, call sites c2c_relay_cmd.ml:1445-1515). (a) register treats a lone C2C_RELAY_NODE_ID as (n,n); dm poll/peek treat it as a NON-override (connector_peek_key fallback only), so register then poll under the same env target different keys - and dm exposes no --node-id/--session-id flags at all. (b) resolve_cli_dm_inbox_key_at prefers the connector (node_id, cs_sessions[alias]) key whenever connector-state.json lists the alias, with NO liveness/freshness check - after the connector dies, an operator following the Direct_cli hint registers cli-X/cli-X successfully, then poll/peek still target the dead connector key: signature_invalid / empty inbox on mail just re-registered. (c) the B294 refusal hint recommends dm peek as a read-only probe, coherent only while the connector is live.
+
+## Fix direction
+
+Gate the connector-key preference on the same liveness predicate connector_owns_alias uses; add --node-id/--session-id to dm poll/peek; align the lone-node-id convention with register.
+
+## Evidence
+
+CLI review 2026-09-17; spot-verified by coordinator.
