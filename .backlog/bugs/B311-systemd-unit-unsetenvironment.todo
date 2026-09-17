@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
 estimate_hours: 1
 id: B311
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: systemd unit UnsetEnvironment covers only C2C_MCP_BROKER_ROOT — C2C_RELAY_CONFIG/TOKEN/IDENTITY_PATH/INSTANCES_DIR leak in
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+The systemd unit UnsetEnvironment covers only C2C_MCP_BROKER_ROOT (c2c_relay_systemd.ml:110). If the user manager has imported C2C_RELAY_CONFIG (connector reads a different relay.json than the unit pin logic assumed), C2C_RELAY_TOKEN (env beats relay.json token), C2C_RELAY_IDENTITY_PATH (redirects signing identity), or C2C_INSTANCES_DIR (relocates the supervisor pidfile and singleton lock so c2c stop from a normal shell reads the home location, finds nothing, and a second connector can arm against the relocated lock), the machine connector silently misbehaves.
+
+## Fix direction
+
+Extend to UnsetEnvironment=C2C_MCP_BROKER_ROOT C2C_RELAY_CONFIG C2C_INSTANCES_DIR C2C_RELAY_TOKEN C2C_RELAY_IDENTITY_PATH C2C_RELAY_NODE_ID C2C_RELAY_SESSION_ID C2C_MCP_SESSION_ID; add a test pinning the list.
+
+## Evidence
+
+CLI review 2026-09-17 (import-environment precondition makes exploitability medium confidence; the coverage gap itself is certain).
