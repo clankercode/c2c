@@ -553,6 +553,11 @@ let b242_start_env ~home ~instances ~broker ~extra =
     "HOME", home;
     "C2C_INSTANCES_DIR", instances;
     "C2C_MCP_BROKER_ROOT", broker;
+    (* B302: stop/restart now consult the systemd unit state; the fixture
+       gate keeps these runs hermetic on hosts where the live
+       c2c-relay-connect.service is active (no state file → no unit → legacy
+       direct path; systemctl is never executed). *)
+    "C2C_SYSTEMCTL_FIXTURE", "1";
     "C2C_STATE_HOME", home // "state";
     "XDG_STATE_HOME", home // "xdg";
     (* Clear ambient developer exports so the fixture alone drives resolution. *)
@@ -621,6 +626,7 @@ let test_b242_start_reads_user_config_relay_json () =
     "C2C_RELAY_TOKEN", "";
     "C2C_RELAY_CONFIG", "";
     "C2C_MCP_BROKER_ROOT", "";
+    "C2C_SYSTEMCTL_FIXTURE", "1";  (* B302: hermetic on hosts with the live unit *)
   ] in
   let pid = spawn_to_log ~env binary
       [ "start"; "relay-connect"; "--interval"; "60" ] log in

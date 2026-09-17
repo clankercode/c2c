@@ -222,6 +222,11 @@ let redirect_daemon_stdio log_path =
 let supervise ~self ~argv ~log_path ~pid_path ~foreground =
   let stopping = ref false in
   let child = ref None in
+  (* B302: the connector child is singleton-exempt (supervised_child_env), so
+     a supervisor that dies without running its handlers (SIGKILL, OOM) leaves
+     it polling forever — a duplicate-connector 429 storm no new supervisor
+     can see. Record the child so every stop path can sweep it. *)
+  let connector_pid_path = Filename.dirname pid_path // "connector.pid" in
   let request_stop _ =
     stopping := true;
     match !child with
@@ -234,6 +239,15 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
     (match !child with
      | Some pid -> (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ())
      | None -> ());
+    (match !child with
+     | Some pid -> (
+         (* Unlink only when the record still names the child we spawned; a
+            rewritten record belongs to a newer launch. *)
+         match read_pidfile connector_pid_path with
+         | Some recorded when recorded = pid ->
+             (try Unix.unlink connector_pid_path with _ -> ())
+         | _ -> ())
+     | None -> ());
     remove_pidfile_if_owned pid_path
   in
   Fun.protect ~finally:cleanup (fun () ->
@@ -245,6 +259,7 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
       let launched_stamp = binary_stamp self in
       let pid = spawn_connector ~self ~argv ~log_path ~foreground in
       child := Some pid;
+      write_pidfile connector_pid_path pid;
       let rec monitor () =
         match Unix.waitpid [ Unix.WNOHANG ] pid with
         | 0, _ when !stopping ->
@@ -373,18 +388,19 @@ let read_managed_config ~name : managed_config option =
     | Some json -> parse_managed_config json
     | None -> None
 
-(* Stop the supervisor recorded in the instance's outer.pid (SIGTERM, then
-   SIGKILL after [timeout_s]). Returns true when no supervisor is running or
-   it has exited; false if a pid is still alive after the SIGKILL fallback. *)
-let stop_supervisor ~name ~timeout_s : bool =
-  let pid_path = instances_dir () // name // "outer.pid" in
-  match read_pidfile pid_path with
-  | Some pid when pid_alive pid
-                  && not (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:pid_path ~pid) ->
-      (* #85: the number is live but was recycled onto another process. There is
-         no supervisor to stop, and signalling it would hit a stranger. *)
+(* B302: kill the connector child recorded in connector.pid — pid-identity
+   guarded (#85: never signal a disk-sourced pid without the check). The child
+   is singleton-exempt, so a supervisor that died without running its handlers
+   leaves it polling forever (duplicate-connector 429 storm). Returns true
+   when nothing recorded is still alive. *)
+let stop_recorded_connector_child ~name ~timeout_s : bool =
+  let path = instances_dir () // name // "connector.pid" in
+  match read_pidfile path with
+  | Some pid when pid <> Unix.getpid () && pid_alive pid
+                  && not (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:path ~pid) ->
+      (* #85: the number is live but was recycled onto another process. *)
       true
-  | Some pid when pid_alive pid ->
+  | Some pid when pid <> Unix.getpid () && pid_alive pid ->
       (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
       let deadline = Unix.gettimeofday () +. timeout_s in
       let rec wait () =
@@ -396,8 +412,137 @@ let stop_supervisor ~name ~timeout_s : bool =
         end
         else (Unix.sleepf 0.1; wait ())
       in
-      wait ()
+      let stopped = wait () in
+      if stopped then (try Unix.unlink path with _ -> ());
+      stopped
   | _ -> true
+
+(* Stop the supervisor recorded in the instance's outer.pid (SIGTERM, then
+   SIGKILL after [timeout_s]), then sweep the recorded connector child —
+   the SIGKILL-the-outer-leaves-child-alive defect (B302). Returns true when
+   no supervisor and no recorded child is left running; false if a pid is
+   still alive after the SIGKILL fallback. *)
+let stop_supervisor ~name ~timeout_s : bool =
+  let pid_path = instances_dir () // name // "outer.pid" in
+  let outer_stopped =
+    match read_pidfile pid_path with
+    | Some pid when pid_alive pid
+                    && not (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:pid_path ~pid) ->
+        (* #85: the number is live but was recycled onto another process. There is
+           no supervisor to stop, and signalling it would hit a stranger. *)
+        true
+    | Some pid when pid_alive pid ->
+        (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+        let deadline = Unix.gettimeofday () +. timeout_s in
+        let rec wait () =
+          if not (pid_alive pid) then true
+          else if Unix.gettimeofday () >= deadline then begin
+            (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+            Unix.sleepf 0.2;
+            not (pid_alive pid)
+          end
+          else (Unix.sleepf 0.1; wait ())
+        in
+        wait ()
+    | _ -> true
+  in
+  let child_stopped = stop_recorded_connector_child ~name ~timeout_s in
+  outer_stopped && child_stopped
+
+(* B302: who owns the machine-wide relay connector right now?
+   - Unit_owns_connector: the systemd --user unit is running (or
+     auto-restarting) and its MainPID is the recorded supervisor — stop/kill
+     paths MUST delegate to systemctl, or Restart=always reverts them.
+   - Unit_retrying_rogue_holds_lock: the unit is active but a live
+     non-systemd supervisor recorded in outer.pid holds the machine
+     singleton (the live incident shape: every unit start dies on the
+     singleton guard while the rogue keeps polling).
+   - Unit_inactive: unit present but not running — direct-supervisor path.
+   - No_unit: no systemd answer (no unit, no user manager, or fixture with
+     no scripted state) — direct-supervisor path. *)
+type unit_ownership =
+  | Unit_owns_connector
+  | Unit_retrying_rogue_holds_lock of int  (* live non-systemd outer pid *)
+  | Unit_inactive
+  | No_unit
+
+let classify_unit_ownership ~name () : unit_ownership =
+  let query = C2c_relay_systemd.query_systemctl_default in
+  match query [ "--user"; "is-active"; C2c_relay_systemd.unit_name ] with
+  | Some state
+    when state = "active" || state = "activating" || state = "reloading" -> (
+      let live_main =
+        match C2c_relay_systemd.unit_main_pid ~query () with
+        | Some p when p > 0 && pid_alive p -> Some p
+        | _ -> None
+      in
+      let live_outer =
+        match read_pidfile (instances_dir () // name // "outer.pid") with
+        | Some p when pid_alive p -> Some p
+        | _ -> None
+      in
+      match live_outer with
+      | Some outer when live_main <> Some outer ->
+          Unit_retrying_rogue_holds_lock outer
+      | _ -> Unit_owns_connector)
+  | Some _ -> Unit_inactive
+  | None -> No_unit
+
+(* The outcome of a B302 systemd-aware stop. Stop_delegation_failed carries
+   a human-readable explanation; the caller must exit nonzero — falling back
+   to signalling the supervisor would re-open the restart war. *)
+type systemd_stop_decision =
+  | Stop_delegated_to_unit
+  | Stop_rogue_stopped
+  | Stop_not_unit_owned
+  | Stop_delegation_failed of string
+
+(* B302: the systemd-aware `c2c stop relay-connect`. When the unit owns the
+   connector, delegate to systemctl (a direct kill is reverted by
+   Restart=always within ~5s) and sweep any recorded child that survived.
+   When a rogue supervisor holds the singleton while the unit retries, stop
+   the rogue via the pid-identity-guarded direct path and let systemd win
+   the lock back on its next auto-restart. Every other state falls through
+   to the caller's existing direct path. *)
+let stop_systemd_aware ~name ~timeout_s () : systemd_stop_decision =
+  if not (is_default_relay_connect_name name) then Stop_not_unit_owned
+  else
+    match classify_unit_ownership ~name () with
+    | Unit_owns_connector ->
+        Printf.eprintf
+          "[c2c stop] systemd unit %s owns the machine-wide relay connector \
+           (Restart=always, RestartSec=5): killing the supervisor directly \
+           would be reverted within ~5s (B302).\n\
+           [c2c stop] delegating: systemctl --user stop %s\n\
+           [c2c stop] the unit stays enabled (starts again at next login); \
+           keep it off for good: c2c relay disable\n%!"
+          C2c_relay_systemd.unit_name C2c_relay_systemd.unit_name;
+        (match C2c_relay_systemd.unit_stop () with
+         | Systemctl_ok ->
+             (* A recorded child that survived the unit stop is an orphaned
+                duplicate connector — sweep it (pid-identity-guarded). *)
+             ignore (stop_recorded_connector_child ~name ~timeout_s);
+             Stop_delegated_to_unit
+         | Systemctl_failed err ->
+             Stop_delegation_failed
+               (Printf.sprintf
+                  "systemctl --user stop %s failed: %s\n\
+                 \  Stop it by hand, or keep the unit off: c2c relay disable"
+                  C2c_relay_systemd.unit_name err))
+    | Unit_retrying_rogue_holds_lock rogue_pid ->
+        Printf.eprintf
+          "[c2c stop] unit %s is active, but pid %d (outer.pid) is a \
+           NON-systemd supervisor holding the machine singleton — the B302 \
+           incident shape.\n\
+           [c2c stop] stopping the rogue directly (pid-identity-guarded); \
+           systemd auto-restart re-acquires the singleton within RestartSec=5\n%!"
+          C2c_relay_systemd.unit_name rogue_pid;
+        if stop_supervisor ~name ~timeout_s then Stop_rogue_stopped
+        else
+          Stop_delegation_failed
+            "the rogue supervisor survived SIGKILL; systemd cannot take over \
+             until it dies — investigate with 'c2c instances'"
+    | Unit_inactive | No_unit -> Stop_not_unit_owned
 
 (** Start the one machine-wide relay service.  A different [name] changes
     only its managed display/stop name; it cannot create a second connector. *)
@@ -451,6 +596,50 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
     (relaunches via the [@noreturn] [start]). *)
 let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
     () =
+  (* B302: when the systemd unit owns the connector, a direct stop+relaunch
+     kills the unit's main process and daemonizes a rogue supervisor — the
+     live incident ended in a permanent restart loop (NRestarts 63+). Delegate
+     instead; the unit re-resolves its own relay URL at start. When a ROGUE
+     supervisor holds the machine singleton while the unit retries, stop it
+     FIRST — the unit's restart can only win the lock back once it is released. *)
+  (match classify_unit_ownership ~name () with
+   | Unit_owns_connector ->
+       Printf.printf
+         "[c2c restart] systemd unit %s owns the machine-wide relay \
+          connector; delegating to `systemctl --user restart %s` (a direct \
+          relaunch would fight Restart=always — B302)\n%!"
+         C2c_relay_systemd.unit_name C2c_relay_systemd.unit_name;
+       (match C2c_relay_systemd.unit_restart () with
+        | Systemctl_ok -> exit 0
+        | Systemctl_failed err ->
+            Printf.eprintf
+              "error: systemctl --user restart %s failed: %s\n\
+              \  Stop it by hand with: systemctl --user stop %s\n%!"
+              C2c_relay_systemd.unit_name err C2c_relay_systemd.unit_name;
+            exit 1)
+   | Unit_retrying_rogue_holds_lock rogue_pid ->
+       Printf.printf
+         "[c2c restart] unit %s is active but pid %d is a NON-systemd \
+          supervisor holding the machine singleton (B302); stopping it first\n\
+          [c2c restart] then handing the singleton back: systemctl --user \
+          restart %s\n%!"
+         C2c_relay_systemd.unit_name rogue_pid C2c_relay_systemd.unit_name;
+       if not (stop_supervisor ~name ~timeout_s) then begin
+         Printf.eprintf
+           "error: could not stop the rogue supervisor holding the machine \
+            singleton; systemd cannot take over until it dies.\n%!";
+         exit 1
+       end;
+       (match C2c_relay_systemd.unit_restart () with
+        | Systemctl_ok -> exit 0
+        | Systemctl_failed err ->
+            Printf.eprintf
+              "error: systemctl --user restart %s failed: %s (the rogue is \
+               down; systemd auto-restart will still re-acquire within \
+               RestartSec=5)\n%!"
+              C2c_relay_systemd.unit_name err;
+            exit 1)
+   | Unit_inactive | No_unit -> ());
   let env_url =
     match Sys.getenv_opt "C2C_RELAY_URL" with
     | Some v when String.trim v <> "" -> Some (String.trim v)

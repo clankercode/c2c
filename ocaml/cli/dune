@@ -50,7 +50,7 @@
 ; child is replaced when an install atomically replaces the c2c executable.
 (test
  (name test_c2c_relay_managed)
- (modules test_c2c_relay_managed c2c_relay_managed c2c_instance_log)
+ (modules test_c2c_relay_managed c2c_relay_managed c2c_relay_systemd c2c_instance_log)
  (libraries c2c_mcp alcotest yojson str unix)
  (deps c2c.exe))
 
@@ -354,6 +354,19 @@
  (name test_c2c_relay_systemd)
  (modules test_c2c_relay_systemd c2c_relay_systemd c2c_uninstall c2c_setup c2c_claude_hook_scripts c2c_kimi_hook c2c_codex_hooks c2c_types c2c_utils c2c_broker_root_check c2c_opencode_plugin_embedded c2c_hermes_plugin_embedded c2c_hermes_config c2c_claude_skill_embedded c2c_grok_skill_embedded c2c_kimi_skill_embedded c2c_agy_skill_embedded)
  (libraries c2c_mcp alcotest cmdliner yojson unix str digestif.ocaml)
+ (deps c2c.exe))
+
+; B302: `c2c stop/restart relay-connect` must not fight the systemd unit into
+; a restart loop — delegation when the unit owns the connector, rogue-
+; supervisor handover (stop rogue, systemd re-acquires), and the recorded-
+; connector-child sweep after a SIGKILLed supervisor. End-to-end through the
+; real binary under C2C_SYSTEMCTL_FIXTURE=1 (scripted answers via
+; C2C_SYSTEMCTL_STATE_FILE, mutating argv asserted via
+; C2C_SYSTEMCTL_CAPTURE_FILE); no test executes systemctl.
+(test
+ (name test_c2c_relay_b302_systemd_handover)
+ (modules test_c2c_relay_b302_systemd_handover c2c_relay_systemd)
+ (libraries c2c_mcp alcotest yojson unix str)
  (deps c2c.exe))
 
 ; #5 vanilla-codex: `c2c hook codex` end-to-end against a temp broker

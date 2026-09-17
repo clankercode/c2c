@@ -174,6 +174,101 @@ let systemd_user_available ?(run = run_systemctl_default) () =
        | Systemctl_failed _ -> false)
 
 (* -------------------------------------------------------------------------- *)
+(* B302: output-carrying query seam (unit ownership detection)                 *)
+(* -------------------------------------------------------------------------- *)
+
+(* A query returns trimmed stdout on exit 0, None otherwise. Under
+   C2C_SYSTEMCTL_FIXTURE=1 the default query NEVER executes systemctl: the
+   answers come from C2C_SYSTEMCTL_STATE_FILE (JSON:
+   {"is-active": "active", "is-enabled": "enabled", "main-pid": "12345"}),
+   and a missing file or key means "no such unit" (None → no-unit → legacy
+   direct path). Outside the fixture it runs the real `systemctl --user`.
+   Queries are read-only and deliberately NOT recorded in
+   C2C_SYSTEMCTL_CAPTURE_FILE — that file stays "would-be mutating
+   invocations" only. *)
+type systemctl_query = string list -> string option
+
+let state_key_of_query_args (args : string list) : string option =
+  if List.mem "is-active" args then Some "is-active"
+  else if List.mem "is-enabled" args then Some "is-enabled"
+  else if List.mem "MainPID" args then Some "main-pid"
+  else None
+
+let query_systemctl_default : systemctl_query =
+ fun args ->
+  if fixture_enabled () then begin
+    match state_key_of_query_args args with
+    | None -> None
+    | Some key -> (
+        match Sys.getenv_opt "C2C_SYSTEMCTL_STATE_FILE" with
+        | None -> None
+        | Some f -> (
+            match (try Some (Yojson.Safe.from_file f) with _ -> None) with
+            | Some (`Assoc fields) -> (
+                match List.assoc_opt key fields with
+                | Some (`String s) when String.trim s <> "" ->
+                    Some (String.trim s)
+                | _ -> None)
+            | _ -> None))
+  end
+  else
+    let cmd =
+      "systemctl " ^ String.concat " " (List.map Filename.quote args)
+      ^ " 2>/dev/null"
+    in
+    try
+      let ic = Unix.open_process_in cmd in
+      let buf = Buffer.create 64 in
+      (try
+         while true do
+           Buffer.add_string buf (input_line ic);
+           Buffer.add_char buf '\n'
+         done
+       with End_of_file -> ());
+      let status = Unix.close_process_in ic in
+      match status with
+      | Unix.WEXITED 0 -> Some (String.trim (Buffer.contents buf))
+      | _ -> None
+    with _ -> None
+
+(* True while the unit is running or systemd is auto-restarting it. *)
+let unit_is_active ?(query = query_systemctl_default) () : bool =
+  match query [ "--user"; "is-active"; unit_name ] with
+  | Some ("active" | "activating" | "reloading") -> true
+  | _ -> false
+
+(* MainPID of the unit; None or 0 when there is no live main process (e.g.
+   the auto-restart window between two Restart=always attempts). Accepts both
+   `--value` output ("12345") and the `MainPID=12345` form older systemctl
+   prints without --value — a parse failure here would misread a healthy unit
+   as unsupervised (B302). *)
+let unit_main_pid ?(query = query_systemctl_default) () : int option =
+  match query [ "--user"; "show"; "-p"; "MainPID"; "--value"; unit_name ] with
+  | Some out ->
+      let s = String.trim out in
+      match int_of_string_opt s with
+      | Some pid -> Some pid
+      | None ->
+          (match String.rindex_opt s '=' with
+           | Some i -> int_of_string_opt (String.trim (String.sub s (i + 1) (String.length s - i - 1)))
+           | None -> None)
+  | None -> None
+
+let unit_is_enabled ?(query = query_systemctl_default) () : bool =
+  match query [ "--user"; "is-enabled"; unit_name ] with
+  | Some s -> String.trim s = "enabled"
+  | None -> false
+
+(* B302 delegation verbs — the only sanctioned way to stop/restart a
+   connector the unit owns; routed through the same injectable runner seam
+   as install/enable, so the fixture records them without executing. *)
+let unit_stop ?(run = run_systemctl_default) () =
+  run [ "--user"; "stop"; unit_name ]
+
+let unit_restart ?(run = run_systemctl_default) () =
+  run [ "--user"; "restart"; unit_name ]
+
+(* -------------------------------------------------------------------------- *)
 (* install / enable / disable / remove                                        *)
 (* -------------------------------------------------------------------------- *)
 

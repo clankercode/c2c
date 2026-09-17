@@ -170,9 +170,11 @@ Float seconds (default `0.35`). Tmux backend only: pause between typing the nudg
 
 Test fixture gate. When set to a path, the injector records every external command it would run (one JSON line per command: `{"argv": [...], "env": {...}}`) to that file instead of executing — no tmux/herdr pane is ever touched. All wake-inject tests use this.
 
-### `C2C_SYSTEMCTL_FIXTURE` / `C2C_SYSTEMCTL_CAPTURE_FILE` (B296)
+### `C2C_SYSTEMCTL_FIXTURE` / `C2C_SYSTEMCTL_CAPTURE_FILE` / `C2C_SYSTEMCTL_STATE_FILE` (B296, B302)
 
-Test fixture gates for the relay-connector boot-supervision unit (`c2c relay enable` / `c2c install self` → `~/.config/systemd/user/c2c-relay-connect.service`). With `C2C_SYSTEMCTL_FIXTURE=1` the systemctl runner never executes anything and answers every call with success; when `C2C_SYSTEMCTL_CAPTURE_FILE` is also set, each would-be invocation (`systemctl --user daemon-reload`, `enable --now …`) is appended as one line so tests can assert the exact argv. No test may run real systemctl against the host.
+Test fixture gates for the relay-connector boot-supervision unit (`c2c relay enable` / `c2c install self` → `~/.config/systemd/user/c2c-relay-connect.service`). With `C2C_SYSTEMCTL_FIXTURE=1` the systemctl runner never executes anything and answers every call with success; when `C2C_SYSTEMCTL_CAPTURE_FILE` is also set, each would-be **mutating** invocation (`systemctl --user daemon-reload`, `enable --now …`, and — since B302 — `stop`/`restart` of the unit when it owns the connector) is appended as one line so tests can assert the exact argv. Read-only queries (`is-active`, `is-enabled`, `show -p MainPID`) are never recorded there.
+
+`C2C_SYSTEMCTL_STATE_FILE` scripts the B302 ownership queries (used by `c2c stop/restart relay-connect` to decide whether the unit owns the connector): a JSON object `{"is-active": "active", "is-enabled": "enabled", "main-pid": "12345"}`. `is-active` values `active`/`activating`/`reloading` mean the unit is running or auto-restarting; `main-pid` is the unit's MainPID (`0` or absent = no live main). A missing file or key means "no such unit", which classifies as not-owned and takes the legacy direct path — so setting only `C2C_SYSTEMCTL_FIXTURE=1` (no state file) keeps a test fully off the host's unit on machines where the real `c2c-relay-connect.service` is active. No test may run real systemctl against the host.
 
 ### `C2C_WAKE_INJECT_HERDR_STATUS`
 
