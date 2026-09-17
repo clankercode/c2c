@@ -1113,7 +1113,8 @@ let test_connector_peek_key_uses_recorded_session_when_local_unresolved () =
       cs_pid = None;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
-      cs_inbound_rejected_note = None }
+      cs_inbound_rejected_note = None;
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0 }
   in
   (match
      Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1159,7 +1160,8 @@ let test_connector_peek_key_backward_compat_fallback () =
       cs_pid = None;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
-      cs_inbound_rejected_note = None }
+      cs_inbound_rejected_note = None;
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0 }
   in
   match
     Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1192,7 +1194,8 @@ let test_resolve_cli_dm_inbox_key_prefers_connector () =
       cs_pid = Some 4242;
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
-      cs_inbound_rejected_note = None }
+      cs_inbound_rejected_note = None;
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0 }
   in
   let node_id, session_id =
     Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
@@ -1503,6 +1506,279 @@ let test_machine_loop_skips_noop_roots () =
           Alcotest.(check bool) "no-op root state written with ok sync" true
             (st.Conn.cs_last_ok_ts > 0.0)
       | None -> Alcotest.fail "no-op root must still get connector state"
+
+(* --- B292: one wedged root must not kill the machine connector ------------ *)
+
+let test_wedge_cooldown_schedule () =
+  (* 10min base, doubling, capped at 2h; a permanently-wedged root is retried
+     at most once per cooldown window (no starvation) and never dropped
+     forever (cap). *)
+  Alcotest.(check (float 1e-9)) "first wedge -> 10min" 600.0
+    (Conn.wedge_cooldown_s ~count:1);
+  Alcotest.(check (float 1e-9)) "second -> 20min" 1200.0
+    (Conn.wedge_cooldown_s ~count:2);
+  Alcotest.(check (float 1e-9)) "third -> 40min" 2400.0
+    (Conn.wedge_cooldown_s ~count:3);
+  Alcotest.(check (float 1e-9)) "capped at 2h" 7200.0
+    (Conn.wedge_cooldown_s ~count:8);
+  Alcotest.(check (float 1e-9)) "stays at cap" 7200.0
+    (Conn.wedge_cooldown_s ~count:30)
+
+let test_wedge_state_persistence () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  Conn.write_connector_state ~node_id:"n1" tmp (mk_result ());
+  let since1, count1 = Conn.mark_connector_wedged tmp ~reason:"staleness: test" in
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check (float 1e-9)) "wedged_since round-trips" since1
+         (Option.value st.Conn.cs_wedged_since ~default:0.0);
+       Alcotest.(check int) "first wedge count" 1 count1;
+       Alcotest.(check int) "count read back" 1 st.Conn.cs_wedge_count;
+       Alcotest.(check bool) "reason round-trips" true
+         (st.Conn.cs_wedge_reason = Some "staleness: test")
+   | None -> Alcotest.fail "state missing after mark_connector_wedged");
+  let _since2, count2 = Conn.mark_connector_wedged tmp ~reason:"again" in
+  Alcotest.(check int) "second wedge doubles the count" 2 count2;
+  (* A real sync clears the wedge: the root is being actively worked again. *)
+  Conn.write_connector_state ~node_id:"n1" tmp (mk_result ());
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check bool) "successful sync clears wedged_since" true
+         (st.Conn.cs_wedged_since = None);
+       Alcotest.(check bool) "successful sync clears reason" true
+         (st.Conn.cs_wedge_reason = None);
+       Alcotest.(check int) "successful sync resets count" 0 st.Conn.cs_wedge_count
+   | None -> Alcotest.fail "state missing after clear");
+  (* The exception writer must preserve wedge fields (it rebuilds the file). *)
+  let _ = Conn.mark_connector_wedged tmp ~reason:"kept" in
+  Conn.write_connector_state_error tmp ~op:"sync_watchdog" ~detail:"d";
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check bool) "error writer preserves wedged_since" true
+         (st.Conn.cs_wedged_since <> None);
+       Alcotest.(check bool) "error writer preserves reason" true
+         (st.Conn.cs_wedge_reason = Some "kept")
+   | None -> Alcotest.fail "state missing after error writer");
+  (* Backward compat: an old state file with no wedge fields reads clean. *)
+  let oc = open_out (Filename.concat tmp "connector-state.json") in
+  Yojson.Safe.to_channel oc
+    (`Assoc [ "last_sync_ts", `Float 1.0; "last_ok_ts", `Float 1.0 ]);
+  close_out oc;
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       Alcotest.(check bool) "old file: no wedged_since" true
+         (st.Conn.cs_wedged_since = None);
+       Alcotest.(check int) "old file: count 0" 0 st.Conn.cs_wedge_count
+   | None -> Alcotest.fail "old-shape state must still parse")
+
+(* Drains sync markers from a nonblocking pipe until [deadline_s] elapses. *)
+let drain_until fd ~deadline_s =
+  Unix.set_nonblock fd;
+  let buf = Buffer.create 32 in
+  let chunk = Bytes.create 64 in
+  let deadline = Unix.gettimeofday () +. deadline_s in
+  while Unix.gettimeofday () < deadline do
+    (match Unix.read fd chunk 0 64 with
+     | n -> Buffer.add_subbytes buf chunk 0 n
+     | exception Unix.Unix_error (Unix.EAGAIN, _, _) -> ());
+    Unix.sleepf 0.05
+  done;
+  Buffer.contents buf
+
+let count_char c s =
+  String.to_seq s |> Seq.filter (fun x -> x = c) |> Seq.length
+
+let expect_machine_exit pid ~timeout_s ~allowed_exit =
+  match waitpid_until ~timeout_s pid with
+  | Some (Unix.WEXITED code) when code = allowed_exit -> code
+  | Some (Unix.WEXITED 3) ->
+      Alcotest.fail "one wedged root exit-3'd the whole machine connector (B292)"
+  | Some status ->
+      Alcotest.failf "machine connector exited abnormally: %s"
+        (match status with
+         | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+         | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+         | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+  | None ->
+      Unix.kill pid Sys.sigkill;
+      ignore (Unix.waitpid [] pid);
+      Alcotest.fail "machine connector did not exit in time"
+
+let test_machine_wedged_root_dropped_not_process () =
+  (* B292: an always-erroring root wedges into a cooldown; the healthy root
+     keeps syncing and the process survives. Re-admission after the cooldown
+     re-wedges with a doubled count (schedule survives in connector-state). *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let bad = Filename.concat tmp "bad-broker" in
+  let good = Filename.concat tmp "good-broker" in
+  write_eligible_registry bad;
+  write_eligible_registry good;
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      Unix.putenv "C2C_RELAY_CONNECTOR_STALE_EXIT_S" "0.3";
+      Unix.putenv "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S" "0.4";
+      let err =
+        { Conn.err_op = "register"; err_detail = "connection_error";
+          err_ts = 0.0 }
+      in
+      let sync_once _shutdown t =
+        let byte = if t.Conn.broker_root = bad then "A" else "B" in
+        ignore (Unix.write_substring call_w byte 0 1);
+        if t.Conn.broker_root = bad then Ok (mk_result ~last_error:err ())
+        else Ok (mk_result ())
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; bad; good ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:good ~node_id:"b292-wedge-test"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      let marks = drain_until call_r ~deadline_s:2.5 in
+      Unix.close call_r;
+      Unix.kill pid Sys.sigterm;
+      ignore (expect_machine_exit pid ~timeout_s:3.0 ~allowed_exit:0);
+      Alcotest.(check bool) "healthy root kept syncing through the wedge" true
+        (count_char 'B' marks >= 5);
+      (match Conn.read_connector_state bad with
+       | Some st ->
+           Alcotest.(check bool) "wedged root recorded in its own state" true
+             (st.Conn.cs_wedged_since <> None);
+           Alcotest.(check bool) "root re-admitted and re-wedged (doubled)" true
+             (st.Conn.cs_wedge_count >= 2)
+       | None -> Alcotest.fail "wedged root must have connector state")
+
+let test_machine_all_roots_wedged_exits_3 () =
+  (* B292: exit 3 is reserved for the machine-wide wedge (and the SIGALRM
+   hang path); with every discovered root wedged there is nothing to sync. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let bad = Filename.concat tmp "bad-broker" in
+  write_eligible_registry bad;
+  match Unix.fork () with
+  | 0 ->
+      Unix.putenv "C2C_RELAY_CONNECTOR_STALE_EXIT_S" "0.3";
+      Unix.putenv "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S" "0.4";
+      let err =
+        { Conn.err_op = "register"; err_detail = "connection_error";
+          err_ts = 0.0 }
+      in
+      let sync_once _shutdown _t = Ok (mk_result ~last_error:err ()) in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; bad ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:bad ~node_id:"b292-all-wedged"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix._exit code
+  | pid ->
+      (match waitpid_until ~timeout_s:5.0 pid with
+       | Some (Unix.WEXITED 3) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "expected machine-wide exit 3, got exit %d" code
+       | Some status ->
+           Alcotest.failf "expected machine-wide exit 3, got %s"
+             (match status with
+              | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+              | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+              | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "all-wedged machine connector did not exit 3 in 5s")
+
+let test_machine_watchdog_strikes_wedge_not_exit () =
+  (* B292: 3 consecutive sync watchdog timeouts on ONE root wedge that root;
+     the process keeps serving the other roots. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let bad = Filename.concat tmp "bad-broker" in
+  let good = Filename.concat tmp "good-broker" in
+  write_eligible_registry bad;
+  write_eligible_registry good;
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      let sync_once _shutdown t =
+        if t.Conn.broker_root = bad then Error (`Watchdog "simulated hang")
+        else begin
+          ignore (Unix.write_substring call_w "B" 0 1);
+          Ok (mk_result ())
+        end
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; bad; good ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:good ~node_id:"b292-watchdog-test"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      let marks = drain_until call_r ~deadline_s:1.5 in
+      Unix.close call_r;
+      Unix.kill pid Sys.sigterm;
+      ignore (expect_machine_exit pid ~timeout_s:3.0 ~allowed_exit:0);
+      Alcotest.(check bool) "healthy root survived 3 watchdog strikes elsewhere"
+        true
+        (count_char 'B' marks >= 3);
+      (match Conn.read_connector_state bad with
+       | Some st ->
+           Alcotest.(check bool) "watchdog wedge recorded" true
+             (match st.Conn.cs_wedge_reason with
+              | Some r -> String.length r > 0 && true
+              | None -> false)
+       | None -> Alcotest.fail "wedged root must have connector state")
+
+let test_machine_cooldown_survives_restart () =
+  (* B292: the cooldown lives in connector-state.json, so a fresh process
+     (e.g. a supervisor restarting every second) does not re-wedge a parked
+     root on its next pass. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let parked = Filename.concat tmp "parked-broker" in
+  let good = Filename.concat tmp "good-broker" in
+  write_eligible_registry parked;
+  write_eligible_registry good;
+  ignore (Conn.mark_connector_wedged parked ~reason:"staleness: prior run");
+  let call_r, call_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close call_r;
+      let sync_once _shutdown t =
+        if t.Conn.broker_root = parked then Unix._exit 9;
+        ignore (Unix.write_substring call_w "B" 0 1);
+        Ok (mk_result ())
+      in
+      let code =
+        Conn.start_machine_impl ~sync_once
+          ~discover_roots:(fun ~primary -> [ primary; parked; good ])
+          ~relay_url:"http://unreachable.invalid" ~token:None ~identity:None
+          ~primary_broker_root:good ~node_id:"b292-restart-test"
+          ~heartbeat_ttl:300.0 ~interval:0.05 ~verbose:false ~once:false
+      in
+      Unix.close call_w;
+      Unix._exit code
+  | pid ->
+      Unix.close call_w;
+      let first = Bytes.create 1 in
+      Alcotest.(check int) "good root synced" 1 (Unix.read call_r first 0 1);
+      Unix.sleepf 0.3;
+      Unix.close call_r;
+      Unix.kill pid Sys.sigterm;
+      ignore (expect_machine_exit pid ~timeout_s:3.0 ~allowed_exit:0)
 
 let test_signal_bounds_blocked_sync ~machine ~signal_name signal () =
   let tmp = make_tmpdir () in
@@ -2004,6 +2280,20 @@ let () =
         test_machine_root_sync_is_noop;
       Alcotest.test_case "machine loop skips no-op roots" `Quick
         test_machine_loop_skips_noop_roots;
+    ];
+    "B292 per-root wedge cooldown", [
+      Alcotest.test_case "cooldown schedule: 10min doubling to 2h cap" `Quick
+        test_wedge_cooldown_schedule;
+      Alcotest.test_case "wedge fields persist / clear / survive old files"
+        `Quick test_wedge_state_persistence;
+      Alcotest.test_case "wedged root dropped, process stays up" `Quick
+        test_machine_wedged_root_dropped_not_process;
+      Alcotest.test_case "all roots wedged -> machine exit 3" `Quick
+        test_machine_all_roots_wedged_exits_3;
+      Alcotest.test_case "watchdog strikes wedge one root, not the process"
+        `Quick test_machine_watchdog_strikes_wedge_not_exit;
+      Alcotest.test_case "cooldown survives process restart" `Quick
+        test_machine_cooldown_survives_restart;
     ];
     "B217 bounded SIGTERM shutdown", [
       Alcotest.test_case "bare connector SIGTERM" `Quick

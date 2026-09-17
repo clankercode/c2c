@@ -1232,6 +1232,14 @@ type connector_state = {
   (* #62: last sync's drop summary. Additive/optional — absent in state files
      written before the fault/accounting split, and [None] there. *)
   cs_inbound_rejected_note : string option;
+  (* B292: per-root wedge bookkeeping (machine connector). [cs_wedged_since]
+     is the epoch of the most recent wedge event, [cs_wedge_reason] a short
+     cause string, [cs_wedge_count] the consecutive-wedge count driving the
+     doubling cooldown schedule. Cleared by the next real sync write;
+     additive/optional so older readers and state files ignore them. *)
+  cs_wedged_since : float option;
+  cs_wedge_reason : string option;
+  cs_wedge_count : int;
 }
 
 let write_connector_state ?node_id broker_root (result : sync_result) =
@@ -1299,6 +1307,12 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
        match result.inbound_rejected_note with
        | Some note -> `String note
        | None -> `Null)
+    (* B292: a real sync write means the root is being actively worked again —
+       clear the wedge record (a cooldown root is never synced, so this
+       cannot race the cooldown itself). *)
+    ; ("wedged_since", `Null)
+    ; ("wedge_reason", `Null)
+    ; ("wedge_count", `Int 0)
     ] @ rl_assoc @ node_id_assoc @ sessions_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
@@ -1327,6 +1341,11 @@ let read_connector_state broker_root : connector_state option =
       in
       let last_sync_ts = Option.value (get_float "last_sync_ts") ~default:0.0 in
       let last_ok_ts = Option.value (get_float "last_ok_ts") ~default:0.0 in
+      (* B292: wedge fields are additive/optional (absent in older files). *)
+      let wedge_count = match json |> member "wedge_count" with
+        | `Int i -> i
+        | _ -> 0
+      in
       let registered = match json |> member "registered" with
         | `List xs -> List.filter_map (function `String s -> Some s | _ -> None) xs
         | _ -> []
@@ -1355,6 +1374,9 @@ let read_connector_state broker_root : connector_state option =
         cs_inbound_delivered = get_int "inbound_delivered";
         cs_inbound_rejected = get_int "inbound_rejected";
         cs_inbound_rejected_note = get_str "inbound_rejected_note";
+        cs_wedged_since = get_float "wedged_since";
+        cs_wedge_reason = get_str "wedge_reason";
+        cs_wedge_count = wedge_count;
       }
 
 (** B209: the authoritative relay peek key for a connector-managed [alias].
@@ -1401,6 +1423,77 @@ let connector_peek_key (cs : connector_state) ~alias
 let cli_inbox_key alias : string * string =
   let k = Printf.sprintf "cli-%s" alias in
   (k, k)
+
+(* B292: cooldown schedule for a wedged broker root in the machine connector.
+   10min base, doubling per consecutive wedge, capped at 2h: a root that
+   wedges every pass is retried at most once per window (it cannot starve
+   the other roots) and is never dropped forever. A successful sync resets
+   the count. Base is env-overridable (C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S)
+   for tests and operators. *)
+let wedge_cooldown_cap_s = 7200.0
+
+let wedge_cooldown_s ~count =
+  let base =
+    match Option.bind
+            (Sys.getenv_opt "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S")
+            float_of_string_opt with
+    | Some v when v > 0.0 -> v
+    | _ -> 600.0
+  in
+  if count <= 1 then Float.min base wedge_cooldown_cap_s
+  else
+    Float.min wedge_cooldown_cap_s
+      (base *. (2.0 ** float_of_int (count - 1)))
+
+(** B292: record a wedge event in this root's connector-state.json.
+
+    Read-modify-write preserving every other field (registered aliases,
+    sessions, timestamps — the B294 guard and doctor read them), so a wedged
+    root keeps its identity evidence. Returns [(wedged_since, count)] so the
+    machine loop can compute the cooldown deadline from the same numbers a
+    restarted process will read back.
+
+    [?prev_count]: the consecutive-wedge count is read from the file by
+    default (correct across restarts), but a live machine loop MUST pass its
+    in-memory count — a re-admitted root's failed sync runs
+    [write_connector_state] first, which CLEARS the file's count before this
+    wedge event lands. Without the override the doubling schedule would
+    restart at 1 on every cooldown cycle. *)
+let mark_connector_wedged ?prev_count broker_root ~reason =
+  let now = Unix.gettimeofday () in
+  let prev_count =
+    match prev_count with
+    | Some n -> n
+    | None ->
+        (match read_connector_state broker_root with
+         | Some st -> st.cs_wedge_count
+         | None -> 0)
+  in
+  let count = prev_count + 1 in
+  let kept =
+    match C2c_io.read_json_opt (connector_state_path broker_root) with
+    | Some (`Assoc fs) ->
+        List.filter
+          (fun (k, _) ->
+             not (List.mem k [ "wedged_since"; "wedge_reason"; "wedge_count" ]))
+          fs
+    | _ -> []
+  in
+  let json =
+    `Assoc
+      (kept
+       @ [ ("wedged_since", `Float now); ("wedge_reason", `String reason);
+           ("wedge_count", `Int count) ])
+  in
+  let path = connector_state_path broker_root in
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
+  let oc = open_out tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+       Yojson.Safe.to_channel oc json ~std:false;
+       close_out oc;
+       Unix.rename tmp path);
+  (now, count)
 
 (** B294: (node_id, session_id) for `c2c relay register`.
 
@@ -1546,6 +1639,18 @@ let write_connector_state_error broker_root ~op ~detail =
          | _ -> 0.0)
     | _ -> 0.0
   in
+  (* B292: this writer rebuilds the file, so carry the wedge record over —
+     an exception while a root is parked in cooldown must not erase the
+     cooldown's persisted basis. *)
+  let wedge_assoc =
+    match C2c_io.read_json_opt (connector_state_path broker_root) with
+    | Some (`Assoc fs) ->
+        List.filter
+          (fun (k, _) ->
+             List.mem k [ "wedged_since"; "wedge_reason"; "wedge_count" ])
+          fs
+    | _ -> []
+  in
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
     ; ("last_ok_ts", `Float prev_ok_ts)
@@ -1560,7 +1665,7 @@ let write_connector_state_error broker_root ~op ~detail =
     ; ("last_error_op", `String op)
     ; ("last_error_detail", `String detail)
     ; ("last_error_ts", `Float now)
-    ]) in
+    ] @ wedge_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
@@ -3154,27 +3259,69 @@ let start_machine_impl ~sync_once ~discover_roots
           Hashtbl.replace progress root now;
           now
     in
+    (* B292: per-root wedge cooldown. A wedged root is DROPPED from the
+       discovery set for [wedge_cooldown_s] (10min base, doubling to a 2h cap,
+       reset by a successful sync) instead of killing the process — the old
+       per-root `exit 3` had a machine-wide blast radius (all 241 roots on
+       xsm taken down by one repo). The cooldown basis lives in that root's
+       connector-state.json ([mark_connector_wedged]), so a supervisor that
+       restarts the connector every second cannot re-wedge a parked root on
+       every pass; [cooldowns]/[wedge_counts] seed from the state file on
+       first sight. *)
+    let cooldowns = Hashtbl.create 8 in
+    let wedge_counts = Hashtbl.create 8 in
+    let in_cooldown root =
+      match Hashtbl.find_opt cooldowns root with
+      | Some until_ -> Unix.gettimeofday () < until_
+      | None ->
+          (* First sight this process: adopt any persisted wedge record. *)
+          let until_ =
+            match read_connector_state root with
+            | Some st when st.cs_wedged_since <> None ->
+                let count = max 1 st.cs_wedge_count in
+                Hashtbl.replace wedge_counts root count;
+                Option.value st.cs_wedged_since ~default:0.0
+                +. wedge_cooldown_s ~count
+            | _ -> 0.0
+          in
+          Hashtbl.replace cooldowns root until_;
+          Unix.gettimeofday () < until_
+    in
+    let wedge_root root ~reason =
+      let prev = Option.value ~default:0 (Hashtbl.find_opt wedge_counts root) in
+      let since, count =
+        mark_connector_wedged root ~reason ~prev_count:prev
+      in
+      Hashtbl.replace wedge_counts root count;
+      Hashtbl.replace cooldowns root (since +. wedge_cooldown_s ~count);
+      count
+    in
+    (* B292: a per-root staleness trip wedges THAT root (cooldown + state
+       record + log naming the stalled root). It never exits the process:
+       staleness is a timer observation about this root, not a claim about
+       which root caused the relay errors. *)
     let check_root_stale_exit root =
       if not !shutdown
          && should_exit_stale ~now:(Unix.gettimeofday ())
            ~last_progress:(last_progress_for root)
            ~threshold:(current_stale_threshold ())
       then begin
+        let stalled_for =
+          Unix.gettimeofday () -. last_progress_for root
+        in
+        let window = current_stale_threshold () in
+        let reason =
+          Printf.sprintf "staleness: no successful sync for %.0fs (window %.0fs)"
+            stalled_for window
+        in
+        let count = wedge_root root ~reason in
         Printf.eprintf
-          "[relay-connector %s] wedged: no successful sync for %.0fs (>= %.0fs \
-           threshold) though the process is alive — exiting so a supervisor \
-           can restart (B211/B228). Recover manually with: c2c restart \
-           relay-connect\n%!"
-          root (Unix.gettimeofday () -. last_progress_for root)
-          (current_stale_threshold ());
-        exit 3
+          "[relay-connector %s] wedged-by-timer: no successful sync of THIS \
+           root for %.0fs (window %.0fs) — this names the stalled root, not \
+           necessarily the one erroring. Dropping it for %.0fs cooldown \
+           (wedge #%d); other roots continue, process stays up (B292)\n%!"
+          root stalled_for window (wedge_cooldown_s ~count) count
       end
-    in
-    (* B228: also re-check every root we have ever synced (progress table), not
-       only the roots discovered this pass — a root that drops out of discovery
-       must still self-exit rather than leave a wedged state file forever. *)
-    let check_all_known_roots_stale () =
-      Hashtbl.iter (fun root _ -> check_root_stale_exit root) progress
     in
     let state_for root =
       match Hashtbl.find_opt states root with
@@ -3215,8 +3362,12 @@ let start_machine_impl ~sync_once ~discover_roots
                | Some ra -> rl_retry_after := Float.max !rl_retry_after ra
                | None -> ())
             end;
-            if sync_made_progress result then
+            if sync_made_progress result then begin
               Hashtbl.replace progress root (Unix.gettimeofday ());
+              (* B292: progress resets the doubling schedule. *)
+              Hashtbl.remove wedge_counts root;
+              Hashtbl.remove cooldowns root
+            end;
             write_connector_state ~node_id t.broker_root result;
             print_sync_result ~broker_root:root result;
             (match result.last_error with None -> true | Some _ -> false)
@@ -3225,7 +3376,21 @@ let start_machine_impl ~sync_once ~discover_roots
             Hashtbl.replace strikes root n;
             write_connector_state_error root ~op:"sync_watchdog" ~detail;
             Printf.eprintf "[relay-connector %s] %s (strike %d/3)\n%!" root detail n;
-            if n >= 3 then exit 3;
+            if n >= 3 then begin
+              (* B292: 3 consecutive hangs on THIS root wedge it; the
+                 process keeps serving the other roots. (A hang that trips
+                 the SIGALRM handler still force-exits 3 there — the
+                 reserved process-level path.) *)
+              let count =
+                wedge_root root ~reason:"3 consecutive sync watchdog timeouts"
+              in
+              Hashtbl.replace strikes root 0;
+              Printf.eprintf
+                "[relay-connector %s] wedged: %d consecutive sync watchdog \
+                 timeouts on THIS root — dropping it for %.0fs cooldown \
+                 (wedge #%d); other roots continue, process stays up (B292)\n%!"
+                root n (wedge_cooldown_s ~count) count
+            end;
             false
         | Error (`Exn exn) ->
             Hashtbl.replace strikes root 0;
@@ -3235,9 +3400,28 @@ let start_machine_impl ~sync_once ~discover_roots
               root (Printexc.to_string exn);
             false
       in
-      (* B211/B228: terminate a persistently-wedged (alive-but-erroring) root. *)
+      (* B211/B228/B292: a persistently no-progress root wedges into cooldown. *)
       check_root_stale_exit root;
       outcome
+      end
+    in
+    (* B292: exit 3 is reserved for the machine-wide wedge — every discovered
+       root parked in cooldown at once means there is nothing left to sync
+       (typically a host-wide network/relay outage), which is exactly the
+       "a fresh process might help" case a supervisor restart addresses.
+       A root that merely left discovery does NOT count: it is usually a
+       deleted broker dir, and wedging (or exiting) on its frozen progress
+       marker would resurrect the crash loop for a root that no longer
+       exists. *)
+    let check_all_roots_wedged roots =
+      if not !shutdown && roots <> [] && List.for_all in_cooldown roots
+      then begin
+        Printf.eprintf
+          "[relay-connector] every discovered root is wedged (%d/%d) — \
+           nothing left to sync; exiting so a supervisor can restart \
+           (B292/B211). Recover manually with: c2c restart relay-connect\n%!"
+          (List.length roots) (List.length roots);
+        exit 3
       end
     in
     let identity_tag = match identity with Some _ -> "Ed25519-signed" | None -> "token-only" in
@@ -3245,6 +3429,8 @@ let start_machine_impl ~sync_once ~discover_roots
       "[relay-connector] starting machine service — relay=%s node=%s auth=%s interval=%.0fs\n%!"
       relay_url node_id identity_tag interval;
     if once then begin
+      (* B292: --once is an explicit operator request — cooldowns are
+         ignored so every discovered root gets exactly one attempt. *)
       walk_started_at := Unix.gettimeofday ();
       let roots = discover_roots ~primary:primary_broker_root in
       let code = if List.fold_left (fun ok root -> sync_root root && ok) true roots then 0 else 2 in
@@ -3260,12 +3446,16 @@ let start_machine_impl ~sync_once ~discover_roots
           rl_seen := false;
           rl_retry_after := 0.;
           walk_started_at := Unix.gettimeofday ();
-          discover_roots ~primary:primary_broker_root
+          let discovered = discover_roots ~primary:primary_broker_root in
+          (* B292: skip roots parked in a wedge cooldown; the pass continues
+             with the remaining roots. *)
+          discovered
+          |> List.filter (fun root -> not (in_cooldown root))
           |> List.iter (fun root ->
                if not !shutdown then ignore (sync_root root));
           last_pass_s := Some (Unix.gettimeofday () -. !walk_started_at);
           walk_started_at := 0.0;
-          check_all_known_roots_stale ();
+          check_all_roots_wedged discovered;
           if !rl_seen then incr rl_strikes
           else begin
             rl_strikes := 0;
@@ -3286,12 +3476,11 @@ let start_machine_impl ~sync_once ~discover_roots
                  else "");
             sleep_interruptibly_until ~slice_s:5.0
               ~should_stop:(fun () ->
-                (* B291: a rate-limited pass already counted as progress for
-                   every root it throttled; the 429 backoff can sleep up to
-                   [rate_limit_backoff_cap_s] (300s), past the 180s floor.
-                   Checking staleness mid-backoff would wedge/exit a connector
-                   the relay is deliberately throttling. *)
-                if !rl_strikes = 0 then check_all_known_roots_stale ();
+                (* B291/B292: no staleness checks mid-sleep — wedge detection
+                   happens at post-sync checks, and a rate-limited pass
+                   already counted as progress for every root it throttled
+                   (the 429 backoff can sleep past the 180s floor; checking
+                   there would wedge a deliberately-throttled connector). *)
                 !shutdown)
               delay;
             loop ()
