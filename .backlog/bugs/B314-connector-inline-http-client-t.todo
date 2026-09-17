@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
 estimate_hours: 1
 id: B314
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: 'connector inline HTTP client: timeout field is dead and C2C_RELAY_CA_BUNDLE unsupported'
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+The connector inline HTTP client stores timeout=10.0 (c2c_relay_connector.ml:1829-1838) but request (1967-1986) calls Cohttp_lwt_unix.Client.call with no deadline - the field is dead, so any request can hang until the process SIGALRM (which then costs the hang-class ticket). The inline client also lacks C2C_RELAY_CA_BUNDLE support that relay_client.ml:196-214 has (net_ctx_of_bundle): a connector pointed at a self-signed/Tailscale HTTPS relay fails every op with connection_error while c2c doctor --relay on the same host succeeds - a confusing permanent wedge.
+
+## Fix direction
+
+Honor timeout (per-call deadline; note the nested Lwt_main.run constraint around line 3087) and port ca_bundle custom-ctx support.
+
+## Evidence
+
+Connector review 2026-09-17.
