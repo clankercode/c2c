@@ -308,3 +308,4 @@ bugs:
     - file: B309-c2c-relay-disable-leaves-subsc.todo
     - file: B310-c2c-relay-enable-ignores-ambie.todo
     - file: B311-systemd-unit-unsetenvironment.todo
+    - file: B312-relay-enable-disable-restart-v.todo
