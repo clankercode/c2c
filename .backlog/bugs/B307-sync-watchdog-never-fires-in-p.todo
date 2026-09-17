@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-09-17T07:56:10Z"
 depends_on: []
 estimate_hours: 1
 id: B307
 priority: high
+started_at: null
 status: pending
 tags: []
 title: 'Sync_watchdog never fires in production: first real hang SIGALRM-exits the whole machine connector with no cooldown learning'
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+B292 cooldowns never apply to the hang class. exception Sync_watchdog is declared (c2c_relay_connector.ml:3097) and caught (3129) but NOTHING raises it - the per-root 3-strike wedge (3577-3597) only runs under injected mock sync_fns. A real hang trips the SIGALRM handler (3114-3127) which _exits with code 3 on the FIRST hang, killing the connector for all roots mid-sync: no wedge record is written, so after the supervisor restart the hung root is retried with no cooldown - a deterministic hang (slow relay, high-latency TLS) is an infinite crash loop at base cadence with zero learning, and each exit destroys all in-memory wedge/strike tables. Compounds with the at-most-once inbound handoff window (separate ticket).
+
+## Fix direction
+
+Persist a hang-wedge via an async-signal-safe write before exit, or run per-root sync in a forked child the parent can time out individually, or scale sync_watchdog_s with observed pass work (B291-style).
+
+## Evidence
+
+Connector review 2026-09-17; verified by coordinator: grep shows no raiser of Sync_watchdog.
