@@ -289,3 +289,4 @@ bugs:
     - file: B290-c2c-should-always-add-mcp-serv.todo
     - file: B291-relay-connector-staleness-watc.todo
     - file: B292-one-wedged-broker-root-exit-3s.todo
+    - file: B293-relay-reports-missing-expired.todo

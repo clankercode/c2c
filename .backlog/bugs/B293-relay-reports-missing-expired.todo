@@ -1,0 +1,105 @@
+---
+complexity: medium
+created_at: "2026-09-17T02:44:58Z"
+depends_on: []
+estimate_hours: 3
+id: B293
+priority: critical
+status: pending
+tags:
+    - relay
+    - connector
+    - auth
+title: relay reports missing/expired lease as signature_invalid and the connector never re-registers -> permanent per-alias wedge
+updated_at: "2026-09-17T02:44:58Z"
+---
+## Symptom
+
+`signature_invalid` is by far the dominant relay error on xsm, and it never
+clears on its own. In the last 200 MB of the connector log:
+
+| error_code | count |
+|---|---|
+| signature_invalid | 12,593 |
+| connection_error | 74 |
+| rate_limit_exceeded | 69 |
+| contact_unauthorised | 5 |
+| nonce_replay | 4 |
+
+By failing op: `heartbeat` 7,770, `poll_inbox` 4,872, `register` 101, `send` 6.
+
+The full error text (truncated in the log at 80 chars; reproduced in full via the
+CLI) is:
+
+```
+{"ok":false,"error_code":"signature_invalid",
+ "error":"verified signer \"codex-midst-vial-6nx9\" does not own session
+          (3d08761ae3f3, 01a084dc-c411-7d63-b80f-1081f0637d57)","http_status":403}
+```
+
+## Root cause — two halves
+
+### Relay half: "no lease" is reported as "bad signature"
+
+`handle_heartbeat` (`ocaml/relay.ml:5294`) and `handle_inbox_read`
+(`ocaml/relay.ml:5747`) both do:
+
+```
+match R.alias_of_session relay ~node_id ~session_id with
+| Some owner when owner = v -> run ()
+| _ -> reject_session_mismatch ~verified:v ~node_id ~session_id
+```
+
+`reject_session_mismatch` emits `relay_err_signature_invalid`. The `| _` arm
+catches **`None`** as well as a genuine foreign-owner mismatch, and
+`alias_of_session` returns `None` both when no row exists and when the row is
+`alias_released` (aged past its window).
+
+So three materially different situations — forged signature, lease owned by
+someone else, lease absent/expired — are collapsed into one error code that reads
+like an authentication failure. A client cannot tell "re-register, your lease is
+gone" from "your key is wrong".
+
+### Client half: the connector never re-registers
+
+`C2c_relay_connector.sync` (around `ocaml/c2c_relay_connector.ml:2219`):
+
+```
+else if List.mem session_id t.registered then
+  ... Relay_client.heartbeat ...   (* on failure: session stays in t.registered *)
+else
+  ... Relay_client.register ...
+```
+
+A session enters `t.registered` on a successful register and only ever leaves it
+via `retain_eligible_registered` (i.e. when the **local** session stops being
+Alive). A failing heartbeat or poll does not remove it. The connector therefore
+heartbeats a lease it does not own forever, and never takes the one action that
+would repair it.
+
+## Why this is load-bearing, not cosmetic
+
+`sync_made_progress result` is `result.last_error = None || result.rate_limited`.
+A single permanently-failing alias makes **every** pass for that broker root
+count as no-progress, which is precisely what drives the staleness watchdog that
+kills the whole connector (see the crash-loop bug). So one stuck alias in one
+repo is sufficient to take down machine-wide relay delivery, even against a
+completely healthy relay.
+
+## Fix direction
+
+Relay:
+- add a distinct error code for "no live lease for this (node_id, session_id)",
+  e.g. `lease_not_found`, and return it from the `None` branch;
+- keep `signature_invalid` for an actual signer/owner mismatch.
+
+Connector:
+- on `lease_not_found` (and on a persistent owner mismatch), drop `session_id`
+  from `t.registered` so the next pass re-registers instead of retrying a dead
+  lease;
+- consider not counting a *recoverable* per-alias error as a whole-root
+  no-progress pass.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
