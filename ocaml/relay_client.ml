@@ -170,46 +170,58 @@ module Relay_client : sig
   val dead_letter : t -> Yojson.Safe.t Lwt.t
 end = struct
 
-  type t = {
-    base_url : string;
-    token : string option;
-    timeout : float;
-    ca_bundle : string option;
-  }
-
   let strip_trailing_slash s =
     let n = String.length s in
     if n > 0 && s.[n-1] = '/' then String.sub s 0 (n-1) else s
 
-  let make ?token ?(timeout = 10.0) ?ca_bundle base_url =
-    let ca_bundle = match ca_bundle with
-      | Some _ -> ca_bundle
-      | None ->
-          match Sys.getenv_opt "C2C_RELAY_CA_BUNDLE" with
-          | Some p when p <> "" -> Some p
-          | _ -> None
-    in
-    { base_url = strip_trailing_slash base_url; token; timeout; ca_bundle }
+  (* B325: parse the CA PEM into a TLS ctx once per bundle path, not once per
+     request — connections are created per operation, so every whoami/doctor
+     op paid a file read + X509 decode. Re-parse only when the file's mtime
+     moves (bundle rotation). If the file disappears after a successful
+     parse, the cached ctx keeps working (the anchors are in memory); a
+     failed parse is never cached, so a garbage bundle keeps failing loudly
+     on every request as before. Successful parses are cached synchronously
+     between awaits, so concurrent first requests share one entry. *)
+  type bundle_entry = {
+    mtime : float;
+    ctx : Cohttp_lwt_unix.Client.ctx Lwt.t;
+  }
 
-  (* Build a custom Net.ctx from a PEM CA bundle path for self-signed certs. *)
+  let bundle_ctx_cache : (string, bundle_entry) Hashtbl.t = Hashtbl.create 4
+
   let net_ctx_of_bundle path =
-    let pem =
-      let ic = open_in path in
-      let n = in_channel_length ic in
-      let buf = Bytes.create n in
-      really_input ic buf 0 n;
-      close_in ic;
-      Bytes.to_string buf
+    let compute () =
+      let pem =
+        let ic = open_in path in
+        let n = in_channel_length ic in
+        let buf = Bytes.create n in
+        really_input ic buf 0 n;
+        close_in ic;
+        Bytes.to_string buf
+      in
+      let certs = match X509.Certificate.decode_pem_multiple pem with
+        | Ok cs -> cs
+        | Error (`Msg m) -> failwith ("C2C_RELAY_CA_BUNDLE parse error: " ^ m)
+      in
+      let auth = X509.Authenticator.chain_of_trust
+        ~time:(fun () -> Some (Ptime_clock.now ())) certs
+      in
+      Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
+      Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
     in
-    let certs = match X509.Certificate.decode_pem_multiple pem with
-      | Ok cs -> cs
-      | Error (`Msg m) -> failwith ("C2C_RELAY_CA_BUNDLE parse error: " ^ m)
+    let mtime_opt =
+      match Unix.stat path with
+      | { Unix.st_mtime; _ } -> Some st_mtime
+      | exception _ -> None
     in
-    let auth = X509.Authenticator.chain_of_trust
-      ~time:(fun () -> Some (Ptime_clock.now ())) certs
-    in
-    Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
-    Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
+    match Hashtbl.find_opt bundle_ctx_cache path with
+    | Some e when mtime_opt = Some e.mtime || mtime_opt = None -> e.ctx
+    | _ ->
+        let ctx = compute () in
+        (match mtime_opt with
+         | Some m -> Hashtbl.replace bundle_ctx_cache path { mtime = m; ctx }
+         | None -> ());
+        ctx
 
   (* Client-synthesized transport failure: the relay never produced a
      coherent HTTP/JSON response. [transport: true] is the marker that
@@ -247,6 +259,28 @@ end = struct
         client_protocol : int;
         server_version : string option;
       }
+
+  type t = {
+    base_url : string;
+    token : string option;
+    timeout : float;
+    ca_bundle : string option;
+    (* B325: the protocol-compat verdict probed from /health after an opaque
+       error. Cached so a client probes at most once per lifetime instead of
+       after every error (monitor/whoami loops were deepening 429 buckets). *)
+    mutable compat_cache : protocol_compat option;
+  }
+
+  let make ?token ?(timeout = 10.0) ?ca_bundle base_url =
+    let ca_bundle = match ca_bundle with
+      | Some _ -> ca_bundle
+      | None ->
+          match Sys.getenv_opt "C2C_RELAY_CA_BUNDLE" with
+          | Some p when p <> "" -> Some p
+          | _ -> None
+    in
+    { base_url = strip_trailing_slash base_url; token; timeout; ca_bundle;
+      compat_cache = None }
 
   let json_int_field fields name =
     match List.assoc_opt name fields with
@@ -504,23 +538,44 @@ end = struct
   (* On a genuine (non-transport) relay error, opportunistically GET /health
      and rewrite the error into incompatible_client when versions skew. Skips
      the /health path itself to avoid recursion. Transport errors stay
-     transport — unreachable is not "incompatible". *)
+     transport — unreachable is not "incompatible".
+
+     B325 economy fixes (the probe itself stays for B121):
+     - a 429 never probes — a rate-limit answer cannot be protocol skew, and
+       the probe would deepen the very bucket that produced the error;
+     - the compat verdict is cached on the client, so N erroring ops cost at
+       most ONE probe (N+1 requests), not one probe each (2N). A probe that
+       itself fails at the transport layer is not cached — the next error
+       may retry it. *)
+  let http_status_of = function
+    | `Assoc fields -> json_int_field fields "http_status"
+    | _ -> None
+
   let maybe_annotate_protocol_skew t ~path body =
     if is_transport_error body
        || response_ok body
        || is_protocol_incompatible body
        || path_without_query path = "/health"
+       || http_status_of body = Some 429
     then Lwt.return body
     else
-      request_raw t ~meth:`GET ~path:"/health" () >>= fun health_json ->
-      if is_transport_error health_json then Lwt.return body
-      else
-        match protocol_compat_of_health health_json with
-        | (Client_too_old _ | Client_too_new _) as compat ->
-            Lwt.return
-              (incompatible_error ~url:t.base_url ~compat
-                 ~underlying:(Some body) ())
-        | Compatible | Unknown -> Lwt.return body
+      (match t.compat_cache with
+       | Some compat -> Lwt.return (Some compat)
+       | None ->
+           request_raw t ~meth:`GET ~path:"/health" () >>= fun health_json ->
+           if is_transport_error health_json then Lwt.return None
+           else begin
+             let compat = protocol_compat_of_health health_json in
+             t.compat_cache <- Some compat;
+             Lwt.return (Some compat)
+           end)
+      >>= function
+      | None -> Lwt.return body
+      | Some (Client_too_old _ | Client_too_new _ as compat) ->
+          Lwt.return
+            (incompatible_error ~url:t.base_url ~compat
+               ~underlying:(Some body) ())
+      | Some (Compatible | Unknown) -> Lwt.return body
 
   let request t ~meth ~path ?body ?auth_override () =
     request_raw t ~meth ~path ?body ?auth_override () >>= fun body ->

@@ -429,6 +429,11 @@
  (libraries c2c_mcp relay_test_support alcotest yojson unix lwt.unix))
 
 (test
+ (name test_c2c_relay_b325_relay_client)
+ (modules test_c2c_relay_b325_relay_client)
+ (libraries c2c_mcp relay_test_support alcotest yojson unix lwt.unix))
+
+(test
  (name test_c2c_relay_b315_root_unavailable)
  (modules test_c2c_relay_b315_root_unavailable)
  (libraries c2c_mcp relay_test_support alcotest yojson unix lwt.unix))
