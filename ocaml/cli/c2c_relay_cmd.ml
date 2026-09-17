@@ -1346,10 +1346,13 @@ let relay_register_cmd =
             Instead:\n\
             \  - restart the connector so it re-registers: c2c restart relay-connect\n\
             \  - read-only probe: c2c relay dm peek --alias %s\n\
+            \    (peek follows the live lease: the connector's key while it\n\
+            \    owns the alias, cli-%s once the lease moves — so the probe\n\
+            \    stays meaningful even if the connector dies)\n\
             \  - to deliberately take the lease: re-run with --force\n\
             \  - to register under the connector's keys: --node-id/--session-id\n\
             %!"
-           alias evidence alias;
+           alias evidence alias alias;
          exit 1
      | true, _, Some _ ->
          Printf.eprintf
@@ -1392,11 +1395,21 @@ let relay_dm_cmd =
   let alias =
     Cmdliner.Arg.(value & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Your alias (required for poll, peek, and send-all).")
   in
+  (* B308: explicit relay keys for dm poll/peek, same convention as
+     register's B294 flags — both-or-lone-node-id, flags over
+     C2C_RELAY_NODE_ID/C2C_RELAY_SESSION_ID, session-only rejected. *)
+  let node_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "node-id" ] ~docv:"NODE_ID" ~doc:"Relay node_id to poll/peek under (poll/peek only; alone implies node/node). Honors C2C_RELAY_NODE_ID.")
+  in
+  let session_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"SESSION_ID" ~doc:"Relay session_id to poll/peek under (requires --node-id). Honors C2C_RELAY_SESSION_ID.")
+  in
   let words =
     Cmdliner.Arg.(value & pos_right 0 string [] & info [] ~docv:"WORDS" ~doc:"For send: <to-alias> <message...>; for send-all: <message...>")
   in
   let+ subcmd = subcmd and+ relay_url = relay_url and+ token = token
-  and+ alias = alias and+ words = words in
+  and+ alias = alias and+ node_id = node_id and+ session_id = session_id
+  and+ words = words in
   match resolve_relay_url relay_url with
   | None ->
       Printf.eprintf "%s%!" (relay_url_required_error ());
@@ -1454,15 +1467,26 @@ let relay_dm_cmd =
            (* B231: when relay-connect owns the alias lease, poll that
               (node_id, session_id) — not cli-<alias>. Hard-coding cli-
               triggers signature_invalid and the old re-register hint
-              steals the lease from the connector. *)
+              steals the lease from the connector.
+              B308: the connector key is preferred only while a live
+              connector still owns the alias (same predicate as the B294
+              register guard); --node-id/--session-id override with
+              register's lone-node-id convention. *)
            let node_id, session_id =
              let env_s k =
                match Sys.getenv_opt k with Some s when s <> "" -> Some s | _ -> None
              in
-             C2c_relay_connector.resolve_cli_dm_inbox_key_at
-               ~broker_root:(resolve_broker_root ()) ~alias:from_alias
-               ~env_node_id:(env_s "C2C_RELAY_NODE_ID")
-               ~env_session_id:(env_s "C2C_RELAY_SESSION_ID")
+             match
+               C2c_relay_connector.resolve_cli_dm_inbox_key_at
+                 ~broker_root:(resolve_broker_root ()) ~alias:from_alias
+                 ~flag_node_id:node_id ~flag_session_id:session_id
+                 ~env_node_id:(env_s "C2C_RELAY_NODE_ID")
+                 ~env_session_id:(env_s "C2C_RELAY_SESSION_ID")
+             with
+             | Ok key -> key
+             | Error advice ->
+                 Printf.eprintf "error: %s\n%!" advice;
+                 exit 1
            in
            let body_str = Yojson.Safe.to_string (`Assoc [
              ("node_id", `String node_id);
@@ -1498,7 +1522,8 @@ let relay_dm_cmd =
               satisfies that. The unsigned fallback below only works
               against a tokenless dev relay that also sets the explicit
               C2C_RELAY_ALLOW_UNSIGNED_INBOX=1 gate.
-              B231: same connector-lease resolution as poll (see above). *)
+              B231: same connector-lease resolution as poll (see above);
+              B308: liveness-gated, with --node-id/--session-id overrides. *)
            let from_alias = match alias with
              | Some a -> a
              | None ->
@@ -1509,10 +1534,17 @@ let relay_dm_cmd =
              let env_s k =
                match Sys.getenv_opt k with Some s when s <> "" -> Some s | _ -> None
              in
-             C2c_relay_connector.resolve_cli_dm_inbox_key_at
-               ~broker_root:(resolve_broker_root ()) ~alias:from_alias
-               ~env_node_id:(env_s "C2C_RELAY_NODE_ID")
-               ~env_session_id:(env_s "C2C_RELAY_SESSION_ID")
+             match
+               C2c_relay_connector.resolve_cli_dm_inbox_key_at
+                 ~broker_root:(resolve_broker_root ()) ~alias:from_alias
+                 ~flag_node_id:node_id ~flag_session_id:session_id
+                 ~env_node_id:(env_s "C2C_RELAY_NODE_ID")
+                 ~env_session_id:(env_s "C2C_RELAY_SESSION_ID")
+             with
+             | Ok key -> key
+             | Error advice ->
+                 Printf.eprintf "error: %s\n%!" advice;
+                 exit 1
            in
            let body_str = Yojson.Safe.to_string (`Assoc [
              ("node_id", `String node_id);

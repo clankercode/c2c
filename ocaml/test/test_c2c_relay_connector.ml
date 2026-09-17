@@ -1187,10 +1187,13 @@ let test_connector_peek_key_backward_compat_fallback () =
            ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"" = None)
   | None -> Alcotest.fail "backward-compat fallback returned None"
 
-(* B231: CLI poll/peek must prefer the connector lease over cli-<alias>. *)
+(* B231: CLI poll/peek must prefer the connector lease over cli-<alias> —
+   while the connector is LIVE (B308: the same liveness predicate as the
+   B294 register guard gates this preference). *)
 let test_resolve_cli_dm_inbox_key_prefers_connector () =
+  let now = Unix.gettimeofday () in
   let cs =
-    { Conn.cs_last_sync_ts = 0.0; cs_last_ok_ts = 0.0;
+    { Conn.cs_last_sync_ts = now; cs_last_ok_ts = now;
       cs_last_error_op = None; cs_last_error_detail = None;
       cs_last_error_ts = None;
       cs_registered = [ "kimi-suvi-lumo-9cr1" ];
@@ -1206,19 +1209,45 @@ let test_resolve_cli_dm_inbox_key_prefers_connector () =
       cs_rate_limited = false; cs_retry_after_s = None;
       cs_pass_duration_s = None; cs_pass_interval_s = None; }
   in
+  let unwrap = function
+    | Ok key -> key
+    | Error m -> Alcotest.failf "unexpected refusal: %s" m
+  in
   let node_id, session_id =
-    Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
-      ~connector_state:(Some cs) ~fallback_node_id:"host-hash-xyz"
-      ~env_node_id:None ~env_session_id:None
+    unwrap
+      (Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1" ~now
+         ~connector_state:(Some cs) ~fallback_node_id:"host-hash-xyz"
+         ~flag_node_id:None ~flag_session_id:None
+         ~env_node_id:None ~env_session_id:None)
   in
   Alcotest.(check string) "node_id = connector node" "host-hash-xyz" node_id;
   Alcotest.(check string) "session_id = connector session (NOT cli-*)"
     "sess-connector-owned-1" session_id;
-  (* Unmanaged / no state → historical CLI key. *)
+  (* B308: a DEAD connector (stale last_ok, no live recorded pid) no longer
+     owns the resolution — the CLI convention it is. cs_pid = None (and a
+     dead pid, for that matter) never counts as alive. *)
+  let dead_cs =
+    { cs with cs_last_sync_ts = now -. 600.0; cs_last_ok_ts = now -. 600.0;
+              cs_pid = None }
+  in
+  let n_dead, s_dead =
+    unwrap
+      (Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1" ~now
+         ~connector_state:(Some dead_cs) ~fallback_node_id:"host-hash-xyz"
+         ~flag_node_id:None ~flag_session_id:None
+         ~env_node_id:None ~env_session_id:None)
+  in
+  Alcotest.(check string) "dead connector -> cli node"
+    "cli-kimi-suvi-lumo-9cr1" n_dead;
+  Alcotest.(check string) "dead connector -> cli session"
+    "cli-kimi-suvi-lumo-9cr1" s_dead;
+  (* No state at all → historical CLI key. *)
   let n2, s2 =
-    Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
-      ~connector_state:None ~fallback_node_id:"host-hash-xyz"
-      ~env_node_id:None ~env_session_id:None
+    unwrap
+      (Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1" ~now
+         ~connector_state:None ~fallback_node_id:"host-hash-xyz"
+         ~flag_node_id:None ~flag_session_id:None
+         ~env_node_id:None ~env_session_id:None)
   in
   Alcotest.(check string) "no connector -> cli node"
     "cli-kimi-suvi-lumo-9cr1" n2;
@@ -1226,9 +1255,11 @@ let test_resolve_cli_dm_inbox_key_prefers_connector () =
     "cli-kimi-suvi-lumo-9cr1" s2;
   (* Explicit env pair wins over connector (operator override). *)
   let n3, s3 =
-    Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
-      ~connector_state:(Some cs) ~fallback_node_id:"host-hash-xyz"
-      ~env_node_id:(Some "override-node") ~env_session_id:(Some "override-sid")
+    unwrap
+      (Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1" ~now
+         ~connector_state:(Some cs) ~fallback_node_id:"host-hash-xyz"
+         ~flag_node_id:None ~flag_session_id:None
+         ~env_node_id:(Some "override-node") ~env_session_id:(Some "override-sid"))
   in
   Alcotest.(check string) "env override node" "override-node" n3;
   Alcotest.(check string) "env override session" "override-sid" s3

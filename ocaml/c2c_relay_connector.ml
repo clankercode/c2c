@@ -1384,7 +1384,6 @@ let write_connector_state ?pass_duration_s ?pass_interval_s ?node_id
     broker_root (result : sync_result) =
   let now = Unix.gettimeofday () in
   let ok = result.last_error = None in
-  let last_ok_ts = if ok then now else 0.0 in
   (* Preserve the previous last_ok_ts when this sync errored, so the doctor
      check can still report how long ago the last healthy sync was. Also
      carry the previous pass metadata forward when this write is not told
@@ -1405,6 +1404,7 @@ let write_connector_state ?pass_duration_s ?pass_interval_s ?node_id
     | None -> None
   in
   let prev_ok_ts = Option.value (prev_float "last_ok_ts") ~default:0.0 in
+  let last_ok_ts = if ok then now else prev_ok_ts in
   let pass_duration_s =
     match pass_duration_s with
     | Some d when d > 0.0 -> Some d
@@ -1707,95 +1707,6 @@ let mark_connector_wedged ?prev_count broker_root ~reason =
        Unix.rename tmp path);
   (now, count)
 
-(** B294: (node_id, session_id) for `c2c relay register`.
-
-    Deliberately NOT [resolve_cli_dm_inbox_key]: that one PREFERS a
-    connector-managed key, while register's default must stay the CLI's own
-    cli-<alias> binding — silently re-keying the connector's lease is the
-    alias theft B294 refuses. Explicit keys (--node-id/--session-id, or
-    C2C_RELAY_NODE_ID/C2C_RELAY_SESSION_ID, flags winning over env) are the
-    supported way to hand a lease to a chosen pair, e.g. the connector's.
-    A node id alone implies node/node (the documented `c2c monitor
-    --relay-node-id` convention); a session id alone is rejected because
-    (cli-<alias>, <other-session>) is a key neither side can use.
-    Returns [Error advice] for the session-only case. Pure so it is
-    unit-testable. *)
-let resolve_register_inbox_key ~alias
-    ~(flag_node_id : string option)
-    ~(flag_session_id : string option)
-    ~(env_node_id : string option)
-    ~(env_session_id : string option)
-    : (string * string, string) result =
-  let pick flag env =
-    match flag with
-    | Some v when v <> "" -> Some v
-    | _ ->
-        (match env with
-         | Some v when v <> "" -> Some v
-         | _ -> None)
-  in
-  let node_id = pick flag_node_id env_node_id in
-  let session_id = pick flag_session_id env_session_id in
-  match node_id, session_id with
-  | Some n, Some s -> Ok (n, s)
-  | Some n, None -> Ok (n, n)
-  | None, Some _ ->
-      Error
-        "--session-id (or C2C_RELAY_SESSION_ID) needs --node-id (or \
-         C2C_RELAY_NODE_ID): a session id alone would register under a \
-         half-cli key neither the CLI nor relay-connect can use"
-  | None, None -> Ok (cli_inbox_key alias)
-
-(** B231: resolve the (node_id, session_id) for CLI `relay dm poll` / `peek`.
-
-    The relay lease is one-row-per-alias and SESSION-scoped. When
-    `relay-connect` is running it re-registers under (connector node_id,
-    local session_id), so a hard-coded [cli-<alias>/cli-<alias>] poll/peek
-    gets signature_invalid ("verified signer does not own session"). Prefer
-    the connector's recorded binding (same as monitor B209); fall back to
-    the CLI convention only when the alias is not connector-managed.
-
-    [env_node_id] / [env_session_id] (from C2C_RELAY_NODE_ID /
-    C2C_RELAY_SESSION_ID) both-set win as an explicit operator override;
-    a lone override is used only as connector_peek_key fallback. *)
-let resolve_cli_dm_inbox_key ~alias
-    ~(connector_state : connector_state option)
-    ~fallback_node_id
-    ~(env_node_id : string option)
-    ~(env_session_id : string option)
-    : string * string =
-  match env_node_id, env_session_id with
-  | Some n, Some s when n <> "" && s <> "" -> (n, s)
-  | _ ->
-      let fb_node =
-        match env_node_id with Some n when n <> "" -> n | _ -> fallback_node_id
-      in
-      let fb_sid =
-        match env_session_id with Some s when s <> "" -> s | _ -> ""
-      in
-      (match connector_state with
-       | Some cs ->
-           (match
-              connector_peek_key cs ~alias
-                ~fallback_node_id:fb_node ~fallback_session_id:fb_sid
-            with
-            | Some key -> key
-            | None -> cli_inbox_key alias)
-       | None -> cli_inbox_key alias)
-
-(** Convenience wrapper: read connector-state from [broker_root] and resolve
-    the B231 inbox key. Safe when the state file is missing or unreadable. *)
-let resolve_cli_dm_inbox_key_at ~broker_root ~alias
-    ~(env_node_id : string option)
-    ~(env_session_id : string option)
-    : string * string =
-  let connector_state = read_connector_state broker_root in
-  let fallback_node_id =
-    try Host_id.compute_host_hash () with _ -> ""
-  in
-  resolve_cli_dm_inbox_key ~alias ~connector_state ~fallback_node_id
-    ~env_node_id ~env_session_id
-
 (** True when [connector-state.json] records a PID that still exists.
     Broker-owned process evidence that does not require argv --broker-root
     scoping (B181). Best-effort: missing pid field or unreadable /proc → false. *)
@@ -1861,15 +1772,12 @@ let connector_freshness_window_s (st : connector_state option) : float =
         (Float.max connector_freshness_floor_s
            (Option.value scaled ~default:connector_freshness_floor_s))
 
-(** B294: does a live machine connector own [alias] on this broker root?
-
-    READ-ONLY evidence from connector-state.json (no pid signalling — repo
-    rule #85): the alias appears in [sessions]/[registered] AND either the
-    recorded pid is alive or the last successful sync is inside doctor's
-    freshness window ([connector_freshness_window_s] — the fixed 120s
-    default, scaled by the recorded pass metadata, overridable with
-    C2C_RELAY_DOCTOR_FRESHNESS_S; inlined here because Relay_doctor depends
-    on this module). Returns the evidence label for the refusal message.
+(** B294/B308: read-only ownership evidence from a connector_state VALUE —
+    the alias appears in [sessions]/[registered] AND either the recorded pid
+    is alive or the last successful sync is inside the B313 freshness window
+    ([connector_freshness_window_s]: fixed 120s default scaled by the
+    recorded pass metadata, overridable with C2C_RELAY_DOCTOR_FRESHNESS_S).
+    No pid signalling — repo rule #85. Returns the evidence label.
 
     B324: pid-alive is DEMOTED below last_ok freshness when the recorded
     [last_error_op] is register — an alive connector whose register arm
@@ -1881,31 +1789,156 @@ let connector_freshness_window_s (st : connector_state option) : float =
     keeps pid-alive as authoritative evidence. B313: the freshness arm
     scales with the recorded pass cadence, so a healthy many-root root
     whose last_ok legitimately ages one pass period is still owned; the
-    B324 demotion threshold itself stays at the fixed 120s floor. *)
+    B324 demotion threshold itself stays at the fixed 120s floor. Shared by
+    the B294 register guard and the B231/B308 dm poll/peek key resolution
+    so the two surfaces can never disagree. *)
+let connector_state_owns_alias (st : connector_state) ~alias ~now :
+    string option =
+  let casefold = String.lowercase_ascii in
+  let alias_cf = casefold alias in
+  let managed =
+    List.exists (fun a -> casefold a = alias_cf) st.cs_registered
+    || List.exists (fun (a, _) -> casefold a = alias_cf) st.cs_sessions
+  in
+  let register_arm_failing =
+    st.cs_last_error_op = Some "register"
+    && now -. st.cs_last_ok_ts >= connector_freshness_floor_s
+  in
+  if not managed then None
+  else if connector_pid_alive st && not register_arm_failing then
+    Some "pid alive in connector-state.json"
+  else
+    let window = connector_freshness_window_s (Some st) in
+    if now -. st.cs_last_ok_ts < window then
+      Some
+        (Printf.sprintf "connector synced this broker root within %.0fs" window)
+    else None
+
+(** B294: (node_id, session_id) for `c2c relay register`.
+
+    Deliberately NOT [resolve_cli_dm_inbox_key]: that one PREFERS a
+    connector-managed key, while register's default must stay the CLI's own
+    cli-<alias> binding — silently re-keying the connector's lease is the
+    alias theft B294 refuses. Explicit keys (--node-id/--session-id, or
+    C2C_RELAY_NODE_ID/C2C_RELAY_SESSION_ID, flags winning over env) are the
+    supported way to hand a lease to a chosen pair, e.g. the connector's.
+    A node id alone implies node/node (the documented `c2c monitor
+    --relay-node-id` convention); a session id alone is rejected because
+    (cli-<alias>, <other-session>) is a key neither side can use.
+    Returns [Error advice] for the session-only case. Pure so it is
+    unit-testable. *)
+let resolve_register_inbox_key ~alias
+    ~(flag_node_id : string option)
+    ~(flag_session_id : string option)
+    ~(env_node_id : string option)
+    ~(env_session_id : string option)
+    : (string * string, string) result =
+  let pick flag env =
+    match flag with
+    | Some v when v <> "" -> Some v
+    | _ ->
+        (match env with
+         | Some v when v <> "" -> Some v
+         | _ -> None)
+  in
+  let node_id = pick flag_node_id env_node_id in
+  let session_id = pick flag_session_id env_session_id in
+  match node_id, session_id with
+  | Some n, Some s -> Ok (n, s)
+  | Some n, None -> Ok (n, n)
+  | None, Some _ ->
+      Error
+        "--session-id (or C2C_RELAY_SESSION_ID) needs --node-id (or \
+         C2C_RELAY_NODE_ID): a session id alone would register under a \
+         half-cli key neither the CLI nor relay-connect can use"
+  | None, None -> Ok (cli_inbox_key alias)
+
+(** B231: resolve the (node_id, session_id) for CLI `relay dm poll` / `peek`.
+
+    The relay lease is one-row-per-alias and SESSION-scoped. When
+    `relay-connect` is running it re-registers under (connector node_id,
+    local session_id), so a hard-coded [cli-<alias>/cli-<alias>] poll/peek
+    gets signature_invalid ("verified signer does not own session"). Prefer
+    the connector's recorded binding (same as monitor B209); fall back to
+    the CLI convention only when the alias is not connector-managed.
+
+    B308: the connector-key preference is gated on the SAME liveness
+    predicate [connector_owns_alias] uses (pid alive, or last_ok inside the
+    B313-scaled freshness window; B324's register-arm demotion composed in).
+    A state file that merely LISTS the alias no longer owns the resolution —
+    after the connector dies, an operator who re-registers cli-X/cli-X gets
+    poll/peek against that key instead of signature_invalid from the dead
+    connector's lease.
+
+    B308: explicit keys follow register's B294 convention exactly (flags
+    win over C2C_RELAY_NODE_ID/C2C_RELAY_SESSION_ID): both set -> (n, s);
+    a LONE node id overrides to (n, n) — register and dm now agree, so
+    register-then-poll under the same env targets one key; a lone session
+    id is [Error] guidance, since (cli-<alias>, <other-session>) is a key
+    neither side can use. Returns [Error advice] for the session-only case. *)
+let resolve_cli_dm_inbox_key ~alias
+    ~(now : float)
+    ~(connector_state : connector_state option)
+    ~fallback_node_id
+    ~(flag_node_id : string option)
+    ~(flag_session_id : string option)
+    ~(env_node_id : string option)
+    ~(env_session_id : string option)
+    : (string * string, string) result =
+  let pick flag env =
+    match flag with
+    | Some v when v <> "" -> Some v
+    | _ ->
+        (match env with
+         | Some v when v <> "" -> Some v
+         | _ -> None)
+  in
+  let node_id = pick flag_node_id env_node_id in
+  let session_id = pick flag_session_id env_session_id in
+  match node_id, session_id with
+  | Some n, Some s -> Ok (n, s)
+  | Some n, None -> Ok (n, n)
+  | None, Some _ ->
+      Error
+        "--session-id (or C2C_RELAY_SESSION_ID) needs --node-id (or \
+         C2C_RELAY_NODE_ID): a session id alone would poll a half-cli key \
+         neither the CLI nor relay-connect can use"
+  | None, None ->
+      let cli_key = cli_inbox_key alias in
+      match connector_state with
+      | Some st when connector_state_owns_alias st ~alias ~now <> None ->
+          (match
+             connector_peek_key st ~alias ~fallback_node_id
+               ~fallback_session_id:""
+           with
+           | Some key -> Ok key
+           | None -> Ok cli_key)
+      | _ -> Ok cli_key
+
+(** Convenience wrapper: read connector-state from [broker_root] and resolve
+    the B231 inbox key. Safe when the state file is missing or unreadable. *)
+let resolve_cli_dm_inbox_key_at ~broker_root ~alias
+    ~(flag_node_id : string option)
+    ~(flag_session_id : string option)
+    ~(env_node_id : string option)
+    ~(env_session_id : string option)
+    : (string * string, string) result =
+  let connector_state = read_connector_state broker_root in
+  let fallback_node_id =
+    try Host_id.compute_host_hash () with _ -> ""
+  in
+  resolve_cli_dm_inbox_key ~alias ~now:(Unix.gettimeofday ())
+    ~connector_state ~fallback_node_id ~flag_node_id ~flag_session_id
+    ~env_node_id ~env_session_id
+
+
+
+(** B294: does a live machine connector own [alias] on this broker root?
+    File-reading form of [connector_state_owns_alias]. *)
 let connector_owns_alias ~broker_root ~alias ~now : string option =
   match read_connector_state broker_root with
   | None -> None
-  | Some st ->
-      let casefold = String.lowercase_ascii in
-      let alias_cf = casefold alias in
-      let managed =
-        List.exists (fun a -> casefold a = alias_cf) st.cs_registered
-        || List.exists (fun (a, _) -> casefold a = alias_cf) st.cs_sessions
-      in
-      let register_arm_failing =
-        st.cs_last_error_op = Some "register"
-        && now -. st.cs_last_ok_ts >= connector_freshness_floor_s
-      in
-      if not managed then None
-      else if connector_pid_alive st && not register_arm_failing then
-        Some "pid alive in connector-state.json"
-      else
-        let window = connector_freshness_window_s (Some st) in
-        if now -. st.cs_last_ok_ts < window then
-          Some
-            (Printf.sprintf
-               "connector synced this broker root within %.0fs" window)
-        else None
+  | Some st -> connector_state_owns_alias st ~alias ~now
 
 (** Write a minimal connector-state.json recording that a sync raised an
     exception (B093). Lets `c2c doctor --relay` report the last error even

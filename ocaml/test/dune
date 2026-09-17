@@ -806,3 +806,15 @@
  (name test_relay_b313_doctor_freshness)
  (modules test_relay_b313_doctor_freshness)
  (libraries c2c_mcp alcotest yojson unix))
+
+; B308: CLI relay dm poll/peek key resolution — lone-node-id aligns with
+; register's (n,n) convention, the connector-key preference is gated on the
+; B294/B324 liveness predicate, --node-id/--session-id flags, and a refusal
+; hint that stays coherent when the connector is dead. Hermetic: pure
+; resolver assertions + the shared scripted loopback relay driving c2c.exe.
+(test
+ (name test_relay_b308_dm_key_resolution)
+ (modules test_relay_b308_dm_key_resolution)
+ (libraries c2c_mcp relay_test_support alcotest yojson unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix)
+ (deps ../cli/c2c.exe))
