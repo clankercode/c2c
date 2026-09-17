@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:05Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T20:20:56Z"
 complexity: medium
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
+duration_minutes: 298.8518559433667
 estimate_hours: 1
 id: B314
 priority: medium
 started_at: "2026-09-17T15:22:05Z"
-status: in_progress
+status: done
 tags: []
 title: 'connector inline HTTP client: timeout field is dead and C2C_RELAY_CA_BUNDLE unsupported'
-updated_at: "2026-09-17T15:22:05Z"
+updated_at: "2026-09-17T20:20:56Z"
 ---
 
 # connector inline HTTP client: timeout field is dead and C2C_RELAY_CA_BUNDLE unsupported
