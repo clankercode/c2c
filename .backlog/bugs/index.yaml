@@ -312,3 +312,4 @@ bugs:
     - file: B313-doctor-connector-freshness-win.todo
     - file: B314-connector-inline-http-client-t.todo
     - file: B315-deleted-unwritable-broker-root.todo
+    - file: B316-write-connector-state-error-wi.todo
