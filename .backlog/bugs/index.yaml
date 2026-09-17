@@ -304,3 +304,4 @@ bugs:
     - file: B305-outbox-toctou-write-outbox-run.todo
     - file: B306-append-to-local-inbox-bypasses.todo
     - file: B307-sync-watchdog-never-fires-in-p.todo
+    - file: B308-relay-dm-poll-peek-key-resolut.todo
