@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T04:06:16Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T04:58:11Z"
 complexity: medium
 created_at: "2026-07-28T08:01:14Z"
 depends_on: []
+duration_minutes: 51.91770632676667
 estimate_hours: 1
 id: B290
 priority: high
 started_at: "2026-09-17T04:06:16Z"
-status: in_progress
+status: done
 tags: []
 title: c2c should always add mcp servers as disabled
-updated_at: "2026-09-17T04:06:16Z"
+updated_at: "2026-09-17T04:58:11Z"
 ---
 
 c2c should always add mcp servers as disabled

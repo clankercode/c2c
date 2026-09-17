@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T04:06:16Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T04:58:11Z"
 complexity: medium
 created_at: "2026-09-17T02:46:09Z"
 depends_on: []
+duration_minutes: 51.9176655289
 estimate_hours: 3
 id: B296
 priority: high
 started_at: "2026-09-17T04:06:16Z"
-status: in_progress
+status: done
 tags: []
 title: relay-connect has no boot supervision; exit-3 assumes a supervisor that does not survive reboot (x-left relay-dark 55 days)
-updated_at: "2026-09-17T04:06:16Z"
+updated_at: "2026-09-17T04:58:11Z"
 ---
 ## Symptom
 
