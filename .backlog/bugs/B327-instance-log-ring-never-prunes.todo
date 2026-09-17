@@ -1,0 +1,26 @@
+---
+complexity: low
+created_at: "2026-09-17T07:56:14Z"
+depends_on: []
+estimate_hours: 1
+id: B327
+priority: low
+status: pending
+tags: []
+title: instance-log ring never prunes numbered strays beyond keep+16 after a C2C_INSTANCE_LOG_KEEP reduction
+updated_at: "2026-09-17T07:56:14Z"
+---
+
+# instance-log ring never prunes numbered strays beyond keep+16 after a C2C_INSTANCE_LOG_KEEP reduction
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior

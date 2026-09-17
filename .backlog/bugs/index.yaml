@@ -323,3 +323,4 @@ bugs:
     - file: B324-b294-register-guard-refuses-th.todo
     - file: B325-relay-client-fires-an-extra-ge.todo
     - file: B326-systemd-unit-execstart-can-pin.todo
+    - file: B327-instance-log-ring-never-prunes.todo
