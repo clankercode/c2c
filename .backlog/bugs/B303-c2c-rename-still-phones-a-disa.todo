@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:10Z"
 depends_on: []
 estimate_hours: 1
 id: B303
 priority: high
+started_at: null
 status: pending
 tags: []
 title: 'c2c rename still phones a disabled relay: rename rebind resolver ignores enabled:false (B300 violation)'
@@ -24,3 +26,5 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom\n\nAfter c2c relay disable (parked URL, enabled:false), c2c rename <alias> still phones the parked relay: Relay_rename_rebind.resolve_relay_url (ocaml/relay_rename_rebind.ml:31-36) is env C2C_RELAY_URL -> relay_config_string_field "url" — it never consults Relay_activation.resolve and never checks enabled. B140 wires rebind_sync into rename, so a signed /register POSTs to a relay the operator turned off, and the rename output shows relay_rebind: ok instead of skipped. This is the fourth drifted copy of URL resolution — exactly the failure B301 was written to end, and a B300 contract break.\n\n## Fix direction\n\nDelete the local resolver; route through Relay_activation.url () and map Relay_disabled/Relay_inactive to the existing skipped JSON. Verify with a clean-HOME test: disabled relay.json + rename issues zero HTTP (same netns method as test_relay_activation).\n\n## Evidence\n\nRead-only relay review 2026-09-17 (verified in source by coordinator).
