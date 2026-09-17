@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:53:33Z"
 depends_on: []
 estimate_hours: 1
 id: B302
 priority: critical
+started_at: null
 status: pending
 tags: []
 title: c2c restart/stop relay-connect fights the systemd unit into an infinite restart loop; stop does not stick (B296 follow-up)
@@ -24,3 +26,22 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom (live incident, 2026-09-17)
+
+After `c2c relay enable` installs the systemd unit (B296), running `c2c restart relay-connect` wedges the unit into a permanent restart loop: restart kills the systemd main process, daemonizes its OWN supervisor which takes the machine singleton lock + instance identity (outer.pid, config.json rewritten), and every systemd retry (RestartSec=5, StartLimitIntervalSec=0 = never stops) dies on the singleton guard at ocaml/cli/c2c_relay_managed.ml:289 ("a machine-wide relay connector is already running"). Observed live: NRestarts 0 -> 63+ at ~1 attempt/5s; the real connector ran outside the unit, logging to the instance log instead of the journal. Delivery kept working; supervision did not.
+
+## Related defects in the same paths
+
+1. `c2c stop relay-connect` SIGTERMs outer.pid, prints "stopped", exits 0 — systemd restarts it 5s later. The stop silently reverts (unit header comments say "wrong tool" but no call site checks or warns). c2c_start.ml:6848-6886, c2c_relay_managed.ml:439-521.
+2. SIGKILL of the outer does not kill the connector child (singleton-exempt via C2C_RELAY_CONNECT_SUPERVISED=1), which keeps polling — a duplicate-connector 429 storm the new supervisor cannot see.
+3. Doctor remediation strings actively recommend `c2c restart relay-connect` for wedged connectors, triggering exactly this.
+
+## Fix direction
+
+stop/restart (and doctor remediation) detect unit ownership (systemctl --user is-active/is-enabled c2c-relay-connect.service) and delegate to systemctl; warn loudly when asked to stop a systemd-owned service; stop_supervisor should also kill the process group or the recorded child. The post-install restart prompt (just bi) also suggests `c2c restart <name>` — that is how this was triggered in the wild.
+
+## Evidence
+
+- .worktrees cleanup happened after; journal captured: "17:47:27 error: a machine-wide relay connector is already running" xN, NRestarts=63.
+- Review finding (explore agent) + live audit 2026-09-17.
