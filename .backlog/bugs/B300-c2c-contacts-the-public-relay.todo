@@ -1,18 +1,18 @@
 ---
+claimed_at: "2026-09-17T02:51:44Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T02:50:12Z"
 depends_on: []
 estimate_hours: 5
 id: B300
 priority: high
-status: pending
-tags:
-    - relay
-    - privacy
-    - defaults
-    - opt-in
+started_at: "2026-09-17T02:51:44Z"
+status: in_progress
+tags: []
 title: c2c contacts the public relay by default; relay should be opt-in and only needed for cross-machine messaging
-updated_at: "2026-09-17T02:50:12Z"
+updated_at: "2026-09-17T02:51:44Z"
 ---
 ## Requested behaviour (Max, 2026-09-17)
 
