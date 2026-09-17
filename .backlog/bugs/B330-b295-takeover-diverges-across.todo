@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:08Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T19:26:02Z"
 complexity: medium
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
+duration_minutes: 243.91637375293334
 estimate_hours: 1
 id: B330
 priority: medium
 started_at: "2026-09-17T15:22:08Z"
-status: in_progress
+status: done
 tags: []
 title: 'B295 takeover diverges across backends: sqlite drops identity binding/reservation; conflict-vs-mismatch precedence differs'
-updated_at: "2026-09-17T15:22:08Z"
+updated_at: "2026-09-17T19:26:02Z"
 ---
 
 # B295 takeover diverges across backends: sqlite drops identity binding/reservation; conflict-vs-mismatch precedence differs
