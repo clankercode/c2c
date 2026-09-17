@@ -104,3 +104,5 @@ Connector:
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane: relay-core, serial order B295->B293->B294->B291->B292->B297 in one worktree (.worktrees/b29x-relay-core) — all six touch ocaml/relay.ml and/or ocaml/c2c_relay_connector.ml; parallel worktrees would conflict. Also align the case-sensitive owner comparison in handle_heartbeat/handle_inbox_read with is_lease_releases lowercase comparison (aliases are case-insensitive per repo rules).
