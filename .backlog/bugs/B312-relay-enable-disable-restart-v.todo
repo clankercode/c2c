@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
 estimate_hours: 1
 id: B312
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: 'relay enable/disable/restart verb scoping: restart ignores relay.json and inverts URL precedence; enable writes repo-local config under broker env'
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Two verb-scoping defects. (1) c2c restart relay-connect bootstrap resolves first_nonempty_url [override; env] then [saved config; override; env] (c2c_relay_managed.ml:461-499) - relay.json/Relay_activation is never a candidate, so on an enable-only non-systemd host restart errors "no relay URL known" even though start works, and when saved config.json holds a URL it WINS over C2C_RELAY_URL - inverted precedence vs start/connect (B300/B242); re-pointing via relay enable --url followed by restart relaunches on the stale URL. (2) enable/disable write through config_location which honors C2C_RELAY_CONFIG/C2C_MCP_BROKER_ROOT: enable inside a broker-scoped session writes the repo-local relay.json; a later plain-shell disable writes enabled:false to the MACHINE file and stops the unit, but the repo-local file still resolves active so relay status/monitor/dm in that repo keep phoning the relay the operator believes is off.
+
+## Fix direction
+
+restart bootstrap: add Relay_activation.url () as last candidate, order override > env > activation > saved-config-once. enable/disable: print or refuse without --config when config_location () is not the machine config; disable warns when a repo-local relay.json still resolves active.
+
+## Evidence
+
+CLI review 2026-09-17 (merges findings 8+9).
