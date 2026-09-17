@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:10Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T19:26:04Z"
 complexity: medium
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
+duration_minutes: 243.90465917305
 estimate_hours: 1
 id: B337
 priority: low
 started_at: "2026-09-17T15:22:10Z"
-status: in_progress
+status: done
 tags: []
 title: room system messages and DM dead-lettering exist only in the in-memory backend - tests describe behavior prod does not have
-updated_at: "2026-09-17T15:22:10Z"
+updated_at: "2026-09-17T19:26:04Z"
 ---
 
 # room system messages and DM dead-lettering exist only in the in-memory backend - tests describe behavior prod does not have
