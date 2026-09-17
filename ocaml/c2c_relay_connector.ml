@@ -4217,7 +4217,8 @@ let start_machine_impl ~sync_once ~discover_roots
         if not !shutdown then begin
           rl_seen := false;
           rl_retry_after := 0.;
-          walk_started_at := Unix.gettimeofday ();
+          let pass_started_at = Unix.gettimeofday () in
+          walk_started_at := pass_started_at;
           let discovered = discover_roots ~primary:primary_broker_root in
           (* B292: skip roots parked in a wedge cooldown; the pass continues
              with the remaining roots. *)
@@ -4246,6 +4247,15 @@ let start_machine_impl ~sync_once ~discover_roots
                 (if !rl_retry_after > 0. then
                    Printf.sprintf ", retry_after=%.1fs" !rl_retry_after
                  else "");
+            (* B318: the cadence is measured between PASS STARTS, not pass
+               ends — pass work no longer inflates the effective poll period
+               (a 4-6min walk at a 30s interval used to make the real cadence
+               interval+walk, drifting without bound). The next pass starts
+               at pass_started_at + delay; a pass that overran the delay
+               starts the next one immediately (never a negative sleep). The
+               rate-limit backoff is honored as spacing between pass starts,
+               which is what protects the shared bucket. *)
+            let next_start = pass_started_at +. delay in
             sleep_interruptibly_until ~slice_s:5.0
               ~should_stop:(fun () ->
                 (* B291/B292: no staleness checks mid-sleep — wedge detection
@@ -4254,7 +4264,7 @@ let start_machine_impl ~sync_once ~discover_roots
                    (the 429 backoff can sleep past the 180s floor; checking
                    there would wedge a deliberately-throttled connector). *)
                 !shutdown)
-              delay;
+              (Float.max 0.0 (next_start -. Unix.gettimeofday ()));
             loop ()
           end
         end

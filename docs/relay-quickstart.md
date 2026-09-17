@@ -194,6 +194,9 @@ c2c relay setup --url http://RELAY_HOST:7331   # once; persists to relay.json
 c2c start relay-connect                          # reads the saved URL
 # Or pass explicitly: c2c start relay-connect --relay-url http://RELAY_HOST:7331
 # Optional: --interval SECONDS (default 30)  --foreground / --fg  (no daemonize)
+# The cadence is measured between pass STARTS (B318): a long sync pass no
+# longer inflates the effective poll period; an overrunning pass starts the
+# next one immediately.
 # Stop with: c2c stop relay-connect
 ```
 
