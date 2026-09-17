@@ -306,3 +306,4 @@ bugs:
     - file: B307-sync-watchdog-never-fires-in-p.todo
     - file: B308-relay-dm-poll-peek-key-resolut.todo
     - file: B309-c2c-relay-disable-leaves-subsc.todo
+    - file: B310-c2c-relay-enable-ignores-ambie.todo
