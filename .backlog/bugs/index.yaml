@@ -329,3 +329,4 @@ bugs:
     - file: B330-b295-takeover-diverges-across.todo
     - file: B331-undelivered-inbox-stranded-the.todo
     - file: B332-b295-takeover-leaves-unremovab.todo
+    - file: B333-sqlite-heartbeat-pair-scan-is.todo
