@@ -86,11 +86,16 @@ let test_append_survives_concurrent_broker_drain () =
   let sid = "fixture-live" in
   let lock_path = Filename.concat tmp (sid ^ ".inbox.lock") in
   let saw_path = Filename.concat tmp "drain-saw.json" in
+  (* Handshake: the drain signals AFTER it holds the lock AND has read the
+     pre-merge file, so the parent's append is guaranteed to start inside
+     the drain's hold window regardless of machine load. *)
+  let ready_r, ready_w = Unix.pipe () in
   write_rows tmp sid [ msg_row ~mid:"m-x" ~content:"x" ];
   (* Fork the broker-drain side: lock via the broker's exact sidecar
      construction + Unix.lockf, read, hold 0.4s, save the drained result. *)
   let drain = Unix.fork () in
   if drain = 0 then begin
+    Unix.close ready_r;
     let exit_code =
       try
         let fd = Unix.openfile lock_path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
@@ -100,6 +105,8 @@ let test_append_survives_concurrent_broker_drain () =
         let oc = open_out saw_path in
         Yojson.Safe.to_channel oc (`List saw);
         close_out oc;
+        ignore (Unix.write_substring ready_w "R" 0 1);
+        Unix.close ready_w;
         Unix.sleepf 0.4;
         (* save_inbox: the drain replaces the file with what it archived *)
         write_rows tmp sid [];
@@ -110,8 +117,13 @@ let test_append_survives_concurrent_broker_drain () =
     in
     Unix._exit exit_code
   end;
-  (* Let the drain acquire the lock and enter its hold window. *)
-  Unix.sleepf 0.1;
+  Unix.close ready_w;
+  (* Block until the drain holds the lock and has read [m-x]. *)
+  let buf = Bytes.create 1 in
+  (match Unix.read ready_r buf 0 1 with
+   | 1 -> ()
+   | _ -> Alcotest.fail "drain child never signaled lock acquisition");
+  Unix.close ready_r;
   let t0 = Unix.gettimeofday () in
   let n = Conn.append_to_local_inbox tmp sid [ msg_row ~mid:"m-y" ~content:"y" ] in
   let append_blocked_for = Unix.gettimeofday () -. t0 in
