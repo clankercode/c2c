@@ -318,3 +318,4 @@ bugs:
     - file: B319-noop-path-records-progress-but.todo
     - file: B320-rate-limited-retry-after-s-wri.todo
     - file: B321-single-root-relay-connect-once.todo
+    - file: B322-last-error-detail-stored-untru.todo
