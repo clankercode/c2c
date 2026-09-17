@@ -1,0 +1,91 @@
+---
+complexity: medium
+created_at: "2026-09-17T02:45:22Z"
+depends_on: []
+estimate_hours: 2
+id: B294
+priority: high
+status: pending
+tags:
+    - relay
+    - cli
+    - docs
+title: c2c relay register steals the lease from relay-connect, and the relay's own B184 hint recommends running it
+updated_at: "2026-09-17T02:45:22Z"
+---
+## Symptom
+
+Running `c2c relay register --alias X` while the machine connector owns X's lease
+**steals** the lease. The connector's subsequent heartbeats and polls for X then
+fail `signature_invalid` forever (see the per-alias wedge bug), which in turn
+feeds the machine-wide crash loop.
+
+The relay's own error text tells operators to do exactly this.
+
+## Reproduced
+
+Before (connector owns nothing usable for this alias):
+
+```
+$ C2C_RELAY_NODE_ID=cli-codex-midst-vial-6nx9 C2C_RELAY_SESSION_ID=cli-codex-midst-vial-6nx9 \
+    c2c relay dm peek --alias codex-midst-vial-6nx9 --relay-url https://relay.c2c.im
+{"ok":false,"error_code":"signature_invalid",
+ "error":"verified signer \"codex-midst-vial-6nx9\" does not own session
+          (cli-codex-midst-vial-6nx9, cli-codex-midst-vial-6nx9)"}
+```
+
+Then one register:
+
+```
+$ c2c relay register --alias codex-midst-vial-6nx9 --relay-url https://relay.c2c.im
+{"ok": true, "result": "ok",
+ "lease": {"node_id": "cli-codex-midst-vial-6nx9",
+           "session_id": "cli-codex-midst-vial-6nx9", ...}}
+```
+
+After — the `cli-*` key now owns it:
+
+```
+$ C2C_RELAY_NODE_ID=cli-... C2C_RELAY_SESSION_ID=cli-... c2c relay dm peek --alias codex-midst-vial-6nx9 ...
+{ "ok": true, "messages": [] }
+```
+
+The lease moved from whatever held it to `cli-<alias>`, and the connector (which
+signs under `(host_hash, local_session_id)`) is locked out.
+
+## Contradictory operator guidance
+
+Two hints in the codebase give opposite advice for the same error:
+
+1. `ocaml/relay.ml`, `try_verify_ed25519_request` (B184 message) tells the
+   operator, on a signature failure:
+   `If you just renamed/re-registered, re-run: c2c relay register --alias %s`
+2. The CLI `relay dm peek` hint says:
+   `Do NOT run 'c2c relay register' - that steals the lease from the connector;
+    the two then fight and delivery wedges.`
+
+(1) is the relay speaking, is emitted more often, and causes the failure that (2)
+warns about. Anyone following the server's advice makes the problem permanent.
+
+## Secondary defect: no way to re-register under the connector's keys
+
+`C2C_RELAY_NODE_ID` / `C2C_RELAY_SESSION_ID` are honoured by
+`c2c relay dm peek|poll` (via `resolve_cli_dm_inbox_key`) but are **ignored** by
+`c2c relay register`, which hard-codes `cli_inbox_key alias` =
+`("cli-" ^ alias, "cli-" ^ alias)`. `c2c relay register --help` exposes no
+`--node-id` / `--session-id` either. So once a lease is stolen there is no
+supported command to hand it back; recovery depends on the connector happening to
+restart with an empty `t.registered`.
+
+## Fix direction
+
+- Remove or rewrite the B184 hint so it never recommends `c2c relay register`
+  when a connector may own the alias.
+- Make `c2c relay register` refuse (or warn loudly and require `--force`) when
+  `connector-state.json` shows a live connector owning that alias.
+- Honour `C2C_RELAY_NODE_ID` / `C2C_RELAY_SESSION_ID` in `relay register`, or add
+  explicit flags, so a lease can be deliberately returned to the connector's keys.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
