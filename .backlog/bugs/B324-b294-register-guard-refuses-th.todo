@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
 estimate_hours: 1
 id: B324
 priority: low
+started_at: null
 status: pending
 tags: []
 title: B294 register guard refuses the documented repair while connector is alive-but-permanently-failing
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+The B294 register guard holds while the connector is alive-but-permanently-failing: connector_owns_alias (c2c_relay_connector.ml:1693-1707) accepts pid-alive regardless of last_ok age. With a register arm failing every pass (identity binding drift after a rename), the root cycles wedge cooldowns while the documented repair (CLI relay register) is refused with pid alive - the operator must know to stop the connector first.
+
+## Fix direction
+
+Demote pid-alive below last_ok-fresh when the recorded last_error_op is register.
+
+## Evidence
+
+Connector review 2026-09-17.
