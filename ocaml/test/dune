@@ -598,6 +598,17 @@
  (modules test_c2c_broker_canonical_alias_deprecation)
  (libraries c2c_mcp alcotest unix))
 
+; B331: sqlite register carries the undelivered inbox from the old
+; (node_id, session_id) key to the new one on a same-alias session
+; re-register (in-memory already did); mail sent while a session was down
+; must not be stranded for the gc stale-inbox sweep to destroy.
+(test
+ (name test_relay_b331_inbox_carry)
+ (modules test_relay_b331_inbox_carry)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+
 ; Slice 2: WebSocket push subscription tests for relay
 (test
  (name test_relay_ws_server)

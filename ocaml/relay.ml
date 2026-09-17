@@ -2599,6 +2599,10 @@ end = struct
         let has_row = exec_prepared conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM secure_leases_v2 WHERE alias = ?" [`Text alias] in
         let conflict_lease = ref None in
         let existing_pk = ref "" in
+        (* B331: the pre-restart lease key whose undelivered inbox must move
+           to the new key on a successful re-register (set only for a live
+           row; a released row has already been release_alias'd away). *)
+        let old_key = ref None in
         if has_row then (
           with_stmt conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
           bind_text stmt 1 alias |> ignore;
@@ -2628,7 +2632,10 @@ end = struct
               let row_pk = Data.to_string_exn (column stmt 5) in
               let released = alias_released ~now ~last_seen:row_last_seen in
               if released then release_alias conn alias
-              else existing_pk := row_pk;
+              else begin
+                existing_pk := row_pk;
+                old_key := Some (row_node_id, row_session_id, row_last_seen, row_ttl)
+              end;
               let same_identity = identity_pk <> "" && row_pk = identity_pk in
               if (not released) && row_node_id <> node_id && not same_identity then (
                 conflict_lease := Some (
@@ -2697,6 +2704,26 @@ end = struct
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc));
+            (* B331: same-alias re-register under a new session id carries the
+               old key's undelivered inbox to the new key — the in-memory
+               arm (is_alive + different session_id gate) always did. Without
+               this, mail that arrived while the session was down sits under
+               the old key where poll never reads it and the gc stale-inbox
+               sweep destroys it. Runs only on this success path: a failed
+               register leaves the old lease's mail untouched. UPDATE (not
+               copy+delete) keeps the id ordering, so old messages stay FIFO
+               ahead of anything already queued under the new key. *)
+            (match !old_key with
+             | Some (old_node, old_session, old_last_seen, old_ttl)
+               when old_session <> session_id
+                    && old_last_seen +. old_ttl >= now ->
+               with_stmt conn "UPDATE inboxes SET node_id = ?, session_id = ? WHERE node_id = ? AND session_id = ?" (fun carry ->
+                 bind_text carry 1 node_id |> ignore;
+                 bind_text carry 2 session_id |> ignore;
+                 bind_text carry 3 old_node |> ignore;
+                 bind_text carry 4 old_session |> ignore;
+                 step carry |> ignore)
+             | _ -> ());
             (* B295: the (node_id, session_id) pair is one session's inbox
                key — the registering alias takes it over. Without this, a
                pre-rename/pre-rebind row under another alias keeps the pair
