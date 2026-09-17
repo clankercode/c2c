@@ -581,6 +581,53 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B328: sqlite send message-id dedup via seen_ids (matches InMemoryRelay
+; semantics: replay -> Duplicate, FIFO window prune). E2E /forward replay
+; against a real loopback sqlite relay answers duplicate:true.
+(test
+ (name test_relay_b328_send_dedup)
+ (modules test_relay_b328_send_dedup)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B329: the /send alias-mismatch rejection must apply to the cross-relay
+; forward-out branch too — an authenticated peer must not spoof the sender
+; on a forwarded delivery. Two real loopback sqlite relays.
+(test
+ (name test_relay_b329_forward_signer_binding)
+ (modules test_relay_b329_forward_signer_binding)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B334: /send and /send_all bind body from_alias to the verified signer
+; case-insensitively, matching the B293 family (heartbeat/register). Real
+; loopback sqlite relay.
+(test
+ (name test_relay_b334_send_alias_case)
+ (modules test_relay_b334_send_alias_case)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B335: register failure messages thread the backend status (no more
+; "alias conflict with existing lease" for every non-ok result); honest
+; HTTP statuses (400/403/409) — safe because in-repo clients parse JSON
+; ok/error_code, never the register HTTP status.
+(test
+ (name test_relay_b335_register_error_messages)
+ (modules test_relay_b335_register_error_messages)
+ (libraries c2c_mcp alcotest yojson base64 unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B336: nonces are consumed only AFTER signature verification succeeds — a
+; failed verification must not poison the nonce for the legitimate retry;
+; replay protection after a verified use is unchanged. Register, room-op
+; proof, and signed room-send envelope; real loopback sqlite relay.
+(test
+ (name test_relay_b336_nonce_after_verify)
+ (modules test_relay_b336_nonce_after_verify)
+ (libraries c2c_mcp alcotest yojson base64 digestif.ocaml unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix))
+
 ; B293: "no live lease" is lease_not_found (not signature_invalid), and the
 ; connector drops a dead cached registration instead of retrying the dead
 ; lease forever. Real loopback sqlite server for the code split; scripted
@@ -610,6 +657,17 @@
  (name test_c2c_broker_canonical_alias_deprecation)
  (modules test_c2c_broker_canonical_alias_deprecation)
  (libraries c2c_mcp alcotest unix))
+
+; B331: sqlite register carries the undelivered inbox from the old
+; (node_id, session_id) key to the new one on a same-alias session
+; re-register (in-memory already did); mail sent while a session was down
+; must not be stranded for the gc stale-inbox sweep to destroy.
+(test
+ (name test_relay_b331_inbox_carry)
+ (modules test_relay_b331_inbox_carry)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 
 ; Slice 2: WebSocket push subscription tests for relay
 (test
@@ -806,7 +864,6 @@
  (name test_c2c_wake_guidance)
  (modules test_c2c_wake_guidance)
  (libraries c2c_mcp alcotest))
-
 ; B313: doctor/state freshness window scales with the pass metadata the
 ; connector records in connector-state.json (pass_duration_s/pass_interval_s),
 ; floored at the 120s default, capped, and C2C_RELAY_DOCTOR_FRESHNESS_S-
@@ -828,3 +885,69 @@
  (libraries c2c_mcp relay_test_support alcotest yojson unix sqlite3
    lwt.unix cohttp cohttp-lwt-unix)
  (deps ../cli/c2c.exe))
+
+; B330: pair-takeover parity — sqlite keeps a binding reservation for
+; shadowed aliases (alias_reservations table) and both backends agree that
+; alias_identity_mismatch outranks alias_conflict. Includes a pre-B330 DB
+; open test (additive CREATE TABLE IF NOT EXISTS migration).
+(test
+ (name test_relay_b330_takeover_parity)
+ (modules test_relay_b330_takeover_parity)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B332: pair takeover removes the shadowed aliases from room_members in both
+; backends (release_alias semantics) — no ghost members feeding per-message
+; recipient_dead dead-letter rows.
+(test
+ (name test_relay_b332_takeover_room_roster)
+ (modules test_relay_b332_takeover_room_roster)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B340: WS subscribe handshake gets a server-issued single-use challenge
+; nonce (signed alias||ts||nonce; legacy alias||ts accepted for a recorded
+; transition, C2C_RELAY_WS_REQUIRE_NONCE ends it), and WS subscribers are
+; evicted when the alias's lease is taken over or released (B295).
+(test
+ (name test_relay_b340_ws_nonce_eviction)
+ (modules test_relay_b340_ws_nonce_eviction)
+ (libraries c2c_mcp alcotest base64 mirage-crypto-ec str yojson unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix))
+
+; B339: unbounded-store retention — the gc sweep prunes dead_letter in both
+; backends (30-day age + 10k cap, newest kept) and finally calls the never-
+; invoked mobile-pair nonce cache cleanup (3600s window).
+(test
+ (name test_relay_b339_gc_retention)
+ (modules test_relay_b339_gc_retention)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B337: sqlite parity with the in-memory contract — join/leave emit the
+; c2c-system room message (room_history row + inbox fan-out, dead members
+; dead-lettered) and sqlite send records unknown_alias/recipient_dead
+; dead_letter rows. In-memory pins stay green.
+(test
+ (name test_relay_b337_sqlite_room_dlq_parity)
+ (modules test_relay_b337_sqlite_room_dlq_parity)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B338: dev-mode (unsigned) heartbeat missing-lease is 404 + lease_not_found
+; (the B293 split existed only on the signed arm), so connector re-register
+; repair also triggers against a token-less relay. Real loopback sqlite server.
+(test
+ (name test_relay_b338_dev_heartbeat_404)
+ (modules test_relay_b338_dev_heartbeat_404)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
+; B333: sqlite heartbeat pair scan (find_lease) gets the B295 treatment —
+; ORDER BY last_seen DESC and released-skip — so a legacy released shadow row
+; at a higher rowid cannot make a live heartbeat fail with unknown_alias.
+(test
+ (name test_relay_b333_heartbeat_pair_scan)
+ (modules test_relay_b333_heartbeat_pair_scan)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))

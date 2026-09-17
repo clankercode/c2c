@@ -26,14 +26,36 @@ let json_of_result = function
   | `Duplicate ts -> json_ok [ ("result", `String "duplicate"); ("ts", `Float ts) ]
   | `Error (code, msg) -> json_error code msg []
 
+(* B335: the human message threads the backend's actual status — every
+   non-ok register result used to share the conflict text, so operators
+   misread allowlist/pinning failures as lease conflicts. error_code (the
+   [status] string) was always correct and stays the machine field. *)
+let register_error_message = function
+  | s when s = relay_err_alias_conflict -> "alias conflict with existing lease"
+  | "invalid_alias" ->
+    "alias is not a valid name (must match the c2c alias grammar)"
+  | "alias_not_allowed" ->
+    "alias is pinned to a different identity key (allowlist mismatch or \
+     missing listed identity)"
+  | s when s = relay_err_alias_identity_mismatch ->
+    "alias is already bound to a different identity key"
+  | _ -> "register failed (see error_code)"
+
 let json_of_register_result ?(receipt = `Null) (status, lease) =
   if status = "ok" then
     let fields = [ ("result", `String status); ("lease", RegistrationLease.to_json lease) ] in
     let fields = if receipt = `Null then fields else fields @ [("receipt", receipt)] in
     json_ok fields
   else
-    json_error status (Printf.sprintf "alias conflict with existing lease")
-      [ ("existing_lease", RegistrationLease.to_json lease) ]
+    (* B335 review: only a genuine conflict holds a foreign lease worth
+       echoing; the other statuses carry a dummy lease that would suggest a
+       conflict that does not exist. *)
+    let fields =
+      if status = relay_err_alias_conflict
+      then [ ("existing_lease", RegistrationLease.to_json lease) ]
+      else []
+    in
+    json_error status (register_error_message status) fields
 
 let json_of_heartbeat_result (status, lease) =
   if status = "ok" then

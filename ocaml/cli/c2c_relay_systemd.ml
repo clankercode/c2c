@@ -16,10 +16,12 @@
    non-login shells (and the user manager) lack ~/.local/bin on PATH.
 
    Machine mode: the connector serves ALL broker roots under ~/.c2c/repos.
-   The unit explicitly clears C2C_MCP_BROKER_ROOT so a value inherited from the
-   user manager cannot scope the connector to one repo; the relay URL is
-   resolved from relay.json at every start (pinned into Environment= only when
-   no durable machine config exists).
+   The unit clears the whole c2c env surface (B311): C2C_MCP_BROKER_ROOT
+   (so an inherited value cannot scope the connector to one repo) plus the
+   relay config/token/identity/instance-dir/session vars a user manager may
+   have imported, any of which would silently redirect the machine
+   connector; the relay URL is resolved from relay.json at every start
+   (pinned into Environment= only when no durable machine config exists).
 
    B300 gating: the unit is installed+enabled ONLY when Relay_activation
    resolves Active — a local-only host must never get an enabled relay
@@ -105,9 +107,13 @@ let unit_text ~c2c_path ?relay_url_env () : string =
      ; "# crashes and c2c binary updates; systemd restarts it across"
      ; "# reboot/logout/OOM (Restart=always, never rate-limited)."
      ; "# Machine mode: the connector serves ALL broker roots"
-     ; "# (~/.c2c/repos/*); an inherited C2C_MCP_BROKER_ROOT would scope it"
-     ; "# to one repo, so it is cleared."
-     ; "UnsetEnvironment=C2C_MCP_BROKER_ROOT" ]
+     ; "# (~/.c2c/repos/*); inherited c2c env (broker root, relay"
+     ; "# config/token/identity, instance dir, session ids) is cleared"
+     ; "# (B311) — any of it would silently redirect the machine"
+     ; "# connector."
+     ; "UnsetEnvironment=C2C_MCP_BROKER_ROOT C2C_RELAY_CONFIG \
+        C2C_INSTANCES_DIR C2C_RELAY_TOKEN C2C_RELAY_IDENTITY_PATH \
+        C2C_RELAY_NODE_ID C2C_RELAY_SESSION_ID C2C_MCP_SESSION_ID" ]
     @ env_lines
     @ [ ""; "[Install]"; "WantedBy=default.target" ])
 
@@ -174,6 +180,101 @@ let systemd_user_available ?(run = run_systemctl_default) () =
        | Systemctl_failed _ -> false)
 
 (* -------------------------------------------------------------------------- *)
+(* B302: output-carrying query seam (unit ownership detection)                 *)
+(* -------------------------------------------------------------------------- *)
+
+(* A query returns trimmed stdout on exit 0, None otherwise. Under
+   C2C_SYSTEMCTL_FIXTURE=1 the default query NEVER executes systemctl: the
+   answers come from C2C_SYSTEMCTL_STATE_FILE (JSON:
+   {"is-active": "active", "is-enabled": "enabled", "main-pid": "12345"}),
+   and a missing file or key means "no such unit" (None → no-unit → legacy
+   direct path). Outside the fixture it runs the real `systemctl --user`.
+   Queries are read-only and deliberately NOT recorded in
+   C2C_SYSTEMCTL_CAPTURE_FILE — that file stays "would-be mutating
+   invocations" only. *)
+type systemctl_query = string list -> string option
+
+let state_key_of_query_args (args : string list) : string option =
+  if List.mem "is-active" args then Some "is-active"
+  else if List.mem "is-enabled" args then Some "is-enabled"
+  else if List.mem "MainPID" args then Some "main-pid"
+  else None
+
+let query_systemctl_default : systemctl_query =
+ fun args ->
+  if fixture_enabled () then begin
+    match state_key_of_query_args args with
+    | None -> None
+    | Some key -> (
+        match Sys.getenv_opt "C2C_SYSTEMCTL_STATE_FILE" with
+        | None -> None
+        | Some f -> (
+            match (try Some (Yojson.Safe.from_file f) with _ -> None) with
+            | Some (`Assoc fields) -> (
+                match List.assoc_opt key fields with
+                | Some (`String s) when String.trim s <> "" ->
+                    Some (String.trim s)
+                | _ -> None)
+            | _ -> None))
+  end
+  else
+    let cmd =
+      "systemctl " ^ String.concat " " (List.map Filename.quote args)
+      ^ " 2>/dev/null"
+    in
+    try
+      let ic = Unix.open_process_in cmd in
+      let buf = Buffer.create 64 in
+      (try
+         while true do
+           Buffer.add_string buf (input_line ic);
+           Buffer.add_char buf '\n'
+         done
+       with End_of_file -> ());
+      let status = Unix.close_process_in ic in
+      match status with
+      | Unix.WEXITED 0 -> Some (String.trim (Buffer.contents buf))
+      | _ -> None
+    with _ -> None
+
+(* True while the unit is running or systemd is auto-restarting it. *)
+let unit_is_active ?(query = query_systemctl_default) () : bool =
+  match query [ "--user"; "is-active"; unit_name ] with
+  | Some ("active" | "activating" | "reloading") -> true
+  | _ -> false
+
+(* MainPID of the unit; None or 0 when there is no live main process (e.g.
+   the auto-restart window between two Restart=always attempts). Accepts both
+   `--value` output ("12345") and the `MainPID=12345` form older systemctl
+   prints without --value — a parse failure here would misread a healthy unit
+   as unsupervised (B302). *)
+let unit_main_pid ?(query = query_systemctl_default) () : int option =
+  match query [ "--user"; "show"; "-p"; "MainPID"; "--value"; unit_name ] with
+  | Some out ->
+      let s = String.trim out in
+      match int_of_string_opt s with
+      | Some pid -> Some pid
+      | None ->
+          (match String.rindex_opt s '=' with
+           | Some i -> int_of_string_opt (String.trim (String.sub s (i + 1) (String.length s - i - 1)))
+           | None -> None)
+  | None -> None
+
+let unit_is_enabled ?(query = query_systemctl_default) () : bool =
+  match query [ "--user"; "is-enabled"; unit_name ] with
+  | Some s -> String.trim s = "enabled"
+  | None -> false
+
+(* B302 delegation verbs — the only sanctioned way to stop/restart a
+   connector the unit owns; routed through the same injectable runner seam
+   as install/enable, so the fixture records them without executing. *)
+let unit_stop ?(run = run_systemctl_default) () =
+  run [ "--user"; "stop"; unit_name ]
+
+let unit_restart ?(run = run_systemctl_default) () =
+  run [ "--user"; "restart"; unit_name ]
+
+(* -------------------------------------------------------------------------- *)
 (* install / enable / disable / remove                                        *)
 (* -------------------------------------------------------------------------- *)
 
@@ -190,19 +291,42 @@ let rec mkdir_p path =
     try Unix.mkdir path 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
-(* The absolute c2c path for ExecStart. Prefers the canonical install
+(* The absolute c2c path for ExecStart (B326). Prefers the canonical install
    location (~/.local/bin/c2c) when it exists: `c2c relay enable` run from a
    dev checkout must not pin a _build path into a boot unit. Falls back to
-   this process's argv[0], made absolute. *)
-let c2c_binary_for_unit () =
-  let installed =
-    (try Sys.getenv "HOME" with Not_found -> ".") // ".local" // "bin" // "c2c"
-  in
-  if Sys.file_exists installed then installed
-  else begin
-    let exe = Sys.executable_name in
-    if Filename.is_relative exe then Sys.getcwd () // exe else exe
-  end
+   this process's argv[0], made absolute — UNLESS that resolves under a dune
+   [_build] tree: a Restart=always unit pinned into _build turns the first
+   [dune clean] / worktree removal into an infinite restart loop
+   (StartLimitIntervalSec=0), so the caller must refuse and demand either an
+   installed binary or an explicit [--unit-binary] override. *)
+type unit_binary =
+  | Binary_ok of string
+      (** A durable absolute path safe to embed in ExecStart. *)
+  | Binary_dev_build of string
+      (** The offending _build path; callers must fail loudly with guidance. *)
+
+let is_dev_build_path p =
+  (* "/" ^ p normalizes a leading "_build/…" so it matches too. *)
+  let s = "/" ^ p in
+  let n = String.length s and m = String.length "/_build/" in
+  let rec go i = i + m <= n && (String.sub s i m = "/_build/" || go (i + 1)) in
+  go 0
+
+let c2c_binary_for_unit ?override ?executable () =
+  match override with
+  | Some o when String.trim o <> "" ->
+      let p = String.trim o in
+      Binary_ok (if Filename.is_relative p then Sys.getcwd () // p else p)
+  | _ ->
+      let installed =
+        (try Sys.getenv "HOME" with Not_found -> ".") // ".local" // "bin" // "c2c"
+      in
+      if Sys.file_exists installed then Binary_ok installed
+      else begin
+        let exe = match executable with Some e -> e | None -> Sys.executable_name in
+        let exe = if Filename.is_relative exe then Sys.getcwd () // exe else exe in
+        if is_dev_build_path exe then Binary_dev_build exe else Binary_ok exe
+      end
 
 (* B300 gate for `c2c install self`: the unit exists only on relay-activated
    hosts. Local-only installs never get an enabled connector unit. *)

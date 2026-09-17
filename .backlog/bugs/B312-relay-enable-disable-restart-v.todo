@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:05Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T18:11:06Z"
 complexity: medium
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
+duration_minutes: 169.03061041316667
 estimate_hours: 1
 id: B312
 priority: medium
 started_at: "2026-09-17T15:22:05Z"
-status: in_progress
+status: done
 tags: []
 title: 'relay enable/disable/restart verb scoping: restart ignores relay.json and inverts URL precedence; enable writes repo-local config under broker env'
-updated_at: "2026-09-17T15:22:05Z"
+updated_at: "2026-09-17T18:11:06Z"
 ---
 
 # relay enable/disable/restart verb scoping: restart ignores relay.json and inverts URL precedence; enable writes repo-local config under broker env

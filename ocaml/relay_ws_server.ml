@@ -6,8 +6,14 @@
    - X-C2C-Timestamp: <unix_seconds>
    - X-C2C-Signature: <base64url of ed25519 sig over (alias || ts)>
    
-   On successful auth, the connection upgrades to WebSocket. The server pushes
-   DM frames: {"op":"dm", "from":"...", "body":"...", "ts":...}
+   B340: a server-issued challenge nonce hardens the handshake. Clients GET
+   /ws/subscribe-challenge, then send X-C2C-Nonce and sign
+   (alias || "\n" || ts || "\n" || nonce); the nonce is single-use and
+   expires after ws_challenge_ttl, so a captured handshake signature cannot
+   be replayed. COMPAT (recorded): the nonce header stays OPTIONAL for a
+   transition — legacy signatures over (alias || ts) are accepted, their
+   replay protection being the ts window alone. Operators can end the
+   transition with C2C_RELAY_WS_REQUIRE_NONCE=1.
    
    Phase 2: clients can dynamically add/remove aliases on an existing connection
    by sending subscribe/unsubscribe frames with per-alias Ed25519 signatures.
@@ -55,6 +61,8 @@ module SubscriberMap : sig
   val create : unit -> t
   val add : t -> alias:string -> subscriber -> unit
   val remove : t -> alias:string -> subscriber -> unit
+  (* B340: drop every subscriber of one alias (lease takeover/release). *)
+  val remove_all : t -> alias:string -> unit
   val find : t -> alias:string -> subscriber list
   val iter : t -> (string -> subscriber list -> unit) -> unit
 end = struct
@@ -87,6 +95,9 @@ end = struct
         let l' = List.filter (fun s -> s != sub) l in
         if l' = [] then Hashtbl.remove t.map alias
         else Hashtbl.replace t.map alias l')
+  
+  let remove_all t ~alias =
+    with_lock t (fun () -> Hashtbl.remove t.map alias)
   
   let find t ~alias =
     with_lock t (fun () ->
@@ -390,10 +401,127 @@ type auth_result =
   | Auth_ok of string (* alias *)
   | Auth_error of string (* error message *)
 
+(* --- B340: server-issued challenge nonces for the subscribe handshake -----
+
+   A captured handshake signature is replayable within auth_ts_window when
+   only alias+ts is signed. The server therefore issues single-use nonces:
+   GET /ws/subscribe-challenge returns one, the client signs
+   (alias || "\n" || ts || "\n" || nonce) and sends it in X-C2C-Nonce, and
+   the server consumes it atomically after the signature verifies (verify
+   first, B336 — a failed verification must not burn the client's nonce).
+   Legacy signatures without a nonce stay accepted for the transition; see
+   the module header. The store is bounded: expired entries are dropped on
+   issue, and the pending count is capped. *)
+
+(* Matches request_nonce_ttl (the relay's per-request replay window). *)
+let ws_challenge_ttl = 120.0
+
+let ws_challenge_max_pending = 4096
+
+let ws_require_nonce () =
+  match Sys.getenv_opt "C2C_RELAY_WS_REQUIRE_NONCE" with
+  | Some v -> v <> "" && v <> "0"
+  | None -> false
+
+module ChallengeStore : sig
+  type t
+  val create : unit -> t
+  (* Issue a fresh nonce recorded at [?now] (test seam; default wall clock). *)
+  val issue : ?now:float -> t -> string
+  (* True iff [nonce] was fresh (issued, unexpired) — this call consumes it. *)
+  val consume_if_fresh : ?now:float -> t -> string -> bool
+  (* Drop entries older than [older_than]; returns how many. The trailing
+     positional unit makes the optional erasable. *)
+  val cleanup : ?now:float -> t -> older_than:float -> unit -> int
+  val pending : t -> int
+end = struct
+  type t = { tbl : (string, float) Hashtbl.t; mutex : Mutex.t }
+
+  let create () = { tbl = Hashtbl.create 256; mutex = Mutex.create () }
+
+  let random_nonce () =
+    (* CSPRNG, same generator as the other relay nonces. *)
+    Relay_signed_ops.random_nonce_b64 ()
+
+  let issue ?(now = Unix.gettimeofday ()) t =
+    Mutex.lock t.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock t.mutex)
+      (fun () ->
+         (* Bound the store: sweep first, then evict the oldest if still full. *)
+         if Hashtbl.length t.tbl >= ws_challenge_max_pending then begin
+           let cutoff = now -. ws_challenge_ttl in
+           Hashtbl.filter_map_inplace
+             (fun _ issued_at -> if issued_at < cutoff then None else Some issued_at)
+             t.tbl
+         end;
+         if Hashtbl.length t.tbl >= ws_challenge_max_pending then begin
+           let oldest = ref (now +. 1.0) in
+           Hashtbl.iter (fun _ issued_at -> oldest := min !oldest issued_at) t.tbl;
+           Hashtbl.filter_map_inplace
+             (fun _ issued_at ->
+                if issued_at <= !oldest then None else Some issued_at)
+             t.tbl
+         end;
+         let nonce = random_nonce () in
+         Hashtbl.replace t.tbl nonce now;
+         nonce)
+
+  let consume_if_fresh ?(now = Unix.gettimeofday ()) t nonce =
+    Mutex.lock t.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock t.mutex)
+      (fun () ->
+         match Hashtbl.find_opt t.tbl nonce with
+         | Some issued_at when now -. issued_at <= ws_challenge_ttl ->
+           Hashtbl.remove t.tbl nonce;
+           true
+         | Some _ ->
+           (* Expired — burn it so it can never pass later. *)
+           Hashtbl.remove t.tbl nonce;
+           false
+         | None -> false)
+
+  let cleanup ?(now = Unix.gettimeofday ()) t ~older_than () =
+    Mutex.lock t.mutex;
+    Fun.protect
+      ~finally:(fun () -> Mutex.unlock t.mutex)
+      (fun () ->
+         let cutoff = now -. older_than in
+         let before = Hashtbl.length t.tbl in
+         Hashtbl.filter_map_inplace
+           (fun _ issued_at -> if issued_at < cutoff then None else Some issued_at)
+           t.tbl;
+         before - Hashtbl.length t.tbl)
+
+  let pending t =
+    Mutex.lock t.mutex;
+    let n = Hashtbl.length t.tbl in
+    Mutex.unlock t.mutex;
+    n
+end
+
+let challenge_store = ChallengeStore.create ()
+
+(* Exposed for the relay gc sweep and tests. *)
+let challenge_issue ?now () = ChallengeStore.issue ?now challenge_store
+
+let challenge_consume_if_fresh ?now nonce =
+  ChallengeStore.consume_if_fresh ?now challenge_store nonce
+
+let challenge_cleanup ?now ~older_than () =
+  ChallengeStore.cleanup ?now challenge_store ~older_than ()
+
+let challenge_pending () = ChallengeStore.pending challenge_store
+
 (* Validate subscribe auth headers.
    Returns Auth_ok alias if valid, Auth_error msg otherwise.
-   lookup_pk is a function that returns Some raw_pk for a registered alias. *)
+   lookup_pk is a function that returns Some raw_pk for a registered alias.
+   ~nonce: the server-issued challenge nonce from X-C2C-Nonce, [None] when
+   the client sent none (B340; required label — optional-erasure semantics
+   made omitted-nonce call sites silently partial-apply). *)
 let validate_subscribe_auth
+    ~(nonce : string option)
     ~(lookup_pk : alias:string -> string option)
     ~(alias : string)
     ~(ts_str : string)
@@ -419,12 +547,27 @@ let validate_subscribe_auth
         | Ok sig_ when String.length sig_ <> 64 ->
           Auth_error "signature must be 64 bytes"
         | Ok sig_ ->
-          (* Verify: sign over alias || ts *)
-          let msg = alias ^ ts_str in
-          if Relay_identity.verify ~pk ~msg ~sig_ then
-            Auth_ok alias
-          else
+          (* B340: nonce form signs alias || "\n" || ts || "\n" || nonce;
+             the legacy blob (alias || ts) stays for the transition. *)
+          let signed_msg =
+            match nonce with
+            | Some n when n <> "" -> alias ^ "\n" ^ ts_str ^ "\n" ^ n
+            | _ -> alias ^ ts_str
+          in
+          if not (Relay_identity.verify ~pk ~msg:signed_msg ~sig_) then
             Auth_error "signature verification failed"
+          else
+            match nonce with
+            | Some n when n <> "" ->
+              if ChallengeStore.consume_if_fresh challenge_store n then
+                Auth_ok alias
+              else
+                Auth_error "challenge nonce unknown, expired, or already used"
+            | _ ->
+              if ws_require_nonce () then
+                Auth_error "server nonce required (fetch /ws/subscribe-challenge)"
+              else
+                Auth_ok alias
 
 (* Push a DM to all subscribers for the given alias.
    Non-blocking: spawns async sends. *)
@@ -454,6 +597,27 @@ let has_subscribers ~alias =
 let subscriber_count ~alias =
   let subs = SubscriberMap.find subscribers ~alias in
   List.length (List.filter (fun s -> not s.closed) subs)
+
+(* B340: drop every subscriber for [alias] — its lease was taken over or
+   released, so sockets authenticated under the old identity must stop
+   receiving push_dm (B295). Closes each socket (close_going_away) so the
+   client's daemon notices and re-subscribes under the current identity.
+   Synchronous map removal + async socket close; returns the number of
+   subscriber connections evicted. *)
+let evict_subscribers ~alias =
+  let subs = SubscriberMap.find subscribers ~alias in
+  List.iter (fun sub ->
+    if not sub.closed then begin
+      sub.closed <- true;
+      Lwt.async (fun () ->
+        Lwt.catch
+          (fun () ->
+             Relay_ws_frame.Session.close_with ~code:close_going_away
+               ~reason:"lease rebound" () sub.session)
+          (fun _ -> Lwt.return_unit))
+    end) subs;
+  SubscriberMap.remove_all subscribers ~alias;
+  List.length subs
 
 (* Get total subscriber count across all aliases *)
 let total_subscriber_count () =
@@ -529,7 +693,10 @@ let process_subscription_frame
                   let get_str key = match List.assoc_opt key sig_fields with Some (`String s) -> s | _ -> "" in
                   let ts_str = get_str "ts" in
                   let sig_b64 = get_str "sig" in
-                  (match validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64 with
+                  (* B340: per-alias signatures may carry the server nonce. *)
+                  let nonce = get_str "nonce" in
+                  (match validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64
+                           ~nonce:(if nonce = "" then None else Some nonce) with
                    | Auth_ok _ -> validated := alias :: !validated
                    | Auth_error msg -> errors := Printf.sprintf "%s: %s" alias msg :: !errors)
                 | _ ->

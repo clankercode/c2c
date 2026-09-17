@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:05Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T18:11:06Z"
 complexity: low
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
+duration_minutes: 169.02074890053333
 estimate_hours: 1
 id: B310
 priority: medium
 started_at: "2026-09-17T15:22:05Z"
-status: in_progress
+status: done
 tags: []
 title: c2c relay enable ignores ambient C2C_RELAY_URL and activates the public relay instead
-updated_at: "2026-09-17T15:22:05Z"
+updated_at: "2026-09-17T18:11:06Z"
 ---
 
 # c2c relay enable ignores ambient C2C_RELAY_URL and activates the public relay instead

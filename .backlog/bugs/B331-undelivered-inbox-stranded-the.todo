@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:09Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T19:26:03Z"
 complexity: medium
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
+duration_minutes: 243.9017839899
 estimate_hours: 1
 id: B331
 priority: medium
 started_at: "2026-09-17T15:22:09Z"
-status: in_progress
+status: done
 tags: []
 title: undelivered inbox stranded then GC-deleted on sqlite session re-register (in-memory carries it; prod loses mail sent during a restart)
-updated_at: "2026-09-17T15:22:09Z"
+updated_at: "2026-09-17T19:26:03Z"
 ---
 
 # undelivered inbox stranded then GC-deleted on sqlite session re-register (in-memory carries it; prod loses mail sent during a restart)

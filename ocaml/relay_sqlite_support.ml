@@ -209,6 +209,21 @@ CREATE TABLE IF NOT EXISTS contact_grant_message_ids (
     accepted_at REAL NOT NULL,
     PRIMARY KEY (verifier, message_id)
 );
+
+-- B330: durable alias identity reservation, the sqlite analogue of the
+-- in-memory t.bindings table. secure_leases_v2 rows are deleted outright by
+-- register's pair takeover (B295) and by release_alias, which silently
+-- dropped the identity binding and the 12-month anti-squat reservation the
+-- in-memory backend keeps (only release_alias clears bindings there).
+-- Reservations are written when a lease takes an identity (register success
+-- path and pair-takeover shadow preservation) and cleared only by
+-- release_alias — additive table; existing DBs gain it via CREATE IF NOT
+-- EXISTS with no backfill needed (reservations materialize on the next
+-- register).
+CREATE TABLE IF NOT EXISTS alias_reservations (
+    alias TEXT PRIMARY KEY,
+    identity_pk TEXT NOT NULL
+);
 |sql}
 
 let exec_no_rows db sql =

@@ -337,3 +337,5 @@ bugs:
     - file: B338-dev-mode-unsigned-heartbeat-mi.todo
     - file: B339-two-unbounded-relay-stores-mob.todo
     - file: B340-ws-subscribe-handshake-has-no.todo
+    - file: B341-subscribe-daemon-ipc-verbs-dou.todo
+    - file: B342-connector-inline-client-re-par.todo

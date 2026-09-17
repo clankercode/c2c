@@ -1,0 +1,44 @@
+---
+completed_at: null
+complexity: medium
+created_at: "2026-09-17T20:16:44Z"
+depends_on: []
+estimate_hours: 1
+id: B342
+priority: high
+started_at: null
+status: pending
+tags: []
+title: connector inline client re-parses the CA bundle PEM on every request (B314 port not memoized)
+updated_at: "2026-09-17T20:16:44Z"
+---
+
+# connector inline client re-parses the CA bundle PEM on every request (B314 port not memoized)
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
+
+## Symptom
+
+Found during B325 (2026-09-18, C5 group): the ticket text claimed the connector-side CA bundle parse was covered, but only ocaml/relay_client.ml was memoized (per-bundle-path TLS ctx with mtime invalidation). The connector's INLINE client port (B314, net_ctx_of_bundle at ocaml/c2c_relay_connector.ml ~2279) still re-parses the PEM and builds the conduit/TLS context on EVERY request while C2C_RELAY_CA_BUNDLE is set.
+
+## Impact
+
+Per-request parse cost on the machine connector loop (every heartbeat/register/send/poll of every root, every pass) against hosts using a private/self-signed HTTPS relay with a CA bundle. Wasteful but not a correctness bug.
+
+## Fix direction
+
+Port the B325 memoization (module-level table keyed by bundle path, invalidate on mtime change, never cache failed parses) to the connector inline client.
+
+## Evidence
+
+Verified in the B325 group report (C5); deliberately out of that ticket's scope (it pinned relay_client behavior only).

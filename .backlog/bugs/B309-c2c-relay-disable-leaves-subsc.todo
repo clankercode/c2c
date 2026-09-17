@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:04Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T18:11:06Z"
 complexity: medium
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
+duration_minutes: 169.03544079548334
 estimate_hours: 1
 id: B309
 priority: medium
 started_at: "2026-09-17T15:22:04Z"
-status: in_progress
+status: done
 tags: []
 title: c2c relay disable leaves subscribe-daemon and monitor watchers retrying the parked relay forever
-updated_at: "2026-09-17T15:22:04Z"
+updated_at: "2026-09-17T18:11:06Z"
 ---
 
 # c2c relay disable leaves subscribe-daemon and monitor watchers retrying the parked relay forever

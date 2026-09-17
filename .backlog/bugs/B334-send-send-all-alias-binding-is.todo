@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:09Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T19:26:03Z"
 complexity: low
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
+duration_minutes: 243.91085843881666
 estimate_hours: 1
 id: B334
 priority: medium
 started_at: "2026-09-17T15:22:09Z"
-status: in_progress
+status: done
 tags: []
 title: send/send_all alias binding is case-sensitive while heartbeat/register compares are case-insensitive
-updated_at: "2026-09-17T15:22:09Z"
+updated_at: "2026-09-17T19:26:03Z"
 ---
 
 # send/send_all alias binding is case-sensitive while heartbeat/register compares are case-insensitive

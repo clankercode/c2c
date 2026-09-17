@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:09Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T19:26:04Z"
 complexity: low
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
+duration_minutes: 243.9184305149
 estimate_hours: 1
 id: B336
 priority: low
 started_at: "2026-09-17T15:22:09Z"
-status: in_progress
+status: done
 tags: []
 title: nonces burned before signature/ownership verification - failed requests poison their nonce for the legitimate retry
-updated_at: "2026-09-17T15:22:09Z"
+updated_at: "2026-09-17T19:26:04Z"
 ---
 
 # nonces burned before signature/ownership verification - failed requests poison their nonce for the legitimate retry

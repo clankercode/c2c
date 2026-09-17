@@ -717,6 +717,10 @@ module InMemoryRelay : RELAY = struct
     Hashtbl.replace t.inboxes key msgs
 
   let release_alias t alias =
+    (* B340: a released lease stops receiving push_dm — drop the alias's WS
+       subscribers so sockets authenticated under the old identity cannot
+       outlive it (B295). *)
+    ignore (Relay_ws_server.evict_subscribers ~alias);
     (match Hashtbl.find_opt t.leases alias with
      | Some lease ->
        Hashtbl.remove t.inboxes
@@ -821,6 +825,22 @@ module InMemoryRelay : RELAY = struct
                  shadowed := other :: !shadowed
              ) t.leases;
              List.iter (Hashtbl.remove t.leases) !shadowed;
+             (* B340: the shadowed aliases' leases are gone — their WS
+                subscribers must not keep receiving push_dm under the old
+                identity (B295). *)
+             List.iter (fun ghost ->
+               ignore (Relay_ws_server.evict_subscribers ~alias:ghost))
+               !shadowed;
+             (* B332: shadowed aliases lose their lease with the takeover —
+                release their room membership too (release_alias semantics),
+                or they linger as ghosts no one can remove: leave_room is
+                rejected without a lease and every send_room fed them to the
+                dead-letter log (in-memory) or the skip list (sqlite). *)
+             List.iter (fun ghost ->
+               Hashtbl.iter (fun room_id members ->
+                 Hashtbl.replace t.rooms room_id
+                   (List.filter ((<>) ghost) members))
+               t.rooms) !shadowed;
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
               | _ -> ());
@@ -1009,6 +1029,8 @@ module InMemoryRelay : RELAY = struct
 
   let unbind_alias t ~alias =
     with_lock t (fun () ->
+      (* B340: unbind drops the lease — its WS subscribers go with it. *)
+      ignore (Relay_ws_server.evict_subscribers ~alias);
       let had = Hashtbl.mem t.bindings alias in
       Hashtbl.remove t.bindings alias;
       Hashtbl.remove t.leases alias;
@@ -1698,6 +1720,30 @@ module InMemoryRelay : RELAY = struct
             (fun (v, _mid) ts -> if v = verifier then None else Some ts)
             t.contact_grant_mids)
         !drop_verifiers;
+      (* B339: dead-letter retention — age-based (30d), then the hard count
+         cap with the newest entries kept. Rows without a parseable ts are
+         kept (never silently destroy an unknown shape). *)
+      let cutoff = now -. dead_letter_retention_s in
+      let kept = Queue.create () in
+      Queue.iter
+        (fun dl ->
+           match Yojson.Safe.Util.member "ts" dl |> Yojson.Safe.Util.to_number_option with
+           | Some ts when ts < cutoff -> ()
+           | _ -> Queue.add dl kept)
+        t.dead_letter;
+      let excess = Queue.length kept - dead_letter_max_entries in
+      if excess > 0 then
+        for _ = 1 to excess do ignore (Queue.pop kept) done;
+      Queue.clear t.dead_letter;
+      Queue.iter (fun dl -> Queue.add dl t.dead_letter) kept;
+      (* B339: the mobile-pair replay nonce cache is process-global and had
+         no pruner; ride the gc cadence. ?now:None applies the trailing
+         optional so the call actually runs instead of building a closure.
+         B340: the WS subscribe-challenge store (same module-global shape)
+         is swept with its own TTL. *)
+      ignore (cleanup_nonce_cache ?now:None ~older_than:mobile_pair_nonce_window_s);
+      ignore (Relay_ws_server.challenge_cleanup ?now:None
+                ~older_than:Relay_ws_server.ws_challenge_ttl ());
       `Ok (List.rev !expired, pruned)
     )
 
@@ -2546,6 +2592,8 @@ end = struct
 
   (* B219: inner worker — lock-free, called under the lock (register/gc). *)
   let release_alias conn alias =
+    (* B340: drop the alias's WS subscribers — see the in-memory arm. *)
+    ignore (Relay_ws_server.evict_subscribers ~alias);
     with_stmt conn "SELECT node_id, session_id FROM secure_leases_v2 WHERE alias = ?" (fun old_key_stmt ->
       Sqlite3.bind_text old_key_stmt 1 alias |> ignore;
       (match Sqlite3.step old_key_stmt with
@@ -2560,6 +2608,13 @@ end = struct
     with_stmt conn "DELETE FROM secure_leases_v2 WHERE alias = ?" (fun del ->
       Sqlite3.bind_text del 1 alias |> ignore;
       Sqlite3.step del |> ignore);
+    (* B330: release_alias is the only reservation clearer — mirror of the
+       in-memory release_alias removing t.bindings. The 12-month anti-squat
+       window keeps the reservation alive while the lease is merely expired;
+       once the alias is released, the identity claim goes with it. *)
+    with_stmt conn "DELETE FROM alias_reservations WHERE alias = ?" (fun del_res ->
+      Sqlite3.bind_text del_res 1 alias |> ignore;
+      Sqlite3.step del_res |> ignore);
     with_stmt conn "DELETE FROM room_members WHERE alias = ?" (fun del_member ->
       Sqlite3.bind_text del_member 1 alias |> ignore;
       Sqlite3.step del_member |> ignore)
@@ -2599,6 +2654,10 @@ end = struct
         let has_row = exec_prepared conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM secure_leases_v2 WHERE alias = ?" [`Text alias] in
         let conflict_lease = ref None in
         let existing_pk = ref "" in
+        (* B331: the pre-restart lease key whose undelivered inbox must move
+           to the new key on a successful re-register (set only for a live
+           row; a released row has already been release_alias'd away). *)
+        let old_key = ref None in
         if has_row then (
           with_stmt conn "SELECT node_id, session_id, registered_at, last_seen, ttl, identity_pk FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
           bind_text stmt 1 alias |> ignore;
@@ -2628,7 +2687,10 @@ end = struct
               let row_pk = Data.to_string_exn (column stmt 5) in
               let released = alias_released ~now ~last_seen:row_last_seen in
               if released then release_alias conn alias
-              else existing_pk := row_pk;
+              else begin
+                existing_pk := row_pk;
+                old_key := Some (row_node_id, row_session_id, row_last_seen, row_ttl)
+              end;
               let same_identity = identity_pk <> "" && row_pk = identity_pk in
               if (not released) && row_node_id <> node_id && not same_identity then (
                 conflict_lease := Some (
@@ -2652,24 +2714,38 @@ end = struct
           in
           check_existing ())
         );
-        match !conflict_lease with
-        | Some lease -> (relay_err_alias_conflict, lease)
-        | None ->
-          let binding_state =
-            if identity_pk <> "" then
-              if !existing_pk <> "" && !existing_pk <> identity_pk then `Mismatch
-              else `Matches
-            else
-              if !existing_pk <> "" then `Preserve
-              else `NoPkNoBinding
-          in
-          match binding_state with
-          | `Mismatch ->
-            let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
-            (relay_err_alias_identity_mismatch, dummy)
-          | _ ->
+        (* B330: the binding check precedes the conflict scan — the in-memory
+           order, and the safer contract. A live alias bound to a different
+           key is a key-drift rebind attempt (alias_identity_mismatch), not a
+           plain collision with someone else's lease. binding_pk falls back to
+           the durable reservation row for the shadowed-alias case, where the
+           lease row is already gone but the identity claim survives (in-memory
+           keeps t.bindings across the takeover shadow-removal). *)
+        let binding_pk =
+          if !existing_pk <> "" then !existing_pk
+          else
+            with_stmt conn "SELECT identity_pk FROM alias_reservations WHERE alias = ?" (fun stmt ->
+              bind_text stmt 1 alias |> ignore;
+              if step stmt = ROW then Data.to_string_exn (column stmt 0) else "")
+        in
+        let binding_state =
+          if identity_pk <> "" then
+            if binding_pk <> "" && binding_pk <> identity_pk then `Mismatch
+            else `Matches
+          else
+            if binding_pk <> "" then `Preserve
+            else `NoPkNoBinding
+        in
+        match binding_state with
+        | `Mismatch ->
+          let dummy = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~ttl ~identity_pk ~enc_pubkey ~signed_at ~sig_b64 () in
+          (relay_err_alias_identity_mismatch, dummy)
+        | _ ->
+          (match !conflict_lease with
+          | Some lease -> (relay_err_alias_conflict, lease)
+          | None ->
             let effective_pk = match binding_state with
-              | `Preserve -> !existing_pk
+              | `Preserve -> binding_pk
               | `Matches -> identity_pk
               | `NoPkNoBinding -> ""
               | `Mismatch -> assert false
@@ -2697,6 +2773,34 @@ end = struct
             let rc = step stmt in
             if not (Rc.is_success rc) && rc <> DONE then
               failwith ("register insert failed: " ^ Rc.to_string rc));
+            (* B331: same-alias re-register under a new session id carries the
+               old key's undelivered inbox to the new key — the in-memory
+               arm (is_alive + different session_id gate) always did. Without
+               this, mail that arrived while the session was down sits under
+               the old key where poll never reads it and the gc stale-inbox
+               sweep destroys it. Runs only on this success path: a failed
+               register leaves the old lease's mail untouched. UPDATE (not
+               copy+delete) keeps the id ordering, so old messages stay FIFO
+               ahead of anything already queued under the new key. *)
+            (match !old_key with
+             | Some (old_node, old_session, old_last_seen, old_ttl)
+               when old_session <> session_id
+                    && old_last_seen +. old_ttl >= now ->
+               with_stmt conn "UPDATE inboxes SET node_id = ?, session_id = ? WHERE node_id = ? AND session_id = ?" (fun carry ->
+                 bind_text carry 1 node_id |> ignore;
+                 bind_text carry 2 session_id |> ignore;
+                 bind_text carry 3 old_node |> ignore;
+                 bind_text carry 4 old_session |> ignore;
+                 step carry |> ignore)
+             | _ -> ());
+            (* B330: keep the durable reservation in step with the lease's
+               identity. Unbound registers write nothing (in-memory BindNew
+               only fires for a submitted pk). *)
+            if effective_pk <> "" then
+              with_stmt conn "INSERT INTO alias_reservations (alias, identity_pk) VALUES (?, ?) ON CONFLICT(alias) DO UPDATE SET identity_pk=excluded.identity_pk" (fun res ->
+                bind_text res 1 alias |> ignore;
+                bind_text res 2 effective_pk |> ignore;
+                step res |> ignore);
             (* B295: the (node_id, session_id) pair is one session's inbox
                key — the registering alias takes it over. Without this, a
                pre-rename/pre-rebind row under another alias keeps the pair
@@ -2704,7 +2808,42 @@ end = struct
                oldest-first scan shadows this fresh row forever: register
                returns ok while every later heartbeat/poll under the
                registering alias fails signature_invalid. Lease row only —
-               the pair's inbox belongs to the session and must survive. *)
+               the pair's inbox belongs to the session and must survive.
+               B330: the shadowed alias's identity reservation is preserved
+               first, so a rename takeover cannot hand the old alias to a
+               foreign identity (in-memory keeps t.bindings here). *)
+            with_stmt conn "INSERT INTO alias_reservations (alias, identity_pk) SELECT alias, identity_pk FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ? AND identity_pk <> '' ON CONFLICT(alias) DO UPDATE SET identity_pk=excluded.identity_pk" (fun preserve ->
+              bind_text preserve 1 node_id |> ignore;
+              bind_text preserve 2 session_id |> ignore;
+              bind_text preserve 3 alias |> ignore;
+              step preserve |> ignore);
+            (* B332: shadowed aliases leave the room rosters with their lease
+               (release_alias semantics) — otherwise they are unremovable
+               ghosts: leave_room is rejected without a lease and every
+               send_room skips them. *)
+            with_stmt conn "DELETE FROM room_members WHERE alias IN (SELECT alias FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?)" (fun del_members ->
+              bind_text del_members 1 node_id |> ignore;
+              bind_text del_members 2 session_id |> ignore;
+              bind_text del_members 3 alias |> ignore;
+              step del_members |> ignore);
+            (* B340: evict the WS subscribers of the shadowed aliases BEFORE
+               the rows go — a subscriber authenticated under the old
+               identity must not keep receiving push_dm after the takeover
+               (B295). *)
+            let shadowed_ws = ref [] in
+            with_stmt conn "SELECT alias FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?" (fun sel_shadow ->
+              bind_text sel_shadow 1 node_id |> ignore;
+              bind_text sel_shadow 2 session_id |> ignore;
+              bind_text sel_shadow 3 alias |> ignore;
+              let rec loop () =
+                match step sel_shadow with
+                | ROW -> shadowed_ws := Data.to_string_exn (column sel_shadow 0) :: !shadowed_ws; loop ()
+                | _ -> ()
+              in
+              loop ());
+            List.iter (fun ghost ->
+              ignore (Relay_ws_server.evict_subscribers ~alias:ghost))
+              !shadowed_ws;
             with_stmt conn "DELETE FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?" (fun del ->
               bind_text del 1 node_id |> ignore;
               bind_text del 2 session_id |> ignore;
@@ -2723,7 +2862,7 @@ end = struct
                   else None)
             in
             let lease = RegistrationLease.make ~node_id ~session_id ~alias ~client_type ~client_version ~client_os ~ttl ~identity_pk:effective_pk ~enc_pubkey ~signed_at ~sig_b64 ~opaque_host_id:effective_ohid () in
-            ("ok", lease)
+            ("ok", lease))
     )
 
   let identity_pk_of t ~alias =
@@ -2913,6 +3052,8 @@ end = struct
   let unbind_alias t ~alias =
     with_lock t (fun () ->
       let conn = t.db in
+      (* B340: unbind drops the lease — its WS subscribers go with it. *)
+      ignore (Relay_ws_server.evict_subscribers ~alias);
       let before = ref false in
       with_stmt conn "SELECT alias FROM secure_leases_v2 WHERE alias = ?" (fun stmt ->
         Sqlite3.bind_text stmt 1 alias |> ignore;
@@ -2923,7 +3064,18 @@ end = struct
           Sqlite3.bind_text del 1 alias |> ignore;
           Sqlite3.step del |> ignore)
       );
-      !before
+      (* B330: unbind is the sanctioned binding-clearer (in-memory unbind_alias
+         removes t.bindings), so the durable reservation goes too — otherwise
+         no foreign identity could ever reclaim the alias. Reservation-only
+         rows count as removed, matching in-memory's binding-existence return. *)
+      let had_reservation = ref false in
+      with_stmt conn "SELECT alias FROM alias_reservations WHERE alias = ?" (fun stmt ->
+        Sqlite3.bind_text stmt 1 alias |> ignore;
+        had_reservation := (Sqlite3.step stmt = Rc.ROW));
+      with_stmt conn "DELETE FROM alias_reservations WHERE alias = ?" (fun del_res ->
+        Sqlite3.bind_text del_res 1 alias |> ignore;
+        Sqlite3.step del_res |> ignore);
+      !before || !had_reservation
     )
 
   (* B219: inner worker — takes the shared connection and does NOT lock; its
@@ -2994,7 +3146,12 @@ end = struct
       let conn = t.db in
       let now = Unix.gettimeofday () in
       let found_lease = ref None in
-      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM secure_leases_v2 WHERE node_id = ? AND session_id = ?" (fun stmt ->
+      (* B333: same treatment as alias_of_session's B295 fix — scan
+         freshest-first and skip released rows. Last-row-wins with no ORDER BY
+         let a legacy released shadow row (higher rowid than the live row)
+         win the scan, so a heartbeat whose handler pre-check passed released
+         the shadow and failed unknown_alias. *)
+      with_stmt conn "SELECT alias, node_id, session_id, client_type, registered_at, last_seen, ttl, identity_pk, opaque_host_id FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? ORDER BY last_seen DESC" (fun stmt ->
       Sqlite3.bind_text stmt 1 node_id |> ignore;
       Sqlite3.bind_text stmt 2 session_id |> ignore;
       let rec find_lease () =
@@ -3039,7 +3196,10 @@ end = struct
               ()
           in
           found_lease := Some lease;
-          find_lease ()
+          if alias_released ~now ~last_seen then find_lease ()
+            (* B333: released row — skip it, keep scanning for a live one. *)
+          else ()
+            (* Freshest live row wins: stop scanning (no last-row-wins). *)
         ) else if rc <> Rc.DONE then
           failwith ("heartbeat step failed: " ^ Rc.to_string rc)
       in
@@ -3248,8 +3408,34 @@ end = struct
           Sqlite3.bind_double del_g 1 contact_grant_gc_grace_s |> ignore;
           Sqlite3.bind_double del_g 2 now |> ignore;
           ignore (Sqlite3.step del_g));
+      (* B339: dead-letter retention — age-based (30d), then the hard count
+         cap with the newest entries kept (ties break toward the higher
+         rowid, i.e. the later insert). *)
+      with_stmt conn "DELETE FROM dead_letter WHERE ts < ?" (fun del_dl ->
+        Sqlite3.bind_double del_dl 1 (now -. dead_letter_retention_s) |> ignore;
+        ignore (Sqlite3.step del_dl));
+      with_stmt conn "DELETE FROM dead_letter WHERE rowid NOT IN (SELECT rowid FROM dead_letter ORDER BY ts DESC, rowid DESC LIMIT ?)" (fun cap_dl ->
+        Sqlite3.bind_int cap_dl 1 dead_letter_max_entries |> ignore;
+        ignore (Sqlite3.step cap_dl));
+      (* B339: mobile-pair replay nonce cache (process-global); see the
+         in-memory arm for the ?now:None note. B340: WS challenge store. *)
+      ignore (cleanup_nonce_cache ?now:None ~older_than:mobile_pair_nonce_window_s);
+      ignore (Relay_ws_server.challenge_cleanup ?now:None
+                ~older_than:Relay_ws_server.ws_challenge_ttl ());
       `Ok (List.rev !expired_aliases, pruned)
     )
+
+  (* B337: parity with InMemoryRelay — sqlite dead-letters DM sends to
+     unknown/dead recipients. Same row shape as add_dead_letter's. *)
+  let insert_dead_letter_row conn ~message_id ~from_alias ~to_alias ~content ~ts ~reason =
+    with_stmt conn "INSERT INTO dead_letter (message_id, from_alias, to_alias, content, ts, reason) VALUES (?, ?, ?, ?, ?, ?)" (fun dl_stmt ->
+      Sqlite3.bind_text dl_stmt 1 message_id |> ignore;
+      Sqlite3.bind_text dl_stmt 2 from_alias |> ignore;
+      Sqlite3.bind_text dl_stmt 3 to_alias |> ignore;
+      Sqlite3.bind_text dl_stmt 4 content |> ignore;
+      Sqlite3.bind_double dl_stmt 5 ts |> ignore;
+      Sqlite3.bind_text dl_stmt 6 reason |> ignore;
+      ignore (Sqlite3.step dl_stmt))
 
   let send t ~from_alias ~to_alias ~content ?(message_id=None) ?(pow_difficulty = -1) =
     with_lock t (fun () ->
@@ -3269,6 +3455,9 @@ end = struct
           disc_vis := Some (if raw = "public" then Public else Private));
       match !disc_vis with
       | None ->
+        (* B337: dead-letter the DM, mirroring InMemoryRelay.send. *)
+        insert_dead_letter_row conn ~message_id:msg_id ~from_alias ~to_alias
+          ~content ~ts ~reason:"unknown_alias";
         `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
       | Some Private ->
         (* B264: private recipient — uniform with unknown; no content DLQ. *)
@@ -3289,10 +3478,20 @@ end = struct
             | Some f -> f
             | None -> float_of_string (Sqlite3.Data.to_string_exn (Sqlite3.column stmt 2))
           in
-          if alias_released ~now:ts ~last_seen then
+          if alias_released ~now:ts ~last_seen then (
+            (* B337: released alias dead-letters like an unknown one, as the
+               in-memory backend does. *)
+            insert_dead_letter_row conn ~message_id:msg_id ~from_alias ~to_alias
+              ~content ~ts ~reason:"unknown_alias";
             `Error (relay_err_unknown_alias, Printf.sprintf "no registration for alias %S" to_alias)
-          else if (last_seen +. ttl) < ts then
+          )
+          else if (last_seen +. ttl) < ts then (
+            (* B337: expired recipient dead-letters with reason
+               recipient_dead, mirroring InMemoryRelay.send. *)
+            insert_dead_letter_row conn ~message_id:msg_id ~from_alias ~to_alias
+              ~content ~ts ~reason:"recipient_dead";
             `Error (relay_err_recipient_dead, Printf.sprintf "alias %S is registered but lease has expired" to_alias)
+          )
           else
             with_stmt conn "SELECT node_id, session_id FROM secure_leases_v2 WHERE alias = ?" (fun recv_stmt ->
             Sqlite3.bind_text recv_stmt 1 lookup_alias |> ignore;
@@ -3300,17 +3499,47 @@ end = struct
             if rc2 = Rc.ROW then
               let recv_node_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 0) in
               let recv_session_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 1) in
-              with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
-              Sqlite3.bind_text ins_stmt 1 recv_node_id |> ignore;
-              Sqlite3.bind_text ins_stmt 2 recv_session_id |> ignore;
-              Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
-              Sqlite3.bind_text ins_stmt 4 from_alias |> ignore;
-              Sqlite3.bind_text ins_stmt 5 to_alias |> ignore;
-              Sqlite3.bind_text ins_stmt 6 content |> ignore;
-              Sqlite3.bind_double ins_stmt 7 ts |> ignore;
-              Sqlite3.bind_int ins_stmt 8 pow_difficulty |> ignore;
-              Sqlite3.step ins_stmt |> ignore;
-              `Ok ts)
+              (* B328: message-id dedup mirroring InMemoryRelay.send — the
+                 seen_ids table was created by the schema but never written.
+                 INSERT OR IGNORE + changes()=0 means the id was already
+                 accepted within the dedup window -> Duplicate, no second
+                 inbox row. Recorded only on the success path so rejected
+                 sends (unknown/dead/private alias) do not consume ids.
+                 Unlike the in-memory FIFO, sqlite rows persist across a
+                 relay restart — dedup outlives the process (deliberate). *)
+              let fresh =
+                with_stmt conn "INSERT OR IGNORE INTO seen_ids (message_id, ts) VALUES (?, ?)" (fun seen_stmt ->
+                Sqlite3.bind_text seen_stmt 1 msg_id |> ignore;
+                Sqlite3.bind_double seen_stmt 2 ts |> ignore;
+                (* The step must have completed for changes() to mean
+                   "ignored as a duplicate"; a failed step would otherwise
+                   inherit a stale count from an earlier statement. *)
+                match Sqlite3.step seen_stmt with
+                | Rc.DONE -> Sqlite3.changes conn > 0
+                | rc -> failwith (Printf.sprintf "seen_ids insert step failed: %s" (Rc.to_string rc)))
+              in
+              if not fresh then `Duplicate ts
+              else begin
+                (* FIFO prune: keep only the newest dedup_window ids, so a
+                   pruned id may be accepted again (same semantics as the
+                   in-memory seen_ids_fifo). Clamp the bound: LIMIT 0 would
+                   drop the id just recorded and a negative LIMIT is
+                   unbounded in SQLite. *)
+                (with_stmt conn "DELETE FROM seen_ids WHERE rowid NOT IN (SELECT rowid FROM seen_ids ORDER BY rowid DESC LIMIT ?)" (fun del_stmt ->
+                 Sqlite3.bind_int del_stmt 1 (max 1 t.dedup_window) |> ignore;
+                 Sqlite3.step del_stmt |> ignore));
+                with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
+                Sqlite3.bind_text ins_stmt 1 recv_node_id |> ignore;
+                Sqlite3.bind_text ins_stmt 2 recv_session_id |> ignore;
+                Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
+                Sqlite3.bind_text ins_stmt 4 from_alias |> ignore;
+                Sqlite3.bind_text ins_stmt 5 to_alias |> ignore;
+                Sqlite3.bind_text ins_stmt 6 content |> ignore;
+                Sqlite3.bind_double ins_stmt 7 ts |> ignore;
+                Sqlite3.bind_int ins_stmt 8 pow_difficulty |> ignore;
+                Sqlite3.step ins_stmt |> ignore;
+                `Ok ts)
+              end
             else
               `Error (relay_err_unknown_alias, "recipient lease not found"))
         else
@@ -3436,6 +3665,55 @@ end = struct
       `Ok (now, List.rev !sent_to, List.map fst (List.rev !skipped))
     )
 
+  (* B337: parity with InMemoryRelay.join_room/leave_room — the room system
+     message is one room_history row plus an inbox fan-out to every member
+     (to_alias "<alias>#<room>"); a member with no lease or an expired lease
+     is dead-lettered with reason recipient_dead instead. *)
+  let emit_room_system_message conn ~room_id ~message_id ~content ~ts =
+    with_stmt conn "INSERT INTO room_history (room_id, message_id, from_alias, content, ts) VALUES (?, ?, ?, ?, ?)" (fun hist_stmt ->
+      Sqlite3.bind_text hist_stmt 1 room_id |> ignore;
+      Sqlite3.bind_text hist_stmt 2 message_id |> ignore;
+      Sqlite3.bind_text hist_stmt 3 room_system_alias |> ignore;
+      Sqlite3.bind_text hist_stmt 4 content |> ignore;
+      Sqlite3.bind_double hist_stmt 5 ts |> ignore;
+      ignore (Sqlite3.step hist_stmt));
+    with_stmt conn "SELECT alias FROM room_members WHERE room_id = ?" (fun sel_stmt ->
+      Sqlite3.bind_text sel_stmt 1 room_id |> ignore;
+      let rec loop () =
+        match Sqlite3.step sel_stmt with
+        | Sqlite3.Rc.ROW ->
+          let member_alias = Sqlite3.Data.to_string_exn (Sqlite3.column sel_stmt 0) in
+          (with_stmt conn "SELECT node_id, session_id, last_seen, ttl FROM secure_leases_v2 WHERE alias = ?" (fun lease_stmt ->
+             Sqlite3.bind_text lease_stmt 1 member_alias |> ignore;
+             match Sqlite3.step lease_stmt with
+             | Sqlite3.Rc.ROW ->
+               let node_id = Sqlite3.Data.to_string_exn (Sqlite3.column lease_stmt 0) in
+               let session_id = Sqlite3.Data.to_string_exn (Sqlite3.column lease_stmt 1) in
+               let last_seen = data_to_float_default (Sqlite3.column lease_stmt 2) in
+               let ttl = data_to_float_default (Sqlite3.column lease_stmt 3) in
+               if last_seen +. ttl >= ts then
+                 with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts) VALUES (?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
+                   Sqlite3.bind_text ins_stmt 1 node_id |> ignore;
+                   Sqlite3.bind_text ins_stmt 2 session_id |> ignore;
+                   Sqlite3.bind_text ins_stmt 3 message_id |> ignore;
+                   Sqlite3.bind_text ins_stmt 4 room_system_alias |> ignore;
+                   Sqlite3.bind_text ins_stmt 5 (member_alias ^ "#" ^ room_id) |> ignore;
+                   Sqlite3.bind_text ins_stmt 6 content |> ignore;
+                   Sqlite3.bind_double ins_stmt 7 ts |> ignore;
+                   ignore (Sqlite3.step ins_stmt))
+               else
+                 insert_dead_letter_row conn ~message_id ~from_alias:room_system_alias
+                   ~to_alias:(member_alias ^ "#" ^ room_id) ~content ~ts
+                   ~reason:"recipient_dead"
+             | _ ->
+               insert_dead_letter_row conn ~message_id ~from_alias:room_system_alias
+                 ~to_alias:(member_alias ^ "#" ^ room_id) ~content ~ts
+                 ~reason:"recipient_dead"));
+          loop ()
+        | _ -> ()
+      in
+      loop ())
+
   let join_room t ?(visibility = "public") ~alias ~room_id () =
     let visibility = canonical_visibility_exn visibility in
     with_lock t (fun () ->
@@ -3467,6 +3745,16 @@ end = struct
         Sqlite3.bind_text mem_stmt 1 room_id |> ignore;
         Sqlite3.bind_text mem_stmt 2 alias |> ignore;
         Sqlite3.step mem_stmt |> ignore);
+      (* B337: a NEW member emits the c2c-system join message (history +
+         fan-out), mirroring InMemoryRelay.join_room. changes()=0 ⇒ the row
+         already existed (re-join): silent, like the in-memory
+         already_member guard. *)
+      if Sqlite3.changes conn > 0 then begin
+        let ts = Unix.gettimeofday () in
+        let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
+        emit_room_system_message conn ~room_id ~message_id:msg_id
+          ~content:(room_join_content alias room_id) ~ts
+      end;
       `Ok
       )
     )
@@ -3474,10 +3762,36 @@ end = struct
   let leave_room t ~alias ~room_id =
     with_lock t (fun () ->
       let conn = t.db in
-      with_stmt conn "DELETE FROM room_members WHERE room_id = ? AND alias = ?" (fun stmt ->
-        Sqlite3.bind_text stmt 1 room_id |> ignore;
-        Sqlite3.bind_text stmt 2 alias |> ignore;
-        Sqlite3.step stmt |> ignore);
+      let removed =
+        with_stmt conn "DELETE FROM room_members WHERE room_id = ? AND alias = ?" (fun stmt ->
+          Sqlite3.bind_text stmt 1 room_id |> ignore;
+          Sqlite3.bind_text stmt 2 alias |> ignore;
+          Sqlite3.step stmt |> ignore;
+          Sqlite3.changes conn > 0)
+      in
+      (* B337: a real departure that leaves other members behind emits the
+         c2c-system leave message; leaving an empty room (or a room you were
+         not in) stays silent, mirroring InMemoryRelay.leave_room. *)
+      if removed then begin
+        let remaining =
+          with_stmt conn "SELECT COUNT(*) FROM room_members WHERE room_id = ?" (fun cnt_stmt ->
+            Sqlite3.bind_text cnt_stmt 1 room_id |> ignore;
+            match Sqlite3.step cnt_stmt with
+            | Sqlite3.Rc.ROW ->
+              (* COUNT comes back as INT; data_to_float_default cannot
+                 parse INT columns (TEXT/BLOB only). *)
+              (match Sqlite3.Data.to_int (Sqlite3.column cnt_stmt 0) with
+               | Some n -> float_of_int n
+               | None -> data_to_float_default (Sqlite3.column cnt_stmt 0))
+            | _ -> 0.0)
+        in
+        if remaining > 0.0 then begin
+          let ts = Unix.gettimeofday () in
+          let msg_id = Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()) in
+          emit_room_system_message conn ~room_id ~message_id:msg_id
+            ~content:(room_leave_content alias room_id) ~ts
+        end
+      end;
       `Ok
     )
 
@@ -5105,6 +5419,22 @@ end = struct
     let respond_register_unauthorized body =
       respond_register_json ~status:`Unauthorized body
     in
+    (* B335: honest HTTP status per register failure. In-repo clients parse
+       the JSON ok/error_code fields (audited: Relay_client reconcile_status,
+       connector response_error_code, monitor classifier all key on the
+       body; http_status is only read for 429), so the status line can tell
+       the truth. Unknown statuses stay 200 (legacy). *)
+    let register_result_http_status = function
+      | "ok" -> `OK
+      | "invalid_alias" -> `Bad_request
+      | s when s = relay_err_alias_identity_mismatch || s = "alias_not_allowed" -> `Forbidden
+      | s when s = relay_err_alias_conflict -> `Conflict
+      | _ -> `OK
+    in
+    let respond_register_result ?difficulty body (status, _lease) =
+      respond_register_json ?difficulty
+        ~status:(register_result_http_status status) body
+    in
     let finish_register_result result =
       if pow_actor_enabled && not is_lease_refresh && fst result = "ok" then begin
         Pow_policy.record_route relay_pow_policy ~actor_id ~route:"register"
@@ -5222,19 +5552,23 @@ end = struct
                   (Printf.sprintf "timestamp skew %.1fs outside [-%.0f, +%.0f]"
                      skew register_ts_past_window register_ts_future_window))
               else
-                match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
-                | Error code ->
-                  respond_register_bad_request (json_error_str code "nonce already seen within TTL")
-                | Ok () ->
-                  let signed =
-                    Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
-                      [ alias; String.lowercase_ascii relay_url;
-                        identity_pk_b64; timestamp_str; nonce_b64 ]
-                  in
-                  if not (Relay_identity.verify ~pk:identity_pk ~msg:signed ~sig_) then
-                    respond_register_unauthorized (json_error_str relay_err_signature_invalid
-                      "Ed25519 signature does not verify against identity_pk")
-                  else
+                (* B336: verify the signature BEFORE consuming the nonce — a
+                   failed verification must not poison the nonce for the
+                   legitimate retry. A nonce reused after a VERIFIED attempt
+                   is still rejected (replay protection unchanged). *)
+                let signed =
+                  Relay_identity.canonical_msg ~ctx:Relay_signed_ops.register_sign_ctx
+                    [ alias; String.lowercase_ascii relay_url;
+                      identity_pk_b64; timestamp_str; nonce_b64 ]
+                in
+                if not (Relay_identity.verify ~pk:identity_pk ~msg:signed ~sig_) then
+                  respond_register_unauthorized (json_error_str relay_err_signature_invalid
+                    "Ed25519 signature does not verify against identity_pk")
+                else
+                  match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+                  | Error code ->
+                    respond_register_bad_request (json_error_str code "nonce already seen within TTL")
+                  | Ok () ->
                     let result =
                       R.register relay ~node_id ~session_id ~alias
                         ~client_type ~client_version ~client_os ~ttl ~identity_pk ~enc_pubkey:enc_pubkey_b64 ~signed_at ~sig_b64:sig_b64
@@ -5258,7 +5592,7 @@ end = struct
                        R.stats_note_activity relay ~machine_id
                          ~retire_key:node_id
                          ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()) ());
-                    respond_register_ok ~difficulty (json_of_register_result ~receipt result)
+                    respond_register_result ~difficulty (json_of_register_result ~receipt result) result
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =
@@ -5272,7 +5606,7 @@ end = struct
            R.stats_note_activity relay ~machine_id
              ~retire_key:node_id
              ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()) ());
-        respond_register_ok ~difficulty (json_of_register_result result)
+        respond_register_result ~difficulty (json_of_register_result result) result
 
   (* S-A1: bind verified Ed25519 signer to body claims. When ~verified_alias
      is [Some v], body [from_alias] on send-family routes must match [v];
@@ -5341,7 +5675,20 @@ end = struct
              ~retire_key:node_id
              ~alias:(stats_alias_key (RegistrationLease.alias lease))
              ~ts:(Unix.gettimeofday ()) ());
-        respond_ok (json_of_heartbeat_result result)
+        (* B338: the backend reports a missing/expired lease as unknown_alias
+           on both arms. Map it to 404 + lease_not_found exactly like the
+           signed pre-check (reject_session_lease_missing), so dev-mode
+           (unsigned) heartbeats also trigger the connectors' re-register
+           repair. Only unknown_alias maps; other statuses keep the legacy
+           200 envelope. *)
+        if fst result = "ok" then
+          respond_ok (json_of_heartbeat_result result)
+        else if fst result = relay_err_unknown_alias then
+          reject_session_lease_missing
+            ~verified:(match verified_alias with Some v -> v | None -> "(unsigned)")
+            ~node_id ~session_id
+        else
+          respond_ok (json_of_heartbeat_result result)
       in
       match verified_alias with
       | Some v ->
@@ -5452,6 +5799,19 @@ end = struct
     if from_alias = "" || to_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, to_alias, and content are required")
     else
+      (* B329: bind the body from_alias to the verified signer BEFORE host
+         routing — the forward-out branch below responds without reaching the
+         local-delivery binding check, so an authenticated peer could spoof
+         the sender on a cross-relay delivery (relay-to-relay trust
+         substitutes for sender binding at the peer). *)
+      (* B334: casefolded compare, matching the B293 family (heartbeat /
+         register are case-insensitive); the outer identity_pk_of lookup
+         still keys by exact case, so only the body/header case skew is
+         forgiven. *)
+      match verified_alias with
+      | Some v when String.lowercase_ascii v <> String.lowercase_ascii (from_alias_signer_name from_alias) ->
+        reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | _ ->
       (* #379: split alias@host for cross-relay routing. A 12-16 lowercase
          hex host is the relay opaque-host reply route, not a cross-relay
          host name, so it stays local while preserving the concrete route
@@ -5574,11 +5934,27 @@ end = struct
                        (json_error_str "forward_local_error"
                           (Printf.sprintf "local forwarder error: %s" err))))
       else
-      match verified_alias with
-      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
-      | _ ->
         let message_id = get_opt_string body "message_id" in
         let deliver_to_alias = if opaque_host_route then to_alias else stripped_to_alias in
+        (* B334: deliver under the verified signer's case when the claim
+           differs only by case, so recipients replying to the delivered
+           name hit the exact-case lease lookup. An opaque host tag on the
+           claim is reply-route metadata and is kept verbatim. *)
+        let deliver_from_alias =
+          match verified_alias with
+          | Some v ->
+            let claim_name, claim_host =
+              C2c_name.split_opaque_host_id from_alias
+            in
+            if claim_name <> v
+               && String.lowercase_ascii claim_name = String.lowercase_ascii v
+            then
+              (match claim_host with
+               | Some h -> v ^ "@" ^ h
+               | None -> v)
+            else from_alias
+          | None -> from_alias
+        in
         (* B014: record the sender's current PoW difficulty (leading-zero bits)
            as sibling metadata on the delivered message. The policy keys cost by
            identity pubkey (b64url, same normalization as the register handler),
@@ -5588,7 +5964,7 @@ end = struct
            accrue send-route cost here (no [record_route]). *)
         let pow_difficulty =
           let sender_actor_id =
-            match R.identity_pk_of relay ~alias:from_alias with
+            match R.identity_pk_of relay ~alias:deliver_from_alias with
             | Some pk when String.length pk = 32 -> b64url_nopad_encode pk
             | _ -> ""
           in
@@ -5596,23 +5972,23 @@ end = struct
             pow_difficulty_for_actor ~enabled:true ~actor_id:sender_actor_id
           else Relay_pow_challenge.pow_difficulty_unrecorded
         in
-        let result = R.send relay ~from_alias ~to_alias:deliver_to_alias ~content ~pow_difficulty ~message_id in
+        let result = R.send relay ~from_alias:deliver_from_alias ~to_alias:deliver_to_alias ~content ~pow_difficulty ~message_id in
         (* B147: count relay-accepted DMs (duplicate replays excluded). *)
         (match result with
          | `Ok ts ->
-           R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts
+           R.stats_note_message relay ~from_alias:(stats_alias_key deliver_from_alias) ~ts
          | _ -> ());
         (match result with
          | `Ok ts | `Duplicate ts ->
            (* Push to WS subscribers (slice 2) *)
-           Relay_ws_server.push_dm ~to_alias:stripped_to_alias ~from_alias ~body:content ~ts;
+           Relay_ws_server.push_dm ~to_alias:stripped_to_alias ~from_alias:deliver_from_alias ~body:content ~ts;
            (match R.identity_pk_of relay ~alias:stripped_to_alias with
             | Some identity_pk ->
               (match binding_id_of_phone_pk ~phone_ed25519_pubkey:identity_pk with
                | Some binding_id ->
                   let sq_msg = {
                     Relay_short_queue.ts;
-                    from_alias;
+                    from_alias = deliver_from_alias;
                     to_alias;
                     room_id = None;
                     content;
@@ -5634,17 +6010,35 @@ end = struct
     if from_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias and content are required")
     else
+      (* B334: casefolded signer binding, same as handle_send. *)
       match verified_alias with
-      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | Some v when String.lowercase_ascii v <> String.lowercase_ascii (from_alias_signer_name from_alias) -> reject_alias_mismatch ~verified:v ~claimed:from_alias
       | _ ->
         let message_id = get_opt_string body "message_id" in
-        match R.send_all relay ~from_alias ~content ~message_id with
+        (* B334: deliver under the verified signer's case when the claim
+           differs only by case (see handle_send). *)
+        let deliver_from_alias =
+          match verified_alias with
+          | Some v ->
+            let claim_name, claim_host =
+              C2c_name.split_opaque_host_id from_alias
+            in
+            if claim_name <> v
+               && String.lowercase_ascii claim_name = String.lowercase_ascii v
+            then
+              (match claim_host with
+               | Some h -> v ^ "@" ^ h
+               | None -> v)
+            else from_alias
+          | None -> from_alias
+        in
+        match R.send_all relay ~from_alias:deliver_from_alias ~content ~message_id with
         | `Ok (ts, delivered, skipped) ->
           (* B147: a broadcast counts as one message, not one per recipient.
              B267: private-only targets yield delivered=[]; do not bump stats
              (G1 — no side effect without a successful public delivery). *)
           (if delivered <> [] then
-             R.stats_note_message relay ~from_alias:(stats_alias_key from_alias) ~ts);
+             R.stats_note_message relay ~from_alias:(stats_alias_key deliver_from_alias) ~ts);
           List.iter (fun to_alias ->
             match R.identity_pk_of relay ~alias:to_alias with
             | Some identity_pk ->
@@ -5652,7 +6046,7 @@ end = struct
                | Some binding_id ->
                   let sq_msg = {
                     Relay_short_queue.ts;
-                    from_alias;
+                    from_alias = deliver_from_alias;
                     to_alias;
                     room_id = None;
                     content;
@@ -5879,35 +6273,38 @@ end = struct
               Error (relay_err_timestamp_out_of_window,
                 Printf.sprintf "ts skew %.1fs outside window" skew)
             else
-              match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
-              | Error code -> Error (code, "nonce already seen within TTL")
-              | Ok () ->
-                (* B114 (review finding 1): the proof only AUTHENTICATES the
-                   alias if [identity_pk] is the key already bound to it. A
-                   self-signed proof for an alias with no registered binding
-                   is meaningless (any attacker key would "verify"), so an
-                   absent binding is rejected — there is no first-proof TOFU
-                   pinning. The alias must have registered a signed identity
-                   first (register_signed binds the key). *)
-                (match R.identity_pk_of relay ~alias with
-                 | Some bound when bound <> identity_pk ->
-                   Error (relay_err_alias_identity_mismatch,
-                     "identity_pk does not match registered binding")
-                 | None ->
-                   Error (relay_err_alias_identity_mismatch,
-                     "alias has no registered identity binding; register a \
-                      signed identity before signing room ops")
-                 | Some _ ->
-                           let blob =
-                             Relay_identity.canonical_msg ~ctx:sign_ctx
-                               ([ room_id; alias ] @ extra_signed_fields
-                                @ [ identity_pk_b64; timestamp_str; nonce_b64 ])
-                           in
-                   if Relay_identity.verify ~pk:identity_pk ~msg:blob ~sig_ then
-                     Ok ()
-                   else
-                     Error (relay_err_signature_invalid,
-                       "Ed25519 signature does not verify"))
+              (* B336: binding check and signature verification happen BEFORE
+                 the nonce is consumed, so a failed verification does not
+                 burn the nonce for the legitimate retry; a nonce reused
+                 after a VERIFIED attempt is still rejected. *)
+              (* B114 (review finding 1): the proof only AUTHENTICATES the
+                 alias if [identity_pk] is the key already bound to it. A
+                 self-signed proof for an alias with no registered binding
+                 is meaningless (any attacker key would "verify"), so an
+                 absent binding is rejected — there is no first-proof TOFU
+                 pinning. The alias must have registered a signed identity
+                 first (register_signed binds the key). *)
+              (match R.identity_pk_of relay ~alias with
+               | Some bound when bound <> identity_pk ->
+                 Error (relay_err_alias_identity_mismatch,
+                   "identity_pk does not match registered binding")
+               | None ->
+                 Error (relay_err_alias_identity_mismatch,
+                   "alias has no registered identity binding; register a \
+                    signed identity before signing room ops")
+               | Some _ ->
+                         let blob =
+                           Relay_identity.canonical_msg ~ctx:sign_ctx
+                             ([ room_id; alias ] @ extra_signed_fields
+                              @ [ identity_pk_b64; timestamp_str; nonce_b64 ])
+                         in
+                 if not (Relay_identity.verify ~pk:identity_pk ~msg:blob ~sig_) then
+                   Error (relay_err_signature_invalid,
+                     "Ed25519 signature does not verify")
+                 else
+                   match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+                   | Error code -> Error (code, "nonce already seen within TTL")
+                   | Ok () -> Ok ())
 
   let handle_join_room relay ~require_signed body =
     let alias = get_string body "alias" in
@@ -6302,15 +6699,16 @@ end = struct
                     Error (relay_err_timestamp_out_of_window,
                       Printf.sprintf "ts skew %.1fs outside window" skew)
                   else
-                    match R.check_register_nonce relay ~nonce ~ts:ts_client with
-                    | Error code -> Error (code, "nonce already seen within TTL")
-                    | Ok () ->
-                      (* B114 (review finding 1): as with room ops, the
-                         envelope only authenticates [from_alias] when
-                         [sender_pk] is the key bound to it. An absent binding
-                         is rejected (no first-proof TOFU) — the sender must
-                         have registered a signed identity. *)
-                      (match R.identity_pk_of relay ~alias:from_alias with
+                    (* B336: binding check and signature verification happen
+                       BEFORE the nonce is consumed (same rationale as the
+                       register path and room-op proofs); replay protection
+                       after a verified use is unchanged. *)
+                    (* B114 (review finding 1): as with room ops, the
+                       envelope only authenticates [from_alias] when
+                       [sender_pk] is the key bound to it. An absent binding
+                       is rejected (no first-proof TOFU) — the sender must
+                       have registered a signed identity. *)
+                    (match R.identity_pk_of relay ~alias:from_alias with
                        | Some bound when bound <> sender_pk ->
                          Error (relay_err_alias_identity_mismatch,
                            "sender_pk does not match registered binding")
@@ -6326,11 +6724,13 @@ end = struct
                              [ room_id; from_alias; sender_pk_b64; enc;
                                ct_hash; ts; nonce ]
                          in
-                         if Relay_identity.verify ~pk:sender_pk ~msg:blob ~sig_ then
-                           Ok ()
-                         else
+                         if not (Relay_identity.verify ~pk:sender_pk ~msg:blob ~sig_) then
                            Error (relay_err_signature_invalid,
-                             "Ed25519 envelope signature does not verify"))
+                             "Ed25519 envelope signature does not verify")
+                         else
+                           match R.check_register_nonce relay ~nonce ~ts:ts_client with
+                           | Error code -> Error (code, "nonce already seen within TTL")
+                           | Ok () -> Ok ())
 
   let handle_send_room relay ~require_signed body =
     let from_alias = get_string body "from_alias" in
@@ -7333,12 +7733,26 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
            respond_bad_request (json_error_str "observer_upgrade_required" "Upgrade: websocket header required"))
 
       (* === Slice 2: WebSocket push subscription endpoint === *)
+      (* === B340: server-issued challenge nonce for the WS subscribe
+         handshake. Self-auth class (see relay_server_auth): the nonce is
+         unauthenticated by design — it is a single-use, short-TTL random
+         the client must sign over, not a capability. Bounded store; swept
+         by the gc arm. === *)
+      | `GET, "/ws/subscribe-challenge" ->
+        let nonce = Relay_ws_server.challenge_issue () in
+        respond_ok (`Assoc [
+          ("nonce", `String nonce);
+          ("ts", `Float (Unix.gettimeofday ()));
+        ])
+
       | `GET, "/ws/subscribe" ->
         let upgrade = Header.get (Request.headers req) "Upgrade" in
         let sec_websocket_key = Header.get (Request.headers req) "Sec-WebSocket-Key" in
         let c2c_alias = Header.get (Request.headers req) "X-C2C-Alias" in
         let c2c_ts = Header.get (Request.headers req) "X-C2C-Timestamp" in
         let c2c_sig = Header.get (Request.headers req) "X-C2C-Signature" in
+        (* B340: server-issued challenge nonce (optional during transition). *)
+        let c2c_nonce = Header.get (Request.headers req) "X-C2C-Nonce" in
         let client_ip = get_client_ip conn in
         (match upgrade with
          | Some u when String.lowercase_ascii u = "websocket" ->
@@ -7350,7 +7764,7 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
             | Some ws_key, Some alias, Some ts_str, Some sig_b64 ->
               (* Validate auth *)
               let lookup_pk ~alias = R.identity_pk_of relay ~alias in
-              (match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64 with
+              (match Relay_ws_server.validate_subscribe_auth ~lookup_pk ~alias ~ts_str ~sig_b64 ~nonce:c2c_nonce with
                | Relay_ws_server.Auth_error msg ->
                  Relay_ratelimit.structured_log
                    ~event:"ws_subscribe"

@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:08Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T18:11:07Z"
 complexity: low
 created_at: "2026-09-17T07:56:14Z"
 depends_on: []
+duration_minutes: 168.98486170993334
 estimate_hours: 1
 id: B327
 priority: low
 started_at: "2026-09-17T15:22:08Z"
-status: in_progress
+status: done
 tags: []
 title: instance-log ring never prunes numbered strays beyond keep+16 after a C2C_INSTANCE_LOG_KEEP reduction
-updated_at: "2026-09-17T15:22:08Z"
+updated_at: "2026-09-17T18:11:07Z"
 ---
 
 # instance-log ring never prunes numbered strays beyond keep+16 after a C2C_INSTANCE_LOG_KEEP reduction

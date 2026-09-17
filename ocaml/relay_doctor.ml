@@ -275,9 +275,10 @@ let duplicate_connector_check ~pids =
                 one."
                (String.concat ", " (List.map string_of_int pids)));
         fix_command =
-          Some
-            "c2c stop relay-connect; pkill -f 'c2c relay connect'; \
-             c2c start relay-connect";
+          (* B304: no pkill — under the B296 systemd unit a pattern-kill only
+             hits the supervisor child and Restart=always reverts it; the
+             B302-aware stop/start verbs are safe on both host shapes. *)
+          Some "c2c stop relay-connect; c2c start relay-connect";
         docs_url = Some docs_url;
       }
   | _ -> None
@@ -329,18 +330,19 @@ let connector_bridge_live ~state ~now =
 let connector_running ~scoped_procs:_ ~state ~now =
   connector_bridge_live ~state ~now
 
-let fix_restart_connect relay_url =
-  Printf.sprintf
-    "c2c restart relay-connect 2>/dev/null || \
-     (pkill -f 'c2c relay connect' 2>/dev/null; \
-      c2c relay connect --relay-url %s &)"
-    relay_url
+(* B304: remediation is a managed verb, never a shell pattern-kill (fights
+   Restart=always under the B296 systemd unit) and never a backgrounded child
+   of the doctor-calling shell (dies with it — the 55-days-dark failure B296
+   cites). `c2c restart relay-connect` is safe on both unit-owned hosts
+   (delegates to systemctl, B302) and direct hosts; it resolves its own URL
+   (override > env > relay.json > saved config, B312). Keeping the bridge off
+   on purpose is `c2c relay disable`, not a kill. *)
+let fix_restart_connect _relay_url = "c2c restart relay-connect"
 
 let fix_start_connect relay_url =
   Printf.sprintf
-    "c2c start relay-connect --relay-url %s 2>/dev/null || \
-     c2c relay connect --relay-url %s &"
-    relay_url relay_url
+    "c2c start relay-connect --relay-url %s  # boot persistence: c2c relay enable"
+    relay_url
 
 (* Pure connector check. Every FAIL carries a copy-pasteable fix_command
    (B093 item 5). Bridge liveness is [connector_running] (fresh last_ok),
@@ -380,7 +382,7 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
            n)
         (Some
            "First sync may still be in flight. If this persists beyond ~2m, \
-            kill and restart the connector.")
+            restart the connector (c2c restart relay-connect).")
         (Some (fix_restart_connect relay_url))
   | false, Some st, n ->
       let last_sync = st.C2c_relay_connector.cs_last_sync_ts in
@@ -421,7 +423,9 @@ let connector_check ~relay_url ~scoped_procs ~state ~now =
           (Printf.sprintf "connector not running (last sync %s ago)" sync_age)
           (Some
              "No broker-attributed process and last_sync is past the freshness \
-              threshold. Outbox will not drain until a connector restarts.")
+              threshold. Outbox will not drain until a connector restarts. If \
+              the bridge is unwanted rather than broken, keep it off with \
+              c2c relay disable.")
           (Some (fix_start_connect relay_url))
   | true, None, _ ->
       (* live requires a state file; unreachable in practice. *)

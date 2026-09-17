@@ -200,6 +200,36 @@ c2c start relay-connect                          # reads the saved URL
 # Stop with: c2c stop relay-connect
 ```
 
+On hosts with a systemd --user session, `c2c relay enable` installs and enables
+`c2c-relay-connect.service` (`Restart=always`, `RestartSec=5`,
+`StartLimitIntervalSec=0`; B296), and the unit — not a c2c daemon — owns the
+connector. Because systemd restarts the unit ~5s after anything kills its main
+process, `c2c stop` / `c2c restart` detect that ownership and delegate to
+systemctl instead (B302); the delegation is announced with a loud notice:
+
+```bash
+systemctl --user stop c2c-relay-connect.service      # what `c2c stop relay-connect` runs
+systemctl --user restart c2c-relay-connect.service   # what `c2c restart relay-connect` runs
+c2c relay disable                                    # stop + disable for good (unit file is kept)
+```
+
+The unit's `ExecStart` pins the canonical install (`~/.local/bin/c2c`) when it
+exists. Running `c2c relay enable` straight from a checkout (no canonical
+install) is **refused** rather than pinning a dev `_build` binary — a
+`dune clean` would leave the unit restarting a missing binary forever (B326).
+Install first (`just install-all` / `c2c install self`) or pass
+`--unit-binary <PATH>` explicitly.
+
+A plain supervisor kill would be reverted within ~5s by `Restart=always`, so
+c2c refuses to do that silently. If the unit is enabled but a *rogue*
+non-systemd supervisor holds the machine singleton (the restart-loop incident
+shape: every unit start dies on the singleton guard while the rogue keeps
+polling), `c2c stop relay-connect` stops the rogue directly — pid-identity
+guarded — and lets systemd win the lock back on its next auto-restart. When
+the unit is present but inactive, the direct-supervisor path is used, and the
+recorded connector child is swept in every state so a SIGKILLed supervisor can
+never leave a duplicate connector polling.
+
 Each local agent still registers its own alias before it can receive mail
 addressed as `alias@relay-hostname`; the one machine connection does not turn
 alias registration into a machine-global identity. Delivery semantics for
@@ -211,7 +241,10 @@ connector (B235)` on stderr steering you to `c2c start relay-connect`, because
 an unsupervised connector does not self-replace when the installed `c2c`
 executable changes. `c2c restart relay-connect` **bootstraps** a managed
 connector even when none was previously configured — it is the standard
-remediation surfaced by `c2c doctor --relay`.
+remediation surfaced by `c2c doctor --relay`. When the systemd unit owns the
+connector, that same restart command delegates to
+`systemctl --user restart c2c-relay-connect.service` (B302), so remediation is
+safe on unit-owned hosts too.
 
 `c2c relay connect` itself has no `--daemon` flag. As an explicitly last-resort
 fallback (unsupervised — you own restarts and the stale-binary risk), you can

@@ -80,7 +80,10 @@ let self_auth_exact_routes =
     "/send_room_invite"; "/invite_room";
     "/uninvite_room"; "/knock_room"; "/list_room_knocks";
     "/approve_room_knock"; "/deny_room_knock"; "/mobile-pair/prepare";
-    "/mobile-pair"; "/forward"; "/ws/subscribe" ]
+    "/mobile-pair"; "/forward"; "/ws/subscribe";
+    (* B340: issues the single-use nonce clients sign over — no credential
+       of its own, so it bypasses the outer gate like /ws/subscribe. *)
+    "/ws/subscribe-challenge" ]
 
 let self_auth_prefix_routes = ["/binding/"]
 

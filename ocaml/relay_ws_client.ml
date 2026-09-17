@@ -222,16 +222,29 @@ let open_channels (ep : endpoint) ?ca_bundle ?(on_close = fun _ -> ()) () =
     (fun () ->
        if !transferred then Lwt.return_unit else close_sock ())
 
-let auth_headers ~alias ~identity =
+(* B340: when the server issued a challenge nonce, sign
+   (alias || "\n" || ts || "\n" || nonce); legacy form (alias || ts) stays
+   for relays without the challenge endpoint. ~nonce is a required label
+   (pass None) — an optional here would partially apply when omitted. *)
+let auth_headers ~nonce ~alias ~identity =
   let ts = Printf.sprintf "%.0f" (Unix.gettimeofday ()) in
-  let msg = alias ^ ts in
+  let msg =
+    match nonce with
+    | Some n when n <> "" -> alias ^ "\n" ^ ts ^ "\n" ^ n
+    | _ -> alias ^ ts
+  in
   let sig_ = Relay_identity.sign identity msg in
   let sig_b64 =
     Base64.encode_string ~pad:false ~alphabet:Base64.uri_safe_alphabet sig_
   in
   (ts, sig_b64)
 
-let make_upgrade_request ~ep ~alias ~ts ~sig_b64 ~ws_key =
+let make_upgrade_request ~ep ~alias ~ts ~sig_b64 ~ws_key ?nonce () =
+  let nonce_hdr =
+    match nonce with
+    | Some n when n <> "" -> "X-C2C-Nonce: " ^ n ^ "\r\n"
+    | _ -> ""
+  in
   Printf.sprintf
     "GET %s HTTP/1.1\r\n\
      Host: %s\r\n\
@@ -242,8 +255,9 @@ let make_upgrade_request ~ep ~alias ~ts ~sig_b64 ~ws_key =
      X-C2C-Alias: %s\r\n\
      X-C2C-Timestamp: %s\r\n\
      X-C2C-Signature: %s\r\n\
+     %s\
      \r\n"
-    ep.path (host_header ep) ws_key alias ts sig_b64
+    ep.path (host_header ep) ws_key alias ts sig_b64 nonce_hdr
 
 (** Read response headers until the blank line. Returns (name, value) pairs
     with names lowercased. *)
@@ -267,6 +281,66 @@ let read_headers ic =
   loop []
 
 let skip_headers ic = read_headers ic >>= fun _ -> Lwt.return_unit
+
+(* B340: best-effort pre-flight — fetch a server-issued challenge nonce from
+   /ws/subscribe-challenge on a throwaway connection (Connection: close).
+   None = challenge unavailable (older relay, transient failure, bad body);
+   the caller then falls back to the legacy handshake on a fresh connection.
+   Bounded by the caller's overall connect timeout. *)
+let fetch_challenge_nonce ~(ep : endpoint) ?ca_bundle () =
+  let open Lwt.Infix in
+  let nonce_of_body body =
+    match Yojson.Safe.from_string body with
+    | exception _ -> None
+    | json ->
+      (match Yojson.Safe.Util.(to_string_option (member "nonce" json)) with
+       | Some n when n <> "" -> Some n
+       | _ -> None)
+  in
+  let read_response ic =
+    Lwt_io.read_line ic >>= fun status_line ->
+    let is_200 =
+      String.length status_line >= 12
+      && String.sub status_line 0 12 = "HTTP/1.1 200"
+    in
+    if not is_200 then Lwt.return_none
+    else
+      read_headers ic >>= fun headers ->
+      let clen =
+        match header_get headers "content-length" with
+        | Some v -> (try int_of_string (String.trim v) with _ -> 0)
+        | None -> 0
+      in
+      if clen <= 0 || clen > 4096 then Lwt.return_none
+      else
+        Lwt_io.read ~count:clen ic >>= fun body ->
+        Lwt.return (nonce_of_body body)
+  in
+  let request_challenge (ic, oc, close) =
+    let req =
+      Printf.sprintf
+        "GET /ws/subscribe-challenge HTTP/1.1\r\n\
+         Host: %s\r\n\
+         Connection: close\r\n\
+         \r\n"
+        (host_header ep)
+    in
+    Lwt.finalize
+      (fun () ->
+         Lwt_io.write oc req >>= fun () ->
+         Lwt_io.flush oc >>= fun () ->
+         read_response ic)
+      (fun () -> close ())
+  in
+  Lwt.catch
+    (fun () ->
+       open_channels ?ca_bundle ep () >>= request_challenge)
+    (function
+      (* Cancellation (the caller's timeout fired) must propagate — falling
+         back here would leave a zombie connection sequence running after
+         connect_subscribe already failed. *)
+      | Lwt.Canceled -> Lwt.fail Lwt.Canceled
+      | _ -> Lwt.return_none)
 
 let timeout_error ~timeout ~(endpoint : endpoint) =
   Failure
@@ -303,16 +377,24 @@ let connect_subscribe ~(endpoint : endpoint) ~alias ~identity ?ca_bundle
        Lwt_unix.with_timeout timeout (fun () ->
          Lwt.finalize
            (fun () ->
+              (* B340: challenge pre-flight — a nonce here upgrades the
+                 handshake to the single-use signed form; None falls back to
+                 the legacy alias||ts signature (older relay). The
+                 throwaway challenge connection is closed before the
+                 upgrade connection is opened. *)
+              fetch_challenge_nonce ~ep:endpoint ?ca_bundle ()
+              >>= fun nonce ->
               open_channels endpoint ?ca_bundle ~on_close:set_close ()
               >>= fun (ic, oc, close) ->
               set_close close;
-              let ts, sig_b64 = auth_headers ~alias ~identity in
+              let ts, sig_b64 = auth_headers ~nonce ~alias ~identity in
               let ws_key =
                 Base64.encode_string
                   (String.init 16 (fun _ -> Char.chr (Random.int 256)))
               in
               let request =
                 make_upgrade_request ~ep:endpoint ~alias ~ts ~sig_b64 ~ws_key
+                  ?nonce ()
               in
               Lwt_io.write oc request >>= fun () ->
               Lwt_io.flush oc >>= fun () ->

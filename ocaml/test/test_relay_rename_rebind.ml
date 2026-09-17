@@ -281,6 +281,62 @@ let test_unreachable_relay_surfaces_next_step () =
           check bool "error non-empty" true
             (String.trim (json_str "error" j) <> "")))
 
+(* B303: a relay parked by `c2c relay disable` (enabled:false in relay.json)
+   must NOT be phoned by rename. The local resolver ignored enabled:false
+   and returned the parked URL, so `c2c rename` POSTed a signed /register
+   to a relay the operator turned off and reported relay_rebind: ok-ish
+   error output instead of skipped. Pinned by: (a) the resolver returns no
+   URL for a parked config, (b) rebind reports skipped with a reason naming
+   the disabled config, and (c) no connection attempt is even prepared —
+   the rebind path creates key material only when it proceeds, so the
+   identity file must still be absent afterwards. The parked URL points at
+   a closed loopback port: under the old resolver the register attempt
+   fails fast (status=error + identity created), under the fixed one
+   nothing is attempted. *)
+let test_disabled_relay_json_is_not_phoned () =
+  with_env_cleared
+    [ "C2C_RELAY_URL"; "C2C_RELAY_CONFIG"; "C2C_MCP_BROKER_ROOT"; "C2C_RELAY_TOKEN" ]
+    (fun () ->
+      with_temp_dir (fun home ->
+          let prev_home = Sys.getenv_opt "HOME" in
+          Unix.putenv "HOME" home;
+          Fun.protect
+            ~finally:(fun () ->
+              match prev_home with
+              | Some h -> Unix.putenv "HOME" h
+              | None -> Unix.putenv "HOME" "")
+            (fun () ->
+              let cfg_dir = Filename.concat home ".config/c2c" in
+              Unix.mkdir (Filename.concat home ".config") 0o700;
+              Unix.mkdir cfg_dir 0o700;
+              let cfg = Filename.concat cfg_dir "relay.json" in
+              let oc = open_out cfg in
+              output_string oc
+                {|{"url":"http://127.0.0.1:1","enabled":false}|};
+              close_out oc;
+              let id_path = Filename.concat home "identity.json" in
+              with_identity_path id_path (fun () ->
+                  check (option string) "parked relay resolves to no URL" None
+                    (Relay_rename_rebind.resolve_relay_url ());
+                  let j =
+                    Relay_rename_rebind.rebind_sync ~old_alias:"b303-old"
+                      ~new_alias:"b303-new" ()
+                  in
+                  check string "status skipped" "skipped" (json_status j);
+                  check bool "reason names the disabled config" true
+                    (let reason = json_str "reason" j in
+                     let rec contains h n =
+                       String.length h >= String.length n
+                       && (String.sub h 0 (String.length n) = n
+                          ||
+                          (String.length h > String.length n
+                           && contains (String.sub h 1
+                                (String.length h - 1)) n))
+                     in
+                     contains reason "disabled");
+                  check bool "no register attempt (identity never created)"
+                    false (Sys.file_exists id_path)))))
+
 let () =
   Random.self_init ();
   Alcotest.run "relay_rename_rebind"
@@ -296,5 +352,9 @@ let () =
             test_rename_then_rebind_end_to_end
         ; test_case "unreachable relay surfaces next_step" `Quick
             test_unreachable_relay_surfaces_next_step
+        ] )
+    ; ( "b303 disabled relay"
+      , [ test_case "rename does not phone a relay parked by disable" `Quick
+            test_disabled_relay_json_is_not_phoned
         ] )
     ]

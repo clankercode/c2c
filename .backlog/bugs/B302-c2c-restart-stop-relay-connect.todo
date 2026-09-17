@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:21:57Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T18:11:05Z"
 complexity: medium
 created_at: "2026-09-17T07:53:33Z"
 depends_on: []
+duration_minutes: 169.1470109737
 estimate_hours: 1
 id: B302
 priority: critical
 started_at: "2026-09-17T15:21:57Z"
-status: in_progress
+status: done
 tags: []
 title: c2c restart/stop relay-connect fights the systemd unit into an infinite restart loop; stop does not stick (B296 follow-up)
-updated_at: "2026-09-17T15:21:57Z"
+updated_at: "2026-09-17T18:11:05Z"
 ---
 
 # c2c restart/stop relay-connect fights the systemd unit into an infinite restart loop; stop does not stick (B296 follow-up)
@@ -47,3 +48,5 @@ stop/restart (and doctor remediation) detect unit ownership (systemctl --user is
 
 - .worktrees cleanup happened after; journal captured: "17:47:27 error: a machine-wide relay connector is already running" xN, NRestarts=63.
 - Review finding (explore agent) + live audit 2026-09-17.
+
+Lane plan 2026-09-18 (bl-fix-many B302-340): 3 serial lanes by file overlap. SERVER lane .worktrees/b302-340-srv: [B328,329,334,335,336] then [B331,330,332,333] then [B338,337,339,340] — all relay.ml-family. CONNECTOR lane .worktrees/b302-340-con: [B305,306,317] then [B307,314,315,321] then [B316,319,320,322,323,324] then [B313,308] then [B318,325] — c2c_relay_connector.ml family. CLI lane .worktrees/b302-340-cli: [B302] then [B304,310,312] then [B309,311,326,303,327] — c2c_relay_cmd/managed/systemd/start files. Parallel across lanes, serial within; merges to master per lane at lane end; scope split: B302 = stop/restart systemd-awareness behavior only, B304 = doctor remediation strings.
