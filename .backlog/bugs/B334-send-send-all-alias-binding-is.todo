@@ -1,0 +1,26 @@
+---
+complexity: low
+created_at: "2026-09-17T07:59:36Z"
+depends_on: []
+estimate_hours: 1
+id: B334
+priority: medium
+status: pending
+tags: []
+title: send/send_all alias binding is case-sensitive while heartbeat/register compares are case-insensitive
+updated_at: "2026-09-17T07:59:36Z"
+---
+
+# send/send_all alias binding is case-sensitive while heartbeat/register compares are case-insensitive
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
