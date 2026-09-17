@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:56:10Z"
 depends_on: []
 estimate_hours: 1
 id: B306
 priority: high
+started_at: null
 status: pending
 tags: []
 title: append_to_local_inbox bypasses the broker per-inbox lock — inbound relay DMs duplicated or silently lost
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Inbound relay DMs can be duplicated or silently lost. C2c_relay_connector.append_to_local_inbox (c2c_relay_connector.ml:909-927) does an unlocked read-merge-tmp-rename on <sid>.inbox.json while every broker drain path runs under with_inbox_lock (c2c_broker.ml:2215; drain_inbox at 3497, drain_inbox_push, drain_inbox_matching). (a) connector reads [X] -> MCP poll_inbox drains (archives X, saves empty) -> connector writes [X @ new] -> X re-delivered and re-archived. (b) broker load_inbox reads [X] -> connector appends Y -> broker saves empty -> Y silently lost, and the relay poll is destructive so Y is gone - unrecoverable for --ephemeral rows. Millisecond window recurring every interval per registered session.
+
+## Fix direction
+
+Acquire the same <sid>.inbox.json.lock sidecar (fcntl lockf, matching with_inbox_lock) around the merge, or hand inbound rows to a Broker API that already holds it.
+
+## Evidence
+
+Connector review 2026-09-17; verified in source by coordinator (no lock in append_to_local_inbox).
