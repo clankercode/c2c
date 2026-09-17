@@ -1,0 +1,26 @@
+---
+complexity: low
+created_at: "2026-09-17T07:59:37Z"
+depends_on: []
+estimate_hours: 1
+id: B338
+priority: low
+status: pending
+tags: []
+title: dev-mode (unsigned) heartbeat missing-lease returns 200 unknown_alias, not 404 lease_not_found - connector repair never triggers on dev relays
+updated_at: "2026-09-17T07:59:37Z"
+---
+
+# dev-mode (unsigned) heartbeat missing-lease returns 200 unknown_alias, not 404 lease_not_found - connector repair never triggers on dev relays
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior

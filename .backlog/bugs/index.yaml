@@ -334,3 +334,4 @@ bugs:
     - file: B335-every-non-ok-register-result-s.todo
     - file: B336-nonces-burned-before-signature.todo
     - file: B337-room-system-messages-and-dm-de.todo
+    - file: B338-dev-mode-unsigned-heartbeat-mi.todo
