@@ -3517,6 +3517,10 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
   let rec loop () =
     if !shutdown then () else (
       let pass_started_at = Unix.gettimeofday () in
+      (* B315: the state writers open files under the broker root; a root
+         deleted or made unwritable mid-service must degrade to a logged skip,
+         not an unhandled Sys_error crash-looping through the supervisor. *)
+      (try
       (match sync_once shutdown t with
        | Ok result ->
            watchdog_strikes := 0;
@@ -3594,7 +3598,18 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
            write_connector_state_error t.broker_root ~op:"sync"
              ~detail:(Printexc.to_string exn);
            Printf.eprintf "[relay-connector] sync exception: %s\n%!"
-             (Printexc.to_string exn));
+             (Printexc.to_string exn))
+       with
+       | Sys_error msg ->
+           Printf.eprintf
+             "[relay-connector] broker root %s unusable (%s) — skipping \
+              state writes this pass (B315)\n%!" t.broker_root msg
+       | Unix.Unix_error (code, fn, arg) ->
+           Printf.eprintf
+             "[relay-connector] broker root %s unusable (%s on %s: %s) — \
+              skipping state writes this pass (B315)\n%!"
+             t.broker_root (Unix.error_message code) fn
+             (String.escaped arg));
       (* B307: feed the observed pass work to the alarm deadline, so the next
          pass's watchdog scales with what a pass actually costs here. *)
       t.last_pass_s <- Unix.gettimeofday () -. pass_started_at;
@@ -3844,6 +3859,30 @@ let start_machine_impl ~sync_once ~discover_roots
     let rl_seen = ref false in
     let rl_retry_after = ref 0. in
     let sync_root root =
+      (* B315: a broker root deleted or made unwritable mid-service used to
+         crash the whole connector with an unhandled Sys_error — the noop
+         branch tolerates a missing dir for READS, but the state writers do
+         bare open_out under the root, and discover_machine_broker_roots
+         always conses the primary, so a deleted PRIMARY repo dir was a
+         permanent crash loop. Skip the root for this pass (a restored dir
+         auto-heals; recording a cooldown would resurrect the B292 crash loop
+         for a dir that no longer exists) and keep the other roots running.
+         broker.log lives UNDER the root, so no broker-log event can record
+         this — stderr is the channel that survives. *)
+      let root_gone () =
+        match Sys.is_directory root with
+        | true -> false
+        | false -> true
+        | exception _ -> true
+      in
+      if root_gone () then begin
+        Printf.eprintf
+          "[relay-connector %s] broker root is gone — skipping it this pass; \
+           other roots continue, no cooldown recorded (B315)\n%!" root;
+        false
+      end
+      else
+        try
       if machine_root_sync_is_noop root then begin
         (* B291: zero eligible registrations, empty outbox, no WS bindings —
            a full sync here would make ZERO relay calls and only pay local
@@ -3913,6 +3952,18 @@ let start_machine_impl ~sync_once ~discover_roots
       check_root_stale_exit root;
       outcome
       end
+      with
+      | Sys_error msg ->
+          Printf.eprintf
+            "[relay-connector %s] broker root unusable (%s) — skipping it \
+             this pass; other roots continue (B315)\n%!" root msg;
+          false
+      | Unix.Unix_error (code, fn, arg) ->
+          Printf.eprintf
+            "[relay-connector %s] broker root unusable (%s on %s: %s) — \
+             skipping it this pass; other roots continue (B315)\n%!"
+            root (Unix.error_message code) fn arg;
+          false
     in
     (* B292: exit 3 is reserved for the machine-wide wedge — every discovered
        root parked in cooldown at once means there is nothing left to sync
