@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:04Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T20:20:55Z"
 complexity: medium
 created_at: "2026-09-17T07:56:10Z"
 depends_on: []
+duration_minutes: 298.8545031864
 estimate_hours: 1
 id: B305
 priority: high
 started_at: "2026-09-17T15:22:04Z"
-status: in_progress
+status: done
 tags: []
 title: 'outbox TOCTOU: write_outbox runs outside the lock and append_outbox_entry never locks — remote DMs silently deleted'
-updated_at: "2026-09-17T15:22:04Z"
+updated_at: "2026-09-17T20:20:55Z"
 ---
 
 # outbox TOCTOU: write_outbox runs outside the lock and append_outbox_entry never locks — remote DMs silently deleted
