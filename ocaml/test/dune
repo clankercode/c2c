@@ -401,7 +401,7 @@
 (test
  (name test_c2c_relay_connector)
  (modules test_c2c_relay_connector)
- (libraries c2c_mcp alcotest yojson unix))
+ (libraries c2c_mcp relay_test_support alcotest yojson unix lwt.unix))
 
 (test
  (name test_c2c_relay_alert)

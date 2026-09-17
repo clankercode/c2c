@@ -1070,7 +1070,7 @@ let sync_result_with_sessions sessions : Conn.sync_result =
     alerts_emitted = 0;
     rate_limited = false;
     retry_after_s = None;
-    last_error = None }
+    last_error = None; errors = [] }
 
 (* Round-trip: write_connector_state persists [sessions]; read_connector_state
    recovers the alias -> session_id map (cs_sessions). *)
@@ -1114,7 +1114,8 @@ let test_connector_peek_key_uses_recorded_session_when_local_unresolved () =
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
       cs_inbound_rejected_note = None;
-      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0 }
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
+      cs_errors = [] }
   in
   (match
      Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1161,7 +1162,8 @@ let test_connector_peek_key_backward_compat_fallback () =
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
       cs_inbound_rejected_note = None;
-      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0 }
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
+      cs_errors = [] }
   in
   match
     Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1195,7 +1197,8 @@ let test_resolve_cli_dm_inbox_key_prefers_connector () =
       cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
       cs_inbound_delivered = 0; cs_inbound_rejected = 0;
       cs_inbound_rejected_note = None;
-      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0 }
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
+      cs_errors = [] }
   in
   let node_id, session_id =
     Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"
@@ -1298,12 +1301,12 @@ let test_response_is_rate_limited_shapes () =
                ; ("error_code", `String "connection_error") ]))
 
 (* B211: staleness-exit watchdog for the alive-but-erroring wedge. *)
-let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error ()
-  : Conn.sync_result =
+let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error
+    ?(errors = []) () : Conn.sync_result =
   { registered = []; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
     inbound_delivered = 0; inbound_rejected = 0; inbound_rejected_note = None;
-    alerts_emitted = 0; rate_limited; retry_after_s; last_error }
+    alerts_emitted = 0; rate_limited; retry_after_s; last_error; errors }
 
 let test_stale_exit_default_threshold () =
   (* B228: default = max(180, interval*6); 30s interval -> 180s, 60s -> 360s. *)
@@ -1415,7 +1418,7 @@ let test_register_failure_pass_is_no_progress () =
           ~last_error:{ Conn.err_op = "register";
                         err_detail =
                           "{\"ok\":false,\"error_code\":\"connection_error\"}";
-                        err_ts = 0.0 } ()))
+                        err_ts = 0.0; err_alias = None; err_session_id = None; err_code = None } (())))
 
 let test_sync_made_progress () =
   (* ok pass (no error) is progress; rate-limited pass is progress (relay up,
@@ -1427,12 +1430,13 @@ let test_sync_made_progress () =
        (mk_result ~rate_limited:true
           ~last_error:{ Conn.err_op = "poll_inbox";
                         err_detail = "rate_limit_exceeded";
-                        err_ts = 0.0 } ()));
+                        err_ts = 0.0; err_alias = None;
+                        err_session_id = None; err_code = None } ()));
   Alcotest.(check bool) "errored pass (request_timeout) is NOT progress" false
     (Conn.sync_made_progress
        (mk_result ~last_error:{ Conn.err_op = "poll_inbox";
                                 err_detail = "request_timeout";
-                                err_ts = 0.0 } ()))
+                                err_ts = 0.0; err_alias = None; err_session_id = None; err_code = None } (())))
 
 let waitpid_until ~timeout_s pid =
   let deadline = Unix.gettimeofday () +. timeout_s in
@@ -1623,7 +1627,8 @@ let test_machine_wedged_root_dropped_not_process () =
       Unix.putenv "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S" "0.4";
       let err =
         { Conn.err_op = "register"; err_detail = "connection_error";
-          err_ts = 0.0 }
+          err_ts = 0.0; err_alias = None; err_session_id = None;
+          err_code = None }
       in
       let sync_once _shutdown t =
         let byte = if t.Conn.broker_root = bad then "A" else "B" in
@@ -1669,7 +1674,8 @@ let test_machine_all_roots_wedged_exits_3 () =
       Unix.putenv "C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S" "0.4";
       let err =
         { Conn.err_op = "register"; err_detail = "connection_error";
-          err_ts = 0.0 }
+          err_ts = 0.0; err_alias = None; err_session_id = None;
+          err_code = None }
       in
       let sync_once _shutdown _t = Ok (mk_result ~last_error:err ()) in
       let code =
@@ -1779,6 +1785,202 @@ let test_machine_cooldown_survives_restart () =
       Unix.close call_r;
       Unix.kill pid Sys.sigterm;
       ignore (expect_machine_exit pid ~timeout_s:3.0 ~allowed_exit:0)
+
+(* --- B297: error logging must keep the alias and every distinct error ------ *)
+
+module RTS = Relay_test_support
+
+let test_error_detail_truncated_at_240 () =
+  (* The relay's error body puts the alias ~90 chars in; an 80-char cap cut
+     mid-alias on every line (12,593 lines, none naming the failing alias). *)
+  let short = String.make 100 'x' in
+  let long = String.make 300 'y' in
+  Alcotest.(check int) "at or under cap unchanged" 100
+    (String.length (Conn.truncate_error_detail short));
+  Alcotest.(check bool) "over cap: first 240 chars + ellipsis" true
+    (Conn.truncate_error_detail long = String.make 240 'y' ^ "...")
+
+let test_pass_errors_deduped_with_counts () =
+  let pe ?(op = "poll_inbox") ?(code = Some "signature_invalid")
+      ?(alias = Some "alpha") ?(session_id = Some "s1") ~detail () :
+      Conn.pass_error =
+    { Conn.pe_op = op; pe_code = code; pe_alias = alias;
+      pe_session_id = session_id; pe_detail = detail }
+  in
+  let errs =
+    [ pe ~detail:"d1" ();
+      pe ~detail:"d2" ();  (* same (op,code,alias): deduped, counted *)
+      pe ~alias:(Some "beta") ~detail:"d3" ();  (* distinct alias: own entry *)
+      pe ~op:"register" ~code:None ~alias:None ~session_id:None
+        ~detail:"d4" () ]
+  in
+  let last_error, summaries = Conn.summarize_pass_errors errs in
+  Alcotest.(check int) "3 distinct (op,code,alias) entries" 3
+    (List.length summaries);
+  (match List.find_opt (fun e -> e.Conn.es_alias = Some "alpha") summaries with
+   | Some e ->
+       Alcotest.(check int) "same-key errors counted" 2 e.Conn.es_count;
+       Alcotest.(check string) "detail kept from first occurrence" "d1"
+         e.Conn.es_detail
+   | None -> Alcotest.fail "alpha entry missing");
+  (match last_error with
+   | Some e ->
+       Alcotest.(check string) "last_error keeps the head error" "poll_inbox"
+         e.Conn.err_op;
+       Alcotest.(check bool) "last_error carries the alias" true
+         (e.Conn.err_alias = Some "alpha");
+       Alcotest.(check bool) "last_error carries the code" true
+         (e.Conn.err_code = Some "signature_invalid")
+   | None -> Alcotest.fail "last_error missing")
+
+let test_format_pass_errors_names_alias () =
+  let summary : Conn.sync_error_summary =
+    { Conn.es_op = "poll_inbox"; es_code = Some "signature_invalid";
+      es_alias = Some "grok-nomad"; es_session_id = Some "sess-1";
+      es_count = 2; es_detail = "{\"ok\":false}" }
+  in
+  let result = { (mk_result ()) with Conn.errors = [ summary ] } in
+  let lines = Conn.format_pass_errors result in
+  Alcotest.(check int) "one line per distinct error" 1 (List.length lines);
+  let line = List.hd lines in
+  Alcotest.(check bool) "line names the op" true (contains_sub ~needle:"op=poll_inbox" line);
+  Alcotest.(check bool) "line names the code" true
+    (contains_sub ~needle:"code=signature_invalid" line);
+  Alcotest.(check bool) "line names the alias explicitly" true
+    (contains_sub ~needle:"alias=grok-nomad" line);
+  Alcotest.(check bool) "line names the session" true
+    (contains_sub ~needle:"session=sess-1" line);
+  Alcotest.(check bool) "line carries the count" true
+    (contains_sub ~needle:"count=2" line)
+
+let test_connector_state_errors_roundtrip () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let summary : Conn.sync_error_summary =
+    { Conn.es_op = "heartbeat"; es_code = Some "signature_invalid";
+      es_alias = Some "alpha"; es_session_id = Some "s1";
+      es_count = 3; es_detail = "{\"ok\":false,\"error_code\":...}" }
+  in
+  let result =
+    { (mk_result ()) with
+      Conn.errors = [ summary ];
+      last_error = Some { Conn.err_op = "heartbeat";
+                          err_detail = "{\"ok\":false}";
+                          err_ts = 0.0; err_alias = Some "alpha";
+                          err_session_id = Some "s1";
+                          err_code = Some "signature_invalid" } }
+  in
+  Conn.write_connector_state ~node_id:"n1" tmp result;
+  (match Conn.read_connector_state tmp with
+   | Some st ->
+       (match st.Conn.cs_errors with
+        | [ e ] ->
+            Alcotest.(check string) "errors[0].op" "heartbeat" e.Conn.cse_op;
+            Alcotest.(check bool) "errors[0].code" true
+              (e.Conn.cse_code = Some "signature_invalid");
+            Alcotest.(check bool) "errors[0].alias" true
+              (e.Conn.cse_alias = Some "alpha");
+            Alcotest.(check int) "errors[0].count" 3 e.Conn.cse_count;
+            Alcotest.(check bool) "errors[0].detail present" true
+              (String.length e.Conn.cse_detail > 0)
+        | _ -> Alcotest.fail "expected exactly one errors entry")
+   | None -> Alcotest.fail "state missing after write");
+  (* Backward compat: an old state file without the errors key reads []. *)
+  let oc = open_out (Filename.concat tmp "connector-state.json") in
+  Yojson.Safe.to_channel oc
+    (`Assoc [ "last_sync_ts", `Float 1.0; "last_ok_ts", `Float 1.0 ]);
+  close_out oc;
+  (match Conn.read_connector_state tmp with
+   | Some st -> Alcotest.(check int) "old file: no errors" 0 (List.length st.Conn.cs_errors)
+   | None -> Alcotest.fail "old-shape state must still parse")
+
+let test_sync_collects_errors_with_alias_fields () =
+  (* Integration through the real [sync] against a scripted relay: each
+     failing op must land in [errors] with explicit alias/session fields
+     (B297: prefer explicit fields over the server's prose), deduplicated
+     per (op, code, alias). Runs in a forked child: the in-process
+     Lwt/cohttp server installs signal machinery that otherwise EINTRs the
+     suite's later fork/waitpid-based tests. *)
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      let exit_code =
+        try
+          let owner_mismatch =
+            {|{"ok":false,"error_code":"signature_invalid","error":"verified signer \"x\" does not own session (n, s)"}|}
+          and lease_gone =
+            {|{"ok":false,"error_code":"lease_not_found","error":"no live lease for session"}|}
+          and unknown_alias =
+            {|{"ok":false,"error_code":"unknown_alias","error":"no registration for alias \"dst\""}|}
+          and reg_ok = {|{"ok":true,"result":"ok"}|} in
+          let routes =
+            [ RTS.route ~meth:"POST" ~path:"/heartbeat"
+                [ RTS.response owner_mismatch ];
+              RTS.route ~meth:"POST" ~path:"/register" [ RTS.response reg_ok ];
+              RTS.route ~meth:"POST" ~path:"/poll_inbox"
+                [ RTS.response lease_gone ];
+              RTS.route ~meth:"POST" ~path:"/send"
+                [ RTS.response unknown_alias ] ]
+          in
+          RTS.with_server ~routes (fun srv ->
+              write_eligible_registry tmp;
+              let oc = open_out (Filename.concat tmp "remote-outbox.jsonl") in
+              output_string oc
+                "{\"from_alias\":\"out-sender\",\"to_alias\":\"dst\",\"content\":\"c\"}\n";
+              close_out oc;
+              let t =
+                Conn.make_state ~relay_url:(RTS.url srv) ~token:None
+                  ~identity:None ~broker_root:tmp ~node_id:"b297-test"
+                  ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false
+              in
+              t.Conn.registered <- [ "fixture-live" ];
+              let r = Lwt_main.run (Conn.sync t) in
+              let find_op op =
+                List.find_opt
+                  (fun (e : Conn.sync_error_summary) -> e.Conn.es_op = op)
+                  r.Conn.errors
+              in
+              (match find_op "heartbeat" with
+               | Some e ->
+                   if e.Conn.es_code <> Some "signature_invalid"
+                      || e.Conn.es_alias <> Some "fixture-alias"
+                      || e.Conn.es_session_id <> Some "fixture-live"
+                   then 21
+                   else
+                     (match find_op "poll_inbox" with
+                      | Some e ->
+                          if e.Conn.es_code <> Some "lease_not_found"
+                             || e.Conn.es_alias <> Some "fixture-alias"
+                          then 22
+                          else
+                            (match find_op "send" with
+                             | Some e ->
+                                 if e.Conn.es_alias <> Some "out-sender"
+                                    || e.Conn.es_code <> Some "unknown_alias"
+                                 then 23
+                                 else 0
+                             | None -> 24)
+                      | None -> 25)
+               | None -> 26))
+        with _ -> 27
+      in
+      Unix._exit exit_code
+  | pid ->
+      (match waitpid_until ~timeout_s:10.0 pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "sync errors missing expected fields (exit %d)" code
+       | Some status ->
+           Alcotest.failf "errors integration child died: %s"
+             (match status with
+              | Unix.WEXITED code -> Printf.sprintf "exit %d" code
+              | Unix.WSIGNALED signal -> Printf.sprintf "signal %d" signal
+              | Unix.WSTOPPED signal -> Printf.sprintf "stopped %d" signal)
+       | None ->
+           Unix.kill pid Sys.sigkill;
+           ignore (Unix.waitpid [] pid);
+           Alcotest.fail "errors integration child did not finish in 10s")
 
 let test_signal_bounds_blocked_sync ~machine ~signal_name signal () =
   let tmp = make_tmpdir () in
@@ -1898,7 +2100,8 @@ let test_run_loop_stale_exit_force_exits () =
       in
       let err =
         { Conn.err_op = "poll_inbox"; err_detail = "request_timeout";
-          err_ts = 0.0 }
+          err_ts = 0.0; err_alias = None; err_session_id = None;
+          err_code = None }
       in
       let sync_once _shutdown _t =
         Ok (mk_result ~last_error:err ())
@@ -1925,7 +2128,7 @@ let test_touch_connector_last_sync_preserves_last_ok () =
       outbox_forwarded = 1; outbox_failed = 0; outbox_dlqed = 0;
       inbound_delivered = 2; inbound_rejected = 0; inbound_rejected_note = None;
       alerts_emitted = 0; rate_limited = false; retry_after_s = None;
-      last_error = None }
+      last_error = None; errors = [] }
   in
   Conn.write_connector_state ~node_id:"n1" tmp ok_result;
   let before =
@@ -2078,7 +2281,8 @@ let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
     | [] -> None
     | (op, detail) :: _ ->
         Some { Conn.err_op = op; err_detail = detail;
-               err_ts = Unix.gettimeofday () }
+               err_ts = Unix.gettimeofday (); err_alias = None;
+               err_session_id = None; err_code = None }
   in
   { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
@@ -2089,7 +2293,7 @@ let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
        | [] -> None
        | notes -> Some (String.concat "; " notes));
     alerts_emitted = 0;
-    rate_limited = false; retry_after_s = None; last_error }
+    rate_limited = false; retry_after_s = None; last_error; errors = [] }
 
 let health_of_result result =
   let tmp = make_tmpdir () in
@@ -2294,6 +2498,18 @@ let () =
         `Quick test_machine_watchdog_strikes_wedge_not_exit;
       Alcotest.test_case "cooldown survives process restart" `Quick
         test_machine_cooldown_survives_restart;
+    ];
+    "B297 per-error logging", [
+      Alcotest.test_case "err_detail cap is 240" `Quick
+        test_error_detail_truncated_at_240;
+      Alcotest.test_case "pass errors deduped with counts" `Quick
+        test_pass_errors_deduped_with_counts;
+      Alcotest.test_case "log line names op/code/alias/session/count" `Quick
+        test_format_pass_errors_names_alias;
+      Alcotest.test_case "connector-state errors array round-trips" `Quick
+        test_connector_state_errors_roundtrip;
+      Alcotest.test_case "sync collects errors with alias fields" `Quick
+        test_sync_collects_errors_with_alias_fields;
     ];
     "B217 bounded SIGTERM shutdown", [
       Alcotest.test_case "bare connector SIGTERM" `Quick

@@ -41,6 +41,35 @@ type sync_error = {
   err_op : string;
   err_detail : string;
   err_ts : float;
+  (* B297: explicit identity fields for the failing op. The relay's error
+     prose buries the alias ~90 chars in ("verified signer \"<alias>\" does
+     not own session..."), so an 80-char detail cap cut mid-alias on every
+     logged line. Callers that know the alias/session record them directly. *)
+  err_alias : string option;
+  err_session_id : string option;
+  err_code : string option;
+}
+
+(* B297: one error observation inside a sync pass, before deduplication.
+   Alias/session are known at the register/heartbeat/poll call sites; the
+   outbox send arm knows only the sender alias. *)
+type pass_error = {
+  pe_op : string;
+  pe_code : string option;
+  pe_alias : string option;
+  pe_session_id : string option;
+  pe_detail : string;
+}
+
+(* B297: a pass's errors deduplicated per (op, code, alias) with a count.
+   Drives the per-pass log lines and the connector-state errors array. *)
+type sync_error_summary = {
+  es_op : string;
+  es_code : string option;
+  es_alias : string option;
+  es_session_id : string option;
+  es_count : int;
+  es_detail : string;
 }
 
 type sync_result = {
@@ -75,6 +104,9 @@ type sync_result = {
      refill instead of being re-hit every base interval. *)
   retry_after_s : float option;
   last_error : sync_error option;
+  (* B297: every DISTINCT error this pass (deduplicated per (op, code,
+     alias), with counts), where [last_error] keeps only the first one. *)
+  errors : sync_error_summary list;
 }
 
 (* B196: relay ingress is untrusted.  These limits are enforced locally,
@@ -1210,6 +1242,16 @@ let classify_error json =
 
 let connector_state_path broker_root = broker_root // "connector-state.json"
 
+(* B297: one entry of the connector-state errors array. *)
+type connector_state_error = {
+  cse_op : string;
+  cse_code : string option;
+  cse_alias : string option;
+  cse_session_id : string option;
+  cse_count : int;
+  cse_detail : string;
+}
+
 type connector_state = {
   cs_last_sync_ts : float;
   cs_last_ok_ts : float;
@@ -1240,6 +1282,9 @@ type connector_state = {
   cs_wedged_since : float option;
   cs_wedge_reason : string option;
   cs_wedge_count : int;
+  (* B297: last sync's errors, deduplicated per (op, code, alias) with
+     counts — [cs_last_error_*] keeps only the first. Additive/optional. *)
+  cs_errors : connector_state_error list;
 }
 
 let write_connector_state ?node_id broker_root (result : sync_result) =
@@ -1313,6 +1358,22 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
     ; ("wedged_since", `Null)
     ; ("wedge_reason", `Null)
     ; ("wedge_count", `Int 0)
+    ; ("errors", `List
+          (List.map (fun (e : sync_error_summary) ->
+               `Assoc
+                 ([ ("op", `String e.es_op)
+                  ; ("count", `Int e.es_count)
+                  ; ("detail", `String e.es_detail) ]
+                  @ (match e.es_code with
+                     | Some c -> [ ("code", `String c) ]
+                     | None -> [])
+                  @ (match e.es_alias with
+                     | Some a -> [ ("alias", `String a) ]
+                     | None -> [])
+                  @ (match e.es_session_id with
+                     | Some s -> [ ("session_id", `String s) ]
+                     | None -> [])))
+             result.errors))
     ] @ rl_assoc @ node_id_assoc @ sessions_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
@@ -1346,6 +1407,26 @@ let read_connector_state broker_root : connector_state option =
         | `Int i -> i
         | _ -> 0
       in
+      (* B297: additive/optional errors array (absent in older files). *)
+      let errors = match json |> member "errors" with
+        | `List entries ->
+            List.filter_map
+              (function
+                | `Assoc fields ->
+                    let f k = List.assoc_opt k fields in
+                    let str k = match f k with Some (`String s) -> s | _ -> "" in
+                    let opt k = match f k with Some (`String s) -> Some s | _ -> None in
+                    let int k = match f k with Some (`Int i) -> i | _ -> 0 in
+                    if str "op" = "" then None
+                    else
+                      Some { cse_op = str "op"; cse_code = opt "code";
+                             cse_alias = opt "alias";
+                             cse_session_id = opt "session_id";
+                             cse_count = int "count"; cse_detail = str "detail" }
+                | _ -> None)
+              entries
+        | _ -> []
+      in
       let registered = match json |> member "registered" with
         | `List xs -> List.filter_map (function `String s -> Some s | _ -> None) xs
         | _ -> []
@@ -1377,6 +1458,7 @@ let read_connector_state broker_root : connector_state option =
         cs_wedged_since = get_float "wedged_since";
         cs_wedge_reason = get_str "wedge_reason";
         cs_wedge_count = wedge_count;
+        cs_errors = errors;
       }
 
 (** B209: the authoritative relay peek key for a connector-managed [alias].
@@ -2030,6 +2112,69 @@ let response_error_code json =
 let response_is_lease_not_found json =
   response_error_code json = Some "lease_not_found"
 
+(* B297: 240 fits the relay's error body far enough to include the
+   error_code plus the alias/session identifiers in the prose; the old
+   80-char cap cut mid-alias on every line. *)
+let error_detail_cap = 240
+
+let truncate_error_detail detail =
+  if String.length detail > error_detail_cap then
+    String.sub detail 0 error_detail_cap ^ "..."
+  else detail
+
+(* B297: collapse a pass's error observations into (summary error,
+   deduplicated entries). Dedup key is (op, code, alias); first occurrence
+   order is preserved and the count aggregates repeats, so a pass where
+   register, send and poll all failed reports all of them instead of only
+   the one [last_error] keeps. *)
+let summarize_pass_errors (errs : pass_error list) :
+    sync_error option * sync_error_summary list =
+  let same_key (s : sync_error_summary) (e : pass_error) =
+    s.es_op = e.pe_op && s.es_code = e.pe_code && s.es_alias = e.pe_alias
+  in
+  let entries =
+    List.fold_left
+      (fun acc (e : pass_error) ->
+         let matches, others = List.partition (fun s -> same_key s e) acc in
+         let total =
+           1 + List.fold_left (fun n (s : sync_error_summary) -> n + s.es_count) 0 matches
+         in
+         let base = match matches with
+           | s :: _ -> s
+           | [] ->
+               { es_op = e.pe_op; es_code = e.pe_code; es_alias = e.pe_alias;
+                 es_session_id = e.pe_session_id; es_count = 0;
+                 es_detail = truncate_error_detail e.pe_detail }
+         in
+         others @ [ { base with es_count = total } ])
+      [] errs
+  in
+  let last_error = match errs with
+    | [] -> None
+    | e :: _ ->
+        Some { err_op = e.pe_op; err_detail = e.pe_detail;
+               err_ts = Unix.gettimeofday ();
+               err_alias = e.pe_alias; err_session_id = e.pe_session_id;
+               err_code = e.pe_code }
+  in
+  (last_error, entries)
+
+(* B297: one log line per distinct (op, code, alias) error, with explicit
+   alias/session fields instead of relying on the server's prose. *)
+let format_pass_errors ?(prefix = "[relay-connector]") (result : sync_result) :
+    string list =
+  List.map
+    (fun (e : sync_error_summary) ->
+       Printf.sprintf "%s error: op=%s%s%s%s count=%d detail=%s"
+         prefix e.es_op
+         (match e.es_code with Some c -> " code=" ^ c | None -> "")
+         (match e.es_alias with Some a -> " alias=" ^ a | None -> "")
+         (match e.es_session_id with Some s -> " session=" ^ s | None -> "")
+         e.es_count
+         (truncate_error_detail e.es_detail))
+    result.errors
+
+
 let response_is_owner_mismatch json =
   response_error_code json = Some "signature_invalid"
   && (match member_or_null "error" json with
@@ -2452,6 +2597,11 @@ let sync (t : t) : sync_result Lwt.t =
      this intersection, a process that dies after the first pass is still
      heartbeated and polled forever even though it disappeared from [regs]. *)
   t.registered <- retain_eligible_registered regs t.registered;
+  (* B297: errors carry explicit alias/session/code (see [pass_error]). *)
+  let mk_reg_err ?code op ~alias ~session_id detail : pass_error =
+    { pe_op = op; pe_code = code; pe_alias = Some alias;
+      pe_session_id = Some session_id; pe_detail = detail }
+  in
   let registered, heartbeated, new_registered, reg_errors =
     List.fold_left (fun (registered, heartbeated, reg_list, errs) (session_id, alias, client_type) ->
       if !abort_on_rate_limit then
@@ -2478,7 +2628,11 @@ let sync (t : t) : sync_result Lwt.t =
             (alias :: registered, heartbeated, reg_list, errs)
           else
             let detail = Yojson.Safe.to_string reg in
-            (registered, heartbeated, reg_list, ("register", detail) :: errs)
+            ( registered
+            , heartbeated
+            , reg_list
+            , mk_reg_err ?code:(response_error_code reg) "register"
+                ~alias ~session_id detail :: errs )
         end
         else if response_is_owner_mismatch json then begin
           owner_mismatched_pass := session_id :: !owner_mismatched_pass;
@@ -2494,14 +2648,23 @@ let sync (t : t) : sync_result Lwt.t =
             ( registered
             , heartbeated
             , List.filter (fun s -> s <> session_id) reg_list
-            , ("heartbeat", detail) :: errs )
+            , mk_reg_err ?code:(response_error_code json) "heartbeat"
+                ~alias ~session_id detail :: errs )
           end
           else
-            (registered, heartbeated, reg_list, ("heartbeat", detail) :: errs)
+            ( registered
+            , heartbeated
+            , reg_list
+            , mk_reg_err ?code:(response_error_code json) "heartbeat"
+                ~alias ~session_id detail :: errs )
         end
         else
           let detail = Yojson.Safe.to_string json in
-          (registered, heartbeated, reg_list, ("heartbeat", detail) :: errs)
+          ( registered
+          , heartbeated
+          , reg_list
+          , mk_reg_err ?code:(response_error_code json) "heartbeat"
+              ~alias ~session_id detail :: errs )
       else
         let json = Lwt_main.run (Relay_client.register client
           ~node_id:t.node_id ~session_id ~alias ~client_type ~ttl:t.heartbeat_ttl ()) in
@@ -2510,7 +2673,11 @@ let sync (t : t) : sync_result Lwt.t =
           (alias :: registered, heartbeated, session_id :: reg_list, errs)
         else
           let detail = Yojson.Safe.to_string json in
-          (registered, heartbeated, reg_list, ("register", detail) :: errs)
+          ( registered
+          , heartbeated
+          , reg_list
+          , mk_reg_err ?code:(response_error_code json) "register"
+              ~alias ~session_id detail :: errs )
     ) ([], [], t.registered, []) regs
   in
   t.registered <- new_registered;
@@ -2523,6 +2690,12 @@ let sync (t : t) : sync_result Lwt.t =
   let outbox_forwarded, outbox_failed, remaining_outbox, dlqed, send_errors =
     with_outbox_lock t.broker_root (fun () ->
       let outbox = read_outbox t.broker_root in
+      (* B297: the send arm knows the sender alias even though the relay's
+         /send does not require the sender's lease. *)
+      let mk_send_err ?code ~from detail : pass_error =
+        { pe_op = "send"; pe_code = code; pe_alias = Some from;
+          pe_session_id = None; pe_detail = detail }
+      in
       List.fold_left (fun (fwd, failed, remaining, dlqed, errs) entry ->
         if !abort_on_rate_limit then
           (* Keep the entry for the next pass; do not burn attempts on 429. *)
@@ -2540,7 +2713,9 @@ let sync (t : t) : sync_result Lwt.t =
           (* B244: rate-limit is not a permanent/attempt failure — keep the
              entry unchanged so we do not burn attempt budget while throttled. *)
           (fwd, failed, entry :: remaining, dlqed,
-           ("send", "rate_limit_exceeded: " ^ Yojson.Safe.to_string json) :: errs)
+           mk_send_err ~from:entry.ob_from
+             ?code:(response_error_code json)
+             ("rate_limit_exceeded: " ^ Yojson.Safe.to_string json) :: errs)
         else
           let err_class = classify_error json in
           let now = Unix.gettimeofday () in
@@ -2557,17 +2732,23 @@ let sync (t : t) : sync_result Lwt.t =
             (* Permanent error: immediate DLQ *)
             let () = append_dlq_entry t.broker_root entry ~reason:err_class in
             let () = note_dlq err_class in
-            (fwd, failed + 1, remaining, dlqed + 1, ("send", err_class ^ ": " ^ detail) :: errs)
+            (fwd, failed + 1, remaining, dlqed + 1,
+             mk_send_err ~from:entry.ob_from ?code:(response_error_code json)
+               (err_class ^ ": " ^ detail) :: errs)
           else if over_attempts || too_old then
             (* Backstop reached: DLQ *)
             let dlq_reason = if over_attempts then "max_attempts" else "max_age" in
             let () = append_dlq_entry t.broker_root { entry with ob_last_error = Some err_class } ~reason:dlq_reason in
             let () = note_dlq dlq_reason in
-            (fwd, failed + 1, remaining, dlqed + 1, ("send", dlq_reason ^ ": " ^ detail) :: errs)
+            (fwd, failed + 1, remaining, dlqed + 1,
+             mk_send_err ~from:entry.ob_from ?code:(response_error_code json)
+               (dlq_reason ^ ": " ^ detail) :: errs)
           else
             (* Retry: increment attempts, update last_error, keep in outbox *)
             let updated = { entry with ob_attempts = entry.ob_attempts + 1; ob_last_error = Some err_class } in
-            (fwd, failed + 1, updated :: remaining, dlqed, ("send", err_class ^ ": " ^ detail) :: errs)
+            (fwd, failed + 1, updated :: remaining, dlqed,
+             mk_send_err ~from:entry.ob_from ?code:(response_error_code json)
+               (err_class ^ ": " ^ detail) :: errs)
         end
       ) (0, 0, [], 0, []) outbox
     )
@@ -2581,10 +2762,13 @@ let sync (t : t) : sync_result Lwt.t =
      the local inbox. Partial-batch delivery: valid rows in a batch with
      invalid siblings still deliver. B244: skip remaining polls once the
      pass is already rate-limited. *)
-  let initial_poll_errors =
+  let initial_poll_errors : pass_error list =
     match inbound_policy with
     | Ok _ -> []
-    | Error detail -> [ ("inbound_policy", detail ^ "; inbound delivery denied") ]
+    | Error detail ->
+        [ { pe_op = "inbound_policy"; pe_code = None; pe_alias = None;
+            pe_session_id = None;
+            pe_detail = detail ^ "; inbound delivery denied" } ]
   in
   let inbound_delivered, inbound_rejected, inbound_notes, poll_errors =
     List.fold_left (fun (delivered, rejected, notes, errs) (session_id, alias, _) ->
@@ -2604,7 +2788,14 @@ let sync (t : t) : sync_result Lwt.t =
             classify_poll_outcome ~alias ~polled:(List.length msgs)
               ~rate_state_error rejection_reasons
           in
-          let errs = List.rev_append acc.pa_errors errs in
+          let errs =
+            List.rev_append
+              (List.map (fun (op, detail) : pass_error ->
+                   { pe_op = op; pe_code = None; pe_alias = Some alias;
+                     pe_session_id = Some session_id; pe_detail = detail })
+                  acc.pa_errors)
+              errs
+          in
           let notes = match acc.pa_note with
             | None -> notes
             | Some note -> note :: notes
@@ -2636,7 +2827,9 @@ let sync (t : t) : sync_result Lwt.t =
           dropped_in_pass := session_id :: !dropped_in_pass;
           t.registered <- List.filter (fun s -> s <> session_id) t.registered;
           let detail = Yojson.Safe.to_string json in
-          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+              ~alias ~session_id detail in
+          delivered, rejected, notes, mk :: errs
         end
         else if response_is_owner_mismatch json then begin
           owner_mismatched_pass := session_id :: !owner_mismatched_pass;
@@ -2649,11 +2842,15 @@ let sync (t : t) : sync_result Lwt.t =
             t.registered <- List.filter (fun s -> s <> session_id) t.registered
           end;
           let detail = Yojson.Safe.to_string json in
-          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+              ~alias ~session_id detail in
+          delivered, rejected, notes, mk :: errs
         end
         else
           let detail = Yojson.Safe.to_string json in
-          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+              ~alias ~session_id detail in
+          delivered, rejected, notes, mk :: errs
       else
         delivered, rejected, notes, errs
     ) (0, 0, [], initial_poll_errors) regs
@@ -2678,10 +2875,10 @@ let sync (t : t) : sync_result Lwt.t =
     List.filter (fun (sid, _) -> List.mem sid !owner_mismatched_pass)
       t.owner_mismatch_strikes;
 
-  let last_error = match reg_errors @ send_errors @ poll_errors with
-    | [] -> None
-    | (op, detail) :: _ ->
-        Some { err_op = op; err_detail = detail; err_ts = Unix.gettimeofday () }
+  (* B297: keep [last_error] as the single summary (connector-state and the
+     sync line), but ALSO carry every distinct error with counts. *)
+  let last_error, pass_error_summaries =
+    summarize_pass_errors (reg_errors @ send_errors @ poll_errors)
   in
 
   (* #62: keeping drops out of [last_error] must not lose them. They stay
@@ -2768,6 +2965,7 @@ let sync (t : t) : sync_result Lwt.t =
     rate_limited = !obs_rate_limited;
     retry_after_s = !obs_retry_after;
     last_error;
+    errors = pass_error_summaries;
   }
 
 (* ---------------------------------------------------------------------------
@@ -3036,9 +3234,7 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              | None -> ""
              | Some e ->
                  Printf.sprintf " [%s: %s]" e.err_op
-                   (if String.length e.err_detail > 80 then
-                     String.sub e.err_detail 0 80 ^ "..."
-                   else e.err_detail)
+                   (truncate_error_detail e.err_detail)
            in
            let rl_tag =
              if result.rate_limited then
@@ -3067,6 +3263,10 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
              err_str
              drop_tag
              rl_tag;
+           (* B297: one line per distinct (op, code, alias) error this pass. *)
+           List.iter
+             (fun line -> Printf.eprintf "%s\n%!" line)
+             (format_pass_errors result);
            if result.rate_limited then
              Printf.eprintf
                "[relay-connector] RATE_LIMITED (HTTP 429) this sync — remaining \
@@ -3160,10 +3360,7 @@ let print_sync_result ?broker_root result =
   let err_str = match result.last_error with
     | None -> ""
     | Some e ->
-        Printf.sprintf " [%s: %s]" e.err_op
-          (if String.length e.err_detail > 80 then
-             String.sub e.err_detail 0 80 ^ "..."
-           else e.err_detail)
+        Printf.sprintf " [%s: %s]" e.err_op (truncate_error_detail e.err_detail)
   in
   let rl_tag =
     if result.rate_limited then
@@ -3185,6 +3382,10 @@ let print_sync_result ?broker_root result =
     result.outbox_forwarded result.outbox_failed result.outbox_dlqed
     result.inbound_delivered result.inbound_rejected result.alerts_emitted
     err_str drop_tag rl_tag;
+  (* B297: one line per distinct (op, code, alias) error this pass. *)
+  List.iter
+    (fun line -> Printf.eprintf "%s\n%!" line)
+    (format_pass_errors ~prefix result);
   if result.rate_limited then
     Printf.eprintf
       "%s RATE_LIMITED (HTTP 429) this sync — remaining heartbeat/poll/send \
@@ -3203,7 +3404,7 @@ let no_work_sync_result () : sync_result =
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
     inbound_delivered = 0; inbound_rejected = 0; inbound_rejected_note = None;
     alerts_emitted = 0; rate_limited = false; retry_after_s = None;
-    last_error = None }
+    last_error = None; errors = [] }
 
 (* B291: would a full [sync] on this broker root make any relay call?
    Heartbeat/register and poll iterate ELIGIBLE registrations (dead history
