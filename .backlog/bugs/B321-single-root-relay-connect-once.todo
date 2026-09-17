@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
 estimate_hours: 1
 id: B321
 priority: low
+started_at: null
 status: pending
 tags: []
 title: single-root relay connect --once has no watchdog — hangs forever against a stuck relay
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Single-root c2c relay connect --once runs bare Lwt_main.run (sync t) with no SIGALRM and no run_sync_once (c2c_relay_connector.ml:3733-3751) - against a hanging relay it blocks forever (scripts and CI hang). The machine --once path does use run_sync_once.
+
+## Fix direction
+
+Route single-root --once through run_sync_once too.
+
+## Evidence
+
+Connector review 2026-09-17.
