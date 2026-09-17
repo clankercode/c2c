@@ -482,10 +482,15 @@ let test_connector_poll_messages_wrong_type () =
   (* B095: poll_inbox answers ok:true but "messages" is not a list. The
      connector tolerates the unrecognized shape WITHOUT fabricating
      deliveries: zero delivered, no inbox file written, sync otherwise
-     clean. (Lenient-ignore, but never garbage-as-success.) *)
+     clean. (Lenient-ignore, but never garbage-as-success.)
+     B317 made the inbound handoff peek-first, so the peek leg is routed
+     empty-ok here and the wrong-typed body stays on the destructive poll
+     leg this case is about. *)
   let routes =
     [ S.route ~meth:"POST" ~path:"/register"
         [ S.response {|{"ok":true,"result":"ok"}|} ];
+      S.route ~meth:"POST" ~path:"/peek_inbox"
+        [ S.response {|{"ok":true,"messages":[]}|} ];
       S.route ~meth:"POST" ~path:"/poll_inbox"
         [ S.response {|{"ok":true,"messages":{"not":"a list"}}|} ];
     ]
@@ -545,6 +550,10 @@ let test_connector_poll_garbage_rows_dropped () =
   let routes =
     [ S.route ~meth:"POST" ~path:"/register"
         [ S.response {|{"ok":true,"result":"ok"}|} ];
+      (* B317 peek-first: the peek leg is routed empty-ok; the batch under
+         test rides the destructive poll leg. *)
+      S.route ~meth:"POST" ~path:"/peek_inbox"
+        [ S.response {|{"ok":true,"messages":[]}|} ];
       S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_body ];
     ]
   in
@@ -653,6 +662,10 @@ let test_connector_poll_local_policy_drop_is_silent_accounting () =
   let routes =
     [ S.route ~meth:"POST" ~path:"/register"
         [ S.response {|{"ok":true,"result":"ok"}|} ];
+      (* B317 peek-first: the peek leg is routed empty-ok; the batch under
+         test rides the destructive poll leg. *)
+      S.route ~meth:"POST" ~path:"/peek_inbox"
+        [ S.response {|{"ok":true,"messages":[]}|} ];
       S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_body ];
     ]
   in
