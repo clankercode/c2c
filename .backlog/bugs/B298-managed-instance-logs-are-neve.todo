@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T04:06:16Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T04:38:13Z"
 complexity: low
 created_at: "2026-09-17T02:46:37Z"
 depends_on: []
+duration_minutes: 31.959535558366667
 estimate_hours: 2
 id: B298
 priority: medium
 started_at: "2026-09-17T04:06:16Z"
-status: in_progress
+status: done
 tags: []
 title: managed instance logs are never rotated (relay-connect log is 810 MiB, +70 MB/day)
-updated_at: "2026-09-17T04:06:16Z"
+updated_at: "2026-09-17T04:38:13Z"
 ---
 ## Symptom
 
