@@ -2330,7 +2330,18 @@ let error_detail_cap = 240
 
 let truncate_error_detail detail =
   if String.length detail > error_detail_cap then
-    String.sub detail 0 error_detail_cap ^ "..."
+    (* String.sub cuts BYTES, and detail sources (Yojson of relay bodies,
+       error prose) can carry multi-byte UTF-8 — a cut landing mid-sequence
+       emits a lone continuation byte into JSON that must stay valid UTF-8.
+       Back the cut off to the last index that is not a continuation byte
+       (same idiom as Relay_state.utf8_safe_cut): only shortens, ASCII
+       output is unchanged. *)
+    let rec back i =
+      if i <= 0 then 0
+      else if Char.code detail.[i] land 0xC0 <> 0x80 then i
+      else back (i - 1)
+    in
+    String.sub detail 0 (back error_detail_cap) ^ "..."
   else detail
 
 (* B297: collapse a pass's error observations into (summary error,
