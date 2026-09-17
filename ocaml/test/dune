@@ -824,6 +824,15 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B338: dev-mode (unsigned) heartbeat missing-lease is 404 + lease_not_found
+; (the B293 split existed only on the signed arm), so connector re-register
+; repair also triggers against a token-less relay. Real loopback sqlite server.
+(test
+ (name test_relay_b338_dev_heartbeat_404)
+ (modules test_relay_b338_dev_heartbeat_404)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 ; B333: sqlite heartbeat pair scan (find_lease) gets the B295 treatment —
 ; ORDER BY last_seen DESC and released-skip — so a legacy released shadow row
 ; at a higher rowid cannot make a live heartbeat fail with unknown_alias.

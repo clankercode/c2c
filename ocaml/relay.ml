@@ -5493,7 +5493,20 @@ end = struct
              ~retire_key:node_id
              ~alias:(stats_alias_key (RegistrationLease.alias lease))
              ~ts:(Unix.gettimeofday ()) ());
-        respond_ok (json_of_heartbeat_result result)
+        (* B338: the backend reports a missing/expired lease as unknown_alias
+           on both arms. Map it to 404 + lease_not_found exactly like the
+           signed pre-check (reject_session_lease_missing), so dev-mode
+           (unsigned) heartbeats also trigger the connectors' re-register
+           repair. Only unknown_alias maps; other statuses keep the legacy
+           200 envelope. *)
+        if fst result = "ok" then
+          respond_ok (json_of_heartbeat_result result)
+        else if fst result = relay_err_unknown_alias then
+          reject_session_lease_missing
+            ~verified:(match verified_alias with Some v -> v | None -> "(unsigned)")
+            ~node_id ~session_id
+        else
+          respond_ok (json_of_heartbeat_result result)
       in
       match verified_alias with
       | Some v ->
