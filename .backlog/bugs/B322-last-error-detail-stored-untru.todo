@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:07Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T20:20:57Z"
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
+duration_minutes: 298.8442523699333
 estimate_hours: 1
 id: B322
 priority: low
 started_at: "2026-09-17T15:22:07Z"
-status: in_progress
+status: done
 tags: []
 title: last_error_detail stored untruncated in connector-state.json (B297 cap only applied to print/summary fields)
-updated_at: "2026-09-17T15:22:07Z"
+updated_at: "2026-09-17T20:20:57Z"
 ---
 
 # last_error_detail stored untruncated in connector-state.json (B297 cap only applied to print/summary fields)
