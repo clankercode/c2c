@@ -548,6 +548,16 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B335: register failure messages thread the backend status (no more
+; "alias conflict with existing lease" for every non-ok result); honest
+; HTTP statuses (400/403/409) — safe because in-repo clients parse JSON
+; ok/error_code, never the register HTTP status.
+(test
+ (name test_relay_b335_register_error_messages)
+ (modules test_relay_b335_register_error_messages)
+ (libraries c2c_mcp alcotest yojson base64 unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 ; B293: "no live lease" is lease_not_found (not signature_invalid), and the
 ; connector drops a dead cached registration instead of retrying the dead
 ; lease forever. Real loopback sqlite server for the code split; scripted

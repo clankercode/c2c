@@ -5127,6 +5127,22 @@ end = struct
     let respond_register_unauthorized body =
       respond_register_json ~status:`Unauthorized body
     in
+    (* B335: honest HTTP status per register failure. In-repo clients parse
+       the JSON ok/error_code fields (audited: Relay_client reconcile_status,
+       connector response_error_code, monitor classifier all key on the
+       body; http_status is only read for 429), so the status line can tell
+       the truth. Unknown statuses stay 200 (legacy). *)
+    let register_result_http_status = function
+      | "ok" -> `OK
+      | "invalid_alias" -> `Bad_request
+      | s when s = relay_err_alias_identity_mismatch || s = "alias_not_allowed" -> `Forbidden
+      | s when s = relay_err_alias_conflict -> `Conflict
+      | _ -> `OK
+    in
+    let respond_register_result ?difficulty body (status, _lease) =
+      respond_register_json ?difficulty
+        ~status:(register_result_http_status status) body
+    in
     let finish_register_result result =
       if pow_actor_enabled && not is_lease_refresh && fst result = "ok" then begin
         Pow_policy.record_route relay_pow_policy ~actor_id ~route:"register"
@@ -5280,7 +5296,7 @@ end = struct
                        R.stats_note_activity relay ~machine_id
                          ~retire_key:node_id
                          ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()) ());
-                    respond_register_ok ~difficulty (json_of_register_result ~receipt result)
+                    respond_register_result ~difficulty (json_of_register_result ~receipt result) result
       else
         (* Legacy path — no identity_pk supplied, behaves exactly as before. *)
         let result =
@@ -5294,7 +5310,7 @@ end = struct
            R.stats_note_activity relay ~machine_id
              ~retire_key:node_id
              ~alias:(stats_alias_key alias) ~ts:(Unix.gettimeofday ()) ());
-        respond_register_ok ~difficulty (json_of_register_result result)
+        respond_register_result ~difficulty (json_of_register_result result) result
 
   (* S-A1: bind verified Ed25519 signer to body claims. When ~verified_alias
      is [Some v], body [from_alias] on send-family routes must match [v];
