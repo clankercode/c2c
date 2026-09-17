@@ -1,0 +1,26 @@
+---
+complexity: medium
+created_at: "2026-09-17T07:53:33Z"
+depends_on: []
+estimate_hours: 1
+id: B302
+priority: critical
+status: pending
+tags: []
+title: c2c restart/stop relay-connect fights the systemd unit into an infinite restart loop; stop does not stick (B296 follow-up)
+updated_at: "2026-09-17T07:53:33Z"
+---
+
+# c2c restart/stop relay-connect fights the systemd unit into an infinite restart loop; stop does not stick (B296 follow-up)
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior

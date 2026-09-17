@@ -298,3 +298,4 @@ bugs:
     - file: B299-orphaned-registry-json-tmp-pid.todo
     - file: B300-c2c-contacts-the-public-relay.todo
     - file: B301-c2c-health-hardcodes-relay-c2c.todo
+    - file: B302-c2c-restart-stop-relay-connect.todo
