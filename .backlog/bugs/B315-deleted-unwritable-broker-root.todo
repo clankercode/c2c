@@ -1,0 +1,26 @@
+---
+complexity: low
+created_at: "2026-09-17T07:56:12Z"
+depends_on: []
+estimate_hours: 1
+id: B315
+priority: medium
+status: pending
+tags: []
+title: deleted/unwritable broker root crashes the machine connector; deleted primary = permanent crash loop
+updated_at: "2026-09-17T07:56:12Z"
+---
+
+# deleted/unwritable broker root crashes the machine connector; deleted primary = permanent crash loop
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
