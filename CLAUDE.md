@@ -598,6 +598,11 @@ archive append. Full caveats: `.collab/runbooks/ephemeral-dms.md`.
   rename is tracked as future work (do not strip without a migration plan).
 - **`C2C_BROKER_LOG_MAX_BYTES` / `C2C_BROKER_LOG_KEEP`** (#61): broker.log size
   cap and ring depth; rotation under flock via `Broker_log.append_json`.
+- **`C2C_INSTANCE_LOG_MAX_BYTES` / `C2C_INSTANCE_LOG_KEEP`** (B298): managed
+  instance log (`instances/<name>/log`) size cap (default 10 MiB) and ring
+  depth (default 3: log, log.1..log.3); rename-only rotation at supervisor
+  start and each child relaunch via `C2c_instance_log` — never truncate under
+  a writer's held fd. Invalid/<=0 values fall back to defaults.
 - **Tier filter**: `filter_commands` in `c2c.ml` enforces tier visibility; the
   `dev` group further filters subcommands by tier at construction time.
 - **Model resolution on resume** (`c2c start`): explicit `--model` > role

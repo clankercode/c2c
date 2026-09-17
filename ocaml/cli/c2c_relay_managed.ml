@@ -194,11 +194,10 @@ let spawn_connector ~self ~argv ~log_path ~foreground =
            let dn = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
            Unix.dup2 dn Unix.stdin; Unix.close dn
          with _ -> ());
-        (try
-           let fd = Unix.openfile log_path
-               [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o600 in
-           Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd
-         with _ -> ())
+        (match C2c_instance_log.open_append log_path with
+         | Some fd ->
+             Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd
+         | None -> ())
       end;
       (* B210: mark the child exempt from the CLI-side connector singleton —
          this supervisor already holds the machine lock. *)
@@ -215,11 +214,10 @@ let redirect_daemon_stdio log_path =
      let dn = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
      Unix.dup2 dn Unix.stdin; Unix.close dn
    with _ -> ());
-  (try
-     let fd = Unix.openfile log_path
-         [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o600 in
-     Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd
-   with _ -> ())
+  (match C2c_instance_log.open_append log_path with
+   | Some fd ->
+       Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd
+   | None -> ())
 
 let supervise ~self ~argv ~log_path ~pid_path ~foreground =
   let stopping = ref false in
@@ -240,6 +238,10 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
   in
   Fun.protect ~finally:cleanup (fun () ->
     let rec launch () =
+      (* B298: rotate an oversized log at every (re)launch — the one point
+         where no writer holds the live path, so a crash loop cannot
+         concatenate indefinitely into one append-only file. *)
+      ignore (C2c_instance_log.rotate_if_oversized ~log_path);
       let launched_stamp = binary_stamp self in
       let pid = spawn_connector ~self ~argv ~log_path ~foreground in
       child := Some pid;
@@ -250,6 +252,16 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
         | 0, _ when binary_changed ~before:launched_stamp ~after:(binary_stamp self) ->
             Printf.eprintf
               "[c2c relay-connect] c2c executable updated; restarting connector\n%!";
+            (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+            ignore (Unix.waitpid [] pid);
+            child := None;
+            `Restart
+        | 0, _ when C2c_instance_log.oversized log_path ->
+            (* B298: the running child holds the log fd, so rotation must not
+               happen under it — ride the existing clean-restart path and let
+               the relaunch do the rename with no writer on the fresh file. *)
+            Printf.eprintf
+              "[c2c relay-connect] instance log over cap; restarting connector to rotate\n%!";
             (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
             ignore (Unix.waitpid [] pid);
             child := None;
@@ -287,6 +299,8 @@ let run_owner ~self ~broker_root ~name ~relay_url ~interval ~extra_args
       let pid_path = inst_dir // "outer.pid" in
       let log_path = inst_dir // "log" in
       mkdir_p inst_dir;
+      (* B298: cap the instance log before anyone opens it. *)
+      ignore (C2c_instance_log.rotate_if_oversized ~log_path);
       (* The supervisor, not only its connector child, must detach its file
          descriptors. Otherwise command substitutions and non-interactive
          callers keep waiting on a pipe held open by the daemon. *)

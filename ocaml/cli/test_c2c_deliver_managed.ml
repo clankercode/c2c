@@ -222,7 +222,22 @@ let test_run_owner_already_running_exits_1 () =
 let test_run_owner_acquires_writes_pid_and_stops () =
   with_temp_dir @@ fun dir ->
   with_home dir (fun () ->
+    with_env "C2C_INSTANCE_LOG_MAX_BYTES" "128" @@ fun () ->
     let name = "deliver-service" in
+    (* B298: an oversized pre-existing log must rotate at supervisor start,
+       before anyone opens it. *)
+    let inst = C2c_deliver_managed.instances_dir () // name in
+    let rec mkdir_p p =
+      if p = "" || p = "/" || Sys.file_exists p then ()
+      else
+        (mkdir_p (Filename.dirname p);
+         try Unix.mkdir p 0o700
+         with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+    in
+    mkdir_p inst;
+    let oc = open_out (inst // "log") in
+    output_string oc (String.make 200 'r');
+    close_out oc;
     match Unix.fork () with
     | 0 ->
         exit
@@ -238,6 +253,8 @@ let test_run_owner_acquires_writes_pid_and_stops () =
             in
             check bool "pidfile appears" true
               (wait_until (fun () -> Sys.file_exists pid_path));
+            check bool "B298: oversized log rotated at supervisor start" true
+              (Sys.file_exists (inst // "log.1"));
             (match C2c_deliver_managed.supervisor_status ~name () with
              | Alive { pid; _ } ->
                  check int "status pid matches child" child pid
@@ -422,6 +439,41 @@ let test_service_should_post_shadow () =
     (C2c_deliver_managed.service_should_post ~mode:C2c_deliver_managed.Shadow
        ~alias:"any")
 
+let read_file path =
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        really_input_string ic (in_channel_length ic))
+  with Sys_error _ -> ""
+
+(* B298: the idle loop must rotate an oversized instance log at the tick and
+   re-point the supervisor's stdio at the fresh file (the supervisor is the
+   only persistent writer; rotation is rename-only — a short-lived delivery
+   child that inherited the old fd keeps writing to the renamed file). *)
+let test_idle_supervise_rotates_oversized_log () =
+  with_temp_dir @@ fun dir ->
+  with_env "C2C_INSTANCE_LOG_MAX_BYTES" "128" @@ fun () ->
+  with_env "C2C_DELIVER_SERVICE_INTERVAL" "0.2" @@ fun () ->
+  let log_path = dir // "log" in
+  let pid_path = dir // "outer.pid" in
+  let oc = open_out log_path in
+  output_string oc (String.make 200 's');
+  close_out oc;
+  match Unix.fork () with
+  | 0 ->
+      exit (C2c_deliver_managed.idle_supervise ~pid_path ~log_path)
+  | child ->
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.kill child Sys.sigterm with Unix.Unix_error _ -> ());
+          try ignore (Unix.waitpid [] child) with Unix.Unix_error _ -> ())
+        (fun () ->
+          check bool "oversized log rotated at first tick" true
+            (wait_until ~timeout:5.0 (fun () ->
+                 Sys.file_exists (log_path ^ ".1")));
+          check bool "rotated segment keeps prior content" true
+            (read_file (log_path ^ ".1") = String.make 200 's'))
+
 let () =
   run "c2c deliver managed (#35 phase 1/2)"
     [ ( "paths"
@@ -458,4 +510,7 @@ let () =
         ; test_case "run_owner pidfile + clean stop" `Quick
             test_run_owner_acquires_writes_pid_and_stops
         ] )
+    ; ( "B298 instance log rotation"
+      , [ test_case "idle loop rotates oversized log at tick" `Slow
+            test_idle_supervise_rotates_oversized_log ] )
     ]
