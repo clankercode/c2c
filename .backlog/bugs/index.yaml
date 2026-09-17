@@ -336,3 +336,4 @@ bugs:
     - file: B337-room-system-messages-and-dm-de.todo
     - file: B338-dev-mode-unsigned-heartbeat-mi.todo
     - file: B339-two-unbounded-relay-stores-mob.todo
+    - file: B340-ws-subscribe-handshake-has-no.todo
