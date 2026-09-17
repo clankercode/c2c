@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
 estimate_hours: 1
 id: B313
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: doctor connector freshness window fixed at 120s while passes take 4-6 min on many-root hosts — healthy connector reads stale
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Doctor/state freshness is a fixed 120s window (relay_doctor.ml:285-291) while the connector self-scales with observed pass work (B291). On a many-root host a healthy root last_ok ages approximately one full pass period (live measured on xsm: 4-6 min passes), so connector_check and Relay_state.derive_health can classify a healthy connector as stale/wedged and recommend starting another, and the B294 register guard fresh arm misfires (pid-alive usually saves it; roots with older state files lose that arm).
+
+## Fix direction
+
+Scale the doctor window from recorded pass metadata or a C2C_RELAY_DOCTOR_FRESHNESS_S override; treat recorded-pid liveness as sufficient evidence in connector_owns_alias.
+
+## Evidence
+
+CLI review 2026-09-17 + live audit (pass timings 4m08s and 5m31s observed on xsm).
