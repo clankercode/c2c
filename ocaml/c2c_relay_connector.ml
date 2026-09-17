@@ -3816,6 +3816,15 @@ let start_machine_impl ~sync_once ~discover_roots
        first sight. *)
     let cooldowns = Hashtbl.create 8 in
     let wedge_counts = Hashtbl.create 8 in
+    (* B319: BOTH progress paths (a real progress-making sync and a B291
+       noop pass) must clear the doubling schedule — an idle epoch is a new
+       wedge epoch, and the first wedge after it must count from 1, not
+       resume the stale count (which the noop write's reset of the state
+       file makes the tables disagree with). *)
+    let clear_wedge_tables root =
+      Hashtbl.remove wedge_counts root;
+      Hashtbl.remove cooldowns root
+    in
     let in_cooldown root =
       match Hashtbl.find_opt cooldowns root with
       | Some until_ -> Unix.gettimeofday () < until_
@@ -3915,6 +3924,7 @@ let start_machine_impl ~sync_once ~discover_roots
            SIGALRM setup). Record it as progress with a fresh ok state so
            doctor's freshness semantics are unchanged from a real pass. *)
         Hashtbl.replace progress root (Unix.gettimeofday ());
+        clear_wedge_tables root;
         let noop = no_work_sync_result () in
         write_connector_state ~node_id root noop;
         print_sync_result ~broker_root:root noop;
@@ -3938,8 +3948,7 @@ let start_machine_impl ~sync_once ~discover_roots
             if sync_made_progress result then begin
               Hashtbl.replace progress root (Unix.gettimeofday ());
               (* B292: progress resets the doubling schedule. *)
-              Hashtbl.remove wedge_counts root;
-              Hashtbl.remove cooldowns root
+              clear_wedge_tables root
             end;
             write_connector_state ~node_id t.broker_root result;
             print_sync_result ~broker_root:root result;
