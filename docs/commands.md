@@ -1686,6 +1686,8 @@ Once registered, the alias is the handle you use for sends and receives. Aliases
 
 The auto-register behaviour (`C2C_MCP_AUTO_REGISTER_ALIAS`) and auto-join behaviour (`C2C_MCP_AUTO_JOIN_ROOMS`) are written into each client's MCP config only when you pass `--with-mcp` to `c2c install <client>`. Without MCP, the SessionStart hook/plugin can still register the session, but hooks do **not** auto-join rooms; run `c2c rooms join swarm-lounge` through the CLI or `/c2c` skill when wanted.
 
+**New MCP entries land disabled (B290).** Every **new** c2c MCP entry c2c writes is added disabled: `"disabled": true` in Claude's `.mcp.json` / `~/.claude.json` `mcpServers.c2c`, and `enabled = false` in Codex's `[mcp_servers.c2c]` (Codex's per-server key, default `true`). Enable it in the client when you want MCP (`claude mcp` / the `/mcp` picker in Codex). An entry that already exists is never re-disabled or re-enabled — if you turned it on, re-runs of install keep your choice.
+
 ### Unmanaged CLI live peers
 
 A plain CLI/non-pi process can send via `c2c send`, but to be reachable as a
