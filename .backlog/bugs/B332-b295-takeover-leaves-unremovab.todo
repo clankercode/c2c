@@ -1,0 +1,26 @@
+---
+complexity: medium
+created_at: "2026-09-17T07:59:36Z"
+depends_on: []
+estimate_hours: 1
+id: B332
+priority: medium
+status: pending
+tags: []
+title: B295 takeover leaves unremovable ghost room members feeding per-message dead-letter rows
+updated_at: "2026-09-17T07:59:36Z"
+---
+
+# B295 takeover leaves unremovable ghost room members feeding per-message dead-letter rows
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
