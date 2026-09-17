@@ -947,6 +947,11 @@ let b098_relay_delivered_verdict_is_inert () =
     ~routes:
       [ Relay_test_support.route ~meth:"POST" ~path:"/register"
           [ json_response (`Assoc [ ("ok", `Bool true) ]) ];
+        (* B317: the inbound handoff peeks (non-destructive) before it
+           polls; the peek sees the same queued row. *)
+        Relay_test_support.route ~meth:"POST" ~path:"/peek_inbox"
+          [ json_response
+              (`Assoc [ ("ok", `Bool true); ("messages", `List [ verdict_msg ]) ]) ];
         Relay_test_support.route ~meth:"POST" ~path:"/poll_inbox"
           [ json_response
               (`Assoc [ ("ok", `Bool true); ("messages", `List [ verdict_msg ]) ]);

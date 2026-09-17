@@ -274,11 +274,13 @@ let test_failed_poll_pass_redelivers_without_duplicates () =
   Alcotest.(check int) "pass 2 delivered nothing (already seen)"
     0 (get_delivered "delivered2")
 
-(* Review-fix regression: when the peek itself fails (relay down, connection
-   drop), the destructive poll must be skipped — the rows are still queued
-   safely on the relay and the next pass retries; polling after a failed
-   peek only doubles the requests and the error records. *)
-let test_failed_peek_skips_destructive_poll () =
+(* Deliberate contract (reviewed and kept): when the peek fails GENERICALLY
+   (relay without /peek_inbox — version skew — or a transient connection
+   error), the destructive poll is still attempted so mail keeps flowing;
+   poll rows are processed through the same filter+persist path. Only a 429
+   or a dropped registration skips the poll. (A peek-only outage therefore
+   degrades to the pre-B317 at-most-once window rather than going dark.) *)
+let test_failed_peek_falls_back_to_poll () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
   match Unix.fork () with
@@ -291,7 +293,8 @@ let test_failed_peek_skips_destructive_poll () =
               RTS.route ~meth:"POST" ~path:"/peek_inbox"
                 [ RTS.response ~close_without_response:true "" ];
               RTS.route ~meth:"POST" ~path:"/poll_inbox"
-                [ RTS.response (messages_json []) ];
+                [ RTS.response (messages_json
+                    [ relay_row ~mid:"m-1" ~content:"one" ]) ];
             ]
             (fun srv ->
                write_eligible_registry tmp;
@@ -301,16 +304,21 @@ let test_failed_peek_skips_destructive_poll () =
                    ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false
                in
                t.Conn.registered <- [ "fixture-live" ];
-               let _r = Lwt_main.run (Conn.sync t) in
+               let r = Lwt_main.run (Conn.sync t) in
+               if r.Conn.inbound_delivered <> 1 then begin
+                 Printf.eprintf "expected poll fallback to deliver 1 row, got %d\n%!"
+                   r.Conn.inbound_delivered;
+                 exit 52
+               end;
                let polls =
                  List.length
                    (List.filter (fun r -> r.RTS.path = "/poll_inbox")
                       (RTS.requests srv))
                in
-               if polls <> 0 then begin
-                 Printf.eprintf "expected no /poll_inbox after failed peek, got %d\n%!"
+               if polls <> 1 then begin
+                 Printf.eprintf "expected /poll_inbox fallback after failed peek, got %d\n%!"
                    polls;
-                 exit 52
+                 exit 55
                end;
                0)
         with _ -> 53
@@ -320,8 +328,8 @@ let test_failed_peek_skips_destructive_poll () =
       (match waitpid_until ~timeout_s:20.0 pid with
        | Some (Unix.WEXITED 0) -> ()
        | Some (Unix.WEXITED code) ->
-           Alcotest.failf "failed-peek child exited %d (52 = poll ran after \
-                           failed peek)" code
+           Alcotest.failf "failed-peek child exited %d (52 = fallback poll \
+                           did not deliver)" code
        | _ ->
            (try Unix.kill pid Sys.sigkill with _ -> ());
            Alcotest.fail "failed-peek child died")
@@ -336,5 +344,5 @@ let () =
            test_peek_poll_race_repair_dedupes;
          test_case "failed poll pass redelivers without duplicates" `Quick
            test_failed_poll_pass_redelivers_without_duplicates;
-         test_case "failed peek skips the destructive poll" `Quick
-           test_failed_peek_skips_destructive_poll ]) ]
+         test_case "failed peek falls back to the destructive poll" `Quick
+           test_failed_peek_falls_back_to_poll ]) ]

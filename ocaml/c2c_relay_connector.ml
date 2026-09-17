@@ -3018,19 +3018,18 @@ let sync (t : t) : sync_result Lwt.t =
         in
         let peek_json = Lwt_main.run (Relay_client.peek_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
         note_observation ~sender:None peek_json;
-        let peek_ok = json_bool_member ~key:"ok" peek_json in
         let acc =
           process_read peek_json
             ~msgs:(json_list_member ~key:"messages" peek_json)
             (delivered, rejected, notes, errs)
         in
-        (* A peek that failed, dropped the registration (B293) or hit a 429
-           (B244) stops this session's handoff before the destructive poll:
-           the rows are still queued safely on the relay for the next pass,
-           and polling after a failed peek only doubles requests and error
-           records. *)
-        if (not peek_ok) || !abort_on_rate_limit
-           || not (List.mem session_id t.registered) then acc
+        (* A peek that dropped the registration (B293) or hit a 429 (B244)
+           stops this session's handoff before the destructive poll. A
+           GENERIC peek failure deliberately does NOT stop it: on a relay
+           without /peek_inbox (version skew) the poll is the only delivery
+           path, and mail keeps flowing with the pre-B317 at-most-once
+           window rather than going silently dark. *)
+        if !abort_on_rate_limit || not (List.mem session_id t.registered) then acc
         else begin
           let poll_json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
           note_observation ~sender:None poll_json;
