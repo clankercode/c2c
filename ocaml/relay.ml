@@ -821,6 +821,16 @@ module InMemoryRelay : RELAY = struct
                  shadowed := other :: !shadowed
              ) t.leases;
              List.iter (Hashtbl.remove t.leases) !shadowed;
+             (* B332: shadowed aliases lose their lease with the takeover —
+                release their room membership too (release_alias semantics),
+                or they linger as ghosts no one can remove: leave_room is
+                rejected without a lease and every send_room fed them to the
+                dead-letter log (in-memory) or the skip list (sqlite). *)
+             List.iter (fun ghost ->
+               Hashtbl.iter (fun room_id members ->
+                 Hashtbl.replace t.rooms room_id
+                   (List.filter ((<>) ghost) members))
+               t.rooms) !shadowed;
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
               | _ -> ());
@@ -2769,6 +2779,15 @@ end = struct
               bind_text preserve 2 session_id |> ignore;
               bind_text preserve 3 alias |> ignore;
               step preserve |> ignore);
+            (* B332: shadowed aliases leave the room rosters with their lease
+               (release_alias semantics) — otherwise they are unremovable
+               ghosts: leave_room is rejected without a lease and every
+               send_room skips them. *)
+            with_stmt conn "DELETE FROM room_members WHERE alias IN (SELECT alias FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?)" (fun del_members ->
+              bind_text del_members 1 node_id |> ignore;
+              bind_text del_members 2 session_id |> ignore;
+              bind_text del_members 3 alias |> ignore;
+              step del_members |> ignore);
             with_stmt conn "DELETE FROM secure_leases_v2 WHERE node_id = ? AND session_id = ? AND alias <> ?" (fun del ->
               bind_text del 1 node_id |> ignore;
               bind_text del 2 session_id |> ignore;
