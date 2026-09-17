@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:12Z"
 depends_on: []
 estimate_hours: 1
 id: B320
 priority: low
+started_at: null
 status: pending
 tags: []
 title: rate_limited/retry_after_s written to connector-state.json but no reader parses them (B244 unrealized)
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+B244 rate_limited/retry_after_s are written to connector-state.json (c2c_relay_connector.ml:1336-1341) but the typed reader (1387-1462) has no such fields, and every consumer (c2c_doctor_relay.ml:1004, c2c_relay_state.ml:239, c2c_send_cmd.ml:107, c2c_monitor_cmd.ml:763) uses the typed reader - Relay_state.connector_info exposes no rate-limit field either. The comment promising doctor/whoami surfacing of chronic 429s is unrealized; the only 429 visibility is connector stdout.
+
+## Fix direction
+
+Add cs_rate_limited/cs_retry_after_s to the typed record; render them in Relay_state.connector_json/connector_human.
+
+## Evidence
+
+Connector review 2026-09-17.
