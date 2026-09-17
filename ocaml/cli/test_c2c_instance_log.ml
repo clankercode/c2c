@@ -180,6 +180,72 @@ let test_open_append_creates_0600 () =
   check int "created with 0o600" 0o600
     ((Unix.stat log).Unix.st_perm land 0o777)
 
+(* B327: the fixed +16 prune window left log.KEEP..log.KEEP+16+ strays on
+   disk forever after a C2C_INSTANCE_LOG_KEEP reduction (50 -> 3 kept
+   log.20..log.50 alive). Rotation must sweep ALL pure-digit log.<n> strays
+   with n >= keep, and only those. *)
+let list_dir dir =
+  Array.to_list (Sys.readdir dir) |> List.sort String.compare
+
+let test_sweep_prunes_strays_beyond_reduced_keep () =
+  with_temp_dir @@ fun dir ->
+  with_env "C2C_INSTANCE_LOG_KEEP" "3" @@ fun () ->
+  let log = dir // "log" in
+  write_file log "live";
+  for i = 1 to 50 do
+    write_file (log ^ "." ^ string_of_int i) (string_of_int i)
+  done;
+  C2c_instance_log.rotate ~log_path:log;
+  let files = list_dir dir in
+  check bool "ring fully pruned to keep depth"
+    (files = [ "log.1"; "log.2"; "log.3" ]) true;
+  List.iter
+    (fun i ->
+       check bool (Printf.sprintf "log.%d gone" i) false
+         (Sys.file_exists (log ^ "." ^ string_of_int i)))
+    [ 4; 16; 17; 20; 50 ]
+
+let test_sweep_is_noop_when_keep_grows () =
+  with_temp_dir @@ fun dir ->
+  with_env "C2C_INSTANCE_LOG_KEEP" "50" @@ fun () ->
+  let log = dir // "log" in
+  write_file log "live";
+  for i = 1 to 10 do
+    write_file (log ^ "." ^ string_of_int i) (string_of_int i)
+  done;
+  C2c_instance_log.rotate ~log_path:log;
+  let files = list_dir dir in
+  (* live log -> log.1; log.1..log.10 shift up by one; nothing pruned. *)
+  check bool "growth keeps every generation" (List.length files = 11) true;
+  check bool "shifted ring ends at log.11" true
+    (Sys.file_exists (log ^ ".11") && not (Sys.file_exists (log ^ ".12")));
+  check bool "nothing at or beyond keep pruned" true
+    (List.for_all
+       (fun f -> List.mem f files)
+       [ "log.1"; "log.2"; "log.10"; "log.11" ])
+
+let test_sweep_spares_non_numbered_siblings () =
+  with_temp_dir @@ fun dir ->
+  with_env "C2C_INSTANCE_LOG_KEEP" "3" @@ fun () ->
+  let log = dir // "log" in
+  write_file log "live";
+  write_file (log ^ ".1") "one";
+  write_file (log ^ ".2") "two";
+  write_file (log ^ ".3") "three";
+  (* Decoys a digit-blind sweep must not touch. *)
+  write_file (log ^ ".backup") "keep";
+  write_file (log ^ ".1x") "keep";
+  write_file (dir // "log-lock") "keep";
+  write_file (dir // "other.log.9") "keep";
+  C2c_instance_log.rotate ~log_path:log;
+  check bool "log.backup survives" true (Sys.file_exists (log ^ ".backup"));
+  check bool "log.1x survives" true (Sys.file_exists (log ^ ".1x"));
+  check bool "log-lock survives" true (Sys.file_exists (dir // "log-lock"));
+  check bool "other.log.9 survives" true
+    (Sys.file_exists (dir // "other.log.9"));
+  check bool "log.3 was pruned before the shift" false
+    (read_file (log ^ ".3") = "three")
+
 let () =
   run "c2c instance log" [
     "env parsing", [
@@ -194,5 +260,8 @@ let () =
       test_case "renamed file keeps its mode" `Quick test_rotation_preserves_mode;
       test_case "rename-safe under a held fd" `Quick test_rotation_is_safe_under_held_fd;
       test_case "open_append creates 0600" `Quick test_open_append_creates_0600;
+      test_case "sweep prunes strays beyond a reduced keep (B327)" `Quick test_sweep_prunes_strays_beyond_reduced_keep;
+      test_case "sweep is a no-op when keep grew (B327)" `Quick test_sweep_is_noop_when_keep_grows;
+      test_case "sweep spares non-numbered siblings (B327)" `Quick test_sweep_spares_non_numbered_siblings;
     ];
   ]
