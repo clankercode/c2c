@@ -309,3 +309,4 @@ bugs:
     - file: B310-c2c-relay-enable-ignores-ambie.todo
     - file: B311-systemd-unit-unsetenvironment.todo
     - file: B312-relay-enable-disable-restart-v.todo
+    - file: B313-doctor-connector-freshness-win.todo
