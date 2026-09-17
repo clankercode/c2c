@@ -1,0 +1,78 @@
+---
+complexity: medium
+created_at: "2026-09-17T02:44:37Z"
+depends_on: []
+estimate_hours: 3
+id: B292
+priority: critical
+status: pending
+tags:
+    - relay
+    - connector
+    - crashloop
+title: one wedged broker root exit-3s the whole machine relay connector (blast radius = all 241 roots)
+updated_at: "2026-09-17T02:44:37Z"
+---
+## Symptom
+
+A single wedged broker root terminates the relay connector for **every** repo on
+the machine. On xsm that is 241 broker roots taken down by one.
+
+Observed live (log tail, `~/.local/share/c2c/instances/relay-connect/log`):
+
+```
+[relay-connector .../ad11378ae1c3/broker] sync: registered=1 ... [poll_inbox: signature_invalid ...]
+[relay-connector .../e0eb9c317019/broker] sync: registered=6 ... [poll_inbox: signature_invalid ...]
+[relay-connector .../0c7c9894233f/broker] wedged: no successful sync for 265s (>= 180s threshold)
+  though the process is alive - exiting so a supervisor can restart (B211/B228).
+[c2c relay-connect] connector exited 3; retrying in 1s
+```
+
+Note the two roots that are actually erroring (`ad11378ae1c3`, `e0eb9c317019`)
+are *not* the root that reports the wedge (`0c7c9894233f`).
+
+## Root cause
+
+In `C2c_relay_connector.start_machine_impl`, both `check_root_stale_exit` and
+the `Error (`Watchdog _)` arm of `sync_root` call `exit 3` — a process-wide
+termination — in response to a **per-root** condition:
+
+```
+let check_root_stale_exit root =
+  if not !shutdown && should_exit_stale ~now ... then begin
+    Printf.eprintf "[relay-connector %s] wedged: ..." root ...;
+    exit 3
+  end
+```
+
+The blast radius of a per-root fault is therefore the whole machine service. The
+rationale in the B211/B228 comments ("exiting so a supervisor can restart it")
+was written for the single-root `run` loop, where process == root. It was carried
+into the multi-root machine service unchanged, where the identity no longer holds.
+
+## Consequences
+
+- One repo with an unrecoverable per-alias lease problem (filed separately)
+  starves relay delivery for every other repo on the host.
+- Combined with the 180s-vs-208s threshold bug, this produces a 9,300-restart
+  crash loop rather than a single degraded root.
+- The operator-facing message accuses the wrong root, which has repeatedly
+  misdirected diagnosis.
+
+## Fix direction
+
+Scope the response to the offending root instead of the process:
+
+- drop the wedged root from the discovery set for a cooldown period and continue
+  the pass;
+- record the wedge in that root's `connector-state.json` so `c2c doctor` reports
+  it per-repo;
+- reserve `exit 3` for conditions that genuinely require a fresh process
+  (e.g. every known root wedged, or the SIGALRM hang path).
+
+Also fix the message to name the root that failed, not the root whose progress
+timer happened to expire first.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`

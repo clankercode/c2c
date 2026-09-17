@@ -288,3 +288,4 @@ bugs:
     - file: B289-c2c-version-should-be-the-same.todo
     - file: B290-c2c-should-always-add-mcp-serv.todo
     - file: B291-relay-connector-staleness-watc.todo
+    - file: B292-one-wedged-broker-root-exit-3s.todo
