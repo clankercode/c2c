@@ -71,7 +71,11 @@ let reg_ok = {|{"ok":true,"result":"ok"}|}
 let empty_inbox = {|{"ok":true,"messages":[]}|}
 
 (* The interleaving regression: a concurrent append during a slow sync send
-   must survive sync's whole-file rewrite. *)
+   must survive sync's whole-file rewrite. Timing is handshake-based, not
+   sleep-based: the appender child is forked only after /send shows up in
+   the server's capture file (fsynced before the delayed response), which
+   guarantees sync is inside its locked send window regardless of machine
+   load. *)
 let test_append_during_slow_sync_survives () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
@@ -103,16 +107,35 @@ let test_append_during_slow_sync_survives () =
                    ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false
                in
                t.Conn.registered <- [ "fixture-live" ];
-               (* Concurrent MCP-side enqueue, timed to land mid-send-window. *)
+               (* Sync runs in its own child so this process can watch the
+                  capture file for the /send request. *)
+               let syncer = Unix.fork () in
+               if syncer = 0 then begin
+                 let _r = Lwt_main.run (Conn.sync t) in
+                 Unix._exit 0
+               end;
+               let rec wait_for_send ~tries =
+                 if List.exists (fun r -> r.RTS.path = "/send")
+                      (RTS.requests srv)
+                 then ()
+                 else if tries <= 0 then failwith "/send never captured"
+                 else (Unix.sleepf 0.02; wait_for_send ~tries:(tries - 1))
+               in
+               wait_for_send ~tries:500;
+               (* Mid-window: sync is inside the delayed /send with the
+                  outbox lock held and ~1s of delay still to run. *)
                let appender = Unix.fork () in
                if appender = 0 then begin
-                 Unix.sleepf 0.3;
                  Conn.append_outbox_entry tmp
                    ~from_alias:"out-sender" ~to_alias:"dst@remote"
                    ~content:"B" ();
                  Unix._exit 0
                end;
-               let _r = Lwt_main.run (Conn.sync t) in
+               (match waitpid_until ~timeout_s:20.0 syncer with
+                | Some (Unix.WEXITED 0) -> ()
+                | Some _ | None ->
+                    (try Unix.kill syncer Sys.sigkill with _ -> ());
+                    exit 30);
                (match waitpid_until ~timeout_s:10.0 appender with
                 | Some (Unix.WEXITED 0) -> ()
                 | Some _ | None ->
@@ -145,7 +168,7 @@ let test_append_during_slow_sync_survives () =
       in
       Unix._exit exit_code
   | pid ->
-      (match waitpid_until ~timeout_s:20.0 pid with
+      (match waitpid_until ~timeout_s:40.0 pid with
        | Some (Unix.WEXITED 0) -> ()
        | Some (Unix.WEXITED code) ->
            Alcotest.failf "interleaving child exited %d (31 = appended entry \
@@ -158,11 +181,32 @@ let test_append_during_slow_sync_survives () =
        | None ->
            Unix.kill pid Sys.sigkill;
            ignore (Unix.waitpid [] pid);
-           Alcotest.fail "interleaving child did not finish in 20s")
+           Alcotest.fail "interleaving child did not finish in 40s")
+
+(* #84 hazard: the outbox rewrite replaces the file (rename swaps the
+   inode). An operator-set mode must survive the rewrite instead of
+   resetting to the umask default. *)
+let test_write_outbox_preserves_file_mode () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let path = Conn.outbox_path tmp in
+  let oc = open_out path in
+  output_string oc
+    "{\"from_alias\":\"a\",\"to_alias\":\"b@h\",\"content\":\"old\"}\n";
+  close_out oc;
+  Unix.chmod path 0o600;
+  Conn.write_outbox tmp
+    [ { Conn.ob_from = "a"; ob_to = "b@h"; ob_content = "new";
+        ob_msg_id = None; ob_attempts = 1; ob_enqueued_at = 0.0;
+        ob_last_error = None } ];
+  Alcotest.(check int) "outbox mode preserved across rewrite" 0o600
+    ((Unix.stat path).st_perm)
 
 let () =
   let open Alcotest in
   run "c2c-relay-b305-outbox-lock"
     [ ("outbox toctou",
        [ test_case "concurrent append during slow sync survives" `Quick
-           test_append_during_slow_sync_survives ]) ]
+           test_append_during_slow_sync_survives;
+         test_case "write_outbox preserves file mode" `Quick
+           test_write_outbox_preserves_file_mode ]) ]

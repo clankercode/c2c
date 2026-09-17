@@ -164,6 +164,19 @@ let test_append_empty_and_fresh_root () =
   Alcotest.(check (list string)) "fresh-root append lands both rows"
     [ "m-1"; "m-2" ] (List.map row_id (read_rows tmp sid))
 
+(* #84 hazard: the merge rewrites the file via tmp+rename, which swaps the
+   inode. The broker owns the inbox at 0600; the rewrite must preserve that
+   mode instead of silently widening plaintext DMs to the umask default. *)
+let test_append_preserves_inbox_file_mode () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let sid = "fixture-live" in
+  write_rows tmp sid [ msg_row ~mid:"m-x" ~content:"x" ];
+  Unix.chmod (Filename.concat tmp (sid ^ ".inbox.json")) 0o600;
+  ignore (Conn.append_to_local_inbox tmp sid [ msg_row ~mid:"m-y" ~content:"y" ]);
+  Alcotest.(check int) "inbox mode preserved across merge rename" 0o600
+    ((Unix.stat (Filename.concat tmp (sid ^ ".inbox.json"))).st_perm)
+
 let () =
   let open Alcotest in
   run "c2c-relay-b306-inbox-lock"
@@ -171,4 +184,6 @@ let () =
        [ test_case "append survives concurrent broker drain" `Quick
            test_append_survives_concurrent_broker_drain;
          test_case "empty append no-op + fresh-root append" `Quick
-           test_append_empty_and_fresh_root ]) ]
+           test_append_empty_and_fresh_root;
+         test_case "append preserves inbox file mode" `Quick
+           test_append_preserves_inbox_file_mode ]) ]

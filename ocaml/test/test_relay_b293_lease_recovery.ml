@@ -414,6 +414,34 @@ let test_connector_poll_lease_not_found_drops_registration () =
           check int "next pass re-registers" 1
             (count_requests srv "/register")))
 
+(* B317 review fix: the inbound fetch runs peek AND poll against the same
+   ownership check, so a mismatching relay body can arrive TWICE in one
+   pass. B293's threshold is documented as consecutive PASSES — the strike
+   must be bumped at most once per pass, or one transient mismatch drops
+   the registration immediately (the thrash the threshold exists to
+   prevent). *)
+let test_connector_owner_mismatch_bumped_once_per_pass () =
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/heartbeat" [ S.response hb_ok ];
+      S.route ~meth:"POST" ~path:"/peek_inbox" [ S.response owner_mismatch ];
+      S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response owner_mismatch ];
+      S.route ~meth:"POST" ~path:"/register" [ S.response reg_ok ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root
+              ~registered:[ sm_session ] in
+          let r1 = run_sync t in
+          check bool "one mismatching pass tolerates (still registered)" true
+            (List.mem sm_session t.registered);
+          check bool "mismatch still reported as an error" true
+            (r1.last_error <> None);
+          let _r2 = run_sync t in
+          check bool "second consecutive mismatching pass drops" false
+            (List.mem sm_session t.registered)))
+
 let () =
   run "B293 relay lease recovery"
     [ ("relay error codes",
@@ -435,5 +463,7 @@ let () =
            test_connector_owner_mismatch_strike_decays_on_success
        ; test_case "poll lease_not_found drops registration" `Quick
            test_connector_poll_lease_not_found_drops_registration
+       ; test_case "owner mismatch bumped once per pass" `Quick
+           test_connector_owner_mismatch_bumped_once_per_pass
        ])
     ]

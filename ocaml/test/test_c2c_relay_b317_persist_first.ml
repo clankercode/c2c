@@ -207,6 +207,125 @@ let test_peek_poll_race_repair_dedupes () =
     [ "m-1"; "m-2" ] (read_inbox_ids tmp "fixture-live");
   Alcotest.(check int) "delivered counts each row once" 2 (read_delivered tmp)
 
+(* Review-fix regression (blocker): persist-first must be idempotent across
+   passes. A batch that was persisted but NOT cleared (poll failed) stays
+   queued on the relay; the next pass re-peeks the identical rows and must
+   not append them again. Without a persisted seen-id ledger, a persistently
+   peek-ok/poll-failing relay grows the inbox by the whole batch every pass. *)
+let test_failed_poll_pass_redelivers_without_duplicates () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let rows = [ relay_row ~mid:"m-1" ~content:"one";
+               relay_row ~mid:"m-2" ~content:"two" ] in
+  match Unix.fork () with
+  | 0 ->
+      let exit_code =
+        try
+          RTS.with_server
+            ~routes:[
+              RTS.route ~meth:"POST" ~path:"/heartbeat" [ RTS.response reg_ok ];
+              RTS.route ~meth:"POST" ~path:"/peek_inbox"
+                [ RTS.response (messages_json rows) ];
+              (* pass 1: the clear step dies; pass 2: it succeeds *)
+              RTS.route ~meth:"POST" ~path:"/poll_inbox"
+                [ RTS.response ~close_without_response:true "";
+                  RTS.response (messages_json []) ];
+            ]
+            (fun srv ->
+               write_eligible_registry tmp;
+               let t =
+                 Conn.make_state ~relay_url:(RTS.url srv) ~token:None
+                   ~identity:None ~broker_root:tmp ~node_id:"b317-test"
+                   ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false
+               in
+               t.Conn.registered <- [ "fixture-live" ];
+               let r1 = Lwt_main.run (Conn.sync t) in
+               let r2 = Lwt_main.run (Conn.sync t) in
+               let oc = open_out (Filename.concat tmp "sync-result.json") in
+               Yojson.Safe.to_channel oc
+                 (`Assoc [ "delivered1", `Int r1.Conn.inbound_delivered;
+                           "delivered2", `Int r2.Conn.inbound_delivered ]);
+               close_out oc;
+               0)
+        with e ->
+          Printf.eprintf "child failed: %s\n%!" (Printexc.to_string e);
+          51
+      in
+      Unix._exit exit_code
+  | pid ->
+      (match waitpid_until ~timeout_s:30.0 pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "two-pass sync child exited %d" code
+       | _ ->
+           (try Unix.kill pid Sys.sigkill with _ -> ());
+           Alcotest.fail "two-pass sync child died")
+  ;
+  Alcotest.(check (list string))
+    "redelivered batch appended exactly once across passes"
+    [ "m-1"; "m-2" ] (read_inbox_ids tmp "fixture-live");
+  let get_delivered key =
+    match C2c_io.read_json_opt (Filename.concat tmp "sync-result.json") with
+    | Some (`Assoc fields) ->
+        (match List.assoc_opt key fields with Some (`Int n) -> n | _ -> -1)
+    | _ -> -1
+  in
+  Alcotest.(check int) "pass 1 delivered both rows" 2 (get_delivered "delivered1");
+  Alcotest.(check int) "pass 2 delivered nothing (already seen)"
+    0 (get_delivered "delivered2")
+
+(* Review-fix regression: when the peek itself fails (relay down, connection
+   drop), the destructive poll must be skipped — the rows are still queued
+   safely on the relay and the next pass retries; polling after a failed
+   peek only doubles the requests and the error records. *)
+let test_failed_peek_skips_destructive_poll () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      let exit_code =
+        try
+          RTS.with_server
+            ~routes:[
+              RTS.route ~meth:"POST" ~path:"/heartbeat" [ RTS.response reg_ok ];
+              RTS.route ~meth:"POST" ~path:"/peek_inbox"
+                [ RTS.response ~close_without_response:true "" ];
+              RTS.route ~meth:"POST" ~path:"/poll_inbox"
+                [ RTS.response (messages_json []) ];
+            ]
+            (fun srv ->
+               write_eligible_registry tmp;
+               let t =
+                 Conn.make_state ~relay_url:(RTS.url srv) ~token:None
+                   ~identity:None ~broker_root:tmp ~node_id:"b317-test"
+                   ~heartbeat_ttl:60.0 ~interval:1.0 ~verbose:false
+               in
+               t.Conn.registered <- [ "fixture-live" ];
+               let _r = Lwt_main.run (Conn.sync t) in
+               let polls =
+                 List.length
+                   (List.filter (fun r -> r.RTS.path = "/poll_inbox")
+                      (RTS.requests srv))
+               in
+               if polls <> 0 then begin
+                 Printf.eprintf "expected no /poll_inbox after failed peek, got %d\n%!"
+                   polls;
+                 exit 52
+               end;
+               0)
+        with _ -> 53
+      in
+      Unix._exit exit_code
+  | pid ->
+      (match waitpid_until ~timeout_s:20.0 pid with
+       | Some (Unix.WEXITED 0) -> ()
+       | Some (Unix.WEXITED code) ->
+           Alcotest.failf "failed-peek child exited %d (52 = poll ran after \
+                           failed peek)" code
+       | _ ->
+           (try Unix.kill pid Sys.sigkill with _ -> ());
+           Alcotest.fail "failed-peek child died")
+
 let () =
   let open Alcotest in
   run "c2c-relay-b317-persist-first"
@@ -214,4 +333,8 @@ let () =
        [ test_case "persist survives crash before relay clear" `Quick
            test_persist_survives_crash_before_clear;
          test_case "peek/poll race repair dedupes by message id" `Quick
-           test_peek_poll_race_repair_dedupes ]) ]
+           test_peek_poll_race_repair_dedupes;
+         test_case "failed poll pass redelivers without duplicates" `Quick
+           test_failed_poll_pass_redelivers_without_duplicates;
+         test_case "failed peek skips the destructive poll" `Quick
+           test_failed_peek_skips_destructive_poll ]) ]

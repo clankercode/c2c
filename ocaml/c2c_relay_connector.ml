@@ -667,6 +667,52 @@ let filter_inbound_messages_persisted ?expected_recipient ~now ~broker_root poli
                 [], List.map (fun _ -> Inbound_policy) messages,
                 Some ("cannot persist relay inbound rate state: " ^ detail))
 
+(* B317 review fix: persisted seen-id ledger. Persist-first handoff is
+   at-least-once: a batch appended locally but NOT cleared on the relay
+   (failed poll pass, or a kill between append and clear) is served again
+   by the next peek. The ledger makes that redelivery idempotent — rows
+   whose message_id was already persisted are skipped instead of
+   re-appended. Relay message ids are unique per row (the relay dedups
+   /send by id), so a bounded FIFO is sufficient. Rows without an id and
+   policy-rejected rows are deliberately never ledgered: the former cannot
+   be keyed, the latter must retry when a transient rejection clears. *)
+let inbound_seen_ids_path broker_root =
+  broker_root // "relay-inbound-seen-ids.json"
+
+let inbound_seen_ids_cap = 4096
+
+let row_message_id row =
+  match Yojson.Safe.Util.member "message_id" row with
+  | `String s -> Some s
+  | _ -> None
+
+let load_inbound_seen_ids broker_root =
+  match C2c_io.read_json_opt (inbound_seen_ids_path broker_root) with
+  | Some (`Assoc fields) ->
+      (match List.assoc_opt "ids" fields with
+       | Some (`List ids) ->
+           List.filter_map (function `String s -> Some s | _ -> None) ids
+       | _ -> [])
+  | _ -> []
+
+let save_inbound_seen_ids broker_root seen =
+  let json =
+    `Assoc [ "ids", `List (List.map (fun s -> `String s) seen);
+             "updated_at", `Float (Unix.gettimeofday ()) ]
+  in
+  (match C2c_io.write_file_atomic (inbound_seen_ids_path broker_root)
+           (Yojson.Safe.to_string json ^ "\n") with
+   | Ok () -> ()
+   | Error _ -> ())
+
+let drop_already_seen_rows seen rows =
+  List.filter
+    (fun row ->
+       match row_message_id row with
+       | Some id -> not (List.mem id seen)
+       | None -> true)
+    rows
+
 let inbound_rejection_name = function
   | Inbound_schema -> "schema"
   | Inbound_policy -> "policy"
@@ -931,7 +977,10 @@ let append_to_local_inbox broker_root session_id messages =
     (* B306: hold the broker's inbox lock across the whole read-merge-write
        window; unlocked, a concurrent broker drain could archive the read
        rows and save an empty file between read and rename, re-delivering or
-       silently dropping rows. *)
+       silently dropping rows. B317 review fix: the write goes through
+       C2c_io.write_file_atomic so the rename is atomic and the broker's
+       0600 mode survives the inode swap (#84) instead of widening
+       plaintext DMs to the umask default. *)
     with_local_inbox_lock broker_root session_id (fun () ->
       let path = local_inbox_path broker_root session_id in
       let existing_json =
@@ -942,14 +991,11 @@ let append_to_local_inbox broker_root session_id messages =
         | `List lst -> lst
         | _ -> [] in
       let merged_json = `List (existing @ messages) in
-      let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
-      let oc = open_out tmp in
-      Fun.protect ~finally:(fun () -> close_out oc)
-        (fun () ->
-          Yojson.Safe.to_channel oc merged_json ~std:false;
-          close_out oc;
-          Unix.rename tmp path);
-      List.length messages)
+      match
+        C2c_io.write_file_atomic path (Yojson.Safe.to_string merged_json ^ "\n")
+      with
+      | Ok () -> List.length messages
+      | Error msg -> failwith msg)
 
 (* ---------------------------------------------------------------------------
  * S5c Phase B: Pseudo-registration storage (separate from registry.json)
@@ -1176,30 +1222,35 @@ let write_outbox broker_root entries =
   let path = outbox_path broker_root in
   if entries = [] then (try Sys.remove path with _ -> ())
   else
-    let oc = open_out path in
-    Fun.protect ~finally:(fun () -> close_out oc)
-      (fun () ->
-        List.iter (fun e ->
-          let msg_id_assoc = match e.ob_msg_id with
-            | Some m -> ["message_id", `String m]
-            | None -> []
-          in
-          let extra = [
-            "attempts", `Int e.ob_attempts;
-            "enqueued_at", `Float e.ob_enqueued_at;
-          ] in
-          let extra = match e.ob_last_error with
-            | Some err -> ("last_error", `String err) :: extra
-            | None -> extra
-          in
-          let json = `Assoc (
-            ["from_alias", `String e.ob_from;
-             "to_alias", `String e.ob_to;
-             "content", `String e.ob_content]
-            @ msg_id_assoc @ extra
-          ) in
-          output_string oc (Yojson.Safe.to_string json ^ "\n")
-        ) entries)
+    (* B305 review fix: temp + rename (atomic, mode-preserving) instead of
+       truncate-in-place — a kill mid-rewrite used to leave a partial file
+       whose unparseable tail read_outbox silently skipped. Callers hold
+       with_outbox_lock across the rewrite. *)
+    let buf = Buffer.create 256 in
+    List.iter (fun e ->
+      let msg_id_assoc = match e.ob_msg_id with
+        | Some m -> ["message_id", `String m]
+        | None -> []
+      in
+      let extra = [
+        "attempts", `Int e.ob_attempts;
+        "enqueued_at", `Float e.ob_enqueued_at;
+      ] in
+      let extra = match e.ob_last_error with
+        | Some err -> ("last_error", `String err) :: extra
+        | None -> extra
+      in
+      let json = `Assoc (
+        ["from_alias", `String e.ob_from;
+         "to_alias", `String e.ob_to;
+         "content", `String e.ob_content]
+        @ msg_id_assoc @ extra
+      ) in
+      Buffer.add_string buf (Yojson.Safe.to_string json ^ "\n")
+    ) entries;
+    match C2c_io.write_file_atomic path (Buffer.contents buf) with
+    | Ok () -> ()
+    | Error msg -> failwith msg
 
 (* Append a single entry to the DLQ (append-only). *)
 let append_dlq_entry broker_root entry ~reason =
@@ -2835,6 +2886,9 @@ let sync (t : t) : sync_result Lwt.t =
             pe_session_id = None;
             pe_detail = detail ^ "; inbound delivery denied" } ]
   in
+  (* B317 review fix: reloaded each pass; consulted (and extended) before
+     appending so redelivery after a failed poll pass is idempotent. *)
+  let inbound_seen_ids = ref (load_inbound_seen_ids t.broker_root) in
   let inbound_delivered, inbound_rejected, inbound_notes, poll_errors =
     List.fold_left (fun (delivered, rejected, notes, errs) (session_id, alias, _) ->
       if !abort_on_rate_limit then
@@ -2851,13 +2905,19 @@ let sync (t : t) : sync_result Lwt.t =
         let process_read json ~msgs (delivered, rejected, notes, errs) =
           if json_bool_member ~key:"ok" json then begin
             if msgs <> [] then begin
+              (* B317 review fix: skip rows already persisted by a previous
+                 pass whose poll never cleared them, so a peek-ok/poll-
+                 failing relay cannot grow the inbox every pass. *)
+              let fresh = drop_already_seen_rows !inbound_seen_ids msgs in
+              if fresh = [] then delivered, rejected, notes, errs
+              else begin
               let deliverable, rejection_reasons, rate_state_error =
                 filter_inbound_messages_persisted ~now:(Unix.gettimeofday ())
                   ~broker_root:t.broker_root ~expected_recipient:alias
-                  inbound_policy msgs
+                  inbound_policy fresh
               in
               let acc =
-                classify_poll_outcome ~alias ~polled:(List.length msgs)
+                classify_poll_outcome ~alias ~polled:(List.length fresh)
                   ~rate_state_error rejection_reasons
               in
               let errs =
@@ -2886,9 +2946,32 @@ let sync (t : t) : sync_result Lwt.t =
                      alias :: !obs_inbound_contract_aliases);
               let delivered =
                 if deliverable = [] then delivered
-                else delivered + append_to_local_inbox t.broker_root session_id deliverable
+                else begin
+                  let delivered =
+                    delivered
+                    + append_to_local_inbox t.broker_root session_id deliverable
+                  in
+                  (* Ledger AFTER the append: a crash in between leaves the
+                     rows un-ledgered (they re-append next pass) but never
+                     ledgered-and-lost. *)
+                  List.iter
+                    (fun row ->
+                       match row_message_id row with
+                       | Some id -> inbound_seen_ids := id :: !inbound_seen_ids
+                       | None -> ())
+                    deliverable;
+                  let rec take n = function
+                    | [] -> []
+                    | x :: rest -> if n <= 0 then [] else x :: take (n - 1) rest
+                  in
+                  inbound_seen_ids :=
+                    take inbound_seen_ids_cap !inbound_seen_ids;
+                  save_inbound_seen_ids t.broker_root !inbound_seen_ids;
+                  delivered
+                end
               in
               delivered, rejected + List.length rejection_reasons, notes, errs
+              end
             end
             else delivered, rejected, notes, errs
           end
@@ -2904,14 +2987,23 @@ let sync (t : t) : sync_result Lwt.t =
             delivered, rejected, notes, mk :: errs
           end
           else if response_is_owner_mismatch json then begin
+            (* B293 review fix: the threshold is consecutive PASSES, and the
+               same mismatching body arrives from BOTH peek and poll (the
+               heartbeat arm shares this memo) — bump at most once per pass
+               per session, or one transient mismatch drops immediately. *)
+            let first_this_pass =
+              not (List.mem session_id !owner_mismatched_pass)
+            in
             owner_mismatched_pass := session_id :: !owner_mismatched_pass;
-            let _n, strikes' = strikes_bump t.owner_mismatch_strikes session_id in
-            t.owner_mismatch_strikes <- strikes';
-            if owner_mismatch_should_drop strikes' session_id then begin
-              dropped_in_pass := session_id :: !dropped_in_pass;
-              t.owner_mismatch_strikes <-
-                strikes_clear t.owner_mismatch_strikes session_id;
-              t.registered <- List.filter (fun s -> s <> session_id) t.registered
+            if first_this_pass then begin
+              let _n, strikes' = strikes_bump t.owner_mismatch_strikes session_id in
+              t.owner_mismatch_strikes <- strikes';
+              if owner_mismatch_should_drop strikes' session_id then begin
+                dropped_in_pass := session_id :: !dropped_in_pass;
+                t.owner_mismatch_strikes <-
+                  strikes_clear t.owner_mismatch_strikes session_id;
+                t.registered <- List.filter (fun s -> s <> session_id) t.registered
+              end
             end;
             let detail = Yojson.Safe.to_string json in
             let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
@@ -2926,14 +3018,19 @@ let sync (t : t) : sync_result Lwt.t =
         in
         let peek_json = Lwt_main.run (Relay_client.peek_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
         note_observation ~sender:None peek_json;
+        let peek_ok = json_bool_member ~key:"ok" peek_json in
         let acc =
           process_read peek_json
             ~msgs:(json_list_member ~key:"messages" peek_json)
             (delivered, rejected, notes, errs)
         in
-        (* A peek that dropped the registration (B293) or hit a 429 (B244)
-           stops this session's handoff before the destructive poll. *)
-        if !abort_on_rate_limit || not (List.mem session_id t.registered) then acc
+        (* A peek that failed, dropped the registration (B293) or hit a 429
+           (B244) stops this session's handoff before the destructive poll:
+           the rows are still queued safely on the relay for the next pass,
+           and polling after a failed peek only doubles requests and error
+           records. *)
+        if (not peek_ok) || !abort_on_rate_limit
+           || not (List.mem session_id t.registered) then acc
         else begin
           let poll_json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
           note_observation ~sender:None poll_json;
