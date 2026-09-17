@@ -44,3 +44,5 @@ Close once: either close the Lwt_io channel (which owns the fd) or the fd direct
 ## Evidence
 
 Observed while writing `test_c2c_relay_b309_disable_consumers.ml`; pre-existing, deliberately out of B309 scope (B309 landed the shutdown sender bounded and non-raising, so the CLI surface is unaffected; the raw IPC verbs still misreport).
+
+Lane plan 2026-09-18 (bl-fix-many B341 B342): two parallel lanes, disjoint files — B341 in .worktrees/b341-ipc (c2c_relay_subscribe_daemon.ml), B342 in .worktrees/b342-ca (c2c_relay_connector.ml inline client). No dependency; both from master tip 86ffa242.
