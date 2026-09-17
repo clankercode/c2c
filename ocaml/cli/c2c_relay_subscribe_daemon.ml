@@ -780,23 +780,18 @@ let start_daemon_cmd =
   let+ relay_url = relay_url
   and+ socket = socket in
   let socket_path = resolve_socket_path socket in
-  let url = match relay_url with
+  (* B300/B301: was a third, drifted copy of relay-URL resolution — it read
+     ~/.c2c/relay-setup.json (a path nothing else writes, so `c2c relay setup`
+     was ignored here) and fell back to the public relay, meaning a daemon
+     started on an unconfigured host would connect to relay.c2c.im. Route
+     through the canonical resolver and refuse when the relay is not
+     activated. *)
+  let url =
+    match Relay_activation.url ?flag:relay_url () with
     | Some u -> u
     | None ->
-      (try Sys.getenv "C2C_RELAY_URL" with _ ->
-       try
-         let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
-         let config_path = Filename.concat home ".c2c/relay-setup.json" in
-         let ic = open_in config_path in
-         let json = Yojson.Safe.from_channel ic in
-         close_in ic;
-         match json with
-         | `Assoc fields ->
-           (match List.assoc_opt "url" fields with
-            | Some (`String u) -> u
-            | _ -> "https://relay.c2c.im")
-         | _ -> "https://relay.c2c.im"
-       with _ -> "https://relay.c2c.im")
+      Printf.eprintf "%s%!" (Relay_activation.not_activated_error ());
+      exit 1
   in
   if not (Relay_doctor.subscribe_url_supported url) then begin
     Printf.eprintf

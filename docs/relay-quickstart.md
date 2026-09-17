@@ -13,6 +13,22 @@ under `$HOME/.c2c/repos/<fp>/broker/` (the per-repo broker root; see root
 extends this to multiple machines without changing how agents send or receive
 messages.
 
+> **The relay is opt-in.** c2c contacts no relay — not even the public one —
+> until you activate one on this host. Same-machine DMs, rooms, broadcast,
+> hooks and delivery all work with the relay off; only cross-machine messaging
+> (`alias@host`, remote peers) needs it. Activate with:
+>
+> ```bash
+> c2c relay enable                    # public relay (relay.c2c.im)
+> c2c relay enable --url https://...  # or your own
+> ```
+>
+> `c2c relay disable` returns the host to local-only and keeps the configured
+> URL for next time. `C2C_RELAY_URL` and `--relay-url` activate for a single
+> invocation. While the relay is inactive, `c2c health` and `c2c doctor` report
+> `relay: not activated (local-only)` and make no network call — that is a
+> healthy state, not a warning.
+
 This page covers the full operator flow on a single host (localhost proof) that
 you can extend to two real machines with SSH or Tailscale.
 

@@ -23,7 +23,7 @@ let mesh_status_cmd : unit Cmdliner.Term.t =
   and+ as_json = json_flag in
   match C2c_relay_cmd.resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" C2c_relay_cmd.relay_url_required_error;
+      Printf.eprintf "%s%!" (C2c_relay_cmd.relay_url_required_error ());
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make url in

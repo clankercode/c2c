@@ -184,8 +184,9 @@ Everything here runs on **each** person's own machine.
 # 1. One Ed25519 identity per machine (idempotent — skips if it exists):
 c2c relay identity show >/dev/null 2>&1 || c2c relay identity init
 
-# 2. Save the public relay URL once so you can drop the flag later:
-c2c relay setup --url https://relay.c2c.im
+# 2. Activate the relay on this host (opt-in; c2c contacts no relay until
+#    you do this). Saves the URL so you can drop the flag later:
+c2c relay enable
 
 # 3. Register your alias on the relay:
 c2c relay register --alias alice-mbp-7f3 --relay-url https://relay.c2c.im
@@ -259,7 +260,7 @@ c2c relay dm send bob-x1-22a "hi Bob, it's Alice's agent" --alias alice-mbp-7f3 
 ```
 
 `"ok": true` means the relay queued the DM for Bob. (Tip: after
-`c2c relay setup --url https://relay.c2c.im` in Step 3 you can drop
+`c2c relay enable` in Step 2 you can drop
 `--relay-url` from every command.)
 
 ---

@@ -922,7 +922,7 @@ composite classification:
 
 | State | Meaning |
 |-------|---------|
-| `unconfigured` | No relay URL configured (`c2c relay setup --url <URL>`). |
+| `unconfigured` | Relay not activated on this host — c2c is local-only (`c2c relay enable`). |
 | `configured_not_registered` | Relay configured, but positively not registered: the relay answered without a lease for this alias, or there is no local identity/session alias to register. |
 | `configured_unverified` | Relay configured but registration unknown — not checked (run with `--relay`) and no local connector evidence either way. |
 | `registered_live` | Registration current and the connector bridge is live — relay traffic flows. |
@@ -1484,6 +1484,8 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 
 | Subcommand | Description |
 |------------|-------------|
+| `relay enable [--url URL] [--token T]` | **Activate the relay on this host.** The relay is opt-in: c2c contacts no relay until this is run (or `C2C_RELAY_URL` / `--relay-url` is given). Defaults to the public relay `https://relay.c2c.im`; pass `--url` for a private one. Writes `url` + `enabled: true` to `relay.json`. |
+| `relay disable` | Return this host to local-only. Sets `enabled: false` and **keeps** the configured URL, so `c2c relay enable` restores it. Same-machine DMs, rooms and broadcast are unaffected. |
 | `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH] [--gc-interval N]` | Start an HTTP relay server |
 | `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. Bare persistent connect is **unsupervised** (B235): it prints a loud warning and is not auto-restarted if it dies — prefer `c2c start relay-connect` for the machine-wide supervised connector; recover with `c2c restart relay-connect` (bootstraps a managed instance when no config exists and a relay URL is known). `--once` is a one-shot sync (no warning). |
 | `relay setup [--url URL] [--token T] [--token-file PATH] [--show]` | Save relay config to disk |
@@ -1605,6 +1607,8 @@ the legacy file-based architecture.
 
 | Subcommand | Description |
 |------------|-------------|
+| `relay enable [--url URL] [--token T]` | **Activate the relay on this host.** The relay is opt-in: c2c contacts no relay until this is run (or `C2C_RELAY_URL` / `--relay-url` is given). Defaults to the public relay `https://relay.c2c.im`; pass `--url` for a private one. Writes `url` + `enabled: true` to `relay.json`. |
+| `relay disable` | Return this host to local-only. Sets `enabled: false` and **keeps** the configured URL, so `c2c relay enable` restores it. Same-machine DMs, rooms and broadcast are unaffected. |
 | `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH]` | Start an HTTP relay server. |
 | `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay. |
 | `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk. |

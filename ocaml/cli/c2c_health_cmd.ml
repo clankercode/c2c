@@ -84,7 +84,19 @@ let check_shared_config_modes () : [ `Green | `Yellow | `Gray ] * string * strin
    The version option feeds B268's cache-only "relay behind latest known"
    comparison — no second network probe. *)
 let check_relay_http () =
-  let url = match Sys.getenv_opt "C2C_RELAY_URL" with Some v when v <> "" -> v | _ -> "https://relay.c2c.im" in
+  (* B301: resolve through the canonical resolver rather than a second,
+     drifted copy. The old code read C2C_RELAY_URL and then fell back to a
+     hardcoded "https://relay.c2c.im", so it (a) probed the PUBLIC relay on a
+     host configured for a private one — reporting that other server's
+     reachability and version as if it were ours — and (b) contacted the relay
+     unconditionally, even on a host with no c2c config at all.
+
+     B300: a host that has not activated the relay is correctly configured, not
+     degraded, so report it in grey and make no network call. *)
+  match C2c_relay_cmd.resolve_relay_url None with
+  | None ->
+      (`Gray, "relay: not activated (local-only; c2c relay enable to turn on)", None)
+  | Some url ->
   try
     let client = Relay.Relay_client.make ~timeout:5.0 url in
     let result = Lwt_main.run (Relay.Relay_client.health client) in
