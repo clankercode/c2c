@@ -1,0 +1,26 @@
+---
+complexity: low
+created_at: "2026-09-17T07:56:13Z"
+depends_on: []
+estimate_hours: 1
+id: B323
+priority: low
+status: pending
+tags: []
+title: owner-mismatch strikes can double within one pass (heartbeat + poll arms both bump)
+updated_at: "2026-09-17T07:56:13Z"
+---
+
+# owner-mismatch strikes can double within one pass (heartbeat + poll arms both bump)
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior
