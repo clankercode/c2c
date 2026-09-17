@@ -1921,6 +1921,8 @@ let test_sync_collects_errors_with_alias_fields () =
             [ RTS.route ~meth:"POST" ~path:"/heartbeat"
                 [ RTS.response owner_mismatch ];
               RTS.route ~meth:"POST" ~path:"/register" [ RTS.response reg_ok ];
+              RTS.route ~meth:"POST" ~path:"/peek_inbox"
+                [ RTS.response lease_gone ];
               RTS.route ~meth:"POST" ~path:"/poll_inbox"
                 [ RTS.response lease_gone ];
               RTS.route ~meth:"POST" ~path:"/send"

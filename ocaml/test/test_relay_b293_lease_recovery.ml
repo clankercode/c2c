@@ -272,6 +272,7 @@ let test_connector_heartbeat_lease_not_found_registers () =
   let routes =
     [ S.route ~meth:"POST" ~path:"/heartbeat" [ S.response lease_gone ];
       S.route ~meth:"POST" ~path:"/register" [ S.response reg_ok ];
+      S.route ~meth:"POST" ~path:"/peek_inbox" [ S.response poll_ok ];
       S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_ok ];
     ]
   in
@@ -298,6 +299,7 @@ let test_connector_repaired_session_stays_registered () =
     [ S.route ~meth:"POST" ~path:"/heartbeat"
         [ S.response lease_gone; S.response hb_ok ];
       S.route ~meth:"POST" ~path:"/register" [ S.response reg_ok ];
+      S.route ~meth:"POST" ~path:"/peek_inbox" [ S.response poll_ok ];
       S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_ok ];
     ]
   in
@@ -331,6 +333,7 @@ let test_connector_owner_mismatch_drops_after_repeat () =
   let routes =
     [ S.route ~meth:"POST" ~path:"/heartbeat" [ S.response owner_mismatch ];
       S.route ~meth:"POST" ~path:"/register" [ S.response reg_ok ];
+      S.route ~meth:"POST" ~path:"/peek_inbox" [ S.response poll_ok ];
       S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_ok ];
     ]
   in
@@ -364,6 +367,7 @@ let test_connector_owner_mismatch_strike_decays_on_success () =
         [ S.response owner_mismatch; S.response hb_ok;
           S.response owner_mismatch; S.response owner_mismatch ];
       S.route ~meth:"POST" ~path:"/register" [ S.response reg_ok ];
+      S.route ~meth:"POST" ~path:"/peek_inbox" [ S.response poll_ok ];
       S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response poll_ok ];
     ]
   in
@@ -381,12 +385,15 @@ let test_connector_owner_mismatch_strike_decays_on_success () =
           check bool "two consecutive mismatches still drop" false
             (List.mem sm_session t.registered)))
 
-(* The poll arm: a lease that died between heartbeat and poll must also be
-   dropped, or the connector keeps polling a dead lease until the local
-   session disappears. *)
+(* The poll arm: a lease that died between heartbeat and the inbound fetch
+   must also be dropped, or the connector keeps polling a dead lease until
+   the local session disappears. B317: the fetch starts with the
+   non-destructive peek, which is where the dead lease is now discovered;
+   classification and drop handling are unchanged. *)
 let test_connector_poll_lease_not_found_drops_registration () =
   let routes =
     [ S.route ~meth:"POST" ~path:"/heartbeat" [ S.response hb_ok ];
+      S.route ~meth:"POST" ~path:"/peek_inbox" [ S.response lease_gone ];
       S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response lease_gone ];
       S.route ~meth:"POST" ~path:"/register" [ S.response reg_ok ];
     ]

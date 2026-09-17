@@ -2108,6 +2108,15 @@ module Relay_client = struct
       ("session_id", `String session_id);
     ])
 
+  (* B317: non-destructive read used by the persist-first inbound handoff —
+     rows are appended locally BEFORE /poll_inbox clears them, so a crash
+     between the two cannot lose the batch. *)
+  let peek_inbox t ~node_id ~session_id ?(alias : string option) () =
+    post t "/peek_inbox" ?alias (`Assoc [
+      ("node_id", `String node_id);
+      ("session_id", `String session_id);
+    ])
+
 end
 
 (* ---------------------------------------------------------------------------
@@ -2124,6 +2133,26 @@ let json_list_member ~key json =
   match member_or_null key json with
   | `List lst -> lst
   | _ -> []
+
+(* B317: rows present in BOTH the peek and the poll result of one pass
+   (everything the peek saw is still queued when /poll_inbox runs) must be
+   appended once. Keyed on message_id; rows without one fall back to
+   whole-row structural equality. *)
+let dedupe_inbound_rows ~seen rows =
+  let seen_ids =
+    List.filter_map
+      (fun row ->
+         match Yojson.Safe.Util.member "message_id" row with
+         | `String s -> Some s
+         | _ -> None)
+      seen
+  in
+  List.filter
+    (fun row ->
+       match Yojson.Safe.Util.member "message_id" row with
+       | `String s -> not (List.mem s seen_ids)
+       | _ -> not (List.mem row seen))
+    rows
 
 (* B293: dead-lease classification for the heartbeat/poll arms of [sync].
    The relay reports an absent/expired (node_id, session_id) lease as
@@ -2811,82 +2840,114 @@ let sync (t : t) : sync_result Lwt.t =
       if !abort_on_rate_limit then
         delivered, rejected, notes, errs
       else if List.mem session_id t.registered then
-        let json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
-        note_observation ~sender:None json;
-        let msgs = json_list_member ~key:"messages" json in
-        if msgs <> [] then begin
-          let deliverable, rejection_reasons, rate_state_error =
-            filter_inbound_messages_persisted ~now:(Unix.gettimeofday ())
-              ~broker_root:t.broker_root ~expected_recipient:alias
-              inbound_policy msgs
-          in
-          let acc =
-            classify_poll_outcome ~alias ~polled:(List.length msgs)
-              ~rate_state_error rejection_reasons
-          in
-          let errs =
-            List.rev_append
-              (List.map (fun (op, detail) : pass_error ->
-                   { pe_op = op; pe_code = None; pe_alias = Some alias;
-                     pe_session_id = Some session_id; pe_detail = detail })
-                  acc.pa_errors)
-              errs
-          in
-          let notes = match acc.pa_note with
-            | None -> notes
-            | Some note -> note :: notes
-          in
-          (* Contract drops are kept in their own accumulator: they are folded
-             back into the single [inbound_rejected_note] summary (which must
-             cover every drop) but need to stay separable for the per-class
-             durable event and for the alert edge. *)
-          (match acc.pa_contract_note with
-           | None -> ()
-           | Some note ->
-               inbound_contract_notes := note :: !inbound_contract_notes;
-               inbound_contract_dropped :=
-                 !inbound_contract_dropped + acc.pa_contract_dropped;
-               obs_inbound_contract_aliases :=
-                 alias :: !obs_inbound_contract_aliases);
-          let delivered =
-            if deliverable = [] then delivered
-            else delivered + append_to_local_inbox t.broker_root session_id deliverable
-          in
-          delivered, rejected + List.length rejection_reasons, notes, errs
-        end
-        else if json_bool_member ~key:"ok" json then
-          delivered, rejected, notes, errs
-        else if response_is_lease_not_found json then begin
-          (* B293: the lease died between heartbeat and poll. Stop polling it;
-             the cached registration is dropped so the next pass re-registers
-             (the heartbeat arm repairs in-pass). *)
-          dropped_in_pass := session_id :: !dropped_in_pass;
-          t.registered <- List.filter (fun s -> s <> session_id) t.registered;
-          let detail = Yojson.Safe.to_string json in
-          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
-              ~alias ~session_id detail in
-          delivered, rejected, notes, mk :: errs
-        end
-        else if response_is_owner_mismatch json then begin
-          owner_mismatched_pass := session_id :: !owner_mismatched_pass;
-          let _n, strikes' = strikes_bump t.owner_mismatch_strikes session_id in
-          t.owner_mismatch_strikes <- strikes';
-          if owner_mismatch_should_drop strikes' session_id then begin
+        (* B317: persist-first inbound handoff — peek (non-destructive),
+           filter, append locally, THEN /poll_inbox to clear. The old order
+           (clear, then append) lost the whole batch to any crash or
+           watchdog kill between the relay clear and the local append.
+           Rows that arrive between peek and poll come back in the poll
+           result and are appended too — the same peek -> inject -> drain
+           repair contract as the Hermes/agy delivery paths. Do NOT
+           "simplify" this into drain-first. *)
+        let process_read json ~msgs (delivered, rejected, notes, errs) =
+          if json_bool_member ~key:"ok" json then begin
+            if msgs <> [] then begin
+              let deliverable, rejection_reasons, rate_state_error =
+                filter_inbound_messages_persisted ~now:(Unix.gettimeofday ())
+                  ~broker_root:t.broker_root ~expected_recipient:alias
+                  inbound_policy msgs
+              in
+              let acc =
+                classify_poll_outcome ~alias ~polled:(List.length msgs)
+                  ~rate_state_error rejection_reasons
+              in
+              let errs =
+                List.rev_append
+                  (List.map (fun (op, detail) : pass_error ->
+                       { pe_op = op; pe_code = None; pe_alias = Some alias;
+                         pe_session_id = Some session_id; pe_detail = detail })
+                      acc.pa_errors)
+                  errs
+              in
+              let notes = match acc.pa_note with
+                | None -> notes
+                | Some note -> note :: notes
+              in
+              (* Contract drops are kept in their own accumulator: they are folded
+                 back into the single [inbound_rejected_note] summary (which must
+                 cover every drop) but need to stay separable for the per-class
+                 durable event and for the alert edge. *)
+              (match acc.pa_contract_note with
+               | None -> ()
+               | Some note ->
+                   inbound_contract_notes := note :: !inbound_contract_notes;
+                   inbound_contract_dropped :=
+                     !inbound_contract_dropped + acc.pa_contract_dropped;
+                   obs_inbound_contract_aliases :=
+                     alias :: !obs_inbound_contract_aliases);
+              let delivered =
+                if deliverable = [] then delivered
+                else delivered + append_to_local_inbox t.broker_root session_id deliverable
+              in
+              delivered, rejected + List.length rejection_reasons, notes, errs
+            end
+            else delivered, rejected, notes, errs
+          end
+          else if response_is_lease_not_found json then begin
+            (* B293: the lease died between heartbeat and poll. Stop polling it;
+               the cached registration is dropped so the next pass re-registers
+               (the heartbeat arm repairs in-pass). *)
             dropped_in_pass := session_id :: !dropped_in_pass;
-            t.owner_mismatch_strikes <-
-              strikes_clear t.owner_mismatch_strikes session_id;
-            t.registered <- List.filter (fun s -> s <> session_id) t.registered
-          end;
-          let detail = Yojson.Safe.to_string json in
-          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
-              ~alias ~session_id detail in
-          delivered, rejected, notes, mk :: errs
+            t.registered <- List.filter (fun s -> s <> session_id) t.registered;
+            let detail = Yojson.Safe.to_string json in
+            let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+                ~alias ~session_id detail in
+            delivered, rejected, notes, mk :: errs
+          end
+          else if response_is_owner_mismatch json then begin
+            owner_mismatched_pass := session_id :: !owner_mismatched_pass;
+            let _n, strikes' = strikes_bump t.owner_mismatch_strikes session_id in
+            t.owner_mismatch_strikes <- strikes';
+            if owner_mismatch_should_drop strikes' session_id then begin
+              dropped_in_pass := session_id :: !dropped_in_pass;
+              t.owner_mismatch_strikes <-
+                strikes_clear t.owner_mismatch_strikes session_id;
+              t.registered <- List.filter (fun s -> s <> session_id) t.registered
+            end;
+            let detail = Yojson.Safe.to_string json in
+            let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+                ~alias ~session_id detail in
+            delivered, rejected, notes, mk :: errs
+          end
+          else
+            let detail = Yojson.Safe.to_string json in
+            let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
+                ~alias ~session_id detail in
+            delivered, rejected, notes, mk :: errs
+        in
+        let peek_json = Lwt_main.run (Relay_client.peek_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
+        note_observation ~sender:None peek_json;
+        let acc =
+          process_read peek_json
+            ~msgs:(json_list_member ~key:"messages" peek_json)
+            (delivered, rejected, notes, errs)
+        in
+        (* A peek that dropped the registration (B293) or hit a 429 (B244)
+           stops this session's handoff before the destructive poll. *)
+        if !abort_on_rate_limit || not (List.mem session_id t.registered) then acc
+        else begin
+          let poll_json = Lwt_main.run (Relay_client.poll_inbox client ~node_id:t.node_id ~session_id ~alias ()) in
+          note_observation ~sender:None poll_json;
+          (* Repair + dedup: poll returns everything still queued — rows the
+             peek already persisted AND new arrivals. Only new rows are
+             processed; already-seen ids must not be re-counted or
+             re-appended. *)
+          let poll_msgs =
+            dedupe_inbound_rows
+              ~seen:(json_list_member ~key:"messages" peek_json)
+              (json_list_member ~key:"messages" poll_json)
+          in
+          process_read poll_json ~msgs:poll_msgs acc
         end
-        else
-          let detail = Yojson.Safe.to_string json in
-          let mk = mk_reg_err ?code:(response_error_code json) "poll_inbox"
-              ~alias ~session_id detail in
-          delivered, rejected, notes, mk :: errs
       else
         delivered, rejected, notes, errs
     ) (0, 0, [], initial_poll_errors) regs
