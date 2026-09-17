@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:59:36Z"
 depends_on: []
 estimate_hours: 1
 id: B335
 priority: low
+started_at: null
 status: pending
 tags: []
 title: every non-ok register result says alias conflict with existing lease; register failures return HTTP 200
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Every non-ok register result carries the hardcoded human message alias conflict with existing lease (relay_server_json.ml:29-36): invalid_alias, alias_not_allowed, alias_identity_mismatch, and alias_conflict all share it (the error_code field is correct). Operators reading the message misdiagnose allowlist/pinning failures as conflicts. Also all register backend failures return HTTP 200 (respond_register_ok).
+
+## Fix direction
+
+Thread the backends actual status into the message; consider 409/403 statuses for conflict/mismatch.
+
+## Evidence
+
+Server-core review 2026-09-17.
