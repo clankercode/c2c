@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:12Z"
 depends_on: []
 estimate_hours: 1
 id: B316
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: write_connector_state_error wipes registered/sessions/node_id — reopens B294 register-theft window and breaks B231 peek keys
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+write_connector_state_error (c2c_relay_connector.ml:1711-1757) rebuilds connector-state.json with registered empty and no node_id/sessions keys (only wedge fields carried over). One transient sync exception erases the ownership evidence: connector_owns_alias returns None so the B294 CLI register guard reopens the alias-theft window, and connector_peek_key loses the binding so monitor/B231 peeks fall back to cli-alias keys and hit signature_invalid, until the next good pass rewrites the file.
+
+## Fix direction
+
+Preserve registered/sessions/node_id the same way the wedge fields are preserved (read-modify-write).
+
+## Evidence
+
+Connector review 2026-09-17.
