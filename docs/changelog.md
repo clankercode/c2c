@@ -9,6 +9,82 @@ nav_label: Changelog
 
 ## Unreleased
 
+## 0.16.0 — 2026-09-17
+
+- **The relay is now opt-in
+  (B300/B301).** A pristine c2c install made no relay *sends* by default,
+  but `c2c doctor` and `c2c health` still probed the public relay at
+  relay.c2c.im — `doctor` substituted the public URL whenever none was
+  configured, and `health` hardcoded it and ignored `relay.json` entirely
+  (so private-relay hosts got a health line about a server they don't use).
+  c2c now makes **no** relay network call until you activate one:
+  `c2c relay enable` (which also installs boot supervision, below),
+  `C2C_RELAY_URL`, or `--relay-url`. An inactive relay reports as a normal
+  healthy state — `relay: not activated (local-only)` — not a warning, and
+  same-machine DMs, rooms, broadcast, hooks and delivery are untouched.
+  Hosts with an existing `relay.json` carrying a `url` stay activated.
+
+- **The machine relay connector no longer crash-loops, and wedged aliases
+  self-heal (B291/B292/B293/B295).** The connector's staleness watchdog
+  assumed one pass fits in `max(180s, 6 × interval)` — but a machine pass
+  walks *every* broker root (241 on one host, ~208 s), so the deadline was
+  structurally unreachable: the connector killed itself every ~3 minutes
+  (9,300 restarts observed) and every root past the ~180 s mark in sort
+  order never had its relay DMs polled at all. A single permanently-failing
+  alias could produce the same machine-wide death, because the relay
+  reported a missing or expired lease as `signature_invalid` — which reads
+  as "your key is wrong" — and the connector retried the dead lease forever
+  instead of re-registering. Four fixes landed together: the staleness
+  window scales with observed pass duration (and no longer fires during
+  rate-limit backoff); roots with no eligible work are skipped cheaply; a
+  wedged root is parked in a cooldown (10 min doubling, capped at 2 h,
+  recorded in its `connector-state.json`) instead of exit-killing the
+  process; and the relay now returns a distinct `lease_not_found` (404)
+  which the connector answers by re-registering in the same pass. `register`
+  also takes over the `(node_id, session_id)` pair from stale pre-rename
+  rows — the root cause of "register returns `ok:true` but the lease never
+  moves" for specific aliases. Connector error logs are no longer truncated
+  mid-alias, and every distinct error in a pass is logged with its alias
+  (B297).
+
+- **`c2c relay register` no longer steals a live connector's lease
+  (B294).** Registering an alias the machine connector owned moved the
+  lease under the CLI's `cli-<alias>` keys and the connector then failed
+  `signature_invalid` forever — and the relay's own error hint recommended
+  running exactly that command. The hint now warns against it; `relay
+  register` refuses when a live connector owns the alias (`--force`
+  overrides), and new `--node-id`/`--session-id` flags (also honoring
+  `C2C_RELAY_NODE_ID`/`C2C_RELAY_SESSION_ID`) are the supported way to
+  hand a lease back to the connector's keys.
+
+- **relay-connect survives reboots (B296).** The connector's exit-based
+  restart design assumed a supervisor that outlives reboots; none existed,
+  and one host sat relay-dark for 55 days after a reboot with nothing
+  noticing. `c2c relay enable` (and `c2c install self` on relay-activated
+  hosts) now installs a systemd `--user` unit — `Restart=always`,
+  `StartLimitIntervalSec=0`, absolute binary path — started at every login.
+  Hosts without systemd `--user` keep the existing `c2c start
+  relay-connect` supervision, and no remediation text suggests
+  backgrounding with `&` any more. `c2c uninstall self` removes the unit.
+
+- **Managed instance logs rotate (B298).** The relay-connect instance log
+  on one host reached 810 MiB (~70 MB/day) because nothing ever rotated it.
+  Instance logs now rotate rename-only at supervisor start and on size into
+  a `log`, `log.1..log.3` ring, 10 MiB each by default; tune with
+  `C2C_INSTANCE_LOG_MAX_BYTES` / `C2C_INSTANCE_LOG_KEEP`.
+
+- **c2c adds its MCP server entries as disabled (B290).** A newly written
+  c2c entry in Claude Code's `.mcp.json` / `~/.claude.json` lands with
+  `"disabled": true`, and in Codex's `[mcp_servers.c2c]` with `enabled =
+  false` — you opt in from the client. Existing entries are never
+  re-disabled. The CLI path is unaffected.
+
+- **Orphaned `registry.json.tmp.<pid>` files are swept (B299).** Hard-exits
+  between temp-write and rename leaked atomic-write temps permanently (297
+  on one host, manufactured by the crash loop above). Registry saves now
+  sweep temps whose pid is dead or whose mtime is over an hour old, under
+  the registry lock.
+
 ## 0.15.1 — 2026-08-09
 
 - **`c2c stop` could kill an unrelated process, and did

@@ -17,6 +17,39 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.16.0 — 2026-09-17
+
+### The relay is now opt-in — c2c contacts no relay until you enable one (B300)
+summary: c2c used to contact the public relay at relay.c2c.im by default. On a host with no relay configuration at all, `c2c doctor` and `c2c health` both probed it — `doctor` fell back to the public URL whenever none was configured, and `health` hardcoded it outright. That is gone: c2c now makes no relay network call until you explicitly activate one, and an unactivated relay is reported as a normal healthy state (`relay: not activated (local-only)`), not a warning. Nothing about same-machine messaging changes — DMs, rooms, broadcast, hooks and delivery never needed the relay. Only cross-machine messaging (`alias@host`, remote peers) does. Activation is `c2c relay enable` (or `--url` for a private relay), `C2C_RELAY_URL`, or `--relay-url`; `c2c relay disable` returns the host to local-only while keeping the configured URL. If you already ran `c2c relay setup` your host stays activated — an existing relay.json with a `url` is honoured as-is, so nothing you have working will disconnect.
+setup: c2c relay enable
+audience: all
+
+### `c2c health` was reporting on the wrong relay for private-relay hosts (B301)
+summary: `c2c health`'s relay line read `C2C_RELAY_URL` and then a hardcoded public URL, never `relay.json` — so if you pointed this host at a private relay with `c2c relay setup --url`, the health line described relay.c2c.im's reachability and version instead of yours, confidently and wrongly. It now uses the same resolution as every other relay surface. Relay URL resolution had been copied three times and all three copies had drifted (the subscribe daemon read `~/.c2c/relay-setup.json`, a path nothing writes); they are now one.
+audience: all
+
+### The machine relay connector no longer crash-loops, and wedged aliases self-heal (B291/B292/B293/B295)
+summary: On a host with many broker roots the machine connector could never finish a sync pass inside its own 180s staleness deadline, so it killed itself roughly every three minutes — 9,300 restarts on one host — and every repo after the ~180s mark in sort order never had its relay DMs polled at all. One permanently failed alias could do the same to a healthy machine, because the relay reported a missing lease as `signature_invalid` and the connector kept retrying a dead lease forever. The staleness window now scales with how long a pass actually takes, roots with nothing to do are skipped cheaply, a wedged root is parked in a cooldown (10 min doubling, capped at 2 h) instead of killing the process, and the relay now says `lease_not_found` for a missing lease — which the connector answers by re-registering in the same pass. Register also takes over the (node_id, session_id) pair from stale pre-rename rows, which is what kept specific aliases wedged with `ok:true` registers that changed nothing. Errors in the connector log are no longer truncated mid-alias and every distinct error in a pass is logged with its alias.
+setup: c2c relay enable
+audience: all
+
+### `c2c relay register` no longer steals a live connector's lease (B294)
+summary: Running `c2c relay register --alias X` while the machine connector owns X's lease moved the lease under the CLI's keys, and the connector then failed `signature_invalid` forever — the relay's own error hint recommended exactly this command. The hint now warns against it, `relay register` refuses when connector-state.json shows a live connector owning the alias (`--force` to override), and `--node-id`/`--session-id` (or `C2C_RELAY_NODE_ID`/`C2C_RELAY_SESSION_ID`) are the supported way to register under the connector's keys when repairing a wedged lease deliberately.
+audience: all
+
+### relay-connect now survives reboots via systemd (B296)
+summary: The connector's crash-exit design assumed a supervisor that survives reboot — none existed, and one host sat relay-dark for 55 days after a reboot with nothing noticing. `c2c relay enable` (and `c2c install self` on a relay-activated host) now installs a systemd --user unit (Restart=always, never rate-limited) that runs the connector at every login. Hosts without systemd --user keep the old `c2c start relay-connect` supervision, and no remediation text suggests backgrounding `c2c relay connect &` any more.
+setup: c2c relay enable
+audience: all
+
+### Managed instance logs now rotate instead of growing forever (B298)
+summary: The relay-connect instance log on one host reached 810 MiB at ~70 MB/day because nothing ever rotated it. Managed instance logs now rotate rename-only at supervisor start and on size, into a ring of `log`, `log.1..log.3`, capped at 10 MiB each by default — tune with `C2C_INSTANCE_LOG_MAX_BYTES` and `C2C_INSTANCE_LOG_KEEP`.
+audience: all
+
+### c2c now adds its MCP server entries as disabled (B290)
+summary: When c2c writes a NEW c2c entry into Claude Code's `.mcp.json`/`~/.claude.json` (`disabled: true`) or Codex's `[mcp_servers.c2c]` (`enabled = false`), the entry lands disabled and you opt in from the client. Entries that already exist are never re-disabled, so an operator's enabled entry stays enabled across reinstalls. The CLI path (`c2c send`, hooks, monitor) is unaffected.
+audience: all
+
 ## v0.15.1 — 2026-08-09
 
 ### `c2c stop` no longer kills a stranger's process (#85)
