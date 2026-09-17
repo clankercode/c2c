@@ -263,12 +263,17 @@ type connector_info = {
   conn_inbound_rejected_note : string option;
 }
 
+(* B296: never recommend backgrounding. The old fallback arms
+   (`c2c relay connect &`, pkill-then-&) were children of the calling agent's
+   shell and died with it — the exact unsupervised failure (x-left relay-dark
+   55 days) the remediation is meant to fix. `c2c start relay-connect` is the
+   supervised path; `c2c relay enable` installs the systemd --user unit so the
+   supervisor itself survives reboots (skipped gracefully without systemd). *)
 let default_remediation_start =
-  "c2c start relay-connect 2>/dev/null || c2c relay connect &"
+  "c2c start relay-connect  # boot persistence: c2c relay enable"
 
 let default_remediation_restart =
-  "c2c restart relay-connect 2>/dev/null || \
-   (pkill -f 'c2c relay connect' 2>/dev/null; c2c relay connect &)"
+  "c2c restart relay-connect"
 
 let derive_health ~live ~process_present ~state ~now : connector_health =
   match state with

@@ -388,10 +388,37 @@ let test_connector_wedged_remediation_untouched () =
   in
   check string "health wedged" "wedged" (health_to_string info.conn_health);
   check (option string) "wedged remediation is the bare restart command"
-    (Some
-       "c2c restart relay-connect 2>/dev/null || (pkill -f 'c2c relay \
-        connect' 2>/dev/null; c2c relay connect &)")
+    (Some "c2c restart relay-connect")
     info.conn_remediation
+
+(* B296: remediation must never recommend backgrounding — `c2c relay connect &`
+   is a child of the calling agent's shell and dies with it, reproducing the
+   exact failure (relay-dark until a human notices) the hint is meant to fix. *)
+let test_remediation_never_backgrounds () =
+  let all_infos =
+    [ connector_info ~state:None ~now ()
+    ; connector_info ~process_present:true ~state:None ~now ()
+    ; connector_info ~state:(Some (conn_state ~last_sync:(now -. 3600.0) ~last_ok:(now -. 3600.0) ())) ~now ()
+    ; connector_info ~process_present:true
+        ~state:(Some (conn_state ~last_sync:(now -. 3600.0) ~last_ok:(now -. 3600.0) ())) ~now ()
+    ; erroring_info ()
+    ]
+  in
+  List.iter
+    (fun info ->
+       match info.conn_remediation with
+       | None -> ()
+       | Some r ->
+           check bool ("remediation does not background: " ^ r) true
+             (not (string_contains ~needle:"&" r));
+           check bool ("remediation is supervised: " ^ r) true
+             (string_contains ~needle:"c2c " r))
+    all_infos;
+  (* The start remediation points at the supervised start verb and mentions
+     the boot-persistence verb (c2c relay enable installs the systemd unit). *)
+  check (option string) "start remediation names start + boot persistence"
+    (Some "c2c start relay-connect  # boot persistence: c2c relay enable")
+    (connector_info ~state:(Some (conn_state ~last_sync:(now -. 3600.0) ~last_ok:(now -. 3600.0) ())) ~now ()).conn_remediation
 
 (* --- #11(2): the two lines must not read as one contradiction ------------- *)
 
@@ -943,6 +970,8 @@ let () =
             test_connector_erroring_without_detail_keeps_guidance;
           test_case "wedged remediation untouched" `Quick
             test_connector_wedged_remediation_untouched;
+          test_case "remediation never backgrounds (B296)" `Quick
+            test_remediation_never_backgrounds;
           test_case "error detail bounded, command last" `Quick
             test_connector_error_detail_bounded;
           test_case "error truncation is utf-8 safe" `Quick

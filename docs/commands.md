@@ -937,7 +937,7 @@ Relay:
   url:        https://relay.c2c.im  (configured)
   alias:      (no current session alias)
   state:      configured_not_registered — no current session alias to register  [relay config: /home/you/.config/c2c/relay.json (machine-wide)]
-  connector:  none (no connector sync state — start with 'c2c relay connect') — c2c start relay-connect 2>/dev/null || c2c relay connect &  [scope: machine connector service, this repo's broker root]
+  connector:  none (no connector sync state — start with 'c2c relay connect') — c2c start relay-connect  # boot persistence: c2c relay enable  [scope: machine connector service, this repo's broker root]
 ```
 
 and the matching `--json` fields under `relay`:
@@ -956,7 +956,7 @@ and the matching `--json` fields under `relay`:
     "last_ok_age_s": null,
     "process_present": false,
     "health": "absent",
-    "remediation": "c2c start relay-connect 2>/dev/null || c2c relay connect &",
+    "remediation": "c2c start relay-connect  # boot persistence: c2c relay enable",
     "scope": "machine_connector_service",
     "last_error_op": null,
     "last_error_detail": null
@@ -1484,8 +1484,8 @@ Peer-PASS commands live under the developer/operator namespace: `c2c dev peer-pa
 
 | Subcommand | Description |
 |------------|-------------|
-| `relay enable [--url URL] [--token T]` | **Activate the relay on this host.** The relay is opt-in: c2c contacts no relay until this is run (or `C2C_RELAY_URL` / `--relay-url` is given). Defaults to the public relay `https://relay.c2c.im`; pass `--url` for a private one. Writes `url` + `enabled: true` to `relay.json`. |
-| `relay disable` | Return this host to local-only. Sets `enabled: false` and **keeps** the configured URL, so `c2c relay enable` restores it. Same-machine DMs, rooms and broadcast are unaffected. |
+| `relay enable [--url URL] [--token T]` | **Activate the relay on this host.** The relay is opt-in: c2c contacts no relay until this is run (or `C2C_RELAY_URL` / `--relay-url` is given). Defaults to the public relay `https://relay.c2c.im`; pass `--url` for a private one. Writes `url` + `enabled: true` to `relay.json`. Also installs + enables a `systemd --user` unit (`c2c-relay-connect.service`, `Restart=always`) so the connector survives reboots/logouts — skipped with a note on hosts without systemd --user. |
+| `relay disable` | Return this host to local-only. Sets `enabled: false` and **keeps** the configured URL, so `c2c relay enable` restores it. Stops + disables the boot-supervision unit (the unit file is kept). Same-machine DMs, rooms and broadcast are unaffected. |
 | `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH] [--gc-interval N]` | Start an HTTP relay server |
 | `relay connect [--relay-url URL] [--token T] [--token-file PATH] [--interval N] [--once]` | Bridge local broker to remote relay. Falls back to env vars and saved `relay.json` config. Bare persistent connect is **unsupervised** (B235): it prints a loud warning and is not auto-restarted if it dies — prefer `c2c start relay-connect` for the machine-wide supervised connector; recover with `c2c restart relay-connect` (bootstraps a managed instance when no config exists and a relay URL is known). `--once` is a one-shot sync (no warning). |
 | `relay setup [--url URL] [--token T] [--token-file PATH] [--show]` | Save relay config to disk |
@@ -1607,8 +1607,8 @@ the legacy file-based architecture.
 
 | Subcommand | Description |
 |------------|-------------|
-| `relay enable [--url URL] [--token T]` | **Activate the relay on this host.** The relay is opt-in: c2c contacts no relay until this is run (or `C2C_RELAY_URL` / `--relay-url` is given). Defaults to the public relay `https://relay.c2c.im`; pass `--url` for a private one. Writes `url` + `enabled: true` to `relay.json`. |
-| `relay disable` | Return this host to local-only. Sets `enabled: false` and **keeps** the configured URL, so `c2c relay enable` restores it. Same-machine DMs, rooms and broadcast are unaffected. |
+| `relay enable [--url URL] [--token T]` | **Activate the relay on this host.** The relay is opt-in: c2c contacts no relay until this is run (or `C2C_RELAY_URL` / `--relay-url` is given). Defaults to the public relay `https://relay.c2c.im`; pass `--url` for a private one. Writes `url` + `enabled: true` to `relay.json`. Also installs + enables a `systemd --user` unit (`c2c-relay-connect.service`, `Restart=always`) so the connector survives reboots/logouts — skipped with a note on hosts without systemd --user. |
+| `relay disable` | Return this host to local-only. Sets `enabled: false` and **keeps** the configured URL, so `c2c relay enable` restores it. Stops + disables the boot-supervision unit (the unit file is kept). Same-machine DMs, rooms and broadcast are unaffected. |
 | `relay serve [--listen HOST:PORT] [--token T] [--storage memory\|sqlite] [--db-path PATH]` | Start an HTTP relay server. |
 | `relay connect [--relay-url URL] [--token T] [--interval N] [--once]` | Bridge local broker to remote relay. |
 | `relay setup [--url URL] [--token T] [--show]` | Save relay config to disk. |

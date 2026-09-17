@@ -588,8 +588,31 @@ let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
             (function Ok p -> Some (C2c_install_manifest.binary p) | Error _ -> None)
             extras
         in
+        (* B296: boot supervision for the relay connector. Installed from
+           `c2c install self` only on relay-activated hosts (B300) and only
+           when a systemd --user session exists; skipped silently (bar one
+           stderr note) otherwise. Dry run reports nothing extra. *)
+        let relay_unit_note, relay_unit_artifacts =
+          if dry_run then ("", [])
+          else
+            match
+              C2c_relay_systemd.install_and_enable_if_active
+                ~c2c_path:dest_path ()
+            with
+            | Unit_enabled path ->
+                ( Printf.sprintf "relay connector boot supervision: %s\n" path
+                , [ C2c_relay_systemd.self_artifact () ] )
+            | Unit_skipped reason ->
+                Printf.eprintf "note: %s\n%!" reason;
+                ("", [])
+            | Unit_error err ->
+                Printf.eprintf "warning: %s\n%!" err;
+                ("", [])
+            | Unit_not_activated -> ("", [])
+        in
         let self_artifacts =
           C2c_install_manifest.binary dest_path :: mcp_artifacts
+          @ relay_unit_artifacts
         in
         (match shim_dir with
          | Some dir ->
@@ -608,6 +631,9 @@ let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
              in
              if extra_json = [] then [] else [ ("mcp_server", `List extra_json) ])
           @ (match shim_dir with Some d -> [ ("git_shim_dir", `String d) ] | None -> [])
+          @ (if relay_unit_note <> "" then
+               [ ("relay_connect_unit_note", `String relay_unit_note) ]
+             else [])
         in
         { artifacts = self_artifacts; extra_json }
     | Error msg ->
