@@ -579,9 +579,24 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
         end
   end
 
+(* B312: restart URL candidates in resolution order — override > env >
+   relay.json activation > saved managed config (B300, matching start and
+   plain connect). The saved managed URL is the LAST resort, not the first:
+   re-pointing via `relay enable --url` / C2C_RELAY_URL must beat the stale
+   saved URL at restart. Pure so the order is unit-testable — `c2c restart`
+   also passes a CLI-resolved override (C2c_managed_cmd), which must not be
+   load-bearing for this module's correctness. *)
+let restart_url_candidates ~saved_url ~relay_url_override ~env_url
+    ~activation_url () =
+  first_nonempty_url
+    (match saved_url with
+     | Some _ ->
+         [ relay_url_override; env_url; activation_url; saved_url ]
+     | None -> [ relay_url_override; env_url; activation_url ])
+
 (** Restart the machine-wide relay connector [name]: stop the running
-    supervisor, resolve its relay URL (saved config → override →
-    [C2C_RELAY_URL]), then relaunch the daemon.
+    supervisor, resolve its relay URL (override → [C2C_RELAY_URL] →
+    relay.json activation → saved managed config), then relaunch the daemon.
 
     B235: when [name] is the conventional [default_instance_name] and no
     managed config exists (typical after an ad-hoc `c2c relay connect` died),
@@ -589,6 +604,13 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
     [relay_url_override] lets the CLI pass the same URL resolution as
     `relay setup` / `C2C_RELAY_URL` without coupling this module to the
     full CLI config loader.
+
+    B312: relay.json (via [Relay_activation]) is a candidate exactly as it
+    is for start/connect (B242/B300) — an enable-only host can restart, and
+    a re-pointed relay.json beats the stale saved managed URL instead of the
+    other way around. A URL parked by `relay disable` (enabled:false) stays
+    out of the resolution: disabled means off, and the saved managed config
+    remains the restart fallback in that state.
 
     Returns a clean nonzero exit with an actionable message (never an uncaught
     exception) when the name is not a managed relay connector and cannot be
@@ -645,6 +667,9 @@ let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
     | Some v when String.trim v <> "" -> Some (String.trim v)
     | _ -> None
   in
+  (* B312: relay.json activation is a restart URL candidate, resolved through
+     the same C2C_RELAY_CONFIG / broker-root / machine chain start uses. *)
+  let activation_url = Relay_activation.url () in
   match read_managed_config ~name with
   | None when not (is_default_relay_connect_name name) ->
       Printf.eprintf
@@ -657,7 +682,8 @@ let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
   | None ->
       (* B235 bootstrap: ad-hoc connector left no supervised config. *)
       let relay_url =
-        first_nonempty_url [ relay_url_override; env_url ]
+        restart_url_candidates ~saved_url:None ~relay_url_override ~env_url
+          ~activation_url ()
       in
       (match relay_url with
        | None ->
@@ -666,7 +692,8 @@ let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
              \  Ad-hoc `c2c relay connect` is unsupervised (B235).\n\
              \  Start the supervised connector:\n\
              \    c2c start relay-connect --relay-url <URL>\n\
-             \  Or set C2C_RELAY_URL / run `c2c relay setup --url <URL>`, then:\n\
+             \  Or set C2C_RELAY_URL / run `c2c relay enable` \
+              or `c2c relay setup --url <URL>`, then:\n\
              \    c2c restart relay-connect\n%!"
              name;
            exit 1
@@ -683,13 +710,15 @@ let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
              ~interval:30 ~extra_args:[] ())
   | Some mc ->
       let relay_url =
-        first_nonempty_url [ mc.mc_relay_url; relay_url_override; env_url ]
+        restart_url_candidates ~saved_url:mc.mc_relay_url ~relay_url_override
+          ~env_url ~activation_url ()
       in
       (match relay_url with
        | None ->
            Printf.eprintf
              "error: cannot restart relay connector '%s': no relay URL known.\n\
-             \  The saved config has no relay_url and C2C_RELAY_URL is unset.\n\
+             \  The saved config, relay.json, and C2C_RELAY_URL have no \
+              relay URL.\n\
              \  Restart it explicitly: c2c start relay-connect --relay-url <URL>\n%!"
              name;
            exit 1

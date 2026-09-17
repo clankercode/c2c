@@ -71,6 +71,19 @@
  (libraries alcotest yojson unix)
  (deps c2c.exe))
 
+; B312: `c2c restart relay-connect` must consider relay.json activation a URL
+; candidate (override > env > activation > saved config), and enable/disable
+; must warn when config_location scopes the write away from the machine file
+; (C2C_RELAY_CONFIG / C2C_MCP_BROKER_ROOT) or when a repo-local relay.json
+; still resolves active after a machine-scope disable. End-to-end through the
+; real binary under C2C_SYSTEMCTL_FIXTURE=1.
+(test
+ (name test_c2c_relay_b312_verb_scoping)
+ (modules test_c2c_relay_b312_verb_scoping c2c_relay_managed c2c_relay_systemd
+  c2c_instance_log)
+ (libraries c2c_mcp alcotest yojson unix digestif.ocaml)
+ (deps c2c.exe))
+
 ; #35 phase 1: machine-wide deliver-service scaffold (lock/pidfile/doctor stub).
 (test
  (name test_c2c_deliver_managed)

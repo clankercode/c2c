@@ -680,6 +680,68 @@ let relay_config_fields () =
 let set_config_field fields key v =
   (key, v) :: List.filter (fun (k, _) -> k <> key) fields
 
+(* B312: enable/disable write through Relay_activation.config_location,
+   which honors C2C_RELAY_CONFIG / C2C_MCP_BROKER_ROOT. Inside a
+   broker-scoped session that silently lands activation in a repo-local
+   relay.json, while a later plain-shell disable flips the MACHINE file —
+   one scope stays active while the operator believes the relay is off
+   (relay status/monitor/dm in that repo keep using it). Warn-not-refuse:
+   repo-scoped relay config is a legitimate deliberate configuration
+   (per-repo opt-in), so the verb proceeds, but the exact file and the
+   split-brain risk must be impossible to miss. *)
+let warn_non_machine_relay_config verb =
+  match relay_config_location () with
+  | Relay_state.Relay_config_machine _ -> ()
+  | loc ->
+      let path = Relay_state.relay_config_path_of loc in
+      Printf.eprintf
+        "warning: `relay %s` is writing %s — NOT the machine-wide config.\n\
+        \  C2C_RELAY_CONFIG / C2C_MCP_BROKER_ROOT scope relay.json per repo,\n\
+        \  so the same verb from a plain shell reads a DIFFERENT file\n\
+        \  (split-brain: this scope flips while the machine-wide config stays \
+         as it was).\n\
+        \  Pass C2C_RELAY_CONFIG explicitly to make the target unambiguous.\n%!"
+        verb path
+
+(* Same active predicate as Relay_activation (url set, not parked by
+   enabled:false) but for an explicit path. *)
+let relay_json_resolves_active path =
+  if not (Sys.file_exists path) then false
+  else
+    match Yojson.Safe.from_file path with
+    | `Assoc fields ->
+        let url =
+          match List.assoc_opt "url" fields with
+          | Some (`String u) -> String.trim u <> ""
+          | _ -> false
+        in
+        let parked =
+          match List.assoc_opt "enabled" fields with
+          | Some (`Bool false) -> true
+          | _ -> false
+        in
+        url && not parked
+    | _ -> false
+
+(* B312: `relay disable` flips the file [config_location] resolves — usually
+   the machine config. A repo-local relay.json written by an earlier
+   broker-scoped enable still resolves active afterwards. Name the file and
+   the sanctioned way to turn that scope off too. *)
+let warn_repo_local_relay_still_active written_path =
+  let broker_root =
+    try C2c_repo_fp.resolve_broker_root_canonical () with _ -> ""
+  in
+  if broker_root <> "" then
+    let repo_local = broker_root // "relay.json" in
+    if repo_local <> written_path && relay_json_resolves_active repo_local then
+      Printf.eprintf
+        "warning: repo-local relay config %s is still ACTIVE (url set, not \
+         disabled).\n\
+        \  The machine-wide config was disabled here, but relay \
+         status/monitor/dm in that repo keep using the relay.\n\
+        \  Turn that scope off too: C2C_RELAY_CONFIG=%s c2c relay disable\n%!"
+        repo_local repo_local
+
 let relay_enable_cmd =
   let url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "url" ] ~docv:"URL"
@@ -693,6 +755,7 @@ let relay_enable_cmd =
       ~doc:"Bearer token for a token-protected relay.")
   in
   let+ url = url and+ token = token in
+  warn_non_machine_relay_config "enable";
   (* B310: activation precedence matches every other surface (B300):
      --url > C2C_RELAY_URL > an already-saved URL — only a host with none of
      those gets the public relay. Previously the ambient env (and any saved
@@ -759,6 +822,7 @@ let relay_enable_cmd =
 
 let relay_disable_cmd =
   let+ () = Cmdliner.Term.const () in
+  warn_non_machine_relay_config "disable";
   let fields = relay_config_fields () in
   let had_url = List.assoc_opt "url" fields <> None in
   let fields = set_config_field fields "enabled" (`Bool false) in
@@ -766,6 +830,7 @@ let relay_disable_cmd =
   (* B296: stop+disable the boot-supervision unit (the file is kept, so a
      later `c2c relay enable` re-enables it cheaply). *)
   C2c_relay_systemd.stop_and_disable ();
+  warn_repo_local_relay_still_active path;
   Printf.printf
     "relay deactivated (enabled: false)\n\
      wrote %s\n\
