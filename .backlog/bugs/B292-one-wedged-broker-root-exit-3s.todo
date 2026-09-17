@@ -77,3 +77,5 @@ timer happened to expire first.
 ## Evidence
 
 Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`
+
+Lane: relay-core, serial (see B293 note); runs 5th. Scope guard: record the wedge via the connector-side writer (c2c_relay_connector.ml / connector-state.json) ONLY; do not touch doctor display or relay_state.ml in this task (B296 lane owns those files).
