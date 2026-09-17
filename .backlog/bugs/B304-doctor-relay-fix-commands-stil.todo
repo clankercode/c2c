@@ -1,0 +1,26 @@
+---
+complexity: low
+created_at: "2026-09-17T07:56:10Z"
+depends_on: []
+estimate_hours: 1
+id: B304
+priority: high
+status: pending
+tags: []
+title: doctor relay fix_commands still recommend pattern-killing and backgrounding the connector (B296 incomplete)
+updated_at: "2026-09-17T07:56:10Z"
+---
+
+# doctor relay fix_commands still recommend pattern-killing and backgrounding the connector (B296 incomplete)
+
+## Steps to Reproduce
+
+1. TODO: Add steps
+
+## Expected Behavior
+
+TODO: Describe expected behavior
+
+## Actual Behavior
+
+TODO: Describe actual behavior

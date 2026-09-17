@@ -300,3 +300,4 @@ bugs:
     - file: B301-c2c-health-hardcodes-relay-c2c.todo
     - file: B302-c2c-restart-stop-relay-connect.todo
     - file: B303-c2c-rename-still-phones-a-disa.todo
+    - file: B304-doctor-relay-fix-commands-stil.todo
