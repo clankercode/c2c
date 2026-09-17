@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:59:35Z"
 depends_on: []
 estimate_hours: 1
 id: B328
 priority: high
+started_at: null
 status: pending
 tags: []
 title: sqlite relay send has no message-id dedup (seen_ids is dead schema) - client and forward retries double-deliver on prod
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+The sqlite relay backend (the production default via c2c relay serve) has NO message-id dedup: SqliteRelay.send unconditionally INSERTs into inboxes (relay.ml:3303-3312) and never touches the seen_ids table that relay_sqlite_support.ml:94-97 creates - grep shows every seen_ids reference is in the in-memory record (relay.ml:105-699). InMemoryRelay.send records the message id and returns Duplicate on replay. A client retry of /send after a timeout (exactly what the connector outbox attempts/retry design does) double-delivers on prod; handle_forwards Duplicate arm (relay.ml:5755) and Relay_forwarders duplicate classification can never fire against a sqlite peer, so cross-relay forward retries also duplicate. Tests run in-memory and are idempotent; prod is not.
+
+## Fix direction
+
+Port the FIFO-bounded dedup to sqlite (INSERT OR IGNORE INTO seen_ids + changes() check, plus a prune past the dedup window), or a UNIQUE index + upsert on inboxes.message_id with the conflict mapped to Duplicate.
+
+## Evidence
+
+Server-core review 2026-09-17; verified in source by coordinator (seen_ids refs all in-memory; sqlite INSERT unconditional).
