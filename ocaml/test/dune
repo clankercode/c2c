@@ -521,6 +521,15 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B328: sqlite send message-id dedup via seen_ids (matches InMemoryRelay
+; semantics: replay -> Duplicate, FIFO window prune). E2E /forward replay
+; against a real loopback sqlite relay answers duplicate:true.
+(test
+ (name test_relay_b328_send_dedup)
+ (modules test_relay_b328_send_dedup)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 ; B293: "no live lease" is lease_not_found (not signature_invalid), and the
 ; connector drops a dead cached registration instead of retrying the dead
 ; lease forever. Real loopback sqlite server for the code split; scripted

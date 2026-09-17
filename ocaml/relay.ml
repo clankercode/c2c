@@ -3300,17 +3300,39 @@ end = struct
             if rc2 = Rc.ROW then
               let recv_node_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 0) in
               let recv_session_id = Sqlite3.Data.to_string_exn (Sqlite3.column recv_stmt 1) in
-              with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
-              Sqlite3.bind_text ins_stmt 1 recv_node_id |> ignore;
-              Sqlite3.bind_text ins_stmt 2 recv_session_id |> ignore;
-              Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
-              Sqlite3.bind_text ins_stmt 4 from_alias |> ignore;
-              Sqlite3.bind_text ins_stmt 5 to_alias |> ignore;
-              Sqlite3.bind_text ins_stmt 6 content |> ignore;
-              Sqlite3.bind_double ins_stmt 7 ts |> ignore;
-              Sqlite3.bind_int ins_stmt 8 pow_difficulty |> ignore;
-              Sqlite3.step ins_stmt |> ignore;
-              `Ok ts)
+              (* B328: message-id dedup mirroring InMemoryRelay.send — the
+                 seen_ids table was created by the schema but never written.
+                 INSERT OR IGNORE + changes()=0 means the id was already
+                 accepted within the dedup window -> Duplicate, no second
+                 inbox row. Recorded only on the success path so rejected
+                 sends (unknown/dead/private alias) do not consume ids. *)
+              let fresh =
+                with_stmt conn "INSERT OR IGNORE INTO seen_ids (message_id, ts) VALUES (?, ?)" (fun seen_stmt ->
+                Sqlite3.bind_text seen_stmt 1 msg_id |> ignore;
+                Sqlite3.bind_double seen_stmt 2 ts |> ignore;
+                Sqlite3.step seen_stmt |> ignore;
+                Sqlite3.changes conn > 0)
+              in
+              if not fresh then `Duplicate ts
+              else begin
+                (* FIFO prune: keep only the newest dedup_window ids, so a
+                   pruned id may be accepted again (same semantics as the
+                   in-memory seen_ids_fifo). *)
+                (with_stmt conn "DELETE FROM seen_ids WHERE rowid NOT IN (SELECT rowid FROM seen_ids ORDER BY rowid DESC LIMIT ?)" (fun del_stmt ->
+                 Sqlite3.bind_int del_stmt 1 t.dedup_window |> ignore;
+                 Sqlite3.step del_stmt |> ignore));
+                with_stmt conn "INSERT INTO inboxes (node_id, session_id, message_id, from_alias, to_alias, content, ts, pow_difficulty) VALUES (?, ?, ?, ?, ?, ?, ?, ?)" (fun ins_stmt ->
+                Sqlite3.bind_text ins_stmt 1 recv_node_id |> ignore;
+                Sqlite3.bind_text ins_stmt 2 recv_session_id |> ignore;
+                Sqlite3.bind_text ins_stmt 3 msg_id |> ignore;
+                Sqlite3.bind_text ins_stmt 4 from_alias |> ignore;
+                Sqlite3.bind_text ins_stmt 5 to_alias |> ignore;
+                Sqlite3.bind_text ins_stmt 6 content |> ignore;
+                Sqlite3.bind_double ins_stmt 7 ts |> ignore;
+                Sqlite3.bind_int ins_stmt 8 pow_difficulty |> ignore;
+                Sqlite3.step ins_stmt |> ignore;
+                `Ok ts)
+              end
             else
               `Error (relay_err_unknown_alias, "recipient lease not found"))
         else
