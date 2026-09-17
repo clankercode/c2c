@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-17T07:59:37Z"
 depends_on: []
 estimate_hours: 1
 id: B340
 priority: low
+started_at: null
 status: pending
 tags: []
 title: WS subscribe handshake has no server nonce and subscribers survive lease takeover/rebind
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+WebSocket subscribe signs only alias+timestamp with no server nonce (relay_ws_server.ml:396-447), so a captured handshake signature is replayable within the ts window (TLS normally hides it). More relevant to B295: subscribers are never evicted on lease takeover/rebind - a subscriber authenticated under an alias old identity keeps receiving push_dm for that alias after the alias is taken over or rebound to a new identity, because no register/release path touches the subscriber map.
+
+## Fix direction
+
+Include a server nonce in the signed blob, and drop subscriptions for an alias when its lease is rebound/released.
+
+## Evidence
+
+Server-core review 2026-09-17.
