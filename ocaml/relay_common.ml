@@ -9,6 +9,11 @@ let relay_err_signature_invalid = "signature_invalid"
 let relay_err_timestamp_out_of_window = "timestamp_out_of_window"
 let relay_err_nonce_replay = "nonce_replay"
 let relay_err_missing_proof_field = "missing_proof_field"
+(* B293: session-scoped route where the (node_id, session_id) has NO live
+   lease (absent or released). Distinct from signature_invalid, which means
+   the signer/ownership claim itself is wrong — a client can act on
+   lease_not_found by re-registering, and the connector does exactly that. *)
+let relay_err_lease_not_found = "lease_not_found"
 (* B116: uniform denial for binding revocation — deliberately covers BOTH
    "binding does not exist" and "proof key does not own this binding" so a
    valid-signature probe cannot be used as a binding-existence oracle. *)

@@ -521,6 +521,29 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B293: "no live lease" is lease_not_found (not signature_invalid), and the
+; connector drops a dead cached registration instead of retrying the dead
+; lease forever. Real loopback sqlite server for the code split; scripted
+; Relay_test_support server for the connector recovery rules.
+(test
+ (name test_relay_b293_lease_recovery)
+ (modules test_relay_b293_lease_recovery)
+ (libraries c2c_mcp relay_test_support alcotest yojson unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix))
+
+; B294: `c2c relay register` must refuse to steal a lease a live relay-connect
+; connector owns (read-only connector-state evidence, --force to override),
+; honour explicit --node-id/--session-id (+ C2C_RELAY_NODE_ID/SESSION_ID), and
+; the relay's key-drift hint must point at the connector, never at register.
+; Drives the built c2c binary against a scripted relay.
+(test
+ (name test_relay_b294_register_guard)
+ (modules test_relay_b294_register_guard)
+ (libraries c2c_mcp relay_test_support alcotest yojson unix sqlite3
+   lwt.unix cohttp cohttp-lwt-unix)
+ (deps c2c.exe))
+
+
 ; #586 slice 3: canonical_alias deprecation flag gates the leaky repo@host form
 ; vs the opaque host id form on local-broker registrations.
 (test

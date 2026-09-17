@@ -379,10 +379,12 @@ let load_or_create_client_identity ~alias_hint =
 (* Shared by `c2c relay register` and the explicit
    `c2c monitor --register-relay-alias` bootstrap. This is the one canonical
    direct-registration shape: cli-<alias>/cli-<alias>, signed by the local
-   machine identity. *)
-let register_alias_signed ~url ?token ~alias ~identity () =
+   machine identity — unless the caller passes explicit relay keys (B294,
+   the supported way to hand a lease to a chosen pair such as the
+   connector's). *)
+let register_alias_signed ~url ?token ~alias ~identity ?node_id ?session_id () =
   C2c_monitor_relay_preflight.register_alias_signed
-    ~url ?token ~alias ~identity ()
+    ~url ?token ~alias ~identity ?node_id ?session_id ()
 
 (* --- shared result rendering -----------------------------------------------
 
@@ -1286,26 +1288,95 @@ let relay_register_cmd =
   let alias =
     Cmdliner.Arg.(required & opt (some string) None & info [ "alias" ] ~docv:"ALIAS" ~doc:"Alias to register.")
   in
-  let+ relay_url = relay_url and+ token = token and+ alias = alias in
+  (* B294: explicit relay keys. With --session-id this registers under a
+     chosen (node_id, session_id) pair instead of cli-<alias>/cli-<alias> —
+     the supported way to hand a lease back to relay-connect's keys. *)
+  let node_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "node-id" ] ~docv:"NODE_ID" ~doc:"Relay node_id to register under (default cli-<alias>; alone implies node/node). Honors C2C_RELAY_NODE_ID.")
+  in
+  let session_id =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "session-id" ] ~docv:"SESSION_ID" ~doc:"Relay session_id to register under (requires --node-id). Honors C2C_RELAY_SESSION_ID.")
+  in
+  let force =
+    Cmdliner.Arg.(value & flag & info [ "force" ] ~doc:"Register even when a live relay-connect connector owns this alias. That takes the lease from the connector and the two fight over it; use only to repair a wedged connector, and prefer restarting it (c2c restart relay-connect).")
+  in
+  let+ relay_url = relay_url and+ token = token and+ alias = alias
+  and+ node_id = node_id and+ session_id = session_id and+ force = force in
   match resolve_relay_url relay_url with
   | None ->
       Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
-      (* B114: register with the same identity the signed room ops use
-         (C2C_RELAY_IDENTITY_PATH override, else the default path), creating
-         it if absent — otherwise the register-time binding and subsequent
-         room-op proofs can come from different keys, and every later signed
-         room op fails with alias_identity_mismatch. *)
-      let id = load_or_create_client_identity ~alias_hint:alias in
-      let result =
-        Lwt_main.run
-          (register_alias_signed ~url ?token:(resolve_relay_token token)
-             ~alias ~identity:id ())
-      in
-      (* No ~alias_source: register IS the binding-establishment command, so
-         hinting "run c2c relay register" at a failing register is circular. *)
-      print_result_and_exit result
+    let env_key k =
+      match Sys.getenv_opt k with Some s when s <> "" -> Some s | _ -> None
+    in
+    let explicit_key =
+      node_id <> None || session_id <> None
+      || env_key "C2C_RELAY_NODE_ID" <> None
+      || env_key "C2C_RELAY_SESSION_ID" <> None
+    in
+    let node_id, session_id =
+      match
+        C2c_relay_connector.resolve_register_inbox_key ~alias
+          ~flag_node_id:node_id ~flag_session_id:session_id
+          ~env_node_id:(env_key "C2C_RELAY_NODE_ID")
+          ~env_session_id:(env_key "C2C_RELAY_SESSION_ID")
+      with
+      | Ok key -> key
+      | Error advice ->
+          Printf.eprintf "error: %s\n%!" advice;
+          exit 1
+    in
+    (* B294: registering under the DEFAULT cli-<alias> key while a live
+       machine connector owns the alias moves its lease under that key; the
+       connector's later heartbeats then fail and delivery wedges (B293).
+       Refuse on read-only connector-state evidence — never signal the pid
+       (rule #85). Explicit --node-id/--session-id (or the env pair) skip
+       the refusal: choosing the connector's own keys is the supported way
+       to hand the lease back. *)
+    let broker_root = resolve_broker_root () in
+    (match explicit_key, force,
+           C2c_relay_connector.connector_owns_alias ~broker_root ~alias
+             ~now:(Unix.gettimeofday ()) with
+     | false, false, Some evidence ->
+         Printf.eprintf
+           "error: relay-connect appears to own alias %s on this machine (%s).\n\
+            `c2c relay register` would take the lease from the connector and\n\
+            the two then fight over the alias — delivery wedges.\n\
+            Instead:\n\
+            \  - restart the connector so it re-registers: c2c restart relay-connect\n\
+            \  - read-only probe: c2c relay dm peek --alias %s\n\
+            \  - to deliberately take the lease: re-run with --force\n\
+            \  - to register under the connector's keys: --node-id/--session-id\n\
+            %!"
+           alias evidence alias;
+         exit 1
+     | true, _, Some _ ->
+         Printf.eprintf
+           "note: registering alias %s under explicit relay keys while a\n\
+            connector manages it — make sure the keys are the connector's own\n\
+            (c2c status --relay), or the two will fight over the alias.\n%!"
+           alias
+     | false, true, Some _ ->
+         Printf.eprintf
+           "warning: --force overrides a live relay-connect connector for alias %s;\n\
+            the connector will re-register on its next pass and the two will fight.\n%!"
+           alias
+     | _, _, None -> ());
+    (* B114: register with the same identity the signed room ops use
+       (C2C_RELAY_IDENTITY_PATH override, else the default path), creating
+       it if absent — otherwise the register-time binding and subsequent
+       room-op proofs can come from different keys, and every later signed
+       room op fails with alias_identity_mismatch. *)
+    let id = load_or_create_client_identity ~alias_hint:alias in
+    let result =
+      Lwt_main.run
+        (register_alias_signed ~url ?token:(resolve_relay_token token)
+           ~alias ~identity:id ~node_id ~session_id ())
+    in
+    (* No ~alias_source: register IS the binding-establishment command, so
+       hinting "run c2c relay register" at a failing register is circular. *)
+    print_result_and_exit result
 
 (* c2c relay dm — cross-host direct messages (§8.3) *)
 let relay_dm_cmd =

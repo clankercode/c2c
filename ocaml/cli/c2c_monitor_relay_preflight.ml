@@ -13,12 +13,17 @@ type outcome =
   | Ready of { registered : bool }
   | Off of string
 
-let register_alias_signed ~url ?token ~alias ~identity () =
+(* B294: ?node_id/?session_id override the cli-<alias> convention so a
+   lease can be deliberately registered under a chosen pair (e.g. handed
+   back to relay-connect's keys). Defaults keep the historical behavior for
+   the monitor bootstrap path. *)
+let register_alias_signed ~url ?token ~alias ~identity
+    ?(node_id = Printf.sprintf "cli-%s" alias)
+    ?(session_id = node_id) () =
   let client = Relay.Relay_client.make ?token url in
-  let node_id = Printf.sprintf "cli-%s" alias in
   let p = Relay_signed_ops.sign_register identity ~alias ~relay_url:url in
   Relay.Relay_client.register_signed client
-    ~node_id ~session_id:node_id ~alias ~client_type:"cli"
+    ~node_id ~session_id ~alias ~client_type:"cli"
     ~identity_pk_b64:p.Relay_signed_ops.identity_pk_b64
     ~sig_b64:p.Relay_signed_ops.sig_b64
     ~nonce:p.Relay_signed_ops.nonce ~ts:p.Relay_signed_ops.ts ()

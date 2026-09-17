@@ -194,6 +194,44 @@ let test_server_format_string_in_sync () =
   Alcotest.(check bool) "session-ownership needle matches server format" true
     (contains ~needle:"does not own session" own_msg)
 
+(* B293: an absent/expired lease is its own code, and the hint must not
+   recommend `c2c relay register` — the pair is unowned but the ALIAS may be
+   connector-managed, and a cli-<alias> register takes it from the connector. *)
+let lease_not_found_response : Yojson.Safe.t =
+  `Assoc [
+    ("ok", `Bool false);
+    ("error_code", `String "lease_not_found");
+    ("error", `String
+       "no live lease for session (n, s); it expired or was never registered \
+        under this key (verified signer \"a\") — re-register to re-establish it");
+  ]
+
+let test_lease_not_found_hint () =
+  Alcotest.(check bool) "detector matches the relay code" true
+    (Relay_client_hints.is_lease_not_found lease_not_found_response);
+  Alcotest.(check bool) "not a signature failure" false
+    (Relay_client_hints.is_signature_invalid lease_not_found_response);
+  Alcotest.(check bool) "success is never lease_not_found" false
+    (Relay_client_hints.is_lease_not_found
+       (`Assoc [ ("ok", `Bool true);
+                 ("error_code", `String "lease_not_found") ]));
+  (match
+     Relay_client_hints.hint_for_response
+       ~alias_source:(Relay_client_hints.Explicit "lyra-quill")
+       lease_not_found_response
+   with
+   | None -> Alcotest.fail "expected a lease_not_found hint"
+   | Some hint ->
+       Alcotest.(check bool) "must NOT recommend re-register" false
+         (contains ~needle:"Fix:  c2c relay register" hint);
+       Alcotest.(check bool) "register appears only as a warning-off" true
+         (contains ~needle:"Do NOT run `c2c relay register --alias lyra-quill`" hint);
+       Alcotest.(check bool) "points at the connector" true
+         (contains ~needle:"relay-connect" hint);
+       Alcotest.(check bool) "offers a read-only probe" true
+         (contains ~needle:"c2c relay dm peek --alias lyra-quill" hint))
+
+
 (* --- contact_unauthorised (#81) ----------------------------------------- *)
 
 (* Byte-for-byte the relay's uniform admission denial. relay.ml builds it in
@@ -371,6 +409,7 @@ let () =
           Alcotest.test_case "no hint otherwise" `Quick test_no_hint_on_success_or_unrelated_error;
           Alcotest.test_case "signature_invalid hint" `Quick test_signature_invalid_hint;
           Alcotest.test_case "session ownership hint (B231)" `Quick test_session_ownership_hint;
+          Alcotest.test_case "lease_not_found hint (B293)" `Quick test_lease_not_found_hint;
           Alcotest.test_case "server format in sync" `Quick test_server_format_string_in_sync;
         ] );
       ( "contact_unauthorised (#81)",
