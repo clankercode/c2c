@@ -379,6 +379,7 @@ let make_connector ~relay_url ~broker_root : C2c_relay_connector.t =
     verbose = false;
     registered = [];
     active_ws_bindings = [];
+    owner_mismatch_strikes = [];
     alert_state = C2c_relay_alert.initial_state;
   }
 

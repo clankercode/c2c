@@ -747,6 +747,10 @@ type t = {
   verbose : bool;
   mutable registered : string list;
   mutable active_ws_bindings : string list;
+  (* B293: consecutive passes each cached registration failed heartbeat with
+     a foreign-owner signature_invalid. Drives the drop-from-registered rule
+     in [sync] — see [owner_mismatch_drop_threshold]. *)
+  mutable owner_mismatch_strikes : (string * int) list;
   mutable alert_state : C2c_relay_alert.state;  (* B010: edge-trigger dedup *)
 }
 
@@ -1842,6 +1846,61 @@ let json_list_member ~key json =
   | `List lst -> lst
   | _ -> []
 
+(* B293: dead-lease classification for the heartbeat/poll arms of [sync].
+   The relay reports an absent/expired (node_id, session_id) lease as
+   lease_not_found (404) and a live lease held by another alias as
+   signature_invalid (403, "does not own session"). Only failure responses
+   count — a body claiming error_code while ok:true is schema-dishonest and
+   must not steer registration state. Total on non-object responses. *)
+let response_error_code json =
+  if json_bool_member ~key:"ok" json then None
+  else
+    (match member_or_null "error_code" json with
+     | `String c -> Some c
+     | _ -> None)
+
+let response_is_lease_not_found json =
+  response_error_code json = Some "lease_not_found"
+
+let response_is_owner_mismatch json =
+  response_error_code json = Some "signature_invalid"
+  && (match member_or_null "error" json with
+      | `String msg ->
+          let needle = "does not own session" in
+          let nl = String.length needle and hl = String.length msg in
+          let rec go i =
+            if i + nl > hl then false
+            else if String.sub msg i nl = needle then true
+            else go (i + 1)
+          in
+          go 0
+      | _ -> false)
+
+(* B293 drop rule for a cached registration whose heartbeat/poll fails:
+   - lease_not_found → drop at once and re-register in the same pass. The
+     relay authoritatively states the pair has no live lease; register is
+     the repair, and doing it in-pass keeps the alias leased and the pass a
+     success instead of a permanent per-alias wedge (B293).
+   - owner mismatch (foreign live lease) → only after it repeats on
+     [owner_mismatch_drop_threshold] consecutive passes, so a transient
+     (a B295 pair takeover racing this pass, a flapping relay) cannot
+     thrash the connector between register and heartbeat. Strikes decay on
+     any success. *)
+let owner_mismatch_drop_threshold = 2
+
+let strikes_clear strikes session_id = List.remove_assoc session_id strikes
+
+(* Returns the new strike count for [session_id] and the updated table. *)
+let strikes_bump strikes session_id =
+  let n = 1 + Option.value ~default:0 (List.assoc_opt session_id strikes) in
+  let others = List.remove_assoc session_id strikes in
+  (n, others @ [ (session_id, n) ])
+
+let owner_mismatch_should_drop strikes session_id =
+  match List.assoc_opt session_id strikes with
+  | Some n when n >= owner_mismatch_drop_threshold -> true
+  | _ -> false
+
 (* H9 (rows B095/B238): minimum deliverable-row contract for relay-pulled
    inbound rows. Mirrors exactly what [C2c_broker.message_of_json] REQUIRES:
    string [from_alias] / [to_alias] / [content] ([member .. |> to_string]
@@ -2211,6 +2270,15 @@ let sync (t : t) : sync_result Lwt.t =
   (* 0. Maintain WS connections to mobile bindings *)
   maintain_ws_connections t;
 
+  (* B293: sessions whose heartbeat or poll hit a foreign-owner
+     signature_invalid this pass. Strikes decay unless the session
+     mismatched again (see owner_mismatch_drop_threshold). *)
+  let owner_mismatched_pass = ref [] in
+  (* B293: sessions whose cached registration was dropped mid-pass (dead
+     lease discovered while polling) — their alias must not be reported as
+     registered by this pass's result. *)
+  let dropped_in_pass = ref [] in
+
   (* 1. Register / heartbeat each local session *)
   (* Drop cached relay registrations that are no longer locally Alive. Without
      this intersection, a process that dies after the first pass is still
@@ -2225,6 +2293,44 @@ let sync (t : t) : sync_result Lwt.t =
         note_observation ~sender:None json;
         if json_bool_member ~key:"ok" json then
           (registered, alias :: heartbeated, reg_list, errs)
+        else if response_is_lease_not_found json then begin
+          (* B293: the cached registration is dead. Re-register NOW — same
+             pass — so the alias stays leased and the pass still counts as
+             progress; a heartbeat error that register repaired is not a
+             whole-root no-progress (which feeds the staleness watchdog). *)
+          let reg =
+            Lwt_main.run (Relay_client.register client
+              ~node_id:t.node_id ~session_id ~alias ~client_type
+              ~ttl:t.heartbeat_ttl ())
+          in
+          note_observation ~sender:None reg;
+          if json_bool_member ~key:"ok" reg then
+            (* [reg_list] already holds session_id — the cached registration
+               is being repaired, not added. *)
+            (alias :: registered, heartbeated, reg_list, errs)
+          else
+            let detail = Yojson.Safe.to_string reg in
+            (registered, heartbeated, reg_list, ("register", detail) :: errs)
+        end
+        else if response_is_owner_mismatch json then begin
+          owner_mismatched_pass := session_id :: !owner_mismatched_pass;
+          let _n, strikes' = strikes_bump t.owner_mismatch_strikes session_id in
+          t.owner_mismatch_strikes <- strikes';
+          let detail = Yojson.Safe.to_string json in
+          if owner_mismatch_should_drop strikes' session_id then begin
+            (* Persistent foreign owner: drop the cached registration so the
+               next pass re-registers (register takes the pair over, B295)
+               instead of retrying a lease we do not own forever. *)
+            t.owner_mismatch_strikes <-
+              strikes_clear t.owner_mismatch_strikes session_id;
+            ( registered
+            , heartbeated
+            , List.filter (fun s -> s <> session_id) reg_list
+            , ("heartbeat", detail) :: errs )
+          end
+          else
+            (registered, heartbeated, reg_list, ("heartbeat", detail) :: errs)
+        end
         else
           let detail = Yojson.Safe.to_string json in
           (registered, heartbeated, reg_list, ("heartbeat", detail) :: errs)
@@ -2355,6 +2461,28 @@ let sync (t : t) : sync_result Lwt.t =
         end
         else if json_bool_member ~key:"ok" json then
           delivered, rejected, notes, errs
+        else if response_is_lease_not_found json then begin
+          (* B293: the lease died between heartbeat and poll. Stop polling it;
+             the cached registration is dropped so the next pass re-registers
+             (the heartbeat arm repairs in-pass). *)
+          dropped_in_pass := session_id :: !dropped_in_pass;
+          t.registered <- List.filter (fun s -> s <> session_id) t.registered;
+          let detail = Yojson.Safe.to_string json in
+          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+        end
+        else if response_is_owner_mismatch json then begin
+          owner_mismatched_pass := session_id :: !owner_mismatched_pass;
+          let _n, strikes' = strikes_bump t.owner_mismatch_strikes session_id in
+          t.owner_mismatch_strikes <- strikes';
+          if owner_mismatch_should_drop strikes' session_id then begin
+            dropped_in_pass := session_id :: !dropped_in_pass;
+            t.owner_mismatch_strikes <-
+              strikes_clear t.owner_mismatch_strikes session_id;
+            t.registered <- List.filter (fun s -> s <> session_id) t.registered
+          end;
+          let detail = Yojson.Safe.to_string json in
+          delivered, rejected, notes, ("poll_inbox", detail) :: errs
+        end
         else
           let detail = Yojson.Safe.to_string json in
           delivered, rejected, notes, ("poll_inbox", detail) :: errs
@@ -2362,6 +2490,25 @@ let sync (t : t) : sync_result Lwt.t =
         delivered, rejected, notes, errs
     ) (0, 0, [], initial_poll_errors) regs
   in
+
+  (* B293: an alias whose cached registration died mid-pass (poll arm) is not
+     registered this pass; keep the reported set consistent with
+     [t.registered] / [registered_sessions] below. *)
+  let registered =
+    let dropped_aliases =
+      List.filter_map
+        (fun (sid, alias, _) ->
+          if List.mem sid !dropped_in_pass then Some alias else None)
+        regs
+    in
+    List.filter (fun a -> not (List.mem a dropped_aliases)) registered
+  in
+  (* B293 strike decay: only sessions that mismatched again this pass keep
+     their count — a clean pass (heartbeat, register or in-pass repair ok)
+     resets it, so one transient cannot permanently lower the tolerance. *)
+  t.owner_mismatch_strikes <-
+    List.filter (fun (sid, _) -> List.mem sid !owner_mismatched_pass)
+      t.owner_mismatch_strikes;
 
   let last_error = match reg_errors @ send_errors @ poll_errors with
     | [] -> None
@@ -2799,6 +2946,7 @@ let make_state ~relay_url ~token ~identity ~broker_root ~node_id
   { relay_url; token; identity; broker_root; node_id;
     heartbeat_ttl; interval; verbose;
     registered = []; active_ws_bindings = [];
+    owner_mismatch_strikes = [];
     alert_state = C2c_relay_alert.initial_state }
 
 let print_sync_result ?broker_root result =
@@ -3024,6 +3172,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       heartbeat_ttl; interval; verbose;
       registered = [];
       active_ws_bindings = [];
+      owner_mismatch_strikes = [];
       alert_state = C2c_relay_alert.initial_state;
     } in
     if once then begin

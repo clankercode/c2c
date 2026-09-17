@@ -5290,6 +5290,20 @@ end = struct
          (Printf.sprintf "verified signer %S does not own session (%s, %s)"
             verified node_id session_id))
 
+  (* B293: alias_of_session returned None — the pair has no live lease (never
+     registered under it, or the row is past its reservation). 404, not 403:
+     the request authenticated fine, the leased resource is gone. Clients
+     (relay-connect above all) distinguish this re-register-worthy state from
+     a fatal signature/ownership failure by both the code and the status. *)
+  let reject_session_lease_missing ~verified ~node_id ~session_id =
+    respond_not_found
+      (json_error_str relay_err_lease_not_found
+         (Printf.sprintf
+            "no live lease for session (%s, %s); it expired or was never \
+             registered under this key (verified signer %S) — re-register to \
+             re-establish it"
+            node_id session_id verified))
+
   (* The body [from_alias] on send routes may carry an opaque host suffix
      (`<name>@<host_id>`) for relay routing/display — clients like pi-c2c sign
      and send under their full relay address. The verified Ed25519 signer is
@@ -5333,7 +5347,8 @@ end = struct
       | Some v ->
         (match R.alias_of_session relay ~node_id ~session_id with
          | Some owner when String.lowercase_ascii owner = String.lowercase_ascii v -> run_heartbeat ()
-         | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
+         | Some _ -> reject_session_mismatch ~verified:v ~node_id ~session_id
+         | None -> reject_session_lease_missing ~verified:v ~node_id ~session_id)
       | None -> run_heartbeat ()
 
   let handle_contact_deliver relay ~verified_alias ~token ~confidential_transport body =
@@ -5788,7 +5803,8 @@ end = struct
          | Some owner when String.lowercase_ascii owner = String.lowercase_ascii v ->
            let msgs = read relay ~node_id ~session_id in
            respond_ok (json_ok [ ("messages", `List msgs) ])
-         | _ -> reject_session_mismatch ~verified:v ~node_id ~session_id)
+         | Some _ -> reject_session_mismatch ~verified:v ~node_id ~session_id
+         | None -> reject_session_lease_missing ~verified:v ~node_id ~session_id)
       | None ->
         if require_owner then
           respond_unauthorized (json_error_str err_unauthorized

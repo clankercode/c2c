@@ -157,6 +157,34 @@ let session_ownership_hint = function
       \  Do NOT re-register just to force a cli-<alias> lease if relay-connect\n\
       \  is already managing the alias — keep the connector and use local inbox.\n"
 
+(* B293: session-scoped route rejected because the (node_id, session_id) has
+   NO live lease — it expired or was never registered under that key. Unlike
+   the ownership mismatch above, nobody holds the pair, so this is
+   recoverable; the connector re-registers on its next pass. Still do not
+   push `c2c relay register` — that mints a cli-<alias> lease and takes the
+   ALIAS away from a connector that is about to re-register its own pair. *)
+let is_lease_not_found (json : Yojson.Safe.t) =
+  match json with
+  | `Assoc fields ->
+      List.assoc_opt "ok" fields = Some (`Bool false)
+      && List.assoc_opt "error_code" fields = Some (`String "lease_not_found")
+  | _ -> false
+
+let lease_not_found_hint = function
+  | Explicit alias ->
+      Printf.sprintf
+        "hint: the relay has no live lease for that session key — it expired\n\
+        \  or was never registered under it. A running relay-connect\n\
+        \  re-establishes its leases on its next pass: c2c status --relay.\n\
+        \  Do NOT run `c2c relay register --alias %s` while relay-connect\n\
+        \  manages %S — that takes the alias from the connector and the two\n\
+        \  fight. Read-only probe: c2c relay dm peek --alias %s\n"
+        alias alias alias
+  | Anon_fallback ->
+      "hint: signed as \"anon\" and there is no live lease for that session\n\
+      \  key. Pass --alias <your-alias> (or set C2C_MCP_AUTO_REGISTER_ALIAS)\n\
+      \  and let relay-connect re-register its own lease (c2c status --relay).\n"
+
 let signature_invalid_hint = function
   | Explicit alias ->
       Printf.sprintf
@@ -255,10 +283,11 @@ let contact_unauthorised_hint ~alias_source ~contact =
 
 (* [hint_for_response ?contact ~alias_source json] returns the hint to print
    on stderr when [json] is a missing-identity-binding auth error, a
-   session-ownership signature_invalid (B231), a generic signature_invalid
-   error (B184), or a contact_unauthorised admission denial (#81) — and None
-   for every other response (including success). Precedence: missing-binding
-   > session-ownership > generic signature_invalid > contact_unauthorised.
+   session-ownership signature_invalid (B231), a lease_not_found (B293), a
+   generic signature_invalid error (B184), or a contact_unauthorised
+   admission denial (#81) — and None for every other response (including
+   success). Precedence: missing-binding > session-ownership >
+   lease_not_found > generic signature_invalid > contact_unauthorised.
    The codes are disjoint, so the order is documentation rather than a
    tie-break. [?contact] sharpens the contact_unauthorised text and is
    ignored for the others. *)
@@ -266,6 +295,7 @@ let hint_for_response ?contact ~alias_source (json : Yojson.Safe.t) =
   if is_missing_identity_binding json then Some (missing_binding_hint alias_source)
   else if is_session_ownership_failure json then
     Some (session_ownership_hint alias_source)
+  else if is_lease_not_found json then Some (lease_not_found_hint alias_source)
   else if is_signature_invalid json then Some (signature_invalid_hint alias_source)
   else if is_contact_unauthorised json then
     Some (contact_unauthorised_hint ~alias_source ~contact)
