@@ -1912,16 +1912,49 @@ module Relay_client = struct
     base_url : string;
     token : string option;
     timeout : float;
+    (* B314: PEM CA bundle for self-signed/Tailscale HTTPS relays — the same
+       C2C_RELAY_CA_BUNDLE support relay_client.ml has, so the connector and
+       `c2c doctor --relay` agree on TLS trust. Explicit arg > env. *)
+    ca_bundle : string option;
     identity : Relay_identity.t option;
   }
 
-  let make ?token ?(timeout = 10.0) ?identity base_url =
+  let make ?token ?(timeout = 10.0) ?ca_bundle ?identity base_url =
     let base_url = match String.length base_url with
       | 0 -> base_url
       | n when base_url.[n-1] = '/' -> String.sub base_url 0 (n-1)
       | _ -> base_url
     in
-    { base_url; token; timeout; identity }
+    let ca_bundle = match ca_bundle with
+      | Some _ -> ca_bundle
+      | None ->
+          match Sys.getenv_opt "C2C_RELAY_CA_BUNDLE" with
+          | Some p when p <> "" -> Some p
+          | _ -> None
+    in
+    { base_url; token; timeout; ca_bundle; identity }
+
+  (* B314: build a custom Net.ctx from a PEM CA bundle path for self-signed
+     certs. Port of relay_client.net_ctx_of_bundle (kept byte-equivalent so
+     doctor and the connector trust exactly the same anchors). *)
+  let net_ctx_of_bundle path =
+    let pem =
+      let ic = open_in path in
+      let n = in_channel_length ic in
+      let buf = Bytes.create n in
+      really_input ic buf 0 n;
+      close_in ic;
+      Bytes.to_string buf
+    in
+    let certs = match X509.Certificate.decode_pem_multiple pem with
+      | Ok cs -> cs
+      | Error (`Msg m) -> failwith ("C2C_RELAY_CA_BUNDLE parse error: " ^ m)
+    in
+    let auth = X509.Authenticator.chain_of_trust
+      ~time:(fun () -> Some (Ptime_clock.now ())) certs
+    in
+    Conduit_lwt_unix.init ~tls_authenticator:auth () >>= fun conduit_ctx ->
+    Lwt.return (Cohttp_lwt_unix.Client.custom_ctx ~ctx:conduit_ctx ())
 
   let connection_error msg =
     `Assoc [
@@ -2058,7 +2091,25 @@ module Relay_client = struct
     in
     Lwt.catch
       (fun () ->
-        Cohttp_lwt_unix.Client.call ~headers ~body:body_payload meth uri
+        (match t.ca_bundle with
+         | None -> Lwt.return_none
+         | Some path ->
+             net_ctx_of_bundle path >>= fun ctx -> Lwt.return (Some ctx))
+        >>= fun ctx_opt ->
+        let call =
+          Cohttp_lwt_unix.Client.call ?ctx:ctx_opt ~headers ~body:body_payload
+            meth uri
+        in
+        (* B314: the timeout field was dead — Client.call has no deadline, so
+           any request could hang until the process SIGALRM (which then costs
+           the whole connector the B307 exit). Race a per-call timer INSIDE
+           the request: sync's ops each run under nested Lwt_main.run, where
+           an outer sibling never races them. Same shape as
+           relay_client.request_raw. *)
+        Lwt.pick
+          [ call
+          ; (Lwt_unix.sleep t.timeout >>= fun () ->
+             Lwt.fail (Failure "request_timeout")) ]
         >>= fun (resp, resp_body) ->
         let status = Cohttp.Code.code_of_status (Cohttp.Response.status resp) in
         Cohttp_lwt.Body.to_string resp_body >>= fun text ->

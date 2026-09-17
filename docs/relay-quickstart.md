@@ -161,6 +161,11 @@ c2c relay connect --once   # one sync, then exit
 c2c relay connect          # loop every 30s (default)
 ```
 
+Pointing the connector at an `https://` relay with a self-signed certificate
+(e.g. a Tailscale-hosted relay)? Set `C2C_RELAY_CA_BUNDLE` to the relay's PEM
+bundle — the connector honors it the same way `c2c doctor --relay` and the
+other relay clients do.
+
 The connector:
 1. Registers only locally verified-alive aliases from `registry.json` with the
    relay. Dead processes and unverified historical rows are skipped rather
