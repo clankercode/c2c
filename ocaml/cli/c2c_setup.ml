@@ -588,8 +588,31 @@ let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
             (function Ok p -> Some (C2c_install_manifest.binary p) | Error _ -> None)
             extras
         in
+        (* B296: boot supervision for the relay connector. Installed from
+           `c2c install self` only on relay-activated hosts (B300) and only
+           when a systemd --user session exists; skipped silently (bar one
+           stderr note) otherwise. Dry run reports nothing extra. *)
+        let relay_unit_note, relay_unit_artifacts =
+          if dry_run then ("", [])
+          else
+            match
+              C2c_relay_systemd.install_and_enable_if_active
+                ~c2c_path:dest_path ()
+            with
+            | Unit_enabled path ->
+                ( Printf.sprintf "relay connector boot supervision: %s\n" path
+                , [ C2c_relay_systemd.self_artifact () ] )
+            | Unit_skipped reason ->
+                Printf.eprintf "note: %s\n%!" reason;
+                ("", [])
+            | Unit_error err ->
+                Printf.eprintf "warning: %s\n%!" err;
+                ("", [])
+            | Unit_not_activated -> ("", [])
+        in
         let self_artifacts =
           C2c_install_manifest.binary dest_path :: mcp_artifacts
+          @ relay_unit_artifacts
         in
         (match shim_dir with
          | Some dir ->
@@ -608,6 +631,9 @@ let do_install_self ~dry_run ~output_mode ~dest_opt ~with_mcp_server =
              in
              if extra_json = [] then [] else [ ("mcp_server", `List extra_json) ])
           @ (match shim_dir with Some d -> [ ("git_shim_dir", `String d) ] | None -> [])
+          @ (if relay_unit_note <> "" then
+               [ ("relay_connect_unit_note", `String relay_unit_note) ]
+             else [])
         in
         { artifacts = self_artifacts; extra_json }
     | Error msg ->
@@ -766,6 +792,37 @@ let setup_codex ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~m
   in
   (* B254: the MCP-server section is written only on the opt-in [with_mcp] path.
      Empty string on the default path so [new_content] is hooks-only. *)
+  (* B290: read the operator's `enabled` state out of the existing section
+     BEFORE the strip below drops it. codex's per-server key is `enabled`
+     (default true, inverse polarity of claude's `disabled`). A NEW entry
+     lands enabled = false; an existing section's state is carried over
+     verbatim — including an absent key, which is the operator's "on".
+     Tri-state: None = no section (new entry); Some None = section exists
+     with no enabled key; Some (Some b) = explicit value. *)
+  let codex_prior_enabled existing =
+    let lines = String.split_on_char '\n' existing in
+    let saw_section = ref false in
+    let in_server_table = ref false in
+    let enabled = ref None in
+    List.iter
+      (fun line ->
+         let t = String.trim line in
+         if t <> "" && t.[0] = '[' then begin
+           if t = "[mcp_servers.c2c]" then saw_section := true;
+           in_server_table := (t = "[mcp_servers.c2c]")
+         end
+         else if !in_server_table then
+           match String.index_opt t '=' with
+           | Some i when String.trim (String.sub t 0 i) = "enabled" ->
+               (match String.trim (String.sub t (i + 1) (String.length t - i - 1)) with
+                | "true" -> enabled := Some true
+                | "false" -> enabled := Some false
+                | _ -> ())
+           | _ -> ())
+      lines;
+    if not !saw_section then None else Some !enabled
+  in
+  let prior_enabled = codex_prior_enabled existing in
   let mcp_buf =
     if not with_mcp then ""
     else begin
@@ -778,6 +835,12 @@ let setup_codex ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~m
         Buffer.add_string buf "command = \"opam\"\n";
         Buffer.add_string buf (Printf.sprintf "args = [\"exec\", \"--\", \"%s\"]\n" server_path)
       end;
+      (match prior_enabled with
+       | None (* no existing section: new entry lands disabled *) ->
+           Buffer.add_string buf "enabled = false\n"
+       | Some None (* exists, key absent: operator's on *) -> ()
+       | Some (Some b) (* explicit *) ->
+           Buffer.add_string buf (Printf.sprintf "enabled = %b\n" b));
       Buffer.add_string buf "\n[mcp_servers.c2c.env]\n";
       Buffer.add_string buf (Printf.sprintf "C2C_MCP_BROKER_ROOT = \"%s\"\n" root);
       (* Without C2C_MCP_AUTO_REGISTER_ALIAS the c2c MCP server inside codex never
@@ -1470,12 +1533,36 @@ let setup_claude ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~alias_opt ~se
   (* Project `.mcp.json` entries conventionally include `"type": "stdio"`;
      `~/.claude.json` mcpServers entries omit it (legacy shape). Match the
      convention of the file we're writing. *)
+  (* B290: every NEW c2c entry lands `"disabled": true` (consistent with
+     init MCP-off-by-default and B300 explicit activation). An entry that
+     already exists is rewritten with the operator's disabled state carried
+     over verbatim — absent field stays absent (Claude defaults to enabled),
+     an explicit true/false keeps its value. Re-runs must never re-disable an
+     entry the operator enabled. *)
+  let prior_disabled =
+    match config with
+    | `Assoc fields ->
+        (match List.assoc_opt "mcpServers" fields with
+         | Some (`Assoc m) ->
+             (match List.assoc_opt "c2c" m with
+              | Some (`Assoc entry) ->
+                  (match List.assoc_opt "disabled" entry with
+                   | Some (`Bool b) -> Some (Some b)
+                   | _ -> Some None)
+              | _ -> None)
+         | _ -> None)
+    | _ -> None
+  in
   let mcp_entry_fields =
     (if global then [] else [ ("type", `String "stdio") ])
     @ [ ("command", `String mcp_command)
       ; ("args", `List (if mcp_command = "c2c-mcp-server" then [] else [ `String "exec"; `String "--"; `String server_path ]))
       ; ("env", `Assoc env_pairs)
       ]
+    @ (match prior_disabled with
+       | None (* no existing entry *) -> [ ("disabled", `Bool true) ]
+       | Some None (* exists, field absent *) -> []
+       | Some (Some b) (* exists, explicit *) -> [ ("disabled", `Bool b) ])
   in
   let mcp_entry = `Assoc mcp_entry_fields in
   let config = match config with

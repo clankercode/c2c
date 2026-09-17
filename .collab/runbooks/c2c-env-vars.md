@@ -170,6 +170,10 @@ Float seconds (default `0.35`). Tmux backend only: pause between typing the nudg
 
 Test fixture gate. When set to a path, the injector records every external command it would run (one JSON line per command: `{"argv": [...], "env": {...}}`) to that file instead of executing — no tmux/herdr pane is ever touched. All wake-inject tests use this.
 
+### `C2C_SYSTEMCTL_FIXTURE` / `C2C_SYSTEMCTL_CAPTURE_FILE` (B296)
+
+Test fixture gates for the relay-connector boot-supervision unit (`c2c relay enable` / `c2c install self` → `~/.config/systemd/user/c2c-relay-connect.service`). With `C2C_SYSTEMCTL_FIXTURE=1` the systemctl runner never executes anything and answers every call with success; when `C2C_SYSTEMCTL_CAPTURE_FILE` is also set, each would-be invocation (`systemctl --user daemon-reload`, `enable --now …`) is appended as one line so tests can assert the exact argv. No test may run real systemctl against the host.
+
 ### `C2C_WAKE_INJECT_HERDR_STATUS`
 
 Test-only companion to the fixture gate: the `agent_status` value the herdr idle probe reports in fixture mode (default `idle`; set `working` to test the never-inject-into-working-pane gate). Ignored outside fixture mode.

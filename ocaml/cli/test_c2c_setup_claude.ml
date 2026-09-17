@@ -48,11 +48,11 @@ let with_temp_home f =
       try remove_tree dir with _ -> ())
     (fun () -> f ~home:dir ~claude_dir)
 
-let run_setup ?(with_mcp=false) ~project_dir () =
+let run_setup ?(with_mcp=false) ?(global=false) ~project_dir () =
   C2c_setup.setup_claude ~with_mcp ~output_mode:C2c_types.Human ~dry_run:false
     ~root:"/fake/broker/root" ~alias_val:"claude-fixture-zz" ~alias_opt:None
     ~server_path:"/fake/bin/c2c_mcp_server.exe" ~mcp_command:"c2c-mcp-server"
-    ~force:false ~channel_delivery:false ~global:false
+    ~force:false ~channel_delivery:false ~global
     ~project_dir:(Some project_dir) ~alias_from_auto_gen:false ~skip_hooks:false
 
 (* Count settings.json entries under hooks.<event> whose hooks[] runs [command]. *)
@@ -328,6 +328,68 @@ let test_with_mcp_writes_mcp_json () =
       (List.length
          (List.filter (fun (k, _) -> k = "mcp") result.C2c_setup.extra_json)))
 
+(* --- B290: new MCP entries land disabled; existing entries untouched ------- *)
+
+(* The `disabled` field of mcpServers.c2c in a .mcp.json. None = absent. *)
+let c2c_disabled_field path =
+  match Yojson.Safe.from_file path with
+  | `Assoc fields ->
+      (match List.assoc_opt "mcpServers" fields with
+       | Some (`Assoc servers) ->
+           (match List.assoc_opt "c2c" servers with
+            | Some (`Assoc entry) ->
+                (match List.assoc_opt "disabled" entry with
+                 | Some (`Bool b) -> Some b
+                 | _ -> None)
+            | _ -> Alcotest.fail "mcpServers.c2c missing")
+       | _ -> Alcotest.fail "mcpServers missing")
+  | _ -> Alcotest.fail ".mcp.json is not an object"
+
+let test_b290_new_entry_lands_disabled () =
+  with_temp_home (fun ~home ~claude_dir ->
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    ignore (run_setup ~with_mcp:true ~project_dir ());
+    (* A freshly-added entry must land disabled: consistent with init
+       MCP-off-by-default and B300 explicit activation. *)
+    check (option bool) "new c2c entry has disabled:true" (Some true)
+      (c2c_disabled_field (project_dir // ".mcp.json")))
+
+let test_b290_global_entry_lands_disabled () =
+  with_temp_home (fun ~home ~claude_dir ->
+    (* The --global path writes mcpServers.c2c into ~/.claude.json — the
+       ticket's second named surface; same B290 rule. *)
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    ignore (run_setup ~with_mcp:true ~global:true ~project_dir ());
+    check (option bool) "global ~/.claude.json entry has disabled:true"
+      (Some true) (c2c_disabled_field (claude_dir // ".claude.json")))
+
+let test_b290_existing_entry_disabled_state_untouched () =
+  with_temp_home (fun ~home ~claude_dir ->
+    let project_dir = home // "proj" in
+    Unix.mkdir project_dir 0o700;
+    let mcp_json = project_dir // ".mcp.json" in
+    (* Operator re-enabled the entry (removed the field — Claude's default is
+       enabled). A re-run must NOT re-disable it. *)
+    write_file mcp_json
+      {|{"mcpServers":{"c2c":{"type":"stdio","command":"c2c-mcp-server","args":[]}}}|};
+    ignore (run_setup ~with_mcp:true ~project_dir ());
+    check (option bool) "enabled entry (no field) stays enabled" None
+      (c2c_disabled_field mcp_json);
+    (* Operator pinned disabled:false explicitly. *)
+    write_file mcp_json
+      {|{"mcpServers":{"c2c":{"type":"stdio","command":"c2c-mcp-server","args":[],"disabled":false}}}|};
+    ignore (run_setup ~with_mcp:true ~project_dir ());
+    check (option bool) "explicit disabled:false preserved" (Some false)
+      (c2c_disabled_field mcp_json);
+    (* Operator left it disabled. *)
+    write_file mcp_json
+      {|{"mcpServers":{"c2c":{"type":"stdio","command":"c2c-mcp-server","args":[],"disabled":true}}}|};
+    ignore (run_setup ~with_mcp:true ~project_dir ());
+    check (option bool) "explicit disabled:true preserved" (Some true)
+      (c2c_disabled_field mcp_json))
+
 let () =
   Random.self_init ();
   run "c2c_setup_claude"
@@ -345,5 +407,11 @@ let () =
             test_default_install_preserves_existing_malformed_mcp_json
         ; test_case "B254 --with-mcp writes .mcp.json" `Quick
             test_with_mcp_writes_mcp_json
+        ; test_case "B290 new entry lands disabled" `Quick
+            test_b290_new_entry_lands_disabled
+        ; test_case "B290 global ~/.claude.json entry lands disabled" `Quick
+            test_b290_global_entry_lands_disabled
+        ; test_case "B290 existing entry disabled state untouched" `Quick
+            test_b290_existing_entry_disabled_state_untouched
         ] )
     ]

@@ -499,9 +499,12 @@ let recompute_self_artifacts () =
     ; "c2c-deliver-inbox"; "c2c-gui"
     ]
   in
+  (* B296: the systemd --user relay-connector unit is an owned self artifact,
+     so a manifest-less `c2c uninstall self` removes it too. *)
   List.map
     (fun name -> C2c_install_manifest.binary (bin // name))
     (names @ [ ".c2c-version" ])
+  @ [ C2c_relay_systemd.self_artifact () ]
 
 let recompute_git_shim_artifacts () =
   let shim_dir = C2c_start.swarm_git_shim_dir () in
@@ -645,6 +648,10 @@ let uninstall_self ~output_mode ~dry_run =
    | Human ->
        Printf.printf "Would remove the running c2c binary at %s/c2c\n" bin
    | Json -> ());
+  (* B296: stop+disable+remove the relay-connector unit before the artifacts
+     pass — disable must see the unit file, and systemctl never runs in dry
+     run. The default runner is inert under C2C_SYSTEMCTL_FIXTURE=1. *)
+  C2c_relay_systemd.disable_and_remove ~dry_run ();
   let artifacts = recompute_self_artifacts () in
   let removed = List.filter_map (remove_artifact ~dry_run) artifacts in
   let any_removed = removed <> [] in

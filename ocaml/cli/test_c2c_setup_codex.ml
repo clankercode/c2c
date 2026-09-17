@@ -300,6 +300,66 @@ let test_preserves_user_agents_md () =
       (count_occurrences ~haystack:agents_md
          ~needle:C2c_codex_hooks.agents_md_begin_marker))
 
+(* --- B290: new MCP entries land disabled; existing entries untouched ------- *
+ *
+ * codex's per-server key is `enabled` (default true) under
+ * [mcp_servers.<name>] — the inverse polarity of claude's `disabled`. *)
+
+(* The `enabled` value of the [mcp_servers.c2c] server table (exact TOML
+   scope: from the [mcp_servers.c2c] header to the next header of any kind).
+   None = no enabled key in that scope (server is on). *)
+let codex_c2c_enabled config =
+  let lines = String.split_on_char '\n' config in
+  let in_server_table = ref false in
+  let enabled = ref None in
+  List.iter
+    (fun line ->
+       let t = String.trim line in
+       if t <> "" && t.[0] = '[' then
+         in_server_table := (t = "[mcp_servers.c2c]")
+       else if !in_server_table then begin
+         match String.index_opt t '=' with
+         | Some i when String.trim (String.sub t 0 i) = "enabled" ->
+             (match String.trim (String.sub t (i + 1) (String.length t - i - 1)) with
+              | "true" -> enabled := Some true
+              | "false" -> enabled := Some false
+              | _ -> ())
+         | _ -> ()
+       end)
+    lines;
+  !enabled
+
+let test_b290_new_entry_lands_disabled () =
+  with_temp_home (fun home ->
+    ignore (run_setup ~with_mcp:true ());
+    let config = read_file (home // ".codex" // "config.toml") in
+    check (option bool) "new [mcp_servers.c2c] has enabled = false"
+      (Some false) (codex_c2c_enabled config))
+
+let test_b290_existing_entry_enabled_state_untouched () =
+  with_temp_home (fun home ->
+    let codex_dir = home // ".codex" in
+    Unix.mkdir codex_dir 0o700;
+    let config = codex_dir // "config.toml" in
+    (* Operator enabled the server explicitly. *)
+    write_file config
+      "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\nargs = []\nenabled = true\n";
+    ignore (run_setup ~with_mcp:true ());
+    check (option bool) "explicit enabled = true preserved" (Some true)
+      (codex_c2c_enabled (read_file config));
+    (* No enabled key = operator's enabled state; must stay absent. *)
+    write_file config
+      "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\nargs = []\n";
+    ignore (run_setup ~with_mcp:true ());
+    check (option bool) "absent enabled key stays absent (server stays on)" None
+      (codex_c2c_enabled (read_file config));
+    (* Disabled by a prior c2c install; preserved. *)
+    write_file config
+      "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\nargs = []\nenabled = false\n";
+    ignore (run_setup ~with_mcp:true ());
+    check (option bool) "enabled = false preserved" (Some false)
+      (codex_c2c_enabled (read_file config)))
+
 let () =
   Random.self_init ();
   run "c2c_setup_codex"
@@ -317,5 +377,9 @@ let () =
         ; test_case "refresh codex skill if stale" `Quick test_refresh_codex_skill_if_stale
         ; test_case "B256 --with-mcp writes [mcp_servers.c2c]" `Quick
             test_with_mcp_writes_mcp_block
+        ; test_case "B290 new entry lands disabled" `Quick
+            test_b290_new_entry_lands_disabled
+        ; test_case "B290 existing entry enabled state untouched" `Quick
+            test_b290_existing_entry_enabled_state_untouched
         ] )
     ]

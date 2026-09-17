@@ -702,13 +702,39 @@ let relay_enable_cmd =
     | _ -> fields
   in
   let path = save_relay_config (`Assoc fields) in
+  (* B296: boot supervision. Install+enable the systemd --user unit so the
+     connector survives reboot/logout/OOM. Before systemd starts it, hand any
+     running non-systemd supervisor over (its singleton lock would otherwise
+     make the unit start fail). Without systemd this is an informational
+     skip, never an error. *)
+  let handover () =
+    ignore
+      (C2c_relay_managed.stop_supervisor
+         ~name:C2c_relay_managed.default_instance_name ~timeout_s:5.0)
+  in
+  let unit_lines =
+    match
+      C2c_relay_systemd.install_and_enable_if_active ~pre_start:handover
+        ~c2c_path:(C2c_relay_systemd.c2c_binary_for_unit ()) ()
+    with
+    | Unit_enabled unit_path ->
+        Printf.sprintf
+          "boot supervision: systemd unit enabled (%s)\n\
+           the connector starts now and at every login\n"
+          unit_path
+    | Unit_skipped reason -> Printf.sprintf "boot supervision skipped: %s\n" reason
+    | Unit_error err -> Printf.sprintf "boot supervision: %s\n" err
+    | Unit_not_activated ->
+        "boot supervision skipped: relay not activated\n"
+  in
   Printf.printf
     "relay activated: %s\n\
      wrote %s\n\
      \n\
-     Cross-machine messaging is now on for this host. Next:\n\
-     \  c2c start relay-connect   # keep this broker connected\n"
-    chosen path;
+     %s\
+     \n\
+     Cross-machine messaging is now on for this host.\n"
+    chosen path unit_lines;
   exit 0
 
 let relay_disable_cmd =
@@ -717,6 +743,9 @@ let relay_disable_cmd =
   let had_url = List.assoc_opt "url" fields <> None in
   let fields = set_config_field fields "enabled" (`Bool false) in
   let path = save_relay_config (`Assoc fields) in
+  (* B296: stop+disable the boot-supervision unit (the file is kept, so a
+     later `c2c relay enable` re-enables it cheaply). *)
+  C2c_relay_systemd.stop_and_disable ();
   Printf.printf
     "relay deactivated (enabled: false)\n\
      wrote %s\n\
