@@ -5474,6 +5474,14 @@ end = struct
     if from_alias = "" || to_alias = "" || content = "" then
       respond_bad_request (json_error_str err_bad_request "from_alias, to_alias, and content are required")
     else
+      (* B329: bind the body from_alias to the verified signer BEFORE host
+         routing — the forward-out branch below responds without reaching the
+         local-delivery binding check, so an authenticated peer could spoof
+         the sender on a cross-relay delivery (relay-to-relay trust
+         substitutes for sender binding at the peer). *)
+      match verified_alias with
+      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
+      | _ ->
       (* #379: split alias@host for cross-relay routing. A 12-16 lowercase
          hex host is the relay opaque-host reply route, not a cross-relay
          host name, so it stays local while preserving the concrete route
@@ -5596,9 +5604,6 @@ end = struct
                        (json_error_str "forward_local_error"
                           (Printf.sprintf "local forwarder error: %s" err))))
       else
-      match verified_alias with
-      | Some v when v <> from_alias_signer_name from_alias -> reject_alias_mismatch ~verified:v ~claimed:from_alias
-      | _ ->
         let message_id = get_opt_string body "message_id" in
         let deliver_to_alias = if opaque_host_route then to_alias else stripped_to_alias in
         (* B014: record the sender's current PoW difficulty (leading-zero bits)

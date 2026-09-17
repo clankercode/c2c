@@ -530,6 +530,15 @@
  (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
    cohttp-lwt-unix))
 
+; B329: the /send alias-mismatch rejection must apply to the cross-relay
+; forward-out branch too — an authenticated peer must not spoof the sender
+; on a forwarded delivery. Two real loopback sqlite relays.
+(test
+ (name test_relay_b329_forward_signer_binding)
+ (modules test_relay_b329_forward_signer_binding)
+ (libraries c2c_mcp alcotest yojson unix sqlite3 lwt.unix cohttp
+   cohttp-lwt-unix))
+
 ; B293: "no live lease" is lease_not_found (not signature_invalid), and the
 ; connector drops a dead cached registration instead of retrying the dead
 ; lease forever. Real loopback sqlite server for the code split; scripted
