@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:08Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T18:11:06Z"
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
+duration_minutes: 168.98254382706668
 estimate_hours: 1
 id: B326
 priority: low
 started_at: "2026-09-17T15:22:08Z"
-status: in_progress
+status: done
 tags: []
 title: systemd unit ExecStart can pin a dev _build path — dune clean turns it into an infinite restart loop
-updated_at: "2026-09-17T15:22:08Z"
+updated_at: "2026-09-17T18:11:06Z"
 ---
 
 # systemd unit ExecStart can pin a dev _build path — dune clean turns it into an infinite restart loop
