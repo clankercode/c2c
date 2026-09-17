@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:05Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T18:11:06Z"
 complexity: low
 created_at: "2026-09-17T07:56:11Z"
 depends_on: []
+duration_minutes: 169.02807044068334
 estimate_hours: 1
 id: B311
 priority: medium
 started_at: "2026-09-17T15:22:05Z"
-status: in_progress
+status: done
 tags: []
 title: systemd unit UnsetEnvironment covers only C2C_MCP_BROKER_ROOT — C2C_RELAY_CONFIG/TOKEN/IDENTITY_PATH/INSTANCES_DIR leak in
-updated_at: "2026-09-17T15:22:05Z"
+updated_at: "2026-09-17T18:11:06Z"
 ---
 
 # systemd unit UnsetEnvironment covers only C2C_MCP_BROKER_ROOT — C2C_RELAY_CONFIG/TOKEN/IDENTITY_PATH/INSTANCES_DIR leak in

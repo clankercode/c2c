@@ -804,7 +804,43 @@ let stop_cmd =
      21-day-old instance's recorded pid had been recycled onto a thread of an
      unrelated desktop application, and `c2c stop` killed it — reporting
      "stopped", exit 0. There is now exactly one implementation. *)
-  let outcome = C2c_start.stop_instance name in
+  (* B302: the systemd unit may own the machine-wide relay connector, in
+     which case killing the supervisor directly is reverted by Restart=always
+     within ~5s (the stop that "does not stick"). Detection + delegation live
+     in C2c_relay_managed: C2c_start is a base-library module and cannot see
+     the cli-level systemd seam. Every other name — and every not-owned state
+     — keeps the single C2c_start.stop_instance path. *)
+  let outcome =
+    if C2c_relay_managed.is_default_relay_connect_name name then
+      match C2c_relay_managed.stop_systemd_aware ~name ~timeout_s:5.0 () with
+      | C2c_relay_managed.Stop_delegated_to_unit
+      | C2c_relay_managed.Stop_rogue_stopped ->
+          C2c_start.Stop_stopped
+      | C2c_relay_managed.Stop_not_unit_owned ->
+          let outcome = C2c_start.stop_instance name in
+          (* B302: the harness stop knows nothing of the relay connector
+             child. Sweep the recorded child in every not-owned state too —
+             a supervisor SIGKILLed without running its handlers leaves its
+             singleton-exempt child polling (duplicate-connector 429 storm). *)
+          if not (C2c_relay_managed.stop_recorded_connector_child ~name ~timeout_s:5.0)
+          then
+            Printf.eprintf
+              "error: the recorded relay connector child for '%s' survived \
+               the stop; investigate with 'c2c instances'\n%!"
+              name;
+          outcome
+      | C2c_relay_managed.Stop_delegation_failed err ->
+          (match output_mode with
+           | Json ->
+               print_json
+                 (`Assoc
+                   [ ("ok", `Bool false)
+                   ; ("name", `String name)
+                   ; ("error", `String err) ])
+           | Human -> Printf.eprintf "error: %s\n%!" err);
+          exit 1
+    else C2c_start.stop_instance name
+  in
   let status = C2c_start.stop_outcome_message ~name outcome in
   (* Stopping an already-stopped instance stays a success, as it has always
      been here — only the new refusal is an error, and nothing can depend on

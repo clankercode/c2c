@@ -686,6 +686,76 @@ let test_check_transport_security_https_pass () =
   Alcotest.(check bool) "https Pass" true
     (c.Relay_doctor.status = Relay_doctor.Pass)
 
+(* ---- B304: remediation strings are systemd-aware ------------------------ *
+ *
+ * The old fix_restart_connect / fix_start_connect fallback arms pattern-
+ * killed the connector (`pkill -f 'c2c relay connect'` — under the B296
+ * systemd unit that only kills the supervisor child and Restart=always
+ * reverts it within ~5s; on direct hosts it fights the B302-delegating
+ * stop/restart) and backgrounded a child of the doctor-calling shell
+ * (`… &` — dies with the shell; the exact 55-days-dark failure B296 cites).
+ * Locked here: every doctor connector remediation is a managed verb, never
+ * a pattern-kill or a backgrounding incantation, and the keep-it-off path
+ * is `c2c relay disable`. *)
+
+let assert_no_kill_or_background ~label s =
+  List.iter
+    (fun bad ->
+      Alcotest.(check bool)
+        (Printf.sprintf "%s: no %S in remediation" label bad)
+        false (has_needle ~needle:bad s))
+    [ "pkill"; "nohup"; "&"; "||" ]
+
+let test_b304_fix_restart_is_managed_verb () =
+  let s = fix_restart_connect relay_url in
+  Alcotest.(check bool) "restart remediation is c2c restart relay-connect" true
+    (has_needle ~needle:"c2c restart relay-connect" s);
+  assert_no_kill_or_background ~label:"fix_restart_connect" s
+
+let test_b304_fix_start_is_supervised_verb () =
+  let s = fix_start_connect relay_url in
+  Alcotest.(check bool) "start remediation is c2c start relay-connect" true
+    (has_needle ~needle:"c2c start relay-connect" s);
+  Alcotest.(check bool) "start remediation carries the probed URL" true
+    (has_needle ~needle:relay_url s);
+  assert_no_kill_or_background ~label:"fix_start_connect" s
+
+let test_b304_duplicate_fix_no_pattern_kill () =
+  match duplicate_connector_check ~pids:[ 111; 222 ] with
+  | Some c ->
+      let s = Option.value c.fix_command ~default:"" in
+      Alcotest.(check bool) "stop path named" true
+        (has_needle ~needle:"c2c stop relay-connect" s);
+      Alcotest.(check bool) "restart path named" true
+        (has_needle ~needle:"c2c start relay-connect" s);
+      assert_no_kill_or_background ~label:"duplicate fix_command" s
+  | None -> Alcotest.fail "expected duplicate-connector FAIL"
+
+let test_b304_not_running_arm_offers_disable () =
+  (* "connector not running" arm: either bring the bridge back or keep it
+     off on purpose — the latter is `c2c relay disable`, not a kill. *)
+  let st = conn_state ~last_sync:(now -. 5000.0) () in
+  let r = cc ~state:st () in
+  Alcotest.(check bool) "arm is the not-running FAIL" true
+    (r.status = Fail && has_needle ~needle:"not running" r.message);
+  Alcotest.(check bool) "detail offers c2c relay disable to keep it off" true
+    (has_needle ~needle:"c2c relay disable" (Option.value r.detail ~default:""));
+  match r.fix_command with
+  | Some s ->
+      assert_no_kill_or_background ~label:"not-running fix_command" s;
+      Alcotest.(check bool) "fix is the managed start verb" true
+        (has_needle ~needle:"c2c start relay-connect" s)
+  | None -> Alcotest.fail "not-running arm must carry a fix"
+
+let test_b304_first_sync_prose_no_kill () =
+  (* Inconclusive first-sync arm previously advised "kill and restart the
+     connector"; under B302 the sanctioned move is the managed restart verb. *)
+  let r = cc ~procs:[ "p" ] () in
+  Alcotest.(check bool) "arm is Inconclusive first-sync" true
+    (r.status = Inconclusive);
+  Alcotest.(check bool) "prose no longer advises killing" false
+    (has_needle ~needle:"kill" (Option.value r.detail ~default:""))
+
 let () =
   Alcotest.run "c2c_doctor_capabilities"
     [ ( "B210 duplicate-connector",
@@ -763,4 +833,15 @@ let () =
             test_check_transport_security_prod_http_fails;
           Alcotest.test_case "transport https Pass" `Quick
             test_check_transport_security_https_pass ] );
+      ( "B304-remediation-strings",
+        [ Alcotest.test_case "fix_restart_connect is managed verb" `Quick
+            test_b304_fix_restart_is_managed_verb;
+          Alcotest.test_case "fix_start_connect is supervised verb" `Quick
+            test_b304_fix_start_is_supervised_verb;
+          Alcotest.test_case "duplicate fix has no pattern-kill" `Quick
+            test_b304_duplicate_fix_no_pattern_kill;
+          Alcotest.test_case "not-running arm offers disable" `Quick
+            test_b304_not_running_arm_offers_disable;
+          Alcotest.test_case "first-sync prose no kill" `Quick
+            test_b304_first_sync_prose_no_kill ] );
     ]

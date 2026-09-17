@@ -29,6 +29,8 @@ let default_max_bytes = 10 * 1024 * 1024
 
 let default_keep = 3
 
+let ( // ) = Filename.concat
+
 let env_int name default =
   match Sys.getenv_opt name with
   | None -> default
@@ -58,20 +60,47 @@ let open_append log_path =
          0o600)
   with _ -> None
 
-(* Rotate the ring: drop the numbered overflow (log.<keep> and deeper strays
-   left by a previously larger keep), shift log.<n> -> log.<n+1> for n in
-   [keep-1 .. 1], then rename log -> log.1. Rename preserves the inode (and
-   therefore the mode) and is safe under any writer that still holds the old
-   fd — that writer keeps writing to the renamed file until it exits. After
-   this the live path does not exist; the next [open_append] recreates it.
-   The stray-cleanup probe window is bounded because numbered files beyond
-   keep can only come from a smaller historical cap, not from this loop. *)
+(* Rotate the ring: drop every numbered stray log.<n> with n >= keep, shift
+   log.<n> -> log.<n+1> for n in [keep-1 .. 1], then rename log -> log.1.
+   Rename preserves the inode (and therefore the mode) and is safe under any
+   writer that still holds the old fd — that writer keeps writing to the
+   renamed file until it exits. After this the live path does not exist; the
+   next [open_append] recreates it.
+
+   B327: the stray sweep is readdir-based over ALL log.<digits> siblings,
+   not a fixed window beyond keep — a host that previously ran a larger
+   C2C_INSTANCE_LOG_KEEP (say 50) and was reduced to 3 kept log.20..log.50
+   forever under a +16 probe. Non-numbered siblings (log.backup, log-lock,
+   …) are never touched. *)
+let numbered_index log_path file =
+  match String.split_on_char '.' file with
+  | [] | [ _ ] -> None
+  | parts -> (
+      let digits = List.nth parts (List.length parts - 1) in
+      let prefix =
+        String.concat "." (List.filteri (fun i _ -> i < List.length parts - 1) parts)
+      in
+      if
+        prefix = Filename.basename log_path
+        && digits <> ""
+        && String.for_all (fun c -> c >= '0' && c <= '9') digits
+      then int_of_string_opt digits
+      else None)
+
+let sweep_beyond_keep ~log_path n =
+  let dir = Filename.dirname log_path in
+  (try
+     Array.iter
+       (fun file ->
+          match numbered_index log_path file with
+          | Some i when i >= n -> (try Sys.remove (dir // file) with _ -> ())
+          | _ -> ())
+       (Sys.readdir dir)
+   with _ -> ())
+
 let rotate ~log_path =
   let n = keep () in
-  for i = n to n + 16 do
-    let p = log_path ^ "." ^ string_of_int i in
-    try if Sys.file_exists p then Sys.remove p with _ -> ()
-  done;
+  sweep_beyond_keep ~log_path n;
   for i = n - 1 downto 1 do
     let src = log_path ^ "." ^ string_of_int i in
     let dst = log_path ^ "." ^ string_of_int (i + 1) in

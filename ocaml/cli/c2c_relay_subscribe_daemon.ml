@@ -286,6 +286,45 @@ let dm_to_json ~to_alias ~from_alias ~body ~ts : Yojson.Safe.t =
     ("ts", `Float ts);
   ]
 
+(* B309: `c2c relay disable` must reach a daemon that resolved the relay
+   before the disable — otherwise it keeps retrying the parked URL forever
+   (backoff capped at 30s). Best-effort: send the {"cmd":"shutdown"} IPC
+   line the daemon already understands and read its ack.
+   [Shutdown_no_daemon] covers both an absent socket file and a stale one
+   nobody listens on (ECONNREFUSED). Never raises. *)
+type shutdown_result =
+  | Shutdown_stopped  (** Daemon answered the shutdown command. *)
+  | Shutdown_no_daemon  (** No daemon listening on the socket. *)
+  | Shutdown_error of string  (** Socket existed but the IPC exchange failed. *)
+
+let send_shutdown_best_effort ?(timeout_s = 2.0) ~socket_path () : shutdown_result =
+  if not (Sys.file_exists socket_path) then Shutdown_no_daemon
+  else
+    let open_fd = ref None in
+    try
+      let s = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+      open_fd := Some s;
+      Unix.setsockopt_float s Unix.SO_RCVTIMEO timeout_s;
+      Unix.setsockopt_float s Unix.SO_SNDTIMEO timeout_s;
+      Unix.connect s (Unix.ADDR_UNIX socket_path);
+      let ic = Unix.in_channel_of_descr s in
+      let oc = Unix.out_channel_of_descr s in
+      output_string oc "{\"cmd\":\"shutdown\"}\n";
+      flush oc;
+      (* Ack is best-effort: the daemon shuts down with or without it. *)
+      (match input_line ic with _ -> () | exception _ -> ());
+      close_in_noerr ic;
+      (* close_in closed the fd; drop it so no error path double-closes. *)
+      open_fd := None;
+      Shutdown_stopped
+    with
+    | Unix.Unix_error (Unix.ECONNREFUSED, _, _) ->
+        (match !open_fd with Some s -> (try Unix.close s with _ -> ()) | None -> ());
+        Shutdown_no_daemon
+    | e ->
+        (match !open_fd with Some s -> (try Unix.close s with _ -> ()) | None -> ());
+        Shutdown_error (Printexc.to_string e)
+
 (* === Helpers === *)
 
 let json_of_string_opt s =
@@ -338,6 +377,11 @@ type daemon_state = {
   (* B275: global cap on concurrent in-flight /ws/subscribe handshakes.
      Live sessions do not hold a slot — only connect/handshake does. *)
   connect_gate : C2c_ws_connect_gate.t;
+  (* B309: the raw --relay-url flag from daemon start (None when activation
+     came from env/config). The per-cycle recheck re-resolves activation
+     with it, so an explicitly flag-started daemon keeps its operator
+     intent while env/config-resolved activation tracks the config file. *)
+  activation_flag : string option;
 }
 
 (* === WebSocket Connection Management (non-blocking Lwt) === *)
@@ -511,16 +555,29 @@ let run_alias_connection (state : daemon_state) (client : client_conn) (conn : a
            | `Unstable -> "unstable"
            | `Connect_failed -> "connect_failed");
         Lwt_unix.sleep wait >>= fun () ->
-        (match !outcome with
-         | `Stable ->
-           (* Leave base at initial so the next cycle starts clean. *)
-           ()
-         | `Unstable | `Connect_failed ->
-           (* B279: never reset to 1s while the origin is rate-limiting us. *)
-           conn.ws_backoff <-
-             grow_backoff ~base:conn.ws_backoff
-               ~max_backoff:reconnect_backoff_max);
-        connect_and_loop ()
+        (* B309: the relay is OPT-IN (B300). If activation turned off since
+           the daemon started (e.g. `c2c relay disable` parked relay.json,
+           or the config was removed), stop retrying this alias instead of
+           hammering the parked URL forever. A start-time --relay-url flag
+           keeps counting as intent for the daemon's lifetime. *)
+        (match Relay_activation.resolve ?flag:state.activation_flag () with
+         | Relay_activation.Relay_active _ ->
+           (match !outcome with
+            | `Stable ->
+              (* Leave base at initial so the next cycle starts clean. *)
+              ()
+            | `Unstable | `Connect_failed ->
+              (* B279: never reset to 1s while the origin is rate-limiting us. *)
+              conn.ws_backoff <-
+                grow_backoff ~base:conn.ws_backoff
+                  ~max_backoff:reconnect_backoff_max);
+           connect_and_loop ()
+         | Relay_activation.Relay_inactive | Relay_activation.Relay_disabled _ ->
+           Printf.eprintf
+             "[subscribe-daemon] relay no longer active on this host — \
+              stopping reconnects for %s (c2c relay enable to resume)\n%!"
+             conn.alias;
+           Lwt.return_unit)
       end
     end
   in
@@ -820,6 +877,7 @@ let start_daemon_cmd =
       socket_path; identity; relay_endpoint = endpoint;
       circuit = Reconnect_circuit.create ();
       connect_gate;
+      activation_flag = relay_url;
     } in
     let handle_signal _sig =
       state.shutdown_requested <- true;
