@@ -106,6 +106,31 @@ let test_unit_text_shape () =
     (not (contains ~haystack:text ~needle:"--broker-root"));
   check bool "no backgrounding" true (not (contains ~haystack:text ~needle:"&"))
 
+(* B311: the user manager may import ANY c2c env var (import-environment);
+   the unit must clear the full c2c env surface, not just the broker root —
+   C2C_RELAY_CONFIG would re-point relay.json, C2C_RELAY_TOKEN beats the
+   config token, C2C_RELAY_IDENTITY_PATH redirects signing identity,
+   C2C_INSTANCES_DIR relocates pidfiles/singleton locks (c2c stop from a
+   normal shell reads the home location and a second connector arms against
+   the relocated lock), and the session/node ids would misattribute the
+   machine connector. *)
+let b311_unset_environment =
+  "UnsetEnvironment=C2C_MCP_BROKER_ROOT C2C_RELAY_CONFIG C2C_INSTANCES_DIR \
+   C2C_RELAY_TOKEN C2C_RELAY_IDENTITY_PATH C2C_RELAY_NODE_ID \
+   C2C_RELAY_SESSION_ID C2C_MCP_SESSION_ID"
+
+let test_unit_text_unsets_full_c2c_env () =
+  let text = C2c_relay_systemd.unit_text ~c2c_path:"/usr/bin/c2c" () in
+  check bool "unit clears the full c2c env surface (exact list)" true
+    (contains ~haystack:text ~needle:b311_unset_environment);
+  (* Exactly one UnsetEnvironment line, so the list cannot be split/drifted. *)
+  let count =
+    String.split_on_char '\n' text
+    |> List.filter (fun l -> contains ~haystack:l ~needle:"UnsetEnvironment=")
+    |> List.length
+  in
+  check int "exactly one UnsetEnvironment line" 1 count
+
 let test_unit_text_relay_url_env () =
   let bin = "/usr/local/bin/c2c" in
   (* Durable machine relay.json: no pin — the supervisor resolves relay.json
@@ -431,6 +456,7 @@ let () =
   run "c2c_relay_systemd"
     [ ( "unit text"
       , [ test_case "shape: absolute ExecStart, Restart=always, no rate limit" `Quick test_unit_text_shape
+        ; test_case "unsets the full c2c env surface (B311)" `Quick test_unit_text_unsets_full_c2c_env
         ; test_case "relay URL env pinning rule" `Quick test_unit_text_relay_url_env
         ; test_case "relay_url_env_for_unit prefers durable config" `Quick test_relay_url_env_for_unit
         ] )

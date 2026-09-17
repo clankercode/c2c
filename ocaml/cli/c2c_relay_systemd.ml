@@ -16,10 +16,12 @@
    non-login shells (and the user manager) lack ~/.local/bin on PATH.
 
    Machine mode: the connector serves ALL broker roots under ~/.c2c/repos.
-   The unit explicitly clears C2C_MCP_BROKER_ROOT so a value inherited from the
-   user manager cannot scope the connector to one repo; the relay URL is
-   resolved from relay.json at every start (pinned into Environment= only when
-   no durable machine config exists).
+   The unit clears the whole c2c env surface (B311): C2C_MCP_BROKER_ROOT
+   (so an inherited value cannot scope the connector to one repo) plus the
+   relay config/token/identity/instance-dir/session vars a user manager may
+   have imported, any of which would silently redirect the machine
+   connector; the relay URL is resolved from relay.json at every start
+   (pinned into Environment= only when no durable machine config exists).
 
    B300 gating: the unit is installed+enabled ONLY when Relay_activation
    resolves Active — a local-only host must never get an enabled relay
@@ -105,9 +107,13 @@ let unit_text ~c2c_path ?relay_url_env () : string =
      ; "# crashes and c2c binary updates; systemd restarts it across"
      ; "# reboot/logout/OOM (Restart=always, never rate-limited)."
      ; "# Machine mode: the connector serves ALL broker roots"
-     ; "# (~/.c2c/repos/*); an inherited C2C_MCP_BROKER_ROOT would scope it"
-     ; "# to one repo, so it is cleared."
-     ; "UnsetEnvironment=C2C_MCP_BROKER_ROOT" ]
+     ; "# (~/.c2c/repos/*); inherited c2c env (broker root, relay"
+     ; "# config/token/identity, instance dir, session ids) is cleared"
+     ; "# (B311) — any of it would silently redirect the machine"
+     ; "# connector."
+     ; "UnsetEnvironment=C2C_MCP_BROKER_ROOT C2C_RELAY_CONFIG \
+        C2C_INSTANCES_DIR C2C_RELAY_TOKEN C2C_RELAY_IDENTITY_PATH \
+        C2C_RELAY_NODE_ID C2C_RELAY_SESSION_ID C2C_MCP_SESSION_ID" ]
     @ env_lines
     @ [ ""; "[Install]"; "WantedBy=default.target" ])
 
