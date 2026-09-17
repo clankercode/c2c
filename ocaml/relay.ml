@@ -811,13 +811,16 @@ module InMemoryRelay : RELAY = struct
                key — drop other aliases' lease entries holding it (same
                takeover the sqlite register enforces), or alias_of_session
                keeps resolving the pair to a pre-rename alias. Lease entry
-               only; the shared inbox belongs to the session. *)
+               only; the shared inbox belongs to the session. Collect first:
+               Hashtbl iteration while removing is unspecified. *)
+             let shadowed = ref [] in
              Hashtbl.iter (fun other other_lease ->
                if other <> alias
                   && RegistrationLease.node_id other_lease = node_id
                   && RegistrationLease.session_id other_lease = session_id then
-                 Hashtbl.remove t.leases other
+                 shadowed := other :: !shadowed
              ) t.leases;
+             List.iter (Hashtbl.remove t.leases) !shadowed;
              (match binding_state with
               | `BindNew -> Hashtbl.replace t.bindings alias identity_pk
               | _ -> ());
