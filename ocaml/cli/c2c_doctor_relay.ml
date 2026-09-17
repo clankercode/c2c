@@ -57,13 +57,15 @@ let resolve_broker_root () =
 
 (* Resolve relay URL + report the source so the operator knows where it came
    from. Returns (url, source). *)
-let resolve_url_with_source () =
-  match Sys.getenv_opt "C2C_RELAY_URL" with
-  | Some v when String.trim v <> "" -> (String.trim v, "env C2C_RELAY_URL")
-  | _ ->
-      (match C2c_relay_cmd.resolve_relay_url None with
-       | Some v -> (v, "c2c relay setup config (relay.json)")
-       | None -> (C2c_relay_cmd.default_public_relay_url, "default (public relay)"))
+(* B300: NO implicit fall back to the public relay. This used to end in
+     | None -> (C2c_relay_cmd.default_public_relay_url, "default (public relay)")
+   which is why `c2c doctor` on a pristine host — no relay.json, no identity,
+   no config of any kind — still contacted relay.c2c.im. Returning [None] lets
+   [run_checks] report "not activated" and skip every network probe. *)
+let resolve_url_with_source_opt () =
+  match C2c_relay_cmd.relay_activation () with
+  | C2c_relay_cmd.Relay_active (url, source) -> Some (url, source)
+  | C2c_relay_cmd.Relay_inactive | C2c_relay_cmd.Relay_disabled _ -> None
 
 let age_str now ts =
   let delta = max 0.0 (now -. ts) in
@@ -797,7 +799,11 @@ let check_outbox ~broker_root =
     let deep = depth > 25 in
     let status = if stuck || deep then Fail else Pass in
     let fix_command =
-      let (url, _) = resolve_url_with_source () in
+      let url =
+        match resolve_url_with_source_opt () with
+        | Some (u, _) -> u
+        | None -> "<relay-url>"   (* B300: relay off; keep the hint shape *)
+      in
       if stuck then
         Some (sprintf
                 "c2c relay connect --relay-url %s --once   # drain now; check relay reachability\n\
@@ -901,9 +907,51 @@ let check_relay_version ~probe ~broker_root =
  * Run all checks
  * --------------------------------------------------------------------------- *)
 
+(* B300: the single check a relay-inactive host reports. Status is [Pass], not
+   [Inconclusive]: "the relay is off" is a valid, healthy configuration for a
+   host that only does same-machine messaging, and reporting it as a problem
+   would train operators to activate the relay to silence a warning — the exact
+   opposite of opt-in. *)
+let relay_not_activated_check () =
+  let detail =
+    "c2c is local-only on this host: same-machine DMs, rooms, broadcast, hooks \n\
+     and delivery all work without the relay. Only cross-machine messaging \n\
+     (alias@host, remote peers) needs it, and no relay network call is made \n\
+     until it is activated."
+  in
+  { check_id = "relay_activation"
+  ; status = Pass
+  ; message = "relay: not activated (local-only)"
+  ; detail = Some detail
+  ; fix_command =
+      Some (sprintf "c2c relay enable              # public relay: %s\n\
+                     c2c relay enable --url <URL>  # or a private relay"
+              C2c_relay_cmd.default_public_relay_url)
+  ; docs_url = Some docs_relay }
+
+let relay_disabled_check path =
+  { check_id = "relay_activation"
+  ; status = Pass
+  ; message = "relay: disabled (enabled: false)"
+  ; detail = Some (sprintf "Relay explicitly disabled in %s." path)
+  ; fix_command = Some "c2c relay enable"
+  ; docs_url = Some docs_relay }
+
+(* An inactive relay still needs a [probe] to satisfy the renderers; build an
+   empty one that names no URL rather than inventing the public default. *)
+let inactive_probe () =
+  { url = ""; url_source = "not activated"
+  ; health = None; health_error = None
+  ; peers = []; list_error = None; list_needs_auth = false }
+
 let run_checks () =
+  match C2c_relay_cmd.relay_activation () with
+  | C2c_relay_cmd.Relay_inactive ->
+      (resolve_broker_root (), inactive_probe (), [ relay_not_activated_check () ])
+  | C2c_relay_cmd.Relay_disabled path ->
+      (resolve_broker_root (), inactive_probe (), [ relay_disabled_check path ])
+  | C2c_relay_cmd.Relay_active (url, url_source) ->
   let broker_root = resolve_broker_root () in
-  let (url, url_source) = resolve_url_with_source () in
   let token = C2c_relay_cmd.resolve_relay_token None in
   let identity = identity_opt () in
   let broker = C2c_mcp.Broker.create ~root:broker_root in

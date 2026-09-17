@@ -566,6 +566,14 @@
 ; whoami json/human parity case drives the c2c binary in an isolated env
 ; (no live relay). Appended below J1's schema stanza to keep this shared
 ; manifest lane append-only (next: H6/F5a).
+; B300/B301: the relay is opt-in — resolution precedence plus the
+; no-phone-home property asserted against the real binary.
+(test
+ (name test_relay_activation)
+ (modules test_relay_activation)
+ (libraries c2c_mcp alcotest unix)
+ (deps ../cli/c2c.exe))
+
 (test
  (name test_c2c_relay_state)
  (modules test_c2c_relay_state)

@@ -305,76 +305,49 @@ match storage with
     let module Server = Relay.Relay_server(Relay.InMemoryRelay) in
     Lwt_main.run (Server.start_server ~host ~port ~relay ~token ~verbose ~gc_interval ?tls:tls_cfg ~allowlist ())
 
-(* #11(2): the same three branches as [relay_config_path], but KEEPING which
-   branch was taken. Surfaces that report on the relay config (whoami/status'
-   `state:` line) must name the file rather than claim a scope: only the
-   middle branch is repo-local, and in the default case — neither env var set,
-   which is every plain shell, since broker-root resolution is
-   fingerprint-derived and never sets C2C_MCP_BROKER_ROOT — the file is
-   machine-wide. [relay_config_path] is derived from this so the two can never
-   drift; the payload is the real path (no abbreviation), since an operator
-   reading the label may want to open or `cat` it. *)
-let relay_config_location () : Relay_state.relay_config_location =
-  match Sys.getenv_opt "C2C_RELAY_CONFIG" with
-  | Some p when p <> "" -> Relay_state.Relay_config_explicit p
-  | _ ->
-      (match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
-       | Some d when String.trim d <> "" ->
-           Relay_state.Relay_config_repo
-             (Filename.concat (String.trim d) "relay.json")
-       | _ ->
-           let home = try Sys.getenv "HOME" with Not_found -> "." in
-           Relay_state.Relay_config_machine
-             (Filename.concat home ".config/c2c/relay.json"))
-
-let relay_config_path () =
-  Relay_state.relay_config_path_of (relay_config_location ())
+(* B301: all relay-config resolution now lives in [Relay_activation] (library
+   leaf) so the CLI, the health probe and the subscribe daemon cannot drift
+   apart again. These are aliases kept for the existing call sites. *)
+let relay_config_location = Relay_activation.config_location
+let relay_config_path = Relay_activation.config_path
+let load_relay_config = Relay_activation.load_config
 
 (* Delegated to C2c_io.read_file_trimmed (#388) *)
 let read_file_trimmed = C2c_io.read_file_trimmed
 
-let load_relay_config () =
-  let path = relay_config_path () in
-  if not (Sys.file_exists path) then `Assoc []
-  else
-    try Yojson.Safe.from_file path
-    with _ -> `Assoc []
+let relay_config_string_field = Relay_activation.config_string_field
+let relay_config_bool_field = Relay_activation.config_bool_field
 
-let relay_config_string_field key =
-  match load_relay_config () with
-  | `Assoc fields ->
-      (match List.assoc_opt key fields with
-       | Some (`String v) when v <> "" -> Some v
-       | _ -> None)
-  | _ -> None
+let default_public_relay_url = Relay_activation.default_public_relay_url
 
-(* Default public relay URL. Surfaced in --help so users can find it
-   without reading source (B091). The same constant is also used as a
-   fallback in c2c_relay_subscribe_daemon.ml / c2c_health_cmd.ml. *)
-let default_public_relay_url = "https://relay.c2c.im"
-
+(* B300: there is no default relay. Saying "Default: <public relay>" is what
+   made operators (and this flag's own callers) assume one. *)
 let relay_url_resolution_doc =
   Printf.sprintf
-    "Relay server URL. Default: %s (public relay). \
-     Override with $(b,--relay-url), $(b,C2C_RELAY_URL), or $(b,c2c relay setup --url) <URL>."
+    "Relay server URL. The relay is OPT-IN: c2c contacts no relay until you \
+     activate one with $(b,c2c relay enable) (public relay: %s), \
+     $(b,C2C_RELAY_URL), or this flag."
     default_public_relay_url
 
 let relay_token_resolution_doc =
   "Bearer token (or C2C_RELAY_TOKEN or saved c2c relay setup config)."
 
-let relay_url_required_error =
-  Printf.sprintf
-    "error: --relay-url required (default public relay is %s; \
-     set C2C_RELAY_URL or run c2c relay setup --url <URL>).\n"
-    default_public_relay_url
+(* B300: activation vocabulary re-exported from [Relay_activation] so existing
+   `C2c_relay_cmd.Relay_active (...)` call sites keep working. *)
+type relay_activation = Relay_activation.t =
+  | Relay_inactive
+  | Relay_disabled of string
+  | Relay_active of string * string
+
+let relay_activation ?flag () = Relay_activation.resolve ?flag ()
+let relay_is_active = Relay_activation.is_active
+let relay_not_activated_error = Relay_activation.not_activated_error
+let relay_url_required_error () = Relay_activation.not_activated_error ()
 
 let resolve_relay_url opt =
-  match opt with
-  | Some v when v <> "" -> Some v
-  | _ ->
-      (match Sys.getenv_opt "C2C_RELAY_URL" with
-       | Some v when v <> "" -> Some v
-       | _ -> relay_config_string_field "url")
+  match relay_activation ?flag:opt () with
+  | Relay_active (url, _) -> Some url
+  | Relay_inactive | Relay_disabled _ -> None
 
 let resolve_relay_token opt =
   match opt with
@@ -678,6 +651,83 @@ let relay_setup_cmd =
   Printf.printf "wrote %s\n" path;
   exit 0
 
+(* B300: activation as an explicit, discoverable verb.
+
+   `c2c relay setup --url ...` already existed, but it reads as "configure the
+   relay I am obviously already using" rather than "turn on cross-machine
+   messaging", and with no --url it writes nothing at all. enable/disable make
+   the opt-in decision the thing you type, and `disable` parks a configured URL
+   (enabled:false) instead of forcing the operator to delete it and retype it
+   later.
+
+   The config file is rewritten in place with open_out rather than a tmp+rename,
+   which preserves the inode — and therefore the operator's mode bits and any
+   symlink pointing at this path (#84). *)
+let save_relay_config json =
+  let path = relay_config_path () in
+  mkdir_p (Filename.dirname path);
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc (Yojson.Safe.pretty_to_string json);
+    output_char oc '\n');
+  path
+
+let relay_config_fields () =
+  match load_relay_config () with `Assoc l -> l | _ -> []
+
+let set_config_field fields key v =
+  (key, v) :: List.filter (fun (k, _) -> k <> key) fields
+
+let relay_enable_cmd =
+  let url =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "url" ] ~docv:"URL"
+      ~doc:(Printf.sprintf
+              "Relay to activate. Defaults to the public relay (%s); pass a \
+               URL to use a private relay instead."
+              default_public_relay_url))
+  in
+  let token =
+    Cmdliner.Arg.(value & opt (some string) None & info [ "token" ] ~docv:"TOKEN"
+      ~doc:"Bearer token for a token-protected relay.")
+  in
+  let+ url = url and+ token = token in
+  let chosen = match url with Some u when String.trim u <> "" -> String.trim u
+                            | _ -> default_public_relay_url in
+  let fields = relay_config_fields () in
+  let fields = set_config_field fields "url" (`String chosen) in
+  let fields = set_config_field fields "enabled" (`Bool true) in
+  let fields =
+    match token with
+    | Some t when t <> "" -> set_config_field fields "token" (`String t)
+    | _ -> fields
+  in
+  let path = save_relay_config (`Assoc fields) in
+  Printf.printf
+    "relay activated: %s\n\
+     wrote %s\n\
+     \n\
+     Cross-machine messaging is now on for this host. Next:\n\
+     \  c2c start relay-connect   # keep this broker connected\n"
+    chosen path;
+  exit 0
+
+let relay_disable_cmd =
+  let+ () = Cmdliner.Term.const () in
+  let fields = relay_config_fields () in
+  let had_url = List.assoc_opt "url" fields <> None in
+  let fields = set_config_field fields "enabled" (`Bool false) in
+  let path = save_relay_config (`Assoc fields) in
+  Printf.printf
+    "relay deactivated (enabled: false)\n\
+     wrote %s\n\
+     %s\n\
+     c2c is now local-only: same-machine DMs, rooms and broadcast still work.\n\
+     Stop any running connector with: c2c stop relay-connect\n"
+    path
+    (if had_url then "The configured URL is kept, so `c2c relay enable` restores it."
+     else "No URL was configured.");
+  exit 0
+
 let relay_status_cmd =
   let relay_url =
     Cmdliner.Arg.(value & opt (some string) None & info [ "relay-url" ] ~docv:"URL" ~doc:relay_url_resolution_doc)
@@ -689,7 +739,7 @@ let relay_status_cmd =
   and+ token = token in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -718,7 +768,7 @@ let relay_list_cmd =
   and+ dead = dead in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -919,7 +969,7 @@ let relay_rooms_cmd =
       in
       (match resolve_relay_url relay_url, alias with
        | None, _ ->
-           Printf.eprintf "%s%!" relay_url_required_error;
+           Printf.eprintf "%s%!" (relay_url_required_error ());
            exit 1
        | _, None ->
            Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
@@ -961,7 +1011,7 @@ let relay_rooms_cmd =
       in
       (match resolve_relay_url relay_url, alias, msg_words with
        | None, _, _ ->
-           Printf.eprintf "%s%!" relay_url_required_error;
+           Printf.eprintf "%s%!" (relay_url_required_error ());
            exit 1
        | _, None, _ ->
            Printf.eprintf "error: --alias required for 'rooms send'.\n%!";
@@ -991,7 +1041,7 @@ let relay_rooms_cmd =
       in
       (match resolve_relay_url relay_url with
        | None ->
-           Printf.eprintf "%s%!" relay_url_required_error;
+           Printf.eprintf "%s%!" (relay_url_required_error ());
            exit 1
        | Some url ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -1053,7 +1103,7 @@ let relay_rooms_cmd =
   | "list" ->
       (match resolve_relay_url relay_url with
        | None ->
-           Printf.eprintf "%s%!" relay_url_required_error;
+           Printf.eprintf "%s%!" (relay_url_required_error ());
            exit 1
        | Some url ->
            let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -1088,7 +1138,7 @@ let relay_rooms_cmd =
       in
       (match resolve_relay_url relay_url, alias, invitee_pk with
        | None, _, _ ->
-           Printf.eprintf "%s%!" relay_url_required_error;
+           Printf.eprintf "%s%!" (relay_url_required_error ());
            exit 1
        | _, None, _ ->
            Printf.eprintf "error: --alias required for 'rooms %s'.\n%!" subcmd;
@@ -1125,7 +1175,7 @@ let relay_rooms_cmd =
       in
       (match resolve_relay_url relay_url, alias, visibility with
        | None, _, _ ->
-           Printf.eprintf "%s%!" relay_url_required_error;
+           Printf.eprintf "%s%!" (relay_url_required_error ());
            exit 1
        | _, None, _ ->
            Printf.eprintf "error: --alias required for 'rooms set-visibility'.\n%!";
@@ -1165,7 +1215,7 @@ let relay_rooms_cmd =
       in
       (match resolve_relay_url relay_url, alias, history_public, parsed_hp with
        | None, _, _, _ ->
-           Printf.eprintf "%s%!" relay_url_required_error;
+           Printf.eprintf "%s%!" (relay_url_required_error ());
            exit 1
        | _, None, _, _ ->
            Printf.eprintf "error: --alias required for 'rooms set-history-public'.\n%!";
@@ -1210,7 +1260,7 @@ let relay_register_cmd =
   let+ relay_url = relay_url and+ token = token and+ alias = alias in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       (* B114: register with the same identity the signed room ops use
@@ -1249,7 +1299,7 @@ let relay_dm_cmd =
   and+ alias = alias and+ words = words in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -1475,7 +1525,7 @@ let relay_mobile_pair_cmd =
   and+ json = json_flag in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -1638,7 +1688,7 @@ let relay_subscribe_cmd =
   and+ alias = alias in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       (* Scheme support is decided by Relay_doctor.subscribe_url_supported — the
@@ -1726,7 +1776,7 @@ let relay_gc_cmd =
   and+ verbose = verbose in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -1780,7 +1830,7 @@ let relay_dead_letter_cmd =
   end;
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       let client = Relay.Relay_client.make ?token:(resolve_relay_token token) url in
@@ -1863,7 +1913,7 @@ let relay_poll_inbox_cmd =
   and+ session_id = session_id in
   match resolve_relay_url relay_url with
   | None ->
-      Printf.eprintf "%s%!" relay_url_required_error;
+      Printf.eprintf "%s%!" (relay_url_required_error ());
       exit 1
   | Some url ->
       let session_id = match session_id with
@@ -2264,6 +2314,16 @@ let relay_setup =
          ])
     relay_setup_cmd
 
+let relay_enable =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "enable"
+       ~doc:"Activate the relay (turn on cross-machine messaging).")
+    relay_enable_cmd
+let relay_disable =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "disable"
+       ~doc:"Deactivate the relay; c2c returns to local-only.")
+    relay_disable_cmd
 let relay_serve = Cmdliner.Cmd.v (Cmdliner.Cmd.info "serve" ~doc:"Start the relay server.") relay_serve_cmd
 let relay_connect = Cmdliner.Cmd.v (Cmdliner.Cmd.info "connect" ~doc:"Run the relay connector.") relay_connect_cmd
 let relay_status = Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show relay health.") relay_status_cmd
@@ -2280,11 +2340,9 @@ let relay_subscribe_daemon = C2c_relay_subscribe_daemon.subscribe_daemon_cmd
 
  let relay_group =
   let group_doc =
-    Printf.sprintf
-      "Cross-machine relay (default: %s). \
-       Subcommands: serve, connect, setup, status, list, rooms, gc, \
-       dead-letter, identity, contact, register, dm, mobile-pair, subscribe."
-      default_public_relay_url
+    "Cross-machine relay — OPT-IN; off until `c2c relay enable`. \
+     Subcommands: enable, disable, serve, connect, setup, status, list, rooms, \
+     gc, dead-letter, identity, contact, register, dm, mobile-pair, subscribe."
   in
   let group_man =
     [ `S "DESCRIPTION"
@@ -2306,6 +2364,6 @@ let relay_subscribe_daemon = C2c_relay_subscribe_daemon.subscribe_daemon_cmd
   Cmdliner.Cmd.group
     ~default:relay_status_cmd
     (Cmdliner.Cmd.info "relay" ~doc:group_doc ~man:group_man)
-    [ relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_contact; relay_register; relay_dm; relay_mobile_pair; relay_subscribe; relay_subscribe_daemon ]
+    [ relay_enable; relay_disable; relay_serve; relay_connect; relay_setup; relay_status; relay_list; relay_rooms; relay_gc; relay_dead_letter; relay_poll_inbox; relay_identity; relay_contact; relay_register; relay_dm; relay_mobile_pair; relay_subscribe; relay_subscribe_daemon ]
 
 (* --- mesh ------------------------------------------------------------------- *)

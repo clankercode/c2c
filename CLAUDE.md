@@ -476,6 +476,25 @@ archive append. Full caveats: `.collab/runbooks/ephemeral-dms.md`.
   the broker). Fingerprint `<fp>` is SHA-256 of `remote.origin.url`, else git
   toplevel. `c2c migrate-broker` merges orphaned XDG-profile brokers.
   `c2c health` / `c2c doctor` report `xdg_split_brain_broker`.
+- **The relay is OPT-IN (B300).** c2c makes NO relay network call until an
+  operator activates one. `Relay_activation.resolve` is the single source of
+  truth: `--relay-url` flag → `C2C_RELAY_URL` → `relay.json` `url` (unless that
+  file sets `enabled: false`). There is deliberately **no** fall back to the
+  public relay — that fallback is what made a pristine host phone home from
+  `c2c doctor` / `c2c health`. An existing `relay.json` carrying a `url` counts
+  as activated (grandfathered), so upgrades do not disconnect working hosts.
+  `c2c relay enable` / `c2c relay disable` are the verbs; `disable` parks the
+  URL rather than deleting it. Inactive is a HEALTHY state — report it grey
+  (`relay: not activated (local-only)`), never as a warning, or operators will
+  activate the relay just to silence it. Any new surface that can reach the
+  relay must route through `Relay_activation` (or `resolve_relay_url`, defined
+  in terms of it); never substitute `default_public_relay_url` for a `None`.
+  Resolution had been copied three times and all three drifted — `c2c health`
+  hardcoded the public URL and ignored `relay.json`, and the subscribe daemon
+  read `~/.c2c/relay-setup.json`, a path nothing writes. Regression tests:
+  `ocaml/test/test_relay_activation.ml` (resolution precedence + a
+  no-phone-home property asserted against the real binary, because the bug was
+  in the callers, not in resolution).
 - **Cross-repo sessions broker** (`~/.c2c/sessions/broker`): `list`, `send`,
   `register`, `monitor` accept `--cross-repo` (override with
   `C2C_SESSIONS_BROKER_ROOT`). Explicit `--root` still wins where supported.
