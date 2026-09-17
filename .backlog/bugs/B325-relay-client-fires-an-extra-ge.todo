@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
 estimate_hours: 1
 id: B325
 priority: low
+started_at: null
 status: pending
 tags: []
 title: relay_client fires an extra GET /health after every error incl 429s and re-parses CA PEM per request
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+relay_client.maybe_annotate_protocol_skew (relay_client.ml:506-528) fires an extra GET /health after ANY non-transport error response - including 429s - deepening the very rate-limit bucket that produced the error and doubling latency; net_ctx_of_bundle (196-214) re-reads and re-parses the CA PEM per request. CLI-side only, but monitor/whoami loops amplify throttling.
+
+## Fix direction
+
+Cache the health/compat verdict per client; build the conduit ctx once.
+
+## Evidence
+
+Connector review 2026-09-17.
