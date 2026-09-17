@@ -703,11 +703,12 @@ let cleanup_client (state : daemon_state) (client : client_conn) =
      client_closed without removing (legacy) or races re-enter cleanup. *)
   state.clients <- remove_client_from_list client state.clients;
   if first then
-    (* Close IPC channels *)
+    (* Close IPC channels. B341: the channels wrap client_fd (created with
+       Lwt_io.of_fd), so closing them closes the fd — a separate raw close
+       would double-close it. *)
     Lwt.async (fun () ->
         Lwt.catch (fun () -> Lwt_io.close client.client_ic) (fun _ -> Lwt.return_unit) >>= fun () ->
-        Lwt.catch (fun () -> Lwt_io.close client.client_oc) (fun _ -> Lwt.return_unit) >>= fun () ->
-        Lwt.catch (fun () -> Lwt_unix.close client.client_fd) (fun _ -> Lwt.return_unit))
+        Lwt.catch (fun () -> Lwt_io.close client.client_oc) (fun _ -> Lwt.return_unit))
 
 let handle_client (state : daemon_state) (client : client_conn) =
   let rec loop () =
@@ -920,7 +921,7 @@ let register_cmd =
   let socket_path = resolve_socket_path socket in
   Lwt_main.run (
     let fd = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-    Lwt.finalize
+    Lwt.try_bind
       (fun () ->
          Lwt_unix.connect fd (Unix.ADDR_UNIX socket_path) >>= fun () ->
          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd in
@@ -936,9 +937,17 @@ let register_cmd =
          Lwt_io.read_line ic >>= fun resp_line ->
          let resp = Yojson.Safe.from_string resp_line in
          Printf.printf "%s\n%!" (Yojson.Safe.pretty_to_string resp);
-         Lwt_io.close ic >>= fun () ->
-         Lwt_io.close oc)
-      (fun () -> Lwt_unix.close fd)
+         (* B341: the of_fd channels own the fd — closing them closes it;
+            close exactly once. The error handler below only runs when the
+            exchange failed before any channel close (these closes are
+            best-effort and cannot fail), so its raw fd close never
+            double-closes; it re-raises so failures still exit non-zero. *)
+         Lwt.catch (fun () -> Lwt_io.close ic) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.catch (fun () -> Lwt_io.close oc) (fun _ -> Lwt.return_unit))
+      (fun () -> Lwt.return_unit)
+      (fun exn ->
+         Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.fail exn)
   )
 
 let deregister_cmd =
@@ -951,7 +960,7 @@ let deregister_cmd =
   let socket_path = resolve_socket_path socket in
   Lwt_main.run (
     let fd = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-    Lwt.finalize
+    Lwt.try_bind
       (fun () ->
          Lwt_unix.connect fd (Unix.ADDR_UNIX socket_path) >>= fun () ->
          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd in
@@ -967,9 +976,17 @@ let deregister_cmd =
          Lwt_io.read_line ic >>= fun resp_line ->
          let resp = Yojson.Safe.from_string resp_line in
          Printf.printf "%s\n%!" (Yojson.Safe.pretty_to_string resp);
-         Lwt_io.close ic >>= fun () ->
-         Lwt_io.close oc)
-      (fun () -> Lwt_unix.close fd)
+         (* B341: the of_fd channels own the fd — closing them closes it;
+            close exactly once. The error handler below only runs when the
+            exchange failed before any channel close (these closes are
+            best-effort and cannot fail), so its raw fd close never
+            double-closes; it re-raises so failures still exit non-zero. *)
+         Lwt.catch (fun () -> Lwt_io.close ic) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.catch (fun () -> Lwt_io.close oc) (fun _ -> Lwt.return_unit))
+      (fun () -> Lwt.return_unit)
+      (fun exn ->
+         Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.fail exn)
   )
 
 let list_cmd =
@@ -988,7 +1005,7 @@ let list_cmd =
   let socket_path = resolve_socket_path socket in
   Lwt_main.run (
     let fd = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-    Lwt.finalize
+    Lwt.try_bind
       (fun () ->
          Lwt_unix.connect fd (Unix.ADDR_UNIX socket_path) >>= fun () ->
          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd in
@@ -1002,9 +1019,17 @@ let list_cmd =
          Lwt_io.read_line ic >>= fun resp_line ->
          let resp = Yojson.Safe.from_string resp_line in
          Printf.printf "%s\n%!" (Yojson.Safe.pretty_to_string resp);
-         Lwt_io.close ic >>= fun () ->
-         Lwt_io.close oc)
-      (fun () -> Lwt_unix.close fd)
+         (* B341: the of_fd channels own the fd — closing them closes it;
+            close exactly once. The error handler below only runs when the
+            exchange failed before any channel close (these closes are
+            best-effort and cannot fail), so its raw fd close never
+            double-closes; it re-raises so failures still exit non-zero. *)
+         Lwt.catch (fun () -> Lwt_io.close ic) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.catch (fun () -> Lwt_io.close oc) (fun _ -> Lwt.return_unit))
+      (fun () -> Lwt.return_unit)
+      (fun exn ->
+         Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.fail exn)
   )
 
 let shutdown_cmd =
@@ -1013,7 +1038,7 @@ let shutdown_cmd =
   let socket_path = resolve_socket_path socket in
   Lwt_main.run (
     let fd = Lwt_unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
-    Lwt.finalize
+    Lwt.try_bind
       (fun () ->
          Lwt_unix.connect fd (Unix.ADDR_UNIX socket_path) >>= fun () ->
          let ic = Lwt_io.of_fd ~mode:Lwt_io.Input fd in
@@ -1024,9 +1049,17 @@ let shutdown_cmd =
          Lwt_io.read_line ic >>= fun resp_line ->
          let resp = Yojson.Safe.from_string resp_line in
          Printf.printf "%s\n%!" (Yojson.Safe.pretty_to_string resp);
-         Lwt_io.close ic >>= fun () ->
-         Lwt_io.close oc)
-      (fun () -> Lwt_unix.close fd)
+         (* B341: the of_fd channels own the fd — closing them closes it;
+            close exactly once. The error handler below only runs when the
+            exchange failed before any channel close (these closes are
+            best-effort and cannot fail), so its raw fd close never
+            double-closes; it re-raises so failures still exit non-zero. *)
+         Lwt.catch (fun () -> Lwt_io.close ic) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.catch (fun () -> Lwt_io.close oc) (fun _ -> Lwt.return_unit))
+      (fun () -> Lwt.return_unit)
+      (fun exn ->
+         Lwt.catch (fun () -> Lwt_unix.close fd) (fun _ -> Lwt.return_unit) >>= fun () ->
+         Lwt.fail exn)
   )
 
 (* === Subcommand Registration === *)

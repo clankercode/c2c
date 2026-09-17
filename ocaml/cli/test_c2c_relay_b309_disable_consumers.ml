@@ -288,6 +288,77 @@ let test_daemon_stops_retries_when_relay_disabled () =
        check bool "no reconnect attempts after the relay turned inactive"
          true (after = before))
 
+(* --- (3) B341: IPC verbs exit 0 after a successful exchange ---------------- *)
+
+(* B341: each IPC verb opens one connection whose Lwt_io.of_fd channels own
+   the fd; the verbs closed the channels AND the raw fd, so the second close
+   raised EBADF and cmdliner reported its internal-error exit code 125 after
+   the exchange had already succeeded. Reuses the one-shot fixture daemon
+   from (1): reads the request, replies ok, exits 0 — so a non-zero verb
+   exit here is the close bug, not a failed exchange. Hermetic: tmp-dir
+   socket via --socket, never the default ~/.c2c/relay-subscribe.sock. *)
+let with_fixture_daemon socket_path capture_path f =
+  let child = start_fixture_daemon ~socket_path ~capture_path in
+  wait_until ~what:"fixture daemon socket to appear" ~deadline_s:5.0
+    (fun () -> Sys.file_exists socket_path);
+  Unix.sleepf 0.2;
+  let reaped = ref false in
+  let child_status = ref None in
+  Fun.protect
+    ~finally:(fun () ->
+      if not !reaped then begin
+        (try Unix.kill child Sys.sigkill with _ -> ());
+        (try ignore (Unix.waitpid [] child); reaped := true with _ -> ())
+      end)
+    (fun () ->
+       f ();
+       (* Wait for the child to exit on its own, reaping EXACTLY once. *)
+       wait_until ~what:"fixture daemon to exit" ~deadline_s:5.0 (fun () ->
+         match Unix.waitpid [ Unix.WNOHANG ] child with
+         | (0, _) -> false
+         | (_, st) ->
+             child_status := Some st;
+             reaped := true;
+             true);
+       check bool "fixture daemon answered" true
+         (match !child_status with
+          | Some (Unix.WEXITED 0) -> true
+          | _ -> false))
+
+let test_ipc_verb_exits_zero ~cmd ~extra_args () =
+  with_temp_dir @@ fun home ->
+  let sock = home // "ipc.sock" in
+  let capture = home // "ipc-capture.txt" in
+  let args =
+    [ "relay"; "subscribe-daemon"; cmd ] @ extra_args @ [ "--socket"; sock ]
+  in
+  with_fixture_daemon sock capture (fun () ->
+    let out = home // "verb.out" in
+    let code = run_c2c ~home args out in
+    check bool
+      (Printf.sprintf "%s exits 0 after a successful exchange: %s" cmd
+         (read_file_all out))
+      true (code = 0);
+    check bool (cmd ^ " prints the daemon response") true
+      (contains ~haystack:(read_file_all out) ~needle:"\"ok\": true");
+    check bool (cmd ^ " request reached the daemon") true
+      (contains ~haystack:(read_file_all capture)
+         ~needle:("\"cmd\":\"" ^ cmd ^ "\"")))
+
+let test_register_verb_exits_zero () =
+  test_ipc_verb_exits_zero ~cmd:"register"
+    ~extra_args:[ "--alias"; "b341probe" ] ()
+
+let test_deregister_verb_exits_zero () =
+  test_ipc_verb_exits_zero ~cmd:"deregister"
+    ~extra_args:[ "--alias"; "b341probe" ] ()
+
+let test_list_verb_exits_zero () =
+  test_ipc_verb_exits_zero ~cmd:"list" ~extra_args:[] ()
+
+let test_shutdown_verb_exits_zero () =
+  test_ipc_verb_exits_zero ~cmd:"shutdown" ~extra_args:[] ()
+
 let () =
   Random.self_init ();
   run "c2c relay b309 disable consumers"
@@ -300,5 +371,15 @@ let () =
     ; ( "daemon recheck per retry cycle",
         [ test_case "daemon stops retrying when relay.json flips to enabled:false" `Quick
             test_daemon_stops_retries_when_relay_disabled
+        ] )
+    ; ( "IPC verbs exit 0 after a successful exchange (B341)",
+        [ test_case "register exits 0 after a successful exchange" `Quick
+            test_register_verb_exits_zero
+        ; test_case "deregister exits 0 after a successful exchange" `Quick
+            test_deregister_verb_exits_zero
+        ; test_case "list exits 0 after a successful exchange" `Quick
+            test_list_verb_exits_zero
+        ; test_case "shutdown exits 0 after a successful exchange" `Quick
+            test_shutdown_verb_exits_zero
         ] )
     ]
