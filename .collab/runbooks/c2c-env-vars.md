@@ -525,6 +525,22 @@ keeps the exit-3 behavior (process == root). Pure predicates + forked loop
 tests in `test_c2c_relay_connector.ml` ("B211/B228 staleness-exit watchdog",
 "B291 pass-duration-aware staleness", "B292 per-root wedge cooldown").
 
+### `C2C_RELAY_DOCTOR_FRESHNESS_S` (B313)
+
+Seconds, overriding the freshness window `c2c doctor --relay`,
+`c2c status`/`whoami`, and the B294 register guard use to decide whether the
+connector's last successful sync (`last_ok`) is recent. Without it the window
+scales from the pass metadata the connector records in connector-state.json
+(`pass_duration_s`, `pass_interval_s`):
+`max(120s, pass_interval + 2 × pass_duration + 30s)`, capped at 1h — a healthy
+many-root root's `last_ok` legitimately ages ~one full pass period, which the
+old fixed 120s window misread as stale/wedged. State files without pass
+metadata keep the 120s default. Invalid, zero, or negative values are ignored
+(fall back to the scaled window). This override is doctor-side only — it does
+not touch the connector's own staleness-exit / watchdog windows
+(`C2C_RELAY_CONNECTOR_STALE_EXIT_S`), and it does not weaken the B324
+register-guard demotion (fixed 120s floor).
+
 ### `C2C_RELAY_CONNECTOR_WEDGE_COOLDOWN_BASE_S` (B292)
 
 Base seconds of the machine connector's per-root wedge cooldown. A broker root

@@ -969,6 +969,15 @@ is `health: "wedged"` / `live: false` — restart the connector; do not assume
 the PID means inbound relay traffic is flowing. `remediation` is a
 copy-pasteable recovery command when not live.
 
+The freshness window is not a fixed 120s (B313): the connector records the
+cost of its last pass in `connector-state.json` (`pass_duration_s`,
+`pass_interval_s`), and the window scales to
+`max(120s, pass_interval + 2 × pass_duration + 30s)`, capped at 1h — on a
+many-root host a healthy root's `last_ok` legitimately ages about one full
+pass period, and the fixed window classified that healthy connector as stale.
+`C2C_RELAY_DOCTOR_FRESHNESS_S` (seconds) overrides the window for operators
+and tests; state files without pass metadata keep the 120s default.
+
 #### Scopes: `state:` and `connector:` answer different questions
 
 The two lines carry a marker (human) / `scope` key (`--json`) because they are

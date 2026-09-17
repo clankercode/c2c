@@ -282,13 +282,21 @@ let duplicate_connector_check ~pids =
       }
   | _ -> None
 
-let connector_stale_threshold_s = 120.0
+(* B313: the freshness window is no longer a fixed 120s — it scales with the
+   pass metadata the connector records in connector-state.json, floored at
+   the 120s default, capped at 1h, overridable with
+   C2C_RELAY_DOCTOR_FRESHNESS_S. [connector_stale_threshold_s] remains as
+   the default/floor value for compatibility. *)
+let connector_stale_threshold_s =
+  C2c_relay_connector.connector_freshness_floor_s
 
 let connector_state_is_fresh ~now (st : C2c_relay_connector.connector_state) =
-  now -. st.C2c_relay_connector.cs_last_sync_ts < connector_stale_threshold_s
+  now -. st.C2c_relay_connector.cs_last_sync_ts
+  < C2c_relay_connector.connector_freshness_window_s (Some st)
 
 let connector_state_ok_is_fresh ~now (st : C2c_relay_connector.connector_state) =
-  now -. st.C2c_relay_connector.cs_last_ok_ts < connector_stale_threshold_s
+  now -. st.C2c_relay_connector.cs_last_ok_ts
+  < C2c_relay_connector.connector_freshness_window_s (Some st)
 
 (* Compact relative-age formatter for connector messages. *)
 let age_str now ts =

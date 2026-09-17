@@ -796,3 +796,13 @@
  (name test_c2c_wake_guidance)
  (modules test_c2c_wake_guidance)
  (libraries c2c_mcp alcotest))
+
+; B313: doctor/state freshness window scales with the pass metadata the
+; connector records in connector-state.json (pass_duration_s/pass_interval_s),
+; floored at the 120s default, capped, and C2C_RELAY_DOCTOR_FRESHNESS_S-
+; overridable — a healthy many-root root past 120s must not read stale.
+; Hermetic: fixture state files only, no network.
+(test
+ (name test_relay_b313_doctor_freshness)
+ (modules test_relay_b313_doctor_freshness)
+ (libraries c2c_mcp alcotest yojson unix))

@@ -1116,7 +1116,8 @@ let test_connector_peek_key_uses_recorded_session_when_local_unresolved () =
       cs_inbound_rejected_note = None;
       cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
       cs_errors = [];
-      cs_rate_limited = false; cs_retry_after_s = None }
+      cs_rate_limited = false; cs_retry_after_s = None;
+      cs_pass_duration_s = None; cs_pass_interval_s = None; }
   in
   (match
      Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1165,7 +1166,8 @@ let test_connector_peek_key_backward_compat_fallback () =
       cs_inbound_rejected_note = None;
       cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
       cs_errors = [];
-      cs_rate_limited = false; cs_retry_after_s = None }
+      cs_rate_limited = false; cs_retry_after_s = None;
+      cs_pass_duration_s = None; cs_pass_interval_s = None; }
   in
   match
     Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
@@ -1201,7 +1203,8 @@ let test_resolve_cli_dm_inbox_key_prefers_connector () =
       cs_inbound_rejected_note = None;
       cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
       cs_errors = [];
-      cs_rate_limited = false; cs_retry_after_s = None }
+      cs_rate_limited = false; cs_retry_after_s = None;
+      cs_pass_duration_s = None; cs_pass_interval_s = None; }
   in
   let node_id, session_id =
     Conn.resolve_cli_dm_inbox_key ~alias:"kimi-suvi-lumo-9cr1"

@@ -1370,24 +1370,51 @@ type connector_state = {
      the fields read false/None. *)
   cs_rate_limited : bool;
   cs_retry_after_s : float option;
+  (* B313: wall-clock cost of the pass that wrote this file and the
+     connector's poll interval, so doctor/status and the B294 register
+     guard can scale the freshness window with the observed pass cadence
+     instead of assuming a fast host (a healthy many-root root's last_ok
+     ages ~one full pass period; live-measured 4-6min walks). Additive/
+     optional — older files read None and keep the 120s default window. *)
+  cs_pass_duration_s : float option;
+  cs_pass_interval_s : float option;
 }
 
-let write_connector_state ?node_id broker_root (result : sync_result) =
+let write_connector_state ?pass_duration_s ?pass_interval_s ?node_id
+    broker_root (result : sync_result) =
   let now = Unix.gettimeofday () in
   let ok = result.last_error = None in
   let last_ok_ts = if ok then now else 0.0 in
   (* Preserve the previous last_ok_ts when this sync errored, so the doctor
-     check can still report how long ago the last healthy sync was. *)
-  let prev_ok_ts =
+     check can still report how long ago the last healthy sync was. Also
+     carry the previous pass metadata forward when this write is not told
+     the current pass's numbers (B313): the window readers must keep seeing
+     the cadence this host actually exhibits. *)
+  let prev_fields =
     match C2c_io.read_json_opt (connector_state_path broker_root) with
-    | Some (`Assoc fs) ->
-        (match List.assoc_opt "last_ok_ts" fs with
-         | Some (`Float f) -> f
-         | Some (`Int i) -> float_of_int i
-         | _ -> 0.0)
-    | _ -> 0.0
+    | Some (`Assoc fs) -> Some fs
+    | _ -> None
   in
-  let last_ok_ts = if ok then now else prev_ok_ts in
+  let prev_float k =
+    match prev_fields with
+    | Some fs ->
+        (match List.assoc_opt k fs with
+         | Some (`Float f) -> Some f
+         | Some (`Int i) -> Some (float_of_int i)
+         | _ -> None)
+    | None -> None
+  in
+  let prev_ok_ts = Option.value (prev_float "last_ok_ts") ~default:0.0 in
+  let pass_duration_s =
+    match pass_duration_s with
+    | Some d when d > 0.0 -> Some d
+    | _ -> prev_float "pass_duration_s"
+  in
+  let pass_interval_s =
+    match pass_interval_s with
+    | Some i when i > 0.0 -> Some i
+    | _ -> prev_float "pass_interval_s"
+  in
   let err_assoc = match result.last_error with
     | Some e ->
         [ ("last_error_op", `String e.err_op)
@@ -1422,6 +1449,17 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
     :: (match result.retry_after_s with
         | Some ra -> [ ("retry_after_s", `Float ra) ]
         | None -> [ ("retry_after_s", `Null) ])
+  in
+  (* B313: pass cadence metadata for the doctor's freshness window. Omitted
+     when unknown (no observation yet, nothing preserved) — readers fall
+     back to the fixed default window. *)
+  let pass_assoc =
+    (match pass_duration_s with
+     | Some d -> [ ("pass_duration_s", `Float d) ]
+     | None -> [])
+    @ (match pass_interval_s with
+       | Some i -> [ ("pass_interval_s", `Float i) ]
+       | None -> [])
   in
   let json = `Assoc (
     [ ("last_sync_ts", `Float now)
@@ -1459,7 +1497,7 @@ let write_connector_state ?node_id broker_root (result : sync_result) =
                      | Some s -> [ ("session_id", `String s) ]
                      | None -> [])))
              result.errors))
-    ] @ rl_assoc @ node_id_assoc @ sessions_assoc @ err_assoc) in
+    ] @ rl_assoc @ pass_assoc @ node_id_assoc @ sessions_assoc @ err_assoc) in
   let path = connector_state_path broker_root in
   let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
   let oc = open_out tmp in
@@ -1549,6 +1587,8 @@ let read_connector_state broker_root : connector_state option =
            | `Bool b -> b
            | _ -> false);
         cs_retry_after_s = get_float "retry_after_s";
+        cs_pass_duration_s = get_float "pass_duration_s";
+        cs_pass_interval_s = get_float "pass_interval_s";
       }
 
 (** B209: the authoritative relay peek key for a connector-managed [alias].
@@ -1772,14 +1812,64 @@ let connector_pid_alive (st : connector_state) : bool =
       | Unix.Unix_error (Unix.EPERM, _, _) -> true (* exists, not signalable *)
       | _ -> false
 
+(* B313: the doctor/state freshness window. The fixed 120s default assumed a
+   fast host; the connector self-scales with observed pass work (B291/B307),
+   and on a many-root host a HEALTHY root's last_ok legitimately ages about
+   one full pass period (live-measured 4-6min walks) before the next pass
+   writes it. With the fixed window, doctor / Relay_state.derive_health
+   classified that healthy root stale and recommended starting another, and
+   the B294 register guard's freshness arm misfired the same way.
+
+   The window scales from the PASS METADATA the connector records in
+   connector-state.json ([pass_duration_s] / [pass_interval_s]):
+     max(120s floor, pass_interval + 2 x pass_duration + 30s slop)
+   — last_ok is written at pass end, so a healthy root's worst-case age is
+   one interval plus the next pass's duration, with one extra duration of
+   slow-pass margin. CAPPED at 1h so absurd metadata can never make a
+   wedged connector read healthy for hours. State files without metadata
+   (pre-B313, or the noop writer before any real pass) keep the 120s
+   default. C2C_RELAY_DOCTOR_FRESHNESS_S (SECONDS, > 0) overrides
+   everything for operators and tests. *)
+let connector_freshness_floor_s = 120.0
+
+let connector_freshness_cap_s = 3600.0
+
+let connector_freshness_env = "C2C_RELAY_DOCTOR_FRESHNESS_S"
+
+let connector_freshness_window_s (st : connector_state option) : float =
+  let env_override =
+    match Sys.getenv_opt connector_freshness_env with
+    | Some v ->
+        (match float_of_string_opt v with
+         | Some f when Float.is_finite f && f > 0.0 -> Some f
+         | _ -> None)
+    | None -> None
+  in
+  match env_override with
+  | Some f -> f
+  | None ->
+      let scaled =
+        match st with
+        | Some s ->
+            (match s.cs_pass_duration_s, s.cs_pass_interval_s with
+             | Some d, Some i when d > 0.0 && i > 0.0 ->
+                 Some (i +. (2.0 *. d) +. 30.0)
+             | _ -> None)
+        | None -> None
+      in
+      Float.min connector_freshness_cap_s
+        (Float.max connector_freshness_floor_s
+           (Option.value scaled ~default:connector_freshness_floor_s))
+
 (** B294: does a live machine connector own [alias] on this broker root?
 
     READ-ONLY evidence from connector-state.json (no pid signalling — repo
     rule #85): the alias appears in [sessions]/[registered] AND either the
     recorded pid is alive or the last successful sync is inside doctor's
-    120s freshness window ([Relay_doctor.connector_stale_threshold_s],
-    inlined here because Relay_doctor depends on this module). Returns the
-    evidence label for the refusal message.
+    freshness window ([connector_freshness_window_s] — the fixed 120s
+    default, scaled by the recorded pass metadata, overridable with
+    C2C_RELAY_DOCTOR_FRESHNESS_S; inlined here because Relay_doctor depends
+    on this module). Returns the evidence label for the refusal message.
 
     B324: pid-alive is DEMOTED below last_ok freshness when the recorded
     [last_error_op] is register — an alive connector whose register arm
@@ -1788,7 +1878,10 @@ let connector_pid_alive (st : connector_state) : bool =
     (CLI relay register) while it cycles wedge cooldowns deadlocks the
     alias. A connector with a fresh last_ok — its register succeeding, or
     the recorded failure being an op that does not bear on the identity —
-    keeps pid-alive as authoritative evidence. *)
+    keeps pid-alive as authoritative evidence. B313: the freshness arm
+    scales with the recorded pass cadence, so a healthy many-root root
+    whose last_ok legitimately ages one pass period is still owned; the
+    B324 demotion threshold itself stays at the fixed 120s floor. *)
 let connector_owns_alias ~broker_root ~alias ~now : string option =
   match read_connector_state broker_root with
   | None -> None
@@ -1801,14 +1894,18 @@ let connector_owns_alias ~broker_root ~alias ~now : string option =
       in
       let register_arm_failing =
         st.cs_last_error_op = Some "register"
-        && now -. st.cs_last_ok_ts >= 120.0
+        && now -. st.cs_last_ok_ts >= connector_freshness_floor_s
       in
       if not managed then None
       else if connector_pid_alive st && not register_arm_failing then
         Some "pid alive in connector-state.json"
-      else if now -. st.cs_last_ok_ts < 120.0 then
-        Some "connector synced this broker root within 120s"
-      else None
+      else
+        let window = connector_freshness_window_s (Some st) in
+        if now -. st.cs_last_ok_ts < window then
+          Some
+            (Printf.sprintf
+               "connector synced this broker root within %.0fs" window)
+        else None
 
 (** Write a minimal connector-state.json recording that a sync raised an
     exception (B093). Lets `c2c doctor --relay` report the last error even
@@ -1846,13 +1943,18 @@ let write_connector_state_error broker_root ~op ~detail =
      node_id and sessions are the B294 register guard's and B231 peek-key
      resolution's only durable evidence, so one transient sync exception
      must not erase them (pre-fix the file was rebuilt with registered
-     empty and no node_id/sessions keys until the next good pass). *)
+     empty and no node_id/sessions keys until the next good pass). B313:
+     the pass metadata rides along — the freshness window it scales is
+     most needed while errors age last_ok. *)
   let ownership_assoc =
     let kept =
       match prev_fields with
       | Some fs ->
           List.filter
-            (fun (k, _) -> List.mem k [ "registered"; "node_id"; "sessions" ])
+            (fun (k, _) ->
+               List.mem k
+                 [ "registered"; "node_id"; "sessions"; "pass_duration_s";
+                   "pass_interval_s" ])
             fs
       | None -> []
     in
@@ -3595,7 +3697,9 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
             | _ -> ());
            if sync_made_progress result then
              last_progress := Unix.gettimeofday ();
-           write_connector_state ~node_id:t.node_id t.broker_root result;
+           write_connector_state ~node_id:t.node_id
+             ~pass_duration_s:(Unix.gettimeofday () -. pass_started_at)
+             ~pass_interval_s:t.interval t.broker_root result;
            let err_str = match result.last_error with
              | None -> ""
              | Some e ->
@@ -3962,7 +4066,9 @@ let start_machine_impl ~sync_once ~discover_roots
         Hashtbl.replace progress root (Unix.gettimeofday ());
         clear_wedge_tables root;
         let noop = no_work_sync_result () in
-        write_connector_state ~node_id root noop;
+        (* B313: record the interval (a noop pass has no meaningful
+           duration — the previous observation, if any, is preserved). *)
+        write_connector_state ~node_id root ~pass_interval_s:interval noop;
         print_sync_result ~broker_root:root noop;
         true
       end
@@ -3971,6 +4077,7 @@ let start_machine_impl ~sync_once ~discover_roots
       (* B307: the alarm deadline scales with the last completed pass's
          observed work (B291-style). *)
       t.last_pass_s <- Option.value !last_pass_s ~default:0.0;
+      let pass_started_at = Unix.gettimeofday () in
       let outcome =
         match sync_once shutdown t with
         | Ok result ->
@@ -3986,7 +4093,9 @@ let start_machine_impl ~sync_once ~discover_roots
               (* B292: progress resets the doubling schedule. *)
               clear_wedge_tables root
             end;
-            write_connector_state ~node_id t.broker_root result;
+            write_connector_state ~node_id t.broker_root
+              ~pass_duration_s:(Unix.gettimeofday () -. pass_started_at)
+              ~pass_interval_s:interval result;
             print_sync_result ~broker_root:root result;
             (match result.last_error with None -> true | Some _ -> false)
         | Error (`Watchdog detail) ->
