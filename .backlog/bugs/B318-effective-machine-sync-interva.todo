@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-09-17T07:56:12Z"
 depends_on: []
 estimate_hours: 1
 id: B318
 priority: medium
+started_at: null
 status: pending
 tags: []
 title: effective machine sync interval is 4-6 min (serial HTTPS across 246 sessions), not the configured 30s
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Effective machine sync interval is 4-6 minutes, not the configured 30s (live measured on xsm 2026-09-17: full-walk 4m08s and 5m31s; 93 heartbeats take ~77s; per-root last_ok spacing 5.5-5.8 min across 178 roots / 246 sessions - all serial HTTPS). Consequences: inbound relay DM latency approximates the pass period; only ~2.5 passes of margin under the staleness window (root e0eb9c317019 tripped 811s against a 769s window); heartbeat TTL headroom shrinks.
+
+## Fix direction
+
+Parallelize per-session ops within a root (bounded concurrency), and/or make the configured interval account for walk time (interval between pass starts rather than sleep after pass).
+
+## Evidence
+
+Live deployment audit 2026-09-17 (journal timings).
