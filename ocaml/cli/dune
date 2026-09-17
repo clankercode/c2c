@@ -71,6 +71,19 @@
  (libraries alcotest yojson unix)
  (deps c2c.exe))
 
+; B309: `relay disable` must reach consumers that resolved the relay before
+; the disable — shutdown IPC to the subscribe-daemon socket, one output line
+; naming both lingering-consumer classes (daemon; monitor watchers), and the
+; durable half: the daemon re-checks Relay_activation per retry cycle and
+; stops reconnecting when the relay turned inactive. End-to-end through the
+; real binary under C2C_SYSTEMCTL_FIXTURE=1 (forked one-shot IPC fixture;
+; retry-cycle case runs the real daemon against a closed loopback port).
+(test
+ (name test_c2c_relay_b309_disable_consumers)
+ (modules test_c2c_relay_b309_disable_consumers)
+ (libraries alcotest yojson unix)
+ (deps c2c.exe))
+
 ; B312: `c2c restart relay-connect` must consider relay.json activation a URL
 ; candidate (override > env > activation > saved config), and enable/disable
 ; must warn when config_location scopes the write away from the machine file

@@ -861,16 +861,47 @@ let relay_disable_cmd =
   (* B296: stop+disable the boot-supervision unit (the file is kept, so a
      later `c2c relay enable` re-enables it cheaply). *)
   C2c_relay_systemd.stop_and_disable ();
+  (* B309: a subscribe-daemon that resolved the relay before this disable
+     would keep retrying the parked URL forever — send it the shutdown IPC
+     command it already understands. Best-effort; the printed line reports
+     the outcome. The remaining lingering consumers — `c2c monitor` relay
+     watchers that hold their startup-resolved URL — can only be fixed by
+     restarting them, so they are named here either way. *)
+  let consumers_line =
+    let daemon_part =
+      match
+        C2c_relay_subscribe_daemon.send_shutdown_best_effort
+          ~socket_path:
+            (C2c_relay_subscribe_daemon.resolve_socket_path None)
+          ()
+      with
+      | C2c_relay_subscribe_daemon.Shutdown_stopped ->
+          "subscribe-daemon stopped (shutdown sent)"
+      | C2c_relay_subscribe_daemon.Shutdown_no_daemon ->
+          "no subscribe-daemon running"
+      | C2c_relay_subscribe_daemon.Shutdown_error e ->
+          Printf.sprintf
+            "subscribe-daemon shutdown FAILED (%s) — stop it with: c2c \
+             relay subscribe-daemon shutdown"
+            e
+    in
+    Printf.sprintf
+      "lingering relay consumers: %s; any running `c2c monitor` relay \
+       watcher keeps its startup-resolved URL until restarted"
+      daemon_part
+  in
   warn_repo_local_relay_still_active path;
   Printf.printf
     "relay deactivated (enabled: false)\n\
      wrote %s\n\
      %s\n\
      c2c is now local-only: same-machine DMs, rooms and broadcast still work.\n\
-     Stop any running connector with: c2c stop relay-connect\n"
+     Stop any running connector with: c2c stop relay-connect\n\
+     %s\n"
     path
     (if had_url then "The configured URL is kept, so `c2c relay enable` restores it."
-     else "No URL was configured.");
+     else "No URL was configured.")
+    consumers_line;
   exit 0
 
 let relay_status_cmd =
