@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-17T15:22:07Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-17T20:20:58Z"
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
+duration_minutes: 298.8501387421333
 estimate_hours: 1
 id: B324
 priority: low
 started_at: "2026-09-17T15:22:07Z"
-status: in_progress
+status: done
 tags: []
 title: B294 register guard refuses the documented repair while connector is alive-but-permanently-failing
-updated_at: "2026-09-17T15:22:07Z"
+updated_at: "2026-09-17T20:20:58Z"
 ---
 
 # B294 register guard refuses the documented repair while connector is alive-but-permanently-failing
