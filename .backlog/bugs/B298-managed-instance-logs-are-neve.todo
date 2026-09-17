@@ -1,0 +1,61 @@
+---
+complexity: low
+created_at: "2026-09-17T02:46:37Z"
+depends_on: []
+estimate_hours: 2
+id: B298
+priority: medium
+status: pending
+tags:
+    - relay
+    - connector
+    - logging
+title: managed instance logs are never rotated (relay-connect log is 810 MiB, +70 MB/day)
+updated_at: "2026-09-17T02:46:37Z"
+---
+## Symptom
+
+`~/.local/share/c2c/instances/relay-connect/log` on xsm is **849,111,601 bytes
+(810 MiB)** and growing at ~820 B/s (measured over a 10 s window) = ~70 MB/day.
+It has been appended to since **2026-07-15** and has never been rotated or
+truncated.
+
+## Root cause
+
+`C2c_relay_managed.spawn_connector` opens the instance log with
+`[O_WRONLY; O_CREAT; O_APPEND]` and `redirect_daemon_stdio` does the same for the
+supervisor. Nothing ever truncates, rotates, or size-caps it. Every restart
+appends to the same file — and with the crash loop that is 9,300 restarts' worth
+of output in one file.
+
+`C2C_BROKER_LOG_MAX_BYTES` / `C2C_BROKER_LOG_KEEP` (#61) cover `broker.log` via
+`Broker_log.append_json`; managed **instance** logs are not covered by that
+mechanism at all. The same applies to every managed instance dir, not just
+relay-connect.
+
+## Impact
+
+- Disk consumption grows without bound on any long-lived host.
+- Makes the log impractical to inspect with ordinary tools — which directly
+  slowed this investigation (every grep had to be run over a `tail -c 200000000`
+  slice).
+- A crash-looping daemon is exactly the case where the log grows fastest and is
+  most needed.
+
+## Fix direction
+
+- Apply a size cap + ring rotation to managed instance logs, reusing the
+  `C2C_BROKER_LOG_MAX_BYTES` / `C2C_BROKER_LOG_KEEP` conventions (or new
+  `C2C_INSTANCE_LOG_*` vars) so one mechanism covers both.
+- Rotate on supervisor start as well as on size, so a restart loop cannot
+  concatenate indefinitely.
+- Have `c2c doctor` report an oversized instance log.
+
+## Immediate
+
+The xsm log can be truncated once the connector is stopped; do not delete it
+while the fd is open or the space will not be reclaimed.
+
+## Evidence
+
+Full investigation: `.collab/findings/2026-09-17T01-50-00Z-kesa-quip-relay-connector-crashloop.md`

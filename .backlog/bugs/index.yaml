@@ -294,3 +294,4 @@ bugs:
     - file: B295-relay-register-returns-ok-true.todo
     - file: B296-relay-connect-has-no-boot-supe.todo
     - file: B297-connector-error-logging-trunca.todo
+    - file: B298-managed-instance-logs-are-neve.todo
