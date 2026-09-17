@@ -443,6 +443,35 @@ let test_connector_owner_mismatch_bumped_once_per_pass () =
           check bool "second consecutive mismatching pass drops" false
             (List.mem sm_session t.registered)))
 
+(* B323: the HEARTBEAT arm and the poll arm both see the foreign lease in
+   ONE pass — exactly one strike, or the documented two-consecutive-pass
+   tolerance collapses to one pass. Pins the per-(session, pass) strike
+   memo (9e7eaa10) for the heartbeat arm's half of it; the previous case
+   covers the peek+poll pair behind a healthy heartbeat. *)
+let test_connector_owner_mismatch_bumped_once_per_pass_heartbeat_and_poll () =
+  let routes =
+    [ S.route ~meth:"POST" ~path:"/heartbeat" [ S.response owner_mismatch ];
+      S.route ~meth:"POST" ~path:"/peek_inbox" [ S.response owner_mismatch ];
+      S.route ~meth:"POST" ~path:"/poll_inbox" [ S.response owner_mismatch ];
+      S.route ~meth:"POST" ~path:"/register" [ S.response reg_ok ];
+    ]
+  in
+  S.with_server ~routes (fun srv ->
+      with_broker_root (fun broker_root ->
+          write_registry broker_root;
+          let t = make_connector ~relay_url:(S.url srv) ~broker_root
+              ~registered:[ sm_session ] in
+          let r1 = run_sync t in
+          check bool
+            "heartbeat+poll mismatch in one pass tolerates (still registered)"
+            true
+            (List.mem sm_session t.registered);
+          check bool "mismatch still reported as an error" true
+            (r1.last_error <> None);
+          let _r2 = run_sync t in
+          check bool "second consecutive mismatching pass drops" false
+            (List.mem sm_session t.registered)))
+
 let () =
   run "B293 relay lease recovery"
     [ ("relay error codes",
@@ -466,5 +495,7 @@ let () =
            test_connector_poll_lease_not_found_drops_registration
        ; test_case "owner mismatch bumped once per pass" `Quick
            test_connector_owner_mismatch_bumped_once_per_pass
+       ; test_case "heartbeat+poll mismatch bumped once per pass (B323)" `Quick
+           test_connector_owner_mismatch_bumped_once_per_pass_heartbeat_and_poll
        ])
     ]
