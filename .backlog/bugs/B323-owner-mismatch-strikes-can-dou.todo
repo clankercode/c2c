@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:56:13Z"
 depends_on: []
 estimate_hours: 1
 id: B323
 priority: low
+started_at: null
 status: pending
 tags: []
 title: owner-mismatch strikes can double within one pass (heartbeat + poll arms both bump)
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+Owner-mismatch strikes can reach the threshold (2) twice within ONE pass: the heartbeat arm (c2c_relay_connector.ml:2638-2651) and poll arm (2834-2848) each bump the same session_id, so heartbeat and poll both seeing the foreign lease drops the cached registration one pass earlier than the documented two consecutive passes - accelerating the register/heartbeat takeover fight in a B295 pair race.
+
+## Fix direction
+
+Count at most one strike per session per pass.
+
+## Evidence
+
+Connector review 2026-09-17.
