@@ -323,6 +323,76 @@ let test_supervisor_restarts_child_on_binary_update () =
           check int "supervisor stops cleanly" 0
             (C2c_relay_managed.child_status_code status))
 
+(* B298: a crash-looping connector must not concatenate indefinitely into one
+   append-only log (the xsm relay-connect log reached 810 MiB over 9,300
+   restarts). Each relaunch rotates an oversized log via rename; the
+   replacement child opens a fresh file, and the oversized segment survives
+   as log.1. *)
+let test_supervisor_rotates_oversized_log_across_restarts () =
+  with_temp_dir @@ fun dir ->
+  with_env "C2C_INSTANCE_LOG_MAX_BYTES" "128" @@ fun () ->
+  let binary = dir // "fake-c2c-b298a" in
+  let pid_path = dir // "outer.pid" in
+  let log_path = dir // "log" in
+  (* The child writes ~240 bytes (> 128 cap) through the redirected stdout
+     (i.e. into the instance log) and exits 3 to drive the retry loop. *)
+  write_executable_atomic binary
+    "#!/bin/sh\nprintf 'b298crashlogpad%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\nexit 3\n";
+  match Unix.fork () with
+  | 0 ->
+      C2c_relay_managed.write_pidfile pid_path (Unix.getpid ());
+      exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
+              ~log_path ~pid_path ~foreground:false)
+  | supervisor ->
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.kill supervisor Sys.sigterm with Unix.Unix_error _ -> ());
+          try ignore (Unix.waitpid [] supervisor) with Unix.Unix_error _ -> ())
+        (fun () ->
+          check bool "oversized segment rotated to log.1 on relaunch" true
+            (wait_until ~timeout:8.0 (fun () ->
+                 Sys.file_exists (log_path ^ ".1")));
+          check bool "rotated segment keeps crash-loop output" true
+            (let body = read_file (log_path ^ ".1") in
+             try
+               ignore (Str.search_forward (Str.regexp_string "b298crashlogpad") body 0);
+               true
+             with Not_found -> false))
+
+(* B298 mid-run: when a live child has grown the log past the cap, the
+   supervisor rides its existing clean-restart path (SIGTERM + waitpid +
+   relaunch) so the rotation happens at the relaunch point where no writer
+   holds the fresh file. The child's held fd is never truncated under it. *)
+let test_supervisor_restarts_connector_when_log_crosses_cap () =
+  with_temp_dir @@ fun dir ->
+  with_env "C2C_INSTANCE_LOG_MAX_BYTES" "128" @@ fun () ->
+  let binary = dir // "fake-c2c-b298b" in
+  let pid_path = dir // "outer.pid" in
+  let log_path = dir // "log" in
+  (* Healthy long-lived child: writes ~240 bytes once (> cap), then sleeps. *)
+  write_executable_atomic binary
+    "#!/bin/sh\nprintf 'b298healthlogpad%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n";
+  match Unix.fork () with
+  | 0 ->
+      C2c_relay_managed.write_pidfile pid_path (Unix.getpid ());
+      exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
+              ~log_path ~pid_path ~foreground:false)
+  | supervisor ->
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.kill supervisor Sys.sigterm with Unix.Unix_error _ -> ());
+          try ignore (Unix.waitpid [] supervisor) with Unix.Unix_error _ -> ())
+        (fun () ->
+          check bool "cap crossing triggers rotation via restart" true
+            (wait_until ~timeout:8.0 (fun () ->
+                 Sys.file_exists (log_path ^ ".1")));
+          check bool "oversized segment keeps healthy-child output" true
+            (let body = read_file (log_path ^ ".1") in
+             try
+               ignore (Str.search_forward (Str.regexp_string "b298healthlogpad") body 0);
+               true
+             with Not_found -> false))
+
 (* B212: `c2c restart relay-connect` used to raise an uncaught Not_found because
    the supervised relay-connect config omits the session_id/alias/resume fields
    the harness restart path requires. The fix routes relay-connect through the
@@ -761,5 +831,11 @@ let () =
     "binary updates", [
       test_case "atomic replacement changes stamp" `Quick test_binary_stamp_detects_atomic_update;
       test_case "supervisor restarts connector" `Slow test_supervisor_restarts_child_on_binary_update;
+    ];
+    "B298 instance log rotation", [
+      test_case "crash loop rotates oversized log on relaunch" `Slow
+        test_supervisor_rotates_oversized_log_across_restarts;
+      test_case "cap crossing mid-run restarts connector" `Slow
+        test_supervisor_restarts_connector_when_log_crosses_cap;
     ];
   ]

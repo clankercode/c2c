@@ -266,16 +266,25 @@ let redirect_daemon_stdio log_path =
      Unix.dup2 dn Unix.stdin;
      Unix.close dn
    with _ -> ());
-  (try
-     let fd =
-       Unix.openfile log_path
-         [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ]
-         0o600
-     in
-     Unix.dup2 fd Unix.stdout;
-     Unix.dup2 fd Unix.stderr;
-     Unix.close fd
-   with _ -> ())
+  (match C2c_instance_log.open_append log_path with
+   | Some fd ->
+       Unix.dup2 fd Unix.stdout;
+       Unix.dup2 fd Unix.stderr;
+       Unix.close fd
+   | None -> ())
+
+(* B298: rotate the instance log when it crosses the cap and re-point this
+   supervisor's stdio at the fresh file. The supervisor is the only
+   persistent writer; a short-lived delivery child that inherited the old fd
+   keeps writing to the renamed file — rename-only, never truncate. *)
+let rotate_log_and_reopen_stdio log_path =
+  if C2c_instance_log.rotate_if_oversized ~log_path then
+    match C2c_instance_log.open_append log_path with
+    | Some fd ->
+        Unix.dup2 fd Unix.stdout;
+        Unix.dup2 fd Unix.stderr;
+        Unix.close fd
+    | None -> ()
 
 let scan_kimi_watch_entries () : watch_entry list * string list =
   let failed = ref [] in
@@ -405,8 +414,9 @@ let tick_one_entry (e : watch_entry) ~mode : int =
         0
   end
 
-(** Phase-2 loop: rebuild kimi watch-set (fail open), optional deliver. *)
-let idle_supervise ~pid_path =
+(** Phase-2 loop: rebuild kimi watch-set (fail open), optional deliver.
+    B298: rotates the instance log at each tick when it crosses the cap. *)
+let idle_supervise ~pid_path ~log_path =
   let stopping = ref false in
   let request_stop _ = stopping := true in
   Sys.set_signal Sys.sigterm (Sys.Signal_handle request_stop);
@@ -417,6 +427,7 @@ let idle_supervise ~pid_path =
     ~finally:(fun () -> remove_pidfile_if_owned pid_path)
     (fun () ->
       while not !stopping do
+        rotate_log_and_reopen_stdio log_path;
         let kimi_on = kimi_adapter_enabled () in
         let agy_on = agy_adapter_enabled () in
         let mode = kimi_adapter_mode () in
@@ -619,6 +630,8 @@ let run_owner ~name ~foreground ~ready_fd =
       let pid_path = inst_dir // "outer.pid" in
       let log_path = inst_dir // "log" in
       mkdir_p inst_dir;
+      (* B298: cap the instance log before anyone opens it. *)
+      ignore (C2c_instance_log.rotate_if_oversized ~log_path);
       if not foreground then redirect_daemon_stdio log_path;
       write_config
         ~config_path:(inst_dir // "config.json")
@@ -636,7 +649,7 @@ let run_owner ~name ~foreground ~ready_fd =
       let code =
         Fun.protect
           ~finally:(fun () -> C2c_singleton_lock.release lock_fd)
-          (fun () -> idle_supervise ~pid_path)
+          (fun () -> idle_supervise ~pid_path ~log_path)
       in
       code
 
