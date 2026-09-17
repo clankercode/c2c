@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: low
 created_at: "2026-09-17T07:59:37Z"
 depends_on: []
 estimate_hours: 1
 id: B338
 priority: low
+started_at: null
 status: pending
 tags: []
 title: dev-mode (unsigned) heartbeat missing-lease returns 200 unknown_alias, not 404 lease_not_found - connector repair never triggers on dev relays
@@ -24,3 +26,15 @@ TODO: Describe expected behavior
 ## Actual Behavior
 
 TODO: Describe actual behavior
+
+## Symptom
+
+On a tokenless (dev-mode) relay, the unsigned heartbeats missing-lease case returns HTTP 200 + unknown_alias instead of 404 + lease_not_found (relay.ml:5344; the B293 split was implemented only on the signed path via reject_session_lease_missing). Client re-register logic keyed on lease_not_found (the connectors) never triggers against a dev relay.
+
+## Fix direction
+
+Route the backend unknown_alias heartbeat result through the same 404/lease_not_found mapping in the unsigned arm.
+
+## Evidence
+
+Server-core review 2026-09-17.
