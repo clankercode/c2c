@@ -17,6 +17,38 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.17.0 — 2026-09-21
+
+### Cross-host relay DMs are no longer lost, duplicated, or eaten by restarts (B305/B306/B317/B328/B331)
+summary: If you message remote peers (`alias@host`) through the machine relay connector, five independent defects could silently eat your mail: an outbox race deleted remote DMs mid-write (B305), inbound relay DMs bypassed the broker per-inbox lock and could arrive twice or not at all (B306), a connector crash or watchdog kill between "cleared on the relay" and "persisted locally" dropped the whole batch (B317), the production sqlite relay had no message-id dedup so client and forward retries double-delivered (B328), and mail sent while a session re-registered was stranded and then GC-deleted (B331). Delivery is now locked, persist-before-clear, and deduplicated — plus a failed peek keeps the poll fallback, so a version skew cannot leave a relay inbox dark.
+audience: all
+
+### The relay connector syncs at its configured interval — and stays up (B318/B307/B321/B313/B319/B320/B322/B323/B325/B342)
+summary: The machine connector's effective sync interval was 4–6 minutes no matter what you configured, because it slept only after each full pass ended — on a many-root host a pass walked 246 sessions, so inbound cross-host DM latency approximated the pass period. Pass starts are now scheduled at a fixed cadence. The hang watchdog now works in production (it persists a wedge record and scales with observed pass work instead of SIGALRM-killing the whole machine on the first hang), single-root `c2c relay connect --once` is bounded by the same watchdog, rate-limit responses are parsed and surfaced (with retry-after), error details are truncated UTF-8-safely, owner-mismatch strikes cannot double-count within one pass, a no-op pass resets stale wedge/cooldown tables, and the client no longer fires an extra GET /health or re-parses the CA bundle PEM after every failed request. `c2c doctor`'s connector freshness window now scales with recorded pass duration, so a healthy connector on a many-root host no longer reads as stale.
+setup: c2c relay enable
+audience: all
+
+### `c2c relay enable` / `disable` / `restart` do what they say (B302/B304/B309/B310/B311/B312/B326)
+summary: Under the B296 systemd supervision, `c2c restart relay-connect` and `c2c stop relay-connect` fought the boot unit into an infinite restart loop and stop never stuck — both are now systemd-aware. `c2c relay disable` stopped the connector but left the subscribe-daemon and monitor watchers retrying the parked relay forever — disable now shuts them down and names any lingering consumers. `relay enable` ignored an ambient `C2C_RELAY_URL` and activated the public relay instead, `relay restart` ignored relay.json and inverted URL precedence, and enable wrote repo-local config under the broker env; all three verbs now share one URL resolution. The boot unit no longer leaks relay env vars across repo switches and refuses to pin a dev `_build` binary (a `dune clean` used to turn the unit into an infinite restart loop). `c2c doctor`'s relay remediation strings no longer recommend pattern-killing or backgrounding the connector.
+setup: c2c relay enable
+audience: all
+
+### One dead broker root, a rename, or a wedged alias no longer breaks the relay surface (B303/B308/B315/B316/B324/B327)
+summary: A deleted or unwritable broker root crashed the machine connector (a deleted primary meant a permanent crash loop); it is now skipped. An error-path write of connector-state.json wiped the registered/sessions/node_id fields, reopening the B294 lease-theft window; those fields survive error writes. `c2c rename` could still contact a disabled relay — a B300 violation; the rebind resolver routes through the same activation check as every other surface. `relay dm poll` and `relay dm peek` preferred a dead connector's key with no liveness check; resolution is now liveness-gated and register-aligned, with `--node-id`/`--session-id` overrides. The B294 register guard now yields when the connector is alive but permanently failing, so the documented repair path works, and the instance-log ring prunes stray numbered logs beyond keep.
+audience: all
+
+### Relay server: sender spoofing closed, replay protection, honest errors (B329/B334/B336/B340/B335/B338)
+summary: Four authentication holes on the relay are closed: cross-relay forward-out never bound `from_alias` to the verified signer, so any authenticated peer could spoof a sender cross-relay (B329); `send`/`send_all` alias binding was case-sensitive while every other comparison was case-insensitive, so `Alice@host` and `alice@host` were different keys (B334); request nonces were burned before signature verification, so a failed request poisoned the nonce for the legitimate retry (B336); and the WebSocket subscribe handshake signed only alias+timestamp, making the signature replayable within its window — it now uses a server-issued challenge nonce (legacy signatures stay accepted during a transition; operators can require the nonce with `C2C_RELAY_WS_REQUIRE_NONCE=1`) and subscribers are evicted when their alias lease is taken over (B340). Register failures now report the backend's real status with honest HTTP codes instead of a blanket alias-conflict with HTTP 200 (B335), and dev-mode heartbeats return 404 `lease_not_found` so connector repair triggers (B338).
+audience: all
+
+### The production (sqlite) relay backend now behaves like the in-memory one (B330/B331/B332/B333/B337)
+summary: Tests exercised the in-memory backend; production relays run sqlite, and the two had diverged. Lease takeover dropped the alias identity binding and reservation on sqlite, undelivered inbox mail was stranded then GC-deleted on session re-register (mail sent during a restart was lost in production but not in tests), ghost room members from a takeover fed per-message dead-letter rows, the heartbeat pair scan was last-row-wins without released-skip, and room system messages plus DM dead-lettering did not exist on sqlite at all. The backends are now at parity — behavior finally matches what the docs describe.
+audience: all
+
+### Relay storage is bounded, and subscribe-daemon IPC verbs exit cleanly (B339/B341/B327)
+summary: The relay's dead_letter store and the mobile-pairing nonce cache grew without bound; both now have GC retention. The relay subscribe-daemon IPC verbs (register / deregister / list / shutdown) double-closed their IPC socket and exited with cmdliner's internal-error code 125 after a fully successful exchange — they now exit 0 like they always claimed to.
+audience: all
+
 ## v0.16.0 — 2026-09-17
 
 ### The relay is now opt-in — c2c contacts no relay until you enable one (B300)
