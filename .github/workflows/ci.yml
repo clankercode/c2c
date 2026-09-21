@@ -89,7 +89,12 @@ jobs:
 
       - name: OCaml tests
         env:
-          DUNE_WATCHDOG_TIMEOUT: '180'
+          # 180s was too tight for the runtest phase under cache contention:
+          # a release pushes master and the tag seconds apart, both gates race
+          # on the same cache, and the loser was watchdog-killed mid-suite
+          # (v0.17.0 release gate, 2026-09-21). 600s still leaves ample headroom
+          # under this job's 25m timeout.
+          DUNE_WATCHDOG_TIMEOUT: '600'
         run: just test-ocaml
 
   # Keep generated files (synced skills, embedded .ml, role templates, opencode
