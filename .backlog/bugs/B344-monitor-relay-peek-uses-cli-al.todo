@@ -1,0 +1,25 @@
+---
+complexity: medium
+created_at: "2026-09-23T14:41:34Z"
+depends_on: []
+estimate_hours: 1
+id: B344
+priority: high
+status: pending
+tags:
+    - monitor
+    - relay
+title: 'monitor: relay peek uses cli-<alias> key while machine connector is live -> lease_not_found spam'
+updated_at: "2026-09-23T14:41:34Z"
+---
+Found while dogfooding (Claude Code session claude-glaze-forge-yil0, host xsm, c2c 0.16.0).
+
+**Observed:** running `c2c monitor` with no flags printed `relay watch: peek cli-claude-glaze-forge-yil0/cli-claude-glaze-forge-yil0 every 5.0s`. It then emitted `transient error peeking ... lease_not_found: no live lease for session (cli-claude-glaze-forge-yil0, cli-claude-glaze-forge-yil0) ... (attempt N; backing off, will retry)` on every retry. Under Claude Code's Monitor tool, each of those lines wakes the agent.
+
+**Expected:** per the H3 peek-key resolution in `c2c monitor --help`, a broker managed by the relay connector should peek under the machine node-id plus the local session id, not the `cli-<alias>` fallback. The B206 alias preflight should also have kept relay watch off instead of arming it and retrying forever.
+
+**Evidence that the connector is live:** at the same moment, `c2c whoami` reported `state: registered_live — connector bridge live (fresh broker-owned sync state)` and `connector: live (last sync 1m ago, last ok 1m ago; process present)` (machine-wide relay config `~/.config/c2c/relay.json`).
+
+**Workaround:** `c2c monitor --no-relay`. The connector delivers relay DMs to the local inbox anyway.
+
+**Suspected cause (unverified):** connector-managed detection fails for this session, so resolution falls back to `cli-<alias>`. Separately, lease_not_found is treated as transient and retried rather than being a terminal "relay watch off" with a fix hint.
