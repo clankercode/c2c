@@ -1,0 +1,73 @@
+---
+complexity: medium
+created_at: "2026-09-23T04:27:01Z"
+depends_on: []
+estimate_hours: 1
+id: B343
+priority: high
+status: pending
+tags:
+    - grok
+    - monitor
+    - relay
+    - lease
+title: 'Grok session start: monitor peeks a lease that cannot be registered, and the alias the docs tell you to use is rejected'
+updated_at: "2026-09-23T04:27:01Z"
+---
+Filed from a live Grok coding session (grok-power-bolt-mbcg, session 01a0ca56-f15c-7873-ad00-a04469eddae6, c2c 0.16.0, linux, host 3d08761ae3f3, relay https://relay.c2c.im) on 2026-09-23. The session skill says: at start run `c2c whoami`, then arm `c2c monitor`. Doing exactly that did not produce a working relay receive path. Related closed bugs B206, B209, B240, and B293 describe pieces of this; this is the loop as it happens now, after those fixes.
+
+## What I was trying to do
+
+Receive peer messages while working. The skill says bare `c2c monitor` is the receive path and that `c2c whoami` is the identity to trust.
+
+## What happened, in order
+
+1. `c2c whoami` reported alias `grok-power-bolt-mbcg`, session `01a0ca56-f15c-7873-ad00-a04469eddae6`. That part was correct and stable.
+
+2. Bare `c2c monitor` started as that alias, then peeked `cli-grok-power-bolt-mbcg/cli-grok-power-bolt-mbcg` and immediately got:
+
+   lease_not_found: no live lease for session (cli-grok-power-bolt-mbcg, cli-grok-power-bolt-mbcg); it expired or was never registered under this key (verified signer "grok-power-bolt-mbcg")
+
+   So the monitor invented a `cli-` session key that nothing had registered, then treated the miss as a retryable outage.
+
+3. Re-registering the alias the docs name failed:
+
+   `c2c register --alias grok-power-bolt-mbcg --session-id cli-grok-power-bolt-mbcg`
+
+   alias rejected: 'grok-power-bolt-mbcg' is a blocked alias. Names equal to reserved client/system aliases or starting with reserved client prefixes are reserved ... (prefixes include grok-). Try 'power-bolt-mbcg' ...
+
+   The auto-generated identity starts with a prefix that `c2c register` refuses. An agent following `c2c whoami` cannot re-register the alias it was just told it has. This is the B240 shape, still reachable.
+
+4. Registering the suggested alias succeeded locally:
+
+   `c2c register --alias power-bolt-mbcg --session-id cli-grok-power-bolt-mbcg`
+   -> { "alias": "power-bolt-mbcg", "session_id": "cli-grok-power-bolt-mbcg" }
+
+   Restarting `c2c monitor --alias power-bolt-mbcg` still peeked `cli-grok-power-bolt-mbcg/cli-grok-power-bolt-mbcg` and got the same lease_not_found, signer now "power-bolt-mbcg". Local register and the relay peek key are not the same record.
+
+5. `c2c relay register --alias power-bolt-mbcg` returned ok, alive, node_id and session_id both `cli-power-bolt-mbcg`. The monitor did not look for that key. It kept peeking `cli-grok-power-bolt-mbcg`. After one reconnect it dropped again within about two minutes and the next peek was lease_not_found. Repeating relay register produced another alive lease that the watcher was not reading.
+
+6. `c2c whoami --relay` then said the opposite of the successful register:
+
+   alias grok-power-bolt-mbcg (local session alias — not a relay registration)
+   state: configured_not_registered — this alias holds no lease there
+   connector: live
+
+   Three commands, three identities: whoami says grok-power-bolt-mbcg with the real session UUID; monitor peeks cli-grok-power-bolt-mbcg; relay register creates cli-power-bolt-mbcg. None of them is the lease the others check.
+
+7. There is no `--no-relay-watch` (or any flag I could find) to keep the local inbox watch and stop the relay retry. `c2c monitor --no-relay-watch` exits 124 with `unknown option`. The only way to stop the error stream is to kill the monitor. Killing it also stops the local inbox watch, which was the part that worked.
+
+8. The retry loop is loud. Each failed peek is a separate wake for the agent (attempt 1, 2, 3, then "reconnected", then the lease dies again). A session that is supposed to be watching a pull request spends its turns on lease errors.
+
+## What was useful
+
+- `c2c whoami` was the one trustworthy local fact. Alias and session id were stable across the whole session.
+- The first bare `c2c monitor` did attach once, to `3d08761ae3f3/01a0ca56-f15c-7873-ad00-a04469eddae6`, and stayed up for about ten hours. That key is the real session id. Local inbox delivery in that window was fine.
+- `c2c monitor` reconnects on its own after a request_timeout (three timeouts, then "reconnected"). That recovery works. It does not help when the lease key itself is wrong.
+- Error text is specific. It names the node id, the session id, and the verified signer, and it says to re-register. The advice is right; the command it implies is the one `c2c register` rejects, and the key it names is not the key `c2c relay register` creates.
+- `c2c whoami --relay` is honest about connector state (live, last ok, host id, identity fingerprint). It is the command that finally showed the register had not bound the alias the session uses.
+- The blocked-alias error suggests a concrete alternative (`power-bolt-mbcg`). The suggestion is usable. It just does not reconnect the monitor, which keeps peeking the grok- prefixed key.
+
+## Expected
+
+Bare `c2c monitor` after `c2c whoami` should peek the lease that belongs to that alias and session. If the lease is missing, one command should recreate it under the same key the monitor peeks, including when the alias starts with `grok-`. A relay miss should not wake the agent on every retry, and there should be a way to watch the local inbox without the relay loop.
