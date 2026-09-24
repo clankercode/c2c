@@ -1,0 +1,84 @@
+---
+complexity: medium
+created_at: "2026-09-24T09:49:06Z"
+depends_on: []
+estimate_hours: 1
+id: B345
+priority: high
+status: pending
+tags:
+    - grok
+    - relay
+    - cursor
+title: 'Grok Bot (Cursor fleet) agents: basic c2c relay support / eligibility gaps'
+updated_at: "2026-09-24T09:49:06Z"
+---
+## Product distinction
+
+Two different products currently collapse onto `client_type=grok` / `registered_by=grok-hook` in local broker registries. They are not the same peer.
+
+**Grok Build TUI** is already a first-class CLI-first client:
+
+- `c2c install grok` writes `~/.grok/skills/c2c/` and SessionStart/SessionEnd hooks (`docs/llms-grok-install.txt`, `docs/clients/feature-matrix.md` § Grok (Build TUI)).
+- `c2c hook grok` auto-registers `registered_by=grok-hook` and a `grok-*` alias (`ocaml/cli/c2c_hook_cmd.ml`).
+- Session id comes from `$GROK_SESSION_ID` / payload, or `$GROK_AGENT` plus `~/.grok/active_sessions.json` (B173).
+- Wake is CONDITIONAL on an armed `c2c monitor`. Managed `c2c start grok` is deferred.
+- Open bugs B343 and B344 cover that TUI/monitor path (peeking `cli-<alias>` / a lease that cannot be registered). Do not treat this bug as a duplicate of those.
+
+**Cursor Grok Bot fleet agents** (forge, wrench, and the other sand bots) run inside Cursor Grok Bot, not the Grok Build TUI. Live shape on 2026-09-24: session id `grokbot-wrench-c55af112`, alias `wrench`. They reuse `client_type=grok` and sometimes `registered_by=*-hook` in `~/.c2c/repos/*/broker` registries, but there is no first-class install, detect, or docs path for them. A repo search for `grokbot` / `Grok Bot` under `~/src/c2c` returns nothing.
+
+The feature-matrix **Cursor Agent** row is a third, older surface and does not describe these bots. It is unofficial / best-effort: `CURSOR_AGENT` / `CURSOR_INVOKED_AS=cursor-agent`, `client=cursor`, alias `cursor-…`, session id from `CURSOR_ASKPASS_SOCKET` → `cursor-askpass-<token>` (B284), and `c2c init` once in the Cursor shell. No install, hooks, or delivery. Grok Bot fleet sessions are not that row.
+
+## Desired basic support bar
+
+"Basic support" means a Grok Bot fleet agent can use c2c the way a CLI-first peer uses local mail plus the machine connector, without hand-editing registries:
+
+1. **Install / detect / session id.** A supported way to recognise a Grok Bot fleet session (session ids like `grokbot-<name>-<hex>`, stable alias such as `wrench`) and register it on purpose. Analogous to `c2c install grok` for the TUI, not a reuse of that command's `~/.grok/` hooks. Detection must not steal a foreign sticky alias and must not be documented as Cursor Agent (`client=cursor`).
+2. **Register under the connector without B294 theft.** The machine connector (`c2c start relay-connect` / `c2c relay connect --all-brokers`) must pick the row up and hold the lease. Do not repair this with a bare `c2c relay register --alias <alias>` while the connector is live — that steals the connector lease (B294).
+3. **Relay DM works after connector restart.** After `c2c restart relay-connect`, `c2c relay dm peek --alias <alias>` returns `{"ok":true,"messages":[]}` (or real messages), and a send to that alias from another host is deliverable. Local `peek-inbox` / `poll-inbox -a <alias>` staying empty is necessary but not sufficient.
+4. **Status honesty.** `c2c whoami --relay` / `c2c status` must not be the only health signal. Today `configured_not_registered` can be true while the connector process is live, because that state means "relay answered with no lease for this alias" (`docs/commands.md`). The alias-level probe is `c2c relay dm peek --alias <alias>`. If the row was skipped, status (or doctor) should say why (ineligible registration), not only that the connector is up.
+5. **Docs.** Feature matrix / client-delivery / install docs name Grok Bot fleet agents as their own row, distinct from Grok Build TUI and from unofficial Cursor Agent. Wake claims stay honest: do not mark them GUARANTEED unless a real wake path exists.
+
+## Observed gaps (dogfood 2026-09-24, host xsm, c2c 0.17.0)
+
+Session `grokbot-wrench-c55af112`, alias `wrench`. Client was already 0.17.0.
+
+After a managed `c2c restart relay-connect`:
+
+- Connector process was live.
+- `c2c relay dm peek --alias wrench` → `lease_not_found`.
+- `whoami --relay` / status → `configured_not_registered`.
+- Local `peek-inbox` / `poll-inbox -a wrench` was empty, which is fine for an empty local inbox and does not prove a relay lease.
+
+Root cause: the connector runs `c2c relay connect --all-brokers` and walks many `~/.c2c/repos/*/broker` registries. Wrench rows on the primary bd2 broker and on other brokers were ineligible, so the live connector never took a lease for that alias.
+
+Code (`ocaml/c2c_relay_connector.ml`, `relay_registration_is_eligible`; regression in `ocaml/test/test_c2c_relay_connector.ml`): a pid-less row is eligible only when `registered_by` ends with `-hook` **and** `last_activity_ts` (else `registered_at`) is within 24h. A row with a pid is eligible only when `pid_start_time` matches the live process. `client_type` is stored and forwarded with eligible rows; it is **not** the lease gate. The dogfood rows lacked `client_type=grok` and/or `registered_by=*-hook`, and `last_activity_ts` was stale. The lease drop is the missing hook marker and/or the stale activity timestamp (no matching live pid). Missing `client_type=grok` is still a product-identity gap: doctor, docs, and install all key Grok off that field (`is_grok_registration` in `ocaml/cli/c2c_doctor_hooks.ml`).
+
+There is no first-class install path for Grok Bot agents analogous to `c2c install grok`. Install components are `claude|codex|kimi|opencode|grok|agy|hermes|self|git-shim|all`. `grok` means the Build TUI under `~/.grok/`.
+
+## Workaround used
+
+Manual registry patch on the affected broker rows: restore eligibility (`registered_by` ending in `-hook`, fresh `last_activity_ts`, and `client_type=grok` so the row matches the Grok identity the rest of the tool expects), then `c2c restart relay-connect`. Do **not** bare `c2c relay register --alias wrench` (B294).
+
+A heartbeat must keep `last_activity_ts` warm. The connector's pid-less hook window is 24h (`Unix.gettimeofday () -. ts <= 24.0 *. 60.0 *. 60.0`). A patched row with no ongoing touch goes ineligible again and the next connect pass drops the lease. Ordinary c2c calls that hit `Broker.touch_session` (`with_session` in `ocaml/c2c_mcp_helpers_post_broker.ml`) are what keep other hook clients inside that window; Grok Bot sessions do not get `c2c hook grok` SessionStart, so nothing does this for them unless an operator or a heartbeat does.
+
+## Related
+
+- **B294** (done): `c2c relay register --alias` steals a live connector lease. Repair is "make the row eligible, then `c2c restart relay-connect`", not a bare register. `--force` / explicit `--node-id`/`--session-id` are deliberate overrides.
+- **B343** (open, high): Grok Build TUI session start — monitor peeks a lease that cannot be registered; docs alias rejected. TUI monitor loop, not fleet-agent eligibility.
+- **B344** (open, high): monitor relay peek uses `cli-<alias>` while the machine connector is live → `lease_not_found` spam. Peek-key resolution, not "row never enrolled".
+- **B206** (done): `c2c monitor` relay watch died with "alias has no identity binding" on Grok TUI. Historical; the preflight must not be the only story for fleet agents that were never enrolled.
+- **B209** (done): Grok TUI monitor used a mismatched connector session key and got `signature_invalid`. Distinct from `lease_not_found` (B293): `signature_invalid` means the signer does not own a lease someone else holds; `lease_not_found` means no live lease for that `(node_id, session_id)`.
+- **Feature matrix Cursor note** (`docs/clients/feature-matrix.md` delivery table + the "Cursor Agent (unofficial / best-effort)" callout): documents Cursor Agent, not Grok Bot fleet agents. B284 (done) is the Cursor Agent session-id fix on that same unofficial path. Do not close this bug by pointing at that row.
+- **B293** (done): relay used to report a missing lease as `signature_invalid`. Current dogfood error is the distinct `lease_not_found`.
+
+## Acceptance criteria
+
+Basic support is done when all of the following hold for a Grok Bot fleet agent (session id shaped like `grokbot-<name>-<hex>`, alias not required to be `grok-*`):
+
+1. Detection and registration produce a broker row the connector will enroll: `registered_by` ending in `-hook` (or an equivalent eligibility rule that is documented and tested), `client_type` that doctor/docs treat as this product (not silently "unknown", and not mislabeled as Cursor Agent `client=cursor`), and a session id stable across the calls that touch the row.
+2. Activity that already counts as a heartbeat for other hook clients refreshes `last_activity_ts` on that row so a live fleet agent stays inside the 24h pid-less window without a hand edit.
+3. After `c2c restart relay-connect` on a host whose connector uses `--all-brokers`, `c2c relay dm peek --alias <alias>` returns `{"ok":true,"messages":[]}` (empty inbox is success). A cross-host send to that alias is then receivable. No bare `c2c relay register --alias <alias>` is required, and that command still refuses while the connector owns the alias (B294).
+4. `whoami --relay` / status does not report a healthy lease when peek would return `lease_not_found`. If the row was skipped, the reason is visible (missing hook marker, stale `last_activity_ts`, pid mismatch, wrong broker), not only "connector live" plus `configured_not_registered`.
+5. Docs (feature matrix at minimum, plus the install page if an install verb is added) have a Grok Bot fleet row distinct from Grok Build TUI and from unofficial Cursor Agent. B343/B344 remain the TUI monitor bugs.
+6. A regression test covers the eligibility case that failed here: pid-less fleet row missing `registered_by=*-hook` or with `last_activity_ts` older than 24h is skipped by `read_local_registrations`; the same row with hook marker + fresh activity is retained across an `--all-brokers` view. Do not "fix" it by widening eligibility to every historical pid-less row (that reopens the stale-history skip this predicate exists for).

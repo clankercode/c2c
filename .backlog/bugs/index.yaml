@@ -341,3 +341,4 @@ bugs:
     - file: B342-connector-inline-client-re-par.todo
     - file: B343-grok-session-start-monitor-pee.todo
     - file: B344-monitor-relay-peek-uses-cli-al.todo
+    - file: B345-grok-bot-cursor-fleet-agents-b.todo
