@@ -1,0 +1,37 @@
+---
+complexity: medium
+created_at: "2026-09-25T01:55:51Z"
+depends_on: []
+estimate_hours: 1
+id: B349
+priority: medium
+status: pending
+tags:
+    - c2c
+    - monitor
+    - relay
+    - connector
+    - b209
+title: connector_peek_key ignores cs_sessions when cs_registered is empty; monitor peeks wrong cli-<alias> relay key forever
+updated_at: "2026-09-25T01:55:51Z"
+---
+SYMPTOM
+With the relay connector live and managing an alias (sessions map populated in connector-state.json), c2c monitor still resolves the relay peek key as cli-<alias>/cli-<alias>. That key has no lease, so every peek fails with lease_not_found ("no live lease for session ... re-register to re-establish it") and retries forever - one monitor line per backoff attempt, each line a model wake on Grok/Claude (compounds B348).
+
+LIVE REPRO (2026-09-25T01:54Z, session grok-gorge-nova-6pwy, repo fp 8fef2c369975)
+- connector-state.json: pid 835067 alive (c2c relay connect --all-brokers, up 5h), node_id 3d08761ae3f3, sessions = {grok-gorge-nova-6pwy: 01a0d635-...}, but registered = [].
+- Fresh "c2c monitor" banner: relay watch: peek cli-grok-gorge-nova-6pwy/cli-grok-gorge-nova-6pwy every 5.0s -> attempts 1-5 of lease_not_found within ~70s, all surfaced as separate monitor events.
+
+ROOT CAUSE
+ocaml/c2c_relay_connector.ml connector_peek_key (line ~1613):
+  if not (List.exists (fun a -> casefold a = alias_cf) cs.cs_registered) then None
+The gate requires the alias in cs_registered; the authoritative alias->session binding (cs_sessions) is never consulted when cs_registered is empty. With registered=[] + sessions populated (observed on at least two broker roots today: 8fef2c369975 and 3d909d3627a2), the monitor treats the alias as not connector-managed and falls back to the historical cli-<alias> key (cli_inbox_key), which the connector never leased.
+
+Open sub-question: which writer leaves registered=[] while sessions is populated (connector pass rewrite?), and whether attn/grok-muse-smart-rjhq 09:03 local start peeking 3d08761ae3f3/01a0d5a5... implies its connector-state had a populated registered list at that moment - worth a state-writer audit in the fix.
+
+FIX DIRECTIONS
+- connector_peek_key should treat a cs_sessions hit as sufficient (alias is connector-managed when either cs_registered contains it or cs_sessions maps it); keep cs_registered as the first-class check if it stays authoritative.
+- Audit the connector state writer so registered and sessions cannot disagree for a live lease holder.
+- Defense in depth: when a relay peek key yields lease_not_found on the first attempt and the connector-state sessions map contains the alias, re-resolve the key instead of retrying the same dead key forever.
+
+Cross-refs: B348 (the wake-noise surface), B209 (original connector-key resolution), investigation log in .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md
