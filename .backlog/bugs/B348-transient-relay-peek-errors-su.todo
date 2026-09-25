@@ -29,3 +29,5 @@ Full investigation: .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-d
 
 LIVE REPRO (2026-09-25T01:54-01:55Z, this reporter session grok-gorge-nova-6pwy):
 Armed a plain "c2c monitor"; the relay watcher emitted "transient error peeking ... lease_not_found ... (attempt N; backing off, will retry)" as SEPARATE monitor events for attempts 1-5 within ~70s, each one waking the agent. Error class is not limited to request_timeout: lease_not_found repeats indefinitely when the peek key is wrong (see B349 for the key-resolution root cause). Backoff retries should never be per-attempt lines on wake surfaces.
+
+LANE PLAN (bl-fix-many 2026-09-25): Lane A serial B349 -> B348 -> B346 (see B349 note). Fix shape decided: quiet-until-wedge (no per-attempt lines below the B211 threshold), recovery line only when an error line was actually emitted.
