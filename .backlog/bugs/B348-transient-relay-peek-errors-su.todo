@@ -1,0 +1,29 @@
+---
+complexity: medium
+created_at: "2026-09-25T01:53:50Z"
+depends_on: []
+estimate_hours: 1
+id: B348
+priority: low
+status: pending
+tags:
+    - c2c
+    - monitor
+    - relay
+    - noise
+title: Transient relay peek errors surface as monitor lines and wake idle agents
+updated_at: "2026-09-25T01:53:50Z"
+---
+SYMPTOM
+c2c monitor peeks the relay inbox every 5s (B089 relay watch). Transient failures each print a line like: relay watch: transient error peeking <node>/<session>: connection_error: Failure("request_timeout") (attempt 1; backing off, will retry). On Grok and Claude every monitor stdout line is a model-visible wake, so idle agents burn turns acknowledging relay noise.
+
+EVIDENCE (2026-09-25, grok session 01a0d5a5-7c00-7d71-a804-91ef2e7f9283 = grok-muse-smart-rjhq, /home/xertrov/src/attn)
+- Monitor events at 09:37:06 and 09:46:26 local, each became a task-notification user turn; the agent replied "Another relay timeout. It will retry on its own." (twice).
+- Same session started with c2c whoami reporting: registered_unreachable - prior connector sync state exists but the connector is down.
+- No double send/recv observed in that session (zero c2c envelopes) - the relay issue there is pure noise/wakes, plus the unreachable-registration state at start.
+
+FIX DIRECTIONS
+- Emit relay peek errors only on state change (ok->error once, error->recovered once) or after N consecutive failures, not per transient failure, on surfaces that wake agents.
+- Consider suppressing attempt-1 backoff lines entirely.
+
+Full investigation: .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md

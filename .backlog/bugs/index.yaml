@@ -344,3 +344,4 @@ bugs:
     - file: B345-grok-bot-cursor-fleet-agents-b.todo
     - file: B346-claude-sessions-get-every-c2c.todo
     - file: B347-claude-resume-leaves-stale-reg.todo
+    - file: B348-transient-relay-peek-errors-su.todo
