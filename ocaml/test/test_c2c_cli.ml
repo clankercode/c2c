@@ -908,6 +908,16 @@ let test_send_dead_alias_queues_offline () =
           check bool "warns offline durable queue" true
             (string_contains content "offline"
              && string_contains content "durable inbox");
+          (* B347: the offline warning must not invite a re-send — the
+             queued copy delivers on the recipient's next activity, and a
+             second send duplicates the DM. *)
+          check bool "B347: warning says next-activity delivery" true
+            (string_contains content "next activity");
+          check bool "B347: warning says re-sending duplicates" true
+            (string_contains content "re-send"
+             && string_contains content "duplicate");
+          check bool "B347: old next-start/resume phrasing gone" false
+            (string_contains content "next start/resume");
           check bool "does NOT claim unregistered" false
             (string_contains content "is not registered");
           let inbox =

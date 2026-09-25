@@ -340,6 +340,16 @@ let test_send_offline_queues_durably () =
         (body |> member "queued_offline" |> to_bool);
       check string "from_alias" "sender" (body |> member "from_alias" |> to_string);
       check string "to_alias" "recipient" (body |> member "to_alias" |> to_string);
+      (* B347: the warning must not invite a re-send — the queued copy
+         delivers on the recipient's next activity; re-sending duplicates. *)
+      let warning =
+        body |> member "delivery" |> member "warning" |> to_string
+      in
+      check bool "B347: delivery.warning says next-activity delivery" true
+        (contains_substring ~haystack:warning ~needle:"next activity");
+      check bool "B347: delivery.warning says re-sending duplicates" true
+        (contains_substring ~haystack:warning ~needle:"re-send"
+         && contains_substring ~haystack:warning ~needle:"duplicate");
       (* Mail is durable in the dead registration's own inbox (no drain). *)
       let inbox = Broker.read_inbox broker ~session_id:"session-recipient" in
       check int "offline mail persisted to dead session inbox" 1

@@ -424,6 +424,95 @@ let test_hook_adopts_mcp_first_registration () =
            (contains ~haystack:context ~needle:"zz-claude-e2e-mcpfirst")
      | None -> failf "expected wake note, got: %S" stdout))
 
+(* --- B347: resume must self-heal a stale registration pid ---------------------
+
+   `claude --resume <sid>` resolves to the prior run's registration (step 2
+   / env sid) but the row keeps the PREVIOUS process's pid, so a LIVE session
+   read offline, peers re-sent, and the DM arrived twice. A SessionStart that
+   adopts a row whose pid is dead (or absent) must re-point it at the live
+   Claude process. The live pid is attributed exactly like `c2c register`
+   (B071): C2C_MCP_CLIENT_PID for managed sessions, else the first
+   known-agent ancestor of the hook — in the tests the env var stands in for
+   that attribution. *)
+
+(* A pid guaranteed dead and not-yet-reused: a forked child we reap. *)
+let reaped_child_pid () =
+  let pid = Unix.fork () in
+  if pid = 0 then Unix._exit 0;
+  ignore (Unix.waitpid [] pid);
+  pid
+
+let test_resume_refreshes_dead_registration_pid () =
+  with_ctx (fun ctx ->
+    let sid = "claude-e2e-b347-resume-0001" in
+    let live_pid = Unix.getpid () in
+    ignore
+      (register ctx ~pid:(Some (reaped_child_pid ())) ~session_id:sid
+         ~alias:"zz-claude-b347-resume");
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_CLIENT_PID", string_of_int live_pid) ]
+        ~payload:(payload ~session_id:sid ~source:"resume" ())
+    in
+    check int "exit 0" 0 rc;
+    (match find_reg ctx sid with
+     | None -> failf "registration vanished (stderr: %S)" stderr
+     | Some r ->
+         check (option int) "stale pid refreshed to live process"
+           (Some live_pid) r.pid;
+         check (option int) "pid_start_time captured for live pid"
+           (C2c_mcp.Broker.capture_pid_start_time (Some live_pid))
+           r.pid_start_time;
+         check string "alias preserved (adopted, not re-minted)"
+           "zz-claude-b347-resume" r.alias);
+    check int "no duplicate registration" 1
+      (List.length (C2c_mcp.Broker.list_registrations (broker ctx)));
+    check bool "wake note still emitted" true
+      (match parse_context stdout with
+       | Some (_, context) -> contains ~haystack:context ~needle:"connected as"
+       | None -> false))
+
+let test_resume_pins_pid_on_adopted_pidless_row () =
+  with_ctx (fun ctx ->
+    let sid = "claude-e2e-b347-pidless-0001" in
+    let live_pid = Unix.getpid () in
+    ignore (register ctx ~pid:None ~session_id:sid ~alias:"zz-claude-b347-pidless");
+    let rc, _, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_CLIENT_PID", string_of_int live_pid) ]
+        ~payload:(payload ~session_id:sid ~source:"resume" ())
+    in
+    check int "exit 0" 0 rc;
+    (match find_reg ctx sid with
+     | None -> failf "registration vanished (stderr: %S)" stderr
+     | Some r ->
+         check (option int) "pid-less adopted row pinned to live process"
+           (Some live_pid) r.pid))
+
+let test_resume_keeps_live_registration_pid () =
+  with_ctx (fun ctx ->
+    let sid = "claude-e2e-b347-live-0001" in
+    (* Row already carries a LIVE pid: adoption must not churn it, even when
+       a different attributable pid is available. *)
+    let row_pid = Unix.getpid () in
+    let sleeper = Unix.fork () in
+    if sleeper = 0 then (ignore (Unix.sleep 60); Unix._exit 0);
+    ignore
+      (register ctx ~pid:(Some row_pid) ~session_id:sid
+         ~alias:"zz-claude-b347-live");
+    let rc, _, _ =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_CLIENT_PID", string_of_int sleeper) ]
+        ~payload:(payload ~session_id:sid ~source:"resume" ())
+    in
+    check int "exit 0" 0 rc;
+    (match find_reg ctx sid with
+     | None -> failf "registration vanished"
+     | Some r ->
+         check (option int) "live row pid untouched" (Some row_pid) r.pid);
+    Unix.kill sleeper Sys.sigkill;
+    ignore (Unix.waitpid [] sleeper))
+
 let test_compact_source_emits_post_compact_context () =
   with_ctx (fun ctx ->
     let sid = "claude-e2e-compact-0001" in
@@ -559,6 +648,12 @@ let () =
             test_session_start_wake_note_and_cold_boot_once
         ; test_case "hook adopts MCP-first registration (B119 reverse)" `Quick
             test_hook_adopts_mcp_first_registration
+        ; test_case "B347: resume refreshes dead registration pid" `Quick
+            test_resume_refreshes_dead_registration_pid
+        ; test_case "B347: resume pins pid on adopted pid-less row" `Quick
+            test_resume_pins_pid_on_adopted_pidless_row
+        ; test_case "B347: resume keeps live registration pid untouched" `Quick
+            test_resume_keeps_live_registration_pid
         ; test_case "compact source emits post-compact context" `Quick
             test_compact_source_emits_post_compact_context
         ; test_case "non-compact source has no post-compact context" `Quick
