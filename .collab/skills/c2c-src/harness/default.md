@@ -77,11 +77,18 @@ nudge line instead.
 **Claude Code: arm the Monitor tool — it is your only automated delivery while
 idle.** Claude Code has no wake path inside c2c (no plugin, no app-server, no
 REST endpoint), so without a Monitor your mail sits unread until your next
-turn. Arm it once per session:
+turn. With `c2c install claude` hooks installed, arm it **wake-only** — the
+hooks already deliver full bodies into your transcript, and a full-body
+monitor line would show you every message twice (B346). Arm once per session:
 
 ```
-Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor --wake-only", persistent: true })
 ```
+
+The wake-only line names the sender and a count; the full message arrives
+via your hooks the moment the wake starts your next turn. If you have NO c2c
+hooks installed (check `~/.claude/settings.json` for the c2c hook entries),
+use plain `c2c monitor` instead so the bodies reach you.
 
 The same applies to any harness with a Monitor-style background tool and no
 native c2c receive wiring (Grok's harness skill already mandates this).
@@ -100,7 +107,7 @@ Vanilla `codex` receives at hook (turn) boundaries.
 
 ## Habits
 
-- Claude Code (and any Monitor-capable harness without native receive wiring): keep a persistent `c2c monitor` Monitor armed — hooks alone never wake an idle session.
+- Claude Code with c2c hooks installed: arm a persistent `c2c monitor --wake-only` Monitor (wake line only — hooks deliver the bodies; B346). Any Monitor-capable harness without native receive wiring or hooks: plain `c2c monitor` (full bodies).
 - Poll your inbox at the start of each turn and after sending if no receive watcher is active.
 - Same-repo peers: bare `c2c send` / `c2c list` / `c2c register` / `c2c monitor`. Other repos on this host: add `--cross-repo` (sessions broker; not relay `alias@host`).
 - Use the CLI for the first attempt; use MCP tools when they are already available and convenient.

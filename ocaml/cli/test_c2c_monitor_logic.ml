@@ -971,21 +971,31 @@ let is_transient_log = function L.Transient_log _ -> true | _ -> false
 let is_transient_wedged = function L.Transient_wedged _ -> true | _ -> false
 let is_transient_quiet = function L.Transient_quiet _ -> true | _ -> false
 
-let test_transient_below_threshold_logs () =
-  (* Every peek below the threshold logs normally (recoverable blip). *)
-  let rec burn i streak =
-    if i >= 3 then ()
+let test_transient_below_threshold_quiet () =
+  (* B348: attempts below the wedge threshold are QUIET — every monitor line
+     is a model-visible wake on Claude/Grok, so a self-healing blip must not
+     print "attempt N; backing off" per peek (live: 5 wakes in ~70s,
+     grok-gorge-nova-6pwy 2026-09-25). Visibility starts at the escalation. *)
+  let rec burn i streak ~logged =
+    if i >= 5 then logged
     else begin
       let action, streak' =
         L.note_transient ~threshold:6 ~min_span_s:0.0
           ~now:(1000.0 +. float_of_int i) ~streak ()
       in
+      let logged =
+        match action with
+        | L.Transient_log _ -> true
+        | _ -> logged
+      in
       Alcotest.(check bool)
-        (Printf.sprintf "attempt %d logs" i) true (is_transient_log action);
-      burn (i + 1) streak'
+        (Printf.sprintf "below-threshold attempt %d is quiet" (i + 1))
+        true (is_transient_quiet action);
+      burn (i + 1) streak' ~logged
     end
   in
-  burn 0 L.empty_transient_streak
+  Alcotest.(check bool) "no attempt below threshold logged" false
+    (burn 0 L.empty_transient_streak ~logged:false)
 
 let test_transient_escalates_once_then_quiets () =
   (* A sustained streak (>= threshold spanning >= min_span) escalates EXACTLY
@@ -1039,13 +1049,33 @@ let test_transient_fast_burst_does_not_escalate () =
 
 let test_transient_reset_starts_fresh_window () =
   (* After escalation, resetting to empty (caller does this on Peek_ok /
-     Peek_terminal / rebind) starts a fresh window: next transient logs. *)
+     Peek_terminal / rebind) starts a fresh window: the next transient streak
+     is quiet until it crosses the threshold again (B348). *)
   let action, _ =
     L.note_transient ~threshold:6 ~min_span_s:0.0
       ~now:2000.0 ~streak:L.empty_transient_streak ()
   in
-  Alcotest.(check bool) "post-reset first attempt logs" true
-    (is_transient_log action)
+  Alcotest.(check bool) "post-reset first attempt is quiet" true
+    (is_transient_quiet action)
+
+(* B348: a short blip that never crosses the wedge threshold produces zero
+   Transient_log actions, so the monitor prints nothing for it (no error
+   line, and therefore no "recovered after N errors" line either — the
+   caller gates recovery on having announced). *)
+let test_transient_blip_emits_nothing () =
+  let rec burn i streak ~logged =
+    if i >= 2 then logged
+    else begin
+      let action, streak' =
+        L.note_transient ~threshold:6 ~min_span_s:60.0 ~log_every:12
+          ~now:(1000.0 +. (float_of_int i *. 20.0)) ~streak ()
+      in
+      let logged = logged || is_transient_log action in
+      burn (i + 1) streak' ~logged
+    end
+  in
+  Alcotest.(check bool) "two-attempt blip never logs" false
+    (burn 0 L.empty_transient_streak ~logged:false)
 
 let test_transient_quiet_periodic_relog () =
   (* Once escalated, a periodic re-log fires every [log_every] attempts so a
@@ -1168,14 +1198,16 @@ let () =
             test_direct_signature_invalid_keeps_register_hint
         ] )
     ; ( "b211-transient-wedge-escalation",
-        [ Alcotest.test_case "below threshold logs each attempt" `Quick
-            test_transient_below_threshold_logs
+        [ Alcotest.test_case "below threshold is quiet until wedge (B348)" `Quick
+            test_transient_below_threshold_quiet
         ; Alcotest.test_case "sustained streak escalates once then quiets" `Quick
             test_transient_escalates_once_then_quiets
         ; Alcotest.test_case "fast burst does not escalate" `Quick
             test_transient_fast_burst_does_not_escalate
         ; Alcotest.test_case "reset starts a fresh window" `Quick
             test_transient_reset_starts_fresh_window
+        ; Alcotest.test_case "self-healing blip emits nothing (B348)" `Quick
+            test_transient_blip_emits_nothing
         ; Alcotest.test_case "periodic re-log after escalation" `Quick
             test_transient_quiet_periodic_relog
         ] )

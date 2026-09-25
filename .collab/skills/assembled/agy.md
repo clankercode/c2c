@@ -159,7 +159,8 @@ For the machine sessions broker instead of this repo's broker, use
 `c2c monitor --cross-repo`.
 
 `c2c monitor` emits **full message bodies** by default — one line per message,
-never collapsed or truncated (legacy `--snippet` restores the short preview).
+never collapsed or truncated (legacy `--snippet` restores the short preview;
+`--wake-only` emits only sender + count for hook-equipped clients, B346).
 It peeks without draining, so it never steals messages from another consumer.
 
 When relay is configured, monitor first verifies that its direct alias is

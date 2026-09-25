@@ -78,8 +78,17 @@ let dedup_check ~from ~to_raw ~content =
    full-delivery surface, so bodies must arrive complete). In --snippet
    mode bursts collapse to a count + preview (legacy). [source] tags the
    message origin ("local" or "relay") so a relay-surfaced cross-host DM is
-   distinguishable from a local-broker one (B089). *)
-let emit_messages ~my_alias ~all ~full_body ~source msgs =
+   distinguishable from a local-broker one (B089).
+
+   B346 wake-only mode: for hook-equipped clients (Claude Code with the
+   c2c Stop/PostToolUse hooks installed) the hooks deliver the full
+   envelope as additionalContext, so a full-body monitor line shows the
+   model the same message TWICE (monitor task-notification + hook
+   context). [wake_only] emits one line per sender with just a count —
+   enough to wake an idle session, no body duplication. The line's
+   prefix (icon, origin, from→dest) is identical so line-parsers keep
+   working; only the subject slot changes. *)
+let emit_messages ~my_alias ~all ~full_body ~wake_only ~source msgs =
   (* Group messages by from_alias *)
   let by_sender = Hashtbl.create 4 in
   List.iter (fun msg ->
@@ -126,12 +135,20 @@ let emit_messages ~my_alias ~all ~full_body ~source msgs =
              operator can tell a cross-host DM (peeked from the relay inbox)
              from a local broker delivery. *)
           let origin = if source = "relay" then "🌐" else "" in
-          let bodies = List.map (fun fields -> jstr fields "content" "") kept in
-          List.iter
-            (fun subject ->
-              Printf.printf "%s %s%s  %s→%s  %s\n%!"
-                (now_hms ()) origin icon from dest subject)
-            (C2c_monitor_logic.burst_subjects ~full_body bodies)
+          if wake_only then
+            (* B346: count only — the wake without the body. *)
+            Printf.printf "%s %s%s  %s→%s  %d message%s [wake-only: bodies via hooks or c2c poll-inbox]\n%!"
+              (now_hms ()) origin icon from dest
+              (List.length kept)
+              (if List.length kept = 1 then "" else "s")
+          else begin
+            let bodies = List.map (fun fields -> jstr fields "content" "") kept in
+            List.iter
+              (fun subject ->
+                Printf.printf "%s %s%s  %s→%s  %s\n%!"
+                  (now_hms ()) origin icon from dest subject)
+              (C2c_monitor_logic.burst_subjects ~full_body bodies)
+          end
         end
   ) by_sender
 
@@ -181,6 +198,16 @@ let monitor_cmd =
   let snippet_flag =
     Arg.(value & flag & info ["snippet"]
            ~doc:"Emit an 80-char subject snippet instead of the full body (legacy default).")
+  in
+  let wake_only_flag =
+    Arg.(value & flag & info ["wake-only"]
+           ~doc:"Emit one line per sender with a message COUNT, no bodies. For \
+                 hook-equipped clients (Claude Code with the c2c Stop/PostToolUse \
+                 hooks installed) whose hooks already deliver full bodies into the \
+                 transcript: the monitor line is only the idle wake, so the same \
+                 message is not shown to the model twice (B346). Bodies remain \
+                 available via the hooks or $(b,c2c poll-inbox). Ignored with \
+                 $(b,--json).")
   in
   let from_opt =
     Arg.(value & opt (some string) None & info ["from"] ~docv:"ALIAS"
@@ -267,7 +294,7 @@ let monitor_cmd =
                  60s; first check is deferred one full interval. Override with \
                  $(b,C2C_MONITOR_SELF_STALE_INTERVAL).")
   in
-  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id register_relay_alias self_stale_exit ->
+  const (fun broker_root_arg alias_arg all drains sweeps full_body snippet wake_only from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id register_relay_alias self_stale_exit ->
     (* Resolve effective flags: --archive and --full-body are now defaults.
        --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
     let full_body = full_body || not snippet in  (* full_body unless --snippet *)
@@ -688,7 +715,7 @@ let monitor_cmd =
                   (C2c_monitor_ndjson.message_event ~monitor_ts:ts ~source m))
                 msgs
           end else
-            emit_messages ~my_alias:(!my_alias_r) ~all ~full_body ~source msgs
+            emit_messages ~my_alias:(!my_alias_r) ~all ~full_body ~wake_only ~source msgs
     in
     (* B089: the local (inotify) path and the relay-peek thread both feed the
        shared [seen] dedup set and stdout. Serialize filter+emit under one mutex
@@ -905,6 +932,12 @@ let monitor_cmd =
                B178: re-sign every peek (fresh ts+nonce). B180: peek target and
                signing alias are refs so rename rebinds without restarting. *)
             let err_streak = ref 0 in
+            (* B348: true once any relay-watch error line has actually been
+               emitted during the current outage. The Peek_ok "reconnected"
+               line prints only when this is set, so a silent (below-wedge)
+               blip that self-heals produces zero lines instead of an
+               error-free "recovered after 1 error" wake. *)
+            let err_announced = ref false in
             let soft_budget = ref C2c_monitor_logic.empty_soft_budget in
             (* B211: bound transient (wedged-bridge) log spam + escalate once. *)
             let transient_streak = ref C2c_monitor_logic.empty_transient_streak in
@@ -951,6 +984,7 @@ let monitor_cmd =
               end;
               if not !terminal_logged then begin
                 terminal_logged := true;
+                err_announced := true;
                 Printf.eprintf
                   "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
                    %s relay watch: recovery budget exhausted (or hard auth/config \
@@ -977,6 +1011,7 @@ let monitor_cmd =
               end;
               if not !terminal_logged then begin
                 terminal_logged := true;
+                err_announced := true;
                 Printf.eprintf
                   "%s relay watch: off — the relay connector owns relay delivery \
                    for this session (peek key %s/%s: %s); the CLI monitor cannot \
@@ -1025,18 +1060,22 @@ let monitor_cmd =
                     rl_streak := C2c_monitor_logic.empty_transient_streak;
                     last_rl_retry_after := None;
                     terminal_logged := false;
-                    err_streak := 0
+                    err_streak := 0;
+                    err_announced := false
                   end;
                   (match outcome with
                    | C2c_monitor_logic.Peek_ok msgs ->
-                       if !err_streak > 0 then begin
+                       if !err_announced then begin
                          Printf.eprintf
                            "%s relay watch: reconnected (recovered after %d \
                             error%s)\n%!"
                            (now_hms ()) !err_streak
                            (if !err_streak = 1 then "" else "s");
-                         err_streak := 0
+                         err_announced := false
                        end;
+                       (* B348: reset the backoff streak even when the outage
+                          was never announced (silent blip). *)
+                       err_streak := 0;
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
                        transient_streak :=
                          C2c_monitor_logic.empty_transient_streak;
@@ -1062,12 +1101,14 @@ let monitor_cmd =
                        transient_streak := streak';
                        (match action with
                         | C2c_monitor_logic.Transient_log attempt ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: transient error peeking %s/%s: \
                                %s (attempt %d; backing off, will retry)\n%!"
                               (now_hms ()) node_id session_id detail attempt
                         | C2c_monitor_logic.Transient_wedged
                             { attempt; remediation } ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: transient error peeking %s/%s: \
                                %s (attempt %d; backing off, will retry)\n\
@@ -1103,6 +1144,7 @@ let monitor_cmd =
                        in
                        (match action with
                         | C2c_monitor_logic.Transient_log attempt ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: rate-limited (HTTP 429) peeking \
                                %s/%s: %s (attempt %d;%s next_wait=%.1fs — \
@@ -1111,6 +1153,7 @@ let monitor_cmd =
                               ra_note pace
                         | C2c_monitor_logic.Transient_wedged
                             { attempt; remediation } ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: rate-limited (HTTP 429) peeking \
                                %s/%s: %s (attempt %d;%s next_wait=%.1fs)\n\
@@ -1148,6 +1191,7 @@ let monitor_cmd =
                         | C2c_monitor_logic.Retry_soft
                             { consecutive; threshold; remediation_hint } ->
                             incr err_streak;
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: recoverable error peeking %s/%s: \
                                %s (soft %d/%d; backing off, will retry — not \
@@ -1728,7 +1772,7 @@ let monitor_cmd =
                           ) msgs
                       end else
                         emit_messages ~my_alias:(!my_alias_r) ~all ~full_body
-                          ~source:"local" msgs)
+                          ~wake_only ~source:"local" msgs)
                end
              end else if filename = "registry.json" && not archive then begin
                (* Registry changed — diff against snapshot and emit peer events.
@@ -1855,7 +1899,7 @@ let monitor_cmd =
           "%s inotify watch stream ended (inotifywait exited or is not \
            installed); monitor exiting\n%!" (now_hms ()))
   ) $ broker_root_opt $ alias_opt $ all_flag $ drains_flag $ sweeps_flag
-    $ full_body_flag $ snippet_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
+    $ full_body_flag $ snippet_flag $ wake_only_flag $ from_opt $ json_flag $ archive_flag $ live_flag $ include_self_flag
     $ force_flag $ drain_flag $ cross_repo $ no_relay $ relay_interval $ relay_node_id $ relay_session_id
     $ register_relay_alias $ self_stale_exit_flag
 

@@ -1187,6 +1187,51 @@ let test_connector_peek_key_backward_compat_fallback () =
            ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"" = None)
   | None -> Alcotest.fail "backward-compat fallback returned None"
 
+(* B349: a cs_sessions hit alone proves the connector manages the alias.
+   Live incident 2026-09-25: connector-state.json had registered=[] while
+   sessions mapped the alias; connector_peek_key gated on cs_registered
+   only, so c2c monitor peeked the cli-<alias> key and every relay peek
+   failed lease_not_found forever. connector_state_owns_alias (B294) already
+   treats either field as ownership — connector_peek_key must agree. *)
+let test_connector_peek_key_sessions_hit_without_registered () =
+  let cs =
+    { Conn.cs_last_sync_ts = 0.0; cs_last_ok_ts = 0.0;
+      cs_last_error_op = None; cs_last_error_detail = None;
+      cs_last_error_ts = None;
+      cs_registered = [];  (* B349 incident shape *)
+      cs_node_id = Some "host-hash-abc";
+      cs_sessions =
+        [ ("grok-powder-kelo-6z5j", "019f64e1-04be-73c0-83e3-c71a3b40d406") ];
+      cs_pid = None;
+      cs_outbox_forwarded = 0; cs_outbox_failed = 0; cs_outbox_dlqed = 0;
+      cs_inbound_delivered = 0; cs_inbound_rejected = 0;
+      cs_inbound_rejected_note = None;
+      cs_wedged_since = None; cs_wedge_reason = None; cs_wedge_count = 0;
+      cs_errors = [];
+      cs_rate_limited = false; cs_retry_after_s = None;
+      cs_pass_duration_s = None; cs_pass_interval_s = None; }
+  in
+  (match
+     Conn.connector_peek_key cs ~alias:"grok-powder-kelo-6z5j"
+       ~fallback_node_id:"host-hash-abc" ~fallback_session_id:""
+   with
+   | Some (node_id, session_id) ->
+       Alcotest.(check string) "sessions hit without registered: node_id"
+         "host-hash-abc" node_id;
+       Alcotest.(check string)
+         "sessions hit without registered: recorded session_id"
+         "019f64e1-04be-73c0-83e3-c71a3b40d406" session_id
+   | None ->
+       Alcotest.fail
+         "connector_peek_key returned None despite a cs_sessions binding — \
+          this is the B349 permanent lease_not_found regression");
+  (* Ownership still requires a hit: with sessions populated for another
+     alias, an unmanaged alias keeps falling back to cli-<alias>. *)
+  Alcotest.(check bool) "alias in neither field -> None" true
+    (Conn.connector_peek_key cs ~alias:"stranger-nope-9z9z"
+       ~fallback_node_id:"host-hash-abc" ~fallback_session_id:"whatever"
+     = None)
+
 (* B231: CLI poll/peek must prefer the connector lease over cli-<alias> —
    while the connector is LIVE (B308: the same liveness predicate as the
    B294 register guard gates this preference). *)
@@ -2669,6 +2714,10 @@ let () =
         test_connector_peek_key_uses_recorded_session_when_local_unresolved;
       Alcotest.test_case "backward-compat fallback to local session-id" `Quick
         test_connector_peek_key_backward_compat_fallback;
+    ];
+    "B349 connector peek key", [
+      Alcotest.test_case "cs_sessions hit suffices when cs_registered is empty" `Quick
+        test_connector_peek_key_sessions_hit_without_registered;
     ];
     "B231 CLI dm inbox key", [
       Alcotest.test_case "prefers connector lease over cli-<alias>" `Quick
