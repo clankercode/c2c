@@ -1,0 +1,39 @@
+---
+complexity: medium
+created_at: "2026-09-25T01:53:41Z"
+depends_on: []
+estimate_hours: 1
+id: B347
+priority: medium
+status: pending
+tags:
+    - c2c
+    - claude
+    - registration
+    - liveness
+    - send
+    - duplication
+title: claude --resume leaves stale registration pid; offline verdict makes agents re-send and duplicate the DM
+updated_at: "2026-09-25T01:53:41Z"
+---
+SYMPTOM
+A resumed Claude session stays marked offline in the broker registry (stale pid), so c2c send prints queued_offline ("will deliver on next start/resume") for a live recipient; agents then re-send through another path and the recipient gets the same DM twice.
+
+EVIDENCE (2026-09-24T20:56Z, live incident)
+- Recipient autoflow-ops (Claude, session e97f6138-ec61-4587-9428-d2f9495162a5, /home/xertrov/src/amaroo) was alive as pid 2065315 ("claude --resume e97f6138...", up 12h), but the sessions-broker registry row still carried pid 599355 registered 2026-09-23. c2c list showed it dead; "c2c refresh-peer --dry-run autoflow-ops --pid 2065315" printed "Would update: pid 599355 -> 2065315".
+- Sender grok-cosmic-sloop-auas ran: c2c send autoflow-ops "Idle and ready..." --fail-if-queued -> "queued_offline ... warning: recipient is offline; message queued to durable inbox (will deliver on next start/resume)" (repo-broker enqueue, message_id 805e0491, logged offline:true).
+- The recipient drained that copy 10s later via its PostToolUse hook (20:56:20Z) - it was never actually offline.
+- The operator had told the sender "it is not offline"; the agent compensated with c2c send --session e97f6138... --fail-if-queued (same body) -> ok (sessions-broker enqueue, message_id ba0d105c, to_alias = raw session id).
+- Result: identical body delivered twice to the model (20:56:21Z and 21:00:24Z), different message_ids, no dedupe possible at the recipient. Both archive records verified in repos/e0eb9c317019 and sessions broker archives.
+
+ROOT CAUSES
+1. claude --resume does not refresh the registration pid (SessionStart hook keeps/adopts the old row without updating pid), so liveness is judged against a dead pid.
+2. The send-time offline verdict trusts only that stale pid; it ignores the sessions-broker row and recent hook-drain activity that prove liveness.
+3. The queued_offline warning text implies non-delivery and invites an immediate re-send through a different path (--session / relay), which is what created the duplicate.
+
+FIX DIRECTIONS
+- Refresh the registration pid (and pid_start_time) on SessionStart for resumed Claude sessions, or make liveness fall back to hook-activity TTL / sessions-broker row when the recorded pid is dead.
+- Cross-check the sessions-broker registration before declaring offline in c2c send.
+- Reword the queued_offline warning so it does not prompt a re-send (state that durable-queue delivery happens on the recipient next activity, and that re-sending will duplicate).
+
+Full investigation: .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md
