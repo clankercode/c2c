@@ -1,16 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-25T01:53:50Z"
 depends_on: []
 estimate_hours: 1
 id: B348
 priority: low
+started_at: null
 status: pending
-tags:
-    - c2c
-    - monitor
-    - relay
-    - noise
+tags: []
 title: Transient relay peek errors surface as monitor lines and wake idle agents
 updated_at: "2026-09-25T01:53:50Z"
 ---
@@ -27,3 +25,7 @@ FIX DIRECTIONS
 - Consider suppressing attempt-1 backoff lines entirely.
 
 Full investigation: .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md
+
+
+LIVE REPRO (2026-09-25T01:54-01:55Z, this reporter session grok-gorge-nova-6pwy):
+Armed a plain "c2c monitor"; the relay watcher emitted "transient error peeking ... lease_not_found ... (attempt N; backing off, will retry)" as SEPARATE monitor events for attempts 1-5 within ~70s, each one waking the agent. Error class is not limited to request_timeout: lease_not_found repeats indefinitely when the peek key is wrong (see B349 for the key-resolution root cause). Backoff retries should never be per-attempt lines on wake surfaces.
