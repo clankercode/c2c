@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-09-25T07:33:30Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-09-25T08:41:47Z"
 complexity: medium
 created_at: "2026-09-25T01:53:50Z"
 depends_on: []
+duration_minutes: 68.28612831868334
 estimate_hours: 1
 id: B348
 priority: low
 started_at: "2026-09-25T07:33:30Z"
-status: in_progress
+status: done
 tags: []
 title: Transient relay peek errors surface as monitor lines and wake idle agents
-updated_at: "2026-09-25T07:33:30Z"
+updated_at: "2026-09-25T08:41:47Z"
 ---
 SYMPTOM
 c2c monitor peeks the relay inbox every 5s (B089 relay watch). Transient failures each print a line like: relay watch: transient error peeking <node>/<session>: connection_error: Failure("request_timeout") (attempt 1; backing off, will retry). On Grok and Claude every monitor stdout line is a model-visible wake, so idle agents burn turns acknowledging relay noise.
