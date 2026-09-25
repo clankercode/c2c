@@ -342,3 +342,4 @@ bugs:
     - file: B343-grok-session-start-monitor-pee.todo
     - file: B344-monitor-relay-peek-uses-cli-al.todo
     - file: B345-grok-bot-cursor-fleet-agents-b.todo
+    - file: B346-claude-sessions-get-every-c2c.todo

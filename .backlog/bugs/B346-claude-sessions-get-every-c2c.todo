@@ -1,0 +1,34 @@
+---
+complexity: medium
+created_at: "2026-09-25T01:53:25Z"
+depends_on: []
+estimate_hours: 1
+id: B346
+priority: high
+status: pending
+tags:
+    - c2c
+    - claude
+    - monitor
+    - hooks
+    - delivery
+    - duplication
+title: 'Claude sessions get every c2c DM twice: full-body monitor line + hook additionalContext'
+updated_at: "2026-09-25T01:53:25Z"
+---
+SYMPTOM
+In active Claude Code sessions with c2c installed (e.g. autoflow-ops, session e97f6138-ec61-4587-9428-d2f9495162a5, /home/xertrov/src/amaroo), inbound c2c DMs are shown to the model twice: once as a Monitor task-notification carrying the full message body, and once as Stop/PostToolUse hook additionalContext carrying the full envelope. Operator-observed duplication; agent-verified 2026-09-25.
+
+EVIDENCE
+- Transcript scan (last ~20MB): 239 PostToolUse + 59 Stop hook deliveries, 84 monitor notification lines. 102 of 102 monitor message previews matched a body also delivered by a hook (same sender + body). Both orders occur: idle path monitor-line 01:39:44Z then Stop-hook drain 01:39:49Z; active path Stop-hook 01:38:05Z with the matching monitor line queued before it.
+- Mechanism: c2c install claude installs PostToolUse/Stop drain hooks (full envelope via hookSpecificOutput.additionalContext). The Claude skill (.claude/skills/c2c/SKILL.md) also instructs Claude to arm a persistent Monitor on "c2c monitor" because hooks alone never wake an idle session. c2c monitor defaults to FULL-BODY emission (ocaml/cli/c2c_monitor_cmd.ml emit_messages: "claude-full-delivery ... bodies must arrive complete") and watches the archive by default, which the drain hooks append to. So a hook drain itself triggers a full-body monitor line; and the idle path (monitor peek -> wake -> hook drain) shows the body twice too. Claude Code surfaces monitor lines as task-notification user turns and hook context as system-reminders: both model-visible.
+- The monitor dedup window (dedup_window_s = 30.0) only dedupes room fanout within the monitor, not across monitor/hook surfaces.
+
+IMPACT
+Every hooked Claude session with the monitor armed reads each DM twice (often full body twice): double context/token cost, agents re-read and sometimes re-answer mail.
+
+FIX DIRECTIONS
+- Add a wake-only monitor mode (sender + count, no body; e.g. --wake-only) and have the Claude skill arm that variant when hooks are installed. Keep full-body default for hook-less clients (Grok CLI-first).
+- Or cross-surface dedupe: a delivered-marker consulted by both monitor and hooks so a message surfaced by one surface is not re-emitted by the other.
+
+Full investigation: .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md
