@@ -1,18 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-25T01:53:25Z"
 depends_on: []
 estimate_hours: 1
 id: B346
 priority: high
+started_at: null
 status: pending
-tags:
-    - c2c
-    - claude
-    - monitor
-    - hooks
-    - delivery
-    - duplication
+tags: []
 title: 'Claude sessions get every c2c DM twice: full-body monitor line + hook additionalContext'
 updated_at: "2026-09-25T01:53:25Z"
 ---
@@ -32,3 +28,5 @@ FIX DIRECTIONS
 - Or cross-surface dedupe: a delivered-marker consulted by both monitor and hooks so a message surfaced by one surface is not re-emitted by the other.
 
 Full investigation: .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md
+
+LANE PLAN (bl-fix-many 2026-09-25): Lane A serial B349 -> B348 -> B346 (see B349 note). Fix shape decided: new --wake-only monitor mode (sender + count, no body); Claude skill (.collab/skills source + codegen) arms wake-only when hooks are installed; full-body stays default for hook-less clients (Grok).
