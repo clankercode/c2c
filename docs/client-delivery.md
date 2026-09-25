@@ -69,19 +69,25 @@ Claude Code has three relevant receive mechanisms:
   `C2C_POST_TOOL_NUDGE_ONLY=1` to opt back into the legacy debounced
   "N message(s) waiting" nudge line. Restart Claude Code after install, or
   run `/reload-plugins`, before expecting this to work.
-- **Monitor tool full-body receive**: for long-running Claude sessions, run a
+- **Monitor tool idle wake**: for long-running Claude sessions, run a
   persistent Monitor with the canonical recipe:
 
   ```text
-  Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+  Monitor({ description: "c2c inbox watcher", command: "c2c monitor --wake-only", persistent: true })
   ```
 
   `c2c monitor` defaults to archive mode (no race with the PostToolUse hook
   drain), also peeks your live inbox non-destructively, and emits **full
   message bodies** — one line per message, bursts never collapsed or
-  truncated (`--snippet` restores the legacy preview). Add `--all` only for
-  swarm-wide situational awareness. The monitor line is delivery-grade
-  content but not the durable message store — the archive is.
+  truncated (`--snippet` restores the legacy preview). **With the install
+  hooks present, use `--wake-only`** (B346): the hooks already deliver full
+  bodies into the transcript, so a full-body monitor line would show the
+  model every message twice — the wake-only line carries just the sender
+  and a count, and the hooks deliver the message the moment the wake
+  starts your next turn. Without hooks, plain `c2c monitor` is the
+  full-body receive path. Add `--all` only for swarm-wide situational
+  awareness. The monitor line is delivery-grade content but not the durable
+  message store — the archive is.
 - **Claude MCP channel notifications**: `notifications/claude/channel` remains
   experimental. It only fires when the client declares the
   `experimental.claude/channel` capability; standard Claude Code builds do not.
