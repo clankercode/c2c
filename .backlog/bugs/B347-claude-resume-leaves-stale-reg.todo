@@ -1,18 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-25T01:53:41Z"
 depends_on: []
 estimate_hours: 1
 id: B347
 priority: medium
+started_at: null
 status: pending
-tags:
-    - c2c
-    - claude
-    - registration
-    - liveness
-    - send
-    - duplication
+tags: []
 title: claude --resume leaves stale registration pid; offline verdict makes agents re-send and duplicate the DM
 updated_at: "2026-09-25T01:53:41Z"
 ---
@@ -37,3 +33,5 @@ FIX DIRECTIONS
 - Reword the queued_offline warning so it does not prompt a re-send (state that durable-queue delivery happens on the recipient next activity, and that re-sending will duplicate).
 
 Full investigation: .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md
+
+LANE PLAN (bl-fix-many 2026-09-25): Lane B (parallel subagent, worktree .worktrees/b347-reg-liveness). Priority: (a) SessionStart refresh of stale/dead pid on resolved existing rows (reuse c2c refresh-peer seam), (c) queued_offline warning reword, (b) send-time cross-check only if a clean seam exists. Disjoint from Lane A files.
