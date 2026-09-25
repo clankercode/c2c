@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-09-25T07:33:30Z"
+claimed_by: cli-user
 completed_at: null
 complexity: medium
 created_at: "2026-09-25T01:53:25Z"
@@ -6,11 +8,11 @@ depends_on: []
 estimate_hours: 1
 id: B346
 priority: high
-started_at: null
-status: pending
+started_at: "2026-09-25T07:33:30Z"
+status: in_progress
 tags: []
 title: 'Claude sessions get every c2c DM twice: full-body monitor line + hook additionalContext'
-updated_at: "2026-09-25T01:53:25Z"
+updated_at: "2026-09-25T07:33:30Z"
 ---
 SYMPTOM
 In active Claude Code sessions with c2c installed (e.g. autoflow-ops, session e97f6138-ec61-4587-9428-d2f9495162a5, /home/xertrov/src/amaroo), inbound c2c DMs are shown to the model twice: once as a Monitor task-notification carrying the full message body, and once as Stop/PostToolUse hook additionalContext carrying the full envelope. Operator-observed duplication; agent-verified 2026-09-25.
