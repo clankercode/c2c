@@ -302,6 +302,18 @@ let verify_peer_pass_dm ~broker ~from_alias ~to_alias ~content
   | None, None ->
       `Allow, extras
 
+(** B347: offline-queue warning shared by both receipt slots below. Never
+    invite a re-send — the queued copy delivers on the recipient's next
+    activity and a re-send duplicates the DM. Mirrored in
+    C2c_send_cmd.offline_queued_warning. *)
+let offline_delivery_warning to_alias =
+  Printf.sprintf
+    "recipient '%s' is offline (possibly a stale registration pid); \
+     message queued to durable inbox — it will deliver on the recipient's \
+     next activity (hook/monitor drain). Do not re-send: the queued copy \
+     is not lost, and re-sending now will duplicate the DM."
+    to_alias
+
 (** Build a send receipt JSON string from accumulated send state.
     Extracted from [send] for readability (#450 S8); no behavior change.
     Updated to accept [pp_receipt_extras] from S9's [verify_peer_pass_dm].
@@ -356,13 +368,7 @@ let build_send_receipt
   if offline then
     receipt_fields :=
       !receipt_fields
-      @ [ ( "delivery_warning"
-          , `String
-              (Printf.sprintf
-                 "recipient '%s' is offline; message queued to durable inbox \
-                  (will deliver on next start/resume)"
-                 to_alias) )
-        ];
+      @ [ ("delivery_warning", `String (offline_delivery_warning to_alias)) ];
   let delivery_state =
     if offline then C2c_schema_v1.Queued_offline else C2c_schema_v1.Queued
   in
@@ -381,13 +387,7 @@ let build_send_receipt
   in
   let delivery_extra =
     if offline then
-      [ ( "warning"
-        , `String
-            (Printf.sprintf
-               "recipient '%s' is offline; message queued to durable inbox \
-                (will deliver on next start/resume)"
-               to_alias) )
-      ]
+      [ ("warning", `String (offline_delivery_warning to_alias)) ]
     else []
   in
   C2c_schema_v1.serialize_with_legacy ~delivery_extra v1 ~legacy:!receipt_fields

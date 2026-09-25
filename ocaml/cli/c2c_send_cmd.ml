@@ -125,9 +125,17 @@ let remote_queued_warning ~broker_root =
      ship it."
 
 let offline_queued_warning to_alias =
+  (* B347: never invite a re-send. The old "(will deliver on next
+     start/resume)" wording made sender agents assume the queued copy was
+     unreliable and re-send via another path (--session / relay), so a live
+     recipient got the DM twice. State durable queueing, the real delivery
+     trigger (recipient activity: hook/monitor drain), and the cost of
+     re-sending. Mirrored in C2c_send_handlers.offline_delivery_warning. *)
   Printf.sprintf
-    "recipient '%s' is offline; message queued to durable inbox \
-     (will deliver on next start/resume)"
+    "recipient '%s' is offline (possibly a stale registration pid); message \
+     queued to durable inbox — it will deliver on the recipient's next \
+     activity (hook/monitor drain). Do not re-send: the queued copy is not \
+     lost, and re-sending now will duplicate the DM."
     to_alias
 
 let send_cmd =

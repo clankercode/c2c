@@ -1194,6 +1194,63 @@ let hook_claude_cmd =
                          ~session_id:sid ~alias ~client:(Some "claude"));
                   (sid, Some alias))
        in
+       (* B347: a resumed session (`claude --resume <sid>`) resolves to the
+          prior run's registration above, but the row keeps the PREVIOUS
+          process's pid, so a LIVE recipient reads offline; senders then
+          re-send through another path and the DM lands twice.
+
+          touch_session's own refresh_pid_if_dead self-heal does not cover
+          this: it scans /proc for C2C_MCP_SESSION_ID in environ (absent on
+          a vanilla claude process) and skips pid-less rows entirely. Here
+          the attribution is positional instead — the pid is attributed like
+          `c2c register` (B071): C2C_MCP_CLIENT_PID (managed) else the first
+          known-agent ancestor of this hook — and the save is the same
+          locked pid+pid_start_time write `c2c refresh-peer` performs. A
+          fresh auto-register (onboarded) is untouched: hook rows are
+          deliberately pid-less so #51's activity TTL stays their decay
+          path. *)
+       (match onboarded_alias with
+        | Some _ -> ()
+        | None -> (
+            try
+              match
+                List.find_opt
+                  (fun (r : C2c_mcp.registration) -> r.session_id = session_id)
+                  (regs ())
+              with
+              | Some reg
+                when reg.pid = None
+                     || not (C2c_mcp.Broker.registration_is_alive reg) -> (
+                  match
+                    C2c_cli_helpers.resolve_registration_pid
+                      ~session_id:session_id ()
+                  with
+                  | Some live_pid
+                    when live_pid > 0
+                         && Sys.file_exists
+                              ("/proc/" ^ string_of_int live_pid) ->
+                      let pid_start_time =
+                        C2c_mcp.Broker.capture_pid_start_time (Some live_pid)
+                      in
+                      C2c_mcp.Broker.with_registry_lock broker (fun () ->
+                          C2c_mcp.Broker.save_registrations broker
+                            (List.map
+                               (fun (r : C2c_mcp.registration) ->
+                                 (* Only overwrite the exact state judged
+                                    stale — a concurrent writer that already
+                                    refreshed the row wins. *)
+                                 if
+                                   r.session_id = session_id && r.pid = reg.pid
+                                 then
+                                   { r with
+                                     pid = Some live_pid;
+                                     pid_start_time
+                                   }
+                                 else r)
+                               (C2c_mcp.Broker.list_registrations broker)))
+                  | _ -> ())
+              | _ -> ()
+            with _ -> ()));
        touch_hook_activity ~broker ~session_id;
        let alias_of sid =
          List.find_map

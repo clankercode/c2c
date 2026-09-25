@@ -211,8 +211,9 @@ for the full grammar. The delivery-relevant contract:
   (exit codes, PATH-upgrade preflight).
 - **Offline mail**: a send to a known-but-offline managed alias is written to
   its **durable inbox** and reported as `queued_offline` (exit 0 with a
-  warning; exit 3 under `c2c send --fail-if-queued`). It drains on the next
-  start/resume. Unknown-alias sends remain an error.
+  warning; exit 3 under `c2c send --fail-if-queued`). It drains on the
+  recipient's next activity (hook/monitor drain) or next start/resume —
+  re-sending duplicates the DM (B347). Unknown-alias sends remain an error.
 
 Codex has **two delivery transports**. `c2c instances`, `c2c status`, and
 `c2c doctor` report which one a session actually has, using one shared
