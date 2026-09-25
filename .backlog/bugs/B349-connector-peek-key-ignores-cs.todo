@@ -1,17 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-25T01:55:51Z"
 depends_on: []
 estimate_hours: 1
 id: B349
 priority: medium
+started_at: null
 status: pending
-tags:
-    - c2c
-    - monitor
-    - relay
-    - connector
-    - b209
+tags: []
 title: connector_peek_key ignores cs_sessions when cs_registered is empty; monitor peeks wrong cli-<alias> relay key forever
 updated_at: "2026-09-25T01:55:51Z"
 ---
@@ -35,3 +32,5 @@ FIX DIRECTIONS
 - Defense in depth: when a relay peek key yields lease_not_found on the first attempt and the connector-state sessions map contains the alias, re-resolve the key instead of retrying the same dead key forever.
 
 Cross-refs: B348 (the wake-noise surface), B209 (original connector-key resolution), investigation log in .collab/findings/2026-09-25T01-52-48Z-grok-gorge-nova-6pwy-duplicate-c2c-delivery.md
+
+LANE PLAN (bl-fix-many 2026-09-25): Lane A serial B349 -> B348 -> B346 (shared files: c2c_monitor_cmd.ml, c2c_monitor_logic.ml, c2c_relay_connector.ml, .collab/skills + codegen). Lane B parallel = B347 (hook/send/registration modules, disjoint). B349 first: its wrong-key retry loop is what makes B348's noise permanent.
