@@ -1609,12 +1609,23 @@ let read_connector_state broker_root : connector_state option =
       resolved session-id) for backward compatibility with older state files
       written before [cs_sessions] existed.
     Returns [None] when the alias is not connector-managed or no key can be
-    resolved. Case-insensitive alias match (per the alias-comparison rule). *)
+    resolved. Case-insensitive alias match (per the alias-comparison rule).
+
+    B349: management evidence is a hit in [cs_registered] OR [cs_sessions],
+    matching [connector_state_owns_alias] (B294). A live connector can write
+    registered=[] while sessions maps the alias (observed 2026-09-25 on two
+    broker roots); gating on cs_registered alone then forced the monitor onto
+    the cli-<alias> key, which has no lease — every peek failed
+    lease_not_found forever. *)
 let connector_peek_key (cs : connector_state) ~alias
     ~fallback_node_id ~fallback_session_id : (string * string) option =
   let casefold = String.lowercase_ascii in
   let alias_cf = casefold alias in
-  if not (List.exists (fun a -> casefold a = alias_cf) cs.cs_registered) then None
+  let managed =
+    List.exists (fun a -> casefold a = alias_cf) cs.cs_registered
+    || List.exists (fun (a, _) -> casefold a = alias_cf) cs.cs_sessions
+  in
+  if not managed then None
   else
     let node_id =
       match cs.cs_node_id with Some n when n <> "" -> n | _ -> fallback_node_id
