@@ -719,7 +719,16 @@ let should_exit_on_relay_terminal ~local_watch_active = not local_watch_active
    wall-clock seconds, emit ONE escalation naming the safe recovery command,
    then log subsequent transient peeks only once every [log_every] attempts.
    The streak resets on any Peek_ok / Peek_terminal so a genuine blip that
-   clears never escalates. Pure so the policy is unit-testable. *)
+   clears never escalates. Pure so the policy is unit-testable.
+
+   B348: below the wedge threshold, transient attempts are QUIET — no
+   per-attempt lines at all. On wake surfaces (Claude Monitor task,
+   Grok monitor) every stdout/stderr line is a model-visible wake, and a
+   self-healing blip (1-2 failed peeks) is not worth one; the old
+   per-attempt "attempt N; backing off" lines woke idle agents repeatedly
+   (live: 5 wakes in ~70s on grok-gorge-nova-6pwy, 2026-09-25). Visibility
+   starts at the wedge escalation; callers pair this with announcing the
+   recovery line only when an error line was actually emitted. *)
 
 let default_transient_wedge_threshold = 6
 let default_transient_wedge_min_span_s = 60.0
@@ -793,7 +802,8 @@ let note_transient
       { ts_consecutive = consecutive; ts_first_at = Some first;
         ts_escalated = true } )
   else
-    ( Transient_log consecutive,
+    (* B348: quiet until the wedge crossing — see the section comment. *)
+    ( Transient_quiet consecutive,
       { ts_consecutive = consecutive; ts_first_at = Some first;
         ts_escalated = false } )
 

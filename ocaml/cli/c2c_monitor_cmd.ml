@@ -905,6 +905,12 @@ let monitor_cmd =
                B178: re-sign every peek (fresh ts+nonce). B180: peek target and
                signing alias are refs so rename rebinds without restarting. *)
             let err_streak = ref 0 in
+            (* B348: true once any relay-watch error line has actually been
+               emitted during the current outage. The Peek_ok "reconnected"
+               line prints only when this is set, so a silent (below-wedge)
+               blip that self-heals produces zero lines instead of an
+               error-free "recovered after 1 error" wake. *)
+            let err_announced = ref false in
             let soft_budget = ref C2c_monitor_logic.empty_soft_budget in
             (* B211: bound transient (wedged-bridge) log spam + escalate once. *)
             let transient_streak = ref C2c_monitor_logic.empty_transient_streak in
@@ -951,6 +957,7 @@ let monitor_cmd =
               end;
               if not !terminal_logged then begin
                 terminal_logged := true;
+                err_announced := true;
                 Printf.eprintf
                   "%s relay watch: TERMINAL failure peeking %s/%s: %s\n\
                    %s relay watch: recovery budget exhausted (or hard auth/config \
@@ -977,6 +984,7 @@ let monitor_cmd =
               end;
               if not !terminal_logged then begin
                 terminal_logged := true;
+                err_announced := true;
                 Printf.eprintf
                   "%s relay watch: off — the relay connector owns relay delivery \
                    for this session (peek key %s/%s: %s); the CLI monitor cannot \
@@ -1025,18 +1033,22 @@ let monitor_cmd =
                     rl_streak := C2c_monitor_logic.empty_transient_streak;
                     last_rl_retry_after := None;
                     terminal_logged := false;
-                    err_streak := 0
+                    err_streak := 0;
+                    err_announced := false
                   end;
                   (match outcome with
                    | C2c_monitor_logic.Peek_ok msgs ->
-                       if !err_streak > 0 then begin
+                       if !err_announced then begin
                          Printf.eprintf
                            "%s relay watch: reconnected (recovered after %d \
                             error%s)\n%!"
                            (now_hms ()) !err_streak
                            (if !err_streak = 1 then "" else "s");
-                         err_streak := 0
+                         err_announced := false
                        end;
+                       (* B348: reset the backoff streak even when the outage
+                          was never announced (silent blip). *)
+                       err_streak := 0;
                        soft_budget := C2c_monitor_logic.empty_soft_budget;
                        transient_streak :=
                          C2c_monitor_logic.empty_transient_streak;
@@ -1062,12 +1074,14 @@ let monitor_cmd =
                        transient_streak := streak';
                        (match action with
                         | C2c_monitor_logic.Transient_log attempt ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: transient error peeking %s/%s: \
                                %s (attempt %d; backing off, will retry)\n%!"
                               (now_hms ()) node_id session_id detail attempt
                         | C2c_monitor_logic.Transient_wedged
                             { attempt; remediation } ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: transient error peeking %s/%s: \
                                %s (attempt %d; backing off, will retry)\n\
@@ -1103,6 +1117,7 @@ let monitor_cmd =
                        in
                        (match action with
                         | C2c_monitor_logic.Transient_log attempt ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: rate-limited (HTTP 429) peeking \
                                %s/%s: %s (attempt %d;%s next_wait=%.1fs — \
@@ -1111,6 +1126,7 @@ let monitor_cmd =
                               ra_note pace
                         | C2c_monitor_logic.Transient_wedged
                             { attempt; remediation } ->
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: rate-limited (HTTP 429) peeking \
                                %s/%s: %s (attempt %d;%s next_wait=%.1fs)\n\
@@ -1148,6 +1164,7 @@ let monitor_cmd =
                         | C2c_monitor_logic.Retry_soft
                             { consecutive; threshold; remediation_hint } ->
                             incr err_streak;
+                            err_announced := true;
                             Printf.eprintf
                               "%s relay watch: recoverable error peeking %s/%s: \
                                %s (soft %d/%d; backing off, will retry — not \
