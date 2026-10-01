@@ -1384,10 +1384,11 @@ let test_response_is_rate_limited_shapes () =
 
 (* B211: staleness-exit watchdog for the alive-but-erroring wedge. *)
 let mk_result ?(rate_limited = false) ?(retry_after_s = None) ?last_error
-    ?(errors = []) () : Conn.sync_result =
-  { registered = []; registered_sessions = []; heartbeated = [];
-    outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
-    inbound_delivered = 0; inbound_rejected = 0; inbound_rejected_note = None;
+    ?(errors = []) ?(registered = []) ?(heartbeated = [])
+    ?(outbox_forwarded = 0) ?(inbound_delivered = 0) () : Conn.sync_result =
+  { registered; registered_sessions = []; heartbeated;
+    outbox_forwarded; outbox_failed = 0; outbox_dlqed = 0;
+    inbound_delivered; inbound_rejected = 0; inbound_rejected_note = None;
     alerts_emitted = 0; rate_limited; retry_after_s; last_error; errors }
 
 let test_stale_exit_default_threshold () =
@@ -1493,6 +1494,32 @@ let test_machine_root_sync_is_noop () =
   Alcotest.(check bool) "mobile binding is not a no-op" false
     (Conn.machine_root_sync_is_noop tmp)
 
+let test_select_machine_roots_rotates_fairly () =
+  let roots = ["r0"; "r1"; "r2"; "r3"; "r4"] in
+  let available _ = true in
+  let first, cursor, examined =
+    Conn.select_machine_roots ~roots ~start_index:0 ~max_roots:2
+      ~is_available:available ()
+  in
+  Alcotest.(check (list string)) "first slice" ["r0"; "r1"] first;
+  Alcotest.(check int) "first examined count" 2 examined;
+  let second, cursor, _ =
+    Conn.select_machine_roots ~roots ~start_index:cursor ~max_roots:2
+      ~is_available:available ()
+  in
+  Alcotest.(check (list string)) "second slice" ["r2"; "r3"] second;
+  let third, _, _ =
+    Conn.select_machine_roots ~roots ~start_index:cursor ~max_roots:2
+      ~is_available:available ()
+  in
+  Alcotest.(check (list string)) "third slice wraps" ["r4"; "r0"] third;
+  let skipped, _, examined =
+    Conn.select_machine_roots ~roots ~start_index:0 ~max_roots:2
+      ~is_available:(fun root -> root <> "r0" && root <> "r1") ()
+  in
+  Alcotest.(check (list string)) "cooldown roots do not consume selection" ["r2"; "r3"] skipped;
+  Alcotest.(check int) "cooldown roots are examined for fairness" 4 examined
+
 let test_register_failure_pass_is_no_progress () =
   (* B293 handoff note: in-pass lease repair records no error, so a FAILING
      register is the loudest genuine no-progress signal — it must keep
@@ -1517,11 +1544,26 @@ let test_sync_made_progress () =
                         err_detail = "rate_limit_exceeded";
                         err_ts = 0.0; err_alias = None;
                         err_session_id = None; err_code = None } ()));
-  Alcotest.(check bool) "errored pass (request_timeout) is NOT progress" false
+  Alcotest.(check bool) "errored pass with successful heartbeat is progress" true
+    (Conn.sync_made_progress
+       (mk_result ~heartbeated:["healthy-session"]
+          ~last_error:{ Conn.err_op = "poll_inbox";
+                        err_detail = "request_timeout";
+                        err_ts = 0.0; err_alias = None; err_session_id = None;
+                        err_code = None } ()));
+  Alcotest.(check bool) "errored pass with forwarded outbox is progress" true
+    (Conn.sync_made_progress
+       (mk_result ~outbox_forwarded:1
+          ~last_error:{ Conn.err_op = "poll_inbox";
+                        err_detail = "request_timeout";
+                        err_ts = 0.0; err_alias = None; err_session_id = None;
+                        err_code = None } ()));
+  Alcotest.(check bool) "errored pass with no successful work is not progress" false
     (Conn.sync_made_progress
        (mk_result ~last_error:{ Conn.err_op = "poll_inbox";
                                 err_detail = "request_timeout";
-                                err_ts = 0.0; err_alias = None; err_session_id = None; err_code = None } (())))
+                                err_ts = 0.0; err_alias = None; err_session_id = None;
+                                err_code = None } ()))
 
 let waitpid_until ~timeout_s pid =
   let deadline = Unix.gettimeofday () +. timeout_s in
@@ -2363,7 +2405,8 @@ let test_rate_state_failure_stays_a_fault () =
    head of the list; these two mirror that composition so the assertion is
    about the health the connector actually reports, not about the classifier
    in isolation. *)
-let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
+let result_of_poll_accounting ?(inbound_delivered = 2) ?(inbound_rejected = 3)
+    (acc : Conn.poll_accounting) : Conn.sync_result =
   let last_error = match acc.Conn.pa_errors with
     | [] -> None
     | (op, detail) :: _ ->
@@ -2371,9 +2414,9 @@ let result_of_poll_accounting (acc : Conn.poll_accounting) : Conn.sync_result =
                err_ts = Unix.gettimeofday (); err_alias = None;
                err_session_id = None; err_code = None }
   in
-  { registered = [ "alpha" ]; registered_sessions = []; heartbeated = [];
+  { registered = []; registered_sessions = []; heartbeated = [];
     outbox_forwarded = 0; outbox_failed = 0; outbox_dlqed = 0;
-    inbound_delivered = 2; inbound_rejected = 3;
+    inbound_delivered; inbound_rejected;
     inbound_rejected_note =
       (match List.filter_map Fun.id
                [ acc.Conn.pa_note; acc.Conn.pa_contract_note ] with
@@ -2413,7 +2456,7 @@ let test_failed_poll_still_errors () =
      quiet at the cost of the signal. *)
   let health, last_ok =
     health_of_result
-      (result_of_poll_accounting
+      (result_of_poll_accounting ~inbound_delivered:0 ~inbound_rejected:0
          { Conn.pa_errors =
              [ ("poll_inbox", {|{"ok":false,"error":"signature_invalid"}|}) ];
            pa_note = None; pa_contract_note = None; pa_contract_dropped = 0 })
@@ -2571,6 +2614,10 @@ let () =
         test_machine_root_sync_is_noop;
       Alcotest.test_case "machine loop skips no-op roots" `Quick
         test_machine_loop_skips_noop_roots;
+    ];
+    "B351 fair machine root scheduling", [
+      Alcotest.test_case "rotating bounded selection visits all roots" `Quick
+        test_select_machine_roots_rotates_fairly;
     ];
     "B292 per-root wedge cooldown", [
       Alcotest.test_case "cooldown schedule: 10min doubling to 2h cap" `Quick

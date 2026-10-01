@@ -109,7 +109,18 @@ type sync_result = {
   errors : sync_error_summary list;
 }
 
-(* B196: relay ingress is untrusted.  These limits are enforced locally,
+(* B350: a partial pass can still prove the relay path is healthy. A successful
+   heartbeat, registration, forward, or inbound delivery keeps freshness even
+   when another session reports a transport error. *)
+let sync_made_progress (result : sync_result) =
+  result.last_error = None || result.rate_limited
+  || result.registered <> []
+  || result.heartbeated <> []
+  || result.outbox_forwarded > 0
+  || result.inbound_delivered > 0
+  || result.inbound_rejected > 0
+
+(* B196: relay ingress is untrusted. These limits are enforced locally,
    after polling but before any row is appended to a broker inbox.  A sliding
    window is deliberately used here: it is deterministic, bounded by the
    configured message count, and does not make the relay a policy authority. *)
@@ -1383,7 +1394,7 @@ type connector_state = {
 let write_connector_state ?pass_duration_s ?pass_interval_s ?node_id
     broker_root (result : sync_result) =
   let now = Unix.gettimeofday () in
-  let ok = result.last_error = None in
+  let ok = sync_made_progress result in
   (* Preserve the previous last_ok_ts when this sync errored, so the doctor
      check can still report how long ago the last healthy sync was. Also
      carry the previous pass metadata forward when this write is not told
@@ -3563,11 +3574,41 @@ let machine_stale_threshold ~interval ~last_pass_s ~in_flight_s =
 let should_exit_stale ~now ~last_progress ~threshold =
   now -. last_progress >= threshold
 
-(* A sync pass counts as forward progress if it fully succeeded or was merely
-   rate-limited (relay reachable, throttling). Any other errored pass does NOT
-   reset the staleness timer. *)
-let sync_made_progress (result : sync_result) =
-  result.last_error = None || result.rate_limited
+(* B351: select a fair slice of machine roots. The cursor advances over the
+   discovery list, while cooldown roots are skipped without consuming the
+   work budget. This keeps a large host from repeatedly starving roots at the
+   end of a serial full walk. *)
+let select_machine_roots ~roots ~start_index ~max_roots ~is_available () =
+  let total = List.length roots in
+  if total = 0 then ([], 0, 0)
+  else
+    let budget = max 1 (min max_roots total) in
+    let start = ((start_index mod total) + total) mod total in
+    let rec loop selected examined =
+      if examined >= total || List.length selected >= budget then
+        (List.rev selected, (start + examined) mod total, examined)
+      else
+        let root = List.nth roots ((start + examined) mod total) in
+        if is_available root then
+          loop (root :: selected) (examined + 1)
+        else
+          loop selected (examined + 1)
+    in
+    loop [] 0
+
+(* B351: operator override for hosts with unusually large or small broker
+   fleets. The default keeps at least 32 roots eligible per pass, which covers
+   the observed 300s lease / 30s interval deployment without reverting to a
+   serial walk of every historical broker root. *)
+let machine_root_budget_default = 32
+
+let machine_root_budget () =
+  match Sys.getenv_opt "C2C_RELAY_CONNECTOR_MAX_ROOTS_PER_PASS" with
+  | Some raw ->
+      (match int_of_string_opt (String.trim raw) with
+       | Some n when n > 0 -> n
+       | _ -> machine_root_budget_default)
+  | None -> machine_root_budget_default
 
 (* B181/B228: wall-clock cap for one sync pass so a hung HTTP path cannot leave
    a multi-hour PID with stale last_sync. Defaults to max(90s, 4 * interval).
@@ -3997,6 +4038,8 @@ let start_machine_impl ~sync_once ~discover_roots
     (* B211: per-root wall-clock epoch of the last progress-making pass; seeded
        lazily to service start so a root that never succeeds still exits. *)
     let progress = Hashtbl.create 8 in
+    let root_cursor = ref 0 in
+    let max_roots_per_pass = machine_root_budget () in
     (* B291: per-pass work observation. One machine pass walks every broker
        root; the staleness window must scale with how long that walk actually
        takes (see [machine_stale_threshold]). [walk_started_at] is 0. between
@@ -4262,18 +4305,27 @@ let start_machine_impl ~sync_once ~discover_roots
         if not !shutdown then begin
           rl_seen := false;
           rl_retry_after := 0.;
-          let pass_started_at = Unix.gettimeofday () in
-          walk_started_at := pass_started_at;
-          let discovered = discover_roots ~primary:primary_broker_root in
-          (* B292: skip roots parked in a wedge cooldown; the pass continues
-             with the remaining roots. *)
-          discovered
-          |> List.filter (fun root -> not (in_cooldown root))
-          |> List.iter (fun root ->
-               if not !shutdown then ignore (sync_root root));
-          last_pass_s := Some (Unix.gettimeofday () -. !walk_started_at);
-          walk_started_at := 0.0;
-          check_all_roots_wedged discovered;
+      let pass_started_at = Unix.gettimeofday () in
+      walk_started_at := pass_started_at;
+      let discovered = discover_roots ~primary:primary_broker_root in
+      (* B351: service a rotating bounded slice of roots. A full walk remains
+         available through the explicit --once path above. *)
+      let selected, next_cursor, examined =
+        select_machine_roots ~roots:discovered ~start_index:!root_cursor
+          ~max_roots:max_roots_per_pass
+          ~is_available:(fun root -> not (in_cooldown root)) ()
+      in
+      root_cursor := next_cursor;
+      if examined < List.length discovered then
+        Printf.eprintf
+          "[relay-connector] bounded pass: roots=%d selected=%d next_cursor=%d\n%!"
+          (List.length discovered) (List.length selected) !root_cursor;
+      selected
+      |> List.iter (fun root ->
+           if not !shutdown then ignore (sync_root root));
+      last_pass_s := Some (Unix.gettimeofday () -. !walk_started_at);
+      walk_started_at := 0.0;
+      check_all_roots_wedged discovered;
           if !rl_seen then incr rl_strikes
           else begin
             rl_strikes := 0;
