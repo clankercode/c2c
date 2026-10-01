@@ -243,6 +243,10 @@ val outer_pid_path : string -> string
 val deliver_pid_path : string -> string
 (** [deliver_pid_path name] returns the deliver.pid path for an instance. *)
 
+val codex_daemon_sidecar_pid_path : string -> string
+(** [codex_daemon_sidecar_pid_path name] returns the pid path for the
+    app-server Codex delivery owner launched by [c2c new codex]. *)
+
 val poker_pid_path : string -> string
 (** [poker_pid_path name] returns the poker.pid path for an instance. *)
 
@@ -1025,6 +1029,21 @@ val run_outer_loop :
     (blocking). Returns the client exit code. Handles SIGCHLD, SIGINT
     (double-SIGINT window), TTY save/restore, deliver daemon and poker
     management, and cleanup. *)
+
+val format_resume_cmd :
+  client:string ->
+  name:string ->
+  ?codex_resume_target:string ->
+  ?resume_session_id:string ->
+  ?session_id:string ->
+  ?binary_override:string ->
+  unit ->
+  string
+(** [format_resume_cmd] is the operator-facing `c2c start …` hint printed when
+    a managed outer loop exits. For [client="codex"], [--session-id] is included
+    only when [codex_resume_target] is a non-empty Codex thread id. A bare c2c
+    [resume_session_id] is broker identity and must not appear (B175). Other
+    clients still pass [--session-id] from [resume_session_id] or [session_id]. *)
 
 val finalize_outer_loop_exit :
   cleanup_and_exit:(int -> int) ->

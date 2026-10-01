@@ -2386,6 +2386,8 @@ let meta_json_path name = instance_dir name // "meta.json"
 let outer_pid_path name = instance_dir name // "outer.pid"
 let inner_pid_path name = instance_dir name // "inner.pid"
 let deliver_pid_path name = instance_dir name // "deliver.pid"
+let codex_daemon_sidecar_pid_path name =
+  instance_dir name // "codex-daemon-sidecar.pid"
 let poker_pid_path name = instance_dir name // "poker.pid"
 (* B145: the kimi notifier is spawned fork+setsid detached; track its pid as a
    supervisor sidecar so `c2c stop`/`c2c restart` kill+respawn it (otherwise it
@@ -4981,6 +4983,33 @@ let run_pty_loop ~(name : string) ~(extra_args : string list)
  * Outer loop
  * --------------------------------------------------------------------------- *)
 
+(* Resume hint printed when the outer loop ends. For Codex, --session-id is only
+   a real Codex thread ([codex_resume_target]). A bare c2c resume_session_id is
+   broker identity (B175); printing it as --session-id makes the next start set
+   codex_resume_target and issue `codex resume <c2c-uuid>` ("No saved session"). *)
+let format_resume_cmd ~client ~name ?codex_resume_target ?resume_session_id
+    ?session_id ?binary_override () =
+  let bin =
+    match binary_override with
+    | None -> ""
+    | Some b -> Printf.sprintf " --bin %s" b
+  in
+  let with_sid sid =
+    Printf.sprintf "c2c start %s -n %s --session-id %s%s" client name sid bin
+  in
+  match client with
+  | "codex" ->
+      (match codex_resume_target with
+       | Some target when String.trim target <> "" -> with_sid target
+       | _ -> Printf.sprintf "c2c start %s -n %s%s" client name bin)
+  | _ ->
+      let sid =
+        match resume_session_id with
+        | Some s when String.trim s <> "" -> s
+        | _ -> Option.value session_id ~default:name
+      in
+      with_sid sid
+
 let finalize_outer_loop_exit
     ~(cleanup_and_exit : int -> int)
     ~(print_resume : string -> unit)
@@ -6341,14 +6370,8 @@ let run_outer_loop ~(name : string) ~(client : string)
        | None -> ());
 
       let resume_cmd =
-        let sid =
-          match client, codex_resume_target, resume_session_id with
-          | "codex", Some target, _ when String.trim target <> "" -> target
-          | _, _, Some sid -> sid
-          | _ -> session_id
-        in
-        Printf.sprintf "c2c start %s -n %s --session-id %s" client name sid
-        ^ (match binary_override with None -> "" | Some b -> Printf.sprintf " --bin %s" b)
+        format_resume_cmd ~client ~name ?codex_resume_target ?resume_session_id
+          ~session_id ?binary_override ()
       in
       ignore
         (finalize_outer_loop_exit
@@ -6568,7 +6591,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
          name inst_dir;
        List.iter remove_pidfile
          [ outer_pid_path name; inner_pid_path name
-         ; deliver_pid_path name; poker_pid_path name
+         ; deliver_pid_path name; codex_daemon_sidecar_pid_path name
+         ; poker_pid_path name
          ; notifier_pid_path name ]
    | None ->
        (* No pid file at all — fresh start or already cleaned up. *)
@@ -6846,6 +6870,30 @@ type stop_outcome =
   | Stop_refused_foreign_pid of int * string  (* pid, human-readable reason *)
 
 let stop_instance (name : string) : stop_outcome =
+  (* The Codex app-server route is launched by [c2c new codex] rather than the
+     generic managed outer loop. Its delivery owner is therefore not in the
+     outer loop's in-memory sidecar refs. Sweep its pidfile after stopping the
+     outer so a SIGKILL or an early launcher exit cannot leave a detached owner
+     polling the daemon and holding the broker registration. *)
+  let stop_codex_daemon_sidecar () =
+    let path = codex_daemon_sidecar_pid_path name in
+    let stop_pid p =
+      (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
+      let deadline = Unix.gettimeofday () +. 2.0 in
+      let rec wait () =
+        if not (pid_alive p) || Unix.gettimeofday () >= deadline then ()
+        else (Unix.sleepf 0.05; wait ())
+      in
+      wait ();
+      if pid_alive p then (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ())
+    in
+    (match read_pid path with
+     | Some p when pid_alive p &&
+                   C2c_pid_identity.pidfile_pid_is_ours ~pidfile:path ~pid:p ->
+         stop_pid p
+     | _ -> ());
+    remove_pidfile path
+  in
   (* B145: the outer's SIGTERM handler (cleanup_and_exit) already tears down
      the detached kimi notifier, but if the outer is SIGKILLed (never runs its
      handler) the notifier would orphan. Belt-and-braces: kill it by its own
@@ -6870,6 +6918,7 @@ let stop_instance (name : string) : stop_outcome =
         done;
       if pid_alive pid then
         (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+      stop_codex_daemon_sidecar ();
       stop_kimi_notifier ();
       Stop_stopped
   | Some pid when pid_alive pid ->
@@ -6880,10 +6929,12 @@ let stop_instance (name : string) : stop_outcome =
       let reason =
         C2c_pid_identity.pid_identity_reason ~pid (outer_pid_identity name ~pid)
       in
+      stop_codex_daemon_sidecar ();
       stop_kimi_notifier ();
       Stop_refused_foreign_pid (pid, reason)
   | _ ->
       (* Even with no live outer, sweep any orphaned notifier for this alias. *)
+      stop_codex_daemon_sidecar ();
       stop_kimi_notifier ();
       Stop_not_running
 

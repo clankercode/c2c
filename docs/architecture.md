@@ -325,7 +325,8 @@ self-restart for Claude Code, Codex, Pi Agent, OpenCode, Grok, agy
      support).
    - **Codex** — managed `c2c start codex` / `c2c new codex` uses
      **app-server inject + gated auto-turn as the primary path (B131)**
-     on codex-cli ≥ 0.144; hooks (`c2c install codex` /
+     on codex-cli ≥ 0.159 via the machine daemon (with the authenticated per-session
+     fallback for ≥ 0.144); hooks (`c2c install codex` /
      `c2c hook codex`) are the vanilla and fallback path. No
      `--xml-input-fd` sideband.
    - **OpenCode** — TypeScript plugin + optional `c2c monitor`

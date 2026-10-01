@@ -112,21 +112,16 @@ idle-gated native heartbeat.
 
 ### Non-Claude receiving
 
-- **Codex**: managed `c2c start codex` / `c2c new codex` use the **app-server
-  transport** by default on a supported Codex (codex-cli ≥ 0.144) — there is no
-  flag to set. Its delivery stack is wired into managed supervision (B131): the
-  supervisor injects inbound c2c mail into the thread's model-visible history on
-  arrival (draft-safe), and starts one gated model turn for eligible local mail
-  when the thread is idle and DND is off (idle auto-turn is immediate; inject /
-  auto-turn failures force-retry or re-batch after ~2 minutes — B168). Older
-  Codex or an app-server startup failure falls back automatically to the **hook
-  boundary**: `c2c install codex` installs `UserPromptSubmit`, `PostToolUse`,
-  `SessionStart`, and `SessionEnd` hooks running `c2c hook codex`, which
-  auto-registers the session, drains inbound broker messages, and returns them
-  through `hookSpecificOutput.additionalContext` — hook delivery happens when a
-  hook fires, not on arrival. Vanilla (non-managed) Codex sessions use the hook
-  path. Explicit polling remains the portable fallback. See [Codex](#codex)
-  below for the full contract.
+- **Codex**: managed `c2c start codex` / `c2c new codex` attach to the
+  machine-wide daemon over its private Unix-domain WebSocket on Codex ≥ 0.159;
+  the launcher arms one sidecar for the exact native thread. Codex ≥ 0.144 has
+  the authenticated per-session app-server fallback. Both paths inject mail on
+  arrival and gate local auto-turns on idle and DND. If neither app-server path
+  starts, c2c falls back to the **hook boundary**: `c2c install codex` installs
+  `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks
+  running `c2c hook codex`. Vanilla sessions use that hook path. Explicit
+  polling remains the portable fallback. See [Codex](#codex) below for the
+  full contract.
 - **Pi Agent**: `pi install npm:pi-c2c` installs the external Pi extension. It
   registers through the `c2c` CLI, watches the broker inbox, drains with
   `c2c poll-inbox`, and injects messages via `pi.sendMessage`.
@@ -204,8 +199,9 @@ for the full grammar. The delivery-relevant contract:
   with a conspicuous warning; it is per-launch only and never persisted into
   later resumes.
 - **Lifecycle**: exiting the TUI ends the session cleanly — the supervisor
-  reaps the app-server when the frontend exits (no orphan processes), and the
-  instance shows `offline`.
+  releases the daemon-thread delivery lease (or reaps the private app-server
+  fallback) when the frontend exits, with no c2c-owned frontend or sidecar
+  left behind, and the instance shows `offline`.
 - **Restart-in-place (B153)**: the launcher is the managed lifecycle owner
   recorded by `c2c instances`. `c2c restart <alias>` sends it an idle-gated
   control request; the launcher stops its authenticated unit and re-execs itself
@@ -235,13 +231,17 @@ delivery when only a hook boundary is available.
 
 ### App-server transport (default managed path)
 
-Managed `c2c start codex` / `c2c new codex` launch `codex app-server` plus the
-stock remote TUI attached to it over an authenticated loopback boundary. This is
-the **default and only** managed path for a supported Codex (codex-cli ≥ 0.144) —
-there is no flag to enable it, and no user-facing way to select hooks. Older
-Codex or a genuine app-server startup failure falls back automatically to the
-hook-backed launch (a hidden `C2C_CODEX_FORCE_HOOKS=1` escape exists for operator
-testing only).
+Managed `c2c start codex` / `c2c new codex` attach the stock remote TUI to the
+machine-wide Codex daemon over its same-UID private Unix-domain WebSocket when
+that daemon is available (codex-cli ≥ 0.159). The launcher arms one delivery
+sidecar for the exact native Codex thread and never starts a second drainer in
+the TUI process. When the daemon is unavailable, supported Codex versions use
+the older per-session `codex app-server` with an authenticated loopback
+WebSocket. Older Codex or a genuine startup failure falls back automatically to
+the hook-backed launch. The daemon path is the default; operators can force the
+private per-session server with the hidden
+`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` escape, or force hooks with
+`C2C_CODEX_FORCE_HOOKS=1` for testing and emergency recovery.
 
 **Wiring status (2026-07-12, B131) — read this first.** The app-server
 *transport* (launch, auth boundary, lifecycle, `app_server_status` reporting) AND
@@ -263,16 +263,16 @@ session actually has and never claims more.
 The contract of the app-server delivery stack, as driven by the managed
 supervisor:
 
-- **Authenticated local boundary (required).** The app-server always listens
-  on loopback with `--ws-auth capability-token` and a per-unit 256-bit
-  capability token: unauthenticated same-UID clients get HTTP 401 at the
-  WebSocket handshake. A **bare listener is never used and must never be
-  recommended** — an unauthenticated app-server exposes `turn/start` and
-  arbitrary `fs/readFile`/`fs/writeFile` to any same-UID process. The raw
-  token is passed to the frontend by environment variable name only (never
-  argv, never disk, never logs). Any future TCP/WebSocket exposure beyond
-  loopback requires the same bearer authentication **plus** an explicit
-  exposure warning; do not forward the port without it.
+- **Private local boundary (required).** The default daemon path uses a
+  same-UID Unix-domain WebSocket whose socket and parent directory are owned by
+  the current UID and private (`0600` / `0700`); the transport sends no bearer
+  token on that socket. The fallback per-session server listens on loopback
+  with `--ws-auth capability-token` and a per-unit 256-bit capability token;
+  unauthenticated clients get HTTP 401 at the WebSocket handshake. A **bare
+  listener is never used and must never be recommended** — an unauthenticated
+  app-server exposes `turn/start` and arbitrary `fs/readFile`/`fs/writeFile` to
+  any same-UID process. Any future TCP/WebSocket exposure beyond loopback
+  requires bearer authentication plus an explicit exposure warning.
 - **Delivery = passive injection plus visible auto-turn DATA.** Inbound mail is
   injected into the thread's model-visible history (`thread/inject_items`) on
   arrival, as DATA. It is not rendered in the TUI transcript. When eligible
@@ -351,15 +351,14 @@ peer mail from `role="developer"` DATA to operator input and break the "bus,
 never RPC" invariant. See [Delivery & Wake Contract](/wake-contract/).
 
 **Single identity per session (B137/B166/B172, fixed).** The managed launcher
-registers the routable app-server alias (the one `c2c instances` reports and the
-delivery loop drives) **immediately after a successful app-server start** (B172
-— banner alias is broker-visible before first interaction; no re-init needed to
-fix alias drift) and hands its session id to the stock Codex frontend's hooks
-via the inherited `C2C_CODEX_APPSERVER_SESSION` marker (exported before the
-frontend is spawned — B166/B137). `c2c hook codex` adopts that identity instead
-of self-registering a *second* alias, so `c2c list` shows exactly one entry per
-session. The hook is then identity-only: it drains nothing (the delivery loop
-owns arrival-time delivery of the repo inbox), so there is no double-drain.
+registers the routable alias (the one `c2c instances` reports) before the TUI
+can deliver mail. On the private per-session fallback, the frontend inherits
+`C2C_CODEX_APPSERVER_SESSION` and the hook adopts that identity. On the machine
+daemon path, that marker is deliberately empty: `SessionStart` arms a sidecar
+using Codex's payload-native thread ID, and the sidecar claims that exact loaded
+thread before it drains or injects. Both paths have one delivery owner, so
+`c2c list` shows one identity per session and a second frontend cannot steal the
+thread by sharing a c2c UUID.
 
 **Cross-repo (sessions-broker) mail (B141).** Mail addressed to the session on
 the machine-wide cross-repo broker (`~/.c2c/sessions/broker`) is ALSO delivered
@@ -373,9 +372,11 @@ process, keyed to the discovered thread — rather than in the frontend hook is
 exactly what keeps the B137 nested-Codex marker-theft vector closed: a nested
 Codex inheriting the env marker never sees this path.
 
-Supported Codex: **codex-cli ≥ 0.144** (validated on 0.144.1). The app-server
-protocol and hook events are upstream surfaces that can drift across Codex
-releases — when something stops matching this page, check the official
+Supported Codex: **codex-cli ≥ 0.144** for the authenticated per-session
+fallback; **≥ 0.159** enables the machine-wide daemon path when its private
+control socket is available. The app-server protocol and hook events are
+upstream surfaces that can drift across Codex releases — when something stops
+matching this page, check the official
 references: [Codex app-server](https://learn.chatgpt.com/docs/app-server) and
 [Codex hooks](https://learn.chatgpt.com/docs/hooks).
 

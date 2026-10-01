@@ -66,7 +66,7 @@ Every push path must check `dnd` before delivering:
   delivery when the recipient is in DND (vanilla Codex and managed
   fallback).
 - **Codex managed app-server** (primary for managed `c2c start codex` /
-  `c2c new codex` on codex-cli ≥ 0.144, B131) — arrival-time
+  `c2c new codex` on codex-cli ≥ 0.144, B131; Codex ≥ 0.159 uses the machine daemon — arrival-time
   model-visible inject and gated auto-turn both honor DND. The T007
   dispatcher (`C2c_codex_autoturn`) leaves mail durably queued (no
   inject, no turn, `queued_reason=dnd`) and re-evaluates on the next

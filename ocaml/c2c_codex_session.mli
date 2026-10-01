@@ -43,6 +43,17 @@ val yolo_warning : string
     decision and is NEVER written into any persisted mapping. *)
 val frontend_extra_args : yolo:bool -> extra:string list -> string list
 
+(** [hook_fallback_extra_args] is the argv forwarded to the hook-backed Codex
+    launch after an app-server startup diagnostic. Same as {!frontend_extra_args}
+    plus [--no-daemon] when [codex_version] parses as >= 0.159.0, so the fallback
+    TUI does not attach to the shared managed daemon and immediately disconnect. *)
+val hook_fallback_extra_args :
+  yolo:bool -> extra:string list -> codex_version:string option -> string list
+
+(** [codex_version_supports_no_daemon] is true when [ver] parses as Codex
+    >= 0.159.0 (the release that auto-starts the managed daemon). *)
+val codex_version_supports_no_daemon : string option -> bool
+
 (** Colored lifecycle logs render this label as one unit so c2c ownership is
     explicit while preserving the Codex app-server context. *)
 val app_server_log_label : string

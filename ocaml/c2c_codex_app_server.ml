@@ -157,7 +157,9 @@ let diagnostic_to_json (d : diagnostic) : Yojson.Safe.t =
 
 type endpoint = { transport : string; host : string; port : int }
 
-let endpoint_uri (e : endpoint) = Printf.sprintf "%s://%s:%d" e.transport e.host e.port
+let endpoint_uri (e : endpoint) =
+  if e.transport = "unix" then "unix://" ^ e.host
+  else Printf.sprintf "%s://%s:%d" e.transport e.host e.port
 
 let endpoint_to_json (e : endpoint) : Yojson.Safe.t =
   `Assoc [ ("transport", `String e.transport); ("host", `String e.host); ("port", `Int e.port) ]

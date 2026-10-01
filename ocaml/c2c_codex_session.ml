@@ -65,6 +65,27 @@ let yolo_warning =
 let frontend_extra_args ~(yolo : bool) ~(extra : string list) : string list =
   (if yolo then [ yolo_bypass_flag ] else []) @ extra
 
+(* Codex 0.159+ auto-starts a machine-wide app-server daemon. Hook-fallback
+   `codex` without --no-daemon attaches to it, prints "Disconnected from this
+   task", and the inner TUI exits 0. Gate on the same version parser as the
+   app-server path so older Codex is not handed an unknown flag. *)
+let no_daemon_min_version = (0, 159, 0)
+
+let codex_version_supports_no_daemon (ver : string option) : bool =
+  match ver with
+  | None -> false
+  | Some s ->
+      (match C2c_codex_app_server.parse_version s with
+       | Some v -> C2c_codex_app_server.version_ge v no_daemon_min_version
+       | None -> false)
+
+let hook_fallback_extra_args ~(yolo : bool) ~(extra : string list)
+    ~(codex_version : string option) : string list =
+  let base = frontend_extra_args ~yolo ~extra in
+  if codex_version_supports_no_daemon codex_version then
+    base @ [ "--no-daemon" ]
+  else base
+
 let app_server_log_label = "[c2c codex app-server]"
 
 (* B176: local wall-clock HH:MM:SS for every [c2c codex app-server] line. Pure
@@ -121,6 +142,52 @@ let app_server_frontend_env ~session_id ~alias =
   ; "C2C_CODEX_APPSERVER_SESSION=" ^ session_id
   ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
   ; "C2C_CODEX_MANAGED=1" ]
+
+(* Daemon-attach TUI must NOT inherit the private-server marker: SessionStart
+   then arms the sidecar on payload_sid and the launcher must not run
+   run_delivery_loop (one owner). *)
+let daemon_frontend_env ~session_id ~alias =
+  [ "C2C_MCP_SESSION_ID=" ^ session_id
+  ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
+  ; "C2C_CODEX_APPSERVER_SESSION="
+  ; "C2C_CODEX_MANAGED=1" ]
+
+let daemon_attach_forced_off () =
+  match Sys.getenv_opt "C2C_CODEX_FORCE_PRIVATE_APPSERVER" with
+  | Some "1" -> true
+  | _ -> false
+
+let daemon_attach_available () =
+  if daemon_attach_forced_off () then false
+  else
+    match C2c_codex_daemon_sidecar.default_control_socket () with
+    | None -> false
+    | Some path ->
+        (match C2c_codex_daemon_sidecar.unix_endpoint path with
+         | None -> false
+         | Some ep ->
+             try
+               let fd = C2c_codex_transport.ws_connect ep ~token:"" ~timeout:2.0 in
+               (try Unix.close fd with _ -> ());
+               true
+             with _ -> false)
+
+let child_env extra =
+  let key kv =
+    match String.index_opt kv '=' with Some i -> String.sub kv 0 i | None -> kv
+  in
+  let overridden = List.map key extra in
+  let inherited =
+    Unix.environment () |> Array.to_list
+    |> List.filter (fun kv -> not (List.mem (key kv) overridden))
+  in
+  Array.of_list (inherited @ extra)
+
+let wait_child pid =
+  match Unix.waitpid [] pid with
+  | _, Unix.WEXITED n -> n
+  | _, Unix.WSIGNALED _ -> 128
+  | _, Unix.WSTOPPED _ -> 1
 
 (* ------------------------- positional splitting --------------------------- *)
 
@@ -1397,6 +1464,174 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
                alias);
       o)
 
+let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
+    ~model_override ~instance_dir:_ () : int =
+  match C2c_codex_daemon_sidecar.default_control_socket () with
+  | None -> 1
+  | Some sock ->
+      (match C2c_codex_daemon_sidecar.unix_endpoint sock with
+       | None -> 1
+       | Some ep ->
+           (* A bare Codex [--remote] TUI starts a fresh native thread when it
+              receives an empty prompt. Starting that thread through the
+              daemon first is insufficient: [thread/start] creates an
+              in-memory thread with no rollout, and [codex resume] rejects it
+              until the TUI has written the empty rollout. Capture the loaded
+              set before spawning, then bind the one new thread after the TUI
+              has performed its own startup handshake. *)
+           (try Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1" with _ -> ());
+           let fresh = Option.is_none thread in
+           let loaded_before =
+             if fresh then
+               C2c_codex_ingress.real_loaded_threads ~endpoint:ep ~token:""
+             else []
+           in
+           (* Codex rejects permission/model overrides on [resume ... --remote],
+              so strip them from an existing-thread frontend while preserving
+              unrelated passthrough flags. Fresh TUI startup receives them. *)
+           let rec drop_options = function
+             | [] -> []
+             | x :: xs when x = "--dangerously-bypass-approvals-and-sandbox" ->
+                 drop_options xs
+             | x :: _v :: xs when x = "--sandbox" || x = "-s" || x = "--model" || x = "-m" ->
+                 drop_options xs
+             | x :: xs when List.exists (fun n -> String.length x > String.length n
+                                      && String.sub x 0 (String.length n + 1) = n ^ "=")
+                           [ "--sandbox"; "--model" ] ->
+                 drop_options xs
+             | x :: xs -> x :: drop_options xs
+           in
+           let frontend_extra = drop_options extra_args in
+           let remote = C2c_codex_app_server.endpoint_uri ep in
+           let bin =
+             match Sys.getenv_opt "C2C_CODEX_BIN" with
+             | Some b when String.trim b <> "" -> String.trim b
+             | _ -> "codex"
+           in
+           let model_args =
+             match model_override with
+             | Some m when String.trim m <> "" -> [ "--model"; m ]
+             | _ -> []
+           in
+           let fresh_frontend_extra =
+             frontend_extra_args ~yolo ~extra:(model_args @ extra_args)
+           in
+           let frontend_extra = if fresh then fresh_frontend_extra else frontend_extra in
+           let argv_list =
+             let cmd =
+               match thread with
+               | Some t when String.trim t <> "" -> [ bin; "resume"; t ]
+               | _ -> [ bin ]
+             in
+             cmd @ [ "--remote"; remote ]
+             @ frontend_extra
+             @ if fresh then [ "" ] else []
+           in
+           let argv = Array.of_list argv_list in
+           let env = child_env (daemon_frontend_env ~session_id ~alias) in
+           emit_app_server_log
+             (Printf.sprintf "daemon attach %s (c2c-alias=%s)" remote alias);
+           let now = Unix.gettimeofday () in
+           let created_at =
+             match C2c_start.load_config_opt name with
+             | Some c -> c.C2c_start.created_at
+             | None -> now
+           in
+           C2c_start.write_config
+             { C2c_start.name; client = "codex"; session_id;
+               resume_session_id = Option.value thread ~default:session_id;
+               codex_resume_target = thread; alias; extra_args; created_at;
+               last_launch_at = Some now; last_exit_code = None;
+               last_exit_reason = None;
+               broker_root = (try C2c_start.broker_root () with _ -> "");
+               auto_join_rooms = C2c_swarm_config.swarm_config_social_room ();
+               binary_override = None; model_override; agent_name = None };
+           let pid_oc = open_out (C2c_start.outer_pid_path name) in
+           Fun.protect ~finally:(fun () -> close_out pid_oc)
+             (fun () -> Printf.fprintf pid_oc "%d\n" (Unix.getpid ()));
+           (try
+              register_managed_app_server_identity
+                ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
+                ~pid:(Unix.getpid ())
+            with _ -> ());
+           let sidecar_pid = ref None in
+           let stop_sidecar () =
+             match !sidecar_pid with
+             | Some pid ->
+                 C2c_codex_daemon_sidecar.stop_pid pid;
+                 sidecar_pid := None
+             | None -> ()
+           in
+           let child =
+             Unix.create_process_env bin argv env Unix.stdin Unix.stdout Unix.stderr
+           in
+           let prev_term = Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
+               stop_sidecar ();
+               (try Unix.kill child Sys.sigterm with _ -> ()); exit 0)) in
+           let prev_int = Sys.signal Sys.sigint (Sys.Signal_handle (fun _ ->
+               stop_sidecar ();
+               (try Unix.kill child Sys.sigint with _ -> ()); exit 0)) in
+           Fun.protect
+             ~finally:(fun () ->
+               (try Sys.set_signal Sys.sigterm prev_term with _ -> ());
+               (try Sys.set_signal Sys.sigint prev_int with _ -> ()))
+             (fun () ->
+                let bound_thread =
+                  match thread with
+                  | Some tid -> Some tid
+                  | None ->
+                      let deadline = Unix.gettimeofday () +. 30.0 in
+                      let rec discover () =
+                        let loaded =
+                          C2c_codex_ingress.real_loaded_threads
+                            ~endpoint:ep ~token:""
+                        in
+                        let candidates =
+                          List.filter (fun tid -> not (List.mem tid loaded_before)) loaded
+                        in
+                        match List.rev candidates with
+                        | tid :: _ when String.trim tid <> "" -> Some tid
+                        | _ when Unix.gettimeofday () < deadline ->
+                            Unix.sleepf 0.2;
+                            discover ()
+                        | _ -> None
+                      in
+                      discover ()
+                in
+                match bound_thread with
+                | None ->
+                    emit_app_server_log
+                      (Printf.sprintf
+                         "daemon attach failed: fresh remote TUI did not expose a \
+                          loaded thread (c2c-alias=%s)" alias);
+                    (try Unix.kill child Sys.sigterm with _ -> ());
+                    stop_sidecar ();
+                    ignore (wait_child child);
+                    1
+                | Some tid ->
+                    (try
+                       match
+                         C2c_codex_daemon_sidecar.arm ~instance_name:name ~thread_id:tid ~alias
+                           ~broker_session_id:session_id
+                           ~broker_root:(try C2c_start.broker_root () with _ -> "")
+                           ()
+                       with
+                       | C2c_codex_daemon_sidecar.Armed { child_pid } ->
+                           sidecar_pid := Some child_pid
+                       | _ -> ()
+                     with _ -> ());
+                    C2c_start.write_config
+                      { C2c_start.name; client = "codex"; session_id;
+                        resume_session_id = tid; codex_resume_target = Some tid;
+                        alias; extra_args; created_at; last_launch_at = Some now;
+                        last_exit_code = None; last_exit_reason = None;
+                        broker_root = (try C2c_start.broker_root () with _ -> "");
+                        auto_join_rooms = C2c_swarm_config.swarm_config_social_room ();
+                        binary_override = None; model_override; agent_name = None };
+                    let exit_code = wait_child child in
+                    stop_sidecar ();
+                    exit_code))
+
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(yolo : bool) ~(extra_args : string list)
     ?(model_override : string option)
@@ -1453,6 +1688,13 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
   in
   let instance_dir = C2c_start.instance_dir name in
   (try C2c_io.mkdir_p instance_dir with _ -> ());
+  (* Prefer the machine daemon when it is up: TUI attaches with --remote unix://
+     and SessionStart/sidecar owns delivery. Injected [backend] stays on the
+     private-server path so hermetic tests do not touch the live daemon. *)
+  if backend = None && daemon_attach_available () then
+    run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
+      ~model_override ~instance_dir ()
+  else begin
   (match discarded_thread with
    | Some dead_thread ->
        clear_unpersisted_resume_target ~name ~instance_dir ~thread_id:dead_thread
@@ -1509,7 +1751,8 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       report_diagnostic diag;
       (* Graceful fallback to the hook-backed launch (AC7). Do NOT forward
          session identity; the hook path owns its own alias handling. *)
-      fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
+      fallback ~extra_args:(hook_fallback_extra_args ~yolo ~extra:extra_args
+                              ~codex_version:diag.C2c_codex_app_server.codex_version) ()
   | Ok handle ->
       (* B153: app-server launchers are first-class managed instances. Persist
          the same config/pid surfaces used by instances/restart, but keep the
@@ -1633,6 +1876,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
            emit_app_server_log "app-server died; session torn down.";
            1
        | _ -> 0)
+  end
 
 (* The emergency hook-backed route bypasses [run_app_server], but it is still a
    real Codex launch.  For the two modes that can reuse an existing managed

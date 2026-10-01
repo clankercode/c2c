@@ -213,9 +213,9 @@ Use `c2c dev instances` to list running managed sessions and `c2c stop <name>` t
 **Codex delivery.** Managed `c2c start codex` (or `c2c new codex` for a
 fresh thread) is the canonical way to run a Codex peer (a stable alias is
 generated automatically; `--alias` overrides it). On a supported Codex
-(codex-cli ≥ 0.144) it runs Codex behind an authenticated loopback
-app-server by default — no flag — and the managed supervisor delivers c2c
-mail arrival-time: injection into the thread's model-visible history without
+(codex-cli ≥ 0.159) it attaches Codex to the machine-wide daemon over its
+private Unix-domain WebSocket; Codex ≥ 0.144 uses an authenticated per-session
+app-server fallback — and the managed supervisor delivers c2c mail arrival-time: injection into the thread's model-visible history without
 ever touching a typed draft, plus one gated turn for eligible local mail
 when the session is idle and DND is off (B131, proven live end-to-end).
 Older Codex, or an app-server startup failure, falls back automatically to

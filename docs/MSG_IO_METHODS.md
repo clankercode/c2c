@@ -20,7 +20,7 @@ Last updated: 2026-07-17 (kimi re-enabled: B146 reverted; REST delivery)
 |---|--------|-----------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|--------|
 | 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No MCP | No | No | No | Experimental / gated behind dev flag |
 | 2 | [PostToolUse Hook](#2-posttooluse-hook) | Host hooks drain inboxes into `additionalContext` at tool/turn boundaries | Yes | Yes (vanilla + managed fallback) | No | No | No | No | Working (primary for Claude Code; Codex vanilla/fallback only) |
-| 2b | [Codex app-server inject + gated auto-turn](#2b-codex-app-server-inject--gated-auto-turn) | Managed Codex: arrival-time inject + idle auto-turn over authenticated app-server | No | Yes (managed ≥0.144) | No | No | No | No | **Primary for managed Codex** (B131); hooks fall back |
+| 2b | [Codex app-server inject + gated auto-turn](#2b-codex-app-server-inject--gated-auto-turn) | Managed Codex: arrival-time inject + idle auto-turn over private daemon WS (authenticated per-session fallback) | No | Yes (managed ≥0.144) | No | No | No | No | **Primary for managed Codex** (B131); hooks fall back |
 | 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Deprecated sentinel | No | Fallback | No | No | Legacy/fallback only; Kimi uses REST prompt injection |
 | 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | No | No | Experimental; not real-time |
 | 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP/CLI tool that drains and returns pending messages | Yes | Yes | Yes (CLI) | Yes | Yes | Yes (CLI) | Working (universal baseline) |
@@ -160,7 +160,7 @@ For Codex, `c2c install codex` writes a managed, pre-trusted hooks block to
 
 Vanilla/unmanaged Codex sessions auto-register on the first hook fire and receive
 through these installed hooks. Managed `c2c start codex` sessions on a supported
-Codex (codex-cli ≥ 0.144) instead receive arrival-time over the app-server path
+Managed Codex on Codex ≥ 0.159 instead receives arrival-time delivery over the private daemon WS; Codex ≥ 0.144 uses the authenticated per-session app-server fallback
 (shipped, B131 — see [Per-Client Delivery § Codex](/client-delivery/#codex));
 managed sessions on an older Codex, or after an app-server startup failure, fall
 back automatically to the installed hooks at hook boundaries, with their stable
@@ -232,15 +232,16 @@ hook boundary still need an idle-session bridge or manual polling.
 
 ### 2b. Codex app-server inject + gated auto-turn
 
-**Primary delivery for managed Codex on a supported binary (codex-cli ≥ 0.144)** —
+**Primary delivery for managed Codex: daemon WS on Codex ≥ 0.159, with the authenticated per-session app-server fallback from Codex ≥ 0.144 —**
 arrival-time injection into the thread's model-visible history plus a gated
 auto-turn for eligible local mail. Distinct from host hooks (method 2).
 
 #### How it works
 
-Managed `c2c start codex` / `c2c new codex` launch `codex app-server` on an
-**authenticated loopback WebSocket** (`--ws-auth capability-token`) with the
-stock remote TUI attached. The managed supervisor drives the T003 ingress +
+Managed `c2c start codex` / `c2c new codex` attach the stock remote TUI to the
+machine-wide daemon over its private Unix-domain WebSocket on Codex ≥ 0.159.
+Codex ≥ 0.144 uses a per-session `codex app-server` over an authenticated
+loopback WebSocket as fallback. The managed supervisor drives the T003 ingress +
 T007 auto-turn pipeline while the frontend is attached:
 
 1. Inbound c2c mail is injected on arrival as DATA (`thread/inject_items`) —
@@ -271,7 +272,8 @@ Full contract: [Per-Client Delivery § Codex](/client-delivery/#codex).
 
 #### Limitations
 
-- Requires codex-cli ≥ 0.144 and a successful app-server start.
+- Requires Codex ≥ 0.159 and a reachable daemon socket, or Codex ≥ 0.144 and a
+  successful authenticated per-session app-server start.
 - Auto-turn is local-broker only; remote-origin mail is data-only.
 - Message content never resolves approvals (B098 bus-never-RPC).
 
@@ -677,7 +679,8 @@ Which methods are primary, fallback, or unavailable for each client:
 
 **Primary** = recommended path for that client; for MCP clients this is installed
 by `c2c install <client>`, while Pi Agent uses `pi install npm:pi-c2c`. Managed
-Codex on a supported binary uses the app-server path (not hooks) as Primary.
+Managed Codex uses the private daemon WS or authenticated per-session app-server
+path (not hooks) as Primary.
 **Baseline** = always available as a universal pull-based fallback.
 **Fallback** = works but superseded by a better method.
 **--** = not applicable or not supported.

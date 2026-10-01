@@ -485,13 +485,60 @@ def run_boundary_checks(result):
 
 
 # --------------------------------------------------------------------------- #
+def run_unix_checks(path):
+    """Read-only handshake/discovery against an existing daemon; never spawn it."""
+    import asyncio
+    import socket
+    import stat
+    from websockets.asyncio.client import unix_connect
+
+    async def probe():
+        target = os.path.realpath(path)
+        st = os.stat(target)
+        parent = os.stat(os.path.dirname(target))
+        if (not stat.S_ISSOCK(st.st_mode) or st.st_uid != os.getuid()
+                or st.st_mode & 0o077 or parent.st_uid != os.getuid()
+                or parent.st_mode & 0o077):
+            raise RuntimeError("daemon socket is not private to this UID")
+        async with unix_connect(target, uri="ws://localhost/", open_timeout=5,
+                                max_size=8 * 1024 * 1024) as ws:
+            async def rpc(rid, method, params):
+                await ws.send(json.dumps({"id": rid, "method": method, "params": params}))
+                async with asyncio.timeout(8):
+                    while True:
+                        message = json.loads(await ws.recv())
+                        if message.get("id") == rid:
+                            if "error" in message:
+                                raise RuntimeError(str(message["error"]))
+                            return message["result"]
+            init = await rpc(1, "initialize", {
+                "clientInfo": {"name": "c2c-daemon-probe", "version": "1"},
+                "capabilities": {"experimentalApi": True}})
+            await ws.send(json.dumps({"method": "initialized"}))
+            loaded = await rpc(2, "thread/loaded/list", {})
+            return {"ok": True, "host": socket.gethostname(), "socket": target,
+                    "mode": oct(stat.S_IMODE(st.st_mode)), "initialize": init,
+                    "loaded_thread_count": len(loaded.get("data", [])),
+                    "methods_checked": ["initialize", "thread/loaded/list"]}
+    try:
+        return asyncio.run(probe())
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--boundary", action="store_true",
                     help="also run the loopback ws auth boundary check (needs websockets)")
     ap.add_argument("--no-stdio", action="store_true", help="skip the stdio inject check")
     ap.add_argument("--json-only", action="store_true", help="suppress human log lines on stderr")
+    ap.add_argument("--unix-socket", help="read-only probe of an existing daemon; skips schema/stdio/boundary")
     args = ap.parse_args()
+
+    if args.unix_socket:
+        result = run_unix_checks(args.unix_socket)
+        print(json.dumps(result, indent=2))
+        return 0 if result["ok"] else 1
 
     if shutil.which(CODEX) is None and not os.path.exists(CODEX):
         print(json.dumps({"ok": False, "error": f"codex binary not found: {CODEX}"}))

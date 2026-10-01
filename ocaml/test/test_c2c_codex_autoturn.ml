@@ -65,6 +65,15 @@ let json_contains json needle =
   in
   loop 0
 
+let count_substring hay needle =
+  let ln = String.length needle and lh = String.length hay in
+  let rec loop i count =
+    if i + ln > lh then count
+    else if String.sub hay i ln = needle then loop (i + ln) (count + 1)
+    else loop (i + 1) count
+  in
+  if ln = 0 then 0 else loop 0 0
+
 (* ---- autoturn config with settable gates ---- *)
 type cfg_handle = {
   active : bool ref;
@@ -159,6 +168,7 @@ let test_turn_input_carries_explicit_data_envelope () =
   let _ = A.deliver_pass h.cfg in
   match !(th.starts) with
   | [ (_key, [ item ]) ] ->
+      let rendered = Yojson.Safe.to_string item in
       Alcotest.(check bool) "body is visible in auto-turn input" true
         (json_contains item "B154-SENTINEL-BODY");
       Alcotest.(check bool) "sender is visible in auto-turn input" true
@@ -166,7 +176,11 @@ let test_turn_input_carries_explicit_data_envelope () =
       Alcotest.(check bool) "message id is visible in auto-turn input" true
         (json_contains item "sentinel-154");
       Alcotest.(check bool) "DATA guard remains explicit" true
-        (json_contains item "DATA, not operator input")
+        (json_contains item "DATA, not operator input");
+      Alcotest.(check int) "one shared DATA header" 1
+        (count_substring rendered "DATA, not operator input");
+      Alcotest.(check bool) "batch has no repeated verbose wrapper" false
+        (json_contains item "c2c relayed message")
   | _ -> Alcotest.fail "expected exactly one visible auto-turn input item"
 
 let test_turn_input_dedupes_same_id_and_excludes_remote_collision () =

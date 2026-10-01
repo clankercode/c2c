@@ -1361,6 +1361,35 @@ let test_build_env_keeps_channel_delivery_without_force_flag () =
     (env_contains env "C2C_MCP_FORCE_CAPABILITIES=claude_channel");
   ()
 
+(* Codex resume hint must not print a c2c broker UUID as --session-id. *)
+let test_format_resume_cmd_codex_omits_session_id_without_thread () =
+  let cmd =
+    C2c_start.format_resume_cmd ~client:"codex" ~name:"codex-sprout"
+      ~resume_session_id:"d60ccf94-b0ef-41ec-8626-792667b39933"
+      ~session_id:"codex-sprout" ()
+  in
+  check string "codex without thread => start -n NAME only"
+    "c2c start codex -n codex-sprout" cmd
+
+let test_format_resume_cmd_codex_uses_thread_target () =
+  let cmd =
+    C2c_start.format_resume_cmd ~client:"codex" ~name:"codex-sprout"
+      ~codex_resume_target:"01a0f59f-fc18-75f3-afa9-fc241e66cd63"
+      ~resume_session_id:"d60ccf94-b0ef-41ec-8626-792667b39933" ()
+  in
+  check string "codex with thread => --session-id is the Codex thread"
+    "c2c start codex -n codex-sprout --session-id 01a0f59f-fc18-75f3-afa9-fc241e66cd63"
+    cmd
+
+let test_format_resume_cmd_other_clients_keep_session_id () =
+  let cmd =
+    C2c_start.format_resume_cmd ~client:"claude" ~name:"claude-demo"
+      ~resume_session_id:"550e8400-e29b-41d4-a716-446655440000" ()
+  in
+  check string "claude still gets --session-id"
+    "c2c start claude -n claude-demo --session-id 550e8400-e29b-41d4-a716-446655440000"
+    cmd
+
 let test_finalize_outer_loop_exit_cleans_before_print () =
   let events = ref [] in
   let cleanup_and_exit code =
@@ -5257,6 +5286,12 @@ let () =
             `Quick, test_render_heartbeat_content_appends_command_output )
         ; ( "per_agent_managed_heartbeats_reads_instance_file",
             `Quick, test_per_agent_managed_heartbeats_reads_instance_file )
+        ; ( "format_resume_cmd_codex_omits_session_id_without_thread",
+            `Quick, test_format_resume_cmd_codex_omits_session_id_without_thread )
+        ; ( "format_resume_cmd_codex_uses_thread_target",
+            `Quick, test_format_resume_cmd_codex_uses_thread_target )
+        ; ( "format_resume_cmd_other_clients_keep_session_id",
+            `Quick, test_format_resume_cmd_other_clients_keep_session_id )
         ; ( "finalize_outer_loop_exit_cleans_before_print",
             `Quick, test_finalize_outer_loop_exit_cleans_before_print )
         ; ( "start_deliver_daemon_detaches_from_terminal_stdio_and_group",

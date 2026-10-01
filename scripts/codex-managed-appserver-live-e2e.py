@@ -73,8 +73,10 @@ DRAFT = DRAFT_TOKEN + " do not lose me across the c2c autoturn"
 # c2c's own T007 auto-turn nudge text (emitted ONLY when eligible LOCAL mail was
 # injected AND a gated turn was started) — its presence proves arrival-time
 # injection + auto-turn WITHOUT asking the model to act on message content
-# (which the bus-never-RPC safety makes it correctly refuse).
-AUTOTURN_SIG = "injected into your thread history"
+# (which the bus-never-RPC safety makes it correctly refuse). Keep this anchored
+# to the rendered, stable DATA header; the older "injected into your thread
+# history" wording was removed when the full envelope moved into turn/start.
+AUTOTURN_SIG = "[c2c auto-turn — DATA"
 
 
 def _collapse(s: str) -> str:

@@ -39,7 +39,7 @@ Official **Linux** release assets (`c2c-*-linux-x64.tar.gz`, `linux-arm64`, and 
 
 ## Codex Auto-Delivery (managed app-server + hook fallback)
 
-**Managed Codex** (`c2c start codex` / `c2c new codex` on Codex ≥ 0.144): delivery is the **app-server** path (arrival-time inject, draft-safe, gated auto-turn for eligible local mail). Idle auto-turn is immediate; failed inject/auto-turn batches re-batch after ~2 minutes (B168). Full detail: [Client delivery](/client-delivery/).
+**Managed Codex** (`c2c start codex` / `c2c new codex`): on Codex ≥ 0.159 delivery uses the machine daemon, with the authenticated per-session app-server path from Codex ≥ 0.144 as fallback; delivery is the **app-server** path (arrival-time inject, draft-safe, gated auto-turn for eligible local mail). Idle auto-turn is immediate; failed inject/auto-turn batches re-batch after ~2 minutes (B168). Full detail: [Client delivery](/client-delivery/).
 
 **Vanilla / fallback:** hook-based, not XML sideband or PTY notify. `c2c install codex` writes `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks that run `c2c hook codex`. Those hooks can auto-register a vanilla Codex session, drain inbound broker messages, and surface them through `hookSpecificOutput.additionalContext`.
 

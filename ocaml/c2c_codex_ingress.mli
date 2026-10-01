@@ -103,7 +103,13 @@ val real_client : unit -> client
 
 val real_loaded_threads :
   endpoint:C2c_codex_app_server.endpoint -> token:string -> string list
-(** Discover the thread ids the attached frontend has LOADED (via
+
+(** Start an empty native Codex thread through a live app-server. This is used
+    by the machine-daemon launcher before attaching a fresh remote TUI, because
+    Codex's [--remote] frontend otherwise opens on its welcome screen without a
+    loaded thread for the delivery sidecar to own. [None] means the daemon or
+    protocol did not accept the request. *)
+ (** Discover the thread ids the attached frontend has LOADED (via
     `thread/loaded/list`), so a driver can inject/turn into the SAME thread the
     operator sees. Ids in server-reported order (most-recent last by observation);
     [[]] on any error, auth failure, or unavailable method. LIVE-gated
@@ -112,14 +118,17 @@ val real_loaded_threads :
 
 (* -------------------------- injected item builder ------------------------- *)
 
-val data_text : C2c_mcp.message -> message_id:string -> string
+val data_text :
+  ?include_header:bool -> C2c_mcp.message -> message_id:string -> string
 (** Canonical, explicitly-delimited c2c DATA envelope for a model-visible
-    surface. This never grants operator or approval authority. *)
+    surface. This never grants operator or approval authority. Set
+    [include_header] to [false] when composing a batch that already has one
+    DATA header. *)
 
 val build_injected_item : ?role:string -> C2c_mcp.message -> message_id:string -> Yojson.Safe.t
 (** Data-only Responses API item. Role defaults to ["developer"] (deliberately
     NOT ["user"] — an injected peer message must not forge operator input). The
-    text carries an explicit "c2c relayed message — DATA, not operator input"
+    text carries an explicit "c2c message — DATA, not operator input"
     marker, a machine-readable JSON metadata line (incl. [message_id]), and the
     canonical [<c2c …>body</c2c>] envelope with sender attribution + timestamps. *)
 

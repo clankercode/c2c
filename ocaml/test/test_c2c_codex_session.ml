@@ -1010,6 +1010,59 @@ let test_glue_diagnostic_falls_back_no_publish () =
 
 (* B175: upgrade guidance only for version/capability gaps; readiness timeout
    / process exit on a supported Codex must NOT tell the operator to upgrade. *)
+let test_hook_fallback_extra_args_no_daemon_gated_on_159 () =
+  let extra_159 =
+    S.hook_fallback_extra_args ~yolo:false ~extra:[ "--model"; "x" ]
+      ~codex_version:(Some "codex-cli 0.159.3")
+  in
+  let extra_144 =
+    S.hook_fallback_extra_args ~yolo:false ~extra:[ "--model"; "x" ]
+      ~codex_version:(Some "codex-cli 0.144.1")
+  in
+  let extra_none =
+    S.hook_fallback_extra_args ~yolo:true ~extra:[] ~codex_version:None
+  in
+  Alcotest.(check bool) "0.159.3 gets --no-daemon" true
+    (List.mem "--no-daemon" extra_159);
+  Alcotest.(check bool) "0.159.3 keeps passthrough" true
+    (List.mem "--model" extra_159);
+  Alcotest.(check bool) "0.144.1 omits --no-daemon" false
+    (List.mem "--no-daemon" extra_144);
+  Alcotest.(check bool) "unknown version omits --no-daemon" false
+    (List.mem "--no-daemon" extra_none);
+  Alcotest.(check bool) "yolo still forwarded without version" true
+    (List.mem S.yolo_bypass_flag extra_none);
+  Alcotest.(check bool) "0.159.0 is the floor" true
+    (S.codex_version_supports_no_daemon (Some "0.159.0"));
+  Alcotest.(check bool) "0.158.9 is below the floor" false
+    (S.codex_version_supports_no_daemon (Some "0.158.9"))
+
+let test_glue_159_died_fallback_forwards_no_daemon () =
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      let clock = ref 0.0 in
+      let dead = { status = Exited 1 } in
+      let bk =
+        scripted ~clock ~codex_version:(Ok "codex-cli 0.159.3")
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:111 dead))
+          ()
+      in
+      let seen = ref [] in
+      let rc =
+        S.run ~mode:S.Start ~yolo:false ~extra_args:[ "--model"; "x" ]
+          ~thread_id:sid ~backend:bk
+          ~fallback:(fun ~extra_args () ->
+              seen := extra_args;
+              77)
+          ()
+      in
+      Alcotest.(check int) "fallback exit code" 77 rc;
+      Alcotest.(check bool) "0.159 died-before-ready forwards --no-daemon" true
+        (List.mem "--no-daemon" !seen);
+      Alcotest.(check bool) "passthrough still present" true
+        (List.mem "--model" !seen))
+
 let test_diagnostic_followup_upgrade_only_when_version_issue () =
   let min = "0.144.0" in
   let version_diag : diagnostic =
@@ -1784,6 +1837,10 @@ let () =
         ; test_case "new codex (default, no flag) engages app-server"
             `Quick test_glue_new_mode_default_engages_app_server
         ; test_case "unsupported codex auto-falls-back, no publish" `Quick test_glue_diagnostic_falls_back_no_publish
+        ; test_case "hook-fallback --no-daemon gated on 0.159" `Quick
+            test_hook_fallback_extra_args_no_daemon_gated_on_159
+        ; test_case "0.159 died-before-ready fallback forwards --no-daemon" `Quick
+            test_glue_159_died_fallback_forwards_no_daemon
         ; test_case "force-hooks env uses fallback" `Quick test_force_hooks_env_uses_fallback
         ; test_case "diagnostic followup upgrade only for version issues (B175)"
             `Quick test_diagnostic_followup_upgrade_only_when_version_issue

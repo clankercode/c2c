@@ -807,6 +807,35 @@ let hook_codex_cmd =
                   (sid, Some alias))
        in
        touch_hook_activity ~broker ~session_id;
+       (* The hook's payload session_id is Codex's native thread id. The c2c
+          session id is a broker identity and can differ for managed launches;
+          daemon ownership must be keyed by the native thread or two aliases
+          can claim the same loaded frontend under different c2c ids. *)
+       let daemon_thread_hint = Option.value payload_sid ~default:session_id in
+       let sidecar_armed =
+         if event <> "SessionStart" then false
+         else
+           let alias =
+             match onboarded_alias with
+             | Some a -> a
+             | None ->
+                 (match
+                    List.find_opt
+                      (fun (r : C2c_mcp.registration) -> r.session_id = session_id)
+                      (regs ())
+                  with
+                  | Some r -> r.alias
+                  | None -> session_id)
+           in
+           try
+             match
+               C2c_codex_daemon_sidecar.arm ~thread_id:daemon_thread_hint ~alias
+                 ~broker_session_id:session_id ~broker_root ()
+             with
+             | Armed _ | Already_running _ | Claim_held _ -> true
+             | Socket_unavailable -> false
+           with _ -> false
+       in
        (* B137 / B168: is this an app-server-backed managed codex session?
           Detected by the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION
           — present even before the launcher's broker registration lands, so the
@@ -821,6 +850,24 @@ let hook_codex_cmd =
           we never dual-drain or dual-identity-storm. Hook-fallback managed
           codex (client_type "codex") is NOT ingress-owned — hooks remain its
           delivery + wake path. *)
+       let daemon_sidecar_owns =
+         match C2c_codex_daemon_sidecar.default_control_socket () with
+         | None -> false
+         | Some sock ->
+             (match C2c_codex_daemon_sidecar.unix_endpoint sock with
+              | None -> false
+              | Some ep ->
+                  (match
+                     C2c_codex_daemon_sidecar.peek
+                       ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                       ~socket_identity:ep.host ~thread_id:daemon_thread_hint
+                   with
+                   | Some l ->
+                       C2c_pid_identity.recorded_pid_is_ours
+                         ~expect:(C2c_pid_identity.Started_at l.claimed_at)
+                         ~pid:l.sidecar_pid
+                   | None -> false))
+       in
        let ingress_owned =
          (match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
           | Some s when String.trim s <> "" -> true
@@ -830,6 +877,8 @@ let hook_codex_cmd =
                  r.session_id = session_id
                  && r.client_type = Some "codex-app-server")
               (regs ())
+         || daemon_sidecar_owns
+         || sidecar_armed
        in
        (* Wake-target capture (codex-wake-inject): the hook runs with the
           codex process's env, so $TMUX/$TMUX_PANE and $HERDR_PANE_ID /

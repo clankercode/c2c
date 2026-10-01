@@ -253,17 +253,38 @@ values fall back to the default. Timeout is distinct from process exit
 `readiness_timeout` and the operator message points at this env var plus the
 app-server log path. Does not change the automatic hook-backed fallback.
 
+### `C2C_CODEX_FORCE_PRIVATE_APPSERVER`
+
+Hidden operator/testing escape. On codex-cli versions with the machine-wide
+daemon control socket, managed Codex normally attaches the TUI to that private
+Unix-domain WebSocket and arms a per-native-thread delivery sidecar. Setting
+`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` skips that daemon attach and uses the
+older per-session authenticated loopback app-server instead. This is useful for
+isolating daemon or sidecar failures; unset it for the normal path.
+
 ### `C2C_CODEX_MANAGED`
 
 Set to `1` by every managed Codex launch (`C2c_codex_session.run`, `ocaml/c2c_codex_session.ml`) **before** any codex child (app-server frontend/server, or the hook-fallback child) is spawned, so all of them — and the hooks they fire — inherit it. It is the load-bearing "this codex session is managed" marker for the B136 nudge: a managed app-server session otherwise resolves in the hook as vanilla (it persists `codex-session.json` rather than the legacy instance `config.json`, registers under the managed instance name not the payload thread id, and sets no `C2C_MCP_SESSION_ID`), so this env is what reliably suppresses the nudge for real `c2c new codex` sessions. Non-secret; read only by the nudge gate.
 
 ### `C2C_CODEX_APPSERVER_SESSION`
 
-Set to the managed app-server session id (the broker session id `run_delivery_loop` registers under) by `C2c_codex_session.run_app_server` (`ocaml/c2c_codex_session.ml`) **before** `C2c_codex_app_server.start` spawns the stock frontend — `build_frontend_env` snapshots `Unix.environment ()`, so the frontend and every hook it fires inherit it. It is the load-bearing **identity** marker for B137: a real `c2c new codex` app-server session otherwise resolves in `c2c hook codex` as vanilla and self-registers a SECOND per-thread identity (dual-identity). The hook adopts this value as its identity (first, unconditionally — race-free, does not need the launcher's broker registration to have landed) so it never forks a duplicate; it then treats the session as ingress-owned and drains **nothing** (the app-server deliver loop owns arrival-time repo delivery; the global cross-repo inbox is deliberately not drained either, since doing so from the frontend hook would let a nested Codex that inherited the marker steal the parent's mail — global-inbox delivery for app-server is a follow-up for the ingress loop). It also suppresses wake-target refresh for the same reason (app-server delivers via ingress, not wake-inject). Reset to the empty string on the app-server→hook-fallback path (`Unix` has no `unsetenv`; readers trim-guard empty as unset) so a fallback launch's hook still owns its own registration/delivery. Distinct from `C2C_CODEX_MANAGED` (a boolean "is managed" marker set for BOTH app-server and hook-fallback); this carries the specific session id and is set for the app-server path only. Non-secret.
+Set to the managed app-server session id on the private per-session fallback by
+`C2c_codex_session.run_app_server` before the stock frontend is spawned. The
+frontend and its hooks inherit it and adopt the launcher identity, so they do
+not mint a second registration or drain the broker. On the machine-daemon path
+this variable is deliberately set to the empty string: the `SessionStart` hook
+arms `C2c_codex_daemon_sidecar` using Codex's payload-native thread id, and that
+sidecar owns delivery. Empty is therefore meaningful and is treated as unset by
+hook readers. Distinct from `C2C_CODEX_MANAGED`, which marks both managed paths.
 
 ### `C2C_CODEX_INGRESS_LIVE`
 
-Set to `1` by a managed app-server Codex session (`C2c_codex_session.run_delivery_loop`, `ocaml/c2c_codex_session.ml`) to unlock the real ingress/auto-turn WebSocket clients in the launcher process. It is exported **after** the codex frontend + app-server children are already spawned (both snapshot `Unix.environment ()` at spawn time), so it is **NOT** inherited by the codex frontend or the hooks it fires — do not rely on it as a "managed session" marker inside a hook process. The `c2c hook codex` B136 nudge treats a set `C2C_CODEX_INGRESS_LIVE` as one (belt-and-suspenders) app-server signal; the load-bearing managed marker is `C2C_CODEX_MANAGED` (above), which — unlike the thread→instance mapping, `C2C_MCP_SESSION_ID`, or the broker registration — is reliably present for a real app-server session.
+Set to `1` inside the private per-session delivery loop and inside a daemon
+sidecar to unlock the real ingress/auto-turn WebSocket clients. It is an
+internal process marker, not the frontend identity marker; the frontend hooks
+must use `C2C_CODEX_MANAGED` plus either the non-empty
+`C2C_CODEX_APPSERVER_SESSION` fallback marker or the daemon sidecar's native
+thread ownership.
 
 ### `C2C_CODEX_APPSERVER_NUDGE_EVERY`
 

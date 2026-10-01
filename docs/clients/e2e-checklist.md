@@ -138,8 +138,9 @@ c2c list --all
 
 ## 2b. Codex app-server delivery (managed, default on supported Codex)
 
-**Applies to** managed Codex on codex-cli ≥ 0.144 — the app-server transport is
-the default managed path (B131 wired the supervision loop; no flag). On older
+**Applies to** managed Codex on Codex ≥ 0.159 — the machine daemon transport is
+the default managed path; Codex ≥ 0.144 uses the authenticated per-session
+app-server fallback (B131 wired the supervision loop; no flag). On older
 codex expect the minimum-version message + hook fallback, and mark this row
 SKIP. The library-level harness `scripts/codex-autoturn-e2e.py` (inside tmux)
 proves the same contract against a real codex if you want a supervision-free

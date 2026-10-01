@@ -1235,16 +1235,24 @@ Key semantics:
   sandbox for that session). It is a per-launch decision and is **never**
   persisted into later resumes; without it, approval/sandbox defaults are
   unchanged.
-- **App-server transport (default, no flag).** Managed Codex sessions use the
-  app-server-backed remote-TUI transport by default on a supported Codex
-  (codex-cli ≥ 0.144) — there is no flag to set. If the local Codex is too old
-  for the app-server capability set, or app-server startup fails, startup falls
-  back automatically to the hook-backed launch before any routable alias is
-  published, printing an actionable minimum-version message. (A hidden
-  `C2C_CODEX_FORCE_HOOKS=1` escape forces the hook path for operator testing
-  only.) `c2c dev instances` reports the app-server lifecycle state — `starting` /
+- **App-server transport (default, no flag).** Managed Codex sessions attach to
+  the machine-wide Codex daemon over its private Unix-domain WebSocket when it
+  is available (codex-cli ≥ 0.159); a per-session authenticated loopback
+  app-server is the fallback for older daemon layouts. The launcher arms one
+  sidecar for the exact native Codex thread. If neither app-server path is
+  available, startup falls back automatically to hooks before any routable alias
+  is published, with an actionable diagnostic. Hidden operator escapes are
+  `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` and `C2C_CODEX_FORCE_HOOKS=1`.
+  `c2c dev instances` reports the app-server lifecycle state — `starting` /
   `online-attached` / `offline` / `failed-startup` — using the same terminology
   across help, completions, `stop`/`restart`, and `resume`.
+
+For a managed session, use `c2c restart <name>` to restart the owner in place.
+Do not run a separate `codex resume` or `cx` in the same terminal while that
+owner is alive: both frontends would share one TTY and the Codex thread could
+have two competing delivery owners. If an old frontend is stranded, stop the
+managed instance first, return to the shell prompt, and then restart it through
+`c2c restart <name>`.
 
 **`--` passthrough (recommended).** This is the codex-specific instance of the
 general [Argument passthrough (`--`)](#argument-passthrough----any-client-wrapper)
@@ -1269,10 +1277,10 @@ cx --model gpt-5.6-sol --c2c:name cx-custom
 ```
 
 **Delivery + diagnostics.** Managed Codex sessions on a supported Codex deliver
-over the app-server path, wired into managed supervision (B131): inbound c2c
-mail is injected into the thread's model-visible history on arrival over the
-authenticated loopback app-server (draft-safe; never rendered in the TUI
-transcript). If eligible **local** mail starts a gated turn, that turn contains
+over the daemon's private Unix-domain WebSocket, or the authenticated loopback
+fallback, wired into managed supervision (B131): inbound c2c mail is injected
+into the thread's model-visible history on arrival (draft-safe; never rendered
+in the TUI transcript). If eligible **local** mail starts a gated turn, that turn contains
 the same explicitly delimited DATA envelopes, so the agent can read sender,
 message ID, and body even when the app-server does not surface injected history
 to the turn. The thread must be explicitly idle and DND off; relay-origin mail
