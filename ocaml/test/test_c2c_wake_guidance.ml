@@ -69,11 +69,11 @@ let test_muse_none_both_contexts () =
   Alcotest.(check bool) "install has Monitor recipe" true (has_monitor_recipe i);
   Alcotest.(check bool) "managed has Monitor recipe" true (has_monitor_recipe m)
 
-(* B358: managed muse keeps NONE + manual (hooks are activity-only, no
-   out-of-process sender) and states the interim truth: pre-B361 the
-   SessionStart hook drains the NATIVE row, not the managed alias row, so
-   managed-alias mail needs Monitor or poll-inbox even at SessionStart. *)
-let test_muse_managed_names_hook_posture () =
+(* B358/B361: managed muse keeps NONE + manual (hooks are activity-only,
+   no out-of-process sender) and states adopted-row truth: since B361,
+   SessionStart drains the MANAGED row at first turn submit, but idle wake
+   stays NONE (no arrival-time path). *)
+let test_muse_managed_names_adopted_posture () =
   let m = C2c_wake_guidance.advice ~client:"muse" ~context:`Managed_start in
   let contains hay needle =
     let hl = String.length hay and nl = String.length needle in
@@ -84,17 +84,21 @@ let test_muse_managed_names_hook_posture () =
         in
         loop 0)
   in
-  Alcotest.(check bool) "primary names B361 interim" true
+  Alcotest.(check bool) "primary names B361 adoption" true
     (contains m.primary "B361");
   Alcotest.(check bool) "primary names Monitor" true
     (contains m.primary "Monitor");
-  Alcotest.(check bool) "warns no auto-drain pre-B361" true
-    (List.exists (fun s -> contains s "does NOT auto-drain") m.warning_lines)
+  Alcotest.(check bool) "primary states managed-row drain" true
+    (contains m.primary "drains the managed row");
+  Alcotest.(check bool) "no stale interim no-auto-drain line" false
+    (List.exists
+       (fun s -> contains s "does NOT auto-drain")
+       m.warning_lines)
 
-(* B359: the managed arm forecasts post-B361 truth without claiming it —
-   SessionStart will drain the managed row at first turn submit, but idle
-   wake stays NONE (no arrival-time path either way). *)
-let test_muse_managed_post_b361_forecast () =
+(* B361: the managed arm states adopted-row truth without overclaiming —
+   SessionStart drains the managed row at first turn submit, but idle wake
+   stays NONE (no arrival-time path either way). *)
+let test_muse_managed_states_adopted_truth () =
   let m = C2c_wake_guidance.advice ~client:"muse" ~context:`Managed_start in
   let contains hay needle =
     let hl = String.length hay and nl = String.length needle in
@@ -105,9 +109,10 @@ let test_muse_managed_post_b361_forecast () =
         in
         loop 0)
   in
-  Alcotest.(check bool) "forecasts managed-row drain post-B361" true
-    (List.exists (fun s -> contains s "Post-B361") m.warning_lines);
-  Alcotest.(check bool) "forecast keeps idle wake NONE" true
+  Alcotest.(check bool) "states managed-row drain" true
+    (List.exists
+       (fun s -> contains s "drains the managed row") m.warning_lines);
+  Alcotest.(check bool) "keeps idle wake NONE" true
     (List.exists (fun s -> contains s "idle wake stays NONE") m.warning_lines)
 
 (* B359: the unknown-client fallback must never be reachable for muse —
@@ -153,10 +158,10 @@ let () =
         ; Alcotest.test_case "grok manual" `Quick test_grok_manual
         ; Alcotest.test_case "muse none both contexts" `Quick
             test_muse_none_both_contexts
-        ; Alcotest.test_case "muse managed names hook posture" `Quick
-            test_muse_managed_names_hook_posture
-        ; Alcotest.test_case "muse managed post-B361 forecast" `Quick
-            test_muse_managed_post_b361_forecast
+        ; Alcotest.test_case "muse managed names adopted posture" `Quick
+            test_muse_managed_names_adopted_posture
+        ; Alcotest.test_case "muse managed states adopted truth" `Quick
+            test_muse_managed_states_adopted_truth
         ; Alcotest.test_case "muse casefold hits muse arm" `Quick
             test_muse_casefold_hits_muse_arm ] )
     ]
