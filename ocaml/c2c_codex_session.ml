@@ -1379,34 +1379,77 @@ let ownership_path_kind path =
   | Unix.Unix_error (Unix.ENOENT, _, _) -> Ownership_missing
   | _ -> Ownership_unknown
 
-(* Broker.list_registrations intentionally treats unreadable or malformed
-   registry state as an empty list. That is safe for display, but unsafe for an
-   ownership decision: an unavailable registry can hide a live owner. *)
-let ownership_registrations ~broker_root : (C2c_mcp.registration list, unit) result =
+(* Ownership reads use one no-follow snapshot. Do not reread through the
+   display-oriented broker loader, which converts read/JSON failures to []. *)
+let ownership_registration entry =
+  let number = function
+    | `Int _ -> true
+    | `Float f -> Float.is_finite f
+    | _ -> false
+  in
+  let string = function `String _ -> true | _ -> false in
+  let integer = function `Int n -> n >= 0 | _ -> false in
+  let boolean = function `Bool _ -> true | _ -> false in
+  let optional check = function `Null -> true | value -> check value in
+  let unique fields =
+    let keys = List.map fst fields in
+    List.length keys = List.length (List.sort_uniq String.compare keys)
+  in
+  let compacting = function
+    | `Assoc fields ->
+        unique fields
+        && List.for_all (fun (key, value) ->
+             match key with
+             | "started_at" -> number value
+             | "reason" -> optional string value
+             | _ -> false) fields
+        && List.mem_assoc "started_at" fields
+    | _ -> false
+  in
+  let valid_field (key, value) =
+    match key with
+    | "session_id" | "alias" ->
+        (match value with `String s -> String.trim s <> "" | _ -> false)
+    | "pid" -> optional (function `Int n -> n > 0 | _ -> false) value
+    | "pid_start_time" -> optional integer value
+    | "compaction_count" -> integer value
+    | "registered_at" | "dnd_since" | "dnd_until" | "confirmed_at"
+    | "pubkey_signed_at" | "last_activity_ts" -> optional number value
+    | "dnd" | "metadata_opt_out" -> boolean value
+    | "automated_delivery" -> optional boolean value
+    | "canonical_alias" | "client_type" | "plugin_version" | "enc_pubkey"
+    | "ed25519_pubkey" | "pubkey_sig" | "role" | "tmux_location"
+    | "herdr_pane" | "herdr_socket" | "cwd" | "registered_by"
+    | "opaque_host_id" -> optional string value
+    | "compacting" -> optional compacting value
+    | _ -> false
+  in
+  match entry with
+  | `Assoc fields when unique fields && List.for_all valid_field fields
+                      && List.mem_assoc "session_id" fields
+                      && List.mem_assoc "alias" fields ->
+      C2c_mcp.Broker.registration_of_json entry
+  | _ -> invalid_arg "invalid ownership registration"
+
+let ownership_registrations_with_hook ~after_read ~broker_root
+    : (C2c_mcp.registration list, unit) result =
   let path = Filename.concat broker_root "registry.json" in
-  match C2c_start.read_regular_file_nofollow path with
-  | C2c_start.Regular_file_missing -> Ok []
-  | C2c_start.Regular_file_unreadable _ -> Error ()
-  | C2c_start.Regular_file_contents contents ->
-      (try
-         match Yojson.Safe.from_string contents with
-         | `List entries ->
-             (* [list_registrations] deliberately treats malformed rows as
-                absent.  That is useful for ordinary display, but this path
-                makes an ownership decision, so validate every row before
-                accepting even a filtered-empty result. *)
-             List.iter
-               (fun entry -> ignore (C2c_mcp.Broker.registration_of_json entry))
-               entries;
-             let regs =
-               C2c_mcp.Broker.list_registrations
-                 (C2c_mcp.Broker.create ~root:broker_root)
-             in
-             (* list_registrations filters expired hook rows; a parsed registry
-               whose visible list is empty is still a confirmed empty set. *)
-             Ok regs
-         | _ -> Error ()
-       with _ -> Error ())
+  try
+    let snapshot = C2c_start.read_regular_file_nofollow path in
+    after_read ();
+    match snapshot with
+    | C2c_start.Regular_file_missing -> Ok []
+    | C2c_start.Regular_file_unreadable _ -> Error ()
+    | C2c_start.Regular_file_contents contents ->
+        (match Yojson.Safe.from_string contents with
+         | `List entries -> Ok (List.map ownership_registration entries)
+         | _ -> Error ())
+  with _ -> Error ()
+
+let ownership_registrations ~broker_root =
+  (* Keep even expired rows in this snapshot. The caller applies the broker's
+     authoritative [registration_is_alive], including hook TTL, to each owner. *)
+  ownership_registrations_with_hook ~after_read:(fun () -> ()) ~broker_root
 
 (* #24 write-side guard: does a DIFFERENT, still-alive managed instance already
    own [thread_id]? Mirrors the [bound_other_thread] predicate shape used by the

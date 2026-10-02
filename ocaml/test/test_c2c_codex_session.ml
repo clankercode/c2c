@@ -823,6 +823,63 @@ let test_write_guard_accepts_valid_registry_with_expired_rows () =
             (Some thread) m.thread_id
       | None -> Alcotest.fail "self mapping vanished")
 
+let test_registry_snapshot_survives_path_replacement () =
+  with_split_brain_env (fun ~inst:_ ~broker_root ->
+      let path = Filename.concat broker_root "registry.json" in
+      let row = `Assoc [ ("session_id", `String "live-owner");
+                        ("alias", `String "owner");
+                        ("pid", `Int (Unix.getpid ())) ] in
+      List.iter (fun replacement ->
+        Yojson.Safe.to_file path (`List [row]);
+        let after_read () =
+          Sys.remove path;
+          match replacement with
+          | "malformed" ->
+              let oc = open_out path in output_string oc "{"; close_out oc
+          | "symlink" -> Unix.symlink (Filename.concat broker_root "missing") path
+          | _ -> ()
+        in
+        (match S.ownership_registrations_with_hook ~after_read ~broker_root with
+         | Ok [reg] ->
+             Alcotest.(check string) "validated snapshot retains owner"
+               "live-owner" reg.C2c_mcp.session_id
+         | _ -> Alcotest.fail "replacement discarded the validated owner snapshot");
+        (try Sys.remove path with _ -> ()))
+        ["malformed"; "symlink"; "absent"])
+
+let test_registry_malformed_optional_fields_refuse_binding () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let dir = Filename.concat inst "self" in
+      ignore (write_codex_mapping ~dir ~session_id:"sid-self" ~thread_id:None);
+      let path = Filename.concat broker_root "registry.json" in
+      let base = [ ("session_id", `String "sid-expired");
+                   ("alias", `String "expired");
+                   ("registered_by", `String "codex-hook");
+                   ("registered_at", `Float 1.); ("last_activity_ts", `Float 1.) ] in
+      let fields = [ "pid"; "pid_start_time"; "compaction_count";
+        "registered_at"; "dnd_since"; "dnd_until"; "confirmed_at";
+        "pubkey_signed_at"; "last_activity_ts"; "dnd"; "automated_delivery";
+        "metadata_opt_out"; "canonical_alias"; "client_type"; "plugin_version";
+        "enc_pubkey"; "ed25519_pubkey"; "pubkey_sig"; "role"; "tmux_location";
+        "herdr_pane"; "herdr_socket"; "cwd"; "registered_by"; "opaque_host_id";
+        "compacting" ] in
+      let check row =
+        Yojson.Safe.to_file path (`List [row]);
+        Alcotest.(check bool) "malformed registry cannot authorize binding" false
+          (S.persist_discovered_thread ~instance_dir:dir ~name:"self" ~broker_root
+             ~thread_id:"thread-uncertain-registry")
+      in
+      List.iter (fun field ->
+        check (`Assoc ((field, `List []) :: List.remove_assoc field base))) fields;
+      List.iter (fun (field, value) ->
+        check (`Assoc ((field, value) :: List.remove_assoc field base)))
+        [ "pid", `String "123"; "pid", `Float 123.; "pid", `Int (-1);
+          "pid_start_time", `Float 1.; "registered_at", `String "nan";
+          "compacting", `Assoc ["started_at", `Float 1.; "reason", `Int 7] ];
+      check (`Assoc (("pid", `Int 1) :: ("pid", `Null) :: base));
+      check (`Assoc (("unknown", `Bool true) :: base));
+      check (`Assoc (List.remove_assoc "session_id" base)))
+
 let test_thread_ownership_lock_serializes_concurrent_claims () =
   with_split_brain_env (fun ~inst ~broker_root ->
       let broker = B.create ~root:broker_root in
@@ -2353,6 +2410,10 @@ let () =
             test_mapping_read_failures_fail_closed
         ; test_case "expired registry rows remain a valid empty set" `Quick
             test_write_guard_accepts_valid_registry_with_expired_rows
+        ; test_case "registry replacement retains one snapshot" `Quick
+            test_registry_snapshot_survives_path_replacement
+        ; test_case "malformed registry optional fields refuse binding" `Quick
+            test_registry_malformed_optional_fields_refuse_binding
         ; test_case "sibling metadata files are ignored" `Quick
             test_sibling_metadata_files_are_ignored ] )
     ; ( "delivery-degraded",

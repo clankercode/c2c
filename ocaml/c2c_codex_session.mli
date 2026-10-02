@@ -367,6 +367,12 @@ val write_mapping : instance_dir:string -> mapping -> bool
     owns [thread_id] — the caller then records the degraded delivery signal
     rather than minting a split-brain second binding. A DEAD prior owner is
     reclaimed freely. Pure w.r.t. the broker registry (read-only liveness). *)
+val ownership_registrations_with_hook :
+  after_read:(unit -> unit) -> broker_root:string ->
+  (C2c_mcp.registration list, unit) result
+(** Test seam for replacing the registry after the single no-follow snapshot.
+    Rows are strictly validated; liveness is applied separately by the caller. *)
+
 val persist_discovered_thread :
   instance_dir:string -> name:string -> broker_root:string ->
   thread_id:string -> bool
