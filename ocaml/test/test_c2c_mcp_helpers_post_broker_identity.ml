@@ -225,6 +225,24 @@ let test_concurrent_sibling_addition_is_detected () =
         (PB.managed_session_id_from_codex_thread_resolution
            ~broker_root:broker ~thread_id:"thread-a"))
 
+let test_unique_mapping_requires_strict_registry () =
+  with_resolver_env (fun ~root:_ ~instances ~broker ->
+      ignore (make_instance ~instances ~name:"unit-a" ~session_id:"sid-a"
+                ~alias:"unit-a" ~thread_id:(Some "thread-a"));
+      write_json (Filename.concat broker "registry.json")
+        (`List [ registry_entry ~session_id:"sid-a" ~alias:"unit-a" ()
+               |> fun (`Assoc fields) ->
+               `Assoc (fields @ [ ("dnd", `String "malformed") ]) ]);
+      expect_resolution "unique malformed registry is uncertain" "uncertain"
+        (PB.managed_session_id_from_codex_thread_resolution
+           ~broker_root:broker ~thread_id:"thread-a");
+      write_json (Filename.concat broker "registry.json")
+        (`List [ registry_entry ~session_id:"sid-a" ~alias:"unit-a" ()
+               ; registry_entry ~session_id:"sid-a" ~alias:"unit-b" () ]);
+      expect_resolution "unique duplicate registry is uncertain" "uncertain"
+        (PB.managed_session_id_from_codex_thread_resolution
+           ~broker_root:broker ~thread_id:"thread-a"))
+
 let () =
   Alcotest.run "c2c_mcp_helpers_post_broker_identity"
     [ ("resolver",
@@ -245,7 +263,9 @@ let () =
        ; test_case "sibling replacement" `Quick
            test_sibling_replacement_is_detected
        ; test_case "concurrent sibling addition" `Quick
-           test_concurrent_sibling_addition_is_detected ])
+           test_concurrent_sibling_addition_is_detected
+       ; test_case "unique mapping validates registry" `Quick
+           test_unique_mapping_requires_strict_registry ])
     ; ("registry",
        [ test_case "strict optional fields and duplicate identities" `Quick
            test_registry_rejects_malformed_optional_and_duplicate_identity ]) ]

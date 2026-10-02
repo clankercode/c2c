@@ -1484,9 +1484,9 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
         | None -> uncertain := true; []
       in
       let parent_after_readdir = codex_path_identity instances_dir in
-      if Option.is_none parent_after_readdir
-         || not (same_codex_path_identity parent_before (Option.get parent_after_readdir))
-      then uncertain := true;
+      (match parent_after_readdir with
+       | Some parent when same_codex_path_identity parent_before parent -> ()
+       | _ -> uncertain := true);
       let entry_snapshots =
         match snapshot_codex_entries ~instances_dir entries with
         | Ok snapshots -> snapshots
@@ -1563,22 +1563,23 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
         | Some current -> codex_entry_names_equal entries current
         | None -> false
       in
-      if Option.is_none parent_after_scan
-         || not (same_codex_path_identity parent_before
-                   (Option.get parent_after_scan))
-         || not (entry_names_unchanged)
-         || not (codex_entries_unchanged entry_snapshots)
+      (match parent_after_scan with
+       | Some parent when same_codex_path_identity parent_before parent -> ()
+       | _ -> uncertain := true);
+      if not entry_names_unchanged || not (codex_entries_unchanged entry_snapshots)
       then uncertain := true;
       if !uncertain then
         Codex_thread_uncertain
       else
         match matches with
       | [] -> Codex_thread_unmapped
-      | [ (session_id, _) ] -> Codex_thread_resolved session_id
       | _ ->
           (match strict_registry ~broker_root with
            | Error () -> Codex_thread_uncertain
            | Ok regs ->
+               match matches with
+               | [ (session_id, _) ] -> Codex_thread_resolved session_id
+               | _ ->
                let rank (session_id, _) =
                  match List.find_opt (fun (r : registration) -> r.session_id = session_id) regs with
                  | None -> (0, None)
