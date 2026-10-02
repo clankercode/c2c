@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-10-02T20:07:59Z"
 depends_on: []
 estimate_hours: 1
 id: B361
 priority: high
+started_at: null
 status: pending
 tags: []
 title: muse hook adoption arm for managed sessions (hook env scrubbed, dual identity)
@@ -12,3 +14,13 @@ updated_at: "2026-10-02T20:07:59Z"
 ---
 
 muse hook adoption arm for managed sessions (hook env scrubbed, dual identity)
+
+B355 follow-up (recorded by B358 per the B355-REVIEW ASSUMPTION handoff): `c2c hook muse` SessionStart mints a competing row for managed sessions because hook env is scrubbed.
+
+PROBE (2026-10-02T19:51Z, muse 1.4.2-R4684.1, real echo TUI in tmux): SessionStart hook stdin carries session_id + cwd=workspace, but hook env has NO C2C_* and NO MUSE_* even though the TUI process itself (direct pane child, NOT a daemon) carries C2C_MCP_SESSION_ID=probe-sid-b358 in /proc/PID/environ. So muse scrubs/does-not-propagate its env to hook children. Consequence: env-first resolution in hook_muse_cmd NEVER sees a managed identity; SessionStart falls to step 3 and mints a second row keyed on the native payload sid (dual identity: pre-registered `name` row from B358 + hook `01a0…` row with registered_by=muse-hook). Managed-row inbox then misses the SessionStart backlog drain (it drains the payload row), and mid-session Stop/PostToolUse touch the payload sid (unknown to the managed row) so the activity anchor misses too.
+
+FIX SHAPE (kimi-#40 adoption, adapted): SessionStart step 0 — when env_sid is absent, adopt a managed row by normalized cwd + live (pid,pid_start_time) pair before minting. Then decide the mid-session mapping: Stop/PostToolUse arrive under the payload sid, so the adoption must persist a payload-sid→managed-sid mapping (or touch-through rule) for the managed row's activity anchor, else managed muse rows decay at the #51 24h TTL while actually live. SessionEnd deregisters hook rows only — adopted rows are managed-owned and must survive.
+
+CONSTRAINTS: two managed muse instances in one directory are indistinguishable to the hook (kimi-#40 known limit — bail loudly rather than guess); a co-located vanilla muse TUI in a managed directory would be adopted too (document). Never trust a recorded pid without C2c_pid_identity (#85). Keep exit-0-never-breaks-the-turn.
+
+Evidence: .collab/findings/2026-10-02T19-55-00Z-b358-muse-hook-env-scrubbed.md (B358 worktree; merge with B358).
