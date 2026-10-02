@@ -107,10 +107,11 @@ val select_new_loaded_thread : before:string list -> candidates:string list -> s
 val daemon_attach_thread_proof :
   requested_thread:string option ->
   handoff_thread:string option ->
+  before_loaded_threads:string list ->
   workspace_loaded_threads:string list -> string option
-(** Bind a daemon frontend only when its authenticated handoff thread is in the
-    authenticated workspace-loaded set and agrees with any requested resume
-    target. *)
+(** Bind a daemon frontend only when a fresh launch has exactly one newly loaded
+    workspace thread, or a resumed launch has an authenticated handoff matching
+    the requested thread and workspace-loaded set. *)
 
 (** Pure gate for selecting daemon attach before starting its detached
     frontend. All three capabilities are required; callers fall back to the

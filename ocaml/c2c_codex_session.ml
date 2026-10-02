@@ -166,14 +166,23 @@ let select_new_loaded_thread ~before ~candidates =
    loaded-thread set agree.  The requested resume target is an input to the
    child command, not proof that the remote TUI actually loaded that thread. *)
 let daemon_attach_thread_proof ~requested_thread ~handoff_thread
-    ~workspace_loaded_threads =
-  match handoff_thread with
-  | Some thread_id when List.mem thread_id workspace_loaded_threads ->
-      (match requested_thread with
-       | None -> Some thread_id
-       | Some requested when requested = thread_id -> Some thread_id
-       | Some _ -> None)
-  | _ -> None
+    ~before_loaded_threads ~workspace_loaded_threads =
+  match requested_thread with
+  | None ->
+      (* A fresh frontend has no supplied id that could be trusted.  The
+         authenticated workspace-filtered list may prove it when exactly one
+         newly loaded thread appears. *)
+      select_new_loaded_thread ~before:before_loaded_threads
+        ~candidates:workspace_loaded_threads
+  | Some requested ->
+      (* A supplied resume id is only accepted when the frontend itself handed
+         off that exact id and the authenticated server reports it loaded in
+         this workspace. *)
+      (match handoff_thread with
+       | Some thread_id
+         when thread_id = requested
+              && List.mem thread_id workspace_loaded_threads -> Some thread_id
+       | _ -> None)
 
 let daemon_attach_forced_off () =
   match Sys.getenv_opt "C2C_CODEX_FORCE_PRIVATE_APPSERVER" with
@@ -2190,7 +2199,10 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
              frontend_extra_args ~yolo ~extra:(model_args @ extra_args)
            in
            let frontend_extra = if fresh then fresh_frontend_extra else frontend_extra in
-           let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
+             let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
+             let loaded_before =
+               C2c_codex_ingress.real_loaded_threads ~endpoint:ep ~token:""
+             in
            let argv_list =
              let cmd =
                match thread with
@@ -2218,8 +2230,10 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
            in
            C2c_start.write_config
              { C2c_start.name; client = "codex"; session_id;
-               resume_session_id = Option.value thread ~default:session_id;
-               codex_resume_target = thread; alias; extra_args; created_at;
+                 (* The requested resume id is only an argv input until the
+                    remote frontend proves it loaded that exact thread. *)
+                 resume_session_id = session_id; codex_resume_target = None;
+                 alias; extra_args; created_at;
                last_launch_at = Some now; last_exit_code = None;
                last_exit_reason = None;
                broker_root = (try C2c_start.broker_root () with _ -> "");
@@ -2432,6 +2446,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                         (match daemon_attach_thread_proof
                                  ~requested_thread:thread
                                  ~handoff_thread:handoff
+                                 ~before_loaded_threads:loaded_before
                                  ~workspace_loaded_threads:loaded_for_cwd with
                          | Some tid -> Some tid
                          | None when Unix.gettimeofday () < deadline ->

@@ -241,7 +241,8 @@ let test_daemon_attach_thread_proof () =
   let check label expected requested handoff loaded =
     Alcotest.(check (option string)) label expected
       (S.daemon_attach_thread_proof ~requested_thread:requested
-         ~handoff_thread:handoff ~workspace_loaded_threads:loaded)
+         ~handoff_thread:handoff ~before_loaded_threads:["old"]
+         ~workspace_loaded_threads:loaded)
   in
   check "resume needs frontend handoff" None (Some "wanted") None ["wanted"];
   check "resume absent from workspace" None (Some "wanted") (Some "wanted") [];
@@ -249,10 +250,8 @@ let test_daemon_attach_thread_proof () =
     (Some "foreign") ["wanted"; "foreign"];
   check "confirmed resume" (Some "wanted") (Some "wanted")
     (Some "wanted") ["wanted"; "other"];
-  check "fresh concurrent thread cannot substitute for handoff" None None None
-    ["other"];
-  check "confirmed fresh thread" (Some "fresh") None (Some "fresh")
-    ["fresh"; "other"]
+  check "fresh existing thread is not claimed" None None None ["old"];
+  check "confirmed fresh thread" (Some "fresh") None None ["old"; "fresh"]
 
 let test_daemon_thread_handoff_rejects_fractional_generation () =
   let dir = Filename.concat (Filename.get_temp_dir_name ())
