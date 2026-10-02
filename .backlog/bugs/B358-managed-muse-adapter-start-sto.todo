@@ -1,0 +1,17 @@
+---
+complexity: high
+created_at: "2026-10-02T17:26:37Z"
+depends_on:
+    - B355
+    - B356
+estimate_hours: 8
+id: B358
+priority: medium
+status: pending
+tags:
+    - muse
+title: managed muse adapter start stop restart e2e
+updated_at: "2026-10-02T17:26:37Z"
+---
+
+managed muse adapter start stop restart e2e
