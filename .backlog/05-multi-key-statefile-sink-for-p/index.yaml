@@ -14,5 +14,11 @@ milestones:
       path: 01-specify-implement-and-prove-mu
       status: done
 name: Multi-key statefile sink for pi-c2c writer multiplexing
+stats:
+    blocked: 0
+    done: 3
+    in_progress: 0
+    pending: 0
+    total_tasks: 3
 status: done
 weeks: 1

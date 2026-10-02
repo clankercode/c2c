@@ -347,5 +347,13 @@ bugs:
     - file: B348-transient-relay-peek-errors-su.todo
     - file: B349-connector-peek-key-ignores-cs.todo
     - file: B350-c2c-codex-install-sets-unsuppo.todo
-    - file: B351-test-dryrun.todo
+    - file: B351-muse-client-support-umbrella.todo
     - file: B352-spike-muse-live-send-wake-plus.todo
+    - file: B353-muse-tier-0-identity-alias-wak.todo
+    - file: B354-c2c-install-uninstall-muse-set.todo
+    - file: B355-c2c-hook-muse-lifecycle-regist.todo
+    - file: B356-muse-delivery-sidecar-via-sess.todo
+    - file: B357-muse-mcp-polish-posture-pinnin.todo
+    - file: B358-managed-muse-adapter-start-sto.todo
+    - file: B359-muse-doctor-health-wake-guidan.todo
+    - file: B360-muse-docs-website-skills-codeg.todo

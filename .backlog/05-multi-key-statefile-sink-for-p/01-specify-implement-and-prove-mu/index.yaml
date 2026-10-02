@@ -14,4 +14,10 @@ estimate_hours: 8
 id: P5.M1
 locked: false
 name: Specify, implement, and prove multi-key sink
+stats:
+    blocked: 0
+    done: 3
+    in_progress: 0
+    pending: 0
+    total_tasks: 3
 status: done

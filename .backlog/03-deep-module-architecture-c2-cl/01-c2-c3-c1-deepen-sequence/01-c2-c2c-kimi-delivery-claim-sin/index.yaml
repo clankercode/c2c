@@ -4,6 +4,12 @@ estimate_hours: 12
 id: P3.M1.E1
 locked: false
 name: 'C2: C2c_kimi_delivery_claim (single-writer)'
+stats:
+    blocked: 0
+    done: 4
+    in_progress: 0
+    pending: 0
+    total: 4
 status: done
 tasks:
     - complexity: medium

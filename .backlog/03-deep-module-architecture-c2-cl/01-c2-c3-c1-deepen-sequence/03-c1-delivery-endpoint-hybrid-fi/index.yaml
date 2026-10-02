@@ -5,6 +5,12 @@ estimate_hours: 18
 id: P3.M1.E3
 locked: false
 name: 'C1: DELIVERY_ENDPOINT hybrid first cut'
+stats:
+    blocked: 0
+    done: 4
+    in_progress: 0
+    pending: 0
+    total: 4
 status: done
 tasks:
     - complexity: medium

@@ -14,5 +14,11 @@ milestones:
       path: 01-c2-c3-c1-deepen-sequence
       status: done
 name: Deep-module architecture (C2 claim · C3 liveness · C1 DeliveryEndpoint)
+stats:
+    blocked: 0
+    done: 11
+    in_progress: 0
+    pending: 0
+    total_tasks: 11
 status: done
 weeks: 4

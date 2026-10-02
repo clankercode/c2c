@@ -5,6 +5,12 @@ estimate_hours: 6
 id: P4.M1.E2
 locked: false
 name: deliver-service multi-client watch + live smoke
+stats:
+    blocked: 0
+    done: 2
+    in_progress: 0
+    pending: 0
+    total: 2
 status: done
 tasks:
     - complexity: medium

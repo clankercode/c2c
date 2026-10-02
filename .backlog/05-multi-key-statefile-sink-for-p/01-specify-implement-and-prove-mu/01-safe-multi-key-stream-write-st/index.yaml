@@ -4,6 +4,12 @@ estimate_hours: 8
 id: P5.M1.E1
 locked: false
 name: Safe multi-key stream-write-statefiles command
+stats:
+    blocked: 0
+    done: 3
+    in_progress: 0
+    pending: 0
+    total: 3
 status: done
 tasks:
     - complexity: medium

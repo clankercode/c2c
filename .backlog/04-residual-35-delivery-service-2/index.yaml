@@ -14,5 +14,11 @@ milestones:
       path: 01-agy-adapter-multi-client-watch
       status: done
 name: 'Residual #35 delivery-service (2nd adapter + dogfood)'
+stats:
+    blocked: 0
+    done: 4
+    in_progress: 0
+    pending: 0
+    total_tasks: 4
 status: done
 weeks: 2

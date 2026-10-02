@@ -24,4 +24,10 @@ estimate_hours: 12
 id: P4.M1
 locked: false
 name: agy adapter + multi-client watch + smoke
+stats:
+    blocked: 0
+    done: 4
+    in_progress: 0
+    pending: 0
+    total_tasks: 4
 status: done

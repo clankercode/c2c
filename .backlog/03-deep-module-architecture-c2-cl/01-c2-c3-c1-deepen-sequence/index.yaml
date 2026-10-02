@@ -34,4 +34,10 @@ estimate_hours: 40
 id: P3.M1
 locked: false
 name: C2→C3→C1 deepen sequence
+stats:
+    blocked: 0
+    done: 11
+    in_progress: 0
+    pending: 0
+    total_tasks: 11
 status: done

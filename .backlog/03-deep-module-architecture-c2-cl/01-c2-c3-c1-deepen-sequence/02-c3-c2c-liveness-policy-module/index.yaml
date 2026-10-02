@@ -5,6 +5,12 @@ estimate_hours: 10
 id: P3.M1.E2
 locked: false
 name: 'C3: C2c_liveness policy module'
+stats:
+    blocked: 0
+    done: 3
+    in_progress: 0
+    pending: 0
+    total: 3
 status: done
 tasks:
     - complexity: medium
