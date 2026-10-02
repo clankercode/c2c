@@ -414,9 +414,10 @@ def run_live() -> int:
             # PID generation left that could route a future message to this
             # stopped process.
             return (len(matching) == 1
-                    and matching[0].get("alive") is False
-                    and matching[0].get("pid") is None
-                    and matching[0].get("pid_start_time") is None)
+                    and matching[0].get("state") in {"dead", "unknown"}
+                    and matching[0].get("alive") is not True
+                    and "pid" not in matching[0]
+                    and "pid_start_time" not in matching[0])
         results["deregistered"] = wait_for(deregistered, timeout=30, interval=3) is not None
         log(f"[appserver-e2e] after stop: my codex procs remaining = "
             f"{len(my_codex_pids(str(broker)))} clean={results['clean_teardown']} "
