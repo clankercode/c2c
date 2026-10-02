@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-10-02T19:28:10Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-02T20:54:26Z"
 complexity: high
 created_at: "2026-10-02T17:26:35Z"
 depends_on:
     - B352
+duration_minutes: 86.28269817576667
 estimate_hours: 5
 id: B354
 priority: high
 started_at: "2026-10-02T19:28:10Z"
-status: in_progress
+status: done
 tags: []
 title: c2c install uninstall muse settings skill plugin
-updated_at: "2026-10-02T19:28:10Z"
+updated_at: "2026-10-02T20:54:26Z"
 ---
 
 # `c2c install/uninstall muse` (settings mcpServers + skill + plugin/hooks)
