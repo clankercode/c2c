@@ -1,6 +1,6 @@
 ---
 complexity: low
-created_at: "2026-10-02T17:26:36Z"
+created_at: "2026-10-02T17:26:35Z"
 depends_on:
     - B352
 estimate_hours: 2
@@ -10,7 +10,49 @@ status: pending
 tags:
     - muse
 title: muse MCP polish posture pinning channel verdict
-updated_at: "2026-10-02T17:26:36Z"
+updated_at: "2026-10-02T17:26:35Z"
 ---
 
-muse MCP polish posture pinning channel verdict
+# muse MCP polish (with-mcp posture, pinning, channel verdict, hijack guard)
+
+## Goal
+
+Make the MCP tier (writer in B354) correct and safe. Needs B352 P3
+(env reachability) + P4/U6 (tool-filter support?).
+
+## Contract
+
+- Posture: MCP behind `--with-mcp` only (B254) — extend the allowed
+  set at `ocaml/cli/c2c_setup.ml:2961` iff P3 proves tools appear.
+  muse has no per-server disable flag; `mode:"optional"` IS the
+  safety (dead server can't block startup) — document that instead
+  of a B290 land-disabled equivalent.
+- Pinning: `C2C_MCP_CLIENT_TYPE=muse` in the written env block
+  (kimi precedent `test_c2c_setup_kimi.ml:238–250`).
+- Allow-list: derive from `C2c_mcp.base_tool_names`
+  (`ocaml/c2c_mcp.ml:29–243`, single source #479) IF muse supports
+  per-tool filtering (U6); else document blanket exposure +
+  `startup_timeout_sec/enabled_tools/disabled_tools` stored-but-
+  unenforced gotcha from the migrate doc.
+- Channel/auto-drain verdict: muse declares no
+  `experimental.claude/channel` → poll-based; confirm
+  `auto_drain_channel_enabled` stays inert for muse
+  (`c2c_mcp_server_inner.ml:75–86`) and managed installs keep
+  writing `AUTO_DRAIN_CHANNEL=0` (`c2c_setup.ml` ×5 + `build_env`).
+  Record the verdict in code comments + docs; do NOT force
+  `C2C_MCP_FORCE_CAPABILITIES` (claude-only precedent).
+- Hijack guard: document the kimi lesson — a child CLI inside muse
+  must use explicit `C2C_MCP_SESSION_ID` + MCP config, never inherit
+  parent session keys; add muse-native keys to the `build_env`
+  strip-list (`c2c_start.ml:4956–4968`) when managed lands (B358).
+- `client_mcp_configured` arm must detect the written entry (B354).
+
+## Acceptance
+
+- Scratch-HOME proof: tools appear, poll_inbox/send round-trip
+  works through MCP, dead-server entry doesn't block muse launch.
+- Verdicts (channel: none/poll; tool-filter: yes+derivation/no+doc)
+  recorded in docs + code comments.
+- Tests: written-config assertions (mode optional, no static sid,
+  pinning) in `test_c2c_setup_muse.ml`; no regression in
+  `test_c2c_mcp_server_inner.ml` auto-drain matrix.

@@ -13,4 +13,62 @@ title: c2c hook muse lifecycle register broker-root
 updated_at: "2026-10-02T17:26:35Z"
 ---
 
-c2c hook muse lifecycle register broker-root
+# `c2c hook muse` (lifecycle register/adopt, broker-root correctness)
+
+## Goal
+
+Muse lifecycle events register identity, anchor activity, and
+deregister cleanly — never breaking a host turn. Gated on B352 P4
+(event vocabulary, payload shape, cwd, stdout contract).
+
+## Contract (`ocaml/cli/c2c_hook_cmd.ml`, grok L1787–1997 / agy L2399–2905 templates)
+
+New `hook_muse_cmd` + group entry (:2913 list + help text). Shared
+skeleton, copy verbatim: 8s SIGALRM→exit-0; `is_subagent_quiet`
+first (`c2c_hook_lib.ml:216`); B130 stdin `agent_id` subagent gate;
+1MiB stdin cap; validate every sid (`C2c_mcp.validate_session_id`);
+outer try→exit-0 (never break the turn); managed-marker gate
+(`C2C_MCP_SESSION_ID` OR `AUTO_REGISTER_ALIAS`, :247–253);
+statefile write-if-not-live with `~client:(Some "muse")`.
+
+- SessionStart: identity env→payload→auto-register (payload field
+  names per P4; accept snake+camel spellings like grok/kimi);
+  register via `locked_sticky_auto_register` (B188/B191
+  NON-REENTRANT lock), `client_type="muse"`,
+  `registered_by="muse-hook"` (None-if-managed-marker, grok-style
+  pre-emptive gate); add `muse-hook` to `is_hook_auto_registration`
+  (`c2c_broker.ml:416–463`) + `same_session_hook_identity_row`
+  (post_broker :1677) so MCP auto-register adopts hook rows (B119).
+- Mid-session events: `touch_hook_activity` + exit 0 (drain only if
+  the watcher does NOT own the channel —
+  `Broker.is_session_channel_capable`); add `"muse-hook"` to
+  `hook_anchor_is_activity_backed` (`c2c_broker.ml:502–507`) ONLY
+  after verified repeating mid-session hooks fire.
+- SessionEnd: deregister hook-owned rows only; never remove the
+  session skill (#82); Stop (or muse's turn-end event) is NEVER
+  teardown (#61 — the agy `agy-env.json` lesson).
+- Broker root: resolve the workspace from the PAYLOAD, never hook
+  cwd (#69/#40). If P4 shows foreign cwd: chdir-before-resolve +
+  `reset_repo_fingerprint_cache ()` immediately before resolving,
+  and resolve NOTHING above that point (`C2C_MCP_BROKER_ROOT` still
+  wins so managed sessions can't relocate). Multi-root set: sort +
+  session-affinity, never index `[0]` (agy ~8% flip lesson).
+- Stdout per P4 contract: `additionalContext`-style JSON (codex/
+  claude) vs silent + identity-agnostic session skill (grok #22/#83
+  — default to agnostic until catalogue timing is proven post-hook).
+- Changelog markers: pass `"muse"` through `c2c_changelog.ml:204`
+  if hooks show changelogs.
+
+## Acceptance
+
+- SessionStart register (fresh + sticky-across-repos + managed
+  no-mint), mid-session touch-only, SessionEnd deregister,
+  malformed-payload→exit-0, subagent-quiet no-op, foreign-cwd
+  broker correctness (P4-shaped fixtures incl. multi-root flip).
+- Tests `test_c2c_hook_muse.ml` via the REAL binary under `env -i`
+  (hermetic temp-HOME/broker): register/teardown/touch/exit-0/
+  managed-not-minted/workspace-from-payload (+ #69-set test if
+  multi-root); `test_c2c_hook_anchor.ml`-style #51 coverage once
+  the allowlist arm lands. Dune stanza with `(deps c2c.exe)`.
+- Live proof: scratch muse session fires SessionStart (row appears),
+  activity anchors, SessionEnd cleans up; broker.log shows no errors.

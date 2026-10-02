@@ -13,4 +13,71 @@ title: c2c install uninstall muse settings skill plugin
 updated_at: "2026-10-02T17:26:35Z"
 ---
 
-c2c install uninstall muse settings skill plugin
+# `c2c install/uninstall muse` (settings mcpServers + skill + plugin/hooks)
+
+## Goal
+
+One-command attach/detach for unmanaged muse sessions. Blocked on the
+B352 P4 hook-transport verdict (plugin-first vs settings.json vs
+no-hooks) — implement the winner; the body covers all three shapes.
+
+## Contract
+
+Tables (`ocaml/cli/c2c_setup.ml`): `known_clients` :2033,
+`install_subcommand_clients` :2041, `init_configurable_clients` :2044
+(free `c2c install muse` routing via :786–810 group),
+`do_install_client` dispatch arm :2464–2481,
+`client_mcp_configured` :2536+ and `client_integration_configured`
+:2636–2665 arms (file-exists like grok's — do NOT copy agy's
+`_ -> false` fallthrough), `--with-mcp` set :2961 (extend ONLY if
+MCP ships — B357 decides posture, this bug implements the writer),
+help strings :2797/:2995. B173 analogue: decide whether muse skips
+the global `~/.config/c2c/default-alias` write like grok (do so if
+multi-session CLI-first).
+
+`setup_muse` writes (mirror closest shape per P4):
+
+- MCP (if `--with-mcp`): merge `mcpServers.c2c` stdio entry into
+  `${XDG_CONFIG_HOME:-$HOME/.config}/muse/settings.json`.
+  LOAD-BEARING: never create a legacy `mcp_servers` key alongside
+  `mcpServers` (loader drops the whole member); `mode:"optional"` so
+  a dead server can't block startup; literal env only (no `${VAR}`);
+  env block mirrors other clients (`C2C_MCP_BROKER_ROOT`,
+  `AUTO_REGISTER_ALIAS`, `AUTO_DRAIN_CHANNEL=0`, `AUTO_JOIN_ROOMS`)
+  but NO static `C2C_MCP_SESSION_ID` (kimi anti-hijack precedent,
+  `c2c_setup.ml:963–978`); warn that entries take effect on next
+  launch only.
+- Skill: owned `SKILL.md` in the muse skills dir (P4 verdict:
+  personal store via `muse skills install` vs owned file write —
+  prefer owned-file if the store permits c2c-managed content,
+  else shell to the CLI and record the receipt accordingly).
+- Hooks: plugin bundle via `muse plugins install` + `approve` (if
+  non-interactive per P4 — else operator-step with exact commands),
+  or `settings.json` merge (parse-tolerant, foreign keys preserved,
+  agy-#65 discipline: pin the schema in a regression test, know the
+  per-file vs per-hook failure scope), or nothing (skill+Monitor).
+- Receive footer: Monitor arming line (grok precedent) or agentapi
+  line (agy precedent) per delivery tier.
+
+Uninstall (`ocaml/cli/c2c_uninstall.ml`): `known_components` :11,
+`recompute_muse_artifacts` covering EVERY setup path (incl. any
+hook-written session skill — its only remover by design, #82),
+dispatch :530–540, `all` list :700. Shared files stripped
+surgically (keys/blocks), never deleted; mode-preserving atomic
+writes (#84 — `?perm` only for c2c-owned files).
+
+## Acceptance
+
+- `c2c install muse` (clean + idempotent re-run), `--dry-run`,
+  `--with-mcp` / without, `--force` overwrite, manifest receipt per
+  `(component,target_dir)`; `c2c uninstall muse` removes everything
+  with AND without the manifest (recompute fallback); `uninstall all`
+  covers muse.
+- Corrupt/foreign `settings.json` (or hooks file) is never clobbered:
+  merge preserves unknown keys; invalid JSON fails closed with a
+  clear error, never a half-write.
+- Tests `test_c2c_setup_muse.ml`: byte-equal artifacts, owned vs
+  shared kinds, no-MCP-by-default (B254), merge-preserves-foreign,
+  schema-shape pinned (agy-#65 style), uninstall round-trip incl.
+  recompute-without-manifest, drift-only skill refresh (#82).
+- Dune stanzas + `(deps c2c.exe)` where the binary is shelled to.

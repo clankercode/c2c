@@ -1,0 +1,67 @@
+---
+complexity: medium
+created_at: "2026-10-02T17:26:34Z"
+depends_on: []
+estimate_hours: 3
+id: B353
+priority: high
+status: pending
+tags:
+    - muse
+title: muse Tier-0 identity alias wake-guidance foundations
+updated_at: "2026-10-02T17:26:34Z"
+---
+
+# muse Tier-0: identity/alias/wake-guidance foundations (poll fallback)
+
+## Goal
+
+`muse` works as a c2c peer with ZERO muse cooperation: CLI-only
+poll/peek/send/whoami/list/rooms from any muse shell, correct alias
+minting, honest NONE wake row + Monitor recipe. No hooks, no MCP, no
+managed start. Can start before B352 lands (identity-key arms take
+provisional values, finalized after the P3 verdict).
+
+## Contract (exact touch points; line refs verified 2026-10-02)
+
+- Alias: free `muse-…` via `C2c_start.default_alias_prefix`
+  (`ocaml/c2c_start.ml:3644`, identity default) — no code.
+- Blocklist: add `muse` + `muse-` in `ocaml/c2c_blocklist.ml:5–72`
+  (B182 keep-in-sync; keep `test_c2c_cli.ml:583` prefix-list green).
+- Inference (`ocaml/c2c_mcp_helpers_post_broker.ml`): native key row in
+  `native_session_id_env_keys` :710–721 (provisional: `MUSE_SESSION_ID`
+  if P3 confirms, else `[]` like cursor + documented fallback);
+  `inferred_client_type_from_env` :875–892 precedence arm (place AFTER
+  established natives; document why); flows into init/send/whoami/MCP.
+- Send sniff: `infer_send_auto_register_client` arm in
+  `ocaml/cli/c2c_send_cmd.ml:23–87` (note: agy/hermes have no arm —
+  muse MUST have one so sends from muse shells self-register).
+- Wake guidance: `advice "muse"` arms (Install + Managed_start) in
+  `ocaml/c2c_wake_guidance.ml:29–173` (NONE + Monitor recipe, verbatim
+  #414); footer flows via `do_install_client` automatically.
+- Detect: `path_detectable_clients` row (`ocaml/cli/c2c_init_cmd.ml:41–49`,
+  `muse` binary) + `detect_client_prefixes`
+  (`ocaml/cli/c2c_setup.ml:2046`, managed-sid prefix match).
+- Health/dashboard: `"muse"` in `supported_clients`
+  (`ocaml/cli/c2c_health_cmd.ml:564`).
+- Detect-agent markers: muse env keys in
+  `ocaml/cli/c2c_detect_agent_cmd.ml:23–39`.
+- Landing copy: CLI-first arm in `ocaml/cli/c2c_root_cmd.ml:137–164`
+  (must NOT fall into the "c2c MCP ready" default).
+- Skill (only if a muse skills dir fits without a spike): embedded
+  `C2c_muse_skill_embedded` + `write/refresh_muse_skill_if_stale`
+  following `c2c_setup.ml:44–135`; body MUST be identity-agnostic
+  (#83: never bake alias/sid/queued-count into a shared file).
+
+## Acceptance
+
+- From a muse shell with `C2C_MCP_SESSION_ID` (or native key post-P3):
+  `c2c whoami`, `send`, `poll-inbox`, `peek-inbox`, `wait-inbox`,
+  `list`, `rooms` all work; alias mints as `muse-…`; sticky alias +
+  B135/B188/B191 behavior matches other clients.
+- `c2c health` shows muse row; landing page names muse correctly.
+- Provisional identity arms replaced/confirmed after B352 P3.
+- Tests: inference unit tests (env→sid/client-type matrix),
+  send-sniff test, wake-guidance pure tests
+  (`test_c2c_wake_guidance.ml` arms), blocklist tests.
+- Live proof: muse↔claude (or codex) poll round-trip recorded.

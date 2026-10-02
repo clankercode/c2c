@@ -1,0 +1,92 @@
+---
+complexity: medium
+created_at: "2026-10-02T17:15:45Z"
+depends_on: []
+estimate_hours: 1
+id: B351
+priority: high
+status: pending
+tags:
+    - muse
+title: muse client support umbrella
+updated_at: "2026-10-02T17:15:45Z"
+---
+
+# muse client support (Meta Muse Code CLI) — umbrella
+
+## Goal
+
+Comprehensive c2c support for `muse` (Meta Muse Code CLI, probed at
+v1.4.2) with cross-client parity: a Muse → Claude/Codex send Just Works,
+same envelope, same delivery honesty. Tiers ship in order; each tier is
+independently useful.
+
+## Background (measured 2026-10-02, read-only recon)
+
+- Binary: `muse` bash launcher + `muse-bin` payload. Key subcommands:
+  `session-message`, `mcp`, `plugins`, `skills`, `exec`, `serve`, `resume`.
+- MCP stdio is real and documented: `settings.json` key `mcpServers`
+  (camelCase), stdio shape with `mode:"optional"`. No channel/push
+  extension → MCP is poll-tools. Gotchas: dual `mcpServers`+`mcp_servers`
+  keys drop the whole member; no `${VAR}` expansion; next-launch-only.
+- Hooks: documented native-plugin contract (manifest
+  `.muse-plugin/plugin.json`, events SessionStart/PreToolUse/PostToolUse/
+  SessionEnd/…, `plugins validate|install|approve|hook test --fixture`).
+  `settings.json` `hooks.handlers` recognized, handler schema unverified.
+- Wake primitive exists but gated: `muse session-message send --target`
+  unlocks ONLY via `MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS=1`
+  (env-only; no persistent switch found). Live delivery untested.
+- Managed start feasible: `muse exec` headless works (keep session
+  logging ON); interactive needs a TTY → tmux/herdr pty + kickoff;
+  untrusted cwd needs `--trust-workspace`.
+- **Nothing is impossible.** Two load-bearing unknowns gate Tier-1/2
+  scope and are owned by the B352 spike (operator-run live probes).
+
+Full evidence: `.collab/research/2026-10-02T17-25-36Z-muse-client-support-scout.md`
+(scout synthesis: per-surface file:line checklists, IGC matrices D1–D4,
+unknowns register U1–U10). Five scout reports back it; their /tmp
+originals are ephemeral — the research doc is the durable reference.
+
+## Tier plan + workstreams
+
+| Bug | Tier | Content | Gates on |
+|---|---|---|---|
+| B352 | spike | Live-send wake + hook/MCP env identity probes (operator-run) | — (first) |
+| B353 | Tier-0 | Identity/alias/wake-guidance foundations (poll fallback, zero muse cooperation) | — |
+| B354 | Tier-1 | `c2c install/uninstall muse` (settings mcpServers + skill + plugin/hooks) | B352 hook-transport verdict |
+| B355 | Tier-1 | `c2c hook muse` (lifecycle register/adopt, broker-root correctness) | B352 |
+| B357 | Tier-1 | MCP polish (with-mcp posture, pinning, channel verdict, hijack guard) | B352 |
+| B359 | Tier-1 | doctor/health/wake-guidance checks (#50-honest) | B354 |
+| B356 | Tier-2 | Delivery sidecar via session-message + DeliveryEndpoint (CONDITIONAL-via-env) | B352 G1/G3 verdicts |
+| B358 | Tier-3 | Managed MuseAdapter + `c2c start/stop/restart` + tmux e2e | B355, B356 |
+| B360 | glue | Docs/website/skills-codegen/runbooks/changelog/tests | B358 (tracks last impl) |
+
+IGC verdicts (matrices in research doc): Monitor floor now (sole
+All-✔ wake); sidecar Tier-2 CONDITIONAL-via-env behind spike; hook
+transport undecided until spike (plugin first, settings.json fallback);
+MCP `mode:optional` behind `--with-mcp`; managed phased day-one
+(recommended) vs deferred (grok precedent) — operator decision, see B358.
+
+## Non-goals / honesty constraints (apply to every workstream)
+
+- Wake row starts NONE/CONDITIONAL-on-monitor; CONDITIONAL-via-env only
+  after a live send→observe proof. Never GUARANTEED from c2c alone
+  without an in-process inject primitive (none observed).
+- B098 bus-never-RPC: peer content is DATA. Any new inject path needs a
+  verdict-inertness regression test mirroring `test_c2c_await_reply.ml` /
+  `test_c2c_codex_autoturn_b098.ml`. `turn/steer`-class APIs are never
+  fed peer content (same reason Codex has no `turn/steer`).
+- Persist-first drain (peek → inject → drain-on-success + race repair);
+  never drain-first. Injector never drains.
+- #50 structural blindness: config-presence checks must say what they
+  cannot observe; live-fire verification is the only proof.
+- New relay-touching surfaces route via `Relay_activation` (B300).
+
+## Acceptance
+
+- All of B352–B360 done, each with its listed acceptance + tests green.
+- Live proofs on record (findings files): Tier-0 poll round-trip,
+  hook fire (register + activity + SessionEnd), sidecar wake at idle
+  (or documented NONE with cause), managed start/stop/restart cycle.
+- `just check` + forced repo-wide `@runtest` green per the 8
+  false-green rules; `bl check` clean.

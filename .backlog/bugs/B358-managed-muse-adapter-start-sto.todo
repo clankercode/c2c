@@ -1,6 +1,6 @@
 ---
 complexity: high
-created_at: "2026-10-02T17:26:37Z"
+created_at: "2026-10-02T17:26:35Z"
 depends_on:
     - B355
     - B356
@@ -11,7 +11,82 @@ status: pending
 tags:
     - muse
 title: managed muse adapter start stop restart e2e
-updated_at: "2026-10-02T17:26:37Z"
+updated_at: "2026-10-02T17:26:35Z"
 ---
 
-managed muse adapter start stop restart e2e
+# Managed muse: MuseAdapter + `c2c start/stop/restart` + tmux e2e
+
+## Goal
+
+`c2c start muse` launches a managed muse peer in tmux/herdr with
+kickoff, registration, delivery, and safe stop/restart. Phased AFTER
+B355 (hook) + B356 (delivery); needs B352 P6 (argv shape) + P4
+(SessionStart-on-resume? hook env visibility?). Operator decision
+D3: phased day-one (recommended — launch shape already mapped) vs
+deferred (grok precedent). If deferred, this bug becomes "document
+no-`c2c-start-muse` everywhere grok says it" + close.
+
+## Contract (`ocaml/c2c_start.ml` unless noted)
+
+- `MuseAdapter : CLIENT_ADAPTER` (:1568–1628 sig) + `Hashtbl.add
+  client_adapters` + `clients["muse"]` table entry (:1644–1704:
+  correct `needs_deliver`/`needs_poker`; `supported_clients` :1705
+  derives) + `start_clients` help text (`c2c_setup.ml:2047`).
+- Argv: `build_start_args` + `prepare_launch_args` branch (:5122–
+  5261; model double-apply guard :5252–5260); resume-flag shape +
+  `--session-id` validation (`cmd_start` :7965–8009; NEVER pass a
+  c2c-minted id as a native conversation id — agy #73 lesson);
+  `normalize_model_override_for_client` arm (:1484 — unknown
+  client currently Errors); fresh `muse [PROMPT]` vs `resume`
+  semantics per P6.
+- Env (`build_env` :4843–4997): `C2C_MCP_SESSION_ID=name`,
+  `C2C_INSTANCE_NAME`, `AUTO_REGISTER_ALIAS`, `BROKER_ROOT`,
+  `AUTO_DRAIN_CHANNEL=0`, `CHANNEL_DELIVERY=1`, `SCHEDULE_TIMER=1`;
+  muse-native session mirror (:4876–4883 style) + legacy strip
+  (:4956–4968); `--trust-workspace` (or pre-recorded trust) so
+  untrusted cwds don't fail fast; session logging stays ON
+  (`--no-session-log` disables local messaging).
+- Kickoff: transport per P6 (positional argv like claude/codex?
+  skill-only like kimi? none+bootstrap like agy?) via
+  `deliver_kickoff` (default no-op) + `[swarm] restart_intro`
+  substitution (`{name}/{alias}/{role}`); alias-authoritative rule
+  `kickoff_alias_is_authoritative` (:6193–6230).
+- Identity: if hooks can't see managed env (kimi #40) or
+  SessionStart is unreliable on resume (agy #73), add
+  `register_managed_muse_session` + pre-fork call (:6962–7047,
+  failure → terminal + broker.log `managed_registration_failed`
+  + refuse launch); teardown strips pid (`clear_registration_pid`
+  :2300).
+- Delivery/idle/mode: `delivery_mode` arm (:5827–5882, shared
+  vocabulary), wake-guidance Managed_start arm, sidecar
+  start/teardown in outer loop + `stop_instance` sweep + stale
+  recovery (:8023–8081); `C2c_idle_contract` kind (Unknown
+  fail-closed unless P6 finds an authoritative signal);
+  `default_restart_timeout_s` arm if slow (:8600, kimi=20s);
+  `default_heartbeat_clients` (:183–184) iff the builtin heartbeat
+  applies; roles (`c2c_role.ml` renderer + agent dir) iff roles
+  target muse.
+- Stop/restart: FREE via single `stop_instance` (:8430–8551) once
+  instance files follow the paired-record convention — but ADD
+  every muse sidecar pidfile to the sweep (:8505–8524), outer-exit
+  cleanup (:6574–6602), restart-stale lists; ALL signalling via
+  `C2c_pid_identity` exact-generation APIs (#85 — never open-code
+  a kill beside `stop_instance`); #86: `instances_dir` is
+  init-time, `putenv` can't redirect it.
+- Do NOT extend `c2c new` (codex|kimi only, B245) without a
+  separate decision.
+
+## Acceptance
+
+- `c2c start/stop/restart muse` + `restart-stale` behavior
+  (idle-gated or Guided-manual per idle verdict) + `dev instances`
+  rows; stale-instance recovery; nested-session + stale-BROKER_ROOT
+  guards hold.
+- Live tmux e2e via `scripts/c2c_tmux.py` ONLY (never raw `c2c
+  start` from bash): cold start, kickoff received, hook fires,
+  delivery arrives, stop removes sidecars without touching
+  strangers (pid-identity test with a recycled-pid fixture).
+- Tests: hermetic adapter/kickoff/registration tests mirroring
+  `test_c2c_start.ml`; restart-stale fixture uses
+  stale-in-one/running-in-the-other (#86 shape).
+- `scripts/c2c_tmux.py` launch help + `KNOWN_TUIS` include muse.

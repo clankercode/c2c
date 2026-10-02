@@ -1,6 +1,6 @@
 ---
 complexity: medium
-created_at: "2026-10-02T17:26:38Z"
+created_at: "2026-10-02T17:26:36Z"
 depends_on:
     - B354
 estimate_hours: 4
@@ -10,7 +10,53 @@ status: pending
 tags:
     - muse
 title: muse doctor health wake-guidance checks
-updated_at: "2026-10-02T17:26:38Z"
+updated_at: "2026-10-02T17:26:36Z"
 ---
 
-muse doctor health wake-guidance checks
+# muse doctor/health/wake-guidance checks (#50-honest)
+
+## Goal
+
+Operators can see muse install/delivery/wake state truthfully.
+Needs B354 (presence signals known); wake classifier shared with
+B356 (env-gated sidecar) — coordinate the enum.
+
+## Contract
+
+- `c2c_doctor_hooks.ml`: `is_muse_registration` triple +
+  `check_muse_install` (skill? hooks/plugin? mcpServers entry? —
+  presence ONLY, labeled as not-proving-fire per #50) +
+  `check_muse_delivery` (DEAF = inbox>0 ∧ ¬poster, kimi
+  `classify_kimi_session` pure precedent, if a sidecar exists) +
+  wake classifier (`Muse_wake_none | Conditional_monitor |
+  Conditional_env_session_message`, grok `.monitor-locks` pid-check
+  precedent :1166–1301) + result field + human/JSON render arms +
+  exit-code wiring (DEAF fails); `--rearm` skips confirmed-dead
+  (#42) and never mints headless targets (#78).
+- `c2c_health_cmd.ml`: probe arm (:208–291 — message MUST contain
+  the client name for the `client_status` substring match) +
+  `"muse"` in `supported_clients` :564 (B353 may already add it —
+  don't duplicate); liveness via `outer_pid_is_ours` (:832–858)
+  once managed exists; relay stays grey-when-inactive (B300 —
+  via `Relay_activation`, never the public URL).
+- `c2c_wake_guidance.ml:29–173`: BOTH contexts (Install +
+  Managed_start) with honest class + primary path; unknown-client
+  fallback must never be reachable for muse. Delivery vocabulary
+  shared with status/instances/doctor (T005 — never overclaim).
+- Minor strings (judgment calls, do them): `whoami` recovery hint
+  (`c2c_whoami_cmd.ml:42–43`), statusline/inject/deliver-inbox
+  `--client` docs, sweep pgrep guard (`c2c_sweep_cmd.ml:267`) if
+  managed outer procs match the pattern, `forward-agent-log`
+  classifier + path/sniff arms (`c2c_forward_agent_log.ml:421–494`)
+  if muse transcripts should be mirrorable.
+
+## Acceptance
+
+- `c2c doctor hooks` + `c2c health` report muse install/delivery/
+  wake correctly across: clean, installed-unfired, live, DEAF,
+  dead-but-registered states. Every presence check's help/output
+  states it does not prove hooks fire (#50).
+- Tests: pure classifier matrices (wake + DEAF truth tables),
+  doctor-hooks golden tests, wake-guidance arms
+  (`test_c2c_wake_guidance.ml`), `test_c2c_doctor_hooks.ml`
+  additions; docs-drift clean on new paths/commands.

@@ -1,6 +1,6 @@
 ---
 complexity: medium
-created_at: "2026-10-02T17:26:47Z"
+created_at: "2026-10-02T17:26:36Z"
 depends_on:
     - B358
 estimate_hours: 5
@@ -10,7 +10,68 @@ status: pending
 tags:
     - muse
 title: muse docs website skills-codegen runbooks tests glue
-updated_at: "2026-10-02T17:26:47Z"
+updated_at: "2026-10-02T17:26:36Z"
 ---
 
-muse docs website skills-codegen runbooks tests glue
+# muse docs/website/skills-codegen/runbooks/tests glue
+
+## Goal
+
+Every user-facing and contributor-facing surface names muse
+correctly, generated files match sources, and the suite is green.
+Tracks the LAST impl bug (B358); start early, finish last.
+
+## Contract
+
+Skills codegen: `.collab/skills/c2c-src/harness/muse.md` (fresh
+fragments as needed) + EMBEDS entry in
+`tools/ci/codegen-c2c-skills.py` (fresh delim) + `just
+codegen-c2c-skills` → `assembled/muse.md` + `c2c_muse_skill_embedded.ml`
+(committed together); `just sync-skills[-check]` gains a `.muse/`
+dst ONLY if muse loads project-local skills there (B352 U8).
+Plugin (only if B354 ships an in-process plugin): `data/muse-plugin/`
+tree + `just codegen-muse-plugin` mirroring hermes (explicit file
+list, letter-only delims, CI drift gate). Alias words: no change
+(client-agnostic pool). Data files are truth — never edit the `.ml`.
+
+Docs (Jekyll publishes every `docs/*.md`; `commands.md` hand-mirrors
+`--help` in the same slice; #414 verbatim recipes — copy, never
+paraphrase in): `client-delivery.md` § + `wake-contract.md` row
+(honest class), `clients/muse.md` page (hermes pattern: permalink,
+install, identity, env table, uninstall), `clients/feature-matrix.md`
+column + deep dive + From/To row/col, `clients/e2e-checklist.md`
+rows, `llms-muse-install.txt` + `llms.txt` + root `llms.txt` mirror,
+`index/get-started/overview/commands/communication-tiers/agent-files
+(iff roles)/architecture/known-issues/connect/cross-machine-broker/
+statusline` rows, changelog entry (`clients: muse`, agent-addressed
+`summary:` + verbatim `setup:`) + `just codegen-changelog`,
+`docs/CLAUDE.md` front-door rules observed. README/CLAUDE/AGENTS.md
+reach lists + delivery-status tables.
+
+Website: hero tab (input+label+panel `docs/_layouts/home.html:24–110`,
+`main.scss:431–458` selectors ×2, `7 clients` stat → 8), og-alt list.
+Fix pre-existing omissions while there (minimum: relay landing
+`relay_server_html.ml:177` missing agy/hermes; judgment: og-alt,
+`c2c_tmux.py:1007`, `KNOWN_TUIS`, statusline/send-sniff/detect-agent,
+missing `llms-hermes-install.txt`).
+
+Runbooks: `c2c-install.md` recipes, `c2c-env-vars.md` entries for
+every new `C2C_MUSE_*`/`MUSE_*` var (verbatim-from-source header),
+`agent-wake-setup.md` client line if Monitor-armed. Findings files
+for each live proof (`<UTC-ts>-<alias>-<topic>.md`).
+
+Tests/build: dune stanzas for every new module/suite (lib →
+`ocaml/dune`, CLI → `ocaml/cli/dune`, `(deps c2c.exe)` wherever the
+binary is shelled to — #60), `C2C_MUSE_*_FIXTURE` gates for external
+effects, wake-guidance/doctor/forward-log/onboarding assertions
+extended, `just check` + forced repo-wide `@runtest` green honoring
+all 8 false-green rules (quote suites AND tests; `[0-9]+ tests? run`).
+
+## Acceptance
+
+- `just check` clean (codegen checks + drift gates + build).
+- `docs` build (`cd docs && bundle exec jekyll build`) clean for
+  structural changes; never commit `_site/`.
+- Repo-wide forced `@runtest`: 0 failures; count quoted as
+  suites+tests with the same method as baseline.
+- `bl check` clean; every B353–B359 acceptance cross-links here.

@@ -13,4 +13,105 @@ title: SPIKE muse live-send wake plus hook-MCP env identity probes
 updated_at: "2026-10-02T17:26:34Z"
 ---
 
-SPIKE muse live-send wake plus hook-MCP env identity probes
+# SPIKE: muse live-send wake + hook/MCP env identity probes (operator-run)
+
+## Goal
+
+Resolve unknowns U1–U10 (research doc §5) that gate Tier-1/2 scope.
+Output is VERDICTS (feasible / conditional / blocked + evidence), not code.
+Blocks B354–B358 scope decisions; B353 (Tier-0) can proceed in parallel.
+
+## Safety rules (load-bearing)
+
+- NEVER `session-message send` into a live foreign session. All send
+  probes target a scratch TUI the operator owns, in tmux, with a
+  distinctive name (e.g. `c2c-spike-<nonce>`).
+- Config-writing probes use a fake `HOME`/`XDG_CONFIG_HOME` under /tmp
+  (recon precedent); never mutate the operator's real muse config.
+- Plugin install probes: scratch scope only; record whether `approve`
+  can run non-interactively.
+- Read-only everywhere else. Quote command + output for every verdict.
+
+## Probes
+
+### P1 — live-send wake at true idle (U1/G1)
+
+1. Launch scratch `muse` in tmux (`scripts/c2c_tmux.py launch`), note
+   session name/uuid; confirm `MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS=1
+   muse session-message list` shows it as `message_capable`.
+2. At true idle (no activity ≥60s), send a short DATA-framed probe body
+   via `session-message send --target <scratch-name>`.
+3. Record: does the TUI wake with no human input? Where does the body
+   land in the transcript (user-role turn? tool result? system notice?)?
+   Latency? Repeat 3×.
+4. Verdict G1: wake-with-no-model-decision yes/no/partial.
+
+### P2 — mid-turn send + B098 posture (U1/G3)
+
+1. Start a long multi-step task in the scratch TUI; mid-turn, send a
+   probe containing verdict-shaped text (`<token> allow` style, inert).
+2. Record: queued to next turn vs steered into the live turn? Does any
+   approval surface treat the content as a verdict? (Expected: DATA only.)
+3. Verdict G3: B098-safe yes/no + exact transcript placement.
+
+### P3 — hook/MCP env identity (U2)
+
+1. From a TUI-spawned shell inside the scratch session: `env | grep MUSE_`
+   (recon: spawned shells had `MUSE_TOOL_USE_ID` but NO `MUSE_SESSION_ID`).
+2. Scaffold a trivial plugin in /tmp (`muse plugins validate`), install
+   to scratch scope, run `hook test` with a SessionStart fixture; capture
+   hook stdin JSON + env (`MUSE_SESSION_ID`? `MUSE_CURRENT_SESSION_LOG`?).
+3. Scratch-HOME MCP probe: add `mcpServers.c2c` stdio entry
+   (`mode:"optional"`, command a logging shim), launch, confirm tools
+   appear and record which env/keys reach the server.
+4. Verdict: native session-id key for `native_session_id_env_keys`
+   (+ `inferred_client_type_from_env` branch), or `[]` + documented
+   fallback (registry/socket discovery à la kimi, or explicit
+   `C2C_MCP_SESSION_ID`).
+
+### P4 — hook transport decision (U3/U4/U7/U8/U9)
+
+1. Record: can `muse plugins install` + `approve` run non-interactively
+   (c2c-installable)? Uninstall path (`disable`/`remove`/delete dir)?
+   Per-handler failure scope (one bad hook vs whole file)?
+2. Fire SessionStart/Stop/SessionEnd/PostToolUse hooks from the scratch
+   session; capture: payload field names (session id? cwd/workspace?
+   event?), hook cwd (workspace vs config dir — #69 analog), stdout
+   contract (`additionalContext`-style inject? ignored like grok?),
+   exit-code semantics, timeout, stderr visibility, SessionStart
+   on resume (#73 analog), multi-root workspaces (#69 set-ordering).
+3. Fallback: probe `settings.json` `hooks.handlers[]` handler schema
+   (minimal handler → does it fire?).
+4. Verdict: plugin-first vs settings.json vs no-hooks; stdout contract;
+   chdir-before/after-resolve rule; subagent marker (B130 analog);
+   skills catalogue timing (#83 analog) + flap cost (#82 analog).
+
+### P5 — persistent ingress enable hunt (U5/G2)
+
+1. Search settings schema (`muse schema`? `config --help`?), bundled
+   skill docs, and binary strings for a non-env ingress switch.
+2. Re-test snake_case `local_session_messaging.enabled=true` variants
+   under fake HOME (recon: recognized but did not unlock).
+3. Verdict: persistent switch exists (exact key + semantics) or
+   CONDITIONAL-via-env stands.
+
+### P6 — managed argv + idle signal (U7/U10, feeds B358)
+
+1. Record exact argv for: fresh interactive start, resume
+   (`resume --last|<id>` vs TUI flag?), `--model`, approval/yolo flags,
+   positional kickoff prompt behavior, `--trust-workspace` effect.
+2. Hunt an idle/busy signal: statefile, status endpoint, event stream,
+   socket query (opencode `agent.is_idle` / codex thread-status analog).
+3. Measure SIGTERM shutdown latency (restart-timeout arm? kimi=20s).
+4. Verdict: `build_start_args` shape; kickoff transport; idle Unknown
+   vs authoritative; restart-timeout arm needed?
+
+## Acceptance
+
+- Verdict table for U1–U10 (feasible/conditional/blocked + quoted
+  evidence) appended to the research doc
+  (`.collab/research/2026-10-02T17-25-36Z-muse-client-support-scout.md`)
+  or a dated follow-up; B354–B358 bodies/scopes updated to match.
+- Findings file for the live-send proof (or documented NONE with cause).
+- IGC D1/D2 All-columns recomputed from verdicts (no lingering ? on
+  the chosen rows).

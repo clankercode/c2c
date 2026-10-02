@@ -1,6 +1,6 @@
 ---
 complexity: high
-created_at: "2026-10-02T17:26:36Z"
+created_at: "2026-10-02T17:26:35Z"
 depends_on:
     - B352
 estimate_hours: 8
@@ -10,7 +10,72 @@ status: pending
 tags:
     - muse
 title: muse delivery sidecar via session-message plus endpoint
-updated_at: "2026-10-02T17:26:36Z"
+updated_at: "2026-10-02T17:26:35Z"
 ---
 
-muse delivery sidecar via session-message plus endpoint
+# muse delivery sidecar via session-message + DeliveryEndpoint (CONDITIONAL-via-env)
+
+## Goal
+
+Out-of-process push delivery for muse: drain broker inbox →
+`muse session-message send --target` → drain-on-success. Honest wake
+row: CONDITIONAL-via-env at best (experimental gate), promoted from
+NONE only by the B352 P1/P2 verdicts (G1 wake + G3 B098-safe). If P1
+or P2 refutes, this bug becomes "document NONE + keep Monitor floor"
+instead of code — do not build on a refuted primitive.
+
+## Contract
+
+Transport (`C2c_muse_session_message`, new module, agy-agentapi
+skeleton `ocaml/c2c_agy_agentapi.ml`):
+
+- Pure `send_argv ~target ~body` (testable without the binary) +
+  bounded `run_send` (15s TERM→KILL, agy L30–55 precedent).
+- Target resolution: session name/uuid → live `message_capable`
+  check via `session-message list` (registry goes stale — 5 JSONs
+  vs 2 live sockets observed — so list, don't scan raw JSON);
+  `launch_excluded` (exec sessions) addressed only if P1 proves
+  delivery there, else fail closed with a clear message.
+- Env gate: `MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS=1` set by the
+  sidecar/supervisor (documented as experimental); `classify_wake_env`
+  (`Env_ready | Waiting_for_gate | Waiting_for_live_target`) à la
+  agy :553; NO raw-env fallback that bypasses discovery (#78 lesson).
+- B098-DATA-framed payload (`format_inbound_payload` precedent,
+  agy :581): envelope + treat-as-data; NEVER user-role; never feed
+  peer content to `turn/steer`-class APIs (MSP has `turn/steer` —
+  same prohibition as Codex).
+
+Sidecar loop (`c2c_muse_deliver.ml`, `c2c_agy_deliver.ml:111–221`
+skeleton): ensure-env → PEEK inbox (+ global sessions-broker peek)
+→ format envelopes → send → `drain_after_inject` with retry +
+broker.log event; `_drain_owed` retry; race repair (drain's return
+injected same cycle); `watched_pid`, `max_iterations`; persist-first
+ordering is load-bearing (hermes `delivery.py:248–324`) — NEVER
+drain-first; injector never drains.
+
+Endpoint: `endpoint_of_muse_reg` + `module Muse : S` + `register`
+in `ocaml/c2c_delivery_endpoint.ml` (`drain_policy=After_push`);
+deliver-service watch-set + config keys
+(`c2c_deliver_managed.ml:68–431` kimi/agy arms as template) behind a
+`C2C_DELIVER_SERVICE_MUSE` gate; claim module only if dual-run is
+possible (kimi-claim precedent).
+
+Doctor: DEAF classifier (`classify_muse_session`: inbox>0 ∧ ¬poster
+= DEAF, kimi pure precedent) + wake classifier
+(`Muse_wake_none | Conditional_env_via_session_message`,
+grok-monitor-lock precedent) + `--rearm` that skips confirmed-dead
+(#42). Fixture gates `C2C_MUSE_*_FIXTURE` for every external effect.
+
+## Acceptance
+
+- Unit: argv purity, classify matrix, payload DATA-framing, endpoint
+  probe/deliver/drain-policy, DEAF truth table.
+- B098 regression mirroring `test_c2c_codex_autoturn_b098.ml`:
+  verdict-shaped peer content delivered as DATA creates NO verdict
+  file and satisfies NO approval.
+- Hermetic sidecar tests (fixture `session-message`): peek→inject→
+  drain success path, inject-failure leaves mail queued + owed-retry,
+  race-repair path, gate-absent fail-closed message.
+- Live proof (operator, scratch TUI): idle wake ×3 with latency +
+  transcript placement + mid-turn behavior recorded; wake-guidance
+  + doctor rows updated to match measured behavior exactly.
