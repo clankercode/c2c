@@ -1391,11 +1391,20 @@ let ownership_registrations ~broker_root : (C2c_mcp.registration list, unit) res
       (try
          match Yojson.Safe.from_string contents with
          | `List entries ->
+             (* [list_registrations] deliberately treats malformed rows as
+                absent.  That is useful for ordinary display, but this path
+                makes an ownership decision, so validate every row before
+                accepting even a filtered-empty result. *)
+             List.iter
+               (fun entry -> ignore (C2c_mcp.Broker.registration_of_json entry))
+               entries;
              let regs =
                C2c_mcp.Broker.list_registrations
                  (C2c_mcp.Broker.create ~root:broker_root)
              in
-             if entries = [] || regs <> [] then Ok regs else Error ()
+             (* list_registrations filters expired hook rows; a parsed registry
+               whose visible list is empty is still a confirmed empty set. *)
+             Ok regs
          | _ -> Error ()
        with _ -> Error ())
 
@@ -1546,6 +1555,9 @@ let emit_app_server_log (body : string) : unit =
 let mapping_for_alias (alias : string) : mapping option =
   load_mapping ~instance_dir:(C2c_start.instance_dir alias)
 
+let mapping_for_alias_state (alias : string) : mapping_read_state =
+  load_mapping_state ~instance_dir:(C2c_start.instance_dir alias)
+
 let alias_taken_by_other ~(our_session_id : string) (alias : string) : bool =
   match mapping_for_alias alias with
   | Some m -> m.session_id <> our_session_id
@@ -1618,13 +1630,18 @@ type resolved = {
    [config_exists] reports whether a non-app-server managed instance owns it —
    both injected so this is unit-testable without touching the filesystem, and
    returns a [result] (the CLI layer decides how to surface an [Error]). *)
-let resolve_identity ~(mode : launch_mode) ~(alias_override : string option)
+let resolve_identity_internal ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(lookup : string -> mapping option)
+    ~(lookup_state : string -> mapping_read_state)
     ~(config_exists : string -> bool) : (resolved, string) result =
   let taken_by_other ~our_session_id a =
-    match lookup a with
-    | Some m -> m.session_id <> our_session_id
-    | None -> config_exists a
+    match lookup_state a with
+    | Mapping_unreadable -> true
+    | Mapping_loaded m -> m.session_id <> our_session_id
+    | Mapping_missing ->
+        (match lookup a with
+         | Some m -> m.session_id <> our_session_id
+         | None -> config_exists a)
   in
   let fresh_sid () =
     match thread_id with Some t when String.trim t <> "" -> t | _ -> gen_session_id ()
@@ -1645,24 +1662,36 @@ let resolve_identity ~(mode : launch_mode) ~(alias_override : string option)
   in
   match mode with
   | Resume alias -> (
-      match lookup alias with
-      | Some m -> from_saved m
-      | None ->
+      match lookup_state alias with
+      | Mapping_unreadable ->
           Error (Printf.sprintf
-            "no saved codex app-server session for alias '%s'. \
-             Start one with `c2c codex --alias %s` or `c2c new codex`." alias alias))
+            "saved Codex identity for alias '%s' is unreadable; refusing to reuse it." alias)
+      | Mapping_loaded m -> from_saved m
+      | Mapping_missing ->
+          (match lookup alias with
+           | Some m -> from_saved m
+           | None ->
+               Error (Printf.sprintf
+                 "no saved codex app-server session for alias '%s'. \
+                  Start one with `c2c codex --alias %s` or `c2c new codex`." alias alias)))
   | Start -> (
       (* Existing `start` semantics: resume the saved instance only when it is
          explicitly selected (an --alias naming an existing mapping). *)
       match alias_override with
       | Some a -> (
-          match lookup a with
-          | Some m -> from_saved m
-          | None ->
-              if config_exists a then
-                Error (Printf.sprintf
-                  "alias '%s' is already owned by a non-app-server managed instance." a)
-              else let sid = fresh_sid () in mk a sid a thread_id)
+          match lookup_state a with
+          | Mapping_unreadable ->
+              Error (Printf.sprintf
+                "saved Codex identity for alias '%s' is unreadable; refusing to reuse it." a)
+          | Mapping_loaded m -> from_saved m
+          | Mapping_missing ->
+              (match lookup a with
+               | Some m -> from_saved m
+               | None ->
+                   if config_exists a then
+                     Error (Printf.sprintf
+                       "alias '%s' is already owned by a non-app-server managed instance." a)
+                   else let sid = fresh_sid () in mk a sid a thread_id))
       | None ->
           let sid = fresh_sid () in
           let alias = derive_alias ~session_id:sid ~taken:(taken_by_other ~our_session_id:sid) in
@@ -1681,6 +1710,16 @@ let resolve_identity ~(mode : launch_mode) ~(alias_override : string option)
        | None ->
            let alias = derive_alias ~session_id:sid ~taken:(taken_by_other ~our_session_id:sid) in
            mk alias sid alias thread_id)
+
+let resolve_identity ~(mode : launch_mode) ~(alias_override : string option)
+    ~(thread_id : string option) ~(lookup : string -> mapping option)
+    ~(config_exists : string -> bool) : (resolved, string) result =
+  resolve_identity_internal ~mode ~alias_override ~thread_id ~lookup
+    ~lookup_state:(fun alias ->
+      match lookup alias with
+      | Some mapping -> Mapping_loaded mapping
+      | None -> Mapping_missing)
+    ~config_exists
 
 (* Read the (possibly None) thread id off a live handle via its persisted view. *)
 let handle_thread (h : C2c_codex_app_server.handle) : string option =
@@ -2449,8 +2488,8 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
   let (name, session_id, alias, thread) =
-    match resolve_identity ~mode ~alias_override ~thread_id
-            ~lookup:mapping_for_alias
+    match resolve_identity_internal ~mode ~alias_override ~thread_id
+            ~lookup:mapping_for_alias ~lookup_state:mapping_for_alias_state
             ~config_exists:(fun a -> Sys.file_exists (C2c_start.config_path a)) with
     | Ok r -> (r.r_name, r.r_session_id, r.r_alias, r.r_thread_id)
     | Error msg -> Printf.eprintf "%serror:%s %s\n%!" (red ()) (reset ()) msg; exit 1

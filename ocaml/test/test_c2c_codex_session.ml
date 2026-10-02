@@ -793,6 +793,36 @@ let test_write_guard_reclaims_dead_sibling () =
             (Some thread) m.thread_id
       | None -> Alcotest.fail "self mapping vanished")
 
+(* An activity-backed hook row may be filtered from [list_registrations] after
+   its TTL.  The raw registry is still valid ownership state, so an expired
+   sibling must not make the registry reader fail closed as "unreadable". *)
+let test_write_guard_accepts_valid_registry_with_expired_rows () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let thread = "thread-expired-hook-row" in
+      let self_dir = Filename.concat inst "self" in
+      let sib_dir = Filename.concat inst "sib" in
+      write_codex_mapping ~dir:self_dir ~session_id:"sid-self" ~thread_id:None;
+      write_codex_mapping ~dir:sib_dir ~session_id:"sid-expired"
+        ~thread_id:(Some thread);
+      let old = Unix.gettimeofday () -. (3. *. 24. *. 60. *. 60.) in
+      Yojson.Safe.to_file (Filename.concat broker_root "registry.json")
+        (`List [ `Assoc
+          [ ("session_id", `String "sid-expired")
+          ; ("alias", `String "sib")
+          ; ("registered_by", `String "codex-hook")
+          ; ("registered_at", `Float old)
+          ; ("last_activity_ts", `Float old)
+          ] ]);
+      Alcotest.(check bool)
+        "expired but valid registry rows are a confirmed non-live set" true
+        (S.persist_discovered_thread ~instance_dir:self_dir ~name:"self"
+           ~broker_root ~thread_id:thread);
+      match S.load_mapping ~instance_dir:self_dir with
+      | Some m ->
+          Alcotest.(check (option string)) "binding written after expired row"
+            (Some thread) m.thread_id
+      | None -> Alcotest.fail "self mapping vanished")
+
 let test_thread_ownership_lock_serializes_concurrent_claims () =
   with_split_brain_env (fun ~inst ~broker_root ->
       let broker = B.create ~root:broker_root in
@@ -1214,14 +1244,16 @@ let test_private_mapping_failure_retains_lifecycle_records () =
   let instance_dir = C2c_start.instance_dir alias in
   Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
       C2c_io.mkdir_p instance_dir;
-      (* Make the durable identity path a directory. The private app-server can
-         start, but its mapping write must fail without replacing this marker. *)
-      Unix.mkdir (S.mapping_path ~instance_dir) 0o700;
       let clock = ref 0.0 in
       let server = { status = Running_ } in
       let frontend = { status = Exited 0 } in
       let bk = scripted ~clock
-          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:511 server))
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+            (* Create the marker after identity resolution. The private
+               app-server can start, but its mapping write must fail without
+               allowing an unreadable mapping to be selected as a fresh alias. *)
+            Unix.mkdir (S.mapping_path ~instance_dir) 0o700;
+            Ok (mk_fake ~id:511 server))
           ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:522 frontend)) () in
       let fallback_called = ref false in
       let rc = S.run ~mode:S.Start ~yolo:false ~extra_args:[] ~thread_id:sid
@@ -2170,6 +2202,49 @@ let test_resolve_start_alias_resumes_mapping () =
       Alcotest.(check (option string)) "resumes saved thread" (Some "TT") r.S.r_thread_id
   | Error e -> Alcotest.failf "start --alias on existing mapping should resume: %s" e
 
+(* The compatibility [resolve_identity] seam intentionally cannot expose
+   filesystem read errors.  Exercise the real launcher path to ensure its
+   strict lookup does not downgrade an unreadable mapping to a fresh alias
+   when no config.json exists to make the ownership visible. *)
+let test_unreadable_mapping_without_config_refuses_launch () =
+  with_split_brain_env (fun ~inst:_ ~broker_root ->
+      let old_root = Sys.getenv_opt "C2C_MCP_BROKER_ROOT" in
+      let alias = Printf.sprintf "unreadable-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+      let instance_dir = C2c_start.instance_dir alias in
+      C2c_io.mkdir_p instance_dir;
+      let mapping_path = S.mapping_path ~instance_dir in
+      Unix.symlink (Filename.concat instance_dir "missing-target") mapping_path;
+      Unix.putenv "C2C_MCP_BROKER_ROOT" broker_root;
+      Fun.protect
+        ~finally:(fun () ->
+          (match old_root with Some v -> Unix.putenv "C2C_MCP_BROKER_ROOT" v
+           | None -> Unix.putenv "C2C_MCP_BROKER_ROOT" "");
+          ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote instance_dir))))
+        (fun () ->
+          let marker = Filename.concat broker_root "spawned" in
+          match Unix.fork () with
+          | 0 ->
+              let clock = ref 0.0 in
+              let bk = scripted ~clock
+                ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+                  close_out (open_out marker);
+                  Error "must not spawn") () in
+              let rc =
+                try S.run ~mode:S.Start ~alias_override:alias ~yolo:false
+                      ~extra_args:[] ~thread_id:"fresh" ~backend:bk
+                      ~fallback:(fun ~extra_args:_ () -> 99) ()
+                with _ -> 98
+              in
+              Unix._exit (if rc = 0 then 0 else rc)
+          | child ->
+              let _, status = Unix.waitpid [] child in
+              (match status with
+               | Unix.WEXITED 1 -> ()
+               | Unix.WEXITED n -> Alcotest.failf "expected refusal exit 1, got %d" n
+               | _ -> Alcotest.fail "unreadable mapping child died abnormally");
+              Alcotest.(check bool) "unreadable mapping prevented spawn" false
+                (Sys.file_exists marker)))
+
 (* ------------------------------------------------------------------ *)
 (* --yolo is NEVER persisted into the identity mapping                 *)
 (* ------------------------------------------------------------------ *)
@@ -2264,7 +2339,9 @@ let () =
         ; test_case "thread conflict rejected" `Quick test_resolve_thread_conflict_rejected
         ; test_case "config-owned alias rejected" `Quick test_resolve_config_owned_rejected
         ; test_case "new derives deterministic" `Quick test_resolve_new_derives_deterministic
-        ; test_case "start --alias resumes mapping" `Quick test_resolve_start_alias_resumes_mapping ] )
+        ; test_case "start --alias resumes mapping" `Quick test_resolve_start_alias_resumes_mapping
+        ; test_case "unreadable mapping without config refuses launch" `Quick
+            test_unreadable_mapping_without_config_refuses_launch ] )
     ; ( "yolo-persistence",
         [ test_case "yolo not persisted" `Quick test_yolo_not_persisted ] )
     ; ( "status",
@@ -2274,6 +2351,8 @@ let () =
         ; test_case "write failure is reported" `Quick test_mapping_write_failure_is_reported
         ; test_case "uncertain mapping reads fail closed" `Quick
             test_mapping_read_failures_fail_closed
+        ; test_case "expired registry rows remain a valid empty set" `Quick
+            test_write_guard_accepts_valid_registry_with_expired_rows
         ; test_case "sibling metadata files are ignored" `Quick
             test_sibling_metadata_files_are_ignored ] )
     ; ( "delivery-degraded",
