@@ -9,7 +9,7 @@ open C2c_types
 open Cmdliner.Term.Syntax
 
 let known_components =
-  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "hermes"; "self"
+  [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "hermes"; "muse"; "self"
   ; "git-shim"; "all" ]
 
 let home_dir () = try Sys.getenv "HOME" with Not_found -> ""
@@ -275,6 +275,130 @@ let remove_claude_settings_hooks ~dry_run path c2c_scripts =
         end
 
 (* -------------------------------------------------------------------------- *)
+(* Muse settings.json hook cleanup + plugin-cache fallback *)
+(* -------------------------------------------------------------------------- *)
+
+(* Surgical mirror of C2c_setup.merge_muse_settings_hooks: drop c2c-owned
+   handlers (command = "c2c hook muse") from every event group, drop emptied
+   groups, drop emptied events, drop an emptied hooks map. Foreign groups and
+   every other key (schema_version, mcpServers, ...) pass through untouched.
+   A generic shared-key removal of "hooks" would nuke the operator's other
+   hooks — this is why muse hooks are cleaned here (claude-style) rather
+   than via a manifest shared-key artifact. *)
+let remove_muse_settings_hooks ~dry_run path =
+  if not (Sys.file_exists path) then None
+  else
+    match read_json_opt path with
+    | None -> None
+    | Some json ->
+        let is_owned = function
+          | `Assoc hf ->
+              (match List.assoc_opt "command" hf with
+               | Some (`String c) -> c = C2c_setup.muse_hook_command
+               | _ -> false)
+          | _ -> false
+        in
+        let strip_group = function
+          | `Assoc g as grp ->
+              (match List.assoc_opt "hooks" g with
+               | Some (`List hs) ->
+                   let kept = List.filter (fun h -> not (is_owned h)) hs in
+                   if kept = [] then None
+                   else if List.length kept = List.length hs then Some grp
+                   else
+                     Some (`Assoc (("hooks", `List kept) :: List.filter (fun (k, _) -> k <> "hooks") g))
+               | _ -> Some grp)
+          | other -> Some other
+        in
+        let cleaned =
+          match json with
+          | `Assoc fields ->
+              (match List.assoc_opt "hooks" fields with
+               | Some (`Assoc hooks) ->
+                   let events =
+                     List.filter_map
+                       (fun (ev, v) ->
+                          match v with
+                          | `List gs ->
+                              let kept = List.filter_map strip_group gs in
+                              if kept = [] then None else Some (ev, `List kept)
+                          | _ -> Some (ev, v))
+                       hooks
+                   in
+                   (* Order-stable: an untouched hooks map rebuilds to a value
+                      that compares EQUAL to the input, so `cleaned = json`
+                      below is an exact change detector — including in-place
+                      handler filtering, which an entry-count check would
+                      miss. A no-op uninstall never rewrites the file. *)
+                   if events = hooks then json
+                   else if events = [] then
+                     `Assoc (List.filter (fun (k, _) -> k <> "hooks") fields)
+                   else
+                     `Assoc
+                       (List.map
+                          (fun (k, v) ->
+                             if k = "hooks" then (k, `Assoc events) else (k, v))
+                          fields)
+               | _ -> json)
+          | _ -> json
+        in
+        if cleaned = json then None
+        else if dry_run then Some path
+        else begin
+          write_json_atomic path cleaned;
+          Some path
+        end
+
+(* Recursive best-effort removal for exactly one path: muse's own plugin
+   cache subtree (cache/local/c2c/). Used only when `plugins remove` could
+   not run (muse binary missing) — after a successful CLI remove the dir is
+   already gone and this is a no-op. Symlinks are unlinked, never followed. *)
+let rec remove_tree_best_effort ~dry_run path =
+  if not (Sys.file_exists path) then None
+  else if dry_run then Some path
+  else begin
+    (try
+       match (Unix.lstat path).Unix.st_kind with
+       | Unix.S_DIR ->
+           Array.iter
+             (fun child -> ignore (remove_tree_best_effort ~dry_run:false (path // child)))
+             (Sys.readdir path);
+           (try Unix.rmdir path with Unix.Unix_error _ -> ())
+       | _ -> (try Unix.unlink path with Unix.Unix_error _ -> ())
+     with Unix.Unix_error _ -> ());
+    if Sys.file_exists path then None else Some path
+  end
+
+(* Drop the "c2c" record from plugins/installed.json ({"version":1,
+   "plugins":{"c2c":{...}}}). No-CLI fallback only; fails closed on
+   unparseable JSON (leave the file rather than guess). *)
+let remove_muse_installed_record ~dry_run path =
+  match read_json_opt path with
+  | None -> None
+  | Some (`Assoc top) ->
+      (match List.assoc_opt "plugins" top with
+       | Some (`Assoc plugins) ->
+           if not (List.mem_assoc C2c_setup.muse_plugin_id plugins) then None
+           else
+             let cleaned =
+               `Assoc
+                 (List.filter (fun (k, _) -> k <> "plugins") top
+                 @ [ ("plugins",
+                      `Assoc
+                        (List.filter
+                           (fun (k, _) -> k <> C2c_setup.muse_plugin_id)
+                           plugins))
+                   ])
+             in
+             if dry_run then Some path
+             else begin
+               write_json_atomic path cleaned;
+               Some path
+             end
+       | _ -> None)
+  | Some _ -> None
+
+(* -------------------------------------------------------------------------- *)
 (* Owned file / directory removal *)
 (* -------------------------------------------------------------------------- *)
 
@@ -312,7 +436,7 @@ let find_manifest_record component target_dir =
   match exact with
   | Some _ -> exact
   | None ->
-      if List.mem component [ "codex"; "kimi"; "git-shim" ] then
+      if List.mem component [ "codex"; "kimi"; "muse"; "git-shim" ] then
         List.find_opt
           (fun r -> r.C2c_install_manifest.component = component)
           m.installs
@@ -490,6 +614,29 @@ let recompute_hermes_artifacts () =
   , files @ dirs
   , None )
 
+(* Muse: owned skill + owned plugin bundle source; shared MCP key in
+   settings.json (kimi precedent: manifest-less uninstall strips it); the
+   settings path itself for surgical hooks cleanup (claude-style — hooks are
+   NEVER a manifest shared-key, since a generic "hooks" removal would nuke
+   foreign hooks). Plugin-cache + installed.json are handled by the muse arm
+   in [uninstall_component] (`plugins remove` first, file fallback when the
+   CLI is missing), not as artifacts. *)
+let recompute_muse_artifacts () =
+  let settings = C2c_setup.muse_settings_path () in
+  let skill_dir = C2c_setup.muse_skill_dir () in
+  let skill = skill_dir // "SKILL.md" in
+  let bundle = C2c_setup.muse_bundle_dir () in
+  let manifest_dir = bundle // ".muse-plugin" in
+  let manifest = manifest_dir // "plugin.json" in
+  ( [ C2c_install_manifest.shared_key ~path:settings ~key:"mcpServers.c2c" ~format:"json" ]
+  , [ C2c_install_manifest.owned_file skill
+    ; C2c_install_manifest.owned_file skill_dir
+    ; C2c_install_manifest.owned_file manifest
+    ; C2c_install_manifest.owned_file manifest_dir
+    ; C2c_install_manifest.owned_file bundle
+    ]
+  , Some settings )
+
 let recompute_self_artifacts () =
   let home = home_dir () in
   let bin = home // ".local" // "bin" in
@@ -537,6 +684,7 @@ let recompute_artifacts_for_component ~component ~target_dir =
   | "grok" -> recompute_grok_artifacts ()
   | "agy" -> recompute_agy_artifacts ()
   | "hermes" -> recompute_hermes_artifacts ()
+  | "muse" -> recompute_muse_artifacts ()
   | "git-shim" -> ([], recompute_git_shim_artifacts (), None)
   | _ -> ([], [], None)
 
@@ -626,13 +774,45 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
           remove_claude_settings_hooks ~dry_run settings
             [ hook_script; stop_hook_script; session_hook_script ]
       | None -> None
+    else if component = "muse" then
+      match settings_path with
+      | Some settings -> remove_muse_settings_hooks ~dry_run settings
+      | None -> None
     else None
+  in
+  (* Muse plugin record: `plugins remove c2c` via the CLI first (the binding
+     uninstall verb — removes record + cache), then the file fallback for
+     whatever remains (no-CLI hosts, partial states). After a successful CLI
+     remove both fallback paths are already gone and report nothing. *)
+  let muse_extra_removed =
+    if component <> "muse" then []
+    else begin
+      (match output_mode with
+       | Human when dry_run ->
+           Printf.printf "[DRY-RUN] would run: muse plugins remove c2c\n"
+       | Human ->
+           let ok, detail = C2c_setup.muse_plugin_remove ~dry_run:false in
+           if ok then
+             Printf.printf "ran: muse plugins remove c2c%s\n"
+               (if detail = "" then "" else " (" ^ detail ^ ")")
+           else
+             Printf.eprintf
+               "[c2c WARNING] muse plugins remove failed (%s); cleaning plugin files directly.\n%!"
+               (if detail = "" then "exit non-zero" else detail)
+       | Json -> ignore (C2c_setup.muse_plugin_remove ~dry_run));
+      List.filter_map
+        Fun.id
+        [ remove_tree_best_effort ~dry_run (C2c_setup.muse_plugin_cache_parent_dir ())
+        ; remove_muse_installed_record ~dry_run (C2c_setup.muse_plugins_installed_path ())
+        ]
+    end
   in
   let removed_paths = List.filter_map (remove_artifact ~dry_run) artifacts in
   let all_removed =
-    match settings_removed with
-    | Some p -> p :: removed_paths
-    | None -> removed_paths
+    (match settings_removed with
+     | Some p -> [ p ]
+     | None -> [])
+    @ removed_paths @ muse_extra_removed
   in
   let any_removed = all_removed <> [] in
   if not dry_run && (any_removed || Option.is_some record) then
@@ -697,7 +877,7 @@ let run_uninstall ~output_mode ~dry_run ~component ~target_dir_opt ~alias_opt =
     exit 124
   end;
   if component = "all" then begin
-    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "hermes"; "crush"; "git-shim" ] in
+    let components = [ "claude"; "codex"; "kimi"; "opencode"; "grok"; "agy"; "hermes"; "muse"; "crush"; "git-shim" ] in
     let target_dir = resolve_target_dir target_dir_opt in
     let all_removed = ref [] in
     List.iter

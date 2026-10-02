@@ -133,6 +133,46 @@ let refresh_kimi_skill_if_stale () =
   refresh_skill_if_stale ~content:C2c_kimi_skill_embedded.content
     ~skill_dir:(kimi_skill_dir ()) ()
 
+(* Muse honors $XDG_CONFIG_HOME/$XDG_DATA_HOME for its config/data roots
+   (verified live: skills install lands under $XDG_CONFIG_HOME/muse/skills).
+   These are muse's own documented roots, not c2c's broker root, so honoring
+   XDG here does not conflict with the #9 split-brain rule (which is about
+   c2c's broker state, not a client's config discovery). *)
+let muse_config_dir () =
+  let base =
+    match Sys.getenv_opt "XDG_CONFIG_HOME" with
+    | Some d when String.trim d <> "" -> String.trim d
+    | _ -> Filename.concat (try Sys.getenv "HOME" with Not_found -> "/tmp") ".config"
+  in
+  base // "muse"
+
+let muse_data_dir () =
+  let base =
+    match Sys.getenv_opt "XDG_DATA_HOME" with
+    | Some d when String.trim d <> "" -> String.trim d
+    | _ -> Filename.concat (try Sys.getenv "HOME" with Not_found -> "/tmp") (".local" // "share")
+  in
+  base // "muse"
+
+let muse_settings_path () = muse_config_dir () // "settings.json"
+
+(* The user-scope skill store is $CONFIG_DIR/skills/<id>/. A directly-written
+   SKILL.md (no `skills install`, no lockfile entry) is listed and honored —
+   verified live — so the skill is a plain owned file, not a CLI receipt. *)
+let muse_skill_dir () = muse_config_dir () // "skills" // "c2c"
+
+let write_muse_skill ~output_mode ~dry_run () =
+  write_c2c_skill ~content:C2c_muse_skill_embedded.content
+    ~skill_dir:(muse_skill_dir ()) ~output_mode ~dry_run ()
+
+(* Drift-only refresh for `c2c hook muse` (B355): muse snapshots its skill
+   catalogue at session startup (#83 analog), so a mid-session refresh is
+   read by the NEXT session — which is exactly what keeps a long-lived
+   install current without reinstalling. *)
+let refresh_muse_skill_if_stale () =
+  refresh_skill_if_stale ~content:C2c_muse_skill_embedded.content
+    ~skill_dir:(muse_skill_dir ()) ()
+
 (* Identity-agnostic session skill (#22): Grok cannot inject SessionStart
    additionalContext into the model transcript (stdout is ignored for passive
    hooks), so a small always-present skill is the best host-supported nudge
@@ -2030,7 +2070,7 @@ let canonical_install_client client =
 
 (* pi is NOT here: pi agents use the npm:pi-c2c extension, not `c2c install`.
    pi is shown in the landing page via a synthetic entry (print_enriched_landing). *)
-let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "hermes" ]
+let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "hermes"; "muse" ]
 (* B122: client MCP / host integrations are never installed by default.
    Convenience paths (`c2c install`, `c2c install all`) stay binary-only
    unless the operator names a client or passes --with-clients. Keep every
@@ -2038,10 +2078,10 @@ let known_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "
    works. *)
 (* crush remains recognized so it routes to the deprecation guard (helpful
    banner) instead of a generic unknown-command error. *)
-let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "hermes"; "crush" ]
+let install_subcommand_clients = [ "claude"; "codex"; "codex-headless"; "opencode"; "kimi"; "grok"; "agy"; "hermes"; "muse"; "crush" ]
 let install_client_error_list = String.concat ", " install_subcommand_clients
 let install_client_pipe_list = String.concat "|" install_subcommand_clients
-let init_configurable_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy"; "hermes" ]
+let init_configurable_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy"; "hermes"; "muse" ]
 let init_configurable_client_list = String.concat ", " init_configurable_clients
 let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "agy"; "hermes"; "cursor"; "crush"; "muse" ]
 let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "agy"; "crush"; "tmux"; "pty"; "relay-connect" ]
@@ -2285,6 +2325,500 @@ let setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen =
    | Json -> ());
   { artifacts; extra_json = extra }
 
+(* --- setup: Muse --------------------------------------------------- *)
+(* CLI-first install (no MCP by default). Writes the /c2c skill (owned file),
+   a c2c plugin bundle (owned dir), and — when the plugins gate is open —
+   installs + approves it non-interactively; otherwise merges a settings.json
+   hooks map (live-proven fallback). B352 P4 verdicts, all verified live on
+   muse 1.4.2-R4684.1:
+   - plugin-first: `plugins install <bundle>` + `approve c2c` are
+     non-interactive (stdin /dev/null), per-capability trust, survives update;
+   - gate check FIRST: `plugins list` reporting "not available in this build"
+     (fresh/offline hosts without the feature-config grant) means the settings
+     fallback — never attempt install into a gated build;
+   - settings.json REQUIRES `schema_version` (else the loader rejects the
+     whole file as malformed);
+   - hook stdout IS the additionalContext inject (unlike grok/kimi), so no
+     second c2c-session skill is needed — the SessionStart hook output itself
+     reaches the model.
+   Skill catalogue is snapshot-at-startup (#83 analog): the skill is
+   identity-agnostic and pre-installed by this command; hook-time refreshes
+   are read by the NEXT session. *)
+
+let muse_plugin_id = "c2c"
+let muse_hook_command = "c2c hook muse"
+
+(* Owned bundle source: `plugins install` copies it into muse's cache, but the
+   source must persist for `plugins update` and reinstalls. HOME-based like
+   the other clients' ~/.c2c material — never under a workspace. *)
+let muse_bundle_dir () =
+  (try Sys.getenv "HOME" with Not_found -> "/tmp")
+  // ".c2c" // "clients" // "muse" // "plugin"
+
+let muse_bundle_manifest_path () =
+  muse_bundle_dir () // ".muse-plugin" // "plugin.json"
+
+(* Plugin cache identity: cache/local/c2c/<package-sha256>/package. The hash
+   dir changes on every update, so only the `.../local/c2c` parent is a stable
+   handle (used by uninstall's no-CLI fallback). *)
+let muse_plugin_cache_parent_dir () =
+  muse_data_dir () // "plugins" // "cache" // "local" // muse_plugin_id
+
+let muse_plugins_installed_path () =
+  muse_data_dir () // "plugins" // "installed.json"
+
+(* Test seam: point at a stub muse. Production default is PATH lookup. *)
+let muse_bin () =
+  match Sys.getenv_opt "C2C_MUSE_BIN" with
+  | Some b when String.trim b <> "" -> String.trim b
+  | _ -> "muse"
+
+let str_contains ~haystack ~needle =
+  let hl = String.length haystack and nl = String.length needle in
+  if nl = 0 then true
+  else
+    let rec at i =
+      i + nl <= hl && (String.sub haystack i nl = needle || at (i + 1))
+    in
+    at 0
+
+type muse_cmd_result = { ok : bool; output : string }
+
+(* Run muse with stdin /dev/null and merged stdout+stderr capture, bounded so
+   a wedged CLI can never hang install/uninstall. Never raises. *)
+let run_muse_capture ~timeout_s argv : muse_cmd_result =
+  let devnull =
+    try Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0
+    with _ -> Unix.stdin
+  in
+  let out_r, out_w = try
+      let r, w = Unix.pipe ~cloexec:true () in
+      (Some r, Some w)
+    with _ -> (None, None)
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (match out_r with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
+      (match out_w with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
+      if devnull <> Unix.stdin then (try Unix.close devnull with _ -> ()))
+    (fun () ->
+      match out_r, out_w with
+      | Some r, Some w ->
+          (try
+             let pid =
+               Unix.create_process_env argv.(0) argv (Unix.environment ())
+                 devnull w w
+             in
+             (try Unix.close w with _ -> ());
+             let ic = Unix.in_channel_of_descr r in
+             let buf = Buffer.create 512 in
+             let cap = 65536 in
+             (try
+                while Buffer.length buf < cap do
+                  Buffer.add_channel buf ic (min 4096 (cap - Buffer.length buf))
+                done
+              with End_of_file -> ());
+             let deadline = Unix.gettimeofday () +. timeout_s in
+             let rec wait () =
+               match (try Unix.waitpid [ Unix.WNOHANG ] pid with _ -> (0, Unix.WEXITED 0)) with
+               | 0, _ ->
+                   if Unix.gettimeofday () >= deadline then begin
+                     (try Unix.kill pid Sys.sigterm with _ -> ());
+                     Unix.sleepf 1.0;
+                     (match (try Unix.waitpid [ Unix.WNOHANG ] pid with _ -> (pid, Unix.WEXITED 0)) with
+                      | 0, _ ->
+                          (try Unix.kill pid Sys.sigkill with _ -> ());
+                          (try ignore (Unix.waitpid [] pid) with _ -> ())
+                      | _ -> ());
+                     false
+                   end else begin
+                     Unix.sleepf 0.05;
+                     wait ()
+                   end
+               | _, Unix.WEXITED 0 -> true
+               | _ -> false
+             in
+             { ok = wait (); output = Buffer.contents buf }
+           with _ -> { ok = false; output = "" })
+      | _ -> { ok = false; output = "" })
+
+type muse_plugin_gate = Gate_open | Gate_absent of string
+
+(* GATE CHECK FIRST (binding B352 verdict): a gated build answers `plugins
+   list` with "not available in this build". A missing/failing muse binary
+   also lands here — install still writes the skill + settings fallback, so a
+   later muse launch picks them up. *)
+let muse_plugin_gate () : muse_plugin_gate =
+  let r = run_muse_capture ~timeout_s:30.0 [| muse_bin (); "plugins"; "list" |] in
+  if str_contains ~haystack:r.output ~needle:"not available in this build" then
+    Gate_absent "plugins are not available in this build"
+  else if not r.ok then
+    Gate_absent
+      (Printf.sprintf "muse plugins list failed: %s"
+         (let o = String.trim r.output in
+          if o = "" then "exit non-zero" else o))
+  else Gate_open
+
+(* Non-interactive install + per-capability approve. Idempotent: reinstalling
+   an unchanged bundle yields the same cache hash and keeps trust. Returns
+   (ok, detail) — never raises; callers fall back to settings hooks on
+   failure with a loud warning. *)
+let muse_plugin_install ~dry_run ~bundle_dir : bool * string =
+  if dry_run then (true, "dry-run")
+  else
+    let inst =
+      run_muse_capture ~timeout_s:60.0
+        [| muse_bin (); "plugins"; "install"; bundle_dir |]
+    in
+    if not inst.ok then
+      (false, Printf.sprintf "plugins install failed: %s" (String.trim inst.output))
+    else
+      let appr =
+        run_muse_capture ~timeout_s:60.0
+          [| muse_bin (); "plugins"; "approve"; muse_plugin_id |]
+      in
+      if not appr.ok then
+        (false, Printf.sprintf "plugins approve failed: %s" (String.trim appr.output))
+      else (true, "installed+approved")
+
+(* Best-effort `plugins remove c2c` for uninstall. Never raises; a missing
+   plugin / missing binary is not an error (nothing to remove). *)
+let muse_plugin_remove ~dry_run : bool * string =
+  if dry_run then (true, "dry-run")
+  else
+    let r =
+      run_muse_capture ~timeout_s:60.0
+        [| muse_bin (); "plugins"; "remove"; muse_plugin_id |]
+    in
+    if r.ok then (true, String.trim r.output)
+    else (false, String.trim r.output)
+
+(* Pure: the c2c plugin bundle manifest. Schema pinned live (B352 A4) and
+   against muse's own capability-examples contract: schemaVersion 1,
+   compat.manifestDir, capabilities.hooks[] with {id, event, command ARRAY}
+   (a string command is rejected). Hook id rules: ^[a-z0-9][a-z0-9._-]*$.
+   Pinned byte-shape by test_c2c_setup_muse.ml (agy-#65 discipline: the
+   loader validates strictly, so drift here is a dead install, not a
+   degraded one). *)
+let muse_plugin_manifest_json () : Yojson.Safe.t =
+  let hook id event =
+    `Assoc
+      [ ("id", `String id)
+      ; ("event", `String event)
+      ; ("command", `List [ `String "c2c"; `String "hook"; `String "muse" ])
+      ; ("timeoutMs", `Int 10000)
+      ; ("statusMessage", `String ("c2c " ^ event))
+      ]
+  in
+  `Assoc
+    [ ("schemaVersion", `Int 1)
+    ; ("name", `String muse_plugin_id)
+    ; ("version", `String "0.0.0")
+    ; ("description", `String "c2c agent-bus lifecycle hooks (register + activity anchor + teardown)")
+    ; ("compat", `Assoc [ ("source", `String "native"); ("manifestDir", `String ".muse-plugin") ])
+    ; ("capabilities",
+       `Assoc
+         [ ("hooks",
+            `List
+              [ hook "session-start" "SessionStart"
+              ; hook "stop" "Stop"
+              ; hook "session-end" "SessionEnd"
+              ])
+         ])
+    ]
+
+(* settings.json without `schema_version` is MALFORMED (loader rejects the
+   whole file). Ensure the key on every merge we perform: preserve an
+   existing value, add 1 when absent. Callers warn when they repair. *)
+let ensure_muse_schema_version = function
+  | `Assoc fields as json ->
+      if List.mem_assoc "schema_version" fields then json
+      else `Assoc (("schema_version", `Int 1) :: fields)
+  | other -> other
+
+let is_muse_owned_handler = function
+  | `Assoc hf ->
+      (match List.assoc_opt "command" hf with
+       | Some (`String c) -> c = muse_hook_command
+       | _ -> false)
+  | _ -> false
+
+(* Pure: our canonical fallback group per event. Stop takes NO matcher
+   (a matcher makes the group unmatchable, D11 — pinned live); the others
+   take the catch-all. *)
+let muse_settings_group event : Yojson.Safe.t =
+  let handler =
+    `Assoc
+      [ ("type", `String "command")
+      ; ("command", `String muse_hook_command)
+      ; ("timeout", `Int 10)
+      ]
+  in
+  if event = "Stop" then `Assoc [ ("hooks", `List [ handler ]) ]
+  else `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ handler ]) ]
+
+let muse_fallback_events = [ "SessionStart"; "Stop"; "SessionEnd" ]
+
+(* Pure: merge our fallback hooks into a parsed settings.json value.
+   Handler-level surgery per event: strip c2c-owned handlers from every
+   group, drop emptied groups, append our canonical group. Foreign groups
+   pass through untouched, and re-running on our own output is a fixed
+   point (idempotent replacement, never append). *)
+let merge_muse_settings_hooks existing : Yojson.Safe.t =
+  let strip_group = function
+    | `Assoc g as grp ->
+        (match List.assoc_opt "hooks" g with
+         | Some (`List hs) ->
+             let kept = List.filter (fun h -> not (is_muse_owned_handler h)) hs in
+             if kept = [] then None
+             else if List.length kept = List.length hs then Some grp
+             else
+               Some (`Assoc (("hooks", `List kept) :: List.filter (fun (k, _) -> k <> "hooks") g))
+         | _ -> Some grp)
+    | other -> Some other
+  in
+  let merge_event hooks_assoc event =
+    let prior =
+      match List.assoc_opt event hooks_assoc with
+      | Some (`List gs) -> List.filter_map strip_group gs
+      | _ -> []
+    in
+    (event, `List (prior @ [ muse_settings_group event ]))
+  in
+  let merged_hooks =
+    match existing with
+    | `Assoc fields ->
+        let prior_hooks =
+          match List.assoc_opt "hooks" fields with
+          | Some (`Assoc h) -> h
+          | _ -> []
+        in
+        let merged_events = List.map (merge_event prior_hooks) muse_fallback_events in
+        let kept_foreign =
+          List.filter (fun (k, _) -> not (List.mem k muse_fallback_events)) prior_hooks
+        in
+        `Assoc (kept_foreign @ merged_events)
+    | _ -> `Assoc (List.map (fun e -> (e, `List [ muse_settings_group e ])) muse_fallback_events)
+  in
+  let fields =
+    match existing with
+    | `Assoc fs -> List.filter (fun (k, _) -> k <> "hooks") fs
+    | _ -> []
+  in
+  ensure_muse_schema_version (`Assoc (fields @ [ ("hooks", merged_hooks) ]))
+
+(* Pure: merge the c2c MCP entry into a parsed settings.json value.
+   LOAD-BEARING (binding B352 verdicts):
+   - NEVER a legacy `mcp_servers` key alongside `mcpServers` (the loader
+     drops the whole member);
+   - `mode: "optional"` so a dead server cannot block muse startup;
+   - literal env only (no ${VAR}); NO static C2C_MCP_SESSION_ID (one file
+     serves every session; the live id arrives via MUSE_SESSION_ID) —
+     the kimi anti-hijack precedent (build_kimi_mcp_config);
+   - no `disabled` key (kimi precedent: --with-mcp IS explicit activation;
+     claude's B290 disabled:true is for its init-written entries);
+   - no tool-filter keys (U6 CONDITIONAL: recognized but enforcement
+     untested → blanket + doc unless B357 verifies). *)
+let build_muse_mcp_config ~root ~alias_val ~server_path ~mcp_command ~alias_from_auto_gen existing
+  : Yojson.Safe.t =
+  let c2c_entry =
+    `Assoc
+      [ ("type", `String "stdio")
+      ; ("command", `String mcp_command)
+      ; ( "args"
+        , `List
+            (if mcp_command = "c2c-mcp-server" then []
+             else [ `String "exec"; `String "--"; `String server_path ]))
+      ; ( "env"
+        , `Assoc
+            ([ ("C2C_MCP_BROKER_ROOT", `String root)
+             ; ("C2C_MCP_AUTO_REGISTER_ALIAS", `String alias_val)
+             (* Pin the client type so inferred_client_type_from_env never
+                fires inside muse (kimi precedent: a muse TUI in another
+                client's shell must not hijack the parent session). *)
+             ; ("C2C_MCP_CLIENT_TYPE", `String "muse")
+             ; ("C2C_MCP_AUTO_DRAIN_CHANNEL", `String "0")
+             ; ("C2C_MCP_AUTO_JOIN_ROOMS", `String (default_social_room ()))
+             ; ("C2C_AUTO_JOIN_ROLE_ROOM", `String "1")
+             ]
+            @ (if alias_from_auto_gen then
+                 [ ("C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN", `String "1") ]
+               else [])))
+      ; ("mode", `String "optional")
+      ]
+  in
+  let merged =
+    match existing with
+    | `Assoc fields ->
+        let existing_mcp =
+          match List.assoc_opt "mcpServers" fields with
+          | Some (`Assoc m) -> List.filter (fun (k, _) -> k <> "c2c") m
+          | _ -> []
+        in
+        `Assoc
+          (List.filter (fun (k, _) -> k <> "mcpServers") fields
+          @ [ ("mcpServers", `Assoc (existing_mcp @ [ ("c2c", c2c_entry) ])) ])
+    | _ -> `Assoc [ ("mcpServers", `Assoc [ ("c2c", c2c_entry) ]) ]
+  in
+  ensure_muse_schema_version merged
+
+(* Pure (testable) settings.json read: missing file is empty config; invalid
+   JSON is an Error the caller must fail closed on — never an empty config
+   (agy's `try parse with _ -> Assoc []` would silently discard the
+   operator's file on the next rewrite). *)
+let read_muse_settings_file path : (Yojson.Safe.t, string) result =
+  if not (Sys.file_exists path) then Ok (`Assoc [])
+  else
+    try Ok (json_read_file path)
+    with e ->
+      Error
+        (Printf.sprintf "refusing to merge into %s: invalid JSON (%s). Fix or move the file, then re-run."
+           path (Printexc.to_string e))
+
+let setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command
+  ~alias_from_auto_gen =
+  let settings_path = muse_settings_path () in
+  (* Fail closed BEFORE writing anything: a corrupt settings.json is never
+     clobbered (acceptance criterion) — abort with a clear error instead. *)
+  let existing_settings =
+    match read_muse_settings_file settings_path with
+    | Ok json -> json
+    | Error msg ->
+        (match output_mode with
+         | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+         | Human -> Printf.eprintf "error: %s\n%!" msg);
+        exit 1
+  in
+  let had_schema_version =
+    match existing_settings with
+    | `Assoc fs -> List.mem_assoc "schema_version" fs
+    | _ -> false
+  in
+  let skill_artifact, skill_path = write_muse_skill ~output_mode ~dry_run () in
+  let artifacts =
+    match skill_artifact with Some a -> [ a ] | None -> []
+  in
+  (* Owned plugin bundle source (always written: the fallback path may flip
+     to plugin on a later re-run once the gate opens). *)
+  let bundle_dir = muse_bundle_dir () in
+  let manifest_path = muse_bundle_manifest_path () in
+  C2c_io.mkdir_p_dryrun dry_run (Filename.dirname manifest_path);
+  let manifest_body =
+    Yojson.Safe.pretty_to_string (muse_plugin_manifest_json ()) ^ "\n"
+  in
+  if dry_run then
+    Printf.printf "[DRY-RUN] would write muse plugin bundle to %s\n%!" manifest_path
+  else begin
+    match C2c_io.write_file_atomic manifest_path manifest_body with
+    | Ok () -> ()
+    | Error e ->
+        (match output_mode with
+         | Human ->
+             Printf.eprintf "[c2c WARNING] Could not write muse plugin bundle to %s: %s\n%!"
+               manifest_path e
+         | Json -> ())
+  end;
+  let artifacts =
+    artifacts
+    @ [ C2c_install_manifest.owned_file manifest_path
+      ; C2c_install_manifest.owned_file (Filename.dirname manifest_path)
+      ; C2c_install_manifest.owned_file bundle_dir
+      ]
+  in
+  (* Hooks: plugin-first with settings fallback. Any plugin-path failure
+     (gated build, missing binary, install/approve error) falls back to the
+     settings.json hooks map with a loud warning — a working fallback beats
+     a dead plugin-path install. *)
+  let hooks_mode, hooks_detail =
+    (* The gate check is read-only, so dry-run performs it too — otherwise a
+       gated host would preview "plugin hooks" while the real run installs
+       the settings fallback. Only install/approve are dry-run-skipped. *)
+    match muse_plugin_gate () with
+    | Gate_open ->
+        if dry_run then ("plugin", "dry-run")
+        else
+          (match muse_plugin_install ~dry_run:false ~bundle_dir with
+           | true, detail -> ("plugin", detail)
+           | false, detail ->
+               Printf.eprintf
+                 "[c2c WARNING] muse plugin install failed (%s); falling back to settings.json hooks.\n%!"
+                 detail;
+               ("settings-fallback", detail))
+    | Gate_absent reason ->
+        Printf.eprintf
+          "[c2c WARNING] muse plugins gate absent (%s); using settings.json hooks fallback.\n%!"
+          reason;
+        ("settings-fallback", reason)
+  in
+  let settings_json, settings_written =
+    if dry_run then begin
+      if hooks_mode = "settings-fallback" then
+        Printf.printf "[DRY-RUN] would merge c2c hooks into %s\n%!" settings_path;
+      if with_mcp then
+        Printf.printf "[DRY-RUN] would merge mcpServers.c2c into %s\n%!" settings_path;
+      (existing_settings, false)
+    end else begin
+      let merged =
+        if hooks_mode = "settings-fallback" then merge_muse_settings_hooks existing_settings
+        else existing_settings
+      in
+      let merged = if with_mcp then
+          build_muse_mcp_config ~root ~alias_val ~server_path ~mcp_command ~alias_from_auto_gen merged
+        else merged
+      in
+      let wrote = hooks_mode = "settings-fallback" || with_mcp in
+      if wrote then begin
+        C2c_io.mkdir_p_dryrun false (Filename.dirname settings_path);
+        (* Shared operator file: mode-preserving atomic write (#84). *)
+        json_write_file settings_path merged;
+        if not had_schema_version then
+          Printf.eprintf
+            "[c2c WARNING] %s had no schema_version (muse rejects such files as malformed); added schema_version 1.\n%!"
+            settings_path
+      end;
+      (merged, wrote)
+    end
+  in
+  ignore settings_json;
+  let artifacts =
+    if with_mcp then
+      artifacts
+      @ [ C2c_install_manifest.shared_key ~path:settings_path ~key:"mcpServers.c2c" ~format:"json" ]
+    else artifacts
+  in
+  let extra =
+    [ ("client", `String "muse")
+    ; ("alias", `String alias_val)
+    ; ("broker_root", `String root)
+    ; ("mcp", `Bool with_mcp)
+    ; ("skill", `String skill_path)
+    ; ("bundle", `String bundle_dir)
+    ; ("hooks", `String hooks_mode)
+    ; ("hooks_detail", `String hooks_detail)
+    ; ("plugin_id", `String muse_plugin_id)
+    ; ("settings", `String settings_path)
+    ; ("settings_written", `Bool settings_written)
+    ; ("alias_from_auto_gen", `Bool alias_from_auto_gen)
+    ]
+    @ (if with_mcp then [ ("server", `String server_path) ] else [])
+  in
+  (match output_mode with
+   | Human ->
+       Printf.printf "Installed c2c for Muse (CLI + skill + %s; %s).\n"
+         (if hooks_mode = "plugin" then "plugin hooks" else "settings.json hooks")
+         (if with_mcp then "MCP (takes effect on next launch)" else "no MCP");
+       Printf.printf "  skill: %s\n" skill_path;
+       Printf.printf "  bundle: %s\n" bundle_dir;
+       if hooks_mode = "plugin" then
+         Printf.printf "  plugin: %s (installed + approved)\n" muse_plugin_id
+       else Printf.printf "  hooks: %s\n" settings_path;
+       Printf.printf "  alias hint: %s\n" alias_val;
+       Printf.printf "  receive: arm Monitor({ command: \"c2c monitor\", persistent: true })\n";
+       Printf.printf "  Restart Muse (or open a new session) so hooks can auto-register.\n%!"
+       (* Shared WARN footer is printed by do_install_client after the summary. *)
+   | Json -> ());
+  { artifacts; extra_json = extra }
+
 (* --- setup: Hermes plugin ----------------------------------------------- *)
 (* CLI-first install (no MCP). Writes the Python plugin files + skill to
    ~/.hermes/plugins/c2c/, then enables the plugin in ~/.hermes/config.yaml.
@@ -2444,8 +2978,10 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
   (* Write default-alias config so bare `c2c monitor` can resolve alias.
      Skip for Grok (B173 residual): Grok is CLI-first and multi-session; writing
      the machine-global default-alias clobbers other clients' monitor fallback
-     and previously caused Grok hook registrations to adopt codex- aliases. *)
-  if (not dry_run) && client <> "grok" then
+     and previously caused Grok hook registrations to adopt codex- aliases.
+     Skip for Muse too (B354 B173 analogue, recorded in the ticket): muse is
+     likewise multi-session CLI-first, so the same clobber applies. *)
+  if (not dry_run) && not (List.mem client [ "grok"; "muse" ]) then
     (try
        let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
        C2c_mcp.mkdir_p config_dir;
@@ -2458,7 +2994,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
      setup until the deprecated cleanup route is removed. *)
   let (server_path, mcp_command) =
     match client with
-    | ("claude" | "codex" | "kimi" | "opencode") when not with_mcp -> ("", "")
+    | ("claude" | "codex" | "kimi" | "opencode" | "muse") when not with_mcp -> ("", "")
     | _ -> resolve_mcp_server_paths ~output_mode
   in
   let result =
@@ -2469,6 +3005,7 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
     | "opencode" -> setup_opencode ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~target_dir_opt ~alias_from_auto_gen ~force ~deliver_watch ()
     | "crush" -> setup_crush ~output_mode ~dry_run ~root ~alias_val ~server_path ~deliver_watch ~alias_from_auto_gen
     | "grok" -> setup_grok ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
+    | "muse" -> setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mcp_command ~alias_from_auto_gen
     | "agy" -> setup_agy ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | "hermes" -> setup_hermes ~output_mode ~dry_run ~root ~alias_val ~alias_from_auto_gen
     | _ ->
@@ -2609,6 +3146,7 @@ let client_mcp_configured client =
      Python plugin instead. Explicit so a future `install all --with-mcp` reads
      as "nothing to do", not "detection not implemented yet". *)
   | "hermes" -> false
+  | "muse" -> json_file_has_c2c_mcp_entry (muse_settings_path ())
   | _ -> false
 
 let file_contains path needle =
@@ -2654,6 +3192,13 @@ let client_integration_configured client =
       Sys.file_exists (opencode_dir // "plugins" // "c2c.ts")
       || Sys.file_exists (opencode_dir // "c2c-sidecar.sh")
   | "grok" | "agy" -> client_mcp_configured client
+  (* Muse is file-exists like grok's client_mcp_configured arm (skill or
+     integration marker on disk) — never agy's `_ -> false` fallthrough. The
+     plugin's live loaded/enabled state is deliberately NOT consulted
+     (hermes rationale): "configured" means c2c wrote its integration. *)
+  | "muse" ->
+      Sys.file_exists (muse_skill_dir () // "SKILL.md")
+      || Sys.file_exists (muse_bundle_manifest_path ())
   | "hermes" ->
       (* Hermes is plugin-first: the installed plugin manifest is the marker.
          config.yaml's plugins.enabled is deliberately NOT consulted — an
@@ -2794,7 +3339,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
       Printf.printf
         "\n  Binary-only install (no client MCP). CLI messaging works immediately:\n\
         \    c2c send / c2c monitor / c2c poll-inbox\n\
-        \  Opt into MCP later with: c2c install claude|codex|opencode|kimi|grok\n"
+        \  Opt into MCP later with: c2c install claude|codex|opencode|kimi|grok|muse\n"
     end;
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =
@@ -2992,7 +3537,7 @@ let install_all_subcmd =
         Printf.printf
           "\n  Client hooks/skill were not configured (opt-in policy).\n\
           \  Pick one explicitly:\n\
-          \    c2c install claude|codex|opencode|kimi|grok\n\
+          \    c2c install claude|codex|opencode|kimi|grok|muse\n\
           \  Or bulk opt-in (still deliberate):\n\
           \    c2c install all --with-clients\n\
           \  CLI messaging works without MCP: c2c send / c2c monitor / c2c poll-inbox\n"
