@@ -1054,8 +1054,13 @@ let hook_codex_cmd =
          | _ -> false
        in
        let daemon_thread_mapping_proven =
-         match Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME", payload_sid with
-         | Some instance_name, Some thread_id when daemon_owner_proven ->
+         (* A launcher handoff proves which frontend emitted this hook, but
+            the launcher still has to authenticate that frontend's loaded
+            workspace thread. Let run_daemon_attach persist the mapping only
+            after that remote proof. Compatibility attaches have no handoff
+            proof and retain their existing config-and-registration gate. *)
+         match handoff_proof, Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME", payload_sid with
+         | None, Some instance_name, Some thread_id when daemon_owner_proven ->
              (try
                 C2c_codex_session.persist_discovered_thread
                   ~instance_dir:(C2c_start.instance_dir instance_name)

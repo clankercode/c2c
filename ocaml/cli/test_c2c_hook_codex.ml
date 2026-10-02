@@ -315,7 +315,7 @@ let test_daemon_thread_handoff_rejects_unproven_env_owner () =
     check bool "unproven owner does not publish handoff" false
       (Sys.file_exists path))
 
-let test_fresh_daemon_session_start_persists_mapping_before_mcp_identity () =
+let test_fresh_daemon_session_start_waits_for_launcher_thread_proof () =
   with_ctx (fun ctx ->
     let managed_sid = "managed-fresh-daemon-ordering" in
     let thread_id = "codex-fresh-daemon-ordering" in
@@ -347,21 +347,15 @@ let test_fresh_daemon_session_start_persists_mapping_before_mcp_identity () =
       ctx.home // ".local" // "share" // "c2c" // "instances" // managed_sid
       // "codex-session.json"
     in
-    let mapping =
-      match C2c_io.read_json_opt mapping_path with
-      | Some (`Assoc fields) -> fields
-      | _ -> failf "fresh mapping missing (stdout=%S stderr=%S)" stdout stderr
-    in
-    (match List.assoc_opt "thread_id" mapping with
-     | Some (`String actual) -> check string "native thread mapped immediately" thread_id actual
-     | _ -> fail "fresh mapping omitted native thread");
+    check bool "launcher handoff does not persist before remote proof" false
+      (Sys.file_exists mapping_path);
     let instances_dir = ctx.home // ".local" // "share" // "c2c" // "instances" in
     Unix.putenv "C2C_INSTANCES_DIR" instances_dir;
     Fun.protect
       ~finally:(fun () -> Unix.putenv "C2C_INSTANCES_DIR" "")
       (fun () ->
-        check (option string) "MCP metadata resolver sees fresh mapping"
-          (Some managed_sid)
+        check (option string) "MCP metadata resolver has no unproven mapping"
+          None
           (C2c_mcp_helpers_post_broker.managed_session_id_from_codex_thread
              ~broker_root:ctx.broker_root ~thread_id));
     check bool "no second payload-thread registration" false
@@ -1903,8 +1897,8 @@ let () =
             test_daemon_thread_handoff_records_native_thread_and_parent
         ; test_case "daemon handoff rejects unproven env owner" `Quick
             test_daemon_thread_handoff_rejects_unproven_env_owner
-        ; test_case "fresh daemon maps native thread before MCP identity" `Quick
-            test_fresh_daemon_session_start_persists_mapping_before_mcp_identity
+        ; test_case "fresh daemon waits for launcher thread proof" `Quick
+            test_fresh_daemon_session_start_waits_for_launcher_thread_proof
         ; test_case "compatibility malformed mapping does not arm sidecar" `Quick
             test_compatibility_malformed_mapping_does_not_arm_sidecar
         ; test_case "compatibility mapping write failure does not arm sidecar" `Quick
