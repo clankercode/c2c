@@ -1083,176 +1083,239 @@ let managed_instances_dir () =
       let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
       Filename.concat home ".local/share/c2c/instances"
 
+(* Keep this resolver below the helper layer's dependency boundary.  The
+   lifecycle reader in [C2c_start] has the same no-follow primitive, but
+   [C2c_start] depends on [C2c_mcp], so calling it here would recreate the
+   [C2c_mcp -> handlers -> helpers -> C2c_start -> C2c_mcp] cycle. *)
+external open_codex_regular_nofollow : string -> Unix.file_descr
+  = "caml_c2c_open_regular_nofollow"
+
+type codex_regular_file_read =
+  | Codex_regular_file_missing
+  | Codex_regular_file_contents of string
+  | Codex_regular_file_unreadable of string
+
+let read_codex_regular_file_nofollow path : codex_regular_file_read =
+  try
+    let fd = open_codex_regular_nofollow path in
+    let ic = Unix.in_channel_of_descr fd in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        try
+          Codex_regular_file_contents (really_input_string ic (in_channel_length ic))
+        with e -> Codex_regular_file_unreadable (Printexc.to_string e))
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> Codex_regular_file_missing
+  | e -> Codex_regular_file_unreadable (Printexc.to_string e)
+
 let string_field_of_assoc fields key =
   match List.assoc_opt key fields with
   | Some (`String value) when String.trim value <> "" ->
       Some (String.trim value)
   | _ -> None
 
-(* Prefer the durable app-server mapping (codex-session.json). Managed
-   `c2c new/start codex` persists the live Codex thread there on discovery
-   (B131), while legacy config.json thread fields are written in the same
-   pass — both are consulted so CLI whoami and MCP hooks share one map. *)
-let managed_session_id_from_codex_session_json ~instance_dir ~thread_id =
-  let path = Filename.concat instance_dir "codex-session.json" in
-  if not (Sys.file_exists path) then None
-  else
-    try
-      let fields =
-        match Yojson.Safe.from_file path with
-        | `Assoc assoc -> assoc
-        | _ -> []
-      in
-      match string_field_of_assoc fields "thread_id",
-            string_field_of_assoc fields "session_id" with
-      | Some tid, Some sid when String.equal tid thread_id -> Some sid
-      | _ -> None
-    with _ -> None
+type codex_thread_resolution =
+  | Codex_thread_resolved of string
+  | Codex_thread_unmapped
+  | Codex_thread_uncertain
+
+type codex_mapping_read =
+  | Codex_mapping_missing
+  | Codex_mapping_loaded of (string * string option)
+  | Codex_mapping_unreadable
+
+let strict_mapping_of_contents contents =
+  let number = function
+    | `Int _ -> true
+    | `Float f -> Float.is_finite f
+    | _ -> false
+  in
+  let nonempty_string = function
+    | `String s -> String.trim s <> ""
+    | _ -> false
+  in
+  try
+    (match Yojson.Safe.from_string contents with
+     | `Assoc fields ->
+         let unique =
+           let keys = List.map fst fields in
+           List.length keys = List.length (List.sort_uniq String.compare keys)
+         in
+         let known key =
+           List.mem key ["session_id"; "alias"; "thread_id"; "created_at"; "updated_at"]
+         in
+         if not unique || not (List.for_all (fun (k, _) -> known k) fields)
+            || not (List.mem_assoc "session_id" fields)
+            || not (List.mem_assoc "alias" fields)
+            || not (List.mem_assoc "created_at" fields)
+            || not (List.mem_assoc "updated_at" fields)
+         then None
+         else
+           let field key = List.assoc_opt key fields in
+           (match field "session_id", field "alias", field "thread_id",
+                  field "created_at", field "updated_at" with
+            | Some sid, Some alias, thread, Some created, Some updated
+              when nonempty_string sid && nonempty_string alias
+                   && number created && number updated
+                   && (match thread with None | Some `Null -> true
+                       | Some (`String value) -> String.trim value <> ""
+                       | _ -> false) ->
+                let sid = match sid with `String s -> String.trim s | _ -> assert false in
+                let thread = match thread with
+                  | Some (`String t) -> Some (String.trim t)
+                  | _ -> None
+                in
+                Some (sid, thread)
+            | _ -> None)
+     | _ -> None)
+  with _ -> None
+
+let read_codex_mapping ~instance_dir : codex_mapping_read =
+  match read_codex_regular_file_nofollow
+          (Filename.concat instance_dir "codex-session.json") with
+  | Codex_regular_file_missing -> Codex_mapping_missing
+  | Codex_regular_file_unreadable _ -> Codex_mapping_unreadable
+  | Codex_regular_file_contents contents ->
+      (match strict_mapping_of_contents contents with
+       | Some loaded -> Codex_mapping_loaded loaded
+       | None -> Codex_mapping_unreadable)
+
+let config_assoc_state path =
+  match read_codex_regular_file_nofollow path with
+  | Codex_regular_file_missing -> `Missing
+  | Codex_regular_file_unreadable _ -> `Unreadable
+  | Codex_regular_file_contents contents ->
+      (try match Yojson.Safe.from_string contents with
+       | `Assoc fields -> `Loaded fields
+       | _ -> `Unreadable
+       with _ -> `Unreadable)
 
 let managed_session_id_from_codex_config_json ~instance_dir ~broker_root ~thread_id =
-  let config_path = Filename.concat instance_dir "config.json" in
-  if not (Sys.file_exists config_path) then None
-  else
-    try
-      let fields =
-        match Yojson.Safe.from_file config_path with
-        | `Assoc assoc -> assoc
-        | _ -> []
+  match config_assoc_state (Filename.concat instance_dir "config.json") with
+  | `Missing -> `Missing
+  | `Unreadable -> `Unreadable
+  | `Loaded fields ->
+      let string_field key =
+        match List.assoc_opt key fields with
+        | Some (`String value) when String.trim value <> "" -> Some (String.trim value)
+        | None -> None
+        | Some _ -> None
       in
-      let string_field = string_field_of_assoc fields in
-      let is_codex_family =
-        match string_field "client" with
-        | Some ("codex" | "codex-headless") -> true
-        | _ -> false
+      let family = match string_field "client" with
+        | Some ("codex" | "codex-headless") -> true | _ -> false
       in
-      let broker_matches =
-        match string_field "broker_root" with
-        | Some root -> String.equal root broker_root
-        (* #504 intentionally omits a default broker root from managed
-           instance configs so they do not pin a stale fingerprint.
-           An omitted value therefore means "this invocation's
-           resolver-default broker", not "unmanaged".  Requiring a
-           serialized root here made an app-server SessionStart miss
-           its own thread mapping and mint a second Codex alias. *)
-        | None -> true
+      let broker_matches = match string_field "broker_root" with
+        | Some root -> root = broker_root | None -> true
       in
       let thread_matches =
-        (match string_field "resume_session_id" with
-         | Some value -> String.equal value thread_id
-         | None -> false)
-        || (match string_field "codex_resume_target" with
-            | Some value -> String.equal value thread_id
-            | None -> false)
+        match string_field "resume_session_id", string_field "codex_resume_target" with
+        | Some value, _ when value = thread_id -> true
+        | _, Some value when value = thread_id -> true
+        | _ -> false
       in
-      if is_codex_family && broker_matches && thread_matches
-      then string_field "session_id"
-      else None
-    with _ -> None
+      if family && broker_matches && thread_matches then
+        (match string_field "session_id" with Some sid -> `Found sid | None -> `Unreadable)
+      else `No_match
 
-(* #24: one-shot-per-thread stderr signal for the genuinely dangerous
-   ambiguous-and-none-live split-brain state. Guarded behind [debug_enabled]
-   AND deduped per thread_id so a per-tool-call hot path never spams. *)
+(* #24: one-shot-per-thread stderr signal for ambiguous split-brain state. *)
 let codex_thread_split_brain_warned : (string, unit) Hashtbl.t = Hashtbl.create 8
 
-(* #24: resolve a Codex thread id to its managed session id. A thread can end
-   up mapped by more than one managed instance (split-brain); routing/`whoami`
-   MUST agree with whichever identity the live deliver loop is watching, not
-   whichever [Sys.readdir] happens to list first. This resolver is a PURE read:
-   it consults the broker registry for liveness but never mutates broker state,
-   writes files, or registers. Ranking is fully deterministic — liveness tier,
-   then newest [registered_at], then lexicographic [session_id] — so identical
-   inputs always pick the same winner regardless of readdir order. *)
-let managed_session_id_from_codex_thread ~broker_root ~thread_id =
+let strict_registry ~broker_root : (registration list, unit) result =
+  match read_codex_regular_file_nofollow
+          (Filename.concat broker_root "registry.json") with
+  | Codex_regular_file_missing -> Ok []
+  | Codex_regular_file_unreadable _ -> Error ()
+  | Codex_regular_file_contents contents ->
+      (try match Yojson.Safe.from_string contents with
+       | `List entries ->
+           Ok (List.map Broker.registration_of_json entries)
+       | _ -> Error ()
+       with _ -> Error ())
+
+let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
   let instances_dir = managed_instances_dir () in
-  if not (Sys.file_exists instances_dir && Sys.is_directory instances_dir) then None
-  else
-    let entries = try Array.to_list (Sys.readdir instances_dir) with _ -> [] in
-    let matches =
-      List.filter_map
-        (fun name ->
+  let dir_state =
+    try match Unix.lstat instances_dir with
+    | { Unix.st_kind = Unix.S_DIR; _ } -> `Directory
+    | _ -> `Unreadable
+    with Unix.Unix_error (Unix.ENOENT, _, _) -> `Missing | _ -> `Unreadable
+  in
+  match dir_state with
+  | `Missing -> Codex_thread_unmapped
+  | `Unreadable -> Codex_thread_uncertain
+  | `Directory ->
+      let uncertain = ref false in
+      let entries =
+        match (try Some (Array.to_list (Sys.readdir instances_dir)) with _ -> None) with
+        | Some entries -> entries
+        | None -> uncertain := true; []
+      in
+      let matches =
+        List.filter_map (fun name ->
           let instance_dir = Filename.concat instances_dir name in
-          if not (Sys.file_exists instance_dir && Sys.is_directory instance_dir) then None
-          else
-            match managed_session_id_from_codex_session_json ~instance_dir ~thread_id with
-            | Some sid -> Some (sid, name)
-            | None ->
-                (match
-                   managed_session_id_from_codex_config_json
-                     ~instance_dir ~broker_root ~thread_id
-                 with
-                 | Some sid -> Some (sid, name)
-                 | None -> None))
-        entries
-    in
-    match matches with
-    | [] -> None
-    | [ (session_id, _) ] ->
-        (* Single mapping: keep working even when the session is offline
-           (whoami/send for a legitimately-idle managed unit). No broker read,
-           no ambiguity — the deterministic winner is trivially itself. *)
-        Some session_id
-    | _ :: _ :: _ ->
-        (* Ambiguous: >=2 instances claim this thread. Rank by liveness so we
-           follow whichever identity the live deliver loop is watching. Broker
-           access is best-effort and read-only. *)
-        let regs =
-          try Broker.list_registrations (Broker.create ~root:broker_root)
-          with _ -> []
-        in
-        (* Higher is better. Tier: 2 = alive (live pid / fresh lease),
-           1 = pidless Unknown (treated alive by [registration_is_alive]),
-           0 = dead or entirely unregistered. *)
-        let rank (session_id, _name) =
-          let tier, registered_at =
-            match
-              List.find_opt
-                (fun (r : registration) -> r.session_id = session_id)
-                regs
-            with
-            | None -> (0, None)
-            | Some r ->
-                let tier =
-                  match Broker.registration_liveness_state r with
-                  | Broker.Alive -> 2
-                  | Broker.Unknown -> 1
-                  | Broker.Dead -> 0
-                in
-                (tier, r.registered_at)
+          let instance_state =
+            try match Unix.lstat instance_dir with
+            | { Unix.st_kind = Unix.S_DIR; _ } -> `Directory
+            | { Unix.st_kind = Unix.S_REG; _ } -> `Skip
+            | _ -> `Uncertain
+            with Unix.Unix_error (Unix.ENOENT, _, _) -> `Skip | _ -> `Uncertain
           in
-          (tier, Option.value registered_at ~default:neg_infinity, session_id)
-        in
-        (* Strict total order over candidates (distinct session_ids guarantee a
-           unique max via the lexicographic final tiebreak): better tier wins,
-           then newer [registered_at], then smaller [session_id]. *)
-        let better a b =
-          let ta, ra, sa = rank a in
-          let tb, rb, sb = rank b in
-          if ta <> tb then ta > tb
-          else if ra <> rb then ra > rb
-          else String.compare sa sb < 0
-        in
-        let winner =
-          List.fold_left
-            (fun best c -> if better c best then c else best)
-            (List.hd matches) (List.tl matches)
-        in
-        let winner_sid, _ = winner in
-        let winner_tier, _, _ = rank winner in
-        (* Ambiguous AND no live candidate is the dangerous state: whoami/send
-           will pick a deterministic-but-possibly-stale identity. Emit once per
-           thread (debug-gated) so operators can spot the split-brain. *)
-        if winner_tier = 0
-           && debug_enabled
-           && not (Hashtbl.mem codex_thread_split_brain_warned thread_id)
-        then begin
-          Hashtbl.replace codex_thread_split_brain_warned thread_id ();
-          Printf.eprintf
-            "[DEBUG managed_session_id_from_codex_thread] ambiguous split-brain \
-             thread %s: %d managed instances claim it and NONE are live; \
-             deterministically picking session %s (#24)\n%!"
-            thread_id (List.length matches) winner_sid
-        end;
-        Some winner_sid
+          match instance_state with
+          | `Skip -> None
+          | `Uncertain -> uncertain := true; None
+          | `Directory ->
+              match read_codex_mapping ~instance_dir with
+              | Codex_mapping_unreadable -> uncertain := true; None
+              | Codex_mapping_loaded (sid, Some tid) when tid = thread_id ->
+                  Some (sid, name)
+              | Codex_mapping_loaded (_, _) -> None
+              | Codex_mapping_missing ->
+                  (match managed_session_id_from_codex_config_json
+                           ~instance_dir ~broker_root ~thread_id with
+                   | `Found sid -> Some (sid, name)
+                   | `Unreadable -> uncertain := true; None
+                   | `Missing | `No_match -> None)
+        ) entries
+      in
+      if !uncertain then Codex_thread_uncertain
+      else match matches with
+      | [] -> Codex_thread_unmapped
+      | [ (session_id, _) ] -> Codex_thread_resolved session_id
+      | _ ->
+          (match strict_registry ~broker_root with
+           | Error () -> Codex_thread_uncertain
+           | Ok regs ->
+               let rank (session_id, _) =
+                 match List.find_opt (fun (r : registration) -> r.session_id = session_id) regs with
+                 | None -> (0, None)
+                 | Some r ->
+                     let tier = match Broker.registration_liveness_state r with
+                       | Broker.Alive -> 2 | Broker.Unknown -> 1 | Broker.Dead -> 0
+                     in (tier, r.registered_at)
+               in
+               let better (sa, _) (sb, _) =
+                 let ta, ra = rank (sa, "") and tb, rb = rank (sb, "") in
+                 ta > tb || (ta = tb && (ra > rb || (ra = rb && sa < sb)))
+               in
+               let winner = List.fold_left (fun best candidate ->
+                 if better candidate best then candidate else best)
+                 (List.hd matches) (List.tl matches)
+               in
+               let sid, _ = winner in
+               let tier, _ = rank winner in
+               if tier = 0 then begin
+                 if debug_enabled && not (Hashtbl.mem codex_thread_split_brain_warned thread_id) then begin
+                   Hashtbl.replace codex_thread_split_brain_warned thread_id ();
+                   Printf.eprintf "[DEBUG] ambiguous Codex thread %s has no live owner; refusing identity\n%!" thread_id
+                 end;
+                 Codex_thread_uncertain
+               end else Codex_thread_resolved sid)
+
+let managed_session_id_from_codex_thread ~broker_root ~thread_id =
+  match managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id with
+  | Codex_thread_resolved sid -> Some sid
+  | Codex_thread_unmapped | Codex_thread_uncertain -> None
 
 let codex_turn_metadata_session_id params =
   let open Yojson.Safe.Util in
@@ -1274,9 +1337,13 @@ let request_session_id_override ~broker_root ~tool_name ~params =
          c2c instance session_id; otherwise we fall back to the raw thread id. *)
       (match codex_turn_metadata_session_id params with
        | Some thread_id ->
-           (match managed_session_id_from_codex_thread ~broker_root ~thread_id with
-            | Some session_id -> Some session_id
-            | None -> Some thread_id)
+           (match managed_session_id_from_codex_thread_resolution
+                    ~broker_root ~thread_id with
+            | Codex_thread_resolved session_id -> Some session_id
+            | Codex_thread_unmapped -> Some thread_id
+            | Codex_thread_uncertain ->
+                invalid_arg
+                  "Codex thread identity is uncertain; refusing raw-thread routing")
        | None -> None)
   | _ -> None
 

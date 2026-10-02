@@ -721,11 +721,9 @@ let test_resolver_prefers_alive_regardless_of_order () =
   run ~stale_first:true;
   run ~stale_first:false
 
-(* A: none live → deterministic pick = newest registered_at. [sid-a-older] is
-   registered FIRST (older) and sorts lexicographically BEFORE [sid-z-newer],
-   so a correct newest-registered_at pick returns "sid-z-newer" and proves
-   registered_at dominates the lexicographic final tiebreak. *)
-let test_resolver_none_live_picks_newest () =
+(* A: none live is ambiguous and must fail closed. A stale mapping must never
+   be selected merely because its registry row sorts first or is newest. *)
+let test_resolver_none_live_refuses_ambiguous () =
   with_split_brain_env (fun ~inst ~broker_root ->
       let broker = B.create ~root:broker_root in
       let thread = "thread-both-dead-24" in
@@ -736,8 +734,8 @@ let test_resolver_none_live_picks_newest () =
       register_dead broker ~session_id:"sid-a-older" ~alias:"unit-a";
       register_dead broker ~session_id:"sid-z-newer" ~alias:"unit-z";
       Alcotest.(check (option string))
-        "none live -> newest registered_at wins (not lexicographic)"
-        (Some "sid-z-newer")
+        "none live -> refuse ambiguous identity"
+        None
         (PB.managed_session_id_from_codex_thread ~broker_root ~thread_id:thread))
 
 (* A: a single (unique) mapping keeps working even when offline — no broker
@@ -2425,8 +2423,8 @@ let () =
     ; ( "codex-thread-split-brain-24",
         [ test_case "resolver prefers alive regardless of readdir order" `Quick
             test_resolver_prefers_alive_regardless_of_order
-        ; test_case "resolver none-live picks newest registered_at" `Quick
-            test_resolver_none_live_picks_newest
+        ; test_case "resolver none-live refuses ambiguous identity" `Quick
+            test_resolver_none_live_refuses_ambiguous
         ; test_case "resolver single offline mapping still resolves" `Quick
             test_resolver_single_offline_mapping_resolves
         ; test_case "write-guard refuses on live sibling" `Quick
