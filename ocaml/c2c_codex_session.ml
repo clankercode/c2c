@@ -2344,10 +2344,10 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          identity record; the broker registration is the in-flight routing entry. *)
       let created =
         match load_mapping ~instance_dir with Some m -> m.created_at | None -> now in
-      write_mapping ~instance_dir
+      ignore (write_mapping ~instance_dir
         { session_id; alias;
           thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
-          created_at = created; updated_at = now };
+          created_at = created; updated_at = now });
       (* B172: bind the banner alias into the broker before the operator can
          interact (init-equivalent of `c2c init --alias <generated> --no-setup`
          on the launcher session_id).  Do this immediately after start returns
@@ -2419,7 +2419,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
           "c2c codex: retaining outer pidfiles because lifecycle cleanup was not confirmed\n%!";
       (* Refresh the mapping's updated_at + thread on clean shutdown. *)
       (match load_mapping ~instance_dir with
-       | Some m -> write_mapping ~instance_dir { m with updated_at = Unix.gettimeofday () }
+       | Some m -> ignore (write_mapping ~instance_dir { m with updated_at = Unix.gettimeofday () })
        | None -> ());
       (match final.C2c_codex_deliver_loop.restart_executable,
              final.C2c_codex_deliver_loop.thread_id with
