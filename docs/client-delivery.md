@@ -190,11 +190,12 @@ for the full grammar. The delivery-relevant contract:
 
 - **Identity**: with no `--alias`, a stable human-readable alias is derived
   deterministically from the Codex session id (resume/restart keeps it);
-  `--alias` optionally overrides the routing identity. After a successful
-  app-server start the launcher binds that banner alias into the broker before
-  interaction (B172), so first-turn `whoami` / send match the banner without a
-  re-init. Hooks inherit the launcher session id via
-  `C2C_CODEX_APPSERVER_SESSION` (B166/B137) and do not mint a second identity.
+  `--alias` optionally overrides the routing identity. The launcher publishes
+  that banner alias only after the authenticated frontend proves its native
+  thread and the durable thread mapping is written (B172/B167), so first-turn
+  `whoami` / send match the banner without a pre-proof routable row. Hooks
+  inherit the launcher session id via `C2C_CODEX_APPSERVER_SESSION` (B166/B137)
+  and generic MCP startup stays suppressed until that launcher proof.
 - **`--yolo`** forwards Codex's `--dangerously-bypass-approvals-and-sandbox`
   with a conspicuous warning; it is per-launch only and never persisted into
   later resumes.
@@ -363,12 +364,13 @@ peer mail from `role="developer"` DATA to operator input and break the "bus,
 never RPC" invariant. See [Delivery & Wake Contract](/wake-contract/).
 
 **Single identity per session (B137/B166/B172, fixed).** The managed launcher
-registers the routable alias (the one `c2c instances` reports) before the TUI
-can deliver mail. On the private per-session fallback, the frontend inherits
-`C2C_CODEX_APPSERVER_SESSION` and the hook adopts that identity. On the machine
-daemon path, that marker is deliberately empty: the launcher discovers the
-loaded native thread after the remote frontend starts and arms the sidecar
-itself. The sidecar claims that exact thread before it drains or injects. In
+publishes the routable alias (the one `c2c instances` reports) only after the
+authenticated frontend proves its native thread and the durable mapping is
+written. Before that proof, generic MCP startup is suppressed so the TUI cannot
+publish a competing row. Both private and machine-daemon frontends inherit
+`C2C_CODEX_APPSERVER_SESSION`; the daemon launcher then discovers the loaded
+native thread and arms the sidecar itself. The sidecar claims that exact thread
+before it drains or injects. In
 the explicitly authorized compatibility hook path, `SessionStart` may arm the
 sidecar only after it has durably persisted the native thread mapping; a failed
 or uncertain mapping remains on hook fallback and never becomes ingress

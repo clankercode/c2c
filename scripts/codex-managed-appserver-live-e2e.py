@@ -148,6 +148,49 @@ def my_codex_pids(broker_root: str) -> list[int]:
     return pids
 
 
+def launcher_identity(instances: Path, name: str) -> tuple[str, str] | None:
+    """Read the identity the launcher persisted for this exact instance."""
+    try:
+        cfg = json.loads((instances / name / "config.json").read_text())
+        sid, alias = cfg.get("session_id"), cfg.get("alias")
+        if isinstance(sid, str) and sid.strip() and isinstance(alias, str) and alias.strip():
+            return sid, alias
+    except (OSError, ValueError, TypeError):
+        pass
+    return None
+
+
+def daemon_lease_records() -> list[tuple[Path, dict]]:
+    root = Path(os.environ.get("C2C_STATE_HOME", Path.home() / ".local" / "share")) \
+        / "c2c" / "codex-daemon-owners"
+    records: list[tuple[Path, dict]] = []
+    try:
+        paths = root.glob("*.json")
+    except OSError:
+        return records
+    for path in paths:
+        try:
+            value = json.loads(path.read_text())
+            if isinstance(value, dict) and {"thread_id", "sidecar_pid", "broker_session_id"} <= value.keys():
+                records.append((path, value))
+        except (OSError, ValueError, TypeError):
+            continue
+    return records
+
+
+def pid_generation(pid: int) -> int | None:
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return int(fields[19])  # /proc stat field 22, after comm/state
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def exact_generation_gone(pid: int, start_time: int) -> bool:
+    current = pid_generation(pid)
+    return current is None or current != start_time
+
+
 def sweep_my_codex(broker_root: str) -> int:
     """SIGTERM (then SIGKILL) every codex proc from this run. Returns how many
     were still alive and had to be force-killed (a nonzero value means `c2c stop`
@@ -292,26 +335,22 @@ def run_live() -> int:
         # that registration before the remote TUI proves a loaded thread; using
         # it as readiness reproduces the reported "registered, then failed"
         # split-brain window.
-        def find_instance_alias() -> str | None:
+        def find_authenticated_ready_identity() -> tuple[str, str] | None:
+            identity = launcher_identity(instances, name)
+            if identity is None:
+                return None
+            expected_sid, expected_alias = identity
             r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
             try:
                 regs = json.loads(r.stdout or "[]")
             except Exception:
                 return None
-            # managed codex registers under the instance alias we chose.
-            for reg in regs:
-                if reg.get("alias") == name and reg.get("alive"):
-                    return name
-            # fallback: any codex-* alias that is alive.
-            for reg in regs:
-                a = reg.get("alias") or ""
-                if a.startswith("codex-") and reg.get("alive"):
-                    return a
-            return None
-
-        def find_authenticated_ready_alias() -> str | None:
-            alias = find_instance_alias()
-            if alias is None:
+            matches = [reg for reg in regs
+                       if reg.get("session_id") == expected_sid
+                       and reg.get("alias") == expected_alias
+                       and reg.get("client_type") == "codex-app-server"
+                       and reg.get("alive") is True]
+            if len(matches) != 1:
                 return None
             instances_root = Path(cli_env.get(
                 "C2C_INSTANCES_DIR",
@@ -320,15 +359,17 @@ def run_live() -> int:
             try:
                 mapping = json.loads(mapping_path.read_text())
                 thread_id = mapping.get("thread_id")
-                return alias if isinstance(thread_id, str) and thread_id.strip() else None
+                return (expected_sid, expected_alias) \
+                    if isinstance(thread_id, str) and thread_id.strip() else None
             except (OSError, ValueError, TypeError):
                 return None
 
-        inst_alias = wait_for(find_authenticated_ready_alias, timeout=150, interval=3)
-        if not inst_alias:
-            log("[appserver-e2e] FAIL: managed session never reached authenticated thread readiness")
+        identity = wait_for(find_authenticated_ready_identity, timeout=150, interval=3)
+        if not identity:
+            log("[appserver-e2e] FAIL: launcher-owned registration never reached authenticated thread readiness")
             log("[appserver-e2e] pane tail:\n" + _pane_text(pane, 120))
             return 4
+        launcher_sid, inst_alias = identity
         log(f"[appserver-e2e] managed session reached authenticated readiness as: {inst_alias}")
 
         # Capture which managed transport owns this instance before stopping it.
@@ -367,6 +408,38 @@ def run_live() -> int:
             log("[appserver-e2e] FAIL: no valid persisted private/daemon lifecycle state")
             return 4
         log(f"[appserver-e2e] persisted lifecycle transport: {transport}")
+        registration_snapshot = None
+        r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
+        try:
+            registration_snapshot = next(reg for reg in json.loads(r.stdout or "[]")
+                                         if reg.get("session_id") == launcher_sid
+                                         and reg.get("alias") == inst_alias)
+        except (StopIteration, ValueError, TypeError):
+            log("[appserver-e2e] FAIL: launcher registration disappeared after readiness")
+            return 4
+        if not (isinstance(registration_snapshot.get("pid"), int)
+                and isinstance(registration_snapshot.get("pid_start_time"), int)):
+            log("[appserver-e2e] FAIL: launcher registration has no exact PID generation")
+            return 4
+        private_generation = None
+        if private_state_path.is_file():
+            try:
+                state = json.loads(private_state_path.read_text())
+                private_generation = {
+                    key: (state[key], state[f"{key}_start_time"])
+                    for key in ("server_pid", "frontend_pid")
+                    if isinstance(state.get(key), int)
+                    and isinstance(state.get(f"{key}_start_time"), int)
+                }
+            except (OSError, ValueError, TypeError, KeyError):
+                private_generation = None
+        lease_snapshot = daemon_lease_records()
+        owned_leases = [(path, rec) for path, rec in lease_snapshot
+                        if rec.get("broker_session_id") == launcher_sid
+                        and rec.get("alias") == inst_alias]
+        if transport == "daemon" and len(owned_leases) != 1:
+            log(f"[appserver-e2e] FAIL: expected exactly one launcher daemon lease, found {len(owned_leases)}")
+            return 4
 
         # 3. wait for the frontend TUI to be interactive, then type an UNSUBMITTED
         #    draft into the composer (draft-preservation setup). No Enter.
@@ -447,6 +520,8 @@ def run_live() -> int:
             return len(my_codex_pids(str(broker))) == 0
         reaped = wait_for(no_my_procs, timeout=60, interval=3) is not None
         results["clean_teardown"] = stop_ok and reaped
+        registration_generation_gone = exact_generation_gone(
+            registration_snapshot["pid"], registration_snapshot["pid_start_time"])
 
         def deregistered() -> bool:
             r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
@@ -454,12 +529,15 @@ def run_live() -> int:
                 regs = json.loads(r.stdout or "[]")
             except Exception:
                 return False
-            matching = [reg for reg in regs if reg.get("alias") == inst_alias]
+            matching = [reg for reg in regs
+                        if reg.get("session_id") == launcher_sid
+                        and reg.get("alias") == inst_alias]
             # Managed stop intentionally preserves the sticky alias row, but
             # it must be completely unowned: one row, marked dead, with no
             # PID generation left that could route a future message to this
             # stopped process.
-            return (len(matching) == 1
+            return (registration_snapshot is not None
+                    and len(matching) == 1
                     and matching[0].get("state") == "dead"
                     and matching[0].get("alive") is not True
                     and "pid" not in matching[0]
@@ -504,19 +582,36 @@ def run_live() -> int:
                        ("server_pid", "server_pid_start_time", "frontend_pid",
                         "frontend_pid_start_time")):
                     return False
+                if private_generation is None or any(
+                        not exact_generation_gone(pid, generation)
+                        for pid, generation in private_generation.values()):
+                    return False
             else:
                 # A daemon attach has no per-instance private app-server JSON.
                 # Its persisted lifecycle is the sidecar PID generation, which
                 # stop removes only after releasing the exact daemon lease.
                 if private_state_path.exists():
                     return False
+                if any(path.exists() for path, _ in owned_leases):
+                    return False
+                if any(rec.get("broker_session_id") == launcher_sid
+                       and rec.get("alias") == inst_alias
+                       for _, rec in daemon_lease_records()):
+                    return False
+                for _, rec in owned_leases:
+                    pid, generation = rec.get("sidecar_pid"), rec.get("sidecar_pid_start_time")
+                    if not (isinstance(pid, int) and isinstance(generation, int)
+                            and exact_generation_gone(pid, generation)):
+                        return False
             return True
 
         results["lifecycle_clean"] = wait_for(lifecycle_clean, timeout=30, interval=3) is not None
         log(f"[appserver-e2e] after stop: my codex procs remaining = "
             f"{len(my_codex_pids(str(broker)))} clean={results['clean_teardown']} "
             f"lifecycle={results['lifecycle_clean']} "
-            f"deregistered={results['deregistered']}")
+            f"deregistered={results['deregistered']} "
+            f"registration_generation_gone={registration_generation_gone}")
+        results["clean_teardown"] = results["clean_teardown"] and registration_generation_gone
 
         verdict = all(results.values())
         log("[appserver-e2e] ===== RESULTS =====")
