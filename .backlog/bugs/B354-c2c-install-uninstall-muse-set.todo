@@ -1,0 +1,16 @@
+---
+complexity: high
+created_at: "2026-10-02T17:26:35Z"
+depends_on:
+    - B352
+estimate_hours: 5
+id: B354
+priority: high
+status: pending
+tags:
+    - muse
+title: c2c install uninstall muse settings skill plugin
+updated_at: "2026-10-02T17:26:35Z"
+---
+
+c2c install uninstall muse settings skill plugin
