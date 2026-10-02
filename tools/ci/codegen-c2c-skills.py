@@ -48,6 +48,11 @@ EMBEDS = {
         "kimi_skill_src",
         "assembled kimi harness",
     ),
+    "muse": (
+        "c2c_muse_skill_embedded.ml",
+        "muse_skill_src",
+        "assembled muse harness",
+    ),
 }
 
 

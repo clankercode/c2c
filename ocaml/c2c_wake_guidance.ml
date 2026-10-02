@@ -159,9 +159,10 @@ let advice ~(client : string) ~(context : [ `Install | `Managed_start ]) :
           ; "  Fallback: c2c poll-inbox"
           ]
       }
-  (* B353: muse Tier-0 is CLI-only — no hooks, no MCP, no managed start — so
-     both contexts are NONE with the Monitor recipe (verbatim #414, copied
-     from the grok arm above). *)
+  (* B353: muse is CLI-first with NONE idle wake — hooks + MCP (B354) do not
+     change that verdict (no out-of-process wake exists), so both contexts
+     stay NONE with the Monitor recipe (verbatim #414, copied from the grok
+     arm above). *)
   | "muse", _ ->
       { client = c
       ; wake = None_idle

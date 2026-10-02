@@ -601,11 +601,12 @@ let connect_dashboard ~root ~broker ~output_mode =
     else if has_yellow then `Needs_install
     else `Not_found
   in
-  (* B353: muse is CLI-first Tier-0 with no `c2c install` target and no plugin
-     checks, so it always reads Not_found. Its row stays in the JSON clients
-     map (contract), but verdicts compute over installable clients only — else
-     the dashboard would nag `c2c install muse` (a command that does not
-     exist) and no host could ever reach "you're connected!". *)
+  (* B354 refresh: `c2c install muse` now exists, but muse still has no plugin
+     presence checks (B357 owns doctor/presence), so it always reads
+     Not_found. Its row stays in the JSON clients map (contract), but
+     verdicts compute over installable clients only — else the dashboard
+     would nag installs no host could satisfy and none could ever reach
+     "you're connected!". Revisit when B357 adds muse presence checks. *)
   let installable_clients = List.filter (fun c -> c <> "muse") supported_clients in
   let all_installed = List.for_all (fun c -> client_status c = `Installed) installable_clients in
   let any_configured = List.exists (fun c -> client_status c <> `Not_found) installable_clients in
