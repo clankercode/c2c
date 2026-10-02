@@ -292,7 +292,7 @@ def run_live() -> int:
         # it as readiness reproduces the reported "registered, then failed"
         # split-brain window.
         def find_instance_alias() -> str | None:
-            r = run_c2c(bin_, ["list", "--json"], cli_env)
+            r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
             try:
                 regs = json.loads(r.stdout or "[]")
             except Exception:
@@ -403,7 +403,7 @@ def run_live() -> int:
         results["clean_teardown"] = reaped
 
         def deregistered() -> bool:
-            r = run_c2c(bin_, ["list", "--json"], cli_env)
+            r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
             try:
                 regs = json.loads(r.stdout or "[]")
             except Exception:
