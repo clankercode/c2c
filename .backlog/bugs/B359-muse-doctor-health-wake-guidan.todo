@@ -74,3 +74,5 @@ Rationale: DEAF means "mail queues that a live poster should have drained" — a
 Code: classify_muse_deaf pinned-false with truth-table tests; muse_deaf_count=0 wired live into doctor_hooks_exit_failure ~muse_deaf so B356 flips one function to get exit-1; rearm_deaf_muse_sessions explicit no-op (skip-confirmed-dead/no-mint satisfied vacuously) with --rearm posture line when muse regs exist. JSON keeps deaf:[]/deaf_count:0 mirroring kimi/codex shape for scripted consumers.
 
 ALSO DECIDED: forward-agent-log muse classifier SKIPPED — muse session.jsonl is a transaction-frame log (frame_schema_version/transaction_id/retained_frame envelope, measured on-host), not a role/content line stream; a classifier needs a fresh parser design (suggest follow-up ticket). Sweep pgrep guard LEFT ALONE — pattern 'run-(kimi|codex|opencode|crush|claude)-inst-outer' matches nothing in-tree (vestigial); adding muse to a never-firing pattern is cargo-cult.
+
+Follow-up filed: B363 (muse forward-agent-log classifier needs frame-envelope parser) — covers the forward-agent-log classifier+paths item B359 skipped with rationale (transaction-frame transcript needs a fresh parser design).
