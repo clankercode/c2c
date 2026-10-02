@@ -615,6 +615,24 @@ type loaded_threads_result =
   | Loaded_threads of string list
   | Loaded_threads_unavailable of string
 
+let parse_loaded_threads_response = function
+  | `Assoc fields ->
+      (match List.assoc_opt "error" fields with
+       | Some _ -> Loaded_threads_unavailable "thread/loaded/list rejected"
+       | None ->
+           (match List.assoc_opt "result" fields with
+            | Some (`Assoc result) ->
+                (match List.assoc_opt "data" result with
+                 | Some (`List xs) ->
+                     Loaded_threads
+                       (List.filter_map
+                          (function `String s -> Some s | _ -> None) xs)
+                 | _ -> Loaded_threads_unavailable
+                          "thread/loaded/list returned malformed data")
+            | _ -> Loaded_threads_unavailable
+                     "thread/loaded/list returned malformed result"))
+  | _ -> Loaded_threads_unavailable "thread/loaded/list returned malformed response"
+
 (* Discover the thread(s) the attached frontend has LOADED, so the B131 deliver
    loop can inject/turn into the SAME thread the operator sees in the remote TUI.
    Keep availability separate from an authenticated empty result: a transport,
@@ -635,23 +653,7 @@ let real_loaded_threads_result ~(endpoint : Ep.endpoint) ~(token : string) : loa
             try
               let _ = rpc_call f ~meth:"initialize" ~params:init_params in
               let resp = rpc_call f ~meth:"thread/loaded/list" ~params:(`Assoc []) in
-              match resp with
-              | `Assoc l ->
-                  (match List.assoc_opt "error" l with
-                   | Some _ -> Loaded_threads_unavailable "thread/loaded/list rejected"
-                   | None ->
-                       (match List.assoc_opt "result" l with
-                        | Some (`Assoc rl) ->
-                            (match List.assoc_opt "data" rl with
-                             | Some (`List xs) ->
-                                 Loaded_threads
-                                   (List.filter_map
-                                      (function `String s -> Some s | _ -> None) xs)
-                             | _ -> Loaded_threads_unavailable
-                                      "thread/loaded/list returned malformed data")
-                        | _ -> Loaded_threads_unavailable
-                                 "thread/loaded/list returned malformed result"))
-              | _ -> Loaded_threads_unavailable "thread/loaded/list returned malformed response"
+              parse_loaded_threads_response resp
             with _ -> Loaded_threads_unavailable "authenticated thread discovery failed"))
 
 let real_loaded_threads ~(endpoint : Ep.endpoint) ~(token : string) : string list =

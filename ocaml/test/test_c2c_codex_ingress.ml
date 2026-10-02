@@ -73,6 +73,40 @@ let test_thread_read_cwd_metadata () =
     (I.thread_read_cwd
        (`Assoc [ ("error", `Assoc [ ("message", `String "not found") ]) ]))
 
+let test_loaded_threads_response_parser_distinguishes_empty_from_unavailable () =
+  let empty =
+    `Assoc [ ("result", `Assoc [ ("data", `List []) ]) ]
+  in
+  (match I.parse_loaded_threads_response empty with
+   | I.Loaded_threads [] -> ()
+   | I.Loaded_threads ids -> Alcotest.failf "expected empty list, got %d ids" (List.length ids)
+   | I.Loaded_threads_unavailable reason ->
+       Alcotest.failf "empty authenticated response unavailable: %s" reason);
+  (match I.parse_loaded_threads_response
+           (`Assoc [ ("error", `Assoc [ ("message", `String "unavailable") ]) ]) with
+   | I.Loaded_threads_unavailable _ -> ()
+   | I.Loaded_threads _ -> Alcotest.fail "JSON-RPC error must be unavailable");
+  (match I.parse_loaded_threads_response (`String "malformed") with
+   | I.Loaded_threads_unavailable _ -> ()
+   | I.Loaded_threads _ -> Alcotest.fail "malformed response must be unavailable")
+
+let test_loaded_threads_result_reports_disabled_or_unavailable_transport () =
+  let old = Sys.getenv_opt "C2C_CODEX_INGRESS_LIVE" in
+  let restore () = Unix.putenv "C2C_CODEX_INGRESS_LIVE" (Option.value old ~default:"") in
+  Fun.protect
+    ~finally:restore
+    (fun () ->
+      Unix.putenv "C2C_CODEX_INGRESS_LIVE" "";
+      (match I.real_loaded_threads_result ~endpoint:ep ~token:"" with
+       | I.Loaded_threads_unavailable reason ->
+           Alcotest.(check string) "disabled ingress is unavailable" "live ingress disabled" reason
+       | I.Loaded_threads _ -> Alcotest.fail "disabled ingress must not be an empty baseline");
+      Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
+      match I.real_loaded_threads_result
+              ~endpoint:{ ep with port = 1 } ~token:"invalid" with
+      | I.Loaded_threads_unavailable _ -> ()
+      | I.Loaded_threads _ -> Alcotest.fail "unavailable transport must not be an empty baseline")
+
 let test_clean_delivery () =
   let root = mk_root () in
   seed_inbox ~root ~session_id:"sess" [ mk_msg ~message_id:"m1" "hello" ];
@@ -411,7 +445,11 @@ let test_stale_pending_force_retry () =
 let () =
   Alcotest.run "c2c_codex_ingress"
     [ ( "workspace-metadata",
-        [ Alcotest.test_case "thread/read cwd" `Quick test_thread_read_cwd_metadata ] );
+        [ Alcotest.test_case "thread/read cwd" `Quick test_thread_read_cwd_metadata;
+          Alcotest.test_case "loaded-thread parser distinguishes empty" `Quick
+            test_loaded_threads_response_parser_distinguishes_empty_from_unavailable;
+          Alcotest.test_case "loaded-thread discovery reports unavailable" `Quick
+            test_loaded_threads_result_reports_disabled_or_unavailable_transport ] );
       ( "persist-first",
         [ Alcotest.test_case "clean delivery" `Quick test_clean_delivery;
           Alcotest.test_case "persist-first before inject" `Quick test_persist_first;

@@ -105,6 +105,8 @@ type loaded_threads_result =
   | Loaded_threads of string list
   | Loaded_threads_unavailable of string
 
+val parse_loaded_threads_response : Yojson.Safe.t -> loaded_threads_result
+
 val real_loaded_threads_result :
   endpoint:C2c_codex_app_server.endpoint -> token:string -> loaded_threads_result
 
