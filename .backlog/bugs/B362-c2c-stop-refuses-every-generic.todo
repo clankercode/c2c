@@ -26,3 +26,5 @@ EVIDENCE: most live ~/.local/share/c2c/instances/*/ with outer.pid lack the .sta
 FIX (proposed, tiny): in run_outer_loop next to `let _lock_fd = acquire_instance_lock ~name` (:6675), add write_pid_generation ~pid_path:(outer_pid_path name) ~start_time_path:(outer_pid_start_time_path name) (Unix.getpid ()) — the exact tmux-loop sequence (:4809-4811). Restores intended behavior: stops that failed now succeed; no previously-working stop changes. B358 may carry this fix since managed muse is unshippable without stop; coordinator decides split vs ride-along.
 
 REGRESSION TEST: hermetic `c2c start` with a stub binary asserting the pair exists + generation matches, then `c2c stop` succeeds. See existing start/stop CLI test harness if any.
+
+Coordinator decision (B358 review): RIDE ALONG — managed muse is unshippable without working stop, the fix is tiny and already implemented+tested on b358-managed-muse. Close B362 with the B358 merge (fixed-by-branch), no separate lane.
