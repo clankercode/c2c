@@ -340,7 +340,7 @@ type mapping = {
 
 val mapping_path : instance_dir:string -> string
 val load_mapping : instance_dir:string -> mapping option
-val write_mapping : instance_dir:string -> mapping -> unit
+val write_mapping : instance_dir:string -> mapping -> bool
 (** #24: persist the discovered Codex [thread_id] onto this managed unit.
     Returns [true] when the thread is (or was already) bound to this unit, and
     [false] when persistence was REFUSED because a live managed sibling already

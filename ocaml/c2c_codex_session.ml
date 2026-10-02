@@ -153,6 +153,9 @@ let daemon_frontend_env ~session_id ~alias ~instance_name =
   ; "C2C_CODEX_MANAGED=1"
   ; "C2C_CODEX_INSTANCE_NAME=" ^ instance_name ]
 
+let daemon_frontend_workspace_args ~(cwd : string) =
+  [ "--cd"; cwd ]
+
 let daemon_attach_forced_off () =
   match Sys.getenv_opt "C2C_CODEX_FORCE_PRIVATE_APPSERVER" with
   | Some "1" -> true
@@ -239,6 +242,9 @@ external setpgid : int -> int -> unit = "caml_c2c_setpgid"
 external tcgetpgrp : Unix.file_descr -> int = "caml_c2c_tcgetpgrp"
 external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
 
+let sentinel_group_joined ~frontend_pid ~sentinel_pid =
+  C2c_pid_identity.proc_pgrp sentinel_pid = Some frontend_pid
+
 type terminal_foreground = {
   fd : Unix.file_descr;
   original_pgrp : int;
@@ -285,18 +291,27 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
           (* The child must not inherit the parent's blocked termination signals
              while it is running the actual frontend. *)
           (try ignore (Thread.sigmask Unix.SIG_SETMASK previous) with _ -> ());
-          (try setpgid 0 0 with _ -> ());
+          (try setpgid 0 0 with _ -> exit 125);
           (* Hand the terminal to the new group before exec. The parent repeats
              the handoff below to close the fork/exec race. *)
           handoff_terminal_to_child terminal (Unix.getpid ());
           (try Unix.execvpe bin argv (frontend_owner_env env (Unix.getpid ()))
            with _ -> exit 127)
       | pid ->
-          (try setpgid pid pid with _ -> ());
-          (* Publish the process group before the receipt callback. If receipt
-             publication fails, the launcher can synchronously tear down this
-             exact group before returning an error. *)
-          on_parent_fork pid;
+          let generation = C2c_mcp.Broker.read_pid_start_time pid in
+          let cleanup_exact_owner () =
+            match generation with
+            | Some expected
+              when C2c_mcp.Broker.read_pid_start_time pid = Some expected
+                   && C2c_pid_identity.proc_pgrp pid = Some pid ->
+                (try Unix.kill (-pid) Sys.sigterm with _ -> ());
+                Unix.sleepf 0.05;
+                if C2c_mcp.Broker.read_pid_start_time pid = Some expected
+                   && C2c_pid_identity.proc_pgrp pid = Some pid then
+                  (try Unix.kill (-pid) Sys.sigkill with _ -> ())
+            | _ -> ()
+          in
+          (try setpgid pid pid with e -> cleanup_exact_owner (); raise e);
           (* Keep an owner-bound sentinel in the frontend's process group. The
              frontend may exit and be reaped while descendants remain; the
              sentinel preserves a generation-checked owner until teardown, so
@@ -308,7 +323,19 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
                (try ignore (Sys.signal Sys.sigint Sys.Signal_ignore) with _ -> ());
                while true do Unix.pause () done
            | sentinel ->
-               (try setpgid sentinel pid with _ -> ());
+               (try setpgid sentinel pid with e ->
+                  cleanup_exact_owner ();
+                  (try ignore (Unix.waitpid [] sentinel) with _ -> ());
+                  raise e);
+               if not (sentinel_group_joined ~frontend_pid:pid ~sentinel_pid:sentinel) then begin
+                 cleanup_exact_owner ();
+                 (try ignore (Unix.waitpid [] sentinel) with _ -> ());
+                 raise (Failure "Codex frontend sentinel did not join its exact process group")
+               end;
+               (* Publish ownership only after the sentinel has joined the
+                  exact frontend group. A failed join must never leave a
+                  teardown record claiming a group we cannot prove. *)
+               on_parent_fork pid;
                on_sentinel
                  (sentinel, C2c_mcp.Broker.read_pid_start_time sentinel));
           handoff_terminal_to_child terminal pid;
@@ -1089,9 +1116,27 @@ let restart_environment () =
   |> List.filter (fun e -> key e <> "C2C_CODEX_INGRESS_LIVE")
   |> Array.of_list
 
-let write_mapping ~instance_dir (m : mapping) : unit =
-  (try if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir
-   with _ -> ());
+let mapping_file_matches path (m : mapping) =
+  try
+    match C2c_io.read_json_opt path with
+    | Some (`Assoc fields) ->
+        let string_field key =
+          match List.assoc_opt key fields with Some (`String s) -> Some s | _ -> None
+        in
+        string_field "session_id" = Some m.session_id
+        && string_field "alias" = Some m.alias
+        && string_field "thread_id" = m.thread_id
+    | _ -> false
+  with _ -> false
+
+(* Mapping writes are ownership records. A successful return therefore means
+   both that rename completed and that the replacement can be read back as the
+   requested owner/thread. *)
+let write_mapping ~instance_dir (m : mapping) : bool =
+  let ensure_dir () =
+    if Sys.file_exists instance_dir then Sys.is_directory instance_dir
+    else (C2c_io.mkdir_p instance_dir; true)
+  in
   let fields =
     [ ("session_id", `String m.session_id)
     ; ("alias", `String m.alias)
@@ -1101,11 +1146,25 @@ let write_mapping ~instance_dir (m : mapping) : unit =
     @ (match m.thread_id with Some t -> [ ("thread_id", `String t) ] | None -> [])
   in
   let path = mapping_path ~instance_dir in
-  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) in
-  let oc = open_out tmp in
-  Fun.protect ~finally:(fun () -> close_out oc)
-    (fun () -> Yojson.Safe.pretty_to_channel oc (`Assoc fields); output_string oc "\n");
-  (try Unix.rename tmp path with _ -> ())
+  let tmp = path ^ ".tmp." ^ string_of_int (Unix.getpid ()) ^
+            "." ^ string_of_int (Random.bits ()) in
+  try
+    if not (ensure_dir ()) then false
+    else begin
+      let oc = open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_text ] 0o600 tmp in
+      Fun.protect
+        ~finally:(fun () -> try close_out oc with _ -> ())
+        (fun () ->
+           Yojson.Safe.pretty_to_channel oc (`Assoc fields);
+           output_string oc "\n";
+           flush oc;
+           (try Unix.fsync (Unix.descr_of_out_channel oc) with _ -> ()));
+      Unix.rename tmp path;
+      mapping_file_matches path m
+    end
+  with _ ->
+    (try Sys.remove tmp with _ -> ());
+    false
 
 let load_mapping ~instance_dir : mapping option =
   let path = mapping_path ~instance_dir in
@@ -1143,8 +1202,8 @@ let clear_unpersisted_resume_target ~(name : string) ~(instance_dir : string)
   try
     match load_mapping ~instance_dir with
     | Some mapping when mapping.thread_id = Some thread_id ->
-        write_mapping ~instance_dir
-          { mapping with thread_id = None; updated_at = Unix.gettimeofday () }
+        ignore (write_mapping ~instance_dir
+          { mapping with thread_id = None; updated_at = Unix.gettimeofday () })
     | _ -> ()
   with _ -> ()
 
@@ -1189,11 +1248,20 @@ let live_sibling_owns_thread ~broker_root ~self_name ~thread_id : bool =
    owns [thread_id] (#24). On refusal this unit stays thread-less and the caller
    records the degraded delivery signal — minting a second binding is exactly
    the split-brain that strands DMs forever. *)
+let thread_ownership_lock_path () =
+  C2c_mcp_helpers_post_broker.managed_instances_dir () // ".codex-thread-ownership.lock"
+
+let with_thread_ownership_lock f =
+  try
+    let path = thread_ownership_lock_path () in
+    C2c_io.mkdir_p (Filename.dirname path);
+    let fd = Unix.openfile path [ Unix.O_CREAT; Unix.O_RDWR ] 0o600 in
+    Fun.protect
+      ~finally:(fun () -> try Unix.close fd with _ -> ())
+      (fun () -> Unix.lockf fd Unix.F_LOCK 0; f ())
+  with _ -> false
+
 let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool =
-  let mapping = load_mapping ~instance_dir in
-  let already_ours =
-    match mapping with Some m -> m.thread_id = Some thread_id | None -> false
-  in
   let repair_config () =
     match C2c_start.load_config_opt name with
     | Some cfg when cfg.codex_resume_target <> Some thread_id
@@ -1211,39 +1279,37 @@ let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool
      binding-state uncertainty fails closed. (live_sibling_owns_thread raising
      is deliberately NOT swallowed — that IS binding-state uncertainty.) *)
   let repair_config () = try repair_config () with _ -> () in
-  if already_ours then begin
-    (* We already own T — repair config.json's restart target if it drifted, but
-       there is no new binding to guard. *)
-    repair_config ();
-    true
-  end
-  else if live_sibling_owns_thread ~broker_root ~self_name:name ~thread_id then
-    false
-  else begin
-    (match mapping with
-     | Some m when m.thread_id <> Some thread_id ->
-         write_mapping ~instance_dir
-           { m with thread_id = Some thread_id;
-                    updated_at = Unix.gettimeofday () }
-     | None ->
-         (* A fresh daemon remote TUI has no codex-session.json yet. The
-            SessionStart hook is the first trusted observer of its native
-            thread, so create the durable mapping from the launcher's already
-            persisted config. The caller must have proved frontend ownership
-            before invoking this helper. *)
-         (match C2c_start.load_config_opt name with
-          | Some cfg when cfg.client = "codex"
-                       && String.trim cfg.session_id <> ""
-                       && String.trim cfg.alias <> "" ->
-              write_mapping ~instance_dir
-                { session_id = cfg.session_id; alias = cfg.alias;
-                  thread_id = Some thread_id; created_at = cfg.created_at;
-                  updated_at = Unix.gettimeofday () }
-          | _ -> ())
-     | _ -> ());
-    repair_config ();
-    true
-  end
+  let result = with_thread_ownership_lock (fun () ->
+    let mapping = load_mapping ~instance_dir in
+    let already_ours =
+      match mapping with Some m -> m.thread_id = Some thread_id | None -> false
+    in
+    if already_ours then true
+    else if live_sibling_owns_thread ~broker_root ~self_name:name ~thread_id then false
+    else
+      match mapping with
+      | Some m when m.thread_id <> Some thread_id ->
+          write_mapping ~instance_dir
+            { m with thread_id = Some thread_id;
+                     updated_at = Unix.gettimeofday () }
+      | None ->
+          (* A fresh daemon remote TUI has no codex-session.json yet. The
+             SessionStart hook is the first trusted observer of its native
+             thread, so create the durable mapping from the launcher's already
+             persisted config. *)
+          (match C2c_start.load_config_opt name with
+           | Some cfg when cfg.client = "codex"
+                        && String.trim cfg.session_id <> ""
+                        && String.trim cfg.alias <> "" ->
+               write_mapping ~instance_dir
+                 { session_id = cfg.session_id; alias = cfg.alias;
+                   thread_id = Some thread_id; created_at = cfg.created_at;
+                   updated_at = Unix.gettimeofday () }
+           | _ -> false)
+      | _ -> false)
+  in
+  if result then repair_config ();
+  result
 
 (* --------------------------------- run ------------------------------------ *)
 
@@ -1798,13 +1864,14 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
              frontend_extra_args ~yolo ~extra:(model_args @ extra_args)
            in
            let frontend_extra = if fresh then fresh_frontend_extra else frontend_extra in
+           let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
            let argv_list =
              let cmd =
                match thread with
                | Some t when String.trim t <> "" -> [ bin; "resume"; t ]
                | _ -> [ bin ]
              in
-             cmd @ [ "--remote"; remote ]
+             cmd @ daemon_frontend_workspace_args ~cwd @ [ "--remote"; remote ]
              @ frontend_extra
              @ if fresh then [ "" ] else []
            in
