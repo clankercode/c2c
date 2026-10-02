@@ -153,7 +153,9 @@ let write_message json =
    background watcher from silently draining messages for clients (e.g. Claude Code
    standard) that do not support the notifications/claude/channel notification
    method, which would otherwise cause messages to vanish from the agent's
-   perspective. *)
+   perspective. B357 verdict: muse is one such client (declares no
+   experimental.claude/channel) — poll-based via poll_inbox; never force
+   the capability for muse (claude-only precedent in build_env). *)
 let start_inbox_watcher ~broker_root ~session_id ~emit_notification_fn
     ~negotiated_capabilities_ref =
   let open Lwt.Syntax in

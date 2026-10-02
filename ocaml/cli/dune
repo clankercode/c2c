@@ -451,7 +451,7 @@
 
 (test
   (name test_c2c_doctor_hooks)
-  (modules test_c2c_doctor_hooks c2c_doctor_hooks c2c_claude_hook_scripts c2c_codex_hooks c2c_kimi_hook c2c_utils c2c_broker_root_check c2c_identity_candidates)
+  (modules test_c2c_doctor_hooks c2c_doctor_hooks c2c_claude_hook_scripts c2c_codex_hooks c2c_kimi_hook c2c_utils c2c_broker_root_check c2c_identity_candidates c2c_setup c2c_relay_systemd c2c_opencode_plugin_embedded c2c_hermes_plugin_embedded c2c_hermes_config c2c_claude_skill_embedded c2c_grok_skill_embedded c2c_kimi_skill_embedded c2c_agy_skill_embedded c2c_muse_skill_embedded c2c_types)
   (libraries c2c_mcp alcotest yojson unix digestif.ocaml))
 
  (test

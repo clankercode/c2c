@@ -47,6 +47,7 @@ type result = {
   kimi : kimi_delivery_result;
   kimi_hook : kimi_hook_result;
   grok : grok_identity_result;
+  muse : muse_result;
 }
 
 and block_diff = {
@@ -161,6 +162,36 @@ and grok_identity_result = {
   gid_remediation : string list; (* export line + candidate identities *)
   gid_wake_class : grok_wake_class; (* overall: CONDITIONAL if any live monitor lock *)
   gid_wake_sessions : grok_wake_session list;
+}
+
+(* B357: one muse session's peer-tool state. [mst_c2c_tools] is [None] when
+   the session log is absent/unreadable — never claimed present. *)
+and muse_session_tools = {
+  mst_session_id : string;
+  mst_workspace : string;
+  mst_eligibility : string;
+  mst_live : bool;
+  mst_c2c_tools : bool option;
+}
+
+(* B357: muse presence + gate + peer-tool verdict. #50-honest throughout:
+   every field reports file/CLI state (skill on disk, plugin trust per
+   `plugins inspect`, gates file, session logs) — never claimed live hook
+   firing, which doctor cannot observe. *)
+and muse_result = {
+  mm_muse_present : bool; (* muse config/data present (settings, plugin state, gates, sessions) *)
+  mm_installed : bool; (* any c2c integration marker (skill/plugin/hooks/MCP) *)
+  mm_skill_exists : bool;
+  mm_plugin_cache_exists : bool; (* <data>/plugins/cache/local/c2c *)
+  mm_plugin_record : bool; (* installed.json carries a c2c key *)
+  mm_plugin_trust : string; (* trusted | needs-approval | not-installed | unknown *)
+  mm_settings_state : string; (* ok | missing | unreadable *)
+  mm_settings_hooks : bool; (* settings.json hooks reference `c2c hook muse` *)
+  mm_mcp_entry : bool; (* settings.json mcpServers.c2c *)
+  mm_plugins_gate : string; (* granted | denied | unknown *)
+  mm_ingress_env : bool; (* MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS opener in THIS process *)
+  mm_ingress_veto : bool; (* local_session_messaging.enabled=false in settings *)
+  mm_sessions : muse_session_tools list; (* registry sessions, live ones log-scanned *)
 }
 
 (* --- Codex delivery-mode classification (P1.M1.E1.T005) -------------------- *)
@@ -1387,6 +1418,288 @@ let check_grok_identity ?broker_root () : grok_identity_result =
     gid_wake_class = wake_class;
     gid_wake_sessions = wake_sessions }
 
+(* --- Muse integration check (B357) ---------------------------------------- *)
+
+(* Pure: classify `muse plugins inspect c2c` output. Proven shapes (B352 A4,
+   B357 live probe): missing plugin prints "plugin `c2c` is not installed"
+   (rc=1); present plugins list `runtime-capability ... status=<state>`
+   lines with status=trusted_enabled | review_needed. Anything else is
+   "unknown" — never claimed trusted. *)
+let muse_plugin_trust_of_inspect_output output =
+  if contains output "is not installed" then "not-installed"
+  else
+    let statuses =
+      List.filter_map
+        (fun line ->
+           let line = String.trim line in
+           (* Anchor on the literal "status=" key, not the first '=' — a
+              capability id could in principle carry '=' earlier. *)
+           if String.length line >= 18 && String.sub line 0 18 = "runtime-capability" then
+             let key = "status=" in
+             let kl = String.length key and ll = String.length line in
+             let rec find i =
+               if i + kl > ll then None
+               else if String.sub line i kl = key then
+                 Some (String.trim (String.sub line (i + kl) (ll - i - kl)))
+               else find (i + 1)
+             in
+             find 0
+           else None)
+        (String.split_on_char '\n' output)
+    in
+    if statuses = [] then "unknown"
+    else if List.for_all (( = ) "trusted_enabled") statuses then "trusted"
+    else if List.mem "review_needed" statuses then "needs-approval"
+    else "unknown"
+
+(* Ingress opener values, verbatim from the B352 A6 gate matrix: only these
+   three open `session-message list`; 0/off/empty/yes leave it closed. *)
+let muse_ingress_opener_values = [ "1"; "true"; "on" ]
+
+let muse_ingress_env_open () =
+  match Sys.getenv_opt "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" with
+  | Some v -> List.mem (String.lowercase_ascii (String.trim v)) muse_ingress_opener_values
+  | None -> false
+
+(* Collect every "command" string in a settings.json hooks map (Stop takes a
+   bare hooks array, other events take matcher groups — both shapes carry
+   command strings at the leaves). *)
+let rec muse_hook_commands json acc =
+  match json with
+  | `Assoc fields ->
+      List.fold_left
+        (fun acc (k, v) ->
+           match k, v with
+           | "command", `String c -> c :: acc
+           | _, v -> muse_hook_commands v acc)
+        acc fields
+  | `List items -> List.fold_left (fun acc v -> muse_hook_commands v acc) acc items
+  | _ -> acc
+
+(* Tail-read at most [max_bytes] of a (possibly large) session log — run
+   records repeat per turn, so the tail carries the latest advertisement. *)
+let read_file_tail path max_bytes =
+  try
+    let ic = open_in_bin path in
+    Fun.protect
+      ~finally:(fun () -> close_in_noerr ic)
+      (fun () ->
+         let len = in_channel_length ic in
+         let start = max 0 (len - max_bytes) in
+         seek_in ic start;
+         really_input_string ic (len - start))
+  with _ -> ""
+
+(* Locate <data>/sessions/YYYY/MM/DD/<sid>/session.jsonl via the fixed
+   3-level date walk. Bounded readdir descent; never follows the whole tree. *)
+let find_muse_session_log ~data_dir sid =
+  let sessions = data_dir // "sessions" in
+  try
+    let years = Array.to_list (Sys.readdir sessions) in
+    List.find_map
+      (fun y ->
+         let yp = sessions // y in
+         if not (try Sys.is_directory yp with _ -> false) then None
+         else
+           (try
+              let months = Array.to_list (Sys.readdir yp) in
+              List.find_map
+                (fun m ->
+                   let mp = yp // m in
+                   if not (try Sys.is_directory mp with _ -> false) then None
+                   else
+                     (try
+                        let days = Array.to_list (Sys.readdir mp) in
+                        List.find_map
+                          (fun d ->
+                             let p = mp // d // sid // "session.jsonl" in
+                             if Sys.file_exists p then Some p else None)
+                          days
+                      with _ -> None))
+                months
+            with _ -> None))
+      years
+  with _ -> None
+
+let muse_pid_of_hint = function
+  | Some (`String h) ->
+      let prefix = "pid=" in
+      if String.length h > String.length prefix
+         && String.sub h 0 (String.length prefix) = prefix then
+        int_of_string_opt
+          (String.sub h (String.length prefix) (String.length h - String.length prefix))
+      else None
+  | _ -> None
+
+(* Peer-tool presence in active_tools for live registry sessions. "Live" is
+   a /proc liveness hint only (no signal is ever sent — #85); a recycled pid
+   at worst scans one extra log. Tools = the literal mcp__c2c__ prefix in the
+   log tail (active_tools arrays + tool-call records both carry it). *)
+let check_muse_session_tools ~data_dir =
+  let reg_dir = data_dir // "runtime" // "muse" // "sessions" in
+  let records =
+    try
+      Array.to_list (Sys.readdir reg_dir)
+      |> List.filter (fun f -> Filename.check_suffix f ".json")
+      |> List.sort String.compare
+    with _ -> []
+  in
+  List.filter_map
+    (fun f ->
+       try
+         let json = Yojson.Safe.from_file (reg_dir // f) in
+         match json with
+         | `Assoc fields ->
+             let str k =
+               match List.assoc_opt k fields with
+               | Some (`String s) -> s
+               | _ -> ""
+             in
+             let sid = str "session_id" in
+             if sid = "" then None
+             else
+               let live =
+                 match muse_pid_of_hint (List.assoc_opt "process_generation_hint" fields) with
+                 | Some pid -> (try C2c_liveness.pid_alive pid with _ -> false)
+                 | None -> false
+               in
+               let tools =
+                 if not live then None
+                 else
+                   (match find_muse_session_log ~data_dir sid with
+                    | None -> None
+                    | Some log ->
+                        let tail = read_file_tail log 262144 in
+                        Some (contains tail "mcp__c2c__"))
+               in
+               Some
+                 { mst_session_id = sid
+                 ; mst_workspace = str "workspace_label"
+                 ; mst_eligibility = str "target_eligibility"
+                 ; mst_live = live
+                 ; mst_c2c_tools = tools
+                 }
+         | _ -> None
+       with _ -> None)
+    records
+
+(* Pure dashboard mapping for `c2c health` / `c2c ping`: installed →
+   green, muse-present-but-no-c2c → yellow, absent → gray. The message
+   always names "muse:" so the connect dashboard's substring match finds
+   its row. *)
+let muse_health_row (m : muse_result) =
+  if m.mm_installed then
+    (`Green, "muse: c2c integration configured (run: c2c install muse to refresh)")
+  else if m.mm_muse_present then
+    (`Yellow, "muse: present but no c2c integration (run: c2c install muse)")
+  else
+    (`Gray, "muse: not configured (run: c2c install muse)")
+
+let check_muse_status () : muse_result =
+  let config_dir = C2c_setup.muse_config_dir () in
+  let data_dir = C2c_setup.muse_data_dir () in
+  let settings_path = config_dir // "settings.json" in
+  let skill_exists = Sys.file_exists (config_dir // "skills" // "c2c" // "SKILL.md") in
+  let settings_state, settings_json =
+    if not (Sys.file_exists settings_path) then ("missing", None)
+    else
+      (try ("ok", Some (Yojson.Safe.from_file settings_path))
+       with _ -> ("unreadable", None))
+  in
+  let settings_hooks =
+    match settings_json with
+    | Some j -> List.exists (fun c -> contains c "c2c hook muse") (muse_hook_commands j [])
+    | None -> false
+  in
+  let mcp_entry =
+    match settings_json with
+    | Some (`Assoc fields) -> (
+        match List.assoc_opt "mcpServers" fields with
+        | Some (`Assoc m) -> List.mem_assoc "c2c" m
+        | _ -> false)
+    | _ -> false
+  in
+  let ingress_veto =
+    match settings_json with
+    | Some (`Assoc fields) -> (
+        match List.assoc_opt "local_session_messaging" fields with
+        | Some (`Assoc lsm) -> (
+            match List.assoc_opt "enabled" lsm with
+            | Some (`Bool false) -> true
+            | _ -> false)
+        | _ -> false)
+    | _ -> false
+  in
+  let plugin_cache_exists =
+    try Sys.is_directory (data_dir // "plugins" // "cache" // "local" // "c2c")
+    with _ -> false
+  in
+  let plugin_record =
+    let installed = data_dir // "plugins" // "installed.json" in
+    if not (Sys.file_exists installed) then false
+    else
+      (try
+         match Yojson.Safe.from_file installed with
+         | `Assoc fields -> (
+             match List.assoc_opt "plugins" fields with
+             | Some (`Assoc ps) -> List.mem_assoc "c2c" ps
+             | _ -> false)
+         | _ -> false
+       with _ -> false)
+  in
+  (* Live trust state: an installed-but-unapproved plugin never fires its
+     hooks — the #50-class silent failure. Fails soft to unknown (C2C_MUSE_BIN
+     seam keeps hermetic tests stubbed). *)
+  let plugin_trust =
+    let r =
+      C2c_setup.run_muse_capture ~timeout_s:10.0
+        [| C2c_setup.muse_bin (); "plugins"; "inspect"; C2c_setup.muse_plugin_id |]
+    in
+    muse_plugin_trust_of_inspect_output r.C2c_setup.output
+  in
+  (* Feature-config grant: <data>/muse/feature-config/7075626c6963.json
+     ("7075626c6963" is "public"). Absent file = unknown, not denied —
+     fresh/offline hosts legitimately lack it (B352 residual 4). *)
+  let plugins_gate =
+    let gate_file = data_dir // "feature-config" // "7075626c6963.json" in
+    if not (Sys.file_exists gate_file) then "unknown"
+    else
+      (try
+         match Yojson.Safe.from_file gate_file with
+         | `Assoc fields -> (
+             match List.assoc_opt "gates" fields with
+             | Some (`Assoc gates) -> (
+                 match List.assoc_opt "plugins" gates with
+                 | Some (`Bool true) -> "granted"
+                 | Some (`Bool false) -> "denied"
+                 | _ -> "unknown")
+             | _ -> "unknown")
+         | _ -> "unknown"
+       with _ -> "unknown")
+  in
+  let sessions = check_muse_session_tools ~data_dir in
+  let installed =
+    skill_exists || plugin_cache_exists || plugin_record || settings_hooks || mcp_entry
+  in
+  let muse_present =
+    settings_state <> "missing" || plugin_cache_exists || plugin_record || sessions <> []
+    || Sys.file_exists (data_dir // "feature-config" // "7075626c6963.json")
+  in
+  { mm_muse_present = muse_present
+  ; mm_installed = installed
+  ; mm_skill_exists = skill_exists
+  ; mm_plugin_cache_exists = plugin_cache_exists
+  ; mm_plugin_record = plugin_record
+  ; mm_plugin_trust = plugin_trust
+  ; mm_settings_state = settings_state
+  ; mm_settings_hooks = settings_hooks
+  ; mm_mcp_entry = mcp_entry
+  ; mm_plugins_gate = plugins_gate
+  ; mm_ingress_env = muse_ingress_env_open ()
+  ; mm_ingress_veto = ingress_veto
+  ; mm_sessions = sessions
+  }
+
 let check ?(dirs = claude_dirs ()) () =
   let dirs = List.filter (fun d -> Sys.file_exists d && Sys.is_directory d) dirs in
   let dir_results = List.map scan_dir dirs in
@@ -1398,7 +1711,8 @@ let check ?(dirs = claude_dirs ()) () =
   let kimi = check_kimi_delivery () in
   let kimi_hook = check_kimi_session_start_hook () in
   let grok = check_grok_identity () in
-  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy; kimi; kimi_hook; grok }
+  let muse = check_muse_status () in
+  { dirs = dir_results; total_referenced; total_dangling; total_skipped; codex; agy; kimi; kimi_hook; grok; muse }
 
 (* --- output formatters ---------------------------------------------------- *)
 
@@ -1574,6 +1888,60 @@ let pp_human r =
       Printf.printf
         "      → arm: Monitor({ description: \"c2c inbox watcher\", \
          command: \"c2c monitor\", persistent: true })\n"
+  end;
+  Printf.printf "\n=== Muse integration check (B357) ===\n\n";
+  let m = r.muse in
+  if not m.mm_muse_present then
+    Printf.printf "Muse c2c install not detected (no muse config/data on this host).\n"
+  else begin
+    Printf.printf "  skill: %s\n" (if m.mm_skill_exists then "OK" else "MISSING — run `c2c install muse`");
+    Printf.printf "  plugin: %s\n"
+      (match m.mm_plugin_trust with
+       | "trusted" -> "OK (installed + approved)"
+       | "needs-approval" -> "INSTALLED BUT UNAPPROVED — hooks never fire until `muse plugins approve c2c`"
+       | "not-installed" ->
+           if m.mm_settings_hooks then "not installed (settings.json hooks fallback in use)"
+           else "not installed"
+       | _ ->
+           if m.mm_plugin_cache_exists || m.mm_plugin_record then "UNKNOWN (installed.json/cache present but `plugins inspect` inconclusive)"
+           else "unknown (`plugins inspect` inconclusive)");
+    (match m.mm_settings_state with
+     | "ok" ->
+         Printf.printf "  settings hooks: %s\n"
+           (if m.mm_settings_hooks then "present (`c2c hook muse`)"
+            else "absent (plugin path or no hooks)");
+         Printf.printf "  mcp entry: %s\n"
+           (if m.mm_mcp_entry then "present (mcpServers.c2c)"
+            else "absent (pass --with-mcp to add MCP tools)")
+     | "missing" -> Printf.printf "  settings.json: missing\n"
+     | _ -> Printf.printf "  settings.json: UNREADABLE (muse rejects malformed files — fix the JSON)\n");
+    Printf.printf "  plugins gate: %s\n"
+      (match m.mm_plugins_gate with
+       | "granted" -> "granted"
+       | "denied" -> "DENIED (settings.json hooks fallback required)"
+       | _ -> "unknown (no feature-config on this host)");
+    Printf.printf "  ingress env: %s\n"
+      (if m.mm_ingress_env then "open in this process (MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS)"
+       else "closed in this process");
+    if m.mm_ingress_veto then
+      Printf.printf "  ingress veto: LOCAL_SESSION_MESSAGING DISABLED in settings (vetoes any env opener)\n";
+    let live = List.filter (fun s -> s.mst_live) m.mm_sessions in
+    let with_tools =
+      List.filter (fun s -> s.mst_c2c_tools = Some true) live
+    in
+    Printf.printf "  sessions: %d live, %d with c2c tools advertised\n"
+      (List.length live) (List.length with_tools);
+    List.iter
+      (fun s ->
+         Printf.printf "    %s (%s): %s, tools=%s\n"
+           s.mst_session_id
+           (if s.mst_workspace = "" then "(no workspace)" else s.mst_workspace)
+           (if s.mst_live then "live" else "dead")
+           (match s.mst_c2c_tools with
+            | Some true -> "advertised"
+            | Some false -> "absent"
+            | None -> if s.mst_live then "log unreadable" else "—"))
+      m.mm_sessions
   end
 
 let to_json r =
@@ -1697,6 +2065,33 @@ let to_json r =
       ("wake_sessions", `List (List.map grok_wake_session_to_json g.gid_wake_sessions))
     ]
   in
+  let muse_session_to_json (s : muse_session_tools) =
+    `Assoc [
+      ("session_id", `String s.mst_session_id);
+      ("workspace", `String s.mst_workspace);
+      ("eligibility", `String s.mst_eligibility);
+      ("live", `Bool s.mst_live);
+      ("c2c_tools",
+       match s.mst_c2c_tools with Some b -> `Bool b | None -> `Null)
+    ]
+  in
+  let muse_to_json (m : muse_result) =
+    `Assoc [
+      ("muse_present", `Bool m.mm_muse_present);
+      ("installed", `Bool m.mm_installed);
+      ("skill_exists", `Bool m.mm_skill_exists);
+      ("plugin_cache_exists", `Bool m.mm_plugin_cache_exists);
+      ("plugin_record", `Bool m.mm_plugin_record);
+      ("plugin_trust", `String m.mm_plugin_trust);
+      ("settings_state", `String m.mm_settings_state);
+      ("settings_hooks", `Bool m.mm_settings_hooks);
+      ("mcp_entry", `Bool m.mm_mcp_entry);
+      ("plugins_gate", `String m.mm_plugins_gate);
+      ("ingress_env", `Bool m.mm_ingress_env);
+      ("ingress_veto", `Bool m.mm_ingress_veto);
+      ("sessions", `List (List.map muse_session_to_json m.mm_sessions))
+    ]
+  in
   `Assoc [
     ("dirs", `List (List.map dir_to_json r.dirs));
     ("total_referenced", `Int r.total_referenced);
@@ -1707,7 +2102,8 @@ let to_json r =
     ("agy", agy_to_json r.agy);
     ("kimi_delivery", kimi_to_json r.kimi);
     ("kimi_session_start_hook", kimi_hook_to_json r.kimi_hook);
-    ("grok_identity", grok_to_json r.grok)
+    ("grok_identity", grok_to_json r.grok);
+    ("muse", muse_to_json r.muse)
   ]
 
 let pp_json r = print_endline (Yojson.Safe.to_string (to_json r))

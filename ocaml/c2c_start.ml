@@ -4936,6 +4936,12 @@ let build_env ?(broker_root_override : string option = None)
            experimental.claude/channel in its initialize request. *)
         base @ [ "C2C_MCP_FORCE_CAPABILITIES", "claude_channel" ]
       else
+        (* B357 channel verdict: muse is deliberately NOT forced. muse
+           declares no experimental.claude/channel, so it is poll-based
+           (poll_inbox / hooks); the auto-drain + watcher paths stay inert
+           via the negotiated-capability gate in c2c_mcp_server_inner, and
+           managed installs keep writing C2C_MCP_AUTO_DRAIN_CHANNEL=0.
+           Do not add a muse force arm here (claude-only precedent). *)
         base
     in
     let base = base @ [ "C2C_CLI_COMMAND", c2c_bin ] in
