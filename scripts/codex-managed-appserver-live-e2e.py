@@ -264,7 +264,8 @@ def run_live() -> int:
 
     log(f"[appserver-e2e] isolated broker root = {broker}")
     results = {"injected_and_autoturn": False, "draft_preserved": False,
-               "clean_teardown": False, "deregistered": False}
+               "clean_teardown": False, "lifecycle_clean": False,
+               "deregistered": False}
     pane = None
     window = f"b144-appserver-{tag}"
     try:
@@ -377,11 +378,15 @@ def run_live() -> int:
         log(f"[appserver-e2e] auto-turn nudge seen={autoturn} "
             f"(informational) broker pending-inbox empty={inbox_empty()}")
 
-        # 5b. draft preserved across the auto-turn: compare the complete draft
-        # captured before the DM with the complete draft after the auto-turn.
-        # The draft fits one row, so no normalization is needed for this test.
+        # 5b. draft preserved across the auto-turn: compare complete occurrences
+        # captured before the DM with those after the auto-turn. Exactly one
+        # complete occurrence on each side catches duplication and truncation.
         draft_after = _pane_text(pane, 80)
-        results["draft_preserved"] = DRAFT in draft_before and DRAFT in draft_after
+        before_matches = re.findall(re.escape(DRAFT), draft_before)
+        after_matches = re.findall(re.escape(DRAFT), draft_after)
+        results["draft_preserved"] = before_matches == [DRAFT] and after_matches == [DRAFT]
+        log(f"[appserver-e2e] complete draft occurrences before={len(before_matches)} "
+            f"after={len(after_matches)}")
         if not results["draft_preserved"]:
             log("[appserver-e2e] draft-before tail:\n" + draft_before[-400:])
             log("[appserver-e2e] draft-after tail:\n" + draft_after[-400:])
@@ -419,8 +424,49 @@ def run_live() -> int:
                     and "pid" not in matching[0]
                     and "pid_start_time" not in matching[0])
         results["deregistered"] = wait_for(deregistered, timeout=30, interval=3) is not None
+
+        def lifecycle_clean() -> bool:
+            instance_dir = instances / name
+            if not instance_dir.is_dir():
+                return False
+            required = instance_dir / "config.json"
+            mapping = instance_dir / "codex-session.json"
+            if not required.is_file() or not mapping.is_file():
+                return False
+            try:
+                config = json.loads(required.read_text())
+                saved_mapping = json.loads(mapping.read_text())
+                if config.get("name") != name or config.get("client") != "codex":
+                    return False
+                if not isinstance(saved_mapping.get("thread_id"), str):
+                    return False
+            except (OSError, ValueError, TypeError):
+                return False
+            for path_name in (
+                "outer.pid", "outer.pid.start-time", "inner.pid",
+                "inner.pid.start-time", "frontend-teardown.json",
+                "daemon-thread-handoff.json",
+            ):
+                if (instance_dir / path_name).exists():
+                    return False
+            app_state = instance_dir / "codex-app-server.json"
+            if app_state.exists():
+                try:
+                    state = json.loads(app_state.read_text())
+                except (OSError, ValueError, TypeError):
+                    return False
+                if state.get("state") not in {"offline", "frontend_exited", "failed"}:
+                    return False
+                if any(state.get(key) is not None for key in
+                       ("server_pid", "server_pid_start_time", "frontend_pid",
+                        "frontend_pid_start_time")):
+                    return False
+            return True
+
+        results["lifecycle_clean"] = wait_for(lifecycle_clean, timeout=30, interval=3) is not None
         log(f"[appserver-e2e] after stop: my codex procs remaining = "
             f"{len(my_codex_pids(str(broker)))} clean={results['clean_teardown']} "
+            f"lifecycle={results['lifecycle_clean']} "
             f"deregistered={results['deregistered']}")
 
         verdict = all(results.values())
