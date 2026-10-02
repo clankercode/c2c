@@ -15,8 +15,8 @@ WHAT THIS PROVES (against the installed codex, default >= 0.144):
     model in the supervised TUI transcript WITHOUT any human keystroke — i.e.
     the mail was injected on arrival AND the T007 dispatcher started a gated
     turn that made it model-visible (one scenario proves both).
-  * DRAFT PRESERVATION: a multibyte/multiline composer draft typed before the
-    DM (never submitted) is preserved byte-for-byte across the auto-turn.
+  * DRAFT PRESERVATION: the complete composer draft typed before the DM (never
+    submitted) remains byte-for-byte present across the auto-turn.
   * CLEAN TEARDOWN / DEREGISTRATION: after `c2c stop`, no orphan
     `codex app-server` / `codex --remote` process from this instance survives
     and the broker registration for the instance alias is gone.
@@ -63,10 +63,8 @@ CODEX = os.environ.get("CODEX_BIN", shutil.which("codex") or "/home/xertrov/.bun
 MODEL = os.environ.get("C2C_APPSERVER_E2E_MODEL", "gpt-5.3-codex-spark")
 MIN_CODEX = (0, 144)
 
-# ASCII-only draft with a unique short token: proves the composer survives the
-# arrival injection + auto-turn. (The multibyte byte-for-byte case is covered
-# rigorously by scripts/codex-draft-preservation-e2e.py / T004; here we avoid
-# tmux `send-keys -l` multibyte-width fragility and keep the assertion crisp.)
+# Keep the draft short enough to fit one terminal row, so the live assertion
+# can compare its complete visible bytes before and after the auto-turn.
 DRAFT_TOKEN = "DRAFTKEEP" + secrets.token_hex(3).upper()
 DRAFT = DRAFT_TOKEN + " do not lose me across the c2c autoturn"
 
@@ -78,9 +76,6 @@ DRAFT = DRAFT_TOKEN + " do not lose me across the c2c autoturn"
 # history" wording was removed when the full envelope moved into turn/start.
 AUTOTURN_SIG = "[c2c auto-turn — DATA"
 
-
-def _collapse(s: str) -> str:
-    return re.sub(r"\s+", "", s)
 
 # Reuse the canonical tmux primitive (no second launcher).
 _spec = importlib.util.spec_from_file_location("c2c_tmux", SCRIPT_DIR / "c2c_tmux.py")
@@ -251,7 +246,9 @@ def run_live() -> int:
     tmp = Path(os.environ.get("C2C_APPSERVER_E2E_RUNDIR",
                f"/tmp/claude-1000/-home-xertrov-src-c2c/b144-appserver-{int(time.time())}-{tag}"))
     broker = tmp / "broker"
+    instances = tmp / "instances"
     broker.mkdir(parents=True, exist_ok=True)
+    instances.mkdir(parents=True, exist_ok=True)
 
     bin_ = c2c_bin()
     name = f"b144as{tag}"                 # managed instance alias
@@ -262,6 +259,7 @@ def run_live() -> int:
     cli_env = {k: v for k, v in os.environ.items()
                if not (k.startswith("C2C_") or k.startswith("CLAUDE") or k.startswith("CODEX_"))}
     cli_env["C2C_MCP_BROKER_ROOT"] = str(broker)
+    cli_env["C2C_INSTANCES_DIR"] = str(instances)
     cli_env["PATH"] = os.environ["PATH"]
 
     log(f"[appserver-e2e] isolated broker root = {broker}")
@@ -281,7 +279,8 @@ def run_live() -> int:
         pane = res.stdout.strip()
         if not pane:
             log("[appserver-e2e] FAIL: could not create tmux window"); return 3
-        exports = f"export C2C_MCP_BROKER_ROOT={_shq(str(broker))}"
+        exports = (f"export C2C_MCP_BROKER_ROOT={_shq(str(broker))}; "
+                   f"export C2C_INSTANCES_DIR={_shq(str(instances))}")
         launch = (f"{exports}; {_shq(bin_)} new codex --alias {name} --yolo "
                   f"-- --sandbox read-only -c model={_shq(MODEL)}")
         log(f"[appserver-e2e] launching managed session '{name}' (model={MODEL}) in tmux window {window}")
@@ -378,10 +377,11 @@ def run_live() -> int:
         log(f"[appserver-e2e] auto-turn nudge seen={autoturn} "
             f"(informational) broker pending-inbox empty={inbox_empty()}")
 
-        # 5b. draft preserved across the auto-turn: the composer still shows the
-        #     unique draft token (whitespace-collapsed to tolerate TUI wrapping).
+        # 5b. draft preserved across the auto-turn: compare the complete draft
+        # captured before the DM with the complete draft after the auto-turn.
+        # The draft fits one row, so no normalization is needed for this test.
         draft_after = _pane_text(pane, 80)
-        results["draft_preserved"] = (DRAFT_TOKEN in _collapse(draft_after))
+        results["draft_preserved"] = DRAFT in draft_before and DRAFT in draft_after
         if not results["draft_preserved"]:
             log("[appserver-e2e] draft-before tail:\n" + draft_before[-400:])
             log("[appserver-e2e] draft-after tail:\n" + draft_after[-400:])
