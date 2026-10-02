@@ -42,6 +42,33 @@ let test_grok_manual () =
   let a = C2c_wake_guidance.advice ~client:"grok" ~context:`Install in
   Alcotest.(check bool) "grok" true a.manual_inbox_required
 
+(* B353: muse Tier-0 is CLI-only — NONE in both contexts with the verbatim
+   #414 Monitor recipe. *)
+let test_muse_none_both_contexts () =
+  let i = C2c_wake_guidance.advice ~client:"muse" ~context:`Install in
+  let m = C2c_wake_guidance.advice ~client:"muse" ~context:`Managed_start in
+  Alcotest.(check bool) "install manual" true i.manual_inbox_required;
+  Alcotest.(check bool) "managed manual" true m.manual_inbox_required;
+  Alcotest.(check string) "install NONE"
+    "NONE" (C2c_wake_guidance.wake_class_label i.wake);
+  Alcotest.(check string) "managed NONE"
+    "NONE" (C2c_wake_guidance.wake_class_label m.wake);
+  let has_monitor_recipe (adv : C2c_wake_guidance.receive_advice) =
+    List.exists
+      (fun s ->
+        let needle = "Monitor({ command: \"c2c monitor\", persistent: true })" in
+        let nl = String.length needle and hl = String.length s in
+        nl <= hl
+        && (let rec loop k =
+              k + nl <= hl
+              && (String.sub s k nl = needle || loop (k + 1))
+            in
+            loop 0))
+      adv.warning_lines
+  in
+  Alcotest.(check bool) "install has Monitor recipe" true (has_monitor_recipe i);
+  Alcotest.(check bool) "managed has Monitor recipe" true (has_monitor_recipe m)
+
 let () =
   Alcotest.run "c2c_wake_guidance"
     [ ( "advice",
@@ -56,5 +83,7 @@ let () =
             test_kimi_install_manual_managed_not
         ; Alcotest.test_case "agy install vs managed" `Quick
             test_agy_install_manual_managed_not
-        ; Alcotest.test_case "grok manual" `Quick test_grok_manual ] )
+        ; Alcotest.test_case "grok manual" `Quick test_grok_manual
+        ; Alcotest.test_case "muse none both contexts" `Quick
+            test_muse_none_both_contexts ] )
     ]

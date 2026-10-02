@@ -14,7 +14,8 @@ let () =
     [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_MCP_SESSION_ID"
     ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID"
     ; "GROK_SESSION_ID"; "GROK_AGENT"; "C2C_GROK_ACTIVE_SESSIONS"
-    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"; "CURSOR_ASKPASS_SOCKET" ]
+    ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"; "CURSOR_ASKPASS_SOCKET"
+    ; "MUSE_SESSION_ID" ]
 
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
@@ -2191,6 +2192,7 @@ let with_scrubbed_client_env f =
     ; "KIMI_SESSION_ID"; "KIMI_CODE_HOME"
     ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"; "CURSOR_ASKPASS_SOCKET"
     ; "ANTIGRAVITY_CONVERSATION_ID"; "ANTIGRAVITY_HOOK_EVENT"; "ANTIGRAVITY_LS_ADDRESS"
+    ; "MUSE_SESSION_ID"
     ]
   in
   List.iter (fun k -> Unix.putenv k "") keys;
@@ -2322,6 +2324,76 @@ let test_inferred_client_type_from_env_cursor_agent_flag () =
       Unix.putenv "CURSOR_AGENT" "1";
       check (option string) "CURSOR_AGENT=1 → cursor" (Some "cursor")
         (C2c_mcp.inferred_client_type_from_env ()))
+
+(* B353: muse Tier-0 identity matrix. MUSE_SESSION_ID is PROVISIONAL pending
+   B352 P3 — these tests pin the provisional contract so P3's verdict has a
+   failing-then-passing record either way. *)
+let test_inferred_client_type_from_env_muse () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "MUSE_SESSION_ID" "muse-sess-b353" ;
+      check (option string) "MUSE_SESSION_ID → muse" (Some "muse")
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "session id via inferred muse" (Some "muse-sess-b353")
+        (C2c_mcp.session_id_from_env ()))
+
+let test_session_id_from_env_muse_explicit_client_type () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "MUSE_SESSION_ID" "muse-managed-sid-b353";
+      check (option string) "MUSE_SESSION_ID via explicit client_type"
+        (Some "muse-managed-sid-b353")
+        (C2c_mcp.session_id_from_env ~client_type:"muse" ());
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "muse";
+      check (option string) "MUSE_SESSION_ID via C2C_MCP_CLIENT_TYPE=muse"
+        (Some "muse-managed-sid-b353")
+        (C2c_mcp.session_id_from_env ()))
+
+let test_inferred_client_type_codex_wins_over_muse () =
+  (* Provisional keys must never steal identity from a confirmed native. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CODEX_THREAD_ID" "codex-thread-keep-b353";
+      Unix.putenv "MUSE_SESSION_ID" "muse-sess-b353";
+      check (option string) "CODEX_THREAD_ID beats MUSE_SESSION_ID" (Some "codex")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_cursor_marker_wins_over_muse () =
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "CURSOR_AGENT" "1";
+      Unix.putenv "MUSE_SESSION_ID" "muse-sess-b353";
+      check (option string) "CURSOR_AGENT beats MUSE_SESSION_ID" (Some "cursor")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_muse_wins_over_cursor_ancestry () =
+  (* Explicit env beats the B288 process-ancestry heuristic. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "MUSE_SESSION_ID" "muse-sess-b353";
+      Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "bash:cursor-agent:node";
+      check (option string) "MUSE_SESSION_ID beats cursor ancestry" (Some "muse")
+        (C2c_mcp.inferred_client_type_from_env ()))
+
+let test_inferred_client_type_muse_empty_key_fails_closed () =
+  (* B353: empty/whitespace MUSE_SESSION_ID fails closed — no label, no sid. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "MUSE_SESSION_ID" "   ";
+      check (option string) "whitespace MUSE_SESSION_ID → None" None
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "whitespace MUSE_SESSION_ID → no sid" None
+        (C2c_mcp.session_id_from_env ());
+      Unix.putenv "MUSE_SESSION_ID" "";
+      check (option string) "empty MUSE_SESSION_ID → None" None
+        (C2c_mcp.inferred_client_type_from_env ());
+      check (option string) "empty MUSE_SESSION_ID → no sid" None
+        (C2c_mcp.session_id_from_env ()))
+
+let test_session_id_from_env_muse_client_type_case_sensitive () =
+  (* Pre-existing shared behavior (all clients, not muse-specific):
+     native_session_id_env_keys matches exact lowercase, so a mixed-case
+     C2C_MCP_CLIENT_TYPE never resolves the native key. Pinned so B352 P3
+     does not trip on it; case-normalizing is a separate-ticket change. *)
+  with_scrubbed_client_env (fun () ->
+      Unix.putenv "MUSE_SESSION_ID" "muse-sess-b353";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "Muse";
+      check (option string) "mixed-case client type → no native sid" None
+        (C2c_mcp.session_id_from_env ()))
 
 let test_inferred_client_type_from_env_cursor_invoked_as () =
   with_scrubbed_client_env (fun () ->
@@ -16253,7 +16325,7 @@ let nonce_is_lowercase_alnum s =
 let test_blocklist_rejects_banned_aliases () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
-      let banned = [ "claude"; "claude-code"; "gpt"; "grok" ] in
+      let banned = [ "claude"; "claude-code"; "gpt"; "grok"; "muse"; "muse-code" ] in
       List.iter
         (fun alias ->
            let raised =
@@ -16285,6 +16357,35 @@ let test_auto_gen_client_prefixed_not_rejected () =
         ~from_auto_gen:true ();
       let regs = C2c_mcp.Broker.list_registrations broker in
       check int "auto-gen codex- prefix accepted" 1 (List.length regs))
+
+(* B353: user-supplied muse/muse- names are blocked while auto-generated
+   muse- aliases (the Tier-0 mint shape) pass. *)
+let test_blocklist_muse_user_blocked_auto_gen_allowed () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      List.iter
+        (fun alias ->
+           let raised =
+             try
+               C2c_mcp.Broker.register broker ~session_id:("ses-" ^ alias)
+                 ~alias ~pid:None ~pid_start_time:None ();
+               false
+             with
+             | Invalid_argument msg -> string_contains msg "blocked"
+             | _ -> false
+           in
+           check bool (Printf.sprintf "broker rejects user alias %s" alias) true raised)
+        [ "muse"; "Muse"; "muse-quill" ];
+      C2c_mcp.Broker.register broker ~session_id:"ses-muse-auto"
+        ~alias:"muse-quill-frost" ~pid:None ~pid_start_time:None
+        ~from_auto_gen:true ();
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      check bool "auto-gen muse- prefix accepted" true
+        (List.exists
+           (fun (r : C2c_mcp.registration) -> r.alias = "muse-quill-frost")
+           regs);
+      check bool "muse- in reserved prefixes" true
+        (List.mem "muse-" C2c_blocklist.reserved_client_prefixes))
 
 let test_user_supplied_codex_rejected () =
   with_temp_dir (fun dir ->
@@ -16946,6 +17047,20 @@ let () =
              test_resolve_session_id_derives_from_auto_register_alias
          ; test_case "inferred_client_type_from_env: CURSOR_AGENT=1 → cursor (B134)" `Quick
              test_inferred_client_type_from_env_cursor_agent_flag
+         ; test_case "inferred_client_type_from_env: MUSE_SESSION_ID → muse (B353)" `Quick
+             test_inferred_client_type_from_env_muse
+         ; test_case "session_id_from_env uses MUSE_SESSION_ID (B353)" `Quick
+             test_session_id_from_env_muse_explicit_client_type
+         ; test_case "inferred_client_type_from_env: CODEX_THREAD_ID beats MUSE (B353)" `Quick
+             test_inferred_client_type_codex_wins_over_muse
+         ; test_case "inferred_client_type_from_env: CURSOR_AGENT beats MUSE (B353)" `Quick
+             test_inferred_client_type_cursor_marker_wins_over_muse
+         ; test_case "inferred_client_type_from_env: MUSE beats cursor ancestry (B353)" `Quick
+             test_inferred_client_type_muse_wins_over_cursor_ancestry
+         ; test_case "inferred_client_type_from_env: empty MUSE key fails closed (B353)" `Quick
+             test_inferred_client_type_muse_empty_key_fails_closed
+         ; test_case "session_id_from_env: mixed-case muse client type pinned (B353)" `Quick
+             test_session_id_from_env_muse_client_type_case_sensitive
          ; test_case "inferred_client_type_from_env: CURSOR_INVOKED_AS → cursor (B134)" `Quick
              test_inferred_client_type_from_env_cursor_invoked_as
          ; test_case "inferred_client_type_from_env: CODEX_THREAD_ID beats CURSOR (B134)" `Quick
@@ -17700,6 +17815,8 @@ let () =
                 test_blocklist_accepts_lyra_quill
             ; test_case "B1 auto-gen client-prefixed alias accepted" `Quick
                 test_auto_gen_client_prefixed_not_rejected
+            ; test_case "B353 blocklist muse user-blocked auto-gen allowed" `Quick
+                test_blocklist_muse_user_blocked_auto_gen_allowed
             ; test_case "B1 user-supplied codex rejected" `Quick
                 test_user_supplied_codex_rejected
             ; test_case "B2 auto-gen alias shape word-word-nonce" `Quick

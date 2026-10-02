@@ -14,6 +14,7 @@ let banned_aliases =
   ; "agy"
   ; "hermes"
   ; "cursor"
+  ; "muse"
   ]
 
 (** Human-readable reserved client prefixes (include trailing hyphen). Keep in
@@ -21,7 +22,7 @@ let banned_aliases =
     the full set operators hit in the wild (B182). *)
 let reserved_client_prefixes =
   [ "claude-"; "codex-"; "opencode-"; "kimi-"; "crush-"; "grok-"; "agy-"
-  ; "hermes-"; "cursor-" ]
+  ; "hermes-"; "cursor-"; "muse-" ]
 
 let alias_casefold s = String.lowercase_ascii s
 

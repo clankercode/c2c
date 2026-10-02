@@ -46,6 +46,7 @@ let path_detectable_clients =
   ; ("grok", [ "grok" ])
   ; ("hermes", [ "hermes" ])
   ; ("cursor", [ "cursor-agent" ])
+  ; ("muse", [ "muse" ])
   ]
 
 (* Is [name] resolvable on the current PATH? *)

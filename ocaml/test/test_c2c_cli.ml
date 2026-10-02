@@ -88,7 +88,7 @@ let c2c_deliver_inbox_binary =
 let host_session_env_keys =
   [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "CODEX_THREAD_ID"
   ; "C2C_OPENCODE_SESSION_ID"; "GROK_SESSION_ID"; "ANTIGRAVITY_CONVERSATION_ID"
-  ; "KIMI_SESSION_ID" ]
+  ; "KIMI_SESSION_ID"; "MUSE_SESSION_ID" ]
 
 let c2c_cmd partial =
   let dir = Filename.dirname c2c_binary in
@@ -748,6 +748,108 @@ let test_send_auto_register_failure_falls_back_to_raw_session_id () =
           check int "recipient has one fallback message" 1 (List.length drained);
           let msg = List.hd drained in
           check string "fallback preserves old sender label" sender_sid msg.from_alias))
+
+(* B353: muse Tier-0 send sniff. A muse-prefixed sid with NO client-type env
+   must self-register a muse- alias via the sniff fallback — every native
+   key is scrubbed so inference yields None and the sid-prefix arm is what
+   labels the sender. *)
+let test_send_auto_register_muse_sid_prefix () =
+  with_temp_dir (fun dir ->
+      with_temp_dir (fun home ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker
+            ~session_id:"b353-recipient-sid" ~alias:"b353-recipient"
+            ~pid:None ~pid_start_time:None ();
+          let outfile = Filename.temp_file "c2c-send-muse-sniff" ".out" in
+          Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+            (fun () ->
+              let sender_sid = "muse-b353-sniff-sid" in
+              let cmd =
+                Printf.sprintf
+                  "env -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_MCP_CLIENT_TYPE \
+                   -u CODEX_THREAD_ID -u CLAUDE_SESSION_ID -u CLAUDE_CODE_SESSION_ID \
+                   -u C2C_OPENCODE_SESSION_ID -u GROK_SESSION_ID -u GROK_AGENT \
+                   -u ANTIGRAVITY_CONVERSATION_ID -u ANTIGRAVITY_HOOK_EVENT -u ANTIGRAVITY_LS_ADDRESS \
+                   -u KIMI_SESSION_ID -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u CURSOR_ASKPASS_SOCKET \
+                   -u MUSE_SESSION_ID \
+                   C2C_DETECT_ANCESTOR_COMMS=dune:test-runner \
+                   HOME=%s XDG_STATE_HOME=%s C2C_STATE_HOME= \
+                   C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s C2C_MCP_SESSION_ID=%s %s send b353-recipient 'hello from muse' > %s 2>&1"
+                  (Filename.quote home)
+                  (Filename.quote (Filename.concat home "xdg-empty"))
+                  (Filename.quote dir)
+                  (Filename.quote sender_sid)
+                  (Filename.quote c2c_binary)
+                  (Filename.quote outfile)
+              in
+              let rc = Sys.command cmd in
+              let content = read_file outfile in
+              check int (Printf.sprintf "send exits 0 (output: %s)" content) 0 rc;
+              check bool "notice mentions auto-registration" true
+                (string_contains content "auto-registered as ");
+              let regs = C2c_mcp.Broker.list_registrations broker in
+              let sender =
+                List.find_opt
+                  (fun (r : C2c_mcp.registration) -> r.session_id = sender_sid)
+                  regs
+              in
+              match sender with
+              | None -> fail "expected muse sender auto-registration"
+              | Some reg ->
+                  check bool "generated muse alias shape" true
+                    (alias_looks_generated_for_client ~client:"muse" reg.alias);
+                  check (option string) "client type muse" (Some "muse") reg.client_type;
+                  check bool "ok line uses generated alias" true
+                    (string_contains content (Printf.sprintf "ok -> b353-recipient (from %s)" reg.alias)))))
+
+(* B353: MUSE_SESSION_ID alone (no C2C_MCP_SESSION_ID) must resolve the sid
+   AND self-register a muse- alias end to end through the real binary. *)
+let test_send_auto_register_muse_native_key () =
+  with_temp_dir (fun dir ->
+      with_temp_dir (fun home ->
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          C2c_mcp.Broker.register broker
+            ~session_id:"b353-native-recipient-sid" ~alias:"b353-native-recipient"
+            ~pid:None ~pid_start_time:None ();
+          let outfile = Filename.temp_file "c2c-send-muse-native" ".out" in
+          Fun.protect ~finally:(fun () -> Sys.remove outfile |> ignore)
+            (fun () ->
+              let sender_sid = "muse-native-b353-sid" in
+              let cmd =
+                Printf.sprintf
+                  "env -u C2C_MCP_AUTO_REGISTER_ALIAS -u C2C_MCP_CLIENT_TYPE -u C2C_MCP_SESSION_ID \
+                   -u CODEX_THREAD_ID -u CLAUDE_SESSION_ID -u CLAUDE_CODE_SESSION_ID \
+                   -u C2C_OPENCODE_SESSION_ID -u GROK_SESSION_ID -u GROK_AGENT \
+                   -u ANTIGRAVITY_CONVERSATION_ID -u ANTIGRAVITY_HOOK_EVENT -u ANTIGRAVITY_LS_ADDRESS \
+                   -u KIMI_SESSION_ID -u CURSOR_AGENT -u CURSOR_INVOKED_AS -u CURSOR_ASKPASS_SOCKET \
+                   MUSE_SESSION_ID=%s \
+                   C2C_DETECT_ANCESTOR_COMMS=dune:test-runner \
+                   HOME=%s XDG_STATE_HOME=%s C2C_STATE_HOME= \
+                   C2C_CLI_FORCE=1 C2C_MCP_BROKER_ROOT=%s %s send b353-native-recipient 'hello via native key' > %s 2>&1"
+                  (Filename.quote sender_sid)
+                  (Filename.quote home)
+                  (Filename.quote (Filename.concat home "xdg-empty"))
+                  (Filename.quote dir)
+                  (Filename.quote c2c_binary)
+                  (Filename.quote outfile)
+              in
+              let rc = Sys.command cmd in
+              let content = read_file outfile in
+              check int (Printf.sprintf "send exits 0 (output: %s)" content) 0 rc;
+              check bool "notice mentions auto-registration" true
+                (string_contains content "auto-registered as ");
+              let regs = C2c_mcp.Broker.list_registrations broker in
+              let sender =
+                List.find_opt
+                  (fun (r : C2c_mcp.registration) -> r.session_id = sender_sid)
+                  regs
+              in
+              match sender with
+              | None -> fail "expected muse native-key sender auto-registration"
+              | Some reg ->
+                  check bool "generated muse alias shape" true
+                    (alias_looks_generated_for_client ~client:"muse" reg.alias);
+                  check (option string) "client type muse" (Some "muse") reg.client_type)))
 
 (* B188: path-fingerprint → remote.origin.url fingerprint switch must not
    mint a second alias for the same session_id on CLI send auto-register. *)
@@ -4782,6 +4884,8 @@ let () =
         ; ( "remote connector liveness uses send broker root (B177)", `Quick, test_remote_connector_liveness_is_scoped_to_broker_state )
         ; ( "send unknown alias routes to relay outbox", `Quick, test_send_unknown_alias_routes_to_relay_outbox )
         ; ( "send auto-registers unregistered sender (B078)", `Quick, test_send_auto_registers_unregistered_session )
+        ; ( "send auto-registers muse sid-prefix sender (B353)", `Quick, test_send_auto_register_muse_sid_prefix )
+        ; ( "send auto-registers muse native-key sender (B353)", `Quick, test_send_auto_register_muse_native_key )
         ; ( "send falls back when auto-registration fails (B078)", `Quick, test_send_auto_register_failure_falls_back_to_raw_session_id )
         ; ( "send auto-register reuses sticky across fingerprint (B188)", `Quick, test_send_auto_register_reuses_sticky_across_fingerprint )
         ; ( "send cross-broker fallback routes to sibling broker", `Quick, test_send_cross_broker_fallback )
