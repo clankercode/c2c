@@ -59,3 +59,5 @@ Make the MCP tier (writer in B354) correct and safe. Needs B352 P3
   `test_c2c_mcp_server_inner.ml` auto-drain matrix.
 
 SCOPE (B352 verdicts, merged): MCP stdio entry behind --with-mcp per D4 (handshake + tool visibility proven live). Doctor: presence checks (#50-honest) + gate checks (gates.plugins grant? ingress env? local_session_messaging veto?) + peer-tool presence in active_tools. Tool-filter keys: blanket + doc unless live-verified with a meta caller (U6 enforcement untested).
+
+B354-review note: bulk-install asymmetry — fresh install all --with-clients --with-mcp writes muse MCP via do_install_client passthrough while the upgrade-check list excludes muse (deliberate). The B357 flip resolves detection; if a no-MCP posture were ever chosen, gate the passthrough too, not just the check line.
