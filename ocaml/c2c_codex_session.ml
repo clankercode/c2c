@@ -161,6 +161,20 @@ let select_new_loaded_thread ~before ~candidates =
   | [ thread_id ] -> Some thread_id
   | _ -> None
 
+(* A daemon frontend may only be bound to a thread when the authenticated
+   [SessionStart] handoff and the authenticated server's workspace-filtered
+   loaded-thread set agree.  The requested resume target is an input to the
+   child command, not proof that the remote TUI actually loaded that thread. *)
+let daemon_attach_thread_proof ~requested_thread ~handoff_thread
+    ~workspace_loaded_threads =
+  match handoff_thread with
+  | Some thread_id when List.mem thread_id workspace_loaded_threads ->
+      (match requested_thread with
+       | None -> Some thread_id
+       | Some requested when requested = thread_id -> Some thread_id
+       | Some _ -> None)
+  | _ -> None
+
 let daemon_attach_forced_off () =
   match Sys.getenv_opt "C2C_CODEX_FORCE_PRIVATE_APPSERVER" with
   | Some "1" -> true
@@ -2177,9 +2191,6 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
            in
            let frontend_extra = if fresh then fresh_frontend_extra else frontend_extra in
            let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
-           let loaded_before =
-             C2c_codex_ingress.real_loaded_threads ~endpoint:ep ~token:""
-           in
            let argv_list =
              let cmd =
                match thread with
@@ -2408,31 +2419,25 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                ignore (cleanup ()))
              (fun () ->
                  let bound_thread =
-                  match thread with
-                  | Some tid -> Some tid
-                  | None ->
                       let deadline = Unix.gettimeofday () +. 30.0 in
                       let rec discover () =
                         let loaded_for_cwd =
                           C2c_codex_ingress.real_loaded_threads_for_cwd
                             ~endpoint:ep ~token:"" ~cwd
                         in
-                        match select_new_loaded_thread
-                                ~before:loaded_before ~candidates:loaded_for_cwd with
-                        | Some tid -> Some tid
-                        | _ ->
-                            (match
-                               daemon_thread_handoff_matches ~path:handoff_path
-                                 ~frontend_pid:child
-                             with
-                             | Some tid
-                               when List.mem tid
-                                      (C2c_codex_ingress.real_loaded_threads
-                                         ~endpoint:ep ~token:"" ) -> Some tid
-                             | _ when Unix.gettimeofday () < deadline ->
-                                 Unix.sleepf 0.2;
-                                 discover ()
-                             | _ -> None)
+                        let handoff =
+                          daemon_thread_handoff_matches ~path:handoff_path
+                            ~frontend_pid:child
+                        in
+                        (match daemon_attach_thread_proof
+                                 ~requested_thread:thread
+                                 ~handoff_thread:handoff
+                                 ~workspace_loaded_threads:loaded_for_cwd with
+                         | Some tid -> Some tid
+                         | None when Unix.gettimeofday () < deadline ->
+                             Unix.sleepf 0.2;
+                             discover ()
+                         | None -> None)
                       in
                       discover ()
                 in
@@ -2440,8 +2445,8 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                 | None ->
                     emit_app_server_log
                       (Printf.sprintf
-                         "daemon attach failed: fresh remote TUI did not expose a \
-                          loaded thread (c2c-alias=%s)" alias);
+                         "daemon attach failed: remote TUI did not prove ownership of a \
+                          loaded workspace thread (c2c-alias=%s)" alias);
                     ignore (cleanup ());
                     1
                 | Some tid ->

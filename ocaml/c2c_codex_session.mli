@@ -104,6 +104,14 @@ val select_new_loaded_thread : before:string list -> candidates:string list -> s
 (** Select exactly one newly loaded thread from authenticated server metadata.
     An existing id or an ambiguous set fails closed. *)
 
+val daemon_attach_thread_proof :
+  requested_thread:string option ->
+  handoff_thread:string option ->
+  workspace_loaded_threads:string list -> string option
+(** Bind a daemon frontend only when its authenticated handoff thread is in the
+    authenticated workspace-loaded set and agrees with any requested resume
+    target. *)
+
 (** Pure gate for selecting daemon attach before starting its detached
     frontend. All three capabilities are required; callers fall back to the
     private app-server/hooks path when any is unavailable. *)
