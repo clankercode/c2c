@@ -1,13 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-10-02T17:15:45Z"
 depends_on: []
 estimate_hours: 1
 id: B351
 priority: high
+started_at: null
 status: pending
-tags:
-    - muse
+tags: []
 title: muse client support umbrella
 updated_at: "2026-10-02T17:15:45Z"
 ---
@@ -92,3 +93,5 @@ CONFIRMED 2026-10-02; B352 spike APPROVED as specced.
   (or documented NONE with cause), managed start/stop/restart cycle.
 - `just check` + forced repo-wide `@runtest` green per the 8
   false-green rules; `bl check` clean.
+
+LANE PLAN (bl-fix-many 2026-10-02, by file overlap): Lane S: B352 spike (probes/verdicts, no code). Lane T0: B353 Tier-0 (blocklist/inference/send-sniff/wake-guidance/detect). Lane A serial: B354 install -> B357 MCP polish (same setup.ml regions) -> B359 doctor (B354 dep). Lane B: B355 hook (hook_cmd/broker-adoption, disjoint from A). Lane C: B358 managed (c2c_start.ml, after B355). Lane D: B360 glue last. B356 PARKED (Monitor-only, skip). Phase 1: B352+B353 parallel. Decision: c2c has no just test-remote (clawq-only), so tests run locally per AGENTS.md (dune wrapper + just check + tmux); reviews via native subagents, muse CLI fallback.
