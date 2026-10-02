@@ -92,3 +92,5 @@ already mapped).
 - `scripts/c2c_tmux.py` launch help + `KNOWN_TUIS` include muse.
 
 SCOPE (B352 verdicts, merged): argv = muse --provider/--model --trust-workspace + approval flags + positional kickoff (positional submits, no bootstrap typing). Do NOT set --disable-approval for wake (no sidecar sender exists). Pre-fork registration REQUIRED (lazy/resume-silent hooks). Idle Unknown; SIGTERM ~2s (no timeout arm). e2e in tmux; kill scratch sessions when done.
+
+B355-REVIEW ASSUMPTION (recorded by B355 implementer): c2c hook muse resolves managed identity env-first (C2C_MCP_SESSION_ID) with NO kimi-#40 adoption fallback. B352 P3 proves hook env lacks MUSE_* but C2C_* inheritance from a launcher parent was NEVER probed. If muse spawns hooks from a daemon (kimi-#40 shape) rather than the TUI, B358's pre-registered row is invisible to the hook and SessionStart mints a competing muse-hook row for the payload sid (dual identity). B358 MUST live-probe C2C_MCP_SESSION_ID visibility in a real TUI hook stdin-env before managed e2e; if absent, B355 needs an adoption-arm follow-up. Do not ship managed muse without closing this. (B355 review issue 1, conditional-major.)
