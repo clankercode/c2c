@@ -166,7 +166,12 @@ let advice ~(client : string) ~(context : [ `Install | `Managed_start ]) :
      competing row), so managed-alias mail needs Monitor or poll-inbox
      even at SessionStart — strictly weaker than Claude/Grok posture until
      the B361 adoption arm lands. SessionStart is lazy (first turn submit)
-     and resume-silent, so a resumed session gets no re-onboarding turn. *)
+     and resume-silent, so a resumed session gets no re-onboarding turn.
+     B359 forecast (consistent with the B361 fix shape; B361 owns the
+     behaviour): adoption makes SessionStart resolve to the managed row,
+     and the backlog drain follows the resolved sid — so post-B361 the
+     managed row drains at first turn submit. Idle wake stays NONE either
+     way: no arrival-time path exists. *)
   | "muse", `Managed_start ->
       { client = c
       ; wake = None_idle
@@ -179,6 +184,8 @@ let advice ~(client : string) ~(context : [ `Install | `Managed_start ]) :
           ; "  Managed-alias mail does NOT auto-drain yet: SessionStart"
           ; "  drains the native row, not the managed alias row (B361);"
           ; "  check explicitly or arm background delivery."
+          ; "  Post-B361: SessionStart will drain the managed row at first"
+          ; "  turn submit — but idle wake stays NONE (no arrival-time path)."
           ; "  Arm receive NOW: Monitor({ command: \"c2c monitor\", \
              persistent: true })"
           ; "  Fallback: c2c poll-inbox"

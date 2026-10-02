@@ -91,6 +91,25 @@ let test_muse_managed_names_hook_posture () =
   Alcotest.(check bool) "warns no auto-drain pre-B361" true
     (List.exists (fun s -> contains s "does NOT auto-drain") m.warning_lines)
 
+(* B359: the managed arm forecasts post-B361 truth without claiming it —
+   SessionStart will drain the managed row at first turn submit, but idle
+   wake stays NONE (no arrival-time path either way). *)
+let test_muse_managed_post_b361_forecast () =
+  let m = C2c_wake_guidance.advice ~client:"muse" ~context:`Managed_start in
+  let contains hay needle =
+    let hl = String.length hay and nl = String.length needle in
+    nl <= hl
+    && (let rec loop k =
+          k + nl <= hl
+          && (String.sub hay k nl = needle || loop (k + 1))
+        in
+        loop 0)
+  in
+  Alcotest.(check bool) "forecasts managed-row drain post-B361" true
+    (List.exists (fun s -> contains s "Post-B361") m.warning_lines);
+  Alcotest.(check bool) "forecast keeps idle wake NONE" true
+    (List.exists (fun s -> contains s "idle wake stays NONE") m.warning_lines)
+
 let () =
   Alcotest.run "c2c_wake_guidance"
     [ ( "advice",
@@ -109,5 +128,7 @@ let () =
         ; Alcotest.test_case "muse none both contexts" `Quick
             test_muse_none_both_contexts
         ; Alcotest.test_case "muse managed names hook posture" `Quick
-            test_muse_managed_names_hook_posture ] )
+            test_muse_managed_names_hook_posture
+        ; Alcotest.test_case "muse managed post-B361 forecast" `Quick
+            test_muse_managed_post_b361_forecast ] )
     ]

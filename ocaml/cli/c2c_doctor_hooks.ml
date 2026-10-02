@@ -192,6 +192,25 @@ and muse_result = {
   mm_ingress_env : bool; (* MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS opener in THIS process *)
   mm_ingress_veto : bool; (* local_session_messaging.enabled=false in settings *)
   mm_sessions : muse_session_tools list; (* registry sessions, live ones log-scanned *)
+  mm_muse_regs : int; (* B359: broker registrations matching is_muse_registration *)
+  mm_wake_class : muse_wake_class; (* B359: overall — CONDITIONAL iff any live monitor lock *)
+  mm_wake_sessions : muse_wake_session list; (* B359: per-session wake rows *)
+}
+
+(* B359: muse has no local inject API and no out-of-process poster (B356
+   PARKED), so idle wake is NONE unless the agent armed `c2c monitor` (a
+   model decision → CONDITIONAL, never GUARANTEED). Same posture as grok
+   #37; the classifier is pure so hermetic tests need no live monitor. *)
+and muse_wake_class =
+  | Muse_wake_none
+  | Muse_wake_conditional_monitor
+
+and muse_wake_session = {
+  mws_alias : string;
+  mws_session_id : string;
+  mws_inbox_count : int; (* queued depth — the wake row carries the signal DEAF would *)
+  mws_monitor_alive : bool;
+  mws_class : muse_wake_class;
 }
 
 (* --- Codex delivery-mode classification (P1.M1.E1.T005) -------------------- *)
@@ -525,14 +544,19 @@ let codex_deaf_summary (rep : codex_delivery_report) : string option =
    the contract is pinned by tests instead of living only inside the cmdliner
    closure. #27 added [codex_deaf] — a DEAF managed codex instance is exactly as
    actionable as a DEAF kimi session or grok identity drift, and must fail the
-   check so scripts/CI can detect it. *)
+   check so scripts/CI can detect it. B359 added [muse_deaf]: today always 0
+   (muse DEAF is vacuous — no poster exists, so no muse state is exit-actionable;
+   see [classify_muse_deaf]); the parameter exists so B356 can wire a real count
+   without reshaping the predicate. *)
 let doctor_hooks_exit_failure ~(total_dangling : int) ~(codex_issues : int)
-    ~(kimi_deaf : int) ~(grok_flagged : bool) ~(codex_deaf : int) : bool =
+    ~(kimi_deaf : int) ~(grok_flagged : bool) ~(codex_deaf : int)
+    ~(muse_deaf : int) : bool =
   total_dangling > 0
   || codex_issues > 0
   || kimi_deaf > 0
   || grok_flagged
   || codex_deaf > 0
+  || muse_deaf > 0
 
 (* #27: observability helper shared by `c2c send`. Given the live (or injected)
    codex instances, return a sender warning when [to_alias] names a managed codex
@@ -1229,8 +1253,9 @@ let pid_alive pid = C2c_liveness.pid_alive pid
 
 (* Cheap read of <broker>/.monitor-locks/<alias>.lock: true only when the
    lockfile holds a pid that is currently alive in /proc. Stale/missing locks
-   and unreadable files are false. Matches #354 lock layout. *)
-let grok_monitor_lock_alive ~broker_root ~alias =
+   and unreadable files are false. Matches #354 lock layout. Client-agnostic
+   (B359: grok #37 and muse share it); the grok name stays as an alias. *)
+let monitor_lock_alive ~broker_root ~alias =
   let lock_path =
     Filename.concat
       (Filename.concat broker_root ".monitor-locks")
@@ -1250,6 +1275,10 @@ let grok_monitor_lock_alive ~broker_root ~alias =
           | Some p when p > 0 -> pid_alive p
           | _ -> false)
     with _ -> false
+
+(* Pre-B359 name; kept so existing callers/tests keep compiling. *)
+let grok_monitor_lock_alive ~broker_root ~alias =
+  monitor_lock_alive ~broker_root ~alias
 
 (* Parse ~/.grok/active_sessions.json (path via the shared helper, which honors
    C2C_GROK_ACTIVE_SESSIONS for tests). Pure/read-only; [] on any error. Unlike
@@ -1583,6 +1612,54 @@ let check_muse_session_tools ~data_dir =
        with _ -> None)
     records
 
+(* --- Muse registration + wake + DEAF classification (B359) ---------------- *)
+
+(* A muse registration, mirroring is_grok_registration: client_type=muse
+   (managed B358 and hook B355 both stamp it), or registered_by=muse-hook,
+   or the sticky client prefix "muse-". *)
+let is_muse_registration (r : C2c_mcp.registration) =
+  (match r.client_type with Some "muse" -> true | _ -> false)
+  || (match r.registered_by with Some "muse-hook" -> true | _ -> false)
+  || (let a = String.lowercase_ascii r.alias in
+      String.length a >= 5 && String.sub a 0 5 = "muse-")
+
+(* B359 pure wake classifier: never GUARANTEED; a live per-alias monitor
+   lock upgrades NONE → CONDITIONAL. Arming remains a model decision. *)
+let classify_muse_wake ~(monitor_alive : bool) : muse_wake_class =
+  if monitor_alive then Muse_wake_conditional_monitor else Muse_wake_none
+
+let muse_wake_class_label = function
+  | Muse_wake_none -> "NONE"
+  | Muse_wake_conditional_monitor -> "CONDITIONAL"
+
+let muse_wake_class_detail = function
+  | Muse_wake_none ->
+      "NONE at true idle (no local inject API, no poster; CONDITIONAL only if agent armed c2c monitor)"
+  | Muse_wake_conditional_monitor ->
+      "CONDITIONAL (live c2c monitor lock detected — still a model-armed path, not a guarantee)"
+
+(* B359 DEAF design decision (recorded on the ticket): VACUOUS. DEAF means
+   "mail queues that a live poster should have drained" — actionable because
+   --rearm can arm the poster. Muse has NO poster (no notifier, no sidecar;
+   B356 PARKED per operator 2026-10-02), so inbox>0 is the EXPECTED steady
+   state for a NONE-wake client, not a failure. Flagging it would be noise
+   with no truthful remediation: doctor cannot arm a Monitor inside the muse
+   session (a model decision), and minting a headless one would violate the
+   #78 no-mint rule. The monitor-lock signal is instead surfaced through the
+   wake classifier above (same as grok #37, which likewise has no DEAF
+   verdict). When B356 unparks, flip this to inbox>0 ∧ ¬poster-alive and
+   grow a rearm arm; until then it is pinned-false by tests. *)
+let classify_muse_deaf ~inbox_count:_ () : bool = false
+
+(* Count muse DEAF sessions under the current classifier — 0 while vacuous.
+   Exists so the exit-code wiring stays live: B356 flips the classifier and
+   the count (and exit 1) follows with no call-site change. *)
+let muse_deaf_count (wake_sessions : muse_wake_session list) : int =
+  List.length
+    (List.filter
+       (fun s -> classify_muse_deaf ~inbox_count:s.mws_inbox_count ())
+       wake_sessions)
+
 (* Pure dashboard mapping for `c2c health` / `c2c ping`: installed →
    green, muse-present-but-no-c2c → yellow, absent → gray. The message
    always names "muse:" so the connect dashboard's substring match finds
@@ -1595,7 +1672,12 @@ let muse_health_row (m : muse_result) =
   else
     (`Gray, "muse: not configured (run: c2c install muse)")
 
-let check_muse_status () : muse_result =
+let check_muse_status ?broker_root () : muse_result =
+  let broker_root =
+    match broker_root with
+    | Some r -> r
+    | None -> C2c_utils.resolve_broker_root ()
+  in
   let config_dir = C2c_setup.muse_config_dir () in
   let data_dir = C2c_setup.muse_data_dir () in
   let settings_path = config_dir // "settings.json" in
@@ -1685,6 +1767,36 @@ let check_muse_status () : muse_result =
     settings_state <> "missing" || plugin_cache_exists || plugin_record || sessions <> []
     || Sys.file_exists (data_dir // "feature-config" // "7075626c6963.json")
   in
+  (* B359: broker registrations + per-session wake rows. Best-effort: an
+     unreadable broker yields zero rows, never an exception. *)
+  let wake_sessions =
+    try
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let regs = C2c_mcp.Broker.list_registrations broker in
+      List.filter_map
+        (fun (r : C2c_mcp.registration) ->
+          if not (is_muse_registration r) then None
+          else
+            let inbox_count =
+              try List.length (C2c_mcp.Broker.read_inbox broker ~session_id:r.session_id)
+              with _ -> 0
+            in
+            let monitor_alive = monitor_lock_alive ~broker_root ~alias:r.alias in
+            Some
+              { mws_alias = r.alias
+              ; mws_session_id = r.session_id
+              ; mws_inbox_count = inbox_count
+              ; mws_monitor_alive = monitor_alive
+              ; mws_class = classify_muse_wake ~monitor_alive
+              })
+        regs
+    with _ -> []
+  in
+  let wake_class =
+    if List.exists (fun s -> s.mws_class = Muse_wake_conditional_monitor) wake_sessions
+    then Muse_wake_conditional_monitor
+    else Muse_wake_none
+  in
   { mm_muse_present = muse_present
   ; mm_installed = installed
   ; mm_skill_exists = skill_exists
@@ -1698,7 +1810,19 @@ let check_muse_status () : muse_result =
   ; mm_ingress_env = muse_ingress_env_open ()
   ; mm_ingress_veto = ingress_veto
   ; mm_sessions = sessions
+  ; mm_muse_regs = List.length wake_sessions
+  ; mm_wake_class = wake_class
+  ; mm_wake_sessions = wake_sessions
   }
+
+(* B359: `c2c doctor hooks --rearm` for muse is an explicit no-op. There is
+   no poster to arm (B356 PARKED), so there is nothing --rearm can truthfully
+   heal: it must NOT mint a headless monitor (#78) and must NOT touch
+   confirmed-dead sessions (#42) — both satisfied vacuously by arming
+   nothing. The CLI prints the posture line (see the rearm block below); this
+   function exists so the no-op is pinned by tests across the state matrix
+   instead of living only as an absent call. *)
+let rearm_deaf_muse_sessions ?broker_root:_ () : rearm_result list = []
 
 let check ?(dirs = claude_dirs ()) () =
   let dirs = List.filter (fun d -> Sys.file_exists d && Sys.is_directory d) dirs in
@@ -1942,7 +2066,32 @@ let pp_human r =
             | Some false -> "absent"
             | None -> if s.mst_live then "log unreadable" else "—"))
       m.mm_sessions
-  end
+  end;
+  (* B359: wake honesty + registration rows. Printed regardless of install
+     presence — a broker can hold muse rows even where muse is not
+     installed (foreign root, uninstalled-after-register). *)
+  if m.mm_muse_regs = 0 then
+    Printf.printf "  registered muse sessions: none on this broker\n"
+  else begin
+    Printf.printf "  registered muse sessions: %d\n" m.mm_muse_regs;
+    Printf.printf "  wake: %s\n" (muse_wake_class_detail m.mm_wake_class);
+    List.iter
+      (fun (s : muse_wake_session) ->
+        Printf.printf "    %s (session %s): %s inbox=%d%s\n"
+          s.mws_alias s.mws_session_id
+          (muse_wake_class_label s.mws_class)
+          s.mws_inbox_count
+          (if s.mws_monitor_alive then " (monitor lock alive)" else ""))
+      m.mm_wake_sessions;
+    if m.mm_wake_class = Muse_wake_none then
+      Printf.printf
+        "      → arm: Monitor({ description: \"c2c inbox watcher\", \
+         command: \"c2c monitor\", persistent: true })\n"
+  end;
+  Printf.printf
+    "  deaf: n/a (no muse poster exists — queued mail at NONE wake is expected steady state, not failure)\n";
+  Printf.printf
+    "  NOTE: install presence above does not prove hooks fire (#50).\n"
 
 let to_json r =
   let dangling_to_json d =
@@ -2075,6 +2224,15 @@ let to_json r =
        match s.mst_c2c_tools with Some b -> `Bool b | None -> `Null)
     ]
   in
+  let muse_wake_session_to_json (s : muse_wake_session) =
+    `Assoc [
+      ("alias", `String s.mws_alias);
+      ("session_id", `String s.mws_session_id);
+      ("inbox_count", `Int s.mws_inbox_count);
+      ("monitor_alive", `Bool s.mws_monitor_alive);
+      ("wake_class", `String (muse_wake_class_label s.mws_class))
+    ]
+  in
   let muse_to_json (m : muse_result) =
     `Assoc [
       ("muse_present", `Bool m.mm_muse_present);
@@ -2089,7 +2247,16 @@ let to_json r =
       ("plugins_gate", `String m.mm_plugins_gate);
       ("ingress_env", `Bool m.mm_ingress_env);
       ("ingress_veto", `Bool m.mm_ingress_veto);
-      ("sessions", `List (List.map muse_session_to_json m.mm_sessions))
+      ("sessions", `List (List.map muse_session_to_json m.mm_sessions));
+      ("muse_regs", `Int m.mm_muse_regs);
+      ("wake_class", `String (muse_wake_class_label m.mm_wake_class));
+      ("wake_detail", `String (muse_wake_class_detail m.mm_wake_class));
+      ("wake_sessions", `List (List.map muse_wake_session_to_json m.mm_wake_sessions));
+      (* B359: DEAF is vacuous (no poster) — empty list mirrors the kimi/codex
+         deaf/deaf_count shape so scripted consumers work uniformly; B356
+         fills it when a poster exists. *)
+      ("deaf", `List []);
+      ("deaf_count", `Int (muse_deaf_count m.mm_wake_sessions))
     ]
   in
   `Assoc [
@@ -2265,6 +2432,14 @@ let pp_compact r =
     (* #37 compact wake honesty line — always printed when grok regs exist. *)
     Printf.printf "Grok wake: %s\n"
       (grok_wake_class_detail r.grok.gid_wake_class)
+  end;
+  (* B359: muse compact line, mirroring grok. *)
+  if r.muse.mm_muse_regs = 0 then
+    Printf.printf "Muse: no registered muse sessions\n"
+  else begin
+    Printf.printf "Muse: %d session(s)\n" r.muse.mm_muse_regs;
+    Printf.printf "Muse wake: %s\n"
+      (muse_wake_class_detail r.muse.mm_wake_class)
   end
 
 (* --- CLI ------------------------------------------------------------------ *)
@@ -2378,10 +2553,20 @@ let c2c_doctor_hooks_cmd =
      end);
     (if rearm then begin
        let results = rearm_deaf_kimi_sessions () in
+       (* B359: muse rearm is an explicit no-op (no poster to arm — see
+          [rearm_deaf_muse_sessions]); state the posture when muse regs exist
+          so --rearm never looks like it healed them. *)
+       let _muse_noop = rearm_deaf_muse_sessions () in
+       let muse_regs = (check_muse_status ()).mm_muse_regs in
        (* Under --json, arm silently so we don't corrupt the JSON envelope; the
           post-arm [check ()] below reflects the result. *)
        if not json then begin
          pp_rearm_human results;
+         if muse_regs > 0 then
+           Printf.printf
+             "muse: %d session(s) — no poster to re-arm (Monitor-only posture; \
+              see `c2c doctor hooks` for the Monitor recipe)\n"
+             muse_regs;
          print_newline ();
          flush stdout
        end
@@ -2409,13 +2594,15 @@ let c2c_doctor_hooks_cmd =
     end;
     (* #27: codex DEAF now fails the check too (see [doctor_hooks_exit_failure])
        — otherwise `c2c doctor hooks` printed the red DEAF block and still
-       exited 0, so no script/CI could detect the failure it exists to surface. *)
+       exited 0, so no script/CI could detect the failure it exists to surface.
+       B359: muse_deaf is wired live but 0 while DEAF is vacuous. *)
     if doctor_hooks_exit_failure
          ~total_dangling:r.total_dangling
          ~codex_issues:r.codex.total_issues
          ~kimi_deaf:(List.length r.kimi.kd_deaf)
          ~grok_flagged:r.grok.gid_flagged
          ~codex_deaf:(List.length (codex_deaf_instances delivery))
+         ~muse_deaf:(muse_deaf_count r.muse.mm_wake_sessions)
     then exit 1
   in
   Cmdliner.Cmd.v
@@ -2425,6 +2612,9 @@ let c2c_doctor_hooks_cmd =
              mode (app-server / app-server-unavailable / hooks+wake / hooks / \
              unavailable), Kimi sessions that are DEAF (undelivered inbox \
              + no notifier — B238), Grok identity drift (statefile identity \
-             not corroborated by a live foreground session — #23), and Grok \
-             wake class honesty (NONE / CONDITIONAL-if-monitor-armed — #37).")
+             not corroborated by a live foreground session — #23), Grok \
+             wake class honesty (NONE / CONDITIONAL-if-monitor-armed — #37), \
+             and Muse install presence plus wake class honesty (NONE / \
+             CONDITIONAL-if-monitor-armed — B357/B359; presence never proves \
+             hooks fire — #50).")
     cmd

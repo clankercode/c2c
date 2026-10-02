@@ -619,7 +619,7 @@ let test_codex_send_warning_present_for_degraded () =
 let test_doctor_exit_code_fails_on_codex_deaf () =
   let clean ?(codex_deaf = 0) () =
     C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:0
-      ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf
+      ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf ~muse_deaf:0
   in
   (* Baseline: an otherwise-clean run with no codex DEAF exits 0. *)
   check bool "all clean → no failure" false (clean ());
@@ -629,16 +629,21 @@ let test_doctor_exit_code_fails_on_codex_deaf () =
   (* Parity with the pre-existing signals, so the convention is pinned too. *)
   check bool "kimi DEAF alone → failure" true
     (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:0
-       ~kimi_deaf:1 ~grok_flagged:false ~codex_deaf:0);
+       ~kimi_deaf:1 ~grok_flagged:false ~codex_deaf:0 ~muse_deaf:0);
   check bool "grok drift alone → failure" true
     (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:0
-       ~kimi_deaf:0 ~grok_flagged:true ~codex_deaf:0);
+       ~kimi_deaf:0 ~grok_flagged:true ~codex_deaf:0 ~muse_deaf:0);
   check bool "dangling hook alone → failure" true
     (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:1 ~codex_issues:0
-       ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0);
+       ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0 ~muse_deaf:0);
   check bool "codex managed-block issue alone → failure" true
     (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:1
-       ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0)
+       ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0 ~muse_deaf:0);
+  (* B359: the muse_deaf arm is wired live (0 while DEAF is vacuous); a
+     nonzero count must fail the check so B356 inherits the exit contract. *)
+  check bool "muse DEAF alone → failure" true
+    (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0 ~codex_issues:0
+       ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0 ~muse_deaf:1)
 
 (* #27 NIT-3: the DEAF rollup must reach `--json` consumers too, mirroring the
    kimi deaf/deaf_count fields. *)
@@ -1519,6 +1524,8 @@ let test_muse_health_row_mapping () =
     ; mm_plugin_trust = "unknown"; mm_settings_state = "missing"
     ; mm_settings_hooks = false; mm_mcp_entry = false; mm_plugins_gate = "unknown"
     ; mm_ingress_env = false; mm_ingress_veto = false; mm_sessions = []
+    ; mm_muse_regs = 0; mm_wake_class = C2c_doctor_hooks.Muse_wake_none
+    ; mm_wake_sessions = []
     }
   in
   (match muse_health_row base with
@@ -1548,6 +1555,259 @@ let test_muse_json_key_present () =
          | Some (`Assoc m) ->
              check bool "muse_present key" true (List.mem_assoc "muse_present" m);
              check bool "sessions key" true (List.mem_assoc "sessions" m)
+         | _ -> fail "muse key missing or malformed")
+     | _ -> fail "doctor json is not an object"))
+
+(* --- Muse doctor/wake/DEAF (B359) ----------------------------------------- *)
+
+let register_muse broker_root ~session_id ~alias =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id ~alias ~pid:None
+    ~pid_start_time:None ~client_type:(Some "muse")
+    ~registered_by:(Some "muse-hook") ~from_auto_gen:true ();
+  broker
+
+let test_muse_registration_detector () =
+  let mk ~alias ~client_type ~registered_by : C2c_mcp.registration =
+    { session_id = "sid"; alias; pid = None; pid_start_time = None
+    ; registered_at = None; canonical_alias = None; dnd = false
+    ; dnd_since = None; dnd_until = None; client_type; plugin_version = None
+    ; confirmed_at = None; enc_pubkey = None; ed25519_pubkey = None
+    ; pubkey_signed_at = None; pubkey_sig = None; compacting = None
+    ; last_activity_ts = None; role = None; compaction_count = 0
+    ; automated_delivery = None; tmux_location = None; herdr_pane = None
+    ; herdr_socket = None; cwd = None; metadata_opt_out = false
+    ; registered_by; opaque_host_id = None }
+  in
+  check bool "client_type=muse" true
+    (C2c_doctor_hooks.is_muse_registration
+       (mk ~alias:"x" ~client_type:(Some "muse") ~registered_by:None));
+  check bool "registered_by=muse-hook" true
+    (C2c_doctor_hooks.is_muse_registration
+       (mk ~alias:"x" ~client_type:None ~registered_by:(Some "muse-hook")));
+  check bool "alias prefix muse-" true
+    (C2c_doctor_hooks.is_muse_registration
+       (mk ~alias:"muse-amber" ~client_type:None ~registered_by:None));
+  check bool "prefix is case-insensitive" true
+    (C2c_doctor_hooks.is_muse_registration
+       (mk ~alias:"Muse-amber" ~client_type:None ~registered_by:None));
+  check bool "bare muse (no dash) is not a prefix hit" false
+    (C2c_doctor_hooks.is_muse_registration
+       (mk ~alias:"muse" ~client_type:None ~registered_by:None));
+  check bool "claude not muse" false
+    (C2c_doctor_hooks.is_muse_registration
+       (mk ~alias:"claude-x" ~client_type:(Some "claude") ~registered_by:None))
+
+let test_classify_muse_wake_none_without_monitor () =
+  check bool "no monitor → NONE" true
+    (C2c_doctor_hooks.classify_muse_wake ~monitor_alive:false
+     = C2c_doctor_hooks.Muse_wake_none);
+  check string "label NONE" "NONE"
+    (C2c_doctor_hooks.muse_wake_class_label C2c_doctor_hooks.Muse_wake_none)
+
+let test_classify_muse_wake_conditional_with_monitor () =
+  check bool "live monitor → CONDITIONAL" true
+    (C2c_doctor_hooks.classify_muse_wake ~monitor_alive:true
+     = C2c_doctor_hooks.Muse_wake_conditional_monitor);
+  check string "label CONDITIONAL" "CONDITIONAL"
+    (C2c_doctor_hooks.muse_wake_class_label
+       C2c_doctor_hooks.Muse_wake_conditional_monitor);
+  check bool "detail names model-armed path" true
+    (C2c_doctor_hooks.contains
+       (C2c_doctor_hooks.muse_wake_class_detail
+          C2c_doctor_hooks.Muse_wake_conditional_monitor)
+       "model-armed")
+
+(* Hermetic broker + absent-muse host: no real HOME/muse state touched. *)
+let with_muse_broker f =
+  with_tmp_dir (fun dir ->
+    let broker_root = dir // "broker" in
+    C2c_io.mkdir_p broker_root;
+    with_muse_env (fun _home -> f ~broker_root))
+
+(* Full hermetic report: hermetic broker via C2C_MCP_BROKER_ROOT ("" restores
+   to unset), empty grok active_sessions, empty instances dir, scratch muse
+   roots — so `check ~dirs:[]` touches nothing real. *)
+let with_full_hermetic_broker f =
+  with_tmp_dir (fun dir ->
+    let broker_root = dir // "broker" in
+    C2c_io.mkdir_p broker_root;
+    let active_path = dir // "active_sessions.json" in
+    write_file active_path "[]";
+    let instances_dir = dir // "instances" in
+    C2c_io.mkdir_p instances_dir;
+    let vars =
+      [ ("C2C_MCP_BROKER_ROOT", broker_root)
+      ; ("C2C_GROK_ACTIVE_SESSIONS", active_path)
+      ; ("C2C_INSTANCES_DIR", instances_dir)
+      ]
+    in
+    let prev = List.map (fun (k, _) -> (k, Sys.getenv_opt k)) vars in
+    List.iter (fun (k, v) -> Unix.putenv k v) vars;
+    Fun.protect
+      ~finally:(fun () ->
+        List.iter
+          (fun (k, v) ->
+             match v with Some x -> Unix.putenv k x | None -> Unix.putenv k "")
+          prev)
+      (fun () -> with_muse_env (fun _home -> f ~broker_root)))
+
+let write_monitor_lock broker_root ~alias ~pid =
+  let lock_dir = broker_root // ".monitor-locks" in
+  C2c_io.mkdir_p lock_dir;
+  write_file (lock_dir // (alias ^ ".lock")) (string_of_int pid ^ "\n")
+
+let test_muse_wake_none_when_no_monitor_lock () =
+  with_muse_broker (fun ~broker_root ->
+    ignore
+      (register_muse broker_root ~session_id:"muse-sess-wake-none"
+         ~alias:"muse-wake-aa");
+    let m = C2c_doctor_hooks.check_muse_status ~broker_root () in
+    check int "one muse reg" 1 m.C2c_doctor_hooks.mm_muse_regs;
+    check bool "overall NONE" true
+      (m.C2c_doctor_hooks.mm_wake_class = C2c_doctor_hooks.Muse_wake_none);
+    check int "one wake session row" 1
+      (List.length m.C2c_doctor_hooks.mm_wake_sessions);
+    let s = List.hd m.C2c_doctor_hooks.mm_wake_sessions in
+    check string "alias" "muse-wake-aa" s.C2c_doctor_hooks.mws_alias;
+    check bool "monitor not alive" false s.C2c_doctor_hooks.mws_monitor_alive;
+    check int "empty inbox" 0 s.C2c_doctor_hooks.mws_inbox_count;
+    check bool "session class NONE" true
+      (s.C2c_doctor_hooks.mws_class = C2c_doctor_hooks.Muse_wake_none))
+
+let test_muse_wake_conditional_when_monitor_lock_alive () =
+  with_muse_broker (fun ~broker_root ->
+    ignore
+      (register_muse broker_root ~session_id:"muse-sess-wake-cond"
+         ~alias:"muse-wake-bb");
+    write_monitor_lock broker_root ~alias:"muse-wake-bb" ~pid:(Unix.getpid ());
+    let m = C2c_doctor_hooks.check_muse_status ~broker_root () in
+    check bool "overall CONDITIONAL" true
+      (m.C2c_doctor_hooks.mm_wake_class
+       = C2c_doctor_hooks.Muse_wake_conditional_monitor);
+    let s = List.hd m.C2c_doctor_hooks.mm_wake_sessions in
+    check bool "monitor alive" true s.C2c_doctor_hooks.mws_monitor_alive;
+    check bool "session class CONDITIONAL" true
+      (s.C2c_doctor_hooks.mws_class
+       = C2c_doctor_hooks.Muse_wake_conditional_monitor))
+
+let test_muse_wake_stale_monitor_lock_stays_none () =
+  with_muse_broker (fun ~broker_root ->
+    ignore
+      (register_muse broker_root ~session_id:"muse-sess-wake-stale"
+         ~alias:"muse-wake-cc");
+    write_monitor_lock broker_root ~alias:"muse-wake-cc" ~pid:(dead_pid ());
+    let m = C2c_doctor_hooks.check_muse_status ~broker_root () in
+    check bool "stale lock → NONE" true
+      (m.C2c_doctor_hooks.mm_wake_class = C2c_doctor_hooks.Muse_wake_none);
+    check bool "monitor not reported alive" false
+      (List.hd m.C2c_doctor_hooks.mm_wake_sessions)
+        .C2c_doctor_hooks.mws_monitor_alive)
+
+(* B359 DEAF decision pin: vacuous — queued mail with no poster is expected
+   steady state, never deaf, across the truth table; and it never fails the
+   exit predicate. *)
+let test_muse_deaf_vacuous_truth_table () =
+  List.iter
+    (fun n ->
+      check bool (Printf.sprintf "inbox=%d never deaf" n) false
+        (C2c_doctor_hooks.classify_muse_deaf ~inbox_count:n ()))
+    [ 0; 1; 5 ];
+  with_muse_broker (fun ~broker_root ->
+    let b =
+      register_muse broker_root ~session_id:"muse-sess-queued"
+        ~alias:"muse-queued-aa"
+    in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"peer"
+      ~to_alias:"muse-queued-aa" ~content:"waiting" ();
+    let m = C2c_doctor_hooks.check_muse_status ~broker_root () in
+    check int "queued mail observed" 1
+      (List.hd m.C2c_doctor_hooks.mm_wake_sessions)
+        .C2c_doctor_hooks.mws_inbox_count;
+    check int "deaf count stays 0 with queued mail" 0
+      (C2c_doctor_hooks.muse_deaf_count m.C2c_doctor_hooks.mm_wake_sessions);
+    check bool "queued mail does not fail the exit predicate" false
+      (C2c_doctor_hooks.doctor_hooks_exit_failure ~total_dangling:0
+         ~codex_issues:0 ~kimi_deaf:0 ~grok_flagged:false ~codex_deaf:0
+         ~muse_deaf:
+           (C2c_doctor_hooks.muse_deaf_count
+              m.C2c_doctor_hooks.mm_wake_sessions)))
+
+(* --rearm no-op across the state matrix: even queued mail + a
+   confirmed-dead pid never arms anything (#42 skip-dead + #78 no-mint,
+   satisfied vacuously). *)
+let test_rearm_muse_noop_across_states () =
+  with_muse_broker (fun ~broker_root ->
+    (* live row with queued mail *)
+    let b =
+      register_muse broker_root ~session_id:"muse-sess-rearm-live"
+        ~alias:"muse-rearm-aa"
+    in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"peer"
+      ~to_alias:"muse-rearm-aa" ~content:"waiting" ();
+    (* dead-registered row: pid guaranteed dead *)
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    C2c_mcp.Broker.register broker ~session_id:"muse-sess-rearm-dead"
+      ~alias:"muse-rearm-bb" ~pid:(Some (dead_pid ())) ~pid_start_time:None
+      ~client_type:(Some "muse") ~registered_by:(Some "muse-hook")
+      ~from_auto_gen:true ();
+    check int "rearm arms nothing (explicit root)" 0
+      (List.length (C2c_doctor_hooks.rearm_deaf_muse_sessions ~broker_root ()));
+    check int "rearm arms nothing (default root)" 0
+      (List.length (C2c_doctor_hooks.rearm_deaf_muse_sessions ())))
+
+let test_muse_human_shows_wake_and_disclaimer () =
+  with_full_hermetic_broker (fun ~broker_root ->
+    let b =
+      register_muse broker_root ~session_id:"muse-sess-human"
+        ~alias:"muse-human-aa"
+    in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"peer"
+      ~to_alias:"muse-human-aa" ~content:"waiting" ();
+    let r = C2c_doctor_hooks.check ~dirs:[] () in
+    let out = capture_stdout (fun () -> C2c_doctor_hooks.pp_human r) in
+    check bool "human names the muse session" true
+      (C2c_doctor_hooks.contains out "muse-human-aa");
+    check bool "human shows wake NONE" true
+      (C2c_doctor_hooks.contains out "wake: NONE at true idle");
+    check bool "human shows inbox depth" true
+      (C2c_doctor_hooks.contains out "inbox=1");
+    check bool "human states DEAF n/a" true
+      (C2c_doctor_hooks.contains out "deaf: n/a (no muse poster exists");
+    check bool "human carries the #50 disclaimer" true
+      (C2c_doctor_hooks.contains out "does not prove hooks fire (#50)"))
+
+let test_muse_compact_shows_wake () =
+  with_full_hermetic_broker (fun ~broker_root ->
+    ignore
+      (register_muse broker_root ~session_id:"muse-sess-compact"
+         ~alias:"muse-compact-aa");
+    let r = C2c_doctor_hooks.check ~dirs:[] () in
+    let out = capture_stdout (fun () -> C2c_doctor_hooks.pp_compact r) in
+    check bool "compact shows muse session count" true
+      (C2c_doctor_hooks.contains out "Muse: 1 session(s)");
+    check bool "compact shows muse wake" true
+      (C2c_doctor_hooks.contains out "Muse wake: NONE"))
+
+let test_muse_json_wake_keys () =
+  with_full_hermetic_broker (fun ~broker_root ->
+    ignore
+      (register_muse broker_root ~session_id:"muse-sess-json"
+         ~alias:"muse-json-aa");
+    write_monitor_lock broker_root ~alias:"muse-json-aa" ~pid:(Unix.getpid ());
+    let r = C2c_doctor_hooks.check ~dirs:[] () in
+    (match C2c_doctor_hooks.to_json r with
+     | `Assoc fields -> (
+         match List.assoc_opt "muse" fields with
+         | Some (`Assoc m) ->
+             check bool "wake_class key CONDITIONAL" true
+               (List.assoc_opt "wake_class" m = Some (`String "CONDITIONAL"));
+             check bool "wake_sessions key" true
+               (List.mem_assoc "wake_sessions" m);
+             check bool "deaf_count key is 0" true
+               (List.assoc_opt "deaf_count" m = Some (`Int 0));
+             check bool "muse_regs key is 1" true
+               (List.assoc_opt "muse_regs" m = Some (`Int 1))
          | _ -> fail "muse key missing or malformed")
      | _ -> fail "doctor json is not an object"))
 
@@ -1650,5 +1910,28 @@ let () =
         ; test_case "dead session not scanned" `Quick test_muse_dead_session_not_scanned
         ; test_case "health row mapping" `Quick test_muse_health_row_mapping
         ; test_case "json key present" `Quick test_muse_json_key_present
+        ] )
+    ; ( "muse-doctor-b359"
+      , [ test_case "registration detector triple" `Quick
+            test_muse_registration_detector
+        ; test_case "classify NONE without monitor" `Quick
+            test_classify_muse_wake_none_without_monitor
+        ; test_case "classify CONDITIONAL with monitor" `Quick
+            test_classify_muse_wake_conditional_with_monitor
+        ; test_case "doctor NONE when no monitor lock" `Quick
+            test_muse_wake_none_when_no_monitor_lock
+        ; test_case "doctor CONDITIONAL when monitor lock alive" `Quick
+            test_muse_wake_conditional_when_monitor_lock_alive
+        ; test_case "stale monitor lock stays NONE" `Quick
+            test_muse_wake_stale_monitor_lock_stays_none
+        ; test_case "DEAF vacuous truth table + exit predicate" `Quick
+            test_muse_deaf_vacuous_truth_table
+        ; test_case "--rearm no-op across states" `Quick
+            test_rearm_muse_noop_across_states
+        ; test_case "human shows wake + #50 disclaimer" `Quick
+            test_muse_human_shows_wake_and_disclaimer
+        ; test_case "compact shows wake" `Quick
+            test_muse_compact_shows_wake
+        ; test_case "json wake keys" `Quick test_muse_json_wake_keys
         ] )
     ]
