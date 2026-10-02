@@ -5,7 +5,7 @@ depends_on:
     - B352
 estimate_hours: 8
 id: B356
-priority: high
+priority: low
 status: pending
 tags:
     - muse
@@ -15,7 +15,18 @@ updated_at: "2026-10-02T17:26:35Z"
 
 # muse delivery sidecar via session-message + DeliveryEndpoint (CONDITIONAL-via-env)
 
-## Goal
+## Status: PARKED per operator 2026-10-02 (Monitor-only posture)
+
+Operator decision: stay Monitor-only for now — Monitor (while armed)
+IS the push path (CONDITIONAL per repo taxonomy: external event pushes
+into attention; GUARANTEED would need no operator arming). Revisit
+this bug when either trigger fires: (a) a persistent (non-env)
+session-ingress enable is found, or (b) the experimental flag
+stabilizes / P1-P2 prove live-send wake and the gate is deemed
+acceptable. The spec below is kept implementation-ready for that day.
+B358 (managed) proceeds on hook + Monitor floor without this bug.
+
+## Goal (when unparked)
 
 Out-of-process push delivery for muse: drain broker inbox →
 `muse session-message send --target` → drain-on-success. Honest wake

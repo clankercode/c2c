@@ -57,15 +57,17 @@ originals are ephemeral — the research doc is the durable reference.
 | B355 | Tier-1 | `c2c hook muse` (lifecycle register/adopt, broker-root correctness) | B352 |
 | B357 | Tier-1 | MCP polish (with-mcp posture, pinning, channel verdict, hijack guard) | B352 |
 | B359 | Tier-1 | doctor/health/wake-guidance checks (#50-honest) | B354 |
-| B356 | Tier-2 | Delivery sidecar via session-message + DeliveryEndpoint (CONDITIONAL-via-env) | B352 G1/G3 verdicts |
-| B358 | Tier-3 | Managed MuseAdapter + `c2c start/stop/restart` + tmux e2e | B355, B356 |
+| B356 | Tier-2 | Delivery sidecar via session-message + DeliveryEndpoint — PARKED per operator 2026-10-02 (Monitor-only posture; spec kept ready) | B352 (parked until persistent-switch/stabilization trigger) |
+| B358 | Tier-3 | Managed MuseAdapter + `c2c start/stop/restart` + tmux e2e (delivery = hook + Monitor floor) | B355 |
 | B360 | glue | Docs/website/skills-codegen/runbooks/changelog/tests | B358 (tracks last impl) |
 
 IGC verdicts (matrices in research doc): Monitor floor now (sole
-All-✔ wake); sidecar Tier-2 CONDITIONAL-via-env behind spike; hook
+All-✔ wake); sidecar Tier-2 CONDITIONAL-via-env PARKED per operator
+2026-10-02 (Monitor-only posture — Monitor while armed IS the push
+path; revisit on persistent-switch/stabilization trigger); hook
 transport undecided until spike (plugin first, settings.json fallback);
 MCP `mode:optional` behind `--with-mcp`; managed phased day-one
-(recommended) vs deferred (grok precedent) — operator decision, see B358.
+CONFIRMED 2026-10-02; B352 spike APPROVED as specced.
 
 ## Non-goals / honesty constraints (apply to every workstream)
 

@@ -28,9 +28,10 @@ B356 (env-gated sidecar) — coordinate the enum.
   presence ONLY, labeled as not-proving-fire per #50) +
   `check_muse_delivery` (DEAF = inbox>0 ∧ ¬poster, kimi
   `classify_kimi_session` pure precedent, if a sidecar exists) +
-  wake classifier (`Muse_wake_none | Conditional_monitor |
-  Conditional_env_session_message`, grok `.monitor-locks` pid-check
-  precedent :1166–1301) + result field + human/JSON render arms +
+  wake classifier (`Muse_wake_none | Conditional_monitor`, grok
+  `.monitor-locks` pid-check precedent :1166–1301; add a
+  `Conditional_env_session_message` arm only if B356 unparks) +
+  result field + human/JSON render arms +
   exit-code wiring (DEAF fails); `--rearm` skips confirmed-dead
   (#42) and never mints headless targets (#78).
 - `c2c_health_cmd.ml`: probe arm (:208–291 — message MUST contain
