@@ -580,6 +580,26 @@ let write_codex_appserver_nudge_count ~broker_root n =
   | Ok () -> true
   | Error _ -> false
 
+(* General flock-guarded critical section for small broker-local read-modify-write
+   files (the codex nudge counter, the B361 muse sid mapping). The lock is a
+   blocking lockf on a sibling lockfile — bounded by the hook's 8s SIGALRM, so
+   a wedged holder can only delay the turn, never stall it. Fails CLOSED:
+   returns [~default] without running [f] when the lockfile cannot be opened
+   or the lock cannot be taken. *)
+let with_broker_file_lock ~lock_path ~default f =
+  match
+    (try Some (Unix.openfile lock_path [ Unix.O_CREAT; Unix.O_RDWR ] 0o600)
+     with _ -> None)
+  with
+  | None -> default
+  | Some fd ->
+      Fun.protect
+        ~finally:(fun () -> (try Unix.close fd with _ -> ()))
+        (fun () ->
+          match (try Unix.lockf fd Unix.F_LOCK 0; true with _ -> false) with
+          | true -> f ()
+          | false -> default)
+
 (* Serialize the read-modify-write of the counter across concurrent SessionStart
    hooks (each is a separate process) with an flock on a sibling lockfile, so two
    simultaneous starts cannot both read N-1, both write N, and both emit. [f]
@@ -588,18 +608,7 @@ let write_codex_appserver_nudge_count ~broker_root n =
    so a lock failure can never let two hooks emit unserialized. *)
 let with_codex_nudge_lock ~broker_root f =
   let lock_path = codex_appserver_nudge_count_path ~broker_root ^ ".lock" in
-  match
-    (try Some (Unix.openfile lock_path [ Unix.O_CREAT; Unix.O_RDWR ] 0o600)
-     with _ -> None)
-  with
-  | None -> ""
-  | Some fd ->
-      Fun.protect
-        ~finally:(fun () -> (try Unix.close fd with _ -> ()))
-        (fun () ->
-          match (try Unix.lockf fd Unix.F_LOCK 0; true with _ -> false) with
-          | true -> f ()
-          | false -> "")
+  with_broker_file_lock ~lock_path ~default:"" f
 
 let codex_appserver_nudge_text =
   "Tip: you're receiving c2c messages at turn boundaries (they surface when \
@@ -2956,7 +2965,18 @@ let hook_agy : unit Cmdliner.Cmd.t =
    to repair and no multi-root concept to order (single workspace_root).
    C2C_MCP_BROKER_ROOT still wins inside resolve_broker_root, so a managed
    session cannot relocate. The payload `cwd` is recorded as the
-   registration cwd for the worktree-mismatch guard. *)
+   registration cwd for the worktree-mismatch guard.
+
+   B361 adoption: the B358 probe proved muse scrubs hook env (NO C2C_* even
+   though the TUI carries C2C_MCP_SESSION_ID), so a managed SessionStart
+   used to mint a competing native-sid row beside the launcher's
+   pre-registered row (dual identity). SessionStart step 0 now adopts the
+   managed row by normalized cwd + live (pid, pid_start_time) before
+   minting (kimi-#40 shape; two live managed instances in one directory
+   bail loudly, never guess), persists a payload-sid→managed-sid mapping
+   (muse-sid-mapping.json) so mid-session Stop/PostToolUse anchor the
+   managed row, and SessionEnd removes only the mapping entry — adopted
+   managed-owned rows survive. *)
 
 let muse_session_events = [ "SessionStart"; "SessionEnd"; "Stop"; "PostToolUse" ]
 
@@ -2985,6 +3005,119 @@ let muse_wake_text ~alias ~session_id =
      with `c2c poll-inbox`, block with `c2c wait-inbox`, or arm `c2c \
      monitor`. Send with `c2c send <alias> \"msg\"`."
     alias session_id
+
+(* B361: managed-row adoption predicates. Shared definition with any future
+   MCP-side consumer; the kimi #40/#47/#48 reasoning they mirror is
+   documented at the definitions in [C2c_mcp_helpers_post_broker]. *)
+let live_managed_muse_registrations = C2c_mcp.live_managed_muse_registrations
+
+let reclaimable_managed_muse_registrations =
+  C2c_mcp.reclaimable_managed_muse_registrations
+
+(* B361: payload-sid→managed-sid mapping.
+   SessionStart adoption resolves the hook to the MANAGED row, but every
+   later Stop/PostToolUse still arrives under the native payload sid — so
+   without a record of the adoption decision, mid-session touches would
+   anchor a sid with no row (registry no-op) and the managed row would
+   decay at the #51 24h TTL while actually live.
+   File: <broker_root>/muse-sid-mapping.json, a JSON object
+   { "<payload sid>": "<managed sid>", ... }. SessionStart writes one entry
+   per adoption (under the sibling .lock flock); Stop/PostToolUse read it
+   lock-free (the file is rename-written, so a torn read is impossible —
+   worst case a concurrent adoption is not yet visible) and touch the
+   mapped managed sid alongside the payload sid; SessionEnd removes the
+   payload's entry. Adoption writes prune entries whose managed sid is no
+   longer registered, and cap the file at [muse_sid_mapping_max_entries]
+   newest-first — prune alone leaves a growth path (it misses kill-9'd
+   sessions whose manager still lives), so the cap is the real bound and
+   prune just prefers evicting dead entries over live ones. A stale
+   entry is harmless either way: keys are muse native uuids that never
+   fire again, and touching an unknown sid is a registry no-op.
+   The file is created ONLY by adoption — vanilla sessions never write,
+   read-meaningfully, or remove it. All helpers are total (never raise). *)
+
+(* Hard cap on mapping entries (newest first). One entry per adoption;
+   ~100 bytes each, so the file stays under ~50KB. Evicting a live entry
+   only degrades that session to pre-B361 anchoring until its next
+   SessionStart re-adopts (SessionStart fires once per process, so in
+   practice evicted-live means kill-9'd). *)
+let muse_sid_mapping_max_entries = 512
+let muse_sid_mapping_path ~broker_root =
+  Filename.concat broker_root "muse-sid-mapping.json"
+
+let read_muse_sid_mapping ~broker_root : (string * string) list =
+  try
+    match Yojson.Safe.from_file (muse_sid_mapping_path ~broker_root) with
+    | `Assoc fields ->
+        List.filter_map
+          (function
+            | k, `String v
+              when String.trim k <> "" && String.trim v <> "" -> Some (k, v)
+            | _ -> None)
+          fields
+    | _ -> []
+  with _ -> []
+
+let muse_managed_sid_for_payload ~broker_root ~payload_sid =
+  try List.assoc_opt payload_sid (read_muse_sid_mapping ~broker_root)
+  with _ -> None
+
+let write_muse_sid_mapping_file ~broker_root entries =
+  let json =
+    `Assoc (List.map (fun (k, v) -> (k, `String v)) entries)
+  in
+  match
+    (try
+       C2c_io.write_file_atomic
+         (muse_sid_mapping_path ~broker_root)
+         (Yojson.Safe.to_string json)
+     with _ -> Error "exn")
+  with
+  | Ok () -> true
+  | Error _ -> false
+
+let rec take_n n xs =
+  if n <= 0 then []
+  else match xs with [] -> [] | x :: rest -> x :: take_n (n - 1) rest
+
+(* Upsert [payload_sid -> managed_sid], pruning entries whose managed sid
+   has no registration (fresh registry read inside the lock, so the prune
+   cannot act on the adoption's stale snapshot), then enforcing the newest-
+   first cap. Returns true iff the entry was durably written — false (lock
+   failure) degrades to pre-B361 anchoring and the caller logs it. *)
+let write_muse_sid_mapping ~broker ~broker_root ~payload_sid ~managed_sid =
+  let lock_path = muse_sid_mapping_path ~broker_root ^ ".lock" in
+  with_broker_file_lock ~lock_path ~default:false (fun () ->
+    let registered sid =
+      try
+        List.exists
+          (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+          (C2c_mcp.Broker.list_registrations broker)
+      with _ -> true (* uncertain: keep rather than prune on a read failure *)
+    in
+    let kept =
+      take_n muse_sid_mapping_max_entries
+        ((payload_sid, managed_sid)
+        :: List.filter
+             (fun (k, v) -> k <> payload_sid && registered v)
+             (read_muse_sid_mapping ~broker_root))
+    in
+    write_muse_sid_mapping_file ~broker_root kept)
+
+(* Best-effort removal; a no-op when the entry is absent (in particular it
+   never creates the mapping file — or takes the lock — for sessions that
+   never adopted; the lock-free pre-check keeps vanilla SessionEnd from
+   littering the .lock sibling). *)
+let remove_muse_sid_mapping ~broker_root ~payload_sid =
+  if not (List.mem_assoc payload_sid (read_muse_sid_mapping ~broker_root)) then ()
+  else
+    let lock_path = muse_sid_mapping_path ~broker_root ^ ".lock" in
+    with_broker_file_lock ~lock_path ~default:() (fun () ->
+      let entries = read_muse_sid_mapping ~broker_root in
+      if List.mem_assoc payload_sid entries then
+        ignore
+          (write_muse_sid_mapping_file ~broker_root
+             (List.remove_assoc payload_sid entries)))
 
 let hook_muse_cmd =
   let open Cmdliner.Term in
@@ -3081,14 +3214,35 @@ let hook_muse_cmd =
           | Some sid when Some sid <> payload_sid ->
               touch_hook_activity ~broker ~session_id:sid
           | _ -> ());
+         (* B361 touch-through: a SessionStart adoption resolved this payload
+            sid to a managed row, so anchor the MANAGED row too — else it
+            decays at the #51 24h TTL while actually live. No mapping (vanilla
+            session, ambiguous bail) means nothing extra to touch. *)
+         (match payload_sid with
+          | Some p -> (
+              match muse_managed_sid_for_payload ~broker_root ~payload_sid:p with
+              | Some m
+                when m <> p
+                     && (match env_sid with Some e -> m <> e | None -> true)
+                ->
+                  touch_hook_activity ~broker ~session_id:m
+              | _ -> ())
+          | None -> ());
          exit 0
        end;
        if event = "SessionEnd" then begin
+         (* B361: drop this payload's adoption-mapping entry (best-effort).
+            The ADOPTED managed row itself must survive — it is
+            launcher-owned; only the hook's record of the adoption goes. *)
+         (match payload_sid with
+          | Some p -> remove_muse_sid_mapping ~broker_root ~payload_sid:p
+          | None -> ());
          (* Deregister ONLY hook auto-registrations for this session. Managed
-            (`c2c start muse`, B358) and MCP-registered sessions carry no
-            hook label and are never touched. No skill/file removal: B355
-            installs no per-session files, and #82 forbids SessionEnd removal
-            of shared paths anyway. Stop is NEVER teardown (#61). *)
+            (`c2c start muse`, B358 — including B361-adopted rows, which carry
+            no hook label) and MCP-registered sessions are never touched. No
+            skill/file removal: B355 installs no per-session files, and #82
+            forbids SessionEnd removal of shared paths anyway. Stop is NEVER
+            teardown (#61). *)
          let candidates = List.filter_map (fun x -> x) [ payload_sid; env_sid ] in
          (match
             List.find_opt
@@ -3101,7 +3255,124 @@ let hook_muse_cmd =
           | None -> ());
          exit 0
        end;
+       (* B361 step 0: adopt a managed `c2c start muse` row when one owns this
+          workspace, instead of minting a competing native-sid row. Muse
+          scrubs hook env (B358 probe), so a managed SessionStart arrives
+          with env_sid absent — the ONLY signal left is the payload cwd plus
+          the launcher-recorded (pid, pid_start_time) pair. Runs ONLY when
+          env_sid is absent: a hook that sees managed env resolves via steps
+          1-3 below. Runs BEFORE the payload-registered check so a stale
+          pre-B361 hook row cannot pin a managed session to its competing
+          identity (adoption heals dual identity; the abandoned hook row is
+          SessionEnd/retirement-cleaned). Ambiguity (two live managed muse
+          instances in one directory) is NOT resolvable from the hook payload,
+          so we bail loudly rather than guess and hijack the wrong
+          instance's identity — the managed sessions are already registered
+          by their launchers, so a bail costs nothing. Co-located vanilla
+          TUI caveat (#40): a plain `muse` in a managed directory is adopted
+          too — documented, not fixed. The reclaim arm is unbounded in time
+          (a pid-None sticky row never expires), so a vanilla SessionStart
+          in a directory that EVER hosted managed muse adopts the dead
+          alias — and then drains the managed alias's backlog into its own
+          context. Same for a legitimate second TUI after a managed
+          instance starts in its cwd. That misdirection is the accepted
+          cost of healing dual identity (adoption must run before the
+          payload-registered check, else a stale hook row pins the managed
+          session to its competing identity forever); to get a fresh
+          identity there, remove the row or run from a different cwd. *)
+       (* Adoption match key: the payload cwd, falling back to the process
+          cwd (B352 P4: the hook cwd IS the workspace in every probe). An
+          unusable cwd skips adoption — loudly, since the fall-through
+          mints the dual-identity row adoption exists to prevent. *)
+       let hook_cwd =
+         match payload_string_field payload "cwd" with
+         | Some c when String.trim c <> "" -> String.trim c
+         | _ -> (try Sys.getcwd () with _ -> "")
+       in
+       let adopted =
+         match env_sid with
+         (* Latent: a present-but-unregistered env sid mints a competing
+            payload row instead of adopting, and a foreign registered env
+            sid resolves via step 1 (env-first, claude/grok shape) with no
+            client-type guard. Both need unscrubbed hook env, which the
+            B358 probe shows production muse never provides — so the gate
+            stays exactly "env absent" per the ticket. *)
+         | Some _ -> None
+         | None ->
+             if hook_cwd = "" then begin
+               (try
+                  prerr_endline
+                    "c2c hook muse: no usable cwd (payload cwd missing, \
+                     getcwd failed) — skipping managed-row adoption for this \
+                     SessionStart; minting from the payload session id."
+                with _ -> ());
+               None
+             end else
+               let regs = regs () in
+               let adopt (m : C2c_mcp.registration) ~why =
+                 (try
+                    Printf.eprintf
+                      "c2c hook muse: adopting managed session '%s' (alias \
+                       '%s') for %s (%s) — not minting a new alias.\n%!"
+                      m.session_id m.alias hook_cwd why
+                  with _ -> ());
+                 (* Persist the adoption for mid-session touch-through.
+                    A dropped write degrades to pre-B361 anchoring (the
+                    managed row decays while live), so say so loudly. *)
+                 (match payload_sid with
+                  | Some p ->
+                      let written =
+                        try
+                          write_muse_sid_mapping ~broker ~broker_root
+                            ~payload_sid:p ~managed_sid:m.session_id
+                        with _ -> false
+                      in
+                      if not written then
+                        (try
+                           prerr_endline
+                             "c2c hook muse: WARNING: adoption mapping write \
+                              failed — mid-session Stop/PostToolUse will NOT \
+                              anchor the managed row (managed alias may decay \
+                              while live)."
+                         with _ -> ())
+                  | None -> ());
+                 Some m.session_id
+               in
+               let bail_ambiguous ~kind (many : C2c_mcp.registration list) =
+                 (try
+                    Printf.eprintf
+                      "c2c hook muse: %d %s managed muse instances share cwd \
+                       %s (%s) — cannot tell which one this SessionStart \
+                       belongs to, so no registration is made here. Those \
+                       instances are already registered by `c2c start`; to \
+                       remove the ambiguity run at most one managed muse per \
+                       directory.\n%!"
+                      (List.length many) kind hook_cwd
+                      (String.concat ", "
+                         (List.map
+                            (fun (r : C2c_mcp.registration) -> r.alias)
+                            many))
+                  with _ -> ());
+                 exit 0
+               in
+               (match live_managed_muse_registrations ~cwd:hook_cwd regs with
+                | [ m ] -> adopt m ~why:"live pid"
+                | _ :: _ as many -> bail_ambiguous ~kind:"live" many
+                | [] -> (
+                    (* #47 shape: no LIVE managed row. Before minting — which
+                       is the dual-identity bug — check for a torn-down one
+                       (pid stripped by `c2c stop`, sticky workspace alias). *)
+                    match
+                      reclaimable_managed_muse_registrations ~cwd:hook_cwd regs
+                    with
+                    | [ m ] -> adopt m ~why:"reclaiming torn-down managed row"
+                    | _ :: _ as many -> bail_ambiguous ~kind:"torn-down" many
+                    | [] -> None))
+       in
        (* SessionStart identity resolution, env first (claude/grok shape):
+          0. B361 adoption (above): env-absent SessionStart in a managed
+             workspace resolves to the managed row — no mint, no statefile
+             write (the launcher owns that identity; kimi #40 F6).
           1. env session already registered (managed session, or any session
              whose env carries an explicit identity) — use it.
           2. payload session_id already registered (previous auto-register,
@@ -3111,12 +3382,15 @@ let hook_muse_cmd =
              C2C_MCP_AUTO_REGISTER_ALIAS) suppresses the hook label
              (grok-style pre-emptive gate, #51 blocker 2). *)
        let resolved =
-         match env_sid with
-         | Some sid when registered sid -> Some sid
-         | _ ->
-             (match payload_sid with
-              | Some sid when registered sid -> Some sid
-              | _ -> None)
+         match adopted with
+         | Some sid -> Some sid
+         | None -> (
+             match env_sid with
+             | Some sid when registered sid -> Some sid
+             | _ ->
+                 (match payload_sid with
+                  | Some sid when registered sid -> Some sid
+                  | _ -> None))
        in
        let session_id, onboarded_alias =
          match resolved with
@@ -3269,7 +3543,7 @@ let hook_muse_cmd =
 let hook_muse : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.v
     (Cmdliner.Cmd.info "muse"
-       ~doc:"Muse SessionStart/SessionEnd/Stop/PostToolUse hook: auto-registers the session (registered_by=muse-hook), anchors activity on mid-session events (touch-only, never drain/teardown), drains backlog + emits onboarding/wake text as hookSpecificOutput.additionalContext on SessionStart, and deregisters hook auto-registrations on SessionEnd. Installed by `c2c install muse`. Never fails the host turn: errors exit 0 with empty output.")
+       ~doc:"Muse SessionStart/SessionEnd/Stop/PostToolUse hook: adopts the managed row for env-scrubbed managed sessions (B361; else auto-registers with registered_by=muse-hook), anchors activity on mid-session events (touch-only, never drain/teardown; adopted payload sids touch through to the managed row), drains backlog + emits onboarding/wake text as hookSpecificOutput.additionalContext on SessionStart, and deregisters hook auto-registrations on SessionEnd (adopted managed rows survive). Installed by `c2c install muse`. Never fails the host turn: errors exit 0 with empty output.")
     hook_muse_cmd
 
 let hook : unit Cmdliner.Cmd.t =

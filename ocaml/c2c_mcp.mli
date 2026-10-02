@@ -992,6 +992,18 @@ val reclaimable_managed_kimi_registrations :
 (** #47: managed kimi rows owning [cwd] whose liveness fields were stripped on
     teardown ([pid = None]) — a positive reclaim signal (sticky workspace
     alias). *)
+
+val live_managed_muse_registrations :
+  cwd:string -> registration list -> registration list
+(** B361: managed (launcher-written, [registered_by <> "muse-hook"]) muse rows
+    owning [cwd] whose pid + pid_start_time prove liveness via
+    [C2c_pid_identity.read_pid_generation] (exact generation match; a missing
+    recorded generation fails closed — no pid-existence fallback). *)
+
+val reclaimable_managed_muse_registrations :
+  cwd:string -> registration list -> registration list
+(** B361 (#47 shape): managed muse rows owning [cwd] whose liveness fields
+    were stripped on teardown ([pid = None]) — the sticky workspace alias. *)
 val pop_channel_test_code : unit -> string option
 (** [pop_channel_test_code ()] returns and clears the pending channel-test code,
     if one was generated during registration. Returns [None] if no test is pending. *)

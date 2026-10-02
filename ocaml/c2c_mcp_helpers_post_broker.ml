@@ -2064,6 +2064,93 @@ let reclaimable_managed_kimi_registrations ~(cwd : string)
        is_managed_kimi_row_for_cwd ~want r && r.pid = None)
     regs
 
+(* ---------------------------------------------------------------------------
+ * Managed `c2c start muse` identity predicates (B361; kimi-#40 shape).
+ *
+ * Muse scrubs its env for hook children (B358 live probe, muse
+ * 1.4.2-R4684.1: the TUI carries C2C_MCP_SESSION_ID but SessionStart sees
+ * no C2C-prefixed vars at all), so `c2c hook muse` can never resolve a
+ * managed session via env.
+ * SessionStart step 0 therefore adopts the launcher's pre-registered row by
+ * normalized cwd + live (pid, pid_start_time) pair instead of minting a
+ * competing native-sid row (dual identity), and persists a
+ * payload-sid→managed-sid mapping so mid-session Stop/PostToolUse anchor the
+ * managed row. Same ambiguity rule as #40: two live managed muse instances
+ * in one directory are indistinguishable — the hook bails loudly, never
+ * guesses. Same co-located-vanilla caveat: a plain `muse` TUI in a managed
+ * directory is adopted too (documented, not fixed).
+ *
+ * Liveness is routed through [C2c_pid_identity.read_pid_generation] (#85):
+ * only an EXACT /proc start-ticks match against the recorded pid_start_time
+ * proves the recorded pid is still ours. Deliberate divergence from kimi's
+ * predicate: there is NO pid-existence fallback when pid_start_time is None
+ * — launcher rows normally carry the pair (eager_register omits the
+ * generation only when its /proc read fails, in which case the row is
+ * permanently unadoptable and that instance dual-identities — fail-closed,
+ * but a loud launcher would be better), so a missing generation fails
+ * closed to minting rather than trusting a bare recycled pid number. And as
+ * with #47, [pid = Some p] where p is dead is a stale claim, never a
+ * reclaim signal. Pure over [regs].
+ *
+ * No positive launcher marker (kimi parity, B361 audit): launcher rows
+ * carry no registered_by, so the predicate cannot tell them from (a) this
+ * hook's own step-3 mint under a managed marker (registered_by=None,
+ * pid=None + cwd — unreachable in scrubbed production env, reachable by
+ * hand-invocation with C2C_MCP_SESSION_ID set), or (b) an MCP-server
+ * auto-registered muse row (cwd-carrying; pidless only when the MCP
+ * process is gone — but a pidless row whose owner died is exactly what
+ * reclaim is for; a LIVE MCP row has pid=Some and matches the live arm
+ * instead). Case (b) with two vanilla TUIs sharing a directory (one
+ * MCP-installed, a second SessionStart) would adopt the first's MCP row —
+ * narrow (MCP install is opt-in, off by default) and inherited from kimi's
+ * identical shape, so accepted without a marker. A marker
+ * (registered_by="c2c-start") would strand pre-marker live rows at
+ * upgrade; revisit only with a migration story.
+ * ------------------------------------------------------------------------- *)
+
+(* The identity half of the match: a managed (launcher-written, not
+   hook-written) muse row owning [cwd]. Says nothing about liveness. *)
+let is_managed_muse_row_for_cwd ~(want : string) (r : registration) =
+  r.client_type = Some "muse"
+  && r.registered_by <> Some "muse-hook"
+  && (match r.cwd with Some c -> normalize_hook_cwd c = want | None -> false)
+
+(* B361: live managed `c2c start muse` rows owning [cwd]. *)
+let live_managed_muse_registrations ~(cwd : string)
+    (regs : registration list) : registration list =
+  let want = normalize_hook_cwd cwd in
+  let pid_is_live p start_time =
+    p > 0
+    &&
+    match start_time with
+    | None -> false (* no recorded generation: fail closed, no kimi-style
+                       pid-existence fallback (B361 divergence, see above) *)
+    | Some recorded -> (
+        match C2c_pid_identity.read_pid_generation p with
+        | C2c_pid_identity.Generation now -> now = recorded
+        | C2c_pid_identity.Absent | C2c_pid_identity.Unreadable -> false)
+  in
+  List.filter
+    (fun (r : registration) ->
+       is_managed_muse_row_for_cwd ~want r
+       && (match r.pid with
+           | Some p -> pid_is_live p r.pid_start_time
+           | None -> false))
+    regs
+
+(* B361 (#47 shape): managed muse rows for [cwd] whose liveness fields were
+   STRIPPED on teardown ([C2c_start.clear_registration_pid] runs from the
+   outer-loop cleanup for muse too — MuseAdapter is a standard
+   CLIENT_ADAPTER). [pid = None] is a positive RECLAIM signal: the sticky
+   workspace alias. Never extended to dead-pid rows. *)
+let reclaimable_managed_muse_registrations ~(cwd : string)
+    (regs : registration list) : registration list =
+  let want = normalize_hook_cwd cwd in
+  List.filter
+    (fun (r : registration) ->
+       is_managed_muse_row_for_cwd ~want r && r.pid = None)
+    regs
+
 (* True when any live or reclaimable managed kimi row owns [cwd] for a kimi
    process. Used to suppress mint/rebind of the install-time alias (#48) and
    to fail closed on auto-join when self cannot be resolved uniquely. *)
