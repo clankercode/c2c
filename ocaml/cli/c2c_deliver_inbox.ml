@@ -792,7 +792,7 @@ let parse_args () : cli_args =
     ("--register", Arg.Set register_self,
      " register --alias as a live receiver pinned to this process pid");
     ("--client", Arg.String (fun s -> client := s),
-     " client type (claude|codex|codex-headless|opencode|kimi|crush|generic)");
+     " client type (claude|codex|codex-headless|opencode|kimi|crush|muse|generic)");
     ("--loop", Arg.Set loop, " keep polling and delivering");
     ("--interval", Arg.Set_float interval, " polling interval in seconds");
     ("--max-iterations", Arg.Int (fun i -> max_iterations := Some i),

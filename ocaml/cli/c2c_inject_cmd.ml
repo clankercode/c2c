@@ -464,7 +464,7 @@ let inject_cmd =
   let client =
     Cmdliner.Arg.(value & opt (some string) None &
       info [ "client" ] ~docv:"CLIENT"
-      ~doc:"Client label: claude, codex, opencode, kimi, generic (default: generic).")
+      ~doc:"Client label: claude, codex, opencode, kimi, muse, generic (default: generic).")
   in
   let event =
     Cmdliner.Arg.(value & opt (some string) None &

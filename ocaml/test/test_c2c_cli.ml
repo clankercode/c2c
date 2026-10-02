@@ -1413,6 +1413,49 @@ let test_whoami_output_contains_alias_field () =
           check bool "whoami output contains session_id field" true
             (string_contains content "session_id:")))
 
+(* B359: managed muse instance liveness flows through the generic
+   read_managed_instances path (outer_pid_is_ours, #85): a dead outer pid
+   reads stopped (archived from the default view), a live pid reads
+   running. Binary e2e — no test exe links c2c_health_cmd/c2c_start, so
+   the pin lives here next to the other c2c.exe-driven CLI tests. *)
+let test_dev_instances_muse_liveness () =
+  with_temp_dir (fun home ->
+    let broker = Filename.concat home "broker" in
+    Unix.mkdir broker 0o700;
+    let instances = Filename.concat home "instances" in
+    Unix.mkdir instances 0o700;
+    let inst = Filename.concat instances "muse-live-pin" in
+    Unix.mkdir inst 0o700;
+    write_file (Filename.concat inst "config.json")
+      {|{"name":"muse-live-pin","client":"muse","alias":"muse-live-pin","session_id":"muse-live-pin"}|};
+    let run_instances outer_pid =
+      write_file (Filename.concat inst "outer.pid") (string_of_int outer_pid ^ "\n");
+      let tmpfile = Filename.temp_file "c2c-dev-instances" ".out" in
+      Fun.protect ~finally:(fun () -> Sys.remove tmpfile |> ignore) (fun () ->
+        ignore
+          (Sys.command
+             (c2c_cmd
+                (Printf.sprintf
+                   "env -u C2C_MCP_AUTO_REGISTER_ALIAS %s C2C_MCP_BROKER_ROOT=%s \
+                    C2C_INSTANCES_DIR=%s c2c dev instances > %s 2>&1"
+                   (isolated_home_env home) (Filename.quote broker)
+                   (Filename.quote instances) (Filename.quote tmpfile))));
+        read_file tmpfile)
+    in
+    (* Dead outer pid: 0 alive, instance archived from the default view. *)
+    let dead_out = run_instances 2_147_483_646 in
+    check bool "dead outer pid reads 0 alive" true
+      (string_contains dead_out "0 alive / 1 total");
+    check bool "dead instance not shown running" false
+      (string_contains dead_out "running");
+    (* Live pid (our own, no meta.json → Pid_unverifiable counts as ours):
+       the muse row reads running. *)
+    let live_out = run_instances (Unix.getpid ()) in
+    check bool "live outer pid names the muse instance" true
+      (string_contains live_out "muse-live-pin");
+    check bool "live row shows running" true
+      (string_contains live_out "running"))
+
 (* ------------------------------------------------------------------------- *)
 (* Cached update notice — each supported CLI path must emit it exactly once  *)
 (* ------------------------------------------------------------------------- *)
@@ -4906,6 +4949,9 @@ let () =
     ; ( "whoami",
         [ ( "whoami exits 0", `Quick, test_whoami_exits_zero )
         ; ( "whoami output contains alias field", `Quick, test_whoami_output_contains_alias_field )
+        ] )
+    ; ( "muse_doctor_b359",
+        [ ( "dev instances muse liveness (dead->stopped, live->running)", `Quick, test_dev_instances_muse_liveness )
         ] )
     ; ( "update_notice",
         [ ( "supported paths emit cached update notice once", `Quick,
