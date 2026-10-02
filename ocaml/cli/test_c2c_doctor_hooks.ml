@@ -1753,7 +1753,10 @@ let test_rearm_muse_noop_across_states () =
       ~from_auto_gen:true ();
     check int "rearm arms nothing (explicit root)" 0
       (List.length (C2c_doctor_hooks.rearm_deaf_muse_sessions ~broker_root ()));
-    check int "rearm arms nothing (default root)" 0
+    (* Signature-stability only: the no-op ignores ?broker_root, so this
+       proves the default-root call compiles and stays empty — not that
+       default-root resolution was exercised. *)
+    check int "rearm arms nothing (default root, signature stability)" 0
       (List.length (C2c_doctor_hooks.rearm_deaf_muse_sessions ())))
 
 let test_muse_human_shows_wake_and_disclaimer () =
@@ -1789,6 +1792,47 @@ let test_muse_compact_shows_wake () =
     check bool "compact shows muse wake" true
       (C2c_doctor_hooks.contains out "Muse wake: NONE"))
 
+(* Zero-regs goldens: the empty-broker lines are pinned, not just the
+   populated case. *)
+let test_muse_empty_broker_lines () =
+  with_full_hermetic_broker (fun ~broker_root:_ ->
+    let r = C2c_doctor_hooks.check ~dirs:[] () in
+    let human = capture_stdout (fun () -> C2c_doctor_hooks.pp_human r) in
+    check bool "human shows zero-regs line" true
+      (C2c_doctor_hooks.contains human
+         "registered muse sessions: none on this broker");
+    let compact = capture_stdout (fun () -> C2c_doctor_hooks.pp_compact r) in
+    check bool "compact shows zero-regs line" true
+      (C2c_doctor_hooks.contains compact "Muse: no registered muse sessions"))
+
+(* Unreadable broker fails soft: zero rows + NONE, never an exception. A
+   regular file as broker root breaks registry reads deterministically. *)
+let test_muse_broken_broker_fails_soft () =
+  with_tmp_dir (fun dir ->
+    let file_root = dir // "not-a-broker" in
+    write_file file_root "not a directory";
+    with_muse_env (fun _home ->
+      let m = C2c_doctor_hooks.check_muse_status ~broker_root:file_root () in
+      check int "zero regs on broken broker" 0 m.C2c_doctor_hooks.mm_muse_regs;
+      check bool "wake NONE on broken broker" true
+        (m.C2c_doctor_hooks.mm_wake_class = C2c_doctor_hooks.Muse_wake_none);
+      check bool "no wake rows on broken broker" true
+        (m.C2c_doctor_hooks.mm_wake_sessions = [])))
+
+(* --rearm posture printer: silent at zero regs, states the no-op otherwise. *)
+let test_muse_rearm_posture_printer () =
+  let silent =
+    capture_stdout (fun () -> C2c_doctor_hooks.pp_rearm_muse_human 0)
+  in
+  check string "silent with no regs" "" silent;
+  let out =
+    capture_stdout (fun () -> C2c_doctor_hooks.pp_rearm_muse_human 2)
+  in
+  check bool "names the session count" true
+    (C2c_doctor_hooks.contains out "muse: 2 session(s)");
+  check bool "states no poster to re-arm" true
+    (C2c_doctor_hooks.contains out "no poster to re-arm")
+
 let test_muse_json_wake_keys () =
   with_full_hermetic_broker (fun ~broker_root ->
     ignore
@@ -1804,6 +1848,8 @@ let test_muse_json_wake_keys () =
                (List.assoc_opt "wake_class" m = Some (`String "CONDITIONAL"));
              check bool "wake_sessions key" true
                (List.mem_assoc "wake_sessions" m);
+             check bool "deaf key is [] (kimi/codex shape parity)" true
+               (List.assoc_opt "deaf" m = Some (`List []));
              check bool "deaf_count key is 0" true
                (List.assoc_opt "deaf_count" m = Some (`Int 0));
              check bool "muse_regs key is 1" true
@@ -1933,5 +1979,11 @@ let () =
         ; test_case "compact shows wake" `Quick
             test_muse_compact_shows_wake
         ; test_case "json wake keys" `Quick test_muse_json_wake_keys
+        ; test_case "empty broker lines" `Quick
+            test_muse_empty_broker_lines
+        ; test_case "broken broker fails soft" `Quick
+            test_muse_broken_broker_fails_soft
+        ; test_case "rearm posture printer" `Quick
+            test_muse_rearm_posture_printer
         ] )
     ]

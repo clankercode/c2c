@@ -110,6 +110,32 @@ let test_muse_managed_post_b361_forecast () =
   Alcotest.(check bool) "forecast keeps idle wake NONE" true
     (List.exists (fun s -> contains s "idle wake stays NONE") m.warning_lines)
 
+(* B359: the unknown-client fallback must never be reachable for muse —
+   case/whitespace variants still hit the muse arm, not `other`. *)
+let test_muse_casefold_hits_muse_arm () =
+  List.iter
+    (fun client ->
+      let m =
+        C2c_wake_guidance.advice ~client ~context:`Managed_start
+      in
+      Alcotest.(check string)
+        (Printf.sprintf "client %S normalizes to muse" client)
+        "muse" m.C2c_wake_guidance.client;
+      Alcotest.(check bool)
+        (Printf.sprintf "client %S keeps the muse Monitor recipe" client)
+        true
+        (List.exists
+           (fun s ->
+             let needle = "c2c monitor" in
+             let hl = String.length s and nl = String.length needle in
+             let rec loop k =
+               k + nl <= hl
+               && (String.sub s k nl = needle || loop (k + 1))
+             in
+             nl <= hl && loop 0)
+           m.C2c_wake_guidance.warning_lines))
+    [ "Muse"; "MUSE"; " muse " ]
+
 let () =
   Alcotest.run "c2c_wake_guidance"
     [ ( "advice",
@@ -130,5 +156,7 @@ let () =
         ; Alcotest.test_case "muse managed names hook posture" `Quick
             test_muse_managed_names_hook_posture
         ; Alcotest.test_case "muse managed post-B361 forecast" `Quick
-            test_muse_managed_post_b361_forecast ] )
+            test_muse_managed_post_b361_forecast
+        ; Alcotest.test_case "muse casefold hits muse arm" `Quick
+            test_muse_casefold_hits_muse_arm ] )
     ]

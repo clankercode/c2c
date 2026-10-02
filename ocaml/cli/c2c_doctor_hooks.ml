@@ -1214,6 +1214,17 @@ let pp_rearm_human (results : rearm_result list) =
           r.rr_alias r.rr_session_id status)
       results
 
+(* B359: muse --rearm posture line. Silent when no muse regs exist (nothing
+   to disclaim); otherwise states the no-op so --rearm never looks like it
+   healed muse sessions. Extracted (kimi pp_rearm_human precedent) so the
+   string is pinned by tests. *)
+let pp_rearm_muse_human (muse_regs : int) =
+  if muse_regs > 0 then
+    Printf.printf
+      "muse: %d session(s) — no poster to re-arm (Monitor-only posture; \
+       see `c2c doctor hooks` for the Monitor recipe)\n"
+      muse_regs
+
 (* --- Grok identity-drift detector (#23a) + wake honesty (#37) -------------- *)
 
 (* A grok registration, mirroring is_kimi_registration: client_type=grok, or
@@ -1651,14 +1662,17 @@ let muse_wake_class_detail = function
    grow a rearm arm; until then it is pinned-false by tests. *)
 let classify_muse_deaf ~inbox_count:_ () : bool = false
 
-(* Count muse DEAF sessions under the current classifier — 0 while vacuous.
-   Exists so the exit-code wiring stays live: B356 flips the classifier and
-   the count (and exit 1) follows with no call-site change. *)
+(* Muse DEAF sessions under the current classifier — [] while vacuous. The
+   list (and the count derived from it) stays live so B356 flips the
+   classifier and exit-1 + JSON follow with no call-site change. *)
+let muse_deaf_sessions (wake_sessions : muse_wake_session list) :
+    muse_wake_session list =
+  List.filter
+    (fun s -> classify_muse_deaf ~inbox_count:s.mws_inbox_count ())
+    wake_sessions
+
 let muse_deaf_count (wake_sessions : muse_wake_session list) : int =
-  List.length
-    (List.filter
-       (fun s -> classify_muse_deaf ~inbox_count:s.mws_inbox_count ())
-       wake_sessions)
+  List.length (muse_deaf_sessions wake_sessions)
 
 (* Pure dashboard mapping for `c2c health` / `c2c ping`: installed →
    green, muse-present-but-no-c2c → yellow, absent → gray. The message
@@ -2252,10 +2266,15 @@ let to_json r =
       ("wake_class", `String (muse_wake_class_label m.mm_wake_class));
       ("wake_detail", `String (muse_wake_class_detail m.mm_wake_class));
       ("wake_sessions", `List (List.map muse_wake_session_to_json m.mm_wake_sessions));
-      (* B359: DEAF is vacuous (no poster) — empty list mirrors the kimi/codex
-         deaf/deaf_count shape so scripted consumers work uniformly; B356
-         fills it when a poster exists. *)
-      ("deaf", `List []);
+      (* B359: DEAF is vacuous (no poster) — the empty list mirrors the
+         kimi/codex deaf/deaf_count shape so scripted consumers work
+         uniformly; both derive live from the classifier so B356 fills them
+         by flipping [classify_muse_deaf]. *)
+      ("deaf",
+       `List
+         (List.map
+            (fun (s : muse_wake_session) -> `String s.mws_alias)
+            (muse_deaf_sessions m.mm_wake_sessions)));
       ("deaf_count", `Int (muse_deaf_count m.mm_wake_sessions))
     ]
   in
@@ -2553,25 +2572,24 @@ let c2c_doctor_hooks_cmd =
      end);
     (if rearm then begin
        let results = rearm_deaf_kimi_sessions () in
-       (* B359: muse rearm is an explicit no-op (no poster to arm — see
-          [rearm_deaf_muse_sessions]); state the posture when muse regs exist
-          so --rearm never looks like it healed them. *)
-       let _muse_noop = rearm_deaf_muse_sessions () in
-       let muse_regs = (check_muse_status ()).mm_muse_regs in
        (* Under --json, arm silently so we don't corrupt the JSON envelope; the
           post-arm [check ()] below reflects the result. *)
        if not json then begin
          pp_rearm_human results;
-         if muse_regs > 0 then
-           Printf.printf
-             "muse: %d session(s) — no poster to re-arm (Monitor-only posture; \
-              see `c2c doctor hooks` for the Monitor recipe)\n"
-             muse_regs;
          print_newline ();
          flush stdout
        end
      end);
     let r = check () in
+    (* B359: muse rearm posture from the post-arm check — NOT a second scan
+       (the muse check spawns `muse plugins inspect` + log scans, so a
+       pre-count would double that cost for a no-op). [rearm_deaf_muse_sessions]
+       is the pinned no-op; this line is its only visible trace. *)
+    if rearm && not json && r.muse.mm_muse_regs > 0 then begin
+      pp_rearm_muse_human r.muse.mm_muse_regs;
+      print_newline ();
+      flush stdout
+    end;
     let delivery = codex_delivery_report () in
     if json then
       (* Merge the T005 delivery report into the existing JSON envelope. *)
