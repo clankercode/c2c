@@ -1258,15 +1258,17 @@ let test_glue_happy_publishes_after_start () =
       (match C2c_start.load_config_opt alias with
        | Some cfg ->
            Alcotest.(check string) "managed client is codex" "codex" cfg.client;
-           Alcotest.(check string) "exact resume target persisted" sid
-             (Option.value cfg.codex_resume_target ~default:"")
+           Alcotest.(check (option string)) "resume target waits for proof" None
+             cfg.codex_resume_target
        | None -> Alcotest.fail "managed config must load");
       (* The routable mapping is published only after start returned Ok. *)
       match S.load_mapping ~instance_dir:(C2c_start.instance_dir alias) with
       | None -> Alcotest.fail "mapping should be published after Running"
       | Some m ->
           Alcotest.(check string) "published alias" alias m.alias;
-          Alcotest.(check string) "seed persisted" sid m.session_id)
+          Alcotest.(check string) "seed persisted" sid m.session_id;
+          Alcotest.(check (option string)) "thread binding waits for discovery"
+            None m.thread_id)
 
 let test_registration_failure_retains_outer_records () =
   let sid = unique_sid () in
@@ -2020,7 +2022,7 @@ let test_effective_resume_thread_decision () =
 (* End-to-end through S.run with a scripted backend: the C2C_CODEX_SESSIONS_DIR
    seam opts the hermetic test into the preflight. [rollout] controls whether
    the requested thread has a persisted rollout; returns the frontend argv and
-   the persisted codex_resume_target. *)
+   the pre-proof codex_resume_target (which must remain unset). *)
 let run_with_thread_preflight ~skip_thread_preflight ~rollout =
   let sid = unique_sid () in
   let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
@@ -2074,7 +2076,7 @@ let test_run_keeps_persisted_thread_b227 () =
   Alcotest.(check bool) "frontend resumes the persisted thread" true
     (Array.exists (fun a -> a = "resume") argv
      && Array.exists (fun a -> a = sid) argv);
-  Alcotest.(check (option string)) "resume target persisted" (Some sid) target
+  Alcotest.(check (option string)) "resume target waits for thread proof" None target
 
 let test_skip_thread_preflight_forces_resume_b227 () =
   let argv, target, sid =
@@ -2082,7 +2084,7 @@ let test_skip_thread_preflight_forces_resume_b227 () =
   Alcotest.(check bool) "skip launches `codex resume`" true
     (Array.exists (fun a -> a = "resume") argv
      && Array.exists (fun a -> a = sid) argv);
-  Alcotest.(check (option string)) "skip preserves resume target" (Some sid) target
+  Alcotest.(check (option string)) "skip does not prebind resume target" None target
 
 let test_unpersisted_thread_cleared_before_hook_fallback_b227 () =
   let session_id = unique_sid () in

@@ -107,7 +107,16 @@ let is_terminal = function
 let heartbeat_interval_s = 10.0
 
 let run (d : deps) : outcome =
-  d.register ();
+  (* Registration is a post-proof side effect. Until the authenticated
+     frontend thread is discovered and its durable binding is accepted, this
+     loop must not publish a routable managed identity. *)
+  let registered = ref false in
+  let register_once () =
+    if not !registered then begin
+      d.register ();
+      registered := true
+    end
+  in
   let report_degraded ?(binding_refused = false) b =
     try d.on_degraded ~degraded:b ~binding_refused with _ -> ()
   in
@@ -117,7 +126,9 @@ let run (d : deps) : outcome =
      app-server delivery during the discovery window, nor for a session that
      never loads a thread. Flipped to [false] the moment a thread is found. *)
   report_degraded true;
-  Fun.protect ~finally:(fun () -> try d.deregister () with _ -> ()) (fun () ->
+  Fun.protect
+    ~finally:(fun () -> if !registered then try d.deregister () with _ -> ())
+    (fun () ->
       let start = d.now () in
       let thread = ref None in
       let passes = ref 0 in
@@ -227,6 +238,7 @@ let run (d : deps) : outcome =
         else begin
           (* Sv_running: (re)discover the thread if needed, then drive one pass. *)
           maybe_discover ();
+          if Option.is_some !thread && not !degraded_latched then register_once ();
           (* #27: advance the liveness heartbeat (throttled) so a reader can
              tell this live loop from a dead one. *)
           maybe_heartbeat ();

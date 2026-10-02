@@ -121,12 +121,12 @@ let test_start_on_attach_and_drive () =
     (o.DL.final = Ep.Sv_frontend_exited)
 
 let test_stop_on_immediate_exit () =
-  (* Frontend already exited: loop returns on the first step, having registered
-     and (in the finally) deregistered — no orphaned loop. *)
+  (* Frontend already exited: loop returns on the first step without publishing
+     an unproven managed identity. *)
   let h = mk_harness ~steps:[ Ep.Sv_frontend_exited ] () in
   let o = DL.run (mk_deps h) in
-  Alcotest.(check int) "registered" 1 h.registers;
-  Alcotest.(check int) "deregistered on exit" 1 h.deregisters;
+  Alcotest.(check int) "not registered before thread proof" 0 h.registers;
+  Alcotest.(check int) "no deregistration before registration" 0 h.deregisters;
   Alcotest.(check int) "no delivery passes" 0 o.DL.passes;
   Alcotest.(check (option string)) "never discovered a thread" None o.DL.thread_id;
   Alcotest.(check bool) "degraded (no thread this session)" true o.DL.degraded;
@@ -164,7 +164,7 @@ let test_degraded_no_thread () =
   Alcotest.(check (option string)) "no thread discovered" None o.DL.thread_id;
   Alcotest.(check bool) "degraded" true o.DL.degraded;
   Alcotest.(check int) "no delivery passes without a thread" 0 o.DL.passes;
-  Alcotest.(check int) "still deregistered cleanly" 1 h.deregisters;
+  Alcotest.(check int) "still has no registration to deregister" 0 h.deregisters;
   Alcotest.(check bool) "final terminal (offline)" true (o.DL.final = Ep.Sv_offline)
 
 let test_max_wall_bound () =

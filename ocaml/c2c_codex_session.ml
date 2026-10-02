@@ -2698,8 +2698,12 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       in
       C2c_start.write_config
         { C2c_start.name; client = "codex"; session_id;
-          resume_session_id = Option.value thread ~default:session_id;
-          codex_resume_target = thread; alias; extra_args; created_at;
+          (* The private app-server has started, but its authenticated frontend
+             thread is discovered by the delivery loop after this lifecycle
+             record is written. Keep requested resume state out of durable
+             ownership until that discovery callback proves the thread. *)
+          resume_session_id = session_id; codex_resume_target = None;
+          alias; extra_args; created_at;
           last_launch_at = Some now; last_exit_code = None;
           last_exit_reason = None;
           broker_root = (try C2c_start.broker_root () with _ -> "");
@@ -2732,7 +2736,10 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       let mapping_persisted =
         write_mapping ~instance_dir
           { session_id; alias;
-            thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
+            (* [thread] is only a requested input here. The delivery loop's
+               authenticated discovery callback is the sole writer allowed to
+               bind a native thread after startup. *)
+            thread_id = handle_thread handle;
             created_at = created; updated_at = now }
       in
       if not mapping_persisted then begin
