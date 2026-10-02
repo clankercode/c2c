@@ -78,3 +78,5 @@ all 8 false-green rules (quote suites AND tests; `[0-9]+ tests? run`).
 - `bl check` clean; every B353–B359 acceptance cross-links here.
 
 B354-review follow-up: just check codegen drift gate diffs only c2c_claude_skill_embedded.ml; extend the gate to ALL embedded mls (muse/grok/agy/kimi) under generated-files-match-sources.
+
+B358-merge dedup: absorb the new CLAUDE.md muse delivery-posture row (5th copy of muse posture) into the docs pass.
