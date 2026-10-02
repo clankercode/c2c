@@ -345,11 +345,20 @@ def run_live() -> int:
                 regs = json.loads(r.stdout or "[]")
             except Exception:
                 return None
+            def is_live(reg: dict) -> bool:
+                # `c2c list --json` exposes the tri-state `alive` field on
+                # current binaries. Some installed/older list surfaces expose
+                # the same liveness as the explicit `state` label instead;
+                # accept that representation only when the boolean field is
+                # absent, so contradictory data still fails closed.
+                return (reg.get("alive") is True
+                        or ("alive" not in reg and reg.get("state") == "alive"))
+
             matches = [reg for reg in regs
                        if reg.get("session_id") == expected_sid
                        and reg.get("alias") == expected_alias
                        and reg.get("client_type") == "codex-app-server"
-                       and reg.get("alive") is True]
+                       and is_live(reg)]
             if len(matches) != 1:
                 return None
             instances_root = Path(cli_env.get(
