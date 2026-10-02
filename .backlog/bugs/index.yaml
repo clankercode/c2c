@@ -347,3 +347,4 @@ bugs:
     - file: B348-transient-relay-peek-errors-su.todo
     - file: B349-connector-peek-key-ignores-cs.todo
     - file: B350-c2c-codex-install-sets-unsuppo.todo
+    - file: B351-test-dryrun.todo
