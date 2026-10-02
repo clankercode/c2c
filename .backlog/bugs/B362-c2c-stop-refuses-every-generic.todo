@@ -1,10 +1,12 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-10-02T20:31:01Z"
 depends_on: []
 estimate_hours: 1
 id: B362
 priority: high
+started_at: null
 status: pending
 tags: []
 title: 'c2c stop refuses every generic-harness instance: run_outer_loop never writes outer.pid.start-time'
@@ -12,3 +14,15 @@ updated_at: "2026-10-02T20:31:01Z"
 ---
 
 c2c stop refuses every generic-harness instance: run_outer_loop never writes outer.pid.start-time
+
+Found live during B358 e2e (2026-10-02): `c2c stop e2e-muse-1` on a RUNNING managed muse refused with "error: cannot trust the paired outer PID lifecycle records; retaining records" — and the instance dir has outer.pid but NO outer.pid.start-time.
+
+ROOT CAUSE (generic, not muse): the only writer of outer.pid.start-time in c2c_start.ml is run_tmux_loop (:4811, client="tmux" only). run_outer_loop (claude/codex-TUI/kimi/agy/opencode/muse/...) writes outer.pid via acquire_instance_lock but NEVER the .start-time sidecar. stop_instance reads the pair via read_pid_record: (Regular, Absent) -> Pid_record_unknown -> Stop_failed before any signal. So EVERY generic-harness instance is unstoppable via `c2c stop` today. Only codex-app-server (c2c_codex_session.ml writers) and tmux-loop instances carry the pair. Reproduced on stock master binary against a dead leftover (b144as089aa7): same refusal, no signals sent.
+
+This is #85's second-half lesson recurring one level down: the strict consumer (stop_instance) shipped without its producer (outer-loop pair write).
+
+EVIDENCE: most live ~/.local/share/c2c/instances/*/ with outer.pid lack the .start-time (surveyed 2026-10-02).
+
+FIX (proposed, tiny): in run_outer_loop next to `let _lock_fd = acquire_instance_lock ~name` (:6675), add write_pid_generation ~pid_path:(outer_pid_path name) ~start_time_path:(outer_pid_start_time_path name) (Unix.getpid ()) — the exact tmux-loop sequence (:4809-4811). Restores intended behavior: stops that failed now succeed; no previously-working stop changes. B358 may carry this fix since managed muse is unshippable without stop; coordinator decides split vs ride-along.
+
+REGRESSION TEST: hermetic `c2c start` with a stub binary asserting the pair exists + generation matches, then `c2c stop` succeeds. See existing start/stop CLI test harness if any.
