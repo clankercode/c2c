@@ -35,6 +35,7 @@ let marker_env_vars =
   ; "CURSOR_AGENT"
   ; "CURSOR_INVOKED_AS"
   ; "CURSOR_ASKPASS_SOCKET"
+  ; "MUSE_SESSION_ID"
   ; "C2C_DETECT_ANCESTOR_COMMS"
   ]
 

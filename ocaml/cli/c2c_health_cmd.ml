@@ -561,7 +561,7 @@ let health_cmd =
 
 (* --- subcommand: connect -------------------------------------------------- *)
 
-let supported_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy"; "hermes" ]
+let supported_clients = [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy"; "hermes"; "muse" ]
 
 let connect_dashboard ~root ~broker ~output_mode =
   let broker_root = root in
@@ -601,15 +601,21 @@ let connect_dashboard ~root ~broker ~output_mode =
     else if has_yellow then `Needs_install
     else `Not_found
   in
-  let all_installed = List.for_all (fun c -> client_status c = `Installed) supported_clients in
-  let any_configured = List.exists (fun c -> client_status c <> `Not_found) supported_clients in
+  (* B353: muse is CLI-first Tier-0 with no `c2c install` target and no plugin
+     checks, so it always reads Not_found. Its row stays in the JSON clients
+     map (contract), but verdicts compute over installable clients only — else
+     the dashboard would nag `c2c install muse` (a command that does not
+     exist) and no host could ever reach "you're connected!". *)
+  let installable_clients = List.filter (fun c -> c <> "muse") supported_clients in
+  let all_installed = List.for_all (fun c -> client_status c = `Installed) installable_clients in
+  let any_configured = List.exists (fun c -> client_status c <> `Not_found) installable_clients in
   let next_action =
     if not root_exists then
       "broker root not found — run 'c2c init' to get started"
     else if not any_configured then
       "no clients configured — run 'c2c install <client>' (explicit MCP opt-in)"
     else if not all_installed then
-      let missing = List.filter (fun c -> client_status c <> `Installed) supported_clients in
+      let missing = List.filter (fun c -> client_status c <> `Installed) installable_clients in
       Printf.sprintf "partially configured — run 'c2c install %s' for missing clients"
         (String.concat " / " missing)
     else if alive_count = 0 then

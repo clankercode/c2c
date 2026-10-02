@@ -717,6 +717,10 @@ let native_session_id_env_keys = function
   (* Kimi Code: managed `c2c start kimi` exports KIMI_SESSION_ID; unmanaged
      sessions usually lack it and resolve via session_index (B233). *)
   | "kimi" -> [ "KIMI_SESSION_ID" ]
+  (* B353 PROVISIONAL: muse Tier-0 identity key. B352 P3 has not yet confirmed
+     whether live muse shells export MUSE_SESSION_ID; if P3 denies it this arm
+     becomes [] (cursor-style) with a documented fallback instead. *)
+  | "muse" -> [ "MUSE_SESSION_ID" ]
   | "crush" | "codex-headless" | "cursor" -> []
   | _ -> []
 
@@ -885,6 +889,12 @@ let inferred_client_type_from_env () =
       else if grok_agent_env_present () then Some "grok"
       else if agy_env_present () then Some "agy"
       else if cursor_agent_env_present () then Some "cursor"
+      (* B353 PROVISIONAL (pending B352 P3): MUSE_SESSION_ID labels muse.
+         Placed AFTER every confirmed native marker so a provisional key can
+         never steal identity from a genuine session, but BEFORE the B288
+         ancestry heuristic — an explicit env marker is stronger evidence
+         than a process-name match. *)
+      else if first_nonempty_env [ "MUSE_SESSION_ID" ] <> None then Some "muse"
       (* B288: no env marker matched — fall back to process ancestry so a
          cursor-agent session with no CURSOR_* env still self-labels cursor.
          Kept last so every genuine harness-native marker wins first. *)

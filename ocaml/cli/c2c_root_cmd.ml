@@ -74,6 +74,11 @@ let print_enriched_landing () =
      still appears in the landing Clients section. *)
   let pi_on_path = C2c_setup.which_binary "pi" <> None in
   let clients = clients @ [ ("pi", pi_on_path, false) ] in
+  (* B353: muse is CLI-first Tier-0, not a `c2c install` target (no hooks/MCP/
+     managed start) — like pi, it gets a synthetic display entry rather than a
+     known_clients row, so the Clients section never routes it to install copy. *)
+  let muse_on_path = C2c_setup.which_binary "muse" <> None in
+  let clients = clients @ [ ("muse", muse_on_path, false) ] in
   let self_path = C2c_setup.self_installed_path () in
   let broker_root = try resolve_broker_root () with _ -> "(unresolved)" in
   Printf.printf "c2c %s — peer-to-peer messaging for AI agents\n" version;
@@ -154,6 +159,13 @@ let print_enriched_landing () =
         | false, _ -> "not on PATH"
         | true, true -> "configured (plugin + skill ready)"
         | true, false -> "on PATH, not configured — run 'c2c install hermes'"
+      else if c = "muse" then
+        (* B353: muse is CLI-first Tier-0 — every command works from any muse
+           shell with zero install. There is no `c2c install muse`; the MCP /
+           install copy below must never fire for this row. *)
+        match on_path, configured with
+        | false, _ -> "not on PATH"
+        | true, _ -> "on PATH — CLI-ready (no install needed; try `c2c poll-inbox`)"
       else
         match on_path, configured with
         | false, _ -> "not on PATH"
@@ -164,7 +176,9 @@ let print_enriched_landing () =
   ) clients;
   let missing_clients =
     List.filter_map (fun (c, on_path, configured) ->
-      if c <> "pi" && on_path && not configured then Some c else None) clients
+      (* B353: muse is CLI-first with no install target — like pi, it must
+         never appear in the `c2c install <client>` suggestions. *)
+      if c <> "pi" && c <> "muse" && on_path && not configured then Some c else None) clients
   in
   let suggestions =
     let buf = Buffer.create 256 in

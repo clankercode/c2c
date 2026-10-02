@@ -159,6 +159,21 @@ let advice ~(client : string) ~(context : [ `Install | `Managed_start ]) :
           ; "  Fallback: c2c poll-inbox"
           ]
       }
+  (* B353: muse Tier-0 is CLI-only — no hooks, no MCP, no managed start — so
+     both contexts are NONE with the Monitor recipe (verbatim #414, copied
+     from the grok arm above). *)
+  | "muse", _ ->
+      { client = c
+      ; wake = None_idle
+      ; primary = "CLI-only Tier-0: no idle wake; agent must arm Monitor"
+      ; manual_inbox_required = true
+      ; warning_lines =
+          [ "[c2c WARNING] muse has NONE idle wake inside c2c."
+          ; "  Arm receive NOW: Monitor({ command: \"c2c monitor\", \
+             persistent: true })"
+          ; "  Fallback: c2c poll-inbox"
+          ]
+      }
   | other, _ ->
       { client = other
       ; wake = None_idle

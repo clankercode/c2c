@@ -33,6 +33,13 @@ let infer_send_auto_register_client ~session_id =
       else if String.starts_with ~prefix:"kimi" sid
               || has_nonempty_env "KIMI_SESSION_ID"
       then "kimi"
+      (* B353: muse Tier-0 sends must self-register as muse (agy/hermes have
+         no arm; muse MUST have one). Sid-prefix only: the MUSE_SESSION_ID
+         case is handled upstream by inferred_client_type_from_env (which
+         returns before this fallback runs), so an env disjunct here would be
+         dead code today — and a trap after B352 P3, where removing a denied
+         key from inference would silently resurrect it in this arm. *)
+      else if String.starts_with ~prefix:"muse" sid then "muse"
       else if String.starts_with ~prefix:"grok" sid then "grok"
       else if String.starts_with ~prefix:"cursor" sid then "cursor"
       else "agent"
