@@ -138,21 +138,26 @@ let refresh_kimi_skill_if_stale () =
    These are muse's own documented roots, not c2c's broker root, so honoring
    XDG here does not conflict with the #9 split-brain rule (which is about
    c2c's broker state, not a client's config discovery). *)
+(* XDG roots must be absolute (the spec requires it): a relative value would
+   make install/uninstall/detect cwd-dependent (the #9 split-brain shape), so
+   it falls back to the HOME default. Silent by design — these helpers run in
+   pure/test contexts where a warning per call would spam. *)
+let absolute_xdg_or var fallback =
+  match Sys.getenv_opt var with
+  | Some d when String.trim d <> "" && not (Filename.is_relative (String.trim d)) ->
+      String.trim d
+  | _ -> fallback
+
+let non_empty_home () =
+  match try Sys.getenv "HOME" with Not_found -> "" with
+  | "" -> "/tmp"
+  | h -> h
+
 let muse_config_dir () =
-  let base =
-    match Sys.getenv_opt "XDG_CONFIG_HOME" with
-    | Some d when String.trim d <> "" -> String.trim d
-    | _ -> Filename.concat (try Sys.getenv "HOME" with Not_found -> "/tmp") ".config"
-  in
-  base // "muse"
+  absolute_xdg_or "XDG_CONFIG_HOME" (non_empty_home () // ".config") // "muse"
 
 let muse_data_dir () =
-  let base =
-    match Sys.getenv_opt "XDG_DATA_HOME" with
-    | Some d when String.trim d <> "" -> String.trim d
-    | _ -> Filename.concat (try Sys.getenv "HOME" with Not_found -> "/tmp") (".local" // "share")
-  in
-  base // "muse"
+  absolute_xdg_or "XDG_DATA_HOME" (non_empty_home () // ".local" // "share") // "muse"
 
 let muse_settings_path () = muse_config_dir () // "settings.json"
 
@@ -2352,8 +2357,7 @@ let muse_hook_command = "c2c hook muse"
    source must persist for `plugins update` and reinstalls. HOME-based like
    the other clients' ~/.c2c material — never under a workspace. *)
 let muse_bundle_dir () =
-  (try Sys.getenv "HOME" with Not_found -> "/tmp")
-  // ".c2c" // "clients" // "muse" // "plugin"
+  non_empty_home () // ".c2c" // "clients" // "muse" // "plugin"
 
 let muse_bundle_manifest_path () =
   muse_bundle_dir () // ".muse-plugin" // "plugin.json"
@@ -2384,63 +2388,175 @@ let str_contains ~haystack ~needle =
 
 type muse_cmd_result = { ok : bool; output : string }
 
-(* Run muse with stdin /dev/null and merged stdout+stderr capture, bounded so
-   a wedged CLI can never hang install/uninstall. Never raises. *)
+(* Run muse with stdin /dev/null and merged stdout+stderr capture. ONE
+   deadline covers the read AND the wait (B354 review M1): the pre-review
+   shape read to EOF first and only then started the clock, so a child
+   stalled with stdout open hung forever. Never raises; any failure
+   (spawn, /dev/null, pipe, timeout) is ok:false — callers fail soft to
+   the settings fallback / file cleanup. *)
 let run_muse_capture ~timeout_s argv : muse_cmd_result =
-  let devnull =
-    try Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0
-    with _ -> Unix.stdin
-  in
-  let out_r, out_w = try
-      let r, w = Unix.pipe ~cloexec:true () in
-      (Some r, Some w)
-    with _ -> (None, None)
-  in
-  Fun.protect
-    ~finally:(fun () ->
-      (match out_r with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
-      (match out_w with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
-      if devnull <> Unix.stdin then (try Unix.close devnull with _ -> ()))
-    (fun () ->
-      match out_r, out_w with
-      | Some r, Some w ->
-          (try
-             let pid =
-               Unix.create_process_env argv.(0) argv (Unix.environment ())
-                 devnull w w
-             in
-             (try Unix.close w with _ -> ());
-             let ic = Unix.in_channel_of_descr r in
-             let buf = Buffer.create 512 in
-             let cap = 65536 in
-             (try
-                while Buffer.length buf < cap do
-                  Buffer.add_channel buf ic (min 4096 (cap - Buffer.length buf))
-                done
-              with End_of_file -> ());
-             let deadline = Unix.gettimeofday () +. timeout_s in
-             let rec wait () =
-               match (try Unix.waitpid [ Unix.WNOHANG ] pid with _ -> (0, Unix.WEXITED 0)) with
-               | 0, _ ->
-                   if Unix.gettimeofday () >= deadline then begin
-                     (try Unix.kill pid Sys.sigterm with _ -> ());
-                     Unix.sleepf 1.0;
-                     (match (try Unix.waitpid [ Unix.WNOHANG ] pid with _ -> (pid, Unix.WEXITED 0)) with
-                      | 0, _ ->
-                          (try Unix.kill pid Sys.sigkill with _ -> ());
-                          (try ignore (Unix.waitpid [] pid) with _ -> ())
-                      | _ -> ());
-                     false
-                   end else begin
-                     Unix.sleepf 0.05;
-                     wait ()
-                   end
-               | _, Unix.WEXITED 0 -> true
-               | _ -> false
-             in
-             { ok = wait (); output = Buffer.contents buf }
-           with _ -> { ok = false; output = "" })
-      | _ -> { ok = false; output = "" })
+  let failed = { ok = false; output = "" } in
+  (* A child without /dev/null stdin would inherit the operator's terminal
+     and could prompt-hang — fail closed instead of inheriting. *)
+  let devnull = try Some (Unix.openfile "/dev/null" [ Unix.O_RDWR ] 0) with _ -> None in
+  let pipe = try Some (Unix.pipe ~cloexec:true ()) with _ -> None in
+  match devnull, pipe with
+  | Some dn, Some (r, w) ->
+      let pid_ref : int option ref = ref None in
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.close r with _ -> ());
+          (try Unix.close dn with _ -> ());
+          (* Always reap: no zombies on any exit path. *)
+          (match !pid_ref with
+           | None -> ()
+           | Some pid -> (try ignore (Unix.waitpid [ Unix.WNOHANG ] pid) with _ -> ())))
+        (fun () ->
+          match
+            (try
+               let pid =
+                 Unix.create_process_env argv.(0) argv (Unix.environment ()) dn w w
+               in
+               pid_ref := Some pid;
+               Some pid
+             with _ -> None)
+          with
+          | None ->
+              (try Unix.close w with _ -> ());
+              failed
+          | Some pid ->
+              (try Unix.close w with _ -> ());
+              (* A blocking read fd would re-open the hang class this
+                 function exists to eliminate — fail closed instead: kill
+                 the just-spawned child at once (no grace needed, nothing
+                 was read) and report failure. *)
+              let nonblock_ok =
+                try Unix.set_nonblock r; true with _ -> false
+              in
+              if not nonblock_ok then begin
+                (try Unix.kill pid Sys.sigkill with _ -> ());
+                (try ignore (Unix.waitpid [] pid) with _ -> ());
+                pid_ref := None;
+                failed
+              end else begin
+              let deadline = Unix.gettimeofday () +. timeout_s in
+              let buf = Buffer.create 512 in
+              let cap = 65536 in
+              let tmp = Bytes.create 4096 in
+              let add_chunk n =
+                (* Past the cap, keep draining (discard) so the child never
+                   blocks on a full pipe while we wait out the deadline. *)
+                if Buffer.length buf < cap then
+                  Buffer.add_subbytes buf tmp 0 (min n (cap - Buffer.length buf))
+              in
+              let try_read () =
+                match (try Some (Unix.read r tmp 0 4096) with
+                       | Unix.Unix_error ((Unix.EAGAIN | Unix.EWOULDBLOCK), _, _) -> None
+                       | _ -> Some 0) with
+                | Some 0 -> `Eof
+                | Some n -> `Got n
+                | None -> `Retry
+              in
+              let try_reap () =
+                (* EINTR retries; ECHILD (a foreign reaper got there first)
+                   counts as done-but-unknown — and unknown is failure
+                   (fail soft), never claimed success. *)
+                match (try Unix.waitpid [ Unix.WNOHANG ] pid with
+                       | Unix.Unix_error (Unix.EINTR, _, _) -> (0, Unix.WEXITED 0)
+                       | Unix.Unix_error (Unix.ECHILD, _, _) -> (pid, Unix.WEXITED 1)
+                       | _ -> (0, Unix.WEXITED 0)) with
+                | 0, _ -> None
+                | _, Unix.WEXITED 0 -> Some true
+                | _ -> Some false
+              in
+              let sleep_ignoring_intr s =
+                try Unix.sleepf s
+                with Unix.Unix_error (Unix.EINTR, _, _) -> () | _ -> ()
+              in
+              (* Shared kill escalation: TERM, 1s grace, KILL, blocking reap.
+                 A SIGKILL'd child cannot wedge the blocking wait (barring
+                 D-state, which nothing here can fix). *)
+              let escalate_and_reap () =
+                (try Unix.kill pid Sys.sigterm with _ -> ());
+                sleep_ignoring_intr 1.0;
+                (match try_reap () with
+                 | Some _ -> ()
+                 | None ->
+                     (try Unix.kill pid Sys.sigkill with _ -> ());
+                     (try ignore (Unix.waitpid [] pid) with _ -> ()));
+                pid_ref := None
+              in
+              let eof = ref false in
+              let exit_ok = ref None in
+              while not !eof && !exit_ok = None
+                    && Unix.gettimeofday () < deadline do
+                let remaining = deadline -. Unix.gettimeofday () in
+                if remaining > 0.0 then begin
+                  (* 1s quanta: a dead child whose pipe is held open by a
+                     forked grandchild must reap promptly, not at the full
+                     deadline (up to 60s) when select would otherwise sleep. *)
+                  let quantum = min remaining 1.0 in
+                  let readable =
+                    try Unix.select [ r ] [] [] quantum
+                    with Unix.Unix_error (Unix.EINTR, _, _) -> ([], [], [])
+                         | _ -> ([], [], [])
+                  in
+                  (match readable with
+                   | rlist, _, _ when List.mem r rlist ->
+                       (match try_read () with
+                        | `Eof -> eof := true
+                        | `Got n -> add_chunk n
+                        | `Retry -> ())
+                   | _ -> ());
+                  (match try_reap () with Some b -> exit_ok := Some b | None -> ())
+                end
+              done;
+              if !eof || !exit_ok <> None then begin
+                (* Child is done (or its stdout closed): non-blocking final
+                   drain collects bytes already in the pipe, then reap. *)
+                let rec drain () =
+                  match try_read () with
+                  | `Got n -> add_chunk n; drain ()
+                  | _ -> ()
+                in
+                drain ();
+                let ok =
+                  match !exit_ok with
+                  | Some b -> b
+                  | None ->
+                      (* EOF but exit not yet observed: the child is all but
+                         dead, so poll briefly — then escalate like any
+                         wedged child (never leak it alive + unreaped). *)
+                      let rec spin n =
+                        match try_reap () with
+                        | Some b -> b
+                        | None ->
+                            if n <= 0 then begin
+                              escalate_and_reap ();
+                              false
+                            end else begin
+                              sleep_ignoring_intr 0.05;
+                              spin (n - 1)
+                            end
+                      in
+                      spin 40
+                in
+                pid_ref := None;
+                { ok; output = Buffer.contents buf }
+              end else begin
+                (* Deadline expired with the child alive. *)
+                escalate_and_reap ();
+                { ok = false; output = Buffer.contents buf }
+              end
+              end)
+  | _ ->
+      (match devnull with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
+      (match pipe with
+       | Some (r, w) ->
+           (try Unix.close r with _ -> ());
+           (try Unix.close w with _ -> ())
+       | None -> ());
+      failed
 
 type muse_plugin_gate = Gate_open | Gate_absent of string
 
@@ -2459,10 +2575,9 @@ let muse_plugin_gate () : muse_plugin_gate =
           if o = "" then "exit non-zero" else o))
   else Gate_open
 
-(* Non-interactive install + per-capability approve. Idempotent: reinstalling
-   an unchanged bundle yields the same cache hash and keeps trust. Returns
-   (ok, detail) — never raises; callers fall back to settings hooks on
-   failure with a loud warning. *)
+(* Non-interactive install. Idempotent: reinstalling an unchanged bundle
+   yields the same cache hash and keeps trust. Returns (ok, detail) — never
+   raises. Approve is deliberately SEPARATE (see below). *)
 let muse_plugin_install ~dry_run ~bundle_dir : bool * string =
   if dry_run then (true, "dry-run")
   else
@@ -2472,17 +2587,29 @@ let muse_plugin_install ~dry_run ~bundle_dir : bool * string =
     in
     if not inst.ok then
       (false, Printf.sprintf "plugins install failed: %s" (String.trim inst.output))
-    else
-      let appr =
-        run_muse_capture ~timeout_s:60.0
-          [| muse_bin (); "plugins"; "approve"; muse_plugin_id |]
-      in
-      if not appr.ok then
-        (false, Printf.sprintf "plugins approve failed: %s" (String.trim appr.output))
-      else (true, "installed+approved")
+    else (true, "installed")
 
-(* Best-effort `plugins remove c2c` for uninstall. Never raises; a missing
-   plugin / missing binary is not an error (nothing to remove). *)
+(* Non-interactive per-capability approve. ORDER IS LOAD-BEARING (measured
+   live 2026-10-03): ANY write to settings.json AFTER approve resets all
+   plugin hook capabilities to review_needed — including a hookless write.
+   So setup_muse runs install -> settings merge/strip -> approve LAST, and
+   every fallback-path install (which never approves) is unaffected. Never
+   raises. *)
+let muse_plugin_approve ~dry_run : bool * string =
+  if dry_run then (true, "dry-run")
+  else
+    let appr =
+      run_muse_capture ~timeout_s:60.0
+        [| muse_bin (); "plugins"; "approve"; muse_plugin_id |]
+    in
+    if not appr.ok then
+      (false, Printf.sprintf "plugins approve failed: %s" (String.trim appr.output))
+    else (true, "approved")
+
+(* Best-effort `plugins remove c2c` for uninstall. Never raises. Removing an
+   absent plugin exits 1 with "plugin `c2c` is not installed" (probed live) —
+   that is the clean nothing-to-do outcome (every fallback-path uninstall
+   hits it), not a warning. *)
 let muse_plugin_remove ~dry_run : bool * string =
   if dry_run then (true, "dry-run")
   else
@@ -2490,8 +2617,10 @@ let muse_plugin_remove ~dry_run : bool * string =
       run_muse_capture ~timeout_s:60.0
         [| muse_bin (); "plugins"; "remove"; muse_plugin_id |]
     in
-    if r.ok then (true, String.trim r.output)
-    else (false, String.trim r.output)
+    let out = String.trim r.output in
+    if r.ok then (true, out)
+    else if str_contains ~haystack:out ~needle:"is not installed" then (true, "not installed")
+    else (false, out)
 
 (* Pure: the c2c plugin bundle manifest. Schema pinned live (B352 A4) and
    against muse's own capability-examples contract: schemaVersion 1,
@@ -2559,28 +2688,32 @@ let muse_settings_group event : Yojson.Safe.t =
 
 let muse_fallback_events = [ "SessionStart"; "Stop"; "SessionEnd" ]
 
+(* Shared group-level strip: drop c2c-owned handlers, drop the group if it
+   empties, else return the group untouched (same value — keeps both callers
+   order-stable). Used by the merge AND the strip so an ownership-predicate
+   change can never diverge the two directions. *)
+let strip_muse_owned_group = function
+  | `Assoc g as grp ->
+      (match List.assoc_opt "hooks" g with
+       | Some (`List hs) ->
+           let kept = List.filter (fun h -> not (is_muse_owned_handler h)) hs in
+           if kept = [] then None
+           else if List.length kept = List.length hs then Some grp
+           else
+             Some (`Assoc (("hooks", `List kept) :: List.filter (fun (k, _) -> k <> "hooks") g))
+       | _ -> Some grp)
+  | other -> Some other
+
 (* Pure: merge our fallback hooks into a parsed settings.json value.
    Handler-level surgery per event: strip c2c-owned handlers from every
    group, drop emptied groups, append our canonical group. Foreign groups
    pass through untouched, and re-running on our own output is a fixed
    point (idempotent replacement, never append). *)
 let merge_muse_settings_hooks existing : Yojson.Safe.t =
-  let strip_group = function
-    | `Assoc g as grp ->
-        (match List.assoc_opt "hooks" g with
-         | Some (`List hs) ->
-             let kept = List.filter (fun h -> not (is_muse_owned_handler h)) hs in
-             if kept = [] then None
-             else if List.length kept = List.length hs then Some grp
-             else
-               Some (`Assoc (("hooks", `List kept) :: List.filter (fun (k, _) -> k <> "hooks") g))
-         | _ -> Some grp)
-    | other -> Some other
-  in
   let merge_event hooks_assoc event =
     let prior =
       match List.assoc_opt event hooks_assoc with
-      | Some (`List gs) -> List.filter_map strip_group gs
+      | Some (`List gs) -> List.filter_map strip_muse_owned_group gs
       | _ -> []
     in
     (event, `List (prior @ [ muse_settings_group event ]))
@@ -2606,6 +2739,38 @@ let merge_muse_settings_hooks existing : Yojson.Safe.t =
     | _ -> []
   in
   ensure_muse_schema_version (`Assoc (fields @ [ ("hooks", merged_hooks) ]))
+
+(* Pure: strip c2c-owned handlers from a parsed settings.json value — the
+   exact inverse of [merge_muse_settings_hooks] for our keys. Shared by
+   install (plugin-path success converges a flipped transport back to
+   plugin-only) and uninstall (surgical cleanup); one parser, both
+   directions, so the two can never diverge on what "ours" means.
+   Order-stable: an input with nothing owned rebuilds EQUAL to itself. *)
+let strip_muse_settings_hooks_json existing : Yojson.Safe.t =
+  match existing with
+  | `Assoc fields ->
+      (match List.assoc_opt "hooks" fields with
+       | Some (`Assoc hooks) ->
+           let events =
+             List.filter_map
+               (fun (ev, v) ->
+                  match v with
+                  | `List gs ->
+                      let kept = List.filter_map strip_muse_owned_group gs in
+                      if kept = [] then None else Some (ev, `List kept)
+                  | _ -> Some (ev, v))
+               hooks
+           in
+           if events = hooks then existing
+           else if events = [] then
+             `Assoc (List.filter (fun (k, _) -> k <> "hooks") fields)
+           else
+             `Assoc
+               (List.map
+                  (fun (k, v) -> if k = "hooks" then (k, `Assoc events) else (k, v))
+                  fields)
+       | _ -> existing)
+  | _ -> existing
 
 (* Pure: merge the c2c MCP entry into a parsed settings.json value.
    LOAD-BEARING (binding B352 verdicts):
@@ -2669,7 +2834,14 @@ let build_muse_mcp_config ~root ~alias_val ~server_path ~mcp_command ~alias_from
 let read_muse_settings_file path : (Yojson.Safe.t, string) result =
   if not (Sys.file_exists path) then Ok (`Assoc [])
   else
-    try Ok (json_read_file path)
+    try
+      match json_read_file path with
+      | `Assoc _ as json -> Ok json
+      | _ ->
+          Error
+            (Printf.sprintf
+               "refusing to merge into %s: root is not a JSON object (only objects carry schema_version/hooks/mcpServers). Fix or move the file, then re-run."
+               path)
     with e ->
       Error
         (Printf.sprintf "refusing to merge into %s: invalid JSON (%s). Fix or move the file, then re-run."
@@ -2728,11 +2900,15 @@ let setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mc
   (* Hooks: plugin-first with settings fallback. Any plugin-path failure
      (gated build, missing binary, install/approve error) falls back to the
      settings.json hooks map with a loud warning — a working fallback beats
-     a dead plugin-path install. *)
-  let hooks_mode, hooks_detail =
+     a dead plugin-path install. ORDER: gate -> install -> settings write ->
+     approve LAST (a settings write after approve resets trust). *)
+  let hooks_mode, install_detail =
     (* The gate check is read-only, so dry-run performs it too — otherwise a
        gated host would preview "plugin hooks" while the real run installs
-       the settings fallback. Only install/approve are dry-run-skipped. *)
+       the settings fallback. Install/approve are dry-run-skipped.
+       Caveat: the spawned muse binary is outside c2c's control — a first-run
+       self-init could write outside our preview. All c2c-side write paths
+       are dry-run pure. *)
     match muse_plugin_gate () with
     | Gate_open ->
         if dry_run then ("plugin", "dry-run")
@@ -2750,36 +2926,137 @@ let setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mc
           reason;
         ("settings-fallback", reason)
   in
-  let settings_json, settings_written =
-    if dry_run then begin
-      if hooks_mode = "settings-fallback" then
-        Printf.printf "[DRY-RUN] would merge c2c hooks into %s\n%!" settings_path;
-      if with_mcp then
-        Printf.printf "[DRY-RUN] would merge mcpServers.c2c into %s\n%!" settings_path;
-      (existing_settings, false)
-    end else begin
-      let merged =
-        if hooks_mode = "settings-fallback" then merge_muse_settings_hooks existing_settings
-        else existing_settings
-      in
-      let merged = if with_mcp then
-          build_muse_mcp_config ~root ~alias_val ~server_path ~mcp_command ~alias_from_auto_gen merged
-        else merged
-      in
-      let wrote = hooks_mode = "settings-fallback" || with_mcp in
-      if wrote then begin
-        C2c_io.mkdir_p_dryrun false (Filename.dirname settings_path);
-        (* Shared operator file: mode-preserving atomic write (#84). *)
-        json_write_file settings_path merged;
-        if not had_schema_version then
-          Printf.eprintf
-            "[c2c WARNING] %s had no schema_version (muse rejects such files as malformed); added schema_version 1.\n%!"
-            settings_path
-      end;
-      (merged, wrote)
+  (* Shape warnings for members the merges are about to replace (stderr, so
+     they survive --json; also in dry-run — a preview that hides a destructive
+     merge is dishonest). read_muse_settings_file already guarantees `Assoc. *)
+  let warn fmt = Printf.eprintf ("[c2c WARNING] " ^^ fmt ^^ "\n%!") in
+  let existing_fields =
+    match existing_settings with `Assoc fs -> fs | _ -> []
+  in
+  (match List.assoc_opt "schema_version" existing_fields with
+   | Some (`Int _) | None -> ()
+   | Some _ ->
+       warn "%s has a non-integer schema_version (preserved as-is); muse may reject the file."
+         settings_path);
+  (* Extracted: also re-emitted on the approve-fail flip (below), which
+     merges the fallback after the pre-approve mode check ran. *)
+  let warn_hooks_shapes () =
+    (match List.assoc_opt "hooks" existing_fields with
+     | None | Some (`Assoc _) -> ()
+     | Some _ ->
+         warn "%s has a malformed hooks member (not an object); it will be replaced."
+           settings_path);
+    (match List.assoc_opt "hooks" existing_fields with
+     | Some (`Assoc hooks) ->
+         List.iter
+           (fun ev ->
+              match List.assoc_opt ev hooks with
+              | None | Some (`List _) -> ()
+              | Some _ ->
+                  warn "%s hooks.%s is malformed (not an array); it will be replaced."
+                    settings_path ev)
+           muse_fallback_events
+     | _ -> ())
+  in
+  if hooks_mode = "settings-fallback" then warn_hooks_shapes ();
+  if with_mcp then begin
+    (match List.assoc_opt "mcpServers" existing_fields with
+     | None | Some (`Assoc _) -> ()
+     | Some _ ->
+         warn "%s has a malformed mcpServers member (not an object); it will be replaced."
+           settings_path);
+    (match List.assoc_opt "mcpServers" existing_fields with
+     | Some (`Assoc m) when List.mem_assoc "c2c" m ->
+         warn "%s already has an mcpServers.c2c entry; it will be replaced (no backup is kept)."
+           settings_path
+     | _ -> ());
+    if List.mem_assoc "mcp_servers" existing_fields then
+      warn "%s has a legacy mcp_servers key alongside mcpServers (the muse loader drops the member); c2c will not delete it — remove it yourself."
+        settings_path
+  end;
+  (* Plugin-path success converges a flipped transport back to plugin-only:
+     stale fallback hooks from an earlier gated install are stripped, so a
+     gate flap can never stack two transports firing per event. *)
+  let stripped_settings = strip_muse_settings_hooks_json existing_settings in
+  let strip_changed = stripped_settings <> existing_settings in
+  (* Shared operator file: mode-preserving atomic write (#84). A write
+     failure is a clean error + exit, not an uncaught backtrace — the
+     skill+bundle already landed, so say exactly what is missing. *)
+  (* Warn-once: write_settings can run twice on the approve-fail flip. *)
+  let warned_schema_repair = ref false in
+  let write_settings merged =
+    C2c_io.mkdir_p_dryrun false (Filename.dirname settings_path);
+    (match (try Ok (json_write_file settings_path merged) with Failure e -> Error e) with
+     | Ok () -> ()
+     | Error e ->
+         let msg =
+           Printf.sprintf
+             "could not write %s: %s (skill + plugin bundle were written; settings merge is missing — fix permissions and re-run)."
+             settings_path e
+         in
+         (match output_mode with
+          | Json -> print_json (`Assoc [ ("ok", `Bool false); ("error", `String msg) ])
+          | Human -> Printf.eprintf "error: %s\n%!" msg);
+         exit 1);
+    if not had_schema_version && not !warned_schema_repair then begin
+      warned_schema_repair := true;
+      warn "%s had no schema_version (muse rejects such files as malformed); added schema_version 1."
+        settings_path
     end
   in
-  ignore settings_json;
+  let merged_for = function
+    | "settings-fallback" -> merge_muse_settings_hooks existing_settings
+    (* A strip rewrite still ensures schema_version (same repair rule as
+       the merges), so the "added schema_version" warning stays true. *)
+    | _ -> ensure_muse_schema_version stripped_settings
+  in
+  let with_mcp_applied merged =
+    if with_mcp then
+      build_muse_mcp_config ~root ~alias_val ~server_path ~mcp_command ~alias_from_auto_gen merged
+    else merged
+  in
+  let settings_written = ref false in
+  if dry_run then begin
+    if hooks_mode = "plugin" then
+      Printf.printf "[DRY-RUN] would run: muse plugins install <bundle> + approve c2c (approve runs after the settings write)\n%!";
+    if hooks_mode = "settings-fallback" then
+      Printf.printf "[DRY-RUN] would merge c2c hooks into %s\n%!" settings_path
+    else if strip_changed then
+      Printf.printf "[DRY-RUN] would strip stale c2c hooks from %s\n%!" settings_path;
+    if with_mcp then
+      Printf.printf "[DRY-RUN] would merge mcpServers.c2c into %s\n%!" settings_path
+  end else begin
+    let merged = with_mcp_applied (merged_for hooks_mode) in
+    let wrote = hooks_mode = "settings-fallback" || strip_changed || with_mcp in
+    if wrote then begin
+      write_settings merged;
+      settings_written := true
+    end
+  end;
+  (* Approve LAST (load-bearing order: any settings write after approve
+     resets trust). On approve failure the installed-but-unapproved plugin
+     is inert, so converge to working hooks: merge the fallback now.
+     merge(stripped) = merge(existing) for all hook maps c2c itself
+     produces — the merge strips owned handlers before appending its
+     canonical groups either way. (Precision corner: a HAND-placed owned
+     handler under a foreign event name would survive merge(existing) but
+     not merge(stripped). c2c never writes such a state.) *)
+  let hooks_mode, hooks_detail =
+    if hooks_mode = "plugin" && not dry_run then
+      match muse_plugin_approve ~dry_run:false with
+      | true, _ -> ("plugin", install_detail ^ "+approved")
+      | false, detail ->
+          Printf.eprintf
+            "[c2c WARNING] muse plugin approve failed (%s); falling back to settings.json hooks.\n%!"
+            detail;
+          warn_hooks_shapes ();
+          let fb = with_mcp_applied (merge_muse_settings_hooks existing_settings) in
+          write_settings fb;
+          settings_written := true;
+          ("settings-fallback", detail)
+    else (hooks_mode, install_detail)
+  in
+  let settings_written = !settings_written in
   let artifacts =
     if with_mcp then
       artifacts
@@ -2814,7 +3091,9 @@ let setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mc
        else Printf.printf "  hooks: %s\n" settings_path;
        Printf.printf "  alias hint: %s\n" alias_val;
        Printf.printf "  receive: arm Monitor({ command: \"c2c monitor\", persistent: true })\n";
-       Printf.printf "  Restart Muse (or open a new session) so hooks can auto-register.\n%!"
+       (* The hooks call `c2c hook muse` (B355); until it ships they fail
+          silently (no turn breakage) and auto-register starts with B355. *)
+       Printf.printf "  Restart Muse (or open a new session) so hooks can auto-register (fully live once `c2c hook muse` ships in B355).\n%!"
        (* Shared WARN footer is printed by do_install_client after the summary. *)
    | Json -> ());
   { artifacts; extra_json = extra }

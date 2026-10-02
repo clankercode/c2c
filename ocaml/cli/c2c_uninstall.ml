@@ -291,82 +291,53 @@ let remove_muse_settings_hooks ~dry_run path =
     match read_json_opt path with
     | None -> None
     | Some json ->
-        let is_owned = function
-          | `Assoc hf ->
-              (match List.assoc_opt "command" hf with
-               | Some (`String c) -> c = C2c_setup.muse_hook_command
-               | _ -> false)
-          | _ -> false
-        in
-        let strip_group = function
-          | `Assoc g as grp ->
-              (match List.assoc_opt "hooks" g with
-               | Some (`List hs) ->
-                   let kept = List.filter (fun h -> not (is_owned h)) hs in
-                   if kept = [] then None
-                   else if List.length kept = List.length hs then Some grp
-                   else
-                     Some (`Assoc (("hooks", `List kept) :: List.filter (fun (k, _) -> k <> "hooks") g))
-               | _ -> Some grp)
-          | other -> Some other
-        in
-        let cleaned =
-          match json with
-          | `Assoc fields ->
-              (match List.assoc_opt "hooks" fields with
-               | Some (`Assoc hooks) ->
-                   let events =
-                     List.filter_map
-                       (fun (ev, v) ->
-                          match v with
-                          | `List gs ->
-                              let kept = List.filter_map strip_group gs in
-                              if kept = [] then None else Some (ev, `List kept)
-                          | _ -> Some (ev, v))
-                       hooks
-                   in
-                   (* Order-stable: an untouched hooks map rebuilds to a value
-                      that compares EQUAL to the input, so `cleaned = json`
-                      below is an exact change detector — including in-place
-                      handler filtering, which an entry-count check would
-                      miss. A no-op uninstall never rewrites the file. *)
-                   if events = hooks then json
-                   else if events = [] then
-                     `Assoc (List.filter (fun (k, _) -> k <> "hooks") fields)
-                   else
-                     `Assoc
-                       (List.map
-                          (fun (k, v) ->
-                             if k = "hooks" then (k, `Assoc events) else (k, v))
-                          fields)
-               | _ -> json)
-          | _ -> json
-        in
+        let cleaned = C2c_setup.strip_muse_settings_hooks_json json in
+        (* Order-stable equality is the exact change detector (in-place
+           handler filtering included) — a no-op uninstall never rewrites. *)
         if cleaned = json then None
         else if dry_run then Some path
         else begin
           write_json_atomic path cleaned;
-          Some path
+          (* Verify the write: atomic_write_json swallows I/O errors, and
+             the receipt must not claim a strip that did not land. *)
+          (match read_json_opt path with
+           | Some reread
+             when C2c_setup.strip_muse_settings_hooks_json reread = reread ->
+               Some path
+           | _ -> None)
         end
 
 (* Recursive best-effort removal for exactly one path: muse's own plugin
    cache subtree (cache/local/c2c/). Used only when `plugins remove` could
    not run (muse binary missing) — after a successful CLI remove the dir is
    already gone and this is a no-op. Symlinks are unlinked, never followed. *)
+let lstat_exists path =
+  try ignore (Unix.lstat path); true with _ -> false
+
 let rec remove_tree_best_effort ~dry_run path =
-  if not (Sys.file_exists path) then None
+  (* lstat-based: a dangling symlink reads as absent to Sys.file_exists and
+     would leak (then block the parent rmdir) — lstat sees it. *)
+  if not (lstat_exists path) then None
   else if dry_run then Some path
   else begin
     (try
        match (Unix.lstat path).Unix.st_kind with
        | Unix.S_DIR ->
-           Array.iter
-             (fun child -> ignore (remove_tree_best_effort ~dry_run:false (path // child)))
-             (Sys.readdir path);
-           (try Unix.rmdir path with Unix.Unix_error _ -> ())
-       | _ -> (try Unix.unlink path with Unix.Unix_error _ -> ())
-     with Unix.Unix_error _ -> ());
-    if Sys.file_exists path then None else Some path
+           (* Every fallible step is caught: Sys.readdir raises Sys_error
+              (not Unix_error) on EACCES, and one bad subtree must skip —
+              never abort the walk or crash `uninstall all` mid-list. *)
+           (match (try Some (Sys.readdir path) with _ -> None) with
+            | None -> ()
+            | Some entries ->
+                Array.iter
+                  (fun child ->
+                     try ignore (remove_tree_best_effort ~dry_run:false (path // child))
+                     with _ -> ())
+                  entries);
+           (try Unix.rmdir path with _ -> ())
+       | _ -> (try Unix.unlink path with _ -> ())
+     with _ -> ());
+    if lstat_exists path then None else Some path
   end
 
 (* Drop the "c2c" record from plugins/installed.json ({"version":1,
@@ -393,7 +364,15 @@ let remove_muse_installed_record ~dry_run path =
              if dry_run then Some path
              else begin
                write_json_atomic path cleaned;
-               Some path
+               (* Verify: the receipt must not claim a drop that did not land. *)
+               (match read_json_opt path with
+                | Some (`Assoc top) ->
+                    (match List.assoc_opt "plugins" top with
+                     | Some (`Assoc plugins)
+                       when not (List.mem_assoc C2c_setup.muse_plugin_id plugins) ->
+                         Some path
+                     | _ -> None)
+                | _ -> None)
              end
        | _ -> None)
   | Some _ -> None
