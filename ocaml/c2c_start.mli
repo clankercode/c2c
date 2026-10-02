@@ -149,6 +149,31 @@ val managed_agy_registration_failure_message :
     `agy --conversation`. Instance names and empty strings are false. *)
 val is_agy_conversation_id : string -> bool
 
+(** [register_managed_muse_session ~broker_root ~name ~alias ~pid ~cwd]
+    (B358) registers a managed `c2c start muse` instance on the broker under
+    [session_id = name] and [alias], recording [cwd] and [pid], then READS the
+    registry back to confirm the row persisted. Mirrors
+    {!register_managed_kimi_session}: muse SessionStart is lazy +
+    resume-silent and hook children see a scrubbed env (no [C2C_*]), so the
+    launcher is the only correct identity authority. *)
+val register_managed_muse_session :
+  broker_root:string ->
+  name:string ->
+  alias:string ->
+  pid:int ->
+  cwd:string ->
+  (unit, string) result
+
+(** Operator-facing text for a failed managed-muse registration. Pure; pinned
+    by unit tests. *)
+val managed_muse_registration_failure_message :
+  name:string -> alias:string -> broker_root:string -> reason:string -> string
+
+(** [is_muse_resume_ref s] (B358) is true iff [s] is a plausible
+    `muse resume <session-ref>` (session UUID or Session Name), i.e. any
+    non-empty string. Empty/whitespace is the fresh sentinel, never a ref. *)
+val is_muse_resume_ref : string -> bool
+
 (** [pick_live_registration_sid ~alias ~now regs] is the session_id of the
     MOST-RECENT registration for [alias] that can be corroborated as live
     (any explicit pid still exists, and a timestamp places it inside the

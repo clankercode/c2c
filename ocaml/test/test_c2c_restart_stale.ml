@@ -524,6 +524,42 @@ let test_app_server_busy_fail_closed_unless_force () =
           check_summary forced ~restarted:1 ~would_restart:0
             ~needs_manual_restart:0 ~skipped:0 ~failed:0))
 
+(* B358: a stale muse instance reports guided-manual (idle Unknown,
+   fail-closed — no authoritative TUI signal per B352 U10). #86 shape: the
+   same name exists RUNNING (verdict current) in a decoy dir, so the test
+   fails if restart-stale enumerates anywhere but C2C_INSTANCES_DIR — a
+   stale-in-both-dirs fixture would pass under mis-scoping. *)
+let test_muse_stale_guided_scoped_to_env_dir () =
+  with_temp_dir (fun target ->
+      with_temp_dir (fun decoy ->
+          let stale_pid = spawn_sleeper () in
+          Fun.protect
+            ~finally:(fun () -> kill_and_reap stale_pid)
+            (fun () ->
+              let current_pid = spawn_current_c2c decoy in
+              with_pid current_pid (fun () ->
+                  ignore
+                    (mk_instance target ~name:"zz-muse-stale" ~client:"muse"
+                       ~pid:stale_pid);
+                  ignore
+                    (mk_instance decoy ~name:"zz-muse-stale" ~client:"muse"
+                       ~pid:current_pid);
+                  let rc, j =
+                    run_json ~instances_dir:target ~args:"--dry-run --json"
+                  in
+                  Alcotest.(check int) "exit 0" 0 rc;
+                  check_json_shape ~ok:true ~dry_run:true ~instances:1 j;
+                  let inst = instance "zz-muse-stale" j in
+                  Alcotest.(check string) "verdict is stale" "stale"
+                    (str (member "verdict" inst));
+                  Alcotest.(check string) "Unknown idle is guided-manual"
+                    "guided" (action_kind inst);
+                  Alcotest.(check string) "guided command names the instance"
+                    "c2c restart zz-muse-stale"
+                    (str (member "command" (member "action" inst)));
+                  check_summary j ~restarted:0 ~would_restart:0
+                    ~needs_manual_restart:1 ~skipped:0 ~failed:0))))
+
 let test_app_server_idle_allows_auto () =
   with_temp_dir (fun dir ->
       let pid = spawn_sleeper () in
@@ -566,5 +602,7 @@ let () =
           Alcotest.test_case "app-server busy fail closed unless force" `Quick
             test_app_server_busy_fail_closed_unless_force;
           Alcotest.test_case "app-server idle allows auto" `Quick
-            test_app_server_idle_allows_auto ] )
+            test_app_server_idle_allows_auto;
+          Alcotest.test_case "muse stale guided, scoped to env dir" `Quick
+            test_muse_stale_guided_scoped_to_env_dir ] )
     ]

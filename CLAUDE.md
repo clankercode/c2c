@@ -245,6 +245,7 @@ wake requirement above and #35). Do not over-claim these in docs or to users:
 | Codex (managed/app-server) | **GUARANTEED for local mail** (inject + gated auto-turn); remote/`@host`/`#` fails closed to inject-only |
 | Kimi, agy | **CONDITIONAL** — out-of-process poster alive (REST POST / agentapi) |
 | Claude Code, Grok | **CONDITIONAL** — idle wake only while **`c2c monitor`** is armed; without it NONE at true idle (activity hooks only). First-class clients; never GUARANTEED from c2c alone |
+| Muse | **NONE pre-B361** — the SessionStart hook drains the native row, not the managed alias row, so managed-alias mail needs **`c2c monitor`** or `poll-inbox` even at SessionStart. (Post-B361 adoption: CONDITIONAL like Claude/Grok.) |
 | Codex (vanilla hooks) | **CONDITIONAL** (weak) — `c2c monitor` or legacy `hooks+wake`; else NONE. Prefer managed app-server |
 
 **Primary automatic delivery must not depend on tmux/herdr send-keys.** Guaranteed/CONDITIONAL rows above are plugin, app-server inject, REST, or agentapi. Codex *hooks* Mode_wake_inject (tmux/herdr nudge) is a fallback for unmanaged/hooks sessions only — prefer managed app-server. Kimi optional `C2C_KIMI_TMUX_COMPOSER_WAKE=1` is legacy composer nudge, not the wake path. Matrix: `.collab/research/2026-07-20T11-00-00Z-auto-delivery-no-sendkeys-matrix.md`.

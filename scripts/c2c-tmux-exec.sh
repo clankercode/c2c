@@ -90,7 +90,10 @@ if [[ -n "$pane_pid" ]]; then
 fi
 
 # Classify: is fg_cmd a known TUI process?
-KNOWN_TUIS="opencode kimi claude codex crush bun node"
+# B358: muse's comm is the 15-char-truncated versioned binary name
+# (measured: "muse-bin-1.4.2-"), so it needs a prefix match — an exact
+# entry would rot on every muse release.
+KNOWN_TUIS="opencode kimi claude codex crush bun node muse"
 is_tui=0
 for tui in $KNOWN_TUIS; do
     if [[ "$fg_cmd" == "$tui" || "$fg_cmd" == ".$tui" || "$fg_cmd" == ".opencode" ]]; then
@@ -98,6 +101,9 @@ for tui in $KNOWN_TUIS; do
         break
     fi
 done
+if [[ "$fg_cmd" == muse-bin-* ]]; then
+    is_tui=1
+fi
 
 if [[ $is_tui -eq 1 ]]; then
     echo "c2c-tmux-exec: WARNING pane '$TARGET' foreground='$fg_cmd' (TUI detected)" >&2

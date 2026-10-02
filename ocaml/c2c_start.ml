@@ -1513,7 +1513,11 @@ let normalize_model_override_for_client ~(client : string) (raw : string)
                        "opencode --model requires provider:model or \
                         provider/model input (got %S)"
                        value)))
-    | "claude" | "codex" | "codex-headless" | "kimi" | "crush" ->
+    | "claude" | "codex" | "codex-headless" | "kimi" | "crush" | "muse" ->
+        (* muse (B358): `muse --model` takes a bare model id; a pmodel
+           `provider:model` contributes its model part while the provider
+           stays operator config (no c2c provider knob; pass `--provider`
+           via extra_args when needed). *)
         if String.contains value ':' then
           (match parse_pmodel value with
            | Ok p -> Ok p.model
@@ -1692,6 +1696,17 @@ let () =
   Stdlib.Hashtbl.add clients "agy"
     { binary = "agy"; deliver_client = "agy";
       needs_deliver = true; needs_poker = false;
+      poker_event = None; poker_from = None; extra_env = [] }
+  ;
+  (* muse (B358): delivery rides hook + Monitor floor — but pre-B361 the
+     SessionStart hook drains the NATIVE sid row, not the managed alias
+     row, so managed-alias mail needs `c2c monitor` or poll-inbox even at
+     SessionStart. No sidecar sender exists (B352 D1 BLOCKED, B356 PARKED),
+     so needs_deliver=false (no deliver daemon to start) and
+     needs_poker=false (no poker consumer). *)
+  Stdlib.Hashtbl.add clients "muse"
+    { binary = "muse"; deliver_client = "muse";
+      needs_deliver = false; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
   ;
   (* tmux: generic lifecycle-decoupled delivery to an existing pane. The
@@ -2577,12 +2592,69 @@ let register_managed_agy_session ~(broker_root : string) ~(name : string)
        | Ok true -> Ok ()
        | Ok false -> Error "registry write did not persist the alias")
 
+(* ---------------------------------------------------------------------------
+ * Managed muse broker registration (B358; mirror of #40 for kimi).
+ *
+ * WHY THE LAUNCHER MUST REGISTER: muse SessionStart is LAZY (fires on
+ * first turn submit, not at TUI open) and RESUME-SILENT (never fires on
+ * `resume`) — so the hook can neither register promptly nor at all on
+ * resume. Worse, the B358 live probe (2026-10-02, muse 1.4.2) proved muse
+ * scrubs its env for hook children: the TUI carries C2C_MCP_SESSION_ID but
+ * its SessionStart hook sees NO C2C_* at all. The launcher knows the alias
+ * and outer pid, so it registers eagerly like kimi/agy. Until the B361
+ * adoption arm lands, SessionStart mints a second (competing) row for the
+ * native payload sid — the managed row stays the addressable identity.
+ * --------------------------------------------------------------------------- *)
+
+let managed_muse_registration_failure_message ~(name : string) ~(alias : string)
+    ~(broker_root : string) ~(reason : string) : string =
+  Printf.sprintf
+    "error: c2c start muse: broker registration for alias '%s' FAILED (%s).\n\
+    \  This session is UNREACHABLE: `c2c send %s ...` will report \
+     \"alias '%s' is not registered\".\n\
+    \  Broker root: %s\n\
+    \  Fix: check that the broker dir is writable (`c2c doctor`), then \
+     `c2c stop %s && c2c start muse -n %s`.\n"
+    alias reason alias alias broker_root name name
+
+let register_managed_muse_session ~(broker_root : string) ~(name : string)
+    ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
+  match
+    eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
+      ~cwd ~client_type:"muse" ()
+  with
+  | Error e -> Error e
+  | Ok () ->
+      (match
+         (try
+            let broker = C2c_mcp.Broker.create ~root:broker_root in
+            Ok
+              (List.exists
+                 (fun (r : C2c_mcp.registration) ->
+                    String.lowercase_ascii r.alias
+                    = String.lowercase_ascii alias)
+                 (C2c_mcp.Broker.list_registrations broker))
+          with e -> Error (Printexc.to_string e))
+       with
+       | Error e -> Error ("registry read-back failed: " ^ e)
+       | Ok true -> Ok ()
+       | Ok false -> Error "registry write did not persist the alias")
+
 (* True when [sid] is a real agy conversation UUID that may be passed as
    `agy --conversation <sid>`. Instance names and empty strings are not. *)
 let is_agy_conversation_id (sid : string) : bool =
   match Uuidm.of_string (String.trim sid) with
   | Some _ -> true
   | None -> false
+
+(* True when [s] is a plausible `muse resume <session-ref>`: an exact
+   session UUID or a Session Name (both per `muse resume --help`), i.e. any
+   non-empty string. The agy-#73 lesson (never pass a c2c-minted id as a
+   native id) is enforced structurally, not by shape: fresh managed starts
+   store the empty sentinel (see [cmd_start]), so only an explicit
+   operator-provided `--session-id` ever reaches `muse resume`. *)
+let is_muse_resume_ref (s : string) : bool =
+  String.trim s <> ""
 
 let instance_dir name = instances_dir // name
 
@@ -4956,8 +5028,15 @@ let build_env ?(broker_root_override : string option = None)
   let legacy_native_session_keys =
     [ "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "CODEX_SESSION_ID";
       "CODEX_THREAD_ID"; "OPENCODE_SESSION_ID";
-      "KIMI_SESSION_ID"; "CRUSH_SESSION_ID" ]
+      "KIMI_SESSION_ID"; "CRUSH_SESSION_ID"; "MUSE_SESSION_ID" ]
   in
+  (* B358: MUSE_SESSION_ID is strip-only, deliberately NOT mirrored. It is
+     muse's runtime-provided MCP-server identity (B352 U2) — a static
+     `MUSE_SESSION_ID=<instance-name>` would be wrong (name <> native sid)
+     and could poison the MCP identity path (B354 verdict: never set it
+     statically). The hook accepts it defensively but managed identity
+     travels via C2C_MCP_SESSION_ID + pre-fork registration. Stripping
+     keeps a stale parent value from hijacking the child's session. *)
   (* Always strip C2C_MCP_FORCE_CAPABILITIES from inherited env. For
      client="claude" we re-add it via `additions` above; for any other client
      we want it gone so claude-only capabilities don't leak from the parent
@@ -5212,6 +5291,25 @@ let prepare_launch_args ~(name : string) ~(client : string)
         let module A = (val (Stdlib.Hashtbl.find client_adapters "agy") : CLIENT_ADAPTER) in
         A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
           ~extra_args:extra_args ~alias_from_auto_gen ()
+    | "muse" ->
+        (* Muse kickoff is a positional [PROMPT] submitted as the first turn
+           live (B352 P6) — claude/codex shape. Fresh spawns only: resumed
+           sessions already carry their instructions (and SessionStart is
+           resume-silent, so no re-onboarding would fire anyway). *)
+        let module A = (val (Stdlib.Hashtbl.find client_adapters "muse") : CLIENT_ADAPTER) in
+        let kickoff_args =
+          match kickoff_prompt with
+          | Some p when p <> "" -> (
+              (* Same resume predicate as MuseAdapter: `Some ""` is fresh
+                 (no `resume` emitted), so it keeps its kickoff. *)
+              match resume_session_id with
+              | Some s when is_muse_resume_ref s -> []
+              | _ -> [ p ])
+          | _ -> []
+        in
+        (A.build_start_args ~name ?alias_override ?model_override ?resume_session_id
+           ~extra_args:extra_args ~alias_from_auto_gen ())
+        @ kickoff_args
     | "codex-headless" ->
         [ "--stdin-format"; "xml";
           "--codex-bin"; "codex";
@@ -5670,6 +5768,84 @@ end
 
 let () = Stdlib.Hashtbl.add client_adapters "agy" (module AgyAdapter)
 
+module MuseAdapter : CLIENT_ADAPTER = struct
+  let name = "muse"
+
+  (* Muse project skills live under <ws>/.agents/skills/<id>/SKILL.md (B352
+     U8); user scope aggregates ~/.agents/skills and ~/.claude/skills. *)
+  let config_dir = ".agents"
+  let agent_dir = "skills"
+  let instances_subdir = "muse"
+
+  let binary = "muse"
+  let needs_deliver = false
+  let needs_poker = false
+  let poker_event = None
+  let poker_from = None
+  let extra_env = []
+
+  (* No native mirror: MUSE_SESSION_ID is runtime-provided by muse for MCP
+     servers (B352 U2); a static value would be wrong and could poison the
+     MCP identity path (B354). Managed identity uses C2C_MCP_SESSION_ID. *)
+  let session_id_env = None
+
+  let build_start_args ~name ?alias_override:_ ?model_override
+      ?resume_session_id ?(extra_args = []) ?alias_from_auto_gen:_ () =
+    ignore name;
+    ignore extra_args;
+    (* Binding B352 P6 shape: `[muse] + resume? + --trust-workspace +
+       approval flags + [--model] + [positional kickoff]`.
+       - resume: `resume <uuid|name>` restores the transcript in place;
+         SessionStart is resume-silent, so resumes suppress the kickoff
+         (done in [prepare_launch_args], claude/codex parity). Only an
+         explicit operator ref ever arrives here (empty sentinel = fresh).
+       - `--trust-workspace`: without it an interactive trust gate blocks a
+         headless managed pane.
+       - `--approval-mode never`: managed panes have no human to click
+         allow (kimi-`--yolo` posture, sandbox left ON). Deliberately NOT
+         `--disable-approval`: no sidecar sender exists to exploit it, and
+         P1 shows it auto-admits peer session messages (B098-safe per P2,
+         but unnecessary surface).
+       - provider: no c2c knob; the operator's muse config decides, or
+         pass `--provider` via extra_args (`c2c start muse -- --provider
+         echo`). Never pass `--no-session-log` (disables local messaging).
+       - kickoff: positional PROMPT is submitted as the first turn live —
+         no bootstrap typing needed (contrast agy #78). *)
+    let base =
+      match resume_session_id with
+      | Some sid when is_muse_resume_ref sid ->
+          [ "resume"; String.trim sid ]
+      | _ -> []
+    in
+    let flags = [ "--trust-workspace"; "--approval-mode"; "never" ] in
+    let model =
+      match model_override with
+      | Some m when String.trim m <> "" -> [ "--model"; String.trim m ]
+      | _ -> []
+    in
+    base @ flags @ model
+
+  let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_
+      ~instances_dir:_ ~agent_name:_ =
+    (* Muse configures itself via C2C_MCP_* env vars injected at launch;
+       no per-launch config-file update is required. *)
+    ()
+
+  let probe_capabilities ~binary_path:_ =
+    (* No muse-specific capabilities: no sidecar wake (B356 PARKED), MCP
+       pending B357. *)
+    []
+
+  (* Kickoff rides the positional [PROMPT] argv element appended in
+     [prepare_launch_args] (see the "muse" branch there), same pattern as
+     claude/codex. This contract method exists to satisfy the
+     CLIENT_ADAPTER signature uniformly. *)
+  let deliver_kickoff ~name:_ ~alias:_ ~kickoff_text:_ ?broker_root:_ () =
+    Ok []
+end
+
+let () = Stdlib.Hashtbl.add client_adapters "muse" (module MuseAdapter)
+
 (* #143: top-level helper that dispatches kickoff delivery to the
    registered [CLIENT_ADAPTER] for [client], or returns [Ok []] if no
    adapter is registered.  Exposed in [c2c_start.mli] so unit tests can
@@ -5853,6 +6029,12 @@ let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
          | _ when has C2c_capability.Pty_inject -> "native_pty_fallback"
          | _ -> "plugin_stale_no_fallback")
   | "kimi" -> "notifier"
+  (* muse (B358): "hooks" posture class (no wake target), same as codex —
+     but pre-B361 the SessionStart hook drains the NATIVE sid row, not the
+     managed alias row, so managed-alias mail needs Monitor or poll-inbox
+     even at SessionStart. No install check here: kimi's "notifier" is
+     likewise unconditional. *)
+  | "muse" -> "hooks"
   | "codex" ->
       (* Hooks (config.toml, `c2c hook codex`) are the codex delivery path;
          the old xml_fd sideband is gone (upstream removed --xml-input-fd)
@@ -6499,6 +6681,19 @@ let run_outer_loop ~(name : string) ~(client : string)
          name; kernel releases on exit so no stale-lock cleanup needed.
          _lock_fd must stay in scope to hold the lock for the outer lifetime. *)
       let _lock_fd = acquire_instance_lock ~name in
+      (* B362: the outer MUST publish its paired generation record. The lock
+         above writes outer.pid only; without the .start-time sidecar every
+         `c2c stop`/`restart` on this instance fails closed with "cannot
+         trust the paired outer PID lifecycle records" (read_pid_record maps
+         (Regular, Absent) to Pid_record_unknown). The tmux loop already
+         does this exact sequence; the generic outer loop never did, which
+         made every harness-client instance unstoppable. [stop_instance]
+         and the outer-exit cleanup below already consume/remove the pair.
+         Recovery for live pair-less outers predating this fix (stop keeps
+         failing closed on them): SIGTERM the outer pid — its handler
+         tears down the inner + sidecars itself — then start fresh. *)
+      write_pid_generation ~pid_path:(outer_pid_path name)
+        ~start_time_path:(outer_pid_start_time_path name) (Unix.getpid ());
 
       let deliver_pid = ref None in
       let poker_pid = ref None in
@@ -7035,6 +7230,45 @@ let run_outer_loop ~(name : string) ~(client : string)
          if String.lowercase_ascii alias <> String.lowercase_ascii name then
            Printf.eprintf
              "note: c2c start agy: instance name '%s' is not the broker \
+              alias — peers must address '%s' (`c2c send %s ...`); \
+              `c2c stop`/`c2c restart` still take '%s'.\n%!"
+             name alias alias name
+       end);
+      (* Managed muse (B358): same pre-fork register as kimi/agy. SessionStart
+         is lazy + resume-silent and the hook env is scrubbed (see
+         [register_managed_muse_session]), so without this the alias stays
+         dead until a hook fire that may never resolve to us. Outer pid is
+         the liveness signal (same rationale as kimi). *)
+      (if client = "muse" then begin
+         let alias = Option.value alias_override ~default:name in
+         let cwd = try Sys.getcwd () with _ -> "" in
+         (match
+            register_managed_muse_session ~broker_root ~name ~alias
+              ~pid:(Unix.getpid ()) ~cwd
+          with
+          | Ok () -> ()
+          | Error reason ->
+              let msg =
+                managed_muse_registration_failure_message ~name ~alias
+                  ~broker_root ~reason
+              in
+              prerr_string msg;
+              flush stderr;
+              (try
+                 Broker_log.append_json ~broker_root
+                   ~json:(`Assoc
+                      [ ("event", `String "managed_registration_failed")
+                      ; ("ts", `Float (Unix.gettimeofday ()))
+                      ; ("client", `String "muse")
+                      ; ("instance", `String name)
+                      ; ("alias", `String alias)
+                      ; ("reason", `String reason)
+                      ; ("detail", `String (String.trim msg)) ])
+               with _ -> ());
+              managed_registration_failed := true);
+         if String.lowercase_ascii alias <> String.lowercase_ascii name then
+           Printf.eprintf
+             "note: c2c start muse: instance name '%s' is not the broker \
               alias — peers must address '%s' (`c2c send %s ...`); \
               `c2c stop`/`c2c restart` still take '%s'.\n%!"
              name alias alias name
@@ -8001,6 +8235,19 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
          Printf.eprintf "error: --session-id for claude must be a non-empty session id\n%!";
          exit 1
        end
+   | Some sid when client = "muse" ->
+       (* muse refs are UUIDs or free-form Session Names (`muse resume
+          --help`): any non-blank value is a plausible ref, and the empty
+          string is the fresh sentinel (`c2c restart` re-passes it) —
+          accept both, resume only non-blank. A whitespace typo is
+          neither: reject it loudly instead of silently starting fresh.
+          agy-#73 holds structurally: only this explicit operator value
+          ever reaches `muse resume`; fresh starts store "". *)
+       if sid <> "" && String.trim sid = "" then begin
+         Printf.eprintf
+           "error: --session-id for muse must be a non-blank session ref or \"\"\n%!";
+         exit 1
+       end
    | Some sid ->
        (match Uuidm.of_string sid with
         | Some _ -> ()
@@ -8200,6 +8447,13 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
              | None when is_agy_conversation_id ex.resume_session_id ->
                  Some ex.resume_session_id
              | None -> None)
+          else if client = "muse" then
+            (* Muse stores "" for fresh starts, so any stored non-empty value
+               is operator-provided (never c2c-minted) and safe to resume.
+               Trim at the boundary so config round-trips what argv runs. *)
+            (if is_muse_resume_ref ex.resume_session_id then
+               Some (String.trim ex.resume_session_id)
+             else None)
           else
             match Uuidm.of_string ex.resume_session_id with
             | Some _ -> Some ex.resume_session_id
@@ -8220,6 +8474,10 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
               (* Empty sentinel: AgyAdapter omits --conversation so agy mints a
                  new conversation and SessionStart can fire. *)
               Some ""
+            else if client = "muse" then
+              (* Empty sentinel: MuseAdapter omits `resume` so muse mints a
+                 fresh session and lazy SessionStart can fire. *)
+              Some ""
             else
               Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))
           end else
@@ -8230,6 +8488,11 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
               (match rs_valid with Some v -> Some v | None -> Some "")
           | "agy", Some s when is_agy_conversation_id s -> Some s
           | "agy", Some _ -> Some ""
+          | "muse", None ->
+              (match rs_valid with Some v -> Some v | None -> Some "")
+          | "muse", Some s when is_muse_resume_ref s ->
+              Some (String.trim s)
+          | "muse", Some _ -> Some ""
           | _, Some s -> Some s
           | _, None ->
               (match ses_id_from_file with
@@ -8261,6 +8524,9 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
           | "agy", None -> ""
           | "agy", Some s when is_agy_conversation_id s -> s
           | "agy", Some _ -> ""
+          | "muse", None -> ""
+          | "muse", Some s when is_muse_resume_ref s -> String.trim s
+          | "muse", Some _ -> ""
           | _, Some s -> s
           | _, None ->
             if client = "claude" then
@@ -8301,7 +8567,12 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
 
   let cfg : instance_config = {
     name; client; session_id = name;
-    resume_session_id = Option.value resume_session_id ~default:name;
+    (* Fail-closed default: for muse/agy a leaked None must mean FRESH
+       (""), never `resume <c2c-name>` — is_muse_resume_ref accepts any
+       non-blank string, so ~default:name would resume garbage. *)
+    resume_session_id =
+      Option.value resume_session_id
+        ~default:(if client = "muse" || client = "agy" then "" else name);
     codex_resume_target;
     alias = Option.value alias_override ~default:name;
     extra_args;
@@ -8336,12 +8607,16 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
      without `--session` and let Kimi Code mint its own CLI/TUI session id.
      For agy: only a real conversation UUID is a resume target; non-UUIDs
      (including the instance name default) must become None so AgyAdapter
-     omits `--conversation` and SessionStart can fire. *)
+     omits `--conversation` and SessionStart can fire.
+     For muse (B358): only an explicit operator ref (UUID or session name)
+     resumes; the empty fresh sentinel becomes None so MuseAdapter omits
+     `resume` and lazy SessionStart can fire. *)
   let launch_resume_session_id =
     match client, cfg.resume_session_id with
     | "codex-headless", sid when String.trim sid = "" -> None
     | "kimi", sid when String.trim sid = "" -> None
     | "agy", sid when not (is_agy_conversation_id sid) -> None
+    | "muse", sid when not (is_muse_resume_ref sid) -> None
     | _, sid -> Some sid
   in
 
@@ -8497,10 +8772,22 @@ let stop_instance (name : string) : stop_outcome =
   let remove_outer_records = function
     | None -> true
     | Some (pid, start_time) ->
-        remove_pid_record_pair_confirmed
-          ~pid_path:(outer_pid_path name)
-          ~start_time_path:(outer_pid_start_time_path name)
-          ~pid ~start_time
+        (* B362: the outer's SIGTERM handler removes its own pair during
+           teardown, and stop waits for the outer exit before reaching here
+           — so an already-absent pair is the handler's completed work, not
+           uncertainty (same precedent as [path_absent_confirmed] for the
+           inner records below). Only a TORN pair (one half present) stays
+           strict: content-pinned removal fails closed on mismatch. *)
+        (match
+           lifecycle_path_state (outer_pid_path name)
+         , lifecycle_path_state (outer_pid_start_time_path name)
+         with
+         | Lifecycle_path_absent, Lifecycle_path_absent -> true
+         | _ ->
+             remove_pid_record_pair_confirmed
+               ~pid_path:(outer_pid_path name)
+               ~start_time_path:(outer_pid_start_time_path name)
+               ~pid ~start_time)
   in
   let cleanup ~stopped ~outer_record : stop_outcome =
     let sidecars_ok = stop_codex_session_sidecars () in
@@ -8717,6 +9004,16 @@ let cmd_restart ?(session_id_override : string option)
           | "codex-headless" -> { cfg with resume_session_id = sid }
           | "claude" | "opencode" | "kimi" | "crush" ->
               { cfg with resume_session_id = sid }
+          | "muse" ->
+              (* Mirror the start-time validation: restart bypasses it, so
+                 a whitespace typo would otherwise store-and-silently-fresh.
+                 Trim at storage so config round-trips what argv runs. *)
+              if sid <> "" && String.trim sid = "" then begin
+                Printf.eprintf
+                  "error: --session-id for muse must be a non-blank session ref or \"\"\n%!";
+                exit 1
+              end;
+              { cfg with resume_session_id = String.trim sid }
           | _ -> cfg
         in
         { updated with last_launch_at = Some (Unix.gettimeofday ()) }

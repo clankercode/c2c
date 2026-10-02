@@ -69,6 +69,28 @@ let test_muse_none_both_contexts () =
   Alcotest.(check bool) "install has Monitor recipe" true (has_monitor_recipe i);
   Alcotest.(check bool) "managed has Monitor recipe" true (has_monitor_recipe m)
 
+(* B358: managed muse keeps NONE + manual (hooks are activity-only, no
+   out-of-process sender) and states the interim truth: pre-B361 the
+   SessionStart hook drains the NATIVE row, not the managed alias row, so
+   managed-alias mail needs Monitor or poll-inbox even at SessionStart. *)
+let test_muse_managed_names_hook_posture () =
+  let m = C2c_wake_guidance.advice ~client:"muse" ~context:`Managed_start in
+  let contains hay needle =
+    let hl = String.length hay and nl = String.length needle in
+    nl <= hl
+    && (let rec loop k =
+          k + nl <= hl
+          && (String.sub hay k nl = needle || loop (k + 1))
+        in
+        loop 0)
+  in
+  Alcotest.(check bool) "primary names B361 interim" true
+    (contains m.primary "B361");
+  Alcotest.(check bool) "primary names Monitor" true
+    (contains m.primary "Monitor");
+  Alcotest.(check bool) "warns no auto-drain pre-B361" true
+    (List.exists (fun s -> contains s "does NOT auto-drain") m.warning_lines)
+
 let () =
   Alcotest.run "c2c_wake_guidance"
     [ ( "advice",
@@ -85,5 +107,7 @@ let () =
             test_agy_install_manual_managed_not
         ; Alcotest.test_case "grok manual" `Quick test_grok_manual
         ; Alcotest.test_case "muse none both contexts" `Quick
-            test_muse_none_both_contexts ] )
+            test_muse_none_both_contexts
+        ; Alcotest.test_case "muse managed names hook posture" `Quick
+            test_muse_managed_names_hook_posture ] )
     ]
