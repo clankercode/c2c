@@ -211,6 +211,11 @@ let test_daemon_frontend_clears_app_server_marker () =
     ; "C2C_CODEX_MANAGED=1"
     ; "C2C_CODEX_INSTANCE_NAME=codex-instance" ] env
 
+let test_daemon_frontend_receives_launcher_workspace () =
+  Alcotest.(check (list string)) "remote frontend gets explicit launcher cwd"
+    [ "--cd"; "/home/xertrov/src/c2c" ]
+    (S.daemon_frontend_workspace_args ~cwd:"/home/xertrov/src/c2c")
+
 let test_daemon_attach_requires_pidfd_and_exact_generation () =
   Alcotest.(check bool) "all prerequisites select daemon attach" true
     (S.daemon_attach_safe_to_start ~socket_available:true
@@ -253,6 +258,28 @@ let test_daemon_thread_handoff_rejects_fractional_generation () =
       Alcotest.(check (option string))
         "fractional parent generation is unknown" None
         (S.daemon_thread_handoff_matches ~path ~frontend_pid:pid))
+
+let test_sentinel_join_failure_cleanup_is_synchronous () =
+  let frontend = Unix.fork () in
+  if frontend = 0 then begin
+    while true do Unix.sleep 60 done
+  end else begin
+    let sentinel = Unix.fork () in
+    if sentinel = 0 then begin
+      while true do Unix.sleep 60 done
+    end else begin
+      let frontend_start = B.read_pid_start_time frontend in
+      let sentinel_start = B.read_pid_start_time sentinel in
+      S.cleanup_after_sentinel_join_failure
+        ~frontend_pid:frontend ~frontend_start_time:frontend_start
+        ~sentinel_pid:sentinel ~sentinel_start_time:sentinel_start;
+      let gone pid =
+        match B.read_pid_start_time pid with None -> true | Some _ -> false
+      in
+      Alcotest.(check bool) "frontend exact owner cleaned" true (gone frontend);
+      Alcotest.(check bool) "sentinel exact owner cleaned" true (gone sentinel)
+    end
+  end
 
 let test_stop_frontend_kills_group_after_leader_reaped () =
   (* The frontend leader can exit cleanly while a shell/inner Codex descendant
@@ -1967,6 +1994,8 @@ let () =
             test_app_server_frontend_identity_env
         ; test_case "daemon frontend clears app-server marker" `Quick
             test_daemon_frontend_clears_app_server_marker
+        ; test_case "daemon frontend receives launcher workspace" `Quick
+            test_daemon_frontend_receives_launcher_workspace
         ; test_case "daemon attach gates on pidfd and generation" `Quick
             test_daemon_attach_requires_pidfd_and_exact_generation
         ; test_case "daemon handoff rejects fractional generation" `Quick
@@ -1974,7 +2003,9 @@ let () =
         ; test_case "stop kills descendants after leader is reaped" `Quick
             test_stop_frontend_kills_group_after_leader_reaped
         ; test_case "stop rejects missing generation after group disappearance" `Quick
-            test_stop_frontend_missing_generation_fails_closed ] )
+            test_stop_frontend_missing_generation_fails_closed
+        ; test_case "sentinel join failure cleans exact owners" `Quick
+            test_sentinel_join_failure_cleanup_is_synchronous ] )
     ; ( "yolo",
         [ test_case "forwards bypass" `Quick test_yolo_forwards_bypass
         ; test_case "absent by default" `Quick test_yolo_absent_by_default ] )
