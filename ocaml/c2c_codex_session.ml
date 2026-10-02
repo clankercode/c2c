@@ -1283,6 +1283,19 @@ let load_mapping ~instance_dir : mapping option =
        | _ -> None)
   | Some _ -> None
 
+type mapping_read_state =
+  | Mapping_missing
+  | Mapping_loaded of mapping
+  | Mapping_unreadable
+
+let load_mapping_state ~instance_dir : mapping_read_state =
+  let path = mapping_path ~instance_dir in
+  if not (Sys.file_exists path) then Mapping_missing
+  else
+    match load_mapping ~instance_dir with
+    | Some mapping -> Mapping_loaded mapping
+    | None -> Mapping_unreadable
+
 (* A B227 fallback can reach the hook-backed launcher before this app-server
    path has written its fresh config/mapping.  Remove the exact dead target from
    the previous managed state first, so that fallback cannot reload it and issue
@@ -1317,33 +1330,44 @@ let clear_unpersisted_resume_target ~(name : string) ~(instance_dir : string)
    freely). This is orthogonal to the "never steal a thread already registered
    by vanilla codex" guard elsewhere: here we only stop two *managed* units from
    both minting a binding for one thread. *)
-let live_sibling_owns_thread ~broker_root ~self_name ~thread_id : bool =
+let live_sibling_owns_thread ~broker_root ~self_name ~thread_id : (bool, unit) result =
   let instances_dir = C2c_mcp_helpers_post_broker.managed_instances_dir () in
-  if not (Sys.file_exists instances_dir && Sys.is_directory instances_dir) then false
+  if not (Sys.file_exists instances_dir) then Ok false
   else
-    let regs =
-      try C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:broker_root)
-      with _ -> []
-    in
-    let entries = try Array.to_list (Sys.readdir instances_dir) with _ -> [] in
-    List.exists
-      (fun entry ->
-        if entry = self_name then false
-        else
-          let dir = Filename.concat instances_dir entry in
-          if not (Sys.file_exists dir && Sys.is_directory dir) then false
-          else
-            match load_mapping ~instance_dir:dir with
-            | Some m when m.thread_id = Some thread_id ->
-                (match
-                   List.find_opt
-                     (fun (r : C2c_mcp.registration) -> r.session_id = m.session_id)
-                     regs
-                 with
-                 | Some r -> C2c_mcp.Broker.registration_is_alive r
-                 | None -> false)
-            | _ -> false)
-      entries
+    try
+      if not (Sys.is_directory instances_dir) then Error ()
+      else
+        let regs =
+          C2c_mcp.Broker.list_registrations
+            (C2c_mcp.Broker.create ~root:broker_root)
+        in
+        let entries = Array.to_list (Sys.readdir instances_dir) in
+        let rec check = function
+          | [] -> Ok false
+          | entry :: rest
+            when entry = self_name || entry = ".codex-thread-ownership.lock" ->
+              check rest
+          | entry :: rest ->
+              let dir = Filename.concat instances_dir entry in
+              if not (Sys.file_exists dir) then check rest
+              else if not (Sys.is_directory dir) then Error ()
+              else
+                match load_mapping_state ~instance_dir:dir with
+                | Mapping_missing -> check rest
+                | Mapping_unreadable -> Error ()
+                | Mapping_loaded m when m.thread_id <> Some thread_id -> check rest
+                | Mapping_loaded m ->
+                    (match
+                       List.find_opt
+                         (fun (r : C2c_mcp.registration) ->
+                           r.session_id = m.session_id)
+                         regs
+                     with
+                     | Some r when C2c_mcp.Broker.registration_is_alive r -> Ok true
+                     | Some _ | None -> check rest)
+        in
+        check entries
+    with _ -> Error ()
 
 (* Returns [true] when the thread is (or was already) bound to this unit, and
    [false] when persistence was REFUSED because a live managed sibling already
@@ -1383,20 +1407,21 @@ let persist_discovered_thread_with_hook ~before_mapping_write
      is deliberately NOT swallowed — that IS binding-state uncertainty.) *)
   let repair_config () = try repair_config () with _ -> () in
   let result = with_thread_ownership_lock (fun () ->
-    let mapping = load_mapping ~instance_dir in
-    let already_ours =
-      match mapping with Some m -> m.thread_id = Some thread_id | None -> false
-    in
-    if already_ours then true
-    else if live_sibling_owns_thread ~broker_root ~self_name:name ~thread_id then false
-    else
-      match mapping with
-      | Some m when m.thread_id <> Some thread_id ->
+    let mapping_state = load_mapping_state ~instance_dir in
+    match mapping_state with
+    | Mapping_unreadable -> false
+    | Mapping_loaded mapping when mapping.thread_id = Some thread_id -> true
+    | (Mapping_missing | Mapping_loaded _) ->
+      (match live_sibling_owns_thread ~broker_root ~self_name:name ~thread_id with
+       | Error () | Ok true -> false
+       | Ok false ->
+         match mapping_state with
+         | Mapping_loaded m ->
           before_mapping_write ();
           write_mapping ~instance_dir
             { m with thread_id = Some thread_id;
                      updated_at = Unix.gettimeofday () }
-      | None ->
+         | Mapping_missing ->
           (* A fresh daemon remote TUI has no codex-session.json yet. The
              SessionStart hook is the first trusted observer of its native
              thread, so create the durable mapping from the launcher's already
@@ -1411,7 +1436,7 @@ let persist_discovered_thread_with_hook ~before_mapping_write
                    thread_id = Some thread_id; created_at = cfg.created_at;
                    updated_at = Unix.gettimeofday () }
            | _ -> false)
-      | _ -> false)
+         | Mapping_unreadable -> false))
   in
   if result then repair_config ();
   result
@@ -2478,10 +2503,34 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          identity record; the broker registration is the in-flight routing entry. *)
       let created =
         match load_mapping ~instance_dir with Some m -> m.created_at | None -> now in
-      ignore (write_mapping ~instance_dir
-        { session_id; alias;
-          thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
-          created_at = created; updated_at = now });
+      let mapping_persisted =
+        write_mapping ~instance_dir
+          { session_id; alias;
+            thread_id = (match handle_thread handle with Some t -> Some t | None -> thread);
+            created_at = created; updated_at = now }
+      in
+      if not mapping_persisted then begin
+        (* A running private app-server without a durable identity is not a
+           managed session: stop it before publishing any broker ownership. *)
+        emit_app_server_log
+          (Printf.sprintf
+             "app-server launch failed: durable identity mapping could not be persisted (c2c-alias=%s)"
+             alias);
+        (try C2c_codex_app_server.stop handle with _ -> ());
+        (match C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()) with
+         | Some start_time ->
+             if not
+                  (C2c_start.remove_pid_record_pair_confirmed
+                     ~pid_path:(C2c_start.outer_pid_path name)
+                     ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+                     ~pid:(Unix.getpid ()) ~start_time) then
+               Printf.eprintf
+                 "c2c codex: retaining lifecycle records after mapping failure; cleanup was not confirmed\n%!"
+         | None ->
+             Printf.eprintf
+               "c2c codex: retaining lifecycle records after mapping failure; launcher generation unavailable\n%!");
+        1
+      end else begin
       (* B172: bind the banner alias into the broker before the operator can
          interact (init-equivalent of `c2c init --alias <generated> --no-setup`
          on the launcher session_id).  Do this immediately after start returns
@@ -2579,6 +2628,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
            emit_app_server_log "app-server died; session torn down.";
            1
        | _ -> 0)
+      end
   end
 
 (* The emergency hook-backed route bypasses [run_app_server], but it is still a

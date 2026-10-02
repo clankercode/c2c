@@ -270,10 +270,13 @@ def run_live() -> int:
     pane = None
     window = f"b144-appserver-{tag}"
     try:
-        # 1. launch the managed supervisor in a dedicated tmux window. Export the
-        #    isolated broker root so it registers there; force the app-server
-        #    path is the default on a supported codex (no flag needed).
-        res = tmux("new-window", "-d", "-c", str(REPO_ROOT), "-n", window,
+        # 1. Launch the managed supervisor from a deliberately different shell
+        #    directory. The launcher must pass its actual workspace to a daemon
+        #    remote frontend; using the daemon's process cwd would reproduce the
+        #    split-brain failure this E2E guards.
+        launcher_cwd = Path(os.environ.get("C2C_APPSERVER_E2E_LAUNCHER_CWD", "/tmp"))
+        launcher_cwd.mkdir(parents=True, exist_ok=True)
+        res = tmux("new-window", "-d", "-c", str(launcher_cwd), "-n", window,
                    "-P", "-F", "#{pane_id}", "bash", check=False)
         pane = res.stdout.strip()
         if not pane:

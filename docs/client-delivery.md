@@ -368,9 +368,11 @@ can deliver mail. On the private per-session fallback, the frontend inherits
 `C2C_CODEX_APPSERVER_SESSION` and the hook adopts that identity. On the machine
 daemon path, that marker is deliberately empty: the launcher discovers the
 loaded native thread after the remote frontend starts and arms the sidecar
-itself. The sidecar claims that exact thread before it drains or injects;
-`SessionStart` remains an identity/fallback hook and does not own this lease.
-Both paths have one delivery owner, so
+itself. The sidecar claims that exact thread before it drains or injects. In
+the explicitly authorized compatibility hook path, `SessionStart` may arm the
+sidecar only after it has durably persisted the native thread mapping; a failed
+or uncertain mapping remains on hook fallback and never becomes ingress
+ownership. Both paths have one delivery owner, so
 `c2c list` shows one identity per session and a second frontend cannot steal the
 thread by sharing a c2c UUID.
 

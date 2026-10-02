@@ -1053,7 +1053,7 @@ let hook_codex_cmd =
                 && codex_app_server_registration_live ~session_id ~regs -> true
          | _ -> false
        in
-       let _daemon_thread_mapping_proven =
+       let daemon_thread_mapping_proven =
          match Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME", payload_sid with
          | Some instance_name, Some thread_id when daemon_owner_proven ->
              (try
@@ -1073,11 +1073,19 @@ let hook_codex_cmd =
        let daemon_attach_requested =
          match Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME" with
          | Some instance_name when String.trim instance_name <> "" ->
-             if Option.is_some handoff_proof then daemon_owner_proven
+             if Option.is_some handoff_proof then
+               daemon_owner_proven && daemon_thread_mapping_proven
              else
                codex_daemon_attach_authorized ~handoff_proof ~instance_name
                  ~session_id ~thread_id:daemon_thread_hint ~regs
          | _ -> false
+       in
+       (* A proven launcher owner with an uncertain durable mapping is never
+          eligible for compatibility sidecar ownership. The launcher or a
+          later retry must repair the mapping first; registration alone is not
+          enough to make this hook an ingress owner. *)
+       let daemon_mapping_uncertain =
+         daemon_owner_proven && not daemon_thread_mapping_proven
        in
        let sidecar_arm_failed = ref false in
        let sidecar_arm_ownership_retained = ref false in
@@ -1206,6 +1214,7 @@ let hook_codex_cmd =
          if daemon_sidecar_owns
             || !sidecar_arm_ownership_retained
             || codex_hook_fallback_blocked ~broker_root ~session_id then true
+         else if daemon_mapping_uncertain then false
          else
            (not !sidecar_arm_failed)
            && not (codex_hook_fallback_active ~broker_root ~session_id)
