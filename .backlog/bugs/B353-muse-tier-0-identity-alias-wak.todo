@@ -68,3 +68,5 @@ provisional values, finalized after the P3 verdict).
   send-sniff test, wake-guidance pure tests
   (`test_c2c_wake_guidance.ml` arms), blocklist tests.
 - Live proof: muse↔claude (or codex) poll round-trip recorded.
+
+Acceptance hygiene (parent review): provisional-arms line resolves to confirmed-kept per B352 P3 U2; stale PROVISIONAL comments refreshed post-merge. M3 (wake-arm surfacing) + M5 (init --with-mcp message) remain as future follow-ups.
