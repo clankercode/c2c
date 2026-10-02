@@ -1537,7 +1537,6 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
                              || config.config_resume_target = Some thread_id
                            in
                            if config.config_name = name
-                              && config.config_alias = name
                               && (match config.config_broker_root with
                                   | None -> true
                                   | Some root -> root = broker_root)
@@ -1910,6 +1909,16 @@ let auto_register_alias_from_auto_gen () =
   | Some value when String.trim value = "1" -> true
   | _ -> false
 
+(* A private managed Codex app-server frontend inherits the launcher's static
+   alias hint before the launcher has authenticated and proved its native
+   thread.  The launcher is the sole owner of that identity: allowing the
+   generic MCP startup path to register first creates a routable row during
+   the unproven window and can race the launcher's post-proof registration. *)
+let managed_codex_app_server_session () =
+  match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
+  | Some sid when String.trim sid <> "" -> Some (String.trim sid)
+  | _ -> None
+
   let current_client_pid () =
     match Sys.getenv_opt "C2C_MCP_CLIENT_PID" with
     | Some value ->
@@ -2139,6 +2148,14 @@ let self_managed_kimi_row ?session_id_override broker =
               | _ -> None))
 
 let auto_register_impl ~broker_root ?session_id_override () =
+  match managed_codex_app_server_session () with
+  | Some session_id ->
+      (try
+         Printf.eprintf
+           "[auto_register_startup] codex app-server session %S: waiting for +            launcher thread proof; generic MCP registration suppressed.\n%!"
+           session_id
+       with _ -> ())
+  | None ->
   match auto_register_alias () with
   | None -> ()
   | Some env_alias ->

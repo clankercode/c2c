@@ -2733,10 +2733,11 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
        with _ -> ());
       (* Session is up and attached. Persist the identity mapping — the
          authoritative alias<->session record that `c2c instances`/status read.
-         B131: the derived alias becomes a LIVE, routable broker alias below —
-         [run_delivery_loop] registers it into the broker on entry and tears the
-         registration down on TUI exit. The mapping persisted here is the durable
-         identity record; the broker registration is the in-flight routing entry. *)
+         B131: the derived alias becomes a LIVE, routable broker alias only after
+         [run_delivery_loop] proves the frontend's authenticated native thread;
+         it tears the registration down on TUI exit. The mapping persisted here
+         is the durable identity record; the broker registration is the in-flight
+         routing entry. *)
       let created =
         match load_mapping ~instance_dir with Some m -> m.created_at | None -> now in
       let mapping_persisted =

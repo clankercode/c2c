@@ -15,7 +15,8 @@ let () =
     ; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"; "C2C_OPENCODE_SESSION_ID"
     ; "GROK_SESSION_ID"; "GROK_AGENT"; "C2C_GROK_ACTIVE_SESSIONS"
     ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"; "CURSOR_ASKPASS_SOCKET"
-    ; "MUSE_SESSION_ID" ]
+    ; "MUSE_SESSION_ID"; "C2C_CODEX_APPSERVER_SESSION"; "C2C_CODEX_MANAGED"
+    ; "C2C_CODEX_INSTANCE_NAME" ]
 
 let with_temp_dir f =
   let base = Filename.get_temp_dir_name () in
@@ -2185,6 +2186,10 @@ let test_session_id_from_env_uses_client_specific_opencode_fallback () =
 
 (* B134/B173/B233: native client-type inference — Grok + unofficial Cursor + Kimi. *)
 let with_scrubbed_client_env f =
+  let hermetic_kimi_home =
+    Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-no-kimi-index-%08x" (Random.bits ()))
+  in
   let keys =
     [ "C2C_MCP_SESSION_ID"; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"
     ; "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_OPENCODE_SESSION_ID"
@@ -2196,6 +2201,10 @@ let with_scrubbed_client_env f =
     ]
   in
   List.iter (fun k -> Unix.putenv k "") keys;
+  (* A developer's real ~/.kimi-code/session_index.jsonl must never supply a
+     session id to tests that intentionally model an unset native id. Tests
+     that exercise the index set KIMI_CODE_HOME explicitly below. *)
+  Unix.putenv "KIMI_CODE_HOME" hermetic_kimi_home;
   (* B288: neutralize process-ancestry cursor detection to a non-cursor
      sentinel (an empty value means "walk /proc", which is non-deterministic
      when the suite runs from inside a Cursor terminal). Tests that exercise
@@ -2204,6 +2213,7 @@ let with_scrubbed_client_env f =
   Fun.protect
     ~finally:(fun () ->
       List.iter (fun k -> Unix.putenv k "") keys;
+      Unix.putenv "KIMI_CODE_HOME" "";
       Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "")
     f
 
@@ -2540,11 +2550,11 @@ let test_tools_call_whoami_uses_codex_turn_metadata_to_find_managed_session ()
     =
   with_temp_dir (fun dir ->
       let instances_dir = Filename.concat dir "instances" in
-      let instance_dir = Filename.concat instances_dir "lyra-quill-x" in
+      let managed_session_id = "Lyra-Quill-X" in
+      let instance_dir = Filename.concat instances_dir managed_session_id in
       let config_path = Filename.concat instance_dir "config.json" in
       let codex_thread_id = "019dafa6-caef-7e50-bfad-323af643e3ce" in
       let broker = C2c_mcp.Broker.create ~root:dir in
-      let managed_session_id = "Lyra-Quill-X" in
       let alias = "lyra-quill" in
       let config_json =
         `Assoc
@@ -2625,10 +2635,10 @@ let test_tools_call_whoami_uses_codex_turn_metadata_to_find_managed_session ()
 let test_tools_call_whoami_lazy_bootstraps_managed_codex_registration () =
   with_temp_dir (fun dir ->
       let instances_dir = Filename.concat dir "instances" in
-      let instance_dir = Filename.concat instances_dir "lyra-quill-x" in
+      let managed_session_id = "Lyra-Quill-X" in
+      let instance_dir = Filename.concat instances_dir managed_session_id in
       let config_path = Filename.concat instance_dir "config.json" in
       let codex_thread_id = "019dafa6-caef-7e50-bfad-323af643e3ce" in
-      let managed_session_id = "Lyra-Quill-X" in
       let alias = "lyra-quill" in
       let config_json =
         `Assoc
@@ -2721,10 +2731,10 @@ let test_tools_call_debug_uses_codex_turn_metadata_to_find_managed_session () =
       if not Build_flags.mcp_debug_tool_enabled then ()
       else
         let instances_dir = Filename.concat dir "instances" in
-        let instance_dir = Filename.concat instances_dir "lyra-quill-x" in
+        let managed_session_id = "Lyra-Quill-X" in
+        let instance_dir = Filename.concat instances_dir managed_session_id in
         let config_path = Filename.concat instance_dir "config.json" in
         let codex_thread_id = "019dafa6-caef-7e50-bfad-323af643e3ce" in
-        let managed_session_id = "Lyra-Quill-X" in
         let alias = "lyra-quill" in
         let config_json =
           `Assoc
@@ -2815,13 +2825,19 @@ let test_tools_call_debug_uses_codex_turn_metadata_to_find_managed_session () =
 let test_tools_call_register_uses_codex_turn_metadata_when_env_missing () =
   with_temp_dir (fun dir ->
       let codex_thread_id = "codex-thread-meta-123" in
+      (* An unset native thread must be resolved against an isolated instance
+         root. The developer's real managed instances must not make this test
+         fail closed as an unrelated directory race or ownership ambiguity. *)
+      let instances_dir = Filename.concat dir "instances" in
       Unix.putenv "C2C_MCP_SESSION_ID" "";
       Unix.putenv "CODEX_THREAD_ID" "";
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+      Unix.putenv "C2C_INSTANCES_DIR" instances_dir;
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
-          Unix.putenv "CODEX_THREAD_ID" "")
+          Unix.putenv "CODEX_THREAD_ID" "";
+          Unix.putenv "C2C_INSTANCES_DIR" "")
         (fun () ->
           let request =
             `Assoc
@@ -4025,6 +4041,29 @@ let test_server_startup_auto_registers_alias_from_env () =
           check string "registered alias" "opencode-local" reg.alias;
           check bool "registered pid" true (reg.pid = Some (Unix.getpid ()));
           check (option string) "registered cwd" (Some (Sys.getcwd ())) reg.cwd))
+
+let test_server_startup_suppresses_managed_codex_appserver_auto_register () =
+  (* The frontend carries the alias hint before the launcher has proved its
+     native thread. Generic MCP startup must leave the broker untouched until
+     the launcher publishes the post-proof app-server row. *)
+  with_temp_dir (fun dir ->
+      Unix.putenv "C2C_MCP_SESSION_ID" "managed-codex-session";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "codex-managed-alias";
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
+      Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int (Unix.getpid ()));
+      Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "managed-codex-session";
+      Fun.protect
+        ~finally:(fun () ->
+          Unix.putenv "C2C_MCP_SESSION_ID" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
+          Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "";
+          Unix.putenv "C2C_MCP_CLIENT_PID" "";
+          Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "")
+        (fun () ->
+          C2c_mcp.auto_register_startup ~broker_root:dir;
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          check int "managed app-server startup does not pre-register" 0
+            (List.length (C2c_mcp.Broker.list_registrations broker))))
 
 let test_server_startup_auto_register_ignores_dead_client_pid_env () =
   with_temp_dir (fun dir ->
@@ -17185,6 +17224,8 @@ let () =
              test_register_revalidates_pending_permission_at_registry_commit
          ; test_case "server startup auto-registers alias from env" `Quick
              test_server_startup_auto_registers_alias_from_env
+         ; test_case "server startup suppresses managed Codex app-server auto-register" `Quick
+             test_server_startup_suppresses_managed_codex_appserver_auto_register
          ; test_case "server startup ignores dead client pid env" `Quick
              test_server_startup_auto_register_ignores_dead_client_pid_env
          ; test_case "server startup auto-register redelivers dead-letter messages" `Quick
