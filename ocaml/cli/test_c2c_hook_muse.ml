@@ -247,7 +247,7 @@ let test_session_start_reuses_sticky_alias_across_repos () =
     let other_root = ctx.dir // "other-repo" // "broker" in
     mkdir_p other_root;
     let ob = C2c_mcp.Broker.create ~root:other_root in
-    C2c_mcp.Broker.register ob ~session_id:sid ~alias:"muse-sticky-keep-aa01"
+    C2c_mcp.Broker.register ob ~session_id:sid ~alias:"zz-muse-sticky-keep"
       ~pid:None ~pid_start_time:None ~client_type:(Some "muse")
       ~registered_by:(Some "muse-hook") ();
     let rc, stdout, stderr =
@@ -259,13 +259,13 @@ let test_session_start_reuses_sticky_alias_across_repos () =
     (match find_reg ctx sid with
      | None -> failf "expected registration for %s (stderr: %S)" sid stderr
      | Some r ->
-         check string "sticky alias reused, not minted" "muse-sticky-keep-aa01"
+         check string "sticky alias reused, not minted" "zz-muse-sticky-keep"
            r.alias;
          check (option string) "registered_by" (Some "muse-hook") r.registered_by;
          (match parse_context stdout with
           | Some (_, context) ->
               check bool "onboarding names the sticky alias" true
-                (contains ~haystack:context ~needle:"muse-sticky-keep-aa01")
+                (contains ~haystack:context ~needle:"zz-muse-sticky-keep")
           | None -> failf "expected onboarding output, got: %S" stdout)))
 
 (* The global sessions-broker drain arm: a regression there is swallowed by
@@ -691,6 +691,539 @@ let test_workspace_cwd_recorded_from_payload () =
         failf "expected one broker holding %s, got [%s] (stderr: %S)" sid
           (String.concat ";" fps) stderr)
 
+(* --- B361: managed-row adoption -----------------------------------------
+   Muse scrubs hook env (B358 probe), so a managed SessionStart arrives with
+   no C2C_* — the hook must adopt the launcher's row by cwd + live
+   (pid, pid_start_time) instead of minting a competing native-sid row. *)
+
+(* Mirrors what `c2c start muse` writes via
+   [C2c_start.register_managed_muse_session]: session_id = instance name, a
+   live (pid, pid_start_time) pair, the launch cwd, and NO registered_by
+   (that marks hook rows). The pid is this test process's own — alive for
+   the whole test — with its REAL start ticks, so only a correct
+   generation comparison adopts it. *)
+let my_pid_start_time () =
+  C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ()))
+
+let register_managed_muse ctx ~alias ~cwd =
+  let b = broker ctx in
+  C2c_mcp.Broker.register b ~session_id:alias ~alias
+    ~pid:(Some (Unix.getpid ())) ~pid_start_time:(my_pid_start_time ())
+    ~client_type:(Some "muse") ~cwd:(Some cwd) ~from_auto_gen:false ();
+  b
+
+(* Post-`c2c stop` shape: [clear_registration_pid] stripped the liveness
+   fields but kept the sticky workspace-alias row. *)
+let register_torn_down_managed_muse ctx ~alias ~cwd =
+  let b = broker ctx in
+  C2c_mcp.Broker.register b ~session_id:alias ~alias ~pid:None
+    ~pid_start_time:None ~client_type:(Some "muse") ~cwd:(Some cwd)
+    ~from_auto_gen:false ();
+  b
+
+let muse_mapping_path ctx = ctx.broker_root // "muse-sid-mapping.json"
+
+let read_muse_mapping ctx =
+  if not (Sys.file_exists (muse_mapping_path ctx)) then []
+  else
+    match Yojson.Safe.from_string (read_file (muse_mapping_path ctx)) with
+    | `Assoc fields ->
+        List.filter_map
+          (function k, `String v -> Some (k, v) | _ -> None)
+          fields
+    | _ -> []
+    | exception _ -> []
+
+(* Native muse session ids are uuids (B358 probe shape). *)
+let native_sid n = Printf.sprintf "01a0b361-0000-4000-8000-%012d" n
+
+let test_b361_adopts_live_managed_row () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-managed" in
+    let cwd = "/tmp/b361-proj" in
+    let b = register_managed_muse ctx ~alias:managed ~cwd in
+    (* Backlog for the MANAGED alias: adoption must drain it (the B361
+       drain gap), not a fresh payload row's empty inbox. *)
+    C2c_mcp.Broker.register b ~session_id:"zz-b361-peer" ~alias:"zz-b361-peer"
+      ~pid:None ~pid_start_time:None ~client_type:(Some "muse") ();
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-b361-peer"
+      ~to_alias:managed ~content:"hello managed muse" ();
+    let payload_sid = native_sid 1 in
+    let rc, stdout, stderr =
+      run_hook ctx ~payload:(payload ~session_id:payload_sid ~cwd ())
+    in
+    check int "exit 0" 0 rc;
+    check int "no competing row minted" 2 (count_regs ctx);
+    check bool "managed row is the identity" true
+      (find_reg ctx managed <> None);
+    check bool "payload sid minted no row" true
+      (find_reg ctx payload_sid = None);
+    check bool "adoption is logged" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check bool "mapping records payload -> managed" true
+      (List.assoc_opt payload_sid (read_muse_mapping ctx) = Some managed);
+    (match parse_context stdout with
+     | Some (_, context) ->
+         check bool "wake names the managed alias" true
+           (contains ~haystack:context ~needle:managed);
+         check bool "managed backlog drained into context" true
+           (contains ~haystack:context ~needle:"hello managed muse");
+         check bool "no second onboarding" false
+           (contains ~haystack:context ~needle:"now registered")
+     | None -> failf "expected wake output, got: %S" stdout);
+    check int "managed inbox drained" 0
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed));
+    (* kimi #40 F6: adoption writes no statefile — the launcher owns the
+       managed identity. *)
+    let statefile = read_file (ctx.broker_root // "default-session.json") in
+    check bool "no statefile for the adopted payload sid" false
+      (contains ~haystack:statefile ~needle:payload_sid))
+
+let test_b361_bails_loudly_on_ambiguous_live_cwd () =
+  with_ctx (fun ctx ->
+    let cwd = "/tmp/b361-proj" in
+    ignore (register_managed_muse ctx ~alias:"zz-b361-two-a" ~cwd);
+    ignore (register_managed_muse ctx ~alias:"zz-b361-two-b" ~cwd);
+    let rc, stdout, stderr =
+      run_hook ctx ~payload:(payload ~session_id:(native_sid 2) ~cwd ())
+    in
+    check int "never fails the host turn" 0 rc;
+    check string "silent stdout" "" (String.trim stdout);
+    check int "no third identity minted" 2 (count_regs ctx);
+    check bool "ambiguity is explained, not silent" true
+      (contains ~haystack:stderr ~needle:"cannot tell which one");
+    check bool "names the candidates" true
+      (contains ~haystack:stderr ~needle:"zz-b361-two-a");
+    check bool "no mapping written on bail" false
+      (Sys.file_exists (muse_mapping_path ctx)))
+
+let test_b361_dead_pid_row_is_not_adopted () =
+  with_ctx (fun ctx ->
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:"zz-b361-dead" ~alias:"zz-b361-dead"
+      ~pid:(Some 2147483646) ~pid_start_time:(Some 12345)
+      ~client_type:(Some "muse") ~cwd:(Some "/tmp/b361-proj")
+      ~from_auto_gen:false ();
+    let payload_sid = native_sid 3 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "no adoption of a dead-pid row" false
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check int "fresh session minted its own identity" 2 (count_regs ctx);
+    check bool "the new row is this session" true
+      (find_reg ctx payload_sid <> None))
+
+(* #85 discriminator: a live pid with a WRONG start-time is PID reuse, not
+   our instance. A bare /proc/<pid> existence check would wrongly adopt. *)
+let test_b361_pid_reuse_row_is_not_adopted () =
+  with_ctx (fun ctx ->
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:"zz-b361-reused"
+      ~alias:"zz-b361-reused" ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(Some 1) (* never a real jiffy count *)
+      ~client_type:(Some "muse") ~cwd:(Some "/tmp/b361-proj")
+      ~from_auto_gen:false ();
+    let payload_sid = native_sid 4 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "no adoption of a pid-reuse row" false
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check int "session minted its own identity" 2 (count_regs ctx);
+    check bool "the new row is this session" true
+      (find_reg ctx payload_sid <> None))
+
+(* Deliberate kimi divergence: kimi falls back to pid existence when
+   pid_start_time is None (pre-#40 rows); launcher rows normally carry the
+   pair, so muse fails closed instead of trusting a bare pid number. (A
+   launcher row whose /proc read failed at register time is therefore
+   permanently unadoptable — fail-closed dual identity; see the predicate
+   comment.) *)
+let test_b361_missing_start_time_fails_closed () =
+  with_ctx (fun ctx ->
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:"zz-b361-nostart"
+      ~alias:"zz-b361-nostart" ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:None ~client_type:(Some "muse")
+      ~cwd:(Some "/tmp/b361-proj") ~from_auto_gen:false ();
+    let payload_sid = native_sid 5 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "no adoption without a recorded generation" false
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check int "session minted its own identity" 2 (count_regs ctx))
+
+let test_b361_torn_down_row_is_reclaimed () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-torn" in
+    ignore (register_torn_down_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    let payload_sid = native_sid 6 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check int "no competing alias minted" 1 (count_regs ctx);
+    check bool "sticky managed alias preserved" true
+      (find_reg ctx managed <> None);
+    check bool "reclaim is logged, not silent" true
+      (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    check bool "mapping records payload -> managed" true
+      (List.assoc_opt payload_sid (read_muse_mapping ctx) = Some managed))
+
+let test_b361_bails_loudly_on_ambiguous_torn_down_cwd () =
+  with_ctx (fun ctx ->
+    let cwd = "/tmp/b361-proj" in
+    ignore (register_torn_down_managed_muse ctx ~alias:"zz-b361-td-a" ~cwd);
+    ignore (register_torn_down_managed_muse ctx ~alias:"zz-b361-td-b" ~cwd);
+    let rc, stdout, stderr =
+      run_hook ctx ~payload:(payload ~session_id:(native_sid 7) ~cwd ())
+    in
+    check int "never fails the host turn" 0 rc;
+    check string "silent stdout" "" (String.trim stdout);
+    check int "nothing minted" 2 (count_regs ctx);
+    check bool "ambiguity is explained" true
+      (contains ~haystack:stderr ~needle:"cannot tell which one"))
+
+(* A dead-pid row asserts a liveness that is false — a stale claim, never a
+   reclaim signal (#47 caveat). Only pid=None reclaims. *)
+let test_b361_dead_pid_row_is_not_reclaimed () =
+  with_ctx (fun ctx ->
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:"zz-b361-stale"
+      ~alias:"zz-b361-stale" ~pid:(Some 2147483646)
+      ~pid_start_time:(Some 12345) ~client_type:(Some "muse")
+      ~cwd:(Some "/tmp/b361-proj") ~from_auto_gen:false ();
+    let payload_sid = native_sid 8 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "no reclaim of a stale-claim row" false
+      (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    check int "fresh session minted its own identity" 2 (count_regs ctx);
+    check bool "the new row is this session" true
+      (find_reg ctx payload_sid <> None))
+
+(* The launcher writes a canonical cwd but the payload cwd is whatever muse
+   passes: a trailing slash must not defeat the match. Uses a REAL directory
+   so realpath (not just the strip fallback) is exercised. *)
+let test_b361_adoption_normalizes_cwd () =
+  with_ctx (fun ctx ->
+    let ws = ctx.dir // "b361-ws" in
+    mkdir_p ws;
+    ignore (register_managed_muse ctx ~alias:"zz-b361-slash" ~cwd:ws);
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:(native_sid 9) ~cwd:(ws ^ "/") ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "trailing slash still matches the managed row" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check int "no second identity minted" 1 (count_regs ctx))
+
+(* Backdate the MANAGED row's anchor in place (raw JSON patch preserving
+   pid/start/cwd), so the Stop touch-through has something to move. *)
+let backdate_anchor ctx ~session_id ~age_s =
+  let path = ctx.broker_root // "registry.json" in
+  let before = Unix.gettimeofday () -. age_s in
+  let rows =
+    match Yojson.Safe.from_string (read_file path) with
+    | `List rows -> rows
+    | _ -> []
+    | exception _ -> []
+  in
+  let rows =
+    List.map
+      (function
+        | `Assoc row as r -> (
+            match List.assoc_opt "session_id" row with
+            | Some (`String s) when s = session_id ->
+                `Assoc
+                  (("last_activity_ts", `Float before)
+                  :: List.remove_assoc "last_activity_ts" row)
+            | _ -> r)
+        | r -> r)
+      rows
+  in
+  write_file path (Yojson.Safe.to_string (`List rows));
+  before
+
+let test_b361_stop_touches_through_to_managed_row () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-touch" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    let payload_sid = native_sid 10 in
+    let rc1, _, stderr1 =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "SessionStart exit 0" 0 rc1;
+    check bool "adopted" true
+      (contains ~haystack:stderr1 ~needle:"adopting managed session");
+    let before = backdate_anchor ctx ~session_id:managed ~age_s:3600.0 in
+    let rc, stdout, _ =
+      run_hook ctx
+        ~payload:(payload ~event:"Stop" ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "Stop exit 0" 0 rc;
+    check string "Stop stdout silent" "" (String.trim stdout);
+    check bool "payload sid still has no row" true
+      (find_reg ctx payload_sid = None);
+    check int "Stop mints no row" 1 (count_regs ctx);
+    (match read_anchor ctx ~session_id:managed with
+     | None -> fail "managed anchor missing after Stop"
+     | Some after ->
+         check bool
+           (Printf.sprintf "Stop advances MANAGED anchor (before=%.3f after=%.3f)"
+              before after)
+           true (after > before +. 60.0)))
+
+let test_b361_posttooluse_touches_through_to_managed_row () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-ptu" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    let payload_sid = native_sid 11 in
+    let rc1, _, stderr1 =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "SessionStart exit 0" 0 rc1;
+    check bool "adopted" true
+      (contains ~haystack:stderr1 ~needle:"adopting managed session");
+    let before = backdate_anchor ctx ~session_id:managed ~age_s:3600.0 in
+    let rc, stdout, _ =
+      run_hook ctx
+        ~payload:
+          (payload ~event:"PostToolUse" ~session_id:payload_sid
+             ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "PostToolUse exit 0" 0 rc;
+    check string "silent" "" (String.trim stdout);
+    (match read_anchor ctx ~session_id:managed with
+     | None -> fail "managed anchor missing after PostToolUse"
+     | Some after ->
+         check bool "PostToolUse advances MANAGED anchor" true
+           (after > before +. 60.0)))
+
+let test_b361_session_end_keeps_adopted_managed_row () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-end" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    let payload_sid = native_sid 12 in
+    let rc1, _, stderr1 =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "SessionStart exit 0" 0 rc1;
+    check bool "adopted" true
+      (contains ~haystack:stderr1 ~needle:"adopting managed session");
+    check bool "mapping written" true
+      (List.assoc_opt payload_sid (read_muse_mapping ctx) = Some managed);
+    let rc, stdout, _ =
+      run_hook ctx
+        ~payload:(payload ~event:"SessionEnd" ~session_id:payload_sid ())
+    in
+    check int "SessionEnd exit 0" 0 rc;
+    check string "SessionEnd silent" "" (String.trim stdout);
+    check bool "adopted managed row survives SessionEnd" true
+      (find_reg ctx managed <> None);
+    check bool "mapping entry removed" true
+      (List.assoc_opt payload_sid (read_muse_mapping ctx) = None))
+
+(* Pre-B361 dual identity heals: a stale hook row for the payload sid plus a
+   live managed row for the cwd — SessionStart adopts the managed row (no
+   third row), and SessionEnd then retires the stale hook row while the
+   managed row survives. *)
+let test_b361_stale_hook_row_heals_to_managed () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-heal" in
+    let b = register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj" in
+    let payload_sid = native_sid 13 in
+    C2c_mcp.Broker.register b ~session_id:payload_sid ~alias:"zz-b361-heal-hook"
+      ~pid:None ~pid_start_time:None ~client_type:(Some "muse")
+      ~cwd:(Some "/tmp/b361-proj") ~registered_by:(Some "muse-hook") ();
+    let rc1, _, stderr1 =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "SessionStart exit 0" 0 rc1;
+    check int "no third row" 2 (count_regs ctx);
+    check bool "managed row adopted despite stale hook row" true
+      (contains ~haystack:stderr1 ~needle:"adopting managed session");
+    let rc2, _, _ =
+      run_hook ctx
+        ~payload:(payload ~event:"SessionEnd" ~session_id:payload_sid ())
+    in
+    check int "SessionEnd exit 0" 0 rc2;
+    check bool "stale hook row retired" true
+      (find_reg ctx payload_sid = None);
+    check bool "managed row survives" true (find_reg ctx managed <> None);
+    check int "one row left" 1 (count_regs ctx))
+
+(* Adoption writes prune mapping entries whose managed sid is gone, so
+   sessions that die without SessionEnd cannot grow the file unboundedly. *)
+let test_b361_adoption_prunes_dead_mapping_entries () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-prune" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    write_file (muse_mapping_path ctx)
+      (Yojson.Safe.to_string
+         (`Assoc [ ("dead-payload-0001", `String "gone-managed-0001") ]));
+    let payload_sid = native_sid 14 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "adopted" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    let mapping = read_muse_mapping ctx in
+    check bool "new entry written" true
+      (List.assoc_opt payload_sid mapping = Some managed);
+    check bool "dead entry pruned" true
+      (List.assoc_opt "dead-payload-0001" mapping = None))
+
+(* Step 0 runs ONLY when env_sid is absent: a hook that sees managed env
+   keeps the env-first resolution and never adopts. *)
+let test_b361_env_present_skips_adoption () =
+  with_ctx (fun ctx ->
+    ignore
+      (register_managed_muse ctx ~alias:"zz-b361-env" ~cwd:"/tmp/b361-proj");
+    let payload_sid = native_sid 15 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", "muse-e2e-env-unregistered") ]
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "no adoption when env is present" false
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check bool "payload identity minted (step 3)" true
+      (find_reg ctx payload_sid <> None))
+
+(* Gate contract: a REGISTERED env sid wins over adoption (step 1 beats
+   step 0) — the env-first claude/grok shape, no client-type guard. *)
+let test_b361_registered_env_wins_over_adoption () =
+  with_ctx (fun ctx ->
+    ignore
+      (register_managed_muse ctx ~alias:"zz-b361-envreg" ~cwd:"/tmp/b361-proj");
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:"muse-e2e-env-foreign"
+      ~alias:"zz-b361-foreign" ~pid:None ~pid_start_time:None
+      ~client_type:(Some "claude") ();
+    let payload_sid = native_sid 16 in
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", "muse-e2e-env-foreign") ]
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "no adoption when env resolves" false
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check int "nothing minted" 2 (count_regs ctx);
+    check bool "payload sid minted no row" true
+      (find_reg ctx payload_sid = None);
+    (match parse_context stdout with
+     | Some (_, context) ->
+         check bool "wake names the env identity" true
+           (contains ~haystack:context ~needle:"zz-b361-foreign")
+     | None -> failf "expected wake output, got: %S" stdout))
+
+(* Empty payload cwd falls back to the process cwd (B352 P4: the hook cwd
+   IS the workspace) instead of skipping adoption. Hermetic: both sides
+   read this test process's own cwd dynamically. *)
+let test_b361_empty_payload_cwd_falls_back_to_getcwd () =
+  with_ctx (fun ctx ->
+    let here = Sys.getcwd () in
+    ignore (register_managed_muse ctx ~alias:"zz-b361-getcwd" ~cwd:here);
+    let rc, _, stderr =
+      run_hook ctx ~payload:(payload ~session_id:(native_sid 17) ~cwd:"" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "getcwd fallback still matches the managed row" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check int "no second identity minted" 1 (count_regs ctx))
+
+(* The cap is the real bound: 600 live entries (all pointing at the still-
+   registered managed row, so prune keeps them) collapse to 512 newest-
+   first on the next adoption write. *)
+let test_b361_mapping_write_enforces_cap () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-cap" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    let stale =
+      List.init 600 (fun i ->
+        (Printf.sprintf "stale-payload-%04d" i, `String managed))
+    in
+    write_file (muse_mapping_path ctx)
+      (Yojson.Safe.to_string (`Assoc stale));
+    let payload_sid = native_sid 18 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "adopted" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    let mapping = read_muse_mapping ctx in
+    check int "capped at 512" 512 (List.length mapping);
+    check bool "new entry written" true
+      (List.assoc_opt payload_sid mapping = Some managed);
+    check bool "newest-kept boundary holds" true
+      (List.assoc_opt "stale-payload-0510" mapping = Some managed);
+    check bool "oldest evicted" true
+      (List.assoc_opt "stale-payload-0511" mapping = None))
+
+(* A dropped mapping write degrades loudly, not silently: adoption still
+   resolves (exit 0, no competing row) but stderr carries the warning.
+   The uncreatable lock path (symlink into a missing dir) is the hermetic
+   lock-failure fixture. *)
+let test_b361_mapping_write_failure_warns_loudly () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-lockfail" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    (try Unix.symlink "/nonexistent-b361-dir/x"
+           (muse_mapping_path ctx ^ ".lock")
+     with _ -> fail "could not plant lock-failure fixture");
+    let payload_sid = native_sid 19 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "still exits 0" 0 rc;
+    check bool "adopted" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check bool "mapping-write failure is loud" true
+      (contains ~haystack:stderr ~needle:"adoption mapping write failed");
+    check int "no competing row" 1 (count_regs ctx);
+    check bool "no mapping recorded" true (read_muse_mapping ctx = []))
+
+(* Vanilla SessionEnd takes no lock and leaves no siblings: neither the
+   mapping file nor its .lock may appear for a session that never adopted. *)
+let test_b361_vanilla_session_end_leaves_no_mapping_files () =
+  with_ctx (fun ctx ->
+    let sid = "muse-e2e-nolitter-0001" in
+    let rc1, _, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "SessionStart exit 0" 0 rc1;
+    let rc2, _, _ =
+      run_hook ctx ~payload:(payload ~event:"SessionEnd" ~session_id:sid ())
+    in
+    check int "SessionEnd exit 0" 0 rc2;
+    check bool "no mapping file" false
+      (Sys.file_exists (muse_mapping_path ctx));
+    check bool "no lock sibling" false
+      (Sys.file_exists (muse_mapping_path ctx ^ ".lock")))
+
 let () =
   Random.self_init ();
   run "c2c_hook_muse"
@@ -739,5 +1272,47 @@ let () =
             test_vanilla_registers_into_workspace_broker
         ; test_case "workspace cwd recorded from payload" `Quick
             test_workspace_cwd_recorded_from_payload
+        ] )
+    ; ( "hook_muse_b361_adoption"
+      , [ test_case "adopts live managed row + drains managed backlog" `Quick
+            test_b361_adopts_live_managed_row
+        ; test_case "bails loudly on ambiguous live cwd" `Quick
+            test_b361_bails_loudly_on_ambiguous_live_cwd
+        ; test_case "dead-pid row is not adopted" `Quick
+            test_b361_dead_pid_row_is_not_adopted
+        ; test_case "pid-reuse row is not adopted" `Quick
+            test_b361_pid_reuse_row_is_not_adopted
+        ; test_case "missing start-time fails closed" `Quick
+            test_b361_missing_start_time_fails_closed
+        ; test_case "torn-down row is reclaimed" `Quick
+            test_b361_torn_down_row_is_reclaimed
+        ; test_case "bails loudly on ambiguous torn-down cwd" `Quick
+            test_b361_bails_loudly_on_ambiguous_torn_down_cwd
+        ; test_case "dead-pid row is not reclaimed" `Quick
+            test_b361_dead_pid_row_is_not_reclaimed
+        ; test_case "adoption normalizes cwd" `Quick
+            test_b361_adoption_normalizes_cwd
+        ; test_case "Stop touches through to managed row" `Quick
+            test_b361_stop_touches_through_to_managed_row
+        ; test_case "PostToolUse touches through to managed row" `Quick
+            test_b361_posttooluse_touches_through_to_managed_row
+        ; test_case "SessionEnd keeps adopted managed row" `Quick
+            test_b361_session_end_keeps_adopted_managed_row
+        ; test_case "stale hook row heals to managed" `Quick
+            test_b361_stale_hook_row_heals_to_managed
+        ; test_case "adoption prunes dead mapping entries" `Quick
+            test_b361_adoption_prunes_dead_mapping_entries
+        ; test_case "env present skips adoption" `Quick
+            test_b361_env_present_skips_adoption
+        ; test_case "registered env wins over adoption" `Quick
+            test_b361_registered_env_wins_over_adoption
+        ; test_case "empty payload cwd falls back to getcwd" `Quick
+            test_b361_empty_payload_cwd_falls_back_to_getcwd
+        ; test_case "mapping write enforces cap" `Quick
+            test_b361_mapping_write_enforces_cap
+        ; test_case "mapping write failure warns loudly" `Quick
+            test_b361_mapping_write_failure_warns_loudly
+        ; test_case "vanilla SessionEnd leaves no mapping files" `Quick
+            test_b361_vanilla_session_end_leaves_no_mapping_files
         ] )
     ]
