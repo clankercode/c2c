@@ -331,6 +331,43 @@ def run_live() -> int:
             return 4
         log(f"[appserver-e2e] managed session reached authenticated readiness as: {inst_alias}")
 
+        # Capture which managed transport owns this instance before stopping it.
+        # Private app-servers persist codex-app-server.json; daemon attaches
+        # persist the exact sidecar PID generation under the instance. A
+        # post-stop assertion must validate the corresponding lifecycle surface
+        # rather than treating a missing private record as clean daemon state.
+        instance_dir = instances / name
+        private_state_path = instance_dir / "codex-app-server.json"
+        daemon_pid_path = instance_dir / "codex-daemon-sidecar.pid"
+        daemon_pid_start_path = instance_dir / "codex-daemon-sidecar.pid.start-time"
+
+        def lifecycle_mode() -> str | None:
+            if private_state_path.is_file():
+                try:
+                    state = json.loads(private_state_path.read_text())
+                    if (state.get("state") == "running"
+                            and isinstance(state.get("server_pid"), int)
+                            and isinstance(state.get("server_pid_start_time"), int)
+                            and isinstance(state.get("frontend_pid"), int)
+                            and isinstance(state.get("frontend_pid_start_time"), int)):
+                        return "private"
+                except (OSError, ValueError, TypeError):
+                    return None
+            if daemon_pid_path.is_file() and daemon_pid_start_path.is_file():
+                try:
+                    int(daemon_pid_path.read_text().strip())
+                    int(daemon_pid_start_path.read_text().strip())
+                    return "daemon"
+                except (OSError, ValueError, TypeError):
+                    return None
+            return None
+
+        transport = wait_for(lifecycle_mode, timeout=30, interval=1)
+        if transport is None:
+            log("[appserver-e2e] FAIL: no valid persisted private/daemon lifecycle state")
+            return 4
+        log(f"[appserver-e2e] persisted lifecycle transport: {transport}")
+
         # 3. wait for the frontend TUI to be interactive, then type an UNSUBMITTED
         #    draft into the composer (draft-preservation setup). No Enter.
         time.sleep(8)
@@ -400,12 +437,16 @@ def run_live() -> int:
         #    codex processes (measured precisely by our isolated broker root) and
         #    deregister the instance — with NO orphan left behind.
         log(f"[appserver-e2e] stopping managed session '{name}' ...")
-        run_c2c(bin_, ["stop", name], cli_env, timeout=60)
+        stop_result = run_c2c(bin_, ["stop", name], cli_env, timeout=60)
+        stop_ok = stop_result.returncode == 0
+        if not stop_ok:
+            log("[appserver-e2e] FAIL: c2c stop returned "
+                f"{stop_result.returncode}:\n{stop_result.stdout}{stop_result.stderr}")
 
         def no_my_procs() -> bool:
             return len(my_codex_pids(str(broker))) == 0
         reaped = wait_for(no_my_procs, timeout=60, interval=3) is not None
-        results["clean_teardown"] = reaped
+        results["clean_teardown"] = stop_ok and reaped
 
         def deregistered() -> bool:
             r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
@@ -419,7 +460,7 @@ def run_live() -> int:
             # PID generation left that could route a future message to this
             # stopped process.
             return (len(matching) == 1
-                    and matching[0].get("state") in {"dead", "unknown"}
+                    and matching[0].get("state") == "dead"
                     and matching[0].get("alive") is not True
                     and "pid" not in matching[0]
                     and "pid_start_time" not in matching[0])
@@ -445,21 +486,29 @@ def run_live() -> int:
             for path_name in (
                 "outer.pid", "outer.pid.start-time", "inner.pid",
                 "inner.pid.start-time", "frontend-teardown.json",
-                "daemon-thread-handoff.json",
+                "daemon-thread-handoff.json", "codex-daemon-sidecar.pid",
+                "codex-daemon-sidecar.pid.start-time",
             ):
                 if (instance_dir / path_name).exists():
                     return False
-            app_state = instance_dir / "codex-app-server.json"
-            if app_state.exists():
+            if transport == "private":
+                if not private_state_path.is_file():
+                    return False
                 try:
-                    state = json.loads(app_state.read_text())
+                    state = json.loads(private_state_path.read_text())
                 except (OSError, ValueError, TypeError):
                     return False
-                if state.get("state") not in {"offline", "frontend_exited", "failed"}:
+                if state.get("state") not in {"offline", "frontend_exited"}:
                     return False
                 if any(state.get(key) is not None for key in
                        ("server_pid", "server_pid_start_time", "frontend_pid",
                         "frontend_pid_start_time")):
+                    return False
+            else:
+                # A daemon attach has no per-instance private app-server JSON.
+                # Its persisted lifecycle is the sidecar PID generation, which
+                # stop removes only after releasing the exact daemon lease.
+                if private_state_path.exists():
                     return False
             return True
 
