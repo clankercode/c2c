@@ -1,0 +1,16 @@
+---
+complexity: low
+created_at: "2026-10-02T17:26:36Z"
+depends_on:
+    - B352
+estimate_hours: 2
+id: B357
+priority: medium
+status: pending
+tags:
+    - muse
+title: muse MCP polish posture pinning channel verdict
+updated_at: "2026-10-02T17:26:36Z"
+---
+
+muse MCP polish posture pinning channel verdict
