@@ -52,6 +52,7 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     ?(broker_root = temp_broker_root ()) ?(global_broker_root = None)
     ?(is_dnd = fun () -> false) ?(on_thread_discovered = fun _ -> true)
     ?(restart_requested = fun ~thread_id:_ -> None)
+    ?(on_ingress_health = fun _ -> ()) ?(stop_requested = fun () -> false)
     (h : harness) : DL.deps =
   { broker_root;
     session_id = "deliver-loop-test-sess";
@@ -78,6 +79,8 @@ let mk_deps ?(discover = fun () -> [ "thread-1" ]) ?(max_wall_s = infinity)
     restart_requested;
     global_broker_root;
     on_global_pass = (fun gh -> h.global_pass_events <- h.global_pass_events @ [ gh ]);
+    on_ingress_health;
+    stop_requested;
     now = (fun () -> !(h.clock));
     sleep = (fun s -> h.clock := !(h.clock) +. s);
     poll_interval_s = 1.0;
@@ -292,9 +295,39 @@ let seed_global_inbox ~root msgs =
   let b = C2c_mcp.Broker.create ~root in
   C2c_mcp.Broker.save_inbox b ~session_id:"deliver-loop-test-sess" msgs
 
+let seed_local_inbox ~root msgs =
+  let b = C2c_mcp.Broker.create ~root in
+  C2c_mcp.Broker.save_inbox b ~session_id:"deliver-loop-test-sess" msgs
+
 let read_global_inbox ~root =
   let b = C2c_mcp.Broker.create ~root in
   C2c_mcp.Broker.read_inbox b ~session_id:"deliver-loop-test-sess"
+
+let test_local_unsupported_stops_private_owner_for_hook_fallback () =
+  let root = temp_broker_root () in
+  seed_local_inbox ~root [ mk_msg ~message_id:"local-unsupported" "hook owns this" ];
+  let inject_client : Ing.client =
+    { inject_items =
+        (fun ~endpoint:_ ~token:_ ~thread_id:_ ~message_id:_ ~items:_ ->
+          Ing.Inj_unsupported "private app-server method unavailable");
+      history_contains = None }
+  in
+  let unsupported = ref false in
+  let h = mk_harness ~steps:[ Ep.Sv_running; Ep.Sv_running ] () in
+  let base =
+    mk_deps ~broker_root:root
+      ~on_ingress_health:(fun health ->
+        if health.Ing.last_error = Some "fallback:unsupported" then
+          unsupported := true)
+      ~stop_requested:(fun () -> !unsupported) h
+  in
+  let o = DL.run { base with inject_client } in
+  Alcotest.(check bool) "local unsupported latched" true !unsupported;
+  Alcotest.(check bool) "private loop stopped" true (o.DL.final = Ep.Sv_offline);
+  Alcotest.(check int) "owner released exactly once" 1 h.deregisters;
+  Alcotest.(check int) "message remains for hook/poll fallback" 1
+    (List.length (C2c_mcp.Broker.read_inbox
+       (C2c_mcp.Broker.create ~root) ~session_id:"deliver-loop-test-sess"))
 
 (* Recording inject client: captures (thread, message_id) per inject. *)
 let recording_inject_client () =
@@ -367,6 +400,37 @@ let test_global_respects_dnd () =
   Alcotest.(check int) "mail still queued" 1
     (List.length (read_global_inbox ~root:groot))
 
+let test_global_unsupported_latches_fallback () =
+  (* A global-only unsupported injection must trip the same latch as local
+     ingress. The sidecar then stops/release ownership, leaving the message
+     queued for the hook fallback instead of spinning forever as its owner. *)
+  let groot = temp_broker_root () in
+  seed_global_inbox ~root:groot [ mk_msg ~message_id:"gm-unsupported" "global fallback" ];
+  let inject_client : Ing.client =
+    { inject_items =
+        (fun ~endpoint:_ ~token:_ ~thread_id:_ ~message_id:_ ~items:_ ->
+          Ing.Inj_unsupported "global method unavailable");
+      history_contains = None }
+  in
+  let unsupported = ref false in
+  let h =
+    mk_harness
+      ~steps:[ Ep.Sv_running; Ep.Sv_running; Ep.Sv_frontend_exited ] ()
+  in
+  let base =
+    mk_deps ~global_broker_root:(Some groot)
+      ~on_ingress_health:(fun health ->
+        if health.Ing.last_error = Some "fallback:unsupported" then
+          unsupported := true)
+      ~stop_requested:(fun () -> !unsupported) h
+  in
+  let o = DL.run { base with inject_client } in
+  Alcotest.(check bool) "global unsupported latched fallback" true !unsupported;
+  Alcotest.(check bool) "loop stopped after global unsupported" true
+    (o.DL.final = Ep.Sv_offline);
+  Alcotest.(check int) "global mail remains queued for fallback" 1
+    (List.length (read_global_inbox ~root:groot))
+
 let test_build_global_ingress_config () =
   let h = mk_harness () in
   let deps_none = mk_deps h in
@@ -405,6 +469,10 @@ let () =
         ; test_case "None root disables global delivery" `Quick test_global_none_disables
         ; test_case "no inbox file: no pass, no artifacts" `Quick test_global_no_inbox_file_no_artifacts
         ; test_case "DND skips the global pass" `Quick test_global_respects_dnd
+        ; test_case "global unsupported latches fallback" `Quick
+            test_global_unsupported_latches_fallback
+        ; test_case "local unsupported stops private owner for hook fallback" `Quick
+            test_local_unsupported_stops_private_owner_for_hook_fallback
         ; test_case "build_global_ingress_config shape" `Quick test_build_global_ingress_config ] )
     ; ( "b168-stale-sla",
         [ test_case "default stale thresholds are 120s" `Quick

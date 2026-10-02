@@ -10,6 +10,8 @@ module S = C2c_codex_session
 module PB = C2c_mcp_helpers_post_broker
 module B = C2c_mcp.Broker
 
+external setpgid : int -> int -> unit = "caml_c2c_setpgid"
+
 (* #31 (nit 2): the config.json repair inside persist_discovered_thread is a
    SIDE repair, not part of the binding verdict. If it raises (ENOSPC / EACCES /
    read-only fs) the binding is still correct, so the exception must NOT escape:
@@ -195,6 +197,148 @@ let test_app_server_frontend_identity_env () =
     ; "C2C_CODEX_APPSERVER_SESSION=managed-codex-session"
     ; "C2C_MCP_AUTO_REGISTER_ALIAS=codex-stack-digit-ca73"
     ; "C2C_CODEX_MANAGED=1" ] env
+
+let test_daemon_frontend_clears_app_server_marker () =
+  let env =
+    S.daemon_frontend_env ~session_id:"managed-codex-session"
+      ~alias:"codex-stack-digit-ca73" ~instance_name:"codex-instance"
+  in
+  Alcotest.(check (list string))
+    "daemon frontend leaves sidecar ownership to the launcher"
+    [ "C2C_MCP_SESSION_ID=managed-codex-session"
+    ; "C2C_MCP_AUTO_REGISTER_ALIAS=codex-stack-digit-ca73"
+    ; "C2C_CODEX_APPSERVER_SESSION="
+    ; "C2C_CODEX_MANAGED=1"
+    ; "C2C_CODEX_INSTANCE_NAME=codex-instance" ] env
+
+let test_daemon_attach_requires_pidfd_and_exact_generation () =
+  Alcotest.(check bool) "all prerequisites select daemon attach" true
+    (S.daemon_attach_safe_to_start ~socket_available:true
+       ~pidfd_available:true ~pid_generation_available:true);
+  Alcotest.(check bool) "unsupported pidfd selects safe fallback" false
+    (S.daemon_attach_safe_to_start ~socket_available:true
+       ~pidfd_available:false ~pid_generation_available:true);
+  Alcotest.(check bool) "missing generation selects safe fallback" false
+    (S.daemon_attach_safe_to_start ~socket_available:true
+       ~pidfd_available:true ~pid_generation_available:false)
+
+let test_daemon_thread_handoff_rejects_fractional_generation () =
+  let dir = Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-codex-handoff-%d-%d" (Unix.getpid ()) (Random.bits ())) in
+  Unix.mkdir dir 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      let pid = Unix.getpid () in
+      let generation =
+        match B.read_pid_start_time pid with
+        | Some value -> value
+        | None -> Alcotest.fail "test requires a readable PID generation"
+      in
+      let path = Filename.concat dir "handoff.json" in
+      let oc = open_out path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+          Printf.fprintf oc
+            "{\"thread_id\":\"thread-fractional\",\"parent_pid\":%d.0,\"parent_pid_start_time\":%d}\n"
+            pid generation);
+      Alcotest.(check (option string))
+        "fractional parent pid is unknown" None
+        (S.daemon_thread_handoff_matches ~path ~frontend_pid:pid);
+      let oc = open_out path in
+      Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+          Printf.fprintf oc
+            "{\"thread_id\":\"thread-fractional\",\"parent_pid\":%d,\"parent_pid_start_time\":%d.0}\n"
+            pid generation);
+      Alcotest.(check (option string))
+        "fractional parent generation is unknown" None
+        (S.daemon_thread_handoff_matches ~path ~frontend_pid:pid))
+
+let test_stop_frontend_kills_group_after_leader_reaped () =
+  (* The frontend leader can exit cleanly while a shell/inner Codex descendant
+     remains in its process group. Reap the leader first, then prove the stop
+     path still reaches the descendant through killpg. *)
+  let read_fd, write_fd = Unix.pipe () in
+  let leader =
+    match Unix.fork () with
+    | 0 ->
+        Unix.close read_fd;
+        (try ignore (Unix.setsid ()) with _ -> exit 2);
+        (match Unix.fork () with
+         | 0 ->
+             Sys.set_signal Sys.sigterm
+               (Sys.Signal_handle (fun _ ->
+                    ignore (Unix.write_substring write_fd "T" 0 1);
+                    exit 0));
+             ignore (Unix.write_substring write_fd "R\n" 0 2);
+             while true do Unix.sleep 60 done
+         | descendant ->
+             let payload = string_of_int descendant ^ "\n" in
+             ignore
+               (Unix.write_substring write_fd payload 0 (String.length payload));
+             (* Owner-bound process-group sentinel: the leader is deliberately
+                reaped before teardown, so the stop path must retain a
+                generation-checked member that proves the PGID is still ours. *)
+             (match Unix.fork () with
+              | 0 ->
+                  (try setpgid 0 (Unix.getppid ()) with _ -> ());
+                  (try ignore (Sys.signal Sys.sigterm Sys.Signal_ignore) with _ -> ());
+                  while true do Unix.pause () done
+              | sentinel ->
+                  let sentinel_payload = string_of_int sentinel ^ "\n" in
+                  ignore
+                    (Unix.write_substring write_fd sentinel_payload 0
+                       (String.length sentinel_payload)));
+             exit 0);
+        exit 0
+    | pid -> pid
+  in
+  Unix.close write_fd;
+  let input = Unix.in_channel_of_descr read_fd in
+  Fun.protect
+    ~finally:(fun () ->
+      (try ignore (S.stop_frontend_process leader) with _ -> ());
+      (try close_in_noerr input with _ -> ());
+      (try ignore (Unix.waitpid [] leader) with Unix.Unix_error _ -> ()))
+    (fun () ->
+      let rec read_records descendant sentinel ready =
+        if ready && Option.is_some descendant && Option.is_some sentinel then
+          (Option.get descendant, Option.get sentinel)
+        else
+          match input_line input with
+          | "R" -> read_records descendant sentinel true
+          | line ->
+              let pid = int_of_string line in
+              (match descendant with
+               | None -> read_records (Some pid) sentinel ready
+               | Some _ -> read_records descendant (Some pid) ready)
+      in
+      let descendant, sentinel = read_records None None false in
+      (* Wait until the descendant has installed its handler before reaping the
+         leader; otherwise a fast cleanup can legitimately deliver SIGTERM
+         before the test child is ready and produce EOF instead of the marker. *)
+      (* Reap the leader before cleanup: this is the review finding's critical
+         state, where waitpid would otherwise make the old code skip killpg. *)
+      ignore (Unix.waitpid [] leader);
+      let sentinel_start = C2c_mcp.Broker.read_pid_start_time sentinel in
+      ignore
+        (S.stop_frontend_process ~sentinel_pid:sentinel
+           ?sentinel_start_time:sentinel_start leader);
+      Alcotest.(check char) "descendant received group termination" 'T'
+        (input_char input);
+      ignore descendant)
+
+let test_stop_frontend_missing_generation_fails_closed () =
+  (* A dead numeric PGID is not proof that an unrecorded owner was ours. *)
+  let child =
+    match Unix.fork () with
+    | 0 -> exit 0
+    | pid -> pid
+  in
+  ignore (Unix.waitpid [] child);
+  Alcotest.(check bool)
+    "missing owner generation is not successful cleanup" false
+    (S.stop_frontend_process child)
 
 (* ------------------------------------------------------------------ *)
 (* --yolo forwarding + non-persistence                                 *)
@@ -590,7 +734,8 @@ let write_persisted_unit ~dir ~unit_id =
       endpoint = { transport = "ws"; host = "127.0.0.1"; port = 40123 };
       token_env_var = "C2C_CODEX_REMOTE_TOKEN_TST";
       token_sha256 = String.make 64 'a';
-      server_pid = Some (Unix.getpid ()); frontend_pid = None;
+      server_pid = Some (Unix.getpid ()); server_pid_start_time = None;
+      frontend_pid = None; frontend_pid_start_time = None;
       thread_id = None; state = Running; created_at = 1.0; updated_at = 2.0 }
   in
   match write_persisted ~instance_dir:dir p with
@@ -771,7 +916,7 @@ let test_glue_happy_publishes_after_start () =
       Alcotest.(check int) "clean exit" 0 rc;
       Alcotest.(check bool) "managed config persisted" true
         (Sys.file_exists (C2c_start.config_path alias));
-      Alcotest.(check bool) "launcher pid persisted" true
+      Alcotest.(check bool) "clean shutdown removes launcher pid" false
         (Sys.file_exists (C2c_start.outer_pid_path alias));
       (* B167: the app-server loop must register under the exact managed
          session id supplied to the remote frontend in C2C_MCP_SESSION_ID,
@@ -799,6 +944,47 @@ let test_glue_happy_publishes_after_start () =
       | Some m ->
           Alcotest.(check string) "published alias" alias m.alias;
           Alcotest.(check string) "seed persisted" sid m.session_id)
+
+let test_registration_failure_retains_outer_records () =
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  let broker_root = Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-codex-registration-failure-%d-%d"
+         (Unix.getpid ()) (Random.bits ())) in
+  Unix.mkdir broker_root 0o700;
+  let old_root = Sys.getenv_opt "C2C_MCP_BROKER_ROOT" in
+  Fun.protect
+    ~finally:(fun () ->
+      (match old_root with
+       | Some value -> Unix.putenv "C2C_MCP_BROKER_ROOT" value
+       | None -> Unix.putenv "C2C_MCP_BROKER_ROOT" "");
+      cleanup_alias alias;
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote broker_root))))
+    (fun () ->
+      Unix.putenv "C2C_MCP_BROKER_ROOT" broker_root;
+      let clock = ref 0.0 in
+      let server = { status = Running_ } in
+      let frontend = { status = Exited 0 } in
+      let bk = scripted ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ ->
+            (* Win the alias between preflight and post-start registration. *)
+            Yojson.Safe.to_file (Filename.concat broker_root "registry.json")
+              (`List [ `Assoc
+                [ ("session_id", `String "other-session")
+                ; ("alias", `String alias)
+                ; ("pid", `Int (Unix.getpid ())) ] ]);
+            Ok (mk_fake ~id:311 server))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:322 frontend)) ()
+      in
+      ignore
+        (try
+           S.run ~mode:S.Start ~alias_override:alias ~yolo:false ~extra_args:[]
+             ~thread_id:sid ~backend:bk ~fallback:(fun ~extra_args:_ () -> 99) ()
+         with _ -> 1);
+      Alcotest.(check bool) "registration failure retains outer PID" true
+        (Sys.file_exists (C2c_start.outer_pid_path alias));
+      Alcotest.(check bool) "registration failure retains outer generation" true
+        (Sys.file_exists (C2c_start.outer_pid_start_time_path alias)))
 
 let test_generic_start_namespaced_name_reaches_app_server_alias_b221 () =
   (* Wiring regression: generic [c2c start codex] parses the reserved control,
@@ -1778,7 +1964,17 @@ let () =
         ; test_case "app-server lifecycle phase bodies (B176)" `Quick
             test_app_server_lifecycle_phase_bodies
         ; test_case "app-server frontend inherits managed identity" `Quick
-            test_app_server_frontend_identity_env ] )
+            test_app_server_frontend_identity_env
+        ; test_case "daemon frontend clears app-server marker" `Quick
+            test_daemon_frontend_clears_app_server_marker
+        ; test_case "daemon attach gates on pidfd and generation" `Quick
+            test_daemon_attach_requires_pidfd_and_exact_generation
+        ; test_case "daemon handoff rejects fractional generation" `Quick
+            test_daemon_thread_handoff_rejects_fractional_generation
+        ; test_case "stop kills descendants after leader is reaped" `Quick
+            test_stop_frontend_kills_group_after_leader_reaped
+        ; test_case "stop rejects missing generation after group disappearance" `Quick
+            test_stop_frontend_missing_generation_fails_closed ] )
     ; ( "yolo",
         [ test_case "forwards bypass" `Quick test_yolo_forwards_bypass
         ; test_case "absent by default" `Quick test_yolo_absent_by_default ] )
@@ -1832,6 +2028,8 @@ let () =
     ; ( "lifecycle-glue",
         [ test_case "default (no flag) engages app-server, publishes after start"
             `Quick test_glue_happy_publishes_after_start
+        ; test_case "registration failure retains outer records" `Quick
+            test_registration_failure_retains_outer_records
         ; test_case "generic start namespaced name reaches app-server alias (B221)"
             `Quick test_generic_start_namespaced_name_reaches_app_server_alias_b221
         ; test_case "new codex (default, no flag) engages app-server"

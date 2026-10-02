@@ -510,7 +510,9 @@ let sample_persisted ?(server_pid = None) ?(frontend_pid = None) () : persisted 
     token_env_var = "C2C_CODEX_REMOTE_TOKEN_U_1";
     token_sha256 = String.make 64 'a';
     server_pid;
+    server_pid_start_time = None;
     frontend_pid;
+    frontend_pid_start_time = None;
     thread_id = None;
     state = Running;
     created_at = 1.0;
@@ -524,8 +526,8 @@ let test_stale_state_starts_fresh () =
    | Start_fresh reason -> Alcotest.(check bool) "has reason" true (String.length reason > 0))
 
 let test_stale_recovery_pid_reuse_safe () =
-  (* classify_persisted must NOT signal a live pid whose /proc cmdline is not our
-     codex-on-this-endpoint (guards against PID reuse killing a foreign process). *)
+  (* A persisted numeric PID without its exact generation is not actionable;
+     stale recovery must leave a live foreign process untouched. *)
   let child = Unix.create_process "sleep" [| "sleep"; "30" |] Unix.stdin Unix.stdout Unix.stderr in
   Fun.protect
     ~finally:(fun () -> (try Unix.kill child Sys.sigkill with _ -> ());
@@ -535,6 +537,24 @@ let test_stale_recovery_pid_reuse_safe () =
       (match classify_persisted ~reap_recorded:true p with Start_fresh _ -> ());
       (* foreign 'sleep' must still be alive — recovery refused to kill it *)
       Alcotest.(check bool) "foreign pid not killed" true (pid_alive child))
+
+let test_stale_recovery_generation_mismatch_safe () =
+  let child = Unix.create_process "sleep" [| "sleep"; "30" |]
+      Unix.stdin Unix.stdout Unix.stderr in
+  Fun.protect
+    ~finally:(fun () -> (try Unix.kill child Sys.sigkill with _ -> ());
+              (try ignore (Unix.waitpid [] child) with Unix.Unix_error _ -> ()))
+    (fun () ->
+      let actual =
+        match C2c_mcp.Broker.read_pid_start_time child with
+        | Some n -> n
+        | None -> Alcotest.fail "child generation unavailable"
+      in
+      let p = { (sample_persisted ~server_pid:(Some child) ()) with
+                server_pid_start_time = Some (actual + 1) } in
+      (match classify_persisted ~reap_recorded:true p with Start_fresh _ -> ());
+      Alcotest.(check bool) "generation mismatch leaves foreign pid alive" true
+        (pid_alive child))
 
 let test_stale_state_roundtrip () =
   with_tmp_dir (fun dir ->
@@ -546,6 +566,55 @@ let test_stale_state_roundtrip () =
       Alcotest.(check int) "port" p.endpoint.port p2.endpoint.port;
       Alcotest.(check string) "state" (state_to_string p.state) (state_to_string p2.state);
       Alcotest.(check string) "sha" p.token_sha256 p2.token_sha256)
+
+let test_persisted_state_reader_fails_closed () =
+  with_tmp_dir (fun dir ->
+      Alcotest.(check bool) "missing state is confirmed missing" true
+        (match read_persisted_state ~instance_dir:dir with
+         | Persisted_missing -> true
+         | _ -> false);
+      let p = sample_persisted () in
+      (match write_persisted ~instance_dir:dir p with
+       | Ok () -> () | Error e -> Alcotest.failf "write: %s" e);
+      Alcotest.(check bool) "valid state is present" true
+        (match read_persisted_state ~instance_dir:dir with
+         | Persisted_present _ -> true
+         | _ -> false);
+      let path = persisted_path ~instance_dir:dir in
+      let write_raw value =
+        let oc = open_out path in
+        Fun.protect ~finally:(fun () -> close_out oc)
+          (fun () -> output_string oc value)
+      in
+      write_raw "{not-json\n";
+      Alcotest.(check bool) "malformed state is unknown" true
+        (match read_persisted_state ~instance_dir:dir with
+         | Persisted_unknown _ -> true
+         | _ -> false);
+      let fractional =
+        match persisted_to_json p with
+        | `Assoc fields ->
+            `Assoc (List.map
+              (fun (key, value) ->
+                 if key = "server_pid" then (key, `Float 42.5) else (key, value))
+              (("server_pid", `Int 42) :: fields))
+        | _ -> Alcotest.fail "persisted JSON must be an object"
+      in
+      write_raw (Yojson.Safe.to_string fractional);
+      Alcotest.(check bool) "fractional PID field is unknown" true
+        (match read_persisted_state ~instance_dir:dir with
+         | Persisted_unknown _ -> true
+         | _ -> false);
+      let target = dir // "persisted-target.json" in
+      let oc = open_out target in
+      Fun.protect ~finally:(fun () -> close_out oc)
+        (fun () -> output_string oc (Yojson.Safe.to_string (persisted_to_json p)));
+      Sys.remove path;
+      Unix.symlink target path;
+      Alcotest.(check bool) "symlink state is unknown" true
+        (match read_persisted_state ~instance_dir:dir with
+         | Persisted_unknown _ -> true
+         | _ -> false))
 
 (* ------------------------------------------------------------------ *)
 (* SECRET HYGIENE — the load-bearing security test                     *)
@@ -785,7 +854,12 @@ let () =
       ( "recovery",
         [ Alcotest.test_case "stale starts fresh" `Quick test_stale_state_starts_fresh;
           Alcotest.test_case "pid-reuse safe" `Quick test_stale_recovery_pid_reuse_safe;
+          Alcotest.test_case "generation mismatch safe" `Quick
+            test_stale_recovery_generation_mismatch_safe;
           Alcotest.test_case "persisted roundtrip" `Quick test_stale_state_roundtrip ] );
+      ( "persisted-reader",
+        [ Alcotest.test_case "fails closed on malformed, fractional, and symlink state"
+            `Quick test_persisted_state_reader_fails_closed ] );
       ( "security",
         [ Alcotest.test_case "secret hygiene" `Quick test_secret_hygiene;
           Alcotest.test_case "handshake refused offline" `Quick test_handshake_refused_when_no_server;

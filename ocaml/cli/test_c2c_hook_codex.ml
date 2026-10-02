@@ -54,6 +54,30 @@ let write_file path content =
   let oc = open_out path in
   Fun.protect ~finally:(fun () -> close_out oc) (fun () -> output_string oc content)
 
+(* A real Unix socket that accepts connections but never completes the
+   app-server handshake. This exercises the parent arm budget rather than the
+   immediate invalid-path fallback. *)
+let with_hanging_unix_socket path f =
+  let fd = Unix.socket Unix.PF_UNIX Unix.SOCK_STREAM 0 in
+  Unix.bind fd (Unix.ADDR_UNIX path);
+  Unix.listen fd 8;
+  match Unix.fork () with
+  | 0 ->
+      let rec serve () =
+        let client, _ = Unix.accept fd in
+        (try Unix.sleep 20 with Unix.Unix_error _ -> ());
+        (try Unix.close client with _ -> ());
+        serve ()
+      in
+      serve ()
+  | pid ->
+      Unix.close fd;
+      Fun.protect
+        ~finally:(fun () ->
+          (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+          (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ()))
+        f
+
 (* c2c.exe lives next to this test executable under _build. *)
 let c2c_binary = Filename.dirname Sys.executable_name // "c2c.exe"
 
@@ -87,9 +111,10 @@ let run_hook ?(extra_env = []) ctx ~payload =
   in
   let cmd =
     Printf.sprintf
-      "env -i HOME=%s PATH=%s C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s %s hook codex < %s > %s 2> %s"
+      "env -i HOME=%s PATH=%s C2C_STATE_HOME=%s C2C_MCP_BROKER_ROOT=%s C2C_SESSIONS_BROKER_ROOT=%s %s %s hook codex < %s > %s 2> %s"
       (Filename.quote ctx.home)
       (Filename.quote (Sys.getenv "PATH"))
+      (Filename.quote ctx.home)
       (Filename.quote ctx.broker_root)
       (Filename.quote ctx.global_root)
       extra
@@ -181,16 +206,28 @@ let write_codex_config_alias ctx alias =
        "[mcp_servers.c2c]\ncommand = \"c2c-mcp-server\"\n\n[mcp_servers.c2c.env]\nC2C_MCP_AUTO_REGISTER_ALIAS = \"%s\"\n"
        alias)
 
-let write_managed_codex_instance ?(include_broker_root = true) ctx ~name ~session_id ~thread_id =
+let write_managed_codex_instance ?(include_broker_root = true)
+    ?(include_thread = true) ctx ~name ~session_id ~thread_id =
   let dir = ctx.home // ".local" // "share" // "c2c" // "instances" // name in
   mkdir_p dir;
+  let thread_fields =
+    if include_thread then
+      [ ("codex_resume_target", `String thread_id) ]
+    else []
+  in
   write_file (dir // "config.json")
     (Yojson.Safe.pretty_to_string
        (`Assoc
-         ([ ("client", `String "codex")
+         ([ ("name", `String name)
+          ; ("client", `String "codex")
           ; ("session_id", `String session_id)
-          ; ("codex_resume_target", `String thread_id)
-          ] @ if include_broker_root then [ ("broker_root", `String ctx.broker_root) ] else [])))
+          ; ("resume_session_id", `String session_id)
+          ; ("alias", `String name)
+          ; ("extra_args", `List [])
+          ; ("created_at", `Float 0.)
+          ; ("auto_join_rooms", `String "swarm-lounge")
+          ] @ thread_fields
+          @ if include_broker_root then [ ("broker_root", `String ctx.broker_root) ] else [])))
 
 (* --- tests -------------------------------------------------------------------- *)
 
@@ -218,6 +255,119 @@ let test_registered_session_drains_message () =
     let rc2, stdout2, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
     check int "second fire exit 0" 0 rc2;
     check string "second fire empty stdout" "" (String.trim stdout2))
+
+let test_daemon_thread_handoff_records_native_thread_and_parent () =
+  with_ctx (fun ctx ->
+    let path = (Filename.dirname ctx.home) // "daemon-thread-handoff.json" in
+    let thread_id = "codex-daemon-thread-handoff" in
+    let frontend_pid = Unix.getpid () in
+    let frontend_start_time =
+      match C2c_mcp.Broker.read_pid_start_time frontend_pid with
+      | Some value -> value
+      | None -> fail "test requires a readable frontend generation"
+    in
+    let rc, _stdout, _stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_THREAD_HANDOFF_PATH", path)
+          ; ("C2C_CODEX_FRONTEND_PID", string_of_int frontend_pid)
+          ; ( "C2C_CODEX_FRONTEND_PID_START_TIME",
+              string_of_int frontend_start_time )
+          ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "hook exits successfully" 0 rc;
+    let json = Yojson.Safe.from_string (read_file path) in
+    match json with
+    | `Assoc fields ->
+        (match List.assoc_opt "thread_id" fields with
+         | Some (`String actual) -> check string "native thread id" thread_id actual
+         | _ -> fail "handoff omitted native thread id");
+        (match List.assoc_opt "parent_pid" fields with
+         | Some (`Int pid) -> check bool "parent pid recorded" true (pid > 0)
+         | _ -> fail "handoff omitted parent pid");
+        (match List.assoc_opt "parent_pid_start_time" fields with
+         | Some (`Int start_time) -> check bool "parent generation recorded" true (start_time > 0)
+         | _ -> fail "handoff omitted parent generation")
+    | _ -> fail "handoff was not an object")
+
+let test_daemon_thread_handoff_rejects_unproven_env_owner () =
+  with_ctx (fun ctx ->
+    let path = (Filename.dirname ctx.home) // "unproven-daemon-handoff.json" in
+    let frontend_pid = Unix.getpid () in
+    let generation =
+      match C2c_mcp.Broker.read_pid_start_time frontend_pid with
+      | Some value -> value
+      | None -> fail "test requires a readable frontend generation"
+    in
+    let rc, _stdout, _stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_THREAD_HANDOFF_PATH", path)
+          ; ("C2C_CODEX_FRONTEND_PID", string_of_int frontend_pid)
+          ; ( "C2C_CODEX_FRONTEND_PID_START_TIME", string_of_int (generation + 1) )
+          ]
+        ctx
+        ~payload:(payload ~event:"SessionStart"
+                    ~session_id:"codex-unproven-handoff" ())
+    in
+    check int "unproven owner hook still exits successfully" 0 rc;
+    check bool "unproven owner does not publish handoff" false
+      (Sys.file_exists path))
+
+let test_fresh_daemon_session_start_persists_mapping_before_mcp_identity () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-fresh-daemon-ordering" in
+    let thread_id = "codex-fresh-daemon-ordering" in
+    let frontend_pid = Unix.getpid () in
+    let frontend_start_time =
+      match C2c_mcp.Broker.read_pid_start_time frontend_pid with
+      | Some value -> value
+      | None -> fail "test requires a readable frontend generation"
+    in
+    write_managed_codex_instance ~include_thread:false ctx
+      ~name:managed_sid ~session_id:managed_sid ~thread_id;
+    ignore (register_app_server ctx ~session_id:managed_sid
+              ~alias:"managed-fresh-daemon-ordering");
+    let handoff = (Filename.dirname ctx.home) // "fresh-ordering-handoff.json" in
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_MCP_SESSION_ID", managed_sid)
+          ; ("C2C_CODEX_INSTANCE_NAME", managed_sid)
+          ; ("C2C_CODEX_THREAD_HANDOFF_PATH", handoff)
+          ; ("C2C_CODEX_FRONTEND_PID", string_of_int frontend_pid)
+          ; ( "C2C_CODEX_FRONTEND_PID_START_TIME",
+              string_of_int frontend_start_time )
+          ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "fresh daemon hook exits successfully" 0 rc;
+    let mapping_path =
+      ctx.home // ".local" // "share" // "c2c" // "instances" // managed_sid
+      // "codex-session.json"
+    in
+    let mapping =
+      match C2c_io.read_json_opt mapping_path with
+      | Some (`Assoc fields) -> fields
+      | _ -> failf "fresh mapping missing (stdout=%S stderr=%S)" stdout stderr
+    in
+    (match List.assoc_opt "thread_id" mapping with
+     | Some (`String actual) -> check string "native thread mapped immediately" thread_id actual
+     | _ -> fail "fresh mapping omitted native thread");
+    let instances_dir = ctx.home // ".local" // "share" // "c2c" // "instances" in
+    Unix.putenv "C2C_INSTANCES_DIR" instances_dir;
+    Fun.protect
+      ~finally:(fun () -> Unix.putenv "C2C_INSTANCES_DIR" "")
+      (fun () ->
+        check (option string) "MCP metadata resolver sees fresh mapping"
+          (Some managed_sid)
+          (C2c_mcp_helpers_post_broker.managed_session_id_from_codex_thread
+             ~broker_root:ctx.broker_root ~thread_id));
+    check bool "no second payload-thread registration" false
+      (List.exists
+         (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
+         (C2c_mcp.Broker.list_registrations (broker ctx))))
 
 let test_post_tool_debounce_bypasses_new_message () =
   with_ctx (fun ctx ->
@@ -393,6 +543,163 @@ let test_session_end_deregisters_hook_auto_registration () =
       (Printf.sprintf "auto-registration removed (stderr before=%S after=%S)" stderr stderr2)
       false
       (List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) regs2))
+
+let test_session_end_stops_sidecar_by_broker_session_id () =
+  with_ctx (fun ctx ->
+    let managed_sid = "codex-managed-session-end-sidecar" in
+    let thread_id = "codex-thread-session-end-sidecar" in
+    let owners_dir = ctx.home // "c2c" // "codex-daemon-owners" in
+    write_managed_codex_instance ctx ~name:"codex-managed-session-end-sidecar"
+      ~session_id:managed_sid ~thread_id;
+    ignore
+      (C2c_codex_daemon_sidecar.try_claim ~owners_dir
+         ~socket_identity:"/fake/codex.sock" ~thread_id
+         ~sidecar_pid:424242 ~alias:"codex-sidecar-end"
+         ~broker_session_id:managed_sid ~sidecar_pid_start_time:1
+         ~holder_live:(fun _ -> false) ());
+    let rc, _stdout, stderr =
+      run_hook ctx ~payload:(payload ~event:"SessionEnd" ~session_id:thread_id ())
+    in
+    check int "SessionEnd exits 0" 0 rc;
+    check bool "resolved broker-session lease removed" false
+      (C2c_codex_daemon_sidecar.leases_for_session ~owners_dir
+         ~broker_session_id:managed_sid <> []);
+    ignore stderr)
+
+let test_nested_session_end_does_not_stop_inherited_parent_sidecar () =
+  with_ctx (fun ctx ->
+    let parent_sid = "codex-parent-inherited-session-end" in
+    let parent_thread = "codex-parent-thread-inherited-session-end" in
+    let child_thread = "codex-child-thread-inherited-session-end" in
+    let owners_dir = ctx.home // "c2c" // "codex-daemon-owners" in
+    ignore
+      (C2c_codex_daemon_sidecar.try_claim ~owners_dir
+         ~socket_identity:"/fake/codex.sock" ~thread_id:parent_thread
+         ~sidecar_pid:424242 ~alias:"codex-parent-sidecar"
+         ~broker_session_id:parent_sid ~holder_live:(fun _ -> false) ());
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", parent_sid) ]
+        ctx ~payload:(payload ~event:"SessionEnd" ~session_id:child_thread ())
+    in
+    check int "nested SessionEnd exits 0" 0 rc;
+    check string "nested SessionEnd stdout is quiet" "" (String.trim stdout);
+    check bool "inherited parent lease remains" true
+      (C2c_codex_daemon_sidecar.leases_for_session ~owners_dir
+         ~broker_session_id:parent_sid <> []);
+    ignore stderr)
+
+let test_nested_session_start_does_not_arm_inherited_instance_sidecar () =
+  with_ctx (fun ctx ->
+    let parent_sid = "codex-parent-inherited-session-start" in
+    let parent_thread = "codex-parent-thread-inherited-session-start" in
+    let child_thread = "codex-child-thread-inherited-session-start" in
+    let instance = "codex-parent-inherited-session-start" in
+    write_managed_codex_instance ctx ~name:instance ~session_id:parent_sid
+      ~thread_id:parent_thread;
+    ignore (register_app_server ctx ~session_id:parent_sid
+              ~alias:"parent-inherited-start");
+    let socket_path = ctx.home // "codex-daemon-inherited.sock" in
+    with_hanging_unix_socket socket_path (fun () ->
+      let started = Unix.gettimeofday () in
+      let rc, stdout, stderr =
+        run_hook
+          ~extra_env:
+            [ ("C2C_MCP_SESSION_ID", parent_sid)
+            ; ("C2C_CODEX_INSTANCE_NAME", instance)
+            ; ("C2C_CODEX_APPSERVER_SESSION", parent_sid)
+            ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+          ctx ~payload:(payload ~event:"SessionStart" ~session_id:child_thread ())
+      in
+      check int "nested SessionStart exits 0" 0 rc;
+      check bool "inherited instance does not authorize an arm" false
+        (contains ~haystack:stderr ~needle:"daemon sidecar arm failed");
+      check bool "nested hook returns promptly" true
+        (Unix.gettimeofday () -. started < 2.0);
+      check bool "nested SessionStart may report identity only" true
+        (contains ~haystack:stdout ~needle:"parent-inherited-start")))
+
+let test_sidecar_arm_failure_falls_back_to_hook_delivery () =
+  with_ctx (fun ctx ->
+    let managed_sid = "codex-managed-sidecar-failure" in
+    let thread_id = "codex-thread-sidecar-failure" in
+    let alias = "zz-codex-sidecar-failure" in
+    write_managed_codex_instance ctx ~name:managed_sid ~session_id:managed_sid
+      ~thread_id;
+    let b = register_app_server ctx ~session_id:managed_sid ~alias in
+    ignore (register ctx ~session_id:"codex-sidecar-failure-peer"
+              ~alias:"zz-codex-sidecar-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-sidecar-peer"
+      ~to_alias:alias ~content:"hook fallback owns this" ();
+    let socket_path = ctx.home // "codex-daemon.sock" in
+    write_file socket_path "not a socket\n";
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_INSTANCE_NAME", "codex-managed-sidecar-failure")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+          ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "failed arm still exits 0" 0 rc;
+    check bool "hook fallback surfaced queued data" true
+      (contains ~haystack:stdout ~needle:"hook fallback owns this");
+    check bool "sidecar failure was surfaced" true
+      (contains ~haystack:stderr ~needle:"daemon sidecar arm failed");
+    check int "fallback drained the inbox" 0
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+    (* The launcher row may still be present after the sidecar reports an
+       unsupported ingress method. A later hook must observe the durable
+       fallback transition and drain mail rather than suppressing itself on
+       the stale app-server row. *)
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-sidecar-peer"
+      ~to_alias:alias ~content:"subsequent hook owns this" ();
+    let rc2, stdout2, _stderr2 =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_INSTANCE_NAME", "codex-managed-sidecar-failure")
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+          ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+        ctx ~payload:(payload ~event:"PostToolUse" ~session_id:thread_id ())
+    in
+    check int "subsequent fallback hook exits 0" 0 rc2;
+    check bool "subsequent hook drains after unsupported sidecar" true
+      (contains ~haystack:stdout2 ~needle:"subsequent hook owns this");
+    check int "subsequent fallback drained the inbox" 0
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid)))
+
+let test_slow_valid_socket_arm_falls_back_before_hook_timeout () =
+  with_ctx (fun ctx ->
+    let managed_sid = "codex-managed-slow-sidecar" in
+    let thread_id = "codex-thread-slow-sidecar" in
+    let alias = "zz-codex-slow-sidecar" in
+    write_managed_codex_instance ctx ~name:managed_sid ~session_id:managed_sid
+      ~thread_id;
+    let b = register_app_server ctx ~session_id:managed_sid ~alias in
+    ignore (register ctx ~session_id:"codex-slow-sidecar-peer"
+              ~alias:"zz-codex-slow-sidecar-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-slow-sidecar-peer"
+      ~to_alias:alias ~content:"slow socket hook fallback" ();
+    let socket_path = ctx.home // "codex-daemon-slow.sock" in
+    with_hanging_unix_socket socket_path (fun () ->
+      let started = Unix.gettimeofday () in
+      let rc, stdout, stderr =
+        run_hook
+          ~extra_env:
+            [ ("C2C_CODEX_INSTANCE_NAME", "codex-managed-slow-sidecar")
+            ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+            ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+          ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+      in
+      let elapsed = Unix.gettimeofday () -. started in
+      check int "slow arm exits 0" 0 rc;
+      check bool "slow valid socket reaches hook fallback" true
+        (contains ~haystack:stdout ~needle:"slow socket hook fallback");
+      check bool "slow arm leaves timeout headroom" true (elapsed < 7.5);
+      check bool "slow arm reports failure" true
+        (contains ~haystack:stderr ~needle:"daemon sidecar arm failed");
+      check int "slow fallback drained the inbox" 0
+        (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid))))
 
 let test_session_end_keeps_explicit_registration () =
   with_ctx (fun ctx ->
@@ -614,7 +921,26 @@ let test_b137_managed_app_server_adopts_launcher_alias () =
      | Some (_, context) ->
          check bool "app-server delivery contract is injected" true
            (contains ~haystack:context ~needle:"automatically injected")
-     | None -> failf "expected app-server startup context, got: %S" stdout))
+     | None -> failf "expected app-server startup context, got: %S" stdout);
+    (* A second hook fire after the launcher/sidecar refreshes its broker row
+       must remain identity-only. This catches the historical refresh from
+       client_type=codex-app-server to plain codex, which made fire two drain
+       mail that the app-server loop was already delivering. *)
+    let rc2, stdout2, stderr2 =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_MANAGED", "1")
+          ; ("C2C_MCP_SESSION_ID", managed_sid)
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid) ]
+        ctx
+        ~payload:(payload ~event:"PostToolUse" ~session_id:thread_id ())
+    in
+    check int "second hook fire exits 0" 0 rc2;
+    check int "second hook fire still leaves inbox for ingress" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+    check bool "second hook fire does not surface body" false
+      (contains ~haystack:stdout2 ~needle:"ingress owns this");
+    ignore stderr2)
 
 (* Race window: the earliest SessionStart hook can fire BEFORE the app-server
    deliver loop has landed its broker registration. The marker is inherited from
@@ -742,6 +1068,46 @@ let test_b137_app_server_registration_arm_drains_nothing () =
       (contains ~haystack:stdout ~needle:"reg-arm ingress owned");
     check int "repo inbox left for ingress loop" 1
       (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid)))
+
+(* A legacy sidecar lease has no process generation, so it is an explicit
+   operator-cleanup barrier. The hook must take over delivery while retaining
+   that barrier: it must not treat the stale app-server row as channel-owned,
+   and it must never signal or remove the unverifiable numeric PID. *)
+let test_legacy_sidecar_lease_forces_hook_fallback () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-legacy-sidecar-fallback" in
+    let thread_id = "codex-thread-legacy-sidecar-fallback" in
+    let alias = "zz-codex-legacy-sidecar-fallback" in
+    let owners_dir = ctx.home // "c2c" // "codex-daemon-owners" in
+    let socket_path = ctx.home // "codex-daemon-legacy.sock" in
+    let b = register_app_server ctx ~session_id:managed_sid ~alias in
+    ignore (register ctx ~session_id:"codex-legacy-sidecar-peer"
+              ~alias:"zz-codex-legacy-sidecar-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-codex-legacy-sidecar-peer"
+      ~to_alias:alias ~content:"legacy lease hook fallback" ();
+    with_hanging_unix_socket socket_path (fun () ->
+      let socket_identity = Unix.realpath socket_path in
+      ignore
+        (C2c_codex_daemon_sidecar.try_claim ~owners_dir ~socket_identity
+           ~thread_id ~sidecar_pid:424242 ~alias
+           ~broker_session_id:managed_sid ());
+      let rc, stdout, stderr =
+        run_hook
+          ~extra_env:
+            [ ("C2C_MCP_SESSION_ID", managed_sid)
+            ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+            ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+          ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+      in
+      check int "legacy lease hook exits 0" 0 rc;
+      check bool "legacy lease hook delivers queued mail" true
+        (contains ~haystack:stdout ~needle:"legacy lease hook fallback");
+      check int "legacy lease hook drains inbox" 0
+        (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+      check bool "legacy lease remains operator cleanup barrier" true
+        (C2c_codex_daemon_sidecar.leases_for_thread ~owners_dir ~thread_id <> []);
+      check bool "hook reports no unsafe PID action" false
+        (contains ~haystack:stderr ~needle:"signalling")))
 
 (* Guard: a codex subprocess that merely inherited C2C_MCP_SESSION_ID from a
    NON-codex managed parent (e.g. a codex spawned inside managed claude) must
@@ -1396,9 +1762,15 @@ let test_non_codex_parent_with_exec_argv_registers () =
 let () =
   Random.self_init ();
   run "c2c_hook_codex"
-    [ ( "hook-codex"
+      [ ( "hook-codex"
       , [ test_case "registered session drains message" `Quick
             test_registered_session_drains_message
+        ; test_case "daemon thread handoff records native thread and parent" `Quick
+            test_daemon_thread_handoff_records_native_thread_and_parent
+        ; test_case "daemon handoff rejects unproven env owner" `Quick
+            test_daemon_thread_handoff_rejects_unproven_env_owner
+        ; test_case "fresh daemon maps native thread before MCP identity" `Quick
+            test_fresh_daemon_session_start_persists_mapping_before_mcp_identity
         ; test_case "post-tool debounce bypasses new message" `Quick
             test_post_tool_debounce_bypasses_new_message
         ; test_case "post-tool debounce coalesces unchanged empty burst" `Quick
@@ -1414,6 +1786,16 @@ let () =
             test_unregistered_session_auto_registers_once
         ; test_case "SessionEnd deregisters hook auto-registration" `Quick
             test_session_end_deregisters_hook_auto_registration
+        ; test_case "SessionEnd stops sidecar by broker session id" `Quick
+            test_session_end_stops_sidecar_by_broker_session_id
+        ; test_case "nested SessionEnd preserves inherited parent sidecar" `Quick
+            test_nested_session_end_does_not_stop_inherited_parent_sidecar
+        ; test_case "nested SessionStart rejects inherited sidecar env" `Quick
+            test_nested_session_start_does_not_arm_inherited_instance_sidecar
+        ; test_case "sidecar arm failure falls back to hook delivery" `Quick
+            test_sidecar_arm_failure_falls_back_to_hook_delivery
+        ; test_case "slow valid socket arm falls back before hook timeout" `Quick
+            test_slow_valid_socket_arm_falls_back_before_hook_timeout
         ; test_case "SessionEnd keeps explicit registration" `Quick
             test_session_end_keeps_explicit_registration
         ; test_case "vanilla auto-register ignores installer alias hint" `Quick
@@ -1432,6 +1814,8 @@ let () =
             test_b137_app_server_hook_drains_nothing
         ; test_case "B137 app-server registration arm drains nothing" `Quick
             test_b137_app_server_registration_arm_drains_nothing
+        ; test_case "legacy sidecar lease forces hook fallback" `Quick
+            test_legacy_sidecar_lease_forces_hook_fallback
         ; test_case "B137 non-codex env session not adopted" `Quick
             test_b137_non_codex_env_session_not_adopted
         ; test_case "deferrable held until turn boundary" `Quick

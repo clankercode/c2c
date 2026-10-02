@@ -28,6 +28,202 @@ let sleep_to_min_runtime start_time =
 let touch_hook_activity ~broker ~session_id =
   try C2c_mcp.Broker.touch_session broker ~session_id with _ -> ()
 
+type codex_handoff_proof =
+  { thread_id : string
+  ; frontend_pid : int
+  ; frontend_start_time : int
+  }
+
+let env_int name =
+  match Sys.getenv_opt name with
+  | Some value -> int_of_string_opt (String.trim value)
+  | None -> None
+
+let is_codex_process pid =
+  match C2c_pid_identity.proc_comm pid with
+  | None -> false
+  | Some comm ->
+      let comm = String.lowercase_ascii (String.trim comm) in
+      comm = "codex" || comm = "codex-cli"
+
+(* A hook runner may sit between Codex and c2c. Walk that ancestry, but reject
+   an intervening Codex process: a nested `codex` inherits the frontend env and
+   must never be allowed to publish its own thread as the outer TUI's thread. *)
+let frontend_ancestry_proves_owner ~frontend_pid =
+  let rec walk pid seen depth =
+    if pid = frontend_pid then true
+    else if depth = 0 || List.mem pid seen then false
+    else
+      match C2c_pid_identity.proc_ppid pid with
+      | None -> false
+      | Some parent when parent <= 1 -> false
+      | Some parent ->
+          if parent = frontend_pid then true
+          else if is_codex_process parent then false
+          else walk parent (pid :: seen) (depth - 1)
+  in
+  walk (Unix.getpid ()) [] 64
+
+let frontend_env_proves_owner () =
+  match env_int "C2C_CODEX_FRONTEND_PID", env_int "C2C_CODEX_FRONTEND_PID_START_TIME" with
+  | Some frontend_pid, Some expected when frontend_pid > 0 && expected > 0 ->
+      C2c_mcp.Broker.read_pid_start_time frontend_pid = Some expected
+      && C2c_pid_identity.proc_tgid frontend_pid = Some frontend_pid
+      && frontend_ancestry_proves_owner ~frontend_pid
+  | _ -> false
+
+(* The daemon launcher cannot infer frontend ownership from the daemon's loaded
+   thread set: another TUI may load a thread concurrently, and the server may
+   reorder that set. Codex's hook payload carries the native thread id. For a
+   launcher-owned frontend, the launcher-provided PID and exact generation are
+   the owner proof; ancestry allows an intermediary hook runner while rejecting
+   nested Codex processes that merely inherited the environment. Best-effort by
+   design: an unproven handoff is omitted and daemon attach fails closed. *)
+let write_codex_daemon_thread_handoff ~event ~payload_sid : codex_handoff_proof option =
+  if event <> "SessionStart" then None
+  else
+    match Sys.getenv_opt "C2C_CODEX_THREAD_HANDOFF_PATH", payload_sid with
+    | Some path, Some thread_id when String.trim path <> "" ->
+        (match env_int "C2C_CODEX_FRONTEND_PID",
+               env_int "C2C_CODEX_FRONTEND_PID_START_TIME" with
+         | Some frontend_pid, Some frontend_start_time
+           when frontend_pid > 0 && frontend_start_time > 0
+                && frontend_env_proves_owner () ->
+             (try
+                C2c_io.mkdir_p (Filename.dirname path);
+                let json =
+                  `Assoc
+                    [ ("thread_id", `String thread_id)
+                    ; ("parent_pid", `Int frontend_pid)
+                    ; ("parent_pid_start_time", `Int frontend_start_time)
+                    ]
+                in
+                match
+                  C2c_io.write_file_atomic ~perm:0o600 path
+                    (Yojson.Safe.to_string json ^ "\n")
+                with
+                | Ok () -> Some { thread_id; frontend_pid; frontend_start_time }
+                | Error _ -> None
+              with _ -> None)
+         | _ -> None)
+    | _ -> None
+
+(* An explicitly marked, compatibility daemon attach can discover a stale
+   app-server registration before its sidecar has successfully registered.
+   The current managed daemon launcher clears that marker and arms its sidecar
+   itself; this hook path is therefore not the ownership path for launcher-mode
+   daemon sessions. Persist a failed compatibility arm separately so later
+   hooks do not silently skip their fallback drain. The filename is
+   digest-keyed because the session id is data, not a path component. *)
+let codex_hook_fallback_path ~broker_root ~session_id =
+  Filename.concat (Filename.concat broker_root ".codex-hook-fallback")
+    (Digest.to_hex (Digest.string session_id))
+
+let codex_hook_fallback_blocked_path ~broker_root ~session_id =
+  Filename.concat (Filename.concat broker_root ".codex-hook-fallback-blocked")
+    (Digest.to_hex (Digest.string session_id))
+
+let codex_hook_fallback_blocked ~broker_root ~session_id =
+  Sys.file_exists (codex_hook_fallback_blocked_path ~broker_root ~session_id)
+
+let codex_hook_fallback_active ~broker_root ~session_id =
+  Sys.file_exists (codex_hook_fallback_path ~broker_root ~session_id)
+  && not (codex_hook_fallback_blocked ~broker_root ~session_id)
+
+let mark_codex_hook_fallback ~broker_root ~session_id =
+  try
+    if codex_hook_fallback_blocked ~broker_root ~session_id then false
+    else
+    let path = codex_hook_fallback_path ~broker_root ~session_id in
+    C2c_mcp.mkdir_p (Filename.dirname path);
+    (match C2c_io.write_file_atomic ~perm:0o600 path "sidecar-arm-failed\n" with
+     | Ok () -> true
+     | Error _ -> false)
+  with _ ->
+    (* A failed marker write cannot establish durable fallback state. The
+       caller must keep this invocation on the safe fallback path, and future
+       invocations must require a confirmed live lease before daemon ownership. *)
+    false
+
+let block_codex_hook_fallback ~broker_root ~session_id =
+  try
+    let path = codex_hook_fallback_blocked_path ~broker_root ~session_id in
+    C2c_mcp.mkdir_p (Filename.dirname path);
+    let written =
+      match C2c_io.write_file_atomic ~perm:0o600 path "sidecar-ownership-retained\n" with
+      | Ok () -> true
+      | Error _ -> false
+    in
+    if written then begin
+      (try Sys.remove (codex_hook_fallback_path ~broker_root ~session_id)
+       with _ -> ());
+      true
+    end else false
+  with _ -> false
+
+let clear_codex_hook_fallback ~broker_root ~session_id =
+  (try Sys.remove (codex_hook_fallback_path ~broker_root ~session_id) with _ -> ());
+  (try Sys.remove (codex_hook_fallback_blocked_path ~broker_root ~session_id)
+   with _ -> ())
+
+(* An inherited managed-session environment is DATA from a parent process, not
+   proof that this hook was launched by the matching daemon-attach frontend.
+   The launcher writes the instance config before the frontend starts; for a
+   direct existing-thread attach, the config's exact resume target, session,
+   and app-server registration must all match this hook's current payload.
+   A nested Codex gets a different native thread and therefore fails closed. *)
+let codex_daemon_attach_authorized ~handoff_proof ~instance_name ~session_id
+    ~thread_id ~regs =
+  match C2c_start.load_config_opt instance_name with
+  | Some cfg
+    when cfg.client = "codex"
+         && cfg.session_id = session_id
+         && List.exists
+              (fun (r : C2c_mcp.registration) ->
+                 r.session_id = session_id
+                 && r.client_type = Some "codex-app-server")
+              (regs ()) ->
+      let marker_matches =
+        match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
+        | Some value -> String.trim value = session_id
+        | None -> false
+      in
+      let owner_handoff_matches =
+        (match handoff_proof with
+         | Some proof -> proof.thread_id = thread_id
+         | None -> false)
+        && (match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+            | Some value -> String.trim value = session_id
+            | None -> false)
+        && List.exists
+             (fun (r : C2c_mcp.registration) ->
+                r.session_id = session_id
+                && r.alias = cfg.alias
+                && r.client_type = Some "codex-app-server")
+             (regs ())
+        &&
+        (match cfg.codex_resume_target with
+         | None -> true
+         | Some target -> target = thread_id)
+      in
+      let compatibility_handoff_matches =
+        marker_matches && cfg.codex_resume_target = Some thread_id
+      in
+      owner_handoff_matches || compatibility_handoff_matches
+  | _ -> false
+
+let codex_app_server_registration_live ~session_id ~regs =
+  List.exists
+    (fun (r : C2c_mcp.registration) ->
+       r.session_id = session_id
+       && r.client_type = Some "codex-app-server"
+       &&
+       match r.pid, r.pid_start_time with
+       | Some pid, Some expected ->
+           C2c_mcp.Broker.read_pid_start_time pid = Some expected
+       | _ -> false)
+    (regs ())
+
 (* #51 (blocker 2): is this hook fire coming from a MANAGED session?
 
    A hook must not stamp [registered_by = "<client>-hook"] on a managed
@@ -551,7 +747,10 @@ let hook_codex_cmd =
              (match C2c_mcp.validate_session_id s with
               | Ok sid -> Some sid
               | Error _ -> None)
-         | None -> None
+        | None -> None
+       in
+       let handoff_proof =
+         write_codex_daemon_thread_handoff ~event ~payload_sid
        in
        let config_path =
          match Sys.getenv_opt "HOME" with
@@ -566,10 +765,42 @@ let hook_codex_cmd =
          | None -> None
        in
        if event = "SessionEnd" then begin
+         (* SessionEnd is the ownership boundary for hook-created daemon
+            sidecars. The Codex payload thread is the primary ownership proof;
+            a managed thread-to-session mapping is the only session-level
+            fallback. Ambient C2C_MCP_SESSION_ID is deliberately excluded:
+            nested Codex processes inherit it from their parent. *)
+         let session_candidates =
+           [ managed_sid_for_payload ]
+           |> List.filter_map (fun x -> x)
+           |> List.filter (fun sid -> String.trim sid <> "")
+           |> List.sort_uniq String.compare
+         in
+         (match payload_sid with
+          | Some thread_id ->
+              (try
+                 ignore
+                   (C2c_codex_daemon_sidecar.stop_for_thread
+                      ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                      ~thread_id)
+               with _ -> ())
+          | None -> ());
+         (* The payload id is Codex's native thread id; the c2c session id can
+            differ for managed launches. Only this proven mapping may broaden
+            cleanup from the thread to the managed broker session. *)
+         List.iter
+           (fun broker_session_id ->
+             (try
+                ignore
+                  (C2c_codex_daemon_sidecar.stop_for_session
+                     ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                     ~broker_session_id)
+              with _ -> ());
+             clear_codex_hook_fallback ~broker_root ~session_id:broker_session_id)
+           session_candidates;
          let candidates =
-           List.filter_map
-             (fun x -> x)
-             [ payload_sid; managed_sid_for_payload ]
+           (match payload_sid with Some sid -> [ sid ] | None -> [])
+           @ session_candidates
          in
          (match
             List.find_opt
@@ -806,14 +1037,59 @@ let hook_codex_cmd =
                          ~session_id:sid ~alias ~client:(Some "codex"));
                   (sid, Some alias))
        in
+       (* The first SessionStart hook is the earliest trustworthy observer of a
+          fresh remote TUI's native thread. When the launcher PID/generation
+          and ancestry proof match this exact managed instance, persist the
+          binding before any MCP request can ask whoami. No ambient env alone
+          can reach this arm: [handoff_proof] is required and the registration
+          must still be the exact managed Codex owner. *)
+       let daemon_owner_proven =
+         match Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME", payload_sid with
+         | Some instance_name, Some thread_id
+           when String.trim instance_name <> ""
+                && session_id <> thread_id
+                && codex_daemon_attach_authorized ~handoff_proof
+                     ~instance_name ~session_id ~thread_id ~regs
+                && codex_app_server_registration_live ~session_id ~regs -> true
+         | _ -> false
+       in
+       let _daemon_thread_mapping_proven =
+         match Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME", payload_sid with
+         | Some instance_name, Some thread_id when daemon_owner_proven ->
+             (try
+                C2c_codex_session.persist_discovered_thread
+                  ~instance_dir:(C2c_start.instance_dir instance_name)
+                  ~name:instance_name ~broker_root ~thread_id
+              with _ -> false)
+         | _ -> false
+       in
        touch_hook_activity ~broker ~session_id;
        (* The hook's payload session_id is Codex's native thread id. The c2c
-          session id is a broker identity and can differ for managed launches;
-          daemon ownership must be keyed by the native thread or two aliases
-          can claim the same loaded frontend under different c2c ids. *)
+          session id is a broker identity and can differ for managed launches.
+          Launcher-mode daemon ownership is already armed by the launcher;
+          this compatibility hook path, when explicitly authorized, is also
+          keyed by the native thread so two aliases cannot claim one frontend. *)
        let daemon_thread_hint = Option.value payload_sid ~default:session_id in
+       let daemon_attach_requested =
+         match Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME" with
+         | Some instance_name when String.trim instance_name <> "" ->
+             if Option.is_some handoff_proof then daemon_owner_proven
+             else
+               codex_daemon_attach_authorized ~handoff_proof ~instance_name
+                 ~session_id ~thread_id:daemon_thread_hint ~regs
+         | _ -> false
+       in
+       let sidecar_arm_failed = ref false in
+       let sidecar_arm_ownership_retained = ref false in
+       let mark_sidecar_arm_failure reason =
+         sidecar_arm_failed := true;
+         ignore (mark_codex_hook_fallback ~broker_root ~session_id);
+         (try
+            prerr_endline ("c2c hook codex: daemon sidecar arm failed: " ^ reason)
+          with _ -> ())
+       in
        let sidecar_armed =
-         if event <> "SessionStart" then false
+         if event <> "SessionStart" || not daemon_attach_requested then false
          else
            let alias =
              match onboarded_alias with
@@ -827,14 +1103,47 @@ let hook_codex_cmd =
                   | Some r -> r.alias
                   | None -> session_id)
            in
+           let instance_name =
+             if daemon_attach_requested then Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME"
+             else None
+           in
            try
              match
                C2c_codex_daemon_sidecar.arm ~thread_id:daemon_thread_hint ~alias
-                 ~broker_session_id:session_id ~broker_root ()
+                 ~broker_session_id:session_id ~broker_root ?instance_name ()
              with
-             | Armed _ | Already_running _ | Claim_held _ -> true
-             | Socket_unavailable -> false
-           with _ -> false
+             | Armed _ ->
+                 clear_codex_hook_fallback ~broker_root ~session_id;
+                 true
+             | Already_running l when l.broker_session_id = session_id ->
+                 clear_codex_hook_fallback ~broker_root ~session_id;
+                 true
+             | Claim_held _ ->
+                 mark_sidecar_arm_failure "another sidecar owns the Codex thread";
+                 false
+             | Arm_failed reason ->
+                 mark_sidecar_arm_failure reason;
+                 false
+             | Arm_failed_ownership_retained reason ->
+                 sidecar_arm_failed := true;
+                 sidecar_arm_ownership_retained := true;
+                 ignore (block_codex_hook_fallback ~broker_root ~session_id);
+                 (try
+                    prerr_endline
+                      ("c2c hook codex: daemon sidecar arm retained ownership; "
+                       ^ "fallback delivery remains disabled: " ^ reason)
+                  with _ -> ());
+                 false
+             | Already_running _ ->
+                 mark_sidecar_arm_failure
+                   "a foreign Codex sidecar already owns the thread";
+                 false
+             | Socket_unavailable ->
+                 mark_sidecar_arm_failure "Codex app-server socket unavailable";
+                 false
+           with e ->
+             mark_sidecar_arm_failure (Printexc.to_string e);
+             false
        in
        (* B137 / B168: is this an app-server-backed managed codex session?
           Detected by the inherited launcher marker (C2C_CODEX_APPSERVER_SESSION
@@ -863,22 +1172,55 @@ let hook_codex_cmd =
                        ~socket_identity:ep.host ~thread_id:daemon_thread_hint
                    with
                    | Some l ->
-                       C2c_pid_identity.recorded_pid_is_ours
-                         ~expect:(C2c_pid_identity.Started_at l.claimed_at)
-                         ~pid:l.sidecar_pid
+                       l.broker_session_id = session_id
+                       && C2c_codex_daemon_sidecar.lease_live l
+                       &&
+                       (match l.sidecar_pid_start_time with
+                        | Some start_time ->
+                            C2c_codex_daemon_sidecar.registration_is_live
+                              ~broker_root ~broker_session_id:l.broker_session_id
+                              ~alias:l.alias ~pid:l.sidecar_pid
+                              ~pid_start_time:start_time
+                        | None -> false)
                    | None -> false))
        in
+       (* A pre-generation lease is an explicit operator-cleanup barrier. It
+          blocks a new sidecar (no safe PID signal exists), while any stale
+          app-server registration must fall back to hooks/poll so two owners
+          can never drain the same inbox. *)
+       let legacy_sidecar_lease =
+         match C2c_codex_daemon_sidecar.default_control_socket () with
+         | None -> false
+         | Some sock ->
+             (match C2c_codex_daemon_sidecar.unix_endpoint sock with
+              | None -> false
+              | Some ep ->
+                  List.exists
+                    (fun (l : C2c_codex_daemon_sidecar.lease) ->
+                       l.sidecar_pid_start_time = None)
+                    (C2c_codex_daemon_sidecar.leases_for_thread
+                       ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                       ~thread_id:daemon_thread_hint))
+       in
        let ingress_owned =
-         (match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
-          | Some s when String.trim s <> "" -> true
-          | _ -> false)
-         || List.exists
-              (fun (r : C2c_mcp.registration) ->
-                 r.session_id = session_id
-                 && r.client_type = Some "codex-app-server")
-              (regs ())
-         || daemon_sidecar_owns
-         || sidecar_armed
+         if daemon_sidecar_owns
+            || !sidecar_arm_ownership_retained
+            || codex_hook_fallback_blocked ~broker_root ~session_id then true
+         else
+           (not !sidecar_arm_failed)
+           && not (codex_hook_fallback_active ~broker_root ~session_id)
+           && not legacy_sidecar_lease
+           && (if daemon_attach_requested then
+                 (* Daemon ownership requires the exact live lease. A missing
+                    or failed fallback marker can never turn a failed arm
+                    into an ingress owner on a later hook fire. *)
+                 daemon_sidecar_owns || sidecar_armed
+               else
+                 (match Sys.getenv_opt "C2C_CODEX_APPSERVER_SESSION" with
+                  | Some s when String.trim s <> "" ->
+                      codex_app_server_registration_live ~session_id ~regs
+                  | _ -> false)
+                 || codex_app_server_registration_live ~session_id ~regs)
        in
        (* Wake-target capture (codex-wake-inject): the hook runs with the
           codex process's env, so $TMUX/$TMUX_PANE and $HERDR_PANE_ID /

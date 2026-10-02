@@ -739,6 +739,991 @@ let test_i49_default_restart_timeout () =
   check (float 0.001) "opencode keeps the tight ceiling" 5.0
     (C2c_start.default_restart_timeout_s ~client:"opencode")
 
+let test_codex_sidecar_pid_generation_guard () =
+  with_temp_dir @@ fun dir ->
+  let pid_path = Filename.concat dir "codex-sidecar.pid" in
+  let start_time_path = Filename.concat dir "codex-sidecar.pid.start-time" in
+  let pid = Unix.getpid () in
+  let generation =
+    match C2c_mcp.Broker.read_pid_start_time pid with
+    | Some value -> value
+    | None -> fail "test requires /proc pid start-time support"
+  in
+  C2c_start.write_pid pid_path pid;
+  C2c_start.write_pid start_time_path generation;
+  check bool "matching sidecar generation is ours" true
+    (C2c_start.codex_daemon_sidecar_pid_is_ours
+       ~pid_path ~start_time_path ~pid);
+  let oc = open_out start_time_path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc (string_of_int generation ^ "\njunk"));
+  check bool "trailing start-time data is rejected" false
+    (C2c_start.codex_daemon_sidecar_pid_is_ours
+       ~pid_path ~start_time_path ~pid);
+  C2c_start.write_pid start_time_path (generation + 1);
+  check bool "reused pid generation is rejected" false
+    (C2c_start.codex_daemon_sidecar_pid_is_ours
+       ~pid_path ~start_time_path ~pid)
+
+let test_malformed_codex_sidecar_arm_blocks_cleanup () =
+  with_temp_dir @@ fun owners_dir ->
+  let path = Filename.concat owners_dir ".arm-corrupt.json" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "not-json\n");
+  check bool "malformed pending arm blocks cleanup" false
+    (C2c_start.cancel_codex_daemon_sidecar_arms ~owners_dir ());
+  check bool "malformed pending arm is retained" true (Sys.file_exists path)
+
+let test_fractional_lifecycle_integer_fields_block_cleanup () =
+  with_temp_dir @@ fun owners_dir ->
+  let token = "fractional" in
+  let pending =
+    C2c_start.codex_daemon_sidecar_arm_pending_path ~owners_dir ~token
+  in
+  let cancel = C2c_start.codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token in
+  let lock = C2c_start.codex_daemon_sidecar_arm_lock_path ~owners_dir ~token in
+  let oc = open_out pending in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      output_string oc
+        (Yojson.Safe.to_string
+           (`Assoc [ ("cancel_path", `String cancel)
+                  ; ("lock_path", `String lock)
+                  ; ("thread_id", `String "thread")
+                  ; ("pid", `Float 123.0)
+                  ; ("pid_start_time", `Int 10)
+                  ; ("broker_session_id", `String "session") ])
+         ^ "\n"));
+  check bool "fractional pending-arm PID blocks cleanup" false
+    (C2c_start.cancel_codex_daemon_sidecar_arms ~owners_dir ());
+  check bool "fractional pending-arm remains" true (Sys.file_exists pending);
+  let name = unique_instance_name "fractional-frontend" in
+  with_instance_dir name @@ fun dir ->
+    let record = C2c_start.codex_frontend_teardown_record_path name in
+    let oc = open_out record in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc "{\"frontend_pid\":123.0}\n");
+    check bool "fractional frontend PID blocks cleanup" false
+      (C2c_start.stop_frontend_teardown_record name);
+    check bool "fractional frontend record remains" true (Sys.file_exists record);
+    let generation =
+      match C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()) with
+      | Some value -> value
+      | None -> fail "current PID generation unavailable"
+    in
+    let oc = open_out record in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () ->
+        output_string oc
+          (Yojson.Safe.to_string
+             (`Assoc [ ("frontend_pid", `Int (Unix.getpid ()))
+                    ; ("frontend_pid_start_time", `Int generation)
+                    ; ("sentinel_pid", `Float 123.0) ])
+           ^ "\n"));
+    check bool "fractional frontend optional PID blocks cleanup" false
+      (C2c_start.stop_frontend_teardown_record name);
+    check bool "fractional frontend optional record remains" true
+      (Sys.file_exists record)
+
+let test_pending_arm_record_removal_requires_confirmation () =
+  with_temp_dir @@ fun owners_dir ->
+  let token = "unlink-failure" in
+  let pending =
+    C2c_start.codex_daemon_sidecar_arm_pending_path ~owners_dir ~token
+  in
+  Unix.mkdir pending 0o700;
+  check bool "pending arm unlink failure is reported" false
+    (C2c_start.remove_codex_daemon_sidecar_arm ~owners_dir ~token);
+  check bool "unremovable pending arm is retained" true (Sys.file_exists pending)
+
+let test_pending_arm_path_identity_blocks_cleanup () =
+  with_temp_dir @@ fun owners_dir ->
+  let token = "path-identity" in
+  let pending =
+    C2c_start.codex_daemon_sidecar_arm_pending_path ~owners_dir ~token
+  in
+  let wrong_cancel = Filename.concat owners_dir ".arm-other.json.cancel" in
+  let lock =
+    C2c_start.codex_daemon_sidecar_arm_lock_path ~owners_dir ~token
+  in
+  let oc = open_out pending in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      output_string oc
+        (Yojson.Safe.to_string
+           (`Assoc [ ("cancel_path", `String wrong_cancel)
+                  ; ("lock_path", `String lock)
+                  ; ("thread_id", `String "thread")
+                  ; ("pid", `Int (-1))
+                  ; ("pid_start_time", `Null)
+                  ; ("broker_session_id", `String "session") ])
+         ^ "\n");
+  );
+  check bool "mismatched pending-arm paths block cleanup" false
+    (C2c_start.cancel_codex_daemon_sidecar_arms ~owners_dir ());
+  check bool "mismatched pending-arm record remains" true (Sys.file_exists pending);
+  check bool "path helper rejects a different cancel path" false
+    (C2c_start.codex_daemon_sidecar_arm_paths_match_token ~owners_dir ~token
+       ~pending_path:pending ~cancel_path:wrong_cancel ~lock_path:lock)
+
+let test_pending_arm_content_replacement_is_retained () =
+  with_temp_dir @@ fun owners_dir ->
+  let token = "replacement" in
+  let pending =
+    C2c_start.codex_daemon_sidecar_arm_pending_path ~owners_dir ~token
+  in
+  let cancel = C2c_start.codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token in
+  let lock = C2c_start.codex_daemon_sidecar_arm_lock_path ~owners_dir ~token in
+  let write path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let pending_contents =
+    Yojson.Safe.to_string
+      (`Assoc [ ("cancel_path", `String cancel)
+             ; ("lock_path", `String lock)
+             ; ("thread_id", `String "thread")
+             ; ("pid", `Int (-1))
+             ; ("pid_start_time", `Null)
+             ; ("broker_session_id", `String "session") ])
+    ^ "\n"
+  in
+  let replacement_tmp = Filename.concat owners_dir "cancel-replacement.tmp" in
+  let ready = Filename.concat owners_dir "cancel-before-exchange-ready" in
+  write pending pending_contents;
+  write cancel "cancelled\n";
+  write replacement_tmp "replacement\n";
+  let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_BEFORE_FINISH" in
+  let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
+  let restore_env () =
+    (match old_ready with
+     | Some value -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" value
+     | None -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" "");
+    (match old_pause with
+     | Some value -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" value
+     | None -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "")
+  in
+  Unix.putenv "C2C_TEST_UNLINK_BEFORE_EXCHANGE" ready;
+  Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "200";
+  Fun.protect ~finally:restore_env @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      let rec wait_for_ready attempts =
+        if Sys.file_exists ready then true
+        else if attempts = 0 then false
+        else (Unix.sleepf 0.005; wait_for_ready (attempts - 1))
+      in
+      if wait_for_ready 400 then begin
+        (try Unix.rename replacement_tmp cancel with _ -> ());
+        exit 0
+      end else exit 1
+  | child ->
+      let removed = C2c_start.remove_codex_daemon_sidecar_arm ~owners_dir ~token in
+      let _, status = Unix.waitpid [] child in
+      check bool "arm replacement child reached exchange window" true
+        (match status with Unix.WEXITED 0 -> true | _ -> false);
+      check bool "arm content replacement fails closed" false removed;
+      check bool "pending arm remains for retry" true (Sys.file_exists pending);
+      check bool "cancel pathname remains a guarded recovery path" true
+        (Sys.is_directory cancel);
+      check bool "replacement cancel artifact remains" true
+        (Array.exists
+           (fun name ->
+             string_contains name ".cancel.c2c-unlink.")
+           (Sys.readdir owners_dir))
+
+let test_confirmed_removal_rejects_symlink () =
+  with_temp_dir @@ fun dir ->
+  let regular = Filename.concat dir "regular-record" in
+  let oc = open_out regular in
+  close_out oc;
+  check bool "exact regular lifecycle record cleanup succeeds" true
+    (C2c_start.remove_pidfile_confirmed regular);
+  check bool "exact regular lifecycle record is removed" false
+    (Sys.file_exists regular);
+  check bool "exact regular cleanup leaves no quarantine" false
+    (Array.exists
+       (fun name -> string_contains name ".c2c-unlink.")
+       (Sys.readdir dir));
+  check bool "exact regular cleanup leaves no rollback" false
+    (Array.exists
+       (fun name -> string_contains name ".c2c-rollback.")
+       (Sys.readdir dir));
+  let target = Filename.concat dir "target" in
+  let link = Filename.concat dir "record" in
+  let oc = open_out target in
+  close_out oc;
+  Unix.symlink target link;
+  check bool "symlink is not durable record removal" false
+    (C2c_start.remove_pidfile_confirmed link);
+  check bool "symlink remains after rejected removal" true (Sys.file_exists link);
+  check bool "symlink target remains" true (Sys.file_exists target);
+  Unix.unlink link
+
+let test_confirmed_removal_does_not_consume_quarantine_collision () =
+  with_temp_dir @@ fun dir ->
+  let record = Filename.concat dir "record" in
+  let collision =
+    Filename.concat dir (Printf.sprintf ".record.c2c-unlink.%d.0" (Unix.getpid ()))
+  in
+  let oc = open_out record in
+  close_out oc;
+  let oc = open_out collision in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "unrelated\n");
+  check bool "quarantine-name collision fails closed" false
+    (C2c_start.remove_pidfile_confirmed record);
+  check bool "record remains after quarantine-name collision" true
+    (Sys.file_exists record);
+  check bool "pre-existing quarantine collision is retained" true
+    (Sys.file_exists collision);
+  Unix.unlink collision
+
+let test_confirmed_removal_rejects_hardlink_replacement () =
+  with_temp_dir @@ fun dir ->
+  let record = Filename.concat dir "record" in
+  let second_link = Filename.concat dir "record-copy" in
+  let oc = open_out record in
+  close_out oc;
+  Unix.link record second_link;
+  check bool "multiply-linked lifecycle record is not exact" false
+    (C2c_start.remove_pidfile_confirmed record);
+  check bool "original hardlink remains" true (Sys.file_exists record);
+  check bool "second hardlink remains" true (Sys.file_exists second_link);
+  Unix.unlink record;
+  Unix.unlink second_link
+
+let test_confirmed_removal_preserves_quarantine_on_path_replacement () =
+  with_temp_dir @@ fun dir ->
+  let record = Filename.concat dir "record" in
+  let replacement_tmp = Filename.concat dir "replacement.tmp" in
+  let ready = Filename.concat dir "quarantine-ready" in
+  let oc = open_out record in
+  close_out oc;
+  let oc = open_out replacement_tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "replacement\n");
+  let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_QUARANTINED_PATH" in
+  let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
+  let restore_env () =
+    (match old_ready with Some v -> Unix.putenv "C2C_TEST_UNLINK_QUARANTINED_PATH" v
+     | None -> Unix.putenv "C2C_TEST_UNLINK_QUARANTINED_PATH" "");
+    (match old_pause with Some v -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" v
+     | None -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "")
+  in
+  Unix.putenv "C2C_TEST_UNLINK_QUARANTINED_PATH" ready;
+  Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "200";
+  Fun.protect
+    ~finally:restore_env
+    (fun () ->
+      match Unix.fork () with
+      | 0 ->
+          let rec wait_for_ready attempts =
+            if Sys.file_exists ready then true
+            else if attempts = 0 then false
+            else (Unix.sleepf 0.005; wait_for_ready (attempts - 1))
+          in
+          if wait_for_ready 400 then begin
+            (try Unix.rename replacement_tmp record with _ -> ());
+            exit 0
+          end else exit 1
+      | child ->
+          let removed = C2c_start.remove_pidfile_confirmed record in
+          let _, status = Unix.waitpid [] child in
+          check bool "replacement child reached quarantine window" true
+            (match status with Unix.WEXITED 0 -> true | _ -> false);
+          check bool "replacement makes cleanup fail closed" false removed;
+          check bool "replacement pathname is retained" true
+            (Sys.file_exists record);
+          let quarantine_retained =
+            Array.exists
+              (fun name ->
+                String.length name >= 19
+                && String.sub name 0 19 = ".record.c2c-unlink.")
+              (Sys.readdir dir)
+          in
+          if not quarantine_retained then
+            failf "original inode remains quarantined for retry; directory has: %s"
+              (String.concat "," (Array.to_list (Sys.readdir dir)))
+          else ())
+
+let test_confirmed_removal_preserves_quarantine_after_guard_replacement () =
+  with_temp_dir @@ fun dir ->
+  let record = Filename.concat dir "record" in
+  let replacement_tmp = Filename.concat dir "replacement.tmp" in
+  let ready = Filename.concat dir "before-finish-ready" in
+  let oc = open_out record in
+  close_out oc;
+  let oc = open_out replacement_tmp in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "replacement-after-guard\n");
+  let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_BEFORE_FINISH" in
+  let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
+  let restore_env () =
+    (match old_ready with Some v -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" v
+     | None -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" "");
+    (match old_pause with Some v -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" v
+     | None -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "")
+  in
+  Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" ready;
+  Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "200";
+  Fun.protect
+    ~finally:restore_env
+    (fun () ->
+      match Unix.fork () with
+      | 0 ->
+          let rec wait_for_ready attempts =
+            if Sys.file_exists ready then true
+            else if attempts = 0 then false
+            else (Unix.sleepf 0.005; wait_for_ready (attempts - 1))
+          in
+          if wait_for_ready 400 then begin
+            let guard = Filename.concat record ".c2c-hold" in
+            (try Unix.chmod record 0o700 with _ -> ());
+            (try Sys.remove guard with _ -> ());
+            (try Unix.rmdir record with _ -> ());
+            (try Unix.rename replacement_tmp record with _ -> ());
+            exit 0
+          end else exit 1
+      | child ->
+          let removed = C2c_start.remove_pidfile_confirmed record in
+          let _, status = Unix.waitpid [] child in
+          check bool "replacement child reached guarded window" true
+            (match status with Unix.WEXITED 0 -> true | _ -> false);
+          check bool "guard replacement makes cleanup fail closed" false removed;
+          check bool "replacement pathname is retained" true
+            (Sys.file_exists record);
+          let retained_original =
+            Array.exists
+              (fun name ->
+                String.length name >= 19
+                && (String.sub name 0 19 = ".record.c2c-unlink."
+                    || (String.length name >= 21
+                        && String.sub name 0 21 = ".record.c2c-rollback.")))
+              (Sys.readdir dir)
+          in
+          check bool "original inode remains recoverable" true retained_original)
+
+let test_content_confirmed_removal_preserves_atomic_replacement () =
+  with_temp_dir @@ fun dir ->
+  let record = Filename.concat dir "frontend-teardown.json" in
+  let replacement_tmp = Filename.concat dir "frontend-replacement.tmp" in
+  let ready = Filename.concat dir "before-exchange-ready" in
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let original = "{\"frontend_pid\":123,\"frontend_pid_start_time\":456}\n" in
+  let replacement = "replacement\n" in
+  put record original;
+  put replacement_tmp replacement;
+  let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_BEFORE_EXCHANGE" in
+  let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
+  let restore_env () =
+    (match old_ready with
+     | Some value -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_EXCHANGE" value
+     | None -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_EXCHANGE" "");
+    (match old_pause with
+     | Some value -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" value
+     | None -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "")
+  in
+  Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" ready;
+  Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "200";
+  Fun.protect ~finally:restore_env @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      let rec find_quarantine attempts =
+        if Sys.file_exists ready then true
+        else if attempts = 0 then false
+        else (Unix.sleepf 0.005; find_quarantine (attempts - 1))
+      in
+      if find_quarantine 400 then begin
+        let quarantine =
+          Array.to_list (Sys.readdir dir)
+          |> List.find_opt (fun name -> string_contains name ".c2c-unlink.")
+        in
+        (match quarantine with
+         | Some name ->
+             (try Unix.rename replacement_tmp (Filename.concat dir name)
+              with _ -> ())
+         | None -> ());
+        exit 0
+      end else exit 1
+  | child ->
+      let removed = C2c_start.remove_path_contents_confirmed record original in
+      let _, status = Unix.waitpid [] child in
+      check bool "replacement child reached before-exchange window" true
+        (match status with Unix.WEXITED 0 -> true | _ -> false);
+      check bool "content replacement makes frontend cleanup fail closed" false
+        removed;
+      check bool "canonical record remains guarded" true (Sys.is_directory record);
+      check bool "replacement quarantine pathname remains" true
+        (Array.exists
+           (fun name -> string_contains name ".c2c-unlink.")
+           (Sys.readdir dir));
+      check bool "original frontend record remains recoverable" true
+        (Array.exists
+           (fun name ->
+             string_contains name ".c2c-rollback.")
+          (Sys.readdir dir))
+
+let test_content_confirmed_removal_succeeds_for_exact_owner () =
+  with_temp_dir @@ fun dir ->
+  let record = Filename.concat dir "frontend-teardown.json" in
+  let original = "{\"frontend_pid\":123,\"frontend_pid_start_time\":456}\n" in
+  let oc = open_out record in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc original);
+  check bool "exact content-confirmed cleanup succeeds" true
+    (C2c_start.remove_path_contents_confirmed record original);
+  check bool "content-confirmed record is removed" false
+    (Sys.file_exists record);
+  check bool "content-confirmed cleanup leaves no recovery artifact" false
+    (Array.exists
+       (fun name -> string_contains name ".c2c-")
+       (Sys.readdir dir))
+
+let test_paired_cleanup_succeeds_for_exact_owner () =
+  with_temp_dir @@ fun dir ->
+  let pid_path = Filename.concat dir "record" in
+  let start_time_path = pid_path ^ ".start-time" in
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  put pid_path "111\n";
+  put start_time_path "222\n";
+  let removed =
+    C2c_start.remove_pid_record_pair_confirmed
+      ~pid_path ~start_time_path ~pid:111 ~start_time:222
+  in
+  check bool "paired exact-owner cleanup succeeds" true removed;
+  check bool "PID path is removed" false (Sys.file_exists pid_path);
+  check bool "start-time path is removed" false (Sys.file_exists start_time_path);
+  let has_prefix prefix =
+    Array.exists
+      (fun name ->
+        String.length name >= String.length prefix
+        && String.sub name 0 (String.length prefix) = prefix)
+      (Sys.readdir dir)
+  in
+  check bool "PID quarantine is removed" false
+    (has_prefix ".record.c2c-unlink.");
+  check bool "PID rollback link is removed" false
+    (has_prefix ".record.c2c-rollback.");
+  check bool "start-time quarantine is removed" false
+    (has_prefix ".record.start-time.c2c-unlink.");
+  check bool "start-time rollback link is removed" false
+    (has_prefix ".record.start-time.c2c-rollback.")
+
+let test_frontend_teardown_symlink_is_retained () =
+  let name = unique_instance_name "codex-teardown-symlink" in
+  with_instance_dir name @@ fun dir ->
+  let path = C2c_start.codex_frontend_teardown_record_path name in
+  let target = Filename.concat dir "frontend-teardown-target.json" in
+  let oc = open_out target in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "{\"frontend_pid\":1}\n");
+  Unix.symlink target path;
+  check bool "frontend teardown symlink is rejected" false
+    (C2c_start.stop_frontend_teardown_record name);
+  check bool "frontend teardown symlink remains" true (Sys.file_exists path);
+  check bool "frontend teardown backing record remains" true (Sys.file_exists target);
+  Unix.unlink path
+
+let test_pid_generation_state_distinguishes_absence () =
+  (match C2c_pid_identity.read_pid_generation (-1) with
+   | C2c_pid_identity.Absent -> ()
+   | _ -> fail "invalid pid must be confirmed absent");
+  (match C2c_pid_identity.read_pid_generation (Unix.getpid ()) with
+   | C2c_pid_identity.Generation _ -> ()
+   | _ -> fail "current pid must have a readable generation")
+
+let test_outer_pid_state_fails_closed () =
+  with_temp_dir @@ fun dir ->
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let path = Filename.concat dir "outer.pid" in
+  (match C2c_start.read_pid_state path with
+   | C2c_start.Pidfile_absent -> ()
+   | _ -> fail "missing outer.pid must be confirmed absent");
+  put path "not-a-pid\n";
+  (match C2c_start.read_pid_state path with
+   | C2c_start.Pidfile_unknown _ -> ()
+   | _ -> fail "malformed outer.pid must be unknown");
+  put path (string_of_int (Unix.getpid ()) ^ "\ntrailing-junk\n");
+  (match C2c_start.read_pid_state path with
+   | C2c_start.Pidfile_unknown _ -> ()
+   | _ -> fail "trailing outer.pid data must be unknown");
+  Sys.remove path;
+  Unix.mkdir path 0o700;
+  (match C2c_start.read_pid_state path with
+   | C2c_start.Pidfile_unknown _ -> ()
+   | _ -> fail "directory outer.pid must be unknown");
+  Sys.rmdir path;
+  let target = Filename.concat dir "target.pid" in
+  put target (string_of_int (Unix.getpid ()) ^ "\n");
+  Unix.symlink target path;
+  (match C2c_start.read_pid_state path with
+   | C2c_start.Pidfile_unknown _ -> ()
+   | _ -> fail "symlink outer.pid must be unknown");
+  Unix.unlink path;
+  put path (string_of_int (Unix.getpid ()) ^ "\n");
+  match C2c_start.read_pid_state path with
+  | C2c_start.Pidfile_valid pid ->
+      check int "valid outer.pid is read" (Unix.getpid ()) pid
+  | _ -> fail "regular numeric outer.pid must be valid"
+
+let test_outer_pid_pair_requires_exact_records () =
+  with_temp_dir @@ fun dir ->
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let pid_path = Filename.concat dir "outer.pid" in
+  let start_time_path = pid_path ^ ".start-time" in
+  let pid = Unix.getpid () in
+  let generation =
+    match C2c_mcp.Broker.read_pid_start_time pid with
+    | Some value -> value
+    | None -> fail "test requires /proc pid start-time support"
+  in
+  put pid_path (string_of_int pid ^ "\n");
+  (match C2c_start.read_pid_record ~pid_path ~start_time_path with
+   | C2c_start.Pid_record_unknown -> ()
+   | _ -> fail "missing paired start-time must be unknown");
+  put start_time_path (string_of_int generation ^ "\ntrailing-junk\n");
+  (match C2c_start.read_pid_record ~pid_path ~start_time_path with
+   | C2c_start.Pid_record_unknown -> ()
+   | _ -> fail "malformed paired start-time must be unknown");
+  put start_time_path (string_of_int generation ^ "\n");
+  match C2c_start.read_pid_record ~pid_path ~start_time_path with
+  | C2c_start.Pid_record_present (actual_pid, actual_generation) ->
+      check int "paired PID" pid actual_pid;
+      check int "paired generation" generation actual_generation
+  | _ -> fail "complete paired record must be present"
+
+let test_pid_pair_rejects_long_trailing_data () =
+  with_temp_dir @@ fun dir ->
+  let pid_path = Filename.concat dir "outer.pid" in
+  let start_time_path = pid_path ^ ".start-time" in
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  (* The old bounded read consumed the valid prefix and whitespace, then saw
+     its initialized NUL before reaching this trailing junk. *)
+  let long_trailing = "111" ^ String.make 60 ' ' ^ "junk\n" in
+  put pid_path long_trailing;
+  put start_time_path "222\n";
+  check bool "long trailing PID data blocks pair cleanup" false
+    (C2c_start.remove_pid_record_pair_confirmed
+       ~pid_path ~start_time_path ~pid:111 ~start_time:222);
+  check bool "long trailing PID record retained" true (Sys.file_exists pid_path);
+  check bool "paired start-time record retained" true
+    (Sys.file_exists start_time_path)
+
+let test_stop_recorded_sidecar_rejects_symlink_before_signal () =
+  with_temp_dir @@ fun dir ->
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let pid_path = Filename.concat dir "deliver.pid" in
+  let target_path = Filename.concat dir "pid-target" in
+  let start_time_path = pid_path ^ ".start-time" in
+  let child =
+    match Unix.fork () with
+    | 0 -> Unix.sleep 30; exit 0
+    | pid -> pid
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.kill child Sys.sigkill with Unix.Unix_error _ -> ());
+      (try ignore (Unix.waitpid [] child) with Unix.Unix_error _ -> ()))
+    (fun () ->
+      let generation =
+        match C2c_mcp.Broker.read_pid_start_time child with
+        | Some n -> n
+        | None -> fail "sidecar child generation unavailable"
+      in
+      put target_path (string_of_int child ^ "\n");
+      put start_time_path (string_of_int generation ^ "\n");
+      Unix.symlink target_path pid_path;
+      check bool "symlink pidfile is retained before signal" false
+        (C2c_start.stop_recorded_sidecar ~pid_path ~start_time_path
+           ~label:"deliver");
+      (match Unix.waitpid [ Unix.WNOHANG ] child with
+       | 0, _ -> ()
+       | _, _ -> fail "symlink pidfile cleanup signalled the child"))
+
+let test_restart_sidecar_requires_exact_outer_generation () =
+  let name = unique_instance_name "restart-sidecar-generation" in
+  with_instance_dir name @@ fun dir ->
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let broker_root = Filename.concat dir "broker" in
+  C2c_start.write_config
+    { C2c_start.name; client = "codex"; session_id = name;
+      resume_session_id = name; codex_resume_target = None;
+      alias = name; extra_args = []; created_at = Unix.gettimeofday ();
+      broker_root; auto_join_rooms = ""; binary_override = None;
+      model_override = None; agent_name = None; last_launch_at = None;
+      last_exit_code = None; last_exit_reason = None };
+  put (Filename.concat dir "outer.pid")
+    (string_of_int (Unix.getpid ()) ^ "\n");
+  put (Filename.concat dir "meta.json")
+    (Printf.sprintf "{\"pid\":%d,\"start_ts\":%.3f}\n"
+       (Unix.getpid ()) (Unix.gettimeofday () -. 3600.0));
+  check int "foreign outer generation blocks sidecar restart" 1
+    (C2c_start.cmd_restart_sidecar name "deliver")
+
+let test_restart_sidecar_requires_outer_generation_record () =
+  let name = unique_instance_name "restart-sidecar-missing-generation" in
+  with_instance_dir name @@ fun dir ->
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let broker_root = Filename.concat dir "broker" in
+  let pid = Unix.getpid () in
+  C2c_start.write_config
+    { C2c_start.name; client = "codex"; session_id = name;
+      resume_session_id = name; codex_resume_target = None;
+      alias = name; extra_args = []; created_at = Unix.gettimeofday ();
+      broker_root; auto_join_rooms = ""; binary_override = None;
+      model_override = None; agent_name = None; last_launch_at = None;
+      last_exit_code = None; last_exit_reason = None };
+  put (C2c_start.outer_pid_path name) (string_of_int pid ^ "\n");
+  put (Filename.concat dir "meta.json")
+    (Printf.sprintf "{\"pid\":%d,\"start_ts\":%.3f}\n"
+       pid (Unix.gettimeofday ()));
+  (* A matching meta.json is insufficient. restart-sidecar must require the
+     exact kernel generation in outer.pid.start-time too. *)
+  check int "missing outer generation blocks sidecar restart" 1
+    (C2c_start.cmd_restart_sidecar name "deliver")
+
+let test_restart_sidecar_rejects_symlink_inner_record () =
+  let name = unique_instance_name "restart-sidecar-inner-symlink" in
+  with_instance_dir name @@ fun dir ->
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  let broker_root = Filename.concat dir "broker" in
+  let pid = Unix.getpid () in
+  let generation =
+    match C2c_mcp.Broker.read_pid_start_time pid with
+    | Some n -> n
+    | None -> fail "test requires current process generation"
+  in
+  C2c_start.write_config
+    { C2c_start.name; client = "codex"; session_id = name;
+      resume_session_id = name; codex_resume_target = None;
+      alias = name; extra_args = []; created_at = Unix.gettimeofday ();
+      broker_root; auto_join_rooms = ""; binary_override = None;
+      model_override = None; agent_name = None; last_launch_at = None;
+      last_exit_code = None; last_exit_reason = None };
+  put (C2c_start.outer_pid_path name) (string_of_int pid ^ "\n");
+  put (C2c_start.outer_pid_start_time_path name) (string_of_int generation ^ "\n");
+  put (Filename.concat dir "meta.json")
+    (Printf.sprintf "{\"pid\":%d,\"start_ts\":%.3f}\n"
+       pid (Unix.gettimeofday ()));
+  let target = Filename.concat dir "inner-target.pid" in
+  put target (string_of_int pid ^ "\n");
+  Unix.symlink target (Filename.concat dir "inner.pid");
+  put (C2c_start.inner_pid_start_time_path name)
+    (string_of_int generation ^ "\n");
+  check int "symlink inner record blocks sidecar restart" 1
+    (C2c_start.cmd_restart_sidecar name "deliver")
+
+let test_regular_lifecycle_reader_rejects_symlink () =
+  with_temp_dir @@ fun dir ->
+  let target = Filename.concat dir "target.json" in
+  let link = Filename.concat dir "record.json" in
+  let oc = open_out target in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "{\"frontend_pid\":1}\n");
+  Unix.symlink target link;
+  (match C2c_start.read_regular_file_nofollow link with
+   | C2c_start.Regular_file_unreadable _ -> ()
+   | C2c_start.Regular_file_missing
+   | C2c_start.Regular_file_contents _ ->
+       fail "race-safe lifecycle reader followed a symlink");
+  Unix.unlink link
+
+let test_regular_lifecycle_reader_raced_enoent_is_unknown () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "record" in
+  let ready = Filename.concat dir "open-ready" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "lifecycle\n");
+  let old_ready = Sys.getenv_opt "C2C_TEST_OPEN_REGULAR_READY" in
+  let old_pause = Sys.getenv_opt "C2C_TEST_OPEN_REGULAR_PAUSE_MS" in
+  let restore_env () =
+    (match old_ready with
+     | Some value -> Unix.putenv "C2C_TEST_OPEN_REGULAR_READY" value
+     | None -> Unix.putenv "C2C_TEST_OPEN_REGULAR_READY" "");
+    (match old_pause with
+     | Some value -> Unix.putenv "C2C_TEST_OPEN_REGULAR_PAUSE_MS" value
+     | None -> Unix.putenv "C2C_TEST_OPEN_REGULAR_PAUSE_MS" "")
+  in
+  Unix.putenv "C2C_TEST_OPEN_REGULAR_READY" ready;
+  Unix.putenv "C2C_TEST_OPEN_REGULAR_PAUSE_MS" "300";
+  Fun.protect ~finally:restore_env @@ fun () ->
+  match Unix.fork () with
+  | 0 ->
+      let code =
+        match C2c_start.read_regular_file_nofollow path with
+        | C2c_start.Regular_file_unreadable _ -> 0
+        | C2c_start.Regular_file_missing -> 1
+        | C2c_start.Regular_file_contents _ -> 2
+      in
+      exit code
+  | child ->
+      let rec wait_for_ready attempts =
+        if Sys.file_exists ready then true
+        else if attempts = 0 then false
+        else (Unix.sleepf 0.005; wait_for_ready (attempts - 1))
+      in
+      if not (wait_for_ready 400) then begin
+        (try Unix.kill child Sys.sigkill with _ -> ());
+        ignore (Unix.waitpid [] child);
+        fail "regular-file reader race hook did not run"
+      end;
+      Unix.unlink path;
+      let _, status = Unix.waitpid [] child in
+      check bool "post-lstat ENOENT is unknown" true
+        (match status with Unix.WEXITED 0 -> true | _ -> false);
+      check (option int) "initial ENOENT remains confirmed missing" (Some 1)
+        (match C2c_start.read_regular_file_nofollow path with
+         | C2c_start.Regular_file_missing -> Some 1
+         | C2c_start.Regular_file_unreadable _ -> Some 2
+         | C2c_start.Regular_file_contents _ -> Some 3)
+
+let test_read_pid_rejects_symlink () =
+  with_temp_dir @@ fun dir ->
+  let target = Filename.concat dir "target.pid" in
+  let link = Filename.concat dir "record.pid" in
+  let oc = open_out target in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc (string_of_int (Unix.getpid ()) ^ "\n"));
+  Unix.symlink target link;
+  check (option int) "read_pid does not follow symlink" None
+    (C2c_start.read_pid link);
+  Unix.unlink link
+
+let test_stop_instance_stops_authoritative_sidecar_without_pidfile () =
+  if not (C2c_pid_identity.pidfd_supported ()) then ()
+  else
+    with_temp_dir @@ fun state_home ->
+    let previous = Sys.getenv_opt "C2C_STATE_HOME" in
+    Unix.putenv "C2C_STATE_HOME" state_home;
+    Fun.protect
+      ~finally:(fun () ->
+        match previous with
+        | Some value -> Unix.putenv "C2C_STATE_HOME" value
+        | None -> Unix.putenv "C2C_STATE_HOME" "")
+      (fun () ->
+        let name = unique_instance_name "codex-authoritative-stop" in
+        with_instance_dir name @@ fun _ ->
+        let broker_root = Filename.concat state_home "broker" in
+        let pid =
+          match Unix.fork () with
+          | 0 -> Unix.sleep 20; exit 0
+          | child -> child
+        in
+        Fun.protect
+          ~finally:(fun () ->
+            (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+            (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ()))
+          (fun () ->
+            let start_time =
+              match C2c_mcp.Broker.read_pid_start_time pid with
+              | Some n -> n
+              | None -> fail "child start-time unavailable"
+            in
+            C2c_start.write_config
+              { C2c_start.name; client = "codex"; session_id = name;
+                resume_session_id = name; codex_resume_target = None;
+                alias = "authoritative-stop"; extra_args = [];
+                created_at = Unix.gettimeofday (); broker_root;
+                auto_join_rooms = C2c_swarm_config.swarm_config_social_room ();
+                binary_override = None;
+                model_override = None; agent_name = None;
+                last_launch_at = None; last_exit_code = None;
+                last_exit_reason = None };
+            let owners_dir =
+              Filename.concat state_home "c2c"
+              |> fun d -> Filename.concat d "codex-daemon-owners"
+            in
+            ignore
+              (C2c_codex_daemon_sidecar.try_claim ~owners_dir
+                 ~socket_identity:"/authoritative.sock"
+                 ~thread_id:"authoritative-thread" ~sidecar_pid:pid
+                 ~sidecar_pid_start_time:start_time ~alias:"authoritative-stop"
+                 ~broker_session_id:name ());
+            ignore (C2c_start.stop_instance name);
+            (match Unix.waitpid [ Unix.WNOHANG ] pid with
+             | _, Unix.WEXITED _ | _, Unix.WSIGNALED _ -> ()
+             | 0, _ -> fail "authoritative lease owner was not stopped"
+             | _, Unix.WSTOPPED _ -> fail "authoritative lease owner was stopped"
+             | exception Unix.Unix_error (Unix.ECHILD, _, _) -> ());
+            check int "authoritative lease removed" 0
+              (List.length
+                 (C2c_codex_daemon_sidecar.leases_for_session ~owners_dir
+                    ~broker_session_id:name))))
+
+let test_codex_frontend_teardown_expectation_fails_closed () =
+  let expect_unknown label name =
+    match C2c_start.codex_frontend_teardown_expected name with
+    | C2c_start.Codex_frontend_teardown_unknown _ -> ()
+    | C2c_start.Codex_frontend_teardown_required ->
+        fail (label ^ ": unexpectedly required")
+    | C2c_start.Codex_frontend_teardown_absent ->
+        fail (label ^ ": uncertainty was treated as absent")
+  in
+  let expect_required label name =
+    match C2c_start.codex_frontend_teardown_expected name with
+    | C2c_start.Codex_frontend_teardown_required -> ()
+    | C2c_start.Codex_frontend_teardown_absent ->
+        fail (label ^ ": record was treated as absent")
+    | C2c_start.Codex_frontend_teardown_unknown reason ->
+        fail (label ^ ": unexpectedly unknown: " ^ reason)
+  in
+  let expect_absent label name =
+    match C2c_start.codex_frontend_teardown_expected name with
+    | C2c_start.Codex_frontend_teardown_absent -> ()
+    | C2c_start.Codex_frontend_teardown_required ->
+        fail (label ^ ": unexpectedly required")
+    | C2c_start.Codex_frontend_teardown_unknown reason ->
+        fail (label ^ ": unexpectedly unknown: " ^ reason)
+  in
+  let missing = unique_instance_name "codex-teardown-missing" in
+  with_instance_dir missing @@ fun _ ->
+  expect_unknown "missing config" missing;
+  let invalid = unique_instance_name "codex-teardown-invalid" in
+  with_instance_dir invalid @@ fun dir ->
+  let oc = open_out (Filename.concat dir "config.json") in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "{not-json\n");
+  expect_unknown "invalid config" invalid;
+  let symlinked = unique_instance_name "codex-teardown-config-symlink" in
+  with_instance_dir symlinked @@ fun dir ->
+  let target = Filename.concat dir "config-target.json" in
+  Yojson.Safe.to_file target
+    (`Assoc
+      [ ("name", `String symlinked); ("client", `String "claude");
+        ("session_id", `String "symlink-session");
+        ("resume_session_id", `String "symlink-session");
+        ("alias", `String symlinked); ("extra_args", `List []);
+        ("created_at", `Float 1.0); ("auto_join_rooms", `String "") ]);
+  Unix.symlink target (Filename.concat dir "config.json");
+  expect_unknown "symlink config" symlinked;
+  let recorded = unique_instance_name "codex-teardown-recorded" in
+  with_instance_dir recorded @@ fun dir ->
+  let oc = open_out (Filename.concat dir "frontend-teardown.json") in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () -> output_string oc "{}\n");
+  expect_required "durable record" recorded;
+  let broker_root = Filename.temp_file "c2c-teardown-broker" "" in
+  Sys.remove broker_root;
+  Unix.mkdir broker_root 0o700;
+  let no_registration = unique_instance_name "codex-teardown-empty" in
+  with_instance_dir no_registration @@ fun _ ->
+  Fun.protect ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote broker_root))))
+    (fun () ->
+      C2c_start.write_config
+        { C2c_start.name = no_registration; client = "codex";
+          session_id = "codex-teardown-empty-session";
+          resume_session_id = "codex-teardown-empty-session";
+          codex_resume_target = None; alias = no_registration; extra_args = [];
+          created_at = 1.; last_launch_at = None; last_exit_code = None;
+          last_exit_reason = None; broker_root;
+          auto_join_rooms = ""; binary_override = None; model_override = None;
+          agent_name = None };
+      expect_absent "readable broker with no registration" no_registration);
+  let unreadable_broker = Filename.temp_file "c2c-teardown-unreadable" "" in
+  let uncertain = unique_instance_name "codex-teardown-broker-error" in
+  with_instance_dir uncertain @@ fun _ ->
+  Fun.protect ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -f %s" (Filename.quote unreadable_broker))))
+    (fun () ->
+      C2c_start.write_config
+        { C2c_start.name = uncertain; client = "codex";
+          session_id = "codex-teardown-broker-error-session";
+          resume_session_id = "codex-teardown-broker-error-session";
+          codex_resume_target = None; alias = uncertain; extra_args = [];
+          created_at = 1.; last_launch_at = None; last_exit_code = None;
+          last_exit_reason = None; broker_root = unreadable_broker;
+          auto_join_rooms = ""; binary_override = None; model_override = None;
+          agent_name = None };
+      expect_unknown "broker read failure" uncertain)
+
+let test_frontend_teardown_requires_generation_and_confirmed_removal () =
+  let write_record name json =
+    let path = C2c_start.codex_frontend_teardown_record_path name in
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc (Yojson.Safe.to_string json ^ "\n"));
+    path
+  in
+  let missing_generation = unique_instance_name "codex-teardown-no-generation" in
+  with_instance_dir missing_generation @@ fun _ ->
+  let child =
+    match Unix.fork () with
+    | 0 -> exit 0
+    | pid -> pid
+  in
+  let path =
+    write_record missing_generation
+      (`Assoc [ ("frontend_pid", `Int child) ])
+  in
+  ignore (Unix.waitpid [] child);
+  check bool "missing generation is retained even after group disappearance" false
+    (C2c_start.stop_frontend_teardown_record missing_generation);
+  check bool "missing-generation record remains" true (Sys.file_exists path);
+  let exact_generation = unique_instance_name "codex-teardown-exact-generation" in
+  with_instance_dir exact_generation @@ fun _ ->
+  let child =
+    match Unix.fork () with
+    | 0 -> exit 0
+    | pid -> pid
+  in
+  let generation =
+    match C2c_mcp.Broker.read_pid_start_time child with
+    | Some n -> n
+    | None -> fail "frontend child start-time unavailable"
+  in
+  let path =
+    write_record exact_generation
+      (`Assoc [ ("frontend_pid", `Int child)
+             ; ("frontend_pid_start_time", `Int generation) ])
+  in
+  ignore (Unix.waitpid [] child);
+  check bool "exact-generation gone record cleanup succeeds" true
+    (C2c_start.stop_frontend_teardown_record exact_generation);
+  check bool "exact-generation record is removed" false (Sys.file_exists path);
+  let durable = Filename.temp_file "c2c-teardown-remove" "" in
+  check bool "confirmed record cleanup succeeds" true
+    (C2c_start.remove_pidfile_confirmed durable);
+  check bool "confirmed record is removed" false (Sys.file_exists durable)
+
 (* Fix 3. The notice fires for a role-derived alias too, where "--alias wins"
    points the operator at a flag they never typed. *)
 let test_i34r_name_notice_names_its_source () =
@@ -4896,6 +5881,174 @@ let read_file path =
       really_input ic b 0 n;
       Bytes.to_string b)
 
+(* Registration teardown must fail closed: a broken registry is not an empty
+   registry, and a PID without an exact generation is not proof of ownership. *)
+let test_registration_cleanup_preserves_malformed_registry () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "registry.json" in
+  let original = "{ definitely not json\n" in
+  write_file path original;
+  check bool "malformed registry blocks cleanup" false
+    (C2c_start.clear_registration_pid_if_owner ~broker_root:dir
+       ~session_id:"sid" ~pid:(Unix.getpid ()) ~pid_start_time:(Some 1));
+  check string "malformed registry is preserved" original (read_file path)
+
+let test_registration_cleanup_preserves_semantically_malformed_registry () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "registry.json" in
+  let original = {|[{"alias":"target"}]|} in
+  write_file path original;
+  check bool "semantic malformed row blocks owner cleanup" false
+    (C2c_start.clear_registration_pid_if_owner ~broker_root:dir
+       ~session_id:"sid" ~pid:(Unix.getpid ()) ~pid_start_time:(Some 1));
+  check bool "semantic malformed row blocks registration cleanup" false
+    (C2c_start.clear_registration_pid ~broker_root:dir ~session_id:"sid");
+  check string "semantic malformed registry is preserved" original (read_file path)
+
+let test_registration_cleanup_requires_exact_generation () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "registry.json" in
+  let row =
+    `Assoc
+      [ ("session_id", `String "sid")
+      ; ("alias", `String "owned")
+      ; ("pid", `Int (Unix.getpid ())) ]
+  in
+  Yojson.Safe.to_file path (`List [ row ]);
+  let original = read_file path in
+  check bool "missing generation blocks cleanup" false
+    (C2c_start.clear_registration_pid_if_owner ~broker_root:dir
+       ~session_id:"sid" ~pid:(Unix.getpid ()) ~pid_start_time:(Some 1));
+  check string "unknown owner row is preserved" original (read_file path)
+
+let test_registration_cleanup_removes_only_exact_owner () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "registry.json" in
+  let pid = Unix.getpid () in
+  let generation =
+    match C2c_mcp.Broker.read_pid_start_time pid with
+    | Some n -> n
+    | None -> Alcotest.fail "test process must have a readable generation"
+  in
+  let owner =
+    `Assoc
+      [ ("session_id", `String "sid")
+      ; ("alias", `String "owned")
+      ; ("pid", `Int pid)
+      ; ("pid_start_time", `Int generation) ]
+  in
+  let unrelated =
+    `Assoc
+      [ ("session_id", `String "other")
+      ; ("alias", `String "other")
+      ; ("pid", `Int pid)
+      ; ("pid_start_time", `Int generation) ]
+  in
+  Yojson.Safe.to_file path (`List [ owner; unrelated ]);
+  check bool "exact owner cleanup succeeds" true
+    (C2c_start.clear_registration_pid_if_owner ~broker_root:dir
+       ~session_id:"sid" ~pid ~pid_start_time:(Some generation));
+  let actual = Yojson.Safe.from_string (read_file path) in
+  let expected =
+    `List
+      [ `Assoc [ ("session_id", `String "sid"); ("alias", `String "owned") ]
+      ; unrelated ]
+  in
+  check bool "only exact owner pid fields are cleared" true
+    (Yojson.Safe.equal expected actual)
+
+let test_registration_cleanup_preserves_on_lock_failure () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "registry.json" in
+  let lock_path = Filename.concat dir "registry.json.lock" in
+  let original =
+    {|[{"session_id":"sid","alias":"owned","pid":1,"pid_start_time":2}]|}
+  in
+  write_file path original;
+  Unix.mkdir lock_path 0o700;
+  check bool "lock failure blocks cleanup" false
+    (C2c_start.clear_registration_pid_if_owner ~broker_root:dir
+       ~session_id:"sid" ~pid:1 ~pid_start_time:(Some 2));
+  check string "lock failure preserves registry" original (read_file path)
+
+let test_eager_registration_preserves_malformed_registry () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let path = Filename.concat broker_root "registry.json" in
+  let original = "{ definitely not json\n" in
+  write_file path original;
+  (match
+     C2c_start.register_managed_agy_session ~broker_root ~name:"sid"
+       ~alias:"alias" ~pid:(Unix.getpid ()) ~cwd:dir
+   with
+   | Error _ -> ()
+   | Ok () -> fail "malformed registry must reject eager registration");
+  check string "malformed registry is preserved" original (read_file path)
+
+let test_eager_registration_preserves_semantically_malformed_registry () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let path = Filename.concat broker_root "registry.json" in
+  let original = {|[{"alias":"target"}]|} in
+  write_file path original;
+  (match
+     C2c_start.register_managed_agy_session ~broker_root ~name:"sid"
+       ~alias:"target" ~pid:(Unix.getpid ()) ~cwd:dir
+   with
+   | Error _ -> ()
+   | Ok () -> fail "semantic malformed registry must reject eager registration");
+  check string "semantic malformed registry is preserved" original (read_file path)
+
+let test_eager_registration_preserves_lock_failure () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let path = Filename.concat broker_root "registry.json" in
+  let original =
+    {|[{"session_id":"other","alias":"other","pid":1}]|}
+  in
+  write_file path original;
+  Unix.mkdir (Filename.concat broker_root "registry.json.lock") 0o700;
+  (match
+     C2c_start.register_managed_agy_session ~broker_root ~name:"sid"
+       ~alias:"alias" ~pid:(Unix.getpid ()) ~cwd:dir
+   with
+   | Error _ -> ()
+   | Ok () -> fail "registry lock failure must reject eager registration");
+  check string "lock failure preserves registry" original (read_file path)
+
+let test_startup_registry_reader_preserves_unknown () =
+  with_temp_dir @@ fun dir ->
+  let path = Filename.concat dir "registry.json" in
+  let check_unknown label contents =
+    write_file path contents;
+    match
+      C2c_start.registry_alive_conflict_strict ~broker_root:dir ~name:"target"
+    with
+    | Error _ -> ()
+    | Ok _ -> fail (label ^ " registry state was accepted")
+  in
+  check_unknown "malformed" "{not-json\n";
+  check_unknown "semantic" {|[{"alias":"target"}]|};
+  let target = Filename.concat dir "registry-target.json" in
+  write_file target "{not-json\n";
+  Sys.remove path;
+  Unix.symlink target path;
+  (match
+     C2c_start.registry_alive_conflict_strict ~broker_root:dir ~name:"target"
+   with
+   | Error _ -> ()
+   | Ok _ -> fail "registry symlink was accepted");
+  Unix.unlink path;
+  (match
+     C2c_start.registry_alive_conflict_strict ~broker_root:dir ~name:"target"
+   with
+   | Ok None -> ()
+   | Ok (Some _) -> fail "missing registry reported a conflict"
+   | Error _ -> fail "confirmed missing registry became unknown")
+
 (* Every registered adapter must satisfy [deliver_kickoff].  This is a
    compile-time guarantee from the [CLIENT_ADAPTER] signature, but we
    exercise each one at runtime to assert no [failwith] regression
@@ -5158,6 +6311,69 @@ let () =
             `Quick, test_i76_role_kickoff_alias_matches_published )
         ; ( "i49_default_restart_timeout",
             `Quick, test_i49_default_restart_timeout )
+        ; ( "codex_sidecar_pid_generation_guard",
+            `Quick, test_codex_sidecar_pid_generation_guard )
+        ; ( "malformed_codex_sidecar_arm_blocks_cleanup",
+            `Quick, test_malformed_codex_sidecar_arm_blocks_cleanup )
+        ; ( "fractional_lifecycle_integer_fields_block_cleanup",
+            `Quick, test_fractional_lifecycle_integer_fields_block_cleanup )
+        ; ( "pending_arm_record_removal_requires_confirmation",
+            `Quick, test_pending_arm_record_removal_requires_confirmation )
+        ; ( "pending_arm_path_identity_blocks_cleanup",
+            `Quick, test_pending_arm_path_identity_blocks_cleanup )
+        ; ( "pending_arm_content_replacement_is_retained",
+            `Quick, test_pending_arm_content_replacement_is_retained )
+        ; ( "confirmed_removal_rejects_symlink",
+            `Quick, test_confirmed_removal_rejects_symlink )
+        ; ( "confirmed_removal_does_not_consume_quarantine_collision",
+            `Quick, test_confirmed_removal_does_not_consume_quarantine_collision )
+        ; ( "confirmed_removal_rejects_hardlink_replacement",
+            `Quick, test_confirmed_removal_rejects_hardlink_replacement )
+        ; ( "confirmed_removal_preserves_quarantine_on_path_replacement",
+            `Quick,
+            test_confirmed_removal_preserves_quarantine_on_path_replacement )
+        ; ( "confirmed_removal_preserves_quarantine_after_guard_replacement",
+            `Quick,
+            test_confirmed_removal_preserves_quarantine_after_guard_replacement )
+        ; ( "content_confirmed_removal_preserves_atomic_replacement",
+            `Quick,
+            test_content_confirmed_removal_preserves_atomic_replacement )
+        ; ( "content_confirmed_removal_succeeds_for_exact_owner",
+            `Quick,
+            test_content_confirmed_removal_succeeds_for_exact_owner )
+        ; ( "paired_cleanup_succeeds_for_exact_owner",
+            `Quick,
+            test_paired_cleanup_succeeds_for_exact_owner )
+        ; ( "frontend_teardown_symlink_is_retained",
+            `Quick, test_frontend_teardown_symlink_is_retained )
+        ; ( "pid_generation_state_distinguishes_absence",
+            `Quick, test_pid_generation_state_distinguishes_absence )
+        ; ( "outer_pid_state_fails_closed",
+            `Quick, test_outer_pid_state_fails_closed )
+        ; ( "outer_pid_pair_requires_exact_records",
+            `Quick, test_outer_pid_pair_requires_exact_records )
+        ; ( "pid_pair_rejects_long_trailing_data",
+            `Quick, test_pid_pair_rejects_long_trailing_data )
+        ; ( "stop_recorded_sidecar_rejects_symlink_before_signal",
+            `Quick, test_stop_recorded_sidecar_rejects_symlink_before_signal )
+        ; ( "restart_sidecar_requires_exact_outer_generation",
+            `Quick, test_restart_sidecar_requires_exact_outer_generation )
+        ; ( "restart_sidecar_requires_outer_generation_record",
+            `Quick, test_restart_sidecar_requires_outer_generation_record )
+        ; ( "restart_sidecar_rejects_symlink_inner_record",
+            `Quick, test_restart_sidecar_rejects_symlink_inner_record )
+        ; ( "regular_lifecycle_reader_rejects_symlink",
+            `Quick, test_regular_lifecycle_reader_rejects_symlink )
+        ; ( "regular_lifecycle_reader_raced_enoent_is_unknown",
+            `Quick, test_regular_lifecycle_reader_raced_enoent_is_unknown )
+        ; ( "read_pid_rejects_symlink",
+            `Quick, test_read_pid_rejects_symlink )
+        ; ( "stop_instance_authoritative_sidecar_without_pidfile",
+            `Quick, test_stop_instance_stops_authoritative_sidecar_without_pidfile )
+        ; ( "codex_frontend_teardown_expectation_fails_closed",
+            `Quick, test_codex_frontend_teardown_expectation_fails_closed )
+        ; ( "frontend_teardown_requires_generation_and_confirmed_removal",
+            `Quick, test_frontend_teardown_requires_generation_and_confirmed_removal )
         ; ( "i34r_name_notice_names_its_source",
             `Quick, test_i34r_name_notice_names_its_source )
         ; ( "i34r_managed_name_not_alias_record",
@@ -5179,6 +6395,24 @@ let () =
             test_i56_registry_alive_conflict_alias_match_is_case_insensitive )
         ; ( "i56_unparseable_row_falls_back_to_pid_alive",
             `Quick, test_i56_unparseable_row_falls_back_to_pid_alive )
+        ; ( "registration_cleanup_preserves_malformed_registry",
+            `Quick, test_registration_cleanup_preserves_malformed_registry )
+        ; ( "registration_cleanup_preserves_semantically_malformed_registry",
+            `Quick, test_registration_cleanup_preserves_semantically_malformed_registry )
+        ; ( "registration_cleanup_requires_exact_generation",
+            `Quick, test_registration_cleanup_requires_exact_generation )
+        ; ( "registration_cleanup_removes_only_exact_owner",
+            `Quick, test_registration_cleanup_removes_only_exact_owner )
+        ; ( "registration_cleanup_preserves_on_lock_failure",
+            `Quick, test_registration_cleanup_preserves_on_lock_failure )
+        ; ( "eager_registration_preserves_malformed_registry",
+            `Quick, test_eager_registration_preserves_malformed_registry )
+        ; ( "eager_registration_preserves_semantically_malformed_registry",
+            `Quick, test_eager_registration_preserves_semantically_malformed_registry )
+        ; ( "eager_registration_preserves_lock_failure",
+            `Quick, test_eager_registration_preserves_lock_failure )
+        ; ( "startup_registry_reader_preserves_unknown",
+            `Quick, test_startup_registry_reader_preserves_unknown )
         ; ( "namespaced_name_filtered_from_generic_tmux_command_b221",
             `Quick, test_namespaced_name_filtered_from_generic_tmux_command_b221 )
         ; ( "generic_start_tmux_consumes_namespaced_control_b221",
