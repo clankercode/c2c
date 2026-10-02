@@ -1572,7 +1572,10 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
       else
         match matches with
       | [] -> Codex_thread_unmapped
-      | [ (session_id, _) ] -> Codex_thread_resolved session_id
+      | [ (session_id, _) ] ->
+          (match strict_registry ~broker_root with
+           | Ok _ -> Codex_thread_resolved session_id
+           | Error () -> Codex_thread_uncertain)
       | _ ->
           (* Multiple durable mappings are a split-brain claim. Registry
              liveness cannot establish which frontend owns the native thread:
@@ -2152,7 +2155,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
   | Some session_id ->
       (try
          Printf.eprintf
-           "[auto_register_startup] codex app-server session %S: waiting for +            launcher thread proof; generic MCP registration suppressed.\n%!"
+           "[auto_register_startup] codex app-server session %S: waiting for launcher thread proof; generic MCP registration suppressed.\n%!"
            session_id
        with _ -> ())
   | None ->
