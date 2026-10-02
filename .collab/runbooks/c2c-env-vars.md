@@ -148,7 +148,15 @@ Legacy opt-in for full PostToolUse injection, from when the debounced nudge was 
 
 ## Codex wake-inject (codex-wake-inject slice)
 
-Idle wake for codex sessions in tmux/herdr panes: a watcher (`C2c_wake_inject` — the managed codex deliver sidecar, or `c2c deliver wake-watch` for vanilla sessions) peeks the inbox and types a one-line nudge into the pane when the session is idle; the injected turn's UserPromptSubmit hook does the actual drain. The injector never drains the inbox. Wake metadata is usable only with a session binding captured by the Codex hook and revalidated immediately before injection; unbound/stale registrations are skipped without touching the inbox.
+Idle wake for vanilla or hook-fallback Codex sessions in tmux/herdr panes: a
+watcher (`C2c_wake_inject`, managed on the hook-fallback path, or
+`c2c deliver wake-watch` for vanilla sessions) peeks the inbox and types a
+one-line nudge into the pane when the session is idle; the injected turn's
+UserPromptSubmit hook does the actual drain. The injector never drains the
+inbox. Daemon/private app-server sessions use their transport instead. Wake
+metadata is usable only with a session binding captured by the Codex hook and
+revalidated immediately before injection; unbound/stale registrations are
+skipped without touching the inbox.
 
 ### `C2C_WAKE_IDLE_THRESHOLD_S`
 
@@ -186,14 +194,14 @@ Test-only companion to the fixture gate: the `agent_status` value the herdr idle
 
 ### `C2C_CODEX_FORCE_HOOKS`
 
-Hidden operator/testing-only escape. The app-server transport is the **default
-and only** managed codex path on a supported codex (B131) — there is no
-`--app-server` flag and no `C2C_CODEX_APP_SERVER` gate (both removed). Setting
-`C2C_CODEX_FORCE_HOOKS=1` makes a managed launch skip the app-server path
-entirely and fall back to the hook delivery path
-(`c2c_codex_session.ml`; only the exact value `1` triggers it). Not user-facing —
-intended for operator testing of the hook fallback. Any other value (or unset)
-leaves app-server as the default.
+Hidden operator/testing-only escape. There is no `--app-server` flag and no
+`C2C_CODEX_APP_SERVER` gate (both removed). Setting
+`C2C_CODEX_FORCE_HOOKS=1` makes a managed launch select hook delivery
+(`c2c_codex_session.ml`; only the exact value `1` triggers it). This is useful
+for operator testing or emergency recovery. Any other value (or unset) leaves
+the normal transport selection in place: daemon when its socket and
+owner/cleanup prerequisites are available, otherwise private authenticated
+app-server, then hooks if private startup is unsupported or fails.
 
 ### `C2C_CODEX_SKIP_MCP_PREFLIGHT`
 
@@ -255,12 +263,20 @@ app-server log path. Does not change the automatic hook-backed fallback.
 
 ### `C2C_CODEX_FORCE_PRIVATE_APPSERVER`
 
-Hidden operator/testing escape. On codex-cli versions with the machine-wide
-daemon control socket, managed Codex normally attaches the TUI to that private
-Unix-domain WebSocket and arms a per-native-thread delivery sidecar. Setting
-`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` skips that daemon attach and uses the
-older per-session authenticated loopback app-server instead. This is useful for
-isolating daemon or sidecar failures; unset it for the normal path.
+Hidden operator/testing escape. On codex-cli >= 0.159, managed Codex normally
+selects the machine-wide daemon only when its private Unix-domain socket and
+owner/cleanup prerequisites are available. Setting
+`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` skips daemon selection and uses the
+authenticated per-session loopback app-server instead (codex-cli >= 0.144).
+If the private app-server is unsupported or fails to start, hooks are the
+fallback. This variable is useful for isolating daemon or sidecar failures;
+unset it for normal selection. Once a daemon frontend has started, uncertain
+thread ownership or cleanup fails closed and does not trigger this fallback.
+
+For both fresh and resumed daemon sessions, the frontend must hand off its
+thread and the authenticated server must report that same thread in the loaded
+workspace before c2c persists the binding or arms the delivery sidecar. The
+requested resume id alone is not proof of a loaded thread.
 
 ### `C2C_CODEX_MANAGED`
 
@@ -272,19 +288,21 @@ Set to the managed app-server session id on the private per-session fallback by
 `C2c_codex_session.run_app_server` before the stock frontend is spawned. The
 frontend and its hooks inherit it and adopt the launcher identity, so they do
 not mint a second registration or drain the broker. On the machine-daemon path
-this variable is deliberately set to the empty string: the `SessionStart` hook
-arms `C2c_codex_daemon_sidecar` using Codex's payload-native thread id, and that
-sidecar owns delivery. Empty is therefore meaningful and is treated as unset by
-hook readers. Distinct from `C2C_CODEX_MANAGED`, which marks both managed paths.
+this variable is deliberately set to the empty string: after frontend handoff
+and authenticated loaded-workspace matching, the launcher arms
+`C2c_codex_daemon_sidecar` using the exact native thread id, and that sidecar
+owns delivery. The `SessionStart` hook is identity/fallback-only. Empty is
+therefore meaningful and is treated as unset by hook readers. Distinct from
+`C2C_CODEX_MANAGED`, which marks all managed paths.
 
 ### `C2C_CODEX_INGRESS_LIVE`
 
 Set to `1` inside the private per-session delivery loop and inside a daemon
 sidecar to unlock the real ingress/auto-turn WebSocket clients. It is an
-internal process marker, not the frontend identity marker; the frontend hooks
-must use `C2C_CODEX_MANAGED` plus either the non-empty
-`C2C_CODEX_APPSERVER_SESSION` fallback marker or the daemon sidecar's native
-thread ownership.
+internal process marker, not the frontend identity marker. The private
+frontend uses `C2C_CODEX_MANAGED` plus the non-empty
+`C2C_CODEX_APPSERVER_SESSION` marker; the daemon sidecar uses its
+frontend-handoff and authenticated workspace ownership proof.
 
 ### `C2C_CODEX_APPSERVER_NUDGE_EVERY`
 

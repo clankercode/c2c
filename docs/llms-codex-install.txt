@@ -62,31 +62,38 @@ cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-
 
 ## Delivery
 
-Managed sessions (`c2c start codex`, `c2c new codex`) on a supported Codex
-(codex-cli >= 0.144) run behind an authenticated loopback app-server by
-default — no flag — with the stock remote TUI attached, and get app-server
-interactive delivery (shipped, B131): inbound mail is injected into the
-thread's model-visible history on arrival without ever touching a typed
-draft, plus one gated auto-turn for eligible local mail when the session is
-idle and DND is off. Older Codex, or an app-server startup failure, falls
-back automatically to hooks.
+Managed sessions (`c2c start codex`, `c2c new codex`, and resume) choose the
+transport in this order. On codex-cli >= 0.159, c2c prefers the machine-wide
+same-UID daemon when its private socket and owner/cleanup proof are available.
+If the daemon is not selected, codex-cli >= 0.144 uses the authenticated
+per-session loopback app-server. If that private app-server is unsupported or
+fails to start, c2c falls back to hooks. `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1`
+selects the private app-server directly; `C2C_CODEX_FORCE_HOOKS=1` selects
+hooks directly.
 
-On Codex >= 0.159, a managed session may attach to Codex's machine-wide
-same-UID daemon instead. The launcher discovers the exact loaded native thread
-after the remote frontend starts and runs one detached delivery sidecar with a
-lease keyed by the daemon socket and thread, including the sidecar PID and
-process start generation. The daemon frontend clears
-`C2C_CODEX_APPSERVER_SESSION`; its `SessionStart` hook remains
-identity/fallback-only. `SessionEnd` and `c2c stop` release only that matching
+Both app-server paths inject inbound mail into the thread's model-visible
+history on arrival without touching a typed draft, plus one gated auto-turn for
+eligible local mail when the session is idle and DND is off. For a fresh or
+resumed daemon session, the launcher requires the frontend handoff and an
+authenticated loaded-workspace match before it persists the binding or arms
+the delivery sidecar. Once the daemon frontend has started, uncertain thread
+ownership or cleanup fails closed: c2c does not promise a private-server or
+hook retry at that point, and mail remains queued.
+
+The daemon sidecar lease is keyed by the daemon socket and exact native thread,
+including the sidecar PID and process start generation. The daemon frontend
+clears `C2C_CODEX_APPSERVER_SESSION`; its `SessionStart` hook is
+identity/fallback-only. `SessionEnd` and `c2c stop` release only the matching
 lease.
-Unsupported daemon injection APIs release the sidecar and leave mail queued so
-the installed hooks can retry it.
 
 The managed launcher owns the remote frontend process group. On shutdown it
 waits after `SIGTERM`, escalates to `SIGKILL` if necessary, reaps the frontend,
 removes `outer.pid`, and clears only its own matching broker registration.
-Arm or registration failures are logged and tear down the frontend instead of
-leaving an unroutable Codex process behind.
+Before a daemon frontend is running, a failed daemon selection can leave the
+launcher to choose the private or hook path described above. After the daemon
+frontend starts, arm, registration, ownership, or cleanup uncertainty is
+logged and fails closed; c2c does not silently switch transports or leave an
+unroutable Codex process behind.
 
 Vanilla sessions — and hook-fallback managed sessions — receive messages
 through the installed hooks. Turn-boundary hooks drain queued messages;

@@ -398,20 +398,26 @@ the operator; do not invent coordination busywork.
 > **Note (T005; updated 2026-07-12):** this whole section describes the
 > **input-injecting** wake, which is the **hook-fallback path only**
 > (`delivery_mode=hooks+wake` / `hooks`). It is NOT how managed codex delivers
-> anymore. The **app-server transport is the default and only** managed codex
-> path on a supported codex (B131/B141, shipped and wired into managed
-> supervision) — inbound mail is injected into the thread history on arrival,
-> plus one gated turn for eligible LOCAL mail when the thread is idle and DND is
-> off (T007 — no pane typing involved). The old `--app-server` flag and the
-> `C2C_CODEX_APP_SERVER` gate are **GONE**; a hidden `C2C_CODEX_FORCE_HOOKS=1`
-> escape forces this hook path (operator testing only). Cross-repo
-> (sessions-broker) mail addressed to the session is also delivered inject-only
-> by the app-server loop (B141). This input-injecting wake still applies to
-> vanilla/hook-fallback codex sessions and to a too-old codex or an app-server
-> startup failure that falls back to hooks. `c2c doctor hooks` classifies which
-> mode a session actually has. Mail arriving *mid-turn* is not stalled until the
-> turn ends: injection is sub-second and the model reads it at its next
-> reasoning step (measured 5s / 15s on a 91s multi-step turn), with the batched
+> anymore. Managed Codex selects the machine-wide daemon on codex-cli >= 0.159
+> when its private socket and owner/cleanup prerequisites are available. When
+> the daemon is not selected, the authenticated private app-server requires
+> codex-cli >= 0.144; if that private startup is unsupported or fails, hooks
+> are the fallback. `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` selects the private
+> path and `C2C_CODEX_FORCE_HOOKS=1` selects hooks. Both app-server paths
+> inject inbound mail into thread history on arrival, plus one gated turn for
+> eligible LOCAL mail when the thread is idle and DND is off (T007 — no pane
+> typing involved). Fresh and resumed daemon sessions require frontend handoff
+> plus an authenticated loaded-workspace match before the binding is persisted
+> or the delivery sidecar is armed. Once the daemon frontend starts, uncertain
+> ownership or cleanup fails closed; c2c does not promise a private-server or
+> hook fallback then. The old `--app-server` flag and `C2C_CODEX_APP_SERVER`
+> gate are **GONE**. Cross-repo (sessions-broker) mail addressed to the session
+> is also delivered inject-only by the app-server loop (B141). This
+> input-injecting wake still applies to vanilla/hook-fallback codex sessions.
+> `c2c doctor hooks` classifies which mode a session actually has. Mail arriving
+> *mid-turn* is not stalled until the turn ends: injection is sub-second and the
+> model reads it at its next reasoning step (measured 5s / 15s on a 91s
+> multi-step turn), with the batched
 > follow-up turn as the backstop — see `docs/wake-contract.md` §"Codex mid-turn
 > timing" (#25). Contract + details: `docs/client-delivery.md`
 > § Codex; CLAUDE.md "Codex delivery — app-server transport".
@@ -444,8 +450,10 @@ SessionStart, but only after binding the hook process to the tmux pane or the
 herdr-reported agent session. A SessionStart without a valid binding clears
 old targets. Before every injection the watcher revalidates that binding;
 legacy/unbound or stale targets are skipped and their inbox stays queued.
-Managed `c2c start codex` runs the watcher as its deliver sidecar; for a
-vanilla codex session run the watcher yourself:
+Managed `c2c start codex` runs this watcher only when the managed session is on
+the hook-fallback path; daemon/private app-server delivery has its own
+transport. For a vanilla or hook-fallback codex session, run the watcher
+yourself:
 
 ```
 c2c deliver wake-watch --alias <codex-alias>
@@ -472,4 +480,3 @@ As of P2 (I010/I011 foundations):
 - Spikes: Codex delivery sidecar extraction **NO-GO**; granular deliver/poker restart **CONDITIONAL GO** (notifier NO-GO until dual-ownership fixed); monitor self-detect-stale **GO** (self-exit + relaunch hint only; no external respawn).
 
 See `.collab/research/2026-07-20-p2-closeout.md`.
-
