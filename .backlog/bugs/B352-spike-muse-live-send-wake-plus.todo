@@ -1,16 +1,18 @@
 ---
+claimed_at: "2026-10-02T18:14:26Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-10-02T17:26:34Z"
 depends_on: []
 estimate_hours: 3
 id: B352
 priority: critical
-status: pending
-tags:
-    - muse
-    - spike
+started_at: "2026-10-02T18:14:26Z"
+status: in_progress
+tags: []
 title: SPIKE muse live-send wake plus hook-MCP env identity probes
-updated_at: "2026-10-02T17:26:34Z"
+updated_at: "2026-10-02T18:14:26Z"
 ---
 
 # SPIKE: muse live-send wake + hook/MCP env identity probes (operator-run)
