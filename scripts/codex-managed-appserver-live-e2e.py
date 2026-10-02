@@ -273,7 +273,8 @@ def run_live() -> int:
         # 1. launch the managed supervisor in a dedicated tmux window. Export the
         #    isolated broker root so it registers there; force the app-server
         #    path is the default on a supported codex (no flag needed).
-        res = tmux("new-window", "-d", "-n", window, "-P", "-F", "#{pane_id}", "bash", check=False)
+        res = tmux("new-window", "-d", "-c", str(REPO_ROOT), "-n", window,
+                   "-P", "-F", "#{pane_id}", "bash", check=False)
         pane = res.stdout.strip()
         if not pane:
             log("[appserver-e2e] FAIL: could not create tmux window"); return 3

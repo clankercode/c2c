@@ -71,6 +71,23 @@ draft, plus one gated auto-turn for eligible local mail when the session is
 idle and DND is off. Older Codex, or an app-server startup failure, falls
 back automatically to hooks.
 
+On Codex >= 0.159, a managed session may attach to Codex's machine-wide
+same-UID daemon instead. The launcher discovers the exact loaded native thread
+after the remote frontend starts and runs one detached delivery sidecar with a
+lease keyed by the daemon socket and thread, including the sidecar PID and
+process start generation. The daemon frontend clears
+`C2C_CODEX_APPSERVER_SESSION`; its `SessionStart` hook remains
+identity/fallback-only. `SessionEnd` and `c2c stop` release only that matching
+lease.
+Unsupported daemon injection APIs release the sidecar and leave mail queued so
+the installed hooks can retry it.
+
+The managed launcher owns the remote frontend process group. On shutdown it
+waits after `SIGTERM`, escalates to `SIGKILL` if necessary, reaps the frontend,
+removes `outer.pid`, and clears only its own matching broker registration.
+Arm or registration failures are logged and tear down the frontend instead of
+leaving an unroutable Codex process behind.
+
 Vanilla sessions — and hook-fallback managed sessions — receive messages
 through the installed hooks. Turn-boundary hooks drain queued messages;
 `PostToolUse` handles timely non-deferrable delivery during active work.

@@ -243,6 +243,18 @@ private per-session server with the hidden
 `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` escape, or force hooks with
 `C2C_CODEX_FORCE_HOOKS=1` for testing and emergency recovery.
 
+The daemon sidecar lease is keyed by the canonical daemon socket and native
+thread id, and records both its PID and `/proc` start generation. `SessionEnd`
+and `c2c stop` enumerate only leases for that broker session, terminate the
+owner, and release the matching generation. If the daemon rejects the
+injection protocol, the sidecar releases its lease and leaves mail retryable
+for the installed hook fallback.
+
+The managed frontend and its child process group are owned by the launcher.
+Shutdown sends `SIGTERM`, waits, escalates to `SIGKILL` when needed, reaps the
+frontend, then removes `outer.pid` and clears only the launcher's matching
+broker registration generation.
+
 **Wiring status (2026-07-12, B131) — read this first.** The app-server
 *transport* (launch, auth boundary, lifecycle, `app_server_status` reporting) AND
 its inbound *delivery stack* — arrival-time passive injection + the gated
@@ -354,9 +366,11 @@ never RPC" invariant. See [Delivery & Wake Contract](/wake-contract/).
 registers the routable alias (the one `c2c instances` reports) before the TUI
 can deliver mail. On the private per-session fallback, the frontend inherits
 `C2C_CODEX_APPSERVER_SESSION` and the hook adopts that identity. On the machine
-daemon path, that marker is deliberately empty: `SessionStart` arms a sidecar
-using Codex's payload-native thread ID, and the sidecar claims that exact loaded
-thread before it drains or injects. Both paths have one delivery owner, so
+daemon path, that marker is deliberately empty: the launcher discovers the
+loaded native thread after the remote frontend starts and arms the sidecar
+itself. The sidecar claims that exact thread before it drains or injects;
+`SessionStart` remains an identity/fallback hook and does not own this lease.
+Both paths have one delivery owner, so
 `c2c list` shows one identity per session and a second frontend cannot steal the
 thread by sharing a c2c UUID.
 

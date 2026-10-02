@@ -101,8 +101,10 @@ DATA and B098 contracts; cross-repo mail is inject-only. If neither app-server
 path is available, c2c falls back to hooks before publishing a routable alias.
 Use `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` to select the older path or
 `C2C_CODEX_FORCE_HOOKS=1` to select hooks for diagnosis. After a successful
-start the launcher binds the banner alias before first interaction, and the
-daemon sidecar claims the exact native thread from the `SessionStart` payload.
+start the launcher binds the banner alias before first interaction, discovers
+the exact loaded native thread, and arms the daemon sidecar itself. The daemon
+frontend intentionally clears `C2C_CODEX_APPSERVER_SESSION`; its
+`SessionStart` hook remains identity/fallback-only.
 `c2c instances` reports `delivery_mode=app-server` only while the unit is
 `online-attached`, plus the `app_server_status` lifecycle field. Full contract:
 [client-delivery](/client-delivery/#codex).

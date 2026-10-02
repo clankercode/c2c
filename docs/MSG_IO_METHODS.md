@@ -244,6 +244,16 @@ Codex ≥ 0.144 uses a per-session `codex app-server` over an authenticated
 loopback WebSocket as fallback. The managed supervisor drives the T003 ingress +
 T007 auto-turn pipeline while the frontend is attached:
 
+The daemon launcher discovers the native thread after the remote frontend is
+loaded and starts one detached sidecar with a lease keyed by daemon socket plus
+thread. The daemon frontend intentionally clears
+`C2C_CODEX_APPSERVER_SESSION`, so its `SessionStart` hook does not own this
+lease. The lease records the sidecar PID and process start generation, so stale
+cleanup cannot remove a newer owner. `SessionEnd` and `c2c stop` release only
+sidecars owned by that broker session. An unsupported daemon injection API
+releases the sidecar and leaves mail in the durable inbox for the installed
+hook fallback.
+
 1. Inbound c2c mail is injected on arrival as DATA (`thread/inject_items`) —
    draft-safe; the composer is frontend-only state the app-server cannot touch.
 2. Eligible **local-broker** mail starts one model turn when the thread is
@@ -259,6 +269,11 @@ T007 auto-turn pipeline while the frontend is attached:
 Identity: after a successful start the launcher binds the banner alias into the
 broker before first interaction (B172); hooks inherit the launcher session id
 via `C2C_CODEX_APPSERVER_SESSION` (B166/B137) so there is a single identity.
+Registration and arm failures are logged and cause safe teardown rather than
+leaving an unroutable frontend running. Frontend shutdown waits after
+`SIGTERM`, escalates to `SIGKILL` on timeout, reaps the process group, removes
+`outer.pid`, and clears a registration only when its PID and start generation
+still match.
 
 Full contract: [Per-Client Delivery § Codex](/client-delivery/#codex).
 
