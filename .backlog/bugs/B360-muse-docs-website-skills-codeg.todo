@@ -1,0 +1,16 @@
+---
+complexity: medium
+created_at: "2026-10-02T17:26:47Z"
+depends_on:
+    - B358
+estimate_hours: 5
+id: B360
+priority: medium
+status: pending
+tags:
+    - muse
+title: muse docs website skills-codegen runbooks tests glue
+updated_at: "2026-10-02T17:26:47Z"
+---
+
+muse docs website skills-codegen runbooks tests glue
