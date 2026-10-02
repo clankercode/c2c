@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-10-02T21:45:24Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-02T22:59:15Z"
 complexity: medium
 created_at: "2026-10-02T17:26:36Z"
 depends_on:
     - B354
+duration_minutes: 73.85610254706667
 estimate_hours: 4
 id: B359
 priority: medium
 started_at: "2026-10-02T21:45:24Z"
-status: in_progress
+status: done
 tags: []
 title: muse doctor health wake-guidance checks
-updated_at: "2026-10-02T21:45:24Z"
+updated_at: "2026-10-02T22:59:15Z"
 ---
 
 # muse doctor/health/wake-guidance checks (#50-honest)
