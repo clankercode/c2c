@@ -773,6 +773,102 @@ let test_write_guard_reclaims_dead_sibling () =
             (Some thread) m.thread_id
       | None -> Alcotest.fail "self mapping vanished")
 
+let test_thread_ownership_lock_serializes_concurrent_claims () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let broker = B.create ~root:broker_root in
+      let thread = "thread-serialized-claim" in
+      let names = [ "race-a"; "race-b" ] in
+      List.iter
+        (fun name ->
+          let dir = Filename.concat inst name in
+          write_codex_mapping ~dir ~session_id:("sid-" ^ name) ~thread_id:None;
+          C2c_start.write_config
+            { C2c_start.name; client = "codex"; session_id = "sid-" ^ name;
+              resume_session_id = "sid-" ^ name; codex_resume_target = None;
+              alias = name; extra_args = []; created_at = 1.;
+              last_launch_at = None; last_exit_code = None;
+              last_exit_reason = None; broker_root; auto_join_rooms = "";
+              binary_override = None; model_override = None; agent_name = None };
+          register_alive broker ~session_id:("sid-" ^ name) ~alias:name)
+        names;
+      let release = Filename.concat inst "release-claim" in
+      let marker name = Filename.concat inst (name ^ ".checked") in
+      let spawn name =
+        let go_r, go_w = Unix.pipe () in
+        let result_r, result_w = Unix.pipe () in
+        match Unix.fork () with
+        | 0 ->
+            Unix.close go_w;
+            Unix.close result_r;
+            ignore (Unix.read go_r (Bytes.create 1) 0 1);
+            let before_mapping_write () =
+              let oc = open_out (marker name) in
+              close_out oc;
+              while not (Sys.file_exists release) do Unix.sleepf 0.01 done
+            in
+            let ok =
+              S.persist_discovered_thread_with_hook ~before_mapping_write
+                ~instance_dir:(Filename.concat inst name) ~name ~broker_root
+                ~thread_id:thread
+            in
+            ignore (Unix.write_substring result_w (if ok then "1" else "0") 0 1);
+            Unix.close go_r;
+            Unix.close result_w;
+            exit 0
+        | pid ->
+            Unix.close go_r;
+            Unix.close result_w;
+            (pid, go_w, result_r)
+      in
+      let children = List.map spawn names in
+      List.iter
+        (fun (_pid, go_w, _result_r) ->
+          ignore (Unix.write_substring go_w "x" 0 1);
+          Unix.close go_w)
+        children;
+      let checked_count () =
+        List.fold_left
+          (fun count name -> if Sys.file_exists (marker name) then count + 1 else count)
+          0 names
+      in
+      let deadline = Unix.gettimeofday () +. 2.0 in
+      let first_reached = ref false in
+      let rec wait_for_first_check () =
+        if checked_count () > 0 then first_reached := true
+        else if Unix.gettimeofday () < deadline then begin
+          Unix.sleepf 0.01;
+          wait_for_first_check ()
+        end
+      in
+      wait_for_first_check ();
+      (* The first claimant holds the ownership lock while this hook is paused;
+         its sibling must not pass the check before the first mapping write. *)
+      Unix.sleepf 0.2;
+      let only_one_entered = !first_reached && checked_count () = 1 in
+      let oc = open_out release in
+      close_out oc;
+      let results =
+        List.map
+          (fun (pid, _go_w, result_r) ->
+            let bytes = Bytes.create 1 in
+            let read = Unix.read result_r bytes 0 1 in
+            Unix.close result_r;
+            ignore (Unix.waitpid [] pid);
+            read = 1 && Bytes.get bytes 0 = '1')
+          children
+      in
+      Alcotest.(check bool) "only one claimant enters the check/write window" true
+        only_one_entered;
+      Alcotest.(check int) "one claim succeeds" 1
+        (List.fold_left (fun count ok -> if ok then count + 1 else count) 0 results);
+      Alcotest.(check int) "one durable mapping is written" 1
+        (List.fold_left
+           (fun count name ->
+             match S.load_mapping ~instance_dir:(Filename.concat inst name) with
+             | Some m when m.thread_id = Some thread -> count + 1
+             | _ -> count)
+           0 names))
+
 let test_missing_fresh_mapping_fails_closed () =
   with_split_brain_env (fun ~inst ~broker_root ->
       let name = Printf.sprintf "missing-config-%d-%d" (Unix.getpid ()) (Random.bits ()) in
@@ -2089,6 +2185,8 @@ let () =
             test_write_guard_refuses_on_live_sibling
         ; test_case "write-guard reclaims dead sibling" `Quick
             test_write_guard_reclaims_dead_sibling
+        ; test_case "ownership lock serializes concurrent claims" `Quick
+            test_thread_ownership_lock_serializes_concurrent_claims
         ; test_case "missing fresh mapping fails closed" `Quick
             test_missing_fresh_mapping_fails_closed ] )
     ; ( "lifecycle-glue",

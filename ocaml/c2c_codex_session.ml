@@ -1323,7 +1323,8 @@ let with_thread_ownership_lock f =
       (fun () -> Unix.lockf fd Unix.F_LOCK 0; f ())
   with _ -> false
 
-let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool =
+let persist_discovered_thread_with_hook ~before_mapping_write
+    ~instance_dir ~name ~broker_root ~thread_id : bool =
   let repair_config () =
     match C2c_start.load_config_opt name with
     | Some cfg when cfg.codex_resume_target <> Some thread_id
@@ -1351,6 +1352,7 @@ let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool
     else
       match mapping with
       | Some m when m.thread_id <> Some thread_id ->
+          before_mapping_write ();
           write_mapping ~instance_dir
             { m with thread_id = Some thread_id;
                      updated_at = Unix.gettimeofday () }
@@ -1363,6 +1365,7 @@ let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool
            | Some cfg when cfg.client = "codex"
                         && String.trim cfg.session_id <> ""
                         && String.trim cfg.alias <> "" ->
+               before_mapping_write ();
                write_mapping ~instance_dir
                  { session_id = cfg.session_id; alias = cfg.alias;
                    thread_id = Some thread_id; created_at = cfg.created_at;
@@ -1372,6 +1375,10 @@ let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool
   in
   if result then repair_config ();
   result
+
+let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool =
+  persist_discovered_thread_with_hook ~before_mapping_write:(fun () -> ())
+    ~instance_dir ~name ~broker_root ~thread_id
 
 (* --------------------------------- run ------------------------------------ *)
 

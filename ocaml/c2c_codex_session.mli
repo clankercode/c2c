@@ -366,6 +366,13 @@ val persist_discovered_thread :
   instance_dir:string -> name:string -> broker_root:string ->
   thread_id:string -> bool
 
+val persist_discovered_thread_with_hook :
+  before_mapping_write:(unit -> unit) ->
+  instance_dir:string -> name:string -> broker_root:string ->
+  thread_id:string -> bool
+(** Test seam: [before_mapping_write] runs while the ownership lock is held,
+    immediately before a new mapping is written. *)
+
 val restart_request_path : instance_dir:string -> string
 val restart_result_path : instance_dir:string -> request_id:string -> string
 val request_restart : instance_dir:string -> force:bool -> string
