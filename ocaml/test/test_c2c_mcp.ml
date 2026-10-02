@@ -6023,7 +6023,8 @@ let hook_row_aged ?pid ~registered_by ~client_type ~age_s ~now () :
 
    Scope is the [hook_anchor_is_activity_backed] allowlist. After #59,
    kimi-hook and grok-hook are activity-backed (mid-session install + touch)
-   and are included here. *)
+   and are included here. B355 adds muse-hook (Stop verified repeating in a
+   live TUI, anchor advanced on every fire). *)
 let test_51_stale_hook_row_is_not_alive () =
   let now = Unix.gettimeofday () in
   List.iter
@@ -6041,6 +6042,7 @@ let test_51_stale_hook_row_is_not_alive () =
     ; ("agy-hook", "agy")
     ; ("kimi-hook", "kimi")
     ; ("grok-hook", "grok")
+    ; ("muse-hook", "muse")
     ]
 
 (* #51 blocker 1 historically: a hook client with NO mid-session anchor must

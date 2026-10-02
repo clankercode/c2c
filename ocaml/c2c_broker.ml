@@ -456,11 +456,14 @@ open C2c_mcp_helpers
   (* B119 / B233: hook auto-registrations (SessionStart hooks of any client)
      are the identity authority for their session_id — the MCP server adopts
      them. Include kimi-hook so unmanaged Kimi MCP (global mcp.json, no
-     C2C_MCP_SESSION_ID) lands on the SessionStart-registered identity. *)
+     C2C_MCP_SESSION_ID) lands on the SessionStart-registered identity.
+     B355: muse-hook joins so `same_session_hook_identity_row` adopts muse
+     SessionStart rows the same way. *)
   let is_hook_auto_registration reg =
     reg.registered_by = Some codex_hook_registered_by
     || reg.registered_by = Some claude_hook_registered_by
     || reg.registered_by = Some kimi_hook_registered_by
+    || reg.registered_by = Some "muse-hook"
 
   let codex_hook_activity_anchor reg =
     match reg.last_activity_ts with
@@ -487,6 +490,9 @@ open C2c_mcp_helpers
                  `c2c hook stop` scripts; `c2c hook claude` itself is
                  SessionStart/SessionEnd only and hard-exits on anything else)
        - agy   : SessionStart + PostToolUse + Stop (C2c_setup agy hooks)
+       - muse  : Stop + PostToolUse (`c2c hook muse`; B355 live proof:
+                 scratch echo TUI fired Stop 3x with distinct turn_ids and
+                 the anchor advanced on every fire)
      Grok and kimi historically installed SessionStart + SessionEnd ONLY and
      stayed immortal (#59 carve-out). Empirically both fire mid-session events
      (UserPromptSubmit / PreToolUse / PostToolUse / Stop); #59 installs those
@@ -501,7 +507,13 @@ open C2c_mcp_helpers
      here without verified repeating hooks that reach touch_hook_activity. *)
   let hook_anchor_is_activity_backed reg =
     match reg.registered_by with
-    | Some ("codex-hook" | "claude-hook" | "agy-hook" | "kimi-hook" | "grok-hook") ->
+    | Some
+        ( "codex-hook"
+        | "claude-hook"
+        | "agy-hook"
+        | "kimi-hook"
+        | "grok-hook"
+        | "muse-hook" ) ->
         true
     | _ -> false
 

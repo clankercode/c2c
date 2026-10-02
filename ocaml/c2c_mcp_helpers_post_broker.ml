@@ -1966,7 +1966,8 @@ let pop_channel_test_code () =
   value
 
 (* B119: any same-session hook auto-registration (pid=None,
-   registered_by="claude-hook"/"codex-hook"/"kimi-hook"), alias-agnostic.
+   registered_by="claude-hook"/"codex-hook"/"kimi-hook"/"muse-hook" —
+   membership via [Broker.is_hook_auto_registration]), alias-agnostic.
    Shared by [auto_register_impl] (adopt-or-skip) and [auto_join_rooms_impl]
    (conflict → no room joins as the hook identity). *)
 let same_session_hook_identity_row ~existing ~session_id =

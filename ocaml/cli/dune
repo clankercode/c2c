@@ -508,6 +508,14 @@
  (libraries c2c_mcp alcotest yojson unix)
  (deps c2c.exe))
 
+; Muse lifecycle hook B355 (SessionStart register + onboarding JSON,
+; Stop/PostToolUse touch-only, SessionEnd deregister, broker-root correctness).
+(test
+ (name test_c2c_hook_muse)
+ (modules test_c2c_hook_muse)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps c2c.exe))
+
 ; #61: agy's `Stop` is a TURN end, not a session end — a vanilla agy row must
 ; survive it and stay addressable, while SessionEnd still tears down.
 (test

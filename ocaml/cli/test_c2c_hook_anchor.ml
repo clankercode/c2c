@@ -168,7 +168,8 @@ let fire ?(extra_env = []) ctx ~args ~payload =
      SessionStart+PostToolUse+Stop; claude writes PostToolUse+Stop alongside
      its SessionStart/SessionEnd hook; grok and kimi write SessionStart +
      mid-session UserPromptSubmit/PreToolUse/PostToolUse/Stop + SessionEnd
-     after #59), and
+     after #59; muse handles SessionStart + mid-session Stop/PostToolUse +
+     SessionEnd, installed by B354), and
    - [Broker.hook_anchor_is_activity_backed], which gates decay. *)
 let clients =
   [ ( "codex-hook"
@@ -198,6 +199,14 @@ let clients =
     , [ ("hook kimi", {|"hook_event_name":"PostToolUse",|})
       ; ("hook kimi", {|"hook_event_name":"UserPromptSubmit",|})
       ; ("hook kimi", {|"hook_event_name":"Stop",|})
+      ] )
+    (* B355: muse Stop verified repeating in a live TUI (3x, distinct
+       turn_ids, anchor advanced every fire); PostToolUse fires per tool
+       call (B352 A2) and reaches the same touch-only arm. *)
+  ; ( "muse-hook"
+    , "muse"
+    , [ ("hook muse", {|"hook_event_name":"PostToolUse",|})
+      ; ("hook muse", {|"hook_event_name":"Stop",|})
       ] )
   ]
 
