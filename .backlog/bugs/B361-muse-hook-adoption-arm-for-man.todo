@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-02T21:45:24Z"
+claimed_by: cli-user
 completed_at: null
 complexity: medium
 created_at: "2026-10-02T20:07:59Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 1
 id: B361
 priority: high
-started_at: null
-status: pending
+started_at: "2026-10-02T21:45:24Z"
+status: in_progress
 tags: []
 title: muse hook adoption arm for managed sessions (hook env scrubbed, dual identity)
-updated_at: "2026-10-02T20:07:59Z"
+updated_at: "2026-10-02T21:45:24Z"
 ---
 
 muse hook adoption arm for managed sessions (hook env scrubbed, dual identity)
