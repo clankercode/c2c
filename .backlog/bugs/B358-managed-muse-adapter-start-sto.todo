@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-10-02T17:26:35Z"
 depends_on:
@@ -6,9 +7,9 @@ depends_on:
 estimate_hours: 8
 id: B358
 priority: medium
+started_at: null
 status: pending
-tags:
-    - muse
+tags: []
 title: managed muse adapter start stop restart e2e
 updated_at: "2026-10-02T17:26:35Z"
 ---
@@ -89,3 +90,5 @@ already mapped).
   `test_c2c_start.ml`; restart-stale fixture uses
   stale-in-one/running-in-the-other (#86 shape).
 - `scripts/c2c_tmux.py` launch help + `KNOWN_TUIS` include muse.
+
+SCOPE (B352 verdicts, merged): argv = muse --provider/--model --trust-workspace + approval flags + positional kickoff (positional submits, no bootstrap typing). Do NOT set --disable-approval for wake (no sidecar sender exists). Pre-fork registration REQUIRED (lazy/resume-silent hooks). Idle Unknown; SIGTERM ~2s (no timeout arm). e2e in tmux; kill scratch sessions when done.
