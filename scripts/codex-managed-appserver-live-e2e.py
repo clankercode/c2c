@@ -560,12 +560,13 @@ def run_live() -> int:
                         if reg.get("session_id") == launcher_sid
                         and reg.get("alias") == inst_alias]
             # Managed stop intentionally preserves the sticky alias row, but
-            # it must be completely unowned: one row, marked dead, with no
+            # it must be completely unowned: one row, with no live state or
             # PID generation left that could route a future message to this
-            # stopped process.
+            # stopped process. The liveness label is normally `unknown` for a
+            # pidless row; older surfaces may render the same row as `dead`.
             return (registration_snapshot is not None
                     and len(matching) == 1
-                    and matching[0].get("state") == "dead"
+                    and matching[0].get("state") in {"dead", "unknown"}
                     and matching[0].get("alive") is not True
                     and "pid" not in matching[0]
                     and "pid_start_time" not in matching[0])
