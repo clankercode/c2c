@@ -2200,9 +2200,17 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
            in
            let frontend_extra = if fresh then fresh_frontend_extra else frontend_extra in
              let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
-             let loaded_before =
-               C2c_codex_ingress.real_loaded_threads ~endpoint:ep ~token:""
+             let loaded_before_result =
+               C2c_codex_ingress.real_loaded_threads_result ~endpoint:ep ~token:""
              in
+           (match loaded_before_result with
+            | C2c_codex_ingress.Loaded_threads_unavailable reason ->
+                emit_app_server_log
+                  (Printf.sprintf
+                     "daemon attach failed: authenticated loaded-thread baseline unavailable: %s"
+                     reason);
+                1
+            | C2c_codex_ingress.Loaded_threads loaded_before -> begin
            let argv_list =
              let cmd =
                match thread with
@@ -2245,31 +2253,8 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
              (Unix.getpid ());
            let outer_pid = Unix.getpid () in
            let outer_pid_start_time = C2c_mcp.Broker.read_pid_start_time outer_pid in
-           let registration_ok =
-             try
-               register_managed_app_server_identity
-                 ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
-                 ~pid:outer_pid;
-               true
-             with e ->
-               emit_app_server_log
-                 (Printf.sprintf
-                    "daemon attach registration failed for %s: %s; frontend not started"
-                    alias (Printexc.to_string e));
-               false
-           in
-           if not registration_ok then begin
-             (* Registration is the durable owner handoff.  If it was not
-                confirmed, retain the lifecycle records so recovery can
-                inspect and retry this exact launch instead of erasing its
-                ownership evidence. *)
-             emit_app_server_log
-               (Printf.sprintf
-                  "retaining lifecycle records for failed registration %s"
-                  alias);
-             1
-           end else begin
            let sidecar_lease = ref None in
+           let registration_published = ref false in
            let frontend_pid = ref None in
            let frontend_pid_start_time = ref None in
            let frontend_sentinel = ref None in
@@ -2353,14 +2338,16 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                let teardown_record_removed =
                  frontend_ok && sidecar_ok
                  && C2c_start.remove_pidfile_confirmed teardown_record
+                 && C2c_start.remove_pidfile_confirmed handoff_path
                in
                let registration_cleared =
                  teardown_record_removed
-                 && (try
-                       C2c_start.clear_registration_pid_if_owner
-                         ~broker_root:(C2c_start.broker_root ()) ~session_id
-                         ~pid:outer_pid ~pid_start_time:outer_pid_start_time
-                     with _ -> false)
+                 && (not !registration_published ||
+                     (try
+                        C2c_start.clear_registration_pid_if_owner
+                          ~broker_root:(C2c_start.broker_root ()) ~session_id
+                          ~pid:outer_pid ~pid_start_time:outer_pid_start_time
+                      with _ -> false))
                in
                if not frontend_ok || not sidecar_ok || not teardown_record_removed
                   || not registration_cleared then begin
@@ -2480,6 +2467,24 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                       ignore (cleanup ());
                       1
                     end else
+                    let registration_ok =
+                      try
+                        register_managed_app_server_identity
+                          ~broker_root:(try C2c_start.broker_root () with _ -> "")
+                          ~session_id ~alias ~pid:outer_pid;
+                        registration_published := true;
+                        true
+                      with e ->
+                        emit_app_server_log
+                          (Printf.sprintf
+                             "daemon attach registration failed after thread proof for %s: %s"
+                             alias (Printexc.to_string e));
+                        false
+                    in
+                    if not registration_ok then begin
+                      ignore (cleanup ());
+                      1
+                    end else
                     let armed =
                       try
                         match
@@ -2533,6 +2538,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                     exit_code
                     end)
            end)
+      )
 
 (* [stop] is intentionally unit-returning and best-effort. Before deleting the
    launcher's lifecycle records, require the stopped private unit's own durable
@@ -2772,45 +2778,6 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
             "c2c codex: retaining lifecycle records after mapping failure; cleanup was not confirmed\n%!";
         1
       end else begin
-      (* B172: bind the banner alias into the broker before the operator can
-         interact (init-equivalent of `c2c init --alias <generated> --no-setup`
-         on the launcher session_id).  Do this immediately after start returns
-         so first-turn CLI whoami/send resolve the same identity the banner
-         prints.  The delivery loop refreshes the same row while attached. *)
-      (* #34 review (fix 1, belt-and-braces): the pre-launch precheck above
-         closes the realistic race, but [Broker.register] can still refuse
-         (someone claimed the alias during startup) and it raises. Uncaught,
-         that killed the launcher AFTER the TUI already owned the terminal —
-         an orphaned frontend with no broker row and no delivery loop. Never
-         let it escape; and because the TUI paints over the terminal, stderr
-         alone is not loud (#40's lesson) — record it durably in broker.log. *)
-      (try
-         register_managed_app_server_identity
-           ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
-           ~pid:(Unix.getpid ())
-       with e ->
-         let detail = Printexc.to_string e in
-         Printf.eprintf
-           "%swarning:%s c2c could not publish broker alias '%s': %s\n\
-            \  This session will NOT receive c2c mail. Exit it and retry with a \
-            free alias (`c2c dev instances` / `c2c list`).\n%!"
-           (red ()) (reset ()) alias detail;
-         (try
-            Broker_log.append_json
-              ~broker_root:(try C2c_start.broker_root () with _ -> "")
-              ~json:(`Assoc
-                 [ ("event", `String "managed_registration_failed")
-                 ; ("ts", `Float (Unix.gettimeofday ()))
-                 ; ("client", `String "codex-app-server")
-                 ; ("name", `String name)
-                 ; ("session_id", `String session_id)
-                 ; ("alias", `String alias)
-                 ; ("detail", `String detail) ])
-         with _ -> ());
-         (try C2c_codex_app_server.stop handle with _ -> ());
-         (* Registration was not confirmed.  Keep the outer generation pair
-            and all retry metadata until ownership cleanup is proven. *)
-         raise (Failure detail));
       (* B176: the pre-TUI handoff line (with alias + endpoint) is emitted inside
          start() via lifecycle_log immediately before spawn_frontend — do not
          reprint a second banner here (avoids duplicate/interleaved TUI noise). *)

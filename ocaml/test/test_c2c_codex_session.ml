@@ -710,9 +710,9 @@ let register_dead broker ~session_id ~alias =
   B.register broker ~session_id ~alias ~pid:(Some dead_pid)
     ~pid_start_time:None ()
 
-(* A: the resolver must follow the LIVE identity, not the first readdir hit.
-   Asserted with the two instance dirs created in both orders. *)
-let test_resolver_prefers_alive_regardless_of_order () =
+(* A: the resolver must fail closed for multiple durable mappings. Registry
+   liveness is not ownership proof, and readdir order must not decide identity. *)
+let test_resolver_ambiguous_regardless_of_order () =
   let run ~stale_first =
     with_split_brain_env (fun ~inst ~broker_root ->
         let broker = B.create ~root:broker_root in
@@ -723,14 +723,14 @@ let test_resolver_prefers_alive_regardless_of_order () =
           write_codex_mapping ~dir ~session_id:sid ~thread_id:(Some thread)
         in
         (* Creation order is the only thing [stale_first] changes; the resolver
-           ranks by liveness, so the result must be identical either way. *)
+           must reject both split-brain layouts identically. *)
         if stale_first then (make stale; make live)
         else (make live; make stale);
         register_dead broker ~session_id:"sid-stale" ~alias:"unit-stale";
         register_alive broker ~session_id:"sid-live" ~alias:"unit-live";
         Alcotest.(check (option string))
-          (Printf.sprintf "alive session wins (stale_first=%b)" stale_first)
-          (Some "sid-live")
+          (Printf.sprintf "ambiguous mappings fail closed (stale_first=%b)" stale_first)
+          None
           (PB.managed_session_id_from_codex_thread ~broker_root
              ~thread_id:thread))
   in
@@ -1186,8 +1186,8 @@ let test_online_attached_degraded_stale_heartbeat () =
            ~stale_window_s:window ~instance_dir:dir ()))
 
 (* ------------------------------------------------------------------ *)
-(* Lifecycle glue: alias published only after start succeeds; graceful *)
-(* fallback on a startup diagnostic.                                   *)
+(* Lifecycle glue: alias published only after authenticated thread proof; *)
+(* graceful fallback on a startup diagnostic.                             *)
 (* ------------------------------------------------------------------ *)
 
 type fake = { mutable status : child_status }
@@ -1217,7 +1217,7 @@ let cleanup_alias alias =
   ignore (Sys.command (Printf.sprintf "rm -rf %s"
     (Filename.quote (C2c_start.instance_dir alias))))
 
-let test_glue_happy_publishes_after_start () =
+let test_glue_does_not_publish_before_thread_proof () =
   let sid = unique_sid () in
   let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
   Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
@@ -1241,20 +1241,16 @@ let test_glue_happy_publishes_after_start () =
         (Sys.file_exists (C2c_start.config_path alias));
       Alcotest.(check bool) "clean shutdown removes launcher pid" false
         (Sys.file_exists (C2c_start.outer_pid_path alias));
-      (* B167: the app-server loop must register under the exact managed
-         session id supplied to the remote frontend in C2C_MCP_SESSION_ID,
-         rather than under the display/instance name.  Otherwise the first
-         SessionStart hook cannot adopt this alias and mints a second identity;
-         mail to that user-visible alias then bypasses the arrival loop. *)
+      (* B167: an app-server loop must register under the exact managed session
+         id supplied to the remote frontend, but only after that frontend proves
+         ownership of a loaded thread. This scripted frontend exits without
+         such proof, so no routable row may be published. *)
       let broker = C2c_mcp.Broker.create
           ~root:(Sys.getenv "C2C_MCP_BROKER_ROOT") in
-      (match List.find_opt
-               (fun (r : C2c_mcp.registration) -> r.session_id = sid)
-               (C2c_mcp.Broker.list_registrations broker)
-       with
-       | Some r -> Alcotest.(check string) "broker row uses frontend session id"
-                     alias r.alias
-       | None -> Alcotest.fail "managed frontend session id was never registered");
+      Alcotest.(check bool) "no managed row before thread proof" false
+        (List.exists
+           (fun (r : C2c_mcp.registration) -> r.session_id = sid)
+           (C2c_mcp.Broker.list_registrations broker));
       (match C2c_start.load_config_opt alias with
        | Some cfg ->
            Alcotest.(check string) "managed client is codex" "codex" cfg.client;
@@ -1270,7 +1266,7 @@ let test_glue_happy_publishes_after_start () =
           Alcotest.(check (option string)) "thread binding waits for discovery"
             None m.thread_id)
 
-let test_registration_failure_retains_outer_records () =
+let test_no_thread_proof_does_not_retain_outer_records () =
   let sid = unique_sid () in
   let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
   let broker_root = Filename.concat (Filename.get_temp_dir_name ())
@@ -1306,9 +1302,9 @@ let test_registration_failure_retains_outer_records () =
            S.run ~mode:S.Start ~alias_override:alias ~yolo:false ~extra_args:[]
              ~thread_id:sid ~backend:bk ~fallback:(fun ~extra_args:_ () -> 99) ()
          with _ -> 1);
-      Alcotest.(check bool) "registration failure retains outer PID" true
+      Alcotest.(check bool) "no-proof shutdown removes outer PID" false
         (Sys.file_exists (C2c_start.outer_pid_path alias));
-      Alcotest.(check bool) "registration failure retains outer generation" true
+      Alcotest.(check bool) "no-proof shutdown removes outer generation" false
         (Sys.file_exists (C2c_start.outer_pid_start_time_path alias)))
 
 let test_private_mapping_failure_retains_lifecycle_records () =
@@ -2441,8 +2437,8 @@ let () =
         ; test_case "degraded reason roundtrip: binding-refused vs no-thread (#31)" `Quick test_i31_degraded_reason_roundtrip
         ; test_case "failing config repair does not break the binding verdict (#31)" `Quick test_i31_config_repair_failure_does_not_break_binding ] )
     ; ( "codex-thread-split-brain-24",
-        [ test_case "resolver prefers alive regardless of readdir order" `Quick
-            test_resolver_prefers_alive_regardless_of_order
+        [ test_case "resolver rejects ambiguous mappings regardless of order" `Quick
+            test_resolver_ambiguous_regardless_of_order
         ; test_case "resolver none-live refuses ambiguous identity" `Quick
             test_resolver_none_live_refuses_ambiguous
         ; test_case "resolver single offline mapping still resolves" `Quick
@@ -2456,10 +2452,10 @@ let () =
         ; test_case "missing fresh mapping fails closed" `Quick
             test_missing_fresh_mapping_fails_closed ] )
     ; ( "lifecycle-glue",
-        [ test_case "default (no flag) engages app-server, publishes after start"
-            `Quick test_glue_happy_publishes_after_start
-        ; test_case "registration failure retains outer records" `Quick
-            test_registration_failure_retains_outer_records
+        [ test_case "default path does not publish before thread proof"
+            `Quick test_glue_does_not_publish_before_thread_proof
+        ; test_case "no thread proof removes outer records" `Quick
+            test_no_thread_proof_does_not_retain_outer_records
         ; test_case "private mapping failure retains lifecycle records" `Quick
             test_private_mapping_failure_retains_lifecycle_records
         ; test_case "generic start namespaced name reaches app-server alias (B221)"

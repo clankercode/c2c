@@ -1573,38 +1573,19 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
       else
         match matches with
       | [] -> Codex_thread_unmapped
+      | [ (session_id, _) ] -> Codex_thread_resolved session_id
       | _ ->
-          (match strict_registry ~broker_root with
-           | Error () -> Codex_thread_uncertain
-           | Ok regs ->
-               match matches with
-               | [ (session_id, _) ] -> Codex_thread_resolved session_id
-               | _ ->
-               let rank (session_id, _) =
-                 match List.find_opt (fun (r : registration) -> r.session_id = session_id) regs with
-                 | None -> (0, None)
-                 | Some r ->
-                     let tier = match Broker.registration_liveness_state r with
-                       | Broker.Alive -> 2 | Broker.Unknown -> 1 | Broker.Dead -> 0
-                     in (tier, r.registered_at)
-               in
-               let better (sa, _) (sb, _) =
-                 let ta, ra = rank (sa, "") and tb, rb = rank (sb, "") in
-                 ta > tb || (ta = tb && (ra > rb || (ra = rb && sa < sb)))
-               in
-               let winner = List.fold_left (fun best candidate ->
-                 if better candidate best then candidate else best)
-                 (List.hd matches) (List.tl matches)
-               in
-               let sid, _ = winner in
-               let tier, _ = rank winner in
-               if tier = 0 then begin
-                 if debug_enabled && not (Hashtbl.mem codex_thread_split_brain_warned thread_id) then begin
-                   Hashtbl.replace codex_thread_split_brain_warned thread_id ();
-                   Printf.eprintf "[DEBUG] ambiguous Codex thread %s has no live owner; refusing identity\n%!" thread_id
-                 end;
-                 Codex_thread_uncertain
-               end else Codex_thread_resolved sid)
+          (* Multiple durable mappings are a split-brain claim. Registry
+             liveness cannot establish which frontend owns the native thread:
+             a live row may be stale, and a dead row may be about to resume.
+             Never turn ambiguity into an identity decision. *)
+          if debug_enabled && not (Hashtbl.mem codex_thread_split_brain_warned thread_id) then begin
+            Hashtbl.replace codex_thread_split_brain_warned thread_id ();
+            Printf.eprintf
+              "[DEBUG] ambiguous Codex thread %s has multiple mappings; refusing identity\n%!"
+              thread_id
+          end;
+          Codex_thread_uncertain
        )
 
 let managed_session_id_from_codex_thread ~broker_root ~thread_id =
