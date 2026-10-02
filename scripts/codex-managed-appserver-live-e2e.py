@@ -408,7 +408,15 @@ def run_live() -> int:
                 regs = json.loads(r.stdout or "[]")
             except Exception:
                 return False
-            return not any((reg.get("alias") == inst_alias and reg.get("alive")) for reg in regs)
+            matching = [reg for reg in regs if reg.get("alias") == inst_alias]
+            # Managed stop intentionally preserves the sticky alias row, but
+            # it must be completely unowned: one row, marked dead, with no
+            # PID generation left that could route a future message to this
+            # stopped process.
+            return (len(matching) == 1
+                    and matching[0].get("alive") is False
+                    and matching[0].get("pid") is None
+                    and matching[0].get("pid_start_time") is None)
         results["deregistered"] = wait_for(deregistered, timeout=30, interval=3) is not None
         log(f"[appserver-e2e] after stop: my codex procs remaining = "
             f"{len(my_codex_pids(str(broker)))} clean={results['clean_teardown']} "
