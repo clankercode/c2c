@@ -1469,7 +1469,13 @@ let live_sibling_owns_thread ~broker_root ~self_name ~thread_id : (bool, unit) r
        | Error () -> Error ()
        | Ok regs ->
            try
+             let parent_before = Unix.lstat instances_dir in
              let entries = Array.to_list (Sys.readdir instances_dir) in
+             let parent_after = Unix.lstat instances_dir in
+             if parent_before.Unix.st_dev <> parent_after.Unix.st_dev
+                || parent_before.Unix.st_ino <> parent_after.Unix.st_ino
+             then Error ()
+             else
              let rec check = function
                | [] -> Ok false
                | entry :: rest
@@ -1481,7 +1487,13 @@ let live_sibling_owns_thread ~broker_root ~self_name ~thread_id : (bool, unit) r
                     | Ownership_missing | Ownership_regular_file -> check rest
                     | Ownership_unknown -> Error ()
                     | Ownership_directory ->
-                        match load_mapping_state ~instance_dir:dir with
+                        let dir_before = Unix.lstat dir in
+                        let state = load_mapping_state ~instance_dir:dir in
+                        let dir_after = Unix.lstat dir in
+                        if dir_before.Unix.st_dev <> dir_after.Unix.st_dev
+                           || dir_before.Unix.st_ino <> dir_after.Unix.st_ino
+                        then Error ()
+                        else match state with
                         | Mapping_missing -> check rest
                         | Mapping_unreadable -> Error ()
                         | Mapping_loaded m when m.thread_id <> Some thread_id ->
@@ -1537,11 +1549,20 @@ let persist_discovered_thread_with_hook ~before_mapping_write
      binding-state uncertainty fails closed. (live_sibling_owns_thread raising
      is deliberately NOT swallowed — that IS binding-state uncertainty.) *)
   let repair_config () = try repair_config () with _ -> () in
+  let mapping_owner_matches_config (mapping : mapping) =
+    match C2c_start.load_config_opt name with
+    | Some cfg ->
+        cfg.C2c_start.name = name
+        && cfg.session_id = mapping.session_id
+        && cfg.alias = mapping.alias
+    | None -> false
+  in
   let result = with_thread_ownership_lock (fun () ->
     let mapping_state = load_mapping_state ~instance_dir in
     match mapping_state with
     | Mapping_unreadable -> false
-    | Mapping_loaded mapping when mapping.thread_id = Some thread_id -> true
+    | Mapping_loaded mapping when mapping.thread_id = Some thread_id ->
+        mapping_owner_matches_config mapping
     | (Mapping_missing | Mapping_loaded _) ->
       (match live_sibling_owns_thread ~broker_root ~self_name:name ~thread_id with
        | Error () | Ok true -> false
@@ -1674,23 +1695,25 @@ type resolved = {
    both injected so this is unit-testable without touching the filesystem, and
    returns a [result] (the CLI layer decides how to surface an [Error]). *)
 let resolve_identity_internal ~(mode : launch_mode) ~(alias_override : string option)
-    ~(thread_id : string option) ~(lookup : string -> mapping option)
+    ~(thread_id : string option) ~lookup:(_lookup : string -> mapping option)
     ~(lookup_state : string -> mapping_read_state)
     ~(config_exists : string -> bool) : (resolved, string) result =
   let taken_by_other ~our_session_id a =
     match lookup_state a with
     | Mapping_unreadable -> true
     | Mapping_loaded m -> m.session_id <> our_session_id
-    | Mapping_missing ->
-        (match lookup a with
-         | Some m -> m.session_id <> our_session_id
-         | None -> config_exists a)
+    | Mapping_missing -> config_exists a
   in
   let fresh_sid () =
     match thread_id with Some t when String.trim t <> "" -> t | _ -> gen_session_id ()
   in
   let mk name sid alias th = Ok { r_name = name; r_session_id = sid; r_alias = alias; r_thread_id = th } in
-  let from_saved (m : mapping) =
+  let from_saved ~requested_name (m : mapping) =
+    if m.alias <> requested_name then
+      Error (Printf.sprintf
+        "saved Codex identity for '%s' claims alias '%s'; refusing to reuse it."
+        requested_name m.alias)
+    else
     let alias_res =
       match alias_override with
       | Some a when a <> m.alias ->
@@ -1699,9 +1722,9 @@ let resolve_identity_internal ~(mode : launch_mode) ~(alias_override : string op
           else Ok a
       | _ -> Ok m.alias
     in
-    match alias_res, reconcile_thread ~requested:thread_id ~saved:m.thread_id with
-    | Error e, _ | _, Error e -> Error e
-    | Ok alias, Ok th -> mk alias m.session_id alias th
+      match alias_res, reconcile_thread ~requested:thread_id ~saved:m.thread_id with
+      | Error e, _ | _, Error e -> Error e
+      | Ok alias, Ok th -> mk alias m.session_id alias th
   in
   match mode with
   | Resume alias -> (
@@ -1709,14 +1732,11 @@ let resolve_identity_internal ~(mode : launch_mode) ~(alias_override : string op
       | Mapping_unreadable ->
           Error (Printf.sprintf
             "saved Codex identity for alias '%s' is unreadable; refusing to reuse it." alias)
-      | Mapping_loaded m -> from_saved m
+      | Mapping_loaded m -> from_saved ~requested_name:alias m
       | Mapping_missing ->
-          (match lookup alias with
-           | Some m -> from_saved m
-           | None ->
-               Error (Printf.sprintf
-                 "no saved codex app-server session for alias '%s'. \
-                  Start one with `c2c codex --alias %s` or `c2c new codex`." alias alias)))
+          Error (Printf.sprintf
+            "no saved codex app-server session for alias '%s'. \
+             Start one with `c2c codex --alias %s` or `c2c new codex`." alias alias))
   | Start -> (
       (* Existing `start` semantics: resume the saved instance only when it is
          explicitly selected (an --alias naming an existing mapping). *)
@@ -1726,15 +1746,12 @@ let resolve_identity_internal ~(mode : launch_mode) ~(alias_override : string op
           | Mapping_unreadable ->
               Error (Printf.sprintf
                 "saved Codex identity for alias '%s' is unreadable; refusing to reuse it." a)
-          | Mapping_loaded m -> from_saved m
+          | Mapping_loaded m -> from_saved ~requested_name:a m
           | Mapping_missing ->
-              (match lookup a with
-               | Some m -> from_saved m
-               | None ->
-                   if config_exists a then
-                     Error (Printf.sprintf
-                       "alias '%s' is already owned by a non-app-server managed instance." a)
-                   else let sid = fresh_sid () in mk a sid a thread_id))
+              if config_exists a then
+                Error (Printf.sprintf
+                  "alias '%s' is already owned by a non-app-server managed instance." a)
+              else let sid = fresh_sid () in mk a sid a thread_id)
       | None ->
           let sid = fresh_sid () in
           let alias = derive_alias ~session_id:sid ~taken:(taken_by_other ~our_session_id:sid) in
