@@ -1825,14 +1825,14 @@ let log_deliver_pass ~(instance_dir : string) (po : C2c_codex_autoturn.pass_outc
 (* Drive the B131 delivery loop for a live, attached app-server session. Wires
    the C2c_codex_deliver_loop seams to the real ingress/turn clients + broker,
    installs SIGTERM/SIGINT teardown, and returns the terminal supervision
-   result. Registration lifetime is bound to the loop (register on entry,
-   deregister in the loop's finally + the signal path). *)
+   result. Registration lifetime is bound to the loop: it is published only
+   after authenticated thread discovery and durable binding, then deregistered
+   in the loop's finally + the signal path. *)
 let register_managed_app_server_identity ~(broker_root : string)
     ~(session_id : string) ~(alias : string) ~(pid : int) : unit =
-  (* Publish as soon as the authenticated app-server unit is running.  The
-     remote frontend's first hook must find this exact row before it processes
-     a user turn; otherwise it creates a second identity and its inbox is not
-     the one watched by the delivery loop (B167). *)
+  (* Publish only after the authenticated frontend thread and durable mapping
+     have been proven. The remote frontend's hook and the delivery loop then
+     share this exact row (B167). *)
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   C2c_mcp.Broker.register broker ~session_id ~alias
     ~pid:(Some pid)

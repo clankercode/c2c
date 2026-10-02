@@ -120,8 +120,9 @@ let run (d : deps) : outcome =
   let report_degraded ?(binding_refused = false) b =
     try d.on_degraded ~degraded:b ~binding_refused with _ -> ()
   in
-  (* Registered but no frontend thread discovered yet — nothing actually
-     delivers until a thread loads. Persist the degraded signal immediately so
+  (* No broker registration exists before proof, and no frontend thread has
+     been discovered yet — nothing actually delivers until a thread loads.
+     Persist the degraded signal immediately so
      the doctor/health (which read persisted state) never overclaim LIVE
      app-server delivery during the discovery window, nor for a session that
      never loads a thread. Flipped to [false] the moment a thread is found. *)

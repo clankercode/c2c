@@ -11,9 +11,10 @@
    the live session's config and binds their lifetime to the attached session.
 
    Contract:
-   - START ON ATTACH. {!run} registers the session's alias into the broker (so
-     peers can route to it) and then, while the app-server unit is [Running],
-     discovers the frontend's LOADED thread (`thread/loaded/list`) and runs a
+   - START AFTER PROOF. {!run} discovers the frontend's LOADED thread
+     (`thread/loaded/list`), persists its durable binding, and only then
+     registers the session's alias into the broker (so peers can route to it).
+     While the app-server unit is [Running], it runs a
      {!C2c_codex_autoturn.deliver_pass} each poll. A pass with an empty inbox +
      no active batch opens NO socket (T003/T007 are self-gating), so the idle
      cadence is cheap.
@@ -61,8 +62,8 @@ type deps = {
           remediation: [false] = no thread loaded (open one), [true] = a thread
           loaded but the #24 guard refused its durable binding (resolve the
           owning sibling). Always [false] while not degraded. Fired
-          [true] at loop start (registered but no frontend thread discovered
-          yet, so nothing actually delivers), then re-stamped with the LATCHED
+          [true] at loop start (before registration and before a frontend thread
+          is discovered, so nothing actually delivers), then re-stamped with the LATCHED
           degraded state (#31) on thread discovery and on each #27 heartbeat:
           [false] once a thread is discovered AND its binding persisted, but
           [true] — and staying true — when [on_thread_discovered] reports the
