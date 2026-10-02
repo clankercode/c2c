@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-10-02T19:47:53Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-02T21:45:14Z"
 complexity: high
 created_at: "2026-10-02T17:26:35Z"
 depends_on:
     - B355
+duration_minutes: 117.35173950958334
 estimate_hours: 8
 id: B358
 priority: medium
 started_at: "2026-10-02T19:47:53Z"
-status: in_progress
+status: done
 tags: []
 title: managed muse adapter start stop restart e2e
-updated_at: "2026-10-02T19:47:53Z"
+updated_at: "2026-10-02T21:45:14Z"
 ---
 
 # Managed muse: MuseAdapter + `c2c start/stop/restart` + tmux e2e
