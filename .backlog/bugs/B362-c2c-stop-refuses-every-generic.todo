@@ -1,0 +1,14 @@
+---
+complexity: medium
+created_at: "2026-10-02T20:31:01Z"
+depends_on: []
+estimate_hours: 1
+id: B362
+priority: high
+status: pending
+tags: []
+title: 'c2c stop refuses every generic-harness instance: run_outer_loop never writes outer.pid.start-time'
+updated_at: "2026-10-02T20:31:01Z"
+---
+
+c2c stop refuses every generic-harness instance: run_outer_loop never writes outer.pid.start-time
