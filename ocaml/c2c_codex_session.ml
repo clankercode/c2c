@@ -250,6 +250,9 @@ external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
 let sentinel_group_joined ~frontend_pid ~sentinel_pid =
   C2c_pid_identity.proc_pgrp sentinel_pid = Some frontend_pid
 
+let sentinel_join_proven ~parent_joined ~child_joined ~group_joined =
+  parent_joined && child_joined && group_joined
+
 let reap_process ~pid =
   let rec reap attempts =
     match Unix.waitpid [ Unix.WNOHANG ] pid with
@@ -369,30 +372,67 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
              frontend may exit and be reaped while descendants remain; the
              sentinel preserves a generation-checked owner until teardown, so
              a reused PGID is never signalled. *)
+          let sentinel_status_r, sentinel_status_w = Unix.pipe () in
+          let close_fd fd = try Unix.close fd with _ -> () in
           (match Unix.fork () with
            | 0 ->
-               (try setpgid 0 pid with _ -> ());
+               close_fd sentinel_status_r;
+               let joined =
+                 try setpgid 0 pid; true with _ -> false
+               in
+               (* The parent must observe the child's own join result. A
+                  successful parent-side setpgid alone is not proof that the
+                  sentinel made the required transition. *)
+               (try
+                  ignore
+                    (Unix.write_substring sentinel_status_w
+                       (if joined then "1" else "0") 0 1)
+                with _ -> ());
+               close_fd sentinel_status_w;
+               if not joined then exit 125;
                (try ignore (Sys.signal Sys.sigterm Sys.Signal_ignore) with _ -> ());
                (try ignore (Sys.signal Sys.sigint Sys.Signal_ignore) with _ -> ());
                while true do Unix.pause () done
            | sentinel ->
+               close_fd sentinel_status_w;
                let sentinel_start_time =
                  C2c_mcp.Broker.read_pid_start_time sentinel
                in
+               let fail_sentinel_join message =
+                 close_fd sentinel_status_r;
+                 cleanup_after_sentinel_join_failure ~frontend_pid:pid
+                   ~frontend_start_time:generation ~sentinel_pid:sentinel
+                   ~sentinel_start_time;
+                 raise (Failure message)
+               in
                (try setpgid sentinel pid with e ->
+                  close_fd sentinel_status_r;
                   cleanup_after_sentinel_join_failure ~frontend_pid:pid
                     ~frontend_start_time:generation ~sentinel_pid:sentinel
                     ~sentinel_start_time;
                   raise e);
-               if not (sentinel_group_joined ~frontend_pid:pid ~sentinel_pid:sentinel) then begin
-                 cleanup_after_sentinel_join_failure ~frontend_pid:pid
-                   ~frontend_start_time:generation ~sentinel_pid:sentinel
-                   ~sentinel_start_time;
-                 raise (Failure "Codex frontend sentinel did not join its exact process group")
-               end;
-               (* Publish ownership only after the sentinel has joined the
-                  exact frontend group. A failed join must never leave a
-                  teardown record claiming a group we cannot prove. *)
+               let child_joined =
+                 let status = Bytes.create 1 in
+                 try
+                   Unix.read sentinel_status_r status 0 1 = 1
+                   && Bytes.get status 0 = '1'
+                 with _ -> false
+               in
+               close_fd sentinel_status_r;
+               if not child_joined then
+                 fail_sentinel_join
+                   "Codex frontend sentinel child could not join its exact process group";
+               if not
+                    (sentinel_join_proven ~parent_joined:true ~child_joined
+                       ~group_joined:
+                         (sentinel_group_joined ~frontend_pid:pid
+                            ~sentinel_pid:sentinel)) then
+                 fail_sentinel_join
+                   "Codex frontend sentinel did not join its exact process group";
+               (* Publish ownership only after the parent and child have both
+                  proved the sentinel's exact frontend group. A failed join
+                  must never leave a teardown record claiming a group we cannot
+                  prove. *)
                on_parent_fork pid;
                on_sentinel
                  (sentinel, C2c_mcp.Broker.read_pid_start_time sentinel));
@@ -1216,7 +1256,7 @@ let write_mapping ~instance_dir (m : mapping) : bool =
            Yojson.Safe.pretty_to_channel oc (`Assoc fields);
            output_string oc "\n";
            flush oc;
-           (try Unix.fsync (Unix.descr_of_out_channel oc) with _ -> ()));
+           Unix.fsync (Unix.descr_of_out_channel oc));
       Unix.rename tmp path;
       let dir_fd = Unix.openfile (Filename.dirname path) [ Unix.O_RDONLY ] 0 in
       Fun.protect

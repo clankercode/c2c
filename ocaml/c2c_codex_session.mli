@@ -127,6 +127,11 @@ val cleanup_after_sentinel_join_failure :
     frontend process group. Both direct children are signalled/reaped only
     with their recorded generations; no teardown ownership is published. *)
 
+val sentinel_join_proven :
+  parent_joined:bool -> child_joined:bool -> group_joined:bool -> bool
+(** Pure publication guard: all three process-group proofs are required before
+    teardown ownership may be recorded. *)
+
 (** Read the daemon frontend's exact thread handoff record.  Only JSON integer
     PID and generation fields can establish ownership; fractional values are
     unknown and return [None]. *)

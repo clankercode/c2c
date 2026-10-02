@@ -291,6 +291,17 @@ let test_sentinel_join_failure_cleanup_is_synchronous () =
     end
   end
 
+let test_sentinel_join_publication_requires_both_join_results () =
+  Alcotest.(check bool) "child setpgid failure blocks publication" false
+    (S.sentinel_join_proven ~parent_joined:true ~child_joined:false
+       ~group_joined:true);
+  Alcotest.(check bool) "observed group mismatch blocks publication" false
+    (S.sentinel_join_proven ~parent_joined:true ~child_joined:true
+       ~group_joined:false);
+  Alcotest.(check bool) "all exact proofs permit publication" true
+    (S.sentinel_join_proven ~parent_joined:true ~child_joined:true
+       ~group_joined:true)
+
 let test_stop_frontend_kills_group_after_leader_reaped () =
   (* The frontend leader can exit cleanly while a shell/inner Codex descendant
      remains in its process group. Reap the leader first, then prove the stop
@@ -2133,7 +2144,9 @@ let () =
         ; test_case "stop rejects missing generation after group disappearance" `Quick
             test_stop_frontend_missing_generation_fails_closed
         ; test_case "sentinel join failure cleans exact owners" `Quick
-            test_sentinel_join_failure_cleanup_is_synchronous ] )
+            test_sentinel_join_failure_cleanup_is_synchronous
+        ; test_case "sentinel publication requires both join results" `Quick
+            test_sentinel_join_publication_requires_both_join_results ] )
     ; ( "yolo",
         [ test_case "forwards bypass" `Quick test_yolo_forwards_bypass
         ; test_case "absent by default" `Quick test_yolo_absent_by_default ] )
