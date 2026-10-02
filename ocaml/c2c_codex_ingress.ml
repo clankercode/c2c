@@ -645,6 +645,79 @@ let real_loaded_threads ~(endpoint : Ep.endpoint) ~(token : string) : string lis
               | _ -> []
             with _ -> []))
 
+(* [thread/loaded/list] reports ids only.  The authenticated [thread/read]
+   response carries the server-side environment selected by the remote TUI,
+   including its workspace cwd.  Keep this parser strict: an absent or
+   malformed environment is not ownership evidence. *)
+let thread_read_cwd = function
+  | `Assoc fields ->
+      (match List.assoc_opt "result" fields with
+       | Some (`Assoc result) ->
+           (match List.assoc_opt "thread" result with
+            | Some (`Assoc thread) ->
+                (match List.assoc_opt "environments" thread with
+                 | Some (`List environments) ->
+                     List.find_map
+                       (function
+                         | `Assoc environment ->
+                             (match List.assoc_opt "cwd" environment with
+                              | Some (`String cwd) when String.trim cwd <> "" ->
+                                  Some (String.trim cwd)
+                              | _ -> None)
+                         | _ -> None)
+                       environments
+                 | _ -> None)
+            | _ -> None)
+       | _ -> None)
+  | _ -> None
+
+let real_loaded_threads_for_cwd ~(endpoint : Ep.endpoint) ~(token : string)
+    ~(cwd : string) : string list =
+  let live = try Sys.getenv "C2C_CODEX_INGRESS_LIVE" = "1" with Not_found -> false in
+  if not live then []
+  else
+    let timeout = 8.0 in
+    let fd = ref None in
+    let close () =
+      match !fd with
+      | Some f -> (try Unix.close f with _ -> ()); fd := None
+      | None -> ()
+    in
+    let canonical path = try Unix.realpath path with _ -> path in
+    let expected_cwd = canonical cwd in
+    Fun.protect ~finally:close (fun () ->
+        match (try Ok (ws_connect endpoint ~token ~timeout) with _ -> Error ()) with
+        | Error () -> []
+        | Ok f ->
+            fd := Some f;
+            try
+              let _ = rpc_call f ~meth:"initialize" ~params:init_params in
+              let resp = rpc_call f ~meth:"thread/loaded/list" ~params:(`Assoc []) in
+              let ids =
+                match resp with
+                | `Assoc fields ->
+                    (match List.assoc_opt "result" fields with
+                     | Some (`Assoc result) ->
+                         (match List.assoc_opt "data" result with
+                          | Some (`List xs) ->
+                              List.filter_map
+                                (function `String id -> Some id | _ -> None) xs
+                          | _ -> [])
+                     | _ -> [])
+                | _ -> []
+              in
+              List.filter
+                (fun thread_id ->
+                  let read =
+                    rpc_call f ~meth:"thread/read"
+                      ~params:(`Assoc [ ("threadId", `String thread_id) ])
+                  in
+                  match thread_read_cwd read with
+                  | Some actual -> canonical actual = expected_cwd
+                  | None -> false)
+                ids
+            with _ -> [])
+
 let real_client () : client =
   let live = try Sys.getenv "C2C_CODEX_INGRESS_LIVE" = "1" with Not_found -> false in
   if not live then

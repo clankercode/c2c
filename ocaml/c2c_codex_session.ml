@@ -245,6 +245,32 @@ external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
 let sentinel_group_joined ~frontend_pid ~sentinel_pid =
   C2c_pid_identity.proc_pgrp sentinel_pid = Some frontend_pid
 
+let reap_process ~pid =
+  let rec reap attempts =
+    match Unix.waitpid [ Unix.WNOHANG ] pid with
+    | 0, _ when attempts > 0 -> Unix.sleepf 0.01; reap (attempts - 1)
+    | 0, _ -> ()
+    | _, _ -> ()
+    | exception Unix.Unix_error (Unix.ECHILD, _, _) -> ()
+  in
+  reap 100
+
+let kill_exact_process_and_reap ~pid ~start_time =
+  match start_time with
+  | Some expected
+    when C2c_mcp.Broker.read_pid_start_time pid = Some expected ->
+      let signalled =
+        try
+          C2c_pid_identity.signal_pid_if_generation_matches
+            ~pid ~start_time:expected ~signal:Sys.sigkill
+        with _ -> false
+      in
+      if not signalled
+         && C2c_mcp.Broker.read_pid_start_time pid = Some expected
+      then (try Unix.kill pid Sys.sigkill with _ -> ());
+      reap_process ~pid
+  | _ -> ()
+
 type terminal_foreground = {
   fd : Unix.file_descr;
   original_pgrp : int;
@@ -308,7 +334,10 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
                 Unix.sleepf 0.05;
                 if C2c_mcp.Broker.read_pid_start_time pid = Some expected
                    && C2c_pid_identity.proc_pgrp pid = Some pid then
-                  (try Unix.kill (-pid) Sys.sigkill with _ -> ())
+                  (try Unix.kill (-pid) Sys.sigkill with _ -> ());
+                reap_process ~pid
+            | Some expected when C2c_mcp.Broker.read_pid_start_time pid = Some expected ->
+                kill_exact_process_and_reap ~pid ~start_time:(Some expected)
             | _ -> ()
           in
           (try setpgid pid pid with e -> cleanup_exact_owner (); raise e);
@@ -323,13 +352,16 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
                (try ignore (Sys.signal Sys.sigint Sys.Signal_ignore) with _ -> ());
                while true do Unix.pause () done
            | sentinel ->
+               let sentinel_start_time =
+                 C2c_mcp.Broker.read_pid_start_time sentinel
+               in
                (try setpgid sentinel pid with e ->
                   cleanup_exact_owner ();
-                  (try ignore (Unix.waitpid [] sentinel) with _ -> ());
+                  kill_exact_process_and_reap ~pid:sentinel ~start_time:sentinel_start_time;
                   raise e);
                if not (sentinel_group_joined ~frontend_pid:pid ~sentinel_pid:sentinel) then begin
                  cleanup_exact_owner ();
-                 (try ignore (Unix.waitpid [] sentinel) with _ -> ());
+                 kill_exact_process_and_reap ~pid:sentinel ~start_time:sentinel_start_time;
                  raise (Failure "Codex frontend sentinel did not join its exact process group")
                end;
                (* Publish ownership only after the sentinel has joined the
@@ -1160,6 +1192,10 @@ let write_mapping ~instance_dir (m : mapping) : bool =
            flush oc;
            (try Unix.fsync (Unix.descr_of_out_channel oc) with _ -> ()));
       Unix.rename tmp path;
+      let dir_fd = Unix.openfile (Filename.dirname path) [ Unix.O_RDONLY ] 0 in
+      Fun.protect
+        ~finally:(fun () -> try Unix.close dir_fd with _ -> ())
+        (fun () -> Unix.fsync dir_fd);
       mapping_file_matches path m
     end
   with _ ->
@@ -1865,6 +1901,9 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
            in
            let frontend_extra = if fresh then fresh_frontend_extra else frontend_extra in
            let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
+           let loaded_before =
+             C2c_codex_ingress.real_loaded_threads ~endpoint:ep ~token:""
+           in
            let argv_list =
              let cmd =
                match thread with
@@ -2098,19 +2137,26 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                   | None ->
                       let deadline = Unix.gettimeofday () +. 30.0 in
                       let rec discover () =
-                        let loaded =
-                          C2c_codex_ingress.real_loaded_threads
-                            ~endpoint:ep ~token:""
+                        let loaded_for_cwd =
+                          C2c_codex_ingress.real_loaded_threads_for_cwd
+                            ~endpoint:ep ~token:"" ~cwd
+                          |> List.filter (fun tid -> not (List.mem tid loaded_before))
                         in
-                        match
-                          daemon_thread_handoff_matches ~path:handoff_path
-                            ~frontend_pid:child
-                        with
-                        | Some tid when List.mem tid loaded -> Some tid
-                        | _ when Unix.gettimeofday () < deadline ->
-                            Unix.sleepf 0.2;
-                            discover ()
-                        | _ -> None
+                        match loaded_for_cwd with
+                        | [ tid ] -> Some tid
+                        | _ ->
+                            (match
+                               daemon_thread_handoff_matches ~path:handoff_path
+                                 ~frontend_pid:child
+                             with
+                             | Some tid
+                               when List.mem tid
+                                      (C2c_codex_ingress.real_loaded_threads
+                                         ~endpoint:ep ~token:"" ) -> Some tid
+                             | _ when Unix.gettimeofday () < deadline ->
+                                 Unix.sleepf 0.2;
+                                 discover ()
+                             | _ -> None)
                       in
                       discover ()
                 in
@@ -2123,6 +2169,21 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                     ignore (cleanup ());
                     1
                 | Some tid ->
+                    let persisted =
+                      persist_discovered_thread
+                        ~instance_dir:(C2c_start.instance_dir name)
+                        ~name
+                        ~broker_root:(try C2c_start.broker_root () with _ -> "")
+                        ~thread_id:tid
+                    in
+                    if not persisted then begin
+                      emit_app_server_log
+                        (Printf.sprintf
+                           "daemon attach failed: durable thread ownership could not be persisted (c2c-alias=%s)"
+                           alias);
+                      ignore (cleanup ());
+                      1
+                    end else
                     let armed =
                       try
                         match

@@ -104,6 +104,17 @@ val real_client : unit -> client
 val real_loaded_threads :
   endpoint:C2c_codex_app_server.endpoint -> token:string -> string list
 
+val thread_read_cwd : Yojson.Safe.t -> string option
+(** Extract the server-authenticated workspace cwd from a [thread/read]
+    response.  [None] means the response is missing the expected thread
+    environment metadata. *)
+
+val real_loaded_threads_for_cwd :
+  endpoint:C2c_codex_app_server.endpoint -> token:string -> cwd:string -> string list
+(** Return loaded native thread ids whose authenticated [thread/read] metadata
+    reports [cwd].  This is deliberately separate from [real_loaded_threads]:
+    membership alone does not prove which remote frontend owns a thread. *)
+
 (** Start an empty native Codex thread through a live app-server. This is used
     by the machine-daemon launcher before attaching a fresh remote TUI, because
     Codex's [--remote] frontend otherwise opens on its welcome screen without a

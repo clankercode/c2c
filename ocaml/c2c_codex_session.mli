@@ -96,6 +96,10 @@ val app_server_frontend_env : session_id:string -> alias:string -> string list
 val daemon_frontend_env :
   session_id:string -> alias:string -> instance_name:string -> string list
 
+val daemon_frontend_workspace_args : cwd:string -> string list
+(** The stock remote frontend must receive the launch workspace explicitly;
+    Codex's shared daemon otherwise reuses its own process cwd. *)
+
 (** Pure gate for selecting daemon attach before starting its detached
     frontend. All three capabilities are required; callers fall back to the
     private app-server/hooks path when any is unavailable. *)
