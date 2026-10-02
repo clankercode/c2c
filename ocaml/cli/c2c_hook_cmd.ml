@@ -2904,10 +2904,373 @@ let hook_agy : unit Cmdliner.Cmd.t =
        ~doc:"Antigravity CLI (agy) SessionStart/PostToolUse/Stop hook: auto-registers the session, updates the agy-env.json metadata, and triggers backup inbox draining. Installed by `c2c install agy`.")
     hook_agy_cmd
 
+(* --- Muse hook (B355) ---------------------------------------------------
+   Lifecycle register/adopt for Muse (muse-bin 1.4.2), wired by
+   `c2c install muse` (B354) via plugin-first hooks with a settings.json
+   fallback (B352 D2). One command serves every muse hook event; the
+   payload's hook_event_name tells us which fired.
+
+   Binding B352 verdicts (spike 2026-10-02T18-55-00Z, muse 1.4.2-R4684.1):
+   - Identity = stdin `session_id`, snake_case, on BOTH transports (plugin
+     and settings.json). Hook env carries NO MUSE_*; hook cwd = workspace.
+   - SessionStart is LAZY (fires on first turn submit, not at TUI open) and
+     RESUME-SILENT (never fires on `resume`). A managed launcher MUST
+     therefore pre-register pre-fork (kimi-#40 shape, B358's job); an
+     unmanaged resume is hook-invisible, full stop. There is deliberately
+     no agy-#73 ensure-on-live-event here: mid-session events are
+     touch-only, so a session resumed after its row went away (SessionEnd
+     deregister) stays unaddressable until its next SessionStart. That gap
+     is documented, not fixed — the verdict scopes it to documentation.
+   - Stop takes NO matcher and fires per turn (exec-proven); it is the
+     turn-end activity anchor candidate. PostToolUse fires per tool call.
+   - NO agent_id-style subagent marker exists in any hook stdin (U9):
+     subagent tool calls arrive as PostToolUse under a DISTINCT session_id
+     (measured: turn_id == session_id there). Subagent decision (recorded
+     on B355): mid-session events NEVER mint — touch-only, and a touch for
+     an unknown sid is a registry no-op — so subagent rows are never
+     created (ignore). SessionStart registers the firing sid, which cannot
+     be distinguished from a primary — but a live Task-subagent probe
+     (B355 review: meta exec spawned a PONG subagent + 4 reminder agents,
+     27 tapped fires, 6 distinct sids) showed subagents fire
+     SubagentStart/SubagentStop/PreToolUse/PostToolUse and NEVER
+     SessionStart, and the run left zero phantom rows. A hypothetical
+     subagent SessionStart row would be addressable and
+     SessionEnd/retirement-cleaned, i.e. harmless. SubagentStart/Stop are
+     deliberately unhandled (silent exit 0); their live payloads
+     (session_id + subagent_id + child_session_id) close B352 residual #3.
+   - Stdout contract (P4, live-proven): hook stdout lands in
+     decision.additional_contexts — plain text verbatim, Claude-JSON
+     hookSpecificOutput.additionalContext parsed. SessionStart emits the
+     Claude-shaped JSON; mid-session events stay silent.
+   - `timeout` (sec) is the kill knob; exit != 0 silent-fails (log-side
+     visibility only). This hook therefore always exits 0 and holds an 8s
+     alarm like every other client arm.
+
+   Broker root: resolved from the process cwd with NO chdir — the hook cwd
+   IS the workspace in every B352 probe, so there is no #69/#40 relocation
+   to repair and no multi-root concept to order (single workspace_root).
+   C2C_MCP_BROKER_ROOT still wins inside resolve_broker_root, so a managed
+   session cannot relocate. The payload `cwd` is recorded as the
+   registration cwd for the worktree-mismatch guard. *)
+
+let muse_session_events = [ "SessionStart"; "SessionEnd"; "Stop"; "PostToolUse" ]
+
+(* Delivery honesty (B355 review): muse mid-session hooks are touch-only and
+   silent, and B352 D1 is NONE-from-c2c-alone — so unlike the claude text
+   this was adapted from, these must NOT claim automatic mid-session
+   delivery. An agent that believes that idles-waiting for mail that never
+   arrives. Backlog queued before this turn IS delivered above; everything
+   after needs an explicit check, a blocking receive, or `c2c monitor`. *)
+let muse_onboarding_text ~alias ~session_id =
+  Printf.sprintf
+    "c2c: this Muse session is now registered on the local agent-messaging \
+     system as `%s` (session ID: `%s`). Any mail queued before this turn \
+     was delivered above. New mail does NOT arrive automatically \
+     mid-session — check with `c2c poll-inbox`, block-receive when idle \
+     with `c2c wait-inbox --timeout 5m`, or arm background delivery with \
+     `c2c monitor`. Key commands: `c2c whoami` (identity), `c2c list \
+     --alive` (peers online), `c2c find <substr>` (peer lookup), `c2c send \
+     <alias> \"msg\"` (DM), `c2c rooms join swarm-lounge` (social room)."
+    alias session_id
+
+let muse_wake_text ~alias ~session_id =
+  Printf.sprintf
+    "c2c: connected as `%s` (session ID: `%s`). Queued mail (if any) is \
+     above; new mail does NOT arrive automatically mid-session — check \
+     with `c2c poll-inbox`, block with `c2c wait-inbox`, or arm `c2c \
+     monitor`. Send with `c2c send <alias> \"msg\"`."
+    alias session_id
+
+let hook_muse_cmd =
+  let open Cmdliner.Term in
+  const (fun () ->
+    (* Hard runtime cap: exit cleanly well before the configured hook timeout
+       so a wedged broker dir can never stall a muse turn. *)
+    (try
+       Sys.set_signal Sys.sigalrm (Sys.Signal_handle (fun _ -> exit 0));
+       ignore (Unix.alarm 8)
+     with _ -> ());
+    (try
+       if C2c_hook_lib.is_subagent_quiet () then exit 0;
+       let raw = read_stdin_all ~max_bytes:(1024 * 1024) in
+       let payload =
+         try Yojson.Safe.from_string (String.trim raw) with _ -> `Null
+       in
+       (* Muse ships snake_case; accept camelCase spellings like grok/kimi. *)
+       let event =
+         match payload_string_field payload "hook_event_name" with
+         | Some e -> e
+         | None ->
+             (match payload_string_field payload "hookEventName" with
+              | Some e -> e
+              | None -> exit 0)
+       in
+       let event =
+         match String.lowercase_ascii event with
+         | "session_start" | "sessionstart" -> "SessionStart"
+         | "session_end" | "sessionend" -> "SessionEnd"
+         | "post_tool_use" | "posttooluse" -> "PostToolUse"
+         | "stop" -> "Stop"
+         | _ -> event
+       in
+       if not (List.mem event muse_session_events) then exit 0;
+       (* B130 gate, defensive: muse carries no `agent_id` today (B352 U9 —
+         subagents arrive as distinct session_ids, handled by the never-mint
+         mid-session arm below), but if a future muse adds the field this
+         fires before any registration or drain. Read from the already-parsed
+         payload, never re-reading stdin. *)
+       (match payload_string_field payload "agent_id" with
+        | Some s when String.trim s <> "" -> exit 0
+        | _ -> ());
+       let validated s =
+         match C2c_mcp.validate_session_id s with
+         | Ok sid -> Some sid
+         | Error _ -> None
+       in
+       let payload_sid =
+         match payload_string_field payload "session_id" with
+         | Some s -> validated s
+         | None ->
+             (match payload_string_field payload "sessionId" with
+              | Some s -> validated s
+              | None -> None)
+       in
+       (* C2C_MCP_SESSION_ID is the managed-launcher identity (B358 exports it
+          pre-fork); MUSE_SESSION_ID is muse's native MCP-server env (B352 U2:
+          present for MCP servers, absent from hook env — accepted here
+          defensively so a hook that DOES inherit it resolves the same
+          identity the MCP path uses). Neither is trusted unregistered: both
+          must resolve to an existing row (SessionStart step 1/2) or the arm
+          mints from the payload sid. MUSE_SESSION_ID is deliberately NOT a
+          managed marker — vanilla sessions' MCP servers carry it too (the
+          GROK_SESSION_ID lesson in [managed_launcher_marker_present]). *)
+       let env_sid =
+         match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
+         | Some s when String.trim s <> "" -> validated (String.trim s)
+         | _ ->
+             (match Sys.getenv_opt "MUSE_SESSION_ID" with
+              | Some s when String.trim s <> "" -> validated (String.trim s)
+              | _ -> None)
+       in
+       (* NO chdir: hook cwd = workspace (B352 P4, every probe). The broker
+          root resolves from the cwd below; C2C_MCP_BROKER_ROOT still wins
+          for managed sessions. *)
+       let broker_root = C2c_utils.resolve_broker_root () in
+       let broker = C2c_mcp.Broker.create ~root:broker_root in
+       let regs () = C2c_mcp.Broker.list_registrations broker in
+       let registered sid =
+         List.exists (fun (r : C2c_mcp.registration) -> r.session_id = sid) (regs ())
+       in
+       (* Mid-session: touch the activity anchor ONLY — never register, never
+          deregister, never drain. Stop fires per turn and PostToolUse per
+          tool call; both are pure activity signals. No drain for the codex
+          Stop reason: only SessionStart's additionalContext output is
+          proven, so draining here could eat messages we cannot deliver.
+          Touching an unknown sid (e.g. a subagent's distinct PostToolUse
+          sid) is a registry no-op — that IS the subagent-ignore decision. *)
+       if event <> "SessionStart" && event <> "SessionEnd" then begin
+         (match payload_sid with
+          | Some sid -> touch_hook_activity ~broker ~session_id:sid
+          | None -> ());
+         (match env_sid with
+          | Some sid when Some sid <> payload_sid ->
+              touch_hook_activity ~broker ~session_id:sid
+          | _ -> ());
+         exit 0
+       end;
+       if event = "SessionEnd" then begin
+         (* Deregister ONLY hook auto-registrations for this session. Managed
+            (`c2c start muse`, B358) and MCP-registered sessions carry no
+            hook label and are never touched. No skill/file removal: B355
+            installs no per-session files, and #82 forbids SessionEnd removal
+            of shared paths anyway. Stop is NEVER teardown (#61). *)
+         let candidates = List.filter_map (fun x -> x) [ payload_sid; env_sid ] in
+         (match
+            List.find_opt
+              (fun (r : C2c_mcp.registration) ->
+                 r.registered_by = Some "muse-hook"
+                 && List.exists (fun sid -> r.session_id = sid) candidates)
+              (regs ())
+          with
+          | Some r -> ignore (C2c_mcp.Broker.deregister broker ~alias:r.alias)
+          | None -> ());
+         exit 0
+       end;
+       (* SessionStart identity resolution, env first (claude/grok shape):
+          1. env session already registered (managed session, or any session
+             whose env carries an explicit identity) — use it.
+          2. payload session_id already registered (previous auto-register,
+             or a sticky row from another repo) — use it.
+          3. nothing -> auto-register: payload sid preferred, else env sid.
+             A managed launcher marker (C2C_MCP_SESSION_ID or
+             C2C_MCP_AUTO_REGISTER_ALIAS) suppresses the hook label
+             (grok-style pre-emptive gate, #51 blocker 2). *)
+       let resolved =
+         match env_sid with
+         | Some sid when registered sid -> Some sid
+         | _ ->
+             (match payload_sid with
+              | Some sid when registered sid -> Some sid
+              | _ -> None)
+       in
+       let session_id, onboarded_alias =
+         match resolved with
+         | Some sid -> (sid, None)
+         | None ->
+             let sid_opt =
+               match payload_sid with
+               | Some sid -> Some sid
+               | None -> env_sid
+             in
+             (match sid_opt with
+              | None ->
+                  (* kimi-#40 lesson: never exit silently here. A bare
+                     `exit 0` is what made the managed-kimi registration gap
+                     take a live e2e to find. Muse swallows hook stderr on the
+                     terminal but records it in the session log's
+                     hook_run_terminal entry, so this line is retrievable
+                     without disturbing the turn. *)
+                  (try
+                     prerr_endline
+                       "c2c hook muse: no usable session id (payload \
+                        session_id/sessionId missing or invalid, \
+                        C2C_MCP_SESSION_ID / MUSE_SESSION_ID unset) — \
+                        skipping broker registration for this SessionStart."
+                   with _ -> ());
+                  exit 0
+              | Some sid ->
+                  (* B188: reuse the sticky alias across broker fingerprints.
+                     B191: resolve + register atomically under the global
+                     per-session registration lock. *)
+                  let alias, _from_auto_gen, _prior_hit =
+                    C2c_mcp.locked_sticky_auto_register ~session_id:sid
+                      ~broker_root
+                      ~mint:(fun () ->
+                        (C2c_setup.default_alias_for_client "muse", true))
+                      ~register:(fun ~alias ~from_auto_gen ->
+                        try
+                          C2c_mcp.Broker.register broker ~session_id:sid ~alias
+                            ~pid:None
+                            ~pid_start_time:
+                              (C2c_mcp.Broker.capture_pid_start_time None)
+                            ~client_type:(Some "muse")
+                            ~cwd:(payload_string_field payload "cwd")
+                            ~registered_by:
+                              (if managed_launcher_marker_present () then None
+                               else Some "muse-hook")
+                            ~from_auto_gen ()
+                        with e ->
+                          (try
+                             prerr_endline
+                               ("c2c hook muse: auto-register failed: "
+                                ^ Printexc.to_string e)
+                           with _ -> ());
+                          exit 0)
+                      ()
+                  in
+                  (* Persist the identity for plain `c2c` CLI calls from this
+                     muse session (same statefile `c2c init` uses), but never
+                     steal a statefile that still points at a live identity. *)
+                  (match C2c_cli_helpers.read_session_statefile ~broker_root with
+                   | Some existing
+                     when C2c_cli_helpers.statefile_session_registered ~broker_root existing -> ()
+                   | _ ->
+                       C2c_cli_helpers.write_session_statefile ~broker_root
+                         ~session_id:sid ~alias ~client:(Some "muse"));
+                  (sid, Some alias))
+       in
+       touch_hook_activity ~broker ~session_id;
+       let alias_of sid =
+         List.find_map
+           (fun (r : C2c_mcp.registration) ->
+              if r.session_id = sid then Some r.alias else None)
+           (regs ())
+       in
+       let intro =
+         match onboarded_alias with
+         | Some alias -> muse_onboarding_text ~alias ~session_id
+         | None ->
+             (match alias_of session_id with
+              | Some a -> muse_wake_text ~alias:a ~session_id
+              | None -> "")
+       in
+       (* Message drain (repo + global sessions broker) — full drain at the
+          session boundary, EXCEPT the repo drain when the session is
+          channel-capable (a watcher owns delivery; dual-drain would race
+          it). SessionStart is lazy (first turn submit), so this backlog
+          lands in a live turn. *)
+       let repo_messages =
+         if C2c_mcp.Broker.is_session_channel_capable broker ~session_id then []
+         else C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id
+       in
+       let global_messages =
+         try
+           let root = C2c_repo_fp.resolve_sessions_broker_root () in
+           if C2c_hook_lib.global_inbox_exists ~root ~session_id then
+             let gb = C2c_mcp.Broker.create ~root in
+             C2c_mcp.Broker.drain_inbox ~drained_by:"hook" gb ~session_id
+           else []
+         with _ -> []
+       in
+       let messages_text =
+         C2c_hook_lib.format_messages_as_text ~repo_broker:(Some broker)
+           (repo_messages @ global_messages)
+       in
+       (* Changelog auto-show (B126): per-client, once per binary version
+          change. Try-guarded — never break the turn. *)
+       let changelog_context =
+         try
+           Option.value
+             (C2c_changelog.auto_show ~broker_root ~client:"muse"
+                ~now:(Unix.gettimeofday ()) ())
+             ~default:""
+         with _ -> ""
+       in
+       (* B268: one-line "newer release available" when the local changelog
+          cache knows a version ahead of this binary. Marker-guarded once per
+          newer release; offline/empty = silent. *)
+       let update_nudge_context =
+         try
+           Option.value
+             (C2c_changelog.update_nudge_auto_show ~broker_root ~client:"muse"
+                ~now:(Unix.gettimeofday ()) ())
+             ~default:""
+         with _ -> ""
+       in
+       let context =
+         [ intro; changelog_context; update_nudge_context; messages_text ]
+         |> List.filter (fun s -> String.trim s <> "")
+         |> String.concat "\n\n"
+       in
+       if context <> "" then begin
+         let json : Yojson.Safe.t =
+           `Assoc
+             [ ( "hookSpecificOutput"
+               , `Assoc
+                   [ ("hookEventName", `String event)
+                   ; ("additionalContext", `String context)
+                   ] )
+             ]
+         in
+         print_string (Yojson.Safe.to_string json);
+         print_newline ()
+       end;
+       exit 0
+     with e ->
+       (* Never break the muse turn: swallow everything, exit 0. *)
+       (try prerr_endline ("c2c hook muse: " ^ Printexc.to_string e) with _ -> ());
+       exit 0)) $ const ()
+
+let hook_muse : unit Cmdliner.Cmd.t =
+  Cmdliner.Cmd.v
+    (Cmdliner.Cmd.info "muse"
+       ~doc:"Muse SessionStart/SessionEnd/Stop/PostToolUse hook: auto-registers the session (registered_by=muse-hook), anchors activity on mid-session events (touch-only, never drain/teardown), drains backlog + emits onboarding/wake text as hookSpecificOutput.additionalContext on SessionStart, and deregisters hook auto-registrations on SessionEnd. Installed by `c2c install muse`. Never fails the host turn: errors exit 0 with empty output.")
+    hook_muse_cmd
+
 let hook : unit Cmdliner.Cmd.t =
   let info = Cmdliner.Cmd.info "hook"
-    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, 'codex' for all Codex CLI hook events, 'grok' for Grok SessionStart/SessionEnd, 'kimi' for Kimi Code SessionStart/SessionEnd, and 'agy' for Antigravity CLI."
+    ~doc:"Hook subcommands for coding-agent host integration. Use 'post-tool' for Claude PostToolUse (drain inbox), 'stop' for Claude Stop (text-only turn delivery), 'claude' for Claude SessionStart/SessionEnd, 'codex' for all Codex CLI hook events, 'grok' for Grok SessionStart/SessionEnd, 'kimi' for Kimi Code SessionStart/SessionEnd, 'muse' for Muse lifecycle events, and 'agy' for Antigravity CLI."
   in
   (* Default to post-tool for backward compat: `c2c hook` (no subcommand) behaves
      as the PostToolUse hook, same as before the hook group refactor. *)
-  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok; hook_kimi; hook_agy ]
+  Cmdliner.Cmd.group ~default:hook_post_tool_cmd info [ hook_post_tool; hook_stop; hook_codex; hook_claude; hook_grok; hook_kimi; hook_muse; hook_agy ]
