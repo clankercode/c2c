@@ -369,6 +369,140 @@ let test_fresh_daemon_session_start_persists_mapping_before_mcp_identity () =
          (fun (r : C2c_mcp.registration) -> r.session_id = thread_id)
          (C2c_mcp.Broker.list_registrations (broker ctx))))
 
+(* Compatibility attach has no fresh frontend handoff proof, so the durable
+   thread mapping is the remaining ownership gate. A malformed mapping must
+   keep the hook on its ordinary delivery path and must never attempt to arm a
+   sidecar merely because the app-server registration and marker match. *)
+let test_compatibility_malformed_mapping_does_not_arm_sidecar () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-compat-malformed-mapping" in
+    let thread_id = "codex-thread-compat-malformed-mapping" in
+    let alias = "zz-compat-malformed-mapping" in
+    write_managed_codex_instance ctx ~name:managed_sid ~session_id:managed_sid
+      ~thread_id;
+    let mapping_path =
+      ctx.home // ".local" // "share" // "c2c" // "instances" // managed_sid
+      // "codex-session.json"
+    in
+    write_file mapping_path "{ malformed mapping\n";
+    let b = register_app_server ctx ~session_id:managed_sid ~alias in
+    ignore (register ctx ~session_id:"compat-malformed-peer"
+              ~alias:"zz-compat-malformed-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-compat-malformed-peer"
+      ~to_alias:alias ~content:"malformed mapping falls back" ();
+    let socket_path = ctx.home // "compat-malformed.sock" in
+    write_file socket_path "not a socket\n";
+    let owners_dir = ctx.home // "c2c" // "codex-daemon-owners" in
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_INSTANCE_NAME", managed_sid)
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+          ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "malformed mapping hook exits 0" 0 rc;
+    check bool "malformed mapping uses hook delivery" true
+      (contains ~haystack:stdout ~needle:"malformed mapping falls back");
+    check bool "malformed mapping does not attempt sidecar arm" false
+      (contains ~haystack:stderr ~needle:"daemon sidecar arm failed");
+    check bool "malformed mapping leaves no sidecar lease" true
+      (C2c_codex_daemon_sidecar.leases_for_thread ~owners_dir ~thread_id = []))
+
+(* A loaded mapping whose thread is stale exercises the filesystem-write arm of
+   persist_discovered_thread. The hook must treat the failed replacement as
+   uncertain, rather than infer ingress ownership from the app-server row. *)
+let test_compatibility_mapping_write_failure_does_not_arm_sidecar () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-compat-mapping-write-failure" in
+    let thread_id = "codex-thread-compat-mapping-write-failure" in
+    let alias = "zz-compat-mapping-write-failure" in
+    write_managed_codex_instance ctx ~name:managed_sid ~session_id:managed_sid
+      ~thread_id;
+    let instance_dir =
+      ctx.home // ".local" // "share" // "c2c" // "instances" // managed_sid
+    in
+    check bool "seed stale mapping" true
+      (C2c_codex_session.write_mapping ~instance_dir
+         { session_id = managed_sid; alias; thread_id = Some "old-thread";
+           created_at = 0.; updated_at = 0. });
+    Unix.chmod instance_dir 0o555;
+    let b = register_app_server ctx ~session_id:managed_sid ~alias in
+    ignore (register ctx ~session_id:"compat-write-failure-peer"
+              ~alias:"zz-compat-write-failure-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-compat-write-failure-peer"
+      ~to_alias:alias ~content:"mapping write failure falls back" ();
+    let socket_path = ctx.home // "compat-write-failure.sock" in
+    write_file socket_path "not a socket\n";
+    let owners_dir = ctx.home // "c2c" // "codex-daemon-owners" in
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_INSTANCE_NAME", managed_sid)
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+          ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "mapping write failure hook exits 0" 0 rc;
+    check bool "mapping write failure uses hook delivery" true
+      (contains ~haystack:stdout ~needle:"mapping write failure falls back");
+    check bool "mapping write failure does not attempt sidecar arm" false
+      (contains ~haystack:stderr ~needle:"daemon sidecar arm failed");
+    check bool "mapping write failure leaves no sidecar lease" true
+      (C2c_codex_daemon_sidecar.leases_for_thread ~owners_dir ~thread_id = []))
+
+(* Mapping uncertainty must not displace a sidecar that already holds a live
+   lease. Keeping that lease as ingress owner prevents the hook from becoming a
+   second drain even though this invocation cannot re-prove the mapping. *)
+let test_compatibility_mapping_failure_preserves_live_lease () =
+  with_ctx (fun ctx ->
+    let managed_sid = "managed-compat-mapping-live-lease" in
+    let thread_id = "codex-thread-compat-mapping-live-lease" in
+    let alias = "zz-compat-mapping-live-lease" in
+    write_managed_codex_instance ctx ~name:managed_sid ~session_id:managed_sid
+      ~thread_id;
+    let mapping_path =
+      ctx.home // ".local" // "share" // "c2c" // "instances" // managed_sid
+      // "codex-session.json"
+    in
+    write_file mapping_path "not json";
+    let pid = Unix.getpid () in
+    let pid_start_time =
+      match C2c_mcp.Broker.read_pid_start_time pid with
+      | Some value -> value
+      | None -> fail "test requires a readable sidecar process generation"
+    in
+    let b = register_app_server ~pid:(Some pid) ctx ~session_id:managed_sid ~alias in
+    ignore (register ctx ~session_id:"compat-live-lease-peer"
+              ~alias:"zz-compat-live-lease-peer");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-compat-live-lease-peer"
+      ~to_alias:alias ~content:"live lease keeps ingress" ();
+    let socket_path = ctx.home // "compat-live-lease.sock" in
+    write_file socket_path "not a socket\n";
+    let socket_identity = Unix.realpath socket_path in
+    let owners_dir = ctx.home // "c2c" // "codex-daemon-owners" in
+    ignore
+      (C2c_codex_daemon_sidecar.try_claim ~owners_dir ~socket_identity
+         ~thread_id ~sidecar_pid:pid ~sidecar_pid_start_time:pid_start_time
+         ~alias ~broker_session_id:managed_sid ());
+    let rc, stdout, stderr =
+      run_hook
+        ~extra_env:
+          [ ("C2C_CODEX_INSTANCE_NAME", managed_sid)
+          ; ("C2C_CODEX_APPSERVER_SESSION", managed_sid)
+          ; ("C2C_CODEX_DAEMON_SOCK", socket_path) ]
+        ctx ~payload:(payload ~event:"SessionStart" ~session_id:thread_id ())
+    in
+    check int "live lease mapping failure hook exits 0" 0 rc;
+    check bool "live lease keeps hook from dual-draining" false
+      (contains ~haystack:stdout ~needle:"live lease keeps ingress");
+    check int "live lease leaves inbox for sidecar" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed_sid));
+    check bool "live lease is preserved" true
+      (C2c_codex_daemon_sidecar.leases_for_thread ~owners_dir ~thread_id <> []);
+    check bool "live lease mapping failure does not attempt arm" false
+      (contains ~haystack:stderr ~needle:"daemon sidecar arm failed"))
+
 let test_post_tool_debounce_bypasses_new_message () =
   with_ctx (fun ctx ->
     let sid = "codex-e2e-debounce-0001" in
@@ -1771,6 +1905,12 @@ let () =
             test_daemon_thread_handoff_rejects_unproven_env_owner
         ; test_case "fresh daemon maps native thread before MCP identity" `Quick
             test_fresh_daemon_session_start_persists_mapping_before_mcp_identity
+        ; test_case "compatibility malformed mapping does not arm sidecar" `Quick
+            test_compatibility_malformed_mapping_does_not_arm_sidecar
+        ; test_case "compatibility mapping write failure does not arm sidecar" `Quick
+            test_compatibility_mapping_write_failure_does_not_arm_sidecar
+        ; test_case "compatibility mapping failure preserves live lease" `Quick
+            test_compatibility_mapping_failure_preserves_live_lease
         ; test_case "post-tool debounce bypasses new message" `Quick
             test_post_tool_debounce_bypasses_new_message
         ; test_case "post-tool debounce coalesces unchanged empty burst" `Quick

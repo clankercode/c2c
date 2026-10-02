@@ -1073,11 +1073,11 @@ let hook_codex_cmd =
        let daemon_attach_requested =
          match Sys.getenv_opt "C2C_CODEX_INSTANCE_NAME" with
          | Some instance_name when String.trim instance_name <> "" ->
-             if Option.is_some handoff_proof then
-               daemon_owner_proven && daemon_thread_mapping_proven
-             else
-               codex_daemon_attach_authorized ~handoff_proof ~instance_name
-                 ~session_id ~thread_id:daemon_thread_hint ~regs
+             (* Compatibility attach (without a fresh handoff proof) still
+                needs the durable thread mapping. Registration plus the
+                compatibility marker only identifies the candidate owner; it
+                cannot establish daemon ownership or ingress. *)
+             daemon_owner_proven && daemon_thread_mapping_proven
          | _ -> false
        in
        (* A proven launcher owner with an uncertain durable mapping is never
