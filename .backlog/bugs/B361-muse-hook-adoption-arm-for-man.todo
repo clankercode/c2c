@@ -24,3 +24,5 @@ FIX SHAPE (kimi-#40 adoption, adapted): SessionStart step 0 — when env_sid is 
 CONSTRAINTS: two managed muse instances in one directory are indistinguishable to the hook (kimi-#40 known limit — bail loudly rather than guess); a co-located vanilla muse TUI in a managed directory would be adopted too (document). Never trust a recorded pid without C2c_pid_identity (#85). Keep exit-0-never-breaks-the-turn.
 
 Evidence: .collab/findings/2026-10-02T19-55-00Z-b358-muse-hook-env-scrubbed.md (B358 worktree; merge with B358).
+
+Coordinator: added to the muse batch — implement after B358 merges (adoption needs managed rows + pre-fork registration on master). Disjoint files from B359 (hook/broker vs doctor/health), may parallel B359.
