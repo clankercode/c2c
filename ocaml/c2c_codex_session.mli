@@ -116,6 +116,13 @@ val stop_frontend_process :
   ?owner_start_time:int -> ?sentinel_pid:int -> ?sentinel_start_time:int ->
   int -> bool
 
+val cleanup_after_sentinel_join_failure :
+  frontend_pid:int -> frontend_start_time:int option ->
+  sentinel_pid:int -> sentinel_start_time:int option -> unit
+(** Fail-closed cleanup used when the owner sentinel cannot join the exact
+    frontend process group. Both direct children are signalled/reaped only
+    with their recorded generations; no teardown ownership is published. *)
+
 (** Read the daemon frontend's exact thread handoff record.  Only JSON integer
     PID and generation fields can establish ownership; fractional values are
     unknown and return [None]. *)

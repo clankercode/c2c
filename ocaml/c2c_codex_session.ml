@@ -271,6 +271,23 @@ let kill_exact_process_and_reap ~pid ~start_time =
       reap_process ~pid
   | _ -> ()
 
+let cleanup_after_sentinel_join_failure ~frontend_pid ~frontend_start_time
+    ~sentinel_pid ~sentinel_start_time =
+  (match frontend_start_time with
+   | Some expected
+     when C2c_mcp.Broker.read_pid_start_time frontend_pid = Some expected ->
+       if C2c_pid_identity.proc_pgrp frontend_pid = Some frontend_pid then
+         (try Unix.kill (-frontend_pid) Sys.sigkill with _ -> ())
+       else
+         ignore
+           (try
+              C2c_pid_identity.signal_pid_if_generation_matches
+                ~pid:frontend_pid ~start_time:expected ~signal:Sys.sigkill
+            with _ -> false);
+       reap_process ~pid:frontend_pid
+   | _ -> ());
+  kill_exact_process_and_reap ~pid:sentinel_pid ~start_time:sentinel_start_time
+
 type terminal_foreground = {
   fd : Unix.file_descr;
   original_pgrp : int;
@@ -328,16 +345,18 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
           let cleanup_exact_owner () =
             match generation with
             | Some expected
-              when C2c_mcp.Broker.read_pid_start_time pid = Some expected
-                   && C2c_pid_identity.proc_pgrp pid = Some pid ->
-                (try Unix.kill (-pid) Sys.sigterm with _ -> ());
-                Unix.sleepf 0.05;
-                if C2c_mcp.Broker.read_pid_start_time pid = Some expected
-                   && C2c_pid_identity.proc_pgrp pid = Some pid then
-                  (try Unix.kill (-pid) Sys.sigkill with _ -> ());
+              when C2c_mcp.Broker.read_pid_start_time pid = Some expected ->
+                if C2c_pid_identity.proc_pgrp pid = Some pid then begin
+                  (try Unix.kill (-pid) Sys.sigterm with _ -> ());
+                  Unix.sleepf 0.05;
+                  if C2c_mcp.Broker.read_pid_start_time pid = Some expected
+                     && C2c_pid_identity.proc_pgrp pid = Some pid then
+                    (try Unix.kill (-pid) Sys.sigkill with _ -> ())
+                end else
+                  ignore
+                    (C2c_pid_identity.signal_pid_if_generation_matches
+                       ~pid ~start_time:expected ~signal:Sys.sigkill);
                 reap_process ~pid
-            | Some expected when C2c_mcp.Broker.read_pid_start_time pid = Some expected ->
-                kill_exact_process_and_reap ~pid ~start_time:(Some expected)
             | _ -> ()
           in
           (try setpgid pid pid with e -> cleanup_exact_owner (); raise e);
@@ -356,12 +375,14 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
                  C2c_mcp.Broker.read_pid_start_time sentinel
                in
                (try setpgid sentinel pid with e ->
-                  cleanup_exact_owner ();
-                  kill_exact_process_and_reap ~pid:sentinel ~start_time:sentinel_start_time;
+                  cleanup_after_sentinel_join_failure ~frontend_pid:pid
+                    ~frontend_start_time:generation ~sentinel_pid:sentinel
+                    ~sentinel_start_time;
                   raise e);
                if not (sentinel_group_joined ~frontend_pid:pid ~sentinel_pid:sentinel) then begin
-                 cleanup_exact_owner ();
-                 kill_exact_process_and_reap ~pid:sentinel ~start_time:sentinel_start_time;
+                 cleanup_after_sentinel_join_failure ~frontend_pid:pid
+                   ~frontend_start_time:generation ~sentinel_pid:sentinel
+                   ~sentinel_start_time;
                  raise (Failure "Codex frontend sentinel did not join its exact process group")
                end;
                (* Publish ownership only after the sentinel has joined the

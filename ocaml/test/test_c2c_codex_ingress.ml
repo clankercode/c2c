@@ -51,6 +51,28 @@ let state_of c mid = I.ledger_state c ~message_id:mid
 
 (* ---------------------------------- tests --------------------------------- *)
 
+let test_thread_read_cwd_metadata () =
+  let response =
+    `Assoc
+      [ ("result",
+         `Assoc
+           [ ("thread",
+              `Assoc
+                [ ("id", `String "thread-cwd")
+                ; ("environments",
+                   `List
+                     [ `Assoc
+                         [ ("environmentId", `String "local")
+                         ; ("cwd", `String "/home/xertrov/src/c2c") ] ]) ]) ]) ]
+  in
+  Alcotest.(check (option string)) "server workspace cwd is extracted"
+    (Some "/home/xertrov/src/c2c") (I.thread_read_cwd response);
+  Alcotest.(check (option string)) "missing environment is not ownership evidence"
+    None (I.thread_read_cwd (`Assoc [ ("result", `Assoc []) ]));
+  Alcotest.(check (option string)) "JSON error is not ownership evidence" None
+    (I.thread_read_cwd
+       (`Assoc [ ("error", `Assoc [ ("message", `String "not found") ]) ]))
+
 let test_clean_delivery () =
   let root = mk_root () in
   seed_inbox ~root ~session_id:"sess" [ mk_msg ~message_id:"m1" "hello" ];
@@ -388,7 +410,9 @@ let test_stale_pending_force_retry () =
 
 let () =
   Alcotest.run "c2c_codex_ingress"
-    [ ( "persist-first",
+    [ ( "workspace-metadata",
+        [ Alcotest.test_case "thread/read cwd" `Quick test_thread_read_cwd_metadata ] );
+      ( "persist-first",
         [ Alcotest.test_case "clean delivery" `Quick test_clean_delivery;
           Alcotest.test_case "persist-first before inject" `Quick test_persist_first;
           Alcotest.test_case "stable message_id across retries" `Quick test_stable_id_across_retries ] );
