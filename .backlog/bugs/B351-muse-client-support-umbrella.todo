@@ -95,3 +95,5 @@ CONFIRMED 2026-10-02; B352 spike APPROVED as specced.
   false-green rules; `bl check` clean.
 
 LANE PLAN (bl-fix-many 2026-10-02, by file overlap): Lane S: B352 spike (probes/verdicts, no code). Lane T0: B353 Tier-0 (blocklist/inference/send-sniff/wake-guidance/detect). Lane A serial: B354 install -> B357 MCP polish (same setup.ml regions) -> B359 doctor (B354 dep). Lane B: B355 hook (hook_cmd/broker-adoption, disjoint from A). Lane C: B358 managed (c2c_start.ml, after B355). Lane D: B360 glue last. B356 PARKED (Monitor-only, skip). Phase 1: B352+B353 parallel. Decision: c2c has no just test-remote (clawq-only), so tests run locally per AGENTS.md (dune wrapper + just check + tmux); reviews via native subagents, muse CLI fallback.
+
+B352 DONE (merged): top finding = no out-of-process wake primitive in muse 1.4.2 (CLI refused 9x) => Tier-2 BLOCKED, Monitor-only floor stands, B356 rescoped to detection+guidance (park stands). D2 = plugin-first choosable, settings.json fallback. Scope notes appended to B354-B358. Phase 2 (B354+B355) unblocked.
