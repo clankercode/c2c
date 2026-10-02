@@ -27,3 +27,5 @@ CONSTRAINTS: two managed muse instances in one directory are indistinguishable t
 Evidence: .collab/findings/2026-10-02T19-55-00Z-b358-muse-hook-env-scrubbed.md (B358 worktree; merge with B358).
 
 Coordinator: added to the muse batch — implement after B358 merges (adoption needs managed rows + pre-fork registration on master). Disjoint files from B359 (hook/broker vs doctor/health), may parallel B359.
+
+Folded follow-up (B358 review MINOR): ocaml/test/test_c2c_hook_muse.ml:250 uses blocked muse- alias (muse-sticky-keep-aa01), fails deterministically on master — rename the test alias in the B361 lane.
