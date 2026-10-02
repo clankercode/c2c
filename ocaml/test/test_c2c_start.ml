@@ -1677,7 +1677,41 @@ let test_codex_frontend_teardown_expectation_fails_closed () =
           last_exit_reason = None; broker_root;
           auto_join_rooms = ""; binary_override = None; model_override = None;
           agent_name = None };
-      expect_absent "readable broker with no registration" no_registration);
+      expect_absent "readable broker with no registration" no_registration;
+      let write_codex_config name session_id =
+        C2c_start.write_config
+          { C2c_start.name = name; client = "codex"; session_id;
+            resume_session_id = session_id; codex_resume_target = None;
+            alias = name; extra_args = []; created_at = 1.;
+            last_launch_at = None; last_exit_code = None;
+            last_exit_reason = None; broker_root; auto_join_rooms = "";
+            binary_override = None; model_override = None; agent_name = None }
+      in
+      let write_registry rows =
+        Yojson.Safe.to_file (Filename.concat broker_root "registry.json")
+          (`List rows)
+      in
+      let sticky = unique_instance_name "codex-teardown-sticky" in
+      with_instance_dir sticky @@ fun _ ->
+      let sticky_sid = "codex-teardown-sticky-session" in
+      write_codex_config sticky sticky_sid;
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String sticky_sid);
+              ("alias", `String sticky);
+              ("client_type", `String "codex-app-server") ] ];
+      expect_absent "pidless sticky registration" sticky;
+      let live = unique_instance_name "codex-teardown-live" in
+      with_instance_dir live @@ fun _ ->
+      let live_sid = "codex-teardown-live-session" in
+      write_codex_config live live_sid;
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String live_sid);
+              ("alias", `String live);
+              ("client_type", `String "codex-app-server");
+              ("pid", `Int 1234) ] ];
+      expect_required "live registration requires receipt" live);
   let unreadable_broker = Filename.temp_file "c2c-teardown-unreadable" "" in
   let uncertain = unique_instance_name "codex-teardown-broker-error" in
   with_instance_dir uncertain @@ fun _ ->

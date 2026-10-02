@@ -4410,9 +4410,12 @@ let frontend_teardown_owner_gone (r : frontend_teardown_record) =
        | _ -> false)
 
 (* A missing receipt is harmless for ordinary hook-backed clients, but it is
-   not evidence of cleanup for a Codex app-server instance. The durable broker
-   registration is the pre-fork marker that lets stale recovery detect that
-   the strict receipt is required even when publication itself failed. *)
+   not evidence of cleanup for a live Codex app-server instance. A broker row
+   that still carries a PID is the pre-fork marker that lets stale recovery
+   detect that the strict receipt is required even when publication itself
+   failed. Once the frontend cleanup has succeeded, the launcher clears the
+   row's PID while retaining its sticky identity; that pidless row must not
+   make a later stop fail on a receipt that was already consumed. *)
 let codex_frontend_teardown_expected_for_config
     (name : string) (cfg : instance_config) : frontend_teardown_expectation =
   let record_path = codex_frontend_teardown_record_path name in
@@ -4450,7 +4453,7 @@ let codex_frontend_teardown_expected_for_config
                            "Codex broker registry at %s could not be trusted: %s"
                            (root // "registry.json") reason)
                   | Managed_registry_present rows ->
-                      let registered =
+                      let registered_with_live_owner =
                         List.exists
                           (function
                             | `Assoc fields ->
@@ -4458,11 +4461,18 @@ let codex_frontend_teardown_expected_for_config
                                        List.assoc_opt "client_type" fields with
                                  | Some (`String sid), Some (`String "codex-app-server") ->
                                      sid = cfg.session_id
+                                     &&
+                                     (match List.assoc_opt "pid" fields with
+                                      | Some (`Int _) -> true
+                                      | Some (`String value) ->
+                                          Option.is_some
+                                            (int_of_string_opt (String.trim value))
+                                      | _ -> false)
                                  | _ -> false)
                             | _ -> false)
                           rows
                       in
-                      if registered then Codex_frontend_teardown_required
+                      if registered_with_live_owner then Codex_frontend_teardown_required
                       else Codex_frontend_teardown_absent)
              | _ ->
                  Codex_frontend_teardown_unknown
