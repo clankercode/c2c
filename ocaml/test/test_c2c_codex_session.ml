@@ -216,6 +216,16 @@ let test_daemon_frontend_receives_launcher_workspace () =
     [ "--cd"; "/home/xertrov/src/c2c" ]
     (S.daemon_frontend_workspace_args ~cwd:"/home/xertrov/src/c2c")
 
+let test_daemon_thread_selection_requires_one_new_thread () =
+  Alcotest.(check (option string)) "one new authenticated thread is selected"
+    (Some "new")
+    (S.select_new_loaded_thread ~before:[ "old" ] ~candidates:[ "old"; "new" ]);
+  Alcotest.(check (option string)) "existing thread is not claimed"
+    None (S.select_new_loaded_thread ~before:[ "old" ] ~candidates:[ "old" ]);
+  Alcotest.(check (option string)) "ambiguous concurrent threads fail closed" None
+    (S.select_new_loaded_thread ~before:[ "old" ]
+       ~candidates:[ "old"; "new-a"; "new-b" ])
+
 let test_daemon_attach_requires_pidfd_and_exact_generation () =
   Alcotest.(check bool) "all prerequisites select daemon attach" true
     (S.daemon_attach_safe_to_start ~socket_available:true
@@ -512,6 +522,17 @@ let test_mapping_roundtrip () =
           Alcotest.(check string) "alias" m.alias m2.alias;
           Alcotest.(check (option string)) "thread_id" m.thread_id m2.thread_id)
 
+let test_mapping_write_failure_is_reported () =
+  with_tmp_dir (fun dir ->
+      let instance_path = Filename.concat dir "instance-file" in
+      let oc = open_out instance_path in
+      Fun.protect ~finally:(fun () -> close_out oc)
+        (fun () -> output_string oc "this is not a directory\n");
+      let m = { S.session_id = "sid-failure"; alias = "alias-failure";
+                thread_id = Some "thread-failure"; created_at = 1.; updated_at = 2. } in
+      Alcotest.(check bool) "directory failure is not reported as success" false
+        (S.write_mapping ~instance_dir:instance_path m))
+
 let test_restart_request_roundtrip () =
   with_tmp_dir (fun dir ->
       let request_id = S.request_restart ~instance_dir:dir ~force:true in
@@ -751,6 +772,15 @@ let test_write_guard_reclaims_dead_sibling () =
           Alcotest.(check (option string)) "binding written on reclaim"
             (Some thread) m.thread_id
       | None -> Alcotest.fail "self mapping vanished")
+
+let test_missing_fresh_mapping_fails_closed () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let name = Printf.sprintf "missing-config-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+      let dir = Filename.concat inst name in
+      C2c_io.mkdir_p dir;
+      Alcotest.(check bool) "missing owner config refuses fresh binding" false
+        (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root
+           ~thread_id:"thread-without-owner"))
 
 (* Build a minimal Running app-server persisted record for the given unit_id so
    online_attached_delivery_degraded can resolve the live unit. *)
@@ -1996,6 +2026,8 @@ let () =
             test_daemon_frontend_clears_app_server_marker
         ; test_case "daemon frontend receives launcher workspace" `Quick
             test_daemon_frontend_receives_launcher_workspace
+        ; test_case "daemon thread selection requires one new thread" `Quick
+            test_daemon_thread_selection_requires_one_new_thread
         ; test_case "daemon attach gates on pidfd and generation" `Quick
             test_daemon_attach_requires_pidfd_and_exact_generation
         ; test_case "daemon handoff rejects fractional generation" `Quick
@@ -2038,7 +2070,8 @@ let () =
     ; ( "status",
         [ test_case "mapping" `Quick test_status_mapping ] )
     ; ( "mapping",
-        [ test_case "roundtrip" `Quick test_mapping_roundtrip ] )
+        [ test_case "roundtrip" `Quick test_mapping_roundtrip
+        ; test_case "write failure is reported" `Quick test_mapping_write_failure_is_reported ] )
     ; ( "delivery-degraded",
         [ test_case "persist + read + flip + stale roundtrip" `Quick test_delivery_degraded_roundtrip
         ; test_case "online-attached decision fail-closed (true/false/absent/stale)" `Quick test_online_attached_degraded_fail_closed
@@ -2055,7 +2088,9 @@ let () =
         ; test_case "write-guard refuses on live sibling" `Quick
             test_write_guard_refuses_on_live_sibling
         ; test_case "write-guard reclaims dead sibling" `Quick
-            test_write_guard_reclaims_dead_sibling ] )
+            test_write_guard_reclaims_dead_sibling
+        ; test_case "missing fresh mapping fails closed" `Quick
+            test_missing_fresh_mapping_fails_closed ] )
     ; ( "lifecycle-glue",
         [ test_case "default (no flag) engages app-server, publishes after start"
             `Quick test_glue_happy_publishes_after_start

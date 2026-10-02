@@ -156,6 +156,11 @@ let daemon_frontend_env ~session_id ~alias ~instance_name =
 let daemon_frontend_workspace_args ~(cwd : string) =
   [ "--cd"; cwd ]
 
+let select_new_loaded_thread ~before ~candidates =
+  match List.filter (fun thread_id -> not (List.mem thread_id before)) candidates with
+  | [ thread_id ] -> Some thread_id
+  | _ -> None
+
 let daemon_attach_forced_off () =
   match Sys.getenv_opt "C2C_CODEX_FORCE_PRIVATE_APPSERVER" with
   | Some "1" -> true
@@ -2161,10 +2166,10 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                         let loaded_for_cwd =
                           C2c_codex_ingress.real_loaded_threads_for_cwd
                             ~endpoint:ep ~token:"" ~cwd
-                          |> List.filter (fun tid -> not (List.mem tid loaded_before))
                         in
-                        match loaded_for_cwd with
-                        | [ tid ] -> Some tid
+                        match select_new_loaded_thread
+                                ~before:loaded_before ~candidates:loaded_for_cwd with
+                        | Some tid -> Some tid
                         | _ ->
                             (match
                                daemon_thread_handoff_matches ~path:handoff_path
