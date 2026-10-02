@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-10-02T17:26:36Z"
 depends_on:
@@ -6,9 +7,9 @@ depends_on:
 estimate_hours: 5
 id: B360
 priority: medium
+started_at: null
 status: pending
-tags:
-    - muse
+tags: []
 title: muse docs website skills-codegen runbooks tests glue
 updated_at: "2026-10-02T17:26:36Z"
 ---
@@ -75,3 +76,5 @@ all 8 false-green rules (quote suites AND tests; `[0-9]+ tests? run`).
 - Repo-wide forced `@runtest`: 0 failures; count quoted as
   suites+tests with the same method as baseline.
 - `bl check` clean; every B353–B359 acceptance cross-links here.
+
+B354-review follow-up: just check codegen drift gate diffs only c2c_claude_skill_embedded.ml; extend the gate to ALL embedded mls (muse/grok/agy/kimi) under generated-files-match-sources.
