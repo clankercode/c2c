@@ -143,13 +143,14 @@ let app_server_frontend_env ~session_id ~alias =
   ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
   ; "C2C_CODEX_MANAGED=1" ]
 
-(* Daemon-attach TUI must NOT inherit the private-server marker. The launcher
-   discovers the exact native thread after the remote frontend is loaded and
-   arms the sidecar itself; the hook remains identity/fallback-only. *)
+(* Daemon-attach TUI carries the same proof gate as the private-server
+   frontend. The launcher discovers the exact native thread after the remote
+   TUI is loaded and arms the sidecar itself; until then generic MCP startup
+   must not publish the launcher's alias. *)
 let daemon_frontend_env ~session_id ~alias ~instance_name =
   [ "C2C_MCP_SESSION_ID=" ^ session_id
   ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
-  ; "C2C_CODEX_APPSERVER_SESSION="
+  ; "C2C_CODEX_APPSERVER_SESSION=" ^ session_id
   ; "C2C_CODEX_MANAGED=1"
   ; "C2C_CODEX_INSTANCE_NAME=" ^ instance_name ]
 
@@ -2422,24 +2423,35 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                  let bound_thread =
                       let deadline = Unix.gettimeofday () +. 30.0 in
                       let rec discover () =
-                        let loaded_for_cwd =
-                          C2c_codex_ingress.real_loaded_threads_for_cwd
+                        let loaded_for_cwd_result =
+                          C2c_codex_ingress.real_loaded_threads_for_cwd_result
                             ~endpoint:ep ~token:"" ~cwd
                         in
                         let handoff =
                           daemon_thread_handoff_matches ~path:handoff_path
                             ~frontend_pid:child
                         in
-                        (match daemon_attach_thread_proof
-                                 ~requested_thread:thread
-                                 ~handoff_thread:handoff
-                                 ~before_loaded_threads:loaded_before
-                                 ~workspace_loaded_threads:loaded_for_cwd with
-                         | Some tid -> Some tid
-                         | None when Unix.gettimeofday () < deadline ->
-                             Unix.sleepf 0.2;
-                             discover ()
-                         | None -> None)
+                        (match loaded_for_cwd_result with
+                         | C2c_codex_ingress.Loaded_threads_for_cwd_unavailable reason ->
+                             if Unix.gettimeofday () < deadline then begin
+                               (* Keep unavailable distinct from an authenticated
+                                  empty workspace set: both fail the proof, but
+                                  only the latter is a valid authenticated result. *)
+                               ignore reason;
+                               Unix.sleepf 0.2;
+                               discover ()
+                             end else None
+                         | C2c_codex_ingress.Loaded_threads_for_cwd loaded_for_cwd ->
+                             (match daemon_attach_thread_proof
+                                      ~requested_thread:thread
+                                      ~handoff_thread:handoff
+                                      ~before_loaded_threads:loaded_before
+                                      ~workspace_loaded_threads:loaded_for_cwd with
+                              | Some tid -> Some tid
+                              | None when Unix.gettimeofday () < deadline ->
+                                  Unix.sleepf 0.2;
+                                  discover ()
+                              | None -> None))
                       in
                       discover ()
                 in

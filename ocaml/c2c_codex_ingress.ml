@@ -615,6 +615,10 @@ type loaded_threads_result =
   | Loaded_threads of string list
   | Loaded_threads_unavailable of string
 
+type loaded_threads_for_cwd_result =
+  | Loaded_threads_for_cwd of string list
+  | Loaded_threads_for_cwd_unavailable of string
+
 let parse_loaded_threads_response = function
   | `Assoc fields ->
       (match List.assoc_opt "error" fields with
@@ -624,9 +628,12 @@ let parse_loaded_threads_response = function
             | Some (`Assoc result) ->
                 (match List.assoc_opt "data" result with
                  | Some (`List xs) ->
-                     Loaded_threads
-                       (List.filter_map
-                          (function `String s -> Some s | _ -> None) xs)
+                     if List.for_all (function `String _ -> true | _ -> false) xs then
+                       Loaded_threads
+                         (List.filter_map
+                            (function `String s -> Some s | _ -> None) xs)
+                     else Loaded_threads_unavailable
+                              "thread/loaded/list returned a non-string thread id"
                  | _ -> Loaded_threads_unavailable
                           "thread/loaded/list returned malformed data")
             | _ -> Loaded_threads_unavailable
@@ -687,10 +694,10 @@ let thread_read_cwd = function
        | _ -> None)
   | _ -> None
 
-let real_loaded_threads_for_cwd ~(endpoint : Ep.endpoint) ~(token : string)
-    ~(cwd : string) : string list =
+let real_loaded_threads_for_cwd_result ~(endpoint : Ep.endpoint) ~(token : string)
+    ~(cwd : string) : loaded_threads_for_cwd_result =
   let live = try Sys.getenv "C2C_CODEX_INGRESS_LIVE" = "1" with Not_found -> false in
-  if not live then []
+  if not live then Loaded_threads_for_cwd_unavailable "live ingress disabled"
   else
     let timeout = 8.0 in
     let fd = ref None in
@@ -703,36 +710,42 @@ let real_loaded_threads_for_cwd ~(endpoint : Ep.endpoint) ~(token : string)
     let expected_cwd = canonical cwd in
     Fun.protect ~finally:close (fun () ->
         match (try Ok (ws_connect endpoint ~token ~timeout) with _ -> Error ()) with
-        | Error () -> []
+        | Error () ->
+            Loaded_threads_for_cwd_unavailable "authenticated websocket unavailable"
         | Ok f ->
             fd := Some f;
             try
               let _ = rpc_call f ~meth:"initialize" ~params:init_params in
               let resp = rpc_call f ~meth:"thread/loaded/list" ~params:(`Assoc []) in
-              let ids =
-                match resp with
-                | `Assoc fields ->
-                    (match List.assoc_opt "result" fields with
-                     | Some (`Assoc result) ->
-                         (match List.assoc_opt "data" result with
-                          | Some (`List xs) ->
-                              List.filter_map
-                                (function `String id -> Some id | _ -> None) xs
-                          | _ -> [])
-                     | _ -> [])
-                | _ -> []
-              in
-              List.filter
-                (fun thread_id ->
-                  let read =
-                    rpc_call f ~meth:"thread/read"
-                      ~params:(`Assoc [ ("threadId", `String thread_id) ])
-                  in
-                  match thread_read_cwd read with
-                  | Some actual -> canonical actual = expected_cwd
-                  | None -> false)
-                ids
-            with _ -> [])
+              (match parse_loaded_threads_response resp with
+               | Loaded_threads ids ->
+                   (try
+                      Loaded_threads_for_cwd
+                        (List.filter
+                           (fun thread_id ->
+                             let read =
+                               rpc_call f ~meth:"thread/read"
+                                 ~params:(`Assoc [ ("threadId", `String thread_id) ])
+                             in
+                             match thread_read_cwd read with
+                             | Some actual -> canonical actual = expected_cwd
+                             | None -> raise (Failure "thread/read returned no workspace")
+                           )
+                           ids)
+                    with _ ->
+                      Loaded_threads_for_cwd_unavailable
+                        "authenticated thread workspace metadata unavailable")
+               | Loaded_threads_unavailable reason ->
+                   Loaded_threads_for_cwd_unavailable reason)
+            with _ ->
+              Loaded_threads_for_cwd_unavailable
+                "authenticated workspace thread discovery failed")
+
+let real_loaded_threads_for_cwd ~(endpoint : Ep.endpoint) ~(token : string)
+    ~(cwd : string) : string list =
+  match real_loaded_threads_for_cwd_result ~endpoint ~token ~cwd with
+  | Loaded_threads_for_cwd ids -> ids
+  | Loaded_threads_for_cwd_unavailable _ -> []
 
 let real_client () : client =
   let live = try Sys.getenv "C2C_CODEX_INGRESS_LIVE" = "1" with Not_found -> false in

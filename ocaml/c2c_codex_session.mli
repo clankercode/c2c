@@ -91,8 +91,8 @@ val lifecycle_tui_handoff_body : alias:string -> endpoint:string -> string
 val app_server_frontend_env : session_id:string -> alias:string -> string list
 
 (** Environment for the machine-daemon remote frontend. The app-server marker
-    is intentionally empty: the launcher owns daemon sidecar arming after it
-    discovers the exact loaded native thread. *)
+    keeps generic MCP registration suppressed until the launcher discovers the
+    exact loaded native thread and publishes the authoritative row. *)
 val daemon_frontend_env :
   session_id:string -> alias:string -> instance_name:string -> string list
 

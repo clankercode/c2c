@@ -198,16 +198,16 @@ let test_app_server_frontend_identity_env () =
     ; "C2C_MCP_AUTO_REGISTER_ALIAS=codex-stack-digit-ca73"
     ; "C2C_CODEX_MANAGED=1" ] env
 
-let test_daemon_frontend_clears_app_server_marker () =
+let test_daemon_frontend_keeps_app_server_proof_gate () =
   let env =
     S.daemon_frontend_env ~session_id:"managed-codex-session"
       ~alias:"codex-stack-digit-ca73" ~instance_name:"codex-instance"
   in
   Alcotest.(check (list string))
-    "daemon frontend leaves sidecar ownership to the launcher"
+    "daemon frontend keeps generic registration proof-gated"
     [ "C2C_MCP_SESSION_ID=managed-codex-session"
     ; "C2C_MCP_AUTO_REGISTER_ALIAS=codex-stack-digit-ca73"
-    ; "C2C_CODEX_APPSERVER_SESSION="
+    ; "C2C_CODEX_APPSERVER_SESSION=managed-codex-session"
     ; "C2C_CODEX_MANAGED=1"
     ; "C2C_CODEX_INSTANCE_NAME=codex-instance" ] env
 
@@ -2364,8 +2364,8 @@ let () =
             test_app_server_lifecycle_phase_bodies
         ; test_case "app-server frontend inherits managed identity" `Quick
             test_app_server_frontend_identity_env
-        ; test_case "daemon frontend clears app-server marker" `Quick
-            test_daemon_frontend_clears_app_server_marker
+        ; test_case "daemon frontend keeps app-server proof gate" `Quick
+            test_daemon_frontend_keeps_app_server_proof_gate
         ; test_case "daemon frontend receives launcher workspace" `Quick
             test_daemon_frontend_receives_launcher_workspace
         ; test_case "daemon thread selection requires one new thread" `Quick

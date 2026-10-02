@@ -101,11 +101,22 @@ let test_loaded_threads_result_reports_disabled_or_unavailable_transport () =
        | I.Loaded_threads_unavailable reason ->
            Alcotest.(check string) "disabled ingress is unavailable" "live ingress disabled" reason
        | I.Loaded_threads _ -> Alcotest.fail "disabled ingress must not be an empty baseline");
+      (match I.real_loaded_threads_for_cwd_result ~endpoint:ep ~token:"" ~cwd:"/tmp" with
+       | I.Loaded_threads_for_cwd_unavailable reason ->
+           Alcotest.(check string) "disabled workspace ingress is unavailable"
+             "live ingress disabled" reason
+       | I.Loaded_threads_for_cwd _ ->
+           Alcotest.fail "disabled workspace ingress must not be an empty baseline");
       Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
       match I.real_loaded_threads_result
               ~endpoint:{ ep with port = 1 } ~token:"invalid" with
       | I.Loaded_threads_unavailable _ -> ()
-      | I.Loaded_threads _ -> Alcotest.fail "unavailable transport must not be an empty baseline")
+      | I.Loaded_threads _ -> Alcotest.fail "unavailable transport must not be an empty baseline";
+      (match I.real_loaded_threads_for_cwd_result
+               ~endpoint:{ ep with port = 1 } ~token:"invalid" ~cwd:"/tmp" with
+       | I.Loaded_threads_for_cwd_unavailable _ -> ()
+       | I.Loaded_threads_for_cwd _ ->
+           Alcotest.fail "unavailable workspace transport must not be an empty baseline"))
 
 let test_clean_delivery () =
   let root = mk_root () in

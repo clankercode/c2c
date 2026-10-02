@@ -2186,6 +2186,7 @@ let test_session_id_from_env_uses_client_specific_opencode_fallback () =
 
 (* B134/B173/B233: native client-type inference — Grok + unofficial Cursor + Kimi. *)
 let with_scrubbed_client_env f =
+  let prior_kimi_code_home = Sys.getenv_opt "KIMI_CODE_HOME" in
   let hermetic_kimi_home =
     Filename.concat (Filename.get_temp_dir_name ())
       (Printf.sprintf "c2c-no-kimi-index-%08x" (Random.bits ()))
@@ -2194,7 +2195,7 @@ let with_scrubbed_client_env f =
     [ "C2C_MCP_SESSION_ID"; "C2C_MCP_CLIENT_TYPE"; "CODEX_THREAD_ID"
     ; "CLAUDE_SESSION_ID"; "CLAUDE_CODE_SESSION_ID"; "C2C_OPENCODE_SESSION_ID"
     ; "GROK_SESSION_ID"; "GROK_AGENT"; "C2C_GROK_ACTIVE_SESSIONS"
-    ; "KIMI_SESSION_ID"; "KIMI_CODE_HOME"
+    ; "KIMI_SESSION_ID"
     ; "CURSOR_AGENT"; "CURSOR_INVOKED_AS"; "CURSOR_ASKPASS_SOCKET"
     ; "ANTIGRAVITY_CONVERSATION_ID"; "ANTIGRAVITY_HOOK_EVENT"; "ANTIGRAVITY_LS_ADDRESS"
     ; "MUSE_SESSION_ID"
@@ -2213,7 +2214,9 @@ let with_scrubbed_client_env f =
   Fun.protect
     ~finally:(fun () ->
       List.iter (fun k -> Unix.putenv k "") keys;
-      Unix.putenv "KIMI_CODE_HOME" "";
+      (match prior_kimi_code_home with
+       | Some value -> Unix.putenv "KIMI_CODE_HOME" value
+       | None -> Unix.putenv "KIMI_CODE_HOME" "");
       Unix.putenv "C2C_DETECT_ANCESTOR_COMMS" "")
     f
 
@@ -4052,13 +4055,15 @@ let test_server_startup_suppresses_managed_codex_appserver_auto_register () =
       Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "1";
       Unix.putenv "C2C_MCP_CLIENT_PID" (string_of_int (Unix.getpid ()));
       Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "managed-codex-session";
+      Unix.putenv "C2C_CODEX_INSTANCE_NAME" "managed-codex-instance";
       Fun.protect
         ~finally:(fun () ->
           Unix.putenv "C2C_MCP_SESSION_ID" "";
           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "";
           Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS_FROM_AUTO_GEN" "";
           Unix.putenv "C2C_MCP_CLIENT_PID" "";
-          Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "")
+          Unix.putenv "C2C_CODEX_APPSERVER_SESSION" "";
+          Unix.putenv "C2C_CODEX_INSTANCE_NAME" "")
         (fun () ->
           C2c_mcp.auto_register_startup ~broker_root:dir;
           let broker = C2c_mcp.Broker.create ~root:dir in

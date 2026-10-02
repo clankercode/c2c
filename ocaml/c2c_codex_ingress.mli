@@ -105,6 +105,10 @@ type loaded_threads_result =
   | Loaded_threads of string list
   | Loaded_threads_unavailable of string
 
+type loaded_threads_for_cwd_result =
+  | Loaded_threads_for_cwd of string list
+  | Loaded_threads_for_cwd_unavailable of string
+
 val parse_loaded_threads_response : Yojson.Safe.t -> loaded_threads_result
 
 val real_loaded_threads_result :
@@ -123,6 +127,12 @@ val real_loaded_threads_for_cwd :
 (** Return loaded native thread ids whose authenticated [thread/read] metadata
     reports [cwd].  This is deliberately separate from [real_loaded_threads]:
     membership alone does not prove which remote frontend owns a thread. *)
+
+val real_loaded_threads_for_cwd_result :
+  endpoint:C2c_codex_app_server.endpoint -> token:string -> cwd:string ->
+  loaded_threads_for_cwd_result
+(** The result form preserves the distinction between an authenticated empty
+    workspace set and unavailable transport/authentication/RPC discovery. *)
 
 (** Start an empty native Codex thread through a live app-server. This is used
     by the machine-daemon launcher before attaching a fresh remote TUI, because
