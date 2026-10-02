@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-02T20:54:33Z"
+claimed_by: cli-user
 completed_at: null
 complexity: low
 created_at: "2026-10-02T17:26:35Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 2
 id: B357
 priority: medium
-started_at: null
-status: pending
+started_at: "2026-10-02T20:54:33Z"
+status: in_progress
 tags: []
 title: muse MCP polish posture pinning channel verdict
-updated_at: "2026-10-02T17:26:35Z"
+updated_at: "2026-10-02T20:54:33Z"
 ---
 
 # muse MCP polish (with-mcp posture, pinning, channel verdict, hijack guard)
