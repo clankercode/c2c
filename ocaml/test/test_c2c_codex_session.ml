@@ -676,6 +676,15 @@ let write_codex_mapping ~dir ~session_id ~thread_id =
     { S.session_id; alias = Filename.basename dir; thread_id;
       created_at = 1.; updated_at = 2. }
 
+let write_codex_config ~broker_root ~name ~session_id =
+  C2c_start.write_config
+    { C2c_start.name; client = "codex"; session_id;
+      resume_session_id = session_id; codex_resume_target = None;
+      alias = name; extra_args = []; created_at = 1.;
+      last_launch_at = None; last_exit_code = None; last_exit_reason = None;
+      broker_root; auto_join_rooms = ""; binary_override = None;
+      model_override = None; agent_name = None }
+
 let register_alive broker ~session_id ~alias =
   let pid = Unix.getpid () in
   B.register broker ~session_id ~alias ~pid:(Some pid)
@@ -888,6 +897,55 @@ let test_missing_fresh_mapping_fails_closed () =
       Alcotest.(check bool) "missing owner config refuses fresh binding" false
         (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root
            ~thread_id:"thread-without-owner"))
+
+let test_mapping_read_failures_fail_closed () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let name = Printf.sprintf "uncertain-mapping-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+      let dir = Filename.concat inst name in
+      C2c_io.mkdir_p dir;
+      write_codex_config ~broker_root ~name ~session_id:"sid-uncertain";
+      let path = S.mapping_path ~instance_dir:dir in
+      let oc = open_out path in
+      Fun.protect ~finally:(fun () -> close_out oc)
+        (fun () ->
+          output_string oc
+            "{\"session_id\":\"sid-uncertain\",\"alias\":\"x\",\"created_at\":1,\"updated_at\":2,\"extra\":true}\n");
+      Alcotest.(check bool) "unknown mapping schema is not an owner" false
+        (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root
+           ~thread_id:"thread-uncertain");
+      let oc = open_out path in
+      Fun.protect ~finally:(fun () -> close_out oc)
+        (fun () -> output_string oc "{\"session_id\":\"sid-uncertain\",\"alias\":\"x\"}\n");
+      Alcotest.(check bool) "incomplete mapping is not an owner" false
+        (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root
+           ~thread_id:"thread-uncertain");
+      Sys.remove path;
+      Unix.symlink (Filename.concat dir "missing-target") path;
+      Alcotest.(check bool) "broken mapping symlink is not absence" false
+        (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root
+           ~thread_id:"thread-uncertain");
+      Alcotest.(check string) "broken mapping symlink is preserved"
+        (Filename.concat dir "missing-target") (Unix.readlink path);
+      Sys.remove path;
+      Unix.symlink (Filename.concat broker_root "missing-registry")
+        (Filename.concat broker_root "registry.json");
+      Alcotest.(check bool) "broken broker registry is not empty ownership state" false
+        (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root
+           ~thread_id:"thread-uncertain"))
+
+let test_sibling_metadata_files_are_ignored () =
+  with_split_brain_env (fun ~inst ~broker_root ->
+      let name = Printf.sprintf "metadata-sibling-%d-%d" (Unix.getpid ()) (Random.bits ()) in
+      let dir = Filename.concat inst name in
+      C2c_io.mkdir_p dir;
+      write_codex_config ~broker_root ~name ~session_id:"sid-metadata";
+      let marker = Filename.concat inst (name ^ ".checked") in
+      let oc = open_out marker in
+      close_out oc;
+      Alcotest.(check bool) "ordinary sibling metadata does not block ownership"
+        true
+        (S.persist_discovered_thread ~instance_dir:dir ~name ~broker_root
+           ~thread_id:"thread-metadata"))
 
 (* Build a minimal Running app-server persisted record for the given unit_id so
    online_attached_delivery_degraded can resolve the live unit. *)
@@ -1149,6 +1207,39 @@ let test_registration_failure_retains_outer_records () =
         (Sys.file_exists (C2c_start.outer_pid_path alias));
       Alcotest.(check bool) "registration failure retains outer generation" true
         (Sys.file_exists (C2c_start.outer_pid_start_time_path alias)))
+
+let test_private_mapping_failure_retains_lifecycle_records () =
+  let sid = unique_sid () in
+  let alias = S.derive_alias ~session_id:sid ~taken:(fun _ -> false) in
+  let instance_dir = C2c_start.instance_dir alias in
+  Fun.protect ~finally:(fun () -> cleanup_alias alias) (fun () ->
+      C2c_io.mkdir_p instance_dir;
+      (* Make the durable identity path a directory. The private app-server can
+         start, but its mapping write must fail without replacing this marker. *)
+      Unix.mkdir (S.mapping_path ~instance_dir) 0o700;
+      let clock = ref 0.0 in
+      let server = { status = Running_ } in
+      let frontend = { status = Exited 0 } in
+      let bk = scripted ~clock
+          ~spawn_server:(fun ~argv:_ ~env:_ ~log_path:_ -> Ok (mk_fake ~id:511 server))
+          ~spawn_frontend:(fun ~argv:_ ~env:_ -> Ok (mk_fake ~id:522 frontend)) () in
+      let fallback_called = ref false in
+      let rc = S.run ~mode:S.Start ~yolo:false ~extra_args:[] ~thread_id:sid
+          ~backend:bk
+          ~fallback:(fun ~extra_args:_ () -> fallback_called := true; 99) () in
+      Alcotest.(check int) "mapping failure returns failure" 1 rc;
+      Alcotest.(check bool) "mapping failure does not enter hook fallback" false
+        !fallback_called;
+      Alcotest.(check bool) "mapping failure retains outer PID" true
+        (Sys.file_exists (C2c_start.outer_pid_path alias));
+      Alcotest.(check bool) "mapping failure retains outer generation" true
+        (Sys.file_exists (C2c_start.outer_pid_start_time_path alias));
+      match C2c_codex_app_server.load_persisted ~instance_dir with
+      | Some persisted ->
+          Alcotest.(check string) "private unit records offline cleanup attempt"
+            "offline"
+            (C2c_codex_app_server.state_to_string persisted.state)
+      | None -> Alcotest.fail "private app-server lifecycle record was lost" )
 
 let test_generic_start_namespaced_name_reaches_app_server_alias_b221 () =
   (* Wiring regression: generic [c2c start codex] parses the reserved control,
@@ -2180,7 +2271,11 @@ let () =
         [ test_case "mapping" `Quick test_status_mapping ] )
     ; ( "mapping",
         [ test_case "roundtrip" `Quick test_mapping_roundtrip
-        ; test_case "write failure is reported" `Quick test_mapping_write_failure_is_reported ] )
+        ; test_case "write failure is reported" `Quick test_mapping_write_failure_is_reported
+        ; test_case "uncertain mapping reads fail closed" `Quick
+            test_mapping_read_failures_fail_closed
+        ; test_case "sibling metadata files are ignored" `Quick
+            test_sibling_metadata_files_are_ignored ] )
     ; ( "delivery-degraded",
         [ test_case "persist + read + flip + stale roundtrip" `Quick test_delivery_degraded_roundtrip
         ; test_case "online-attached decision fail-closed (true/false/absent/stale)" `Quick test_online_attached_degraded_fail_closed
@@ -2207,6 +2302,8 @@ let () =
             `Quick test_glue_happy_publishes_after_start
         ; test_case "registration failure retains outer records" `Quick
             test_registration_failure_retains_outer_records
+        ; test_case "private mapping failure retains lifecycle records" `Quick
+            test_private_mapping_failure_retains_lifecycle_records
         ; test_case "generic start namespaced name reaches app-server alias (B221)"
             `Quick test_generic_start_namespaced_name_reaches_app_server_alias_b221
         ; test_case "new codex (default, no flag) engages app-server"

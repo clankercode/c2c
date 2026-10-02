@@ -1214,18 +1214,82 @@ let restart_environment () =
   |> List.filter (fun e -> key e <> "C2C_CODEX_INGRESS_LIVE")
   |> Array.of_list
 
-let mapping_file_matches path (m : mapping) =
-  try
-    match C2c_io.read_json_opt path with
-    | Some (`Assoc fields) ->
-        let string_field key =
-          match List.assoc_opt key fields with Some (`String s) -> Some s | _ -> None
+let mapping_field_count key fields =
+  List.length (List.filter (fun (candidate, _) -> candidate = key) fields)
+
+let mapping_number = function
+  | `Float value when Float.is_finite value -> Some value
+  | `Int value -> Some (float_of_int value)
+  | _ -> None
+
+let parse_mapping_json (json : Yojson.Safe.t) : mapping option =
+  match json with
+  | `Assoc fields ->
+      let allowed = [ "session_id"; "alias"; "thread_id"; "created_at"; "updated_at" ] in
+      let known key = List.mem key allowed in
+      let unique key = mapping_field_count key fields <= 1 in
+      let field key = List.assoc_opt key fields in
+      let required key =
+        mapping_field_count key fields = 1
+        && Option.is_some (field key)
+      in
+      if not (List.for_all (fun (key, _) -> known key) fields)
+         || not (List.for_all unique allowed)
+         || not (required "session_id" && required "alias"
+                 && required "created_at" && required "updated_at") then None
+      else
+        let nonempty_string key =
+          match field key with
+          | Some (`String value) when String.trim value <> "" -> Some value
+          | _ -> None
         in
-        string_field "session_id" = Some m.session_id
-        && string_field "alias" = Some m.alias
-        && string_field "thread_id" = m.thread_id
-    | _ -> false
-  with _ -> false
+        let thread_id =
+          match field "thread_id" with
+          | None -> Some None
+          | Some (`String value) when String.trim value <> "" -> Some (Some value)
+          | _ -> None
+        in
+        (match nonempty_string "session_id", nonempty_string "alias",
+               mapping_number (Option.get (field "created_at")),
+               mapping_number (Option.get (field "updated_at")), thread_id with
+         | Some session_id, Some alias, Some created_at, Some updated_at,
+           Some thread_id ->
+             Some { session_id; alias; thread_id; created_at; updated_at }
+         | _ -> None)
+  | _ -> None
+
+type mapping_read_state =
+  | Mapping_missing
+  | Mapping_loaded of mapping
+  | Mapping_unreadable
+
+(* Read ownership records through the no-follow lifecycle reader. Only its
+   confirmed ENOENT result is absence; permissions, symlinks, directories,
+   malformed JSON, and all other read failures remain unknown ownership. *)
+let load_mapping_state ~instance_dir : mapping_read_state =
+  let path = mapping_path ~instance_dir in
+  match C2c_start.read_regular_file_nofollow path with
+  | C2c_start.Regular_file_missing -> Mapping_missing
+  | C2c_start.Regular_file_unreadable _ -> Mapping_unreadable
+  | C2c_start.Regular_file_contents contents ->
+      (try
+         match parse_mapping_json (Yojson.Safe.from_string contents) with
+         | Some mapping -> Mapping_loaded mapping
+         | None -> Mapping_unreadable
+       with _ -> Mapping_unreadable)
+
+let mapping_file_matches path (m : mapping) =
+  match C2c_start.read_regular_file_nofollow path with
+  | C2c_start.Regular_file_contents contents ->
+      (try
+         match parse_mapping_json (Yojson.Safe.from_string contents) with
+         | Some loaded ->
+             loaded.session_id = m.session_id
+             && loaded.alias = m.alias
+             && loaded.thread_id = m.thread_id
+         | None -> false
+       with _ -> false)
+  | C2c_start.Regular_file_missing | C2c_start.Regular_file_unreadable _ -> false
 
 (* Mapping writes are ownership records. A successful return therefore means
    both that rename completed and that the replacement can be read back as the
@@ -1269,32 +1333,9 @@ let write_mapping ~instance_dir (m : mapping) : bool =
     false
 
 let load_mapping ~instance_dir : mapping option =
-  let path = mapping_path ~instance_dir in
-  match C2c_io.read_json_opt path with
-  | None -> None
-  | Some (`Assoc a) ->
-      let s k = match List.assoc_opt k a with Some (`String v) -> Some v | _ -> None in
-      let f k = match List.assoc_opt k a with
-        | Some (`Float v) -> v | Some (`Int i) -> float_of_int i | _ -> 0.0 in
-      (match s "session_id", s "alias" with
-       | Some session_id, Some alias ->
-           Some { session_id; alias; thread_id = s "thread_id";
-                  created_at = f "created_at"; updated_at = f "updated_at" }
-       | _ -> None)
-  | Some _ -> None
-
-type mapping_read_state =
-  | Mapping_missing
-  | Mapping_loaded of mapping
-  | Mapping_unreadable
-
-let load_mapping_state ~instance_dir : mapping_read_state =
-  let path = mapping_path ~instance_dir in
-  if not (Sys.file_exists path) then Mapping_missing
-  else
-    match load_mapping ~instance_dir with
-    | Some mapping -> Mapping_loaded mapping
-    | None -> Mapping_unreadable
+  match load_mapping_state ~instance_dir with
+  | Mapping_loaded mapping -> Some mapping
+  | Mapping_missing | Mapping_unreadable -> None
 
 (* A B227 fallback can reach the hook-backed launcher before this app-server
    path has written its fresh config/mapping.  Remove the exact dead target from
@@ -1322,6 +1363,42 @@ let clear_unpersisted_resume_target ~(name : string) ~(instance_dir : string)
     | _ -> ()
   with _ -> ()
 
+type ownership_path_kind =
+  | Ownership_missing
+  | Ownership_directory
+  | Ownership_regular_file
+  | Ownership_unknown
+
+let ownership_path_kind path =
+  try
+    match (Unix.lstat path).Unix.st_kind with
+    | Unix.S_DIR -> Ownership_directory
+    | Unix.S_REG -> Ownership_regular_file
+    | _ -> Ownership_unknown
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> Ownership_missing
+  | _ -> Ownership_unknown
+
+(* Broker.list_registrations intentionally treats unreadable or malformed
+   registry state as an empty list. That is safe for display, but unsafe for an
+   ownership decision: an unavailable registry can hide a live owner. *)
+let ownership_registrations ~broker_root : (C2c_mcp.registration list, unit) result =
+  let path = Filename.concat broker_root "registry.json" in
+  match C2c_start.read_regular_file_nofollow path with
+  | C2c_start.Regular_file_missing -> Ok []
+  | C2c_start.Regular_file_unreadable _ -> Error ()
+  | C2c_start.Regular_file_contents contents ->
+      (try
+         match Yojson.Safe.from_string contents with
+         | `List entries ->
+             let regs =
+               C2c_mcp.Broker.list_registrations
+                 (C2c_mcp.Broker.create ~root:broker_root)
+             in
+             if entries = [] || regs <> [] then Ok regs else Error ()
+         | _ -> Error ()
+       with _ -> Error ())
+
 (* #24 write-side guard: does a DIFFERENT, still-alive managed instance already
    own [thread_id]? Mirrors the [bound_other_thread] predicate shape used by the
    adopt-existing path (c2c_cli_helpers.sole_alive_codex_app_server_session) plus
@@ -1332,42 +1409,44 @@ let clear_unpersisted_resume_target ~(name : string) ~(instance_dir : string)
    both minting a binding for one thread. *)
 let live_sibling_owns_thread ~broker_root ~self_name ~thread_id : (bool, unit) result =
   let instances_dir = C2c_mcp_helpers_post_broker.managed_instances_dir () in
-  if not (Sys.file_exists instances_dir) then Ok false
-  else
-    try
-      if not (Sys.is_directory instances_dir) then Error ()
-      else
-        let regs =
-          C2c_mcp.Broker.list_registrations
-            (C2c_mcp.Broker.create ~root:broker_root)
-        in
-        let entries = Array.to_list (Sys.readdir instances_dir) in
-        let rec check = function
-          | [] -> Ok false
-          | entry :: rest
-            when entry = self_name || entry = ".codex-thread-ownership.lock" ->
-              check rest
-          | entry :: rest ->
-              let dir = Filename.concat instances_dir entry in
-              if not (Sys.file_exists dir) then check rest
-              else if not (Sys.is_directory dir) then Error ()
-              else
-                match load_mapping_state ~instance_dir:dir with
-                | Mapping_missing -> check rest
-                | Mapping_unreadable -> Error ()
-                | Mapping_loaded m when m.thread_id <> Some thread_id -> check rest
-                | Mapping_loaded m ->
-                    (match
-                       List.find_opt
-                         (fun (r : C2c_mcp.registration) ->
-                           r.session_id = m.session_id)
-                         regs
-                     with
-                     | Some r when C2c_mcp.Broker.registration_is_alive r -> Ok true
-                     | Some _ | None -> check rest)
-        in
-        check entries
-    with _ -> Error ()
+  match ownership_path_kind instances_dir with
+  | Ownership_missing -> Ok false
+  | Ownership_unknown | Ownership_regular_file -> Error ()
+  | Ownership_directory ->
+      (match ownership_registrations ~broker_root with
+       | Error () -> Error ()
+       | Ok regs ->
+           try
+             let entries = Array.to_list (Sys.readdir instances_dir) in
+             let rec check = function
+               | [] -> Ok false
+               | entry :: rest
+                 when entry = self_name || entry = ".codex-thread-ownership.lock" ->
+                   check rest
+               | entry :: rest ->
+                   let dir = Filename.concat instances_dir entry in
+                   (match ownership_path_kind dir with
+                    | Ownership_missing | Ownership_regular_file -> check rest
+                    | Ownership_unknown -> Error ()
+                    | Ownership_directory ->
+                        match load_mapping_state ~instance_dir:dir with
+                        | Mapping_missing -> check rest
+                        | Mapping_unreadable -> Error ()
+                        | Mapping_loaded m when m.thread_id <> Some thread_id ->
+                            check rest
+                        | Mapping_loaded m ->
+                            (match
+                               List.find_opt
+                                 (fun (r : C2c_mcp.registration) ->
+                                   r.session_id = m.session_id)
+                                 regs
+                             with
+                             | Some r when C2c_mcp.Broker.registration_is_alive r ->
+                                 Ok true
+                             | Some _ | None -> check rest))
+             in
+             check entries
+           with _ -> Error ())
 
 (* Returns [true] when the thread is (or was already) bound to this unit, and
    [false] when persistence was REFUSED because a live managed sibling already
@@ -2336,6 +2415,34 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                     end)
            end)
 
+(* [stop] is intentionally unit-returning and best-effort. Before deleting the
+   launcher's lifecycle records, require the stopped private unit's own durable
+   record to say [Offline] and prove every recorded process generation is gone.
+   Missing generation metadata is uncertainty, so records remain for retry and
+   diagnosis. *)
+let private_process_cleanup_confirmed pid start_time =
+  match pid, start_time with
+  | None, _ -> true
+  | Some _, None -> false
+  | Some pid, Some expected ->
+      (match C2c_pid_identity.read_pid_generation pid with
+       | C2c_pid_identity.Absent -> true
+       | C2c_pid_identity.Generation actual -> actual <> expected
+       | C2c_pid_identity.Unreadable -> false)
+
+let private_cleanup_confirmed ~instance_dir ~unit_id ~before =
+  match before, C2c_codex_app_server.read_persisted_state ~instance_dir with
+  | C2c_codex_app_server.Persisted_present prior,
+    C2c_codex_app_server.Persisted_present after
+    when prior.unit_id = unit_id
+         && after.unit_id = unit_id
+         && after.state = C2c_codex_app_server.Offline ->
+      private_process_cleanup_confirmed prior.server_pid
+        prior.server_pid_start_time
+      && private_process_cleanup_confirmed prior.frontend_pid
+           prior.frontend_pid_start_time
+  | _ -> false
+
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(yolo : bool) ~(extra_args : string list)
     ?(model_override : string option)
@@ -2516,19 +2623,27 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
           (Printf.sprintf
              "app-server launch failed: durable identity mapping could not be persisted (c2c-alias=%s)"
              alias);
+        let private_state_before =
+          C2c_codex_app_server.read_persisted_state ~instance_dir
+        in
         (try C2c_codex_app_server.stop handle with _ -> ());
-        (match C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()) with
-         | Some start_time ->
-             if not
-                  (C2c_start.remove_pid_record_pair_confirmed
-                     ~pid_path:(C2c_start.outer_pid_path name)
-                     ~start_time_path:(C2c_start.outer_pid_start_time_path name)
-                     ~pid:(Unix.getpid ()) ~start_time) then
-               Printf.eprintf
-                 "c2c codex: retaining lifecycle records after mapping failure; cleanup was not confirmed\n%!"
-         | None ->
-             Printf.eprintf
-               "c2c codex: retaining lifecycle records after mapping failure; launcher generation unavailable\n%!");
+        let private_cleanup_ok =
+          private_cleanup_confirmed ~instance_dir
+            ~unit_id:(C2c_codex_app_server.unit_id_of handle)
+            ~before:private_state_before
+        in
+        let outer_cleanup_ok =
+          match C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()) with
+          | Some start_time when private_cleanup_ok ->
+              C2c_start.remove_pid_record_pair_confirmed
+                ~pid_path:(C2c_start.outer_pid_path name)
+                ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+                ~pid:(Unix.getpid ()) ~start_time
+          | Some _ | None -> false
+        in
+        if not outer_cleanup_ok then
+          Printf.eprintf
+            "c2c codex: retaining lifecycle records after mapping failure; cleanup was not confirmed\n%!";
         1
       end else begin
       (* B172: bind the banner alias into the broker before the operator can
