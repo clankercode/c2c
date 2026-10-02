@@ -357,9 +357,24 @@ def run_live() -> int:
             matches = [reg for reg in regs
                        if reg.get("session_id") == expected_sid
                        and reg.get("alias") == expected_alias
-                       and reg.get("client_type") == "codex-app-server"
                        and is_live(reg)]
             if len(matches) != 1:
+                return None
+            # `list --json` is the raw registration surface and preserves the
+            # launcher's exact alias, while `sessions --json` is the surface
+            # that exposes the authenticated client type. Correlate both by
+            # the launcher-owned session id instead of assuming either shape
+            # carries every field.
+            sessions_result = run_c2c(bin_, ["sessions", "--json"], cli_env)
+            try:
+                sessions = json.loads(sessions_result.stdout or "[]")
+            except Exception:
+                return None
+            authenticated = [session for session in sessions
+                             if session.get("session_id") == expected_sid
+                             and session.get("client_type") == "codex-app-server"
+                             and session.get("alive") is True]
+            if len(authenticated) != 1:
                 return None
             instances_root = Path(cli_env.get(
                 "C2C_INSTANCES_DIR",
@@ -426,9 +441,12 @@ def run_live() -> int:
         except (StopIteration, ValueError, TypeError):
             log("[appserver-e2e] FAIL: launcher registration disappeared after readiness")
             return 4
-        if not (isinstance(registration_snapshot.get("pid"), int)
-                and isinstance(registration_snapshot.get("pid_start_time"), int)):
-            log("[appserver-e2e] FAIL: launcher registration has no exact PID generation")
+        registration_pid = registration_snapshot.get("pid")
+        registration_pid_start_time = (
+            pid_generation(registration_pid)
+            if isinstance(registration_pid, int) else None)
+        if registration_pid_start_time is None:
+            log("[appserver-e2e] FAIL: launcher registration has no exact live PID generation")
             return 4
         private_generation = None
         if private_state_path.is_file():
@@ -530,7 +548,7 @@ def run_live() -> int:
         reaped = wait_for(no_my_procs, timeout=60, interval=3) is not None
         results["clean_teardown"] = stop_ok and reaped
         registration_generation_gone = exact_generation_gone(
-            registration_snapshot["pid"], registration_snapshot["pid_start_time"])
+            registration_pid, registration_pid_start_time)
 
         def deregistered() -> bool:
             r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
