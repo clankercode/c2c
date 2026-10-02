@@ -213,6 +213,18 @@ let test_sibling_replacement_is_detected () =
       ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir)));
       Unix.rename old_dir dir)
 
+let test_concurrent_sibling_addition_is_detected () =
+  with_resolver_env (fun ~root:_ ~instances ~broker ->
+      ignore (make_instance ~instances ~name:"unit-a" ~session_id:"sid-a"
+                ~alias:"unit-a" ~thread_id:(Some "thread-a"));
+      PB.set_codex_identity_test_hook (fun label ->
+          if label = "after-snapshots" then
+            ignore (make_instance ~instances ~name:"unit-b" ~session_id:"sid-b"
+                      ~alias:"unit-b" ~thread_id:(Some "thread-a")));
+      expect_resolution "concurrent sibling addition is uncertain" "uncertain"
+        (PB.managed_session_id_from_codex_thread_resolution
+           ~broker_root:broker ~thread_id:"thread-a"))
+
 let () =
   Alcotest.run "c2c_mcp_helpers_post_broker_identity"
     [ ("resolver",
@@ -231,7 +243,9 @@ let () =
        ; test_case "parent replacement" `Quick
            test_parent_replacement_is_detected
        ; test_case "sibling replacement" `Quick
-           test_sibling_replacement_is_detected ])
+           test_sibling_replacement_is_detected
+       ; test_case "concurrent sibling addition" `Quick
+           test_concurrent_sibling_addition_is_detected ])
     ; ("registry",
        [ test_case "strict optional fields and duplicate identities" `Quick
            test_registry_rejects_malformed_optional_and_duplicate_identity ]) ]

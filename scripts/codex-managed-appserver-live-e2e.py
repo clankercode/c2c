@@ -287,7 +287,11 @@ def run_live() -> int:
         log(f"[appserver-e2e] launching managed session '{name}' (model={MODEL}) in tmux window {window}")
         tmux("send-keys", "-t", pane, launch, "Enter", check=False)
 
-        # 2. wait for the supervised session to register (alive) in the broker.
+        # 2. Wait for the supervised session's authenticated thread proof, not
+        # merely its early broker registration. The daemon launcher publishes
+        # that registration before the remote TUI proves a loaded thread; using
+        # it as readiness reproduces the reported "registered, then failed"
+        # split-brain window.
         def find_instance_alias() -> str | None:
             r = run_c2c(bin_, ["list", "--json"], cli_env)
             try:
@@ -305,12 +309,27 @@ def run_live() -> int:
                     return a
             return None
 
-        inst_alias = wait_for(find_instance_alias, timeout=150, interval=3)
+        def find_authenticated_ready_alias() -> str | None:
+            alias = find_instance_alias()
+            if alias is None:
+                return None
+            instances_root = Path(cli_env.get(
+                "C2C_INSTANCES_DIR",
+                str(Path.home() / ".local" / "share" / "c2c" / "instances")))
+            mapping_path = instances_root / name / "codex-session.json"
+            try:
+                mapping = json.loads(mapping_path.read_text())
+                thread_id = mapping.get("thread_id")
+                return alias if isinstance(thread_id, str) and thread_id.strip() else None
+            except (OSError, ValueError, TypeError):
+                return None
+
+        inst_alias = wait_for(find_authenticated_ready_alias, timeout=150, interval=3)
         if not inst_alias:
-            log("[appserver-e2e] FAIL: managed session never registered")
+            log("[appserver-e2e] FAIL: managed session never reached authenticated thread readiness")
             log("[appserver-e2e] pane tail:\n" + _pane_text(pane, 120))
             return 4
-        log(f"[appserver-e2e] managed session registered as: {inst_alias}")
+        log(f"[appserver-e2e] managed session reached authenticated readiness as: {inst_alias}")
 
         # 3. wait for the frontend TUI to be interactive, then type an UNSUBMITTED
         #    draft into the composer (draft-preservation setup). No Enter.

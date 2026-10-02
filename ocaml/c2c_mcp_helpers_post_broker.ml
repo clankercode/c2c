@@ -1447,6 +1447,12 @@ let codex_entries_unchanged entries =
       | Some current -> same_codex_path_identity entry.entry_identity current
       | None -> false) entries
 
+let codex_entry_names instances_dir =
+  try Some (Array.to_list (Sys.readdir instances_dir)) with _ -> None
+
+let codex_entry_names_equal left right =
+  List.sort String.compare left = List.sort String.compare right
+
 let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
   let instances_dir = managed_instances_dir () in
   let dir_state =
@@ -1459,10 +1465,12 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
   | `Missing -> Codex_thread_unmapped
   | `Unreadable -> Codex_thread_uncertain
   | `Directory ->
+      (match codex_path_identity instances_dir with
+       | None -> Codex_thread_uncertain
+       | Some parent_before ->
       let uncertain = ref false in
-      let parent_before = Option.get (codex_path_identity instances_dir) in
       let entries =
-        match (try Some (Array.to_list (Sys.readdir instances_dir)) with _ -> None) with
+        match codex_entry_names instances_dir with
         | Some entries -> entries
         | None -> uncertain := true; []
       in
@@ -1541,9 +1549,15 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
         ) entry_snapshots
       in
       let parent_after_scan = codex_path_identity instances_dir in
+      let entry_names_unchanged =
+        match codex_entry_names instances_dir with
+        | Some current -> codex_entry_names_equal entries current
+        | None -> false
+      in
       if Option.is_none parent_after_scan
          || not (same_codex_path_identity parent_before
                    (Option.get parent_after_scan))
+         || not (entry_names_unchanged)
          || not (codex_entries_unchanged entry_snapshots)
       then uncertain := true;
       if !uncertain then
@@ -1581,6 +1595,7 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
                  end;
                  Codex_thread_uncertain
                end else Codex_thread_resolved sid)
+       )
 
 let managed_session_id_from_codex_thread ~broker_root ~thread_id =
   match managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id with
