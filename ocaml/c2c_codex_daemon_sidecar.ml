@@ -964,10 +964,27 @@ let collect_leases ~owners_dir ~matches =
     List.iter
       (fun name ->
         if C2c_start.is_lifecycle_recovery_artifact_name name then begin
-          ok := false;
-          Printf.eprintf
-            "c2c: retaining Codex sidecar recovery artifact %s for retry\n%!"
-            (owners_dir // name)
+          (* Recovery artifacts share the machine-wide owner directory with
+             unrelated sessions. Parse their lease payload before treating
+             one as an obstacle for this scoped stop; malformed artifacts
+             remain fail-closed. *)
+          let relevant =
+            match C2c_start.read_regular_file_nofollow (owners_dir // name) with
+            | C2c_start.Regular_file_contents contents ->
+                (try
+                   match lease_of_json (Yojson.Safe.from_string contents) with
+                   | Some lease -> matches lease
+                   | None -> true
+                 with _ -> true)
+            | C2c_start.Regular_file_missing
+            | C2c_start.Regular_file_unreadable _ -> true
+          in
+          if relevant then begin
+            ok := false;
+            Printf.eprintf
+              "c2c: retaining Codex sidecar recovery artifact %s for retry\n%!"
+              (owners_dir // name)
+          end
         end else if Filename.check_suffix name ".json"
            && not (is_arm_pending_filename name)
         then

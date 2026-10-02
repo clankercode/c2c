@@ -545,6 +545,23 @@ let read_regular_file_nofollow path : regular_file_read =
            Regular_file_unreadable "lifecycle record absence is uncertain")
   | e -> Regular_file_unreadable (Printexc.to_string e)
 
+(* Recovery artifacts live in one machine-wide owner directory. A stop scoped
+   to one broker session must not be blocked by an artifact left by a
+   different session. Keep malformed or legacy artifacts fail-closed; with a
+   scope, only an artifact that explicitly names that session is relevant. *)
+let recovery_artifact_belongs_to_session ~broker_session_id path =
+  match read_regular_file_nofollow path with
+  | Regular_file_contents contents ->
+      (try
+         match Yojson.Safe.from_string contents with
+         | `Assoc fields ->
+             (match List.assoc_opt "broker_session_id" fields with
+              | Some (`String sid) -> sid = broker_session_id
+              | _ -> true)
+         | _ -> true
+       with _ -> true)
+  | Regular_file_missing | Regular_file_unreadable _ -> true
+
 (* tcsetpgrp(3) binding — errors suppressed inside the stub. After the
    child forks into its own pgid, we hand it the controlling terminal
    so it's the tty's foreground process group; otherwise TUIs like
@@ -3053,10 +3070,19 @@ let cancel_codex_daemon_sidecar_arms ?thread_id ?broker_session_id ~owners_dir (
          || is_lifecycle_recovery_artifact_name name)
     |> List.iter (fun name ->
          if is_lifecycle_recovery_artifact_name name then begin
-           ok := false;
-           Printf.eprintf
-             "c2c: retaining Codex sidecar arm recovery artifact %s for retry\n%!"
-             (owners_dir // name)
+           let relevant =
+             match broker_session_id with
+             | None -> true
+             | Some sid ->
+                 recovery_artifact_belongs_to_session ~broker_session_id:sid
+                   (owners_dir // name)
+           in
+           if relevant then begin
+             ok := false;
+             Printf.eprintf
+               "c2c: retaining Codex sidecar arm recovery artifact %s for retry\n%!"
+               (owners_dir // name)
+           end
          end else match read_codex_sidecar_arm (owners_dir // name) with
          | None ->
              ok := false;

@@ -775,6 +775,25 @@ let test_malformed_codex_sidecar_arm_blocks_cleanup () =
     (C2c_start.cancel_codex_daemon_sidecar_arms ~owners_dir ());
   check bool "malformed pending arm is retained" true (Sys.file_exists path)
 
+let test_unrelated_codex_recovery_artifact_does_not_block_session_cleanup () =
+  with_temp_dir @@ fun owners_dir ->
+  let path = Filename.concat owners_dir ".lease.json.c2c-rollback.foreign" in
+  let oc = open_out path in
+  Fun.protect ~finally:(fun () -> close_out oc)
+    (fun () ->
+      output_string oc
+        (Yojson.Safe.to_string
+           (`Assoc [ ("broker_session_id", `String "other-session") ]) ^ "\n"));
+  check bool "foreign recovery artifact does not block this session" true
+    (C2c_start.cancel_codex_daemon_sidecar_arms
+       ~broker_session_id:"current-session" ~owners_dir ());
+  check bool "foreign recovery artifact remains for its owner" true
+    (Sys.file_exists path);
+  check bool "matching recovery artifact blocks cleanup" false
+    (C2c_start.cancel_codex_daemon_sidecar_arms
+       ~broker_session_id:"other-session" ~owners_dir ());
+  check bool "matching recovery artifact remains" true (Sys.file_exists path)
+
 let test_fractional_lifecycle_integer_fields_block_cleanup () =
   with_temp_dir @@ fun owners_dir ->
   let token = "fractional" in
@@ -6943,6 +6962,8 @@ let () =
             `Quick, test_stop_instance_stops_authoritative_sidecar_without_pidfile )
         ; ( "codex_frontend_teardown_expectation_fails_closed",
             `Quick, test_codex_frontend_teardown_expectation_fails_closed )
+        ; ( "unrelated_codex_recovery_artifact_does_not_block_session_cleanup",
+            `Quick, test_unrelated_codex_recovery_artifact_does_not_block_session_cleanup )
         ; ( "frontend_teardown_requires_generation_and_confirmed_removal",
             `Quick, test_frontend_teardown_requires_generation_and_confirmed_removal )
         ; ( "i34r_name_notice_names_its_source",
