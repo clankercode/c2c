@@ -167,6 +167,7 @@ let test_no_authoritative_tui_clients () =
     [ C2c_idle_contract.Claude, "claude"
     ; C2c_idle_contract.Kimi, "kimi"
     ; C2c_idle_contract.Agy, "agy"
+    ; C2c_idle_contract.Muse, "muse"
     ; C2c_idle_contract.Codex_hooks, "codex-hooks"
     ]
 
@@ -177,6 +178,29 @@ let test_auto_restart_allowed_policy () =
     (C2c_idle_contract.auto_restart_allowed Busy);
   Alcotest.(check bool) "unknown denies" false
     (C2c_idle_contract.auto_restart_allowed (Unknown "x"))
+
+let test_resolve_muse_kind_roundtrip () =
+  Alcotest.(check bool) "muse resolves to Muse" true
+    (C2c_idle_contract.resolve_client_kind ~client:"muse"
+       ~has_app_server_mapping:false
+     = Some C2c_idle_contract.Muse);
+  Alcotest.(check bool) "kind string roundtrips" true
+    (C2c_idle_contract.client_kind_of_string
+       (C2c_idle_contract.client_kind_to_string
+          C2c_idle_contract.Muse)
+     = Some C2c_idle_contract.Muse);
+  (* query_client end-to-end: unrecognized-client Unknown must NOT fire. *)
+  let dir = tmp_dir () in
+  (match
+     C2c_idle_contract.query_client ~client:"muse" ~instance_dir:dir
+       ~has_app_server_mapping:false ()
+   with
+   | C2c_idle_contract.Unknown reason ->
+       Alcotest.(check bool) "muse recognized (no authoritative TUI)" true
+         (contains reason "no authoritative TUI")
+   | other ->
+       Alcotest.failf "muse must be Unknown, got %s"
+         (C2c_idle_contract.idle_state_to_string other))
 
 let test_resolve_codex_by_mapping () =
   Alcotest.(check bool) "mapping => app-server" true
@@ -242,12 +266,14 @@ let () =
             test_opencode_heartbeat_alone_not_idle
         ; Alcotest.test_case "opencode missing statefile" `Quick
             test_opencode_missing_statefile
-        ; Alcotest.test_case "claude/kimi/agy/hooks unknown" `Quick
+        ; Alcotest.test_case "claude/kimi/agy/muse/hooks unknown" `Quick
             test_no_authoritative_tui_clients
         ; Alcotest.test_case "auto_restart_allowed policy" `Quick
             test_auto_restart_allowed_policy
         ; Alcotest.test_case "resolve codex by mapping" `Quick
             test_resolve_codex_by_mapping
+        ; Alcotest.test_case "resolve muse kind roundtrip" `Quick
+            test_resolve_muse_kind_roundtrip
         ; Alcotest.test_case "no activity-age substitution" `Quick
             test_never_uses_activity_age_for_claude
         ] )

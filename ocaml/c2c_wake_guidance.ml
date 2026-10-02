@@ -159,6 +159,31 @@ let advice ~(client : string) ~(context : [ `Install | `Managed_start ]) :
           ; "  Fallback: c2c poll-inbox"
           ]
       }
+  (* B358: managed muse is pre-registered but has no arrival-time path:
+     hooks fire on activity only, and no out-of-process sender exists
+     (B352 D1 BLOCKED, B356 PARKED). Pre-B361 the SessionStart hook drains
+     the NATIVE sid row, NOT the managed alias row (the hook mints a
+     competing row), so managed-alias mail needs Monitor or poll-inbox
+     even at SessionStart — strictly weaker than Claude/Grok posture until
+     the B361 adoption arm lands. SessionStart is lazy (first turn submit)
+     and resume-silent, so a resumed session gets no re-onboarding turn. *)
+  | "muse", `Managed_start ->
+      { client = c
+      ; wake = None_idle
+      ; primary =
+          "pre-registered; managed-alias mail needs Monitor or poll-inbox \
+           until hook adoption (B361)"
+      ; manual_inbox_required = true
+      ; warning_lines =
+          [ "[c2c WARNING] muse has NONE idle wake inside c2c."
+          ; "  Managed-alias mail does NOT auto-drain yet: SessionStart"
+          ; "  drains the native row, not the managed alias row (B361);"
+          ; "  check explicitly or arm background delivery."
+          ; "  Arm receive NOW: Monitor({ command: \"c2c monitor\", \
+             persistent: true })"
+          ; "  Fallback: c2c poll-inbox"
+          ]
+      }
   (* B353: muse is CLI-first with NONE idle wake — hooks + MCP (B354) do not
      change that verdict (no out-of-process wake exists), so both contexts
      stay NONE with the Monitor recipe (verbatim #414, copied from the grok

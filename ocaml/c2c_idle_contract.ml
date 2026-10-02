@@ -19,6 +19,7 @@ type client_kind =
   | OpenCode
   | Kimi
   | Agy
+  | Muse
   | Codex_hooks
   | Codex_app_server
 
@@ -32,6 +33,7 @@ let client_kind_of_string = function
   | "opencode" -> Some OpenCode
   | "kimi" -> Some Kimi
   | "agy" -> Some Agy
+  | "muse" -> Some Muse
   | "codex-hooks" | "codex_hooks" -> Some Codex_hooks
   | "codex-app-server" | "codex_app_server" | "codex-appserver" ->
       Some Codex_app_server
@@ -45,6 +47,7 @@ let client_kind_to_string = function
   | OpenCode -> "opencode"
   | Kimi -> "kimi"
   | Agy -> "agy"
+  | Muse -> "muse"
   | Codex_hooks -> "codex-hooks"
   | Codex_app_server -> "codex-app-server"
 
@@ -61,6 +64,7 @@ let resolve_client_kind ~(client : string) ~(has_app_server_mapping : bool) :
   | "opencode" -> Some OpenCode
   | "kimi" -> Some Kimi
   | "agy" -> Some Agy
+  | "muse" -> Some Muse
   | "codex" when has_app_server_mapping -> Some Codex_app_server
   | "codex" -> Some Codex_hooks
   | "codex-headless" -> Some Codex_hooks
@@ -201,6 +205,9 @@ let query ~(kind : client_kind) ~(instance_dir : string) ?now
   | Claude -> no_authoritative_tui "claude"
   | Kimi -> no_authoritative_tui "kimi"
   | Agy -> no_authoritative_tui "agy"
+  (* B358: B352 U10 found no run-state signal (index `status` is health,
+     MSP sockets undocumented) — Unknown fail-closed stands. *)
+  | Muse -> no_authoritative_tui "muse"
   | Codex_hooks -> no_authoritative_tui "codex-hooks"
 
 let query_client ~(client : string) ~(instance_dir : string)

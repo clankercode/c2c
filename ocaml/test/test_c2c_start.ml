@@ -5562,6 +5562,535 @@ let test_managed_agy_registration_failure_message () =
   check bool "recovery" true (string_contains msg "c2c start agy -n");
   check bool "broker root" true (string_contains msg "/tmp/broker-x")
 
+(* B358 managed muse: MuseAdapter argv (binding B352 P6 shape), positional
+   kickoff, resume-ref validation, pre-fork registration, no static
+   MUSE_SESSION_ID mirror, hooks delivery mode. *)
+
+let test_is_muse_resume_ref () =
+  check bool "uuid is a resume ref" true
+    (C2c_start.is_muse_resume_ref "01a0fe2a-f99b-7e32-b1fe-d1f9bf86f2fc");
+  check bool "session name is a resume ref" true
+    (C2c_start.is_muse_resume_ref "basalt-fireball");
+  check bool "empty is not (fresh sentinel)" false
+    (C2c_start.is_muse_resume_ref "");
+  check bool "whitespace is not" false
+    (C2c_start.is_muse_resume_ref "   ")
+
+let test_prepare_launch_args_muse_fresh_shape () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "fresh: --trust-workspace present" true
+    (List.mem "--trust-workspace" args);
+  check bool "fresh: --approval-mode never" true
+    (has_adjacent_pair "--approval-mode" "never" args);
+  check bool "fresh: no resume" false (List.mem "resume" args);
+  check bool "fresh: never --disable-approval" false
+    (List.mem "--disable-approval" args);
+  check bool "fresh: never --yolo" false (List.mem "--yolo" args);
+  check bool "fresh: never --no-session-log" false
+    (List.mem "--no-session-log" args);
+  check bool "fresh: instance name not on argv" false
+    (List.mem "e2e-muse-proof" args)
+
+let test_prepare_launch_args_muse_fresh_kickoff_positional () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let kickoff = "KICKOFF-MARKER-muse-7" in
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ~kickoff_prompt:kickoff ()
+  in
+  check bool "kickoff rides positional argv" true (List.mem kickoff args);
+  check bool "kickoff is last (positional PROMPT)" true
+    (is_suffix [ kickoff ] args)
+
+let test_prepare_launch_args_muse_model_flag_once () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"muse-spark-1.3" ()
+  in
+  check bool "model flag present" true
+    (has_adjacent_pair "--model" "muse-spark-1.3" args);
+  let count =
+    List.fold_left
+      (fun acc a -> if a = "--model" then acc + 1 else acc)
+      0 args
+  in
+  check int "no model double-apply" 1 count;
+  (* n2: the adapter trims the model value after the trim-check. *)
+  let padded =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"  muse-spark-1.3  " ()
+  in
+  check bool "model value trimmed" true
+    (has_adjacent_pair "--model" "muse-spark-1.3" padded);
+  check bool "untrimmed model absent" false
+    (List.mem "  muse-spark-1.3  " padded)
+
+let test_prepare_launch_args_muse_uuid_resume_suppresses_kickoff () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let ref_ = "01a0fe2a-f99b-7e32-b1fe-d1f9bf86f2fc" in
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ~resume_session_id:ref_
+      ~kickoff_prompt:"SHOULD-NOT-APPEAR" ()
+  in
+  check bool "uuid resume passes resume ref" true
+    (has_adjacent_pair "resume" ref_ args);
+  check bool "resume suppresses kickoff" false
+    (List.mem "SHOULD-NOT-APPEAR" args)
+
+let test_prepare_launch_args_muse_name_resume () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~resume_session_id:"basalt-fireball" ()
+  in
+  check bool "name resume passes resume ref" true
+    (has_adjacent_pair "resume" "basalt-fireball" args)
+
+let test_prepare_launch_args_muse_empty_resume_is_fresh () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let kickoff = "KICKOFF-MARKER-muse-empty" in
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[] ~broker_root:"/tmp/broker" ~resume_session_id:""
+      ~kickoff_prompt:kickoff ()
+  in
+  check bool "empty sentinel omits resume" false (List.mem "resume" args);
+  check bool "empty sentinel keeps trust flag" true
+    (List.mem "--trust-workspace" args);
+  (* m2: `Some ""` is fresh, so it keeps its kickoff — the suppression
+     predicate must agree with the adapter's resume predicate. *)
+  check bool "empty sentinel keeps kickoff" true (List.mem kickoff args)
+
+let test_prepare_launch_args_muse_forwards_extra_args () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"e2e-muse-proof" ~client:"muse"
+      ~extra_args:[ "--provider"; "echo" ] ~broker_root:"/tmp/broker" ()
+  in
+  check bool "provider forwarded at tail" true
+    (is_suffix [ "--provider"; "echo" ] args)
+
+let test_normalize_model_override_for_muse () =
+  check string "bare model preserved" "muse-spark-1.3"
+    (match C2c_start.normalize_model_override_for_client ~client:"muse"
+             "muse-spark-1.3"
+     with
+     | Ok model -> model
+     | Error msg -> fail msg);
+  check string "pmodel contributes model part" "muse-spark-1.3"
+    (match C2c_start.normalize_model_override_for_client ~client:"muse"
+             "meta:muse-spark-1.3"
+     with
+     | Ok model -> model
+     | Error msg -> fail msg);
+  (match C2c_start.normalize_model_override_for_client ~client:"muse" "  " with
+   | Ok _ -> fail "empty model must be rejected"
+   | Error _ -> ())
+
+let test_register_managed_muse_session_persists_row () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let name = "zz-muse-managed" in
+  let cwd = "/proj/muse" in
+  (match
+     C2c_start.register_managed_muse_session ~broker_root ~name ~alias:name
+       ~pid:(Unix.getpid ()) ~cwd
+   with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "registration failed: %s" e));
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let regs = C2c_mcp.Broker.list_registrations broker in
+  match List.find_opt (fun (r : C2c_mcp.registration) -> r.alias = name) regs with
+  | None -> fail (Printf.sprintf "alias %s not registered" name)
+  | Some r ->
+      check string "session_id is instance name" name r.session_id;
+      check (option string) "cwd recorded" (Some cwd) r.cwd;
+      check (option string) "client_type muse" (Some "muse") r.client_type
+
+let test_register_managed_muse_alias_override () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let name = "zz-muse-name" and alias = "zz-muse-alias" in
+  (match
+     C2c_start.register_managed_muse_session ~broker_root ~name ~alias
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse"
+   with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "registration failed: %s" e));
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let aliases =
+    List.map (fun (r : C2c_mcp.registration) -> r.alias)
+      (C2c_mcp.Broker.list_registrations broker)
+  in
+  check bool "alias override is registered" true (List.mem alias aliases);
+  check bool "instance name is not also registered" false (List.mem name aliases)
+
+let test_managed_muse_registration_failure_message () =
+  let msg =
+    C2c_start.managed_muse_registration_failure_message ~name:"zz-muse-fail"
+      ~alias:"zz-muse-fail" ~broker_root:"/tmp/broker-x" ~reason:"disk full"
+  in
+  check bool "names alias" true (string_contains msg "zz-muse-fail");
+  check bool "peer error" true (string_contains msg "is not registered");
+  check bool "recovery" true (string_contains msg "c2c start muse -n");
+  check bool "broker root" true (string_contains msg "/tmp/broker-x")
+
+let test_delivery_mode_muse_is_hooks () =
+  let mode =
+    C2c_start.delivery_mode ~client:"muse" ~name:"zz-muse-managed"
+      ~binary_path:"/bin/true" ~start_time:None ()
+  in
+  check string "muse delivery mode" "hooks" mode
+
+let test_deliver_kickoff_muse_is_noop () =
+  (* No instances-dir override needed: the muse arm writes nothing. *)
+  (match
+     C2c_start.deliver_kickoff_for_client ~client:"muse"
+       ~name:"deliver-kickoff-probe" ~alias:"deliver-kickoff-alias"
+       ~kickoff_text:"Hello kickoff." ()
+   with
+   | Ok pairs ->
+       check int "muse kickoff returns no env pairs" 0 (List.length pairs)
+   | Error msg -> fail (Printf.sprintf "muse deliver_kickoff failed: %s" msg))
+
+let test_build_env_muse_strips_ambient_session_id_without_mirror () =
+  with_env "MUSE_SESSION_ID" "stale-native-sid" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "muse")
+      "muse-proof" (Some "muse-proof")
+  in
+  check bool "strips ambient MUSE_SESSION_ID" false
+    (env_contains env "MUSE_SESSION_ID=stale-native-sid");
+  check bool "no static MUSE_SESSION_ID mirror" false
+    (env_has_key env "MUSE_SESSION_ID");
+  check bool "managed identity via C2C_MCP_SESSION_ID" true
+    (env_contains env "C2C_MCP_SESSION_ID=muse-proof")
+
+let test_default_restart_timeout_muse_is_default () =
+  (* SIGTERM ~2s (B352 P6): no slow-shutdown arm like kimi's 20s. *)
+  check (float 0.001) "muse restart timeout is the 5s default" 5.0
+    (C2c_start.default_restart_timeout_s ~client:"muse")
+
+let test_clients_table_has_muse () =
+  (match Stdlib.Hashtbl.find_opt C2c_start.clients "muse" with
+   | None -> fail "clients table lacks muse"
+   | Some cfg ->
+       check string "binary" "muse" cfg.C2c_start.binary;
+       check bool "no deliver daemon" false cfg.C2c_start.needs_deliver;
+       check bool "no poker sidecar" false cfg.C2c_start.needs_poker);
+  check bool "supported_clients mentions muse" true
+    (List.mem "muse" C2c_start.supported_clients)
+
+(* B362 regression: the generic outer loop must publish the paired
+   outer.pid + outer.pid.start-time generation record, and `c2c stop` must
+   then stop the instance. Driven through client "muse" with a stub --bin
+   (no real TUI); hermetic HOME + C2C_INSTANCES_DIR; every spawned process
+   reaped. Without the run_outer_loop write, the pair never appears and
+   `c2c stop` fails closed with "cannot trust the paired outer PID
+   lifecycle records". *)
+
+let b362_spawn_env ~home ~instances_dir =
+  let overrides =
+    [ ("HOME", Some home)
+    ; ("C2C_INSTANCES_DIR", Some instances_dir)
+    ; ("C2C_MCP_SESSION_ID", None)
+    ; ("C2C_INSTANCE_NAME", None)
+    ; ("C2C_MCP_AUTO_REGISTER_ALIAS", None)
+    ; ("C2C_MCP_BROKER_ROOT", None)
+    ; ("C2C_STATE_HOME", None)
+    ; ("C2C_WRAPPER_SELF", None)
+    ; ("C2C_AUTO_WORKTREE", None)
+    ]
+  in
+  let names = List.map fst overrides in
+  let inherited =
+    Unix.environment () |> Array.to_list
+    |> List.filter (fun entry ->
+           match String.index_opt entry '=' with
+           | None -> true
+           | Some eq ->
+               not (List.mem (String.sub entry 0 eq) names))
+  in
+  Array.of_list
+    (List.filter_map
+       (fun (name, value) ->
+         match value with
+         | Some v -> Some (name ^ "=" ^ v)
+         | None -> None)
+       overrides
+     @ inherited)
+
+let b362_wait_for_file path ~timeout_s =
+  let deadline = Unix.gettimeofday () +. timeout_s in
+  let rec loop () =
+    if Sys.file_exists path then true
+    else if Unix.gettimeofday () > deadline then false
+    else begin
+      Unix.sleepf 0.1;
+      loop ()
+    end
+  in
+  loop ()
+
+let b362_read_int_file path =
+  try
+    let ic = open_in path in
+    Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+        int_of_string_opt (String.trim (input_line ic)))
+  with _ -> None
+
+let test_start_muse_blank_session_id_rejected () =
+  (* m1: a whitespace `--session-id` is neither a ref nor the fresh
+     sentinel — validation must fail fast (rc 1) before any side effect,
+     not silently start fresh. *)
+  with_temp_dir @@ fun dir ->
+  let home = Filename.concat dir "home" in
+  let work = Filename.concat dir "work" in
+  let inst = Filename.concat dir "inst" in
+  List.iter (fun d -> Unix.mkdir d 0o755) [ home; work; inst ];
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    fail (Printf.sprintf "expected built CLI at %s — run `dune build` first" bin);
+  let env = b362_spawn_env ~home ~instances_dir:inst in
+  let err_path = Filename.concat dir "start.err" in
+  let null_r = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+  let err_w =
+    Unix.openfile err_path [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644
+  in
+  let rc =
+    Fun.protect
+      ~finally:(fun () ->
+        Unix.close null_r;
+        Unix.close err_w)
+      (fun () ->
+        with_cwd work (fun () ->
+            let pid =
+              Unix.create_process_env bin
+                [| bin; "start"; "muse"; "-n"; "zz-blank-sid"; "--session-id"; "   " |]
+                env null_r err_w err_w
+            in
+            (match Unix.waitpid [] pid with
+             | _, Unix.WEXITED n -> n
+             | _ -> 999)))
+  in
+  check int "blank session-id exits 1" 1 rc;
+  let err = try read_all_file err_path with _ -> "" in
+  check bool "blank session-id names the rule" true
+    (let needle = "non-blank" in
+     let nl = String.length needle and hl = String.length err in
+     nl <= hl
+     && (let rec loop k =
+           k + nl <= hl && (String.sub err k nl = needle || loop (k + 1))
+         in
+         loop 0));
+  check bool "no instance dir created" false
+    (Sys.file_exists (Filename.concat inst "zz-blank-sid"))
+
+let test_start_writes_outer_pair_and_stop_stops () =
+  with_temp_dir @@ fun dir ->
+  let home = Filename.concat dir "home" in
+  let work = Filename.concat dir "work" in
+  let inst = Filename.concat dir "inst" in
+  List.iter (fun d -> Unix.mkdir d 0o755) [ home; work; inst ];
+  let stub = Filename.concat dir "stub-client.sh" in
+  write_file stub "#!/bin/sh\nexec sleep 300\n";
+  Unix.chmod stub 0o755;
+  let name = unique_instance_name "zz-b362" in
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    fail (Printf.sprintf "expected built CLI at %s — run `dune build` first" bin);
+  let env = b362_spawn_env ~home ~instances_dir:inst in
+  let log_path = Filename.concat dir "start.log" in
+  let kill_quiet pid =
+    (try Unix.kill pid Sys.sigkill with _ -> ());
+    (try ignore (Unix.waitpid [ Unix.WNOHANG ] pid) with _ -> ())
+  in
+  (* SIGKILLing the outer orphans the stub (separate pgid); reap it too.
+     Verify /proc cmdline first so a recycled pid is never signalled. *)
+  let kill_inner_stub () =
+    let inner_path =
+      Filename.concat inst (Filename.concat name "inner.pid")
+    in
+    (match b362_read_int_file inner_path with
+     | None -> ()
+     | Some pid ->
+         let cmdline =
+           try
+             let ic =
+               open_in (Printf.sprintf "/proc/%d/cmdline" pid)
+             in
+             Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+                 really_input_string ic (in_channel_length ic))
+           with _ -> ""
+         in
+         if cmdline = "sleep\000300\000" then kill_quiet pid)
+  in
+  (* Double-fork daemonize: the outer must NOT be our child. A child outer
+     becomes an un-reaped zombie after stop's SIGTERM — the test binary
+     never reaps it — and kill(pid,0) on a zombie succeeds, so stop's
+     death-confirm would time out. That shape is harness-only: production
+     parents (tmux shell, init) always reap. The middleman exits at once
+     and the worker reparents to init, which reaps it promptly. *)
+  let middleman =
+    with_cwd work (fun () ->
+        match Unix.fork () with
+        | 0 -> (
+            (match Unix.fork () with
+             | 0 ->
+                 ignore (Unix.setsid ());
+                 let null_r =
+                   Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0
+                 in
+                 let log_w =
+                   Unix.openfile log_path
+                     [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o644
+                 in
+                 Unix.dup2 null_r Unix.stdin;
+                 Unix.dup2 log_w Unix.stdout;
+                 Unix.dup2 log_w Unix.stderr;
+                 Unix.close null_r;
+                 Unix.close log_w;
+                 (try
+                    Unix.execvpe bin
+                      [| bin; "start"; "muse"; "-n"; name; "--bin"; stub |]
+                      env
+                  with _ -> Unix._exit 127)
+             | _worker -> Unix._exit 0
+             | exception _ -> Unix._exit 127))
+        | pid -> pid)
+  in
+  (match Unix.waitpid [] middleman with
+   | _ -> ()
+   | exception Unix.Unix_error _ -> ());
+  let pair_path =
+    Filename.concat inst (Filename.concat name "outer.pid.start-time")
+  in
+  if not (b362_wait_for_file pair_path ~timeout_s:20.0) then begin
+    let log =
+      try read_all_file log_path with _ -> "(unreadable start.log)"
+    in
+    fail
+      (Printf.sprintf "outer.pid.start-time never appeared for %s\nstart.log:\n%s"
+         name log)
+  end;
+  let outer_pid_file =
+    Filename.concat inst (Filename.concat name "outer.pid")
+  in
+  let start_pid =
+    match b362_read_int_file outer_pid_file with
+    | Some p -> p
+    | None -> fail "outer.pid missing or malformed"
+  in
+  let recorded =
+    match b362_read_int_file pair_path with
+    | Some n -> n
+    | None -> fail "outer.pid.start-time malformed"
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      kill_inner_stub ();
+      (* m4 (#85): start_pid came from outer.pid on disk — SIGKILL it only
+         when its live generation still matches the recorded one, so a
+         recycled pid is never signalled from the test harness. *)
+      (match C2c_pid_identity.read_pid_generation start_pid with
+       | C2c_pid_identity.Generation g when g = recorded ->
+           kill_quiet start_pid
+       | _ -> ()))
+    (fun () ->
+      (match C2c_pid_identity.read_pid_generation start_pid with
+       | C2c_pid_identity.Generation actual ->
+           check int "start-time matches live generation" actual recorded
+       | C2c_pid_identity.Absent | C2c_pid_identity.Unreadable ->
+           fail "outer pid has no readable generation");
+      (* The pair the launcher wrote must satisfy `c2c stop`. *)
+      let stop_log = Filename.concat dir "stop.log" in
+      let stop_w =
+        Unix.openfile stop_log [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ]
+          0o644
+      in
+      let null_r = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+      let rc =
+        Fun.protect
+          ~finally:(fun () ->
+            Unix.close stop_w;
+            Unix.close null_r)
+          (fun () ->
+            with_cwd work (fun () ->
+                let pid =
+                  Unix.create_process_env bin
+                    [| bin; "stop"; name |]
+                    env null_r stop_w stop_w
+                in
+                (match Unix.waitpid [] pid with
+                 | _, Unix.WEXITED n -> n
+                 | _ -> 999)))
+      in
+      if rc <> 0 then begin
+        let slog =
+          try read_all_file stop_log
+          with _ -> "(unreadable stop.log)"
+        in
+        let startlog =
+          try read_all_file log_path with _ -> "(unreadable start.log)"
+        in
+        let outer_state =
+          try
+            let stat =
+              read_all_file (Printf.sprintf "/proc/%d/stat" start_pid)
+            in
+            (match String.index_opt stat ')' with
+             | Some close when close + 2 < String.length stat ->
+                 Printf.sprintf "state=%c" stat.[close + 2]
+             | _ -> "state=(unparsed)")
+          with _ -> "state=(no /proc)"
+        in
+        fail
+          (Printf.sprintf "c2c stop exited %d (%s)\nstop.log:\n%s\nstart.log:\n%s"
+             rc outer_state slog startlog)
+      end;
+      (* The worker reparented to init, which reaps it at exit: after a
+         successful stop the pid must be gone (ESRCH), with a short grace
+         for scheduling lag. *)
+      let rec outer_gone tries =
+        (match Unix.kill start_pid 0 with
+         | () when tries > 0 ->
+             Unix.sleepf 0.1;
+             outer_gone (tries - 1)
+         | () -> false
+         | exception Unix.Unix_error (Unix.ESRCH, _, _) -> true
+         | exception Unix.Unix_error _ when tries > 0 ->
+             Unix.sleepf 0.1;
+             outer_gone (tries - 1)
+         | exception Unix.Unix_error _ -> false)
+      in
+      check bool "outer exited after stop" true (outer_gone 50);
+      (* n5: stop rc=0 means the pair is gone — removed either by the
+         outer's SIGTERM handler during teardown (absent-absent
+         tolerance) or by stop's own content-pinned cleanup. Pin it. *)
+      check bool "outer.pid removed after stop" false
+        (Sys.file_exists outer_pid_file);
+      check bool "outer.pid.start-time removed after stop" false
+        (Sys.file_exists pair_path))
+
 (* #489 regression: verify kimi_agent_yaml_path returns a path under
    .kimi-code/agents/<name>/agent.yaml (yaml dir), NOT .kimi-code/agents/<name>.md.
    This is the contract that write_agent_file (c2c.ml) and
@@ -6249,6 +6778,48 @@ let () =
             `Quick, test_register_managed_agy_alias_override )
         ; ( "registration_failure_message",
             `Quick, test_managed_agy_registration_failure_message )
+        ] )
+    ; ( "muse_adapter_b358",
+        [ ( "is_muse_resume_ref",
+            `Quick, test_is_muse_resume_ref )
+        ; ( "fresh_shape",
+            `Quick, test_prepare_launch_args_muse_fresh_shape )
+        ; ( "fresh_kickoff_positional",
+            `Quick, test_prepare_launch_args_muse_fresh_kickoff_positional )
+        ; ( "model_flag_once",
+            `Quick, test_prepare_launch_args_muse_model_flag_once )
+        ; ( "uuid_resume_suppresses_kickoff",
+            `Quick, test_prepare_launch_args_muse_uuid_resume_suppresses_kickoff )
+        ; ( "name_resume",
+            `Quick, test_prepare_launch_args_muse_name_resume )
+        ; ( "empty_resume_is_fresh",
+            `Quick, test_prepare_launch_args_muse_empty_resume_is_fresh )
+        ; ( "forwards_extra_args",
+            `Quick, test_prepare_launch_args_muse_forwards_extra_args )
+        ; ( "normalize_model_override",
+            `Quick, test_normalize_model_override_for_muse )
+        ; ( "register_managed_muse_session_persists_row",
+            `Quick, test_register_managed_muse_session_persists_row )
+        ; ( "register_managed_muse_alias_override",
+            `Quick, test_register_managed_muse_alias_override )
+        ; ( "registration_failure_message",
+            `Quick, test_managed_muse_registration_failure_message )
+        ; ( "delivery_mode_is_hooks",
+            `Quick, test_delivery_mode_muse_is_hooks )
+        ; ( "deliver_kickoff_is_noop",
+            `Quick, test_deliver_kickoff_muse_is_noop )
+        ; ( "build_env_strips_session_id_without_mirror",
+            `Quick, test_build_env_muse_strips_ambient_session_id_without_mirror )
+        ; ( "restart_timeout_is_default",
+            `Quick, test_default_restart_timeout_muse_is_default )
+        ; ( "clients_table_has_muse",
+            `Quick, test_clients_table_has_muse )
+        ; ( "blank_session_id_rejected",
+            `Quick, test_start_muse_blank_session_id_rejected )
+        ] )
+    ; ( "outer_pair_b362",
+        [ ( "start_writes_outer_pair_and_stop_stops",
+            `Quick, test_start_writes_outer_pair_and_stop_stops )
         ] )
     ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",
