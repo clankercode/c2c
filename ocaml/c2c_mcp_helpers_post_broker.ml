@@ -1120,9 +1120,15 @@ type codex_thread_resolution =
   | Codex_thread_unmapped
   | Codex_thread_uncertain
 
+type codex_mapping =
+  { mapping_session_id : string
+  ; mapping_alias : string
+  ; mapping_thread_id : string option
+  }
+
 type codex_mapping_read =
   | Codex_mapping_missing
-  | Codex_mapping_loaded of (string * string option)
+  | Codex_mapping_loaded of codex_mapping
   | Codex_mapping_unreadable
 
 let strict_mapping_of_contents contents =
@@ -1166,7 +1172,9 @@ let strict_mapping_of_contents contents =
                   | Some (`String t) -> Some (String.trim t)
                   | _ -> None
                 in
-                Some (sid, thread)
+                Some { mapping_session_id = sid;
+                       mapping_alias = String.trim (match alias with `String s -> s | _ -> assert false);
+                       mapping_thread_id = thread }
             | _ -> None)
      | _ -> None)
   with _ -> None
@@ -1181,45 +1189,183 @@ let read_codex_mapping ~instance_dir : codex_mapping_read =
        | Some loaded -> Codex_mapping_loaded loaded
        | None -> Codex_mapping_unreadable)
 
-let config_assoc_state path =
-  match read_codex_regular_file_nofollow path with
-  | Codex_regular_file_missing -> `Missing
-  | Codex_regular_file_unreadable _ -> `Unreadable
-  | Codex_regular_file_contents contents ->
-      (try match Yojson.Safe.from_string contents with
-       | `Assoc fields -> `Loaded fields
-       | _ -> `Unreadable
-       with _ -> `Unreadable)
+type codex_config =
+  { config_name : string
+  ; config_session_id : string
+  ; config_alias : string
+  ; config_resume_session_id : string
+  ; config_resume_target : string option
+  ; config_broker_root : string option
+  }
 
-let managed_session_id_from_codex_config_json ~instance_dir ~broker_root ~thread_id =
-  match config_assoc_state (Filename.concat instance_dir "config.json") with
-  | `Missing -> `Missing
-  | `Unreadable -> `Unreadable
-  | `Loaded fields ->
-      let string_field key =
-        match List.assoc_opt key fields with
-        | Some (`String value) when String.trim value <> "" -> Some (String.trim value)
-        | None -> None
-        | Some _ -> None
-      in
-      let family = match string_field "client" with
-        | Some ("codex" | "codex-headless") -> true | _ -> false
-      in
-      let broker_matches = match string_field "broker_root" with
-        | Some root -> root = broker_root | None -> true
-      in
-      let thread_matches =
-        match string_field "resume_session_id", string_field "codex_resume_target" with
-        | Some value, _ when value = thread_id -> true
-        | _, Some value when value = thread_id -> true
-        | _ -> false
-      in
-      if family && broker_matches && thread_matches then
-        (match string_field "session_id" with Some sid -> `Found sid | None -> `Unreadable)
+type codex_config_read =
+  | Codex_config_missing
+  | Codex_config_non_codex
+  | Codex_config_loaded of codex_config
+  | Codex_config_unreadable
+
+let assoc_keys_unique fields =
+  let keys = List.map fst fields in
+  List.length keys = List.length (List.sort_uniq String.compare keys)
+
+let strict_optional_ownership_field fields key ~allow_null =
+  match List.assoc_opt key fields with
+  | None -> `Absent
+  | Some `Null when allow_null -> `Null
+  | Some (`String value) when String.trim value <> "" -> `String (String.trim value)
+  | Some _ -> `Malformed
+
+(* Configs are also ownership records. Keep the parser deliberately narrower
+   than [C2c_start.parse_instance_config_json]: this reader must never turn a
+   malformed ownership field into an absent field and then accept a mapping.
+   Unknown operational fields remain allowed so newer, legitimate Codex
+   configs continue to work. *)
+let strict_codex_config_of_contents contents =
+  try
+    match Yojson.Safe.from_string contents with
+    | `Assoc fields when assoc_keys_unique fields ->
+        (match List.assoc_opt "client" fields with
+         | Some (`String client) when String.trim client <> "" ->
+             let client = String.trim client in
+             let ownership_fields =
+               [ "name"; "session_id"; "alias"; "resume_session_id";
+                 "codex_resume_target"; "broker_root" ]
+             in
+             let malformed_known =
+               List.exists
+                 (fun key ->
+                   match key with
+                   | "codex_resume_target" ->
+                       strict_optional_ownership_field fields key ~allow_null:true
+                       = `Malformed
+                   | "broker_root" ->
+                       strict_optional_ownership_field fields key ~allow_null:false
+                       = `Malformed
+                   | _ ->
+                       (match List.assoc_opt key fields with
+                        | None -> false
+                        | Some (`String value) -> String.trim value = ""
+                        | Some _ -> true))
+                 ownership_fields
+             in
+             if malformed_known then Codex_config_unreadable
+             else if client <> "codex" && client <> "codex-headless" then
+               Codex_config_non_codex
+             else
+               let required key =
+                 match List.assoc_opt key fields with
+                 | Some (`String value) when String.trim value <> "" ->
+                     Some (String.trim value)
+                 | _ -> None
+               in
+               (match required "name", required "session_id", required "alias",
+                      required "resume_session_id",
+                      strict_optional_ownership_field fields "codex_resume_target"
+                        ~allow_null:true,
+                      strict_optional_ownership_field fields "broker_root"
+                        ~allow_null:false with
+                | Some config_name, Some config_session_id, Some config_alias,
+                  Some config_resume_session_id, target, broker_root
+                  when target <> `Malformed && broker_root <> `Malformed ->
+                    let config_resume_target =
+                      match target with
+                      | `String value -> Some value
+                      | `Null | `Absent -> None
+                      | `Malformed -> assert false
+                    in
+                    let config_broker_root =
+                      match broker_root with
+                      | `String value -> Some value
+                      | `Absent -> None
+                      | `Null | `Malformed -> None
+                    in
+                    Codex_config_loaded
+                      { config_name; config_session_id; config_alias;
+                        config_resume_session_id; config_resume_target;
+                        config_broker_root }
+                | _ -> Codex_config_unreadable)
+         | Some _ | None -> Codex_config_unreadable)
+    | `Assoc _ -> Codex_config_unreadable
+    | _ -> Codex_config_unreadable
+  with _ -> Codex_config_unreadable
+
+let read_codex_config ~instance_dir : codex_config_read =
+  match read_codex_regular_file_nofollow
+          (Filename.concat instance_dir "config.json") with
+  | Codex_regular_file_missing -> Codex_config_missing
+  | Codex_regular_file_unreadable _ -> Codex_config_unreadable
+  | Codex_regular_file_contents contents ->
+      strict_codex_config_of_contents contents
+
+let config_owns_mapping ~instance_dir ~instance_name ~broker_root ~thread_id mapping =
+  match read_codex_config ~instance_dir with
+  | Codex_config_missing -> `Legacy_mapping
+  | Codex_config_non_codex -> `No_match
+  | Codex_config_unreadable -> `Unreadable
+  | Codex_config_loaded config ->
+      if config.config_name = instance_name
+         && config.config_session_id = mapping.mapping_session_id
+         && config.config_alias = mapping.mapping_alias
+         && config.config_broker_root
+              |> Option.fold ~none:true ~some:(( = ) broker_root)
+         && (config.config_resume_session_id = thread_id
+             || config.config_resume_target = Some thread_id)
+      then `Matches
       else `No_match
 
 (* #24: one-shot-per-thread stderr signal for ambiguous split-brain state. *)
 let codex_thread_split_brain_warned : (string, unit) Hashtbl.t = Hashtbl.create 8
+
+(* This validator intentionally lives here as well as in the session module.
+   The post-broker resolver cannot depend on [C2c_codex_session] without
+   recreating the MCP dependency cycle. The two implementations must stay
+   equivalent; the session implementation should eventually alias this one. *)
+let ownership_registration entry =
+  let number = function
+    | `Int _ -> true
+    | `Float f -> Float.is_finite f
+    | _ -> false
+  in
+  let string = function `String _ -> true | _ -> false in
+  let integer = function `Int n -> n >= 0 | _ -> false in
+  let boolean = function `Bool _ -> true | _ -> false in
+  let optional check = function `Null -> true | value -> check value in
+  let unique fields = assoc_keys_unique fields in
+  let compacting = function
+    | `Assoc fields ->
+        unique fields
+        && List.for_all (fun (key, value) ->
+             match key with
+             | "started_at" -> number value
+             | "reason" -> optional string value
+             | _ -> false) fields
+        && List.mem_assoc "started_at" fields
+    | _ -> false
+  in
+  let valid_field (key, value) =
+    match key with
+    | "session_id" | "alias" ->
+        (match value with `String s -> String.trim s <> "" | _ -> false)
+    | "pid" -> optional (function `Int n -> n > 0 | _ -> false) value
+    | "pid_start_time" -> optional integer value
+    | "compaction_count" -> integer value
+    | "registered_at" | "dnd_since" | "dnd_until" | "confirmed_at"
+    | "pubkey_signed_at" | "last_activity_ts" -> optional number value
+    | "dnd" | "metadata_opt_out" -> boolean value
+    | "automated_delivery" -> optional boolean value
+    | "canonical_alias" | "client_type" | "plugin_version" | "enc_pubkey"
+    | "ed25519_pubkey" | "pubkey_sig" | "role" | "tmux_location"
+    | "herdr_pane" | "herdr_socket" | "cwd" | "registered_by"
+    | "opaque_host_id" -> optional string value
+    | "compacting" -> optional compacting value
+    | _ -> false
+  in
+  match entry with
+  | `Assoc fields when unique fields && List.for_all valid_field fields
+                      && List.mem_assoc "session_id" fields
+                      && List.mem_assoc "alias" fields ->
+      Broker.registration_of_json entry
+  | _ -> invalid_arg "invalid ownership registration"
 
 let strict_registry ~broker_root : (registration list, unit) result =
   match read_codex_regular_file_nofollow
@@ -1229,9 +1375,77 @@ let strict_registry ~broker_root : (registration list, unit) result =
   | Codex_regular_file_contents contents ->
       (try match Yojson.Safe.from_string contents with
        | `List entries ->
-           Ok (List.map Broker.registration_of_json entries)
+           let registrations = List.map ownership_registration entries in
+           let duplicate_identity registrations =
+             let rec loop seen_sessions seen_aliases = function
+               | [] -> false
+               | (registration : registration) :: rest ->
+                   let session_duplicate =
+                     List.mem registration.session_id seen_sessions
+                   in
+                   let alias = String.lowercase_ascii registration.alias in
+                   let alias_duplicate = List.mem alias seen_aliases in
+                   session_duplicate || alias_duplicate
+                   || loop (registration.session_id :: seen_sessions)
+                        (alias :: seen_aliases) rest
+             in
+             loop [] [] registrations
+           in
+           if duplicate_identity registrations then Error ()
+           else Ok registrations
        | _ -> Error ()
        with _ -> Error ())
+
+type codex_path_identity =
+  { identity_dev : int
+  ; identity_ino : int
+  ; identity_kind : Unix.file_kind
+  }
+
+let codex_path_identity path =
+  try
+    let stat = Unix.lstat path in
+    Some { identity_dev = stat.Unix.st_dev; identity_ino = stat.Unix.st_ino;
+           identity_kind = stat.Unix.st_kind }
+  with _ -> None
+
+let same_codex_path_identity left right =
+  left.identity_dev = right.identity_dev
+  && left.identity_ino = right.identity_ino
+  && left.identity_kind = right.identity_kind
+
+(* Test-only seam. It is deliberately a callback rather than a sleep in the
+   production path, so a test can replace the parent or a sibling directory at
+   an exact point and prove that the resolver returns [Uncertain]. *)
+let codex_identity_test_hook : (string -> unit) ref = ref (fun _ -> ())
+
+let set_codex_identity_test_hook hook = codex_identity_test_hook := hook
+
+let run_codex_identity_test_hook label = (!codex_identity_test_hook) label
+
+type codex_entry_snapshot =
+  { entry_name : string
+  ; entry_path : string
+  ; entry_identity : codex_path_identity
+  }
+
+let snapshot_codex_entries ~instances_dir entries =
+  let rec loop acc = function
+    | [] -> Ok (List.rev acc)
+    | name :: rest ->
+        let path = Filename.concat instances_dir name in
+        (match codex_path_identity path with
+         | Some entry_identity ->
+             loop ({ entry_name = name; entry_path = path; entry_identity } :: acc) rest
+         | None -> Error ())
+  in
+  loop [] entries
+
+let codex_entries_unchanged entries =
+  List.for_all (fun entry ->
+      match codex_path_identity entry.entry_path with
+      | Some current -> same_codex_path_identity entry.entry_identity current
+      | None -> false) entries
 
 let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
   let instances_dir = managed_instances_dir () in
@@ -1246,40 +1460,96 @@ let managed_session_id_from_codex_thread_resolution ~broker_root ~thread_id =
   | `Unreadable -> Codex_thread_uncertain
   | `Directory ->
       let uncertain = ref false in
+      let parent_before = Option.get (codex_path_identity instances_dir) in
       let entries =
         match (try Some (Array.to_list (Sys.readdir instances_dir)) with _ -> None) with
         | Some entries -> entries
         | None -> uncertain := true; []
       in
-      let matches =
-        List.filter_map (fun name ->
-          let instance_dir = Filename.concat instances_dir name in
-          let instance_state =
-            try match Unix.lstat instance_dir with
-            | { Unix.st_kind = Unix.S_DIR; _ } -> `Directory
-            | { Unix.st_kind = Unix.S_REG; _ } -> `Skip
-            | _ -> `Uncertain
-            with Unix.Unix_error (Unix.ENOENT, _, _) -> `Skip | _ -> `Uncertain
-          in
-          match instance_state with
-          | `Skip -> None
-          | `Uncertain -> uncertain := true; None
-          | `Directory ->
-              match read_codex_mapping ~instance_dir with
-              | Codex_mapping_unreadable -> uncertain := true; None
-              | Codex_mapping_loaded (sid, Some tid) when tid = thread_id ->
-                  Some (sid, name)
-              | Codex_mapping_loaded (_, _) -> None
-              | Codex_mapping_missing ->
-                  (match managed_session_id_from_codex_config_json
-                           ~instance_dir ~broker_root ~thread_id with
-                   | `Found sid -> Some (sid, name)
-                   | `Unreadable -> uncertain := true; None
-                   | `Missing | `No_match -> None)
-        ) entries
+      let parent_after_readdir = codex_path_identity instances_dir in
+      if Option.is_none parent_after_readdir
+         || not (same_codex_path_identity parent_before (Option.get parent_after_readdir))
+      then uncertain := true;
+      let entry_snapshots =
+        match snapshot_codex_entries ~instances_dir entries with
+        | Ok snapshots -> snapshots
+        | Error () -> uncertain := true; []
       in
-      if !uncertain then Codex_thread_uncertain
-      else match matches with
+      (try run_codex_identity_test_hook "after-snapshots"
+       with _ -> uncertain := true);
+      let matches =
+        List.filter_map (fun entry ->
+          let name = entry.entry_name in
+          let instance_dir = entry.entry_path in
+          match entry.entry_identity.identity_kind with
+          | Unix.S_REG -> None
+          | Unix.S_DIR ->
+              let before_read = codex_path_identity instance_dir in
+              if Option.is_none before_read
+                 || not (same_codex_path_identity entry.entry_identity
+                           (Option.get before_read))
+              then (uncertain := true; None)
+              else begin
+                (try run_codex_identity_test_hook ("before-sibling-read:" ^ name)
+                 with _ -> uncertain := true);
+                let result =
+                  match read_codex_mapping ~instance_dir with
+                  | Codex_mapping_unreadable -> uncertain := true; None
+                  | Codex_mapping_loaded mapping ->
+                      if mapping.mapping_alias <> name then begin
+                        uncertain := true;
+                        None
+                      end else
+                        (match mapping.mapping_thread_id with
+                         | Some tid when tid = thread_id ->
+                             (match config_owns_mapping ~instance_dir
+                                      ~instance_name:name ~broker_root ~thread_id
+                                      mapping with
+                              | `Matches | `Legacy_mapping ->
+                                  Some (mapping.mapping_session_id, name)
+                              | `No_match -> None
+                              | `Unreadable -> uncertain := true; None)
+                         | _ -> None)
+                  | Codex_mapping_missing ->
+                      (match read_codex_config ~instance_dir with
+                       | Codex_config_missing | Codex_config_non_codex -> None
+                       | Codex_config_unreadable -> uncertain := true; None
+                       | Codex_config_loaded config ->
+                           let thread_matches =
+                             config.config_resume_session_id = thread_id
+                             || config.config_resume_target = Some thread_id
+                           in
+                           if config.config_name = name
+                              && config.config_alias = name
+                              && (match config.config_broker_root with
+                                  | None -> true
+                                  | Some root -> root = broker_root)
+                              && thread_matches
+                           then Some (config.config_session_id, name)
+                           else None)
+                in
+                let after_read = codex_path_identity instance_dir in
+                if Option.is_none after_read
+                   || not (same_codex_path_identity entry.entry_identity
+                             (Option.get after_read))
+                then (uncertain := true; None)
+                else result
+              end
+          | Unix.S_LNK | Unix.S_CHR | Unix.S_BLK | Unix.S_FIFO | Unix.S_SOCK ->
+              uncertain := true;
+              None
+        ) entry_snapshots
+      in
+      let parent_after_scan = codex_path_identity instances_dir in
+      if Option.is_none parent_after_scan
+         || not (same_codex_path_identity parent_before
+                   (Option.get parent_after_scan))
+         || not (codex_entries_unchanged entry_snapshots)
+      then uncertain := true;
+      if !uncertain then
+        Codex_thread_uncertain
+      else
+        match matches with
       | [] -> Codex_thread_unmapped
       | [ (session_id, _) ] -> Codex_thread_resolved session_id
       | _ ->
@@ -1995,7 +2265,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
            below — pidless zombie rows cannot prove ownership against a
            legitimate post-OOM resume. *)
         List.exists
-          (fun reg ->
+          (fun (reg : registration) ->
             Option.is_some reg.pid
             && reg.session_id = session_id
             && reg.alias <> alias
@@ -2025,7 +2295,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
            .collab/findings/2026-04-29T14-25-00Z-slate-coder-alias-casefold-guard-asymmetry-takeover.md. *)
         let target = Broker.alias_casefold alias in
         List.exists
-          (fun reg ->
+          (fun (reg : registration) ->
             Option.is_some reg.pid
             && Broker.alias_casefold reg.alias = target
             && reg.session_id <> session_id
@@ -2047,7 +2317,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
          cannot "own" an alias — treat it as an empty slot. *)
       let same_session_alive_different_pid =
         List.exists
-          (fun reg ->
+          (fun (reg : registration) ->
              reg.session_id = session_id
              && reg.alias = alias
              && reg.pid <> None
@@ -2068,7 +2338,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
            but the explicit filter pins the predicate to its semantic
            intent ("a row whose pid we know matches ours"). *)
         List.exists
-          (fun reg ->
+          (fun (reg : registration) ->
              Option.is_some reg.pid
              && reg.session_id <> session_id
              && reg.alias <> alias
@@ -2115,7 +2385,7 @@ let auto_register_impl ~broker_root ?session_id_override () =
         (* Log which guard triggered and by which registration, for debugging.
            Each guard recomputes the same predicate it used for its boolean guard,
            then logs the matching registration if found. *)
-        let log_guard_if_fired ~label ?(reg_pid_fn = fun reg -> reg.pid) pred =
+        let log_guard_if_fired ~label ?(reg_pid_fn = fun (reg : registration) -> reg.pid) pred =
           match List.find_opt pred existing with
           | Some reg ->
               let pid_str = match reg_pid_fn reg with None -> "none" | Some p -> string_of_int p in
@@ -2129,18 +2399,18 @@ let auto_register_impl ~broker_root ?session_id_override () =
            pid=None hook row emits a false "hijack_guard" diagnostic on the
            client-type-conflict skip path. *)
         log_guard_if_fired ~label:"hijack_guard"
-          (fun reg -> Option.is_some reg.pid && reg.session_id = session_id
+          (fun (reg : registration) -> Option.is_some reg.pid && reg.session_id = session_id
                       && reg.alias <> alias && Broker.registration_is_alive reg);
         log_guard_if_fired ~label:"alias_occupied_guard"
-          (fun reg -> Option.is_some reg.pid && Broker.alias_casefold reg.alias = target
+          (fun (reg : registration) -> Option.is_some reg.pid && Broker.alias_casefold reg.alias = target
                        && reg.session_id <> session_id
                        && reg.pid <> pid && Broker.registration_is_alive reg);
         log_guard_if_fired ~label:"same_session_alive_different_pid"
-          (fun reg -> reg.session_id = session_id && reg.alias = alias && reg.pid <> None
+          (fun (reg : registration) -> reg.session_id = session_id && reg.alias = alias && reg.pid <> None
                       && reg.pid <> pid && Broker.registration_is_alive reg);
         log_guard_if_fired ~label:"same_pid_alive_different_session"
           ~reg_pid_fn:(fun _ -> pid)
-          (fun reg -> reg.pid = pid && reg.session_id <> session_id && reg.alias <> alias
+          (fun (reg : registration) -> reg.pid = pid && reg.session_id <> session_id && reg.alias <> alias
                       && Broker.registration_is_alive reg);
         (if hook_client_type_conflict then
            match hook_identity_row with
@@ -2225,7 +2495,7 @@ let auto_join_rooms_impl ~broker_root ?session_id_override () =
       let alias, session_id =
         match
           List.find_opt
-            (fun reg -> reg.session_id = session_id)
+            (fun (reg : registration) -> reg.session_id = session_id)
             existing
         with
         | Some reg -> (reg.alias, reg.session_id)
@@ -2307,8 +2577,8 @@ let current_registered_alias ?session_id_override broker =
     | Some session_id ->
         Broker.list_registrations broker
         |> List.find_opt
-             (fun reg -> reg.session_id = session_id)
-        |> Option.map (fun reg -> reg.alias)
+             (fun (reg : registration) -> reg.session_id = session_id)
+        |> Option.map (fun (reg : registration) -> reg.alias)
   in
   match by_session_id with
   | Some _ -> by_session_id
@@ -2368,7 +2638,7 @@ let send_alias_impersonation_check ?session_id_override broker from_alias =
   | None -> None
   | Some current_sid ->
       List.find_opt
-        (fun reg ->
+        (fun (reg : registration) ->
            Broker.alias_casefold reg.alias = from_cf
            && reg.session_id <> current_sid
            (* Require a real pid that /proc confirms is running. Pidless

@@ -86,6 +86,11 @@
  (libraries c2c_mcp alcotest yojson unix))
 
 (test
+ (name test_c2c_mcp_helpers_post_broker_identity)
+ (modules test_c2c_mcp_helpers_post_broker_identity)
+ (libraries c2c_mcp alcotest yojson unix))
+
+(test
  (name test_c2c_codex_autoturn)
  (modules test_c2c_codex_autoturn)
  (libraries c2c_mcp alcotest yojson unix))
