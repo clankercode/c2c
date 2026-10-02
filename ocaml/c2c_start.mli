@@ -240,15 +240,59 @@ val config_path : string -> string
 val outer_pid_path : string -> string
 (** [outer_pid_path name] returns the outer.pid path for an instance. *)
 
+val outer_pid_start_time_path : string -> string
+val inner_pid_start_time_path : string -> string
+
+val codex_frontend_teardown_record_path : string -> string
+(** Generation-bound daemon-attach frontend teardown receipt. *)
+
+type frontend_teardown_expectation =
+  | Codex_frontend_teardown_required
+  | Codex_frontend_teardown_absent
+  | Codex_frontend_teardown_unknown of string
+
+val codex_frontend_teardown_expected :
+  string -> frontend_teardown_expectation
+
+val codex_daemon_thread_handoff_path : string -> string
+(** Native Codex thread handoff written by the daemon-attach frontend hook. *)
+
+val codex_hook_fallback_path : broker_root:string -> session_id:string -> string
+val mark_codex_hook_fallback : broker_root:string -> session_id:string -> bool
+val clear_codex_hook_fallback : broker_root:string -> session_id:string -> unit
+
 val deliver_pid_path : string -> string
 (** [deliver_pid_path name] returns the deliver.pid path for an instance. *)
+
+val deliver_pid_start_time_path : string -> string
+(** Exact process generation sibling for [deliver.pid]. *)
 
 val codex_daemon_sidecar_pid_path : string -> string
 (** [codex_daemon_sidecar_pid_path name] returns the pid path for the
     app-server Codex delivery owner launched by [c2c new codex]. *)
 
+val codex_daemon_sidecar_pid_start_time_path : string -> string
+(** Sibling file containing the exact process start-time generation for the
+    Codex daemon sidecar pidfile. *)
+
+val codex_daemon_sidecar_arm_pending_path : owners_dir:string -> token:string -> string
+val codex_daemon_sidecar_arm_cancel_path : owners_dir:string -> token:string -> string
+val codex_daemon_sidecar_arm_lock_path : owners_dir:string -> token:string -> string
+val codex_daemon_sidecar_arm_paths_match_token :
+  owners_dir:string -> token:string -> pending_path:string ->
+  cancel_path:string -> lock_path:string -> bool
+val write_codex_daemon_sidecar_arm :
+  owners_dir:string -> token:string -> thread_id:string -> pid:int ->
+  pid_start_time:int option -> broker_session_id:string -> (unit, string) result
+val remove_codex_daemon_sidecar_arm : owners_dir:string -> token:string -> bool
+val cancel_codex_daemon_sidecar_arms :
+  ?thread_id:string -> ?broker_session_id:string -> owners_dir:string -> unit -> bool
+
 val poker_pid_path : string -> string
 (** [poker_pid_path name] returns the poker.pid path for an instance. *)
+
+val poker_pid_start_time_path : string -> string
+(** Exact process generation sibling for [poker.pid]. *)
 
 val generate_alias : ?no_nonce:bool -> unit -> string
 (** [generate_alias ?no_nonce ()] returns a random two-word alias like
@@ -725,7 +769,15 @@ val registry_alive_conflict :
     [register] side this guard would be a false ACCEPT.
 
     Alias matching is case-insensitive, as [register]'s is; session ids are
-    compared byte-exactly, as [register]'s are. Exported for tests. *)
+    compared byte-exactly, as [register]'s are. This is a compatibility,
+    best-effort reader: use {!registry_alive_conflict_strict} from startup
+    code so an unreadable or malformed registry cannot become [None]. *)
+
+val registry_alive_conflict_strict :
+  broker_root:string -> name:string -> ((string * int) option, string) result
+(** Strict startup form of {!registry_alive_conflict}.  [Error] means the
+    registry could not be read or validated and must block startup; only
+    [Ok None] means a confirmed missing or valid registry with no conflict. *)
 
 val check_registry_alias_alive : broker_root:string -> name:string -> unit
 (** Registry precheck for launchers: print a FATAL message and [exit 1] when
@@ -735,10 +787,18 @@ val check_registry_alias_alive : broker_root:string -> name:string -> unit
     terminal, which strands an orphaned frontend with no delivery loop (#34
     review, fix 1). *)
 
-val clear_registration_pid : broker_root:string -> session_id:string -> unit
+val clear_registration_pid : broker_root:string -> session_id:string -> bool
 (** Mark the registration for [session_id] as pid-cleared (offline) so peers stop
-    routing to it. Used by managed supervisors on clean teardown (the same path
-    the tmux/outer-loop launchers use). Best-effort; never raises. *)
+    routing to it. Returns [false] on unreadable, malformed, lock, or write
+    uncertainty and leaves the registry intact for retry. *)
+
+val clear_registration_pid_if_owner :
+  broker_root:string -> session_id:string -> pid:int -> pid_start_time:int option -> bool
+(** Clear the registration only when its current PID and, when available, its
+    process start time still belong to this owner generation. A newer owner for
+    the same session is left untouched. Returns [false] on unreadable,
+    malformed, lock, ownership, or write/read-back uncertainty, preserving the
+    durable registry for retry. *)
 
 (** {1 Environment building} *)
 
@@ -948,11 +1008,96 @@ val outer_pid_is_ours : string -> pid:int -> bool
 val read_pid : string -> int option
 (** [read_pid path] reads a PID from a pidfile; returns [None] if invalid. *)
 
+type regular_file_read =
+  | Regular_file_missing
+  | Regular_file_contents of string
+  | Regular_file_unreadable of string
+
+type lifecycle_path_state =
+  | Lifecycle_path_present
+  | Lifecycle_path_absent
+  | Lifecycle_path_quarantined
+  | Lifecycle_path_unknown
+
+val lifecycle_path_state : string -> lifecycle_path_state
+(** Classify a lifecycle path while holding its parent lock.  A quarantined
+    record is not confirmed absent: its quarantine/rollback artifacts remain
+    durable recovery state and must block cleanup success. *)
+
+val is_lifecycle_recovery_artifact_name : string -> bool
+(** True for quarantine/rollback entries that scanners must retain as unknown
+    lifecycle state rather than filtering away. *)
+
+val read_regular_file_nofollow : string -> regular_file_read
+(** Read one regular lifecycle file through an [O_NOFOLLOW] descriptor.
+    Only [Regular_file_missing] represents confirmed absence; symlinks,
+    non-regular files, replacement/open/read failures, and malformed content
+    are reported as [Regular_file_unreadable] or by the caller's parser. *)
+
+type pidfile_state =
+  | Pidfile_absent
+  | Pidfile_valid of int
+  | Pidfile_unknown of string
+
+val read_pid_state : string -> pidfile_state
+(** [read_pid_state path] reads a lifecycle PID without following symlinks.
+    [Pidfile_absent] is confirmed absence; malformed, unreadable, and
+    non-regular records are [Pidfile_unknown] and must block recovery. *)
+
+type pid_record_state =
+  | Pid_record_absent
+  | Pid_record_present of int * int
+  | Pid_record_unknown
+
+val read_pid_record : pid_path:string -> start_time_path:string -> pid_record_state
+(** Read an exact paired PID/start-time record through race-safe regular-file
+    readers.  Only both files being confirmed absent is [Pid_record_absent];
+    malformed, unreadable, non-regular, or incomplete pairs are unknown. *)
+
+val codex_daemon_sidecar_pid_is_ours :
+  pid_path:string -> start_time_path:string -> pid:int -> bool
+(** True only when the pidfile and its exact start-time generation still match
+    the live process. *)
+
 val write_pid : string -> int -> unit
 (** [write_pid path pid] writes a PID to a pidfile, creating parent dirs. *)
 
+val write_pid_generation :
+  pid_path:string -> start_time_path:string -> int -> unit
+
+val write_codex_daemon_sidecar_pid : string -> int -> unit
+(** Write the Codex sidecar pid and its exact process start-time generation. *)
+
 val remove_pidfile : string -> unit
 (** [remove_pidfile path] removes a pidfile if it exists. *)
+
+val remove_pidfile_confirmed : string -> bool
+(** Remove a durable lifecycle record only when an opened, single-link regular
+    inode is the one unlinked and the exact pathname is then absent. Existing
+    symlinks, non-regular files, hardlink ambiguity, replacement races, and
+    unlink/readback uncertainty return [false]; confirmed absence returns
+    [true]. *)
+
+val remove_path_contents_confirmed : string -> string -> bool
+(** Remove a regular lifecycle record only when its no-follow contents still
+    equal the supplied record identity. Replacement or readback uncertainty
+    preserves recovery state and returns [false]. *)
+
+val remove_pid_record_pair_confirmed :
+  pid_path:string -> start_time_path:string -> pid:int -> start_time:int -> bool
+(** Remove an exact PID/start-time record pair. Any failed or uncertain
+    finalization or rollback retains the exact original inode for retry and
+    returns [false]. *)
+
+val stop_recorded_sidecar :
+  pid_path:string -> start_time_path:string -> label:string -> bool
+(** Stop and reap a sidecar only when its paired pid records are exact regular
+    files with a matching generation. Symlinks, malformed contents, and path
+    mismatches are retained as uncertain state. *)
+
+val stop_frontend_teardown_record : string -> bool
+(** Stop and reap a recorded Codex frontend only with exact generation
+    ownership, then remove and confirm removal of its teardown record. *)
 
 val cleanup_stale_opentui_zig_cache : unit -> int
 (** [cleanup_stale_opentui_zig_cache ()] removes stale OpenUI Zig-compiled
@@ -1100,10 +1245,12 @@ val filter_env_for_restart : unit -> string array
     c2c session" guard (c2c.ml:8499). *)
 
 (** Outcome of {!stop_instance}. [Stop_refused_foreign_pid] carries the pid and
-    a human-readable reason. *)
+    a human-readable reason. [Stop_failed] means an owner-bound delivery
+    process could not be terminated and its lease/pidfile was retained. *)
 type stop_outcome =
   | Stop_stopped
   | Stop_not_running
+  | Stop_failed of string
   | Stop_refused_foreign_pid of int * string
 
 val stop_instance : string -> stop_outcome

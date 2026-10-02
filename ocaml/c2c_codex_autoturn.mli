@@ -121,6 +121,7 @@ type config = {
           messages can re-batch via the app-server path (default [120.] =
           2 minutes). Idle delivery still fires immediately; this is the
           backstop for failed turns that would otherwise claim mail forever. *)
+  on_ingress_health : Ingress.health -> unit;
 }
 
 (** Default B168 stale-inbox threshold (2 minutes). *)

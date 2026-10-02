@@ -474,6 +474,77 @@ let start_managed_heartbeat_stoppable ~(broker_root : string) ~(alias : string)
    Implementation in ocaml/cli/c2c_posix_stubs.c. *)
 external setpgid : int -> int -> unit = "caml_c2c_setpgid"
 
+(* open(2) with O_NOFOLLOW plus a regular-file fstat. OCaml's Unix module does
+   not expose this flag on every supported compiler. *)
+external open_regular_nofollow : string -> Unix.file_descr
+  = "caml_c2c_open_regular_nofollow"
+
+external lifecycle_path_state_code : string -> int
+  = "caml_c2c_lifecycle_path_state"
+
+external unlink_regular_file_confirmed : string -> bool
+  = "caml_c2c_unlink_regular_confirmed"
+
+external unlink_regular_file_if_contents_confirmed : string -> string -> bool
+  = "caml_c2c_unlink_regular_if_contents_confirmed"
+
+external unlink_pid_record_pair_confirmed : string -> string -> int -> int -> bool
+  = "caml_c2c_unlink_pid_record_pair_confirmed"
+
+type regular_file_read =
+  | Regular_file_missing
+  | Regular_file_contents of string
+  | Regular_file_unreadable of string
+
+type lifecycle_path_state =
+  | Lifecycle_path_present
+  | Lifecycle_path_absent
+  | Lifecycle_path_quarantined
+  | Lifecycle_path_unknown
+
+let is_lifecycle_recovery_artifact_name name =
+  let has needle =
+    let n = String.length needle in
+    let rec loop i =
+      if i + n > String.length name then false
+      else if String.sub name i n = needle then true
+      else loop (i + 1)
+    in
+    loop 0
+  in
+  has ".c2c-unlink." || has ".c2c-rollback."
+
+let lifecycle_path_state path =
+  match lifecycle_path_state_code path with
+  | 0 -> Lifecycle_path_present
+  | 1 -> Lifecycle_path_absent
+  | 2 -> Lifecycle_path_quarantined
+  | _ -> Lifecycle_path_unknown
+
+(* Read a lifecycle record through one descriptor opened with O_NOFOLLOW.
+   Callers must use [Regular_file_unreadable] for every failure other than a
+   confirmed ENOENT: a separate lstat followed by [from_file]/[open_in] leaves
+   a symlink replacement window between the check and the read. *)
+let read_regular_file_nofollow path : regular_file_read =
+  try
+    let fd = open_regular_nofollow path in
+    let ic = Unix.in_channel_of_descr fd in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+         try
+           Regular_file_contents (really_input_string ic (in_channel_length ic))
+         with e -> Regular_file_unreadable (Printexc.to_string e))
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) ->
+      (match lifecycle_path_state path with
+       | Lifecycle_path_absent -> Regular_file_missing
+       | Lifecycle_path_quarantined ->
+           Regular_file_unreadable "lifecycle record has quarantined recovery state"
+       | Lifecycle_path_present | Lifecycle_path_unknown ->
+           Regular_file_unreadable "lifecycle record absence is uncertain")
+  | e -> Regular_file_unreadable (Printexc.to_string e)
+
 (* tcsetpgrp(3) binding — errors suppressed inside the stub. After the
    child forks into its own pgid, we hand it the controlling terminal
    so it's the tty's foreground process group; otherwise TUIs like
@@ -2124,36 +2195,162 @@ let with_file_lock (path : string) (f : unit -> 'a) : 'a =
       Unix.lockf fd Unix.F_LOCK 0;
       f ())
 
-let clear_registration_pid ~(broker_root : string) ~(session_id : string) : unit =
+(* The broker's registration decoder requires every row to carry both identity
+   fields.  Cleanup and eager managed registration must preserve the whole
+   registry when any row is semantically malformed; treating such a row as an
+   ordinary object and filtering it during a rewrite would erase unrelated
+   ownership state. *)
+let managed_registry_row_is_well_formed = function
+  | `Assoc fields ->
+      let required_string key =
+        match List.assoc_opt key fields with
+        | Some (`String value) -> String.trim value <> ""
+        | _ -> false
+      in
+      let optional_int key =
+        match List.assoc_opt key fields with
+        | None | Some `Null | Some (`Int _) -> true
+        | Some (`String value) -> Option.is_some (int_of_string_opt (String.trim value))
+        | _ -> false
+      in
+      required_string "session_id" && required_string "alias"
+      && optional_int "pid" && optional_int "pid_start_time"
+  | _ -> false
+
+let managed_registry_rows_are_well_formed rows =
+  List.for_all managed_registry_row_is_well_formed rows
+
+let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : string)
+    ~(pid : int) ~(pid_start_time : int option) : bool =
   let reg_path = broker_root // "registry.json" in
   let lock_path = broker_root // "registry.json.lock" in
-  if Sys.file_exists reg_path then
+  let int_field key fields =
+    match List.assoc_opt key fields with
+    | Some (`Int n) -> Some n
+    | Some (`String s) -> int_of_string_opt (String.trim s)
+    | _ -> None
+  in
+  let read_registry () =
+    match read_regular_file_nofollow reg_path with
+    | Regular_file_missing -> Ok None
+    | Regular_file_unreadable _ -> Error ()
+    | Regular_file_contents contents ->
+        (try
+           match Yojson.Safe.from_string contents with
+           | `List rows when managed_registry_rows_are_well_formed rows ->
+               Ok (Some (`List rows))
+           | _ -> Error ()
+         with _ -> Error ())
+  in
+  let confirm_write json =
+    try
+      write_json_file_atomic reg_path json;
+      match read_regular_file_nofollow reg_path with
+      | Regular_file_contents contents ->
+          (try Yojson.Safe.equal json (Yojson.Safe.from_string contents)
+           with _ -> false)
+      | Regular_file_missing | Regular_file_unreadable _ -> false
+    with _ -> false
+  in
+  try
     with_file_lock lock_path (fun () ->
-      let json = try Yojson.Safe.from_file reg_path with _ -> `List [] in
-      let updated =
-        match json with
-        | `List regs ->
-            `List
-              (List.map
-                 (fun r ->
-                   match r with
+        match read_registry () with
+        | Error () -> false
+        | Ok None -> true
+        | Ok (Some (`List rows)) ->
+            let rec update changed uncertain (acc : Yojson.Safe.t list) = function
+              | [] ->
+                  if uncertain then Error ()
+                  else Ok (changed, `List (List.rev acc))
+              | row :: rest ->
+                  (match row with
                    | `Assoc fields ->
                        let sid =
                          match List.assoc_opt "session_id" fields with
-                         | Some (`String s) -> s
-                         | _ -> ""
+                         | Some (`String s) -> Some s
+                         | _ -> None
                        in
-                       if sid = session_id then
-                         `Assoc
-                           (List.filter
-                              (fun (k, _) -> k <> "pid" && k <> "pid_start_time")
-                              fields)
-                       else r
-                   | _ -> r)
-                 regs)
-        | _ -> json
-      in
-      write_json_file_atomic reg_path updated)
+                       let stored_pid = int_field "pid" fields in
+                       let stored_start = int_field "pid_start_time" fields in
+                       if sid = Some session_id && stored_pid = Some pid then
+                         (match pid_start_time, stored_start with
+                          | Some expected, Some actual when expected = actual ->
+                              let cleared =
+                                `Assoc
+                                  (List.filter
+                                     (fun (k, _) ->
+                                       k <> "pid" && k <> "pid_start_time")
+                                     fields)
+                              in
+                              update true uncertain (cleared :: acc) rest
+                          | _ ->
+                              (* A row that names this PID but lacks an exact
+                                 generation is an unknown owner, never
+                                 permission to clear it. *)
+                              update changed true (row :: acc) rest)
+                       else update changed uncertain (row :: acc) rest
+                   | _ -> update changed true (row :: acc) rest)
+            in
+            (match update false false [] rows with
+             | Error () -> false
+             | Ok (false, _) -> true
+             | Ok (true, updated) -> confirm_write updated))
+  with _ -> false
+
+let clear_registration_pid ~(broker_root : string) ~(session_id : string) : bool =
+  let reg_path = broker_root // "registry.json" in
+  let lock_path = broker_root // "registry.json.lock" in
+  let read_registry () =
+    match read_regular_file_nofollow reg_path with
+    | Regular_file_missing -> Ok None
+    | Regular_file_unreadable _ -> Error ()
+    | Regular_file_contents contents ->
+        (try
+           match Yojson.Safe.from_string contents with
+           | `List rows when managed_registry_rows_are_well_formed rows ->
+               Ok (Some (`List rows))
+           | _ -> Error ()
+         with _ -> Error ())
+  in
+  let confirm_write json =
+    try
+      write_json_file_atomic reg_path json;
+      match read_regular_file_nofollow reg_path with
+      | Regular_file_contents contents ->
+          (try Yojson.Safe.equal json (Yojson.Safe.from_string contents)
+           with _ -> false)
+      | Regular_file_missing | Regular_file_unreadable _ -> false
+    with _ -> false
+  in
+  try
+    with_file_lock lock_path (fun () ->
+        match read_registry () with
+        | Error () -> false
+        | Ok None -> true
+        | Ok (Some (`List rows)) ->
+            let updated =
+              List.map
+                (function
+                  | `Assoc fields as row ->
+                      let sid =
+                        match List.assoc_opt "session_id" fields with
+                        | Some (`String s) -> Some s
+                        | _ -> None
+                      in
+                      if sid = Some session_id then
+                        `Assoc
+                          (List.filter
+                             (fun (k, _) ->
+                               k <> "pid" && k <> "pid_start_time")
+                             fields)
+                      else row
+                  | row -> row)
+                rows
+            in
+            let updated_json = `List updated in
+            if Yojson.Safe.equal (`List rows) updated_json then true
+            else confirm_write updated_json)
+  with _ -> false
 
 let read_pid_start_time (pid : int) : int option =
   let path = Printf.sprintf "/proc/%d/stat" pid in
@@ -2174,60 +2371,95 @@ let read_pid_start_time (pid : int) : int option =
              | None -> None))
   with Sys_error _ | End_of_file -> None
 
+type managed_registry_read =
+  | Managed_registry_missing
+  | Managed_registry_present of Yojson.Safe.t list
+  | Managed_registry_unknown of string
+
+let read_managed_registry (path : string) : managed_registry_read =
+  match read_regular_file_nofollow path with
+  | Regular_file_missing -> Managed_registry_missing
+  | Regular_file_unreadable reason -> Managed_registry_unknown reason
+  | Regular_file_contents contents ->
+      (try
+         match Yojson.Safe.from_string contents with
+         | `List rows when managed_registry_rows_are_well_formed rows ->
+             Managed_registry_present rows
+         | _ -> Managed_registry_unknown "registry is not a list of registration objects"
+       with e -> Managed_registry_unknown (Printexc.to_string e))
+
 let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
     ~(alias : string) ~(pid : int) ?(cwd : string option)
-    ~(client_type : string) () : unit =
-  (* Managed codex-headless needs broker reachability before the bridge has
-     produced a thread id. Ensure the broker dir exists before taking the
-     registry lock so the eager registration path can bootstrap cleanly. *)
-  mkdir_p broker_root;
-  let reg_path = broker_root // "registry.json" in
-  let lock_path = broker_root // "registry.json.lock" in
-  let pid_start_time = read_pid_start_time pid in
-  let now = Unix.gettimeofday () in
-  let row =
-    `Assoc
-      ([ ("session_id", `String session_id)
-       ; ("alias", `String alias)
-       ; ("pid", `Int pid)
-       ; ("registered_at", `Float now)
-       ; ("client_type", `String client_type) ]
-       @ (match pid_start_time with
-          | Some n -> [ ("pid_start_time", `Int n) ]
-          | None -> [])
-       (* #40: record the launch cwd. The kimi SessionStart hook uses it to
-          recognise that a managed instance already owns this workspace (the
-          hook cannot see the managed identity env — see
-          [register_managed_kimi_session]). *)
-       @ (match cwd with
-          | Some c when String.trim c <> "" -> [ ("cwd", `String c) ]
-          | _ -> []))
-  in
-  with_file_lock lock_path (fun () ->
-    let regs =
-      match (try Yojson.Safe.from_file reg_path with _ -> `List []) with
-      | `List items -> items
-      | _ -> []
+    ~(client_type : string) () : (unit, string) result =
+  try
+    (* Managed codex-headless needs broker reachability before the bridge has
+       produced a thread id. Ensure the broker dir exists before taking the
+       registry lock so the eager registration path can bootstrap cleanly.
+       This is inside the Result boundary: a broker-root mkdir failure is an
+       uncertain registry state, not an exception that can bypass the caller's
+       startup/cleanup handling. *)
+    mkdir_p broker_root;
+    let reg_path = broker_root // "registry.json" in
+    let lock_path = broker_root // "registry.json.lock" in
+    let pid_start_time = read_pid_start_time pid in
+    let now = Unix.gettimeofday () in
+    let row =
+      `Assoc
+        ([ ("session_id", `String session_id)
+         ; ("alias", `String alias)
+         ; ("pid", `Int pid)
+         ; ("registered_at", `Float now)
+         ; ("client_type", `String client_type) ]
+         @ (match pid_start_time with
+            | Some n -> [ ("pid_start_time", `Int n) ]
+            | None -> [])
+         (* #40: record the launch cwd. The kimi SessionStart hook uses it to
+            recognise that a managed instance already owns this workspace (the
+            hook cannot see the managed identity env — see
+            [register_managed_kimi_session]). *)
+         @ (match cwd with
+            | Some c when String.trim c <> "" -> [ ("cwd", `String c) ]
+            | _ -> []))
     in
-    let kept =
-      List.filter
-        (function
-          | `Assoc fields ->
-              let sid =
-                match List.assoc_opt "session_id" fields with
-                | Some (`String s) -> s
-                | _ -> ""
-              in
-              let existing_alias =
-                match List.assoc_opt "alias" fields with
-                | Some (`String s) -> s
-                | _ -> ""
-              in
-              sid <> session_id && existing_alias <> alias
-          | _ -> false)
-        regs
-    in
-    write_json_file_atomic reg_path (`List (row :: kept)))
+    with_file_lock lock_path (fun () ->
+      let regs =
+        match read_managed_registry reg_path with
+        | Managed_registry_missing -> []
+        | Managed_registry_present items -> items
+        | Managed_registry_unknown reason ->
+            raise (Failure ("registry read is uncertain: " ^ reason))
+      in
+      let kept =
+        List.filter
+          (function
+            | `Assoc fields ->
+                let sid =
+                  match List.assoc_opt "session_id" fields with
+                  | Some (`String s) -> s
+                  | _ -> ""
+                in
+                let existing_alias =
+                  match List.assoc_opt "alias" fields with
+                  | Some (`String s) -> s
+                  | _ -> ""
+                in
+                sid <> session_id && existing_alias <> alias
+            | _ ->
+                raise (Failure "registry row became semantically malformed"))
+          regs
+      in
+      let expected = `List (row :: kept) in
+      write_json_file_atomic reg_path expected;
+      match read_managed_registry reg_path with
+      | Managed_registry_present actual
+        when Yojson.Safe.equal expected (`List actual) -> Ok ()
+      | Managed_registry_missing ->
+          Error "registry write could not be confirmed: registry disappeared"
+      | Managed_registry_unknown reason ->
+          Error ("registry write could not be confirmed: " ^ reason)
+      | Managed_registry_present _ ->
+          Error "registry write could not be confirmed: contents changed")
+  with e -> Error (Printexc.to_string e)
 
 (* ---------------------------------------------------------------------------
  * #40 — managed kimi broker registration
@@ -2269,8 +2501,8 @@ let register_managed_kimi_session ~(broker_root : string) ~(name : string)
     eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
       ~cwd ~client_type:"kimi" ()
   with
-  | exception e -> Error (Printexc.to_string e)
-  | () ->
+  | Error e -> Error e
+  | Ok () ->
       (match
          (try
             let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -2328,8 +2560,8 @@ let register_managed_agy_session ~(broker_root : string) ~(name : string)
     eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
       ~cwd ~client_type:"agy" ()
   with
-  | exception e -> Error (Printexc.to_string e)
-  | () ->
+  | Error e -> Error e
+  | Ok () ->
       (match
          (try
             let broker = C2c_mcp.Broker.create ~root:broker_root in
@@ -2384,15 +2616,573 @@ let per_agent_managed_heartbeats ~(name : string) : managed_heartbeat list =
 let config_path name = instance_dir name // "config.json"
 let meta_json_path name = instance_dir name // "meta.json"
 let outer_pid_path name = instance_dir name // "outer.pid"
+let outer_pid_start_time_path name = outer_pid_path name ^ ".start-time"
 let inner_pid_path name = instance_dir name // "inner.pid"
+let inner_pid_start_time_path name = inner_pid_path name ^ ".start-time"
+(* Generation-bound frontend teardown receipt. A failed process-group cleanup
+   leaves this file beside outer.pid so `c2c stop` can report/retry rather than
+   clearing the broker row and claiming the instance stopped. *)
+let codex_frontend_teardown_record_path name =
+  instance_dir name // "frontend-teardown.json"
+
+(* The Codex hook writes the native thread id here during SessionStart.  The
+   parent launcher accepts it only when the hook's parent is the exact
+   frontend generation it just spawned; a loaded-thread set by itself cannot
+   establish that ownership under concurrent daemon activity. *)
+let codex_daemon_thread_handoff_path name =
+  instance_dir name // "daemon-thread-handoff.json"
+
+let codex_hook_fallback_path ~broker_root ~session_id =
+  Filename.concat (Filename.concat broker_root ".codex-hook-fallback")
+    (Digest.to_hex (Digest.string session_id))
+
+let mark_codex_hook_fallback ~broker_root ~session_id =
+  try
+    let path = codex_hook_fallback_path ~broker_root ~session_id in
+    mkdir_p (Filename.dirname path);
+    match C2c_io.write_file_atomic ~perm:0o600 path "sidecar-arm-failed\n" with
+    | Ok () -> true
+    | Error _ -> false
+  with _ -> false
+
+let clear_codex_hook_fallback ~broker_root ~session_id =
+  try Sys.remove (codex_hook_fallback_path ~broker_root ~session_id) with _ -> ()
+
 let deliver_pid_path name = instance_dir name // "deliver.pid"
+let deliver_pid_start_time_path name = deliver_pid_path name ^ ".start-time"
 let codex_daemon_sidecar_pid_path name =
   instance_dir name // "codex-daemon-sidecar.pid"
+let codex_daemon_sidecar_pid_start_time_path name =
+  codex_daemon_sidecar_pid_path name ^ ".start-time"
+
+let codex_daemon_sidecar_arm_pending_path ~owners_dir ~token =
+  owners_dir // (".arm-" ^ token ^ ".json")
+
+let codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token =
+  codex_daemon_sidecar_arm_pending_path ~owners_dir ~token ^ ".cancel"
+
+let codex_daemon_sidecar_arm_lock_path ~owners_dir ~token =
+  codex_daemon_sidecar_arm_pending_path ~owners_dir ~token ^ ".lock"
+
+(* Keep stop_instance independent of the higher-level sidecar module (which
+   itself depends on this lifecycle module) while treating lease files as an
+   authoritative owner index. *)
+let codex_daemon_sidecar_owners_dir () =
+  let home = try Sys.getenv "HOME" with Not_found -> "/tmp" in
+  let state_home =
+    match Sys.getenv_opt "C2C_STATE_HOME" with
+    | Some d when String.trim d <> "" -> String.trim d
+    | _ -> Filename.concat home ".local/share"
+  in
+  Filename.concat state_home "c2c/codex-daemon-owners"
+
+type codex_sidecar_lease_record = {
+  lease_path : string;
+  socket_identity : string;
+  thread_id : string;
+  sidecar_pid : int;
+  sidecar_pid_start_time : int option;
+  broker_session_id : string;
+}
+
+type codex_sidecar_arm_record = {
+  arm_pending_path : string;
+  arm_cancel_path : string;
+  arm_lock_path : string;
+  arm_thread_id : string;
+  arm_pid : int;
+  arm_pid_start_time : int option;
+  arm_broker_session_id : string;
+}
+
+let is_codex_sidecar_arm_filename name =
+  String.length name > 5
+  && String.sub name 0 5 = ".arm-"
+  && Filename.check_suffix name ".json"
+
+let codex_sidecar_arm_token_of_filename name =
+  if is_codex_sidecar_arm_filename name then
+    let token_length = String.length name - 5 - 5 in
+    if token_length > 0 then Some (String.sub name 5 token_length) else None
+  else None
+
+let codex_sidecar_arm_paths_match ~owners_dir ~filename
+    (record : codex_sidecar_arm_record) =
+  match codex_sidecar_arm_token_of_filename filename with
+  | None -> false
+  | Some token ->
+      record.arm_pending_path = owners_dir // filename
+      && record.arm_cancel_path =
+           codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token
+      && record.arm_lock_path =
+           codex_daemon_sidecar_arm_lock_path ~owners_dir ~token
+
+(* Lifecycle paths are part of the arm's ownership proof. A caller may only
+   use the pending/cancel/lock names derived from the token encoded in the
+   pending filename; accepting a caller-supplied sibling path would let it
+   lock, overwrite, or remove a different arm's durable state. *)
+let codex_daemon_sidecar_arm_paths_match_token ~owners_dir ~token
+    ~pending_path ~cancel_path ~lock_path =
+  match codex_sidecar_arm_token_of_filename (Filename.basename pending_path) with
+  | Some recorded_token when recorded_token = token ->
+      pending_path = codex_daemon_sidecar_arm_pending_path ~owners_dir ~token
+      && cancel_path = codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token
+      && lock_path = codex_daemon_sidecar_arm_lock_path ~owners_dir ~token
+  | _ -> false
+
+let regular_or_absent path =
+  try
+    match (Unix.lstat path).Unix.st_kind with
+    | Unix.S_REG -> true
+    | _ -> false
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> true
+  | _ -> false
+
+let codex_sidecar_lease_filename_matches path ~socket_identity ~thread_id =
+  Filename.basename path
+  = Digest.to_hex (Digest.string (socket_identity ^ "\n" ^ thread_id)) ^ ".json"
+
+type codex_sidecar_lease_read =
+  | Codex_sidecar_lease_missing
+  | Codex_sidecar_lease_present of codex_sidecar_lease_record
+  | Codex_sidecar_lease_unreadable
+
+let read_codex_sidecar_lease_state path =
+  match read_regular_file_nofollow path with
+  | Regular_file_missing -> Codex_sidecar_lease_missing
+  | Regular_file_unreadable _ -> Codex_sidecar_lease_unreadable
+  | Regular_file_contents contents ->
+    try match Yojson.Safe.from_string contents with
+    | `Assoc fields ->
+        let str key =
+          match List.assoc_opt key fields with Some (`String s) -> Some s | _ -> None
+        in
+        let int key =
+          match List.assoc_opt key fields with
+          | Some (`Int n) -> Some n
+          | Some (`String s) -> int_of_string_opt (String.trim s)
+          | _ -> None
+        in
+        let start_time = int "sidecar_pid_start_time" in
+        (match str "socket_identity", str "thread_id", int "sidecar_pid",
+               str "broker_session_id" with
+         | Some socket_identity, Some thread_id, Some sidecar_pid,
+           Some broker_session_id ->
+             Codex_sidecar_lease_present
+               { lease_path = path; socket_identity; thread_id; sidecar_pid;
+                 sidecar_pid_start_time = start_time; broker_session_id }
+         | _ -> Codex_sidecar_lease_unreadable)
+    | _ -> Codex_sidecar_lease_unreadable
+    with _ -> Codex_sidecar_lease_unreadable
+
+let read_codex_sidecar_lease path =
+  match read_codex_sidecar_lease_state path with
+  | Codex_sidecar_lease_present lease -> Some lease
+  | Codex_sidecar_lease_missing | Codex_sidecar_lease_unreadable -> None
+
+let codex_sidecar_lease_contents_for_owner path
+    (expected : codex_sidecar_lease_record) =
+  match read_regular_file_nofollow path with
+  | Regular_file_contents contents ->
+      (try
+         match Yojson.Safe.from_string contents with
+         | `Assoc fields ->
+             let str key =
+               match List.assoc_opt key fields with
+               | Some (`String s) -> Some s
+               | _ -> None
+             in
+             let int key =
+               match List.assoc_opt key fields with
+               | Some (`Int n) -> Some n
+               | Some (`String s) -> int_of_string_opt (String.trim s)
+               | _ -> None
+             in
+             (match str "socket_identity", str "thread_id", int "sidecar_pid",
+                    int "sidecar_pid_start_time", str "broker_session_id" with
+              | Some socket_identity, Some thread_id, Some sidecar_pid,
+                sidecar_pid_start_time, Some broker_session_id
+                when codex_sidecar_lease_filename_matches path
+                       ~socket_identity ~thread_id
+                     && socket_identity = expected.socket_identity
+                     && thread_id = expected.thread_id
+                     && sidecar_pid = expected.sidecar_pid
+                     && sidecar_pid_start_time = expected.sidecar_pid_start_time
+                     && broker_session_id = expected.broker_session_id ->
+                  Some contents
+              | _ -> None)
+         | _ -> None
+       with _ -> None)
+  | Regular_file_missing | Regular_file_unreadable _ -> None
+
+let stop_codex_sidecar_generation ?(term_timeout_s = 2.0)
+    ?(kill_timeout_s = 1.0) ~(pid : int) ~(start_time : int) () : bool =
+  let reap_if_child () =
+    try
+      match Unix.waitpid [ Unix.WNOHANG ] pid with
+      | 0, _ -> false
+      | _, _ -> true
+    with Unix.Unix_error (Unix.ECHILD, _, _) -> false
+  in
+  let gone () =
+    if reap_if_child () then true
+    else
+      match C2c_pid_identity.read_pid_generation pid with
+      | C2c_pid_identity.Absent -> true
+      | C2c_pid_identity.Generation actual -> actual <> start_time
+      | C2c_pid_identity.Unreadable -> false
+  in
+  if not (C2c_pid_identity.pidfd_supported ()) then false
+  else
+    let signal sig_ =
+      C2c_pid_identity.signal_pid_if_generation_matches
+        ~pid ~start_time ~signal:sig_
+    in
+    if not (gone ()) then ignore (signal Sys.sigterm);
+    let deadline = Unix.gettimeofday () +. term_timeout_s in
+    while not (gone ()) && Unix.gettimeofday () < deadline do Unix.sleepf 0.05 done;
+    if not (gone ()) then ignore (signal Sys.sigkill);
+    let deadline = Unix.gettimeofday () +. kill_timeout_s in
+    while not (gone ()) && Unix.gettimeofday () < deadline do Unix.sleepf 0.02 done;
+    (* Do not treat a successful signal syscall as teardown success. The
+       caller may clear leases and pidfiles only after this exact generation
+       has disappeared. *)
+    gone ()
+
+let read_codex_sidecar_arm path : codex_sidecar_arm_record option =
+  match read_regular_file_nofollow path with
+  | Regular_file_missing | Regular_file_unreadable _ -> None
+  | Regular_file_contents contents ->
+    try match Yojson.Safe.from_string contents with
+    | `Assoc fields ->
+        let str key =
+          match List.assoc_opt key fields with Some (`String s) -> Some s | _ -> None
+        in
+        let int key =
+          match List.assoc_opt key fields with
+          | Some (`Int n) -> Some n
+          | Some (`String s) -> int_of_string_opt (String.trim s)
+          | _ -> None
+        in
+        (match str "cancel_path", str "lock_path", str "thread_id",
+               int "pid", str "broker_session_id" with
+         | Some arm_cancel_path, Some arm_lock_path, Some arm_thread_id,
+           Some arm_pid, Some arm_broker_session_id ->
+             Some
+               { arm_pending_path = path; arm_cancel_path; arm_lock_path;
+                 arm_thread_id; arm_pid;
+                 arm_pid_start_time = int "pid_start_time";
+                 arm_broker_session_id }
+         | _ -> None)
+    | _ -> None
+    with _ -> None
+
+let write_codex_daemon_sidecar_arm ~owners_dir ~token ~thread_id ~pid
+    ~pid_start_time ~broker_session_id =
+  let pending_path =
+    codex_daemon_sidecar_arm_pending_path ~owners_dir ~token
+  in
+  let cancel_path = codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token in
+  let lock_path = codex_daemon_sidecar_arm_lock_path ~owners_dir ~token in
+  if not
+       (codex_daemon_sidecar_arm_paths_match_token ~owners_dir ~token
+          ~pending_path ~cancel_path ~lock_path)
+  then Error "pending Codex sidecar arm paths do not match their token"
+  else if not
+       (regular_or_absent pending_path
+        && regular_or_absent cancel_path
+        && regular_or_absent lock_path)
+  then Error "pending Codex sidecar arm lifecycle path is not regular or absent"
+  else
+  let json =
+    `Assoc
+      [ ("cancel_path", `String
+           cancel_path);
+        ("lock_path", `String
+           lock_path);
+        ("thread_id", `String thread_id);
+        ("pid", `Int pid);
+        ("pid_start_time", match pid_start_time with Some n -> `Int n | None -> `Null);
+        ("broker_session_id", `String broker_session_id) ]
+  in
+  C2c_io.mkdir_p owners_dir;
+  C2c_io.write_file_atomic ~perm:0o600 pending_path
+    (Yojson.Safe.to_string json ^ "\n")
+
+let remove_path_confirmed path =
+  unlink_regular_file_confirmed path
+
+let remove_path_contents_confirmed path contents =
+  unlink_regular_file_if_contents_confirmed path contents
+
+let remove_pid_record_pair_confirmed ~(pid_path : string)
+    ~(start_time_path : string) ~(pid : int) ~(start_time : int) : bool =
+  unlink_pid_record_pair_confirmed pid_path start_time_path pid start_time
+
+let remove_codex_daemon_sidecar_arm ~owners_dir ~token =
+  let pending = codex_daemon_sidecar_arm_pending_path ~owners_dir ~token in
+  let cancel = codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token in
+  let lock = codex_daemon_sidecar_arm_lock_path ~owners_dir ~token in
+  if not
+       (codex_daemon_sidecar_arm_paths_match_token ~owners_dir ~token
+          ~pending_path:pending ~cancel_path:cancel ~lock_path:lock)
+  then false
+  else if not (regular_or_absent pending && regular_or_absent cancel
+               && regular_or_absent lock)
+  then false
+  else
+    try
+      with_file_lock lock (fun () ->
+          let remove_cancel () =
+            match read_regular_file_nofollow cancel with
+            | Regular_file_missing -> true
+            | Regular_file_contents contents
+              when contents = "cancelled\n" ->
+                remove_path_contents_confirmed cancel contents
+            | Regular_file_contents _ | Regular_file_unreadable _ -> false
+          in
+          match read_regular_file_nofollow pending with
+          | Regular_file_contents contents ->
+              (match read_codex_sidecar_arm pending with
+               | Some record
+                 when codex_daemon_sidecar_arm_paths_match_token ~owners_dir ~token
+                        ~pending_path:record.arm_pending_path
+                        ~cancel_path:record.arm_cancel_path
+                        ~lock_path:record.arm_lock_path ->
+                   (* Remove the cancellation marker first. If either
+                      identity-pinned unlink is uncertain, leave the pending
+                      arm JSON as the durable retry record. *)
+                   remove_cancel ()
+                   && remove_path_contents_confirmed pending contents
+               | _ -> false)
+          | Regular_file_missing -> remove_cancel ()
+          | Regular_file_unreadable _ -> false)
+    with _ -> false
+
+let cancel_codex_daemon_sidecar_arms ?thread_id ?broker_session_id ~owners_dir () =
+  let read_entries () =
+    try
+      match (Unix.stat owners_dir).Unix.st_kind with
+      | Unix.S_DIR -> `Entries (Sys.readdir owners_dir)
+      | _ -> `Unreadable
+    with
+    | Unix.Unix_error (Unix.ENOENT, _, _) -> `Missing
+    | _ -> `Unreadable
+  in
+  match read_entries () with
+  | `Missing -> true
+  | `Unreadable -> false
+  | `Entries entries ->
+    let ok = ref true in
+    Array.to_list entries
+    |> List.filter (fun name ->
+         is_codex_sidecar_arm_filename name
+         || is_lifecycle_recovery_artifact_name name)
+    |> List.iter (fun name ->
+         if is_lifecycle_recovery_artifact_name name then begin
+           ok := false;
+           Printf.eprintf
+             "c2c: retaining Codex sidecar arm recovery artifact %s for retry\n%!"
+             (owners_dir // name)
+         end else match read_codex_sidecar_arm (owners_dir // name) with
+         | None ->
+             ok := false;
+             Printf.eprintf
+               "c2c: cannot parse pending Codex sidecar arm %s; retaining for retry\n%!"
+               (owners_dir // name)
+         | Some record
+           when not (codex_sidecar_arm_paths_match ~owners_dir ~filename:name record)
+                || not (regular_or_absent record.arm_cancel_path)
+                || not (regular_or_absent record.arm_lock_path) ->
+             ok := false;
+             Printf.eprintf
+               "c2c: pending Codex sidecar arm %s has mismatched or non-regular lifecycle paths; retaining for retry\n%!"
+               (owners_dir // name)
+         | Some record ->
+         if (match broker_session_id with
+             | Some sid -> record.arm_broker_session_id = sid
+             | None -> true)
+            && (match thread_id with
+                | None -> true
+                | Some tid -> record.arm_thread_id = tid)
+         then begin
+           (* Publish cancellation before taking the arm lock. A child which is
+              still waiting for a loaded thread observes this sentinel and exits;
+              a child already in the claim/register critical section is killed
+              and then its owner record is checked again. *)
+           (try
+              ignore (C2c_io.write_file_atomic ~perm:0o600
+                        record.arm_cancel_path "cancelled\n")
+            with _ -> ok := false);
+           let stop_record () =
+             match record.arm_pid_start_time with
+             | Some start_time ->
+                 (match C2c_pid_identity.read_pid_generation record.arm_pid with
+                  | C2c_pid_identity.Generation actual when actual = start_time ->
+                      stop_codex_sidecar_generation ~pid:record.arm_pid ~start_time ()
+                  | C2c_pid_identity.Absent
+                  | C2c_pid_identity.Generation _ -> true
+                  | C2c_pid_identity.Unreadable -> false)
+             | None -> false
+           in
+           let stopped =
+             try with_file_lock record.arm_lock_path stop_record
+             with _ -> false
+           in
+           let stopped =
+             if stopped then true
+             else
+               (* Pending arms are children of the hook/launcher process. A
+                  killed child can be a zombie until this owner reaps it;
+                  reap that exact recorded PID before deciding teardown failed. *)
+               match Unix.waitpid [ Unix.WNOHANG ] record.arm_pid with
+               | _, Unix.WEXITED _ | _, Unix.WSIGNALED _ -> true
+               | 0, _ -> false
+               | _, Unix.WSTOPPED _ -> false
+               | exception Unix.Unix_error (Unix.ECHILD, _, _) -> false
+           in
+           if stopped then begin
+             (try ignore (Unix.waitpid [] record.arm_pid)
+              with Unix.Unix_error (Unix.ECHILD, _, _) -> ());
+             let records_removed =
+               match codex_sidecar_arm_token_of_filename name with
+               | Some token -> remove_codex_daemon_sidecar_arm ~owners_dir ~token
+               | None -> false
+             in
+             if not records_removed then begin
+               ok := false;
+               Printf.eprintf
+                 "c2c: pending Codex sidecar arm stopped but its durable records could not be removed; retaining %s\n%!"
+                 record.arm_pending_path
+             end
+           end
+           else begin
+             ok := false;
+             Printf.eprintf
+               "c2c: failed to stop pending Codex sidecar arm pid %d; retaining %s\n%!"
+               record.arm_pid record.arm_pending_path
+           end
+         end);
+    !ok
+
+let remove_codex_sidecar_lease_if_owner (expected : codex_sidecar_lease_record) : bool =
+  let lock_path = expected.lease_path ^ ".lock" in
+  if not
+       (codex_sidecar_lease_filename_matches expected.lease_path
+          ~socket_identity:expected.socket_identity ~thread_id:expected.thread_id)
+  then false
+  else try
+    with_file_lock lock_path (fun () ->
+        (* The stop operation may race a replacement sidecar. Re-read the
+           lease while holding its stable lock and remove it only when every
+           owner identity field still names the process we actually stopped. *)
+        match read_codex_sidecar_lease_state expected.lease_path with
+        | Codex_sidecar_lease_present current
+          when current.socket_identity = expected.socket_identity
+               && current.thread_id = expected.thread_id
+               && current.broker_session_id = expected.broker_session_id
+               && current.sidecar_pid = expected.sidecar_pid
+               && current.sidecar_pid_start_time = expected.sidecar_pid_start_time
+               && Option.is_some expected.sidecar_pid_start_time ->
+            (match codex_sidecar_lease_contents_for_owner expected.lease_path expected with
+             | Some contents ->
+                 remove_path_contents_confirmed expected.lease_path contents
+             | None -> false)
+        | Codex_sidecar_lease_missing -> true
+        | Codex_sidecar_lease_unreadable
+        | Codex_sidecar_lease_present _ ->
+            (* A replacement owner won the race, or the record no longer
+               names the process we stopped. An unreadable path is not
+               confirmed absence; keep it and fail closed. *)
+            false)
+  with _ -> false
+
+let stop_codex_sidecars_for_session ~(broker_session_id : string) : bool =
+  let dir = codex_daemon_sidecar_owners_dir () in
+  let ok = ref
+    (cancel_codex_daemon_sidecar_arms ~owners_dir:dir
+       ~broker_session_id () ) in
+  (try
+     match (Unix.stat dir).Unix.st_kind with
+     | Unix.S_DIR ->
+         Sys.readdir dir
+         |> Array.to_list
+         |> List.filter (fun name ->
+              Filename.check_suffix name ".json"
+              && not (is_codex_sidecar_arm_filename name))
+         |> List.iter (fun name ->
+         match read_codex_sidecar_lease (dir // name) with
+         | None ->
+             ok := false;
+             Printf.eprintf
+               "c2c: cannot parse Codex sidecar lease %s; retaining for retry\n%!"
+               (dir // name)
+         | Some lease
+           when not
+                  (codex_sidecar_lease_filename_matches (dir // name)
+                     ~socket_identity:lease.socket_identity
+                     ~thread_id:lease.thread_id) ->
+             ok := false;
+             Printf.eprintf
+               "c2c: Codex sidecar lease %s has an identity that does not match its filename; retaining for retry\n%!"
+               (dir // name)
+         | Some lease when lease.broker_session_id = broker_session_id ->
+           (match lease.sidecar_pid_start_time with
+           | None ->
+               (* Legacy leases have no exact generation. A missing /proc
+                  read is not proof that the process is gone, so retain the
+                  lease and leave stale cleanup to an explicit safe path. *)
+               ok := false;
+               Printf.eprintf
+                 "c2c: retaining unverifiable legacy Codex sidecar lease %s\n%!"
+                 lease.lease_path
+           | Some start_time ->
+               (match C2c_pid_identity.read_pid_generation lease.sidecar_pid with
+                | C2c_pid_identity.Generation actual when actual = start_time ->
+                    if stop_codex_sidecar_generation
+                         ~pid:lease.sidecar_pid ~start_time ()
+                    then if not (remove_codex_sidecar_lease_if_owner lease) then begin
+                      ok := false;
+                      Printf.eprintf
+                        "c2c: stopped Codex sidecar pid %d but could not remove lease %s; retaining for retry\n%!"
+                        lease.sidecar_pid lease.lease_path
+                    end
+                    else begin
+                      ok := false;
+                      Printf.eprintf
+                        "c2c: failed to stop Codex sidecar pid %d; retaining lease %s\n%!"
+                        lease.sidecar_pid lease.lease_path
+                    end
+                | C2c_pid_identity.Absent
+                | C2c_pid_identity.Generation _ ->
+                    (* The recorded generation is already gone or the PID was
+                       reused. It is safe to remove only this exact stale
+                       lease, under the identity check above. *)
+                    if not (remove_codex_sidecar_lease_if_owner lease) then begin
+                      ok := false;
+                      Printf.eprintf
+                        "c2c: could not confirm removal of stale Codex sidecar lease %s; retaining for retry\n%!"
+                        lease.lease_path
+                    end
+                | C2c_pid_identity.Unreadable ->
+                    ok := false;
+                    Printf.eprintf
+                      "c2c: cannot verify Codex sidecar pid %d; retaining lease %s\n%!"
+                      lease.sidecar_pid lease.lease_path))
+         | Some _ -> ())
+     | _ -> ok := false
+   with
+   | Unix.Unix_error (Unix.ENOENT, _, _) -> ()
+   | _ -> ok := false);
+  !ok
 let poker_pid_path name = instance_dir name // "poker.pid"
+let poker_pid_start_time_path name = poker_pid_path name ^ ".start-time"
 (* B145: the kimi notifier is spawned fork+setsid detached; track its pid as a
    supervisor sidecar so `c2c stop`/`c2c restart` kill+respawn it (otherwise it
    survives restart and runs stale code after an upgrade). *)
 let notifier_pid_path name = instance_dir name // "notifier.pid"
+let notifier_pid_start_time_path name = notifier_pid_path name ^ ".start-time"
 let stderr_log_path name = instance_dir name // "stderr.log"
 let client_log_path name = instance_dir name // "client.log"
 let headless_thread_id_handoff_path name = instance_dir name // "thread-id-handoff.jsonl"
@@ -2965,20 +3755,14 @@ let write_config (cfg : instance_config) =
       Yojson.Safe.pretty_to_channel oc (`Assoc fields);
       output_string oc "\n")
 
-let load_config_opt (name : string) : instance_config option =
-  let path = config_path name in
-  if not (Sys.file_exists path) then None
-  else
-    match C2c_io.read_json_opt path with
-    | None -> None
-    | Some json ->
-      (* B212 defence-in-depth: a config that is not a harness-client instance
-         (e.g. the machine-wide relay connector's supervised config, which omits
-         session_id/alias/resume) must not escape as an uncaught Not_found from
-         the [gs]/[gf]/[gl] helpers below. Any missing-required-field failure
-         degrades to None (treated as "no usable config") rather than crashing
-         a recovery path like `c2c restart`. *)
-      (try
+let parse_instance_config_json (json : Yojson.Safe.t) : instance_config option =
+  (* B212 defence-in-depth: a config that is not a harness-client instance
+     (e.g. the machine-wide relay connector's supervised config, which omits
+     session_id/alias/resume) must not escape as an uncaught Not_found from
+     the [gs]/[gf]/[gl] helpers below. Any missing-required-field failure
+     degrades to None (treated as "no usable config") rather than crashing
+     a recovery path like `c2c restart`. *)
+  try
         let a = match json with `Assoc a -> a | _ -> raise Not_found in
         let gs k = match List.assoc_opt k a with Some (`String s) -> s | _ -> raise Not_found in
         let gso k = match List.assoc_opt k a with Some (`String s) -> Some s | _ -> None in
@@ -3006,7 +3790,49 @@ let load_config_opt (name : string) : instance_config option =
                agent_name = gso "agent_name";
                last_exit_code = gio "last_exit_code";
                last_exit_reason = gso "last_exit_reason" }
-      with Not_found -> None)
+  with Not_found -> None
+
+let load_config_opt (name : string) : instance_config option =
+  let path = config_path name in
+  if not (Sys.file_exists path) then None
+  else
+    match C2c_io.read_json_opt path with
+    | None -> None
+    | Some json -> parse_instance_config_json json
+
+(* Recovery decisions must not classify a pathname using one inode and then
+   parse a replacement through symlink-following [open_in]. *)
+type instance_config_read =
+  | Instance_config_missing
+  | Instance_config_present of instance_config
+  | Instance_config_unknown of string
+
+type instance_config_snapshot = {
+  config : instance_config;
+  contents : string;
+}
+
+let read_config_snapshot_nofollow (name : string) :
+    (instance_config_snapshot, instance_config_read) result =
+  match read_regular_file_nofollow (config_path name) with
+  | Regular_file_missing -> Error Instance_config_missing
+  | Regular_file_unreadable reason -> Error (Instance_config_unknown reason)
+  | Regular_file_contents contents ->
+      (try
+         match parse_instance_config_json (Yojson.Safe.from_string contents) with
+         | Some config -> Ok { config; contents }
+         | None -> Error (Instance_config_unknown "invalid instance config")
+       with e -> Error (Instance_config_unknown (Printexc.to_string e)))
+
+let read_config_nofollow (name : string) : instance_config_read =
+  match read_config_snapshot_nofollow name with
+  | Ok snapshot -> Instance_config_present snapshot.config
+  | Error state -> state
+
+let load_config_opt_nofollow (name : string) : instance_config option =
+  match read_config_nofollow name with
+  | Instance_config_present cfg -> Some cfg
+  | Instance_config_missing | Instance_config_unknown _ -> None
 
 (* Resolve effective extra_args on (re-)launch.
 
@@ -3093,8 +3919,9 @@ let pid_alive (pid : int) : bool =
    belongs to that other launch and comparing against it would be worse than
    having no evidence at all. *)
 let recorded_outer_start_ts (name : string) ~(pid : int) : float option =
-  try
-    match Yojson.Safe.from_file (meta_json_path name) with
+  match read_regular_file_nofollow (meta_json_path name) with
+  | Regular_file_contents contents ->
+    (try match Yojson.Safe.from_string contents with
     | `Assoc fields ->
         let meta_pid =
           match List.assoc_opt "pid" fields with
@@ -3108,7 +3935,8 @@ let recorded_outer_start_ts (name : string) ~(pid : int) : float option =
           | Some (`Int i) -> Some (float_of_int i)
           | _ -> None)
     | _ -> None
-  with _ -> None
+    with _ -> None)
+  | Regular_file_missing | Regular_file_unreadable _ -> None
 
 (* #85: is this instance's recorded outer pid still OUR process? Distinct from
    [pid_alive], which only asks whether the number is in use — a recycled pid
@@ -3137,12 +3965,82 @@ let outer_pid_is_ours (name : string) ~(pid : int) : bool =
 let inner_pid_is_ours (name : string) ~(pid : int) : bool =
   C2c_pid_identity.pidfile_pid_is_ours ~pidfile:(inner_pid_path name) ~pid
 
+let parse_positive_int_record (contents : string) : int option =
+  match int_of_string_opt (String.trim contents) with
+  | Some value when value > 0 -> Some value
+  | _ -> None
+
 let read_pid (path : string) : int option =
-  try
-    let ic = open_in path in
-    Fun.protect ~finally:(fun () -> close_in ic)
-      (fun () -> int_of_string_opt (String.trim (input_line ic)))
-  with _ -> None
+  match read_regular_file_nofollow path with
+  | Regular_file_contents contents -> parse_positive_int_record contents
+  | Regular_file_missing | Regular_file_unreadable _ -> None
+
+type pidfile_state =
+  | Pidfile_absent
+  | Pidfile_valid of int
+  | Pidfile_unknown of string
+
+(* Lifecycle decisions must distinguish a missing outer.pid from a path that
+   exists but cannot be trusted.  [lstat] and [O_NOFOLLOW] make a symlink or a
+   replacement race an unknown record rather than a readable PID. *)
+let read_pid_state (path : string) : pidfile_state =
+  let unknown reason = Pidfile_unknown reason in
+  match read_regular_file_nofollow path with
+  | Regular_file_missing -> Pidfile_absent
+  | Regular_file_unreadable reason -> unknown reason
+  | Regular_file_contents contents ->
+      (match parse_positive_int_record contents with
+       | Some pid -> Pidfile_valid pid
+       | None -> unknown "malformed PID record")
+
+type pid_record_state =
+  | Pid_record_absent
+  | Pid_record_present of int * int
+  | Pid_record_unknown
+
+let pid_record_paths_match ~(pid_path : string) ~(start_time_path : string) : bool =
+  Filename.dirname pid_path = Filename.dirname start_time_path
+  && start_time_path = pid_path ^ ".start-time"
+
+let read_regular_int_nofollow path : int option =
+  match read_regular_file_nofollow path with
+  | Regular_file_contents contents -> parse_positive_int_record contents
+  | Regular_file_missing | Regular_file_unreadable _ -> None
+
+(* Read both records only after proving their paths are the exact paired
+   regular files expected by the lifecycle owner.  A missing pair is the only
+   confirmed absence; every other path/content failure is uncertainty. *)
+let read_pid_record ~(pid_path : string) ~(start_time_path : string) =
+  if not (pid_record_paths_match ~pid_path ~start_time_path) then
+    Pid_record_unknown
+  else
+    let classify path =
+      match lifecycle_path_state path with
+      | Lifecycle_path_present ->
+          (try
+             match (Unix.lstat path).Unix.st_kind with
+             | Unix.S_REG -> `Regular
+             | _ -> `Unknown
+           with _ -> `Unknown)
+      | Lifecycle_path_absent -> `Absent
+      | Lifecycle_path_quarantined | Lifecycle_path_unknown -> `Unknown
+    in
+    match classify pid_path, classify start_time_path with
+    | `Absent, `Absent -> Pid_record_absent
+    | `Regular, `Regular ->
+        (match read_regular_int_nofollow pid_path,
+               read_regular_int_nofollow start_time_path with
+         | Some pid, Some start_time -> Pid_record_present (pid, start_time)
+         | _ -> Pid_record_unknown)
+    | _ -> Pid_record_unknown
+
+let codex_daemon_sidecar_pid_is_ours ~(pid_path : string)
+    ~(start_time_path : string) ~(pid : int) : bool =
+  match read_pid_record ~pid_path ~start_time_path,
+        C2c_mcp.Broker.read_pid_start_time pid with
+  | Pid_record_present (recorded, expected), Some actual ->
+      recorded = pid && expected = actual
+  | _ -> false
 
 let write_pid (path : string) (pid : int) =
   let dir = Filename.dirname path in
@@ -3151,8 +4049,443 @@ let write_pid (path : string) (pid : int) =
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc (Printf.sprintf "%d\n" pid))
 
+let write_codex_daemon_sidecar_pid (name : string) (pid : int) =
+  let pid_path = codex_daemon_sidecar_pid_path name in
+  let start_time_path = codex_daemon_sidecar_pid_start_time_path name in
+  write_pid pid_path pid;
+  match C2c_mcp.Broker.read_pid_start_time pid with
+  | Some start_time -> write_pid start_time_path start_time
+  | None -> (try Sys.remove start_time_path with _ -> ())
+
 let remove_pidfile (path : string) =
   try Sys.remove path with Unix.Unix_error _ | Sys_error _ -> ()
+
+let path_absent_confirmed (path : string) =
+  match lifecycle_path_state path with
+  | Lifecycle_path_absent -> true
+  | Lifecycle_path_present | Lifecycle_path_quarantined
+  | Lifecycle_path_unknown -> false
+
+(* [remove_pidfile] is intentionally best-effort for ordinary cleanup. A
+   frontend teardown receipt is different: callers must not report lifecycle
+   success while the durable recovery record might still exist. *)
+let remove_pidfile_confirmed (path : string) =
+  remove_path_confirmed path
+
+(* Shared Codex-daemon sidecar cleanup. Both an explicit stop and stale-start
+   recovery must use this path so a crashed launcher cannot leave a detached
+   delivery owner or its lease behind. *)
+let stop_codex_daemon_sidecar_for_instance (name : string) : bool =
+  let path = codex_daemon_sidecar_pid_path name in
+  let start_time_path = codex_daemon_sidecar_pid_start_time_path name in
+  let stop_pid p =
+    match read_pid_record ~pid_path:path ~start_time_path with
+    | Pid_record_present (recorded_pid, start_time)
+      when recorded_pid = p
+           && codex_daemon_sidecar_pid_is_ours
+                ~pid_path:path ~start_time_path ~pid:p ->
+        stop_codex_sidecar_generation ~pid:p ~start_time ()
+    | _ -> false
+  in
+  let ok = ref true in
+  (match read_pid_record ~pid_path:path ~start_time_path with
+   | Pid_record_present (p, expected_start_time)
+     when codex_daemon_sidecar_pid_is_ours
+            ~pid_path:path ~start_time_path ~pid:p ->
+       if stop_pid p then begin
+         let same_recorded_owner =
+           match read_pid_record ~pid_path:path ~start_time_path with
+           | Pid_record_present (recorded_pid, recorded_start) ->
+               recorded_pid = p && recorded_start = expected_start_time
+           | _ -> false
+         in
+         if same_recorded_owner then begin
+           if not (remove_pid_record_pair_confirmed ~pid_path:path
+                     ~start_time_path ~pid:p ~start_time:expected_start_time)
+           then ok := false
+         end
+       end else begin
+         ok := false;
+         Printf.eprintf
+           "c2c: failed to stop Codex sidecar pid %d; retaining pidfile %s\n%!"
+           p path
+       end
+   | Pid_record_present (p, expected_start_time) ->
+       (match C2c_pid_identity.read_pid_generation p with
+        | C2c_pid_identity.Absent ->
+            if not (remove_pid_record_pair_confirmed ~pid_path:path
+                      ~start_time_path ~pid:p ~start_time:expected_start_time)
+            then ok := false
+        | C2c_pid_identity.Generation _
+        | C2c_pid_identity.Unreadable ->
+            ok := false;
+            Printf.eprintf
+              "c2c: refusing to clear uncertain Codex sidecar pid %d; retaining pidfile %s\n%!"
+              p path)
+   | Pid_record_absent -> ()
+   | Pid_record_unknown ->
+       ok := false;
+       Printf.eprintf
+         "c2c: refusing to inspect uncertain Codex sidecar pid records; retaining %s\n%!"
+         path);
+  !ok
+
+let write_pid_generation ~(pid_path : string) ~(start_time_path : string) (pid : int) =
+  write_pid pid_path pid;
+  match C2c_mcp.Broker.read_pid_start_time pid with
+  | Some start_time -> write_pid start_time_path start_time
+  | None -> remove_pidfile start_time_path
+
+let pid_record_gone ~(pid : int) ~(start_time : int option) =
+  match C2c_pid_identity.read_pid_generation pid, start_time with
+  | C2c_pid_identity.Absent, _ -> true
+  | C2c_pid_identity.Generation actual, Some expected -> actual <> expected
+  | C2c_pid_identity.Generation _, None -> false
+  | C2c_pid_identity.Unreadable, _ -> false
+
+let stop_recorded_sidecar ~(pid_path : string) ~(start_time_path : string)
+    ~(label : string) : bool =
+  match read_pid_record ~pid_path ~start_time_path with
+  | Pid_record_absent -> true
+  | Pid_record_unknown ->
+      Printf.eprintf
+        "c2c: refusing to inspect uncertain %s pid records; retaining %s\n%!"
+        label pid_path;
+      false
+  | Pid_record_present (pid, expected_start) ->
+      let owner_check () =
+        (match read_pid_record ~pid_path ~start_time_path with
+         | Pid_record_present (recorded_pid, recorded_start) ->
+             recorded_pid = pid && recorded_start = expected_start
+         | _ -> false)
+        && C2c_mcp.Broker.read_pid_start_time pid = Some expected_start
+      in
+      let reap () =
+        try
+          match Unix.waitpid [ Unix.WNOHANG ] pid with
+          | 0, _ -> false
+          | _, _ -> true
+        with Unix.Unix_error (Unix.ECHILD, _, _) -> false
+      in
+      let gone () = pid_record_gone ~pid ~start_time:(Some expected_start) || reap () in
+      if gone () then begin
+        remove_pid_record_pair_confirmed ~pid_path ~start_time_path ~pid
+          ~start_time:expected_start
+      end else if not (owner_check ()) then begin
+        Printf.eprintf
+          "c2c: refusing to signal foreign or unverifiable %s pid %d; retaining %s\n%!"
+          label pid pid_path;
+        false
+      end else begin
+        let signal signal =
+          (* Revalidate the owner immediately before every signal. For exact
+             generations this uses pidfd_send_signal; legacy pidfiles retain
+             the mtime/leader guard and fail closed when it cannot prove the
+             process is ours. *)
+          if not (owner_check ()) then false
+          else
+            C2c_pid_identity.signal_pid_if_generation_matches
+              ~pid ~start_time:expected_start ~signal
+        in
+        let wait timeout_s =
+          let deadline = Unix.gettimeofday () +. timeout_s in
+          let rec loop () =
+            if gone () then true
+            else if Unix.gettimeofday () >= deadline then false
+            else (Unix.sleepf 0.05; loop ())
+          in
+          loop ()
+        in
+        ignore (signal Sys.sigterm);
+        if not (wait 2.0) then ignore (signal Sys.sigkill);
+        if wait 1.0 then begin
+          if remove_pid_record_pair_confirmed ~pid_path ~start_time_path ~pid
+               ~start_time:expected_start
+          then true
+          else begin
+            Printf.eprintf
+              "c2c: could not confirm removal of %s pid records; retaining for retry\n%!"
+              label;
+            false
+          end
+        end else begin
+          Printf.eprintf
+            "c2c: failed to reap %s pid %d; retaining %s for retry\n%!"
+            label pid pid_path;
+          false
+        end
+      end
+
+type frontend_teardown_expectation =
+  | Codex_frontend_teardown_required
+  | Codex_frontend_teardown_absent
+  | Codex_frontend_teardown_unknown of string
+
+type frontend_teardown_record = {
+  frontend_pid : int;
+  frontend_start_time : int option;
+  sentinel_pid : int option;
+  sentinel_start_time : int option;
+}
+
+let frontend_teardown_record_of_contents contents : frontend_teardown_record option =
+  try match Yojson.Safe.from_string contents with
+    | `Assoc fields ->
+        let int key =
+          match List.assoc_opt key fields with
+          | Some (`Int n) -> Some n
+          | Some (`String s) -> int_of_string_opt (String.trim s)
+          | _ -> None
+        in
+        let optional_int key =
+          match List.assoc_opt key fields with
+          | None | Some `Null -> Some None
+          | Some (`Int n) -> Some (Some n)
+          | Some (`String s) ->
+              Option.map (fun n -> Some n) (int_of_string_opt (String.trim s))
+          | _ -> None
+        in
+        (match int "frontend_pid", optional_int "frontend_pid_start_time",
+               optional_int "sentinel_pid", optional_int "sentinel_start_time" with
+         | Some frontend_pid, Some frontend_start_time, Some sentinel_pid,
+           Some sentinel_start_time ->
+             Some
+               { frontend_pid;
+                 frontend_start_time;
+                 sentinel_pid;
+                 sentinel_start_time }
+         | _ -> None)
+    | _ -> None
+  with _ -> None
+
+let read_frontend_teardown_record path : frontend_teardown_record option =
+  match read_regular_file_nofollow path with
+  | Regular_file_missing | Regular_file_unreadable _ -> None
+  | Regular_file_contents contents -> frontend_teardown_record_of_contents contents
+
+let process_group_alive pgid =
+  if pgid <= 0 then false
+  else try Unix.kill (-pgid) 0; true
+  with Unix.Unix_error (Unix.ESRCH, _, _) -> false
+     | Unix.Unix_error _ -> true
+
+let process_generation_gone pid expected =
+  match C2c_mcp.Broker.read_pid_start_time pid with
+  | Some actual -> actual <> expected
+  | None ->
+      (* [read_pid_start_time] deliberately collapses a dead process and a
+         procfs read error. Only a stat-level ENOENT proves the process is
+         gone; all other uncertainty retains the recovery record. *)
+      let proc_path = Printf.sprintf "/proc/%d" pid in
+      (try
+         ignore (Unix.stat proc_path);
+         false
+       with
+       | Unix.Unix_error (Unix.ENOENT, _, _) -> true
+       | _ -> false)
+
+let frontend_owner_valid (r : frontend_teardown_record) =
+  r.frontend_pid > 0 &&
+  let sentinel_valid () =
+    match r.sentinel_pid, r.sentinel_start_time with
+    | Some pid, Some expected ->
+        C2c_mcp.Broker.read_pid_start_time pid = Some expected
+        && C2c_pid_identity.proc_pgrp pid = Some r.frontend_pid
+    | _ -> false
+  in
+  let leader_valid () =
+    C2c_pid_identity.proc_pgrp r.frontend_pid = Some r.frontend_pid
+    &&
+    match r.frontend_start_time with
+    | Some expected ->
+        C2c_mcp.Broker.read_pid_start_time r.frontend_pid = Some expected
+    | None -> false
+  in
+  sentinel_valid () || leader_valid ()
+
+let frontend_teardown_owner_gone (r : frontend_teardown_record) =
+  match r.frontend_start_time with
+  | Some expected -> process_generation_gone r.frontend_pid expected
+  | None ->
+      (match r.sentinel_pid, r.sentinel_start_time with
+       | Some pid, Some expected -> process_generation_gone pid expected
+       | _ -> false)
+
+(* A missing receipt is harmless for ordinary hook-backed clients, but it is
+   not evidence of cleanup for a Codex app-server instance. The durable broker
+   registration is the pre-fork marker that lets stale recovery detect that
+   the strict receipt is required even when publication itself failed. *)
+let codex_frontend_teardown_expected_for_config
+    (name : string) (cfg : instance_config) : frontend_teardown_expectation =
+  let record_path = codex_frontend_teardown_record_path name in
+  let stat_path path =
+    match lifecycle_path_state path with
+    | Lifecycle_path_present ->
+        (try
+           match (Unix.lstat path).Unix.st_kind with
+           | Unix.S_REG -> `Present
+           | _ -> `Uncertain
+         with _ -> `Uncertain)
+    | Lifecycle_path_absent -> `Missing
+    | Lifecycle_path_quarantined | Lifecycle_path_unknown -> `Uncertain
+  in
+  match stat_path record_path with
+  | `Present -> Codex_frontend_teardown_required
+  | `Uncertain ->
+      Codex_frontend_teardown_unknown
+        (Printf.sprintf "Codex frontend teardown record %s cannot be inspected" record_path)
+  | `Missing ->
+      if cfg.client <> "codex" then Codex_frontend_teardown_absent
+      else
+          let root = String.trim cfg.broker_root in
+          if root = "" then
+            Codex_frontend_teardown_unknown
+              "Codex broker root could not be resolved"
+          else
+            (match (try Some (Unix.stat root).Unix.st_kind with _ -> None) with
+             | Some Unix.S_DIR ->
+                 (match read_managed_registry (root // "registry.json") with
+                  | Managed_registry_missing -> Codex_frontend_teardown_absent
+                  | Managed_registry_unknown reason ->
+                      Codex_frontend_teardown_unknown
+                        (Printf.sprintf
+                           "Codex broker registry at %s could not be trusted: %s"
+                           (root // "registry.json") reason)
+                  | Managed_registry_present rows ->
+                      let registered =
+                        List.exists
+                          (function
+                            | `Assoc fields ->
+                                (match List.assoc_opt "session_id" fields,
+                                       List.assoc_opt "client_type" fields with
+                                 | Some (`String sid), Some (`String "codex-app-server") ->
+                                     sid = cfg.session_id
+                                 | _ -> false)
+                            | _ -> false)
+                          rows
+                      in
+                      if registered then Codex_frontend_teardown_required
+                      else Codex_frontend_teardown_absent)
+             | _ ->
+                 Codex_frontend_teardown_unknown
+                   (Printf.sprintf "Codex broker root %s is missing or not a directory" root))
+
+let codex_frontend_teardown_expected (name : string) : frontend_teardown_expectation =
+  let record_path = codex_frontend_teardown_record_path name in
+  let record_state () =
+    match lifecycle_path_state record_path with
+    | Lifecycle_path_present ->
+        (try
+           match (Unix.lstat record_path).Unix.st_kind with
+           | Unix.S_REG -> `Present
+           | _ -> `Uncertain
+         with _ -> `Uncertain)
+    | Lifecycle_path_absent -> `Missing
+    | Lifecycle_path_quarantined | Lifecycle_path_unknown -> `Uncertain
+  in
+  match record_state () with
+  | `Present -> Codex_frontend_teardown_required
+  | `Uncertain ->
+      Codex_frontend_teardown_unknown
+        (Printf.sprintf "Codex frontend teardown record %s cannot be inspected" record_path)
+  | `Missing ->
+      match read_config_nofollow name with
+      | Instance_config_missing ->
+          Codex_frontend_teardown_unknown
+            (Printf.sprintf "Codex instance config %s is missing, unreadable, or invalid"
+               (config_path name))
+      | Instance_config_unknown reason ->
+          Codex_frontend_teardown_unknown
+            (Printf.sprintf "Codex instance config %s could not be trusted: %s"
+               (config_path name) reason)
+      | Instance_config_present cfg ->
+          codex_frontend_teardown_expected_for_config name cfg
+
+let stop_frontend_teardown_record (name : string) : bool =
+  let path = codex_frontend_teardown_record_path name in
+  let regular_record =
+    try (Unix.lstat path).Unix.st_kind = Unix.S_REG with _ -> false
+  in
+  if not regular_record then begin
+    Printf.eprintf
+      "c2c: Codex frontend teardown record %s is missing, unreadable, or non-regular; retaining lifecycle state for retry\n%!"
+      path;
+    false
+  end
+  else
+    try
+      with_file_lock (path ^ ".lock") (fun () ->
+        match read_regular_file_nofollow path with
+        | Regular_file_missing | Regular_file_unreadable _ ->
+            Printf.eprintf
+              "c2c: invalid Codex frontend teardown record %s; retaining for retry\n%!"
+              path;
+            false
+        | Regular_file_contents contents ->
+            (match frontend_teardown_record_of_contents contents with
+             | None ->
+                 Printf.eprintf
+                   "c2c: invalid Codex frontend teardown record %s; retaining for retry\n%!"
+                   path;
+                 false
+             | Some record ->
+            let group_gone () = not (process_group_alive record.frontend_pid) in
+            let remove_record () =
+              if remove_path_contents_confirmed path contents then true
+              else begin
+                Printf.eprintf
+                  "c2c: could not remove Codex frontend teardown record %s; retaining for retry\n%!"
+                  path;
+                false
+              end
+            in
+            if group_gone () && frontend_teardown_owner_gone record then begin
+              remove_record ()
+            end else if group_gone () then begin
+              Printf.eprintf
+                "c2c: Codex frontend group %d is gone but its exact generation is not proven; retaining %s\n%!"
+                record.frontend_pid path;
+              false
+            end else if not (frontend_owner_valid record) then begin
+              Printf.eprintf
+                "c2c: cannot owner-validate Codex frontend group %d; retaining %s\n%!"
+                record.frontend_pid path;
+              false
+            end else begin
+              let signal_group signal =
+                (* Revalidate the exact sentinel/leader immediately before each
+                   group signal. A numeric PGID can be recycled after the
+                   frontend leader exits; an owner-bound member must still be
+                   in this group at the signal point. *)
+                if not (frontend_owner_valid record) then false
+                else
+                  try Unix.kill (-record.frontend_pid) signal; true
+                  with Unix.Unix_error _ -> false
+              in
+              let wait_gone timeout_s =
+                let deadline = Unix.gettimeofday () +. timeout_s in
+                let rec loop () =
+                  if group_gone () then true
+                  else if Unix.gettimeofday () >= deadline then false
+                  else (Unix.sleepf 0.05; loop ())
+                in
+                loop ()
+              in
+              ignore (signal_group Sys.sigterm);
+              if not (wait_gone 2.0) then ignore (signal_group Sys.sigkill);
+              if wait_gone 2.0 && frontend_teardown_owner_gone record then
+                remove_record ()
+              else begin
+                Printf.eprintf
+                  "c2c: failed to reap Codex frontend group %d; retaining %s for retry\n%!"
+                  record.frontend_pid path;
+                false
+              end
+            end)
+            )
+    with _ ->
+      Printf.eprintf "c2c: failed to inspect Codex frontend teardown record %s; retaining it\n%!" path;
+      false
 
 (* ---------------------------------------------------------------------------
  * Instance lock  — prevents two concurrent `c2c start` for the same name.
@@ -3191,13 +4524,8 @@ let remove_pidfile (path : string) =
     [test_i77_derived_alias_collision_register_backstops_namescoped_guard] pins
     that the authority still refuses the derived-alias collision even though
     this guard is blind to it. *)
-let registry_alive_conflict ~(broker_root : string) ~(name : string)
-    : (string * int) option =
-  let reg_path = broker_root // "registry.json" in
-  if not (Sys.file_exists reg_path) then None
-  else begin
-    match (try Some (Yojson.Safe.from_file reg_path) with _ -> None) with
-    | Some (`List regs) ->
+let registry_alive_conflict_from_rows ~(name : string)
+    (regs : Yojson.Safe.t list) : (string * int) option =
         let self = Unix.getpid () in
         (* #67: [Broker.register]'s [same_process] exempts a same-pid row ONLY
            when the stored [pid_start_time] matches the registering process's,
@@ -3296,13 +4624,38 @@ let registry_alive_conflict ~(broker_root : string) ~(name : string)
              let pid = (match List.assoc_opt "pid" fields with Some (`Int p) -> p | _ -> 0) in
              Some (alias, pid)
          | _ -> None)
+
+let registry_alive_conflict_strict ~(broker_root : string) ~(name : string) :
+    ((string * int) option, string) result =
+  match read_managed_registry (broker_root // "registry.json") with
+  | Managed_registry_missing -> Ok None
+  | Managed_registry_unknown reason -> Error reason
+  | Managed_registry_present rows ->
+      (try Ok (registry_alive_conflict_from_rows ~name rows)
+       with e -> Error (Printexc.to_string e))
+
+let registry_alive_conflict ~(broker_root : string) ~(name : string)
+    : (string * int) option =
+  (* Compatibility/read-only helper: callers that intentionally inspect a
+     partially upgraded registry retain the historical best-effort behavior.
+     Startup uses [registry_alive_conflict_strict] below, so this path cannot
+     authorize a launch. *)
+  let reg_path = broker_root // "registry.json" in
+  if not (Sys.file_exists reg_path) then None
+  else
+    match (try Some (Yojson.Safe.from_file reg_path) with _ -> None) with
+    | Some (`List rows) -> registry_alive_conflict_from_rows ~name rows
     | _ -> None
-  end
 
 let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
-  match registry_alive_conflict ~broker_root ~name with
-  | None -> ()
-  | Some (alias, pid) ->
+  match registry_alive_conflict_strict ~broker_root ~name with
+  | Error reason ->
+      Printf.eprintf
+        "FATAL: cannot trust broker registry %s; refusing startup: %s\n%!"
+        (broker_root // "registry.json") reason;
+      exit 1
+  | Ok None -> ()
+  | Ok (Some (alias, pid)) ->
       (* #56: `c2c stop` only knows about managed instances, so it is a dead
          end when the row belongs to an unmanaged MCP peer — which is the
          common case for a plain broker registration.  Name both exits.
@@ -3383,11 +4736,21 @@ let run_tmux_loop ~(name : string) ~(tmux_location : string)
   mkdir_p inst_dir;
   check_registry_alias_alive ~broker_root ~name;
   let _lock_fd = acquire_instance_lock ~name in
-  write_pid (outer_pid_path name) (Unix.getpid ());
+  write_pid_generation ~pid_path:(outer_pid_path name)
+    ~start_time_path:(outer_pid_start_time_path name) (Unix.getpid ());
   write_tmux_target_info name target_info;
   let cleanup_and_exit code =
-    remove_pidfile (outer_pid_path name);
-    (try clear_registration_pid ~broker_root ~session_id:name with _ -> ());
+    let registration_ok =
+      try clear_registration_pid ~broker_root ~session_id:name
+      with _ -> false
+    in
+    if registration_ok then begin
+      remove_pidfile (outer_pid_path name);
+      remove_pidfile (outer_pid_start_time_path name)
+    end else
+      Printf.eprintf
+        "c2c: retaining %s registration and outer pidfiles after cleanup uncertainty\n%!"
+        name;
     code
   in
   ignore (Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
@@ -4964,19 +6327,47 @@ let run_pty_loop ~(name : string) ~(extra_args : string list)
         exit 127)
   end else begin
     (* Parent *)
+    let child_start_time = C2c_mcp.Broker.read_pid_start_time pid in
     (* Register the managed alias *)
-    (try
-      eager_register_managed_alias ~broker_root ~session_id ~alias:name
-        ~pid ~client_type:"pty" ()
-    with e ->
-      Printf.eprintf "warning: registration failed: %s\n%!" (Printexc.to_string e));
-    (* PTY deliver loop (runs in parent, polling broker and writing to master) *)
-    (try pty_deliver_loop ~master_fd ~broker_root ~session_id ~name ~child_pid:pid with _ -> ());
-    (* When pty_deliver_loop exits (e.g. on error), kill the child and wait *)
-    (try Unix.kill pid Sys.sigterm with _ -> ());
-    ignore (Unix.waitpid [] pid);
-    Unix.close master_fd;
-    0
+    let registration_ok =
+      match
+        eager_register_managed_alias ~broker_root ~session_id ~alias:name
+          ~pid ~client_type:"pty" ()
+      with
+      | Ok () -> true
+      | Error reason ->
+          Printf.eprintf "error: PTY registration failed: %s\n%!" reason;
+          false
+    in
+    if not registration_ok then begin
+      (match child_start_time with
+       | Some start_time ->
+           ignore
+             (C2c_pid_identity.signal_process_group_if_generation_matches
+                ~pid ~start_time ~signal:Sys.sigterm)
+       | None -> ());
+      ignore (Unix.waitpid [] pid);
+      Unix.close master_fd;
+      1
+    end else begin
+      (* PTY deliver loop (runs in parent, polling broker and writing to master) *)
+      (try pty_deliver_loop ~master_fd ~broker_root ~session_id ~name ~child_pid:pid with _ -> ());
+      (* When pty_deliver_loop exits (e.g. on error), terminate only the exact
+         generation that forkpty published. A raw numeric PID can be recycled
+         between the delivery loop and cleanup. *)
+      (match child_start_time with
+       | Some start_time ->
+           ignore
+             (C2c_pid_identity.signal_process_group_if_generation_matches
+                ~pid ~start_time ~signal:Sys.sigterm)
+       | None ->
+           Printf.eprintf
+             "c2c: refusing to signal PTY child %d; generation is unreadable\n%!"
+             pid);
+      ignore (Unix.waitpid [] pid);
+      Unix.close master_fd;
+      0
+    end
   end
 
 (* ---------------------------------------------------------------------------
@@ -5115,32 +6506,34 @@ let run_outer_loop ~(name : string) ~(client : string)
       let notifier_pid = ref None in
       (* Inner child PID — set after fork so the SIGTERM handler can kill it. *)
       let inner_child_pid = ref None in
+      let inner_child_start_time = ref None in
 
-      let stop_sidecar pid_opt =
+      let stop_sidecar pid_opt ~pid_path ~start_time_path ~label =
         match pid_opt with
-        | None -> ()
-        | Some p ->
-            (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
-            (* Wait up to 2s for graceful exit using waitpid WNOHANG.
-               Using WNOHANG avoids zombie reaping confusion: we just poll
-               until the process exits or 2s elapses. *)
-            let rec wait_try n =
-              if n <= 0 then ()
-              else (
-                match Unix.waitpid [Unix.WNOHANG] p with
-                | 0, _ -> Unix.sleepf 0.1; wait_try (n - 1)
-                | _, _ -> ()
-              )
-            in
-            wait_try 20;
-            (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ())
+        | None -> true
+        | Some _ ->
+            stop_recorded_sidecar ~pid_path ~start_time_path ~label
       in
 
       let kill_inner_target signal pid =
-        try
-          if client = "codex-headless" then Unix.kill pid signal
-          else Unix.kill (- pid) signal
-        with Unix.Unix_error _ -> ()
+        match !inner_child_start_time with
+        | Some start_time ->
+            let signalled =
+              if client = "codex-headless" then
+                C2c_pid_identity.signal_pid_if_generation_matches
+                  ~pid ~start_time ~signal
+              else
+                C2c_pid_identity.signal_process_group_if_generation_matches
+                  ~pid ~start_time ~signal
+            in
+            if not signalled then
+              Printf.eprintf
+                "c2c: refusing to signal inner PID/group %d; generation or ownership changed\n%!"
+                pid
+        | None ->
+            Printf.eprintf
+              "c2c: refusing to signal inner PID/group %d; no recorded generation\n%!"
+              pid
       in
 
       (* B145: tear down the detached kimi notifier. The tracked pid may be our
@@ -5152,20 +6545,11 @@ let run_outer_loop ~(name : string) ~(client : string)
          subsequent start does not dedup against a dead/reused pid. No-op for
          non-kimi clients / when never started. *)
       let stop_notifier () =
-        (match !notifier_pid with
-         | None -> ()
-         | Some p ->
-             (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
-             let rec reap n =
-               if n <= 0 then ()
-               else
-                 match (try Unix.waitpid [ Unix.WNOHANG ] p
-                        with _ -> (p, Unix.WEXITED 0)) with
-                 | 0, _ -> Unix.sleepf 0.05; reap (n - 1)
-                 | _, _ -> ()
-             in
-             reap 40;
-             (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ()));
+        let ok =
+          stop_recorded_sidecar ~pid_path:(notifier_pid_path name)
+            ~start_time_path:(notifier_pid_start_time_path name)
+            ~label:"kimi notifier"
+        in
         (* #42: tear down the notifier under the instance alias AND any daemon
            (whatever its own alias) bound to this managed session's id (= name).
            Keyed on the instance name — provably unique — so a live/different
@@ -5174,6 +6558,7 @@ let run_outer_loop ~(name : string) ~(client : string)
         (if client = "kimi" then
            teardown_kimi_notifiers_for_stop
              ~alias:(Option.value alias_override ~default:name) ~session_id:name)
+        ; ok
       in
 
       let cleanup_and_exit code =
@@ -5186,20 +6571,35 @@ let run_outer_loop ~(name : string) ~(client : string)
              kill_inner_target Sys.sigterm p;
              Unix.sleepf 0.3;
              kill_inner_target Sys.sigkill p);
-        stop_sidecar !deliver_pid;
-        stop_sidecar !poker_pid;
-        stop_notifier ();
-        remove_pidfile (outer_pid_path name);
-        remove_pidfile (inner_pid_path name);
-        remove_pidfile (deliver_pid_path name);
-        remove_pidfile (poker_pid_path name);
-        remove_pidfile (notifier_pid_path name);
-        (* Clear pid from registration so the entry shows Unknown instead of
-           ghost-alive if the PID is later reused by an unrelated process.
-           Done inline (not via C2c_mcp.Broker) to avoid a compile-time
-           cycle: c2c_mcp.mli re-exports C2c_start, so C2c_start cannot
-           depend on C2c_mcp. *)
-        (try clear_registration_pid ~broker_root ~session_id:name with _ -> ());
+        let deliver_ok =
+          stop_sidecar !deliver_pid ~pid_path:(deliver_pid_path name)
+            ~start_time_path:(deliver_pid_start_time_path name) ~label:"deliver"
+        in
+        let poker_ok =
+          stop_sidecar !poker_pid ~pid_path:(poker_pid_path name)
+            ~start_time_path:(poker_pid_start_time_path name) ~label:"poker"
+        in
+        let notifier_ok = stop_notifier () in
+        let registration_ok =
+          deliver_ok && poker_ok && notifier_ok
+          && (try clear_registration_pid ~broker_root ~session_id:name
+              with _ -> false)
+        in
+        if registration_ok then begin
+          remove_pidfile (outer_pid_path name);
+          remove_pidfile (outer_pid_start_time_path name);
+          remove_pidfile (inner_pid_path name);
+          remove_pidfile (inner_pid_start_time_path name);
+          remove_pidfile (deliver_pid_path name);
+          remove_pidfile (deliver_pid_start_time_path name);
+          remove_pidfile (poker_pid_path name);
+          remove_pidfile (poker_pid_start_time_path name);
+          remove_pidfile (notifier_pid_path name);
+          remove_pidfile (notifier_pid_start_time_path name);
+        end else
+          Printf.eprintf
+            "c2c: retaining %s sidecar records because teardown did not confirm termination\n%!"
+            name;
         code
       in
 
@@ -5560,6 +6960,7 @@ let run_outer_loop ~(name : string) ~(client : string)
          earlier "survives restart" rationale here was wrong; the pid choice is
          right for the within-instance reason above.) *)
       let kimi_registration_authoritative = ref false in
+      let managed_registration_failed = ref false in
       (if client = "kimi" then begin
          let alias = Option.value alias_override ~default:name in
          let cwd = try Sys.getcwd () with _ -> "" in
@@ -5589,7 +6990,8 @@ let run_outer_loop ~(name : string) ~(client : string)
                       ; ("alias", `String alias)
                       ; ("reason", `String reason)
                       ; ("detail", `String (String.trim msg)) ])
-               with _ -> ()));
+               with _ -> ());
+              managed_registration_failed := true);
          (* Name/alias distinction is explicit rather than silent: peers must
             address the ALIAS, `c2c stop`/`restart` take the NAME. *)
          if String.lowercase_ascii alias <> String.lowercase_ascii name then
@@ -5628,7 +7030,8 @@ let run_outer_loop ~(name : string) ~(client : string)
                       ; ("alias", `String alias)
                       ; ("reason", `String reason)
                       ; ("detail", `String (String.trim msg)) ])
-               with _ -> ()));
+               with _ -> ());
+              managed_registration_failed := true);
          if String.lowercase_ascii alias <> String.lowercase_ascii name then
            Printf.eprintf
              "note: c2c start agy: instance name '%s' is not the broker \
@@ -5636,6 +7039,12 @@ let run_outer_loop ~(name : string) ~(client : string)
               `c2c stop`/`c2c restart` still take '%s'.\n%!"
              name alias alias name
        end);
+      if !managed_registration_failed then begin
+        Printf.eprintf
+          "c2c: refusing to launch '%s': managed registry state is uncertain; retaining lifecycle records for retry\n%!"
+          name;
+        exit 1
+      end;
       let child_pid_opt =
         try
           (* S10 (#482): compute pre-deliver hook path for needs_deliver
@@ -5656,6 +7065,11 @@ let run_outer_loop ~(name : string) ~(client : string)
           in
           let pid = match Unix.fork () with
             | 0 ->
+                (* Do not inherit the outer shutdown handlers. Reset TERM/INT
+                   before process-group or TTY setup so the exec'd frontend
+                   owns its normal signal semantics from the first instruction. *)
+                (try ignore (Sys.signal Sys.sigterm Sys.Signal_default) with _ -> ());
+                (try ignore (Sys.signal Sys.sigint Sys.Signal_default) with _ -> ());
                 (try ignore (Sys.signal Sys.sigchld Sys.Signal_default) with _ -> ());
                 (try ignore (Sys.signal Sys.sigpipe Sys.Signal_default) with _ -> ());
                 (* Interactive TUI clients run in their own process group so cleanup can
@@ -5727,16 +7141,25 @@ let run_outer_loop ~(name : string) ~(client : string)
              managed child without killing the outer loop. Also used by the
              SIGTERM handler so `c2c stop` can kill the whole inner pgid. *)
           inner_child_pid := Some pid;
-          write_pid (inner_pid_path name) pid;
+          inner_child_start_time := C2c_mcp.Broker.read_pid_start_time pid;
+          write_pid_generation ~pid_path:(inner_pid_path name)
+            ~start_time_path:(inner_pid_start_time_path name) pid;
           (if client = "codex-headless" then
-             (try
-                eager_register_managed_alias
-                  ~broker_root
-                  ~session_id:name
-                  ~alias:(Option.value alias_override ~default:name)
-                  ~pid
-                  ~client_type:"codex-headless" ()
-              with _ -> ()));
+             match
+               eager_register_managed_alias
+                 ~broker_root
+                 ~session_id:name
+                 ~alias:(Option.value alias_override ~default:name)
+                 ~pid
+                 ~client_type:"codex-headless" ()
+             with
+             | Ok () -> ()
+             | Error reason ->
+                 Printf.eprintf
+                   "error: codex-headless registration failed: %s\n%!" reason;
+                 kill_inner_target Sys.sigterm pid;
+                 (try ignore (Unix.waitpid [] pid) with _ -> ());
+                 exit 1);
           (* #40: the managed kimi alias is registered BEFORE the fork above
              (F3) — the SessionStart hook can fire the moment the child is up.
              See [register_managed_kimi_session]. *)
@@ -5768,7 +7191,8 @@ let run_outer_loop ~(name : string) ~(client : string)
              with
              | Some p ->
                  deliver_pid := Some p;
-                 write_pid (deliver_pid_path name) p
+                 write_pid_generation ~pid_path:(deliver_pid_path name)
+                   ~start_time_path:(deliver_pid_start_time_path name) p
              | None ->
                  (* B013: surface the failure loudly instead of going
                     dark silently. *)
@@ -6041,13 +7465,18 @@ let run_outer_loop ~(name : string) ~(client : string)
              with
              | Some p ->
                  notifier_pid := Some p;
-                 write_pid (notifier_pid_path name) p
+                 write_pid_generation
+                   ~pid_path:(notifier_pid_path name)
+                   ~start_time_path:(notifier_pid_start_time_path name) p
              | None -> ()
            end);
            (* Start poker *)
           (if !poker_pid = None && cfg.needs_poker then
              match start_poker ~name ~client ~broker_root ?child_pid_opt:(Some pid) () with
-             | Some p -> poker_pid := Some p; write_pid (poker_pid_path name) p
+             | Some p ->
+                 poker_pid := Some p;
+                 write_pid_generation ~pid_path:(poker_pid_path name)
+                   ~start_time_path:(poker_pid_start_time_path name) p
              | None -> ());
           (* Start periodic title ticker — updates glyph based on broker state (✉ ⏸). *)
           start_title_ticker ~broker_root ~session_id:name ~alias:effective_alias
@@ -6137,15 +7566,21 @@ let run_outer_loop ~(name : string) ~(client : string)
                         else
                           let teardown () =
                             try
-                              stop_sidecar !deliver_pid;
-                              stop_sidecar !poker_pid;
+                              ignore
+                                (stop_sidecar !deliver_pid
+                                   ~pid_path:(deliver_pid_path name)
+                                   ~start_time_path:(deliver_pid_start_time_path name)
+                                   ~label:"deliver");
+                              ignore
+                                (stop_sidecar !poker_pid
+                                   ~pid_path:(poker_pid_path name)
+                                   ~start_time_path:(poker_pid_start_time_path name)
+                                   ~label:"poker");
                               stop_notifier ();
                               if child_pid_opt > 0 then begin
-                                (try Unix.kill (-child_pid_opt) Sys.sigterm
-                                 with _ -> ());
+                                kill_inner_target Sys.sigterm child_pid_opt;
                                 Unix.sleepf 0.3;
-                                (try Unix.kill (-child_pid_opt) Sys.sigkill
-                                 with _ -> ());
+                                kill_inner_target Sys.sigkill child_pid_opt;
                                 (try
                                    ignore
                                      (Unix.waitpid [ Unix.WNOHANG ]
@@ -6220,7 +7655,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                    (try tcsetpgrp Unix.stdin (Unix.getpid ()) with _ -> ());
                    (try Unix.kill (Unix.getpid ()) Sys.sigstop with _ -> ());
                    (try tcsetpgrp Unix.stdin child_pid_opt with _ -> ());
-                   (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
+                   kill_inner_target Sys.sigcont child_pid_opt;
                    wait_for_child ()
                | _, Unix.WSTOPPED sig_n ->
                    (* SIGTTIN/SIGTTOU/SIGSTOP etc — not a user suspend.
@@ -6230,7 +7665,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                    Printf.eprintf
                      "[c2c-start/%s] child stopped (sig=%d, not SIGTSTP=%d); SIGCONTing, not suspending\n%!"
                      name sig_n Sys.sigtstp;
-                   (try Unix.kill (- child_pid_opt) Sys.sigcont with _ -> ());
+                   kill_inner_target Sys.sigcont child_pid_opt;
                    wait_for_child ()
                | _, Unix.WEXITED 0 -> (0, Some "clean")
                | _, Unix.WEXITED n -> (n, Some (Printf.sprintf "exit:%d" n))
@@ -6317,8 +7752,12 @@ let run_outer_loop ~(name : string) ~(client : string)
          capture + execvp path directly. *)
       if exit_code = 42 then begin
         (* Stop sidecars (deliver, poker). *)
-        stop_sidecar !deliver_pid;
-        stop_sidecar !poker_pid;
+        ignore
+          (stop_sidecar !deliver_pid ~pid_path:(deliver_pid_path name)
+             ~start_time_path:(deliver_pid_start_time_path name) ~label:"deliver");
+        ignore
+          (stop_sidecar !poker_pid ~pid_path:(poker_pid_path name)
+             ~start_time_path:(poker_pid_start_time_path name) ~label:"poker");
         (* B145: also cycle the kimi notifier — the re-exec below picks up a
            fresh broker_root, and a surviving notifier would keep draining the
            STALE root. Killing it here means the re-exec'd start respawns it
@@ -6570,8 +8009,92 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
             exit 1));
 
   let inst_dir = instance_dir name in
-  (match read_pid (outer_pid_path name) with
-   | Some pid when pid_alive pid ->
+  let lifecycle_record_paths =
+    [ outer_pid_start_time_path name
+    ; inner_pid_path name
+    ; inner_pid_start_time_path name
+    ; codex_daemon_sidecar_pid_path name
+    ; codex_daemon_sidecar_pid_start_time_path name
+    ; notifier_pid_path name
+    ; notifier_pid_start_time_path name
+    ; codex_frontend_teardown_record_path name ]
+  in
+  let validated_stale_config : instance_config_snapshot option ref = ref None in
+  let recover_stale_instance () =
+    Printf.eprintf
+      "note: stale instance '%s'; cleaning up lifecycle records in %s\n%!"
+      name inst_dir;
+    let snapshot =
+      match read_config_snapshot_nofollow name with
+      | Ok snapshot ->
+          validated_stale_config := Some snapshot;
+          snapshot
+      | Error (Instance_config_missing | Instance_config_unknown _) ->
+          Printf.eprintf
+            "error: cannot trust instance config for stale '%s'; refusing lifecycle cleanup and startup\n%!"
+            name;
+          exit 1
+      | Error (Instance_config_present _) ->
+          Printf.eprintf
+            "error: cannot classify instance config for stale '%s'; refusing lifecycle cleanup and startup\n%!"
+            name;
+          exit 1
+    in
+    let session_id = snapshot.config.session_id in
+    let frontend_ok =
+      match codex_frontend_teardown_expected_for_config name snapshot.config with
+      | Codex_frontend_teardown_required -> stop_frontend_teardown_record name
+      | Codex_frontend_teardown_absent -> true
+      | Codex_frontend_teardown_unknown reason ->
+          Printf.eprintf
+            "c2c: cannot determine whether Codex frontend teardown is required for %s: %s; retaining lifecycle state\n%!"
+            name reason;
+          false
+    in
+    let codex_leases_ok =
+      stop_codex_sidecars_for_session ~broker_session_id:session_id
+    in
+    let codex_daemon_ok = stop_codex_daemon_sidecar_for_instance name in
+    let deliver_ok =
+      stop_recorded_sidecar ~pid_path:(deliver_pid_path name)
+        ~start_time_path:(deliver_pid_start_time_path name) ~label:"deliver"
+    in
+    let poker_ok =
+      stop_recorded_sidecar ~pid_path:(poker_pid_path name)
+        ~start_time_path:(poker_pid_start_time_path name) ~label:"poker"
+    in
+    if not (frontend_ok && codex_leases_ok && codex_daemon_ok
+            && deliver_ok && poker_ok) then begin
+      Printf.eprintf
+        "error: refusing to start '%s' while orphaned frontend/sidecar teardown is unconfirmed; retry `c2c stop %s`\n%!"
+        name name;
+      exit 1
+    end;
+    let all_lifecycle_records =
+      outer_pid_path name :: lifecycle_record_paths
+    in
+    if not (List.for_all remove_path_confirmed all_lifecycle_records) then begin
+      Printf.eprintf
+        "error: stale instance '%s' has lifecycle records that could not be removed; refusing startup\n%!"
+        name;
+      exit 1
+    end
+  in
+  let has_lifecycle_records () =
+    List.exists (fun path -> not (path_absent_confirmed path))
+      lifecycle_record_paths
+  in
+  (* The outer PID is actionable only as a complete paired record.  Reading
+     outer.pid alone and applying [pid_alive] would mistake a recycled PID for
+     this instance and would also let a missing/malformed generation record
+     enter stale cleanup. *)
+  (match read_pid_record ~pid_path:(outer_pid_path name)
+           ~start_time_path:(outer_pid_start_time_path name) with
+   | Pid_record_present (pid, expected_start) ->
+       (match C2c_pid_identity.read_pid_generation pid with
+        | C2c_pid_identity.Generation actual
+          when actual = expected_start
+               && C2c_pid_identity.proc_tgid pid = Some pid ->
        let use_color = Unix.isatty Unix.stderr in
        let red = if use_color then "\027[1;31m" else "" in
        let yellow = if use_color then "\027[33m" else "" in
@@ -6583,23 +8106,45 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
          red reset yellow name reset pid
          yellow name reset inst_dir;
        exit 1
-   | Some _ ->
-       (* Stale pid file — process is dead. Clean up all pid files so the
-          restart doesn't see phantom sidecar PIDs. *)
+        | C2c_pid_identity.Absent ->
+            (* The paired record is valid, and the exact recorded generation is
+               confirmed gone. Reuse the full stop surface before removing any
+               lifecycle record: the frontend receipt and Codex lease index are
+               authoritative even when the launcher itself crashed. *)
+            recover_stale_instance ()
+        | C2c_pid_identity.Generation _
+        | C2c_pid_identity.Unreadable ->
+            Printf.eprintf
+              "error: recorded outer PID generation for '%s' is live but no longer the exact owner; refusing startup recovery\n%!"
+              name;
+            exit 1)
+   | Pid_record_unknown ->
        Printf.eprintf
-         "note: stale instance '%s' (dead process); cleaning up pid files in %s\n%!"
-         name inst_dir;
-       List.iter remove_pidfile
-         [ outer_pid_path name; inner_pid_path name
-         ; deliver_pid_path name; codex_daemon_sidecar_pid_path name
-         ; poker_pid_path name
-         ; notifier_pid_path name ]
-   | None ->
-       (* No pid file at all — fresh start or already cleaned up. *)
-       ());
+         "error: cannot trust the paired outer PID records for '%s'; refusing startup recovery\n%!"
+         name;
+       exit 1
+   | Pid_record_absent ->
+       if has_lifecycle_records () then begin
+         Printf.eprintf
+           "error: instance '%s' has lifecycle records but no complete outer PID generation; refusing startup recovery\n%!"
+           name;
+         exit 1
+       end);
 
-  (* Resume: inherit saved settings *)
-  let existing = load_config_opt name in
+  (* Resume: inherit the exact config snapshot that authorized stale cleanup.
+     A pathname reload here could observe a symlink or replacement inode after
+     the no-follow validation and silently switch session identity. *)
+  let existing =
+    match !validated_stale_config with
+    | None -> load_config_opt name
+    | Some snapshot ->
+        (match read_config_snapshot_nofollow name with
+         | Ok current when current.contents = snapshot.contents -> Some snapshot.config
+         | Ok _ | Error _ ->
+             Printf.eprintf
+               "error: instance config changed or became unreadable during stale recovery; refusing startup\n%!";
+             exit 1)
+  in
   let (binary_override, alias_override, extra_args, resume_session_id, codex_resume_target, broker_root, model_override, mo) =
     match existing with
     | Some ex ->
@@ -6827,36 +8372,60 @@ let cmd_restart_self ?(name : string option) () : int =
          managed c2c-start session (C2C_MCP_SESSION_ID is set).\n%!";
       1
   | Some name ->
-      (match read_pid (inner_pid_path name) with
-       | None ->
+      (match read_pid_record ~pid_path:(inner_pid_path name)
+               ~start_time_path:(inner_pid_start_time_path name) with
+       | Pid_record_absent ->
            Printf.eprintf
              "error: no inner.pid for '%s' — was it started with a recent \
               c2c? Stop + start to populate.\n%!" name;
            1
-       | Some pid when not (pid_alive pid) ->
+       | Pid_record_unknown ->
            Printf.eprintf
-             "error: inner pid %d for '%s' not alive (outer may be \
-              relaunching).\n%!" pid name;
+             "error: inner PID records for '%s' are missing, unreadable, malformed, or non-regular; refusing restart\n%!"
+             name;
            1
-       | Some pid when not (inner_pid_is_ours name ~pid) ->
-           (* #85: alive, but the number was recycled onto another process. *)
-           Printf.eprintf
-             "error: recorded inner pid %d for '%s' is no longer ours: %s.\n%!"
-             pid name
-             (C2c_pid_identity.pid_identity_reason ~pid
-                (C2c_pid_identity.classify_pid_identity ~pid
-                   ~expect:(C2c_pid_identity.pidfile_expectation (inner_pid_path name))));
-           1
-       | Some pid when pid = Unix.getpid () ->
+       | Pid_record_present (pid, start_time) when pid = Unix.getpid () ->
            Printf.eprintf "error: refusing to signal our own pid\n%!"; 1
-       | Some pid ->
-           Printf.printf
-             "[c2c restart-self] SIGTERM pid %d for '%s' (outer will \
-              relaunch)\n%!" pid name;
-           (try Unix.kill pid Sys.sigterm; 0
-            with Unix.Unix_error (e, _, _) ->
-              Printf.eprintf "kill failed: %s\n%!" (Unix.error_message e);
-              1))
+       | Pid_record_present (pid, start_time) ->
+           let record_still_matches () =
+             match read_pid_record ~pid_path:(inner_pid_path name)
+                     ~start_time_path:(inner_pid_start_time_path name) with
+             | Pid_record_present (recorded_pid, recorded_start) ->
+                 recorded_pid = pid && recorded_start = start_time
+             | Pid_record_absent | Pid_record_unknown -> false
+           in
+           let generation_matches () =
+             record_still_matches ()
+             && match C2c_pid_identity.read_pid_generation pid with
+                | C2c_pid_identity.Generation actual -> actual = start_time
+                | C2c_pid_identity.Absent
+                | C2c_pid_identity.Unreadable -> false
+           in
+           if not (generation_matches ()) then begin
+             Printf.eprintf
+               "kill refused: inner PID records or generation changed, or are unverifiable\n%!";
+             1
+           end else
+           (match read_pid_record ~pid_path:(inner_pid_path name)
+                    ~start_time_path:(inner_pid_start_time_path name) with
+            | Pid_record_present (reread_pid, reread_start)
+              when reread_pid = pid && reread_start = start_time
+                   && record_still_matches () ->
+                Printf.printf
+                  "[c2c restart-self] SIGTERM generation %d/%d for '%s' (outer will \
+                   relaunch)\n%!" pid start_time name;
+                if C2c_pid_identity.signal_pid_if_generation_matches
+                     ~pid ~start_time ~signal:Sys.sigterm
+                then 0
+                else begin
+                  Printf.eprintf
+                    "kill refused: inner PID generation changed or is unverifiable\n%!";
+                  1
+                end
+            | _ ->
+                Printf.eprintf
+                  "kill refused: inner PID generation record changed or could not be read for '%s'\n%!" name;
+                1))
 
 (* The outcome of stopping an instance, so the human and --json CLI surfaces
    can share ONE implementation. They used to be two: this function and a
@@ -6867,6 +8436,7 @@ let cmd_restart_self ?(name : string option) () : int =
 type stop_outcome =
   | Stop_stopped
   | Stop_not_running
+  | Stop_failed of string
   | Stop_refused_foreign_pid of int * string  (* pid, human-readable reason *)
 
 let stop_instance (name : string) : stop_outcome =
@@ -6876,30 +8446,19 @@ let stop_instance (name : string) : stop_outcome =
      outer so a SIGKILL or an early launcher exit cannot leave a detached owner
      polling the daemon and holding the broker registration. *)
   let stop_codex_daemon_sidecar () =
-    let path = codex_daemon_sidecar_pid_path name in
-    let stop_pid p =
-      (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
-      let deadline = Unix.gettimeofday () +. 2.0 in
-      let rec wait () =
-        if not (pid_alive p) || Unix.gettimeofday () >= deadline then ()
-        else (Unix.sleepf 0.05; wait ())
-      in
-      wait ();
-      if pid_alive p then (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ())
-    in
-    (match read_pid path with
-     | Some p when pid_alive p &&
-                   C2c_pid_identity.pidfile_pid_is_ours ~pidfile:path ~pid:p ->
-         stop_pid p
-     | _ -> ());
-    remove_pidfile path
+    stop_codex_daemon_sidecar_for_instance name
   in
   (* B145: the outer's SIGTERM handler (cleanup_and_exit) already tears down
      the detached kimi notifier, but if the outer is SIGKILLed (never runs its
      handler) the notifier would orphan. Belt-and-braces: kill it by its own
      pidfile after the outer is down, using the alias from instance config. *)
   let stop_kimi_notifier () =
-    match load_config_opt name with
+    let pid_ok =
+      stop_recorded_sidecar ~pid_path:(notifier_pid_path name)
+        ~start_time_path:(notifier_pid_start_time_path name)
+        ~label:"kimi notifier"
+    in
+    (match load_config_opt name with
     | Some cfg when cfg.client = "kimi" ->
         (* #42: reap the instance-alias notifier AND any daemon (whatever its
            own alias) bound to this managed session's own id. Keyed on the
@@ -6907,42 +8466,96 @@ let stop_instance (name : string) : stop_outcome =
            uuid — so a live/different session's notifier can never be reaped.
            See [teardown_kimi_notifiers_for_stop] for the full safety argument. *)
         teardown_kimi_notifiers_for_stop ~alias:cfg.alias ~session_id:cfg.session_id
-    | _ -> ()
+    | _ -> ());
+    pid_ok
   in
-  match read_pid (outer_pid_path name) with
-  | Some pid when pid_alive pid && outer_pid_is_ours name ~pid ->
-      (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
-      let deadline = Unix.gettimeofday () +. 10.0 in
-        while Unix.gettimeofday () < deadline && pid_alive pid do
-          Unix.sleepf 0.1
-        done;
-      if pid_alive pid then
-        (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
-      stop_codex_daemon_sidecar ();
-      stop_kimi_notifier ();
-      Stop_stopped
-  | Some pid when pid_alive pid ->
-      (* #85: the number is in use, but by something that is not this instance.
-         Signalling it would SIGTERM (then SIGKILL) a stranger's process — the
-         reported case sent it at a desktop application that had inherited the
-         pid. Refuse, explain, and still sweep our own notifier. *)
-      let reason =
-        C2c_pid_identity.pid_identity_reason ~pid (outer_pid_identity name ~pid)
-      in
-      stop_codex_daemon_sidecar ();
-      stop_kimi_notifier ();
-      Stop_refused_foreign_pid (pid, reason)
-  | _ ->
+  let stop_codex_session_sidecars () =
+    match load_config_opt name with
+    | Some cfg -> stop_codex_sidecars_for_session ~broker_session_id:cfg.session_id
+    | None -> stop_codex_sidecars_for_session ~broker_session_id:name
+  in
+  let stop_generic_sidecars () =
+    stop_recorded_sidecar ~pid_path:(deliver_pid_path name)
+      ~start_time_path:(deliver_pid_start_time_path name) ~label:"deliver"
+    && stop_recorded_sidecar ~pid_path:(poker_pid_path name)
+         ~start_time_path:(poker_pid_start_time_path name) ~label:"poker"
+  in
+  let frontend_ok () =
+    match codex_frontend_teardown_expected name with
+    | Codex_frontend_teardown_required -> stop_frontend_teardown_record name
+    | Codex_frontend_teardown_absent -> true
+    | Codex_frontend_teardown_unknown reason ->
+        Printf.eprintf
+          "c2c: cannot determine whether Codex frontend teardown is required for %s: %s; retaining lifecycle state\n%!"
+          name reason;
+        false
+  in
+  let inner_lifecycle_records =
+    [ inner_pid_path name
+    ; inner_pid_start_time_path name ]
+  in
+  let remove_outer_records = function
+    | None -> true
+    | Some (pid, start_time) ->
+        remove_pid_record_pair_confirmed
+          ~pid_path:(outer_pid_path name)
+          ~start_time_path:(outer_pid_start_time_path name)
+          ~pid ~start_time
+  in
+  let cleanup ~stopped ~outer_record : stop_outcome =
+    let sidecars_ok = stop_codex_session_sidecars () in
+    let daemon_ok = stop_codex_daemon_sidecar () in
+    let generic_ok = stop_generic_sidecars () in
+    let frontend_ok = frontend_ok () in
+    let notifier_ok = stop_kimi_notifier () in
+    let outer_records_ok = remove_outer_records outer_record in
+    let inner_records_ok =
+      List.for_all path_absent_confirmed inner_lifecycle_records
+    in
+    if sidecars_ok && daemon_ok && generic_ok && notifier_ok && frontend_ok
+       && outer_records_ok && inner_records_ok then
+      if stopped then Stop_stopped else Stop_not_running
+    else
+      Stop_failed
+        (if stopped then
+           "stopped the instance, but lifecycle teardown is incomplete; recovery records retained"
+         else
+           "instance was not running, but lifecycle records remain or teardown is uncertain; state retained")
+  in
+  match read_pid_record ~pid_path:(outer_pid_path name)
+          ~start_time_path:(outer_pid_start_time_path name) with
+  | Pid_record_present (pid, start_time) ->
+      (match C2c_pid_identity.read_pid_generation pid with
+       | C2c_pid_identity.Generation actual
+         when actual = start_time
+              && C2c_pid_identity.proc_tgid pid = Some pid ->
+           if stop_codex_sidecar_generation ~term_timeout_s:10.0
+                ~pid ~start_time ()
+           then cleanup ~stopped:true ~outer_record:(Some (pid, start_time))
+           else
+             Stop_failed
+               "could not stop the exact recorded outer generation; retaining lifecycle state"
+       | C2c_pid_identity.Absent ->
+           (* The recorded generation is gone. Never signal a replacement;
+              continue only with descendant cleanup. *)
+           cleanup ~stopped:false ~outer_record:(Some (pid, start_time))
+       | C2c_pid_identity.Generation _
+       | C2c_pid_identity.Unreadable ->
+           Stop_failed
+             "cannot read the exact recorded outer PID generation; refusing numeric teardown")
+  | Pid_record_absent ->
       (* Even with no live outer, sweep any orphaned notifier for this alias. *)
-      stop_codex_daemon_sidecar ();
-      stop_kimi_notifier ();
-      Stop_not_running
+      cleanup ~stopped:false ~outer_record:None
+  | Pid_record_unknown ->
+      Stop_failed
+        "cannot trust the paired outer PID lifecycle records; retaining records"
 
 (* Short status phrase, sized to fit both "Instance '<name>': <msg>" and a
    bare error line. *)
 let stop_outcome_message ~(name : string) : stop_outcome -> string = function
   | Stop_stopped -> "stopped"
   | Stop_not_running -> "not running"
+  | Stop_failed reason -> reason
   | Stop_refused_foreign_pid (pid, reason) ->
       Printf.sprintf
         "refusing to signal pid %d for instance '%s': %s. The instance is not \
@@ -7044,6 +8657,56 @@ let cmd_restart ?(session_id_override : string option)
         exit 1
     | Some cfg -> cfg
   in
+  let outer_state = read_pid_state (outer_pid_path name) in
+  let outer_record =
+    read_pid_record ~pid_path:(outer_pid_path name)
+      ~start_time_path:(outer_pid_start_time_path name)
+  in
+  (match outer_state, outer_record with
+   | Pidfile_unknown reason, _ ->
+       Printf.eprintf
+         "error: cannot trust the recorded outer pid for '%s' (%s); refusing restart\n%!"
+         name reason;
+       exit 1
+   | Pidfile_valid pid, Pid_record_unknown ->
+       Printf.eprintf
+         "error: cannot trust the paired outer PID generation for '%s'; refusing restart\n%!"
+         name;
+       exit 1
+   | Pidfile_valid _, Pid_record_absent ->
+       Printf.eprintf
+         "error: outer PID record for '%s' lost its paired generation; refusing restart\n%!"
+         name;
+       exit 1
+   | Pidfile_valid pid, Pid_record_present (recorded_pid, expected_start)
+     when pid <> recorded_pid ->
+       Printf.eprintf
+         "error: paired outer PID record for '%s' changed; refusing restart\n%!"
+         name;
+       exit 1
+   | Pidfile_valid pid, Pid_record_present (_, expected_start) ->
+       (match C2c_pid_identity.read_pid_generation pid with
+        | C2c_pid_identity.Generation actual
+          when actual = expected_start
+               && C2c_pid_identity.proc_tgid pid = Some pid -> ()
+        | C2c_pid_identity.Absent -> ()
+        | C2c_pid_identity.Generation _
+        | C2c_pid_identity.Unreadable ->
+            Printf.eprintf
+              "error: recorded outer pid %d for '%s' is not the exact recorded generation; refusing restart\n%!"
+              pid name;
+            exit 1)
+   | Pidfile_absent, Pid_record_unknown ->
+       Printf.eprintf
+         "error: outer PID lifecycle state for '%s' is uncertain; refusing restart\n%!"
+         name;
+       exit 1
+   | Pidfile_absent, Pid_record_present _ ->
+       Printf.eprintf
+         "error: outer PID lifecycle records for '%s' are inconsistent; refusing restart\n%!"
+         name;
+       exit 1
+   | Pidfile_absent, Pid_record_absent -> ());
   (* Apply session-id override if given; update last_launch_at for restart *)
   let cfg =
     match session_id_override with
@@ -7065,28 +8728,47 @@ let cmd_restart ?(session_id_override : string option)
   (* Kill inner — SIGTERM to whole process group for TUI clients (inner ran with
      setpgid 0 0 so PGID == inner PID; kill(-pid) kills the whole group).
      codex-headless stays in outer's PGID so use positive kill(pid). *)
-  let inner_pid = read_pid (inner_pid_path name) in
-  let outer_pid = read_pid (outer_pid_path name) in
-  (match inner_pid with
-   | Some pid when pid_alive pid && not (inner_pid_is_ours name ~pid) ->
-       (* #85 *)
-       Printf.printf
-         "[c2c restart] recorded inner pid %d for '%s' is no longer ours (%s); \
-          not signalling\n%!"
-         pid name
-         (C2c_pid_identity.pid_identity_reason ~pid
-            (C2c_pid_identity.classify_pid_identity ~pid
-               ~expect:(C2c_pid_identity.pidfile_expectation (inner_pid_path name))))
-   | Some pid when pid_alive pid ->
+  let inner_record =
+    read_pid_record ~pid_path:(inner_pid_path name)
+      ~start_time_path:(inner_pid_start_time_path name)
+  in
+  let outer_pid =
+    match outer_state with
+    | Pidfile_valid pid -> Some pid
+    | Pidfile_absent -> None
+    | Pidfile_unknown _ -> None
+  in
+  (match inner_record with
+   | Pid_record_present (pid, start_time) ->
        let target_pid = if cfg.client = "codex-headless" then pid else -pid in
+       let record_still_matches () =
+         match read_pid_record ~pid_path:(inner_pid_path name)
+                 ~start_time_path:(inner_pid_start_time_path name) with
+         | Pid_record_present (recorded_pid, recorded_start) ->
+             recorded_pid = pid && recorded_start = start_time
+         | Pid_record_absent | Pid_record_unknown -> false
+       in
+       let signalled =
+         if not (record_still_matches ()) then false
+         else if target_pid = pid then
+           C2c_pid_identity.signal_pid_if_generation_matches
+             ~pid ~start_time ~signal:Sys.sigterm
+         else
+           C2c_pid_identity.signal_process_group_if_generation_matches
+             ~pid ~start_time ~signal:Sys.sigterm
+       in
        Printf.printf "[c2c restart] signalling inner pid %d (pgid=%s) for '%s'\n%!"
          pid (if target_pid = pid then "self" else "group") name;
-       (try Unix.kill target_pid Sys.sigterm
-        with Unix.Unix_error (e, _, _) ->
-          Printf.eprintf "warning: kill %s %d failed: %s\n%!"
-            (if target_pid = pid then "inner" else "inner-group") pid (Unix.error_message e))
-   | _ ->
-       Printf.printf "[c2c restart] no live inner for '%s'\n%!" name);
+       if not signalled then
+         Printf.eprintf
+           "warning: refusing to signal inner process group %d; paired record, owner, or generation could not be revalidated\n%!"
+           pid
+   | Pid_record_absent ->
+       Printf.printf "[c2c restart] no live inner for '%s'\n%!" name
+   | Pid_record_unknown ->
+       Printf.eprintf
+         "warning: refusing to signal inner process for '%s'; paired PID records are unreadable or non-regular\n%!"
+         name);
   (* Wait for outer to exit so we don't have two instances racing on the lock.
      Use kill(pid, 0) + exponential backoff. *)
   (match outer_pid with
@@ -7181,14 +8863,33 @@ let cmd_restart_sidecar (name : string) (kind_s : string) : int =
            Printf.eprintf "error: no managed instance config for '%s'\n%!" name;
            1
        | Some cfg ->
-           let outer_live =
-             match read_pid (outer_pid_path name) with
-             | Some p when pid_alive p -> true
-             | _ -> false
+           (* Sidecar replacement is allowed only while the exact outer
+              generation recorded by the paired regular files is live. The
+              meta/pidfile-mtime fallback used by ordinary legacy status
+              reporting is intentionally not sufficient here. *)
+           let outer_generation_is_current () =
+             match read_pid_record
+                     ~pid_path:(outer_pid_path name)
+                     ~start_time_path:(outer_pid_start_time_path name) with
+             | Pid_record_present (pid, expected_start) ->
+                 (match C2c_pid_identity.read_pid_generation pid with
+                  | C2c_pid_identity.Generation actual
+                    when actual = expected_start ->
+                      (match recorded_outer_start_ts name ~pid with
+                       | Some launch_ts ->
+                           (match
+                              C2c_pid_identity.classify_pid_identity ~pid
+                                ~expect:(C2c_pid_identity.Started_at launch_ts)
+                            with
+                            | C2c_pid_identity.Pid_matches -> true
+                            | _ -> false)
+                       | None -> false)
+                  | _ -> false)
+             | Pid_record_absent | Pid_record_unknown -> false
            in
-           if not outer_live then begin
+           if not (outer_generation_is_current ()) then begin
              Printf.eprintf
-               "error: instance '%s' outer is not running — start it first\n%!"
+               "error: instance '%s' outer generation is not current — start it first\n%!"
                name;
              1
            end else begin
@@ -7217,54 +8918,68 @@ let cmd_restart_sidecar (name : string) (kind_s : string) : int =
                (* Stop existing via pidfile (external path; outer's in-memory
                   ref may lag — acceptable for operator repair; next full stop
                   still reaps via pidfile cleanup). *)
-               (match read_pid pid_path with
-                | Some p
-                  when pid_alive p
-                       && C2c_pid_identity.pidfile_pid_is_ours ~pidfile:pid_path ~pid:p ->
-                    Printf.printf
-                      "[c2c restart-sidecar] stopping %s pid %d for '%s'\n%!"
-                      (sidecar_kind_to_string kind) p name;
-                    (try Unix.kill p Sys.sigterm with Unix.Unix_error _ -> ());
-                    let rec wait_try n =
-                      if n <= 0 then ()
-                      else if not (pid_alive p) then ()
-                      else (Unix.sleepf 0.1; wait_try (n - 1))
-                    in
-                    wait_try 20;
-                    if pid_alive p then
-                      (try Unix.kill p Sys.sigkill with Unix.Unix_error _ -> ());
-                    remove_pidfile pid_path
-                | Some _ ->
-                    Printf.printf
-                      "[c2c restart-sidecar] stale pidfile for %s; removing\n%!"
-                      (sidecar_kind_to_string kind);
-                    remove_pidfile pid_path
-                | None ->
-                    Printf.printf
-                      "[c2c restart-sidecar] no live %s for '%s'; starting fresh\n%!"
-                      (sidecar_kind_to_string kind) name);
-               let child_pid_opt = read_pid (inner_pid_path name) in
-               let started =
-                 match kind with
-                 | Deliver ->
-                     start_deliver_daemon ~name ~client:cfg.client
-                       ~broker_root:cfg.broker_root ?child_pid_opt ()
-                 | Poker ->
-                     start_poker ~name ~client:cfg.client
-                       ~broker_root:cfg.broker_root ?child_pid_opt ()
+               let stopped_existing =
+                 stop_recorded_sidecar ~pid_path
+                   ~start_time_path:(match kind with
+                     | Deliver -> deliver_pid_start_time_path name
+                     | Poker -> poker_pid_start_time_path name)
+                   ~label:(sidecar_kind_to_string kind)
                in
-               match started with
-               | Some p ->
-                   write_pid pid_path p;
-                   Printf.printf
-                     "[c2c restart-sidecar] started %s pid %d for '%s'\n%!"
-                     (sidecar_kind_to_string kind) p name;
-                   0
-               | None ->
-                   Printf.eprintf
-                     "error: failed to start %s for '%s'\n%!"
-                     (sidecar_kind_to_string kind) name;
-                   1
+               if not stopped_existing then 1 else
+               if not (outer_generation_is_current ()) then begin
+                 Printf.eprintf
+                   "error: instance '%s' outer generation changed during sidecar teardown; refusing replacement\n%!"
+                   name;
+                 1
+               end else
+               let exact_inner_pid () =
+                 match read_pid_record
+                         ~pid_path:(inner_pid_path name)
+                         ~start_time_path:(inner_pid_start_time_path name) with
+                 | Pid_record_present (pid, expected_start) ->
+                     (match C2c_pid_identity.read_pid_generation pid with
+                      | C2c_pid_identity.Generation actual
+                        when actual = expected_start
+                             && C2c_pid_identity.proc_tgid pid = Some pid ->
+                          Some pid
+                      | _ -> None)
+                 | Pid_record_absent | Pid_record_unknown -> None
+               in
+               (match exact_inner_pid () with
+                | None ->
+                    Printf.eprintf
+                      "error: cannot prove the exact inner PID generation for '%s'; refusing sidecar replacement\n%!"
+                      name;
+                    1
+                | Some inner_pid ->
+                    let child_pid_opt = Some inner_pid in
+                    let started =
+                      match kind with
+                      | Deliver ->
+                          start_deliver_daemon ~name ~client:cfg.client
+                            ~broker_root:cfg.broker_root ?child_pid_opt ()
+                      | Poker ->
+                          start_poker ~name ~client:cfg.client
+                            ~broker_root:cfg.broker_root ?child_pid_opt ()
+                    in
+                    match started with
+                    | Some p ->
+                        write_pid_generation
+                          ~pid_path
+                          ~start_time_path:(
+                            match kind with
+                            | Deliver -> deliver_pid_start_time_path name
+                            | Poker -> poker_pid_start_time_path name)
+                          p;
+                        Printf.printf
+                          "[c2c restart-sidecar] started %s pid %d for '%s'\n%!"
+                          (sidecar_kind_to_string kind) p name;
+                        0
+                    | None ->
+                        Printf.eprintf
+                          "error: failed to start %s for '%s'\n%!"
+                          (sidecar_kind_to_string kind) name;
+                        1)
              end
            end)
 

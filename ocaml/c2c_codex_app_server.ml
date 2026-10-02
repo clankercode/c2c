@@ -706,7 +706,9 @@ type persisted = {
   token_env_var : string;      (* NAME only — never the value *)
   token_sha256 : string;       (* digest only — reveals nothing *)
   server_pid : int option;
+  server_pid_start_time : int option;
   frontend_pid : int option;
+  frontend_pid_start_time : int option;
   thread_id : string option;   (* filled by T003/T006 once a thread is loaded; None here *)
   state : state;
   created_at : float;
@@ -722,7 +724,9 @@ let persisted_to_json (p : persisted) : Yojson.Safe.t =
        ; ("token_env_var", `String p.token_env_var)
        ; ("token_sha256", `String p.token_sha256) ]
      @ (match p.server_pid with Some x -> [ ("server_pid", `Int x) ] | None -> [])
+     @ (match p.server_pid_start_time with Some x -> [ ("server_pid_start_time", `Int x) ] | None -> [])
      @ (match p.frontend_pid with Some x -> [ ("frontend_pid", `Int x) ] | None -> [])
+     @ (match p.frontend_pid_start_time with Some x -> [ ("frontend_pid_start_time", `Int x) ] | None -> [])
      @ (match p.thread_id with Some x -> [ ("thread_id", `String x) ] | None -> [])
      @ [ ("state", `String (state_to_string p.state))
        ; ("created_at", `Float p.created_at); ("updated_at", `Float p.updated_at) ])
@@ -731,10 +735,18 @@ let persisted_of_json (j : Yojson.Safe.t) : persisted option =
   match j with
   | `Assoc a ->
       let s k = match List.assoc_opt k a with Some (`String v) -> Some v | _ -> None in
-      let i k = match List.assoc_opt k a with Some (`Int v) -> Some v | _ -> None in
+      let oi k =
+        match List.assoc_opt k a with
+        | None | Some `Null -> Some None
+        | Some (`Int v) -> Some (Some v)
+        | Some (`String s) ->
+            Option.map (fun v -> Some v) (int_of_string_opt (String.trim s))
+        | _ -> None
+      in
       let f k = match List.assoc_opt k a with
         | Some (`Float v) -> Some v | Some (`Int v) -> Some (float_of_int v) | _ -> None in
       let req_s k = match s k with Some v -> v | None -> raise Not_found in
+      let req_oi k = match oi k with Some v -> v | None -> raise Not_found in
       (try
          let endpoint = match List.assoc_opt "endpoint" a with
            | Some j -> (match endpoint_of_json j with Some e -> e | None -> raise Not_found)
@@ -743,7 +755,11 @@ let persisted_of_json (j : Yojson.Safe.t) : persisted option =
            unit_id = req_s "unit_id"; instance_name = req_s "instance_name"; alias = s "alias";
            codex_version = req_s "codex_version"; endpoint;
            token_env_var = req_s "token_env_var"; token_sha256 = req_s "token_sha256";
-           server_pid = i "server_pid"; frontend_pid = i "frontend_pid"; thread_id = s "thread_id";
+           server_pid = req_oi "server_pid";
+           server_pid_start_time = req_oi "server_pid_start_time";
+           frontend_pid = req_oi "frontend_pid";
+           frontend_pid_start_time = req_oi "frontend_pid_start_time";
+           thread_id = s "thread_id";
            state = (match s "state" with Some v -> state_of_string v | None -> Offline);
            created_at = (match f "created_at" with Some v -> v | None -> 0.0);
            updated_at = (match f "updated_at" with Some v -> v | None -> 0.0);
@@ -753,6 +769,23 @@ let persisted_of_json (j : Yojson.Safe.t) : persisted option =
 
 let persisted_path ~(instance_dir : string) : string = instance_dir // "codex-app-server.json"
 
+type persisted_read =
+  | Persisted_missing
+  | Persisted_present of persisted
+  | Persisted_unknown of string
+
+let read_persisted_state ~(instance_dir : string) : persisted_read =
+  match C2c_start.read_regular_file_nofollow
+          (persisted_path ~instance_dir) with
+  | C2c_start.Regular_file_missing -> Persisted_missing
+  | C2c_start.Regular_file_unreadable reason -> Persisted_unknown reason
+  | C2c_start.Regular_file_contents contents ->
+      (try
+         match persisted_of_json (Yojson.Safe.from_string contents) with
+         | Some persisted -> Persisted_present persisted
+         | None -> Persisted_unknown "invalid persisted app-server state"
+       with e -> Persisted_unknown (Printexc.to_string e))
+
 let write_persisted ~(instance_dir : string) (p : persisted) : (unit, string) result =
   (try if not (Sys.file_exists instance_dir) then Unix.mkdir instance_dir 0o700 with _ -> ());
   let path = persisted_path ~instance_dir in
@@ -760,9 +793,9 @@ let write_persisted ~(instance_dir : string) (p : persisted) : (unit, string) re
   C2c_io.write_file_atomic path content
 
 let load_persisted ~(instance_dir : string) : persisted option =
-  let path = persisted_path ~instance_dir in
-  if not (Sys.file_exists path) then None
-  else match C2c_io.read_json_opt path with Some j -> persisted_of_json j | None -> None
+  match read_persisted_state ~instance_dir with
+  | Persisted_present persisted -> Some persisted
+  | Persisted_missing | Persisted_unknown _ -> None
 
 (* --------------------------------------------------------------------------- *)
 (* Stale-state recovery                                                        *)
@@ -775,28 +808,32 @@ let load_persisted ~(instance_dir : string) : persisted option =
    best-effort reaping any recorded process we can positively identify as ours). *)
 type recovery = Start_fresh of string
 
-(* A recorded pid is only ours if it is alive AND its /proc cmdline still looks
-   like the codex process we launched for THIS endpoint (guards against PID
-   reuse killing an unrelated same-UID process — findings #2). *)
+(* A persisted numeric PID is actionable only when the record also carries the
+   exact procfs generation observed for that role. Command-line text and
+   liveness are diagnostics, not ownership proof. Old records without this
+   binding are deliberately unreapable by stale recovery. *)
+let recorded_pid_generation (p : persisted) ~(pid : int) : int option =
+  if p.server_pid = Some pid then p.server_pid_start_time
+  else if p.frontend_pid = Some pid then p.frontend_pid_start_time
+  else None
+
 let recorded_pid_is_ours (p : persisted) ~(pid : int) : bool =
-  pid > 1 && pid_alive pid
-  && (match read_proc_cmdline pid with
-      | Some cmd ->
-          let has s =
-            let nl = String.length s and hl = String.length cmd in
-            if nl = 0 then true else
-              let rec go i = if i + nl > hl then false
-                else if String.sub cmd i nl = s then true else go (i + 1) in go 0
-          in
-          (* server: `codex ... app-server ... ws://127.0.0.1:<port>` ;
-             frontend: `codex ... --remote ws://127.0.0.1:<port>` *)
-          has "codex" && has (endpoint_uri p.endpoint)
-      | None -> false)
+  match recorded_pid_generation p ~pid with
+  | Some expected ->
+      (match C2c_pid_identity.read_pid_generation pid with
+       | C2c_pid_identity.Generation actual -> actual = expected
+       | C2c_pid_identity.Absent | C2c_pid_identity.Unreadable -> false)
+  | None -> false
 
 let classify_persisted ?(reap_recorded = true) (p : persisted) : recovery =
   if reap_recorded then begin
     let try_kill = function
-      | Some pid when recorded_pid_is_ours p ~pid -> (try Unix.kill pid Sys.sigterm with _ -> ())
+      | Some pid when recorded_pid_is_ours p ~pid ->
+          (match recorded_pid_generation p ~pid with
+           | Some start_time ->
+               ignore (C2c_pid_identity.signal_pid_if_generation_matches
+                         ~pid ~start_time ~signal:Sys.sigterm)
+           | None -> ())
       | _ -> ()
     in
     try_kill p.frontend_pid;   (* frontend before server *)
@@ -847,7 +884,11 @@ let persisted_of (h : handle) : persisted =
     codex_version = h.h_codex_version; endpoint = h.h_endpoint;
     token_env_var = h.h_token_env_var; token_sha256 = h.h_token_sha256;
     server_pid = Option.map (fun c -> c.child_id) h.h_server;
+    server_pid_start_time =
+      Option.bind h.h_server (fun c -> C2c_mcp.Broker.read_pid_start_time c.child_id);
     frontend_pid = Option.map (fun c -> c.child_id) h.h_frontend;
+    frontend_pid_start_time =
+      Option.bind h.h_frontend (fun c -> C2c_mcp.Broker.read_pid_start_time c.child_id);
     thread_id = None; state = h.h_state; created_at = h.h_created_at; updated_at = h.bk.now ();
   }
 
@@ -1001,9 +1042,20 @@ let start ?(backend = real_backend ()) (cfg : config) : (handle, diagnostic) res
               (* Recover any prior unit for this instance BEFORE we overwrite state.
                  A recovering process cannot re-authenticate, so classify_persisted
                  tears the old pair down (never attaches). *)
-              (match load_persisted ~instance_dir:cfg.instance_dir with
-               | Some prior -> ignore (classify_persisted prior)
-               | None -> ());
+              let recovery_check =
+                match read_persisted_state ~instance_dir:cfg.instance_dir with
+                | Persisted_unknown reason -> Error reason
+                | Persisted_missing -> Ok ()
+                | Persisted_present prior ->
+                    ignore (classify_persisted prior);
+                    Ok ()
+              in
+              match recovery_check with
+              | Error reason ->
+                  fail_early Persistence_failed
+                    (Printf.sprintf
+                       "cannot trust persisted app-server state: %s" reason)
+              | Ok () ->
               let lock = acquire_instance_lock cfg.instance_dir in
               match bk.alloc_port () with
               | Error e ->

@@ -154,6 +154,7 @@ type config = {
   backoff_base_s : float;
   backoff_max_s : float;
   stale_inbox_threshold_s : float; (** B168: release failed batches after this age *)
+  on_ingress_health : Ingress.health -> unit;
 }
 
 (* B168: 2-minute SLA for re-batching Turn_failed mail via the app-server path. *)
@@ -163,7 +164,8 @@ let default_config ~ingress_cfg ~turn_client ~session_active ~is_dnd =
   { ingress_cfg; turn_client; session_active; is_dnd;
     provenance = default_provenance; now = Unix.gettimeofday;
     max_turn_batch = 64; backoff_base_s = 1.0; backoff_max_s = 60.0;
-    stale_inbox_threshold_s = default_stale_inbox_threshold_s }
+    stale_inbox_threshold_s = default_stale_inbox_threshold_s;
+    on_ingress_health = (fun _ -> ()) }
 
 (* --------------------------------- ledger --------------------------------- *)
 
@@ -591,6 +593,7 @@ let deliver_pass (cfg : config) : pass_outcome =
        idempotent; never drains. B168: ingress itself force-retries injects
        that have sat longer than its stale threshold. *)
     let ingress_health = Ingress.deliver_pass cfg.ingress_cfg in
+    (try cfg.on_ingress_health ingress_health with _ -> ());
     let injected_count = ingress_health.Ingress.injected_count in
     let lg = load_ledger cfg in
     (* 3b. B168: release stale Turn_failed batches so mail can re-batch. *)

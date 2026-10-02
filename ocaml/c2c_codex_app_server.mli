@@ -212,7 +212,9 @@ type persisted = {
   token_env_var : string;
   token_sha256 : string;
   server_pid : int option;
+  server_pid_start_time : int option;
   frontend_pid : int option;
+  frontend_pid_start_time : int option;
   thread_id : string option;
   state : state;
   created_at : float;
@@ -223,6 +225,13 @@ val persisted_to_json : persisted -> Yojson.Safe.t
 val persisted_of_json : Yojson.Safe.t -> persisted option
 val persisted_path : instance_dir:string -> string
 val write_persisted : instance_dir:string -> persisted -> (unit, string) result
+
+type persisted_read =
+  | Persisted_missing
+  | Persisted_present of persisted
+  | Persisted_unknown of string
+
+val read_persisted_state : instance_dir:string -> persisted_read
 val load_persisted : instance_dir:string -> persisted option
 
 (* --------------------------- stale-state recovery ------------------------- *)
@@ -231,8 +240,9 @@ type recovery = Start_fresh of string
 
 (** Classify a loaded persisted record. Always [Start_fresh]: a recovering
     process lacks the memory-only capability token and cannot verify ownership of
-    the persisted endpoint. [reap_recorded] (default true) best-effort SIGTERMs
-    still-alive recorded pids so no unowned app-server is orphaned. *)
+    the persisted endpoint. [reap_recorded] (default true) only signals a
+    recorded pid when its exact persisted generation can be revalidated through
+    a pidfd; old records without generation metadata are retained. *)
 val classify_persisted : ?reap_recorded:bool -> persisted -> recovery
 
 (* -------------------------------- handle ---------------------------------- *)

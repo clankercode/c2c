@@ -143,34 +143,50 @@ let app_server_frontend_env ~session_id ~alias =
   ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
   ; "C2C_CODEX_MANAGED=1" ]
 
-(* Daemon-attach TUI must NOT inherit the private-server marker: SessionStart
-   then arms the sidecar on payload_sid and the launcher must not run
-   run_delivery_loop (one owner). *)
-let daemon_frontend_env ~session_id ~alias =
+(* Daemon-attach TUI must NOT inherit the private-server marker. The launcher
+   discovers the exact native thread after the remote frontend is loaded and
+   arms the sidecar itself; the hook remains identity/fallback-only. *)
+let daemon_frontend_env ~session_id ~alias ~instance_name =
   [ "C2C_MCP_SESSION_ID=" ^ session_id
   ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
   ; "C2C_CODEX_APPSERVER_SESSION="
-  ; "C2C_CODEX_MANAGED=1" ]
+  ; "C2C_CODEX_MANAGED=1"
+  ; "C2C_CODEX_INSTANCE_NAME=" ^ instance_name ]
 
 let daemon_attach_forced_off () =
   match Sys.getenv_opt "C2C_CODEX_FORCE_PRIVATE_APPSERVER" with
   | Some "1" -> true
   | _ -> false
 
+let daemon_attach_safe_to_start ~socket_available ~pidfd_available
+    ~pid_generation_available =
+  socket_available && pidfd_available && pid_generation_available
+
 let daemon_attach_available () =
   if daemon_attach_forced_off () then false
   else
-    match C2c_codex_daemon_sidecar.default_control_socket () with
-    | None -> false
-    | Some path ->
-        (match C2c_codex_daemon_sidecar.unix_endpoint path with
-         | None -> false
-         | Some ep ->
-             try
-               let fd = C2c_codex_transport.ws_connect ep ~token:"" ~timeout:2.0 in
-               (try Unix.close fd with _ -> ());
-               true
-             with _ -> false)
+    let socket_available =
+      match C2c_codex_daemon_sidecar.default_control_socket () with
+      | None -> false
+      | Some path ->
+          (match C2c_codex_daemon_sidecar.unix_endpoint path with
+           | None -> false
+           | Some ep ->
+               try
+                 let fd = C2c_codex_transport.ws_connect ep ~token:"" ~timeout:2.0 in
+                 (try Unix.close fd with _ -> ());
+                 true
+               with _ -> false)
+    in
+    (* The daemon path starts a detached remote frontend and later relies on
+       owner-bound cleanup. Refuse that path before the frontend is spawned
+       unless this launcher has both an exact process generation and pidfd
+       signalling. The private app-server path below remains the safe fallback. *)
+    daemon_attach_safe_to_start ~socket_available
+      ~pidfd_available:(C2c_pid_identity.pidfd_supported ())
+      ~pid_generation_available:
+        (Option.is_some
+           (C2c_mcp.Broker.read_pid_start_time (Unix.getpid ())))
 
 let child_env extra =
   let key kv =
@@ -183,11 +199,195 @@ let child_env extra =
   in
   Array.of_list (inherited @ extra)
 
+(* [spawn_frontend_process] learns the real frontend PID only after [fork].
+   Publish that PID into the child environment immediately before [exec], so
+   Codex hooks can distinguish this frontend from a nested Codex that merely
+   inherited the managed launcher's environment. *)
+let frontend_owner_env env pid =
+  let key kv =
+    match String.index_opt kv '=' with
+    | Some i -> String.sub kv 0 i
+    | None -> kv
+  in
+  let overridden =
+    [ "C2C_CODEX_FRONTEND_PID"; "C2C_CODEX_FRONTEND_PID_START_TIME" ]
+  in
+  let kept =
+    Array.to_list env |> List.filter (fun kv -> not (List.mem (key kv) overridden))
+  in
+  let generation = C2c_mcp.Broker.read_pid_start_time pid in
+  let generation_text =
+    match generation with Some value -> string_of_int value | None -> ""
+  in
+  Array.of_list
+    (kept
+     @ [ "C2C_CODEX_FRONTEND_PID=" ^ string_of_int pid
+       ; ( "C2C_CODEX_FRONTEND_PID_START_TIME="
+         ^ generation_text ) ])
+
 let wait_child pid =
   match Unix.waitpid [] pid with
   | _, Unix.WEXITED n -> n
   | _, Unix.WSIGNALED _ -> 128
   | _, Unix.WSTOPPED _ -> 1
+
+(* The daemon attach frontend is a real interactive child, but it owns a
+   process group so `c2c stop` cannot leave a shell/inner Codex process behind.
+   OCaml's Unix module does not expose setpgid on this toolchain; the project
+   C stub is already used by the managed-client launcher. *)
+external setpgid : int -> int -> unit = "caml_c2c_setpgid"
+external tcgetpgrp : Unix.file_descr -> int = "caml_c2c_tcgetpgrp"
+external tcsetpgrp : Unix.file_descr -> int -> unit = "caml_c2c_tcsetpgrp"
+
+type terminal_foreground = {
+  fd : Unix.file_descr;
+  original_pgrp : int;
+}
+
+let capture_terminal_foreground () : terminal_foreground option =
+  try
+    if Unix.isatty Unix.stdin then
+      Some { fd = Unix.stdin; original_pgrp = tcgetpgrp Unix.stdin }
+    else None
+  with _ -> None
+
+let handoff_terminal_to_child (terminal : terminal_foreground option) pid =
+  match terminal with
+  | Some { fd; _ } -> (try tcsetpgrp fd pid with _ -> ())
+  | None -> ()
+
+let restore_terminal_foreground (terminal : terminal_foreground option) =
+  match terminal with
+  | Some { fd; original_pgrp } -> (try tcsetpgrp fd original_pgrp with _ -> ())
+  | None -> ()
+
+let spawn_frontend_process ~(bin : string) ~(argv : string array)
+    ~(env : string array) ~(terminal : terminal_foreground option)
+    ~(on_parent_fork : int -> unit)
+    ~(on_sentinel : (int * int option) -> unit) : int =
+  (* A termination signal delivered after fork but before [on_parent_fork]
+     publishes the child used to run cleanup with no frontend PID. Keep those
+     signals pending across the complete fork/publication/terminal-handoff
+     sequence; the handler then sees the child and can kill its process group. *)
+  let blocked = [ Sys.sigterm; Sys.sigint ] in
+  let previous = try Thread.sigmask Unix.SIG_BLOCK blocked with _ -> [] in
+  Fun.protect
+    ~finally:(fun () ->
+      try ignore (Thread.sigmask Unix.SIG_SETMASK previous) with _ -> ())
+    (fun () ->
+      match Unix.fork () with
+      | 0 ->
+          (* The frontend must not inherit the launcher's shutdown handlers.
+             Reset these dispositions before any process-group or TTY setup so
+             an early signal reaches the exec'd client normally. *)
+          (try ignore (Sys.signal Sys.sigterm Sys.Signal_default) with _ -> ());
+          (try ignore (Sys.signal Sys.sigint Sys.Signal_default) with _ -> ());
+          (* The child must not inherit the parent's blocked termination signals
+             while it is running the actual frontend. *)
+          (try ignore (Thread.sigmask Unix.SIG_SETMASK previous) with _ -> ());
+          (try setpgid 0 0 with _ -> ());
+          (* Hand the terminal to the new group before exec. The parent repeats
+             the handoff below to close the fork/exec race. *)
+          handoff_terminal_to_child terminal (Unix.getpid ());
+          (try Unix.execvpe bin argv (frontend_owner_env env (Unix.getpid ()))
+           with _ -> exit 127)
+      | pid ->
+          (try setpgid pid pid with _ -> ());
+          (* Publish the process group before the receipt callback. If receipt
+             publication fails, the launcher can synchronously tear down this
+             exact group before returning an error. *)
+          on_parent_fork pid;
+          (* Keep an owner-bound sentinel in the frontend's process group. The
+             frontend may exit and be reaped while descendants remain; the
+             sentinel preserves a generation-checked owner until teardown, so
+             a reused PGID is never signalled. *)
+          (match Unix.fork () with
+           | 0 ->
+               (try setpgid 0 pid with _ -> ());
+               (try ignore (Sys.signal Sys.sigterm Sys.Signal_ignore) with _ -> ());
+               (try ignore (Sys.signal Sys.sigint Sys.Signal_ignore) with _ -> ());
+               while true do Unix.pause () done
+           | sentinel ->
+               (try setpgid sentinel pid with _ -> ());
+               on_sentinel
+                 (sentinel, C2c_mcp.Broker.read_pid_start_time sentinel));
+          handoff_terminal_to_child terminal pid;
+          pid)
+
+let stop_frontend_process ?owner_start_time ?sentinel_pid ?sentinel_start_time pid : bool =
+  let wait_once () =
+    match Unix.waitpid [ Unix.WNOHANG ] pid with
+    | 0, _ -> false
+    | _, _ -> true
+    | exception Unix.Unix_error (Unix.ECHILD, _, _) -> true
+  in
+  let owner_alive () =
+    match sentinel_pid, sentinel_start_time with
+    | Some sentinel, Some expected ->
+        C2c_mcp.Broker.read_pid_start_time sentinel = Some expected
+        && C2c_pid_identity.proc_pgrp sentinel = Some pid
+    | _ ->
+        (* Without a sentinel, the process-group leader itself is the only
+           owner proof. Missing generation metadata is not sufficient owner
+           proof: a recycled PID/PGID must never receive a signal. *)
+        (match owner_start_time with
+         | None -> false
+         | Some expected ->
+             C2c_mcp.Broker.read_pid_start_time pid = Some expected
+             && C2c_pid_identity.proc_pgrp pid = Some pid)
+  in
+  let group_alive () =
+    try Unix.kill (-pid) 0; true
+    with Unix.Unix_error (Unix.ESRCH, _, _) -> false
+       | Unix.Unix_error _ -> true
+  in
+  let signal_group signal =
+    if not (owner_alive ()) then false
+    else try Unix.kill (-pid) signal; true with Unix.Unix_error _ -> false
+  in
+  (* A missing generation/sentinel is an unknown owner, even when the numeric
+     process group happens to be gone already.  Never turn that uncertainty
+     into a successful cleanup result. *)
+  if not (owner_alive ()) then false
+  else
+  (* The leader may already have exited (and been reaped) while descendants
+     remain in its process group.  Signal the group independently of the
+     leader's wait state, then reap the leader if it is still our child. *)
+  let term_sent = signal_group Sys.sigterm in
+  let deadline = Unix.gettimeofday () +. 2.0 in
+  let rec wait_grace () =
+    if (wait_once () && not (group_alive ())) || Unix.gettimeofday () >= deadline then ()
+    else (Unix.sleepf 0.05; wait_grace ())
+  in
+  wait_grace ();
+  (* Escalate the group even when [wait_once] observed ECHILD.  That is the
+     case where the old implementation leaked shell/inner-Codex descendants. *)
+  let kill_sent = signal_group Sys.sigkill in
+  let deadline = Unix.gettimeofday () +. 2.0 in
+  let reap_sentinel () =
+    match sentinel_pid with
+    | Some sentinel ->
+        (try ignore (Unix.waitpid [ Unix.WNOHANG ] sentinel) with _ -> ())
+    | None -> ()
+  in
+  let rec wait_group_gone () =
+    reap_sentinel ();
+    if not (group_alive ()) then true
+    else if Unix.gettimeofday () >= deadline then false
+    else (Unix.sleepf 0.05; wait_group_gone ())
+  in
+  let group_gone = wait_group_gone () in
+  (match sentinel_pid with
+   | Some sentinel ->
+       (try ignore (Unix.waitpid [ Unix.WNOHANG ] sentinel) with _ -> ())
+   | None -> ());
+  (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ());
+  (* A process-group id is the only target used here. If the group did not
+     disappear within the bounded poll, report failure so callers cannot claim
+     teardown completed while descendants remain. *)
+  ignore term_sent;
+  ignore kill_sent;
+  group_gone
 
 (* ------------------------- positional splitting --------------------------- *)
 
@@ -1025,6 +1225,21 @@ let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool
          write_mapping ~instance_dir
            { m with thread_id = Some thread_id;
                     updated_at = Unix.gettimeofday () }
+     | None ->
+         (* A fresh daemon remote TUI has no codex-session.json yet. The
+            SessionStart hook is the first trusted observer of its native
+            thread, so create the durable mapping from the launcher's already
+            persisted config. The caller must have proved frontend ownership
+            before invoking this helper. *)
+         (match C2c_start.load_config_opt name with
+          | Some cfg when cfg.client = "codex"
+                       && String.trim cfg.session_id <> ""
+                       && String.trim cfg.alias <> "" ->
+              write_mapping ~instance_dir
+                { session_id = cfg.session_id; alias = cfg.alias;
+                  thread_id = Some thread_id; created_at = cfg.created_at;
+                  updated_at = Unix.gettimeofday () }
+          | _ -> ())
      | _ -> ());
     repair_config ();
     true
@@ -1225,6 +1440,7 @@ let register_managed_app_server_identity ~(broker_root : string)
 
 let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
     ~(session_id : string) ~(alias : string) ~(instance_dir : string)
+    ~(cleanup_failed : bool ref)
     : C2c_codex_deliver_loop.outcome =
   (* Unlock the real WS clients in THIS launcher process only (the frontend was
      already spawned with its env captured, so this does not leak into it). *)
@@ -1241,16 +1457,23 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   let turn_client = C2c_codex_autoturn.real_turn_client () in
   let my_pid = Unix.getpid () in
+  let my_pid_start_time = C2c_mcp.Broker.read_pid_start_time my_pid in
+  let remove_outer_records () =
+    match my_pid_start_time with
+    | Some start_time ->
+        C2c_start.remove_pid_record_pair_confirmed
+          ~pid_path:(C2c_start.outer_pid_path name)
+          ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+          ~pid:my_pid ~start_time
+    | None -> false
+  in
   let register () =
-    (try
-       (* The remote frontend receives [session_id] in C2C_MCP_SESSION_ID.
-          The broker row and delivery loop must use that same id: using the
-          managed instance [name] here made the advertised alias unreachable
-          to the frontend hook, which then minted a second identity on its
-          first user turn (B167). *)
-       register_managed_app_server_identity ~broker_root ~session_id ~alias
-         ~pid:my_pid
-     with _ -> ());
+    (* The remote frontend receives [session_id] in C2C_MCP_SESSION_ID.  The
+       broker row and delivery loop must use that same id: using the managed
+       instance [name] here made the advertised alias unreachable to the
+       frontend hook, which then minted a second identity (B167). *)
+    register_managed_app_server_identity ~broker_root ~session_id ~alias
+      ~pid:my_pid;
     (* Swarm onboarding parity: join the social room like other managed sessions. *)
     (let rooms =
        C2c_swarm_config.swarm_config_social_room ()
@@ -1263,11 +1486,18 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
        rooms)
   in
   let deregistered = ref false in
+  let registered = ref false in
   let deregister () =
-    if not !deregistered then begin
-      deregistered := true;
-      (try C2c_start.clear_registration_pid ~broker_root ~session_id with _ -> ())
-    end
+    if !deregistered then true
+    else
+      let ok =
+        try
+          C2c_start.clear_registration_pid_if_owner ~broker_root ~session_id
+            ~pid:my_pid ~pid_start_time:my_pid_start_time
+        with _ -> false
+      in
+      if ok then deregistered := true else cleanup_failed := true;
+      ok
   in
   let deps : C2c_codex_deliver_loop.deps =
     { broker_root;
@@ -1286,8 +1516,8 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
       session_active =
         (fun () -> C2c_codex_app_server.current_state handle = C2c_codex_app_server.Running);
       is_dnd = (fun () -> try C2c_mcp.Broker.is_dnd broker ~session_id with _ -> false);
-      register;
-      deregister;
+      register = (fun () -> register (); registered := true);
+      deregister = (fun () -> ignore (deregister ()));
       on_pass =
         (* Collapse runs of identical passes into a single log line — log only
            when the structured outcome CHANGES. An idle session polls once/sec and
@@ -1422,6 +1652,14 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
                C2c_io.append_jsonl (instance_dir // "codex-deliver.log") line
              with _ -> ()
            end);
+      on_ingress_health =
+        (fun health ->
+          match health.C2c_codex_ingress.last_error with
+          | Some "fallback:unsupported" ->
+              ignore
+                (C2c_start.mark_codex_hook_fallback ~broker_root ~session_id)
+          | _ -> ());
+      stop_requested = (fun () -> false);
       now = Unix.gettimeofday;
       sleep = (fun s -> try Unix.sleepf s with _ -> ());
       poll_interval_s = 1.0;
@@ -1432,15 +1670,32 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
      app-server unit AND clear the registration (Fun.protect finally does not run
      on exit). Idempotent with the loop's own deregister. *)
   let prev_term = Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
-      (try C2c_codex_app_server.stop handle with _ -> ()); deregister (); exit 0)) in
+      (try C2c_codex_app_server.stop handle with _ -> ());
+      let ok = !registered && deregister () in
+      let records_removed = ok && remove_outer_records () in
+      exit (if records_removed then 0 else 1))) in
   let prev_int = Sys.signal Sys.sigint (Sys.Signal_handle (fun _ ->
-      (try C2c_codex_app_server.stop handle with _ -> ()); deregister (); exit 0)) in
+      (try C2c_codex_app_server.stop handle with _ -> ());
+      let ok = !registered && deregister () in
+      let records_removed = ok && remove_outer_records () in
+      exit (if records_removed then 0 else 1))) in
   let restore () =
     (try Sys.set_signal Sys.sigterm prev_term with _ -> ());
     (try Sys.set_signal Sys.sigint prev_int with _ -> ())
   in
   Fun.protect ~finally:restore (fun () ->
-      let o = C2c_codex_deliver_loop.run deps in
+      let o =
+        try C2c_codex_deliver_loop.run deps with e ->
+          (try C2c_codex_app_server.stop handle with _ -> ());
+          if !registered && deregister () then begin
+            if not (remove_outer_records ()) then cleanup_failed := true
+          end else if not !registered then begin
+            (* Registration itself failed or was never confirmed.  Preserve
+               the outer generation records for retry/recovery. *)
+            cleanup_failed := true
+          end;
+          raise e
+      in
       (* #31: the two degraded shapes are operationally different — say which
          one happened. Claiming "no frontend thread was ever loaded" for a
          binding-refused run is simply false: a thread loaded and mail WAS
@@ -1464,6 +1719,37 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
                alias);
       o)
 
+(* Read the exact native thread handoff emitted by the daemon frontend's
+   SessionStart hook. The parent PID and its kernel start-time generation bind
+   the payload to this launch's frontend; a mere membership in
+   thread/loaded/list is insufficient under concurrent TUIs. *)
+let daemon_thread_handoff_matches ~path ~frontend_pid : string option =
+  match C2c_start.read_regular_file_nofollow path with
+  | C2c_start.Regular_file_contents contents ->
+    (try
+    match Yojson.Safe.from_string contents with
+    | `Assoc fields ->
+        let string_field key =
+          match List.assoc_opt key fields with
+          | Some (`String s) when String.trim s <> "" -> Some (String.trim s)
+          | _ -> None
+        in
+        let int_field key =
+          match List.assoc_opt key fields with
+          | Some (`Int n) -> Some n
+          | _ -> None
+        in
+        (match string_field "thread_id", int_field "parent_pid",
+               int_field "parent_pid_start_time",
+               C2c_mcp.Broker.read_pid_start_time frontend_pid with
+         | Some thread_id, Some parent_pid, Some expected, Some actual
+           when parent_pid = frontend_pid && expected = actual -> Some thread_id
+         | _ -> None)
+    | _ -> None
+    with _ -> None)
+  | C2c_start.Regular_file_missing
+  | C2c_start.Regular_file_unreadable _ -> None
+
 let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
     ~model_override ~instance_dir:_ () : int =
   match C2c_codex_daemon_sidecar.default_control_socket () with
@@ -1476,16 +1762,11 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
               receives an empty prompt. Starting that thread through the
               daemon first is insufficient: [thread/start] creates an
               in-memory thread with no rollout, and [codex resume] rejects it
-              until the TUI has written the empty rollout. Capture the loaded
-              set before spawning, then bind the one new thread after the TUI
-              has performed its own startup handshake. *)
+              until the TUI has written the empty rollout. The frontend's
+              SessionStart hook supplies the native thread id and its exact
+              parent PID; loaded-list membership is only a final liveness check. *)
            (try Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1" with _ -> ());
            let fresh = Option.is_none thread in
-           let loaded_before =
-             if fresh then
-               C2c_codex_ingress.real_loaded_threads ~endpoint:ep ~token:""
-             else []
-           in
            (* Codex rejects permission/model overrides on [resume ... --remote],
               so strip them from an existing-thread frontend while preserving
               unrelated passthrough flags. Fresh TUI startup receives them. *)
@@ -1528,7 +1809,12 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
              @ if fresh then [ "" ] else []
            in
            let argv = Array.of_list argv_list in
-           let env = child_env (daemon_frontend_env ~session_id ~alias) in
+           let handoff_path = C2c_start.codex_daemon_thread_handoff_path name in
+           C2c_start.remove_pidfile handoff_path;
+           let env = child_env
+               ((daemon_frontend_env ~session_id ~alias ~instance_name:name)
+                @ [ "C2C_CODEX_THREAD_HANDOFF_PATH=" ^ handoff_path ]) in
+           let terminal = capture_terminal_foreground () in
            emit_app_server_log
              (Printf.sprintf "daemon attach %s (c2c-alias=%s)" remote alias);
            let now = Unix.gettimeofday () in
@@ -1546,37 +1832,200 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                broker_root = (try C2c_start.broker_root () with _ -> "");
                auto_join_rooms = C2c_swarm_config.swarm_config_social_room ();
                binary_override = None; model_override; agent_name = None };
-           let pid_oc = open_out (C2c_start.outer_pid_path name) in
-           Fun.protect ~finally:(fun () -> close_out pid_oc)
-             (fun () -> Printf.fprintf pid_oc "%d\n" (Unix.getpid ()));
-           (try
-              register_managed_app_server_identity
-                ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
-                ~pid:(Unix.getpid ())
-            with _ -> ());
-           let sidecar_pid = ref None in
-           let stop_sidecar () =
-             match !sidecar_pid with
-             | Some pid ->
-                 C2c_codex_daemon_sidecar.stop_pid pid;
-                 sidecar_pid := None
-             | None -> ()
+           C2c_start.write_pid_generation
+             ~pid_path:(C2c_start.outer_pid_path name)
+             ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+             (Unix.getpid ());
+           let outer_pid = Unix.getpid () in
+           let outer_pid_start_time = C2c_mcp.Broker.read_pid_start_time outer_pid in
+           let registration_ok =
+             try
+               register_managed_app_server_identity
+                 ~broker_root:(C2c_start.broker_root ()) ~session_id ~alias
+                 ~pid:outer_pid;
+               true
+             with e ->
+               emit_app_server_log
+                 (Printf.sprintf
+                    "daemon attach registration failed for %s: %s; frontend not started"
+                    alias (Printexc.to_string e));
+               false
            in
-           let child =
-             Unix.create_process_env bin argv env Unix.stdin Unix.stdout Unix.stderr
+           if not registration_ok then begin
+             (* Registration is the durable owner handoff.  If it was not
+                confirmed, retain the lifecycle records so recovery can
+                inspect and retry this exact launch instead of erasing its
+                ownership evidence. *)
+             emit_app_server_log
+               (Printf.sprintf
+                  "retaining lifecycle records for failed registration %s"
+                  alias);
+             1
+           end else begin
+           let sidecar_lease = ref None in
+           let frontend_pid = ref None in
+           let frontend_pid_start_time = ref None in
+           let frontend_sentinel = ref None in
+           let teardown_record =
+             C2c_start.instance_dir name // "frontend-teardown.json"
+           in
+           let write_teardown_record () =
+             match !frontend_pid with
+             | None -> ()
+             | Some pid ->
+                 let start_time = C2c_mcp.Broker.read_pid_start_time pid in
+                 let sentinel =
+                   match !frontend_sentinel with
+                   | Some (p, Some st) ->
+                       [ ("sentinel_pid", `Int p)
+                       ; ("sentinel_start_time", `Int st) ]
+                   | _ -> []
+                 in
+                 (match
+                    C2c_io.write_file_atomic ~perm:0o600 teardown_record
+                      (Yojson.Safe.to_string
+                         (`Assoc
+                           ([ ("frontend_pid", `Int pid)
+                            ; ("frontend_pid_start_time",
+                               match start_time with Some n -> `Int n | None -> `Null) ]
+                            @ sentinel)) ^ "\n")
+                  with
+                  | Ok () -> ()
+                  | Error reason ->
+                      failwith
+                        ("Codex frontend teardown record could not be published: "
+                         ^ reason))
+           in
+           let cleaned = ref false in
+           let stop_sidecar () =
+             (* Stop through the lease owner path. It revalidates the sidecar's
+                recorded PID generation before ever signaling a numeric PID. *)
+             let ok =
+               match !sidecar_lease with
+               | Some lease ->
+                   (try
+                      C2c_codex_daemon_sidecar.stop_lease
+                        ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                        lease
+                    with _ -> false)
+               | None ->
+                   (try
+                      C2c_codex_daemon_sidecar.stop_for_session
+                        ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                        ~broker_session_id:session_id
+                    with _ -> false)
+             in
+             if ok then sidecar_lease := None;
+             ok
+           in
+           let cleanup () =
+             if !cleaned then true
+             else begin
+               let frontend_ok =
+                 match !frontend_pid with
+                 | Some child ->
+                     (try
+                        match !frontend_sentinel with
+                        | Some (sentinel, Some start_time) ->
+                            stop_frontend_process ~sentinel_pid:sentinel
+                              ~sentinel_start_time:start_time child
+                        | _ ->
+                            (match !frontend_pid_start_time with
+                             | Some start_time ->
+                                 stop_frontend_process
+                                   ~owner_start_time:start_time child
+                             | None -> false)
+                      with _ -> false)
+                 | None -> true
+               in
+               (* Reclaim the terminal even when ownership teardown failed, but
+                  retain the generation-bound record, broker registration, and
+                  outer pidfile so c2c stop can retry/report honestly. *)
+               restore_terminal_foreground terminal;
+               let sidecar_ok = if frontend_ok then stop_sidecar () else false in
+               let teardown_record_removed =
+                 frontend_ok && sidecar_ok
+                 && C2c_start.remove_pidfile_confirmed teardown_record
+               in
+               let registration_cleared =
+                 teardown_record_removed
+                 && (try
+                       C2c_start.clear_registration_pid_if_owner
+                         ~broker_root:(C2c_start.broker_root ()) ~session_id
+                         ~pid:outer_pid ~pid_start_time:outer_pid_start_time
+                     with _ -> false)
+               in
+               if not frontend_ok || not sidecar_ok || not teardown_record_removed
+                  || not registration_cleared then begin
+                 Printf.eprintf
+                   "c2c codex: frontend cleanup is incomplete; retaining %s for retry\n%!"
+                   teardown_record;
+                 false
+               end else begin
+                 let outer_pidfiles_removed =
+                   C2c_start.remove_pidfile_confirmed (C2c_start.outer_pid_path name)
+                   && C2c_start.remove_pidfile_confirmed
+                        (C2c_start.outer_pid_start_time_path name)
+                 in
+                 if outer_pidfiles_removed then begin
+                   cleaned := true;
+                   frontend_pid := None;
+                   true
+                 end else begin
+                   Printf.eprintf
+                     "c2c codex: outer pidfile cleanup is incomplete; retaining state for retry\n%!";
+                   false
+                 end
+               end
+             end
            in
            let prev_term = Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
-               stop_sidecar ();
-               (try Unix.kill child Sys.sigterm with _ -> ()); exit 0)) in
+               if cleanup () then exit 0 else ())) in
            let prev_int = Sys.signal Sys.sigint (Sys.Signal_handle (fun _ ->
-               stop_sidecar ();
-               (try Unix.kill child Sys.sigint with _ -> ()); exit 0)) in
+               if cleanup () then exit 0 else ())) in
+           let restore_signals () =
+             (try Sys.set_signal Sys.sigterm prev_term with _ -> ());
+             (try Sys.set_signal Sys.sigint prev_int with _ -> ())
+           in
+           let child =
+             try
+               spawn_frontend_process ~bin ~argv ~env ~terminal
+                 ~on_parent_fork:(fun pid ->
+                   frontend_pid := Some pid;
+                   frontend_pid_start_time :=
+                     C2c_mcp.Broker.read_pid_start_time pid;
+                   write_teardown_record ())
+                 ~on_sentinel:(fun owner ->
+                   frontend_sentinel := Some owner;
+                   write_teardown_record ())
+             with e ->
+               restore_signals ();
+               if cleanup () then raise e
+               else begin
+                 (* The first publication may itself have failed. Retry the
+                    exact-generation cleanup synchronously and make one best
+                    effort to publish a receipt before refusing to return. *)
+                 (try write_teardown_record () with _ -> ());
+                 let rec retry attempts =
+                   if cleanup () then true
+                   else if attempts = 0 then false
+                   else (Unix.sleepf 0.05; retry (attempts - 1))
+                 in
+                 if retry 40 then raise e
+                 else
+                   raise
+                     (Failure
+                        (Printf.sprintf
+                           "Codex frontend startup failed and exact frontend cleanup could not be confirmed: %s"
+                           (Printexc.to_string e)))
+               end
+           in
            Fun.protect
              ~finally:(fun () ->
-               (try Sys.set_signal Sys.sigterm prev_term with _ -> ());
-               (try Sys.set_signal Sys.sigint prev_int with _ -> ()))
+               restore_signals ();
+               ignore (cleanup ()))
              (fun () ->
-                let bound_thread =
+                 let bound_thread =
                   match thread with
                   | Some tid -> Some tid
                   | None ->
@@ -1586,11 +2035,11 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                           C2c_codex_ingress.real_loaded_threads
                             ~endpoint:ep ~token:""
                         in
-                        let candidates =
-                          List.filter (fun tid -> not (List.mem tid loaded_before)) loaded
-                        in
-                        match List.rev candidates with
-                        | tid :: _ when String.trim tid <> "" -> Some tid
+                        match
+                          daemon_thread_handoff_matches ~path:handoff_path
+                            ~frontend_pid:child
+                        with
+                        | Some tid when List.mem tid loaded -> Some tid
                         | _ when Unix.gettimeofday () < deadline ->
                             Unix.sleepf 0.2;
                             discover ()
@@ -1604,22 +2053,50 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                       (Printf.sprintf
                          "daemon attach failed: fresh remote TUI did not expose a \
                           loaded thread (c2c-alias=%s)" alias);
-                    (try Unix.kill child Sys.sigterm with _ -> ());
-                    stop_sidecar ();
-                    ignore (wait_child child);
+                    ignore (cleanup ());
                     1
                 | Some tid ->
-                    (try
-                       match
-                         C2c_codex_daemon_sidecar.arm ~instance_name:name ~thread_id:tid ~alias
-                           ~broker_session_id:session_id
-                           ~broker_root:(try C2c_start.broker_root () with _ -> "")
-                           ()
-                       with
-                       | C2c_codex_daemon_sidecar.Armed { child_pid } ->
-                           sidecar_pid := Some child_pid
-                       | _ -> ()
-                     with _ -> ());
+                    let armed =
+                      try
+                        match
+                          C2c_codex_daemon_sidecar.arm ~instance_name:name ~thread_id:tid ~alias
+                            ~broker_session_id:session_id
+                            ~broker_root:(try C2c_start.broker_root () with _ -> "")
+                            ()
+                        with
+                        | C2c_codex_daemon_sidecar.Armed { child_pid = _ } ->
+                            sidecar_lease :=
+                              C2c_codex_daemon_sidecar.peek
+                                ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                                ~socket_identity:ep.host ~thread_id:tid;
+                            true
+                        | C2c_codex_daemon_sidecar.Already_running l
+                          when l.broker_session_id = session_id ->
+                            sidecar_lease := Some l;
+                            true
+                        | C2c_codex_daemon_sidecar.Already_running _
+                        | C2c_codex_daemon_sidecar.Claim_held _
+                        | C2c_codex_daemon_sidecar.Socket_unavailable -> false
+                        | C2c_codex_daemon_sidecar.Arm_failed reason ->
+                            emit_app_server_log
+                              (Printf.sprintf "daemon sidecar arm failed: %s" reason);
+                            false
+                        | C2c_codex_daemon_sidecar.Arm_failed_ownership_retained reason ->
+                            emit_app_server_log
+                              (Printf.sprintf
+                                 "daemon sidecar arm retained ownership; fallback disabled: %s"
+                                 reason);
+                            false
+                      with e ->
+                        emit_app_server_log
+                          (Printf.sprintf "daemon sidecar arm failed: %s"
+                             (Printexc.to_string e));
+                        false
+                    in
+                    if not armed then begin
+                      ignore (cleanup ());
+                      1
+                    end else begin
                     C2c_start.write_config
                       { C2c_start.name; client = "codex"; session_id;
                         resume_session_id = tid; codex_resume_target = Some tid;
@@ -1629,8 +2106,9 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                         auto_join_rooms = C2c_swarm_config.swarm_config_social_room ();
                         binary_override = None; model_override; agent_name = None };
                     let exit_code = wait_child child in
-                    stop_sidecar ();
-                    exit_code))
+                    exit_code
+                    end)
+           end)
 
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(yolo : bool) ~(extra_args : string list)
@@ -1688,8 +2166,10 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
   in
   let instance_dir = C2c_start.instance_dir name in
   (try C2c_io.mkdir_p instance_dir with _ -> ());
-  (* Prefer the machine daemon when it is up: TUI attaches with --remote unix://
-     and SessionStart/sidecar owns delivery. Injected [backend] stays on the
+  (* Prefer the machine daemon only when its owner-bound cleanup prerequisites
+     are available: the launcher has an exact PID generation and pidfd
+     signalling. The launcher then attaches the TUI and arms the sidecar after
+     discovering its exact native thread. Injected [backend] stays on the
      private-server path so hermetic tests do not touch the live daemon. *)
   if backend = None && daemon_attach_available () then
     run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
@@ -1773,9 +2253,10 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
           broker_root = (try C2c_start.broker_root () with _ -> "");
           auto_join_rooms = C2c_swarm_config.swarm_config_social_room ();
           binary_override = None; model_override; agent_name = None };
-      let pid_oc = open_out (C2c_start.outer_pid_path name) in
-      Fun.protect ~finally:(fun () -> close_out pid_oc)
-        (fun () -> Printf.fprintf pid_oc "%d\n" (Unix.getpid ()); flush pid_oc);
+           C2c_start.write_pid_generation
+             ~pid_path:(C2c_start.outer_pid_path name)
+             ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+             (Unix.getpid ());
       (* B138: the instant the unit is up (and therefore observable as
          online-attached by doctor/health), synchronously publish a fail-closed
          degraded record STAMPED with this unit's generation id — before the
@@ -1834,7 +2315,11 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
                  ; ("session_id", `String session_id)
                  ; ("alias", `String alias)
                  ; ("detail", `String detail) ])
-          with _ -> ()));
+         with _ -> ());
+         (try C2c_codex_app_server.stop handle with _ -> ());
+         (* Registration was not confirmed.  Keep the outer generation pair
+            and all retry metadata until ownership cleanup is proven. *)
+         raise (Failure detail));
       (* B176: the pre-TUI handoff line (with alias + endpoint) is emitted inside
          start() via lifecycle_log immediately before spawn_frontend — do not
          reprint a second banner here (avoids duplicate/interleaved TUI noise). *)
@@ -1844,10 +2329,27 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
          inbound c2c mail as DATA + auto-turns eligible local mail, and tears the
          registration + loop down on TUI exit. Falls back to plain supervision
          (degraded) if no thread is ever loaded — never crashes the session. *)
+      let delivery_cleanup_failed = ref false in
+      let outer_pid = Unix.getpid () in
+      let outer_pid_start_time = C2c_mcp.Broker.read_pid_start_time outer_pid in
+      let remove_outer_records () =
+        match outer_pid_start_time with
+        | Some start_time ->
+            C2c_start.remove_pid_record_pair_confirmed
+              ~pid_path:(C2c_start.outer_pid_path name)
+              ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+              ~pid:outer_pid ~start_time
+        | None -> false
+      in
       let final =
         run_delivery_loop ~handle ~name ~session_id ~alias ~instance_dir
+          ~cleanup_failed:delivery_cleanup_failed
       in
       C2c_codex_app_server.stop handle;
+      if not !delivery_cleanup_failed && remove_outer_records () then ()
+      else
+        Printf.eprintf
+          "c2c codex: retaining outer pidfiles because lifecycle cleanup was not confirmed\n%!";
       (* Refresh the mapping's updated_at + thread on clean shutdown. *)
       (match load_mapping ~instance_dir with
        | Some m -> write_mapping ~instance_dir { m with updated_at = Unix.gettimeofday () }

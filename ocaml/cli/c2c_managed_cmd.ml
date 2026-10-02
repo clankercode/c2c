@@ -847,7 +847,7 @@ let stop_cmd =
      that exit code yet. *)
   let ok = match outcome with
     | C2c_start.Stop_stopped | C2c_start.Stop_not_running -> true
-    | C2c_start.Stop_refused_foreign_pid _ -> false
+    | C2c_start.Stop_failed _ | C2c_start.Stop_refused_foreign_pid _ -> false
   in
   (match output_mode with
    | Json ->
@@ -1312,4 +1312,3 @@ let restart_sidecar : unit Cmdliner.Cmd.t =
     (Cmdliner.Cmd.info "restart-sidecar"
        ~doc:"Restart a managed deliver or poker sidecar without killing the inner client (I012). Local-operator only; never message-triggered (B098).")
     restart_sidecar_cmd
-

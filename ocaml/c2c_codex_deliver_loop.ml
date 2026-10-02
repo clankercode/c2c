@@ -29,6 +29,8 @@ type deps = {
   restart_requested : thread_id:string -> string option;
   global_broker_root : string option;
   on_global_pass : Ingress.health -> unit;
+  on_ingress_health : Ingress.health -> unit;
+  stop_requested : unit -> bool;
   now : unit -> float;
   sleep : float -> unit;
   poll_interval_s : float;
@@ -57,11 +59,12 @@ let build_autoturn_config (d : deps) ~(thread_id : string) : Autoturn.config =
       ~token_provider:d.token_provider
       ~client:d.inject_client
   in
-  Autoturn.default_config
+  { (Autoturn.default_config
     ~ingress_cfg
     ~turn_client:d.turn_client
     ~session_active:d.session_active
-    ~is_dnd:d.is_dnd
+    ~is_dnd:d.is_dnd) with
+    on_ingress_health = d.on_ingress_health }
 
 (* B141: plain T003 ingress config for the machine-wide cross-repo sessions
    broker — same session key, same attached thread, same client/token; only
@@ -136,6 +139,15 @@ let run (d : deps) : outcome =
          and recovery is INTENTIONALLY by restart (resolve the owning sibling,
          then relaunch), not by silently re-deriving health on a timer. *)
       let degraded_latched = ref false in
+      (* Unsupported ingress is a capability result, not a transient retry.
+         Latch it exactly like the daemon sidecar does: hooks/poll own the
+         durable inbox after this loop releases its broker registration. *)
+      let unsupported_latched = ref false in
+      let observe_ingress_health (health : Ingress.health) =
+        (try d.on_ingress_health health with _ -> ());
+        if health.last_error = Some "fallback:unsupported" then
+          unsupported_latched := true
+      in
       let current_degraded () = !thread = None || !degraded_latched in
       let stamp_degraded () =
         report_degraded ~binding_refused:!degraded_latched (current_degraded ())
@@ -201,6 +213,9 @@ let run (d : deps) : outcome =
                 match (try Some (Ingress.deliver_pass gcfg) with _ -> None) with
                 | Some gh ->
                     incr global_passes;
+                    (* Global ingress is subject to the same unsupported /
+                       fallback latch as local ingress. *)
+                    observe_ingress_health gh;
                     (try d.on_global_pass gh with _ -> ())
                 | None -> ())
             | None -> ())
@@ -221,23 +236,29 @@ let run (d : deps) : outcome =
                | Some executable ->
                  mk_outcome ~restart_executable:executable Ep.Sv_offline
                | None -> begin
-               let cfg = build_autoturn_config d ~thread_id:tid in
+               let cfg =
+                 { (build_autoturn_config d ~thread_id:tid) with
+                   on_ingress_health = observe_ingress_health }
+               in
                (* deliver_pass never raises for a delivery/protocol error — it
                   records the reason and returns a pass_outcome. Guard anyway so
                   a bug can never wedge the supervisor. *)
                (match (try Some (Autoturn.deliver_pass cfg) with _ -> None) with
                 | Some po -> incr passes; (try d.on_pass po with _ -> ())
                 | None -> ());
-               run_global_pass ~thread_id:tid;
-               (* #27: beat AGAIN after the delivery work. A single healthy pass
-                  can legitimately run far longer than the read-side staleness
-                  window against a hung-but-not-dead app-server
-                  ([Ingress.max_batch] = 32 injections x 8-12s socket timeouts),
-                  which would false-flag a LIVE loop as deaf until the next beat.
-                  Beating on both sides of the work closes that window. *)
-               maybe_heartbeat ();
-               if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline
-               else (d.sleep d.poll_interval_s; loop ())
+               if !unsupported_latched || d.stop_requested () then mk_outcome Ep.Sv_offline
+               else begin
+                 run_global_pass ~thread_id:tid;
+                 (* #27: beat AGAIN after the delivery work. A single healthy pass
+                    can legitimately run far longer than the read-side staleness
+                    window against a hung-but-not-dead app-server
+                    ([Ingress.max_batch] = 32 injections x 8-12s socket timeouts),
+                    which would false-flag a LIVE loop as deaf until the next beat.
+                    Beating on both sides of the work closes that window. *)
+                 maybe_heartbeat ();
+                 if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline
+                 else (d.sleep d.poll_interval_s; loop ())
+               end
                end)
            | None ->
                if d.now () -. start >= d.max_wall_s then mk_outcome Ep.Sv_offline

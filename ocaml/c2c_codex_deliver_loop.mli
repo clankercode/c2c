@@ -97,6 +97,8 @@ type deps = {
           marker never sees this path. [None] disables global delivery
           (sessions-broker root unresolvable). *)
   on_global_pass : C2c_codex_ingress.health -> unit;
+  on_ingress_health : C2c_codex_ingress.health -> unit;
+  stop_requested : unit -> bool;
       (** structured metrics/log sink for each global-inbox ingress pass —
           contains NO message content and NO credential (ingress health only).
           Best-effort: exceptions are swallowed. *)

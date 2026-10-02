@@ -88,7 +88,10 @@ let data_text ?(include_header = true) (m : C2c_mcp.message) ~message_id : strin
   in
   let envelope =
     Printf.sprintf "<c2c event=\"message\" from=\"%s\" to=\"%s\" message_id=\"%s\">%s</c2c>"
-      m.from_alias m.to_alias message_id m.content
+      (C2c_mcp.xml_escape m.from_alias)
+      (C2c_mcp.xml_escape m.to_alias)
+      (C2c_mcp.xml_escape message_id)
+      (C2c_mcp.xml_escape m.content)
   in
   let body =
     String.concat "\n"

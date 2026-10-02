@@ -90,6 +90,33 @@ val lifecycle_tui_handoff_body : alias:string -> endpoint:string -> string
     [C2C_MCP_AUTO_REGISTER_ALIAS] carries the banner alias for whoami fallback. *)
 val app_server_frontend_env : session_id:string -> alias:string -> string list
 
+(** Environment for the machine-daemon remote frontend. The app-server marker
+    is intentionally empty: the launcher owns daemon sidecar arming after it
+    discovers the exact loaded native thread. *)
+val daemon_frontend_env :
+  session_id:string -> alias:string -> instance_name:string -> string list
+
+(** Pure gate for selecting daemon attach before starting its detached
+    frontend. All three capabilities are required; callers fall back to the
+    private app-server/hooks path when any is unavailable. *)
+val daemon_attach_safe_to_start :
+  socket_available:bool ->
+  pidfd_available:bool ->
+  pid_generation_available:bool ->
+  bool
+
+(** Stop a daemon-attach frontend and all descendants in its process group.
+    The group is signalled even when the frontend leader has already been
+    reaped. *)
+val stop_frontend_process :
+  ?owner_start_time:int -> ?sentinel_pid:int -> ?sentinel_start_time:int ->
+  int -> bool
+
+(** Read the daemon frontend's exact thread handoff record.  Only JSON integer
+    PID and generation fields can establish ownership; fractional values are
+    unknown and return [None]. *)
+val daemon_thread_handoff_matches : path:string -> frontend_pid:int -> string option
+
 (* ----------------------- B224: MCP-block preflight ------------------------ *)
 
 (** Classification of the machine-wide [mcp_servers.c2c] block that
