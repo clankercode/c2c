@@ -112,6 +112,45 @@ let proc_field_int ~(path : string) ~(prefix : string) : int option =
 let proc_tgid (pid : int) : int option =
   proc_field_int ~path:(Printf.sprintf "/proc/%d/status" pid) ~prefix:"Tgid:"
 
+(* Parent process id from /proc/<pid>/stat field 4. The command name is
+   parenthesized, so locate the final ')' before splitting the remaining
+   fields; this also handles names containing spaces or parentheses. *)
+let proc_ppid (pid : int) : int option =
+  try
+    let ic = open_in (Printf.sprintf "/proc/%d/stat" pid) in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        let line = input_line ic in
+        match String.rindex_opt line ')' with
+        | None -> None
+        | Some idx ->
+            let tail = String.sub line (idx + 2) (String.length line - idx - 2) in
+            (* tail[0] is state; tail[1] is ppid. *)
+            (match List.nth_opt (String.split_on_char ' ' tail) 1 with
+             | Some value -> int_of_string_opt value
+             | None -> None))
+  with Sys_error _ | End_of_file -> None
+
+(* Process-group id from /proc/<pid>/stat field 5. This is used immediately
+   before group signalling; a live PID alone does not prove that its PGID has
+   not been reused. *)
+let proc_pgrp (pid : int) : int option =
+  try
+    let ic = open_in (Printf.sprintf "/proc/%d/stat" pid) in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        let line = input_line ic in
+        match String.rindex_opt line ')' with
+        | None -> None
+        | Some idx ->
+            let tail = String.sub line (idx + 2) (String.length line - idx - 2) in
+            (match List.nth_opt (String.split_on_char ' ' tail) 2 with
+             | Some p -> int_of_string_opt p
+             | None -> None))
+  with Sys_error _ | End_of_file -> None
+
 (* Process name, for explaining a rejection to a human. *)
 let proc_comm (pid : int) : string option =
   try
@@ -149,6 +188,27 @@ let proc_start_ticks (pid : int) : int option =
                | Some token -> int_of_string_opt token
                | None -> None))
   with Sys_error _ | End_of_file -> None
+
+type pid_generation_state =
+  | Generation of int
+  | Absent
+  | Unreadable
+
+(* Unlike [read_pid_start_time], this preserves the distinction between a
+   process which is definitely gone and procfs which could not answer. Cleanup
+   code must never turn the latter into permission to forget an owner record. *)
+let read_pid_generation (pid : int) : pid_generation_state =
+  if pid <= 0 then Absent
+  else
+    match proc_start_ticks pid with
+    | Some ticks -> Generation ticks
+    | None ->
+        (try
+           ignore (Unix.stat (Printf.sprintf "/proc/%d" pid));
+           Unreadable
+         with
+         | Unix.Unix_error (Unix.ENOENT, _, _) -> Absent
+         | _ -> Unreadable)
 
 (* Wall-clock start of [pid], or None when procfs cannot answer. *)
 let proc_start_wall_clock (pid : int) : float option =
@@ -189,20 +249,20 @@ let classify_pid_identity ~(pid : int) ~(expect : pid_expectation) : pid_identit
                 else Pid_recycled (observed, recorded)))
 
 (* Upper bound on the start time of whatever [pidfile] names: the file's own
-   mtime. [Unknown_start] when it cannot be stat'd, so an unreadable pidfile
-   degrades to the leadership check rather than to a refusal. *)
+   mtime. [Unknown_start] when it cannot be stat'd; callers must fail closed
+   rather than substitute a liveness or leadership check. *)
 let pidfile_expectation (pidfile : string) : pid_expectation =
   match Unix.stat pidfile with
   | st -> Recorded_at st.Unix.st_mtime
   | exception Unix.Unix_error _ -> Unknown_start
 
-(* Does this pid still belong to us? Pid_unverifiable counts as ours: without a
-   recorded start time there is no evidence of reuse, and treating "unknown" as
-   dead would break stop for any instance predating start_ts. The leadership
-   and existence checks still apply in that case, so the dangerous case (#85)
-   is caught regardless. *)
+(* Does this pid still belong to us? An unreadable start-time record is an
+   unknown lifecycle state, never ownership evidence. Callers that signal a
+   numeric process group must have a positive generation match; treating
+   [Pid_unverifiable] as owned would reopen the PID-reuse window. *)
 let pid_identity_is_ours = function
-  | Pid_matches | Pid_unverifiable -> true
+  | Pid_matches -> true
+  | Pid_unverifiable -> false
   | Pid_absent | Pid_not_leader _ | Pid_recycled _ -> false
 
 let recorded_pid_is_ours ~(expect : pid_expectation) ~(pid : int) : bool =
@@ -212,9 +272,43 @@ let recorded_pid_is_ours ~(expect : pid_expectation) ~(pid : int) : bool =
 let pidfile_pid_is_ours ~(pidfile : string) ~(pid : int) : bool =
   recorded_pid_is_ours ~expect:(pidfile_expectation pidfile) ~pid
 
+let signal_process_group_if_owner ~(pidfile : string) ~(pid : int)
+    ~(signal : int) : bool =
+  if not (pidfile_pid_is_ours ~pidfile ~pid)
+     || proc_pgrp pid <> Some pid
+  then false
+  else
+    try Unix.kill (-pid) signal; true with Unix.Unix_error _ -> false
+
+let signal_process_group_if_generation_matches ~(pid : int) ~(start_time : int)
+    ~(signal : int) : bool =
+  match read_pid_generation pid with
+  | Generation actual when actual = start_time && proc_pgrp pid = Some pid ->
+      (try Unix.kill (-pid) signal; true with Unix.Unix_error _ -> false)
+  | _ -> false
+
+(* Open and signal a process through a pidfd after checking the exact procfs
+   generation in the same owner-bound operation.  Numeric [kill] after a
+   separate /proc check still has a PID-reuse window; callers that need to
+   stop a detached child or lease must use this seam.  Unsupported kernels and
+   non-Linux platforms return [false], which is deliberately fail-closed. *)
+external pidfd_supported : unit -> bool = "caml_c2c_pidfd_supported"
+external pidfd_send_signal_if_start_time : int -> int -> int -> bool
+  = "caml_c2c_pidfd_send_signal_if_start_time"
+
+let signal_pid_if_generation_matches ~(pid : int) ~(start_time : int)
+    ~(signal : int) : bool =
+  let signal_kind =
+    if signal = Sys.sigterm then 0
+    else if signal = Sys.sigkill then 1
+    else -1
+  in
+  signal_kind >= 0
+  && pidfd_send_signal_if_start_time pid start_time signal_kind
+
 let pid_identity_reason ~(pid : int) = function
   | Pid_matches -> "pid matches the recorded start time"
-  | Pid_unverifiable -> "pid is live but has no recorded start time to verify"
+  | Pid_unverifiable -> "pid start time is unreadable; ownership is unverifiable"
   | Pid_absent -> Printf.sprintf "no process with pid %d" pid
   | Pid_not_leader tgid ->
       Printf.sprintf

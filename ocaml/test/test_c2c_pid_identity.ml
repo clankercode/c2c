@@ -167,11 +167,9 @@ let test_absent_pid () =
   check identity "negative pid is not a target" P.Pid_absent
     (P.classify_pid_identity ~pid:(-1) ~expect:P.Unknown_start)
 
-let test_unverifiable_counts_as_ours () =
-  (* Without evidence of reuse we keep the pre-#85 behaviour, so an instance
-     with no recorded start time can still be stopped. Existence and leadership
-     have already been checked by the time we get here. *)
-  check bool "unverifiable is ours" true (P.pid_identity_is_ours P.Pid_unverifiable);
+let test_unverifiable_is_not_ours () =
+  (* Unknown start-time metadata is not ownership evidence. *)
+  check bool "unverifiable is not ours" false (P.pid_identity_is_ours P.Pid_unverifiable);
   check bool "matches is ours" true (P.pid_identity_is_ours P.Pid_matches);
   check bool "absent is not" false (P.pid_identity_is_ours P.Pid_absent);
   check bool "thread is not" false (P.pid_identity_is_ours (P.Pid_not_leader 1));
@@ -211,8 +209,8 @@ let () =
         ] )
     ; ( "absence and asymmetry",
         [ test_case "absent pids" `Quick test_absent_pid
-        ; test_case "unverifiable counts as ours" `Quick
-            test_unverifiable_counts_as_ours
+        ; test_case "unverifiable is not ours" `Quick
+            test_unverifiable_is_not_ours
         ; test_case "proc readers" `Quick test_proc_readers
         ] )
     ]
