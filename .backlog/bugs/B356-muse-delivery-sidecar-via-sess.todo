@@ -1,0 +1,16 @@
+---
+complexity: high
+created_at: "2026-10-02T17:26:36Z"
+depends_on:
+    - B352
+estimate_hours: 8
+id: B356
+priority: high
+status: pending
+tags:
+    - muse
+title: muse delivery sidecar via session-message plus endpoint
+updated_at: "2026-10-02T17:26:36Z"
+---
+
+muse delivery sidecar via session-message plus endpoint
