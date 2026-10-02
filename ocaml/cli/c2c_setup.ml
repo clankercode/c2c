@@ -2782,8 +2782,12 @@ let strip_muse_settings_hooks_json existing : Yojson.Safe.t =
      the kimi anti-hijack precedent (build_kimi_mcp_config);
    - no `disabled` key (kimi precedent: --with-mcp IS explicit activation;
      claude's B290 disabled:true is for its init-written entries);
-   - no tool-filter keys (U6 CONDITIONAL: recognized but enforcement
-     untested → blanket + doc unless B357 verifies). *)
+   - no tool-filter keys (U6 RESOLVED by B357: `enabled_tools` /
+     `disabled_tools` are schema-recognized but COMPLETELY unenforced —
+     a meta caller called a disabled_tools-listed tool end-to-end and the
+     call reached the server; all 40 c2c tools stay advertised. Blanket
+     exposure is the only honest posture, so no allow-list is derived
+     from C2c_mcp.base_tool_names. Evidence: B357 findings file). *)
 let build_muse_mcp_config ~root ~alias_val ~server_path ~mcp_command ~alias_from_auto_gen existing
   : Yojson.Safe.t =
   let c2c_entry =
@@ -3428,6 +3432,20 @@ let client_mcp_configured client =
   | "muse" -> json_file_has_c2c_mcp_entry (muse_settings_path ())
   | _ -> false
 
+(* Clients whose `install all --with-mcp` upgrade check reads MCP state
+   ([client_mcp_configured]) instead of integration state, so a hooks-only
+   install is upgraded to MCP rather than skipped as up-to-date.
+   B357 posture flip: muse joins this set — B352 P3/D4 proved the stdio
+   handshake + tool visibility live, so `install all --with-clients
+   --with-mcp` now converges a hooks-only muse install to MCP.
+   ASYMMETRY (B354 review, binding): [do_install_client] passes [with_mcp]
+   through to every per-client setup (muse included) regardless of this
+   list — this list gates only the *upgrade check*. If a no-MCP posture
+   were ever chosen for a client here, gate the passthrough too, not just
+   the check line. *)
+let mcp_upgrade_check_clients =
+  [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "muse" ]
+
 let file_contains path needle =
   if not (Sys.file_exists path) then false
   else
@@ -3782,7 +3800,7 @@ let install_all_subcmd =
     let any_client_configured = ref false in
     List.iter (fun (c, on_path, integration_configured) ->
       let configured =
-        if with_mcp && List.mem c [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode" ]
+        if with_mcp && List.mem c mcp_upgrade_check_clients
         then client_mcp_configured c
         else integration_configured
       in

@@ -1290,6 +1290,267 @@ let test_kimi_hook_not_detected_when_no_config () =
     check bool "no kimi config" false r.C2c_doctor_hooks.khook_config_exists;
     check bool "hook not installed" false r.C2c_doctor_hooks.khook_installed)
 
+(* --- Muse integration check (B357) ---------------------------------------- *)
+
+(* Scratch muse roots: HOME + XDG_CONFIG_HOME + XDG_DATA_HOME + stub muse
+   binary + ingress env, all restored after. All vars treat "" as unset. *)
+let muse_stub_script = {|#!/bin/sh
+if [ "$1" = "plugins" ] && [ "$2" = "inspect" ]; then
+  printf '%s\n' "$C2C_MUSE_STUB_INSPECT"
+  exit "$C2C_MUSE_STUB_INSPECT_RC"
+fi
+echo "stub: unknown argv: $*" >&2
+exit 1
+|}
+
+let with_muse_env ?(inspect = "plugin `c2c` is not installed") ?(inspect_rc = "1") f =
+  with_tmp_dir (fun dir ->
+    let home = dir // "home" in
+    C2c_io.mkdir_p home;
+    let stub = dir // "muse-stub.sh" in
+    write_file stub muse_stub_script;
+    Unix.chmod stub 0o755;
+    let vars =
+      [ ("HOME", home)
+      ; ("XDG_CONFIG_HOME", home // ".config")
+      ; ("XDG_DATA_HOME", home // ".local" // "share")
+      ; ("C2C_MUSE_BIN", stub)
+      ; ("C2C_MUSE_STUB_INSPECT", inspect)
+      ; ("C2C_MUSE_STUB_INSPECT_RC", inspect_rc)
+      ]
+    in
+    let prev = List.map (fun (k, _) -> (k, Sys.getenv_opt k)) vars in
+    List.iter (fun (k, v) -> Unix.putenv k v) vars;
+    Fun.protect
+      ~finally:(fun () ->
+        List.iter
+          (fun (k, v) ->
+             match v with Some x -> Unix.putenv k x | None -> Unix.putenv k "")
+          prev)
+      (fun () -> f home))
+
+let with_ingress value f =
+  let prev = Sys.getenv_opt "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" in
+  Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" value;
+  Fun.protect
+    ~finally:(fun () ->
+      match prev with Some x -> Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" x
+      | None -> Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" "")
+    f
+
+let write_muse_settings home content =
+  write_file (home // ".config" // "muse" // "settings.json") content
+
+let write_muse_gate home plugins_value =
+  write_file
+    (home // ".local" // "share" // "muse" // "feature-config" // "7075626c6963.json")
+    (Printf.sprintf {|{"schema_version":1,"gates":{"plugins":%s}}|} plugins_value)
+
+let seed_muse_runtime_session ~home ~sid ~pid ~workspace ~eligibility =
+  write_file
+    (home // ".local" // "share" // "muse" // "runtime" // "muse" // "sessions" // (sid ^ ".json"))
+    (Printf.sprintf
+       {|{"schema_version":1,"session_id":"%s","endpoint_hint":"ms-test.sock","workspace_label":"%s","target_eligibility":"%s","process_generation_hint":"pid=%d"}|}
+       sid workspace eligibility pid)
+
+let seed_muse_session_log ~home ~sid content =
+  write_file
+    (home // ".local" // "share" // "muse" // "sessions" // "2026" // "10" // "02" // sid
+     // "session.jsonl")
+    content
+
+(* A pid that is certainly dead: fork a child that exits at once, reap it. *)
+let dead_pid () =
+  match Unix.fork () with
+  | 0 -> exit 0
+  | p -> ignore (Unix.waitpid [] p); p
+
+let test_muse_trust_parser_shapes () =
+  let trust = C2c_doctor_hooks.muse_plugin_trust_of_inspect_output in
+  check string "missing plugin" "not-installed"
+    (trust "plugin `c2c` is not installed\n");
+  check string "all trusted" "trusted"
+    (trust
+       "c2c 0.0.0 enabled=true\n\
+        runtime-capability  plugin:c2c:hook:session-start  status=trusted_enabled\n\
+        runtime-capability  plugin:c2c:hook:stop  status=trusted_enabled\n");
+  check string "mixed trust needs approval" "needs-approval"
+    (trust
+       "runtime-capability  plugin:c2c:hook:probe   status=trusted_enabled\n\
+        runtime-capability  plugin:c2c:hook:probe2  status=review_needed\n");
+  check string "garbage is unknown, never trusted" "unknown"
+    (trust "something unexpected\n");
+  check string "empty is unknown" "unknown" (trust "");
+  check string "status key anchored, not first equals" "trusted"
+    (trust "runtime-capability  plugin:c2c:hook:we=ird  status=trusted_enabled\n")
+
+let test_muse_ingress_opener_values () =
+  let is_open = C2c_doctor_hooks.muse_ingress_env_open in
+  List.iter
+    (fun v -> with_ingress v (fun () ->
+       check bool (Printf.sprintf "%s opens" v) true (is_open ())))
+    [ "1"; "true"; "on"; "TRUE"; " On " ];
+  List.iter
+    (fun v -> with_ingress v (fun () ->
+       check bool (Printf.sprintf "%s stays closed" v) false (is_open ())))
+    [ "0"; "off"; ""; "yes"; "false" ];
+  (* Unset also closed. *)
+  let prev = Sys.getenv_opt "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" in
+  Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" "";
+  Fun.protect
+    ~finally:(fun () ->
+      match prev with Some x -> Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" x
+      | None -> Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" "")
+    (fun () -> check bool "unset stays closed" false (is_open ()))
+
+let test_muse_absent_host () =
+  with_muse_env (fun _home ->
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check bool "muse not present" false m.C2c_doctor_hooks.mm_muse_present;
+    check bool "not installed" false m.C2c_doctor_hooks.mm_installed;
+    check string "settings missing" "missing" m.C2c_doctor_hooks.mm_settings_state;
+    check string "trust not-installed" "not-installed" m.C2c_doctor_hooks.mm_plugin_trust;
+    check string "gate unknown" "unknown" m.C2c_doctor_hooks.mm_plugins_gate;
+    check bool "no sessions" true (m.C2c_doctor_hooks.mm_sessions = []))
+
+let test_muse_settings_only_no_c2c () =
+  with_muse_env (fun home ->
+    write_muse_settings home {|{"schema_version":1,"provider":"meta"}|};
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check bool "muse present" true m.C2c_doctor_hooks.mm_muse_present;
+    check bool "not installed" false m.C2c_doctor_hooks.mm_installed;
+    check string "settings ok" "ok" m.C2c_doctor_hooks.mm_settings_state;
+    check bool "no settings hooks" false m.C2c_doctor_hooks.mm_settings_hooks;
+    check bool "no mcp entry" false m.C2c_doctor_hooks.mm_mcp_entry)
+
+let test_muse_full_install_detected () =
+  let inspect =
+    "c2c 0.0.0 enabled=true\n\
+     runtime-capability  plugin:c2c:hook:session-start  status=trusted_enabled\n"
+  in
+  with_muse_env ~inspect ~inspect_rc:"0" (fun home ->
+    with_ingress "1" (fun () ->
+      write_file (home // ".config" // "muse" // "skills" // "c2c" // "SKILL.md") "# c2c\n";
+      write_muse_settings home
+        {|{"schema_version":1,"hooks":{"SessionStart":[{"matcher":".*","hooks":[{"type":"command","command":"c2c hook muse","timeout":10}]}]},"mcpServers":{"c2c":{"type":"stdio"}},"local_session_messaging":{"enabled":false}}|};
+      C2c_io.mkdir_p (home // ".local" // "share" // "muse" // "plugins" // "cache" // "local" // "c2c");
+      write_file
+        (home // ".local" // "share" // "muse" // "plugins" // "installed.json")
+        {|{"version":1,"plugins":{"c2c":{"id":"c2c"}}}|};
+      write_muse_gate home "true";
+      let m = C2c_doctor_hooks.check_muse_status () in
+      check bool "installed" true m.C2c_doctor_hooks.mm_installed;
+      check bool "skill" true m.C2c_doctor_hooks.mm_skill_exists;
+      check bool "cache" true m.C2c_doctor_hooks.mm_plugin_cache_exists;
+      check bool "record" true m.C2c_doctor_hooks.mm_plugin_record;
+      check string "trust trusted" "trusted" m.C2c_doctor_hooks.mm_plugin_trust;
+      check bool "settings hooks" true m.C2c_doctor_hooks.mm_settings_hooks;
+      check bool "mcp entry" true m.C2c_doctor_hooks.mm_mcp_entry;
+      check string "gate granted" "granted" m.C2c_doctor_hooks.mm_plugins_gate;
+      check bool "ingress env open" true m.C2c_doctor_hooks.mm_ingress_env;
+      check bool "ingress veto set" true m.C2c_doctor_hooks.mm_ingress_veto))
+
+let test_muse_unreadable_settings () =
+  with_muse_env (fun home ->
+    write_muse_settings home "{not json";
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check bool "muse present (file exists)" true m.C2c_doctor_hooks.mm_muse_present;
+    check string "settings unreadable" "unreadable" m.C2c_doctor_hooks.mm_settings_state;
+    check bool "hooks fail closed" false m.C2c_doctor_hooks.mm_settings_hooks;
+    check bool "mcp fails closed" false m.C2c_doctor_hooks.mm_mcp_entry;
+    check bool "veto fails closed" false m.C2c_doctor_hooks.mm_ingress_veto)
+
+let test_muse_gate_denied () =
+  with_muse_env (fun home ->
+    write_muse_settings home {|{"schema_version":1}|};
+    write_muse_gate home "false";
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check string "gate denied" "denied" m.C2c_doctor_hooks.mm_plugins_gate)
+
+let test_muse_live_session_tools_advertised () =
+  with_muse_env (fun home ->
+    let sid = "livemuse000000000000000000000001" in
+    seed_muse_runtime_session ~home ~sid ~pid:(Unix.getpid ()) ~workspace:"ws-live"
+      ~eligibility:"message_capable";
+    seed_muse_session_log ~home ~sid
+      {|{"run":{"active_tools":["bash","mcp__c2c__poll_inbox","mcp__c2c__send"]}}|} ;
+    let m = C2c_doctor_hooks.check_muse_status () in
+    (match m.C2c_doctor_hooks.mm_sessions with
+     | [ s ] ->
+         check string "sid" sid s.C2c_doctor_hooks.mst_session_id;
+         check bool "live" true s.C2c_doctor_hooks.mst_live;
+         check (option bool) "c2c tools advertised" (Some true)
+           s.C2c_doctor_hooks.mst_c2c_tools
+     | _ -> fail "expected exactly one session"))
+
+let test_muse_live_session_tools_absent () =
+  with_muse_env (fun home ->
+    let sid = "livemuse000000000000000000000002" in
+    seed_muse_runtime_session ~home ~sid ~pid:(Unix.getpid ()) ~workspace:"ws-live"
+      ~eligibility:"message_capable";
+    seed_muse_session_log ~home ~sid {|{"run":{"active_tools":["bash","search"]}}|} ;
+    let m = C2c_doctor_hooks.check_muse_status () in
+    (match m.C2c_doctor_hooks.mm_sessions with
+     | [ s ] ->
+         check bool "live" true s.C2c_doctor_hooks.mst_live;
+         check (option bool) "c2c tools absent" (Some false)
+           s.C2c_doctor_hooks.mst_c2c_tools
+     | _ -> fail "expected exactly one session"))
+
+let test_muse_dead_session_not_scanned () =
+  with_muse_env (fun home ->
+    let sid = "livemuse000000000000000000000003" in
+    seed_muse_runtime_session ~home ~sid ~pid:(dead_pid ()) ~workspace:"ws-dead"
+      ~eligibility:"message_capable";
+    (* Even with a log present, dead sessions are not scanned. *)
+    seed_muse_session_log ~home ~sid {|{"run":{"active_tools":["mcp__c2c__poll_inbox"]}}|} ;
+    let m = C2c_doctor_hooks.check_muse_status () in
+    (match m.C2c_doctor_hooks.mm_sessions with
+     | [ s ] ->
+         check bool "dead" false s.C2c_doctor_hooks.mst_live;
+         check (option bool) "tools unscanned" None s.C2c_doctor_hooks.mst_c2c_tools
+     | _ -> fail "expected exactly one session"))
+
+let test_muse_health_row_mapping () =
+  let muse_health_row = C2c_doctor_hooks.muse_health_row in
+  let base : C2c_doctor_hooks.muse_result =
+    { mm_muse_present = false; mm_installed = false; mm_skill_exists = false
+    ; mm_plugin_cache_exists = false; mm_plugin_record = false
+    ; mm_plugin_trust = "unknown"; mm_settings_state = "missing"
+    ; mm_settings_hooks = false; mm_mcp_entry = false; mm_plugins_gate = "unknown"
+    ; mm_ingress_env = false; mm_ingress_veto = false; mm_sessions = []
+    }
+  in
+  (match muse_health_row base with
+   | `Gray, msg ->
+       check bool "gray names muse:" true
+         (let n = "muse:" in
+          let rec loop i =
+            i + String.length n <= String.length msg
+            && (String.sub msg i (String.length n) = n || loop (i + 1))
+          in
+          loop 0)
+   | _ -> fail "absent host must be gray");
+  (match muse_health_row { base with mm_muse_present = true } with
+   | `Yellow, _ -> ()
+   | _ -> fail "present-but-no-c2c must be yellow");
+  (match muse_health_row { base with mm_muse_present = true; mm_installed = true } with
+   | `Green, _ -> ()
+   | _ -> fail "installed must be green")
+
+let test_muse_json_key_present () =
+  with_muse_env (fun home ->
+    write_muse_settings home {|{"schema_version":1}|};
+    let r = C2c_doctor_hooks.check ~dirs:[] () in
+    (match C2c_doctor_hooks.to_json r with
+     | `Assoc fields -> (
+         match List.assoc_opt "muse" fields with
+         | Some (`Assoc m) ->
+             check bool "muse_present key" true (List.mem_assoc "muse_present" m);
+             check bool "sessions key" true (List.mem_assoc "sessions" m)
+         | _ -> fail "muse key missing or malformed")
+     | _ -> fail "doctor json is not an object"))
+
 let () =
   run "c2c_doctor_hooks"
     [ ( "dangling_detection"
@@ -1373,5 +1634,21 @@ let () =
             test_kimi_hook_healthy_when_block_present
         ; test_case "not detected when no kimi config" `Quick
             test_kimi_hook_not_detected_when_no_config
+        ] )
+    ; ( "muse-integration-b357"
+      , [ test_case "trust parser shapes" `Quick test_muse_trust_parser_shapes
+        ; test_case "ingress opener values" `Quick test_muse_ingress_opener_values
+        ; test_case "absent host" `Quick test_muse_absent_host
+        ; test_case "settings-only, no c2c" `Quick test_muse_settings_only_no_c2c
+        ; test_case "full install detected" `Quick test_muse_full_install_detected
+        ; test_case "unreadable settings fails closed" `Quick test_muse_unreadable_settings
+        ; test_case "gate denied" `Quick test_muse_gate_denied
+        ; test_case "live session tools advertised" `Quick
+            test_muse_live_session_tools_advertised
+        ; test_case "live session tools absent" `Quick
+            test_muse_live_session_tools_absent
+        ; test_case "dead session not scanned" `Quick test_muse_dead_session_not_scanned
+        ; test_case "health row mapping" `Quick test_muse_health_row_mapping
+        ; test_case "json key present" `Quick test_muse_json_key_present
         ] )
     ]

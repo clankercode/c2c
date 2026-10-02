@@ -290,6 +290,12 @@ let check_plugin_installs () =
    else
      add (`Gray, "hermes: not configured (run: c2c install hermes)"));
 
+  (* Muse: plugin-first (+ settings.json hooks fallback) with optional MCP
+     entry (B354 writer, B357 presence). The shared doctor check is the
+     source of truth; the row mapping is pure (tested in
+     test_c2c_doctor_hooks). *)
+  add (C2c_doctor_hooks.muse_health_row (C2c_doctor_hooks.check_muse_status ()));
+
   List.rev !results
 
 (* Scan for running deprecated PTY-based wake daemons.
@@ -601,13 +607,11 @@ let connect_dashboard ~root ~broker ~output_mode =
     else if has_yellow then `Needs_install
     else `Not_found
   in
-  (* B354 refresh: `c2c install muse` now exists, but muse still has no plugin
-     presence checks (B357 owns doctor/presence), so it always reads
-     Not_found. Its row stays in the JSON clients map (contract), but
-     verdicts compute over installable clients only — else the dashboard
-     would nag installs no host could satisfy and none could ever reach
-     "you're connected!". Revisit when B357 adds muse presence checks. *)
-  let installable_clients = List.filter (fun c -> c <> "muse") supported_clients in
+  (* B357 flip: muse presence checks now exist (see the muse arm in
+     [check_plugin_installs]), so verdicts compute over every supported
+     client — a muse-less host nags `c2c install muse` exactly like any
+     other missing client. *)
+  let installable_clients = supported_clients in
   let all_installed = List.for_all (fun c -> client_status c = `Installed) installable_clients in
   let any_configured = List.exists (fun c -> client_status c <> `Not_found) installable_clients in
   let next_action =
