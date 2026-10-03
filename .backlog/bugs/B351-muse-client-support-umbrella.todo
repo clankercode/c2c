@@ -1,15 +1,16 @@
 ---
 claimed_at: "2026-10-03T00:38:42Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-03T00:38:42Z"
 complexity: medium
 created_at: "2026-10-02T17:15:45Z"
 depends_on: []
+duration_minutes: 0.01470707615
 estimate_hours: 1
 id: B351
 priority: high
 started_at: "2026-10-03T00:38:42Z"
-status: in_progress
+status: done
 tags: []
 title: muse client support umbrella
 updated_at: "2026-10-03T00:38:42Z"
