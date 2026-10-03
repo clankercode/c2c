@@ -33,8 +33,9 @@ Codex delivery has two transports; live coverage is split/incomplete:
 2. `scripts/codex-managed-appserver-live-e2e.py` — MANAGED app-server transport.
    Launch via `c2c new codex` (in tmux, per CLAUDE.md). Send a peer DM, assert:
    arrival-time model-visible injection, an eligible LOCAL auto-turn fired,
-   typed-draft preservation held, teardown/deregistration clean (no orphan proc,
-   registration gone). Gate: `C2C_CODEX_APPSERVER_LIVE`. preflight/run.
+   typed-draft preservation held, and teardown satisfies the invariant of no
+   orphan processes, cleaned lifecycle records, and exactly one unowned pidless
+   sticky row remaining. Gate: `C2C_CODEX_APPSERVER_LIVE`. preflight/run.
 3. `ocaml/test/test_c2c_codex_live_e2e.ml` (+ dune stanza) — in-suite skip proof.
    Two gated cases; gate off → skip; gate on → shell to the harness `run` mode,
    assert exit 0. Keeps `dune runtest` (CI) hermetic by default.
