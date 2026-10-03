@@ -4035,6 +4035,25 @@ let read_config_nofollow (name : string) : instance_config_read =
   | Ok snapshot -> Instance_config_present snapshot.config
   | Error state -> state
 
+(* Some machine services persist a lifecycle config shape that belongs to a
+   CLI-level module rather than the generic managed-instance parser (the
+   relay-connect supervisor is one example).  Stop still needs to prove that
+   an unparsed config did not change while it waited for the outer process to
+   exit, so retain an exact no-follow contents check for that case. *)
+let read_config_contents_nofollow (name : string) : string option =
+  match read_regular_file_nofollow (config_path name) with
+  | Regular_file_contents contents -> Some contents
+  | Regular_file_missing | Regular_file_unreadable _ -> None
+
+let is_relay_connect_config_contents contents =
+  try
+    match Yojson.Safe.from_string contents with
+    | `Assoc fields ->
+        List.assoc_opt "client" fields = Some (`String "relay-connect")
+        || List.assoc_opt "supervised" fields = Some (`Bool true)
+    | _ -> false
+  with _ -> false
+
 let load_config_opt_nofollow (name : string) : instance_config option =
   match read_config_nofollow name with
   | Instance_config_present cfg -> Some cfg
@@ -4685,9 +4704,16 @@ let codex_frontend_teardown_expected (name : string) : frontend_teardown_expecta
             (Printf.sprintf "Codex instance config %s is missing, unreadable, or invalid"
                (config_path name))
       | Instance_config_unknown reason ->
-          Codex_frontend_teardown_unknown
-            (Printf.sprintf "Codex instance config %s could not be trusted: %s"
-               (config_path name) reason)
+          (match read_config_contents_nofollow name with
+           | Some contents when is_relay_connect_config_contents contents ->
+               (* The machine-wide relay supervisor has no Codex frontend or
+                  frontend teardown receipt. Its config is intentionally a
+                  different shape from an agent instance config. *)
+               Codex_frontend_teardown_absent
+           | _ ->
+               Codex_frontend_teardown_unknown
+                 (Printf.sprintf "Codex instance config %s could not be trusted: %s"
+                    (config_path name) reason))
       | Instance_config_present cfg ->
           codex_frontend_teardown_expected_for_config name cfg
 
@@ -9118,6 +9144,11 @@ let stop_instance (name : string) : stop_outcome =
      values are the proof that the cleanup below still belongs to the same
      generation after the signal/wait boundary. *)
   let captured_config = read_config_nofollow name in
+  let captured_unknown_config_contents =
+    match captured_config with
+    | Instance_config_unknown _ -> read_config_contents_nofollow name
+    | Instance_config_missing | Instance_config_present _ -> None
+  in
   (* The Codex app-server route is launched by [c2c new codex] rather than the
      generic managed outer loop. Its delivery owner is therefore not in the
      outer loop's in-memory sidecar refs. Sweep its pidfile after stopping the
@@ -9204,6 +9235,10 @@ let stop_instance (name : string) : stop_outcome =
     | Instance_config_missing, Instance_config_missing -> true
     | Instance_config_present before, Instance_config_present after ->
         config_identity_equal before after
+    | Instance_config_unknown _, Instance_config_unknown _ ->
+        (match captured_unknown_config_contents with
+         | Some before -> Some before = read_config_contents_nofollow name
+         | None -> false)
     | _ -> false
   in
   let outer_record_still_belongs_to_capture captured =

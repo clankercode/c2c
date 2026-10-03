@@ -182,6 +182,27 @@ let remove_pidfile_if_owned path =
   | Some pid when pid = Unix.getpid () -> (try Unix.unlink path with _ -> ())
   | _ -> ()
 
+(* The shared managed-instance stop path treats a PID without its exact
+   generation sibling as uncertain.  Relay-connect predates that contract, so
+   keep the legacy test/supervisor entry point tolerant while removing a
+   published pair through the same identity-pinned helper as c2c_start. *)
+let remove_outer_pid_record_if_owned pid_path =
+  let start_time_path = pid_path ^ ".start-time" in
+  match C2c_start.read_pid_record ~pid_path ~start_time_path with
+  | C2c_start.Pid_record_present (pid, start_time)
+    when pid = Unix.getpid () ->
+      ignore
+        (C2c_start.remove_pid_record_pair_confirmed
+           ~pid_path ~start_time_path ~pid ~start_time)
+  | C2c_start.Pid_record_absent -> ()
+  | C2c_start.Pid_record_unknown ->
+      (* Unit tests and older callers can invoke [supervise] after writing only
+         outer.pid. Preserve that cleanup behavior, but retain any uncertain
+         sidecar for stale-record recovery. *)
+      if not (Sys.file_exists start_time_path) then
+        remove_pidfile_if_owned pid_path
+  | C2c_start.Pid_record_present _ -> ()
+
 let child_status_code = function
   | Unix.WEXITED n -> n
   | Unix.WSIGNALED n | Unix.WSTOPPED n -> 128 + n
@@ -248,7 +269,7 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
              (try Unix.unlink connector_pid_path with _ -> ())
          | _ -> ())
      | None -> ());
-    remove_pidfile_if_owned pid_path
+    remove_outer_pid_record_if_owned pid_path
   in
   Fun.protect ~finally:cleanup (fun () ->
     let rec launch () =
@@ -321,7 +342,11 @@ let run_owner ~self ~broker_root ~name ~relay_url ~interval ~extra_args
          callers keep waiting on a pipe held open by the daemon. *)
       if not foreground then redirect_daemon_stdio log_path;
       write_config ~config_path:(inst_dir // "config.json") ~relay_url ~interval;
-      write_pidfile pid_path (Unix.getpid ());
+      (* Publish the exact supervisor generation required by the shared
+         c2c_start stop/recovery path.  A PID alone is deliberately not
+         trusted because it may later be recycled by an unrelated process. *)
+      C2c_start.write_pid_generation
+        ~pid_path ~start_time_path:(pid_path ^ ".start-time") (Unix.getpid ());
       (match ready_fd with
        | Some fd -> ignore (Unix.write_substring fd "READY\n" 0 6); Unix.close fd
        | None -> ());

@@ -110,6 +110,12 @@ let wait_status pid =
   | Unix.WEXITED n -> n
   | Unix.WSIGNALED n | Unix.WSTOPPED n -> 128 + n
 
+let write_pid_generation path pid =
+  write_file path (Printf.sprintf "%d\n" pid);
+  match C2c_broker.read_pid_start_time pid with
+  | Some start_time -> write_file (path ^ ".start-time") (Printf.sprintf "%d\n" start_time)
+  | None -> failwith (Printf.sprintf "no /proc start time for pid %d" pid)
+
 let c2c_exe =
   let e = Sys.executable_name in
   let abs = if Filename.is_relative e then Sys.getcwd () // e else e in
@@ -291,6 +297,7 @@ let test_unit_inactive_falls_through_to_legacy () =
   let parent = spawn_to_log ~env c2c_exe [ "start"; "relay-connect"; "--interval"; "60" ] start_log in
   check int "start exits 0" 0 (wait_status parent);
   let outer_pid_path = instances // "relay-connect" // "outer.pid" in
+  let outer_start_time_path = outer_pid_path ^ ".start-time" in
   check bool "supervisor recorded" true
     (wait_until (fun () ->
          let pid =
@@ -299,6 +306,8 @@ let test_unit_inactive_falls_through_to_legacy () =
            | None -> None
          in
          match pid with Some p when pid_alive p -> true | _ -> false));
+  check bool "supervisor records exact generation" true
+    (wait_until (fun () -> Sys.file_exists outer_start_time_path));
   let outer =
     int_of_string (String.trim (read_file outer_pid_path))
   in
@@ -319,6 +328,10 @@ let test_unit_inactive_falls_through_to_legacy () =
     (read_file capture = "");
   check bool "outer supervisor is down" true
     (wait_until ~timeout:5.0 (fun () -> not (pid_alive outer)));
+  check bool "outer generation record is cleaned up" true
+    (wait_until ~timeout:5.0 (fun () ->
+         not (Sys.file_exists outer_pid_path)
+         && not (Sys.file_exists outer_start_time_path)));
   check bool "reports stopped" true (contains ~haystack:out ~needle:"stopped")
 
 (* --- (d) rogue supervisor + active unit: stop the rogue, systemd wins back -- *)
@@ -432,10 +445,12 @@ let test_stop_sweeps_child_after_outer_sigkilled () =
   Fun.protect ~finally:(fun () -> kill9 child; reap child) @@ fun () ->
   (* A supervisor that died without running its handlers: dead pid recorded. *)
   let dead_outer = spawn_decoy root "dead-outer" in
+  let outer_pid_path = inst // "outer.pid" in
+  write_pid_generation outer_pid_path dead_outer;
   kill9 dead_outer;
   reap dead_outer;
-  write_file (inst // "outer.pid") (Printf.sprintf "%d\n" dead_outer);
   write_file (inst // "connector.pid") (Printf.sprintf "%d\n" child);
+  write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
   check bool "outer is gone" true
     (wait_until ~timeout:5.0 (fun () -> not (pid_alive dead_outer)));
   check bool "child survived the SIGKILLed outer (defect precondition)" true
