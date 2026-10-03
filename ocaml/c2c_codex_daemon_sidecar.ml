@@ -332,8 +332,8 @@ type arm_result =
 let arm_wait_budget_s = 5.0
 
 let arm_failed_after_pending_cleanup ~stopped ~lease_released
-    ~registration_cleared =
-  if stopped && lease_released && registration_cleared then
+    ~registration_cleared ~sidecar_pid_cleared =
+  if stopped && lease_released && registration_cleared && sidecar_pid_cleared then
     Arm_failed
       "sidecar became operational but its pending arm records could not be removed"
   else if not stopped then
@@ -342,9 +342,12 @@ let arm_failed_after_pending_cleanup ~stopped ~lease_released
   else if not lease_released then
     Arm_failed_ownership_retained
       "sidecar child stopped but its exact lease could not be released after pending-arm cleanup failed"
-  else
+  else if not registration_cleared then
     Arm_failed_ownership_retained
       "sidecar lease was released but its exact broker registration could not be cleared after pending-arm cleanup failed"
+  else
+    Arm_failed_ownership_retained
+      "sidecar broker registration was cleared but its exact pid/generation record could not be removed after pending-arm cleanup failed"
 
 let registration_is_live ~broker_root ~broker_session_id ~alias ~pid
     ~pid_start_time =
@@ -451,7 +454,24 @@ let release_arm_lease ~owners_dir ~socket_identity ~thread_id
         ?sidecar_pid_start_time:child_pid_start_time ()
   | Lease_present _ -> false
 
-let cleanup_failed_arm ~owners_dir ~socket_identity ~thread_id
+let clear_instance_sidecar_pid ~instance_name ~child_pid ~child_pid_start_time =
+  let pid_path = C2c_start.codex_daemon_sidecar_pid_path instance_name in
+  let start_time_path =
+    C2c_start.codex_daemon_sidecar_pid_start_time_path instance_name
+  in
+  match child_pid_start_time with
+  | None -> false
+  | Some child_pid_start_time ->
+      match C2c_start.read_pid_record ~pid_path ~start_time_path with
+      | C2c_start.Pid_record_absent -> true
+      | C2c_start.Pid_record_present (pid, start_time)
+        when pid = child_pid && start_time = child_pid_start_time ->
+          C2c_start.remove_pid_record_pair_confirmed ~pid_path ~start_time_path
+            ~pid:child_pid ~start_time:child_pid_start_time
+      | C2c_start.Pid_record_unknown
+      | C2c_start.Pid_record_present _ -> false
+
+let cleanup_failed_arm ~instance_name ~owners_dir ~socket_identity ~thread_id
     ~broker_root ~broker_session_id ~alias ~token ~child_pid
     ~child_pid_start_time ~reason =
   let stopped = stop_pid ?sidecar_pid_start_time:child_pid_start_time child_pid in
@@ -472,9 +492,18 @@ let cleanup_failed_arm ~owners_dir ~socket_identity ~thread_id
         ~pid_start_time:child_pid_start_time
     else false
   in
+  let sidecar_pid_cleared =
+    if registration_cleared then
+      match instance_name with
+      | None -> true
+      | Some instance_name ->
+          clear_instance_sidecar_pid ~instance_name ~child_pid
+            ~child_pid_start_time
+    else false
+  in
   let result =
     arm_failed_after_pending_cleanup ~stopped ~lease_released
-      ~registration_cleared
+      ~registration_cleared ~sidecar_pid_cleared
   in
   match result with
   | Arm_failed _ as failed ->
@@ -580,18 +609,8 @@ let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
             match instance_name with
             | None -> true
             | Some instance_name ->
-                let path = C2c_start.codex_daemon_sidecar_pid_path instance_name in
-                let start_time_path =
-                  C2c_start.codex_daemon_sidecar_pid_start_time_path instance_name
-                in
-                match C2c_start.read_pid_state path,
-                      C2c_start.read_pid_state start_time_path with
-                | C2c_start.Pidfile_absent, C2c_start.Pidfile_absent -> true
-                | C2c_start.Pidfile_valid p, C2c_start.Pidfile_valid _
-                  when p = pid ->
-                    C2c_start.remove_pidfile_confirmed path
-                    && C2c_start.remove_pidfile_confirmed start_time_path
-                | _ -> false
+                clear_instance_sidecar_pid ~instance_name ~child_pid:pid
+                  ~child_pid_start_time:pid_start_time
         in
         let ok =
           release_before_cleanup
@@ -829,7 +848,7 @@ let arm ~thread_id ~alias ~broker_session_id ~broker_root ?instance_name ?owners
                             "sidecar arm record could not be published: " ^ reason
                         | None -> "sidecar arm record could not be published"
                       in
-                      cleanup_failed_arm ~owners_dir ~socket_identity ~thread_id
+                      cleanup_failed_arm ~instance_name ~owners_dir ~socket_identity ~thread_id
                         ~broker_root ~broker_session_id ~alias ~token ~child_pid
                         ~child_pid_start_time ~reason
                     end else begin
@@ -908,34 +927,11 @@ let arm ~thread_id ~alias ~broker_session_id ~broker_root ?instance_name ?owners
                               enable fallback delivery.  If any owner-bound
                               step is uncertain, retain the ownership barrier
                               and make the hook suppress fallback delivery. *)
-                           let stopped =
-                             stop_pid ?sidecar_pid_start_time:child_pid_start_time
-                               child_pid
-                           in
-                           let lease_released =
-                             if not stopped then false
-                             else
-                               release_arm_lease ~owners_dir ~socket_identity
-                                 ~thread_id ~broker_session_id ~alias
-                                 ~child_pid
-                                 ~child_pid_start_time
-                           in
-                             let cleanup_result =
-                               let registration_cleared =
-                                 if stopped && lease_released then
-                                   C2c_start.clear_registration_pid_if_owner
-                                     ~broker_root ~session_id:broker_session_id
-                                     ~pid:child_pid
-                                     ~pid_start_time:child_pid_start_time
-                                 else false
-                               in
-                               arm_failed_after_pending_cleanup ~stopped
-                                 ~lease_released ~registration_cleared
-                             in
-                             match cleanup_result with
-                             | Arm_failed_ownership_retained _ -> cleanup_result
-                             | Arm_failed _ -> cleanup_result
-                             | other -> other
+                           cleanup_failed_arm ~instance_name ~owners_dir
+                             ~socket_identity ~thread_id ~broker_root
+                             ~broker_session_id ~alias ~token ~child_pid
+                             ~child_pid_start_time
+                             ~reason:"pending sidecar arm record could not be removed"
                          end
                      | Arm_failed _ as failed ->
                          (* A child that never observes a valid loaded thread
@@ -943,7 +939,7 @@ let arm ~thread_id ~alias ~broker_session_id ~broker_root ?instance_name ?owners
                             registration before the parent observed failure.
                             Fallback is allowed only after this exact owner has
                             been stopped, released, and cleared. *)
-                         cleanup_failed_arm ~owners_dir ~socket_identity ~thread_id
+                         cleanup_failed_arm ~instance_name ~owners_dir ~socket_identity ~thread_id
                            ~broker_root ~broker_session_id ~alias ~token ~child_pid
                            ~child_pid_start_time
                            ~reason:(match failed with Arm_failed reason -> reason | _ -> "sidecar arm failed")

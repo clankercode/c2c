@@ -321,6 +321,18 @@ let signal_pid_if_generation_matches ~(pid : int) ~(start_time : int)
       pidfd_send_signal_if_start_time pid start_time signal_kind
   | None -> false
 
+(* Managed lifecycle records are only safe when this process can both publish
+   an exact generation and signal that generation without a numeric-PID reuse
+   window. On platforms without procfs or pidfd support, refusing before fork
+   avoids treating a live owner as absent or waiting forever for an owner that
+   cannot be signalled. *)
+let managed_lifecycle_supported () =
+  pidfd_supported ()
+  &&
+  match read_pid_generation (Unix.getpid ()) with
+  | Generation _ -> true
+  | Absent | Unreadable -> false
+
 let pid_identity_reason ~(pid : int) = function
   | Pid_matches -> "pid matches the recorded start time"
   | Pid_unverifiable -> "pid start time is unreadable; ownership is unverifiable"

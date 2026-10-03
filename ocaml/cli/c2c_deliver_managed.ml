@@ -589,6 +589,11 @@ let pp_supervisor_status_human (s : supervisor_status) =
         reason
 
 let stop_supervisor ~name ~timeout_s : bool =
+  if not (C2c_pid_identity.managed_lifecycle_supported ()) then begin
+    Printf.eprintf
+      "[c2c stop] managed deliver-service is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; lifecycle records retained\n%!";
+    false
+  end else
   let pid_path = instances_dir () // name // "outer.pid" in
   match read_pidfile pid_path with
   | Some pid when pid_alive pid
@@ -612,6 +617,14 @@ let stop_supervisor ~name ~timeout_s : bool =
   | _ -> true
 
 let run_owner ~name ~foreground ~ready_fd =
+  if not (C2c_pid_identity.managed_lifecycle_supported ()) then begin
+    (match ready_fd with
+     | Some fd -> ignore (Unix.write_substring fd "UNSUPPORTED\n" 0 12); Unix.close fd
+     | None -> ());
+    Printf.eprintf
+      "error: managed deliver-service is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; no service was started\n%!";
+    1
+  end else begin
   mkdir_p (machine_state_dir ());
   match C2c_singleton_lock.try_acquire ~path:(machine_lock_resource ()) with
   | Already_running ->
@@ -652,6 +665,7 @@ let run_owner ~name ~foreground ~ready_fd =
           (fun () -> idle_supervise ~pid_path ~log_path)
       in
       code
+  end
 
 let read_ready fd =
   let buf = Bytes.create 16 in
@@ -659,6 +673,11 @@ let read_ready fd =
   Bytes.sub_string buf 0 n
 
 let[@noreturn] start ~name ~daemon () =
+  if not (C2c_pid_identity.managed_lifecycle_supported ()) then begin
+    Printf.eprintf
+      "error: managed deliver-service is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; no service was started\n%!";
+    exit 1
+  end;
   if not daemon then
     exit (run_owner ~name ~foreground:true ~ready_fd:None)
   else begin

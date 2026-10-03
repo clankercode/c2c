@@ -187,6 +187,9 @@ let generation_matches ~pid ~start_time =
       C2c_pid_identity.proc_tgid pid = Some pid
   | _ -> false
 
+let managed_lifecycle_supported () =
+  C2c_pid_identity.managed_lifecycle_supported ()
+
 let record_matches ~pid_path ~start_time_path ~pid ~start_time =
   match C2c_start.read_pid_record ~pid_path ~start_time_path with
   | C2c_start.Pid_record_present (recorded_pid, recorded_start) ->
@@ -214,7 +217,8 @@ let read_recorded_pid ~pid_path : recorded_pid_state =
   | C2c_start.Pid_record_present (pid, start_time) -> Recorded_present (pid, start_time)
 
 let generation_gone ~pid ~start_time =
-  match C2c_pid_identity.read_pid_generation pid with
+  if not (managed_lifecycle_supported ()) then false
+  else match C2c_pid_identity.read_pid_generation pid with
   | C2c_pid_identity.Absent -> true
   | C2c_pid_identity.Generation actual when actual = start_time -> false
   | C2c_pid_identity.Generation _
@@ -253,6 +257,8 @@ let remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time =
    operation into a signal or unlink against the replacement owner. *)
 let stop_recorded_generation ~pid_path ~start_time_path ~pid ~start_time
     ~timeout_s =
+  if not (managed_lifecycle_supported ()) then false
+  else
   let gone () =
     match read_recorded_pid ~pid_path with
     | Recorded_present (recorded_pid, recorded_start)
@@ -417,6 +423,14 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
 
 let run_owner ~self ~broker_root ~name ~relay_url ~interval ~extra_args
     ~foreground ~ready_fd =
+  if not (managed_lifecycle_supported ()) then begin
+    (match ready_fd with
+     | Some fd -> ignore (Unix.write_substring fd "UNSUPPORTED\n" 0 12); Unix.close fd
+     | None -> ());
+    Printf.eprintf
+      "error: managed relay connector is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; no connector was started\n%!";
+    1
+  end else begin
   mkdir_p (machine_state_dir ());
   match C2c_singleton_lock.try_acquire ~path:(machine_lock_resource ()) with
   | Already_running ->
@@ -454,6 +468,7 @@ let run_owner ~self ~broker_root ~name ~relay_url ~interval ~extra_args
           (fun () -> supervise ~self ~argv ~log_path ~pid_path ~foreground)
       in
       code
+  end
 
 let read_ready fd =
   let buf = Bytes.create 16 in
@@ -764,6 +779,11 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
   (* Resolve before daemon mode chdirs to /. Relative checkout invocations
      such as ./_build/default/ocaml/cli/c2c.exe must keep working. *)
   let self = resolve_self_binary () in
+  if not (managed_lifecycle_supported ()) then begin
+    Printf.eprintf
+      "error: managed relay connector is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; no connector was started\n%!";
+    exit 1
+  end;
   if not daemon then
     exit (run_owner ~self ~broker_root ~name ~relay_url ~interval ~extra_args
             ~foreground:true ~ready_fd:None)

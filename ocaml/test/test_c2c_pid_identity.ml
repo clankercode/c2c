@@ -186,6 +186,16 @@ let test_unverifiable_is_not_ours () =
   check bool "thread is not" false (P.pid_identity_is_ours (P.Pid_not_leader 1));
   check bool "recycled is not" false (P.pid_identity_is_ours (P.Pid_recycled (1., 2.)))
 
+let test_managed_lifecycle_capability_matches_exact_primitives () =
+  let generation_available =
+    match P.read_pid_generation self with
+    | P.Generation _ -> true
+    | P.Absent | P.Unreadable -> false
+  in
+  check bool "managed lifecycle requires pidfd and own generation"
+    (P.pidfd_supported () && generation_available)
+    (P.managed_lifecycle_supported ())
+
 let test_proc_readers () =
   check (option int) "tgid of self is self" (Some self) (P.proc_tgid self);
   check (option int) "tgid of a thread is the leader" (Some self)
@@ -276,69 +286,82 @@ let test_group_signal_skips_reused_member_generation () =
       Unix.pause ();
       pause_forever ()
     in
-    let owner =
-      match Unix.fork () with
-      | 0 ->
-          Unix.close owner_ready_r;
-          Unix.close member_ready_r;
-          Unix.close member_ready_w;
-          Unix.close marker_r;
-          ignore (Unix.write_substring owner_ready_w "O\n" 0 2);
-          pause_forever ()
-      | pid -> pid
-    in
-    setpgid_retry owner owner;
-    Unix.close owner_ready_w;
-    let owner_ready = Unix.in_channel_of_descr owner_ready_r in
-    ignore (input_line owner_ready);
-    close_in_noerr owner_ready;
-    let member =
-      match Unix.fork () with
-      | 0 ->
-          Unix.close member_ready_r;
-          Unix.close marker_r;
-          ignore (Unix.write_substring member_ready_w "M\n" 0 2);
-          Sys.set_signal Sys.sigterm
-            (Sys.Signal_handle (fun _ ->
-                 ignore (Unix.write_substring marker_w "M" 0 1)));
-          pause_forever ()
-      | pid -> pid
-    in
-    setpgid_retry member owner;
-    Unix.close member_ready_w;
-    let member_ready = Unix.in_channel_of_descr member_ready_r in
-    Fun.protect
-      ~finally:(fun () -> close_in_noerr member_ready)
-      (fun () -> ignore (input_line member_ready));
-    Unix.close marker_w;
+    let owner = ref None in
+    let member = ref None in
+    let close_fd fd = try Unix.close fd with Unix.Unix_error _ -> () in
+    (* Install cleanup immediately after the first fork. Every later setup
+       step can fail (including setpgid, pipe reads, and the second fork), and
+       a stopped owner must never escape the fixture's exception path. *)
     Fun.protect
       ~finally:(fun () ->
-        (try Unix.kill owner Sys.sigkill with Unix.Unix_error _ -> ());
-        (try ignore (Unix.waitpid [] owner) with Unix.Unix_error _ -> ());
-        (try Unix.kill member Sys.sigkill with Unix.Unix_error _ -> ());
-        (try ignore (Unix.waitpid [] member) with Unix.Unix_error _ -> ());
-        (try Unix.close marker_r with Unix.Unix_error _ -> ()))
+        Option.iter (fun pid ->
+          (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+          (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ())) !member;
+        Option.iter (fun pid ->
+          (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
+          (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ())) !owner;
+        close_fd owner_ready_r;
+        close_fd owner_ready_w;
+        close_fd member_ready_r;
+        close_fd member_ready_w;
+        close_fd marker_r;
+        close_fd marker_w)
       (fun () ->
+        let owner_pid =
+          match Unix.fork () with
+          | 0 ->
+              close_fd owner_ready_r;
+              close_fd member_ready_r;
+              close_fd member_ready_w;
+              close_fd marker_r;
+              ignore (Unix.write_substring owner_ready_w "O\n" 0 2);
+              pause_forever ()
+          | pid -> owner := Some pid; pid
+        in
+        setpgid_retry owner_pid owner_pid;
+        close_fd owner_ready_w;
+        let owner_ready = Unix.in_channel_of_descr owner_ready_r in
+        ignore (input_line owner_ready);
+        close_in_noerr owner_ready;
+        let member_pid =
+          match Unix.fork () with
+          | 0 ->
+              close_fd member_ready_r;
+              close_fd marker_r;
+              ignore (Unix.write_substring member_ready_w "M\n" 0 2);
+              Sys.set_signal Sys.sigterm
+                (Sys.Signal_handle (fun _ ->
+                     ignore (Unix.write_substring marker_w "M" 0 1)));
+              pause_forever ()
+          | pid -> member := Some pid; pid
+        in
+        setpgid_retry member_pid owner_pid;
+        close_fd member_ready_w;
+        let member_ready = Unix.in_channel_of_descr member_ready_r in
+        Fun.protect
+          ~finally:(fun () -> close_in_noerr member_ready)
+          (fun () -> ignore (input_line member_ready));
+        close_fd marker_w;
         let old_mismatch = Sys.getenv_opt "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" in
         let restore_mismatch () =
           match old_mismatch with
           | Some value -> Unix.putenv "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" value
           | None -> Unix.putenv "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" ""
         in
-        Unix.putenv "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" (string_of_int member);
+        Unix.putenv "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" (string_of_int member_pid);
         Fun.protect ~finally:restore_mismatch @@ fun () ->
         let owner_start =
-          match P.read_pid_generation owner with
+          match P.read_pid_generation owner_pid with
           | P.Generation value -> value
           | _ -> fail "owner generation unavailable"
         in
         check bool "a recycled member makes the whole group signal fail" false
           (P.signal_process_group_if_generation_matches
-             ~pid:owner ~start_time:owner_start ~signal:Sys.sigterm);
+             ~pid:owner_pid ~start_time:owner_start ~signal:Sys.sigterm);
         check bool "owner remains alive after fail-closed group signal" true
-          (try Unix.kill owner 0; true with Unix.Unix_error _ -> false);
+          (try Unix.kill owner_pid 0; true with Unix.Unix_error _ -> false);
         check bool "member remains alive after fail-closed group signal" true
-          (try Unix.kill member 0; true with Unix.Unix_error _ -> false);
+          (try Unix.kill member_pid 0; true with Unix.Unix_error _ -> false);
         let ready, _, _ = Unix.select [ marker_r ] [] [] 0.2 in
           check bool "generation-mismatched member is not signalled" false
           (List.mem marker_r ready);
@@ -370,6 +393,8 @@ let () =
         [ test_case "absent pids" `Quick test_absent_pid
         ; test_case "unverifiable is not ours" `Quick
             test_unverifiable_is_not_ours
+        ; test_case "managed lifecycle capability" `Quick
+            test_managed_lifecycle_capability_matches_exact_primitives
         ; test_case "proc readers" `Quick test_proc_readers
         ; test_case "group signal binds generation" `Quick
             test_group_signal_is_generation_bound

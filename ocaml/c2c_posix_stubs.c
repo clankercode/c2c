@@ -1155,7 +1155,13 @@ static int c2c_pidfd_scan_group_members(
     if (proc == NULL) return 0;
     struct dirent *entry;
     int complete = 1;
-    while ((entry = readdir(proc)) != NULL) {
+    for (;;) {
+        errno = 0;
+        entry = readdir(proc);
+        if (entry == NULL) {
+            if (errno != 0) complete = 0;
+            break;
+        }
         char *end = NULL;
         long candidate = strtol(entry->d_name, &end, 10);
         if (end == entry->d_name || *end != '\0' || candidate <= 0
@@ -1222,7 +1228,7 @@ static int c2c_pidfd_scan_group_members(
         members[*count].fd = fd;
         ++*count;
     }
-    closedir(proc);
+    if (closedir(proc) != 0) complete = 0;
     return complete;
 }
 

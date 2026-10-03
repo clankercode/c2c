@@ -24,6 +24,7 @@ This downloads the latest release from GitHub, verifies the SHA-256 checksum, an
 | **glibc** | **≥ 2.35** (Ubuntu **22.04+**, Debian 12+, RHEL 9+, Fedora recent). Official `linux-x64` / `linux-arm64` release assets are built on Ubuntu 22.04 so they stay under this ceiling (B190). |
 | **Shared libraries** | `libsqlite3` and `libgmp` (Debian/Ubuntu packages: `libsqlite3-0`, `libgmp10`). |
 | **macOS** | Native `darwin-x64` / `darwin-arm64` assets (no glibc floor). |
+| **Managed client sessions** | Require Linux `/proc` generation data and pidfd signalling. On macOS or another platform without both, `c2c start <client>` refuses before forking; use ad-hoc CLI sessions or `c2c start pty`. |
 | **Ubuntu 20.04 / older glibc** | Official release binaries will not start (`GLIBC_… not found`). Build from a checkout on that host (`just install-all`) until a manylinux/static artifact exists. |
 | **musl (Alpine, etc.)** | Official Linux assets are glibc-linked; build from source or use a glibc distro. |
 | **Host / `just install-all` builds** | Inherit the **build host** glibc. A binary built on a rolling distro (e.g. glibc 2.42) will not run on Ubuntu 24.04 or older even if release assets would. Prefer the GitHub release or build on a machine no newer than your oldest deploy target. |

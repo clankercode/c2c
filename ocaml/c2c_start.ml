@@ -8606,6 +8606,17 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     exit 1
   end;
 
+  (* Every managed outer/inner lifecycle record is generation-bound. Refuse
+     before acquiring locks, writing config, or forking when this host cannot
+     publish and signal that generation exactly. Raw PTY mode owns its child
+     through waitpid and has no durable managed lifecycle record. *)
+  if client <> "pty" && not (C2c_pid_identity.managed_lifecycle_supported ()) then begin
+    Printf.eprintf
+      "error: managed client '%s' is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; no child was started\n%!"
+      client;
+    exit 1
+  end;
+
   (* Guard: fail fast if already running inside a c2c agent session.
      C2C_WRAPPER_SELF is set by build_env exclusively in the wrapper process
      (passed to exec'd client via env, NOT inherited by bash subshells of the
@@ -9374,6 +9385,27 @@ let stop_instance (name : string) : stop_outcome =
          else
            "instance was not running, but lifecycle records remain or teardown is uncertain; state retained")
   in
+  let lifecycle_records_present =
+    [ outer_pid_path name
+    ; outer_pid_start_time_path name
+    ; inner_pid_path name
+    ; inner_pid_start_time_path name
+    ; deliver_pid_path name
+    ; deliver_pid_start_time_path name
+    ; poker_pid_path name
+    ; poker_pid_start_time_path name
+    ; notifier_pid_path name
+    ; notifier_pid_start_time_path name
+    ; codex_daemon_sidecar_pid_path name
+    ; codex_daemon_sidecar_pid_start_time_path name
+    ; codex_frontend_teardown_record_path name ]
+    |> List.exists (fun path -> not (path_absent_confirmed path))
+  in
+  if not (C2c_pid_identity.managed_lifecycle_supported ())
+     && lifecycle_records_present then
+    Stop_failed
+      "managed lifecycle teardown is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; lifecycle records retained"
+  else
   match read_pid_record ~pid_path:(outer_pid_path name)
           ~start_time_path:(outer_pid_start_time_path name) with
   | Pid_record_present (pid, start_time) ->
@@ -9511,6 +9543,11 @@ let filter_env_for_restart () =
 let cmd_restart ?(session_id_override : string option)
     ?(do_exec : (string array -> unit) option)
     (name : string) ~(timeout_s : float) : int =
+  if not (C2c_pid_identity.managed_lifecycle_supported ()) then begin
+    Printf.eprintf
+      "error: managed restart is unsupported on this platform: exact PID generation and pidfd signalling are unavailable; lifecycle records retained\n%!";
+    exit 1
+  end;
   (* Strip C2C_INSTANCE_NAME so the re-launched c2c start doesn't hit the
      "cannot run c2c start from inside a c2c session" guard (c2c.ml:8499).
      Use execve + filtered env rather than execvp to control inheritance. *)

@@ -100,3 +100,8 @@ val signal_pid_if_generation_matches :
 (** Open a pidfd, verify the exact process start-time generation, and send the
     signal through that pidfd. Supports SIGTERM, SIGKILL, and SIGCONT. Returns
     [false] when unsupported, unverifiable, or already gone. *)
+
+val managed_lifecycle_supported : unit -> bool
+(** True when managed start/stop/restart can publish and signal an exact
+    process generation on this host. False on platforms without procfs or
+    pidfd support; callers must refuse managed launch before forking. *)

@@ -143,10 +143,12 @@ val arm_wait_budget_s : float
     eight-second hard timeout. *)
 
 val arm_failed_after_pending_cleanup :
-  stopped:bool -> lease_released:bool -> registration_cleared:bool -> arm_result
+  stopped:bool -> lease_released:bool -> registration_cleared:bool ->
+  sidecar_pid_cleared:bool -> arm_result
 (** Classify failure cleanup after a child became operational but its pending
     arm records could not be removed. Fallback is safe only after the exact
-    child, lease, and broker registration are all gone. *)
+    child, lease, broker registration, and instance pid/generation pair are
+    all gone. *)
 
 val registration_is_live :
   broker_root:string ->
