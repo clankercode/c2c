@@ -75,6 +75,7 @@ if [ "$1" = "plugins" ] && [ "$2" = "approve" ]; then
   fi
   echo "approve plugin:c2c:hook:session-start"
   echo "approve plugin:c2c:hook:stop"
+  echo "approve plugin:c2c:hook:post-tool-use"
   echo "approve plugin:c2c:hook:session-end"
   exit 0
 fi
@@ -248,7 +249,7 @@ let test_gate_absent_falls_back_to_settings_hooks () =
               List.iter
                 (fun ev ->
                    check bool (ev ^ " present") true (List.mem_assoc ev hooks))
-                [ "SessionStart"; "Stop"; "SessionEnd" ];
+                [ "SessionStart"; "Stop"; "PostToolUse"; "SessionEnd" ];
               (* Stop takes NO matcher (D11); the others take catch-all. *)
               (match List.assoc_opt "Stop" hooks with
                | Some (`List [ `Assoc g ]) ->
@@ -387,7 +388,7 @@ let test_plugin_manifest_schema_pinned () =
         | Some (`Assoc caps) ->
             (match List.assoc_opt "hooks" caps with
              | Some (`List hs) ->
-                 check int "three hooks" 3 (List.length hs);
+                 check int "four hooks" 4 (List.length hs);
                  let ids =
                    List.filter_map
                      (function
@@ -395,7 +396,8 @@ let test_plugin_manifest_schema_pinned () =
                        | _ -> None)
                      hs
                  in
-                 check bool "hook ids" true (ids = [ "session-start"; "stop"; "session-end" ]);
+                 check bool "hook ids" true
+                   (ids = [ "session-start"; "stop"; "post-tool-use"; "session-end" ]);
                  List.iter
                    (function
                      | `Assoc h ->

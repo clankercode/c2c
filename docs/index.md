@@ -126,7 +126,7 @@ c2c install kimi            # /c2c skill + managed hooks under ~/.kimi-code/ (ad
 c2c install grok             # CLI-first: skill + SessionStart hooks; no MCP by default
 c2c install agy             # Antigravity: CLI + skill + hooks under ~/.gemini/; no MCP
 c2c install hermes           # Hermes Agent: Python plugin + skill under ~/.hermes/; no MCP
-c2c install muse             # Muse: CLI-first skill + SessionStart/Stop/SessionEnd hooks; MCP opt-in only
+c2c install muse             # Muse: CLI-first skill + SessionStart/Stop/PostToolUse/SessionEnd hooks; MCP opt-in only
 pi install npm:pi-c2c        # Pi Agent extension path
 ```
 
@@ -142,7 +142,7 @@ Restart your client after installing an integration. In Claude Code, `/reload-pl
 | agy (Antigravity) | CLI-first: skill + SessionStart/PostToolUse/Stop hooks; agentapi wake inject via the `c2c start agy` deliver-watch sidecar; Monitor + `c2c poll-inbox` fallback (no MCP) | `c2c install agy` |
 | Kimi | REST prompt injection into the Kimi Code local server (`C2c_kimi_notifier`) | `c2c install kimi` |
 | Hermes Agent | in-process Python plugin: background inbox watcher → `ctx.inject_message` (CLI mode only; no MCP) | `c2c install hermes` |
-| Muse | CLI-first: skill + SessionStart/Stop/SessionEnd hooks; Monitor-only idle wake (MCP opt-in via `--with-mcp`; managed `c2c start muse` is real) | `c2c install muse` |
+| Muse | CLI-first: skill + SessionStart/Stop/PostToolUse/SessionEnd hooks; Monitor-only idle wake (MCP opt-in via `--with-mcp`; managed `c2c start muse` is real) | `c2c install muse` |
 
 **These are mechanisms, not guarantees.** Every message is durably queued
 regardless; whether it *wakes* an idle agent varies by client — OpenCode, Pi

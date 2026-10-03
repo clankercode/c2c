@@ -1700,7 +1700,29 @@ let test_codex_frontend_teardown_expectation_fails_closed () =
             [ ("session_id", `String sticky_sid);
               ("alias", `String sticky);
               ("client_type", `String "codex-app-server") ] ];
-      expect_absent "pidless sticky registration" sticky;
+      expect_unknown "pidless sticky registration without teardown evidence" sticky;
+      let completed = unique_instance_name "codex-teardown-completed" in
+      with_instance_dir completed @@ fun _ ->
+      let completed_sid = "codex-teardown-completed-session" in
+      write_codex_config completed completed_sid;
+      let pid = Unix.getpid () in
+      let generation =
+        match C2c_mcp.Broker.read_pid_start_time pid with
+        | Some value -> value
+        | None -> fail "test process generation unavailable"
+      in
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String completed_sid)
+            ; ("alias", `String completed)
+            ; ("client_type", `String "codex-app-server")
+            ; ("pid", `Int pid)
+            ; ("pid_start_time", `Int generation) ] ];
+      check bool "exact owner cleanup records teardown evidence" true
+        (C2c_start.clear_registration_pid_if_owner ~broker_root
+           ~session_id:completed_sid ~pid
+           ~pid_start_time:(Some generation));
+      expect_absent "pidless sticky registration with exact teardown evidence" completed;
       let live = unique_instance_name "codex-teardown-live" in
       with_instance_dir live @@ fun _ ->
       let live_sid = "codex-teardown-live-session" in
@@ -5777,6 +5799,27 @@ let test_register_managed_muse_session_persists_row () =
       check (option string) "cwd recorded" (Some cwd) r.cwd;
       check (option string) "client_type muse" (Some "muse") r.client_type
 
+let test_managed_muse_registration_clears_prior_teardown_evidence () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let name = "zz-muse-generation-reset" in
+  let evidence =
+    C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root
+      ~session_id:name
+  in
+  write_file evidence
+    {|{"session_id":"zz-muse-generation-reset","launcher_pid":1,"launcher_generation":2}|};
+  check bool "prior completion evidence seeded" true (Sys.file_exists evidence);
+  (match
+     C2c_start.register_managed_muse_session ~broker_root ~name ~alias:name
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse"
+   with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "registration failed: %s" e));
+  check bool "new launcher generation clears prior evidence" false
+    (Sys.file_exists evidence)
+
 let test_register_managed_muse_alias_override () =
   with_temp_dir @@ fun dir ->
   let broker_root = Filename.concat dir "broker" in
@@ -6853,6 +6896,8 @@ let () =
             `Quick, test_normalize_model_override_for_muse )
         ; ( "register_managed_muse_session_persists_row",
             `Quick, test_register_managed_muse_session_persists_row )
+        ; ( "managed_muse_registration_clears_prior_teardown_evidence",
+            `Quick, test_managed_muse_registration_clears_prior_teardown_evidence )
         ; ( "register_managed_muse_alias_override",
             `Quick, test_register_managed_muse_alias_override )
         ; ( "registration_failure_message",

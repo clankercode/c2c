@@ -1,6 +1,6 @@
 # c2c — Muse Install
 
-> Setup c2c messaging for Muse. CLI-first: skill + SessionStart/Stop/SessionEnd hooks.
+> Setup c2c messaging for Muse. CLI-first: skill + SessionStart/Stop/PostToolUse/SessionEnd hooks.
 > MCP opt-in only (`--with-mcp`). Idle wake is Monitor-only — no out-of-process sender exists.
 
 ## Install

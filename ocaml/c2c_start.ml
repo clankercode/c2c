@@ -2252,6 +2252,12 @@ let managed_registry_row_is_well_formed = function
 let managed_registry_rows_are_well_formed rows =
   List.for_all managed_registry_row_is_well_formed rows
 
+let clear_managed_teardown_evidence ~(broker_root : string) ~(session_id : string) =
+  let path =
+    C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root ~session_id
+  in
+  try Sys.remove path with Sys_error _ -> ()
+
 let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : string)
     ~(pid : int) ~(pid_start_time : int option) : bool =
   let reg_path = broker_root // "registry.json" in
@@ -2284,12 +2290,32 @@ let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : strin
       | Regular_file_missing | Regular_file_unreadable _ -> false
     with _ -> false
   in
+  let write_teardown_evidence generation =
+    let path =
+      C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root ~session_id
+    in
+    let json =
+      `Assoc
+        [ ("session_id", `String session_id)
+        ; ("launcher_pid", `Int pid)
+        ; ("launcher_generation", `Int generation)
+        ; ("completed_at", `Float (Unix.gettimeofday ()))
+        ]
+    in
+    match
+      C2c_io.write_file_atomic ~perm:0o600 path
+        (Yojson.Safe.to_string json ^ "\n")
+    with
+    | Ok () -> true
+    | Error _ -> false
+  in
   try
     with_file_lock lock_path (fun () ->
         match read_registry () with
         | Error () -> false
         | Ok None -> true
         | Ok (Some (`List rows)) ->
+            let cleared_generation = ref None in
             let rec update changed uncertain (acc : Yojson.Safe.t list) = function
               | [] ->
                   if uncertain then Error ()
@@ -2307,6 +2333,7 @@ let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : strin
                        if sid = Some session_id && stored_pid = Some pid then
                          (match pid_start_time, stored_start with
                           | Some expected, Some actual when expected = actual ->
+                              cleared_generation := Some expected;
                               let cleared =
                                 `Assoc
                                   (List.filter
@@ -2326,7 +2353,11 @@ let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : strin
             (match update false false [] rows with
              | Error () -> false
              | Ok (false, _) -> true
-             | Ok (true, updated) -> confirm_write updated))
+             | Ok (true, updated) ->
+                 confirm_write updated
+                 && (match !cleared_generation with
+                     | Some generation -> write_teardown_evidence generation
+                     | None -> false)))
   with _ -> false
 
 let clear_registration_pid ~(broker_root : string) ~(session_id : string) : bool =
@@ -2636,6 +2667,9 @@ let managed_muse_registration_failure_message ~(name : string) ~(alias : string)
 
 let register_managed_muse_session ~(broker_root : string) ~(name : string)
     ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
+  (* A new launcher generation must not inherit completion proof from an
+     older generation with the same sticky session id. *)
+  clear_managed_teardown_evidence ~broker_root ~session_id:name;
   match
     eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
       ~cwd ~client_type:"muse" ()
@@ -4409,13 +4443,13 @@ let frontend_teardown_owner_gone (r : frontend_teardown_record) =
        | Some pid, Some expected -> process_generation_gone pid expected
        | _ -> false)
 
-(* A missing receipt is harmless for ordinary hook-backed clients, but it is
-   not evidence of cleanup for a live Codex app-server instance. A broker row
-   that still carries a PID is the pre-fork marker that lets stale recovery
-   detect that the strict receipt is required even when publication itself
-   failed. Once the frontend cleanup has succeeded, the launcher clears the
-   row's PID while retaining its sticky identity; that pidless row must not
-   make a later stop fail on a receipt that was already consumed. *)
+(* A missing frontend receipt is harmless for ordinary hook-backed clients,
+   but it is not evidence of cleanup for a Codex app-server instance. A broker
+   row that still carries a PID is the pre-fork marker that lets stale recovery
+   detect that strict cleanup is required even when publication itself failed.
+   Once exact-generation frontend cleanup has succeeded, the launcher clears
+   the row's PID and writes a durable completion receipt while retaining its
+   sticky identity. *)
 let codex_frontend_teardown_expected_for_config
     (name : string) (cfg : instance_config) : frontend_teardown_expectation =
   let record_path = codex_frontend_teardown_record_path name in
@@ -4452,28 +4486,70 @@ let codex_frontend_teardown_expected_for_config
                         (Printf.sprintf
                            "Codex broker registry at %s could not be trusted: %s"
                            (root // "registry.json") reason)
-                  | Managed_registry_present rows ->
-                      let registered_with_live_owner =
-                        List.exists
+                 | Managed_registry_present rows ->
+                      let matching_registration =
+                        List.find_opt
                           (function
                             | `Assoc fields ->
                                 (match List.assoc_opt "session_id" fields,
                                        List.assoc_opt "client_type" fields with
-                                 | Some (`String sid), Some (`String "codex-app-server") ->
+                                 | Some (`String sid),
+                                   Some (`String "codex-app-server") ->
                                      sid = cfg.session_id
-                                     &&
-                                     (match List.assoc_opt "pid" fields with
-                                      | Some (`Int _) -> true
-                                      | Some (`String value) ->
-                                          Option.is_some
-                                            (int_of_string_opt (String.trim value))
-                                      | _ -> false)
                                  | _ -> false)
                             | _ -> false)
                           rows
                       in
-                      if registered_with_live_owner then Codex_frontend_teardown_required
-                      else Codex_frontend_teardown_absent)
+                      let teardown_evidence_valid () =
+                        let path =
+                          C2c_mcp_helpers.managed_teardown_evidence_path
+                            ~broker_root:root ~session_id:cfg.session_id
+                        in
+                        match read_regular_file_nofollow path with
+                        | Regular_file_contents contents ->
+                            (try
+                               match Yojson.Safe.from_string contents with
+                               | `Assoc fields ->
+                                   let positive_int key =
+                                     match List.assoc_opt key fields with
+                                     | Some (`Int n) when n > 0 -> true
+                                     | Some (`String s) ->
+                                         (match int_of_string_opt (String.trim s) with
+                                          | Some n -> n > 0
+                                          | None -> false)
+                                     | _ -> false
+                                   in
+                                   List.assoc_opt "session_id" fields
+                                   = Some (`String cfg.session_id)
+                                   && positive_int "launcher_pid"
+                                   && positive_int "launcher_generation"
+                               | _ -> false
+                             with _ -> false)
+                        | Regular_file_missing | Regular_file_unreadable _ -> false
+                      in
+                      match matching_registration with
+                       | None -> Codex_frontend_teardown_absent
+                       | Some (`Assoc fields) ->
+                           let has_pid =
+                             match List.assoc_opt "pid" fields with
+                             | Some (`Int n) -> n > 0
+                             | Some (`String value) ->
+                                 (match int_of_string_opt (String.trim value) with
+                                  | Some n -> n > 0
+                                  | None -> false)
+                             | _ -> false
+                           in
+                           if has_pid then Codex_frontend_teardown_required
+                           else if teardown_evidence_valid () then
+                             Codex_frontend_teardown_absent
+                           else
+                             Codex_frontend_teardown_unknown
+                               (Printf.sprintf
+                                  "pidless Codex app-server registration for %s has no exact-generation teardown evidence"
+                                  cfg.session_id)
+                       | Some _ ->
+                           Codex_frontend_teardown_unknown
+                             "Codex broker registry contains a malformed matching registration")
              | _ ->
                  Codex_frontend_teardown_unknown
                    (Printf.sprintf "Codex broker root %s is missing or not a directory" root))
@@ -6817,9 +6893,22 @@ let run_outer_loop ~(name : string) ~(client : string)
             ~start_time_path:(poker_pid_start_time_path name) ~label:"poker"
         in
         let notifier_ok = stop_notifier () in
+        let registration_cleanup () =
+          if client = "muse" then
+            (* Muse pidless adoption is safe only after this exact launcher
+               generation has recorded completion. *)
+            (match C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()) with
+             | Some generation ->
+                 clear_registration_pid_if_owner ~broker_root
+                   ~session_id:name ~pid:(Unix.getpid ())
+                   ~pid_start_time:(Some generation)
+             | None -> false)
+          else
+            clear_registration_pid ~broker_root ~session_id:name
+        in
         let registration_ok =
           deliver_ok && poker_ok && notifier_ok
-          && (try clear_registration_pid ~broker_root ~session_id:name
+          && (try registration_cleanup ()
               with _ -> false)
         in
         if registration_ok then begin

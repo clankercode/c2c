@@ -2104,20 +2104,11 @@ let reclaimable_managed_kimi_registrations ~(cwd : string)
  * with #47, [pid = Some p] where p is dead is a stale claim, never a
  * reclaim signal. Pure over [regs].
  *
- * No positive launcher marker (kimi parity, B361 audit): launcher rows
- * carry no registered_by, so the predicate cannot tell them from (a) this
- * hook's own step-3 mint under a managed marker (registered_by=None,
- * pid=None + cwd — unreachable in scrubbed production env, reachable by
- * hand-invocation with C2C_MCP_SESSION_ID set), or (b) an MCP-server
- * auto-registered muse row (cwd-carrying; pidless only when the MCP
- * process is gone — but a pidless row whose owner died is exactly what
- * reclaim is for; a LIVE MCP row has pid=Some and matches the live arm
- * instead). Case (b) with two vanilla TUIs sharing a directory (one
- * MCP-installed, a second SessionStart) would adopt the first's MCP row —
- * narrow (MCP install is opt-in, off by default) and inherited from kimi's
- * identical shape, so accepted without a marker. A marker
- * (registered_by="c2c-start") would strand pre-marker live rows at
- * upgrade; revisit only with a migration story.
+ * The launcher row has no registered_by marker (to preserve pre-B361 live
+ * rows), so the identity predicate still accepts live generation matches and
+ * then uses the durable exact-generation receipt for pidless reclaim. This
+ * keeps pre-marker live adoption compatible while preventing a crash-stale or
+ * manually-authored pidless row from redirecting a fresh vanilla session.
  * ------------------------------------------------------------------------- *)
 
 (* The identity half of the match: a managed (launcher-written, not
@@ -2150,17 +2141,54 @@ let live_managed_muse_registrations ~(cwd : string)
            | None -> false))
     regs
 
+(* A pidless managed row is reclaimable only after the launcher recorded a
+   successful exact-generation cleanup.  The receipt is keyed by session id
+   under the broker root and is written by [clear_registration_pid_if_owner];
+   a bare pidless row may instead be a crash, a manually-authored row, or a
+   stale alias that a fresh vanilla Muse session must not inherit. *)
+let managed_muse_teardown_evidence_valid ~broker_root (r : registration) =
+  let path =
+    C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root
+      ~session_id:r.session_id
+  in
+  match C2c_io.read_file_opt path with
+  | "" -> false
+  | contents ->
+      (try
+         match Yojson.Safe.from_string contents with
+         | `Assoc fields ->
+             let positive_int key =
+               match List.assoc_opt key fields with
+               | Some (`Int n) -> n > 0
+               | Some (`String s) ->
+                   (match int_of_string_opt (String.trim s) with
+                    | Some n -> n > 0
+                    | None -> false)
+               | _ -> false
+             in
+             List.assoc_opt "session_id" fields
+             = Some (`String r.session_id)
+             && positive_int "launcher_pid"
+             && positive_int "launcher_generation"
+         | _ -> false
+       with _ -> false)
+
 (* B361 (#47 shape): managed muse rows for [cwd] whose liveness fields were
-   STRIPPED on teardown ([C2c_start.clear_registration_pid] runs from the
-   outer-loop cleanup for muse too — MuseAdapter is a standard
-   CLIENT_ADAPTER). [pid = None] is a positive RECLAIM signal: the sticky
-   workspace alias. Never extended to dead-pid rows. *)
-let reclaimable_managed_muse_registrations ~(cwd : string)
+   STRIPPED on teardown ([C2c_start.clear_registration_pid_if_owner] records
+   exact-generation completion for muse too — MuseAdapter is a standard
+   CLIENT_ADAPTER). [pid = None] plus that receipt is the positive RECLAIM
+   signal: the sticky workspace alias. Never extended to dead-pid rows or
+   pidless rows whose cleanup was not proven. *)
+let reclaimable_managed_muse_registrations ?broker_root ~(cwd : string)
     (regs : registration list) : registration list =
   let want = normalize_hook_cwd cwd in
   List.filter
     (fun (r : registration) ->
-       is_managed_muse_row_for_cwd ~want r && r.pid = None)
+       is_managed_muse_row_for_cwd ~want r
+       && r.pid = None
+       && (match broker_root with
+           | Some root -> managed_muse_teardown_evidence_valid ~broker_root:root r
+           | None -> false))
     regs
 
 (* True when any live or reclaimable managed kimi row owns [cwd] for a kimi

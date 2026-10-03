@@ -271,6 +271,8 @@ val inner_pid_start_time_path : string -> string
 val codex_frontend_teardown_record_path : string -> string
 (** Generation-bound daemon-attach frontend teardown receipt. *)
 
+val clear_managed_teardown_evidence : broker_root:string -> session_id:string -> unit
+
 type frontend_teardown_expectation =
   | Codex_frontend_teardown_required
   | Codex_frontend_teardown_absent

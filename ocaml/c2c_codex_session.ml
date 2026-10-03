@@ -1834,6 +1834,9 @@ let register_managed_app_server_identity ~(broker_root : string)
   (* Publish only after the authenticated frontend thread and durable mapping
      have been proven. The remote frontend's hook and the delivery loop then
      share this exact row (B167). *)
+  (* A new launcher generation must not inherit completion proof from an older
+     generation with the same sticky session id. *)
+  C2c_start.clear_managed_teardown_evidence ~broker_root ~session_id;
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   C2c_mcp.Broker.register broker ~session_id ~alias
     ~pid:(Some pid)

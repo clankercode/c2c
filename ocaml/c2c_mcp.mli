@@ -1001,9 +1001,11 @@ val live_managed_muse_registrations :
     recorded generation fails closed — no pid-existence fallback). *)
 
 val reclaimable_managed_muse_registrations :
-  cwd:string -> registration list -> registration list
+    ?broker_root:string -> cwd:string -> registration list -> registration list
 (** B361 (#47 shape): managed muse rows owning [cwd] whose liveness fields
-    were stripped on teardown ([pid = None]) — the sticky workspace alias. *)
+    were stripped on teardown ([pid = None]) and whose exact-generation
+    teardown receipt exists under [broker_root] — the sticky workspace alias.
+    Without [broker_root], no pidless row is reclaimable. *)
 val pop_channel_test_code : unit -> string option
 (** [pop_channel_test_code ()] returns and clears the pending channel-test code,
     if one was generated during registration. Returns [None] if no test is pending. *)

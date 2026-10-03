@@ -187,6 +187,13 @@ let validate_session_id session_id =
   if C2c_name.is_valid trimmed then Ok trimmed
   else Error (C2c_name.error_message "session_id" trimmed)
 
+(* Durable proof that a launcher-owned registration was cleared by the exact
+   PID generation that owned it.  Keep this in the shared substrate so the
+   lifecycle writer and hook readers cannot drift on the receipt name. *)
+let managed_teardown_evidence_path ~broker_root ~session_id =
+  Filename.concat broker_root
+    (".managed-teardown-" ^ Digest.to_hex (Digest.string session_id) ^ ".json")
+
 let float_opt_to_json = function
   | None -> `Null
   | Some f -> `Float f

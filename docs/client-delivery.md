@@ -722,8 +722,8 @@ message. Gateway delivery needs a separate path and is unimplemented. See
   back to a `hooks` map merged into
   `${XDG_CONFIG_HOME:-~/.config}/muse/settings.json` (foreign keys
   preserved; never clobbers a corrupt file — fails closed instead).
-- Both transports wire the same three events — SessionStart, Stop (no
-  matcher: a matcher makes it unmatchable), SessionEnd — to
+- Both transports wire the same four events — SessionStart, Stop (no
+  matcher: a matcher makes it unmatchable), PostToolUse, and SessionEnd — to
   `c2c hook muse`. Install order is load-bearing: `approve` runs LAST,
   because any settings.json write after approve resets plugin trust.
 
@@ -760,8 +760,11 @@ a hook can never break a turn):
   persists a payload-sid→managed-sid mapping
   (`<broker>/muse-sid-mapping.json`) so mid-session events anchor the
   managed row. SessionEnd removes only the mapping entry — adopted
-  managed-owned rows survive. Two managed instances in one directory bail
-  loudly rather than guess (kimi-#40 known limit).
+  managed-owned rows survive. A pidless row is adopted only when the broker
+  has durable exact-launcher-generation teardown evidence; an unproven stale
+  row cannot redirect a fresh vanilla session into its inbox. Two managed
+  instances in one directory bail loudly rather than guess (kimi-#40 known
+  limit).
 
 **Managed start is real:** `c2c start muse` (`MuseAdapter`) launches
 `muse --trust-workspace --approval-mode never [--model …] [positional

@@ -63,7 +63,7 @@ likewise CLI-first: skill under `~/.gemini/` + SessionStart/PostToolUse/Stop
 hooks (`c2c hook agy`), delivering via agentapi inject (the
 `c2c start … deliver-watch` sidecar) with no MCP. Unlike Grok, agy's
 managed `c2c start agy` **is real** (via `AgyAdapter`). Muse is likewise
-CLI-first: skill + SessionStart/Stop/SessionEnd hooks (`c2c hook muse`),
+CLI-first: skill + SessionStart/Stop/PostToolUse/SessionEnd hooks (`c2c hook muse`),
 Monitor-only idle wake, MCP opt-in only (`--with-mcp`); managed
 `c2c start muse` **is real** (via `MuseAdapter`).
 
@@ -353,7 +353,7 @@ self-restart for Claude Code, Codex, Pi Agent, OpenCode, Grok, agy
      (CLI mode only); peek → inject → drain-on-success. No MCP, no
      `c2c start hermes`.
    - **Muse** — CLI-first: `c2c install muse` writes skill +
-     SessionStart/Stop/SessionEnd hooks (`c2c hook muse`); SessionStart
+     SessionStart/Stop/PostToolUse/SessionEnd hooks (`c2c hook muse`); SessionStart
      auto-registers + drains backlog; idle wake is Monitor-only (MCP
      opt-in via `--with-mcp`). Managed `c2c start muse` **is real**
      (via `MuseAdapter`).

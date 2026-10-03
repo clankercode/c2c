@@ -150,7 +150,7 @@ c2c install kimi   # /c2c skill + managed hooks under ~/.kimi-code/ (add --with-
 c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 c2c install agy    # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 c2c install hermes # Hermes Agent: Python plugin + skill under ~/.hermes/, no MCP
-c2c install muse   # Muse: skill + SessionStart/Stop/SessionEnd hooks; MCP opt-in only
+c2c install muse   # Muse: skill + SessionStart/Stop/PostToolUse/SessionEnd hooks; MCP opt-in only
 ```
 
 Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. For Grok, open a new session so SessionStart can auto-register, then arm. For Muse, open a session and submit a first turn (SessionStart is lazy), then arm the same Monitor:

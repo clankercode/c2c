@@ -2659,6 +2659,7 @@ let muse_plugin_manifest_json () : Yojson.Safe.t =
             `List
               [ hook "session-start" "SessionStart"
               ; hook "stop" "Stop"
+              ; hook "post-tool-use" "PostToolUse"
               ; hook "session-end" "SessionEnd"
               ])
          ])
@@ -2694,7 +2695,7 @@ let muse_settings_group event : Yojson.Safe.t =
   if event = "Stop" then `Assoc [ ("hooks", `List [ handler ]) ]
   else `Assoc [ ("matcher", `String ".*"); ("hooks", `List [ handler ]) ]
 
-let muse_fallback_events = [ "SessionStart"; "Stop"; "SessionEnd" ]
+let muse_fallback_events = [ "SessionStart"; "Stop"; "PostToolUse"; "SessionEnd" ]
 
 (* Shared group-level strip: drop c2c-owned handlers, drop the group if it
    empties, else return the group untouched (same value — keeps both callers

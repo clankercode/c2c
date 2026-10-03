@@ -3270,16 +3270,9 @@ let hook_muse_cmd =
           instance's identity — the managed sessions are already registered
           by their launchers, so a bail costs nothing. Co-located vanilla
           TUI caveat (#40): a plain `muse` in a managed directory is adopted
-          too — documented, not fixed. The reclaim arm is unbounded in time
-          (a pid-None sticky row never expires), so a vanilla SessionStart
-          in a directory that EVER hosted managed muse adopts the dead
-          alias — and then drains the managed alias's backlog into its own
-          context. Same for a legitimate second TUI after a managed
-          instance starts in its cwd. That misdirection is the accepted
-          cost of healing dual identity (adoption must run before the
-          payload-registered check, else a stale hook row pins the managed
-          session to its competing identity forever); to get a fresh
-          identity there, remove the row or run from a different cwd. *)
+          when the live generation matches. A pidless row is adopted only
+          after durable exact-generation teardown evidence; a crash or stale
+          row therefore cannot redirect a fresh session into its inbox. *)
        (* Adoption match key: the payload cwd, falling back to the process
           cwd (B352 P4: the hook cwd IS the workspace in every probe). An
           unusable cwd skips adoption — loudly, since the fall-through
@@ -3361,9 +3354,12 @@ let hook_muse_cmd =
                 | [] -> (
                     (* #47 shape: no LIVE managed row. Before minting — which
                        is the dual-identity bug — check for a torn-down one
-                       (pid stripped by `c2c stop`, sticky workspace alias). *)
+                       whose exact launcher generation recorded successful
+                       cleanup. A bare pidless row is ambiguous and must not
+                       let a fresh vanilla session inherit its inbox. *)
                     match
-                      reclaimable_managed_muse_registrations ~cwd:hook_cwd regs
+                      reclaimable_managed_muse_registrations
+                        ~broker_root ~cwd:hook_cwd regs
                     with
                     | [ m ] -> adopt m ~why:"reclaiming torn-down managed row"
                     | _ :: _ as many -> bail_ambiguous ~kind:"torn-down" many
