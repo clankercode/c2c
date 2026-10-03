@@ -1020,6 +1020,13 @@ static int c2c_pidfd_send_signal(int pidfd, int sig)
 #endif
 }
 
+static int c2c_signal_from_kind(int signal_kind)
+{
+    return signal_kind == 0 ? SIGTERM :
+           (signal_kind == 1 ? SIGKILL :
+            (signal_kind == 2 ? SIGCONT : -1));
+}
+
 static long c2c_proc_start_ticks(pid_t pid)
 {
     char path[64];
@@ -1084,8 +1091,7 @@ static int c2c_pidfd_send_group_if_member_start_time(pid_t group_pid,
                                                       long owner_start,
                                                       int signal_kind)
 {
-    int signal = signal_kind == 0 ? SIGTERM :
-                 (signal_kind == 1 ? SIGKILL : -1);
+    int signal = c2c_signal_from_kind(signal_kind);
     if (group_pid <= 0 || owner_pid <= 0 || owner_start <= 0 || signal < 0)
         return 0;
     int fds[1024];
@@ -1172,8 +1178,7 @@ CAMLprim value caml_c2c_pidfd_send_signal_if_start_time(value vpid,
         CAMLreturn(Val_false);
     }
     int signal_kind = Int_val(vsig);
-    int signal = signal_kind == 0 ? SIGTERM :
-                 (signal_kind == 1 ? SIGKILL : -1);
+    int signal = c2c_signal_from_kind(signal_kind);
     if (signal < 0) {
         close(fd);
         CAMLreturn(Val_false);

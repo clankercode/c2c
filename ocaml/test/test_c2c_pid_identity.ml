@@ -211,6 +211,50 @@ let test_group_signal_is_generation_bound () =
                  ~pid:child ~start_time ~signal:Sys.sigterm);
             ignore (Unix.waitpid [] child))
 
+let test_group_signal_continues_exact_generation () =
+  if not (P.pidfd_supported ()) then ()
+  else
+    let continue_r, continue_w = Unix.pipe () in
+    match Unix.fork () with
+    | 0 ->
+        Unix.close continue_r;
+        (try ignore (Unix.setsid ()) with _ -> exit 2);
+        Unix.kill (Unix.getpid ()) Sys.sigstop;
+        ignore (Unix.write_substring continue_w "C" 0 1);
+        Unix.close continue_w;
+        while true do Unix.sleep 60 done
+    | child ->
+        Unix.close continue_w;
+        Fun.protect
+          ~finally:(fun () ->
+            (try Unix.kill child Sys.sigkill with Unix.Unix_error _ -> ());
+            (try ignore (Unix.waitpid [] child) with Unix.Unix_error _ -> ());
+            Unix.close continue_r)
+          (fun () ->
+            let start_time =
+              match P.read_pid_generation child with
+              | P.Generation value -> value
+              | _ -> fail "stopped child generation unavailable"
+            in
+            (match Unix.waitpid [ Unix.WUNTRACED ] child with
+             | _, Unix.WSTOPPED signal ->
+                 check int "child stopped with SIGSTOP" Sys.sigstop signal
+             | _ -> fail "expected child to stop with SIGSTOP");
+            check bool "owner-bound SIGCONT resumes exact generation" true
+              (P.signal_process_group_if_generation_matches
+                 ~pid:child ~start_time ~signal:Sys.sigcont);
+            let marker = Bytes.create 1 in
+            check int "continued child ran after SIGCONT" 1
+              (Unix.read continue_r marker 0 1);
+            check char "continued marker" 'C' (Bytes.get marker 0);
+            check bool "wrong generation SIGCONT remains rejected" false
+              (P.signal_process_group_if_generation_matches
+                 ~pid:child ~start_time:(start_time + 1) ~signal:Sys.sigcont);
+            ignore
+              (P.signal_process_group_if_generation_matches
+                 ~pid:child ~start_time ~signal:Sys.sigterm);
+            ignore (Unix.waitpid [] child))
+
 let () =
   run "c2c_pid_identity"
     [ ( "recycled onto a thread (the #85 incident)",
@@ -240,5 +284,7 @@ let () =
         ; test_case "proc readers" `Quick test_proc_readers
         ; test_case "group signal binds generation" `Quick
             test_group_signal_is_generation_bound
+        ; test_case "group SIGCONT binds generation" `Quick
+            test_group_signal_continues_exact_generation
         ] )
     ]

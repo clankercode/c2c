@@ -75,8 +75,9 @@ val signal_process_group_if_owner : pidfile:string -> pid:int -> signal:int -> b
 val signal_process_group_if_generation_matches :
   pid:int -> start_time:int -> signal:int -> bool
 (** Revalidate the exact process generation and signal every currently observed
-    member of [-pid] through owner-bound pidfds. A PID/PGID replacement can
-    only make an individual send fail, never redirect it. *)
+    member of [-pid] through owner-bound pidfds. Supports SIGTERM, SIGKILL, and
+    SIGCONT. A PID/PGID replacement can only make an individual send fail,
+    never redirect it. *)
 
 val signal_process_group_if_member_generation_matches :
   group_pid:int -> member_pid:int -> member_start_time:int -> signal:int -> bool
@@ -92,5 +93,5 @@ val pidfd_supported : unit -> bool
 val signal_pid_if_generation_matches :
   pid:int -> start_time:int -> signal:int -> bool
 (** Open a pidfd, verify the exact process start-time generation, and send the
-    signal through that pidfd. Returns [false] when unsupported, unverifiable,
-    or already gone. *)
+    signal through that pidfd. Supports SIGTERM, SIGKILL, and SIGCONT. Returns
+    [false] when unsupported, unverifiable, or already gone. *)

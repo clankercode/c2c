@@ -167,6 +167,16 @@ val sentinel_join_proven :
     unknown and return [None]. *)
 val daemon_thread_handoff_matches : path:string -> frontend_pid:int -> string option
 
+val daemon_handoff_generation_gone :
+  frontend_pid:int -> frontend_start_time:int -> bool
+(** [true] only when procfs confirms that the captured frontend generation is
+    absent. A replacement generation or an unreadable proc entry is retained. *)
+
+val remove_handoff_receipt_after_generation_gone :
+  path:string -> frontend_pid:int -> frontend_start_time:int -> contents:string -> bool
+(** Remove [path] only after the captured frontend generation is confirmed gone,
+    and only when the file still has the captured contents. *)
+
 (* ----------------------- B224: MCP-block preflight ------------------------ *)
 
 (** Classification of the machine-wide [mcp_servers.c2c] block that

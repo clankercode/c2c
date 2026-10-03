@@ -299,6 +299,68 @@ let test_daemon_thread_handoff_rejects_fractional_generation () =
         "fractional parent generation is unknown" None
         (S.daemon_thread_handoff_matches ~path ~frontend_pid:pid))
 
+let test_daemon_handoff_cleanup_uses_captured_generation_and_contents () =
+  let dir = Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-codex-handoff-cleanup-%d-%d" (Unix.getpid ())
+         (Random.bits ())) in
+  Unix.mkdir dir 0o755;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () ->
+      let path = Filename.concat dir "handoff.json" in
+      let child = Unix.fork () in
+      if child = 0 then begin
+        while true do Unix.sleep 60 done
+      end else
+        Fun.protect
+          ~finally:(fun () ->
+            (try Unix.kill child Sys.sigkill with Unix.Unix_error _ -> ());
+            (try ignore (Unix.waitpid [] child) with Unix.Unix_error _ -> ()))
+          (fun () ->
+            let generation =
+              match B.read_pid_start_time child with
+              | Some value -> value
+              | None -> Alcotest.fail "handoff frontend generation unavailable"
+            in
+            let captured_contents =
+              Printf.sprintf
+                "{\"thread_id\":\"captured-thread\",\"parent_pid\":%d,\"parent_pid_start_time\":%d}\n"
+                child generation
+            in
+            let write contents =
+              let oc = open_out path in
+              Fun.protect ~finally:(fun () -> close_out oc)
+                (fun () -> output_string oc contents)
+            in
+            write captured_contents;
+            Alcotest.(check (option string)) "live handoff is generation-bound"
+              (Some "captured-thread")
+              (S.daemon_thread_handoff_matches ~path ~frontend_pid:child);
+            Alcotest.(check bool) "live generation cannot be cleaned" false
+              (S.remove_handoff_receipt_after_generation_gone ~path
+                 ~frontend_pid:child ~frontend_start_time:generation
+                 ~contents:captured_contents);
+            Alcotest.(check bool) "live generation is not gone" false
+              (S.daemon_handoff_generation_gone ~frontend_pid:child
+                 ~frontend_start_time:generation);
+            ignore (Unix.kill child Sys.sigkill);
+            ignore (Unix.waitpid [] child);
+            Alcotest.(check bool) "reaped captured generation is gone" true
+              (S.daemon_handoff_generation_gone ~frontend_pid:child
+                 ~frontend_start_time:generation);
+            let replacement_contents =
+              "{\"thread_id\":\"replacement-thread\",\"parent_pid\":1,\"parent_pid_start_time\":1}\n"
+            in
+            write replacement_contents;
+            Alcotest.(check bool) "replacement contents are retained" false
+              (S.remove_handoff_receipt_after_generation_gone ~path
+                 ~frontend_pid:child ~frontend_start_time:generation
+                 ~contents:captured_contents);
+            Alcotest.(check bool) "replacement receipt remains" true
+              (Sys.file_exists path);
+            Sys.remove path))
+
 let test_sentinel_join_failure_cleanup_is_synchronous () =
   let frontend = Unix.fork () in
   if frontend = 0 then begin
@@ -2473,6 +2535,8 @@ let () =
             test_daemon_attach_thread_proof
         ; test_case "daemon handoff rejects fractional generation" `Quick
             test_daemon_thread_handoff_rejects_fractional_generation
+        ; test_case "daemon handoff cleanup pins generation and contents" `Quick
+            test_daemon_handoff_cleanup_uses_captured_generation_and_contents
         ; test_case "stop kills descendants after leader is reaped" `Quick
             test_stop_frontend_kills_group_after_leader_reaped
         ; test_case "stop rejects missing generation after group disappearance" `Quick

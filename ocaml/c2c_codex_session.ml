@@ -2155,10 +2155,9 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
    SessionStart hook. The parent PID and its kernel start-time generation bind
    the payload to this launch's frontend; a mere membership in
    thread/loaded/list is insufficient under concurrent TUIs. *)
-let daemon_thread_handoff_matches ~path ~frontend_pid : string option =
-  match C2c_start.read_regular_file_nofollow path with
-  | C2c_start.Regular_file_contents contents ->
-    (try
+let daemon_thread_handoff_thread_of_contents ~contents ~frontend_pid
+    ~frontend_start_time : string option =
+  try
     match Yojson.Safe.from_string contents with
     | `Assoc fields ->
         let string_field key =
@@ -2172,15 +2171,62 @@ let daemon_thread_handoff_matches ~path ~frontend_pid : string option =
           | _ -> None
         in
         (match string_field "thread_id", int_field "parent_pid",
-               int_field "parent_pid_start_time",
-               C2c_mcp.Broker.read_pid_start_time frontend_pid with
-         | Some thread_id, Some parent_pid, Some expected, Some actual
-           when parent_pid = frontend_pid && expected = actual -> Some thread_id
+               int_field "parent_pid_start_time" with
+         | Some thread_id, Some parent_pid, Some expected
+           when parent_pid = frontend_pid && expected = frontend_start_time ->
+             Some thread_id
          | _ -> None)
     | _ -> None
-    with _ -> None)
+  with _ -> None
+
+let daemon_thread_handoff_matches ~path ~frontend_pid : string option =
+  match C2c_start.read_regular_file_nofollow path with
+  | C2c_start.Regular_file_contents contents ->
+      (match C2c_pid_identity.read_pid_generation frontend_pid with
+       | C2c_pid_identity.Generation frontend_start_time ->
+           daemon_thread_handoff_thread_of_contents ~contents ~frontend_pid
+             ~frontend_start_time
+       | C2c_pid_identity.Absent | C2c_pid_identity.Unreadable -> None)
   | C2c_start.Regular_file_missing
   | C2c_start.Regular_file_unreadable _ -> None
+
+(* This is deliberately stricter than a PID mismatch: only confirmed procfs
+   absence proves that the captured frontend generation is gone. A replacement
+   generation and an unreadable proc entry both retain the handoff for retry. *)
+let daemon_handoff_generation_gone ~frontend_pid ~frontend_start_time =
+  frontend_pid > 0 && frontend_start_time > 0
+  && match C2c_pid_identity.read_pid_generation frontend_pid with
+     | C2c_pid_identity.Absent -> true
+     | C2c_pid_identity.Generation _ | C2c_pid_identity.Unreadable -> false
+
+let remove_handoff_receipt_after_generation_gone ~path ~frontend_pid
+    ~frontend_start_time ~contents =
+  daemon_handoff_generation_gone ~frontend_pid ~frontend_start_time
+  && C2c_start.remove_path_contents_confirmed path contents
+
+type daemon_handoff_cleanup_capture =
+  | Handoff_missing
+  | Handoff_captured of {
+      contents : string;
+      frontend_pid : int;
+      frontend_start_time : int;
+    }
+  | Handoff_uncertain
+
+let capture_daemon_handoff_receipt ~path ~frontend_pid
+    ~frontend_start_time : daemon_handoff_cleanup_capture =
+  match C2c_start.read_regular_file_nofollow path with
+  | C2c_start.Regular_file_missing -> Handoff_missing
+  | C2c_start.Regular_file_unreadable _ -> Handoff_uncertain
+  | C2c_start.Regular_file_contents contents ->
+      (match C2c_pid_identity.read_pid_generation frontend_pid with
+       | C2c_pid_identity.Generation actual
+         when actual = frontend_start_time
+              && Option.is_some
+                   (daemon_thread_handoff_thread_of_contents ~contents
+                      ~frontend_pid ~frontend_start_time) ->
+           Handoff_captured { contents; frontend_pid; frontend_start_time }
+       | _ -> Handoff_uncertain)
 
 let remove_teardown_receipts_after_registration ~registration_cleared
     ~(teardown_record : string) ~(handoff_path : string) : bool =
@@ -2340,6 +2386,28 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                         ("Codex frontend teardown record could not be published: "
                          ^ reason))
            in
+           (* Capture the handoff while the frontend generation is still
+              inspectable. stop_frontend_process may reap that PID, so a
+              teardown-time reread cannot prove which handoff it belonged to. *)
+           let handoff_receipt_capture = ref None in
+           let capture_handoff_receipt () =
+             match !handoff_receipt_capture with
+             | Some capture -> capture
+             | None ->
+                 let capture =
+                   match !frontend_pid, !frontend_pid_start_time with
+                   | Some pid, Some start_time ->
+                       capture_daemon_handoff_receipt ~path:handoff_path
+                         ~frontend_pid:pid ~frontend_start_time:start_time
+                   | _ ->
+                       (match C2c_start.read_regular_file_nofollow handoff_path with
+                        | C2c_start.Regular_file_missing -> Handoff_missing
+                        | C2c_start.Regular_file_contents _
+                        | C2c_start.Regular_file_unreadable _ -> Handoff_uncertain)
+                 in
+                 handoff_receipt_capture := Some capture;
+                 capture
+           in
            let cleaned = ref false in
            let outer_generation_is_current () =
              match
@@ -2357,18 +2425,17 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
              | C2c_start.Pid_record_absent
              | C2c_start.Pid_record_unknown -> false
            in
-           let remove_handoff_receipt () =
-             match C2c_start.read_regular_file_nofollow handoff_path with
-             | C2c_start.Regular_file_missing -> true
-             | C2c_start.Regular_file_contents contents ->
-                 (match !frontend_pid with
-                  | Some pid
-                    when Option.is_some
-                           (daemon_thread_handoff_matches ~path:handoff_path
-                              ~frontend_pid:pid) ->
-                      C2c_start.remove_path_contents_confirmed handoff_path contents
-                  | _ -> false)
-             | C2c_start.Regular_file_unreadable _ -> false
+           let remove_handoff_receipt capture =
+             match capture with
+             | Handoff_missing ->
+                 (match C2c_start.read_regular_file_nofollow handoff_path with
+                  | C2c_start.Regular_file_missing -> true
+                  | C2c_start.Regular_file_contents _
+                  | C2c_start.Regular_file_unreadable _ -> false)
+             | Handoff_uncertain -> false
+             | Handoff_captured { contents; frontend_pid; frontend_start_time } ->
+                 remove_handoff_receipt_after_generation_gone
+                   ~path:handoff_path ~frontend_pid ~frontend_start_time ~contents
            in
            let remove_teardown_receipt () =
              match !teardown_record_contents with
@@ -2400,6 +2467,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
            let cleanup () =
              if !cleaned then true
              else begin
+               let handoff_capture = capture_handoff_receipt () in
                let frontend_ok =
                  match !frontend_pid with
                  | Some child ->
@@ -2439,7 +2507,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                let teardown_record_removed =
                  registration_cleared
                  && remove_teardown_receipt ()
-                 && remove_handoff_receipt ()
+                 && remove_handoff_receipt handoff_capture
                in
                if not frontend_ok || not sidecar_ok || not teardown_record_removed
                   || not registration_cleared then begin
