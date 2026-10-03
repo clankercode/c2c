@@ -4437,22 +4437,29 @@ type frontend_teardown_record = {
 let frontend_teardown_record_of_contents contents : frontend_teardown_record option =
   try match Yojson.Safe.from_string contents with
     | `Assoc fields ->
-        let int key =
+        let positive_int key =
           match List.assoc_opt key fields with
-          | Some (`Int n) -> Some n
-          | Some (`String s) -> int_of_string_opt (String.trim s)
+          | Some (`Int n) when n > 0 -> Some n
+          | Some (`String s) ->
+              (match int_of_string_opt (String.trim s) with
+               | Some n when n > 0 -> Some n
+               | _ -> None)
           | _ -> None
         in
-        let optional_int key =
+        let optional_positive_int key =
           match List.assoc_opt key fields with
           | None | Some `Null -> Some None
-          | Some (`Int n) -> Some (Some n)
+          | Some (`Int n) when n > 0 -> Some (Some n)
           | Some (`String s) ->
-              Option.map (fun n -> Some n) (int_of_string_opt (String.trim s))
+              (match int_of_string_opt (String.trim s) with
+               | Some n when n > 0 -> Some (Some n)
+               | _ -> None)
           | _ -> None
         in
-        (match int "frontend_pid", optional_int "frontend_pid_start_time",
-               optional_int "sentinel_pid", optional_int "sentinel_start_time" with
+        (match positive_int "frontend_pid",
+               optional_positive_int "frontend_pid_start_time",
+               optional_positive_int "sentinel_pid",
+               optional_positive_int "sentinel_start_time" with
          | Some frontend_pid, Some frontend_start_time, Some sentinel_pid,
            Some sentinel_start_time ->
              Some

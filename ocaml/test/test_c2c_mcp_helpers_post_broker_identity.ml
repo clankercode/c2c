@@ -169,7 +169,20 @@ let test_registry_rejects_malformed_optional_and_duplicate_identity () =
         (`List [ registry_entry ~session_id:"sid-a" ~alias:"unit-a" ()
                ; registry_entry ~session_id:"sid-b" ~alias:"UNIT-A" () ]);
       Alcotest.(check bool) "duplicate case-folded alias identity" true
-        (match PB.strict_registry ~broker_root:broker with Error () -> true | Ok _ -> false))
+        (match PB.strict_registry ~broker_root:broker with Error () -> true | Ok _ -> false);
+      List.iter (fun generation ->
+        write_json (Filename.concat broker "registry.json")
+          (`List [ `Assoc
+             [ ("session_id", `String "sid-generation")
+             ; ("alias", `String "unit-generation")
+             ; ("pid_start_time", `Int generation) ] ]);
+        Alcotest.(check bool)
+          (Printf.sprintf "nonpositive generation %d is rejected" generation)
+          true
+          (match PB.strict_registry ~broker_root:broker with
+           | Error () -> true
+           | Ok _ -> false))
+        [ 0; -1 ])
 
 let test_legitimate_non_codex_config_is_ignored () =
   with_resolver_env (fun ~root:_ ~instances ~broker ->

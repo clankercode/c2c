@@ -1435,7 +1435,8 @@ let ownership_registration entry =
     | "session_id" | "alias" ->
         (match value with `String s -> String.trim s <> "" | _ -> false)
     | "pid" -> optional (function `Int n -> n > 0 | _ -> false) value
-    | "pid_start_time" -> optional integer value
+    | "pid_start_time" ->
+        optional (function `Int n -> n > 0 | _ -> false) value
     | "compaction_count" -> integer value
     | "registered_at" | "dnd_since" | "dnd_until" | "confirmed_at"
     | "pubkey_signed_at" | "last_activity_ts" -> optional number value
@@ -2155,6 +2156,12 @@ let daemon_thread_handoff_matches ~path ~frontend_pid : string option =
   | C2c_start.Regular_file_missing
   | C2c_start.Regular_file_unreadable _ -> None
 
+let remove_teardown_receipts_after_registration ~registration_cleared
+    ~(teardown_record : string) ~(handoff_path : string) : bool =
+  registration_cleared
+  && C2c_start.remove_pidfile_confirmed teardown_record
+  && C2c_start.remove_pidfile_confirmed handoff_path
+
 let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
     ~model_override ~instance_dir:_ () : int =
   match C2c_codex_daemon_sidecar.default_control_socket () with
@@ -2339,19 +2346,22 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                   outer pidfile so c2c stop can retry/report honestly. *)
                restore_terminal_foreground terminal;
                let sidecar_ok = if frontend_ok then stop_sidecar () else false in
-               let teardown_record_removed =
-                 frontend_ok && sidecar_ok
-                 && C2c_start.remove_pidfile_confirmed teardown_record
-                 && C2c_start.remove_pidfile_confirmed handoff_path
-               in
                let registration_cleared =
-                 teardown_record_removed
+                 frontend_ok && sidecar_ok
                  && (not !registration_published ||
                      (try
                         C2c_start.clear_registration_pid_if_owner
                           ~broker_root:(C2c_start.broker_root ()) ~session_id
                           ~pid:outer_pid ~pid_start_time:outer_pid_start_time
                       with _ -> false))
+               in
+               (* Keep the frontend receipt until the broker has confirmed
+                  ownership cleanup.  A failed registry write must leave the
+                  exact frontend recovery record available to the next stop
+                  or stale-start recovery attempt. *)
+               let teardown_record_removed =
+                 remove_teardown_receipts_after_registration
+                   ~registration_cleared ~teardown_record ~handoff_path
                in
                if not frontend_ok || not sidecar_ok || not teardown_record_removed
                   || not registration_cleared then begin

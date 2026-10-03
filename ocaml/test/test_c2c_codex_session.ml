@@ -537,6 +537,34 @@ let with_tmp_dir f =
     ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
     (fun () -> f dir)
 
+let test_daemon_cleanup_retains_receipts_on_registry_failure () =
+  with_tmp_dir (fun dir ->
+      let teardown_record = Filename.concat dir "frontend-teardown.json" in
+      let handoff_path = Filename.concat dir "handoff.json" in
+      let write path contents =
+        let oc = open_out path in
+        Fun.protect ~finally:(fun () -> close_out oc)
+          (fun () -> output_string oc contents)
+      in
+      write teardown_record "frontend receipt";
+      write handoff_path "handoff receipt";
+      let lock_path = Filename.concat dir "registry.json.lock" in
+      Unix.mkdir lock_path 0o700;
+      let registration_cleared =
+        C2c_start.clear_registration_pid_if_owner ~broker_root:dir
+          ~session_id:"sid" ~pid:1 ~pid_start_time:(Some 2)
+      in
+      Alcotest.(check bool) "registry failure is not cleanup confirmation"
+        false registration_cleared;
+      Alcotest.(check bool) "receipt cleanup is blocked by registry failure"
+        false
+        (S.remove_teardown_receipts_after_registration ~registration_cleared
+           ~teardown_record ~handoff_path);
+      Alcotest.(check bool) "frontend receipt remains for recovery" true
+        (Sys.file_exists teardown_record);
+      Alcotest.(check bool) "handoff receipt remains for recovery" true
+        (Sys.file_exists handoff_path))
+
 let test_mapping_roundtrip () =
   with_tmp_dir (fun dir ->
       let m = { S.session_id = "sid-123"; alias = "quokka-lantern";
@@ -888,6 +916,7 @@ let test_registry_malformed_optional_fields_refuse_binding () =
       List.iter (fun (field, value) ->
         check (`Assoc ((field, value) :: List.remove_assoc field base)))
         [ "pid", `String "123"; "pid", `Float 123.; "pid", `Int (-1);
+          "pid_start_time", `Int 0; "pid_start_time", `Int (-1);
           "pid_start_time", `Float 1.; "registered_at", `String "nan";
           "compacting", `Assoc ["started_at", `Float 1.; "reason", `Int 7] ];
       check (`Assoc (("pid", `Int 1) :: ("pid", `Null) :: base));
@@ -2366,6 +2395,8 @@ let () =
             test_app_server_frontend_identity_env
         ; test_case "daemon frontend keeps app-server proof gate" `Quick
             test_daemon_frontend_keeps_app_server_proof_gate
+        ; test_case "daemon cleanup retains receipts on registry failure" `Quick
+            test_daemon_cleanup_retains_receipts_on_registry_failure
         ; test_case "daemon frontend receives launcher workspace" `Quick
             test_daemon_frontend_receives_launcher_workspace
         ; test_case "daemon thread selection requires one new thread" `Quick

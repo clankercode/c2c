@@ -844,46 +844,70 @@ CAMLprim value caml_c2c_unlink_pid_record_pair_confirmed(value vpid_path,
     if (dirfd < 0)
         CAMLreturn(Val_false);
     int pid_fd = openat(dirfd, pid_name, O_RDONLY | O_NOFOLLOW);
+    int pid_errno = pid_fd < 0 ? errno : 0;
     int st_fd = openat(dirfd, st_name, O_RDONLY | O_NOFOLLOW);
-    int ok = pid_fd >= 0 && st_fd >= 0;
+    int st_errno = st_fd < 0 ? errno : 0;
+    /* A previous invocation may have completed one half of the pair before
+       the other half failed. Treat a cleanly absent side as already done, so
+       retrying can finish the remaining exact record. Recovery artifacts are
+       deliberately not treated as absence: an uncertain partial finalization
+       must remain fail-closed. */
+    int pid_missing = pid_fd < 0 && pid_errno == ENOENT
+                      && c2c_recovery_artifacts_at(dirfd, pid_name) == 0;
+    int st_missing = st_fd < 0 && st_errno == ENOENT
+                     && c2c_recovery_artifacts_at(dirfd, st_name) == 0;
+    int ok = (pid_fd >= 0 || pid_missing) && (st_fd >= 0 || st_missing);
     struct stat pid_st, st_st;
-    if (ok)
-        ok = fstat(pid_fd, &pid_st) == 0 && fstat(st_fd, &st_st) == 0
-             && S_ISREG(pid_st.st_mode) && S_ISREG(st_st.st_mode)
-             && pid_st.st_nlink == 1 && st_st.st_nlink == 1
-             && c2c_read_exact_long(pid_fd, (long)Int_val(vpid))
+    if (ok && pid_fd >= 0)
+        ok = fstat(pid_fd, &pid_st) == 0
+             && S_ISREG(pid_st.st_mode) && pid_st.st_nlink == 1
+             && c2c_read_exact_long(pid_fd, (long)Int_val(vpid));
+    if (ok && st_fd >= 0)
+        ok = fstat(st_fd, &st_st) == 0
+             && S_ISREG(st_st.st_mode) && st_st.st_nlink == 1
              && c2c_read_exact_long(st_fd, Long_val(vst));
     if (pid_fd >= 0) close(pid_fd);
     if (st_fd >= 0) close(st_fd);
     int result = 0;
     if (ok) {
-        struct c2c_prepared_unlink pid_record;
-        struct c2c_prepared_unlink start_record;
-        int pid_prepared = c2c_prepare_unlink_at(dirfd, pid_name, 101,
-                                                 &pid_record);
-        if (pid_prepared == 1) {
-            int start_prepared = c2c_prepare_unlink_at(dirfd, st_name, 102,
-                                                      &start_record);
-            if (start_prepared == 1
-                && c2c_read_exact_long(pid_record.fd, (long)Int_val(vpid))
-                && c2c_read_exact_long(start_record.fd, Long_val(vst))
-                && c2c_unlink_guard_intact(dirfd, &pid_record)
-                && c2c_unlink_guard_intact(dirfd, &start_record)) {
-                /* Both guards are installed before either quarantine entry is
-                   touched. Rollback links keep both exact original inodes
-                   recoverable; neither recovery name is ever consumed. */
-                int pid_done = c2c_finish_unlink_at(dirfd, &pid_record);
-                int start_done = c2c_finish_unlink_at(dirfd, &start_record);
-                result = pid_done && start_done;
-            } else {
-                if (start_prepared == 1)
-                    c2c_restore_prepared(dirfd, &start_record);
-                c2c_restore_prepared(dirfd, &pid_record);
+        if (pid_missing && st_missing) {
+            result = 1;
+        } else {
+            struct c2c_prepared_unlink pid_record;
+            struct c2c_prepared_unlink start_record;
+            int pid_prepared = pid_missing
+                               ? 1
+                               : c2c_prepare_unlink_at(dirfd, pid_name, 101,
+                                                       &pid_record);
+            if (pid_prepared == 1) {
+                int start_prepared = st_missing
+                                     ? 1
+                                     : c2c_prepare_unlink_at(dirfd, st_name,
+                                                             102, &start_record);
+                if (start_prepared == 1
+                    && (pid_missing
+                        || (c2c_read_exact_long(pid_record.fd, (long)Int_val(vpid))
+                            && c2c_unlink_guard_intact(dirfd, &pid_record)))
+                    && (st_missing
+                        || (c2c_read_exact_long(start_record.fd, Long_val(vst))
+                            && c2c_unlink_guard_intact(dirfd, &start_record)))) {
+                    /* Each prepared side has its own guard and rollback link
+                       before finalization. Each side is independently
+                       idempotent: if one finish succeeds and the other fails,
+                       a retry sees the completed side as cleanly absent and
+                       finishes the remaining exact record. */
+                    int pid_done = pid_missing
+                                   || c2c_finish_unlink_at(dirfd, &pid_record);
+                    int start_done = st_missing
+                                     || c2c_finish_unlink_at(dirfd, &start_record);
+                    result = pid_done && start_done;
+                } else {
+                    if (start_prepared == 1 && !st_missing)
+                        c2c_restore_prepared(dirfd, &start_record);
+                    if (pid_prepared == 1 && !pid_missing)
+                        c2c_restore_prepared(dirfd, &pid_record);
+                }
             }
-        } else if (pid_prepared < 0) {
-            /* Both records were opened above, so an absent first half is not
-               a confirmed pair absence. Preserve the existing false result. */
-            result = 0;
         }
     }
     flock(dirfd, LOCK_UN);

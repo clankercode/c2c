@@ -1392,7 +1392,8 @@ let ownership_registration entry =
     | "session_id" | "alias" ->
         (match value with `String s -> String.trim s <> "" | _ -> false)
     | "pid" -> optional (function `Int n -> n > 0 | _ -> false) value
-    | "pid_start_time" -> optional integer value
+    | "pid_start_time" ->
+        optional (function `Int n -> n > 0 | _ -> false) value
     | "compaction_count" -> integer value
     | "registered_at" | "dnd_since" | "dnd_until" | "confirmed_at"
     | "pubkey_signed_at" | "last_activity_ts" -> optional number value

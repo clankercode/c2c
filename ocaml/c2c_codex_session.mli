@@ -100,6 +100,11 @@ val daemon_frontend_workspace_args : cwd:string -> string list
 (** The stock remote frontend must receive the launch workspace explicitly;
     Codex's shared daemon otherwise reuses its own process cwd. *)
 
+val remove_teardown_receipts_after_registration :
+  registration_cleared:bool -> teardown_record:string -> handoff_path:string -> bool
+(** Remove frontend recovery receipts only after registry ownership cleanup has
+    succeeded. A failed registry write leaves both receipts available for retry. *)
+
 val select_new_loaded_thread : before:string list -> candidates:string list -> string option
 (** Select exactly one newly loaded thread from authenticated server metadata.
     An existing id or an ambiguous set fails closed. *)

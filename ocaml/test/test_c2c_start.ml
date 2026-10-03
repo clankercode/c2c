@@ -1239,6 +1239,27 @@ let test_paired_cleanup_succeeds_for_exact_owner () =
   check bool "start-time rollback link is removed" false
     (has_prefix ".record.start-time.c2c-rollback.")
 
+let test_paired_cleanup_is_idempotent_after_one_side_finalized () =
+  with_temp_dir @@ fun dir ->
+  let pid_path = Filename.concat dir "record" in
+  let start_time_path = pid_path ^ ".start-time" in
+  let put path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
+  put pid_path "111\n";
+  put start_time_path "222\n";
+  check bool "first side can be finalized independently" true
+    (C2c_start.remove_pidfile_confirmed pid_path);
+  check bool "first side is absent before pair retry" false
+    (Sys.file_exists pid_path);
+  check bool "pair retry finishes the remaining side" true
+    (C2c_start.remove_pid_record_pair_confirmed
+       ~pid_path ~start_time_path ~pid:111 ~start_time:222);
+  check bool "remaining start-time side is removed" false
+    (Sys.file_exists start_time_path)
+
 let test_frontend_teardown_symlink_is_retained () =
   let name = unique_instance_name "codex-teardown-symlink" in
   with_instance_dir name @@ fun dir ->
@@ -1839,6 +1860,46 @@ let test_frontend_teardown_requires_generation_and_confirmed_removal () =
       (fun () -> output_string oc (Yojson.Safe.to_string json ^ "\n"));
     path
   in
+  let invalid_values = unique_instance_name "codex-teardown-invalid-values" in
+  with_instance_dir invalid_values @@ fun _ ->
+  let path =
+    write_record invalid_values
+      (`Assoc [ ("frontend_pid", `Int 0)
+             ; ("frontend_pid_start_time", `Int 1) ])
+  in
+  check bool "zero frontend PID is retained" false
+    (C2c_start.stop_frontend_teardown_record invalid_values);
+  check bool "zero frontend PID record remains" true (Sys.file_exists path);
+  let path =
+    write_record invalid_values
+      (`Assoc [ ("frontend_pid", `Int 1)
+             ; ("frontend_pid_start_time", `Int (-1)) ])
+  in
+  check bool "negative frontend generation is retained" false
+    (C2c_start.stop_frontend_teardown_record invalid_values);
+  check bool "negative frontend generation record remains" true
+    (Sys.file_exists path);
+  let path =
+    write_record invalid_values
+      (`Assoc [ ("frontend_pid", `Int 1)
+             ; ("frontend_pid_start_time", `Int 1)
+             ; ("sentinel_pid", `Int 0)
+             ; ("sentinel_start_time", `Int 1) ])
+  in
+  check bool "zero sentinel PID is retained" false
+    (C2c_start.stop_frontend_teardown_record invalid_values);
+  check bool "zero sentinel PID record remains" true (Sys.file_exists path);
+  let path =
+    write_record invalid_values
+      (`Assoc [ ("frontend_pid", `Int 1)
+             ; ("frontend_pid_start_time", `Int 1)
+             ; ("sentinel_pid", `Int 1)
+             ; ("sentinel_start_time", `Int (-1)) ])
+  in
+  check bool "negative sentinel generation is retained" false
+    (C2c_start.stop_frontend_teardown_record invalid_values);
+  check bool "negative sentinel generation record remains" true
+    (Sys.file_exists path);
   let missing_generation = unique_instance_name "codex-teardown-no-generation" in
   with_instance_dir missing_generation @@ fun _ ->
   let child =
@@ -6684,7 +6745,11 @@ let test_registration_cleanup_preserves_on_lock_failure () =
   check bool "lock failure blocks cleanup" false
     (C2c_start.clear_registration_pid_if_owner ~broker_root:dir
        ~session_id:"sid" ~pid:1 ~pid_start_time:(Some 2));
-  check string "lock failure preserves registry" original (read_file path)
+  check string "lock failure preserves registry" original (read_file path);
+  check bool "lock failure leaves no teardown receipt" false
+    (Sys.file_exists
+       (C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root:dir
+          ~session_id:"sid"))
 
 let test_eager_registration_preserves_malformed_registry () =
   with_temp_dir @@ fun dir ->
@@ -7103,6 +7168,9 @@ let () =
         ; ( "paired_cleanup_succeeds_for_exact_owner",
             `Quick,
             test_paired_cleanup_succeeds_for_exact_owner )
+        ; ( "paired_cleanup_is_idempotent_after_one_side_finalized",
+            `Quick,
+            test_paired_cleanup_is_idempotent_after_one_side_finalized )
         ; ( "frontend_teardown_symlink_is_retained",
             `Quick, test_frontend_teardown_symlink_is_retained )
         ; ( "pid_generation_state_distinguishes_absence",
