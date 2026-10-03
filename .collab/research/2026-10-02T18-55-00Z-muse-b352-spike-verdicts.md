@@ -647,4 +647,3 @@ Usage: muse [OPTIONS] [PROMPT]
 muse resume:  muse resume [--last | <session-ref>]  ("exact session UUID or Session Name")
 muse exec:    muse exec [OPTIONS] [PROMPT]  (--json, --prompt-file, --provider echo|meta, ...)
 ```
-

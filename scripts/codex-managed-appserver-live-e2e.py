@@ -18,8 +18,9 @@ WHAT THIS PROVES (against the installed codex, default >= 0.144):
   * DRAFT PRESERVATION: the complete composer draft typed before the DM (never
     submitted) remains byte-for-byte present across the auto-turn.
   * CLEAN TEARDOWN / DEREGISTRATION: after `c2c stop`, no orphan
-    `codex app-server` / `codex --remote` process from this instance survives
-    and the broker registration for the instance alias is gone.
+    `codex app-server` / `codex --remote` process from this instance survives,
+    the managed lifecycle records are cleaned, and the broker may retain only
+    one unowned, pidless sticky alias row for the instance.
 
 MUST run from inside tmux (per repo CLAUDE.md: never `c2c start/new codex` from
 a bare shell). The supervisor is launched via scripts/c2c_tmux.py's launch flow
@@ -190,6 +191,29 @@ def pid_generation(pid: int) -> int | None:
 def exact_generation_gone(pid: int, start_time: int) -> bool:
     current = pid_generation(pid)
     return current is None or current != start_time
+
+
+def isolated_registration_generation(
+        broker_root: Path, session_id: str, alias: str) -> tuple[int, int] | None:
+    """Read the exact owned PID generation from this run's registry."""
+    try:
+        rows = json.loads((broker_root / "registry.json").read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(rows, list):
+        return None
+    matching = [row for row in rows
+                if isinstance(row, dict)
+                and row.get("session_id") == session_id
+                and row.get("alias") == alias]
+    if len(matching) != 1:
+        return None
+    pid = matching[0].get("pid")
+    start_time = matching[0].get("pid_start_time")
+    if (type(pid) is not int or pid <= 0
+            or type(start_time) is not int or start_time < 0):
+        return None
+    return pid, start_time
 
 
 def sweep_my_codex(broker_root: str) -> int:
@@ -494,12 +518,14 @@ def run_live() -> int:
         except (StopIteration, ValueError, TypeError):
             log("[appserver-e2e] FAIL: launcher registration disappeared after readiness")
             return 4
-        registration_pid = registration_snapshot.get("pid")
-        registration_pid_start_time = (
-            pid_generation(registration_pid)
-            if isinstance(registration_pid, int) else None)
-        if registration_pid_start_time is None:
-            log("[appserver-e2e] FAIL: launcher registration has no exact live PID generation")
+        registration_generation = isolated_registration_generation(
+            broker, launcher_sid, inst_alias)
+        if registration_generation is None:
+            log("[appserver-e2e] FAIL: isolated registry has no exact launcher PID generation")
+            return 4
+        registration_pid, registration_pid_start_time = registration_generation
+        if pid_generation(registration_pid) != registration_pid_start_time:
+            log("[appserver-e2e] FAIL: launcher registration PID generation changed before stop")
             return 4
         private_generation = None
         if private_state_path.is_file():
@@ -608,9 +634,9 @@ def run_live() -> int:
         if not results["injected_and_autoturn"]:
             log("[appserver-e2e] transcript tail:\n" + _pane_text(pane, 200))
 
-        # 6. clean teardown / deregistration: `c2c stop` must reap the managed
-        #    codex processes (measured precisely by our isolated broker root) and
-        #    deregister the instance — with NO orphan left behind.
+        # 6. clean teardown / deregistration: `c2c stop` must leave no orphan
+        #    codex process, clean the managed lifecycle records, and leave at
+        #    most one unowned, pidless sticky alias row in the broker registry.
         log(f"[appserver-e2e] stopping managed session '{name}' ...")
         stop_result = run_c2c(bin_, ["stop", name], cli_env, timeout=60)
         stop_ok = stop_result.returncode == 0
@@ -620,8 +646,17 @@ def run_live() -> int:
 
         def no_my_procs() -> bool:
             return len(my_codex_pids(str(broker))) == 0
-        reaped = wait_for(no_my_procs, timeout=60, interval=3) is not None
-        results["clean_teardown"] = stop_ok and reaped
+        teardown_deadline = time.monotonic() + 60
+        reaped = False
+        registration_generation_gone = False
+        while time.monotonic() < teardown_deadline:
+            reaped = no_my_procs()
+            registration_generation_gone = exact_generation_gone(
+                registration_pid, registration_pid_start_time)
+            if reaped and registration_generation_gone:
+                break
+            time.sleep(min(3, max(0, teardown_deadline - time.monotonic())))
+        reaped = no_my_procs()
         registration_generation_gone = exact_generation_gone(
             registration_pid, registration_pid_start_time)
 
@@ -709,13 +744,13 @@ def run_live() -> int:
             return True
 
         results["lifecycle_clean"] = wait_for(lifecycle_clean, timeout=30, interval=3) is not None
+        results["clean_teardown"] = (
+            stop_ok and reaped and registration_generation_gone)
         log(f"[appserver-e2e] after stop: my codex procs remaining = "
             f"{len(my_codex_pids(str(broker)))} clean={results['clean_teardown']} "
             f"lifecycle={results['lifecycle_clean']} "
             f"deregistered={results['deregistered']} "
             f"registration_generation_gone={registration_generation_gone}")
-        results["clean_teardown"] = results["clean_teardown"] and registration_generation_gone
-
         verdict = all(results.values())
         log("[appserver-e2e] ===== RESULTS =====")
         log("      " + json.dumps(results))
@@ -733,8 +768,10 @@ def run_live() -> int:
             pass
         # SAFETY: guarantee no orphan survives this run regardless of whether
         # `c2c stop` reaped. Only touches procs carrying our isolated broker
-        # root, so a live swarm's codex is never affected. A nonzero forced
-        # count is logged as evidence that `c2c stop` alone did not fully reap.
+        # root, so a live swarm's codex is never affected. The teardown
+        # invariant also requires cleaned lifecycle records; one unowned,
+        # pidless sticky alias row may remain. A nonzero forced count is logged
+        # as evidence that `c2c stop` alone did not fully reap.
         forced = sweep_my_codex(str(broker))
         if forced:
             log(f"[appserver-e2e] WARNING: force-killed {forced} orphan codex "
