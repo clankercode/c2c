@@ -2527,6 +2527,7 @@ let read_managed_registry (path : string) : managed_registry_read =
 
 let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
     ~(alias : string) ~(pid : int) ?(cwd : string option)
+    ?(alias_from_auto_gen = false)
     ~(client_type : string) () : (unit, string) result =
   try
     (* Managed codex-headless needs broker reachability before the bridge has
@@ -2544,7 +2545,7 @@ let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
        discard metadata carried by a same-session re-registration. *)
     C2c_mcp.Broker.register broker ~session_id ~alias ~pid:(Some pid)
       ~pid_start_time ~client_type:(Some client_type) ~cwd
-      ~preserve_existing_metadata:true ();
+      ~from_auto_gen:alias_from_auto_gen ~preserve_existing_metadata:true ();
     let persisted =
       List.exists
         (fun (r : C2c_mcp.registration) ->
@@ -2591,11 +2592,12 @@ let managed_kimi_registration_failure_message ~(name : string) ~(alias : string)
    no-op write is exactly the failure mode #40 was; verifying turns it into a
    loud, actionable error. Returns [Error reason] rather than raising so the
    launch path decides how loud to be. *)
-let register_managed_kimi_session ~(broker_root : string) ~(name : string)
-    ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
+let register_managed_kimi_session ?(alias_from_auto_gen = false)
+    ~(broker_root : string) ~(name : string)
+    ~(alias : string) ~(pid : int) ~(cwd : string) () : (unit, string) result =
   match
     eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
-      ~cwd ~client_type:"kimi" ()
+      ~cwd ~alias_from_auto_gen ~client_type:"kimi" ()
   with
   | Error e -> Error e
   | Ok () ->
@@ -2650,11 +2652,12 @@ let managed_agy_registration_failure_message ~(name : string) ~(alias : string)
      `c2c stop %s && c2c start agy -n %s`.\n"
     alias reason alias alias broker_root name name
 
-let register_managed_agy_session ~(broker_root : string) ~(name : string)
-    ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
+let register_managed_agy_session ?(alias_from_auto_gen = false)
+    ~(broker_root : string) ~(name : string) ~(alias : string) ~(pid : int)
+    ~(cwd : string) () : (unit, string) result =
   match
     eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
-      ~cwd ~client_type:"agy" ()
+      ~cwd ~alias_from_auto_gen ~client_type:"agy" ()
   with
   | Error e -> Error e
   | Ok () ->
@@ -2698,11 +2701,12 @@ let managed_muse_registration_failure_message ~(name : string) ~(alias : string)
      `c2c stop %s && c2c start muse -n %s`.\n"
     alias reason alias alias broker_root name name
 
-let register_managed_muse_session ~(broker_root : string) ~(name : string)
-    ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
+let register_managed_muse_session ?(alias_from_auto_gen = false)
+    ~(broker_root : string) ~(name : string) ~(alias : string) ~(pid : int)
+    ~(cwd : string) () : (unit, string) result =
   match
     eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
-      ~cwd ~client_type:"muse" ()
+      ~cwd ~alias_from_auto_gen ~client_type:"muse" ()
   with
   | Error e -> Error e
   | Ok () ->
@@ -5106,6 +5110,34 @@ let acquire_instance_lock_for_daemon_attach ~(name : string) : Unix.file_descr o
   | Some _ -> None
   | None -> Some (acquire_instance_lock ~name)
 
+(* Stop must not wait for a replacement generation.  The old outer owns this
+   lock while it is alive, so stop signals the captured generation first and
+   then takes the same stable lock before touching any descendant or cleanup
+   state.  A failed [F_TLOCK] means a replacement owns the instance now. *)
+let try_acquire_instance_lock_for_stop ~(name : string) :
+    (Unix.file_descr * bool) option =
+  match held_instance_lock ~name with
+  | Some fd -> Some (fd, false)
+  | None ->
+      let path = instance_lock_path name in
+      mkdir_p (Filename.dirname path);
+      let fd =
+        try Some (Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644)
+        with _ -> None
+      in
+      (match fd with
+       | None -> None
+       | Some fd ->
+           (match Unix.lockf fd Unix.F_TLOCK 0 with
+            | () -> Some (fd, true)
+            | exception Unix.Unix_error
+                ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
+                (try Unix.close fd with _ -> ());
+                None
+            | exception _ ->
+                (try Unix.close fd with _ -> ());
+                None))
+
 let release_instance_lock_for_daemon_attach ~(name : string)
     (fd : Unix.file_descr option) : unit =
   match fd with
@@ -5114,7 +5146,8 @@ let release_instance_lock_for_daemon_attach ~(name : string)
 
 let run_tmux_loop ~(name : string) ~(tmux_location : string)
     ~(tmux_command : string list) ~(broker_root : string)
-    ?(alias_override : string option) ?(auto_join_rooms : string option) () : int =
+    ?(alias_override : string option) ?(auto_join_rooms : string option)
+    ?(alias_from_auto_gen = false) () : int =
   let loc = String.trim tmux_location in
   if loc = "" then begin
     Printf.eprintf "error: c2c start tmux requires --loc <tmux-target>\n%!";
@@ -5156,7 +5189,7 @@ let run_tmux_loop ~(name : string) ~(tmux_location : string)
   C2c_mcp.Broker.register broker ~session_id:name ~alias:effective_alias
     ~pid:(Some (Unix.getpid ()))
     ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
-    ~client_type:(Some "tmux") ();
+    ~client_type:(Some "tmux") ~from_auto_gen:alias_from_auto_gen ();
   let rooms =
     Option.value auto_join_rooms
       ~default:(C2c_swarm_config.swarm_config_social_room ())
@@ -7505,7 +7538,7 @@ let run_outer_loop ~(name : string) ~(client : string)
          let cwd = try Sys.getcwd () with _ -> "" in
          (match
             register_managed_kimi_session ~broker_root ~name ~alias
-              ~pid:(Unix.getpid ()) ~cwd
+              ~pid:(Unix.getpid ()) ~cwd ~alias_from_auto_gen ()
           with
           | Ok () -> kimi_registration_authoritative := true
           | Error reason ->
@@ -7549,7 +7582,7 @@ let run_outer_loop ~(name : string) ~(client : string)
          let cwd = try Sys.getcwd () with _ -> "" in
          (match
             register_managed_agy_session ~broker_root ~name ~alias
-              ~pid:(Unix.getpid ()) ~cwd
+              ~pid:(Unix.getpid ()) ~cwd ~alias_from_auto_gen ()
           with
           | Ok () -> ()
           | Error reason ->
@@ -7588,7 +7621,7 @@ let run_outer_loop ~(name : string) ~(client : string)
          let cwd = try Sys.getcwd () with _ -> "" in
          (match
             register_managed_muse_session ~broker_root ~name ~alias
-              ~pid:(Unix.getpid ()) ~cwd
+              ~pid:(Unix.getpid ()) ~cwd ~alias_from_auto_gen ()
           with
           | Ok () -> ()
           | Error reason ->
@@ -7729,7 +7762,7 @@ let run_outer_loop ~(name : string) ~(client : string)
                  ~session_id:name
                  ~alias:(Option.value alias_override ~default:name)
                  ~pid
-                 ~client_type:"codex-headless" ()
+                 ~alias_from_auto_gen ~client_type:"codex-headless" ()
              with
              | Ok () -> ()
              | Error reason ->
@@ -8948,7 +8981,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     | Some loc ->
         run_tmux_loop ~name ~tmux_location:loc
           ~tmux_command:(Option.value tmux_command ~default:extra_args)
-          ~broker_root ?alias_override ~auto_join_rooms:cfg.auto_join_rooms ()
+          ~broker_root ?alias_override ~auto_join_rooms:cfg.auto_join_rooms
+          ~alias_from_auto_gen ()
   else
 
   (* The persisted empty string sentinel means "no thread id yet" for a fresh
@@ -9065,6 +9099,11 @@ type stop_outcome =
   | Stop_refused_foreign_pid of int * string  (* pid, human-readable reason *)
 
 let stop_instance (name : string) : stop_outcome =
+  (* Capture the lifecycle state before signalling the current outer.  The
+     stable instance lock is unavailable while that outer is alive, so these
+     values are the proof that the cleanup below still belongs to the same
+     generation after the signal/wait boundary. *)
+  let captured_config = read_config_nofollow name in
   (* The Codex app-server route is launched by [c2c new codex] rather than the
      generic managed outer loop. Its delivery owner is therefore not in the
      outer loop's in-memory sidecar refs. Sweep its pidfile after stopping the
@@ -9139,6 +9178,49 @@ let stop_instance (name : string) : stop_outcome =
                ~start_time_path:(outer_pid_start_time_path name)
                ~pid ~start_time)
   in
+  let config_identity_equal a b =
+    a.name = b.name
+    && a.client = b.client
+    && a.session_id = b.session_id
+    && a.alias = b.alias
+    && a.broker_root = b.broker_root
+  in
+  let config_still_belongs_to_capture () =
+    match captured_config, read_config_nofollow name with
+    | Instance_config_missing, Instance_config_missing -> true
+    | Instance_config_present before, Instance_config_present after ->
+        config_identity_equal before after
+    | _ -> false
+  in
+  let outer_record_still_belongs_to_capture captured =
+    match captured,
+          read_pid_record ~pid_path:(outer_pid_path name)
+            ~start_time_path:(outer_pid_start_time_path name) with
+    | None, Pid_record_absent -> true
+    | Some (pid, start_time), Pid_record_absent -> true
+    | Some (pid, start_time), Pid_record_present (current_pid, current_start) ->
+        current_pid = pid && current_start = start_time
+    | _ -> false
+  in
+  let with_stable_cleanup_lock ~(captured_outer : (int * int) option)
+      (f : unit -> stop_outcome) : stop_outcome =
+    match try_acquire_instance_lock_for_stop ~name with
+    | None ->
+        Stop_failed
+          "instance state changed during stop; a replacement generation owns the lifecycle lock"
+    | Some (fd, acquired_here) ->
+        Fun.protect
+          ~finally:(fun () ->
+            if acquired_here then release_instance_lock ~name fd)
+          (fun () ->
+             if not (config_still_belongs_to_capture ()) then
+               Stop_failed
+                 "instance configuration changed during stop; retaining replacement lifecycle state"
+             else if not (outer_record_still_belongs_to_capture captured_outer) then
+               Stop_failed
+                 "outer generation changed during stop; retaining replacement lifecycle state"
+             else f ())
+  in
   let cleanup ~stopped ~outer_record : stop_outcome =
     let sidecars_ok = stop_codex_session_sidecars () in
     let daemon_ok = stop_codex_daemon_sidecar () in
@@ -9168,21 +9250,27 @@ let stop_instance (name : string) : stop_outcome =
               && C2c_pid_identity.proc_tgid pid = Some pid ->
            if stop_codex_sidecar_generation ~term_timeout_s:10.0
                 ~pid ~start_time ()
-           then cleanup ~stopped:true ~outer_record:(Some (pid, start_time))
+           then
+             with_stable_cleanup_lock
+               ~captured_outer:(Some (pid, start_time))
+               (fun () -> cleanup ~stopped:true ~outer_record:(Some (pid, start_time)))
            else
              Stop_failed
                "could not stop the exact recorded outer generation; retaining lifecycle state"
        | C2c_pid_identity.Absent ->
            (* The recorded generation is gone. Never signal a replacement;
               continue only with descendant cleanup. *)
-           cleanup ~stopped:false ~outer_record:(Some (pid, start_time))
+           with_stable_cleanup_lock
+             ~captured_outer:(Some (pid, start_time))
+             (fun () -> cleanup ~stopped:false ~outer_record:(Some (pid, start_time)))
        | C2c_pid_identity.Generation _
        | C2c_pid_identity.Unreadable ->
            Stop_failed
              "cannot read the exact recorded outer PID generation; refusing numeric teardown")
   | Pid_record_absent ->
       (* Even with no live outer, sweep any orphaned notifier for this alias. *)
-      cleanup ~stopped:false ~outer_record:None
+      with_stable_cleanup_lock ~captured_outer:None
+        (fun () -> cleanup ~stopped:false ~outer_record:None)
   | Pid_record_unknown ->
       Stop_failed
         "cannot trust the paired outer PID lifecycle records; retaining records"

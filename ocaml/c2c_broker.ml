@@ -80,6 +80,8 @@ open C2c_mcp_helpers
         (try Yojson.Safe.from_string content with _ -> default)
     else default
 
+  exception Registry_state_untrusted of string
+
   let write_json_file path json =
     (* Atomic write via temp+rename+fsync. A truncate-in-place writer that
        gets SIGKILLed (OOM, parent process exit, kill -9) between
@@ -543,6 +545,79 @@ open C2c_mcp_helpers
         regs
     | _ -> []
 
+  (* Mutation paths must distinguish an empty registry from a registry that
+     cannot be trusted.  The historical [load_registrations] reader is kept
+     best-effort for status/discovery callers, but a writer must never turn a
+     malformed, unreadable, non-list, or capped registry into [ [] ].  Read
+     the file before any caller can construct a replacement so the original
+     bytes remain untouched on failure. *)
+  let load_registrations_strict t =
+    ensure_root t;
+    let path = registry_path t in
+    let stat_opt =
+      try Some (Unix.lstat path) with
+      | Unix.Unix_error (Unix.ENOENT, _, _) -> None
+      | e ->
+          raise
+            (Registry_state_untrusted
+               (Printf.sprintf "registry could not be inspected: %s"
+                  (Printexc.to_string e)))
+    in
+    match stat_opt with
+    | None -> []
+    | Some lst when lst.Unix.st_kind <> Unix.S_REG ->
+        raise (Registry_state_untrusted "registry is not a regular file")
+    | Some _ ->
+      let content =
+        try
+          let st = Unix.stat path in
+          if st.Unix.st_kind <> Unix.S_REG then
+            raise (Registry_state_untrusted "registry is not a regular file");
+          if st.Unix.st_size > 64 * 1024 then
+            raise (Registry_state_untrusted "registry exceeds the 64 KiB size limit");
+          let fd = Unix.openfile path [ Unix.O_RDONLY ] 0 in
+          let ic = Unix.in_channel_of_descr fd in
+          Fun.protect
+            ~finally:(fun () -> close_in_noerr ic)
+            (fun () ->
+              let buffer = Bytes.create (64 * 1024 + 1) in
+              let rec read used =
+                if used = Bytes.length buffer then
+                  raise
+                    (Registry_state_untrusted
+                       "registry exceeds the 64 KiB size limit")
+                else
+                  let count = input ic buffer used (Bytes.length buffer - used) in
+                  if count = 0 then Bytes.sub_string buffer 0 used
+                  else read (used + count)
+              in
+              read 0)
+        with
+        | Registry_state_untrusted _ as e -> raise e
+        | e ->
+            raise
+              (Registry_state_untrusted
+                 (Printf.sprintf "registry could not be read: %s"
+                    (Printexc.to_string e)))
+      in
+      try
+        match Yojson.Safe.from_string content with
+        | `List items ->
+            (try List.map registration_of_json items with
+             | e ->
+                 raise
+                   (Registry_state_untrusted
+                      (Printf.sprintf "registry contains an invalid registration: %s"
+                         (Printexc.to_string e))))
+        | _ ->
+            raise (Registry_state_untrusted "registry is not a list of registrations")
+      with
+      | Registry_state_untrusted _ as e -> raise e
+      | e ->
+          raise
+            (Registry_state_untrusted
+               (Printf.sprintf "registry is malformed: %s" (Printexc.to_string e)))
+
   (* #432: invariant — among ALIVE registrations, no two rows may share
      a case-folded alias. We only WARN (broker.log + stderr) — not
      reject — so partial-upgrade scenarios where the registry has
@@ -638,6 +713,10 @@ open C2c_mcp_helpers
 
   let save_registrations t regs =
     ensure_root t;
+    (* Revalidate the current bytes immediately before replacing them.  This
+       closes the gap where a best-effort reader returned [] and a mutation
+       would otherwise overwrite an operator-visible registry failure. *)
+    ignore (load_registrations_strict t);
     check_alias_casefold_invariant t regs;
     write_json_file (registry_path t) (`List (List.map registration_to_json regs));
     sweep_registry_tmps ~root:t.root
@@ -2476,7 +2555,7 @@ open C2c_mcp_helpers
       invalid_arg (Printf.sprintf "register rejected: %s"
         (C2c_name.error_message "alias" alias));
     with_registry_lock t (fun () ->
-        let regs = load_registrations t in
+        let regs = load_registrations_strict t in
         (* Registry → pending is the canonical multi-store order.  Keep the
            pending lock through [save_registrations], not merely through the
            observation, so a newly-opened prior-owner permission cannot slip

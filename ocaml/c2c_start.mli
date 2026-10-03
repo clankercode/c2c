@@ -103,11 +103,13 @@ val kimi_disabled_notice : string
     One daemon serves many sessions, so its env can never identify any one of
     them: the launcher is the only correct identity authority here. *)
 val register_managed_kimi_session :
+  ?alias_from_auto_gen:bool ->
   broker_root:string ->
   name:string ->
   alias:string ->
   pid:int ->
   cwd:string ->
+  unit ->
   (unit, string) result
 
 (** [kimi_notifier_arm_is_authoritative ~registered_ok ~resolved_sid ~name] —
@@ -133,11 +135,13 @@ val managed_kimi_registration_failure_message :
     {!register_managed_kimi_session} so peers can address the alias before any
     SessionStart hook fires (and when SessionStart never fires). *)
 val register_managed_agy_session :
+  ?alias_from_auto_gen:bool ->
   broker_root:string ->
   name:string ->
   alias:string ->
   pid:int ->
   cwd:string ->
+  unit ->
   (unit, string) result
 
 (** Operator-facing text for a failed managed-agy registration. Pure; pinned
@@ -157,11 +161,13 @@ val is_agy_conversation_id : string -> bool
     resume-silent and hook children see a scrubbed env (no [C2C_*]), so the
     launcher is the only correct identity authority. *)
 val register_managed_muse_session :
+  ?alias_from_auto_gen:bool ->
   broker_root:string ->
   name:string ->
   alias:string ->
   pid:int ->
   cwd:string ->
+  unit ->
   (unit, string) result
 
 (** Operator-facing text for a failed managed-muse registration. Pure; pinned

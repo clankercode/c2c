@@ -444,8 +444,21 @@ let with_arm_lock path f =
       Unix.close fd)
     f
 
+let refresh_managed_registration ~(broker_root : string)
+    ~(broker_session_id : string) ~(alias : string) ~(pid : int)
+    ~(pid_start_time : int option) ?(alias_from_auto_gen = false) () : unit =
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  (* The detached daemon sidecar is the arrival-time delivery owner. Preserve
+     this discriminator and existing metadata on every refresh so the Codex
+     hook remains identity-only and cannot dual-drain the same inbox. *)
+  C2c_mcp.Broker.register broker ~session_id:broker_session_id ~alias
+    ~pid:(Some pid) ~pid_start_time
+    ~client_type:(Some "codex-app-server")
+    ~from_auto_gen:alias_from_auto_gen ~preserve_existing_metadata:true ()
+
 let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
-    ~broker_session_id ~broker_root ~arm_cancel_path ~arm_lock_path =
+    ~broker_session_id ~broker_root ~arm_cancel_path ~arm_lock_path
+    ~alias_from_auto_gen =
   Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
   let pending_path =
     C2c_start.codex_daemon_sidecar_arm_pending_path ~owners_dir ~token
@@ -492,12 +505,8 @@ let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
       C2c_start.clear_codex_hook_fallback ~broker_root
         ~session_id:broker_session_id;
       let register () =
-        C2c_mcp.Broker.register broker ~session_id:broker_session_id ~alias
-          ~pid:(Some pid) ~pid_start_time:pid_start_time
-          (* The detached daemon sidecar is the arrival-time delivery owner.
-             Preserve this discriminator on every refresh so the Codex hook
-             remains identity-only and cannot dual-drain the same inbox. *)
-          ~client_type:(Some "codex-app-server") ~from_auto_gen:false ()
+        refresh_managed_registration ~broker_root
+          ~broker_session_id ~alias ~pid ~pid_start_time ~alias_from_auto_gen ()
       in
       let cleanup_failed = ref false in
       let deregister () =
@@ -652,7 +661,8 @@ let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
       exit (if !cleanup_failed then 1 else 0)
 
 let arm ~thread_id ~alias ~broker_session_id ~broker_root ?instance_name ?owners_dir
-    ?socket_path ?(arm_wait_s = arm_wait_budget_s) () =
+    ?socket_path ?(arm_wait_s = arm_wait_budget_s)
+    ?(alias_from_auto_gen = false) () =
   if not (C2c_pid_identity.pidfd_supported ()) then
     Arm_failed "daemon sidecar requires owner-bound pidfd signalling"
   else
@@ -725,6 +735,7 @@ let arm ~thread_id ~alias ~broker_session_id ~broker_root ?instance_name ?owners
                     (try Unix.chdir "/" with _ -> ());
                     run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
                       ~broker_session_id ~broker_root ~arm_cancel_path ~arm_lock_path
+                      ~alias_from_auto_gen
                 | child_pid ->
                     (* Capture the child generation before any wait/reap path.
                        Never derive it later from a possibly reused PID. *)

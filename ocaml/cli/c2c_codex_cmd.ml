@@ -146,6 +146,7 @@ let dispatch ~(mode : C2c_codex_session.launch_mode) ~alias_override ~thread_id
     ~yolo ?model_override ~extra_args () : int =
   C2c_codex_session.run ~mode ?alias_override ?thread_id ~yolo
     ~extra_args ?model_override
+    ~alias_from_auto_gen:(alias_override = None)
     ~fallback:(hook_fallback ~mode ~alias_override ?model_override ())
     ()
 
@@ -304,6 +305,6 @@ let resume_cmd : unit Cmd.t =
 
 (* Re-exported for c2c_managed_cmd so `c2c start codex` routes to the same path. *)
 let start_delegate ~alias_override ~thread_id ~yolo ?model_override
-    ~extra_args ~fallback () : int =
+    ~extra_args ~alias_from_auto_gen ~fallback () : int =
   C2c_codex_session.run ~mode:C2c_codex_session.Start ?alias_override ?thread_id
-    ~yolo ?model_override ~extra_args ~fallback ()
+    ~yolo ?model_override ~extra_args ~alias_from_auto_gen ~fallback ()

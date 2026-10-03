@@ -110,6 +110,81 @@ let test_register_metadata_opt_out_reregister_discards () =
       let reg2 = List.hd (C2c_mcp.Broker.list_registrations broker2) in
       check bool "re-register without opt-out resets to false" false reg2.metadata_opt_out)
 
+let test_register_rejects_untrusted_registry_without_overwrite () =
+  let cases =
+    [ ("malformed", "{ malformed\n")
+    ; ("non-list", "{\"registrations\":[]}\n")
+    ; ("semantic", "[{\"session_id\":\"sid\"}]\n")
+    ; ("oversized", String.make (64 * 1024 + 1) 'x')
+    ]
+  in
+  List.iter
+    (fun (label, original) ->
+      with_temp_dir (fun dir ->
+          let path = Filename.concat dir "registry.json" in
+          let oc = open_out_bin path in
+          Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+              output_string oc original);
+          let broker = C2c_mcp.Broker.create ~root:dir in
+          let rejected =
+            try
+              C2c_mcp.Broker.register broker ~session_id:"new-session"
+                ~alias:"new-alias" ~pid:None ~pid_start_time:None ();
+              false
+            with _ -> true
+          in
+          check bool (label ^ " registry is rejected") true rejected;
+          let ic = open_in_bin path in
+          let actual =
+            Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+                really_input_string ic (in_channel_length ic))
+          in
+          check string (label ^ " registry bytes are preserved") original actual))
+    cases
+
+let test_register_managed_metadata_preserved_on_refresh () =
+  with_temp_dir (fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:"managed-session"
+        ~alias:"refresh-alias" ~pid:(Some (Unix.getpid ()))
+        ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+        ~client_type:(Some "legacy") ~metadata_opt_out:true
+        ~registered_by:(Some "legacy-owner") ~cwd:(Some "/old") ();
+      C2c_mcp.Broker.register broker ~session_id:"managed-session"
+        ~alias:"refresh-alias" ~pid:(Some (Unix.getpid ()))
+        ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+        ~client_type:(Some "codex-app-server") ~cwd:(Some "/new")
+        ~from_auto_gen:true ~preserve_existing_metadata:true ();
+      match C2c_mcp.Broker.list_registrations broker with
+      | [ row ] ->
+          check bool "metadata opt-out survives refresh" true row.metadata_opt_out;
+          check (option string) "registration provenance survives refresh"
+            (Some "legacy-owner") row.registered_by;
+          check (option string) "intentional cwd refresh applies" (Some "/new") row.cwd;
+          check (option string) "intentional client type applies"
+            (Some "codex-app-server") row.client_type
+      | rows -> failf "expected one refreshed row, got %d" (List.length rows))
+
+let test_register_rejects_nonregular_or_unreadable_registry () =
+  let assert_rejected label make_registry =
+    with_temp_dir (fun dir ->
+        let path = Filename.concat dir "registry.json" in
+        make_registry path;
+        let broker = C2c_mcp.Broker.create ~root:dir in
+        let rejected =
+          try
+            C2c_mcp.Broker.register broker ~session_id:"new-session"
+              ~alias:"new-alias" ~pid:None ~pid_start_time:None ();
+            false
+          with _ -> true
+        in
+        check bool (label ^ " registry is rejected") true rejected;
+        check bool (label ^ " registry path is preserved") true
+          (try (Unix.lstat path).Unix.st_kind <> Unix.S_REG with _ -> false))
+  in
+  assert_rejected "directory" (fun path -> Unix.mkdir path 0o700);
+  assert_rejected "dangling symlink" (fun path -> Unix.symlink "missing" path)
+
 let test_send_enqueues_message_for_target_alias () =
   with_temp_dir (fun dir ->
       let broker = C2c_mcp.Broker.create ~root:dir in
@@ -16933,6 +17008,12 @@ let () =
             test_register_metadata_opt_out_forward_compat
         ; test_case "register metadata_opt_out re-register discards" `Quick
             test_register_metadata_opt_out_reregister_discards
+        ; test_case "register rejects untrusted registry without overwrite" `Quick
+            test_register_rejects_untrusted_registry_without_overwrite
+        ; test_case "register managed refresh preserves metadata" `Quick
+            test_register_managed_metadata_preserved_on_refresh
+        ; test_case "register rejects nonregular or unreadable registry" `Quick
+            test_register_rejects_nonregular_or_unreadable_registry
         ; test_case "register same session different alias dedup" `Quick
             test_register_same_session_different_alias_dedup
         ; test_case "register same session same alias idempotent" `Quick

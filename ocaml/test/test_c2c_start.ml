@@ -1656,6 +1656,40 @@ let test_stop_instance_stops_authoritative_sidecar_without_pidfile () =
                  (C2c_codex_daemon_sidecar.leases_for_session ~owners_dir
                     ~broker_session_id:name))))
 
+let test_stop_refuses_replacement_generation_owning_instance_lock () =
+  let name = unique_instance_name "stop-replacement-lock" in
+  with_instance_dir name @@ fun _ ->
+  let ready_r, ready_w = Unix.pipe () in
+  let release_r, release_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close ready_r;
+      Unix.close release_w;
+      (try
+         ignore (C2c_start.acquire_instance_lock_for_daemon_attach ~name);
+         ignore (Unix.write_substring ready_w "r" 0 1);
+         let byte = Bytes.create 1 in
+         ignore (Unix.read release_r byte 0 1);
+         exit 0
+       with _ -> exit 2)
+  | child_pid ->
+      Unix.close ready_w;
+      Unix.close release_r;
+      let byte = Bytes.create 1 in
+      check int "replacement owns stable lock" 1 (Unix.read ready_r byte 0 1);
+      (match C2c_start.stop_instance name with
+       | C2c_start.Stop_failed reason ->
+           check bool "stop reports replacement ownership" true
+             (string_contains reason "replacement")
+       | C2c_start.Stop_stopped | C2c_start.Stop_not_running ->
+           fail "stop must not clean through a replacement owner"
+       | C2c_start.Stop_refused_foreign_pid _ ->
+           fail "stop must not classify replacement ownership as foreign pid");
+      ignore (Unix.write_substring release_w "x" 0 1);
+      ignore (Unix.waitpid [] child_pid);
+      Unix.close ready_r;
+      Unix.close release_w
+
 let test_codex_frontend_teardown_expectation_fails_closed () =
   let expect_unknown label name =
     match C2c_start.codex_frontend_teardown_expected name with
@@ -5763,7 +5797,7 @@ let test_register_managed_agy_session_persists_row () =
   let cwd = "/proj/agy" in
   (match
      C2c_start.register_managed_agy_session ~broker_root ~name ~alias:name
-       ~pid:(Unix.getpid ()) ~cwd
+       ~pid:(Unix.getpid ()) ~cwd ()
    with
    | Ok () -> ()
    | Error e -> fail (Printf.sprintf "registration failed: %s" e));
@@ -5783,7 +5817,7 @@ let test_register_managed_agy_alias_override () =
   let name = "zz-agy-name" and alias = "zz-agy-alias" in
   (match
      C2c_start.register_managed_agy_session ~broker_root ~name ~alias
-       ~pid:(Unix.getpid ()) ~cwd:"/proj/agy"
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/agy" ()
    with
    | Ok () -> ()
    | Error e -> fail (Printf.sprintf "registration failed: %s" e));
@@ -5794,6 +5828,55 @@ let test_register_managed_agy_alias_override () =
   in
   check bool "alias override is registered" true (List.mem alias aliases);
   check bool "instance name is not also registered" false (List.mem name aliases)
+
+let test_managed_alias_provenance_covers_all_registration_paths () =
+  let managed_paths =
+    [ ("kimi", fun ~broker_root ~name ~alias ~auto ->
+          C2c_start.register_managed_kimi_session ~broker_root ~name ~alias
+            ~pid:(Unix.getpid ()) ~cwd:"/proj" ~alias_from_auto_gen:auto ())
+    ; ("agy", fun ~broker_root ~name ~alias ~auto ->
+          C2c_start.register_managed_agy_session ~broker_root ~name ~alias
+            ~pid:(Unix.getpid ()) ~cwd:"/proj" ~alias_from_auto_gen:auto ())
+    ; ("muse", fun ~broker_root ~name ~alias ~auto ->
+          C2c_start.register_managed_muse_session ~broker_root ~name ~alias
+            ~pid:(Unix.getpid ()) ~cwd:"/proj" ~alias_from_auto_gen:auto ())
+    ]
+  in
+  List.iter
+    (fun (client, register) ->
+      let alias = client ^ "-generated" in
+      with_temp_dir @@ fun dir ->
+      let broker_root = Filename.concat dir "auto" in
+      Unix.mkdir broker_root 0o755;
+      (match register ~broker_root ~name:(client ^ "-auto") ~alias ~auto:true with
+       | Ok () -> ()
+       | Error reason -> failf "%s auto-generated alias rejected: %s" client reason);
+      with_temp_dir @@ fun dir ->
+      let broker_root = Filename.concat dir "explicit" in
+      Unix.mkdir broker_root 0o755;
+      (match register ~broker_root ~name:(client ^ "-explicit") ~alias ~auto:false with
+       | Ok () -> failf "%s explicit reserved-prefix alias was accepted" client
+       | Error _ -> ()))
+    managed_paths;
+  List.iter
+    (fun client_type ->
+      let alias = client_type ^ "-generated" in
+      with_temp_dir @@ fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      C2c_mcp.Broker.register broker ~session_id:(client_type ^ "-auto") ~alias
+        ~pid:(Some (Unix.getpid ()))
+        ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+        ~client_type:(Some client_type) ~from_auto_gen:true ();
+      with_temp_dir @@ fun dir ->
+      let broker = C2c_mcp.Broker.create ~root:dir in
+      (try
+         C2c_mcp.Broker.register broker ~session_id:(client_type ^ "-explicit")
+           ~alias ~pid:(Some (Unix.getpid ()))
+           ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+           ~client_type:(Some client_type) ~from_auto_gen:false ();
+         failf "%s explicit reserved-prefix alias was accepted" client_type
+       with Invalid_argument _ -> ()))
+    [ "codex-headless"; "codex-app-server" ]
 
 let with_live_broker_owner ~broker_root ~session_id ~alias f =
   let ready_r, ready_w = Unix.pipe () in
@@ -5838,7 +5921,7 @@ let test_managed_registration_exact_alias_preserves_metadata () =
     ~registered_by:(Some "legacy-hook") ~cwd:(Some "/old/cwd") ();
   (match
      C2c_start.register_managed_agy_session ~broker_root ~name:"managed-exact"
-       ~alias:"exact-alias" ~pid:(Unix.getpid ()) ~cwd:"/new/cwd"
+       ~alias:"exact-alias" ~pid:(Unix.getpid ()) ~cwd:"/new/cwd" ()
    with
    | Ok () -> ()
    | Error e -> fail (Printf.sprintf "exact managed registration failed: %s" e));
@@ -5858,7 +5941,7 @@ let test_managed_registration_case_only_collision_fails_closed () =
     ~alias:"Case-Only" (fun _ ->
       match
         C2c_start.register_managed_agy_session ~broker_root ~name:"new-owner"
-          ~alias:"case-only" ~pid:(Unix.getpid ()) ~cwd:dir
+          ~alias:"case-only" ~pid:(Unix.getpid ()) ~cwd:dir ()
       with
       | Ok () -> fail "case-only live collision must be rejected"
       | Error _ -> ())
@@ -5871,7 +5954,7 @@ let test_managed_registration_live_owner_fails_closed () =
     ~alias:"live-alias" (fun _ ->
       match
         C2c_start.register_managed_agy_session ~broker_root ~name:"new-owner"
-          ~alias:"live-alias" ~pid:(Unix.getpid ()) ~cwd:dir
+          ~alias:"live-alias" ~pid:(Unix.getpid ()) ~cwd:dir ()
       with
       | Ok () -> fail "live alias owner must be rejected"
       | Error _ -> ())
@@ -6035,7 +6118,7 @@ let test_register_managed_muse_session_persists_row () =
   let cwd = "/proj/muse" in
   (match
      C2c_start.register_managed_muse_session ~broker_root ~name ~alias:name
-       ~pid:(Unix.getpid ()) ~cwd
+       ~pid:(Unix.getpid ()) ~cwd ()
    with
    | Ok () -> ()
    | Error e -> fail (Printf.sprintf "registration failed: %s" e));
@@ -6062,7 +6145,7 @@ let test_managed_muse_registration_clears_prior_teardown_evidence () =
   check bool "prior completion evidence seeded" true (Sys.file_exists evidence);
   (match
      C2c_start.register_managed_muse_session ~broker_root ~name ~alias:name
-       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse"
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse" ()
    with
    | Ok () -> ()
    | Error e -> fail (Printf.sprintf "registration failed: %s" e));
@@ -6085,7 +6168,7 @@ let test_managed_muse_registration_failure_preserves_prior_teardown_evidence () 
   write_file (Filename.concat broker_root "registry.json") "{ malformed\n";
   (match
      C2c_start.register_managed_muse_session ~broker_root ~name ~alias:name
-       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse"
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse" ()
    with
    | Error _ -> ()
    | Ok () -> fail "malformed registry must reject Muse registration");
@@ -6099,7 +6182,7 @@ let test_register_managed_muse_alias_override () =
   let name = "zz-muse-name" and alias = "zz-muse-alias" in
   (match
      C2c_start.register_managed_muse_session ~broker_root ~name ~alias
-       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse"
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse" ()
    with
    | Ok () -> ()
    | Error e -> fail (Printf.sprintf "registration failed: %s" e));
@@ -6978,7 +7061,7 @@ let test_eager_registration_preserves_malformed_registry () =
   write_file path original;
   (match
      C2c_start.register_managed_agy_session ~broker_root ~name:"sid"
-       ~alias:"alias" ~pid:(Unix.getpid ()) ~cwd:dir
+       ~alias:"alias" ~pid:(Unix.getpid ()) ~cwd:dir ()
    with
    | Error _ -> ()
    | Ok () -> fail "malformed registry must reject eager registration");
@@ -6993,7 +7076,7 @@ let test_eager_registration_preserves_semantically_malformed_registry () =
   write_file path original;
   (match
      C2c_start.register_managed_agy_session ~broker_root ~name:"sid"
-       ~alias:"target" ~pid:(Unix.getpid ()) ~cwd:dir
+       ~alias:"target" ~pid:(Unix.getpid ()) ~cwd:dir ()
    with
    | Error _ -> ()
    | Ok () -> fail "semantic malformed registry must reject eager registration");
@@ -7011,7 +7094,7 @@ let test_eager_registration_preserves_lock_failure () =
   Unix.mkdir (Filename.concat broker_root "registry.json.lock") 0o700;
   (match
      C2c_start.register_managed_agy_session ~broker_root ~name:"sid"
-       ~alias:"alias" ~pid:(Unix.getpid ()) ~cwd:dir
+       ~alias:"alias" ~pid:(Unix.getpid ()) ~cwd:dir ()
    with
    | Error _ -> ()
    | Ok () -> fail "registry lock failure must reject eager registration");
@@ -7253,6 +7336,8 @@ let () =
             `Quick, test_managed_registration_live_owner_fails_closed )
         ; ( "registration_failure_message",
             `Quick, test_managed_agy_registration_failure_message )
+        ; ( "managed_alias_provenance_covers_all_registration_paths",
+            `Quick, test_managed_alias_provenance_covers_all_registration_paths )
         ] )
     ; ( "muse_adapter_b358",
         [ ( "is_muse_resume_ref",
@@ -7304,6 +7389,8 @@ let () =
             `Quick, test_same_instance_lock_serializes_concurrent_attach )
         ; ( "daemon_attach_recovers_crashed_outer_generation",
             `Quick, test_daemon_attach_recover_removes_crashed_outer_generation )
+        ; ( "stop_refuses_replacement_generation_owning_instance_lock",
+            `Quick, test_stop_refuses_replacement_generation_owning_instance_lock )
         ] )
     ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",

@@ -105,6 +105,16 @@ val remove_teardown_receipts_after_registration :
 (** Remove frontend recovery receipts only after registry ownership cleanup has
     succeeded. A failed registry write leaves both receipts available for retry. *)
 
+val register_managed_app_server_identity :
+  broker_root:string ->
+  session_id:string ->
+  alias:string ->
+  pid:int ->
+  ?alias_from_auto_gen:bool ->
+  unit -> unit
+(** Publish or refresh the authoritative app-server registration while
+    retaining existing registration metadata owned by the same session. *)
+
 val daemon_attach_generation_matches :
   expected_pid:int -> expected_start_time:int ->
   current_pid:int -> current_start_time:int -> bool
@@ -472,6 +482,7 @@ val run :
   extra_args:string list ->
   ?model_override:string ->
   ?backend:C2c_codex_app_server.backend ->
+  ?alias_from_auto_gen:bool ->
   fallback:(extra_args:string list -> unit -> int) ->
   unit ->
   int

@@ -1831,7 +1831,8 @@ let log_deliver_pass ~(instance_dir : string) (po : C2c_codex_autoturn.pass_outc
    after authenticated thread discovery and durable binding, then deregistered
    in the loop's finally + the signal path. *)
 let register_managed_app_server_identity ~(broker_root : string)
-    ~(session_id : string) ~(alias : string) ~(pid : int) : unit =
+    ~(session_id : string) ~(alias : string) ~(pid : int)
+    ?(alias_from_auto_gen = false) () : unit =
   (* Publish only after the authenticated frontend thread and durable mapping
      have been proven. The remote frontend's hook and the delivery loop then
      share this exact row (B167). *)
@@ -1839,7 +1840,8 @@ let register_managed_app_server_identity ~(broker_root : string)
   C2c_mcp.Broker.register broker ~session_id ~alias
     ~pid:(Some pid)
     ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time pid)
-    ~client_type:(Some "codex-app-server") ~from_auto_gen:true ();
+    ~client_type:(Some "codex-app-server")
+    ~from_auto_gen:alias_from_auto_gen ~preserve_existing_metadata:true ();
   (* A new launcher generation must not inherit completion proof from an older
      generation with the same sticky session id. Invalidate it only after the
      broker accepted the new owner row. *)
@@ -1847,8 +1849,8 @@ let register_managed_app_server_identity ~(broker_root : string)
 
 let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
     ~(session_id : string) ~(alias : string) ~(instance_dir : string)
-    ~(cleanup_failed : bool ref)
-    : C2c_codex_deliver_loop.outcome =
+    ~(cleanup_failed : bool ref) ?(alias_from_auto_gen = false)
+    () : C2c_codex_deliver_loop.outcome =
   (* Unlock the real WS clients in THIS launcher process only (the frontend was
      already spawned with its env captured, so this does not leak into it). *)
   Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
@@ -1880,7 +1882,7 @@ let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
        instance [name] here made the advertised alias unreachable to the
        frontend hook, which then minted a second identity (B167). *)
     register_managed_app_server_identity ~broker_root ~session_id ~alias
-      ~pid:my_pid;
+      ~pid:my_pid ~alias_from_auto_gen ();
     (* Swarm onboarding parity: join the social room like other managed sessions. *)
     (let rooms =
        C2c_swarm_config.swarm_config_social_room ()
@@ -2169,7 +2171,7 @@ let daemon_attach_generation_matches ~expected_pid ~expected_start_time
   && current_pid = expected_pid && current_start_time = expected_start_time
 
 let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
-    ~model_override ~instance_dir:_ () : int =
+    ~model_override ?(alias_from_auto_gen = false) ~instance_dir:_ () : int =
   let lifecycle_lock =
     C2c_start.acquire_instance_lock_for_daemon_attach ~name
   in
@@ -2553,7 +2555,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                       try
                         register_managed_app_server_identity
                           ~broker_root:(try C2c_start.broker_root () with _ -> "")
-                          ~session_id ~alias ~pid:outer_pid;
+                          ~session_id ~alias ~pid:outer_pid ~alias_from_auto_gen ();
                         registration_published := true;
                         true
                       with e ->
@@ -2573,6 +2575,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                           C2c_codex_daemon_sidecar.arm ~instance_name:name ~thread_id:tid ~alias
                             ~broker_session_id:session_id
                             ~broker_root:(try C2c_start.broker_root () with _ -> "")
+                            ~alias_from_auto_gen
                             ()
                         with
                         | C2c_codex_daemon_sidecar.Armed { child_pid = _ } ->
@@ -2659,6 +2662,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(yolo : bool) ~(extra_args : string list)
     ?(model_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
+    ?(alias_from_auto_gen = false)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
   let (name, session_id, alias, thread) =
     match resolve_identity_internal ~mode ~alias_override ~thread_id
@@ -2729,7 +2733,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
      private-server path so hermetic tests do not touch the live daemon. *)
   if daemon_selected then
     run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
-      ~model_override ~instance_dir ()
+      ~model_override ~alias_from_auto_gen ~instance_dir ()
   else begin
   (match discarded_thread with
    | Some dead_thread ->
@@ -2900,7 +2904,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
       in
       let final =
         run_delivery_loop ~handle ~name ~session_id ~alias ~instance_dir
-          ~cleanup_failed:delivery_cleanup_failed
+          ~cleanup_failed:delivery_cleanup_failed ~alias_from_auto_gen ()
       in
       C2c_codex_app_server.stop handle;
       if not !delivery_cleanup_failed && remove_outer_records () then ()
@@ -2988,6 +2992,7 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     ?(thread_id : string option) ~(yolo : bool)
     ~(extra_args : string list) ?(model_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
+    ?(alias_from_auto_gen = false)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
   (* B136: hook fallback still needs this inherited non-secret marker so its
      hooks suppress the vanilla app-server tip.  The app-server path uses the
@@ -3051,4 +3056,4 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     end
     else
       run_app_server ~mode ~alias_override ~thread_id ~yolo ~extra_args
-        ?model_override ?backend ~fallback ()
+        ?model_override ?backend ~alias_from_auto_gen ~fallback ()

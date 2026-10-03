@@ -551,6 +551,30 @@ let with_tmp_dir f =
     ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
     (fun () -> f dir)
 
+let test_app_server_registration_preserves_existing_metadata () =
+  with_tmp_dir (fun broker_root ->
+      let broker = B.create ~root:broker_root in
+      let pid = Unix.getpid () in
+      let pid_start_time = B.read_pid_start_time pid in
+      B.register broker ~session_id:"app-server-refresh" ~alias:"refresh-app"
+        ~pid:(Some pid) ~pid_start_time ~client_type:(Some "legacy")
+        ~metadata_opt_out:true ~registered_by:(Some "legacy-owner")
+        ~cwd:(Some "/old") ();
+      S.register_managed_app_server_identity ~broker_root
+        ~session_id:"app-server-refresh" ~alias:"refresh-app" ~pid
+        ~alias_from_auto_gen:false ();
+      match B.list_registrations broker with
+      | [ row ] ->
+          Alcotest.(check bool) "metadata opt-out survives app-server refresh"
+            true row.metadata_opt_out;
+          Alcotest.(check (option string)) "registration owner survives"
+            (Some "legacy-owner") row.registered_by;
+          Alcotest.(check (option string)) "cwd survives"
+            (Some "/old") row.cwd;
+          Alcotest.(check (option string)) "client identity updates"
+            (Some "codex-app-server") row.client_type
+      | rows -> Alcotest.failf "expected one app-server row, got %d" (List.length rows))
+
 let test_daemon_cleanup_retains_receipts_on_registry_failure () =
   with_tmp_dir (fun dir ->
       let teardown_record = Filename.concat dir "frontend-teardown.json" in
@@ -2501,6 +2525,8 @@ let () =
     ; ( "lifecycle-glue",
         [ test_case "default path does not publish before thread proof"
             `Quick test_glue_does_not_publish_before_thread_proof
+        ; test_case "app-server registration preserves metadata on refresh"
+            `Quick test_app_server_registration_preserves_existing_metadata
         ; test_case "no thread proof removes outer records" `Quick
             test_no_thread_proof_does_not_retain_outer_records
         ; test_case "private mapping failure retains lifecycle records" `Quick

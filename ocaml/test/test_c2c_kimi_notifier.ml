@@ -1654,7 +1654,7 @@ let test_i40_managed_start_registers_instance_name_as_alias () =
        it must be a LIVE pid, exactly as at launch time. *)
     (match
        C2c_start.register_managed_kimi_session ~broker_root ~name ~alias:name
-         ~pid:(Unix.getpid ()) ~cwd
+         ~pid:(Unix.getpid ()) ~cwd ()
      with
      | Ok () -> ()
      | Error e -> Alcotest.failf "registration failed: %s" e);
@@ -1689,7 +1689,7 @@ let test_i40_alias_override_wins_over_instance_name () =
     let name = "zz-i40-name" and alias = "zz-i40-alias" in
     (match
        C2c_start.register_managed_kimi_session ~broker_root ~name ~alias
-         ~pid:(Unix.getpid ()) ~cwd:"/proj/i40"
+         ~pid:(Unix.getpid ()) ~cwd:"/proj/i40" ()
      with
      | Ok () -> ()
      | Error e -> Alcotest.failf "registration failed: %s" e);
@@ -1733,7 +1733,7 @@ let test_i40_registration_failure_is_loud_and_actionable () =
         match
           C2c_start.register_managed_kimi_session ~broker_root
             ~name:"zz-i40-fail" ~alias:"zz-i40-fail" ~pid:(Unix.getpid ())
-            ~cwd:"/proj/i40"
+            ~cwd:"/proj/i40" ()
         with
         | Ok () ->
             Alcotest.fail

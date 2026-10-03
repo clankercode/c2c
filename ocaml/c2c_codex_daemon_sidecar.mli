@@ -118,6 +118,7 @@ val arm :
   ?owners_dir:string ->
   ?socket_path:string ->
   ?arm_wait_s:float ->
+  ?alias_from_auto_gen:bool ->
   unit ->
   arm_result
 (** Fork+setsid a sidecar. The child waits until [thread_id] appears in
@@ -125,6 +126,17 @@ val arm :
     loaded thread) and drives {!C2c_codex_deliver_loop} pinned to it.
     Fail-closed if a live other owner holds the thread or the hint never
     loads. *)
+
+val refresh_managed_registration :
+  broker_root:string ->
+  broker_session_id:string ->
+  alias:string ->
+  pid:int ->
+  pid_start_time:int option ->
+  ?alias_from_auto_gen:bool ->
+  unit -> unit
+(** Refresh the sidecar's authoritative broker registration while retaining
+    existing registration metadata owned by the same session. *)
 
 val arm_wait_budget_s : float
 (** Default parent-side arm wait. It leaves headroom under the Codex hook's

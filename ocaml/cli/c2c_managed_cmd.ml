@@ -762,6 +762,7 @@ let start_cmd =
             ~alias_override:codex_alias_override
             ~thread_id:thread_id_flag ~yolo:yolo_flag
             ?model_override ~extra_args:extra_argv
+            ~alias_from_auto_gen
             ~fallback:cmd_start_with ())
   else begin
     ignore yolo_flag; ignore thread_id_flag;

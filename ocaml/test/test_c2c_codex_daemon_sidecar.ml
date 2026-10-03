@@ -530,6 +530,30 @@ let test_registration_readback_is_required_for_arm_readiness () =
     (S.registration_is_live ~broker_root ~broker_session_id:"sid"
        ~alias:"alias" ~pid ~pid_start_time:start_time)
 
+let test_refresh_registration_preserves_existing_metadata () =
+  with_temp @@ fun root ->
+  let broker_root = root // "broker" in
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  let pid = Unix.getpid () in
+  let pid_start_time = C2c_mcp.Broker.read_pid_start_time pid in
+  C2c_mcp.Broker.register broker ~session_id:"sidecar-refresh"
+    ~alias:"refresh-sidecar" ~pid:(Some pid) ~pid_start_time
+    ~client_type:(Some "legacy") ~metadata_opt_out:true
+    ~registered_by:(Some "legacy-owner") ~cwd:(Some "/old") ();
+  S.refresh_managed_registration ~broker_root
+    ~broker_session_id:"sidecar-refresh" ~alias:"refresh-sidecar" ~pid
+    ~pid_start_time ~alias_from_auto_gen:false ();
+  match C2c_mcp.Broker.list_registrations broker with
+  | [ row ] ->
+      check bool "metadata opt-out survives sidecar refresh" true
+        row.metadata_opt_out;
+      check (option string) "registration owner survives"
+        (Some "legacy-owner") row.registered_by;
+      check (option string) "cwd survives" (Some "/old") row.cwd;
+      check (option string) "client identity updates"
+        (Some "codex-app-server") row.client_type
+  | rows -> failf "expected one sidecar row, got %d" (List.length rows)
+
 let test_pidfd_signal_is_owner_bound () =
   if not (C2c_pid_identity.pidfd_supported ()) then ()
   else
@@ -656,6 +680,8 @@ let () =
             test_concurrent_claim_has_one_winner
         ; test_case "registration readback gates arm readiness" `Quick
             test_registration_readback_is_required_for_arm_readiness
+        ; test_case "refresh preserves existing metadata" `Quick
+            test_refresh_registration_preserves_existing_metadata
         ; test_case "pidfd signalling is owner bound" `Quick
             test_pidfd_signal_is_owner_bound
         ; test_case "claim uses stable lock" `Quick test_claim_creates_stable_lock_file
