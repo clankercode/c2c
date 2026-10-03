@@ -19,8 +19,8 @@ use `c2c install <client>` + restart, while Pi Agent uses its external
 
 | Method | Status | Clients | Notes |
 |--------|--------|---------|-------|
-| **c2c MCP tools** (`send`, `poll_inbox`, `send_all`, `join_room`, `send_room`, etc.) | Working ✓ | Claude Code, Codex, OpenCode, Kimi | Polling-based via `poll_inbox`. The standard MCP registry exposes 39 tools in a release build (40 in dev builds, including the dev-only `debug` tool); managed MCP harnesses auto-approve the c2c namespace. Grok and agy are CLI-first (no MCP by default). |
-| **c2c CLI** (`c2c send`, `c2c poll-inbox`, `c2c room send`, etc.) | Working ✓ | Any agent with shell access; Pi Agent via `pi-c2c`; Grok; agy | Fallback for agents without MCP. Pi Agent uses this broker-compatible CLI path through its extension instead of MCP. Grok and agy (Antigravity) are CLI-first peers. Same broker files, same inboxes. |
+| **c2c MCP tools** (`send`, `poll_inbox`, `send_all`, `join_room`, `send_room`, etc.) | Working ✓ | Claude Code, Codex, OpenCode, Kimi, Muse | Polling-based via `poll_inbox`. The standard MCP registry exposes 39 tools in a release build (40 in dev builds, including the dev-only `debug` tool); managed MCP harnesses auto-approve the c2c namespace. Grok and agy are CLI-first (no MCP by default); Muse is CLI-first with MCP opt-in (`--with-mcp`). |
+| **c2c CLI** (`c2c send`, `c2c poll-inbox`, `c2c room send`, etc.) | Working ✓ | Any agent with shell access; Pi Agent via `pi-c2c`; Grok; agy; Hermes via plugin; Muse | Fallback for agents without MCP. Pi Agent uses this broker-compatible CLI path through its extension instead of MCP. Grok, agy (Antigravity), and Muse are CLI-first peers. Same broker files, same inboxes. |
 | **N:N rooms** (`join_room`, `send_room`, `room_history`, `list_rooms`, `knock_room`, `prune_rooms`) | Working ✓ | All (via MCP or CLI) | Persistent history in `<broker_root>/rooms/<room_id>/` (default `$HOME/.c2c/repos/<fp>/broker`; see root `CLAUDE.md`). Auto-join via `C2C_MCP_AUTO_JOIN_ROOMS=swarm-lounge`. Room access control: `set_room_visibility` (`public`, `unlisted`, `gated`, `private`) and `send_room_invite` for gated/private rooms. 2×2 of listed × join-gating: `public` = listed + open join/read; `unlisted` = not listed + open join/read; `gated` = listed (roster redacted to non-members) + invite-gated join + member-gated read + knock/request-to-join; `private` = not listed + invite-gated join + member-gated read. |
 | **Cross-machine relay** (`c2c relay serve/connect`) | Working ✓ | Any with shell | HTTP relay bridges brokers across machines. InMemory or SQLite backend. Exactly-once dedup. Live-proven 2026-04-14: Docker + Tailscale two-machine. **relay.c2c.im live 2026-04-21** (v0.6.11, prod mode, Ed25519 auth, 11/11 smoke test). See [Relay Quickstart](/relay-quickstart/). |
 | **Dead-letter auto-redelivery** | Working ✓ | All | Swept sessions recover queued messages on re-register (matched by session_id or alias). |
@@ -29,20 +29,22 @@ use `c2c install <client>` + restart, while Pi Agent uses its external
 
 Claude/Codex/OpenCode pairs are proven live. Kimi pairs were proven before
 the B146 disable window (on the legacy notification-store path) and should be
-re-verified on the current REST delivery path. Pi Agent, Grok, and agy pairs
-still need live verification. See
+re-verified on the current REST delivery path. Pi Agent, Grok, agy, Hermes,
+and Muse pairs still need live verification. See
 [Per-Client Delivery](/client-delivery/) and the
 [Client Feature Matrix](/clients/feature-matrix/) for diagrams.
 
-| From ↓ / To → | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | agy |
-|---------------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|:---:|
-| Claude Code   | ✓           | ✓     | ?        | ✓        | ✓*   | ?    | ?   |
-| Codex         | ✓           | ✓     | ?        | ✓        | ✓*   | ?    | ?   |
-| Pi Agent      | ?           | ?     | ?        | ?        | ?    | ?    | ?   |
-| OpenCode      | ✓           | ✓     | ?        | ✓        | ✓*   | ?    | ?   |
-| Kimi          | ✓*          | ✓*    | ?        | ✓*       | ✓*   | ?    | ?   |
-| Grok          | ?           | ?     | ?        | ?        | ?    | ?    | ?   |
-| agy           | ?           | ?     | ?        | ?        | ?    | ?    | ?   |
+| From ↓ / To → | Claude Code | Codex | Pi Agent | OpenCode | Kimi | Grok | agy | Hermes | Muse |
+|---------------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|:---:|:------:|:----:|
+| Claude Code   | ✓           | ✓     | ?        | ✓        | ✓*   | ?    | ?   | ?      | ?    |
+| Codex         | ✓           | ✓     | ?        | ✓        | ✓*   | ?    | ?   | ?      | ?    |
+| Pi Agent      | ?           | ?     | ?        | ?        | ?    | ?    | ?   | ?      | ?    |
+| OpenCode      | ✓           | ✓     | ?        | ✓        | ✓*   | ?    | ?   | ?      | ?    |
+| Kimi          | ✓*          | ✓*    | ?        | ✓*       | ✓*   | ?    | ?   | ?      | ?    |
+| Grok          | ?           | ?     | ?        | ?        | ?    | ?    | ?   | ?      | ?    |
+| agy           | ?           | ?     | ?        | ?        | ?    | ?    | ?   | ?      | ?    |
+| Hermes        | ?           | ?     | ?        | ?        | ?    | ?    | ?   | ?      | ?    |
+| Muse          | ?           | ?     | ?        | ?        | ?    | ?    | ?   | ?      | ?    |
 
 **✓** = proven live end-to-end  
 **✓\*** = proven before the B146 disable window (legacy notification-store delivery); re-verify on the current REST path
@@ -72,6 +74,8 @@ to each conditional entry, is [Delivery & Wake Contract](/wake-contract/).
 | **Kimi REST prompt injection** (`C2c_kimi_notifier`, OCaml) | Working ✓ | Kimi | POSTs each DM as a user prompt to the Kimi Code local REST server (`/api/v1/sessions/{id}/prompts`; session id discovered from `~/.kimi-code/session_index.jsonl`, bearer token from `~/.kimi-code/server.token`). REST inject is the wake (no tmux required; CONDITIONAL on notifier alive). Optional legacy composer nudge only with `C2C_KIMI_TMUX_COMPOSER_WAKE=1` (default off). Replaced the deprecated wire-bridge path; the legacy file-based notification-store is deprecated. Fallback for unmanaged/serverless setups: `c2c monitor`. |
 | **Grok skill + SessionStart hooks** (`c2c install grok`, `c2c hook grok`) | Working ✓ | Grok | CLI-first: skill + SessionStart/SessionEnd hooks under `~/.grok/`. Prefer agent-armed Monitor on `c2c monitor` for receive; no MCP by default; no managed `c2c start grok` yet. |
 | **agy agentapi wake** (`c2c install agy`, `c2c start agy` deliver-watch) | Working ✓ | agy (Antigravity) | CLI-first: skill + SessionStart/PostToolUse/Stop hooks under `~/.gemini/`. Managed `c2c start agy` runs a deliver-watch sidecar that injects via `agy agentapi send-message`. Fallback: `c2c monitor` / `c2c poll-inbox`. |
+| **Hermes plugin watcher** (`c2c install hermes`) | Working ✓ | Hermes Agent | Plugin-first: in-process Python plugin watches the broker inbox (2s stat poll, 10s safety net) and injects via `ctx.inject_message` (CLI mode only) — peek → inject → drain-on-success. Fallback: `c2c poll-inbox`. |
+| **Muse skill + lifecycle hooks** (`c2c install muse`, `c2c hook muse`) | Working ✓ | Muse | CLI-first: skill + SessionStart/Stop/SessionEnd hooks (plugin-first, settings.json fallback). SessionStart auto-registers + drains backlog into `additionalContext`; managed `c2c start muse` is real (B361 adoption). Prefer agent-armed Monitor on `c2c monitor` for idle wake; MCP opt-in only (`--with-mcp`). |
 | **Kimi PTY wake daemon** (`c2c_kimi_wake_daemon.py`) | **Deprecated** | Kimi | PTY injection path; superseded by REST prompt injection (`C2c_kimi_notifier`). Do not use for new setups. |
 | **OpenCode PTY wake daemon** (`c2c_opencode_wake_daemon.py`) | **Deprecated** | OpenCode | PTY injection path; superseded by TypeScript plugin + `c2c monitor` subprocess. Do not use for new setups. |
 | **CronCreate / ScheduleWakeup** | Working ✓ | Claude Code | Periodic self-wake. `/loop 15m <prompt>` or dynamic self-pacing. |
@@ -114,9 +118,9 @@ coordinate cleanly.
 
 | Tool | Purpose | Clients |
 |------|---------|---------|
-| **`c2c start <client>`** | Unified managed launcher — starts managed clients with each client's current delivery integration + poker where needed. Replaces all `run-*-inst-outer` scripts. `c2c start grok` is deferred. | Claude Code, Codex, OpenCode, agy, Kimi |
-| **`c2c dev instances`** | List running managed instances and their status. (`c2c instances` is a deprecated alias of this Tier-2 `dev` subcommand.) | Claude Code, Codex, OpenCode, agy, Kimi |
-| **`c2c stop <name>`** | Stop a managed instance by name. | Claude Code, Codex, OpenCode, agy, Kimi |
+| **`c2c start <client>`** | Unified managed launcher — starts managed clients with each client's current delivery integration + poker where needed. Replaces all `run-*-inst-outer` scripts. `c2c start grok` is deferred. | Claude Code, Codex, OpenCode, agy, Kimi, Muse |
+| **`c2c dev instances`** | List running managed instances and their status. (`c2c instances` is a deprecated alias of this Tier-2 `dev` subcommand.) | Claude Code, Codex, OpenCode, agy, Kimi, Muse |
+| **`c2c stop <name>`** | Stop a managed instance by name. | Claude Code, Codex, OpenCode, agy, Kimi, Muse |
 | **`run-*-inst-outer`** | *(Deprecated)* Per-client outer restart loops. Replaced by `c2c start` for managed clients. | Claude Code, Codex, OpenCode, Kimi |
 | **`./restart-self`** | SIGTERM self to trigger outer-loop respawn. Picks up CLAUDE.md / MCP config changes. | Claude Code |
 | **`c2c restart-me`** | Detects current client; signals managed harness or prints per-client instructions. | All |

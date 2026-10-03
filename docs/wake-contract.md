@@ -67,6 +67,7 @@ reaches an agent sitting completely idle.**
 | **agy** (Antigravity) | **CONDITIONAL** | Needs the deliver-watch sidecar alive (managed `c2c start agy`) and `agy-env.json` with a **TUI-owned** conversation (CLI-log discovery; managed start bootstraps via operator kickoff — #78 fixed, never headless mint). `agy agentapi send-message` injects. Proven live 2026-07-20/21. |
 | **Claude Code** | **CONDITIONAL** | Idle wake only while a live **`c2c monitor`** (or equivalent) is armed — typically by the agent. Without it: **NONE** at true idle (PostToolUse / Stop / SessionStart are activity-triggered only). Mail is still durable. |
 | **Grok** | **CONDITIONAL** | Idle wake only while a live **`c2c monitor`** is armed. SessionStart + skill *instruct* the agent to arm one — that is a model decision, so c2c cannot guarantee it. Without Monitor: **NONE** at true idle. |
+| **Muse** | **CONDITIONAL** | Idle wake only while a live **`c2c monitor`** is armed. SessionStart adopts the managed row and drains it at first turn submit (B361) — but SessionStart is lazy (first turn submit) and resume-silent, and Stop/PostToolUse hooks are touch-only activity anchors. Without Monitor: **NONE** at true idle. No out-of-process sender exists in muse 1.4.2 (B356 parked). |
 | **Codex** (vanilla hooks) | **CONDITIONAL** (weak) | Hooks alone: **NONE** at true idle. Idle wake if the agent arms **`c2c monitor`**, or (legacy) `hooks+wake` tmux/herdr nudge when a wake target is registered. Prefer managed app-server for a real guarantee. |
 
 **GUARANTEED** = c2c pushes it, no model decision, works at full idle.
@@ -77,7 +78,7 @@ as best-effort and diagnose with `c2c doctor hooks` / a live monitor process.
 = c2c cannot wake this client from idle. Mail is still durable and is seen at the
 agent's next turn.
 
-### Claude Code and Grok: CONDITIONAL on Monitor, never GUARANTEED from c2c alone
+### Claude Code, Grok, and Muse: CONDITIONAL on Monitor, never GUARANTEED from c2c alone
 
 These clients are **first-class** for c2c (install, send/receive, rooms, durability).
 They appear in the table as **CONDITIONAL**, not missing — the condition is an
@@ -85,14 +86,15 @@ agent-armed (or operator-armed) **`c2c monitor`**. That is the same *tier label*
 as Kimi/agy (helper must be alive), with a different helper: Monitor instead of
 REST/agentapi.
 
-They cannot be **GUARANTEED** from inside c2c: neither exposes a local control
+They cannot be **GUARANTEED** from inside c2c: none exposes a usable local control
 surface that accepts a synthetic user turn on a running session — the shape Kimi
 has (REST `/api/v1/sessions/{id}/prompts`), Codex has (the app-server), OpenCode
-has (the plugin API), and Pi has (`pi.sendMessage`). Paths that exist but are not
-guarantees:
+has (the plugin API), and Pi has (`pi.sendMessage`). Muse's `session-message`
+is experiment-gated and refused out-of-process send in 1.4.2 (B356 parked), so
+it is not a wake path either. Paths that exist but are not guarantees:
 
 - `c2c monitor` must be armed *by the agent or operator* — not auto-started by
-  `c2c install claude` / `c2c install grok`.
+  `c2c install claude` / `c2c install grok` / `c2c install muse`.
 - The experimental MCP notification channel sits behind an approval-gated
   client capability that standard builds do not declare.
 - PTY / tmux keystroke injection is deprecated and too fragile to found a
@@ -104,7 +106,7 @@ fires on external file change and can resume an idle session). Tracked in
 [#37](https://github.com/clankercode/c2c/issues/37); the machine-wide
 delivery-service design is [#35](https://github.com/clankercode/c2c/issues/35).
 
-**Operator advice for Claude Code and Grok:** treat wake as CONDITIONAL — arm a
+**Operator advice for Claude Code, Grok, and Muse:** treat wake as CONDITIONAL — arm a
 Monitor (or keep one armed in the session template):
 
 ```text
@@ -115,7 +117,7 @@ Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: 
 
 `c2c install <client>` and `c2c start <client>` print a **manual-inbox warning**
 when idle wake is NONE or when install alone is not enough (vanilla Codex,
-unmanaged Kimi/agy, Claude, Grok). Prefer managed `c2c start` where it provides
+unmanaged Kimi/agy, Claude, Grok, Muse). Prefer managed `c2c start` where it provides
 arrival-time delivery (Codex app-server, Kimi notifier, agy agentapi). The copy
 lives in `C2c_wake_guidance` so install, start, and this page stay aligned.
 

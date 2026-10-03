@@ -98,7 +98,7 @@ it, hooks are activity-triggered only — a message arriving after the session g
 idle sits durably until the next turn (**NONE** at true idle). Claude is a
 first-class c2c client; the limitation is idle wake from c2c alone, not
 participation. Full contract:
-[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-conditional-on-monitor-never-guaranteed-from-c2c-alone).
+[Delivery & Wake Contract](/wake-contract/#claude-code-grok-and-muse-conditional-on-monitor-never-guaranteed-from-c2c-alone).
 If messages only appear when you poll manually, reload plugins or restart after
 `c2c install claude`, and arm a Monitor for idle wake.
 
@@ -556,7 +556,7 @@ are lifecycle events, not arrival events; the skill only *instructs* the agent t
 arm a Monitor. Without Monitor: **NONE** at true idle. Grok is first-class for
 send/receive/rooms; idle wake is not GUARANTEED from c2c alone
 ([#37](https://github.com/clankercode/c2c/issues/37)). See
-[Delivery & Wake Contract](/wake-contract/#claude-code-and-grok-conditional-on-monitor-never-guaranteed-from-c2c-alone).
+[Delivery & Wake Contract](/wake-contract/#claude-code-grok-and-muse-conditional-on-monitor-never-guaranteed-from-c2c-alone).
 
 ## Antigravity (agy)
 
@@ -703,6 +703,94 @@ logs a warning naming the count, and the agent still gets it from
 message. Gateway delivery needs a separate path and is unimplemented. See
 [Delivery & Wake Contract](/wake-contract/#wake-status-by-client) and the
 [Hermes client page](/clients/hermes/).
+
+## Muse
+
+> **NEW client (2026-10-02, probed at muse 1.4.2).** Monitor-only wake —
+> no out-of-process sender exists. Cross-client DM parity has not been
+> verified live yet.
+
+`c2c install muse` writes:
+
+- `${XDG_CONFIG_HOME:-~/.config}/muse/skills/c2c/SKILL.md` — assembled Muse
+  skill (CLI-first cookbook). Identity-agnostic and byte-stable: muse
+  snapshots its skill catalogue at session startup, so anything
+  session-specific written here would be read by the *next* session.
+- `~/.c2c/clients/muse/plugin/.muse-plugin/plugin.json` — owned plugin
+  bundle source, installed via `muse plugins install` + `approve` when the
+  plugins gate is open in the running build. Any plugin-path failure falls
+  back to a `hooks` map merged into
+  `${XDG_CONFIG_HOME:-~/.config}/muse/settings.json` (foreign keys
+  preserved; never clobbers a corrupt file — fails closed instead).
+- Both transports wire the same three events — SessionStart, Stop (no
+  matcher: a matcher makes it unmatchable), SessionEnd — to
+  `c2c hook muse`. Install order is load-bearing: `approve` runs LAST,
+  because any settings.json write after approve resets plugin trust.
+
+**MCP is opt-in** (`--with-mcp` only): `mcpServers.c2c` stdio entry with
+`mode: "optional"` (a dead server cannot block startup), literal env only
+(no `${VAR}` expansion), `C2C_MCP_CLIENT_TYPE=muse` pinning, and
+`C2C_MCP_AUTO_DRAIN_CHANNEL=0` — but **no** static `C2C_MCP_SESSION_ID`
+(one file serves every session; the live id arrives via `MUSE_SESSION_ID`),
+no legacy `mcp_servers` key (the loader drops the whole member when both
+exist), and no tool-filter keys (`enabled_tools` / `disabled_tools` are
+schema-recognized but completely unenforced — a meta caller called a
+disabled-listed tool end-to-end, so blanket exposure of all tools is the
+only honest posture). Entries take effect on next launch only.
+
+**Hooks** (`c2c hook muse`, one command for every event; always exits 0 so
+a hook can never break a turn):
+
+- SessionStart is **lazy** (fires on first turn submit, not at TUI open)
+  and **resume-silent** (never fires on `resume`) — measured, not assumed.
+  It registers the firing `session_id` (`registered_by=muse-hook`,
+  `client_type=muse`), refreshes the skill on drift only, and drains the
+  backlog into `additionalContext` (proven accepted). A resumed session is
+  hook-invisible: no re-onboarding turn.
+- Stop (per turn) and PostToolUse (per tool call) are **touch-only
+  activity anchors** — never register, never drain. A touch for an unknown
+  sid is a registry no-op, which is also the subagent rule: subagent tool
+  calls arrive as PostToolUse under a *distinct* session id, so no
+  subagent row is ever created (live-proven: a Task subagent + 4 reminder
+  agents left zero phantom rows). SessionEnd deregisters hook-owned rows
+  only; Stop is never teardown.
+- **Managed adoption (B361):** muse scrubs hook env (no `C2C_*` even
+  though the TUI carries it), so SessionStart step 0 adopts the managed
+  row by normalized cwd + live (pid, pid_start_time) before minting, and
+  persists a payload-sid→managed-sid mapping
+  (`<broker>/muse-sid-mapping.json`) so mid-session events anchor the
+  managed row. SessionEnd removes only the mapping entry — adopted
+  managed-owned rows survive. Two managed instances in one directory bail
+  loudly rather than guess (kimi-#40 known limit).
+
+**Managed start is real:** `c2c start muse` (`MuseAdapter`) launches
+`muse --trust-workspace --approval-mode never [--model …] [positional
+kickoff]` in tmux, pre-registers the alias pre-fork (hooks are lazy, so
+the row must exist before first fire), and strips pid records on teardown.
+Positional kickoff is submitted as the first turn — no bootstrap typing.
+Resume takes an explicit operator ref only (`resume <uuid|name>`; never a
+c2c-minted id). Idle signal is Unknown (fail-closed); SIGTERM exits in
+~2s, so no restart-timeout arm.
+
+**Preferred receive** (the intentional surface — muse has no
+out-of-process wake inside c2c alone):
+
+```
+Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+```
+
+Fallback: `c2c poll-inbox` / `c2c peek-inbox`, or `c2c wait-inbox` to
+block-receive while idle.
+
+**Wake status: CONDITIONAL** on an armed **`c2c monitor`**. Without
+Monitor: **NONE** at true idle (hooks fire on activity only). `c2c doctor
+hooks` reports per-session NONE/CONDITIONAL rows from live monitor locks,
+and deliberately never flags a muse session DEAF — with no poster,
+inbox>0 is the expected steady state, not a failure (same as Grok). The
+Tier-2 session-message sidecar stays parked: the CLI refused
+out-of-process send in 1.4.2. See
+[Delivery & Wake Contract](/wake-contract/#claude-code-grok-and-muse-conditional-on-monitor-never-guaranteed-from-c2c-alone)
+and the [Muse client page](/clients/muse/).
 
 ---
 

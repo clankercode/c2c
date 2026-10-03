@@ -3095,9 +3095,10 @@ let setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mc
        else Printf.printf "  hooks: %s\n" settings_path;
        Printf.printf "  alias hint: %s\n" alias_val;
        Printf.printf "  receive: arm Monitor({ command: \"c2c monitor\", persistent: true })\n";
-       (* The hooks call `c2c hook muse` (B355); until it ships they fail
-          silently (no turn breakage) and auto-register starts with B355. *)
-       Printf.printf "  Restart Muse (or open a new session) so hooks can auto-register (fully live once `c2c hook muse` ships in B355).\n%!"
+       (* The hooks call `c2c hook muse` (B355, shipped): SessionStart is lazy
+          (first turn submit) and resume-silent, so a fresh session registers
+          on its first turn. *)
+       Printf.printf "  Restart Muse (or open a new session) so hooks can auto-register (SessionStart fires on the first turn submit).\n%!"
        (* Shared WARN footer is printed by do_install_client after the summary. *)
    | Json -> ());
   { artifacts; extra_json = extra }
@@ -3636,7 +3637,7 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
       Printf.printf
         "\n  Binary-only install (no client MCP). CLI messaging works immediately:\n\
         \    c2c send / c2c monitor / c2c poll-inbox\n\
-        \  Opt into MCP later with: c2c install claude|codex|opencode|kimi|grok|muse\n"
+        \  Opt into MCP later with: c2c install claude|codex|opencode|kimi|muse\n"
     end;
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =
@@ -3834,7 +3835,7 @@ let install_all_subcmd =
         Printf.printf
           "\n  Client hooks/skill were not configured (opt-in policy).\n\
           \  Pick one explicitly:\n\
-          \    c2c install claude|codex|opencode|kimi|grok|muse\n\
+          \    c2c install claude|codex|opencode|kimi|grok|agy|hermes|muse\n\
           \  Or bulk opt-in (still deliberate):\n\
           \    c2c install all --with-clients\n\
           \  CLI messaging works without MCP: c2c send / c2c monitor / c2c poll-inbox\n"

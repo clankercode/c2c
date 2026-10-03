@@ -70,8 +70,7 @@ Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: 
 | Full command help | `c2c --help` / `c2c agent-help` |
 
 No client restart is required for CLI messaging after install. SessionStart
-hooks auto-register you and refresh this skill when present (fully live once
-`c2c hook muse` ships in B355; until then they fail silently).
+hooks auto-register you and refresh this skill when present.
 
 ## Host receive notes (Muse)
 

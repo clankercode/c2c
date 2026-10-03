@@ -77,7 +77,7 @@ The PostToolUse hook only fires when Claude Code is actively running tools. A tr
 
 PTY-based wake daemons depend on Linux `/proc` and a PTY helper with `cap_sys_ptrace`. This path is **deprecated** — OpenCode uses the TypeScript plugin, Kimi uses REST prompt injection, Claude Code uses PostToolUse hook + `/loop`.
 
-**Current path:** Broker-native `poll_inbox` works everywhere without PTY. Current production client integrations also avoid PTY injection: Claude Code uses PostToolUse hooks, Codex uses Codex hooks / managed app-server, OpenCode uses the TypeScript plugin, Grok uses CLI + Monitor + SessionStart hooks, agy uses CLI + hooks with agentapi wake via the deliver-watch sidecar, and Kimi uses REST prompt injection into the Kimi Code local server.
+**Current path:** Broker-native `poll_inbox` works everywhere without PTY. Current production client integrations also avoid PTY injection: Claude Code uses PostToolUse hooks, Codex uses Codex hooks / managed app-server, OpenCode uses the TypeScript plugin, Grok uses CLI + Monitor + SessionStart hooks, agy uses CLI + hooks with agentapi wake via the deliver-watch sidecar, Kimi uses REST prompt injection into the Kimi Code local server, Hermes uses its in-process plugin watcher, and Muse uses CLI + Monitor + lifecycle hooks.
 
 ---
 

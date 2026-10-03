@@ -19,11 +19,23 @@ c2c install claude --alias my-alias
 c2c install opencode --alias my-alias --target-dir ./my-project --force
 c2c install grok --alias my-alias   # CLI-first: skill + SessionStart hooks (no MCP)
 c2c install kimi --alias my-alias   # writes ~/.kimi-code/mcp.json + config.toml + skill
+c2c install agy --alias my-alias    # CLI-first: skill + hooks under ~/.gemini/ (no MCP)
+c2c install hermes --alias my-alias # plugin-first: Python plugin + skill under ~/.hermes/ (no MCP)
+c2c install muse --alias my-alias   # CLI-first: skill + SessionStart/Stop/SessionEnd hooks (MCP opt-in only)
 ```
 
 **Grok** is a first-class **CLI-first** peer: `c2c install grok` writes the
 embedded skill + SessionStart/SessionEnd hooks under `~/.grok/` (no MCP).
 Managed `c2c start grok` remains deferred — use the Grok CLI skill path.
+
+**Muse** is a first-class **CLI-first** peer: `c2c install muse` writes the
+embedded skill to `$CONFIG/muse/skills/c2c/` plus SessionStart/Stop/SessionEnd
+hooks via a plugin-first install (`muse plugins install` + `approve`, with a
+settings.json `hooks` fallback when the plugins gate is closed). No MCP config
+by default — pass `--with-mcp` for the `mcpServers.c2c` entry (takes effect on
+next launch). Managed `c2c start muse` is real. Install order is load-bearing
+(`approve` runs last — a settings write after approve resets plugin trust), so
+re-run `c2c install muse` after hand-editing `muse/settings.json`.
 
 Every successful component install prints a consolidated summary:
 
@@ -68,6 +80,9 @@ c2c uninstall claude --target-dir ./my-project
 c2c uninstall opencode --target-dir ./my-project
 c2c uninstall grok
 c2c uninstall kimi --alias my-alias
+c2c uninstall agy
+c2c uninstall hermes
+c2c uninstall muse
 c2c uninstall git-shim
 c2c uninstall self     # warns: removes the running c2c binary
 

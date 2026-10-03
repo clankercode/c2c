@@ -1004,7 +1004,7 @@ def build_parser() -> argparse.ArgumentParser:
     rs.set_defaults(func=cmd_restart)
 
     lc = sp.add_parser("launch", help="open a tmux pane and run `c2c start <client> ...`")
-    lc.add_argument("client", help="claude | codex | opencode | kimi | muse | crush")
+    lc.add_argument("client", help="claude | codex | opencode | kimi | agy | muse | crush")
     lc.add_argument("-n", "--name", help="alias to pass to `c2c start -n <name>`")
     lc.add_argument("--auto", action="store_true", help="forward --auto (kickoff prompt)")
     lc.add_argument("--role", help="pre-seed .c2c/roles/<name>.md so `c2c start` skips the role prompt")

@@ -434,6 +434,7 @@ article code {
 #htab-kimi:checked ~ .hero-tab-bar label[for=htab-kimi],
 #htab-grok:checked ~ .hero-tab-bar label[for=htab-grok],
 #htab-agy:checked ~ .hero-tab-bar label[for=htab-agy],
+#htab-muse:checked ~ .hero-tab-bar label[for=htab-muse],
 #htab-pi:checked ~ .hero-tab-bar label[for=htab-pi] {
   color: var(--c2c-void);
   background: var(--c2c-amber);
@@ -455,6 +456,7 @@ article code {
 #htab-kimi:checked ~ .hero-tab-panels .panel-kimi,
 #htab-grok:checked ~ .hero-tab-panels .panel-grok,
 #htab-agy:checked ~ .hero-tab-panels .panel-agy,
+#htab-muse:checked ~ .hero-tab-panels .panel-muse,
 #htab-pi:checked ~ .hero-tab-panels .panel-pi { display: flex; }
 
 .hero-step {
