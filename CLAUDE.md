@@ -45,17 +45,20 @@ even when the immediate task is narrower.
     only changes how the external process learns mail arrived. Never present
     it as a delivery guarantee.
   - CLI: always-available fallback usable by any agent with or without
-    MCP. Must keep working across Claude, Codex, OpenCode, Kimi, Grok, and agy.
+    MCP. Must keep working across Claude, Codex, OpenCode, Kimi, Grok, agy, Hermes, and Muse.
   - CLI self-configuration: `c2c` should turn on automatic delivery on any
     host client that supports it — operators should not need to hand-edit
     settings files.
-- **Reach**: Codex, Claude Code, OpenCode, Kimi, Grok, agy, and Hermes as
+- **Reach**: Codex, Claude Code, OpenCode, Kimi, Grok, agy, Hermes, and Muse as
   first-class peers (Grok is CLI-first: skill + SessionStart hooks + Monitor;
   managed `c2c start grok` is deferred. agy / Antigravity is CLI-first: skill +
   hooks under `~/.gemini/`; managed `c2c start agy` is real via `AgyAdapter` +
   agentapi wake. Hermes is plugin-first: an in-process Python plugin under
   `~/.hermes/plugins/c2c/`; no MCP path and no `c2c start hermes` — Hermes runs
-  its own loop, like Pi Agent). Cross-client parity — a Codex → Claude send
+  its own loop, like Pi Agent. Muse is CLI-first: skill + plugin/hooks;
+  managed `c2c start muse` is real via `MuseAdapter`; wake is Monitor-only —
+  no out-of-process sender in 1.4.2, B356 parked). Cross-client parity — a
+  Codex → Claude send
   Just Works, same format, same delivery guarantees. Local-only today; broker
   design must not foreclose remote transport later.
 - **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms:
@@ -244,17 +247,17 @@ wake requirement above and #35). Do not over-claim these in docs or to users:
 | Hermes | **GUARANTEED** (CLI mode) — Hermes plugin: background watcher → `c2c poll-inbox` → `ctx.inject_message`; **NONE** in gateway mode (no CLI reference) |
 | Codex (managed/app-server) | **GUARANTEED for local mail** (inject + gated auto-turn); remote/`@host`/`#` fails closed to inject-only |
 | Kimi, agy | **CONDITIONAL** — out-of-process poster alive (REST POST / agentapi) |
-| Claude Code, Grok | **CONDITIONAL** — idle wake only while **`c2c monitor`** is armed; without it NONE at true idle (activity hooks only). First-class clients; never GUARANTEED from c2c alone |
-| Muse | **NONE pre-B361** — the SessionStart hook drains the native row, not the managed alias row, so managed-alias mail needs **`c2c monitor`** or `poll-inbox` even at SessionStart. (Post-B361 adoption: CONDITIONAL like Claude/Grok.) |
+| Claude Code, Grok, Muse | **CONDITIONAL** — idle wake only while **`c2c monitor`** is armed; without it NONE at true idle (activity hooks only). First-class clients; never GUARANTEED from c2c alone |
 | Codex (vanilla hooks) | **CONDITIONAL** (weak) — `c2c monitor` or legacy `hooks+wake`; else NONE. Prefer managed app-server |
 
 **Primary automatic delivery must not depend on tmux/herdr send-keys.** Guaranteed/CONDITIONAL rows above are plugin, app-server inject, REST, or agentapi. Codex *hooks* Mode_wake_inject (tmux/herdr nudge) is a fallback for unmanaged/hooks sessions only — prefer managed app-server. Kimi optional `C2C_KIMI_TMUX_COMPOSER_WAKE=1` is legacy composer nudge, not the wake path. Matrix: `.collab/research/2026-07-20T11-00-00Z-auto-delivery-no-sendkeys-matrix.md`.
 
 
-Claude Code and Grok cannot be guaranteed from inside c2c: neither exposes a
-local endpoint accepting a synthetic user turn (Kimi has REST, Codex the
-app-server, OpenCode the plugin API, Hermes `ctx.inject_message`). That is an
-upstream ask, not our bug.
+Claude Code, Grok, and Muse cannot be guaranteed from inside c2c: none exposes
+a usable local endpoint accepting a synthetic user turn (Kimi has REST, Codex
+the app-server, OpenCode the plugin API, Hermes `ctx.inject_message`; muse's
+`session-message` is experiment-gated and refused out-of-process send in
+1.4.2 — B356 parked). That is an upstream ask, not our bug.
 
 **Hermes delivery order is load-bearing: peek → inject → drain-on-success.**
 `drain_and_inject` (`data/hermes-plugin/delivery.py`) peeks with

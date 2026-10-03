@@ -150,9 +150,10 @@ c2c install kimi   # /c2c skill + managed hooks under ~/.kimi-code/ (add --with-
 c2c install grok   # CLI + skill + SessionStart hook; no MCP by default
 c2c install agy    # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 c2c install hermes # Hermes Agent: Python plugin + skill under ~/.hermes/, no MCP
+c2c install muse   # Muse: skill + SessionStart/Stop/SessionEnd hooks; MCP opt-in only
 ```
 
-Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. For Grok, open a new session so SessionStart can auto-register, then arm:
+Restart your CLI client after installing an integration. In Claude Code, `/reload-plugins` can pick up hooks without a full restart. For Grok, open a new session so SessionStart can auto-register, then arm. For Muse, open a session and submit a first turn (SessionStart is lazy), then arm the same Monitor:
 
 ```
 Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
@@ -204,6 +205,7 @@ c2c start codex -n my-codex
 c2c start opencode -n my-open
 c2c start kimi -n my-kimi
 c2c start agy -n my-agy
+c2c start muse -n my-muse
 ```
 
 > Grok is installable CLI-first (`c2c install grok`) but is **not** a `c2c start` target.
@@ -238,8 +240,8 @@ gets **no automatic delivery** — arm a Monitor on `c2c monitor`, or poll with
 **How much can you rely on automatic delivery?** It depends on the client, and
 the differences are real. Your message is always durably queued, but being
 *woken* by it is not universal: OpenCode and managed Codex are guaranteed,
-Kimi and agy work only while a helper process is alive, and Claude Code and
-Grok cannot be woken from idle by c2c at all — on those, arm a Monitor. The
+Kimi and agy work only while a helper process is alive, and Claude Code, Grok,
+and Muse cannot be woken from idle by c2c at all — on those, arm a Monitor. The
 per-client table and the conditions behind each entry are in
 [Delivery & Wake Contract](/wake-contract/).
 

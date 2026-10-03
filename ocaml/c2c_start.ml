@@ -1715,12 +1715,12 @@ let () =
       needs_deliver = true; needs_poker = false;
       poker_event = None; poker_from = None; extra_env = [] }
   ;
-  (* muse (B358): delivery rides hook + Monitor floor — but pre-B361 the
-     SessionStart hook drains the NATIVE sid row, not the managed alias
-     row, so managed-alias mail needs `c2c monitor` or poll-inbox even at
-     SessionStart. No sidecar sender exists (B352 D1 BLOCKED, B356 PARKED),
-     so needs_deliver=false (no deliver daemon to start) and
-     needs_poker=false (no poker consumer). *)
+  (* muse (B358/B361): delivery rides hook + Monitor floor — SessionStart
+     adopts the managed row (scrubbed-env adoption) and the backlog drain
+     follows the resolved sid, so the managed row drains at first turn
+     submit; idle wake stays NONE (no arrival-time path). No sidecar sender
+     exists (B352 D1 BLOCKED, B356 PARKED), so needs_deliver=false (no
+     deliver daemon to start) and needs_poker=false (no poker consumer). *)
   Stdlib.Hashtbl.add clients "muse"
     { binary = "muse"; deliver_client = "muse";
       needs_deliver = false; needs_poker = false;
@@ -5875,7 +5875,7 @@ module MuseAdapter : CLIENT_ADAPTER = struct
 
   let probe_capabilities ~binary_path:_ =
     (* No muse-specific capabilities: no sidecar wake (B356 PARKED), MCP
-       pending B357. *)
+       behind --with-mcp only (B357). *)
     []
 
   (* Kickoff rides the positional [PROMPT] argv element appended in
@@ -6071,11 +6071,11 @@ let delivery_mode ?(now = Unix.gettimeofday ()) ?(startup_grace_s = 60.0)
          | _ when has C2c_capability.Pty_inject -> "native_pty_fallback"
          | _ -> "plugin_stale_no_fallback")
   | "kimi" -> "notifier"
-  (* muse (B358): "hooks" posture class (no wake target), same as codex —
-     but pre-B361 the SessionStart hook drains the NATIVE sid row, not the
-     managed alias row, so managed-alias mail needs Monitor or poll-inbox
-     even at SessionStart. No install check here: kimi's "notifier" is
-     likewise unconditional. *)
+  (* muse (B358/B361): "hooks" posture class (no wake target), same as
+     codex — SessionStart adopts the managed row and the backlog drain
+     follows the resolved sid, so the managed row drains at first turn
+     submit; idle wake stays NONE. No install check here: kimi's
+     "notifier" is likewise unconditional. *)
   | "muse" -> "hooks"
   | "codex" ->
       (* Hooks (config.toml, `c2c hook codex`) are the codex delivery path;

@@ -234,6 +234,11 @@ agent has to arm it, that makes Claude CONDITIONAL, never guaranteed (see
 `docs/wake-contract.md`). Do NOT arm it on managed channel-push sessions (see
 below).
 
+**Muse:** this same recipe is not optional — it is the entire idle-wake
+path. Muse hooks fire on activity only and no out-of-process sender exists
+in 1.4.2 (B356 parked), so an idle Muse with no armed Monitor sees nothing
+until its next turn. Arm it once per session, before expecting mail.
+
 **How to arm (broad awareness watcher):**
 ```
 Monitor({

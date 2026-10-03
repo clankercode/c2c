@@ -60,9 +60,9 @@ Explicit session ID override. Set this when launching one-shot child CLI probes 
 
 ### Client-native session keys (read, not set, by c2c)
 
-When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode), `GROK_SESSION_ID` (Grok Build TUI; injected into Grok **hook** processes — tool shells typically do **not** get this key). When the client is Grok (see below) and `GROK_SESSION_ID` is still empty, c2c resolves the live session by matching an ancestor pid against `~/.grok/active_sessions.json` (override path: `C2C_GROK_ACTIVE_SESSIONS`, for tests). kimi has no native key. If none is present, the CLI additionally consults the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (single identity per repo, CLI-only — the MCP server never reads it). **#26 fail-closed gate:** the statefile only resolves an identity when its session is the **sole** registration in the broker (a loud `WARN:` is printed, exit 0); if **any other** session is registered, bare `c2c whoami`/`send`/`poll-inbox`/`rooms` **fail closed** with a candidate list + an `export C2C_MCP_SESSION_ID=…` hint instead of silently adopting a possibly-stale alias (which had caused wrong-sender DMs — #21). Set `C2C_ALLOW_DEFAULT_SESSION=1` to restore the pre-#26 silent "statefile wins if registered" behaviour.
+When `C2C_MCP_SESSION_ID` is unset, session resolution falls back to the host client's own export: `CLAUDE_SESSION_ID` (legacy Claude Code; wins when both are set) then `CLAUDE_CODE_SESSION_ID` (current Claude Code >= v2.1.x Bash-tool env), `CODEX_THREAD_ID` (codex), `C2C_OPENCODE_SESSION_ID` (opencode), `GROK_SESSION_ID` (Grok Build TUI; injected into Grok **hook** processes — tool shells typically do **not** get this key). When the client is Grok (see below) and `GROK_SESSION_ID` is still empty, c2c resolves the live session by matching an ancestor pid against `~/.grok/active_sessions.json` (override path: `C2C_GROK_ACTIVE_SESSIONS`, for tests). kimi has no native key. `MUSE_SESSION_ID` (Muse native key, exported to MCP servers — hook children do **not** inherit it (hook env is EMPTY of `MUSE_*` in all fires, B352 A2); TUI bang-shell env carries only `MUSE_TOOL_USE_ID`, a per-tool-call id, not a session key). If none is present, the CLI additionally consults the per-repo `<broker_root>/default-session.json` statefile written by `c2c init` (single identity per repo, CLI-only — the MCP server never reads it). **#26 fail-closed gate:** the statefile only resolves an identity when its session is the **sole** registration in the broker (a loud `WARN:` is printed, exit 0); if **any other** session is registered, bare `c2c whoami`/`send`/`poll-inbox`/`rooms` **fail closed** with a candidate list + an `export C2C_MCP_SESSION_ID=…` hint instead of silently adopting a possibly-stale alias (which had caused wrong-sender DMs — #21). Set `C2C_ALLOW_DEFAULT_SESSION=1` to restore the pre-#26 silent "statefile wins if registered" behaviour.
 
-**Client-type inference (B134, B173).** The same ambient keys drive `inferred_client_type_from_env` / `c2c init` detect (shared): `C2C_MCP_CLIENT_TYPE` override → `CODEX_THREAD_ID` → Claude session keys → OpenCode → `GROK_SESSION_ID` → truthy `GROK_AGENT` (Grok tool shells export this, often `1`) → unofficial Cursor Agent markers (`CURSOR_AGENT` truthy, or `CURSOR_INVOKED_AS=cursor-agent`). Cursor labeling is **best-effort identity only** (alias prefix `cursor-`, `client: "cursor"`) — not install/hooks/MCP parity. Genuine Codex markers always win over Grok/Cursor markers.
+**Client-type inference (B134, B173).** The same ambient keys drive `inferred_client_type_from_env` / `c2c init` detect (shared): `C2C_MCP_CLIENT_TYPE` override → `CODEX_THREAD_ID` → Claude session keys → OpenCode → `GROK_SESSION_ID` → truthy `GROK_AGENT` (Grok tool shells export this, often `1`) → agy markers (`ANTIGRAVITY_CONVERSATION_ID` / `ANTIGRAVITY_HOOK_EVENT` / `ANTIGRAVITY_LS_ADDRESS`) → unofficial Cursor Agent markers (`CURSOR_AGENT` truthy, or `CURSOR_INVOKED_AS=cursor-agent`) → `MUSE_SESSION_ID` (muse — after every other native marker, before the B288 ancestry heuristic). Cursor labeling is **best-effort identity only** (alias prefix `cursor-`, `client: "cursor"`) — not install/hooks/MCP parity. Genuine Codex markers always win over Grok/Cursor markers.
 
 ### `C2C_ALLOW_DEFAULT_SESSION`
 
@@ -464,6 +464,34 @@ Set to `1` only to re-enable the legacy post-deliver composer nudge that types
 Left off by default because modern kimi-code often fails to submit that Enter
 (extended-keys/focus), stacking unsubmitted text while the real REST turn
 already ran.
+
+---
+
+## Muse
+
+### `C2C_MUSE_BIN`
+
+Path override for the `muse` binary. When set non-blank, c2c uses the value
+verbatim (trimmed) as the muse argv[0] for plugin verbs (`plugins list` /
+`install` / `approve` / `remove` / `inspect`) and the doctor trust probe;
+otherwise `muse` resolves via `PATH`. Production default is PATH lookup —
+this is a test seam and an operator escape hatch for non-PATH installs.
+
+### `MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS`
+
+Muse-native experimental gate for `session-message` (read, not set, by c2c).
+Only the values `1`, `true`, `on` (case-insensitive, trimmed) open
+`session-message list`; `0`/`off`/empty/`yes` leave it closed (verbatim B352
+A6 gate matrix). `c2c doctor hooks` reports whether it is open in the current
+process. No c2c sender uses it today (B356 parked — the CLI refused
+out-of-process send in 1.4.2), so setting it changes no c2c behaviour; it is
+documented here because doctor surfaces it.
+
+(`C2C_MUSE_STUB_*` — `STUB_LIST`, `STUB_LOG`, `STUB_SETTINGS`,
+`STUB_INSPECT`, `STUB_INSPECT_RC`, `STUB_APPROVE_FAIL`,
+`STUB_APPROVE_MARKER`, `STUB_REMOVE_ABSENT` — drive the stub muse binary in
+hermetic install/doctor tests only. Production code never reads them; per the
+header policy they get no entries of their own.)
 
 ---
 

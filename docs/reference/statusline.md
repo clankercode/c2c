@@ -26,7 +26,7 @@ c2c statusline --no-color
 |------|-------------|
 | `--json` | Emit a machine-readable object (stable field names below). |
 | `--print-config` | Print the Claude Code `settings.json` snippet that wires `c2c statusline` as the status line, then exit. |
-| `--client CLIENT` | Override auto-detected host client (`claude` \| `codex` \| `opencode` \| `kimi` \| `grok`). Currently only affects the reported `client` field; local state reads are the same for all clients. |
+| `--client CLIENT` | Override auto-detected host client (`claude` \| `codex` \| `opencode` \| `kimi` \| `grok` \| `agy` \| `hermes` \| `muse`). Currently only affects the reported `client` field; local state reads are the same for all clients. |
 | `--no-color` | Disable ANSI colour even on a TTY. Colour is auto-disabled when stdout is not a TTY or when `NO_COLOR` is set. |
 
 Claude Code supplies session JSON on stdin (`session_id`, `model`); c2c reads

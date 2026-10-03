@@ -11,6 +11,8 @@ Outputs:
   ocaml/cli/c2c_claude_skill_embedded.ml  (default harness; claude/codex install)
   ocaml/cli/c2c_grok_skill_embedded.ml    (grok harness)
   ocaml/cli/c2c_kimi_skill_embedded.ml    (kimi harness)
+  ocaml/cli/c2c_agy_skill_embedded.ml     (agy harness)
+  ocaml/cli/c2c_muse_skill_embedded.ml    (muse harness)
 """
 from __future__ import annotations
 

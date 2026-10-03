@@ -93,7 +93,10 @@ fi
 # B358: muse's comm is the 15-char-truncated versioned binary name
 # (measured: "muse-bin-1.4.2-"), so it needs a prefix match — an exact
 # entry would rot on every muse release.
-KNOWN_TUIS="opencode kimi claude codex crush bun node muse"
+# B360: hermes is deliberately absent — it is plugin-first with no TUI
+# binary, so any comm entry could only false-positive. grok/agy assume
+# comm == binary name (unmeasured; exact match degrades to status quo).
+KNOWN_TUIS="opencode kimi claude codex crush bun node muse agy grok"
 is_tui=0
 for tui in $KNOWN_TUIS; do
     if [[ "$fg_cmd" == "$tui" || "$fg_cmd" == ".$tui" || "$fg_cmd" == ".opencode" ]]; then

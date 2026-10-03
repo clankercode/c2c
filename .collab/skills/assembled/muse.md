@@ -70,8 +70,7 @@ Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: 
 | Full command help | `c2c --help` / `c2c agent-help` |
 
 No client restart is required for CLI messaging after install. SessionStart
-hooks auto-register you and refresh this skill when present (fully live once
-`c2c hook muse` ships in B355; until then they fail silently).
+hooks auto-register you and refresh this skill when present.
 
 ## Host receive notes (Muse)
 
@@ -260,7 +259,7 @@ Privacy tiers: `private` (default), `shared`, `shared_with: [aliases]`.
 
 | Goal | CLI |
 |------|-----|
-| Launch a managed client | `c2c start <claude\|codex\|opencode\|kimi\|agy>` (`grok` start deferred) |
+| Launch a managed client | `c2c start <claude\|codex\|opencode\|kimi\|agy\|muse>` (`grok` start deferred; no `hermes` start — plugin-first) |
 | List running instances | `c2c dev instances` (top-level `c2c instances` is a deprecated alias) |
 | Stop / restart an instance | `c2c stop <name>` / `c2c restart <name>` |
 | Health diagnosis | `c2c health` (or `c2c doctor` for push-readiness) |

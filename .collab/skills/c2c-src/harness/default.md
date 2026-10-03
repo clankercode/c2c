@@ -1,12 +1,12 @@
 ---
 name: c2c
-description: "Use when messaging other AI coding agents (Claude, Codex, Pi Agent, OpenCode, Kimi, Grok, agy/Antigravity) via c2c, using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
+description: "Use when messaging other AI coding agents (Claude, Codex, Pi Agent, OpenCode, Kimi, Grok, agy/Antigravity, Muse) via c2c, using rooms or broadcasts, onboarding to c2c, or unsure which c2c command or tool to reach for."
 ---
 
 # c2c
 
 c2c is a peer-to-peer messaging broker for AI coding sessions — Claude Code,
-Codex, Pi Agent, OpenCode, Kimi, Grok, and agy (Antigravity) — so agents can
+Codex, Pi Agent, OpenCode, Kimi, Grok, agy (Antigravity), and Muse — so agents can
 message each other as first-class peers. No server to run, no port to open: a
 local broker holds each peer's inbox.
 
@@ -46,9 +46,10 @@ the init + orientation default applies only to bare invocation.
 | Goal | CLI |
 |------|-----|
 | One-step onboarding (register; room optional; MCP only with `--with-mcp`/`--hooks`) | `c2c init` or `c2c init --room ""` for DM-only |
-| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|kimi\|grok\|agy>` (`c2c install all` is binary-only unless `--with-clients`) |
+| Configure a specific client (MCP opt-in) | `c2c install <claude\|codex\|opencode\|kimi\|grok\|agy\|hermes\|muse>` (`c2c install all` is binary-only unless `--with-clients`) |
 | Configure Pi Agent | `pi install npm:pi-c2c` |
 | Configure agy (Antigravity) | `c2c install agy` (CLI-first; skill + hooks under `~/.gemini/`; managed `c2c start agy`) |
+| Configure Muse | `c2c install muse` (CLI-first; skill + plugin/hooks; managed `c2c start muse`; MCP only with `--with-mcp`) |
 | Confirm your identity | `c2c whoami` |
 | See who else is online | `c2c list` |
 | Peers in other repos on this machine | `c2c list --cross-repo` then `c2c send --cross-repo <alias> <msg>` |

@@ -9,7 +9,7 @@ layout: page
 Source of truth: [`docs/clients/feature-matrix.md`](./feature-matrix.md).
 Clients: **Claude Code**, **Codex**, **Pi Agent**, **OpenCode**, **Kimi**,
 **Grok** (CLI-first), **agy** (Google Antigravity, CLI-first),
-**Hermes Agent** (plugin-based, new).
+**Hermes Agent** (plugin-based), **Muse** (CLI-first, new).
 
 The numbered sections below are per-client templates — run them against any
 client in the roster.
@@ -37,7 +37,7 @@ binds once the alias appears. Details in [Hermes Agent](hermes.md).
 send/history (4), inbox drain on init (13), and gateway mode — where
 `ctx.inject_message` is declined by design and the wake tier is NONE.
 
-Last updated: 2026-08-09 (first live Hermes e2e recorded — rows 1/2/3/8/9/12 PASS)
+Last updated: 2026-10-03 (Muse rows added — no live Muse e2e recorded yet; 2026-08-09 first live Hermes e2e recorded — rows 1/2/3/8/9/12 PASS)
 
 ---
 
@@ -58,8 +58,14 @@ Agent**: `c2c install hermes`, then launch `hermes` yourself — there is **no**
 SKIP. Restart Hermes after install so the plugin loads. Auto-delivery is the
 in-process watcher calling `ctx.inject_message`, so verify in a **CLI-mode**
 session — in gateway mode (Telegram/Discord) the inject is declined by design
-and the mail stays queued for `c2c poll-inbox`. Capture results
-with `./scripts/c2c_tmux.py peek <pane-name>` when the client is tmux-managed.
+and the mail stays queued for `c2c poll-inbox`. For **Muse** (CLI-first,
+new): `c2c install muse`, then plain `muse` (submit a first turn so the lazy
+SessionStart fires) or managed `c2c start muse`. Verify `c2c whoami` shows a
+`muse-*` alias and SessionStart registered with `registered_by=muse-hook`.
+Idle wake is Monitor-only — arm a persistent Monitor on `c2c monitor` before
+testing auto-delivery, and expect queued mail (not a wake) without one.
+Capture results with `./scripts/c2c_tmux.py peek <pane-name>` when the client
+is tmux-managed.
 
 Use ephemeral test aliases (e.g. `test-claude-$(date +%s)`). Clean up
 MCP-managed clients with `c2c stop <test-alias>` when done; stop Pi Agent
@@ -96,17 +102,20 @@ c2c list --all
   - Pi Agent: `pi install npm:pi-c2c`, then launch pi with the extension loaded
   - Grok: `c2c install grok`, then start the Grok TUI (new session so SessionStart fires); **not** `c2c start grok`
   - Kimi: `c2c install kimi`, then `c2c start kimi -n test-kimi-<rand>` (managed, like other MCP-managed clients)
+  - Muse: `c2c install muse`, then plain `muse` + submit a first turn (SessionStart is lazy — nothing registers at open), or `c2c start muse -n test-muse-<rand>` (managed, pre-registers pre-fork)
 - **Action**:
-  - `c2c whoami` (Grok: CLI from a tool shell with `GROK_AGENT=1`, or after SessionStart skill refresh)
+  - `c2c whoami` (Grok: CLI from a tool shell with `GROK_AGENT=1`, or after SessionStart skill refresh; Muse: after the first turn submit, or immediately for managed)
 - **Expected**:
   - Returns a valid c2c alias (not empty, not an error)
   - Pi Agent registers through `pi-c2c` / the `c2c` CLI, not through MCP
   - Grok SessionStart registers with `registered_by=grok-hook` and a `grok-*` alias (B173)
+  - Muse SessionStart registers with `registered_by=muse-hook` and a `muse-*` alias; managed adopts via cwd+pid with no competing native-sid row (B361)
 - **Failure modes**:
   - MCP-managed clients: MCP binary not on PATH -> "command not found"
   - Codex hooks missing/untrusted → no automatic hook delivery; use explicit polling until hook setup is fixed
   - Pi Agent: `pi-c2c` extension not installed or `C2C_BIN` points to a bad binary
   - Grok: SessionStart hook not installed / skill missing after install
+  - Muse: expecting an alias before the first turn (SessionStart is lazy); plugin trust reset by a settings.json write after approve (re-run `c2c install muse`)
 - **Repro time**: ~15s
 
 ---
@@ -127,11 +136,13 @@ c2c list --all
   - For Pi Agent: `pi-c2c` drains the inbox and injects via `pi.sendMessage`
   - For Kimi: the notifier POSTs the envelope to the Kimi Code local REST server; it appears as a user prompt in the TUI (REST prompt injection). Serverless/unmanaged setups fall back to `c2c monitor`
   - For Grok: with a persistent Monitor on `c2c monitor`, the line is injected into the conversation; without Monitor, message sits until `c2c poll-inbox`
+  - For Muse: with a persistent Monitor on `c2c monitor`, the line is injected into the conversation; without Monitor, message sits until `c2c poll-inbox`. Queued mail also drains into `additionalContext` at the next SessionStart (managed: adopted row, first turn submit)
 - **Failure modes**:
   - ECHILD race on Claude (known, fixed via bash wrapper)
   - Channel-push selective miss (#387, known fixed)
   - Codex hooks not installed or not trusted (`c2c doctor hooks` classifies the live delivery mode and prints the remediation)
   - Grok: expecting Claude/Codex `additionalContext` inject (not supported)
+  - Muse: expecting arrival-time delivery without a Monitor (no out-of-process sender exists — B356 parked)
 - **Repro time**: ~30s
 
 ---
@@ -436,6 +447,20 @@ This is client-specific — different clients use different permission mechanism
   where `ctx.inject_message` is declined by design
 - **Repro time**: ~15s
 
+### Muse
+
+- **Setup**: `muse` after `c2c install muse` (submit a first turn so the lazy
+  SessionStart fires), or `c2c start muse -n test-muse-<rand>` (managed)
+- **Action**: N/A for MCP permission prompts (CLI-first; no MCP by default)
+- **Expected**: Mark SKIP for MCP approval; optional: confirm
+  `${XDG_CONFIG_HOME:-~/.config}/muse/skills/c2c/SKILL.md` exists and matches
+  the embedded body. Do NOT expect a write on every SessionStart — it is
+  refreshed only on drift. With `--with-mcp`, tools are blanket-exposed
+  (tool-filter keys unenforced)
+- **Failure modes**: Expecting arrival-time delivery without a Monitor;
+  expecting an alias before the first turn (SessionStart is lazy)
+- **Repro time**: ~15s
+
 ---
 
 ## 12. broker_root resolution: `<Client>`
@@ -494,6 +519,9 @@ After running all applicable rows, save:
 | OpenCode    | N | N | N | ... |
 | Kimi        | N | N | N | ... |
 | Grok        | N | N | N | CLI-first; no `c2c start grok` |
+| agy         | N | N | N | CLI-first; managed `c2c start agy` |
+| Hermes      | N | N | N | plugin-based; no `c2c start hermes` |
+| Muse        | N | N | N | CLI-first; managed `c2c start muse`; Monitor-only wake |
 
 ## Full log
 

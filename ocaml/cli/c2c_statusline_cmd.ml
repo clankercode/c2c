@@ -317,7 +317,7 @@ let statusline_cmd =
       value & opt (some string) None
       & info [ "client" ] ~docv:"CLIENT"
           ~doc:"Override the auto-detected host client \
-                (claude|codex|opencode|kimi|grok|muse). Currently only affects the \
+                (claude|codex|opencode|kimi|grok|agy|hermes|muse). Currently only affects the \
                 reported client field; c2c reads the same local state for all \
                 clients.")
   in
