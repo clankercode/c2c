@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-10-02T23:08:48Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-03T00:30:46Z"
 complexity: medium
 created_at: "2026-10-02T17:26:36Z"
 depends_on:
     - B358
+duration_minutes: 81.96722705151667
 estimate_hours: 5
 id: B360
 priority: medium
 started_at: "2026-10-02T23:08:48Z"
-status: in_progress
+status: done
 tags: []
 title: muse docs website skills-codegen runbooks tests glue
-updated_at: "2026-10-02T23:08:48Z"
+updated_at: "2026-10-03T00:30:46Z"
 ---
 
 # muse docs/website/skills-codegen/runbooks/tests glue
