@@ -255,6 +255,69 @@ let test_group_signal_continues_exact_generation () =
                  ~pid:child ~start_time ~signal:Sys.sigterm);
             ignore (Unix.waitpid [] child))
 
+let test_group_signal_skips_reused_member_generation () =
+  if not (P.pidfd_supported ()) then ()
+  else
+    let pid_r, pid_w = Unix.pipe () in
+    let marker_r, marker_w = Unix.pipe () in
+    let rec pause_forever () =
+      Unix.pause ();
+      pause_forever ()
+    in
+    let owner =
+      match Unix.fork () with
+      | 0 ->
+          Unix.close pid_r;
+          Unix.close marker_r;
+          (try ignore (Unix.setsid ()) with _ -> exit 2);
+          (match Unix.fork () with
+           | 0 ->
+               Sys.set_signal Sys.sigterm
+                 (Sys.Signal_handle (fun _ ->
+                      ignore (Unix.write_substring marker_w "M" 0 1)));
+               pause_forever ()
+           | member ->
+               let payload = string_of_int member ^ "\n" in
+               ignore
+                 (Unix.write_substring pid_w payload 0 (String.length payload));
+               pause_forever ())
+      | pid -> pid
+    in
+    Unix.close pid_w;
+    Unix.close marker_w;
+    let pid_input = Unix.in_channel_of_descr pid_r in
+    Fun.protect
+      ~finally:(fun () ->
+        (try Unix.kill owner Sys.sigkill with Unix.Unix_error _ -> ());
+        (try ignore (Unix.waitpid [] owner) with Unix.Unix_error _ -> ());
+        close_in_noerr pid_input;
+        (try Unix.close marker_r with Unix.Unix_error _ -> ()))
+      (fun () ->
+        let member = int_of_string (input_line pid_input) in
+        let old_mismatch = Sys.getenv_opt "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" in
+        let restore_mismatch () =
+          match old_mismatch with
+          | Some value -> Unix.putenv "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" value
+          | None -> Unix.putenv "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" ""
+        in
+        Unix.putenv "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" (string_of_int member);
+        Fun.protect ~finally:restore_mismatch @@ fun () ->
+        let owner_start =
+          match P.read_pid_generation owner with
+          | P.Generation value -> value
+          | _ -> fail "owner generation unavailable"
+        in
+        check bool "owner signal still succeeds when a member is recycled" true
+          (P.signal_process_group_if_generation_matches
+             ~pid:owner ~start_time:owner_start ~signal:Sys.sigterm);
+        ignore (Unix.waitpid [] owner);
+        let ready, _, _ = Unix.select [ marker_r ] [] [] 0.2 in
+        check bool "generation-mismatched member is not signalled" false
+          (List.mem marker_r ready);
+        (* The member survived the group cleanup and must be explicitly reaped
+           by the test process tree's owner-independent cleanup. *)
+        (try Unix.kill member Sys.sigkill with Unix.Unix_error _ -> ()))
+
 let () =
   run "c2c_pid_identity"
     [ ( "recycled onto a thread (the #85 incident)",
@@ -286,5 +349,7 @@ let () =
             test_group_signal_is_generation_bound
         ; test_case "group SIGCONT binds generation" `Quick
             test_group_signal_continues_exact_generation
+        ; test_case "group skips reused member generation" `Quick
+            test_group_signal_skips_reused_member_generation
         ] )
     ]

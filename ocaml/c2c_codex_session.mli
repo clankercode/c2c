@@ -173,9 +173,10 @@ val daemon_handoff_generation_gone :
     absent. A replacement generation or an unreadable proc entry is retained. *)
 
 val remove_handoff_receipt_after_generation_gone :
-  path:string -> frontend_pid:int -> frontend_start_time:int -> contents:string -> bool
+  path:string -> frontend_pid:int -> frontend_start_time:int ->
+  identity:C2c_start.regular_file_identity -> contents:string -> bool
 (** Remove [path] only after the captured frontend generation is confirmed gone,
-    and only when the file still has the captured contents. *)
+    and only when the file still has the captured device/inode and contents. *)
 
 (* ----------------------- B224: MCP-block preflight ------------------------ *)
 

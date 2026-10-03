@@ -940,6 +940,17 @@ let test_pending_arm_content_replacement_is_retained () =
   write pending pending_contents;
   write cancel "cancelled\n";
   write replacement_tmp "replacement\n";
+  (* The guarded cancel pathname can survive this race intentionally. Restore
+     its permissions and remove only this fixture's guard after assertions so
+     the enclosing temporary directory remains removable. *)
+  let cleanup_guard () =
+    if Sys.file_exists cancel && Sys.is_directory cancel then begin
+      (try Unix.chmod cancel 0o700 with _ -> ());
+      (try Sys.remove (Filename.concat cancel ".c2c-hold") with _ -> ());
+      (try Unix.rmdir cancel with _ -> ())
+    end
+  in
+  Fun.protect ~finally:cleanup_guard @@ fun () ->
   let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_BEFORE_FINISH" in
   let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
   let restore_env () =
@@ -1104,6 +1115,18 @@ let test_confirmed_removal_preserves_quarantine_after_guard_replacement () =
   let oc = open_out replacement_tmp in
   Fun.protect ~finally:(fun () -> close_out oc)
     (fun () -> output_string oc "replacement-after-guard\n");
+  (* The production guard is intentionally mode 0500 while the race window is
+     under test. If the child wins that window, it may leave the guard behind
+     for recovery. Clean only this fixture's known guard after all assertions;
+     never weaken the production retention path just to satisfy the harness. *)
+  let cleanup_guard () =
+    if Sys.file_exists record && Sys.is_directory record then begin
+      (try Unix.chmod record 0o700 with _ -> ());
+      (try Sys.remove (Filename.concat record ".c2c-hold") with _ -> ());
+      (try Unix.rmdir record with _ -> ())
+    end
+  in
+  Fun.protect ~finally:cleanup_guard @@ fun () ->
   let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_BEFORE_FINISH" in
   let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
   let restore_env () =
@@ -1165,6 +1188,18 @@ let test_content_confirmed_removal_preserves_atomic_replacement () =
   let replacement = "replacement\n" in
   put record original;
   put replacement_tmp replacement;
+  (* The production guard is intentionally mode 0500 while the race window is
+     under test. If the child wins that window, it may leave the guard behind
+     for recovery. Clean only this fixture's known guard after all assertions;
+     never weaken the production retention path just to satisfy the harness. *)
+  let cleanup_guard () =
+    if Sys.file_exists record && Sys.is_directory record then begin
+      (try Unix.chmod record 0o700 with _ -> ());
+      (try Sys.remove (Filename.concat record ".c2c-hold") with _ -> ());
+      (try Unix.rmdir record with _ -> ())
+    end
+  in
+  Fun.protect ~finally:cleanup_guard @@ fun () ->
   let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_BEFORE_EXCHANGE" in
   let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
   let restore_env () =

@@ -488,6 +488,10 @@ external unlink_regular_file_confirmed : string -> bool
 external unlink_regular_file_if_contents_confirmed : string -> string -> bool
   = "caml_c2c_unlink_regular_if_contents_confirmed"
 
+external unlink_regular_file_if_identity_and_contents_confirmed :
+  string -> int64 -> int64 -> string -> bool
+  = "caml_c2c_unlink_regular_if_identity_and_contents_confirmed"
+
 external unlink_pid_record_pair_confirmed : string -> string -> int -> int -> bool
   = "caml_c2c_unlink_pid_record_pair_confirmed"
 
@@ -495,6 +499,16 @@ type regular_file_read =
   | Regular_file_missing
   | Regular_file_contents of string
   | Regular_file_unreadable of string
+
+type regular_file_identity = {
+  device : int;
+  inode : int;
+}
+
+type regular_file_read_with_identity =
+  | Regular_file_identity_missing
+  | Regular_file_identity_contents of string * regular_file_identity
+  | Regular_file_identity_unreadable of string
 
 type lifecycle_path_state =
   | Lifecycle_path_present
@@ -544,6 +558,36 @@ let read_regular_file_nofollow path : regular_file_read =
        | Lifecycle_path_present | Lifecycle_path_unknown ->
            Regular_file_unreadable "lifecycle record absence is uncertain")
   | e -> Regular_file_unreadable (Printexc.to_string e)
+
+(* Read the bytes and stat identity from the same no-follow descriptor.  The
+   caller can therefore pin an atomic handoff to the inode whose contents it
+   captured; a later replacement with identical bytes cannot be mistaken for
+   that handoff. *)
+let read_regular_file_nofollow_with_identity path :
+    regular_file_read_with_identity =
+  try
+    let fd = open_regular_nofollow path in
+    let stat = Unix.fstat fd in
+    let ic = Unix.in_channel_of_descr fd in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        try
+          let contents = really_input_string ic (in_channel_length ic) in
+          Regular_file_identity_contents
+            ( contents
+            , { device = stat.Unix.st_dev; inode = stat.Unix.st_ino } )
+        with e -> Regular_file_identity_unreadable (Printexc.to_string e))
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) ->
+      (match lifecycle_path_state path with
+       | Lifecycle_path_absent -> Regular_file_identity_missing
+       | Lifecycle_path_quarantined ->
+           Regular_file_identity_unreadable
+             "lifecycle record has quarantined recovery state"
+       | Lifecycle_path_present | Lifecycle_path_unknown ->
+           Regular_file_identity_unreadable "lifecycle record absence is uncertain")
+  | e -> Regular_file_identity_unreadable (Printexc.to_string e)
 
 (* Read a small lifecycle record through the same descriptor-bound no-follow
    primitive, but cap the bytes consumed before constructing a string. The
@@ -3110,6 +3154,11 @@ let remove_path_confirmed path =
 
 let remove_path_contents_confirmed path contents =
   unlink_regular_file_if_contents_confirmed path contents
+
+let remove_path_identity_contents_confirmed path
+    ({ device; inode } : regular_file_identity) contents =
+  unlink_regular_file_if_identity_and_contents_confirmed path
+    (Int64.of_int device) (Int64.of_int inode) contents
 
 let remove_pid_record_pair_confirmed ~(pid_path : string)
     ~(start_time_path : string) ~(pid : int) ~(start_time : int) : bool =

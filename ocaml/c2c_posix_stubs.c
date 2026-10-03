@@ -288,6 +288,9 @@ struct c2c_prepared_unlink {
     const char *expected;
     size_t expected_len;
     int check_contents;
+    int check_identity;
+    dev_t expected_dev;
+    ino_t expected_ino;
 };
 
 static void c2c_test_unlink_hook(const char *ready_env,
@@ -513,6 +516,9 @@ static int c2c_prepare_unlink_exchanged_at(int dirfd, const char *base,
                                            unsigned int seed,
                                            const char *expected,
                                            size_t expected_len,
+                                           int check_identity,
+                                           dev_t expected_dev,
+                                           ino_t expected_ino,
                                            struct c2c_prepared_unlink *p)
 {
     int flags = O_RDONLY;
@@ -527,6 +533,9 @@ static int c2c_prepare_unlink_exchanged_at(int dirfd, const char *base,
     p->expected = expected;
     p->expected_len = expected_len;
     p->check_contents = 1;
+    p->check_identity = check_identity;
+    p->expected_dev = expected_dev;
+    p->expected_ino = expected_ino;
     memcpy(p->base, base, strlen(base) + 1);
     p->fd = openat(dirfd, base, flags);
     if (p->fd < 0)
@@ -534,6 +543,9 @@ static int c2c_prepare_unlink_exchanged_at(int dirfd, const char *base,
     struct stat named;
     if (fstat(p->fd, &p->before) < 0 || !S_ISREG(p->before.st_mode)
         || p->before.st_nlink != 1
+        || (p->check_identity
+            && (p->before.st_dev != p->expected_dev
+                || p->before.st_ino != p->expected_ino))
         || fstatat(dirfd, base, &named, AT_SYMLINK_NOFOLLOW) < 0
         || !S_ISREG(named.st_mode) || named.st_dev != p->before.st_dev
         || named.st_ino != p->before.st_ino
@@ -771,7 +783,35 @@ CAMLprim value caml_c2c_unlink_regular_if_contents_confirmed(value vpath,
     if (c2c_prepare_unlink_exchanged_at(dirfd, base, 200,
                                         String_val(vexpected),
                                         caml_string_length(vexpected),
+                                        0, 0, 0,
                                         &prepared) == 1) {
+        result = c2c_finish_unlink_at(dirfd, &prepared);
+    }
+    flock(dirfd, LOCK_UN);
+    close(dirfd);
+    CAMLreturn(result ? Val_true : Val_false);
+#else
+    CAMLreturn(Val_false);
+#endif
+}
+
+CAMLprim value caml_c2c_unlink_regular_if_identity_and_contents_confirmed(
+    value vpath, value vdev, value vino, value vexpected)
+{
+    CAMLparam4(vpath, vdev, vino, vexpected);
+#ifdef __linux__
+    const char *path = String_val(vpath);
+    char parent[PATH_MAX], base[NAME_MAX + 1];
+    int dirfd = c2c_open_locked_parent(path, parent, sizeof(parent), base,
+                                       sizeof(base));
+    if (dirfd < 0)
+        CAMLreturn(Val_false);
+    struct c2c_prepared_unlink prepared;
+    int result = 0;
+    if (c2c_prepare_unlink_exchanged_at(
+            dirfd, base, 201, String_val(vexpected),
+            caml_string_length(vexpected), 1, (dev_t)Int64_val(vdev),
+            (ino_t)Int64_val(vino), &prepared) == 1) {
         result = c2c_finish_unlink_at(dirfd, &prepared);
     }
     flock(dirfd, LOCK_UN);
@@ -1081,6 +1121,21 @@ static long c2c_proc_pgrp_id(pid_t pid)
     return result;
 }
 
+/* Test-only seam for the PID-reuse regression.  A real replacement can have
+   the same PGID as the process selected by the /proc scan; forcing the
+   post-pidfd generation check to disagree lets the test exercise that fail-
+   closed branch deterministically without trying to exhaust the host's PID
+   space. */
+static int c2c_test_pidfd_member_generation_mismatch(pid_t pid)
+{
+    const char *value = getenv("C2C_TEST_PIDFD_MEMBER_MISMATCH_PID");
+    if (value == NULL || *value == '\0')
+        return 0;
+    char *end = NULL;
+    long selected = strtol(value, &end, 10);
+    return end != value && *end == '\0' && selected == (long)pid;
+}
+
 /* Signal every process currently observed in one exact process group through
    its own pidfd. The owner pidfd is opened and generation-checked before the
    directory scan; every member fd remains bound to the process instance that
@@ -1117,7 +1172,10 @@ static int c2c_pidfd_send_group_if_member_start_time(pid_t group_pid,
         if (end == entry->d_name || *end != '\0' || candidate <= 0
             || candidate == (long)owner_pid)
             continue;
-        if (c2c_proc_pgrp_id((pid_t)candidate) != group_pid)
+        long candidate_start = c2c_proc_start_ticks((pid_t)candidate);
+        if (candidate_start <= 0
+            || c2c_proc_pgrp_id((pid_t)candidate) != group_pid
+            || c2c_proc_start_ticks((pid_t)candidate) != candidate_start)
             continue;
         if (count >= sizeof(fds) / sizeof(fds[0])) {
             complete = 0;
@@ -1130,6 +1188,19 @@ static int c2c_pidfd_send_group_if_member_start_time(pid_t group_pid,
             if (errno == ESRCH || errno == ENOENT) continue;
             complete = 0;
             break;
+        }
+        /* pidfd_open binds [fd] to one process instance, but the numeric
+           /proc reads above can straddle a PID exit/reuse.  Re-read the
+           candidate generation after opening the pidfd and only retain the fd
+           when it is still the same process in the selected group.  A
+           mismatch or unreadable generation skips that non-owner member; the
+           separately validated owner/sentinel remains authoritative. */
+        long after_start = c2c_proc_start_ticks((pid_t)candidate);
+        if (c2c_test_pidfd_member_generation_mismatch((pid_t)candidate)
+            || after_start <= 0 || after_start != candidate_start
+            || c2c_proc_pgrp_id((pid_t)candidate) != group_pid) {
+            close(fd);
+            continue;
         }
         fds[count++] = fd;
     }

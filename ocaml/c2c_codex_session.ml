@@ -2200,14 +2200,15 @@ let daemon_handoff_generation_gone ~frontend_pid ~frontend_start_time =
      | C2c_pid_identity.Generation _ | C2c_pid_identity.Unreadable -> false
 
 let remove_handoff_receipt_after_generation_gone ~path ~frontend_pid
-    ~frontend_start_time ~contents =
+    ~frontend_start_time ~identity ~contents =
   daemon_handoff_generation_gone ~frontend_pid ~frontend_start_time
-  && C2c_start.remove_path_contents_confirmed path contents
+  && C2c_start.remove_path_identity_contents_confirmed path identity contents
 
 type daemon_handoff_cleanup_capture =
   | Handoff_missing
   | Handoff_captured of {
       contents : string;
+      identity : C2c_start.regular_file_identity;
       frontend_pid : int;
       frontend_start_time : int;
     }
@@ -2215,17 +2216,18 @@ type daemon_handoff_cleanup_capture =
 
 let capture_daemon_handoff_receipt ~path ~frontend_pid
     ~frontend_start_time : daemon_handoff_cleanup_capture =
-  match C2c_start.read_regular_file_nofollow path with
-  | C2c_start.Regular_file_missing -> Handoff_missing
-  | C2c_start.Regular_file_unreadable _ -> Handoff_uncertain
-  | C2c_start.Regular_file_contents contents ->
+  match C2c_start.read_regular_file_nofollow_with_identity path with
+  | C2c_start.Regular_file_identity_missing -> Handoff_missing
+  | C2c_start.Regular_file_identity_unreadable _ -> Handoff_uncertain
+  | C2c_start.Regular_file_identity_contents (contents, identity) ->
       (match C2c_pid_identity.read_pid_generation frontend_pid with
        | C2c_pid_identity.Generation actual
          when actual = frontend_start_time
               && Option.is_some
                    (daemon_thread_handoff_thread_of_contents ~contents
                       ~frontend_pid ~frontend_start_time) ->
-           Handoff_captured { contents; frontend_pid; frontend_start_time }
+           Handoff_captured
+             { contents; identity; frontend_pid; frontend_start_time }
        | _ -> Handoff_uncertain)
 
 let remove_teardown_receipts_after_registration ~registration_cleared
@@ -2433,9 +2435,11 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                   | C2c_start.Regular_file_contents _
                   | C2c_start.Regular_file_unreadable _ -> false)
              | Handoff_uncertain -> false
-             | Handoff_captured { contents; frontend_pid; frontend_start_time } ->
+             | Handoff_captured
+                 { contents; identity; frontend_pid; frontend_start_time } ->
                  remove_handoff_receipt_after_generation_gone
-                   ~path:handoff_path ~frontend_pid ~frontend_start_time ~contents
+                   ~path:handoff_path ~frontend_pid ~frontend_start_time
+                   ~identity ~contents
            in
            let remove_teardown_receipt () =
              match !teardown_record_contents with

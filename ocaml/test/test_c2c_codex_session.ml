@@ -328,18 +328,26 @@ let test_daemon_handoff_cleanup_uses_captured_generation_and_contents () =
                 "{\"thread_id\":\"captured-thread\",\"parent_pid\":%d,\"parent_pid_start_time\":%d}\n"
                 child generation
             in
-            let write contents =
+            let write_to path contents =
               let oc = open_out path in
               Fun.protect ~finally:(fun () -> close_out oc)
                 (fun () -> output_string oc contents)
             in
-            write captured_contents;
+            write_to path captured_contents;
+            let captured_identity =
+              match C2c_start.read_regular_file_nofollow_with_identity path with
+              | C2c_start.Regular_file_identity_contents (_, identity) -> identity
+              | C2c_start.Regular_file_identity_missing
+              | C2c_start.Regular_file_identity_unreadable _ ->
+                  Alcotest.fail "handoff identity capture failed"
+            in
             Alcotest.(check (option string)) "live handoff is generation-bound"
               (Some "captured-thread")
               (S.daemon_thread_handoff_matches ~path ~frontend_pid:child);
             Alcotest.(check bool) "live generation cannot be cleaned" false
               (S.remove_handoff_receipt_after_generation_gone ~path
                  ~frontend_pid:child ~frontend_start_time:generation
+                 ~identity:captured_identity
                  ~contents:captured_contents);
             Alcotest.(check bool) "live generation is not gone" false
               (S.daemon_handoff_generation_gone ~frontend_pid:child
@@ -349,13 +357,16 @@ let test_daemon_handoff_cleanup_uses_captured_generation_and_contents () =
             Alcotest.(check bool) "reaped captured generation is gone" true
               (S.daemon_handoff_generation_gone ~frontend_pid:child
                  ~frontend_start_time:generation);
-            let replacement_contents =
-              "{\"thread_id\":\"replacement-thread\",\"parent_pid\":1,\"parent_pid_start_time\":1}\n"
-            in
-            write replacement_contents;
-            Alcotest.(check bool) "replacement contents are retained" false
+            (* The replacement deliberately has identical bytes. Contents-only
+               cleanup would consume this new inode; the captured device/inode
+               must retain it for the next generation to inspect. *)
+            let replacement_tmp = path ^ ".replacement" in
+            write_to replacement_tmp captured_contents;
+            Unix.rename replacement_tmp path;
+            Alcotest.(check bool) "identical-byte replacement is retained" false
               (S.remove_handoff_receipt_after_generation_gone ~path
                  ~frontend_pid:child ~frontend_start_time:generation
+                 ~identity:captured_identity
                  ~contents:captured_contents);
             Alcotest.(check bool) "replacement receipt remains" true
               (Sys.file_exists path);

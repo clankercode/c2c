@@ -75,14 +75,17 @@ val signal_process_group_if_owner : pidfile:string -> pid:int -> signal:int -> b
 val signal_process_group_if_generation_matches :
   pid:int -> start_time:int -> signal:int -> bool
 (** Revalidate the exact process generation and signal every currently observed
-    member of [-pid] through owner-bound pidfds. Supports SIGTERM, SIGKILL, and
-    SIGCONT. A PID/PGID replacement can only make an individual send fail,
-    never redirect it. *)
+    member of [-pid] through owner-bound pidfds. The owner is validated first;
+    each selected non-owner member is generation-checked after its pidfd is
+    opened, so a PID/PGID replacement is skipped safely. Supports SIGTERM,
+    SIGKILL, and SIGCONT. *)
 
 val signal_process_group_if_member_generation_matches :
   group_pid:int -> member_pid:int -> member_start_time:int -> signal:int -> bool
 (** Signal the members of [group_pid] through pidfds after proving that
-    [member_pid] with [member_start_time] is still in that group. *)
+    [member_pid] with [member_start_time] is still in that group. That member
+    is the owner/sentinel proof; every other selected member gets its own
+    post-pidfd generation check. *)
 
 val pid_identity_reason : pid:int -> pid_identity -> string
 (** Human-readable explanation, safe to print to an operator. *)

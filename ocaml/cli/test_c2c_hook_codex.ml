@@ -29,6 +29,11 @@ let alias_looks_generated_for_codex alias =
 
 let rec remove_tree path =
   if Sys.is_directory path then begin
+    (* Some hook fixtures deliberately make an instance directory read-only
+       before exercising a failed mapping write. Restore fixture-owned
+       permissions before removing its children so Dune can clean the temp
+       tree after the assertions finish. *)
+    (try Unix.chmod path 0o700 with _ -> ());
     Array.iter (fun child -> remove_tree (path // child)) (Sys.readdir path);
     Unix.rmdir path
   end else Sys.remove path

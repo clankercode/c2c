@@ -1068,6 +1068,16 @@ type regular_file_read =
   | Regular_file_contents of string
   | Regular_file_unreadable of string
 
+type regular_file_identity = {
+  device : int;
+  inode : int;
+}
+
+type regular_file_read_with_identity =
+  | Regular_file_identity_missing
+  | Regular_file_identity_contents of string * regular_file_identity
+  | Regular_file_identity_unreadable of string
+
 type lifecycle_path_state =
   | Lifecycle_path_present
   | Lifecycle_path_absent
@@ -1088,6 +1098,11 @@ val read_regular_file_nofollow : string -> regular_file_read
     Only [Regular_file_missing] represents confirmed absence; symlinks,
     non-regular files, replacement/open/read failures, and malformed content
     are reported as [Regular_file_unreadable] or by the caller's parser. *)
+
+val read_regular_file_nofollow_with_identity :
+  string -> regular_file_read_with_identity
+(** Read a regular lifecycle file's contents and device/inode from one
+    descriptor-bound no-follow read. *)
 
 type pidfile_state =
   | Pidfile_absent
@@ -1137,6 +1152,12 @@ val remove_path_contents_confirmed : string -> string -> bool
 (** Remove a regular lifecycle record only when its no-follow contents still
     equal the supplied record identity. Replacement or readback uncertainty
     preserves recovery state and returns [false]. *)
+
+val remove_path_identity_contents_confirmed :
+  string -> regular_file_identity -> string -> bool
+(** Remove a regular lifecycle record only when its device/inode and contents
+    still equal the captured identity. Atomic replacements with identical
+    bytes are retained. *)
 
 val remove_pid_record_pair_confirmed :
   pid_path:string -> start_time_path:string -> pid:int -> start_time:int -> bool
