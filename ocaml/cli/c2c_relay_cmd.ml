@@ -822,9 +822,14 @@ let relay_enable_cmd =
      make the unit start fail). Without systemd this is an informational
      skip, never an error. *)
   let handover () =
-    ignore
-      (C2c_relay_managed.stop_supervisor
-         ~name:C2c_relay_managed.default_instance_name ~timeout_s:5.0)
+    if not
+         (C2c_relay_managed.stop_supervisor
+            ~name:C2c_relay_managed.default_instance_name ~timeout_s:5.0)
+    then begin
+      Printf.eprintf
+        "error: could not safely hand over the relay connector; retaining lifecycle records and refusing enable.\n%!";
+      exit 1
+    end
   in
   let unit_lines =
     match

@@ -153,6 +153,36 @@ let spawn_decoy dir tag =
   in
   loop ()
 
+(* Model systemd completing a stop/restart job. The fixture runner records the
+   would-be systemctl call but cannot signal a real unit, so this detached
+   helper watches that record and tears down the recorded process itself. The
+   marker proves the lifecycle ended through the fixture's systemd side. *)
+let spawn_systemd_decoy dir tag capture =
+  let pidfile = dir // Printf.sprintf "systemd-decoy-%s.pid" tag in
+  let log = dir // Printf.sprintf "systemd-decoy-%s.log" tag in
+  let capture = Filename.quote capture in
+  let cmd =
+    Printf.sprintf
+      "sh -c '/bin/sleep 61 & pid=$!; echo $pid > %s; while ! (grep -q \"systemctl --user stop c2c-relay-connect.service\" %s 2>/dev/null || grep -q \"systemctl --user restart c2c-relay-connect.service\" %s 2>/dev/null); do sleep 0.01; done; echo systemd-fixture-teardown; kill -TERM $pid; wait $pid' >> %s 2>&1 &"
+      (Filename.quote pidfile) capture capture (Filename.quote log)
+  in
+  ignore (Sys.command cmd);
+  let deadline = Unix.gettimeofday () +. 5.0 in
+  let rec loop () =
+    match
+      if Sys.file_exists pidfile then
+        int_of_string_opt (String.trim (read_file pidfile))
+      else None
+    with
+    | Some pid -> pid
+    | None when Unix.gettimeofday () >= deadline ->
+        failwith ("systemd decoy did not start: " ^ tag)
+    | None ->
+        Unix.sleepf 0.05;
+        loop ()
+  in
+  loop ()
+
 (* Scripted systemd answers for the fixture query seam. main_pid: None means
    the key is absent (query returns no answer); the unit is reported active. *)
 let write_state_file ?(is_enabled = "enabled") ?(main_pid = None) path =
@@ -211,9 +241,9 @@ let test_stop_delegates_when_unit_owns () =
   let capture = root // "systemctl.log" in
   let state = root // "state.json" in
   mkdir_p inst;
-  let decoy = spawn_decoy root "outer" in
+  let decoy = spawn_systemd_decoy root "outer" capture in
   Fun.protect ~finally:(fun () -> kill9 decoy; reap decoy) @@ fun () ->
-  write_file (inst // "outer.pid") (Printf.sprintf "%d\n" decoy);
+  write_pid_generation (inst // "outer.pid") decoy;
   write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
   write_state_file state ~main_pid:(Some decoy);
   let env = b302_env ~home ~instances ~state:(Some state) ~capture ~relay_cfg:"" in
@@ -225,8 +255,14 @@ let test_stop_delegates_when_unit_owns () =
     (contains ~haystack:out ~needle:"c2c-relay-connect.service");
   check bool "delegation is mentioned" true
     (contains ~haystack:out ~needle:"systemctl");
-  check bool "supervisor pid NOT signalled directly (systemd owns it)" true
-    (pid_alive decoy);
+  check bool "systemd fixture tears down the supervisor" true
+    (wait_until ~timeout:5.0 (fun () -> not (pid_alive decoy)));
+  check bool "systemd-side teardown is recorded" true
+    (contains ~haystack:(read_file (root // "systemd-decoy-outer.log"))
+       ~needle:"systemd-fixture-teardown");
+  check bool "outer lifecycle records are cleaned" true
+    (not (Sys.file_exists (inst // "outer.pid"))
+     && not (Sys.file_exists (inst // "outer.pid.start-time")));
   check bool "keep-it-off hint printed" true
     (contains ~haystack:out ~needle:"c2c relay disable")
 
@@ -242,9 +278,9 @@ let test_main_pid_legacy_form_still_owns () =
   let capture = root // "systemctl.log" in
   let state = root // "state.json" in
   mkdir_p inst;
-  let decoy = spawn_decoy root "outer" in
+  let decoy = spawn_systemd_decoy root "legacy-mainpid" capture in
   Fun.protect ~finally:(fun () -> kill9 decoy; reap decoy) @@ fun () ->
-  write_file (inst // "outer.pid") (Printf.sprintf "%d\n" decoy);
+  write_pid_generation (inst // "outer.pid") decoy;
   write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
   write_file state
     (Printf.sprintf
@@ -255,7 +291,11 @@ let test_main_pid_legacy_form_still_owns () =
   check int "stop exits 0" 0 rc;
   check bool "legacy MainPID form still classified as unit-owned" true
     (contains ~haystack:(read_file capture) ~needle:unit_stop_line);
-  check bool "supervisor not signalled" true (pid_alive decoy)
+  check bool "systemd fixture tears down legacy-mainpid supervisor" true
+    (wait_until ~timeout:5.0 (fun () -> not (pid_alive decoy)));
+  check bool "legacy-mainpid lifecycle records are cleaned" true
+    (not (Sys.file_exists (inst // "outer.pid"))
+     && not (Sys.file_exists (inst // "outer.pid.start-time")))
 
 (* --- (b) restart with the unit active delegates ----------------------------- *)
 
@@ -267,9 +307,9 @@ let test_restart_delegates_when_unit_owns () =
   let capture = root // "systemctl.log" in
   let state = root // "state.json" in
   mkdir_p inst;
-  let decoy = spawn_decoy root "outer" in
+  let decoy = spawn_systemd_decoy root "restart" capture in
   Fun.protect ~finally:(fun () -> kill9 decoy; reap decoy) @@ fun () ->
-  write_file (inst // "outer.pid") (Printf.sprintf "%d\n" decoy);
+  write_pid_generation (inst // "outer.pid") decoy;
   write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
   write_state_file state ~main_pid:(Some decoy);
   let env = b302_env ~home ~instances ~state:(Some state) ~capture ~relay_cfg:"" in
@@ -277,7 +317,11 @@ let test_restart_delegates_when_unit_owns () =
   check int "restart exits 0" 0 rc;
   check bool "capture records the systemctl restart" true
     (contains ~haystack:(read_file capture) ~needle:unit_restart_line);
-  check bool "no direct kill of the supervisor pid" true (pid_alive decoy);
+  check bool "systemd fixture tears down restart supervisor" true
+    (wait_until ~timeout:5.0 (fun () -> not (pid_alive decoy)));
+  check bool "restart cleans the old outer lifecycle records" true
+    (not (Sys.file_exists (inst // "outer.pid"))
+     && not (Sys.file_exists (inst // "outer.pid.start-time")));
   check bool "legacy relaunch did NOT run" true
     (not (contains ~haystack:out ~needle:"relaunching machine-wide relay connector"))
 
@@ -339,9 +383,9 @@ let test_unit_inactive_falls_through_to_legacy () =
 let write_rogue_shape ~root ~instances ~state ~capture ~outer_pid ~child_pid =
   let inst = instances // "relay-connect" in
   mkdir_p inst;
-  write_file (inst // "outer.pid") (Printf.sprintf "%d\n" outer_pid);
+  write_pid_generation (inst // "outer.pid") outer_pid;
   if child_pid > 0 then
-    write_file (inst // "connector.pid") (Printf.sprintf "%d\n" child_pid);
+    write_pid_generation (inst // "connector.pid") child_pid;
   write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
   (* MainPID differs from the live outer → non-systemd supervisor holds the
      singleton while the unit is active (the live B302 incident shape). *)
@@ -411,12 +455,12 @@ let test_delegated_stop_sweeps_recorded_child () =
   let capture = root // "systemctl.log" in
   let state = root // "state.json" in
   mkdir_p inst;
-  let decoy = spawn_decoy root "outer" in
+  let decoy = spawn_systemd_decoy root "delegated-child" capture in
   let child = spawn_decoy root "child" in
   Fun.protect ~finally:(fun () -> kill9 decoy; kill9 child; reap decoy; reap child)
     @@ fun () ->
-  write_file (inst // "outer.pid") (Printf.sprintf "%d\n" decoy);
-  write_file (inst // "connector.pid") (Printf.sprintf "%d\n" child);
+  write_pid_generation (inst // "outer.pid") decoy;
+  write_pid_generation (inst // "connector.pid") child;
   write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
   write_state_file state ~main_pid:(Some decoy);
   let env = b302_env ~home ~instances ~state:(Some state) ~capture ~relay_cfg:"" in
@@ -424,7 +468,8 @@ let test_delegated_stop_sweeps_recorded_child () =
   check int "stop exits 0" 0 rc;
   check bool "capture records the systemctl stop" true
     (contains ~haystack:(read_file capture) ~needle:unit_stop_line);
-  check bool "outer untouched (unit owns it)" true (pid_alive decoy);
+  check bool "systemd fixture tears down the outer" true
+    (wait_until ~timeout:5.0 (fun () -> not (pid_alive decoy)));
   check bool "recorded child swept (no duplicate connector)" true
     (wait_until ~timeout:5.0 (fun () -> not (pid_alive child)))
 
@@ -449,7 +494,7 @@ let test_stop_sweeps_child_after_outer_sigkilled () =
   write_pid_generation outer_pid_path dead_outer;
   kill9 dead_outer;
   reap dead_outer;
-  write_file (inst // "connector.pid") (Printf.sprintf "%d\n" child);
+  write_pid_generation (inst // "connector.pid") child;
   write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
   check bool "outer is gone" true
     (wait_until ~timeout:5.0 (fun () -> not (pid_alive dead_outer)));
@@ -466,8 +511,47 @@ let test_stop_sweeps_child_after_outer_sigkilled () =
     (read_file capture = "");
   check bool "recorded child swept after the outer was SIGKILLed" true
     (wait_until ~timeout:5.0 (fun () -> not (pid_alive child)));
+  check bool "outer generation records cleaned after SIGKILL recovery" true
+    (wait_until ~timeout:5.0 (fun () ->
+         not (Sys.file_exists outer_pid_path)
+         && not (Sys.file_exists (outer_pid_path ^ ".start-time"))));
   check bool "connector.pid cleaned up" true
     (wait_until ~timeout:5.0 (fun () -> not (Sys.file_exists (inst // "connector.pid"))))
+
+(* A live PID with a replaced generation is a foreign process. The direct
+   stop path must refuse it, preserve both records for recovery, and never
+   claim success or signal the replacement. *)
+let test_mismatched_outer_generation_refuses_stop () =
+  with_temp_dir @@ fun root ->
+  let home = root // "home" in
+  let instances = root // "instances" in
+  let inst = instances // "relay-connect" in
+  let capture = root // "systemctl.log" in
+  let state = root // "state.json" in
+  mkdir_p inst;
+  let replacement = spawn_decoy root "replacement" in
+  Fun.protect ~finally:(fun () -> kill9 replacement; reap replacement) @@ fun () ->
+  let outer_pid_path = inst // "outer.pid" in
+  write_pid_generation outer_pid_path replacement;
+  let actual =
+    match C2c_broker.read_pid_start_time replacement with
+    | Some generation -> generation
+    | None -> fail "replacement generation unavailable"
+  in
+  write_file (outer_pid_path ^ ".start-time") (Printf.sprintf "%d\n" (actual + 1));
+  write_managed_config ~inst_dir:inst ~url:"https://relay.b302.example";
+  write_file state {|{"is-active": "inactive", "is-enabled": "enabled", "main-pid": "0"}|};
+  let env = b302_env ~home ~instances ~state:(Some state) ~capture ~relay_cfg:"" in
+  let rc, out = run_c2c ~env [ "stop"; "relay-connect" ] (root // "stop.log") in
+  check bool "mismatched generation stop fails" true (rc <> 0);
+  check bool "replacement process survives" true (pid_alive replacement);
+  check bool "explains generation refusal" true
+    (contains ~haystack:out ~needle:"generation");
+  check bool "outer PID record retained" true (Sys.file_exists outer_pid_path);
+  check bool "outer generation record retained" true
+    (Sys.file_exists (outer_pid_path ^ ".start-time"));
+  check bool "no systemctl mutation on direct refusal" true
+    (read_file capture = "")
 
 (* --- (e) existing systemd helpers still behave ------------------------------ *)
 
@@ -539,6 +623,8 @@ let () =
     "B302 stop_supervisor completeness", [
       test_case "stop sweeps the recorded child after the outer is SIGKILLed" `Quick
         test_stop_sweeps_child_after_outer_sigkilled;
+      test_case "mismatched outer generation refuses direct stop" `Quick
+        test_mismatched_outer_generation_refuses_stop;
     ];
     "B296 helpers unchanged", [
       test_case "unit text + delegation runners still behave" `Quick

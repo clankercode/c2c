@@ -100,21 +100,6 @@ let json_to_file path json =
       output_string oc (Yojson.Safe.pretty_to_string json);
       output_char oc '\n')
 
-let write_pidfile path pid =
-  let oc = open_out path in
-  Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
-      output_string oc (string_of_int pid);
-      output_char oc '\n')
-
-let read_pidfile path =
-  if not (Sys.file_exists path) then None
-  else
-    try
-      let ic = open_in path in
-      Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
-          int_of_string_opt (String.trim (input_line ic)))
-    with _ -> None
-
 let pid_alive pid =
   try Unix.kill pid 0; true with Unix.Unix_error _ -> false
 
@@ -177,31 +162,105 @@ let connector_argv ~self ~broker_root ~relay_url ~interval ~extra_args =
   Option.iter (fun u -> argv := !argv @ [ "--relay-url"; u ]) relay_url;
   !argv @ [ "--interval"; string_of_int interval ] @ extra_args
 
-let remove_pidfile_if_owned path =
-  match read_pidfile path with
-  | Some pid when pid = Unix.getpid () -> (try Unix.unlink path with _ -> ())
-  | _ -> ()
-
 (* The shared managed-instance stop path treats a PID without its exact
-   generation sibling as uncertain.  Relay-connect predates that contract, so
-   keep the legacy test/supervisor entry point tolerant while removing a
-   published pair through the same identity-pinned helper as c2c_start. *)
+   generation sibling as uncertain. Relay lifecycle records use the same
+   contract: never signal or clear a PID unless both records still name the
+   captured generation. *)
 let remove_outer_pid_record_if_owned pid_path =
   let start_time_path = pid_path ^ ".start-time" in
   match C2c_start.read_pid_record ~pid_path ~start_time_path with
   | C2c_start.Pid_record_present (pid, start_time)
     when pid = Unix.getpid () ->
-      ignore
-        (C2c_start.remove_pid_record_pair_confirmed
-           ~pid_path ~start_time_path ~pid ~start_time)
-  | C2c_start.Pid_record_absent -> ()
-  | C2c_start.Pid_record_unknown ->
-      (* Unit tests and older callers can invoke [supervise] after writing only
-         outer.pid. Preserve that cleanup behavior, but retain any uncertain
-         sidecar for stale-record recovery. *)
-      if not (Sys.file_exists start_time_path) then
-        remove_pidfile_if_owned pid_path
+      (match C2c_pid_identity.read_pid_generation pid with
+       | C2c_pid_identity.Generation actual when actual = start_time ->
+           ignore
+             (C2c_start.remove_pid_record_pair_confirmed
+                ~pid_path ~start_time_path ~pid ~start_time)
+       | _ -> ())
+  | C2c_start.Pid_record_absent
+  | C2c_start.Pid_record_unknown
   | C2c_start.Pid_record_present _ -> ()
+
+let generation_matches ~pid ~start_time =
+  match C2c_pid_identity.read_pid_generation pid with
+  | C2c_pid_identity.Generation actual when actual = start_time ->
+      C2c_pid_identity.proc_tgid pid = Some pid
+  | _ -> false
+
+let record_matches ~pid_path ~start_time_path ~pid ~start_time =
+  match C2c_start.read_pid_record ~pid_path ~start_time_path with
+  | C2c_start.Pid_record_present (recorded_pid, recorded_start) ->
+      recorded_pid = pid && recorded_start = start_time
+  | C2c_start.Pid_record_absent
+  | C2c_start.Pid_record_unknown -> false
+
+(* Signal a captured generation through a pidfd. The pair is reread directly
+   before every signal, and the pidfd helper repeats the kernel generation
+   check, so a recycled or replaced PID cannot receive TERM or KILL. *)
+let signal_recorded_pid ~pid_path ~start_time_path ~pid ~start_time ~signal =
+  record_matches ~pid_path ~start_time_path ~pid ~start_time
+  && generation_matches ~pid ~start_time
+  && C2c_pid_identity.signal_pid_if_generation_matches ~pid ~start_time ~signal
+
+type recorded_pid_state =
+  | Recorded_absent
+  | Recorded_unknown
+  | Recorded_present of int * int
+
+let read_recorded_pid ~pid_path : recorded_pid_state =
+  match C2c_start.read_pid_record ~pid_path ~start_time_path:(pid_path ^ ".start-time") with
+  | C2c_start.Pid_record_absent -> Recorded_absent
+  | C2c_start.Pid_record_unknown -> Recorded_unknown
+  | C2c_start.Pid_record_present (pid, start_time) -> Recorded_present (pid, start_time)
+
+let generation_gone ~pid ~start_time =
+  match C2c_pid_identity.read_pid_generation pid with
+  | C2c_pid_identity.Absent -> true
+  | C2c_pid_identity.Generation actual when actual = start_time -> false
+  | C2c_pid_identity.Generation _
+  | C2c_pid_identity.Unreadable -> false
+
+(* Wait only for the captured generation to disappear. A replacement process or
+   an unreadable /proc entry is uncertainty, not successful teardown. *)
+let wait_generation_gone ~pid_path ~start_time_path ~pid ~start_time ~timeout_s =
+  let deadline = Unix.gettimeofday () +. timeout_s in
+  let rec loop () =
+    if not (record_matches ~pid_path ~start_time_path ~pid ~start_time) then false
+    else if generation_gone ~pid ~start_time then true
+    else if Unix.gettimeofday () >= deadline then false
+    else (Unix.sleepf 0.05; loop ())
+  in
+  loop ()
+
+let remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time =
+  C2c_start.remove_pid_record_pair_confirmed
+    ~pid_path ~start_time_path ~pid ~start_time
+
+(* Stop exactly the record captured by the caller. The record is reread before
+   each signal and before cleanup, so a supervisor restart cannot turn this
+   operation into a signal or unlink against the replacement owner. *)
+let stop_recorded_generation ~pid_path ~start_time_path ~pid ~start_time
+    ~timeout_s =
+  let gone () =
+    record_matches ~pid_path ~start_time_path ~pid ~start_time
+    && generation_gone ~pid ~start_time
+  in
+  if gone () then remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time
+  else if pid = Unix.getpid () then false
+  else if not (generation_matches ~pid ~start_time) then false
+  else if not (signal_recorded_pid ~pid_path ~start_time_path ~pid ~start_time
+                 ~signal:Sys.sigterm)
+  then false
+  else if wait_generation_gone ~pid_path ~start_time_path ~pid ~start_time
+            ~timeout_s
+  then remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time
+  else if not (signal_recorded_pid ~pid_path ~start_time_path ~pid ~start_time
+                ~signal:Sys.sigkill)
+  then false
+  else if wait_generation_gone ~pid_path ~start_time_path ~pid ~start_time
+             ~timeout_s:1.0
+  then remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time
+  else false
 
 let child_status_code = function
   | Unix.WEXITED n -> n
@@ -243,31 +302,41 @@ let redirect_daemon_stdio log_path =
 let supervise ~self ~argv ~log_path ~pid_path ~foreground =
   let stopping = ref false in
   let child = ref None in
+  let child_generation = ref None in
   (* B302: the connector child is singleton-exempt (supervised_child_env), so
      a supervisor that dies without running its handlers (SIGKILL, OOM) leaves
      it polling forever — a duplicate-connector 429 storm no new supervisor
      can see. Record the child so every stop path can sweep it. *)
   let connector_pid_path = Filename.dirname pid_path // "connector.pid" in
+  let signal_child signal =
+    match !child, !child_generation with
+    | Some pid, Some start_time ->
+        C2c_pid_identity.signal_pid_if_generation_matches
+          ~pid ~start_time ~signal
+    | _ -> false
+  in
   let request_stop _ =
     stopping := true;
-    match !child with
-    | Some pid -> (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ())
-    | None -> ()
+    ignore (signal_child Sys.sigterm)
   in
   Sys.set_signal Sys.sigterm (Sys.Signal_handle request_stop);
   Sys.set_signal Sys.sigint (Sys.Signal_handle request_stop);
   let cleanup () =
+    ignore (signal_child Sys.sigterm);
     (match !child with
-     | Some pid -> (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ())
-     | None -> ());
-    (match !child with
-     | Some pid -> (
+     | Some pid ->
          (* Unlink only when the record still names the child we spawned; a
             rewritten record belongs to a newer launch. *)
-         match read_pidfile connector_pid_path with
-         | Some recorded when recorded = pid ->
-             (try Unix.unlink connector_pid_path with _ -> ())
-         | _ -> ())
+         (match !child_generation with
+          | Some start_time
+            when record_matches ~pid_path:connector_pid_path
+                   ~start_time_path:(connector_pid_path ^ ".start-time")
+                   ~pid ~start_time ->
+              ignore
+                (remove_recorded_pair ~pid_path:connector_pid_path
+                   ~start_time_path:(connector_pid_path ^ ".start-time")
+                   ~pid ~start_time)
+          | _ -> ())
      | None -> ());
     remove_outer_pid_record_if_owned pid_path
   in
@@ -280,7 +349,15 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
       let launched_stamp = binary_stamp self in
       let pid = spawn_connector ~self ~argv ~log_path ~foreground in
       child := Some pid;
-      write_pidfile connector_pid_path pid;
+      child_generation :=
+        (match C2c_pid_identity.read_pid_generation pid with
+         | C2c_pid_identity.Generation start_time ->
+             C2c_start.write_pid_generation
+               ~pid_path:connector_pid_path
+               ~start_time_path:(connector_pid_path ^ ".start-time") pid;
+             Some start_time
+         | C2c_pid_identity.Absent
+         | C2c_pid_identity.Unreadable -> None);
       let rec monitor () =
         match Unix.waitpid [ Unix.WNOHANG ] pid with
         | 0, _ when !stopping ->
@@ -288,9 +365,10 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
         | 0, _ when binary_changed ~before:launched_stamp ~after:(binary_stamp self) ->
             Printf.eprintf
               "[c2c relay-connect] c2c executable updated; restarting connector\n%!";
-            (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+            ignore (signal_child Sys.sigterm);
             ignore (Unix.waitpid [] pid);
             child := None;
+            child_generation := None;
             `Restart
         | 0, _ when C2c_instance_log.oversized log_path ->
             (* B298: the running child holds the log fd, so rotation must not
@@ -298,13 +376,15 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
                the relaunch do the rename with no writer on the fresh file. *)
             Printf.eprintf
               "[c2c relay-connect] instance log over cap; restarting connector to rotate\n%!";
-            (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
+            ignore (signal_child Sys.sigterm);
             ignore (Unix.waitpid [] pid);
             child := None;
+            child_generation := None;
             `Restart
         | 0, _ -> Unix.sleepf 0.5; monitor ()
         | _, status ->
             child := None;
+            child_generation := None;
             if !stopping then `Exit 0 else `Exit (child_status_code status)
       in
       match monitor () with
@@ -420,27 +500,30 @@ let read_managed_config ~name : managed_config option =
    when nothing recorded is still alive. *)
 let stop_recorded_connector_child ~name ~timeout_s : bool =
   let path = instances_dir () // name // "connector.pid" in
-  match read_pidfile path with
-  | Some pid when pid <> Unix.getpid () && pid_alive pid
-                  && not (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:path ~pid) ->
-      (* #85: the number is live but was recycled onto another process. *)
-      true
-  | Some pid when pid <> Unix.getpid () && pid_alive pid ->
-      (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
-      let deadline = Unix.gettimeofday () +. timeout_s in
-      let rec wait () =
-        if not (pid_alive pid) then true
-        else if Unix.gettimeofday () >= deadline then begin
-          (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
-          Unix.sleepf 0.2;
-          not (pid_alive pid)
-        end
-        else (Unix.sleepf 0.1; wait ())
-      in
-      let stopped = wait () in
-      if stopped then (try Unix.unlink path with _ -> ());
-      stopped
-  | _ -> true
+  let start_time_path = path ^ ".start-time" in
+  match read_recorded_pid ~pid_path:path with
+  | Recorded_absent -> true
+  | Recorded_unknown ->
+      Printf.eprintf
+        "[c2c stop] refusing to inspect uncertain relay connector child records; retaining %s\n%!"
+        path;
+      false
+  | Recorded_present (pid, _) when pid = Unix.getpid () ->
+      Printf.eprintf
+        "[c2c stop] refusing to signal relay connector child record for this process; retaining %s\n%!"
+        path;
+      false
+  | Recorded_present (pid, start_time) ->
+      if not (generation_matches ~pid ~start_time)
+         && not (generation_gone ~pid ~start_time)
+      then begin
+        Printf.eprintf
+          "[c2c stop] refusing to signal relay connector child pid %d; generation is missing or mismatched (retaining %s)\n%!"
+          pid path;
+        false
+      end
+      else stop_recorded_generation ~pid_path:path ~start_time_path ~pid
+             ~start_time ~timeout_s
 
 (* Stop the supervisor recorded in the instance's outer.pid (SIGTERM, then
    SIGKILL after [timeout_s]), then sweep the recorded connector child —
@@ -449,30 +532,97 @@ let stop_recorded_connector_child ~name ~timeout_s : bool =
    still alive after the SIGKILL fallback. *)
 let stop_supervisor ~name ~timeout_s : bool =
   let pid_path = instances_dir () // name // "outer.pid" in
+  let start_time_path = pid_path ^ ".start-time" in
+  (* Capture both owners before signalling either one. If the outer supervisor
+     is replaced while it is being stopped, the child record from that newer
+     launch must remain untouched for its owner. *)
+  let outer_record = read_recorded_pid ~pid_path in
+  let child_path = instances_dir () // name // "connector.pid" in
+  let child_start_time_path = child_path ^ ".start-time" in
+  let child_record = read_recorded_pid ~pid_path:child_path in
   let outer_stopped =
-    match read_pidfile pid_path with
-    | Some pid when pid_alive pid
-                    && not (C2c_pid_identity.pidfile_pid_is_ours ~pidfile:pid_path ~pid) ->
-        (* #85: the number is live but was recycled onto another process. There is
-           no supervisor to stop, and signalling it would hit a stranger. *)
-        true
-    | Some pid when pid_alive pid ->
-        (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
-        let deadline = Unix.gettimeofday () +. timeout_s in
-        let rec wait () =
-          if not (pid_alive pid) then true
-          else if Unix.gettimeofday () >= deadline then begin
-            (try Unix.kill pid Sys.sigkill with Unix.Unix_error _ -> ());
-            Unix.sleepf 0.2;
-            not (pid_alive pid)
-          end
-          else (Unix.sleepf 0.1; wait ())
-        in
-        wait ()
-    | _ -> true
+    match outer_record with
+    | Recorded_absent -> true
+    | Recorded_unknown ->
+        Printf.eprintf
+          "[c2c stop] refusing to inspect uncertain relay supervisor records; retaining %s\n%!"
+          pid_path;
+        false
+    | Recorded_present (pid, _) when pid = Unix.getpid () ->
+        Printf.eprintf
+          "[c2c stop] refusing to signal relay supervisor record for this process; retaining %s\n%!"
+          pid_path;
+        false
+    | Recorded_present (pid, start_time) ->
+        if not (generation_matches ~pid ~start_time)
+           && not (generation_gone ~pid ~start_time)
+        then begin
+          Printf.eprintf
+            "[c2c stop] refusing to signal relay supervisor pid %d; generation is missing or mismatched (retaining %s)\n%!"
+            pid pid_path;
+          false
+        end
+        else stop_recorded_generation ~pid_path ~start_time_path ~pid
+               ~start_time ~timeout_s
   in
-  let child_stopped = stop_recorded_connector_child ~name ~timeout_s in
+  let child_stopped =
+    match child_record with
+    | Recorded_absent -> true
+    | Recorded_unknown ->
+        Printf.eprintf
+          "[c2c stop] refusing to inspect uncertain relay connector child records; retaining %s\n%!"
+          child_path;
+        false
+    | Recorded_present (pid, _) when pid = Unix.getpid () ->
+        Printf.eprintf
+          "[c2c stop] refusing to signal relay connector child record for this process; retaining %s\n%!"
+          child_path;
+        false
+    | Recorded_present (pid, start_time) ->
+        if not (generation_matches ~pid ~start_time)
+           && not (generation_gone ~pid ~start_time)
+        then begin
+          Printf.eprintf
+            "[c2c stop] refusing to signal relay connector child pid %d; generation is missing or mismatched (retaining %s)\n%!"
+            pid child_path;
+          false
+        end
+        else
+          stop_recorded_generation ~pid_path:child_path
+            ~start_time_path:child_start_time_path ~pid ~start_time ~timeout_s
+  in
   outer_stopped && child_stopped
+
+(* A systemd stop can SIGKILL the foreground supervisor before its OCaml
+   cleanup handler runs. Remove that stale pair only when the record is still
+   the exact pair captured before the unit operation and its generation is
+   confirmed gone. A replacement record is left to its owner; restart may
+   legitimately install one while the unit comes back. *)
+let cleanup_captured_outer_record ~name ~captured ~allow_replacement =
+  let pid_path = instances_dir () // name // "outer.pid" in
+  let start_time_path = pid_path ^ ".start-time" in
+  match captured with
+  | Recorded_unknown -> false
+  | Recorded_absent ->
+      (match read_recorded_pid ~pid_path with
+       | Recorded_absent -> true
+       | Recorded_present _ -> allow_replacement
+       | Recorded_unknown -> false)
+  | Recorded_present (pid, start_time) ->
+      (match read_recorded_pid ~pid_path with
+       | Recorded_absent -> true
+       | Recorded_unknown -> false
+       | Recorded_present (current_pid, current_start)
+         when current_pid = pid && current_start = start_time ->
+           if generation_gone ~pid ~start_time then
+             remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time
+           else if
+             wait_generation_gone ~pid_path ~start_time_path ~pid ~start_time
+               ~timeout_s:1.0
+           then
+             remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time
+           else false
+       | Recorded_present _ -> allow_replacement)
 
 (* B302: who owns the machine-wide relay connector right now?
    - Unit_owns_connector: the systemd --user unit is running (or
@@ -488,6 +638,7 @@ let stop_supervisor ~name ~timeout_s : bool =
 type unit_ownership =
   | Unit_owns_connector
   | Unit_retrying_rogue_holds_lock of int  (* live non-systemd outer pid *)
+  | Unit_ownership_uncertain of string
   | Unit_inactive
   | No_unit
 
@@ -502,14 +653,21 @@ let classify_unit_ownership ~name () : unit_ownership =
         | _ -> None
       in
       let live_outer =
-        match read_pidfile (instances_dir () // name // "outer.pid") with
-        | Some p when pid_alive p -> Some p
-        | _ -> None
+        let pid_path = instances_dir () // name // "outer.pid" in
+        match read_recorded_pid ~pid_path with
+        | Recorded_present (p, start_time) when generation_matches ~pid:p ~start_time ->
+            `Live p
+        | Recorded_present (p, start_time) when generation_gone ~pid:p ~start_time ->
+            `Stale
+        | Recorded_absent -> `Absent
+        | Recorded_unknown -> `Uncertain "outer PID records are missing or unreadable"
+        | Recorded_present _ -> `Uncertain "outer PID generation no longer matches"
       in
       match live_outer with
-      | Some outer when live_main <> Some outer ->
+      | `Uncertain reason -> Unit_ownership_uncertain reason
+      | `Live outer when live_main <> Some outer ->
           Unit_retrying_rogue_holds_lock outer
-      | _ -> Unit_owns_connector)
+      | `Live _ | `Stale | `Absent -> Unit_owns_connector)
   | Some _ -> Unit_inactive
   | None -> No_unit
 
@@ -534,6 +692,9 @@ let stop_systemd_aware ~name ~timeout_s () : systemd_stop_decision =
   else
     match classify_unit_ownership ~name () with
     | Unit_owns_connector ->
+        let captured_outer =
+          read_recorded_pid ~pid_path:(instances_dir () // name // "outer.pid")
+        in
         Printf.eprintf
           "[c2c stop] systemd unit %s owns the machine-wide relay connector \
            (Restart=always, RestartSec=5): killing the supervisor directly \
@@ -545,9 +706,15 @@ let stop_systemd_aware ~name ~timeout_s () : systemd_stop_decision =
         (match C2c_relay_systemd.unit_stop () with
          | Systemctl_ok ->
              (* A recorded child that survived the unit stop is an orphaned
-                duplicate connector — sweep it (pid-identity-guarded). *)
-             ignore (stop_recorded_connector_child ~name ~timeout_s);
-             Stop_delegated_to_unit
+                duplicate connector — sweep it (generation-guarded). *)
+             if stop_recorded_connector_child ~name ~timeout_s
+                && cleanup_captured_outer_record ~name ~captured:captured_outer
+                     ~allow_replacement:false
+             then
+               Stop_delegated_to_unit
+             else
+               Stop_delegation_failed
+                 "systemd stopped the unit, but the recorded connector child could not be safely swept; retaining lifecycle records"
          | Systemctl_failed err ->
              Stop_delegation_failed
                (Printf.sprintf
@@ -567,6 +734,11 @@ let stop_systemd_aware ~name ~timeout_s () : systemd_stop_decision =
           Stop_delegation_failed
             "the rogue supervisor survived SIGKILL; systemd cannot take over \
              until it dies — investigate with 'c2c instances'"
+    | Unit_ownership_uncertain reason ->
+        Stop_delegation_failed
+          (Printf.sprintf
+             "cannot prove the relay supervisor generation before stop: %s; retaining lifecycle records"
+             reason)
     | Unit_inactive | No_unit -> Stop_not_unit_owned
 
 (** Start the one machine-wide relay service.  A different [name] changes
@@ -651,13 +823,25 @@ let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
      FIRST — the unit's restart can only win the lock back once it is released. *)
   (match classify_unit_ownership ~name () with
    | Unit_owns_connector ->
+       let captured_outer =
+         read_recorded_pid ~pid_path:(instances_dir () // name // "outer.pid")
+       in
        Printf.printf
          "[c2c restart] systemd unit %s owns the machine-wide relay \
           connector; delegating to `systemctl --user restart %s` (a direct \
           relaunch would fight Restart=always — B302)\n%!"
          C2c_relay_systemd.unit_name C2c_relay_systemd.unit_name;
        (match C2c_relay_systemd.unit_restart () with
-        | Systemctl_ok -> exit 0
+        | Systemctl_ok ->
+            if cleanup_captured_outer_record ~name ~captured:captured_outer
+                 ~allow_replacement:true
+            then exit 0
+            else begin
+              Printf.eprintf
+                "error: systemctl --user restart %s succeeded, but the captured outer PID record is uncertain; retaining lifecycle records\n%!"
+                C2c_relay_systemd.unit_name;
+              exit 1
+            end
         | Systemctl_failed err ->
             Printf.eprintf
               "error: systemctl --user restart %s failed: %s\n\
@@ -686,6 +870,11 @@ let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
                RestartSec=5)\n%!"
               C2c_relay_systemd.unit_name err;
             exit 1)
+   | Unit_ownership_uncertain reason ->
+       Printf.eprintf
+         "error: cannot prove the relay supervisor generation before restart: %s; retaining lifecycle records\n%!"
+         reason;
+       exit 1
    | Unit_inactive | No_unit -> ());
   let env_url =
     match Sys.getenv_opt "C2C_RELAY_URL" with
@@ -723,8 +912,12 @@ let restart ?(relay_url_override : string option) ~name ~broker_root ~timeout_s
              name;
            exit 1
        | Some url ->
-           (* Best-effort: stop a prior supervised pid if any (usually none). *)
-           ignore (stop_supervisor ~name ~timeout_s);
+           if not (stop_supervisor ~name ~timeout_s) then begin
+             Printf.eprintf
+               "error: could not safely stop the prior relay connector '%s'; retaining lifecycle records and refusing restart.\n%!"
+               name;
+             exit 1
+           end;
            Printf.printf
              "[c2c restart] no managed config for '%s'; starting supervised \
               connector (B235)\n\

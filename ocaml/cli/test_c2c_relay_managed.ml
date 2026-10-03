@@ -32,6 +32,21 @@ let read_file path =
       really_input_string ic (in_channel_length ic))
   with Sys_error _ -> ""
 
+let write_pid_generation path pid =
+  let start_time_path = path ^ ".start-time" in
+  let start_time =
+    match C2c_broker.read_pid_start_time pid with
+    | Some n -> n
+    | None -> failwith "cannot read fixture process start time"
+  in
+  let write path value =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out_noerr oc) (fun () ->
+        Printf.fprintf oc "%d\n" value)
+  in
+  write path pid;
+  write start_time_path start_time
+
 let rec mkdir_p path =
   if path = "" || path = "/" || Sys.file_exists path then ()
   else (mkdir_p (Filename.dirname path); Unix.mkdir path 0o700)
@@ -306,7 +321,7 @@ let test_supervisor_restarts_child_on_binary_update () =
   write_executable_atomic binary (script "v1");
   match Unix.fork () with
   | 0 ->
-      C2c_relay_managed.write_pidfile pid_path (Unix.getpid ());
+      write_pid_generation pid_path (Unix.getpid ());
       exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
               ~log_path ~pid_path ~foreground:false)
   | supervisor ->
@@ -340,7 +355,7 @@ let test_supervisor_rotates_oversized_log_across_restarts () =
     "#!/bin/sh\nprintf 'b298crashlogpad%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\nexit 3\n";
   match Unix.fork () with
   | 0 ->
-      C2c_relay_managed.write_pidfile pid_path (Unix.getpid ());
+      write_pid_generation pid_path (Unix.getpid ());
       exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
               ~log_path ~pid_path ~foreground:false)
   | supervisor ->
@@ -374,7 +389,7 @@ let test_supervisor_restarts_connector_when_log_crosses_cap () =
     "#!/bin/sh\nprintf 'b298healthlogpad%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n";
   match Unix.fork () with
   | 0 ->
-      C2c_relay_managed.write_pidfile pid_path (Unix.getpid ());
+      write_pid_generation pid_path (Unix.getpid ());
       exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
               ~log_path ~pid_path ~foreground:false)
   | supervisor ->
