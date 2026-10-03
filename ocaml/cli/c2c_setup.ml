@@ -2091,6 +2091,14 @@ let init_configurable_client_list = String.concat ", " init_configurable_clients
 let detect_client_prefixes = [ "opencode"; "claude"; "codex-headless"; "codex"; "kimi"; "grok"; "agy"; "hermes"; "cursor"; "crush"; "muse" ]
 let start_clients = [ "claude"; "codex"; "codex-headless"; "kimi"; "opencode"; "agy"; "muse"; "crush"; "tmux"; "pty"; "relay-connect" ]
 let start_client_list = String.concat ", " start_clients
+(* B360 follow-up: install-footer enums, pinned by tests. MCP footer =
+   MCP-capable clients only (muse speaks MCP stdio, B357); hooks footer =
+   every client with an installable hooks/skill path. *)
+let mcp_install_footer_clients = [ "claude"; "codex"; "opencode"; "kimi"; "muse" ]
+let mcp_install_footer_pipe_list = String.concat "|" mcp_install_footer_clients
+let hooks_install_footer_clients =
+  [ "claude"; "codex"; "opencode"; "kimi"; "grok"; "agy"; "hermes"; "muse" ]
+let hooks_install_footer_pipe_list = String.concat "|" hooks_install_footer_clients
 
 (* codex is no longer here: its delivery is via config.toml hooks
    (`c2c hook codex`), and setup_codex ignores deliver_watch entirely
@@ -3637,7 +3645,8 @@ let run_install_tui ~alias_opt ~broker_root_opt ~dry_run =
       Printf.printf
         "\n  Binary-only install (no client MCP). CLI messaging works immediately:\n\
         \    c2c send / c2c monitor / c2c poll-inbox\n\
-        \  Opt into MCP later with: c2c install claude|codex|opencode|kimi|muse\n"
+        \  Opt into MCP later with: c2c install %s\n"
+        mcp_install_footer_pipe_list
     end;
     (* Polish: hint about faster message delivery if inotifywait is available *)
     let inotify_available =
@@ -3835,10 +3844,11 @@ let install_all_subcmd =
         Printf.printf
           "\n  Client hooks/skill were not configured (opt-in policy).\n\
           \  Pick one explicitly:\n\
-          \    c2c install claude|codex|opencode|kimi|grok|agy|hermes|muse\n\
+          \    c2c install %s\n\
           \  Or bulk opt-in (still deliberate):\n\
           \    c2c install all --with-clients\n\
           \  CLI messaging works without MCP: c2c send / c2c monitor / c2c poll-inbox\n"
+          hooks_install_footer_pipe_list
       end else begin
         Printf.printf "\n  Before sending messages, restart your CLI client (or run /reload-plugins\n  in Claude Code) and resume this session.\n";
         Printf.printf "\nRun 'c2c ping --verify' to confirm delivery is live.\n"

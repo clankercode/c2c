@@ -762,6 +762,15 @@ let test_recompute_covers_every_setup_path () =
       (owned_path (Filename.dirname sc.bundle_manifest)
       && owned_path (Filename.dirname (Filename.dirname sc.bundle_manifest))))
 
+(* B360 follow-up: install-footer enums pinned. MCP footer = MCP-capable
+   clients only; hooks footer = every installable hooks/skill path. *)
+let test_install_footer_enums_pinned () =
+  check string "mcp footer enum" "claude|codex|opencode|kimi|muse"
+    C2c_setup.mcp_install_footer_pipe_list;
+  check string "hooks footer enum"
+    "claude|codex|opencode|kimi|grok|agy|hermes|muse"
+    C2c_setup.hooks_install_footer_pipe_list
+
 let () =
   Random.self_init ();
   run "c2c_setup_muse"
@@ -804,6 +813,8 @@ let () =
             test_posture_flip_muse_in_upgrade_check_list
         ; test_case "written config pins client, no static sid" `Quick
             test_with_mcp_written_config_pins_client_no_static_sid
+        ; test_case "install footer enums pinned" `Quick
+            test_install_footer_enums_pinned
         ] )
     ; ( "refresh"
       , [ test_case "refresh only on drift (#82)" `Quick test_refresh_skill_only_on_drift ] )
