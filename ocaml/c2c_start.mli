@@ -265,6 +265,12 @@ val config_path : string -> string
 val outer_pid_path : string -> string
 (** [outer_pid_path name] returns the outer.pid path for an instance. *)
 
+val acquire_instance_lock_for_daemon_attach : name:string -> Unix.file_descr option
+(** Acquire the per-instance lifecycle lock for a direct daemon attach.
+    Managed attaches inherit the lock held by their outer supervisor and return
+    [None]; direct attaches return the newly opened descriptor, which the
+    caller must hold until all lifecycle cleanup is complete. *)
+
 val outer_pid_start_time_path : string -> string
 val inner_pid_start_time_path : string -> string
 

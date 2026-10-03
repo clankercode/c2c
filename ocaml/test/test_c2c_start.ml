@@ -775,6 +775,32 @@ let test_malformed_codex_sidecar_arm_blocks_cleanup () =
     (C2c_start.cancel_codex_daemon_sidecar_arms ~owners_dir ());
   check bool "malformed pending arm is retained" true (Sys.file_exists path)
 
+let test_nonpositive_codex_sidecar_arm_identity_blocks_cleanup () =
+  let cases = [ ("pid", 0); ("pid", -1); ("pid_start_time", 0); ("pid_start_time", -1) ] in
+  List.iter
+    (fun (field, value) ->
+      with_temp_dir @@ fun owners_dir ->
+      let token = "invalid-" ^ field ^ "-" ^ string_of_int value in
+      let pending = C2c_start.codex_daemon_sidecar_arm_pending_path ~owners_dir ~token in
+      let cancel = C2c_start.codex_daemon_sidecar_arm_cancel_path ~owners_dir ~token in
+      let lock = C2c_start.codex_daemon_sidecar_arm_lock_path ~owners_dir ~token in
+      let int_field key default = if key = field then value else default in
+      let oc = open_out pending in
+      Fun.protect ~finally:(fun () -> close_out oc)
+        (fun () ->
+          output_string oc
+            (Yojson.Safe.to_string
+               (`Assoc [ ("cancel_path", `String cancel)
+                      ; ("lock_path", `String lock)
+                      ; ("thread_id", `String "invalid")
+                      ; ("pid", `Int (int_field "pid" 1))
+                      ; ("pid_start_time", `Int (int_field "pid_start_time" 1))
+                      ; ("broker_session_id", `String "session") ]) ^ "\n"));
+      check bool (field ^ " " ^ string_of_int value ^ " blocks cleanup") false
+        (C2c_start.cancel_codex_daemon_sidecar_arms ~owners_dir ());
+      check bool "invalid arm remains" true (Sys.file_exists pending))
+    cases
+
 let test_unrelated_codex_recovery_artifact_does_not_block_session_cleanup () =
   with_temp_dir @@ fun owners_dir ->
   let path = Filename.concat owners_dir ".lease.json.c2c-rollback.foreign" in
@@ -874,7 +900,7 @@ let test_pending_arm_path_identity_blocks_cleanup () =
            (`Assoc [ ("cancel_path", `String wrong_cancel)
                   ; ("lock_path", `String lock)
                   ; ("thread_id", `String "thread")
-                  ; ("pid", `Int (-1))
+                  ; ("pid", `Int (Unix.getpid ()))
                   ; ("pid_start_time", `Null)
                   ; ("broker_session_id", `String "session") ])
          ^ "\n");
@@ -904,7 +930,7 @@ let test_pending_arm_content_replacement_is_retained () =
       (`Assoc [ ("cancel_path", `String cancel)
              ; ("lock_path", `String lock)
              ; ("thread_id", `String "thread")
-             ; ("pid", `Int (-1))
+             ; ("pid", `Int (Unix.getpid ()))
              ; ("pid_start_time", `Null)
              ; ("broker_session_id", `String "session") ])
     ^ "\n"
@@ -5962,6 +5988,29 @@ let test_managed_muse_registration_clears_prior_teardown_evidence () =
   check bool "new launcher generation clears prior evidence" false
     (Sys.file_exists evidence)
 
+let test_managed_muse_registration_failure_preserves_prior_teardown_evidence () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let name = "zz-muse-registration-failure" in
+  let evidence =
+    C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root
+      ~session_id:name
+  in
+  let prior =
+    {|{"session_id":"zz-muse-registration-failure","launcher_pid":1,"launcher_generation":2}|}
+  in
+  write_file evidence prior;
+  write_file (Filename.concat broker_root "registry.json") "{ malformed\n";
+  (match
+     C2c_start.register_managed_muse_session ~broker_root ~name ~alias:name
+       ~pid:(Unix.getpid ()) ~cwd:"/proj/muse"
+   with
+   | Error _ -> ()
+   | Ok () -> fail "malformed registry must reject Muse registration");
+  check string "failed registration preserves prior teardown evidence" prior
+    (C2c_io.read_file evidence)
+
 let test_register_managed_muse_alias_override () =
   with_temp_dir @@ fun dir ->
   let broker_root = Filename.concat dir "broker" in
@@ -7053,6 +7102,9 @@ let () =
             `Quick, test_register_managed_muse_session_persists_row )
         ; ( "managed_muse_registration_clears_prior_teardown_evidence",
             `Quick, test_managed_muse_registration_clears_prior_teardown_evidence )
+        ; ( "managed_muse_registration_failure_preserves_prior_teardown_evidence",
+            `Quick,
+            test_managed_muse_registration_failure_preserves_prior_teardown_evidence )
         ; ( "register_managed_muse_alias_override",
             `Quick, test_register_managed_muse_alias_override )
         ; ( "registration_failure_message",
@@ -7139,6 +7191,8 @@ let () =
             `Quick, test_codex_sidecar_pid_generation_guard )
         ; ( "malformed_codex_sidecar_arm_blocks_cleanup",
             `Quick, test_malformed_codex_sidecar_arm_blocks_cleanup )
+        ; ( "nonpositive_codex_sidecar_arm_identity_blocks_cleanup",
+            `Quick, test_nonpositive_codex_sidecar_arm_identity_blocks_cleanup )
         ; ( "fractional_lifecycle_integer_fields_block_cleanup",
             `Quick, test_fractional_lifecycle_integer_fields_block_cleanup )
         ; ( "pending_arm_record_removal_requires_confirmation",

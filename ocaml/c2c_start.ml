@@ -2741,9 +2741,6 @@ let managed_muse_registration_failure_message ~(name : string) ~(alias : string)
 
 let register_managed_muse_session ~(broker_root : string) ~(name : string)
     ~(alias : string) ~(pid : int) ~(cwd : string) : (unit, string) result =
-  (* A new launcher generation must not inherit completion proof from an
-     older generation with the same sticky session id. *)
-  clear_managed_teardown_evidence ~broker_root ~session_id:name;
   match
     eager_register_managed_alias ~broker_root ~session_id:name ~alias ~pid
       ~cwd ~client_type:"muse" ()
@@ -2762,7 +2759,12 @@ let register_managed_muse_session ~(broker_root : string) ~(name : string)
           with e -> Error (Printexc.to_string e))
        with
        | Error e -> Error ("registry read-back failed: " ^ e)
-       | Ok true -> Ok ()
+       | Ok true ->
+           (* Invalidate completion proof only after this generation's
+              registration has been durably confirmed. A failed registration
+              must leave the prior teardown evidence available for recovery. *)
+           clear_managed_teardown_evidence ~broker_root ~session_id:name;
+           Ok ()
        | Ok false -> Error "registry write did not persist the alias")
 
 (* True when [sid] is a real agy conversation UUID that may be passed as
@@ -2955,20 +2957,33 @@ let read_codex_sidecar_lease_state path =
         let str key =
           match List.assoc_opt key fields with Some (`String s) -> Some s | _ -> None
         in
-        let int key =
+        let positive_int key =
           match List.assoc_opt key fields with
-          | Some (`Int n) -> Some n
-          | Some (`String s) -> int_of_string_opt (String.trim s)
+          | Some (`Int n) when n > 0 -> Some n
+          | Some (`String s) ->
+              (match int_of_string_opt (String.trim s) with
+               | Some n when n > 0 -> Some n
+               | _ -> None)
           | _ -> None
         in
-        let start_time = int "sidecar_pid_start_time" in
-        (match str "socket_identity", str "thread_id", int "sidecar_pid",
+        let optional_positive_int key =
+          match List.assoc_opt key fields with
+          | None | Some `Null -> Some None
+          | Some (`Int n) when n > 0 -> Some (Some n)
+          | Some (`String s) ->
+              (match int_of_string_opt (String.trim s) with
+               | Some n when n > 0 -> Some (Some n)
+               | _ -> None)
+          | _ -> None
+        in
+        (match str "socket_identity", str "thread_id", positive_int "sidecar_pid",
+               optional_positive_int "sidecar_pid_start_time",
                str "broker_session_id" with
          | Some socket_identity, Some thread_id, Some sidecar_pid,
-           Some broker_session_id ->
+           Some sidecar_pid_start_time, Some broker_session_id ->
              Codex_sidecar_lease_present
                { lease_path = path; socket_identity; thread_id; sidecar_pid;
-                 sidecar_pid_start_time = start_time; broker_session_id }
+                 sidecar_pid_start_time; broker_session_id }
          | _ -> Codex_sidecar_lease_unreadable)
     | _ -> Codex_sidecar_lease_unreadable
     with _ -> Codex_sidecar_lease_unreadable
@@ -3015,6 +3030,7 @@ let codex_sidecar_lease_contents_for_owner path
 
 let stop_codex_sidecar_generation ?(term_timeout_s = 2.0)
     ?(kill_timeout_s = 1.0) ~(pid : int) ~(start_time : int) () : bool =
+  if pid <= 0 || start_time <= 0 then false else
   let reap_if_child () =
     try
       match Unix.waitpid [ Unix.WNOHANG ] pid with
@@ -3056,20 +3072,34 @@ let read_codex_sidecar_arm path : codex_sidecar_arm_record option =
         let str key =
           match List.assoc_opt key fields with Some (`String s) -> Some s | _ -> None
         in
-        let int key =
+        let positive_int key =
           match List.assoc_opt key fields with
-          | Some (`Int n) -> Some n
-          | Some (`String s) -> int_of_string_opt (String.trim s)
+          | Some (`Int n) when n > 0 -> Some n
+          | Some (`String s) ->
+              (match int_of_string_opt (String.trim s) with
+               | Some n when n > 0 -> Some n
+               | _ -> None)
+          | _ -> None
+        in
+        let optional_positive_int key =
+          match List.assoc_opt key fields with
+          | None | Some `Null -> Some None
+          | Some (`Int n) when n > 0 -> Some (Some n)
+          | Some (`String s) ->
+              (match int_of_string_opt (String.trim s) with
+               | Some n when n > 0 -> Some (Some n)
+               | _ -> None)
           | _ -> None
         in
         (match str "cancel_path", str "lock_path", str "thread_id",
-               int "pid", str "broker_session_id" with
+               positive_int "pid", optional_positive_int "pid_start_time",
+               str "broker_session_id" with
          | Some arm_cancel_path, Some arm_lock_path, Some arm_thread_id,
-           Some arm_pid, Some arm_broker_session_id ->
+           Some arm_pid, Some arm_pid_start_time, Some arm_broker_session_id ->
              Some
                { arm_pending_path = path; arm_cancel_path; arm_lock_path;
                  arm_thread_id; arm_pid;
-                 arm_pid_start_time = int "pid_start_time";
+                 arm_pid_start_time;
                  arm_broker_session_id }
          | _ -> None)
     | _ -> None
@@ -3233,11 +3263,13 @@ let cancel_codex_daemon_sidecar_arms ?thread_id ?broker_session_id ~owners_dir (
              | None -> false
            in
            let stopped =
-             try with_file_lock record.arm_lock_path stop_record
-             with _ -> false
+             if record.arm_pid <= 0 then false
+             else
+               try with_file_lock record.arm_lock_path stop_record
+               with _ -> false
            in
            let stopped =
-             if stopped then true
+             if stopped || record.arm_pid <= 0 then stopped
              else
                (* Pending arms are children of the hook/launcher process. A
                   killed child can be a zombie until this owner reaps it;
@@ -5006,6 +5038,22 @@ let acquire_instance_lock ~(name : string) : Unix.file_descr =
         name;
       exit 1
 
+(* [c2c start] holds the instance lock in its outer supervisor while the
+   inner Codex process runs. A direct [c2c codex] launch has no supervisor, so
+   it acquires the same lock here. The marker is scoped to the exact managed
+   instance name and is supplied only by [build_env] after the supervisor has
+   acquired the lock. *)
+let acquire_instance_lock_for_daemon_attach ~(name : string) : Unix.file_descr option =
+  match Sys.getenv_opt "C2C_INSTANCE_LOCK_HELD",
+        Sys.getenv_opt "C2C_INSTANCE_NAME" with
+  | Some "1", Some current when current = name -> None
+  | _ ->
+      let path = outer_pid_path name in
+      mkdir_p (Filename.dirname path);
+      let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
+      Unix.lockf fd Unix.F_LOCK 0;
+      Some fd
+
 let run_tmux_loop ~(name : string) ~(tmux_location : string)
     ~(tmux_command : string list) ~(broker_root : string)
     ?(alias_override : string option) ?(auto_join_rooms : string option) () : int =
@@ -5175,6 +5223,7 @@ let build_env ?(broker_root_override : string option = None)
     let alias = Option.value alias_override ~default:name in
     let base = [
     "C2C_WRAPPER_SELF", "1";  (* marks the wrapper process itself; bash subshells of the managed client don't inherit this *)
+    "C2C_INSTANCE_LOCK_HELD", "1";
     "C2C_MCP_SESSION_ID", name;
     "C2C_INSTANCE_NAME", name;
     "C2C_MCP_AUTO_REGISTER_ALIAS", alias;
@@ -5266,7 +5315,7 @@ let build_env ?(broker_root_override : string option = None)
      we want it gone so claude-only capabilities don't leak from the parent
      shell into Codex/OpenCode/Kimi/Crush managed sessions. *)
   let override_keys =
-    ("C2C_MCP_FORCE_CAPABILITIES" :: legacy_native_session_keys)
+    ("C2C_MCP_FORCE_CAPABILITIES" :: "C2C_INSTANCE_LOCK_HELD" :: legacy_native_session_keys)
     @ ("C2C_GIT_SHIM_ACTIVE" :: List.map fst additions)
   in
   let env_key e =

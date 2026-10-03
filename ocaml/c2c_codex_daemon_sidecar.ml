@@ -87,16 +87,21 @@ let float_field fields key =
 
 let int_field fields key =
   match List.assoc_opt key fields with
-  | Some (`Int i) -> Some i
-  | Some (`String s) -> int_of_string_opt (String.trim s)
+  | Some (`Int i) when i > 0 -> Some i
+  | Some (`String s) ->
+      (match int_of_string_opt (String.trim s) with
+       | Some i when i > 0 -> Some i
+       | _ -> None)
   | _ -> None
 
 let optional_int_field fields key =
   match List.assoc_opt key fields with
   | None | Some `Null -> Some None
-  | Some (`Int i) -> Some (Some i)
+  | Some (`Int i) when i > 0 -> Some (Some i)
   | Some (`String s) ->
-      Option.map (fun i -> Some i) (int_of_string_opt (String.trim s))
+      (match int_of_string_opt (String.trim s) with
+       | Some i when i > 0 -> Some (Some i)
+       | _ -> None)
   | _ -> None
 
 let lease_of_json = function
@@ -369,6 +374,7 @@ let socket_ok path =
   with _ -> false
 
 let stop_pid ?sidecar_pid_start_time pid =
+  if pid <= 0 then false else
   let generation =
     match sidecar_pid_start_time with
     | Some n -> Some n

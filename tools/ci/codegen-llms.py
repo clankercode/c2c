@@ -44,6 +44,15 @@ CURATED_PAGES = [
 DOCS_SECTION_BEGIN = "## Docs"
 DOCS_SECTION_END = "## MCP Tools"
 
+# The root and published docs copies are intentionally hand-maintained, but
+# their client quick-start surfaces must stay paired. Keep these high-signal
+# Muse commands in one small drift gate so a future docs update cannot silently
+# hide the optional MCP install or managed launcher.
+PAIRED_CLIENT_SURFACES = (
+    "c2c install muse --with-mcp",
+    "c2c start muse",
+)
+
 
 def read_frontmatter(path: Path) -> dict[str, str]:
     """Read Jekyll YAML front-matter (title, permalink) from a markdown file."""
@@ -96,13 +105,25 @@ def check_llms(root: Path) -> int:
         return 1
     current = text[begin:end].rstrip()
     expected = generate_docs_section(root).rstrip()
-    if current == expected:
-        print("codegen-llms: Docs section is up to date")
-        return 0
-    print("codegen-llms: Docs section has drifted. Update with:", file=sys.stderr)
-    print("  python3 tools/ci/codegen-llms.py  # copy the output into llms.txt", file=sys.stderr)
-    print("\n--- expected ---\n", expected, "\n--- current ---\n", current, sep="", file=sys.stderr)
-    return 1
+    if current != expected:
+        print("codegen-llms: Docs section has drifted. Update with:", file=sys.stderr)
+        print("  python3 tools/ci/codegen-llms.py  # copy the output into llms.txt", file=sys.stderr)
+        print("\n--- expected ---\n", expected, "\n--- current ---\n", current, sep="", file=sys.stderr)
+        return 1
+
+    missing: list[str] = []
+    for relpath in ("llms.txt", "docs/llms.txt"):
+        text = (root / relpath).read_text(encoding="utf-8")
+        missing.extend(f"{relpath}: {surface}" for surface in PAIRED_CLIENT_SURFACES
+                       if surface not in text)
+    if missing:
+        print("codegen-llms: paired client surfaces are missing:", file=sys.stderr)
+        for item in missing:
+            print(f"  - {item}", file=sys.stderr)
+        return 1
+
+    print("codegen-llms: Docs section and paired client surfaces are up to date")
+    return 0
 
 
 def main() -> int:

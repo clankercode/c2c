@@ -16,6 +16,7 @@ c2c install grok        # Grok Build TUI: CLI-first skill + SessionStart hooks (
 c2c install agy         # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 c2c install hermes      # Hermes Agent: Python plugin + skill under ~/.hermes/plugins/c2c/, no MCP
 c2c install muse        # Muse: CLI-first skill + SessionStart/Stop/PostToolUse/SessionEnd hooks (MCP opt-in only)
+c2c install muse --with-mcp  # Muse: also write the optional mcpServers.c2c config
 # `c2c install` (no args) is binary-only by default; customize or name a client for MCP.
 # `c2c install all` is also binary-only unless --with-clients.
 
@@ -94,7 +95,8 @@ namespace. Pi Agent uses the `pi-c2c` extension and `c2c` CLI bridge instead.
 ## CLI Subcommands (fallback)
 
 ```
-c2c install <client>   # self / claude / codex / codex-headless / opencode / kimi / grok / agy / all (grok + agy = CLI+hook, no MCP; crush deprecated/refused)
+c2c install <client>   # self / claude / codex / codex-headless / opencode / kimi / grok / agy / hermes / muse / all
+c2c start muse         # managed Muse session (trust-workspace, approval-mode never)
 pi install npm:pi-c2c  # Pi Agent extension; not a c2c install/start target
 c2c new codex|kimi     # launch a fresh managed session for codex or kimi
 c2c restart <name>     # restart a managed MCP-client instance

@@ -323,6 +323,36 @@ let test_fractional_lease_generation_blocks_claim () =
    | _ -> fail "fractional lease generation must block claim");
   check bool "fractional lease generation remains" true (Sys.file_exists path)
 
+let test_nonpositive_lease_identity_blocks_claim () =
+  let cases = [ ("sidecar_pid", 0); ("sidecar_pid", -1);
+                ("sidecar_pid_start_time", 0); ("sidecar_pid_start_time", -1) ] in
+  List.iter
+    (fun (field, value) ->
+      with_temp @@ fun dir ->
+      let thread = "invalid-" ^ field ^ "-" ^ string_of_int value in
+      let path = S.lease_path ~owners_dir:dir ~socket_identity:"/sock" ~thread_id:thread in
+      let value_for key default = if key = field then value else default in
+      let oc = open_out path in
+      Fun.protect ~finally:(fun () -> close_out oc)
+        (fun () ->
+          output_string oc
+            (Yojson.Safe.to_string
+               (`Assoc [ ("socket_identity", `String "/sock")
+                      ; ("thread_id", `String thread)
+                      ; ("sidecar_pid", `Int (value_for "sidecar_pid" 100))
+                      ; ("sidecar_pid_start_time",
+                         `Int (value_for "sidecar_pid_start_time" 10))
+                      ; ("claimed_at", `Float 1.0)
+                      ; ("heartbeat_at", `Float 1.0)
+                      ; ("alias", `String "owner")
+                      ; ("broker_session_id", `String "session") ]) ^ "\n"));
+      match S.try_claim ~owners_dir:dir ~socket_identity:"/sock" ~thread_id:thread
+              ~sidecar_pid:200 ~alias:"new" ~broker_session_id:"session"
+              ~sidecar_pid_start_time:20 () with
+      | S.Claim_uncertain _ -> ()
+      | _ -> fail (field ^ " " ^ string_of_int value ^ " must block claim"))
+    cases
+
 let test_select_owned_thread_fail_closed () =
   check (option string) "hint in loaded" (Some "thr-a")
     (S.select_owned_thread ~hint:"thr-a" ~loaded:[ "thr-b"; "thr-a" ]);
@@ -609,6 +639,8 @@ let () =
             test_fractional_lease_integer_fields_block_claim
         ; test_case "fractional lease generation blocks claim" `Quick
             test_fractional_lease_generation_blocks_claim
+        ; test_case "nonpositive lease identity blocks claim" `Quick
+            test_nonpositive_lease_identity_blocks_claim
         ; test_case "foreign release is noop" `Quick test_foreign_release_is_noop
         ; test_case "legacy lease is unverifiable and blocks" `Quick
             test_legacy_lease_is_unverifiable_and_blocks

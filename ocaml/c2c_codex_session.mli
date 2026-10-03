@@ -105,6 +105,12 @@ val remove_teardown_receipts_after_registration :
 (** Remove frontend recovery receipts only after registry ownership cleanup has
     succeeded. A failed registry write leaves both receipts available for retry. *)
 
+val daemon_attach_generation_matches :
+  expected_pid:int -> expected_start_time:int ->
+  current_pid:int -> current_start_time:int -> bool
+(** True only when a lifecycle record still belongs to the exact attach
+    generation that created it. *)
+
 val select_new_loaded_thread : before:string list -> candidates:string list -> string option
 (** Select exactly one newly loaded thread from authenticated server metadata.
     An existing id or an ambiguous set fails closed. *)

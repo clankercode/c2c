@@ -237,6 +237,20 @@ let test_daemon_attach_requires_pidfd_and_exact_generation () =
     (S.daemon_attach_safe_to_start ~socket_available:true
        ~pidfd_available:true ~pid_generation_available:false)
 
+let test_daemon_attach_cleanup_rejects_newer_generation () =
+  Alcotest.(check bool) "same generation is owned" true
+    (S.daemon_attach_generation_matches ~expected_pid:101
+       ~expected_start_time:202 ~current_pid:101 ~current_start_time:202);
+  Alcotest.(check bool) "newer PID generation is retained" false
+    (S.daemon_attach_generation_matches ~expected_pid:101
+       ~expected_start_time:202 ~current_pid:303 ~current_start_time:404);
+  Alcotest.(check bool) "reused PID with newer generation is retained" false
+    (S.daemon_attach_generation_matches ~expected_pid:101
+       ~expected_start_time:202 ~current_pid:101 ~current_start_time:404);
+  Alcotest.(check bool) "nonpositive generation is never owned" false
+    (S.daemon_attach_generation_matches ~expected_pid:101
+       ~expected_start_time:0 ~current_pid:101 ~current_start_time:0)
+
 let test_daemon_attach_thread_proof () =
   let check label expected requested handoff loaded =
     Alcotest.(check (option string)) label expected
@@ -2403,6 +2417,8 @@ let () =
             test_daemon_thread_selection_requires_one_new_thread
         ; test_case "daemon attach gates on pidfd and generation" `Quick
             test_daemon_attach_requires_pidfd_and_exact_generation
+        ; test_case "daemon cleanup rejects newer generation" `Quick
+            test_daemon_attach_cleanup_rejects_newer_generation
         ; test_case "daemon attach authenticates fresh and resume thread" `Quick
             test_daemon_attach_thread_proof
         ; test_case "daemon handoff rejects fractional generation" `Quick

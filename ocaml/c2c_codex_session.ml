@@ -1835,14 +1835,15 @@ let register_managed_app_server_identity ~(broker_root : string)
   (* Publish only after the authenticated frontend thread and durable mapping
      have been proven. The remote frontend's hook and the delivery loop then
      share this exact row (B167). *)
-  (* A new launcher generation must not inherit completion proof from an older
-     generation with the same sticky session id. *)
-  C2c_start.clear_managed_teardown_evidence ~broker_root ~session_id;
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   C2c_mcp.Broker.register broker ~session_id ~alias
     ~pid:(Some pid)
     ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time pid)
-    ~client_type:(Some "codex-app-server") ~from_auto_gen:true ()
+    ~client_type:(Some "codex-app-server") ~from_auto_gen:true ();
+  (* A new launcher generation must not inherit completion proof from an older
+     generation with the same sticky session id. Invalidate it only after the
+     broker accepted the new owner row. *)
+  C2c_start.clear_managed_teardown_evidence ~broker_root ~session_id
 
 let run_delivery_loop ~(handle : C2c_codex_app_server.handle) ~(name : string)
     ~(session_id : string) ~(alias : string) ~(instance_dir : string)
@@ -2162,9 +2163,17 @@ let remove_teardown_receipts_after_registration ~registration_cleared
   && C2c_start.remove_pidfile_confirmed teardown_record
   && C2c_start.remove_pidfile_confirmed handoff_path
 
+let daemon_attach_generation_matches ~expected_pid ~expected_start_time
+    ~current_pid ~current_start_time =
+  expected_pid > 0 && expected_start_time > 0
+  && current_pid = expected_pid && current_start_time = expected_start_time
+
 let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
     ~model_override ~instance_dir:_ () : int =
-  match C2c_codex_daemon_sidecar.default_control_socket () with
+  let lifecycle_lock =
+    C2c_start.acquire_instance_lock_for_daemon_attach ~name
+  in
+  let result = try match C2c_codex_daemon_sidecar.default_control_socket () with
   | None -> 1
   | Some sock ->
       (match C2c_codex_daemon_sidecar.unix_endpoint sock with
@@ -2272,6 +2281,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
            let teardown_record =
              C2c_start.instance_dir name // "frontend-teardown.json"
            in
+           let teardown_record_contents = ref None in
            let write_teardown_record () =
              match !frontend_pid with
              | None -> ()
@@ -2284,22 +2294,59 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                        ; ("sentinel_start_time", `Int st) ]
                    | _ -> []
                  in
+                 let contents =
+                   Yojson.Safe.to_string
+                     (`Assoc
+                       ([ ("frontend_pid", `Int pid)
+                        ; ("frontend_pid_start_time",
+                           match start_time with Some n -> `Int n | None -> `Null) ]
+                        @ sentinel)) ^ "\n"
+                 in
                  (match
-                    C2c_io.write_file_atomic ~perm:0o600 teardown_record
-                      (Yojson.Safe.to_string
-                         (`Assoc
-                           ([ ("frontend_pid", `Int pid)
-                            ; ("frontend_pid_start_time",
-                               match start_time with Some n -> `Int n | None -> `Null) ]
-                            @ sentinel)) ^ "\n")
+                    C2c_io.write_file_atomic ~perm:0o600 teardown_record contents
                   with
-                  | Ok () -> ()
+                  | Ok () -> teardown_record_contents := Some contents
                   | Error reason ->
                       failwith
                         ("Codex frontend teardown record could not be published: "
                          ^ reason))
            in
            let cleaned = ref false in
+           let outer_generation_is_current () =
+             match
+               C2c_start.read_pid_record
+                 ~pid_path:(C2c_start.outer_pid_path name)
+                 ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+             with
+             | C2c_start.Pid_record_present (current_pid, current_start_time) ->
+                 (match outer_pid_start_time with
+                  | Some expected_start_time ->
+                      daemon_attach_generation_matches
+                        ~expected_pid:outer_pid ~expected_start_time
+                        ~current_pid ~current_start_time
+                  | None -> false)
+             | C2c_start.Pid_record_absent
+             | C2c_start.Pid_record_unknown -> false
+           in
+           let remove_handoff_receipt () =
+             match C2c_start.read_regular_file_nofollow handoff_path with
+             | C2c_start.Regular_file_missing -> true
+             | C2c_start.Regular_file_contents contents ->
+                 (match !frontend_pid with
+                  | Some pid
+                    when Option.is_some
+                           (daemon_thread_handoff_matches ~path:handoff_path
+                              ~frontend_pid:pid) ->
+                      C2c_start.remove_path_contents_confirmed handoff_path contents
+                  | _ -> false)
+             | C2c_start.Regular_file_unreadable _ -> false
+           in
+           let remove_teardown_receipt () =
+             match !teardown_record_contents with
+             | Some contents ->
+                 C2c_start.remove_path_contents_confirmed teardown_record contents
+             | None -> C2c_start.remove_pidfile_confirmed teardown_record
+           in
            let stop_sidecar () =
              (* Stop through the lease owner path. It revalidates the sidecar's
                 recorded PID generation before ever signaling a numeric PID. *)
@@ -2346,8 +2393,9 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                   outer pidfile so c2c stop can retry/report honestly. *)
                restore_terminal_foreground terminal;
                let sidecar_ok = if frontend_ok then stop_sidecar () else false in
+               let generation_current = outer_generation_is_current () in
                let registration_cleared =
-                 frontend_ok && sidecar_ok
+                 generation_current && frontend_ok && sidecar_ok
                  && (not !registration_published ||
                      (try
                         C2c_start.clear_registration_pid_if_owner
@@ -2360,8 +2408,9 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                   exact frontend recovery record available to the next stop
                   or stale-start recovery attempt. *)
                let teardown_record_removed =
-                 remove_teardown_receipts_after_registration
-                   ~registration_cleared ~teardown_record ~handoff_path
+                 registration_cleared
+                 && remove_teardown_receipt ()
+                 && remove_handoff_receipt ()
                in
                if not frontend_ok || not sidecar_ok || not teardown_record_removed
                   || not registration_cleared then begin
@@ -2371,9 +2420,13 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                  false
                end else begin
                  let outer_pidfiles_removed =
-                   C2c_start.remove_pidfile_confirmed (C2c_start.outer_pid_path name)
-                   && C2c_start.remove_pidfile_confirmed
-                        (C2c_start.outer_pid_start_time_path name)
+                   match outer_pid_start_time with
+                   | Some start_time ->
+                       C2c_start.remove_pid_record_pair_confirmed
+                         ~pid_path:(C2c_start.outer_pid_path name)
+                         ~start_time_path:(C2c_start.outer_pid_start_time_path name)
+                         ~pid:outer_pid ~start_time
+                   | None -> false
                  in
                  if outer_pidfiles_removed then begin
                    cleaned := true;
@@ -2563,7 +2616,12 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                     exit_code
                     end)
            end)
-      )
+      ) with e ->
+    (match lifecycle_lock with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
+    raise e
+  in
+  (match lifecycle_lock with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
+  result
 
 (* [stop] is intentionally unit-returning and best-effort. Before deleting the
    launcher's lifecycle records, require the stopped private unit's own durable
