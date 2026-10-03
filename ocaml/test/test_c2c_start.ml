@@ -1701,6 +1701,29 @@ let test_codex_frontend_teardown_expectation_fails_closed () =
               ("alias", `String sticky);
               ("client_type", `String "codex-app-server") ] ];
       expect_unknown "pidless sticky registration without teardown evidence" sticky;
+      let duplicate = unique_instance_name "codex-teardown-duplicate" in
+      with_instance_dir duplicate @@ fun _ ->
+      let duplicate_sid = "codex-teardown-duplicate-session" in
+      write_codex_config duplicate duplicate_sid;
+      let duplicate_row =
+        `Assoc
+          [ ("session_id", `String duplicate_sid)
+          ; ("alias", `String duplicate)
+          ; ("client_type", `String "codex-app-server")
+          ; ("pid", `Int 1234) ]
+      in
+      write_registry [ duplicate_row; duplicate_row ];
+      expect_unknown "duplicate matching registrations" duplicate;
+      let malformed = unique_instance_name "codex-teardown-malformed" in
+      with_instance_dir malformed @@ fun _ ->
+      let malformed_sid = "codex-teardown-malformed-session" in
+      write_codex_config malformed malformed_sid;
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String malformed_sid)
+            ; ("alias", `String malformed)
+            ; ("client_type", `Int 7) ] ];
+      expect_unknown "malformed matching registration" malformed;
       let completed = unique_instance_name "codex-teardown-completed" in
       with_instance_dir completed @@ fun _ ->
       let completed_sid = "codex-teardown-completed-session" in

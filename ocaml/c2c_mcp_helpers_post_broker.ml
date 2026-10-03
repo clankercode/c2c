@@ -1099,6 +1099,9 @@ let managed_instances_dir () =
 external open_codex_regular_nofollow : string -> Unix.file_descr
   = "caml_c2c_open_regular_nofollow"
 
+external open_muse_regular_nofollow : string -> Unix.file_descr
+  = "caml_c2c_open_regular_nofollow"
+
 type codex_regular_file_read =
   | Codex_regular_file_missing
   | Codex_regular_file_contents of string
@@ -1117,6 +1120,39 @@ let read_codex_regular_file_nofollow path : codex_regular_file_read =
   with
   | Unix.Unix_error (Unix.ENOENT, _, _) -> Codex_regular_file_missing
   | e -> Codex_regular_file_unreadable (Printexc.to_string e)
+
+type muse_regular_file_read =
+  | Muse_regular_file_missing
+  | Muse_regular_file_contents of string
+  | Muse_regular_file_unreadable of string
+
+(* Teardown evidence is a tiny launcher-owned record.  Read it through the
+   same O_NOFOLLOW regular-file primitive as Codex and cap the bytes consumed
+   before constructing a string, so a hostile replacement cannot force an
+   unbounded allocation. *)
+let read_muse_regular_file_nofollow path : muse_regular_file_read =
+  let max_bytes = 4096 in
+  try
+    let fd = open_muse_regular_nofollow path in
+    let ic = Unix.in_channel_of_descr fd in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        let buffer = Bytes.create (max_bytes + 1) in
+        let rec read used =
+          if used = Bytes.length buffer then `Too_large
+          else
+            let count = input ic buffer used (Bytes.length buffer - used) in
+            if count = 0 then `Contents (Bytes.sub_string buffer 0 used)
+            else read (used + count)
+        in
+        match read 0 with
+        | `Contents contents -> Muse_regular_file_contents contents
+        | `Too_large ->
+            Muse_regular_file_unreadable "teardown evidence exceeds size limit")
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) -> Muse_regular_file_missing
+  | e -> Muse_regular_file_unreadable (Printexc.to_string e)
 
 let string_field_of_assoc fields key =
   match List.assoc_opt key fields with
@@ -2151,9 +2187,8 @@ let managed_muse_teardown_evidence_valid ~broker_root (r : registration) =
     C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root
       ~session_id:r.session_id
   in
-  match C2c_io.read_file_opt path with
-  | "" -> false
-  | contents ->
+  match read_muse_regular_file_nofollow path with
+  | Muse_regular_file_contents contents ->
       (try
          match Yojson.Safe.from_string contents with
          | `Assoc fields ->
@@ -2172,6 +2207,7 @@ let managed_muse_teardown_evidence_valid ~broker_root (r : registration) =
              && positive_int "launcher_generation"
          | _ -> false
        with _ -> false)
+  | Muse_regular_file_missing | Muse_regular_file_unreadable _ -> false
 
 (* B361 (#47 shape): managed muse rows for [cwd] whose liveness fields were
    STRIPPED on teardown ([C2c_start.clear_registration_pid_if_owner] records

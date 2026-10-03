@@ -896,6 +896,31 @@ let test_b361_torn_down_row_is_reclaimed () =
     check bool "mapping records payload -> managed" true
       (List.assoc_opt payload_sid (read_muse_mapping ctx) = Some managed))
 
+let test_b361_symlinked_teardown_evidence_is_not_reclaimed () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-symlink-receipt" in
+    ignore
+      (register_torn_down_managed_muse ctx ~alias:managed
+         ~cwd:"/tmp/b361-proj");
+    let receipt =
+      C2c_mcp_helpers.managed_teardown_evidence_path
+        ~broker_root:ctx.broker_root ~session_id:managed
+    in
+    let target = receipt ^ ".target" in
+    Unix.rename receipt target;
+    Unix.symlink target receipt;
+    let payload_sid = native_sid 20 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "symlinked receipt is not trusted" false
+      (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    check int "fresh session gets its own identity" 2 (count_regs ctx);
+    check bool "fresh payload row exists" true
+      (find_reg ctx payload_sid <> None))
+
 let test_b361_pidless_row_without_teardown_evidence_is_not_reclaimed () =
   with_ctx (fun ctx ->
     let managed = "zz-b361-stale-pidless" in
@@ -1320,6 +1345,8 @@ let () =
             test_b361_missing_start_time_fails_closed
         ; test_case "torn-down row is reclaimed" `Quick
             test_b361_torn_down_row_is_reclaimed
+        ; test_case "symlinked teardown evidence is not reclaimed" `Quick
+            test_b361_symlinked_teardown_evidence_is_not_reclaimed
         ; test_case "pidless row without teardown evidence is not reclaimed"
             `Quick test_b361_pidless_row_without_teardown_evidence_is_not_reclaimed
         ; test_case "bails loudly on ambiguous torn-down cwd" `Quick

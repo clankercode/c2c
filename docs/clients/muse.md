@@ -48,7 +48,8 @@ c2c install muse --with-mcp
 
 ## How it works
 
-Install wires three hook events — SessionStart, Stop, SessionEnd — to
+Install wires four hook events — SessionStart, Stop, PostToolUse, and
+SessionEnd — to
 `c2c hook muse` (plugin-first, settings.json fallback). One command serves
 every event; it always exits 0 so a hook can never break a turn.
 

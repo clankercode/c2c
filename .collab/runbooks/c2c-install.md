@@ -21,7 +21,7 @@ c2c install grok --alias my-alias   # CLI-first: skill + SessionStart hooks (no 
 c2c install kimi --alias my-alias   # writes ~/.kimi-code/mcp.json + config.toml + skill
 c2c install agy --alias my-alias    # CLI-first: skill + hooks under ~/.gemini/ (no MCP)
 c2c install hermes --alias my-alias # plugin-first: Python plugin + skill under ~/.hermes/ (no MCP)
-c2c install muse --alias my-alias   # CLI-first: skill + SessionStart/Stop/SessionEnd hooks (MCP opt-in only)
+c2c install muse --alias my-alias   # CLI-first: skill + SessionStart/Stop/PostToolUse/SessionEnd hooks (MCP opt-in only)
 ```
 
 **Grok** is a first-class **CLI-first** peer: `c2c install grok` writes the
@@ -29,7 +29,7 @@ embedded skill + SessionStart/SessionEnd hooks under `~/.grok/` (no MCP).
 Managed `c2c start grok` remains deferred — use the Grok CLI skill path.
 
 **Muse** is a first-class **CLI-first** peer: `c2c install muse` writes the
-embedded skill to `$CONFIG/muse/skills/c2c/` plus SessionStart/Stop/SessionEnd
+embedded skill to `$CONFIG/muse/skills/c2c/` plus SessionStart/Stop/PostToolUse/SessionEnd
 hooks via a plugin-first install (`muse plugins install` + `approve`, with a
 settings.json `hooks` fallback when the plugins gate is closed). No MCP config
 by default — pass `--with-mcp` for the `mcpServers.c2c` entry (takes effect on

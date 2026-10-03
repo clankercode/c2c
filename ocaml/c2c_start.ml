@@ -1579,6 +1579,35 @@ let write_json_file_atomic (path : string) (json : Yojson.Safe.t) : unit =
     cleanup_tmp ();
     raise e
 
+(* The managed teardown receipt is a recovery proof, so its rename must be
+   durable too: fsync the temporary file before publishing it, then fsync the
+   containing directory after the rename.  Keep this helper local because the
+   general-purpose [C2c_io.write_file_atomic] intentionally offers only the
+   atomic rename contract. *)
+let write_file_atomic_durable ~(perm : int) (path : string) (content : string) =
+  let tmp =
+    Printf.sprintf "%s.tmp.%d.%d" path (Unix.getpid ()) (Random.bits ())
+  in
+  try
+    let oc =
+      open_out_gen [ Open_wronly; Open_creat; Open_excl; Open_binary ] perm tmp
+    in
+    Fun.protect
+      ~finally:(fun () -> close_out_noerr oc)
+      (fun () ->
+        output_string oc content;
+        flush oc;
+        Unix.fsync (Unix.descr_of_out_channel oc));
+    Unix.chmod tmp perm;
+    Unix.rename tmp path;
+    let dir_fd = Unix.openfile (Filename.dirname path) [ Unix.O_RDONLY ] 0 in
+    Fun.protect
+      ~finally:(fun () -> try Unix.close dir_fd with _ -> ())
+      (fun () -> Unix.fsync dir_fd)
+  with e ->
+    (try Sys.remove tmp with _ -> ());
+    raise e
+
 (* ---------------------------------------------------------------------------
  * Client adapter — unified client abstraction (Phase 1: opencode POC)
  * --------------------------------------------------------------------------- *)
@@ -2302,12 +2331,11 @@ let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : strin
         ; ("completed_at", `Float (Unix.gettimeofday ()))
         ]
     in
-    match
-      C2c_io.write_file_atomic ~perm:0o600 path
-        (Yojson.Safe.to_string json ^ "\n")
-    with
-    | Ok () -> true
-    | Error _ -> false
+    try
+      write_file_atomic_durable ~perm:0o600 path
+        (Yojson.Safe.to_string json ^ "\n");
+      true
+    with _ -> false
   in
   try
     with_file_lock lock_path (fun () ->
@@ -4487,16 +4515,16 @@ let codex_frontend_teardown_expected_for_config
                            "Codex broker registry at %s could not be trusted: %s"
                            (root // "registry.json") reason)
                  | Managed_registry_present rows ->
-                      let matching_registration =
-                        List.find_opt
+                      (* Count every row for the configured session before
+                         inspecting its client fields.  Selecting the first
+                         matching row would let a duplicate or a malformed
+                         sibling hide registry ambiguity. *)
+                      let matching_registrations =
+                        List.filter
                           (function
                             | `Assoc fields ->
-                                (match List.assoc_opt "session_id" fields,
-                                       List.assoc_opt "client_type" fields with
-                                 | Some (`String sid),
-                                   Some (`String "codex-app-server") ->
-                                     sid = cfg.session_id
-                                 | _ -> false)
+                                List.assoc_opt "session_id" fields
+                                = Some (`String cfg.session_id)
                             | _ -> false)
                           rows
                       in
@@ -4527,9 +4555,11 @@ let codex_frontend_teardown_expected_for_config
                              with _ -> false)
                         | Regular_file_missing | Regular_file_unreadable _ -> false
                       in
-                      match matching_registration with
-                       | None -> Codex_frontend_teardown_absent
-                       | Some (`Assoc fields) ->
+                      match matching_registrations with
+                       | [] -> Codex_frontend_teardown_absent
+                       | [ `Assoc fields ] ->
+                           (match List.assoc_opt "client_type" fields with
+                            | Some (`String "codex-app-server") ->
                            let has_pid =
                              match List.assoc_opt "pid" fields with
                              | Some (`Int n) -> n > 0
@@ -4547,9 +4577,14 @@ let codex_frontend_teardown_expected_for_config
                                (Printf.sprintf
                                   "pidless Codex app-server registration for %s has no exact-generation teardown evidence"
                                   cfg.session_id)
-                       | Some _ ->
+                            | _ ->
+                                Codex_frontend_teardown_unknown
+                                  "Codex broker registry contains a malformed matching registration")
+                       | _ ->
                            Codex_frontend_teardown_unknown
-                             "Codex broker registry contains a malformed matching registration")
+                             (Printf.sprintf
+                                "Codex broker registry contains multiple registrations for session %s"
+                                cfg.session_id))
              | _ ->
                  Codex_frontend_teardown_unknown
                    (Printf.sprintf "Codex broker root %s is missing or not a directory" root))
