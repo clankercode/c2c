@@ -4107,6 +4107,7 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
   let name = Printf.sprintf "codex-reset-%d" (Random.bits ()) in
   with_instance_dir name @@ fun _dir ->
   with_temp_dir @@ fun broker_root ->
+  let seen_argv = ref None in
   let cfg : C2c_start.instance_config =
     { name
     ; client = "codex"
@@ -4129,14 +4130,60 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
   in
   C2c_start.write_config cfg;
   let rc =
-    C2c_start.cmd_reset_thread ~do_exec:(fun _ -> ()) name "thread-reset-123"
+    C2c_start.cmd_reset_thread
+      ~do_exec:(fun argv -> seen_argv := Some (Array.to_list argv))
+      name "thread-reset-123"
   in
   check int "reset-thread rc" 0 rc;
   match C2c_start.load_config_opt name with
   | None -> fail "expected config after reset-thread"
   | Some saved ->
       check (option string) "persisted codex resume target"
-        (Some "thread-reset-123") saved.codex_resume_target
+        (Some "thread-reset-123") saved.codex_resume_target;
+      (match !seen_argv with
+       | None -> fail "expected restart exec argv"
+       | Some argv ->
+           check bool "restart uses codex resume target" true
+             (has_adjacent_pair "--session-id" "thread-reset-123" argv);
+           check bool "restart does not use broker session id" false
+             (has_adjacent_pair "--session-id" cfg.resume_session_id argv))
+
+let test_cmd_restart_codex_falls_back_to_resume_session_id () =
+  let name = Printf.sprintf "codex-restart-%d" (Random.bits ()) in
+  with_instance_dir name @@ fun _dir ->
+  with_temp_dir @@ fun broker_root ->
+  let seen_argv = ref None in
+  let cfg : C2c_start.instance_config =
+    { name
+    ; client = "codex"
+    ; session_id = name
+    ; resume_session_id = "ordinary-resume-session"
+    ; codex_resume_target = None
+    ; alias = name
+    ; extra_args = []
+    ; created_at = Unix.gettimeofday ()
+    ; last_launch_at = None
+    ; broker_root
+    ; auto_join_rooms = "swarm-lounge"
+    ; binary_override = Some "/bin/true"
+    ; model_override = None
+    ; agent_name = None
+    ; last_exit_code = None
+    ; last_exit_reason = None
+    }
+  in
+  C2c_start.write_config cfg;
+  let rc =
+    C2c_start.cmd_restart
+      ~do_exec:(fun argv -> seen_argv := Some (Array.to_list argv))
+      name ~timeout_s:0.0
+  in
+  check int "restart rc" 0 rc;
+  match !seen_argv with
+  | None -> fail "expected restart exec argv"
+  | Some argv ->
+      check bool "restart preserves ordinary resume session id" true
+        (has_adjacent_pair "--session-id" cfg.resume_session_id argv)
 
 let test_last_launch_at_roundtrip () =
   let name = Printf.sprintf "launch-at-%d" (Random.bits ()) in
@@ -7736,6 +7783,8 @@ let () =
             `Quick, test_codex_supports_server_request_fds_requires_both_flags )
         ; ( "cmd_reset_thread_persists_codex_resume_target",
             `Quick, test_cmd_reset_thread_persists_codex_resume_target )
+        ; ( "cmd_restart_codex_falls_back_to_resume_session_id",
+            `Quick, test_cmd_restart_codex_falls_back_to_resume_session_id )
         ; ( "last_launch_at_roundtrip",
             `Quick, test_last_launch_at_roundtrip )
         ; ( "last_launch_at_backward_compat_missing_field",

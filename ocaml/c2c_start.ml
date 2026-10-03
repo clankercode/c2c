@@ -9332,8 +9332,13 @@ let default_restart_timeout_s ~(client : string) : float =
 let build_start_argv ~(cfg : instance_config) : string array =
   let c2c = current_c2c_command () in
   let argv = ref [ c2c; "start"; cfg.client; "-n"; cfg.name ] in
+  let resume_arg =
+    match cfg.client, cfg.codex_resume_target with
+    | "codex", Some target -> target
+    | _ -> cfg.resume_session_id
+  in
   (* --session-id *)
-  argv := !argv @ [ "--session-id"; cfg.resume_session_id ];
+  argv := !argv @ [ "--session-id"; resume_arg ];
   (* --alias *)
   if cfg.alias <> cfg.name then argv := !argv @ [ "--alias"; cfg.alias ];
   (* --bin (binary_override) *)
