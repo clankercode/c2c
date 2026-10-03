@@ -99,3 +99,5 @@ LANE PLAN (bl-fix-many 2026-10-02, by file overlap): Lane S: B352 spike (probes/
 B352 DONE (merged): top finding = no out-of-process wake primitive in muse 1.4.2 (CLI refused 9x) => Tier-2 BLOCKED, Monitor-only floor stands, B356 rescoped to detection+guidance (park stands). D2 = plugin-first choosable, settings.json fallback. Scope notes appended to B354-B358. Phase 2 (B354+B355) unblocked.
 
 B357+B358 merged. B362 closed fixed-by-branch. B359+B361 unblocked (parallel next); B360 after; B356 still parked.
+
+CLOSEOUT: all workstreams merged. B352-B355, B357-B361 done; B362 (generic stop-pair bug found live) fixed-by-B358-branch and closed; B356 PARKED per operator (Monitor-only; rescope recorded); B363 (forward-log classifier) deferred low-priority follow-up. Acceptance evidence on master: just check rc=0; forced repo-wide @runtest 212 suites green / 4166 tests with only 2 pre-existing B302 systemd FAILs (base-proven in B357/B358/B360 lanes); bl check clean. Live proofs: B353 Tier-0 poll round-trip, B354 install/uninstall, B355 hook fire, B356 N/A (parked), B358 managed cycle (findings docs). Footer-pin + guidance-flip follow-ups committed post-merge.
