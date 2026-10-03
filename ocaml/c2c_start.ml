@@ -589,6 +589,21 @@ let read_regular_file_nofollow_with_identity path :
            Regular_file_identity_unreadable "lifecycle record absence is uncertain")
   | e -> Regular_file_identity_unreadable (Printexc.to_string e)
 
+type codex_handoff_capture =
+  | Codex_handoff_absent
+  | Codex_handoff_captured of string * regular_file_identity
+  | Codex_handoff_uncertain of string
+
+(* Capture the daemon-thread handoff before any stale frontend teardown. The
+   recovery step must later unlink exactly this inode and these bytes; a fresh
+   handoff written at the same pathname belongs to the replacement launcher. *)
+let capture_codex_handoff path =
+  match read_regular_file_nofollow_with_identity path with
+  | Regular_file_identity_missing -> Codex_handoff_absent
+  | Regular_file_identity_contents (contents, identity) ->
+      Codex_handoff_captured (contents, identity)
+  | Regular_file_identity_unreadable reason -> Codex_handoff_uncertain reason
+
 (* Read a small lifecycle record through the same descriptor-bound no-follow
    primitive, but cap the bytes consumed before constructing a string. The
    managed teardown receipt is launcher-owned and tiny; a hostile replacement
@@ -3160,6 +3175,13 @@ let remove_path_identity_contents_confirmed path
   unlink_regular_file_if_identity_and_contents_confirmed path
     (Int64.of_int device) (Int64.of_int inode) contents
 
+let remove_captured_codex_handoff path = function
+  | Codex_handoff_captured (contents, identity) ->
+      remove_path_identity_contents_confirmed path identity contents
+  | Codex_handoff_absent ->
+      lifecycle_path_state path = Lifecycle_path_absent
+  | Codex_handoff_uncertain _ -> false
+
 let remove_pid_record_pair_confirmed ~(pid_path : string)
     ~(start_time_path : string) ~(pid : int) ~(start_time : int) : bool =
   unlink_pid_record_pair_confirmed pid_path start_time_path pid start_time
@@ -4866,6 +4888,11 @@ let stop_frontend_teardown_record (name : string) : bool =
    cannot inspect the same generation between these checks and the subsequent
    handoff/config/PID publications. *)
 let recover_codex_daemon_attach_state ~(name : string) ~(session_id : string) : bool =
+  let handoff_path = codex_daemon_thread_handoff_path name in
+  (* This read deliberately precedes frontend teardown. A teardown callback may
+     race a new Codex process writing the same pathname, so pathname-only
+     cleanup after teardown is unsafe. *)
+  let handoff = capture_codex_handoff handoff_path in
   let outer_state =
     match read_pid_record ~pid_path:(outer_pid_path name)
             ~start_time_path:(outer_pid_start_time_path name) with
@@ -4918,8 +4945,7 @@ let recover_codex_daemon_attach_state ~(name : string) ~(session_id : string) : 
         false
   in
   let handoff_ok =
-    if frontend_ok then
-      remove_pidfile_confirmed (codex_daemon_thread_handoff_path name)
+    if frontend_ok then remove_captured_codex_handoff handoff_path handoff
     else false
   in
   let sidecars_ok = stop_codex_sidecars_for_session ~broker_session_id:session_id in

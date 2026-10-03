@@ -14,6 +14,17 @@ open Alcotest
 
 module P = C2c_pid_identity
 
+external setpgid : int -> int -> unit = "caml_c2c_setpgid"
+
+let setpgid_retry pid pgrp =
+  let rec loop attempts =
+    try setpgid pid pgrp
+    with _ when attempts > 0 ->
+      Unix.sleepf 0.001;
+      loop (attempts - 1)
+  in
+  loop 100
+
 let self = Unix.getpid ()
 
 (* A non-leader thread id of this process. Alcotest runs single-threaded, so we
@@ -190,9 +201,9 @@ let test_group_signal_is_generation_bound () =
   else
     match Unix.fork () with
     | 0 ->
-        (try ignore (Unix.setsid ()) with _ -> exit 2);
         while true do Unix.sleep 60 done
     | child ->
+        setpgid_retry child child;
         Fun.protect
           ~finally:(fun () ->
             (try Unix.kill child Sys.sigkill with Unix.Unix_error _ -> ());
@@ -258,7 +269,8 @@ let test_group_signal_continues_exact_generation () =
 let test_group_signal_skips_reused_member_generation () =
   if not (P.pidfd_supported ()) then ()
   else
-    let pid_r, pid_w = Unix.pipe () in
+    let owner_ready_r, owner_ready_w = Unix.pipe () in
+    let member_ready_r, member_ready_w = Unix.pipe () in
     let marker_r, marker_w = Unix.pipe () in
     let rec pause_forever () =
       Unix.pause ();
@@ -267,33 +279,46 @@ let test_group_signal_skips_reused_member_generation () =
     let owner =
       match Unix.fork () with
       | 0 ->
-          Unix.close pid_r;
+          Unix.close owner_ready_r;
+          Unix.close member_ready_r;
+          Unix.close member_ready_w;
           Unix.close marker_r;
-          (try ignore (Unix.setsid ()) with _ -> exit 2);
-          (match Unix.fork () with
-           | 0 ->
-               Sys.set_signal Sys.sigterm
-                 (Sys.Signal_handle (fun _ ->
-                      ignore (Unix.write_substring marker_w "M" 0 1)));
-               pause_forever ()
-           | member ->
-               let payload = string_of_int member ^ "\n" in
-               ignore
-                 (Unix.write_substring pid_w payload 0 (String.length payload));
-               pause_forever ())
+          ignore (Unix.write_substring owner_ready_w "O\n" 0 2);
+          pause_forever ()
       | pid -> pid
     in
-    Unix.close pid_w;
+    setpgid_retry owner owner;
+    Unix.close owner_ready_w;
+    let owner_ready = Unix.in_channel_of_descr owner_ready_r in
+    ignore (input_line owner_ready);
+    close_in_noerr owner_ready;
+    let member =
+      match Unix.fork () with
+      | 0 ->
+          Unix.close member_ready_r;
+          Unix.close marker_r;
+          ignore (Unix.write_substring member_ready_w "M\n" 0 2);
+          Sys.set_signal Sys.sigterm
+            (Sys.Signal_handle (fun _ ->
+                 ignore (Unix.write_substring marker_w "M" 0 1)));
+          pause_forever ()
+      | pid -> pid
+    in
+    setpgid_retry member owner;
+    Unix.close member_ready_w;
+    let member_ready = Unix.in_channel_of_descr member_ready_r in
+    Fun.protect
+      ~finally:(fun () -> close_in_noerr member_ready)
+      (fun () -> ignore (input_line member_ready));
     Unix.close marker_w;
-    let pid_input = Unix.in_channel_of_descr pid_r in
     Fun.protect
       ~finally:(fun () ->
         (try Unix.kill owner Sys.sigkill with Unix.Unix_error _ -> ());
         (try ignore (Unix.waitpid [] owner) with Unix.Unix_error _ -> ());
-        close_in_noerr pid_input;
+        (try Unix.kill member Sys.sigkill with Unix.Unix_error _ -> ());
+        (try ignore (Unix.waitpid [] member) with Unix.Unix_error _ -> ());
         (try Unix.close marker_r with Unix.Unix_error _ -> ()))
       (fun () ->
-        let member = int_of_string (input_line pid_input) in
         let old_mismatch = Sys.getenv_opt "C2C_TEST_PIDFD_MEMBER_MISMATCH_PID" in
         let restore_mismatch () =
           match old_mismatch with
@@ -307,16 +332,17 @@ let test_group_signal_skips_reused_member_generation () =
           | P.Generation value -> value
           | _ -> fail "owner generation unavailable"
         in
-        check bool "owner signal still succeeds when a member is recycled" true
+        check bool "a recycled member makes the whole group signal fail" false
           (P.signal_process_group_if_generation_matches
              ~pid:owner ~start_time:owner_start ~signal:Sys.sigterm);
-        ignore (Unix.waitpid [] owner);
+        check bool "owner remains alive after fail-closed group signal" true
+          (try Unix.kill owner 0; true with Unix.Unix_error _ -> false);
+        check bool "member remains alive after fail-closed group signal" true
+          (try Unix.kill member 0; true with Unix.Unix_error _ -> false);
         let ready, _, _ = Unix.select [ marker_r ] [] [] 0.2 in
-        check bool "generation-mismatched member is not signalled" false
+          check bool "generation-mismatched member is not signalled" false
           (List.mem marker_r ready);
-        (* The member survived the group cleanup and must be explicitly reaped
-           by the test process tree's owner-independent cleanup. *)
-        (try Unix.kill member Sys.sigkill with Unix.Unix_error _ -> ()))
+        ())
 
 let () =
   run "c2c_pid_identity"

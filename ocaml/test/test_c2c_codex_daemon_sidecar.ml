@@ -244,16 +244,25 @@ let test_release_failure_retains_dependent_cleanup_state () =
 let test_pending_cleanup_failure_retains_ownership_barrier () =
   (match
      S.arm_failed_after_pending_cleanup ~stopped:false ~lease_released:false
+       ~registration_cleared:false
    with
    | S.Arm_failed_ownership_retained _ -> ()
    | _ -> fail "a live child must retain the ownership barrier");
   (match
      S.arm_failed_after_pending_cleanup ~stopped:true ~lease_released:false
+       ~registration_cleared:false
    with
    | S.Arm_failed_ownership_retained _ -> ()
    | _ -> fail "an unreleased lease must retain the ownership barrier");
   (match
      S.arm_failed_after_pending_cleanup ~stopped:true ~lease_released:true
+       ~registration_cleared:false
+   with
+   | S.Arm_failed_ownership_retained _ -> ()
+   | _ -> fail "an uncleared registration must retain the ownership barrier");
+  (match
+     S.arm_failed_after_pending_cleanup ~stopped:true ~lease_released:true
+       ~registration_cleared:true
    with
    | S.Arm_failed _ -> ()
    | _ -> fail "fallback is allowed after exact child and lease cleanup")

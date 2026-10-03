@@ -331,16 +331,20 @@ type arm_result =
 
 let arm_wait_budget_s = 5.0
 
-let arm_failed_after_pending_cleanup ~stopped ~lease_released =
-  if stopped && lease_released then
+let arm_failed_after_pending_cleanup ~stopped ~lease_released
+    ~registration_cleared =
+  if stopped && lease_released && registration_cleared then
     Arm_failed
       "sidecar became operational but its pending arm records could not be removed"
   else if not stopped then
     Arm_failed_ownership_retained
       "sidecar became operational but its child could not be stopped after pending-arm cleanup failed"
-  else
+  else if not lease_released then
     Arm_failed_ownership_retained
       "sidecar child stopped but its exact lease could not be released after pending-arm cleanup failed"
+  else
+    Arm_failed_ownership_retained
+      "sidecar lease was released but its exact broker registration could not be cleared after pending-arm cleanup failed"
 
 let registration_is_live ~broker_root ~broker_session_id ~alias ~pid
     ~pid_start_time =
@@ -425,6 +429,59 @@ let stop_pid ?sidecar_pid_start_time pid =
   (* A signal being sent is not success: callers may clear leases and
      registrations only after the exact generation has disappeared. *)
   gone ()
+
+(* Release only the lease that belongs to this exact child generation and
+   arm. A malformed, foreign, or replacement lease is uncertainty, never
+   evidence that cleanup succeeded. *)
+let release_arm_lease ~owners_dir ~socket_identity ~thread_id
+    ~broker_session_id ~alias ~child_pid ~child_pid_start_time =
+  let path = lease_path ~owners_dir ~socket_identity ~thread_id in
+  match read_lease_state path with
+  | Lease_missing -> true
+  | Lease_unreadable -> false
+  | Lease_present lease
+    when lease.socket_identity = socket_identity
+         && lease.thread_id = thread_id
+         && lease.broker_session_id = broker_session_id
+         && lease.alias = alias
+         && lease.sidecar_pid = child_pid
+         && lease.sidecar_pid_start_time = child_pid_start_time ->
+      release ~owners_dir ~socket_identity:lease.socket_identity
+        ~thread_id:lease.thread_id ~sidecar_pid:child_pid
+        ?sidecar_pid_start_time:child_pid_start_time ()
+  | Lease_present _ -> false
+
+let cleanup_failed_arm ~owners_dir ~socket_identity ~thread_id
+    ~broker_root ~broker_session_id ~alias ~token ~child_pid
+    ~child_pid_start_time ~reason =
+  let stopped = stop_pid ?sidecar_pid_start_time:child_pid_start_time child_pid in
+  if stopped then
+    (try ignore (Unix.waitpid [] child_pid)
+     with Unix.Unix_error (Unix.ECHILD, _, _) -> ())
+  else ();
+  let lease_released =
+    if stopped then
+      release_arm_lease ~owners_dir ~socket_identity ~thread_id
+        ~broker_session_id ~alias ~child_pid ~child_pid_start_time
+    else false
+  in
+  let registration_cleared =
+    if stopped && lease_released then
+      C2c_start.clear_registration_pid_if_owner ~broker_root
+        ~session_id:broker_session_id ~pid:child_pid
+        ~pid_start_time:child_pid_start_time
+    else false
+  in
+  let result =
+    arm_failed_after_pending_cleanup ~stopped ~lease_released
+      ~registration_cleared
+  in
+  match result with
+  | Arm_failed _ as failed ->
+      ignore (C2c_start.remove_codex_daemon_sidecar_arm ~owners_dir ~token);
+      (match failed with Arm_failed _ -> Arm_failed reason | _ -> failed)
+  | Arm_failed_ownership_retained _ as retained -> retained
+  | other -> other
 
 type child_observation = Child_alive | Child_exited | Child_unavailable
 
@@ -765,53 +822,16 @@ let arm ~thread_id ~alias ~broker_session_id ~broker_root ?instance_name ?owners
                          missing generation is not permission to signal the
                          numeric PID, even though it is our direct child: only
                          [waitpid] may observe it in that state. *)
-                      let stop_and_reap () =
-                        match child_pid_start_time with
-                        | Some start_time ->
-                            stop_pid ~sidecar_pid_start_time:start_time child_pid
-                        | None ->
-                            (try
-                               ignore (Unix.waitpid [] child_pid);
-                               true
-                             with Unix.Unix_error (Unix.ECHILD, _, _) -> false)
-                      in
-                      let stopped = stop_and_reap () in
-                      (* SIGKILL can bypass the child's finally block after it
-                         has claimed a lease. Remove only a lease carrying this
-                         exact child generation, then clear its exact broker
-                         registration. *)
-                      let cleanup_ok =
-                        match peek ~owners_dir ~socket_identity ~thread_id with
-                        | Some lease
-                          when lease.sidecar_pid = child_pid
-                               && lease.sidecar_pid_start_time = child_pid_start_time ->
-                            release_before_cleanup
-                              ~release:(fun () ->
-                                release ~owners_dir
-                                  ~socket_identity:lease.socket_identity
-                                  ~thread_id:lease.thread_id ~sidecar_pid:child_pid
-                                  ?sidecar_pid_start_time:child_pid_start_time ())
-                              ~cleanup:(fun () ->
-                                match child_pid_start_time with
-                                | Some start_time ->
-                                    C2c_start.clear_registration_pid_if_owner
-                                      ~broker_root ~session_id:broker_session_id
-                                      ~pid:child_pid ~pid_start_time:(Some start_time)
-                                | None -> false)
-                        | _ -> false
-                      in
                       restore_signal_mask ();
-                      if not stopped then failwith "sidecar child could not be reaped";
                       let reason =
                         match !publication_error with
                         | Some reason ->
                             "sidecar arm record could not be published: " ^ reason
                         | None -> "sidecar arm record could not be published"
                       in
-                      if cleanup_ok then Arm_failed reason
-                      else Arm_failed
-                        (reason
-                         ^ "; lease/registration cleanup was not confirmed and was retained for retry")
+                      cleanup_failed_arm ~owners_dir ~socket_identity ~thread_id
+                        ~broker_root ~broker_session_id ~alias ~token ~child_pid
+                        ~child_pid_start_time ~reason
                     end else begin
                     restore_signal_mask ();
                     let deadline = Unix.gettimeofday () +. arm_wait_s in
@@ -895,55 +915,38 @@ let arm ~thread_id ~alias ~broker_session_id ~broker_root ?instance_name ?owners
                            let lease_released =
                              if not stopped then false
                              else
-                               match peek ~owners_dir ~socket_identity
-                                       ~thread_id with
-                               | Some lease
-                                 when lease.sidecar_pid = child_pid
-                                      && lease.sidecar_pid_start_time = child_pid_start_time ->
-                                   release ~owners_dir
-                                     ~socket_identity:lease.socket_identity
-                                     ~thread_id:lease.thread_id
-                                     ~sidecar_pid:child_pid
-                                     ?sidecar_pid_start_time:child_pid_start_time ()
-                               | None -> true
-                               | Some _ -> false
-                             in
+                               release_arm_lease ~owners_dir ~socket_identity
+                                 ~thread_id ~broker_session_id ~alias
+                                 ~child_pid
+                                 ~child_pid_start_time
+                           in
                              let cleanup_result =
-                               arm_failed_after_pending_cleanup ~stopped ~lease_released
+                               let registration_cleared =
+                                 if stopped && lease_released then
+                                   C2c_start.clear_registration_pid_if_owner
+                                     ~broker_root ~session_id:broker_session_id
+                                     ~pid:child_pid
+                                     ~pid_start_time:child_pid_start_time
+                                 else false
+                               in
+                               arm_failed_after_pending_cleanup ~stopped
+                                 ~lease_released ~registration_cleared
                              in
                              match cleanup_result with
                              | Arm_failed_ownership_retained _ -> cleanup_result
-                             | Arm_failed _ -> begin
-                               (* Registration cleanup is exact-generation
-                                  pinned too.  It is safe to permit fallback
-                                  once the child and lease are gone; retain
-                                  the pending record itself for a later,
-                                  identity-pinned retry if necessary. *)
-                               ignore
-                                 (C2c_start.clear_registration_pid_if_owner
-                                    ~broker_root ~session_id:broker_session_id
-                                    ~pid:child_pid
-                                    ~pid_start_time:child_pid_start_time);
-                               cleanup_result
-                             end
+                             | Arm_failed _ -> cleanup_result
                              | other -> other
                          end
                      | Arm_failed _ as failed ->
                          (* A child that never observes a valid loaded thread
-                            must not survive the hook's fallback decision. Keep
-                            the pending record if owner-bound termination fails,
-                            so a later stop can retry it. *)
-                         let stopped =
-                           stop_pid ?sidecar_pid_start_time:child_pid_start_time
-                             child_pid
-                         in
-                         if stopped then begin
-                           (try ignore (Unix.waitpid [] child_pid)
-                            with Unix.Unix_error (Unix.ECHILD, _, _) -> ());
-                           ignore
-                             (C2c_start.remove_codex_daemon_sidecar_arm ~owners_dir ~token);
-                         end;
-                         failed
+                            still may have claimed the lease and published a
+                            registration before the parent observed failure.
+                            Fallback is allowed only after this exact owner has
+                            been stopped, released, and cleared. *)
+                         cleanup_failed_arm ~owners_dir ~socket_identity ~thread_id
+                           ~broker_root ~broker_session_id ~alias ~token ~child_pid
+                           ~child_pid_start_time
+                           ~reason:(match failed with Arm_failed reason -> reason | _ -> "sidecar arm failed")
                      | Arm_failed_ownership_retained _ as failed -> failed
                      | other ->
                          ignore

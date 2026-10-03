@@ -1136,34 +1136,23 @@ static int c2c_test_pidfd_member_generation_mismatch(pid_t pid)
     return end != value && *end == '\0' && selected == (long)pid;
 }
 
-/* Signal every process currently observed in one exact process group through
-   its own pidfd. The owner pidfd is opened and generation-checked before the
-   directory scan; every member fd remains bound to the process instance that
-   was observed, so a PID or PGID recycle can only make a send fail with ESRCH,
-   never redirect a signal to a replacement process. */
-static int c2c_pidfd_send_group_if_member_start_time(pid_t group_pid,
-                                                      pid_t owner_pid,
-                                                      long owner_start,
-                                                      int signal_kind)
-{
-    int signal = c2c_signal_from_kind(signal_kind);
-    if (group_pid <= 0 || owner_pid <= 0 || owner_start <= 0 || signal < 0)
-        return 0;
-    int fds[1024];
-    size_t count = 0;
-    int owner_fd = c2c_pidfd_open(owner_pid);
-    if (owner_fd < 0 || c2c_proc_start_ticks(owner_pid) != owner_start
-        || c2c_proc_pgrp_id(owner_pid) != group_pid) {
-        if (owner_fd >= 0) close(owner_fd);
-        return 0;
-    }
-    fds[count++] = owner_fd;
+struct c2c_pidfd_group_member {
+    pid_t pid;
+    long start;
+    int fd;
+};
 
+/* Add and validate every member visible in one /proc scan. Once a process has
+   been observed with the selected PGID, every later read/open failure is a
+   hard failure: silently dropping that member could otherwise make a caller
+   believe that the whole group was signalled after reaching only the owner. */
+static int c2c_pidfd_scan_group_members(
+    pid_t group_pid, pid_t owner_pid,
+    struct c2c_pidfd_group_member *members, size_t *count,
+    size_t capacity)
+{
     DIR *proc = opendir("/proc");
-    if (proc == NULL) {
-        close(owner_fd);
-        return 0;
-    }
+    if (proc == NULL) return 0;
     struct dirent *entry;
     int complete = 1;
     while ((entry = readdir(proc)) != NULL) {
@@ -1172,51 +1161,120 @@ static int c2c_pidfd_send_group_if_member_start_time(pid_t group_pid,
         if (end == entry->d_name || *end != '\0' || candidate <= 0
             || candidate == (long)owner_pid)
             continue;
-        long candidate_start = c2c_proc_start_ticks((pid_t)candidate);
-        if (candidate_start <= 0
-            || c2c_proc_pgrp_id((pid_t)candidate) != group_pid
-            || c2c_proc_start_ticks((pid_t)candidate) != candidate_start)
+        pid_t pid = (pid_t)candidate;
+        size_t existing = 0;
+        while (existing < *count && members[existing].pid != pid) ++existing;
+        long before_group = c2c_proc_pgrp_id(pid);
+        if (before_group < 0) {
+            /* A process that was not previously selected may vanish during
+               enumeration. An already selected member is different: its
+               unreadable group identity is a hard failure. */
+            if (existing < *count) {
+                complete = 0;
+                break;
+            }
             continue;
-        if (count >= sizeof(fds) / sizeof(fds[0])) {
+        }
+        if (existing < *count) {
+            long before_start = c2c_proc_start_ticks(pid);
+            long after_start = c2c_proc_start_ticks(pid);
+            long after_group = c2c_proc_pgrp_id(pid);
+            if (before_group != (long)group_pid || before_start <= 0
+                || after_start <= 0 || after_start != members[existing].start
+                || after_group < 0 || after_group != (long)group_pid
+                || c2c_test_pidfd_member_generation_mismatch(pid)) {
+                complete = 0;
+                break;
+            }
+            continue;
+        }
+        if (before_group != (long)group_pid) continue;
+        long before_start = c2c_proc_start_ticks(pid);
+        if (before_start <= 0) {
+            /* The process disappeared between the group read and the
+               generation read, so it was never a fully selected member. If
+               it still names the target group, however, its unreadable
+               generation is a fail-closed result. */
+            if (c2c_proc_pgrp_id(pid) < 0) continue;
             complete = 0;
             break;
         }
-        int fd = c2c_pidfd_open((pid_t)candidate);
+        if (*count >= capacity) {
+            complete = 0;
+            break;
+        }
+        int fd = c2c_pidfd_open(pid);
         if (fd < 0) {
-            /* A member can exit between readdir and pidfd_open. It is safe to
-               omit that dead member; a live member must remain owner-bound. */
-            if (errno == ESRCH || errno == ENOENT) continue;
             complete = 0;
             break;
         }
-        /* pidfd_open binds [fd] to one process instance, but the numeric
-           /proc reads above can straddle a PID exit/reuse.  Re-read the
-           candidate generation after opening the pidfd and only retain the fd
-           when it is still the same process in the selected group.  A
-           mismatch or unreadable generation skips that non-owner member; the
-           separately validated owner/sentinel remains authoritative. */
-        long after_start = c2c_proc_start_ticks((pid_t)candidate);
-        if (c2c_test_pidfd_member_generation_mismatch((pid_t)candidate)
-            || after_start <= 0 || after_start != candidate_start
-            || c2c_proc_pgrp_id((pid_t)candidate) != group_pid) {
+        long after_start = c2c_proc_start_ticks(pid);
+        long after_group = c2c_proc_pgrp_id(pid);
+        if (after_start <= 0 || after_start != before_start
+            || after_group < 0 || after_group != (long)group_pid
+            || c2c_test_pidfd_member_generation_mismatch(pid)) {
             close(fd);
-            continue;
+            complete = 0;
+            break;
         }
-        fds[count++] = fd;
+        members[*count].pid = pid;
+        members[*count].start = after_start;
+        members[*count].fd = fd;
+        ++*count;
     }
     closedir(proc);
-    if (!complete) {
-        for (size_t i = 0; i < count; ++i) close(fds[i]);
+    return complete;
+}
+
+/* Signal every process currently observed in one exact process group through
+   its own pidfd. The owner pidfd is opened and generation-checked before the
+   directory scan; every member fd remains bound to the process instance that
+   was observed, so a PID or PGID recycle can only make a send fail. The
+   repeated scans account for members joining during enumeration. */
+static int c2c_pidfd_send_group_if_member_start_time(pid_t group_pid,
+                                                      pid_t owner_pid,
+                                                      long owner_start,
+                                                      int signal_kind)
+{
+    int signal = c2c_signal_from_kind(signal_kind);
+    if (group_pid <= 0 || owner_pid <= 0 || owner_start <= 0 || signal < 0)
+        return 0;
+    struct c2c_pidfd_group_member members[1024];
+    size_t count = 0;
+    int owner_fd = c2c_pidfd_open(owner_pid);
+    if (owner_fd < 0 || c2c_proc_start_ticks(owner_pid) != owner_start
+        || c2c_proc_pgrp_id(owner_pid) != group_pid) {
+        if (owner_fd >= 0) close(owner_fd);
         return 0;
     }
-
-    int delivered = 0;
-    for (size_t i = 0; i < count; ++i) {
-        if (c2c_pidfd_send_signal(fds[i], signal) == 0)
-            delivered = 1;
-        close(fds[i]);
+    /* Three passes catch members that join while /proc is being enumerated.
+       Any process seen as a member must survive all later validation passes. */
+    for (int pass = 0; pass < 3; ++pass) {
+        if (!c2c_pidfd_scan_group_members(
+                group_pid, owner_pid, members, &count,
+                sizeof(members) / sizeof(members[0]))) {
+            for (size_t i = 0; i < count; ++i) close(members[i].fd);
+            close(owner_fd);
+            return 0;
+        }
+        if (c2c_proc_start_ticks(owner_pid) != owner_start
+            || c2c_proc_pgrp_id(owner_pid) != group_pid) {
+            for (size_t i = 0; i < count; ++i) close(members[i].fd);
+            close(owner_fd);
+            return 0;
+        }
     }
-    return delivered;
+
+    int all_sent = 1;
+    if (c2c_pidfd_send_signal(owner_fd, signal) != 0)
+        all_sent = 0;
+    close(owner_fd);
+    for (size_t i = 0; i < count; ++i) {
+        if (c2c_pidfd_send_signal(members[i].fd, signal) != 0)
+            all_sent = 0;
+        close(members[i].fd);
+    }
+    return all_sent;
 }
 #endif
 

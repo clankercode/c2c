@@ -7179,6 +7179,65 @@ let test_daemon_attach_recover_removes_crashed_outer_generation () =
       check bool "stale daemon handoff removed" false
         (Sys.file_exists (C2c_start.codex_daemon_thread_handoff_path name)))
 
+let test_daemon_attach_recovery_pins_handoff_before_teardown () =
+  let name = unique_instance_name "daemon-recovery-handoff-replacement" in
+  with_instance_dir name @@ fun dir ->
+  let handoff = C2c_start.codex_daemon_thread_handoff_path name in
+  let replacement_tmp = Filename.concat dir "handoff-replacement.tmp" in
+  let ready = Filename.concat dir "handoff-before-exchange-ready" in
+  let original = "{\"thread_id\":\"stale-thread\",\"frontend_pid\":1}\n" in
+  let replacement = "{\"thread_id\":\"replacement-thread\"}\n" in
+  write_file handoff original;
+  write_file replacement_tmp replacement;
+  let old_ready = Sys.getenv_opt "C2C_TEST_UNLINK_BEFORE_FINISH" in
+  let old_pause = Sys.getenv_opt "C2C_TEST_UNLINK_PAUSE_MS" in
+  let restore_env () =
+    (match old_ready with
+     | Some value -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" value
+     | None -> Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" "");
+    (match old_pause with
+     | Some value -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" value
+     | None -> Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "")
+  in
+  Unix.putenv "C2C_TEST_UNLINK_BEFORE_FINISH" ready;
+  Unix.putenv "C2C_TEST_UNLINK_PAUSE_MS" "200";
+  Fun.protect ~finally:restore_env @@ fun () ->
+    match Unix.fork () with
+    | 0 ->
+        let rec wait_for_ready attempts =
+          if Sys.file_exists ready then true
+          else if attempts = 0 then false
+          else (Unix.sleepf 0.005; wait_for_ready (attempts - 1))
+        in
+        if wait_for_ready 400 then begin
+          (* The production unlink guard deliberately turns the canonical
+             pathname into a directory during the exchange window. Remove
+             only this fixture's guard before installing the replacement. *)
+          if Sys.file_exists handoff && Sys.is_directory handoff then begin
+            (try Unix.chmod handoff 0o700 with _ -> ());
+            (try Sys.remove (Filename.concat handoff ".c2c-hold") with _ -> ());
+            (try Unix.rmdir handoff with _ -> ())
+          end;
+          (try Unix.rename replacement_tmp handoff with _ -> ());
+          exit 0
+        end else exit 1
+    | child ->
+        let recovered =
+          C2c_start.recover_codex_daemon_attach_state ~name ~session_id:name
+        in
+        let _, status = Unix.waitpid [] child in
+        if Sys.file_exists handoff && Sys.is_directory handoff then begin
+          (try Unix.chmod handoff 0o700 with _ -> ());
+          (try Sys.remove (Filename.concat handoff ".c2c-hold") with _ -> ());
+          (try Unix.rmdir handoff with _ -> ())
+        end;
+        check bool "replacement child reached handoff exchange window" true
+          (match status with Unix.WEXITED 0 -> true | _ -> false);
+        check bool "handoff replacement blocks stale recovery" false recovered;
+        check bool "replacement handoff remains" true (Sys.file_exists handoff);
+        check string "replacement handoff content is preserved" replacement
+          (read_file handoff)
+
 let test_eager_registration_preserves_malformed_registry () =
   with_temp_dir @@ fun dir ->
   let broker_root = Filename.concat dir "broker" in
@@ -7518,6 +7577,8 @@ let () =
             `Quick, test_same_instance_lock_serializes_concurrent_attach )
         ; ( "daemon_attach_recovers_crashed_outer_generation",
             `Quick, test_daemon_attach_recover_removes_crashed_outer_generation )
+        ; ( "daemon_attach_pins_handoff_before_teardown",
+            `Quick, test_daemon_attach_recovery_pins_handoff_before_teardown )
         ; ( "stop_refuses_replacement_generation_owning_instance_lock",
             `Quick, test_stop_refuses_replacement_generation_owning_instance_lock )
         ] )
