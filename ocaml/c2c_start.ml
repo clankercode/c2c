@@ -2545,7 +2545,8 @@ let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
        discard metadata carried by a same-session re-registration. *)
     C2c_mcp.Broker.register broker ~session_id ~alias ~pid:(Some pid)
       ~pid_start_time ~client_type:(Some client_type) ~cwd
-      ~from_auto_gen:alias_from_auto_gen ~preserve_existing_metadata:true ();
+      ~from_auto_gen:alias_from_auto_gen ~preserve_existing_metadata:true
+      ~clear_hook_ownership:true ();
     let persisted =
       List.exists
         (fun (r : C2c_mcp.registration) ->
@@ -8449,11 +8450,24 @@ let resolve_model_override
        | Some _ -> role_pmodel_override
        | None -> saved_model_override)
 
+(* A restart re-execs [c2c start] with [--session-id] because that value is
+   still needed as the broker identity for inbox replay.  For Codex it must not
+   be mistaken for a native thread id.  Reset-thread persists the native target
+   before invoking the same restart path, so restart mode deliberately selects
+   that persisted target and ignores the argv fallback. *)
+let codex_resume_target_for_start ~(restart_mode : bool)
+    ~(session_id_override : string option) ~(saved_target : string option) :
+    string option =
+  match restart_mode, session_id_override with
+  | true, Some _ -> saved_target
+  | _, Some sid -> Some sid
+  | _ -> saved_target
+
 let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ?(binary_override : string option) ?(alias_override : string option)
     ?(session_id_override : string option) ?(model_override : string option)
     ?(role_pmodel_override : string option)
-    ?(one_hr_cache = false) ?(new_session = false)
+    ?(one_hr_cache = false) ?(new_session = false) ?(restart_mode = false)
     ?(kickoff_prompt : string option) ?(auto_join_rooms : string option)
     ?(agent_name : string option) ?(reply_to : string option)
     ?(tmux_location : string option) ?(tmux_command : string list option)
@@ -8886,11 +8900,10 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
                     | None -> Some (Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ()))))
         in
         let codex_target =
-          match client, session_id_override with
-          | "codex", Some sid -> Some sid
-          | "codex", None -> ex.codex_resume_target
-          | _, Some _ -> ex.codex_resume_target
-          | _ -> None
+          if client = "codex" then
+            codex_resume_target_for_start ~restart_mode ~session_id_override
+              ~saved_target:ex.codex_resume_target
+          else ex.codex_resume_target
         in
         (* If persisted broker_root is empty (#501: instance configs were
            cleaned of broker_root pinning during legacy→canonical broker
@@ -8921,9 +8934,10 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
               Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
         in
         let codex_target =
-          match client, session_id_override with
-          | "codex", Some sid -> Some sid
-          | _ -> None
+          if client = "codex" then
+            codex_resume_target_for_start ~restart_mode ~session_id_override
+              ~saved_target:None
+          else None
         in
         let mo = resolve_model_override ~model_override ~role_pmodel_override ~saved_model_override:None in
         (binary_override, alias_override, extra_args, Some rs, codex_target, broker_root (), model_override, mo)
@@ -9337,6 +9351,10 @@ let build_start_argv ~(cfg : instance_config) : string array =
     | "codex", Some target -> target
     | _ -> cfg.resume_session_id
   in
+  (* [--session-id] is also the broker-session fallback for ordinary Codex
+     restarts. Mark the re-exec so [cmd_start] keeps that value out of the
+     native-thread selector while reset-thread uses the persisted target. *)
+  if cfg.client = "codex" then argv := !argv @ [ "--restart-mode" ];
   (* --session-id *)
   argv := !argv @ [ "--session-id"; resume_arg ];
   (* --alias *)

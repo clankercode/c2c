@@ -1266,6 +1266,15 @@ val resolve_model_override :
   saved_model_override:string option ->
   string option
 
+val codex_resume_target_for_start :
+  restart_mode:bool ->
+  session_id_override:string option ->
+  saved_target:string option ->
+  string option
+(** Resolve the native Codex thread target from start argv semantics. A
+    restart-mode argv carries the broker session id for identity/replay; the
+    persisted target remains authoritative in that mode. *)
+
 val cmd_start :
   client:string ->
   name:string ->
@@ -1277,6 +1286,7 @@ val cmd_start :
   ?role_pmodel_override:string ->
   ?one_hr_cache:bool ->
   ?new_session:bool ->
+  ?restart_mode:bool ->
   ?kickoff_prompt:string ->
   ?auto_join_rooms:string ->
   ?agent_name:string ->

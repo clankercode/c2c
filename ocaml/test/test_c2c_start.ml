@@ -4143,10 +4143,18 @@ let test_cmd_reset_thread_persists_codex_resume_target () =
       (match !seen_argv with
        | None -> fail "expected restart exec argv"
        | Some argv ->
+           check bool "restart carries explicit restart marker" true
+             (List.mem "--restart-mode" argv);
            check bool "restart uses codex resume target" true
              (has_adjacent_pair "--session-id" "thread-reset-123" argv);
            check bool "restart does not use broker session id" false
-             (has_adjacent_pair "--session-id" cfg.resume_session_id argv))
+             (has_adjacent_pair "--session-id" cfg.resume_session_id argv);
+           check (option string) "restart marker selects persisted native target"
+             (Some "thread-reset-123")
+             (C2c_start.codex_resume_target_for_start
+                ~restart_mode:(List.mem "--restart-mode" argv)
+                ~session_id_override:(Some "thread-reset-123")
+                ~saved_target:(Some "thread-reset-123")))
 
 let test_cmd_restart_codex_falls_back_to_resume_session_id () =
   let name = Printf.sprintf "codex-restart-%d" (Random.bits ()) in
@@ -4182,8 +4190,16 @@ let test_cmd_restart_codex_falls_back_to_resume_session_id () =
   match !seen_argv with
   | None -> fail "expected restart exec argv"
   | Some argv ->
+      check bool "ordinary restart carries explicit restart marker" true
+        (List.mem "--restart-mode" argv);
       check bool "restart preserves ordinary resume session id" true
-        (has_adjacent_pair "--session-id" cfg.resume_session_id argv)
+        (has_adjacent_pair "--session-id" cfg.resume_session_id argv);
+      check (option string) "restart marker keeps broker id out of native target"
+        None
+        (C2c_start.codex_resume_target_for_start
+           ~restart_mode:(List.mem "--restart-mode" argv)
+           ~session_id_override:(Some cfg.resume_session_id)
+           ~saved_target:cfg.codex_resume_target)
 
 let test_last_launch_at_roundtrip () =
   let name = Printf.sprintf "launch-at-%d" (Random.bits ()) in
@@ -5965,7 +5981,7 @@ let test_managed_registration_exact_alias_preserves_metadata () =
     ~pid:(Some (Unix.getpid ()))
     ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
     ~client_type:(Some "legacy") ~metadata_opt_out:true
-    ~registered_by:(Some "legacy-hook") ~cwd:(Some "/old/cwd") ();
+    ~registered_by:(Some "operator") ~cwd:(Some "/old/cwd") ();
   (match
      C2c_start.register_managed_agy_session ~broker_root ~name:"managed-exact"
        ~alias:"exact-alias" ~pid:(Unix.getpid ()) ~cwd:"/new/cwd" ()
@@ -5975,10 +5991,39 @@ let test_managed_registration_exact_alias_preserves_metadata () =
   match C2c_mcp.Broker.list_registrations broker with
   | [ r ] ->
       check bool "metadata opt-out preserved" true r.metadata_opt_out;
-      check (option string) "registered-by preserved" (Some "legacy-hook")
+      check (option string) "independent registered-by preserved" (Some "operator")
         r.registered_by;
       check (option string) "managed cwd refreshed" (Some "/new/cwd") r.cwd
   | rows -> failf "expected one exact-alias row, got %d" (List.length rows)
+
+let test_managed_registration_replaces_muse_hook_ownership () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id:"managed-hook" ~alias:"managed-hook"
+    ~pid:None ~pid_start_time:None ~client_type:(Some "muse")
+    ~role:(Some "reviewer") ~metadata_opt_out:true
+    ~registered_by:(Some "muse-hook") ~cwd:(Some "/old/cwd") ();
+  (match
+     C2c_start.register_managed_muse_session ~broker_root ~name:"managed-hook"
+       ~alias:"managed-hook" ~pid:(Unix.getpid ()) ~cwd:"/new/cwd" ()
+   with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "managed hook adoption failed: %s" e));
+  match C2c_mcp.Broker.list_registrations broker with
+  | [ r ] ->
+      check (option string) "hook ownership cleared" None r.registered_by;
+      check (option string) "managed client type stamped" (Some "muse")
+        r.client_type;
+      check (option string) "user role preserved" (Some "reviewer") r.role;
+      check bool "metadata opt-out preserved" true r.metadata_opt_out;
+      check (option string) "managed cwd refreshed" (Some "/new/cwd") r.cwd;
+      check bool "managed row is alive after ownership replacement" true
+        (C2c_mcp.Broker.registration_is_alive r);
+      check bool "managed row is retained by TTL sweep classification" true
+        (C2c_mcp.Broker.is_sweep_keepable r)
+  | rows -> failf "expected one managed row, got %d" (List.length rows)
 
 let test_managed_registration_case_only_collision_fails_closed () =
   with_temp_dir @@ fun dir ->
@@ -7377,6 +7422,8 @@ let () =
             `Quick, test_register_managed_agy_alias_override )
         ; ( "managed_registration_exact_alias_preserves_metadata",
             `Quick, test_managed_registration_exact_alias_preserves_metadata )
+        ; ( "managed_registration_replaces_muse_hook_ownership",
+            `Quick, test_managed_registration_replaces_muse_hook_ownership )
         ; ( "managed_registration_case_only_collision_fails_closed",
             `Quick, test_managed_registration_case_only_collision_fails_closed )
         ; ( "managed_registration_live_owner_fails_closed",

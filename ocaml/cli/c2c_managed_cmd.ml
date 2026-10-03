@@ -224,6 +224,10 @@ let start_cmd =
             Discards the saved session ID; the agent starts with a clean transcript. \
             Use when resumed sessions have grown too large.")
   in
+  let restart_mode_flag =
+    Cmdliner.Arg.(value & flag & info [ "restart-mode" ]
+      ~doc:"Internal restart marker: treat Codex --session-id as the broker fallback.")
+  in
   let foreground_flag =
     Cmdliner.Arg.(value & flag & info [ "foreground"; "fg" ]
       ~doc:"For CLIENT=relay-connect: run connector in the foreground instead of \
@@ -273,6 +277,7 @@ let start_cmd =
   and+ tmux_loc = tmux_loc
   and+ extra_argv = extra_argv
   and+ new_session = new_session_flag
+  and+ restart_mode = restart_mode_flag
   and+ foreground_flag = foreground_flag
   and+ relay_url_opt = relay_url_opt
   and+ interval_opt = interval_opt
@@ -706,6 +711,7 @@ let start_cmd =
       ?model_override
       ?role_pmodel_override
       ~one_hr_cache ~new_session
+      ~restart_mode
       ?kickoff_prompt
       ?agent_name
       ?auto_join_rooms

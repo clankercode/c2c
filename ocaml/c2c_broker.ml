@@ -2531,7 +2531,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) ?(preserve_existing_metadata = false) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) ?(preserve_existing_metadata = false) ?(clear_hook_ownership = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2732,6 +2732,12 @@ open C2c_mcp_helpers
           let effective_registered_by =
             match registered_by with
             | Some _ -> registered_by
+            | None when clear_hook_ownership ->
+                (match old_reg_opt with
+                 | Some old when is_any_hook_registration old -> None
+                 | _ when preserve_existing_metadata ->
+                     Option.bind old_reg_opt (fun r -> r.registered_by)
+                 | _ -> None)
             | None when preserve_existing_metadata -> Option.bind old_reg_opt (fun r -> r.registered_by)
             | None -> None
           in
