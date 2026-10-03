@@ -81,7 +81,8 @@ every event; it always exits 0 so a hook can never break a turn.
    children even though the TUI carries it), so a managed SessionStart
    would mint a competing native-sid row beside the launcher's
    pre-registered row. Instead, SessionStart step 0 adopts the managed row
-   by normalized cwd + live (pid, pid_start_time) and records a
+   by normalized cwd + a live exact-generation (pid, pid_start_time) match,
+   or a valid exact-generation teardown receipt for a pidless row, and records a
    payload-sid→managed-sid mapping
    (`<broker>/muse-sid-mapping.json`) so mid-session events anchor the
    managed row. SessionEnd removes only the mapping entry — adopted
@@ -192,9 +193,10 @@ environment instead; set them in your shell or launcher.
   minted; resumed sessions reappear on their next fresh start.
 - **Hook env is scrubbed** — muse does not propagate its env to hook
   children, so the hook never sees `C2C_MCP_SESSION_ID` from a managed
-  parent. Managed identity works through cwd+pid adoption (B361), not env
-  inheritance. A plain `muse` in a managed directory is adopted into the
-  managed row too — documented, not fixed.
+  parent. Managed identity works through cwd plus a live generation match or
+  a valid exact-generation teardown receipt (B361), not env inheritance. A
+  plain `muse` in a managed directory is adopted into the managed row too —
+  documented, not fixed.
 - **A settings.json write after `plugins approve` resets trust** — c2c
   installs in approve-last order, but any later hand-edit of
   `settings.json` drops the plugin back to review. Re-run

@@ -1634,6 +1634,11 @@ let test_codex_frontend_teardown_expectation_fails_closed () =
     | C2c_start.Codex_frontend_teardown_unknown reason ->
         fail (label ^ ": unexpectedly unknown: " ^ reason)
   in
+  let write_text path contents =
+    let oc = open_out path in
+    Fun.protect ~finally:(fun () -> close_out oc)
+      (fun () -> output_string oc contents)
+  in
   let missing = unique_instance_name "codex-teardown-missing" in
   with_instance_dir missing @@ fun _ ->
   expect_unknown "missing config" missing;
@@ -1724,6 +1729,46 @@ let test_codex_frontend_teardown_expectation_fails_closed () =
             ; ("alias", `String malformed)
             ; ("client_type", `Int 7) ] ];
       expect_unknown "malformed matching registration" malformed;
+      let invalid_pid = unique_instance_name "codex-teardown-invalid-pid" in
+      with_instance_dir invalid_pid @@ fun _ ->
+      let invalid_pid_sid = "codex-teardown-invalid-pid-session" in
+      write_codex_config invalid_pid invalid_pid_sid;
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String invalid_pid_sid)
+            ; ("alias", `String invalid_pid)
+            ; ("client_type", `String "codex-app-server")
+            ; ("pid", `Int 0)
+            ; ("pid_start_time", `Int 7) ] ];
+      expect_unknown "zero pid is malformed" invalid_pid;
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String invalid_pid_sid)
+            ; ("alias", `String invalid_pid)
+            ; ("client_type", `String "codex-app-server")
+            ; ("pid", `Int (-1))
+            ; ("pid_start_time", `Int 7) ] ];
+      expect_unknown "negative pid is malformed" invalid_pid;
+      let invalid_generation =
+        unique_instance_name "codex-teardown-invalid-generation"
+      in
+      with_instance_dir invalid_generation @@ fun _ ->
+      let invalid_generation_sid = "codex-teardown-invalid-generation-session" in
+      write_codex_config invalid_generation invalid_generation_sid;
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String invalid_generation_sid)
+            ; ("alias", `String invalid_generation)
+            ; ("client_type", `String "codex-app-server")
+            ; ("pid_start_time", `Int 0) ] ];
+      expect_unknown "zero generation is malformed" invalid_generation;
+      write_registry
+        [ `Assoc
+            [ ("session_id", `String invalid_generation_sid)
+            ; ("alias", `String invalid_generation)
+            ; ("client_type", `String "codex-app-server")
+            ; ("pid_start_time", `Int (-1)) ] ];
+      expect_unknown "negative generation is malformed" invalid_generation;
       let completed = unique_instance_name "codex-teardown-completed" in
       with_instance_dir completed @@ fun _ ->
       let completed_sid = "codex-teardown-completed-session" in
@@ -1746,6 +1791,19 @@ let test_codex_frontend_teardown_expectation_fails_closed () =
            ~session_id:completed_sid ~pid
            ~pid_start_time:(Some generation));
       expect_absent "pidless sticky registration with exact teardown evidence" completed;
+      let evidence =
+        C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root
+          ~session_id:completed_sid
+      in
+      write_text evidence
+        (Yojson.Safe.to_string
+           (`Assoc
+             [ ("session_id", `String completed_sid)
+             ; ("launcher_pid", `Int pid)
+             ; ("launcher_generation", `Int (generation + 1)) ]));
+      expect_unknown "stale receipt generation mismatch" completed;
+      write_text evidence (String.make 5001 'x');
+      expect_unknown "oversized receipt is rejected" completed;
       let live = unique_instance_name "codex-teardown-live" in
       with_instance_dir live @@ fun _ ->
       let live_sid = "codex-teardown-live-session" in
@@ -6599,11 +6657,20 @@ let test_registration_cleanup_removes_only_exact_owner () =
   let actual = Yojson.Safe.from_string (read_file path) in
   let expected =
     `List
-      [ `Assoc [ ("session_id", `String "sid"); ("alias", `String "owned") ]
+      [ `Assoc
+          [ ("session_id", `String "sid")
+          ; ("alias", `String "owned")
+          ; ("pid_start_time", `Int generation) ]
       ; unrelated ]
   in
   check bool "only exact owner pid fields are cleared" true
     (Yojson.Safe.equal expected actual)
+  ; let evidence =
+      C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root:dir
+        ~session_id:"sid"
+    in
+    check bool "exact generation receipt is published" true
+      (Sys.file_exists evidence)
 
 let test_registration_cleanup_preserves_on_lock_failure () =
   with_temp_dir @@ fun dir ->

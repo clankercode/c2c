@@ -823,9 +823,11 @@ val clear_registration_pid_if_owner :
   broker_root:string -> session_id:string -> pid:int -> pid_start_time:int option -> bool
 (** Clear the registration only when its current PID and, when available, its
     process start time still belong to this owner generation. A newer owner for
-    the same session is left untouched. Returns [false] on unreadable,
-    malformed, lock, ownership, or write/read-back uncertainty, preserving the
-    durable registry for retry. *)
+    the same session is left untouched. Successful cleanup retains the exact
+    [pid_start_time] on the pidless row so the teardown receipt can be matched
+    to this generation. Returns [false] on unreadable, malformed, lock,
+    ownership, or write/read-back uncertainty, preserving the durable registry
+    for retry. *)
 
 (** {1 Environment building} *)
 

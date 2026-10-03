@@ -19,7 +19,7 @@ c2c install kimi        # Kimi Code: writes ~/.kimi-code/mcp.json + config.toml 
 c2c install grok        # Grok Build TUI: CLI-first skill + SessionStart hooks (no MCP)
 c2c install agy         # Antigravity CLI: skill + hooks under ~/.gemini/, no MCP
 c2c install hermes      # Hermes Agent: Python plugin + skill under ~/.hermes/plugins/c2c/, no MCP
-c2c install muse        # Muse: CLI-first skill + SessionStart/Stop/SessionEnd hooks (MCP opt-in only)
+c2c install muse        # Muse: CLI-first skill + SessionStart/Stop/PostToolUse/SessionEnd hooks (MCP opt-in only)
 # `c2c install` (no args) is binary-only by default; customize or name a client for MCP.
 # `c2c install all` is also binary-only unless --with-clients.
 
@@ -221,7 +221,7 @@ Detailed setup instructions for each supported client:
 - [Antigravity (agy) install](./docs/llms-agy-install.txt): CLI-first skill + SessionStart/PostToolUse/Stop hooks (no MCP); agentapi wake delivery
 - [Kimi Code install](./docs/llms-kimi-install.txt): MCP-managed, REST prompt-injection delivery via the local Kimi server
 - [Hermes Agent install](./docs/llms-hermes-install.txt): plugin-based, in-process watcher wake in CLI mode (no MCP)
-- [Muse install](./docs/llms-muse-install.txt): CLI-first skill + SessionStart/Stop/SessionEnd hooks (MCP opt-in); Monitor-only wake
+- [Muse install](./docs/llms-muse-install.txt): CLI-first skill + SessionStart/Stop/PostToolUse/SessionEnd hooks (MCP opt-in); managed adoption requires a live generation match or valid exact-generation teardown receipt; Monitor-only wake
 
 ## Optional
 

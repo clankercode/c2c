@@ -712,14 +712,15 @@ let register_managed_muse ctx ~alias ~cwd =
     ~client_type:(Some "muse") ~cwd:(Some cwd) ~from_auto_gen:false ();
   b
 
-(* Post-`c2c stop` shape: exact-generation cleanup stripped the liveness
-   fields, wrote its durable receipt, and kept the sticky workspace-alias row. *)
+(* Post-`c2c stop` shape: exact-generation cleanup cleared the PID, retained
+   its authoritative generation, wrote the durable receipt, and kept the
+   sticky workspace-alias row. *)
 let register_torn_down_managed_muse ctx ~alias ~cwd =
   let b = broker ctx in
-  C2c_mcp.Broker.register b ~session_id:alias ~alias ~pid:None
-    ~pid_start_time:None ~client_type:(Some "muse") ~cwd:(Some cwd)
-    ~from_auto_gen:false ();
   let generation = Option.value (my_pid_start_time ()) ~default:1 in
+  C2c_mcp.Broker.register b ~session_id:alias ~alias ~pid:None
+    ~pid_start_time:(Some generation) ~client_type:(Some "muse") ~cwd:(Some cwd)
+    ~from_auto_gen:false ();
   write_file
     (C2c_mcp_helpers.managed_teardown_evidence_path
        ~broker_root:ctx.broker_root ~session_id:alias)
@@ -937,6 +938,64 @@ let test_b361_pidless_row_without_teardown_evidence_is_not_reclaimed () =
       (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
     check int "fresh session gets its own identity" 2 (count_regs ctx);
     check bool "fresh payload row exists" true (find_reg ctx payload_sid <> None))
+
+let test_b361_receipt_generation_mismatch_is_not_reclaimed () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-mismatched-receipt" in
+    ignore
+      (register_torn_down_managed_muse ctx ~alias:managed
+         ~cwd:"/tmp/b361-proj");
+    let receipt =
+      C2c_mcp_helpers.managed_teardown_evidence_path
+        ~broker_root:ctx.broker_root ~session_id:managed
+    in
+    let generation = Option.value (my_pid_start_time ()) ~default:1 in
+    write_file receipt
+      (Yojson.Safe.to_string
+         (`Assoc
+           [ ("session_id", `String managed)
+           ; ("launcher_pid", `Int (Unix.getpid ()))
+           ; ("launcher_generation", `Int (generation + 1)) ]));
+    let payload_sid = native_sid 21 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "mismatched receipt is not trusted" false
+      (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    check int "fresh session gets its own identity" 2 (count_regs ctx))
+
+let test_b361_invalid_generation_is_not_reclaimed () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-invalid-generation" in
+    ignore
+      (register_torn_down_managed_muse ctx ~alias:managed
+         ~cwd:"/tmp/b361-proj");
+    let registry = ctx.broker_root // "registry.json" in
+    let rows = Yojson.Safe.from_string (read_file registry) in
+    let invalid_rows =
+      match rows with
+      | `List [ `Assoc fields ] ->
+          `List
+            [ `Assoc
+                (List.map
+                   (fun (key, value) ->
+                     if key = "pid_start_time" then (key, `Int 0)
+                     else (key, value))
+                   fields) ]
+      | _ -> fail "managed row fixture missing"
+    in
+    write_file registry (Yojson.Safe.to_string invalid_rows);
+    let payload_sid = native_sid 22 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "invalid generation is not trusted" false
+      (contains ~haystack:stderr ~needle:"reclaiming torn-down managed row");
+    check int "fresh session gets its own identity" 2 (count_regs ctx))
 
 let test_b361_bails_loudly_on_ambiguous_torn_down_cwd () =
   with_ctx (fun ctx ->
@@ -1349,6 +1408,10 @@ let () =
             test_b361_symlinked_teardown_evidence_is_not_reclaimed
         ; test_case "pidless row without teardown evidence is not reclaimed"
             `Quick test_b361_pidless_row_without_teardown_evidence_is_not_reclaimed
+        ; test_case "receipt generation mismatch is not reclaimed" `Quick
+            test_b361_receipt_generation_mismatch_is_not_reclaimed
+        ; test_case "invalid generation is not reclaimed" `Quick
+            test_b361_invalid_generation_is_not_reclaimed
         ; test_case "bails loudly on ambiguous torn-down cwd" `Quick
             test_b361_bails_loudly_on_ambiguous_torn_down_cwd
         ; test_case "dead-pid row is not reclaimed" `Quick

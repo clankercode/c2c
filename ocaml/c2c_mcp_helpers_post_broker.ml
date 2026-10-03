@@ -2164,10 +2164,11 @@ let live_managed_muse_registrations ~(cwd : string)
     match start_time with
     | None -> false (* no recorded generation: fail closed, no kimi-style
                        pid-existence fallback (B361 divergence, see above) *)
-    | Some recorded -> (
+    | Some recorded when recorded > 0 -> (
         match C2c_pid_identity.read_pid_generation p with
         | C2c_pid_identity.Generation now -> now = recorded
         | C2c_pid_identity.Absent | C2c_pid_identity.Unreadable -> false)
+    | Some _ -> false
   in
   List.filter
     (fun (r : registration) ->
@@ -2205,16 +2206,24 @@ let managed_muse_teardown_evidence_valid ~broker_root (r : registration) =
              = Some (`String r.session_id)
              && positive_int "launcher_pid"
              && positive_int "launcher_generation"
+             && (match List.assoc_opt "launcher_generation" fields,
+                       r.pid_start_time with
+                 | Some (`Int receipt), Some row -> receipt = row && row > 0
+                 | Some (`String receipt), Some row ->
+                     int_of_string_opt (String.trim receipt) = Some row
+                     && row > 0
+                 | _ -> false)
          | _ -> false
        with _ -> false)
   | Muse_regular_file_missing | Muse_regular_file_unreadable _ -> false
 
-(* B361 (#47 shape): managed muse rows for [cwd] whose liveness fields were
-   STRIPPED on teardown ([C2c_start.clear_registration_pid_if_owner] records
-   exact-generation completion for muse too — MuseAdapter is a standard
-   CLIENT_ADAPTER). [pid = None] plus that receipt is the positive RECLAIM
-   signal: the sticky workspace alias. Never extended to dead-pid rows or
-   pidless rows whose cleanup was not proven. *)
+(* B361 (#47 shape): managed muse rows for [cwd] whose PID was cleared on
+   teardown ([C2c_start.clear_registration_pid_if_owner] retains the
+   authoritative pid_start_time and records exact-generation completion for
+   muse too — MuseAdapter is a standard CLIENT_ADAPTER). [pid = None] plus
+   that receipt is the positive RECLAIM signal: the sticky workspace alias.
+   Never extended to dead-pid rows or pidless rows whose cleanup was not
+   proven. *)
 let reclaimable_managed_muse_registrations ?broker_root ~(cwd : string)
     (regs : registration list) : registration list =
   let want = normalize_hook_cwd cwd in
@@ -2222,6 +2231,7 @@ let reclaimable_managed_muse_registrations ?broker_root ~(cwd : string)
     (fun (r : registration) ->
        is_managed_muse_row_for_cwd ~want r
        && r.pid = None
+       && (match r.pid_start_time with Some generation -> generation > 0 | None -> false)
        && (match broker_root with
            | Some root -> managed_muse_teardown_evidence_valid ~broker_root:root r
            | None -> false))

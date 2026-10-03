@@ -545,6 +545,39 @@ let read_regular_file_nofollow path : regular_file_read =
            Regular_file_unreadable "lifecycle record absence is uncertain")
   | e -> Regular_file_unreadable (Printexc.to_string e)
 
+(* Read a small lifecycle record through the same descriptor-bound no-follow
+   primitive, but cap the bytes consumed before constructing a string. The
+   managed teardown receipt is launcher-owned and tiny; a hostile replacement
+   must not turn its validation into an unbounded allocation. *)
+let read_regular_file_nofollow_bounded ~max_bytes path : regular_file_read =
+  try
+    let fd = open_regular_nofollow path in
+    let ic = Unix.in_channel_of_descr fd in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        let buffer = Bytes.create (max_bytes + 1) in
+        let rec read used =
+          if used = Bytes.length buffer then `Too_large
+          else
+            let count = input ic buffer used (Bytes.length buffer - used) in
+            if count = 0 then `Contents (Bytes.sub_string buffer 0 used)
+            else read (used + count)
+        in
+        match read 0 with
+        | `Contents contents -> Regular_file_contents contents
+        | `Too_large ->
+            Regular_file_unreadable "lifecycle record exceeds size limit")
+  with
+  | Unix.Unix_error (Unix.ENOENT, _, _) ->
+      (match lifecycle_path_state path with
+       | Lifecycle_path_absent -> Regular_file_missing
+       | Lifecycle_path_quarantined ->
+           Regular_file_unreadable "lifecycle record has quarantined recovery state"
+       | Lifecycle_path_present | Lifecycle_path_unknown ->
+           Regular_file_unreadable "lifecycle record absence is uncertain")
+  | e -> Regular_file_unreadable (Printexc.to_string e)
+
 (* Recovery artifacts live in one machine-wide owner directory. A stop scoped
    to one broker session must not be blocked by an artifact left by a
    different session. Keep malformed or legacy artifacts fail-closed; with a
@@ -1574,7 +1607,12 @@ let write_json_file_atomic (path : string) (json : Yojson.Safe.t) : unit =
    with e ->
      cleanup_tmp ();
      raise e);
-  try Unix.rename tmp path
+  try
+    Unix.rename tmp path;
+    let dir_fd = Unix.openfile (Filename.dirname path) [ Unix.O_RDONLY ] 0 in
+    Fun.protect
+      ~finally:(fun () -> try Unix.close dir_fd with _ -> ())
+      (fun () -> Unix.fsync dir_fd)
   with e ->
     cleanup_tmp ();
     raise e
@@ -2268,14 +2306,18 @@ let managed_registry_row_is_well_formed = function
         | Some (`String value) -> String.trim value <> ""
         | _ -> false
       in
-      let optional_int key =
+      let positive_optional_int key =
         match List.assoc_opt key fields with
-        | None | Some `Null | Some (`Int _) -> true
-        | Some (`String value) -> Option.is_some (int_of_string_opt (String.trim value))
+        | None | Some `Null -> true
+        | Some (`Int value) -> value > 0
+        | Some (`String value) ->
+            (match int_of_string_opt (String.trim value) with
+             | Some value -> value > 0
+             | None -> false)
         | _ -> false
       in
       required_string "session_id" && required_string "alias"
-      && optional_int "pid" && optional_int "pid_start_time"
+      && positive_optional_int "pid" && positive_optional_int "pid_start_time"
   | _ -> false
 
 let managed_registry_rows_are_well_formed rows =
@@ -2366,7 +2408,7 @@ let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : strin
                                 `Assoc
                                   (List.filter
                                      (fun (k, _) ->
-                                       k <> "pid" && k <> "pid_start_time")
+                                       k <> "pid")
                                      fields)
                               in
                               update true uncertain (cleared :: acc) rest
@@ -2382,10 +2424,14 @@ let clear_registration_pid_if_owner ~(broker_root : string) ~(session_id : strin
              | Error () -> false
              | Ok (false, _) -> true
              | Ok (true, updated) ->
-                 confirm_write updated
-                 && (match !cleared_generation with
-                     | Some generation -> write_teardown_evidence generation
-                     | None -> false)))
+                 (* Publish the durable exact-generation proof first. If the
+                    registry rename is interrupted afterward, the old
+                    pid-bearing row remains the recovery marker; no observer
+                    can see a pidless row without its receipt. *)
+                 (match !cleared_generation with
+                  | Some generation when write_teardown_evidence generation ->
+                      confirm_write updated
+                  | _ -> false)))
   with _ -> false
 
 let clear_registration_pid ~(broker_root : string) ~(session_id : string) : bool =
@@ -4476,8 +4522,8 @@ let frontend_teardown_owner_gone (r : frontend_teardown_record) =
    row that still carries a PID is the pre-fork marker that lets stale recovery
    detect that strict cleanup is required even when publication itself failed.
    Once exact-generation frontend cleanup has succeeded, the launcher clears
-   the row's PID and writes a durable completion receipt while retaining its
-   sticky identity. *)
+   the row's PID, retains its authoritative start-time generation, and writes
+   a durable completion receipt while retaining its sticky identity. *)
 let codex_frontend_teardown_expected_for_config
     (name : string) (cfg : instance_config) : frontend_teardown_expectation =
   let record_path = codex_frontend_teardown_record_path name in
@@ -4528,12 +4574,12 @@ let codex_frontend_teardown_expected_for_config
                             | _ -> false)
                           rows
                       in
-                      let teardown_evidence_valid () =
+                      let teardown_evidence_valid current_fields =
                         let path =
                           C2c_mcp_helpers.managed_teardown_evidence_path
                             ~broker_root:root ~session_id:cfg.session_id
                         in
-                        match read_regular_file_nofollow path with
+                        match read_regular_file_nofollow_bounded ~max_bytes:4096 path with
                         | Regular_file_contents contents ->
                             (try
                                match Yojson.Safe.from_string contents with
@@ -4547,10 +4593,28 @@ let codex_frontend_teardown_expected_for_config
                                           | None -> false)
                                      | _ -> false
                                    in
+                                   let int_field key fields =
+                                     match List.assoc_opt key fields with
+                                     | Some (`Int n) -> Some n
+                                     | Some (`String s) ->
+                                         int_of_string_opt (String.trim s)
+                                     | _ -> None
+                                   in
                                    List.assoc_opt "session_id" fields
                                    = Some (`String cfg.session_id)
                                    && positive_int "launcher_pid"
                                    && positive_int "launcher_generation"
+                                   && (match int_field "launcher_generation" fields,
+                                             List.assoc_opt "pid_start_time"
+                                               current_fields with
+                                       | Some receipt_generation,
+                                         Some (`Int row_generation) ->
+                                           receipt_generation = row_generation
+                                       | Some receipt_generation,
+                                         Some (`String row_generation) ->
+                                           int_of_string_opt (String.trim row_generation)
+                                           = Some receipt_generation
+                                       | _ -> false)
                                | _ -> false
                              with _ -> false)
                         | Regular_file_missing | Regular_file_unreadable _ -> false
@@ -4570,7 +4634,7 @@ let codex_frontend_teardown_expected_for_config
                              | _ -> false
                            in
                            if has_pid then Codex_frontend_teardown_required
-                           else if teardown_evidence_valid () then
+                           else if teardown_evidence_valid fields then
                              Codex_frontend_teardown_absent
                            else
                              Codex_frontend_teardown_unknown
