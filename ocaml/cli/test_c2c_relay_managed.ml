@@ -338,6 +338,76 @@ let test_supervisor_restarts_child_on_binary_update () =
           check int "supervisor stops cleanly" 0
             (C2c_relay_managed.child_status_code status))
 
+(* A graceful supervisor removes outer.pid and its generation sidecar from its
+   finally handler before the supervisor process itself exits. B302 stop must
+   wait for that captured generation to disappear and accept the cleanly
+   absent pair, while still rejecting a replacement generation. *)
+let test_stop_supervisor_accepts_graceful_term_record_removal () =
+  with_temp_dir @@ fun root ->
+  let instances = root // "instances" in
+  let name = "relay-connect" in
+  let inst = instances // name in
+  mkdir_p inst;
+  let pid_path = inst // "outer.pid" in
+  with_env "C2C_INSTANCES_DIR" instances @@ fun () ->
+  let result_r, result_w = Unix.pipe () in
+  let supervisor =
+    match Unix.fork () with
+    | 0 ->
+        Unix.close result_r;
+        write_pid_generation pid_path (Unix.getpid ());
+        Sys.set_signal Sys.sigterm
+          (Sys.Signal_handle (fun _ ->
+             (try Sys.remove pid_path with Sys_error _ -> ());
+             (try Sys.remove (pid_path ^ ".start-time") with Sys_error _ -> ());
+             exit 0));
+        while true do Unix.sleep 60 done;
+        0
+    | pid -> pid
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.kill supervisor Sys.sigkill with Unix.Unix_error _ -> ());
+      (try ignore (Unix.waitpid [] supervisor) with Unix.Unix_error _ -> ());
+      try Unix.close result_r with Unix.Unix_error _ -> ())
+    (fun () ->
+      check bool "supervisor generation is recorded" true
+        (wait_until (fun () -> Sys.file_exists pid_path));
+      let stopper =
+        match Unix.fork () with
+        | 0 ->
+            Unix.close result_r;
+            let stopped = C2c_relay_managed.stop_supervisor ~name ~timeout_s:3.0 in
+            ignore (Unix.write_substring result_w (if stopped then "1" else "0") 0 1);
+            exit 0
+        | pid -> pid
+      in
+      Unix.close result_w;
+      let stopped, supervisor_reaped =
+        let rec wait_for_result reaped =
+          let reaped =
+            if reaped then true
+            else
+              match Unix.waitpid [ Unix.WNOHANG ] supervisor with
+              | 0, _ -> false
+              | _, _ -> true
+          in
+          let ready, _, _ = Unix.select [ result_r ] [] [] 0.05 in
+          if ready <> [] then begin
+            let b = Bytes.create 1 in
+            ignore (Unix.read result_r b 0 1);
+            (Bytes.get b 0 = '1', reaped)
+          end else wait_for_result reaped
+        in
+        wait_for_result false
+      in
+      check bool "stop caller reaped graceful supervisor" true supervisor_reaped;
+      ignore (Unix.waitpid [] stopper);
+      check bool "graceful TERM accepts supervisor-owned record removal" true stopped;
+      check bool "outer pid record removed" false (Sys.file_exists pid_path);
+      check bool "outer generation record removed" false
+        (Sys.file_exists (pid_path ^ ".start-time")))
+
 (* B298: a crash-looping connector must not concatenate indefinitely into one
    append-only log (the xsm relay-connect log reached 810 MiB over 9,300
    restarts). Each relaunch rotates an oversized log via rename; the
@@ -852,6 +922,10 @@ let () =
     "binary updates", [
       test_case "atomic replacement changes stamp" `Quick test_binary_stamp_detects_atomic_update;
       test_case "supervisor restarts connector" `Slow test_supervisor_restarts_child_on_binary_update;
+    ];
+    "B302 graceful supervisor teardown", [
+      test_case "accepts TERM record removal after captured generation exits" `Slow
+        test_stop_supervisor_accepts_graceful_term_record_removal;
     ];
     "B298 instance log rotation", [
       test_case "crash loop rotates oversized log on relaunch" `Slow

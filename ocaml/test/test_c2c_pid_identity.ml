@@ -185,6 +185,32 @@ let test_proc_readers () =
   check bool "start time of an absent pid" true
     (P.proc_start_wall_clock 0x3FFFFFFF = None)
 
+let test_group_signal_is_generation_bound () =
+  if not (P.pidfd_supported ()) then ()
+  else
+    match Unix.fork () with
+    | 0 ->
+        (try ignore (Unix.setsid ()) with _ -> exit 2);
+        while true do Unix.sleep 60 done
+    | child ->
+        Fun.protect
+          ~finally:(fun () ->
+            (try Unix.kill child Sys.sigkill with Unix.Unix_error _ -> ());
+            try ignore (Unix.waitpid [] child) with Unix.Unix_error _ -> ())
+          (fun () ->
+            let start_time =
+              match P.read_pid_generation child with
+              | P.Generation value -> value
+              | _ -> fail "child generation unavailable"
+            in
+            check bool "wrong group generation is rejected" false
+              (P.signal_process_group_if_generation_matches
+                 ~pid:child ~start_time:(start_time + 1) ~signal:Sys.sigterm);
+            check bool "matching group generation signals through pidfds" true
+              (P.signal_process_group_if_generation_matches
+                 ~pid:child ~start_time ~signal:Sys.sigterm);
+            ignore (Unix.waitpid [] child))
+
 let () =
   run "c2c_pid_identity"
     [ ( "recycled onto a thread (the #85 incident)",
@@ -212,5 +238,7 @@ let () =
         ; test_case "unverifiable is not ours" `Quick
             test_unverifiable_is_not_ours
         ; test_case "proc readers" `Quick test_proc_readers
+        ; test_case "group signal binds generation" `Quick
+            test_group_signal_is_generation_bound
         ] )
     ]

@@ -297,10 +297,10 @@ let kill_exact_process_and_reap ~pid ~start_time =
             ~pid ~start_time:expected ~signal:Sys.sigkill
         with _ -> false
       in
-      if not signalled
-         && C2c_mcp.Broker.read_pid_start_time pid = Some expected
-      then (try Unix.kill pid Sys.sigkill with _ -> ());
-      reap_process ~pid
+      (* A failed pidfd send is an ownership failure, not permission to fall
+         back to a numeric kill. Leave the exact child record available to
+         the caller's recovery path. *)
+      if signalled then reap_process ~pid
   | _ -> ()
 
 let cleanup_after_sentinel_join_failure ~frontend_pid ~frontend_start_time
@@ -308,15 +308,17 @@ let cleanup_after_sentinel_join_failure ~frontend_pid ~frontend_start_time
   (match frontend_start_time with
    | Some expected
      when C2c_mcp.Broker.read_pid_start_time frontend_pid = Some expected ->
-       if C2c_pid_identity.proc_pgrp frontend_pid = Some frontend_pid then
-         (try Unix.kill (-frontend_pid) Sys.sigkill with _ -> ())
-       else
-         ignore
-           (try
-              C2c_pid_identity.signal_pid_if_generation_matches
-                ~pid:frontend_pid ~start_time:expected ~signal:Sys.sigkill
-            with _ -> false);
-       reap_process ~pid:frontend_pid
+       let signalled =
+         try
+           if C2c_pid_identity.proc_pgrp frontend_pid = Some frontend_pid then
+             C2c_pid_identity.signal_process_group_if_generation_matches
+               ~pid:frontend_pid ~start_time:expected ~signal:Sys.sigkill
+           else
+             C2c_pid_identity.signal_pid_if_generation_matches
+               ~pid:frontend_pid ~start_time:expected ~signal:Sys.sigkill
+         with _ -> false
+       in
+       if signalled then reap_process ~pid:frontend_pid
    | _ -> ());
   kill_exact_process_and_reap ~pid:sentinel_pid ~start_time:sentinel_start_time
 
@@ -378,19 +380,29 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
             match generation with
             | Some expected
               when C2c_mcp.Broker.read_pid_start_time pid = Some expected ->
-                if C2c_pid_identity.proc_pgrp pid = Some pid then begin
-                  (try Unix.kill (-pid) Sys.sigterm with _ -> ());
+                let signal signal =
+                  try
+                    if C2c_pid_identity.proc_pgrp pid = Some pid then
+                      C2c_pid_identity.signal_process_group_if_generation_matches
+                        ~pid ~start_time:expected ~signal
+                    else
+                      C2c_pid_identity.signal_pid_if_generation_matches
+                        ~pid ~start_time:expected ~signal
+                  with _ -> false
+                in
+                if signal Sys.sigterm then begin
                   Unix.sleepf 0.05;
-                  if C2c_mcp.Broker.read_pid_start_time pid = Some expected
-                     && C2c_pid_identity.proc_pgrp pid = Some pid then
-                    (try Unix.kill (-pid) Sys.sigkill with _ -> ())
-                end else
-                  ignore
-                    (C2c_pid_identity.signal_pid_if_generation_matches
-                       ~pid ~start_time:expected ~signal:Sys.sigkill);
+                  if C2c_mcp.Broker.read_pid_start_time pid = Some expected then
+                    ignore (signal Sys.sigkill)
+                end;
                 reap_process ~pid
             | _ -> ()
           in
+          (* Publish the exact frontend owner before group setup begins so a
+             failed owner-bound cleanup still leaves a durable recovery record.
+             The sentinel callback below adds the stronger process-group proof
+             once both join operations succeed. *)
+          (try on_parent_fork pid with e -> cleanup_exact_owner (); raise e);
           (try setpgid pid pid with e -> cleanup_exact_owner (); raise e);
           (* Keep an owner-bound sentinel in the frontend's process group. The
              frontend may exit and be reaped while descendants remain; the
@@ -453,11 +465,10 @@ let spawn_frontend_process ~(bin : string) ~(argv : string array)
                             ~sentinel_pid:sentinel)) then
                  fail_sentinel_join
                    "Codex frontend sentinel did not join its exact process group";
-               (* Publish ownership only after the parent and child have both
-                  proved the sentinel's exact frontend group. A failed join
-                  must never leave a teardown record claiming a group we cannot
-                  prove. *)
-               on_parent_fork pid;
+               (* Publish the sentinel only after the parent and child have
+                  both proved the exact frontend group. A failed join retains
+                  the earlier exact frontend recovery record and never claims
+                  group ownership. *)
                on_sentinel
                  (sentinel, C2c_mcp.Broker.read_pid_start_time sentinel));
           handoff_terminal_to_child terminal pid;
@@ -492,7 +503,20 @@ let stop_frontend_process ?owner_start_time ?sentinel_pid ?sentinel_start_time p
   in
   let signal_group signal =
     if not (owner_alive ()) then false
-    else try Unix.kill (-pid) signal; true with Unix.Unix_error _ -> false
+    else
+      try
+        match sentinel_pid, sentinel_start_time with
+        | Some sentinel, Some expected ->
+            C2c_pid_identity.signal_process_group_if_member_generation_matches
+              ~group_pid:pid ~member_pid:sentinel ~member_start_time:expected
+              ~signal
+        | _ ->
+            (match owner_start_time with
+             | Some expected ->
+                 C2c_pid_identity.signal_process_group_if_generation_matches
+                   ~pid ~start_time:expected ~signal
+             | None -> false)
+      with _ -> false
   in
   (* A missing generation/sentinel is an unknown owner, even when the numeric
      process group happens to be gone already.  Never turn that uncertainty
@@ -503,40 +527,39 @@ let stop_frontend_process ?owner_start_time ?sentinel_pid ?sentinel_start_time p
      remain in its process group.  Signal the group independently of the
      leader's wait state, then reap the leader if it is still our child. *)
   let term_sent = signal_group Sys.sigterm in
-  let deadline = Unix.gettimeofday () +. 2.0 in
-  let rec wait_grace () =
-    if (wait_once () && not (group_alive ())) || Unix.gettimeofday () >= deadline then ()
-    else (Unix.sleepf 0.05; wait_grace ())
-  in
-  wait_grace ();
-  (* Escalate the group even when [wait_once] observed ECHILD.  That is the
-     case where the old implementation leaked shell/inner-Codex descendants. *)
-  let kill_sent = signal_group Sys.sigkill in
-  let deadline = Unix.gettimeofday () +. 2.0 in
-  let reap_sentinel () =
-    match sentinel_pid with
-    | Some sentinel ->
-        (try ignore (Unix.waitpid [ Unix.WNOHANG ] sentinel) with _ -> ())
-    | None -> ()
-  in
-  let rec wait_group_gone () =
-    reap_sentinel ();
-    if not (group_alive ()) then true
-    else if Unix.gettimeofday () >= deadline then false
-    else (Unix.sleepf 0.05; wait_group_gone ())
-  in
-  let group_gone = wait_group_gone () in
-  (match sentinel_pid with
-   | Some sentinel ->
-       (try ignore (Unix.waitpid [ Unix.WNOHANG ] sentinel) with _ -> ())
-   | None -> ());
-  (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ());
-  (* A process-group id is the only target used here. If the group did not
-     disappear within the bounded poll, report failure so callers cannot claim
-     teardown completed while descendants remain. *)
-  ignore term_sent;
-  ignore kill_sent;
-  group_gone
+  if not term_sent then false
+  else
+    let deadline = Unix.gettimeofday () +. 2.0 in
+    let rec wait_grace () =
+      if (wait_once () && not (group_alive ())) || Unix.gettimeofday () >= deadline then ()
+      else (Unix.sleepf 0.05; wait_grace ())
+    in
+    wait_grace ();
+    (* Escalate only through the same owner-bound group primitive. If the
+       owner proof or pidfd operation fails, retain the teardown receipt. *)
+    let kill_sent = if group_alive () then signal_group Sys.sigkill else true in
+    if not kill_sent then false
+    else
+      let deadline = Unix.gettimeofday () +. 2.0 in
+      let reap_sentinel () =
+        match sentinel_pid with
+        | Some sentinel ->
+            (try ignore (Unix.waitpid [ Unix.WNOHANG ] sentinel) with _ -> ())
+        | None -> ()
+      in
+      let rec wait_group_gone () =
+        reap_sentinel ();
+        if not (group_alive ()) then true
+        else if Unix.gettimeofday () >= deadline then false
+        else (Unix.sleepf 0.05; wait_group_gone ())
+      in
+      let group_gone = wait_group_gone () in
+      (match sentinel_pid with
+       | Some sentinel ->
+           (try ignore (Unix.waitpid [ Unix.WNOHANG ] sentinel) with _ -> ())
+       | None -> ());
+      (try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ());
+      group_gone
 
 (* ------------------------- positional splitting --------------------------- *)
 

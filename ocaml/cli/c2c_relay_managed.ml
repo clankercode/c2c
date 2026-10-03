@@ -225,10 +225,22 @@ let generation_gone ~pid ~start_time =
 let wait_generation_gone ~pid_path ~start_time_path ~pid ~start_time ~timeout_s =
   let deadline = Unix.gettimeofday () +. timeout_s in
   let rec loop () =
-    if not (record_matches ~pid_path ~start_time_path ~pid ~start_time) then false
-    else if generation_gone ~pid ~start_time then true
-    else if Unix.gettimeofday () >= deadline then false
-    else (Unix.sleepf 0.05; loop ())
+    (* A graceful supervisor removes its own PID pair before it exits. That is
+       a valid completion only when the captured generation is also gone. A
+       replacement pair or an unreadable record remains an ownership conflict
+       and must fail closed. *)
+    (match read_recorded_pid ~pid_path with
+     | Recorded_present (recorded_pid, recorded_start)
+       when recorded_pid = pid && recorded_start = start_time ->
+         if generation_gone ~pid ~start_time then true
+         else if Unix.gettimeofday () >= deadline then false
+         else (Unix.sleepf 0.05; loop ())
+     | Recorded_absent ->
+         if generation_gone ~pid ~start_time then true
+         else if Unix.gettimeofday () >= deadline then false
+         else (Unix.sleepf 0.05; loop ())
+     | Recorded_unknown
+     | Recorded_present _ -> false)
   in
   loop ()
 
@@ -242,8 +254,13 @@ let remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time =
 let stop_recorded_generation ~pid_path ~start_time_path ~pid ~start_time
     ~timeout_s =
   let gone () =
-    record_matches ~pid_path ~start_time_path ~pid ~start_time
-    && generation_gone ~pid ~start_time
+    match read_recorded_pid ~pid_path with
+    | Recorded_present (recorded_pid, recorded_start)
+      when recorded_pid = pid && recorded_start = start_time ->
+        generation_gone ~pid ~start_time
+    | Recorded_absent -> generation_gone ~pid ~start_time
+    | Recorded_unknown
+    | Recorded_present _ -> false
   in
   if gone () then remove_recorded_pair ~pid_path ~start_time_path ~pid ~start_time
   else if pid = Unix.getpid () then false

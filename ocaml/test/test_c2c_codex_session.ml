@@ -418,6 +418,32 @@ let test_stop_frontend_missing_generation_fails_closed () =
     "missing owner generation is not successful cleanup" false
     (S.stop_frontend_process child)
 
+let test_stop_frontend_rejects_mismatched_group_owner () =
+  (* A live process group with the wrong owner generation is an unknown owner;
+     no numeric killpg fallback may be attempted. *)
+  let child =
+    match Unix.fork () with
+    | 0 ->
+        (try ignore (Unix.setsid ()) with _ -> exit 2);
+        while true do Unix.sleep 60 done;
+        0
+    | pid -> pid
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try Unix.kill child Sys.sigkill with Unix.Unix_error _ -> ());
+      try ignore (Unix.waitpid [] child) with Unix.Unix_error _ -> ())
+    (fun () ->
+      let generation =
+        match B.read_pid_start_time child with
+        | Some value -> value
+        | None -> Alcotest.fail "group owner generation unavailable"
+      in
+      Alcotest.(check bool) "mismatched group owner fails closed" false
+        (S.stop_frontend_process ~owner_start_time:(generation + 1) child);
+      Alcotest.(check (option int)) "owner remains the same generation"
+        (Some generation) (B.read_pid_start_time child))
+
 (* ------------------------------------------------------------------ *)
 (* --yolo forwarding + non-persistence                                 *)
 (* ------------------------------------------------------------------ *)
@@ -2451,6 +2477,8 @@ let () =
             test_stop_frontend_kills_group_after_leader_reaped
         ; test_case "stop rejects missing generation after group disappearance" `Quick
             test_stop_frontend_missing_generation_fails_closed
+        ; test_case "stop rejects mismatched group owner" `Quick
+            test_stop_frontend_rejects_mismatched_group_owner
         ; test_case "sentinel join failure cleans exact owners" `Quick
             test_sentinel_join_failure_cleanup_is_synchronous
         ; test_case "sentinel publication requires both join results" `Quick

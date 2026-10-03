@@ -4769,27 +4769,36 @@ let stop_frontend_teardown_record (name : string) : bool =
               false
             end else begin
               let signal_group signal =
-                (* Revalidate the exact sentinel/leader immediately before each
-                   group signal. A numeric PGID can be recycled after the
-                   frontend leader exits; an owner-bound member must still be
-                   in this group at the signal point. *)
                 if not (frontend_owner_valid record) then false
                 else
-                  try Unix.kill (-record.frontend_pid) signal; true
-                  with Unix.Unix_error _ -> false
-              in
-              let wait_gone timeout_s =
-                let deadline = Unix.gettimeofday () +. timeout_s in
-                let rec loop () =
-                  if group_gone () then true
-                  else if Unix.gettimeofday () >= deadline then false
-                  else (Unix.sleepf 0.05; loop ())
+                  try
+                    match record.sentinel_pid, record.sentinel_start_time with
+                    | Some sentinel, Some expected ->
+                        C2c_pid_identity.signal_process_group_if_member_generation_matches
+                          ~group_pid:record.frontend_pid ~member_pid:sentinel
+                          ~member_start_time:expected ~signal
+                    | _ ->
+                        (match record.frontend_start_time with
+                         | Some expected ->
+                             C2c_pid_identity.signal_process_group_if_generation_matches
+                               ~pid:record.frontend_pid ~start_time:expected ~signal
+                         | None -> false)
+                  with _ -> false
                 in
-                loop ()
-              in
-              ignore (signal_group Sys.sigterm);
-              if not (wait_gone 2.0) then ignore (signal_group Sys.sigkill);
-              if wait_gone 2.0 && frontend_teardown_owner_gone record then
+                let wait_gone timeout_s =
+                  let deadline = Unix.gettimeofday () +. timeout_s in
+                  let rec loop () =
+                    if group_gone () then true
+                    else if Unix.gettimeofday () >= deadline then false
+                    else (Unix.sleepf 0.05; loop ())
+                  in
+                  loop ()
+                in
+              let term_sent = signal_group Sys.sigterm in
+              if not term_sent then false
+              else if not (wait_gone 2.0) && not (signal_group Sys.sigkill) then
+                false
+              else if wait_gone 2.0 && frontend_teardown_owner_gone record then
                 remove_record ()
               else begin
                 Printf.eprintf

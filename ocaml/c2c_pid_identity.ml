@@ -280,12 +280,28 @@ let signal_process_group_if_owner ~(pidfile : string) ~(pid : int)
   else
     try Unix.kill (-pid) signal; true with Unix.Unix_error _ -> false
 
+external pidfd_send_group_signal_if_member_start_time : int -> int -> int -> int -> bool
+  = "caml_c2c_pidfd_send_group_signal_if_member_start_time"
+
 let signal_process_group_if_generation_matches ~(pid : int) ~(start_time : int)
     ~(signal : int) : bool =
-  match read_pid_generation pid with
-  | Generation actual when actual = start_time && proc_pgrp pid = Some pid ->
-      (try Unix.kill (-pid) signal; true with Unix.Unix_error _ -> false)
-  | _ -> false
+  let signal_kind =
+    if signal = Sys.sigterm then 0
+    else if signal = Sys.sigkill then 1
+    else -1
+  in
+  signal_kind >= 0 && pidfd_send_group_signal_if_member_start_time
+    pid pid start_time signal_kind
+
+let signal_process_group_if_member_generation_matches ~(group_pid : int)
+    ~(member_pid : int) ~(member_start_time : int) ~(signal : int) : bool =
+  let signal_kind =
+    if signal = Sys.sigterm then 0
+    else if signal = Sys.sigkill then 1
+    else -1
+  in
+  signal_kind >= 0 && pidfd_send_group_signal_if_member_start_time
+    group_pid member_pid member_start_time signal_kind
 
 (* Open and signal a process through a pidfd after checking the exact procfs
    generation in the same owner-bound operation.  Numeric [kill] after a
