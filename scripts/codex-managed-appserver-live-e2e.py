@@ -306,6 +306,11 @@ def _terminal_composer(frame: str) -> str | None:
 def _matches_autoturn_evidence(transcript: str, peer: str,
                                inst_alias: str, dm: str) -> bool:
     """Require this run's complete DATA envelope beside the auto-turn prefix."""
+    # TUI wrapping inserts newlines between attributes and inside long message
+    # bodies. Collapse only presentation whitespace; the unique sender,
+    # recipient, marker, and message_id values remain exact.
+    transcript = re.sub(r"\s+", " ", transcript)
+    dm = re.sub(r"\s+", " ", dm)
     envelope = re.compile(
         re.escape(AUTOTURN_SIG)
         + r"(?:(?!" + re.escape(AUTOTURN_SIG) + r").)*?"
