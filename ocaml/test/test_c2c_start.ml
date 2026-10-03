@@ -5795,6 +5795,87 @@ let test_register_managed_agy_alias_override () =
   check bool "alias override is registered" true (List.mem alias aliases);
   check bool "instance name is not also registered" false (List.mem name aliases)
 
+let with_live_broker_owner ~broker_root ~session_id ~alias f =
+  let ready_r, ready_w = Unix.pipe () in
+  let release_r, release_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close ready_r;
+      Unix.close release_w;
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      (try
+         C2c_mcp.Broker.register broker ~session_id ~alias
+           ~pid:(Some (Unix.getpid ()))
+           ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ())) ();
+         ignore (Unix.write_substring ready_w "r" 0 1);
+         let byte = Bytes.create 1 in
+         ignore (Unix.read release_r byte 0 1);
+         exit 0
+       with _ -> exit 2)
+  | child_pid ->
+      Unix.close ready_w;
+      Unix.close release_r;
+      let byte = Bytes.create 1 in
+      let n = Unix.read ready_r byte 0 1 in
+      if n <> 1 then fail "live broker owner did not become ready";
+      Fun.protect
+        ~finally:(fun () ->
+          ignore (Unix.write_substring release_w "x" 0 1);
+          ignore (Unix.waitpid [] child_pid);
+          Unix.close ready_r;
+          Unix.close release_w)
+        (fun () -> f child_pid)
+
+let test_managed_registration_exact_alias_preserves_metadata () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  let broker = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register broker ~session_id:"managed-exact" ~alias:"exact-alias"
+    ~pid:(Some (Unix.getpid ()))
+    ~pid_start_time:(C2c_mcp.Broker.read_pid_start_time (Unix.getpid ()))
+    ~client_type:(Some "legacy") ~metadata_opt_out:true
+    ~registered_by:(Some "legacy-hook") ~cwd:(Some "/old/cwd") ();
+  (match
+     C2c_start.register_managed_agy_session ~broker_root ~name:"managed-exact"
+       ~alias:"exact-alias" ~pid:(Unix.getpid ()) ~cwd:"/new/cwd"
+   with
+   | Ok () -> ()
+   | Error e -> fail (Printf.sprintf "exact managed registration failed: %s" e));
+  match C2c_mcp.Broker.list_registrations broker with
+  | [ r ] ->
+      check bool "metadata opt-out preserved" true r.metadata_opt_out;
+      check (option string) "registered-by preserved" (Some "legacy-hook")
+        r.registered_by;
+      check (option string) "managed cwd refreshed" (Some "/new/cwd") r.cwd
+  | rows -> failf "expected one exact-alias row, got %d" (List.length rows)
+
+let test_managed_registration_case_only_collision_fails_closed () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  with_live_broker_owner ~broker_root ~session_id:"case-owner"
+    ~alias:"Case-Only" (fun _ ->
+      match
+        C2c_start.register_managed_agy_session ~broker_root ~name:"new-owner"
+          ~alias:"case-only" ~pid:(Unix.getpid ()) ~cwd:dir
+      with
+      | Ok () -> fail "case-only live collision must be rejected"
+      | Error _ -> ())
+
+let test_managed_registration_live_owner_fails_closed () =
+  with_temp_dir @@ fun dir ->
+  let broker_root = Filename.concat dir "broker" in
+  Unix.mkdir broker_root 0o755;
+  with_live_broker_owner ~broker_root ~session_id:"live-owner"
+    ~alias:"live-alias" (fun _ ->
+      match
+        C2c_start.register_managed_agy_session ~broker_root ~name:"new-owner"
+          ~alias:"live-alias" ~pid:(Unix.getpid ()) ~cwd:dir
+      with
+      | Ok () -> fail "live alias owner must be rejected"
+      | Error _ -> ())
+
 let test_managed_agy_registration_failure_message () =
   let msg =
     C2c_start.managed_agy_registration_failure_message ~name:"zz-agy-fail"
@@ -6800,6 +6881,94 @@ let test_registration_cleanup_preserves_on_lock_failure () =
        (C2c_mcp_helpers.managed_teardown_evidence_path ~broker_root:dir
           ~session_id:"sid"))
 
+let test_same_instance_lock_serializes_concurrent_attach () =
+  let name = unique_instance_name "same-instance-lock" in
+  with_instance_dir name @@ fun dir ->
+  let ready_r, ready_w = Unix.pipe () in
+  let release_r, release_w = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close ready_r;
+      Unix.close release_w;
+      (try
+         ignore (C2c_start.acquire_instance_lock_for_daemon_attach ~name);
+         ignore (Unix.write_substring ready_w "r" 0 1);
+         let byte = Bytes.create 1 in
+         ignore (Unix.read release_r byte 0 1);
+         exit 0
+       with _ -> exit 2)
+  | child_pid ->
+      Unix.close ready_w;
+      Unix.close release_r;
+      let byte = Bytes.create 1 in
+      check int "lock holder ready" 1 (Unix.read ready_r byte 0 1);
+      let lock_path = C2c_start.instance_lock_path name in
+      let fd = Unix.openfile lock_path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
+      let rejected =
+        try
+          Unix.lockf fd Unix.F_TLOCK 0;
+          false
+        with Unix.Unix_error ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
+          true
+      in
+      Unix.close fd;
+      ignore (Unix.write_substring release_w "x" 0 1);
+      ignore (Unix.waitpid [] child_pid);
+      Unix.close ready_r;
+      Unix.close release_w;
+      check bool "concurrent same-name attach is rejected" true rejected;
+      check bool "lock path remains a regular lifecycle file" true
+        (try (Unix.lstat lock_path).Unix.st_kind = Unix.S_REG with _ -> false);
+      check bool "lock does not masquerade as outer pid" true
+        (not (Sys.file_exists (C2c_start.outer_pid_path name)));
+      ignore dir
+
+let test_daemon_attach_recover_removes_crashed_outer_generation () =
+  let name = unique_instance_name "daemon-recovery" in
+  with_instance_dir name @@ fun _dir ->
+  let child_pid =
+    match Unix.fork () with
+    | 0 -> Unix.sleep 60; exit 0
+    | pid -> pid
+  in
+  Fun.protect
+    ~finally:(fun () ->
+      (try ignore (Unix.kill child_pid Sys.sigkill) with _ -> ());
+      (try ignore (Unix.waitpid [] child_pid) with _ -> ()))
+    (fun () ->
+      let start_time =
+        match C2c_mcp.Broker.read_pid_start_time child_pid with
+        | Some n -> n
+        | None -> fail "crash fixture must have a readable PID generation"
+      in
+      C2c_start.write_pid_generation
+        ~pid_path:(C2c_start.outer_pid_path name)
+        ~start_time_path:(C2c_start.outer_pid_start_time_path name) child_pid;
+      write_file (C2c_start.codex_daemon_thread_handoff_path name)
+        "{\"thread_id\":\"stale-thread\",\"frontend_pid\":1,\"parent_pid_start_time\":1}\n";
+      write_file (C2c_start.codex_frontend_teardown_record_path name)
+        (Printf.sprintf
+           "{\"frontend_pid\":%d,\"frontend_pid_start_time\":%d}\n"
+           child_pid start_time);
+      ignore (Unix.kill child_pid Sys.sigkill);
+      ignore (Unix.waitpid [] child_pid);
+      let lock = C2c_start.acquire_instance_lock_for_daemon_attach ~name in
+      Fun.protect
+        ~finally:(fun () ->
+          C2c_start.release_instance_lock_for_daemon_attach ~name lock)
+        (fun () ->
+          check bool "stale daemon generation is recovered" true
+            (C2c_start.recover_codex_daemon_attach_state ~name
+               ~session_id:name));
+      check bool "stale outer pid removed" false
+        (Sys.file_exists (C2c_start.outer_pid_path name));
+      check bool "stale outer generation removed" false
+        (Sys.file_exists (C2c_start.outer_pid_start_time_path name));
+      check bool "stale frontend teardown removed" false
+        (Sys.file_exists (C2c_start.codex_frontend_teardown_record_path name));
+      check bool "stale daemon handoff removed" false
+        (Sys.file_exists (C2c_start.codex_daemon_thread_handoff_path name)))
+
 let test_eager_registration_preserves_malformed_registry () =
   with_temp_dir @@ fun dir ->
   let broker_root = Filename.concat dir "broker" in
@@ -7076,6 +7245,12 @@ let () =
             `Quick, test_register_managed_agy_session_persists_row )
         ; ( "register_managed_agy_alias_override",
             `Quick, test_register_managed_agy_alias_override )
+        ; ( "managed_registration_exact_alias_preserves_metadata",
+            `Quick, test_managed_registration_exact_alias_preserves_metadata )
+        ; ( "managed_registration_case_only_collision_fails_closed",
+            `Quick, test_managed_registration_case_only_collision_fails_closed )
+        ; ( "managed_registration_live_owner_fails_closed",
+            `Quick, test_managed_registration_live_owner_fails_closed )
         ; ( "registration_failure_message",
             `Quick, test_managed_agy_registration_failure_message )
         ] )
@@ -7125,6 +7300,10 @@ let () =
     ; ( "outer_pair_b362",
         [ ( "start_writes_outer_pair_and_stop_stops",
             `Quick, test_start_writes_outer_pair_and_stop_stops )
+        ; ( "same_instance_lock_serializes_concurrent_attach",
+            `Quick, test_same_instance_lock_serializes_concurrent_attach )
+        ; ( "daemon_attach_recovers_crashed_outer_generation",
+            `Quick, test_daemon_attach_recover_removes_crashed_outer_generation )
         ] )
     ; ( "launch_args",
         [ ( "prepare_launch_args_claude_uses_development_channel_flag",

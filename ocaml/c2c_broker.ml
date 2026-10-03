@@ -2452,7 +2452,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) ?(preserve_existing_metadata = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2595,7 +2595,7 @@ open C2c_mcp_helpers
             log_broker_event ~broker_root:(root t) "session_id_differs_from_alias" fields
           with _ -> ());
           let new_reg =
-          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location, _old_cwd, _old_metadata_opt_out, old_opaque_host_id) = old_state in
+          let (dnd, dnd_since, dnd_until, old_confirmed_at, old_client_type, old_plugin_version, old_compacting, old_enc_pubkey, old_ed25519_pubkey, old_pubkey_signed_at, old_pubkey_sig, old_last_activity_ts, old_role, old_compaction_count, old_automated_delivery, old_tmux_location, old_cwd, old_metadata_opt_out, old_opaque_host_id) = old_state in
           let effective_client_type = match client_type with
             | Some _ -> client_type
             | None -> old_client_type
@@ -2639,6 +2639,23 @@ open C2c_mcp_helpers
             | Some _ -> herdr_socket
             | None -> Option.bind old_reg_opt (fun r -> r.herdr_socket)
           in
+          let effective_cwd =
+            match cwd with
+            | Some _ -> cwd
+            | None when preserve_existing_metadata -> old_cwd
+            | None -> None
+          in
+          let effective_metadata_opt_out =
+            if preserve_existing_metadata && not metadata_opt_out
+            then old_metadata_opt_out
+            else metadata_opt_out
+          in
+          let effective_registered_by =
+            match registered_by with
+            | Some _ -> registered_by
+            | None when preserve_existing_metadata -> Option.bind old_reg_opt (fun r -> r.registered_by)
+            | None -> None
+          in
           { session_id; alias; pid; pid_start_time
           ; registered_at = Some (Unix.gettimeofday ())
           ; canonical_alias = Some (compute_canonical_alias ~deprecate_canonical_alias:t.deprecate_canonical_alias ~alias ~broker_root:(root t) ())
@@ -2658,9 +2675,9 @@ open C2c_mcp_helpers
           ; tmux_location = effective_tmux_location
           ; herdr_pane = effective_herdr_pane
           ; herdr_socket = effective_herdr_socket
-          ; cwd
-          ; metadata_opt_out
-          ; registered_by
+          ; cwd = effective_cwd
+          ; metadata_opt_out = effective_metadata_opt_out
+          ; registered_by = effective_registered_by
           ; opaque_host_id = old_opaque_host_id }
         in
         let kept =

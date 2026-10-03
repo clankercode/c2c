@@ -2536,66 +2536,25 @@ let eager_register_managed_alias ~(broker_root : string) ~(session_id : string)
        uncertain registry state, not an exception that can bypass the caller's
        startup/cleanup handling. *)
     mkdir_p broker_root;
-    let reg_path = broker_root // "registry.json" in
-    let lock_path = broker_root // "registry.json.lock" in
     let pid_start_time = read_pid_start_time pid in
-    let now = Unix.gettimeofday () in
-    let row =
-      `Assoc
-        ([ ("session_id", `String session_id)
-         ; ("alias", `String alias)
-         ; ("pid", `Int pid)
-         ; ("registered_at", `Float now)
-         ; ("client_type", `String client_type) ]
-         @ (match pid_start_time with
-            | Some n -> [ ("pid_start_time", `Int n) ]
-            | None -> [])
-         (* #40: record the launch cwd. The kimi SessionStart hook uses it to
-            recognise that a managed instance already owns this workspace (the
-            hook cannot see the managed identity env — see
-            [register_managed_kimi_session]). *)
-         @ (match cwd with
-            | Some c when String.trim c <> "" -> [ ("cwd", `String c) ]
-            | _ -> []))
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    (* Broker.register owns the registry lock and performs the generation-aware
+       alias/session collision check.  In particular, do not hand-edit rows:
+       an exact-string filter would evict a live case-variant owner and would
+       discard metadata carried by a same-session re-registration. *)
+    C2c_mcp.Broker.register broker ~session_id ~alias ~pid:(Some pid)
+      ~pid_start_time ~client_type:(Some client_type) ~cwd
+      ~preserve_existing_metadata:true ();
+    let persisted =
+      List.exists
+        (fun (r : C2c_mcp.registration) ->
+          r.session_id = session_id
+          && C2c_mcp.Broker.alias_casefold r.alias
+             = C2c_mcp.Broker.alias_casefold alias
+          && r.pid = Some pid)
+        (C2c_mcp.Broker.list_registrations broker)
     in
-    with_file_lock lock_path (fun () ->
-      let regs =
-        match read_managed_registry reg_path with
-        | Managed_registry_missing -> []
-        | Managed_registry_present items -> items
-        | Managed_registry_unknown reason ->
-            raise (Failure ("registry read is uncertain: " ^ reason))
-      in
-      let kept =
-        List.filter
-          (function
-            | `Assoc fields ->
-                let sid =
-                  match List.assoc_opt "session_id" fields with
-                  | Some (`String s) -> s
-                  | _ -> ""
-                in
-                let existing_alias =
-                  match List.assoc_opt "alias" fields with
-                  | Some (`String s) -> s
-                  | _ -> ""
-                in
-                sid <> session_id && existing_alias <> alias
-            | _ ->
-                raise (Failure "registry row became semantically malformed"))
-          regs
-      in
-      let expected = `List (row :: kept) in
-      write_json_file_atomic reg_path expected;
-      match read_managed_registry reg_path with
-      | Managed_registry_present actual
-        when Yojson.Safe.equal expected (`List actual) -> Ok ()
-      | Managed_registry_missing ->
-          Error "registry write could not be confirmed: registry disappeared"
-      | Managed_registry_unknown reason ->
-          Error ("registry write could not be confirmed: " ^ reason)
-      | Managed_registry_present _ ->
-          Error "registry write could not be confirmed: contents changed")
+    if persisted then Ok () else Error "registry write did not persist the managed alias"
   with e -> Error (Printexc.to_string e)
 
 (* ---------------------------------------------------------------------------
@@ -2814,6 +2773,10 @@ let per_agent_managed_heartbeats ~(name : string) : managed_heartbeat list =
 
 let config_path name = instance_dir name // "config.json"
 let meta_json_path name = instance_dir name // "meta.json"
+(* Stable advisory lock, deliberately separate from the generation-bound
+   outer.pid record.  The lock survives a crashed launcher and is released by
+   the kernel; outer.pid remains available for exact owner/liveness checks. *)
+let instance_lock_path name = instance_dir name // "instance.lock"
 let outer_pid_path name = instance_dir name // "outer.pid"
 let outer_pid_start_time_path name = outer_pid_path name ^ ".start-time"
 let inner_pid_path name = instance_dir name // "inner.pid"
@@ -4809,12 +4772,106 @@ let stop_frontend_teardown_record (name : string) : bool =
       Printf.eprintf "c2c: failed to inspect Codex frontend teardown record %s; retaining it\n%!" path;
       false
 
+(* Recover only the exact lifecycle state that belongs to a previous daemon
+   attach.  The caller holds the stable instance lock, so a second starter
+   cannot inspect the same generation between these checks and the subsequent
+   handoff/config/PID publications. *)
+let recover_codex_daemon_attach_state ~(name : string) ~(session_id : string) : bool =
+  let outer_state =
+    match read_pid_record ~pid_path:(outer_pid_path name)
+            ~start_time_path:(outer_pid_start_time_path name) with
+    | Pid_record_absent -> `Absent
+    | Pid_record_present (pid, start_time) ->
+        (match C2c_pid_identity.read_pid_generation pid with
+         | C2c_pid_identity.Absent ->
+             `Stale (pid, start_time)
+         | C2c_pid_identity.Generation actual when actual <> start_time ->
+             `Stale (pid, start_time)
+         | C2c_pid_identity.Generation _
+         | C2c_pid_identity.Unreadable ->
+             Printf.eprintf
+               "c2c: refusing daemon attach over live or uncertain prior outer generation for %s\n%!"
+               name;
+             `Unsafe)
+    | Pid_record_unknown ->
+        Printf.eprintf
+          "c2c: refusing daemon attach over uncertain outer lifecycle state for %s\n%!"
+          name;
+        `Unsafe
+  in
+  if outer_state = `Unsafe then false
+  else
+  let frontend_ok =
+    match lifecycle_path_state (codex_frontend_teardown_record_path name) with
+    | Lifecycle_path_absent ->
+        (match read_config_nofollow name with
+         | Instance_config_missing -> true
+         | Instance_config_present _ ->
+             (match codex_frontend_teardown_expected name with
+              | Codex_frontend_teardown_absent -> true
+              | Codex_frontend_teardown_required ->
+                  stop_frontend_teardown_record name
+              | Codex_frontend_teardown_unknown reason ->
+                  Printf.eprintf
+                    "c2c: daemon attach stale frontend state for %s is uncertain: %s\n%!"
+                    name reason;
+                  false)
+         | Instance_config_unknown reason ->
+             Printf.eprintf
+               "c2c: daemon attach cannot trust instance config for %s: %s\n%!"
+               name reason;
+             false)
+    | Lifecycle_path_present -> stop_frontend_teardown_record name
+    | Lifecycle_path_quarantined | Lifecycle_path_unknown ->
+        Printf.eprintf
+          "c2c: daemon attach frontend teardown state for %s is not inspectable\n%!"
+          name;
+        false
+  in
+  let handoff_ok =
+    if frontend_ok then
+      remove_pidfile_confirmed (codex_daemon_thread_handoff_path name)
+    else false
+  in
+  let sidecars_ok = stop_codex_sidecars_for_session ~broker_session_id:session_id in
+  let daemon_sidecar_ok = stop_codex_daemon_sidecar_for_instance name in
+  let outer_cleanup_ok =
+    match outer_state with
+    | `Absent -> true
+    | `Stale (pid, start_time) ->
+        remove_pid_record_pair_confirmed
+          ~pid_path:(outer_pid_path name)
+          ~start_time_path:(outer_pid_start_time_path name)
+          ~pid ~start_time
+    | `Unsafe -> false
+  in
+  frontend_ok && handoff_ok && sidecars_ok && daemon_sidecar_ok
+  && outer_cleanup_ok
+
 (* ---------------------------------------------------------------------------
  * Instance lock  — prevents two concurrent `c2c start` for the same name.
  * Uses POSIX advisory record locks (lockf F_TLOCK via OCaml Unix.lockf).
  * The kernel releases the lock automatically on process exit / crash, so
  * no stale-lock cleanup is needed.
  * --------------------------------------------------------------------------- *)
+
+(* A single c2c process can enter the managed launcher and then invoke another
+   lifecycle layer (for example the Codex app-server path).  Keep the owning fd
+   in a process-local table so those layers reuse the already-held lock instead
+   of opening a second descriptor that could later be closed independently. *)
+let held_instance_locks : (string * Unix.file_descr) list ref = ref []
+
+let held_instance_lock ~(name : string) : Unix.file_descr option =
+  List.assoc_opt name !held_instance_locks
+
+let remember_instance_lock name fd =
+  held_instance_locks := (name, fd) :: List.remove_assoc name !held_instance_locks
+
+let release_instance_lock ~(name : string) (fd : Unix.file_descr) =
+  held_instance_locks :=
+    List.filter (fun (held_name, held_fd) -> held_name <> name || held_fd <> fd)
+      !held_instance_locks;
+  try Unix.close fd with _ -> ()
 
 (** Registry precheck: if the alias/session-id is already alive in the broker
     registry, print a human-readable FATAL message and exit 1.  Called before
@@ -5003,56 +5060,57 @@ let check_registry_alias_alive ~(broker_root : string) ~(name : string) : unit =
         alias pid broker_root name alias broker_root broker_root;
       exit 1
 
-(** Acquire an exclusive POSIX advisory lock on `outer_pid_path name`.
-    Writes our PID into the file.  Returns the open fd — caller MUST keep it
+(** Acquire an exclusive POSIX advisory lock on `instance_lock_path name`.
+    Returns the open fd — caller MUST keep it
     referenced for the lifetime of the outer process (closing it releases the
     lock; the kernel does so automatically on process exit).
     On conflict, prints FATAL and exits 1 immediately. *)
 let acquire_instance_lock ~(name : string) : Unix.file_descr =
-  let path = outer_pid_path name in
-  mkdir_p (Filename.dirname path);
-  let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
-  match Unix.lockf fd Unix.F_TLOCK 0 with
-  | () ->
-      (* Lock acquired: truncate and write our PID. *)
-      Unix.ftruncate fd 0;
-      let s = string_of_int (Unix.getpid ()) ^ "\n" in
-      ignore (Unix.write_substring fd s 0 (String.length s));
-      fd
-  | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
-      (* Another process holds the lock — read their PID for diagnostics. *)
-      let existing_pid =
-        try
-          ignore (Unix.lseek fd 0 Unix.SEEK_SET);
-          let buf = Bytes.create 32 in
-          let n = Unix.read fd buf 0 32 in
-          int_of_string_opt (String.trim (Bytes.sub_string buf 0 n))
-        with _ -> None
-      in
-      Unix.close fd;
-      Printf.eprintf
-        "FATAL: instance '%s' already running (pid %s).\n\
-         \  Stop it first:  c2c stop %s\n%!"
-        name
-        (Option.fold ~none:"unknown" ~some:string_of_int existing_pid)
-        name;
-      exit 1
-
-(* [c2c start] holds the instance lock in its outer supervisor while the
-   inner Codex process runs. A direct [c2c codex] launch has no supervisor, so
-   it acquires the same lock here. The marker is scoped to the exact managed
-   instance name and is supplied only by [build_env] after the supervisor has
-   acquired the lock. *)
-let acquire_instance_lock_for_daemon_attach ~(name : string) : Unix.file_descr option =
-  match Sys.getenv_opt "C2C_INSTANCE_LOCK_HELD",
-        Sys.getenv_opt "C2C_INSTANCE_NAME" with
-  | Some "1", Some current when current = name -> None
-  | _ ->
-      let path = outer_pid_path name in
+  match held_instance_lock ~name with
+  | Some fd -> fd
+  | None ->
+      let path = instance_lock_path name in
       mkdir_p (Filename.dirname path);
       let fd = Unix.openfile path [ Unix.O_RDWR; Unix.O_CREAT ] 0o644 in
-      Unix.lockf fd Unix.F_LOCK 0;
-      Some fd
+      (match Unix.lockf fd Unix.F_TLOCK 0 with
+       | () ->
+           remember_instance_lock name fd;
+           fd
+       | exception Unix.Unix_error ((Unix.EAGAIN | Unix.EACCES | Unix.EWOULDBLOCK), _, _) ->
+           (* Another process holds the lock — read the generation-bound PID
+              record for diagnostics.  The lock file itself carries no owner
+              data because it must remain stable across launcher generations. *)
+           let existing_pid =
+             try
+               match read_pid_record ~pid_path:(outer_pid_path name)
+                       ~start_time_path:(outer_pid_start_time_path name) with
+               | Pid_record_present (pid, _) -> Some pid
+               | Pid_record_absent | Pid_record_unknown -> None
+             with _ -> None
+           in
+           Unix.close fd;
+           Printf.eprintf
+             "FATAL: instance '%s' already running (pid %s).\n\
+              \  Stop it first:  c2c stop %s\n%!"
+             name
+             (Option.fold ~none:"unknown" ~some:string_of_int existing_pid)
+             name;
+           exit 1)
+
+(* [c2c start] holds the instance lock in its outer supervisor while the
+   inner client runs. A direct [c2c codex] launch acquires the same lock here.
+   Re-entrancy is process-local: an inherited environment marker is not a lock
+   proof because a child process does not inherit its parent's POSIX lock. *)
+let acquire_instance_lock_for_daemon_attach ~(name : string) : Unix.file_descr option =
+  match held_instance_lock ~name with
+  | Some _ -> None
+  | None -> Some (acquire_instance_lock ~name)
+
+let release_instance_lock_for_daemon_attach ~(name : string)
+    (fd : Unix.file_descr option) : unit =
+  match fd with
+  | None -> ()
+  | Some fd -> release_instance_lock ~name fd
 
 let run_tmux_loop ~(name : string) ~(tmux_location : string)
     ~(tmux_command : string list) ~(broker_root : string)
@@ -8552,6 +8610,12 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ; notifier_pid_start_time_path name
     ; codex_frontend_teardown_record_path name ]
   in
+  (* Serialize stale inspection/recovery with every later lifecycle write.  The
+     lock is retained by this process; the outer loop and nested Codex launcher
+     reuse the same descriptor through [held_instance_locks]. *)
+  ignore (acquire_instance_lock ~name);
+  Unix.putenv "C2C_INSTANCE_LOCK_HELD" "1";
+  Unix.putenv "C2C_INSTANCE_NAME" name;
   let validated_stale_config : instance_config_snapshot option ref = ref None in
   let recover_stale_instance () =
     Printf.eprintf

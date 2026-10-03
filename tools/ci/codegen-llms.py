@@ -51,6 +51,8 @@ DOCS_SECTION_END = "## MCP Tools"
 PAIRED_CLIENT_SURFACES = (
     "c2c install muse --with-mcp",
     "c2c start muse",
+    "codex-cli >= 0.159",
+    "authenticated private app-server fallback",
 )
 
 
@@ -120,6 +122,19 @@ def check_llms(root: Path) -> int:
         print("codegen-llms: paired client surfaces are missing:", file=sys.stderr)
         for item in missing:
             print(f"  - {item}", file=sys.stderr)
+        return 1
+
+    codex_bullets = []
+    for relpath in ("llms.txt", "docs/llms.txt"):
+        codex_bullets.append(
+            next((line for line in (root / relpath).read_text(encoding="utf-8").splitlines()
+                  if line.startswith("- **Codex**:")), None)
+        )
+    if codex_bullets[0] is None or codex_bullets[1] is None:
+        print("codegen-llms: Codex delivery bullet is missing", file=sys.stderr)
+        return 1
+    if codex_bullets[0] != codex_bullets[1]:
+        print("codegen-llms: root and published Codex delivery bullets differ", file=sys.stderr)
         return 1
 
     print("codegen-llms: Docs section and paired client surfaces are up to date")

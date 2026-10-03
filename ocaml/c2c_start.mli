@@ -262,14 +262,22 @@ val expected_cwd_path : string -> string
 val config_path : string -> string
 (** [config_path name] returns the config.json path for an instance. *)
 
+val instance_lock_path : string -> string
+(** [instance_lock_path name] returns the stable advisory lifecycle lock. *)
+
 val outer_pid_path : string -> string
 (** [outer_pid_path name] returns the outer.pid path for an instance. *)
 
 val acquire_instance_lock_for_daemon_attach : name:string -> Unix.file_descr option
 (** Acquire the per-instance lifecycle lock for a direct daemon attach.
-    Managed attaches inherit the lock held by their outer supervisor and return
-    [None]; direct attaches return the newly opened descriptor, which the
-    caller must hold until all lifecycle cleanup is complete. *)
+    A same-process managed attach reuses the lock held by its outer supervisor
+    and returns [None]; direct attaches return the newly opened descriptor,
+    which the caller must release with [release_instance_lock_for_daemon_attach]
+    after all lifecycle cleanup is complete. Concurrent same-name attaches fail
+    closed instead of waiting behind an unknown generation. *)
+
+val release_instance_lock_for_daemon_attach :
+  name:string -> Unix.file_descr option -> unit
 
 val outer_pid_start_time_path : string -> string
 val inner_pid_start_time_path : string -> string
@@ -286,6 +294,12 @@ type frontend_teardown_expectation =
 
 val codex_frontend_teardown_expected :
   string -> frontend_teardown_expectation
+
+val recover_codex_daemon_attach_state :
+  name:string -> session_id:string -> bool
+(** Under the caller-held instance lock, recover a crashed daemon frontend and
+    its exact-generation sidecars/PID records before a new attach publishes
+    handoff, config, teardown, or PID state. *)
 
 val codex_daemon_thread_handoff_path : string -> string
 (** Native Codex thread handoff written by the daemon-attach frontend hook. *)

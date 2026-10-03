@@ -2173,7 +2173,11 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
   let lifecycle_lock =
     C2c_start.acquire_instance_lock_for_daemon_attach ~name
   in
-  let result = try match C2c_codex_daemon_sidecar.default_control_socket () with
+  let result = try
+    if not
+         (C2c_start.recover_codex_daemon_attach_state ~name ~session_id)
+    then 1
+    else match C2c_codex_daemon_sidecar.default_control_socket () with
   | None -> 1
   | Some sock ->
       (match C2c_codex_daemon_sidecar.unix_endpoint sock with
@@ -2616,11 +2620,11 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                     exit_code
                     end)
            end)
-      ) with e ->
-    (match lifecycle_lock with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
+  ) with e ->
+    C2c_start.release_instance_lock_for_daemon_attach ~name lifecycle_lock;
     raise e
   in
-  (match lifecycle_lock with Some fd -> (try Unix.close fd with _ -> ()) | None -> ());
+  C2c_start.release_instance_lock_for_daemon_attach ~name lifecycle_lock;
   result
 
 (* [stop] is intentionally unit-returning and best-effort. Before deleting the
@@ -2706,13 +2710,24 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     end
   in
   let instance_dir = C2c_start.instance_dir name in
+  let daemon_selected =
+    backend = None && daemon_attach_available ()
+  in
+  (* Private app-server lifecycle files share the same stable instance lock as
+     daemon attach.  Acquire it before creating the instance directory or
+     touching any resume/cleanup state, and hold it through startup and the
+     cleanup/fallback paths below. *)
+  let private_lifecycle_lock =
+    if daemon_selected then None
+    else C2c_start.acquire_instance_lock_for_daemon_attach ~name
+  in
   (try C2c_io.mkdir_p instance_dir with _ -> ());
   (* Prefer the machine daemon only when its owner-bound cleanup prerequisites
      are available: the launcher has an exact PID generation and pidfd
      signalling. The launcher then attaches the TUI and arms the sidecar after
      discovering its exact native thread. Injected [backend] stays on the
      private-server path so hermetic tests do not touch the live daemon. *)
-  if backend = None && daemon_attach_available () then
+  if daemon_selected then
     run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
       ~model_override ~instance_dir ()
   else begin
@@ -2763,7 +2778,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     | Some bk -> C2c_codex_app_server.start ~backend:bk cfg
     | None -> C2c_codex_app_server.start cfg
   in
-  match start cfg with
+  let private_result = try match start cfg with
   | Error diag ->
       (* No routable identity was persisted (start failed before Running), so
          nothing to clean up here. Best-effort remove the empty instance dir we
@@ -2921,6 +2936,12 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
            1
        | _ -> 0)
       end
+  with e ->
+    C2c_start.release_instance_lock_for_daemon_attach ~name private_lifecycle_lock;
+    raise e
+  in
+  C2c_start.release_instance_lock_for_daemon_attach ~name private_lifecycle_lock;
+  private_result
   end
 
 (* The emergency hook-backed route bypasses [run_app_server], but it is still a
