@@ -975,6 +975,37 @@ let test_live_connector_fallback_key () =
     (L.live_connector_fallback_key ~connector_live:true ~node_id:"host-abc"
        ~local_session_id:(Some "") () = None)
 
+(* ---------- B343: Grok peek/register key parity ---------- *)
+
+let test_grok_direct_peek_matches_register_key () =
+  (* B343: with no connector, a bare `c2c monitor` after `c2c whoami` must
+     peek the SAME key `c2c relay register --alias` creates for that alias —
+     including grok- -prefixed AUTO aliases (no invented cli-grok-* vs
+     cli-stripped split). The register side of this parity is pinned in
+     test_relay_b294_register_guard (resolve_register_inbox_key default). *)
+  let k = L.resolve_relay_peek_key ~alias:"grok-power-bolt-mbcg"
+            ~node_id_override:None ~session_id_override:None
+            ~connector_key:None () in
+  Alcotest.(check string) "node_id = cli-<grok-alias>"
+    "cli-grok-power-bolt-mbcg" k.L.node_id;
+  Alcotest.(check string) "session_id = cli-<grok-alias>"
+    "cli-grok-power-bolt-mbcg" k.L.session_id
+
+let test_grok_connector_peek_uses_machine_node_and_session () =
+  (* B343: with a live connector (B344 fallback), the monitor peeks the lease
+     that belongs to the whoami alias+session — machine node-id + the REAL
+     local session id — never an invented cli-grok-* key. *)
+  let ck =
+    L.live_connector_fallback_key ~connector_live:true ~node_id:"3d08761ae3f3"
+      ~local_session_id:(Some "01a0ca56-f15c-7873-ad00-a04469eddae6") ()
+  in
+  let k = L.resolve_relay_peek_key ~alias:"grok-power-bolt-mbcg"
+            ~node_id_override:None ~session_id_override:None
+            ~connector_key:ck () in
+  Alcotest.(check string) "connector node_id used" "3d08761ae3f3" k.L.node_id;
+  Alcotest.(check string) "real session id used"
+    "01a0ca56-f15c-7873-ad00-a04469eddae6" k.L.session_id
+
 (* ---------- B180: identity rebind after rename ---------- *)
 
 let rebind_new = function
@@ -1321,6 +1352,12 @@ let () =
             test_lease_not_found_not_connector_owned_variant
         ; Alcotest.test_case "live-connector fallback peek key" `Quick
             test_live_connector_fallback_key
+        ] )
+    ; ( "b343-grok-peek-register-parity",
+        [ Alcotest.test_case "grok direct peek matches register key" `Quick
+            test_grok_direct_peek_matches_register_key
+        ; Alcotest.test_case "grok connector peek uses node + session" `Quick
+            test_grok_connector_peek_uses_machine_node_and_session
         ] )
     ; ( "b211-transient-wedge-escalation",
         [ Alcotest.test_case "below threshold is quiet until wedge (B348)" `Quick

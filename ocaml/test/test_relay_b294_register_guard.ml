@@ -116,6 +116,29 @@ let test_register_key_resolution () =
    | Error _ -> check bool "env session alone refused too" true true
    | Ok _ -> fail "env session without node must not resolve")
 
+let test_register_key_grok_prefix_parity () =
+  (* B343: the repair path for grok- -prefixed AUTO aliases is the KEY, not
+     the gate — `c2c relay register` accepts a grok- alias (no blocklist on
+     the relay path; the c2c_blocklist gate stays for user-supplied LOCAL
+     `c2c register` only) and resolves the SAME key the monitor peeks:
+     cli-<alias>/cli-<alias> by default (direct case), or an explicit
+     (node, session) pair to recreate the connector's lease. *)
+  let resolve ?flag_node ?flag_session ?env_node ?env_session () =
+    C2c_relay_connector.resolve_register_inbox_key ~alias:"grok-power-bolt-mbcg"
+      ~flag_node_id:flag_node ~flag_session_id:flag_session
+      ~env_node_id:env_node ~env_session_id:env_session
+  in
+  let ok_key r = match r with
+    | Ok k -> k
+    | Error m -> Alcotest.failf "unexpected refusal: %s" m
+  in
+  check (pair string string) "grok- default keeps the cli convention"
+    ("cli-grok-power-bolt-mbcg", "cli-grok-power-bolt-mbcg") (ok_key (resolve ()));
+  check (pair string string) "grok- explicit keys recreate the connector lease"
+    ("3d08761ae3f3", "01a0ca56-f15c-7873-ad00-a04469eddae6")
+    (ok_key (resolve ~flag_node:"3d08761ae3f3"
+               ~flag_session:"01a0ca56-f15c-7873-ad00-a04469eddae6" ()))
+
 (* --- pure: connector ownership evidence --------------------------------- *)
 
 let test_connector_owns_alias_evidence () =
@@ -469,7 +492,9 @@ let () =
   run "B294 relay register lease guard"
     [ ("register key resolution",
        [ test_case "flags/env/default precedence" `Quick
-           test_register_key_resolution ])
+           test_register_key_resolution
+       ; test_case "grok- prefix peek/register parity (B343)" `Quick
+           test_register_key_grok_prefix_parity ])
     ; ("connector ownership evidence",
        [ test_case "fresh vs stale vs unmanaged vs live pid" `Quick
            test_connector_owns_alias_evidence
