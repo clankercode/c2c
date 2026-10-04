@@ -1,15 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-24T09:49:06Z"
 depends_on: []
 estimate_hours: 1
 id: B345
 priority: high
+started_at: null
 status: pending
-tags:
-    - grok
-    - relay
-    - cursor
+tags: []
 title: 'Grok Bot (Cursor fleet) agents: basic c2c relay support / eligibility gaps'
 updated_at: "2026-09-24T09:49:06Z"
 ---
@@ -82,3 +81,12 @@ Basic support is done when all of the following hold for a Grok Bot fleet agent 
 4. `whoami --relay` / status does not report a healthy lease when peek would return `lease_not_found`. If the row was skipped, the reason is visible (missing hook marker, stale `last_activity_ts`, pid mismatch, wrong broker), not only "connector live" plus `configured_not_registered`.
 5. Docs (feature matrix at minimum, plus the install page if an install verb is added) have a Grok Bot fleet row distinct from Grok Build TUI and from unofficial Cursor Agent. B343/B344 remain the TUI monitor bugs.
 6. A regression test covers the eligibility case that failed here: pid-less fleet row missing `registered_by=*-hook` or with `last_activity_ts` older than 24h is skipped by `read_local_registrations`; the same row with hook marker + fresh activity is retained across an `--all-brokers` view. Do not "fix" it by widening eligibility to every historical pid-less row (that reopens the stale-history skip this predicate exists for).
+
+INVESTIGATION 2026-10-04 (repo + web, primary sources). Full research: .collab/research/2026-10-04T06-15-54Z-grokbot-fleet-identity.md (every claim cited; Beacon #461-#464 patches, websentry, gbot-pipeline/grokbot.py, docs.x.ai fetched verbatim).
+
+Three premises of this ticket do NOT survive contact with primary sources:
+1. Grok Bot is NOT a local process. Bots run on a Cursor-hosted per-user cloud computer (Firecracker microVM); the desktop app is a client (docs.x.ai/grok-bot/overview, verified). The xsm grokbot-wrench rows (cwd=/home/xertrov/...) were minted ON xsm, not by any Bot runtime.
+2. There is NO hook/plugin/extension/session-store/local-OTLP surface on the endpoint. Beacon #463 (verified patch text): 'no hook, plugin, extension, session store, or local OTLP export, so there is nothing to install and detection is the whole of what the endpoint can do'; doctor reports presence as informational (cloud_export_only), never a fixable warning. websentry independently confirmed: adding MCP+skill in-app 'wrote neither to any readable file on the device'. Hook-shaped c2c support is therefore IMPOSSIBLE; any -hook marker on a grokbot row can never be honestly fed by hook fires.
+3. No grokbot-<name>-<hex> session format and no forge/wrench fleet names exist anywhere (UNVERIFIED; 'Sand' is the internal codename for the billing lane + x-cursor-client-type header, not a fleet). Stable Bot identity = gateway agent id (survives renames) or OTLP cursor.conversation.id. Aliases like 'wrench' are display names.
+
+Live xsm state (measured): 12+ grokbot rows across brokers, ALL pid-less and ~250h stale (outside the 24h window); mix of grok-hook (hand-patched per workaround) and None registered_by; one row lacks client_type entirely. Even patched rows are ineligible today — exactly the ticket's predicted decay, now observed.
