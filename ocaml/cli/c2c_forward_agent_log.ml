@@ -5,10 +5,10 @@
    observe a session without the tool-call / thinking noise.
 
    All supported clients have a classifier: claude / codex / kimi / grok /
-   agy tail an append-only jsonl transcript; opencode (per-message JSON
-   files, no single transcript) is a polled directory source. `--format
-   auto` resolves the format from the path (standard session-store
-   locations) or by sniffing the first line.
+   agy / muse tail an append-only jsonl transcript; opencode (per-message
+   JSON files, no single transcript) is a polled directory source.
+   `--format auto` resolves the format from the path (standard
+   session-store locations) or by sniffing the first line.
 
    Layering: this module is the PURE core (jsonl classification, incremental
    tail reading, message formatting) plus the follow/forward loop. It depends
@@ -407,6 +407,108 @@ let classify_agy_line (line : string) : (role * string) option =
         | _ -> None)
 
 (* ------------------------------------------------------------------ *)
+(* Muse transcript classification (B363)                               *)
+(* ------------------------------------------------------------------ *)
+
+(* Muse session logs
+   (~/.local/share/muse/sessions/YYYY/MM/DD/<session-id>/session.jsonl;
+   measured live 2026-10 over 84 sessions / 332k lines) mix two line
+   shapes — NOT a role/content line stream:
+   - Transaction-frame envelopes: top-level keys {children,
+     content_sha256, frame_schema_version, outer_log_ordinal,
+     retained_frame, transaction_id}. [retained_frame] is always the string
+     tag "session_permission_transaction" (79 envelopes measured, no other
+     tag); [children] embeds that transaction's records as JSON-encoded
+     [record_json] strings, all permission meta
+     (runtime.session.permission_{format_declared,profile_committed,
+     command_settled}). Envelopes open 77/84 sessions but also appear
+     mid-log (permission changes); 7 short sessions have none at all. The
+     envelope carries NO conversation. NOISE.
+   - Flat records: top-level keys {schema_version, id, stream, sequence,
+     recorded_at, record_type, durability, causation_id, payload_type,
+     payload_schema_version, payload}. The conversation is exactly two
+     payload_types (measured 1:1 paired: 21 user intents <-> 21 assistant
+     messages in the reference session):
+     - {"payload_type":"runtime.user_intent.accepted","payload":
+       {"model_messages":[{"content":[{"kind":"text","text":"..."}]}],
+       "refill_blocks":[...],"semantic_kind":{"kind":"chat"},"surface":
+       "main",...}} — typed human input. Text blocks live in both
+       [model_messages] and [refill_blocks] (identical in all 22 measured
+       intents); we read [model_messages] first and fall back to
+       [refill_blocks]. All 153 intents on host are semantic_kind chat /
+       surface main; a non-"chat" semantic_kind (future steering /
+       injection kinds) is dropped, while a missing semantic_kind still
+       forwards (stripped-export precedent, cf. kimi origin).
+     - {"payload_type":"runtime.session","payload":{"kind":"run"|"task",
+       "event":{"kind":"assistant_message_committed","text":"..."}}} —
+       agent chat plaintext.
+   Everything else is NOISE: reasoning_committed (encrypted) /
+   reasoning_summary_committed (thinking), output (tool-output chunks),
+   model_response_created / model_completed / usage records, task
+   lifecycle (proposed/accepted/completed/...), approval payloads
+   (requested / decision_applied — B098: approval records are never
+   conversation), inbox_item_queued (background-task notices),
+   peer_message.admission.* (muse-native session mail — forwarding it
+   would duplicate peer DATA), command.invoked (bare command name, no
+   args, unproven provenance), user_shell.command/result (TUI shell
+   escapes + output), retained/route facts, metadata, intake records,
+   {"retained_marker":"omitted_live_only","omitted_record":{...}} markers
+   for ephemeral status records, and malformed lines. *)
+
+let muse_text_blocks (blocks : Yojson.Safe.t) : string list =
+  match blocks with
+  | `List items ->
+      List.filter_map
+        (fun b ->
+          match (member "kind" b, member "text" b) with
+          | `String "text", `String t ->
+              let trimmed = String.trim t in
+              if trimmed = "" || is_user_noise_text trimmed then None
+              else Some trimmed
+          | _ -> None)
+        items
+  | _ -> []
+
+let muse_user_text (payload : Yojson.Safe.t) : (role * string) option =
+  match member "kind" (member "semantic_kind" payload) with
+  | `String k when k <> "chat" -> None
+  | _ -> (
+      let from_model_messages =
+        match member "model_messages" payload with
+        | `List msgs ->
+            List.concat_map (fun m -> muse_text_blocks (member "content" m)) msgs
+        | _ -> []
+      in
+      let texts =
+        if from_model_messages <> [] then from_model_messages
+        else muse_text_blocks (member "refill_blocks" payload)
+      in
+      (match texts with
+       | [] -> None
+       | _ ->
+           let joined = String.trim (String.concat "\n\n" texts) in
+           if joined = "" || is_user_noise_text joined then None
+           else Some (User, joined)))
+
+let classify_muse_line (line : string) : (role * string) option =
+  match Yojson.Safe.from_string line with
+  | exception _ -> None
+  | j -> (
+      (* Envelope lines, omitted-record markers, and every non-conversation
+         record lack a matching "payload_type" and fall through to None. *)
+      match member "payload_type" j with
+      | `String "runtime.user_intent.accepted" ->
+          muse_user_text (member "payload" j)
+      | `String "runtime.session" -> (
+          let event = member "event" (member "payload" j) in
+          match (member "kind" event, member "text" event) with
+          | `String "assistant_message_committed", `String text ->
+              let trimmed = String.trim text in
+              if trimmed = "" then None else Some (Agent, trimmed)
+          | _ -> None)
+      | _ -> None)
+
+(* ------------------------------------------------------------------ *)
 (* Format registry + auto-detection                                    *)
 (* ------------------------------------------------------------------ *)
 
@@ -421,10 +523,11 @@ let classifier_for_format (fmt : string) :
   | "kimi" -> Some classify_kimi_line
   | "grok" -> Some classify_grok_line
   | "agy" | "gemini" -> Some classify_agy_line
+  | "muse" -> Some classify_muse_line
   | _ -> None
 
 let supported_formats =
-  [ "auto"; "claude"; "codex"; "kimi"; "grok"; "agy"; "opencode" ]
+  [ "auto"; "claude"; "codex"; "kimi"; "grok"; "agy"; "muse"; "opencode" ]
 
 let contains_sub (s : string) (sub : string) : bool =
   find_sub s sub 0 <> None
@@ -442,6 +545,9 @@ let detect_format_by_path ~(is_dir : bool) (path : string) : string option =
     base = "context.jsonl" || base = "wire.jsonl" || has "/.kimi-code/"
     || has "/.kimi/"
   then Some "kimi"
+  else if
+    base = "session.jsonl" && (has "/muse/sessions/" || has "/.muse/")
+  then Some "muse"
   else if String.starts_with ~prefix:"rollout-" base || has "/.codex/" then
     Some "codex"
   else if
@@ -459,7 +565,9 @@ let detect_format_by_path ~(is_dir : bool) (path : string) : string option =
    ops); legacy kimi keys entries by top-level "role"; Kimi Code wire opens
    with {"type":"metadata","protocol_version":...} or other wire events;
    claude nests the turn under "message"; grok puts "content" at top level
-   next to "type". *)
+   next to "type"; muse lines are transaction-frame envelopes
+   (frame_schema_version + transaction_id) or flat records (payload_type +
+   stream + recorded_at + payload_schema_version). *)
 let sniff_format_from_line (line : string) : string option =
   match Yojson.Safe.from_string line with
   | exception _ -> None
@@ -477,7 +585,23 @@ let sniff_format_from_line (line : string) : string option =
              is the strongest signal; the other types are wire-only). *)
           Some "kimi"
       | _ ->
-          if has "projectHash" && has "sessionId" then Some "agy"
+          if has "frame_schema_version" && has "transaction_id" then
+            (* Muse transaction-frame envelope. Both keys are muse-only —
+               no other client's transcript uses either — so the conjunction
+               fails closed on unknown shapes. *)
+            Some "muse"
+          else if
+            has "payload_type" && has "stream" && has "recorded_at"
+            && has "payload_schema_version"
+          then
+            (* Muse flat record. [payload_type] alone already discriminates
+               against every other client (codex uses an untyped "payload");
+               the conjunction keeps unproven shapes out. *)
+            Some "muse"
+          else if has "omitted_record" && has "retained_marker" then
+            (* Muse omitted-live-only marker line. *)
+            Some "muse"
+          else if has "projectHash" && has "sessionId" then Some "agy"
           else if has "$set" then Some "agy"
           else if
             match member "role" j with `String _ -> true | _ -> false

@@ -24,8 +24,8 @@ let forward_agent_log_term =
       & info [ "file"; "f" ] ~docv:"SESSION"
           ~doc:
             "Path to the session transcript to follow — a session jsonl \
-             file (claude / codex / kimi / grok / agy), or for opencode the \
-             session's message DIRECTORY \
+             file (claude / codex / kimi / grok / agy / muse), or for \
+             opencode the session's message DIRECTORY \
              (~/.local/share/opencode/storage/message/<sessionID>).")
   in
   let format_arg =
@@ -36,8 +36,8 @@ let forward_agent_log_term =
           ~doc:
             "Transcript format: $(b,auto) (default; resolved from the path \
              or by sniffing the first line), $(b,claude), $(b,codex), \
-             $(b,kimi), $(b,grok), $(b,agy), or $(b,opencode) (directory \
-             source).")
+             $(b,kimi), $(b,grok), $(b,agy), $(b,muse), or $(b,opencode) \
+             (directory source).")
   in
   let from_override =
     Cmdliner.Arg.(
@@ -354,7 +354,9 @@ let forward_agent_log =
          or legacy kimi-cli \
          ~/.kimi/sessions/<project>/<uuid>/context.jsonl), \
          $(b,grok) (~/.grok/sessions/<cwd>/<uuid>/chat_history.jsonl), \
-         $(b,agy) (~/.gemini/tmp/<project>/chats/session-*.jsonl). \
+         $(b,agy) (~/.gemini/tmp/<project>/chats/session-*.jsonl), \
+         $(b,muse) \
+         (~/.local/share/muse/sessions/YYYY/MM/DD/<session-id>/session.jsonl). \
          $(b,opencode) keeps per-message files instead of one transcript, \
          so --file takes the session's message directory \
          (~/.local/share/opencode/storage/message/<sessionID>) and it is \

@@ -7,6 +7,9 @@
    1b. per-client classifiers (B194): codex event_msg stream, kimi legacy
       context roles + Kimi Code wire events (B225), grok <user_query>
       extraction + synthetic turns, agy message / $set journal lines.
+   1b2. muse classifier (B363): user_intent.accepted + assistant_message_
+      committed over the transaction-frame log; permission envelopes,
+      reasoning/tool/approval/peer/shell records dropped.
    1c. detect_format — path heuristics over the standard session stores and
       first-lines content sniffing.
    1d. opencode directory source — user forwards on appearance, assistant
@@ -315,6 +318,114 @@ let test_classify_agy () =
       , {|{"id":"3","type":"gemini","content":"","thoughts":[{"subject":"s"}]}|} )
     ; ("malformed", "{") ]
 
+(* --- 1b2. muse classifier (B363) -------------------------------------------- *)
+
+(* Fixtures: field STRUCTURE pinned from live sessions
+   (~/.local/share/muse/sessions/2026/09/2*, measured 2026-10-04 over 84
+   sessions / 332k lines); text content is synthetic. The conversation is
+   two flat-record shapes — runtime.user_intent.accepted (User) and
+   runtime.session/assistant_message_committed (Agent) — measured 1:1
+   paired (21 <-> 21 in the reference session). *)
+
+let muse_envelope_line =
+  {|{"retained_frame":"session_permission_transaction","frame_schema_version":1,"outer_log_ordinal":1,"transaction_id":"2e1755b9-ca9b-4fff-9196-e5ec442e2cfe","children":[{"child_index":0,"record_json":"{\"schema_version\":1,\"payload_type\":\"runtime.session.permission_format_declared\"}"},{"child_index":1,"record_json":"{\"schema_version\":1,\"payload_type\":\"runtime.session.permission_profile_committed\"}"}],"content_sha256":"sha256:13bb7349c32a1213631a289770341107c2db9d749db627a3b0571facf8b1cf22"}|}
+
+let muse_user_intent_line =
+  {|{"schema_version":1,"id":"a4997373-9ef8-4fb6-b865-8b49108d14bd","stream":{"kind":"session","id":"01a0c786-c8e3-7483-8702-8696fef5f126"},"sequence":13,"recorded_at":1790053895109313,"record_type":"event","durability":"durable","causation_id":"01a0c786-cbb6-7000-ac73-f5b9543972f6","payload_type":"runtime.user_intent.accepted","payload_schema_version":1,"payload":{"bindings":[],"delivery_policy":"session_current","intent_id":"01a0c786-cbb6-7000-ac73-f5b9543972f6","model_messages":[{"content":[{"kind":"text","text":"fix the login bug"}]}],"refill_blocks":[{"kind":"text","text":"fix the login bug"}],"semantic_kind":{"kind":"chat"},"source_session_id":"01a0c786-c8e3-7483-8702-8696fef5f126","surface":"main","wake_policy":"start_once"}}|}
+
+let muse_assistant_line =
+  {|{"schema_version":1,"id":"3832c630-4265-4689-83b5-9416fb68624e","stream":{"kind":"session","id":"01a0c786-c8e3-7483-8702-8696fef5f126"},"sequence":42,"recorded_at":1790053895199999,"record_type":"event","durability":"durable","causation_id":null,"payload_type":"runtime.session","payload_schema_version":1,"payload":{"kind":"run","run_id":"01a0c786-cbb6-7000-ac73-f5b9543972f6","source_run_record_id":"9ad3cc9b-d18a-4bdd-b27a-1b9ec8605de9","source_run_record_sequence":40,"event":{"kind":"assistant_message_committed","message_id":"449a99dd-2d5f-4c67-8954-7dbeec2e96f3","provider_item_id":"msg_01a0c786d7f876ddbefb9fcd98220138","response_id":"resp_6ab20e09100a64448e3c41de","text":"fixed — the token check was inverted."}}}|}
+
+let muse_session_event_line kind event_json =
+  Printf.sprintf
+    {|{"schema_version":1,"id":"evt-1","stream":{"kind":"session","id":"s"},"sequence":7,"recorded_at":1790053895199999,"record_type":"event","durability":"durable","causation_id":null,"payload_type":"runtime.session","payload_schema_version":1,"payload":{"kind":"%s","run_id":"r","event":%s}}|}
+    kind event_json
+
+let test_classify_muse () =
+  let c = F.classify_muse_line in
+  check (option event) "user_intent.accepted chat text kept"
+    (Some (F.User, "fix the login bug"))
+    (c muse_user_intent_line);
+  check (option event) "assistant_message_committed kept"
+    (Some (F.Agent, "fixed — the token check was inverted."))
+    (c muse_assistant_line);
+  (* refill_blocks fallback when model_messages carries no text *)
+  check (option event) "refill_blocks fallback"
+    (Some (F.User, "from refill"))
+    (c
+       {|{"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"image","text":"nope"}]}],"refill_blocks":[{"kind":"text","text":"from refill"}],"semantic_kind":{"kind":"chat"}}}|});
+  (* missing semantic_kind still forwards (stripped-export precedent) *)
+  check (option event) "missing semantic_kind kept"
+    (Some (F.User, "hi"))
+    (c
+       {|{"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"text","text":"hi"}]}]}}|});
+  (* multi-block user text joins with blank lines *)
+  check (option event) "multi-block user text joined"
+    (Some (F.User, "one\n\ntwo"))
+    (c
+       {|{"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"text","text":"one"},{"kind":"text","text":"two"}]}]}}|});
+  List.iter
+    (fun (name, l) -> check (option event) ("noise dropped: " ^ name) None (c l))
+    [ ("permission envelope", muse_envelope_line)
+    ; ( "non-chat semantic_kind"
+      , {|{"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"text","text":"steer me"}]}],"semantic_kind":{"kind":"steer"}}}|} )
+    ; ( "injected user text"
+      , {|{"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"text","text":"<system-reminder>ctx</system-reminder>"}]}]}}|} )
+    ; ( "empty user text"
+      , {|{"payload_type":"runtime.user_intent.accepted","payload":{"model_messages":[{"content":[{"kind":"text","text":"  "}}]}}|} )
+    ; ( "user_intent.materialized"
+      , {|{"payload_type":"runtime.user_intent.materialized","payload":{"intent_id":"i","outcome":{"kind":"top_level_turn_started"}}}|} )
+    ; ( "reasoning_summary_committed"
+      , muse_session_event_line "run"
+          {|{"kind":"reasoning_summary_committed","message_id":"m","text":"loading the skill and checking config"}|} )
+    ; ( "reasoning_committed (encrypted)"
+      , muse_session_event_line "run"
+          {|{"kind":"reasoning_committed","message_id":"m","encrypted_content":"Q-PaDgH7","text":""}|} )
+    ; ( "output (tool chunk)"
+      , muse_session_event_line "task"
+          {|{"kind":"output","chunk":"{\"exit_code\": 0, \"output\": \"total 256\"}"}|} )
+    ; ( "model_response_created"
+      , muse_session_event_line "run"
+          {|{"kind":"model_response_created","response_id":"resp_1"}|} )
+    ; ( "approval requested (B098)"
+      , {|{"payload_type":"runtime.session","payload":{"kind":"approval","run_id":"r","event":{"kind":"requested","request_id":"a"}}}|} )
+    ; ( "approval decision_applied (B098)"
+      , {|{"payload_type":"runtime.session","payload":{"kind":"approval","run_id":"r","event":{"kind":"decision_applied","decision":"allow"}}}|} )
+    ; ( "inbox_item_queued (background-task notice)"
+      , muse_session_event_line "task"
+          {|{"kind":"inbox_item_queued","body":"Background terminal completed"}|} )
+    ; ( "empty assistant text"
+      , muse_session_event_line "run"
+          {|{"kind":"assistant_message_committed","message_id":"m","text":"  "}|} )
+    ; ( "command.invoked (bare name, unproven provenance)"
+      , {|{"payload_type":"command.invoked","payload":{"kind":"command_invoked","record":{"command":"/usage","schema_version":1,"session_id":"s"}}}|} )
+    ; ( "user_shell.command (TUI shell escape)"
+      , {|{"payload_type":"user_shell.command","payload":{"kind":"user_shell_command","record":{"client_id":"tui","command_text":"git status"}}}|} )
+    ; ( "user_shell.result"
+      , {|{"payload_type":"user_shell.result","payload":{"kind":"user_shell_result","record":{"command_id":"c","exit_code":0,"visible_output":"clean"}}}|} )
+    ; ( "peer_message.admission.requested (peer DATA)"
+      , {|{"payload_type":"peer_message.admission.requested","payload":{"body":"META-TUI-PROBE-1","origin_channel":"local_session"}}|} )
+    ; ( "omitted_live_only marker"
+      , {|{"retained_marker":"omitted_live_only","schema_version":1,"stream":{"kind":"session","id":"s"},"position":{"id":"d","sequence":71},"omitted_record":{"record_type":"status","durability":"ephemeral","payload_type":"runtime.session","omission_class":"task_tool_delta_v1"}}|} )
+    ; ("malformed", "{nope")
+    ; ("empty line", "")
+    ];
+  (* guard: other clients' transcripts never classify as muse content *)
+  List.iter
+    (fun (name, l) ->
+      check (option event) ("foreign line dropped: " ^ name) None (c l))
+    [ ( "claude user"
+      , {|{"type":"user","message":{"role":"user","content":"hi"}}|} )
+    ; ( "codex user_message"
+      , {|{"timestamp":"t","type":"event_msg","payload":{"type":"user_message","message":"hi"}}|} )
+    ; ( "kimi wire user"
+      , {|{"type":"context.append_message","message":{"role":"user","content":[{"type":"text","text":"hi"}]},"time":1}|} )
+    ; ( "grok user_query"
+      , {|{"type":"user","content":[{"type":"text","text":"<user_query>hi</user_query>"}]}|} )
+    ; ( "agy user"
+      , {|{"id":"1","type":"user","content":[{"text":"hi"}]}|} )
+    ]
+
 (* --- 1c. format auto-detection --------------------------------------------- *)
 
 let test_detect_format_by_path () =
@@ -339,6 +450,14 @@ let test_detect_format_by_path () =
     (d "/home/u/.claude/projects/-home-u-src-p/sid.jsonl");
   check (option string) "claude-w variant" (Some "claude")
     (d "/home/u/.claude-w/projects/-home-u-src-p/sid.jsonl");
+  check (option string) "muse sessions dir" (Some "muse")
+    (d
+       "/home/u/.local/share/muse/sessions/2026/09/22/01a0c786-c8e3-7483-8702-8696fef5f126/session.jsonl");
+  check (option string) "muse subagent session" (Some "muse")
+    (d
+       "/home/u/.local/share/muse/sessions/2026/09/21/01a0c2c1-33a2-7b13-85d1-96112bad47b2/subagent/8069d245-5b16-485b-bc91-bea3150de54a/session.jsonl");
+  check (option string) "bare session.jsonl outside muse dir -> no path hit" None
+    (d "/tmp/copies/session.jsonl");
   check (option string) "opencode storage path" (Some "opencode")
     (d "/home/u/.local/share/opencode/storage/message/ses_x");
   check (option string) "directory -> opencode" (Some "opencode")
@@ -366,6 +485,19 @@ let test_detect_format_by_sniff () =
     (d {|{"type":"user","message":{"role":"user","content":"hi"}}|});
   check (option string) "grok system line" (Some "grok")
     (d {|{"type":"system","content":"You are Grok"}|});
+  check (option string) "muse envelope" (Some "muse") (d muse_envelope_line);
+  check (option string) "muse flat user_intent" (Some "muse")
+    (d muse_user_intent_line);
+  check (option string) "muse flat runtime.session" (Some "muse")
+    (d muse_assistant_line);
+  check (option string) "muse omitted marker" (Some "muse")
+    (d
+       {|{"retained_marker":"omitted_live_only","schema_version":1,"stream":{"kind":"session","id":"s"},"position":{"id":"d","sequence":71},"omitted_record":{"record_type":"status","durability":"ephemeral","payload_type":"runtime.session","omission_class":"task_tool_delta_v1"}}|});
+  (* guard: partial muse keys fail closed, never claim another shape *)
+  check (option string) "frame_schema_version alone is not muse" None
+    (d {|{"frame_schema_version":1,"other":"x"}|});
+  check (option string) "payload_type alone is not muse" None
+    (d {|{"payload_type":"runtime.session"}|});
   check (option string) "garbage" None (d "not json")
 
 (* --- 1d. opencode directory source ----------------------------------------- *)
@@ -1076,6 +1208,43 @@ let test_binary_auto_detects_codex_by_sniff () =
       check bool "token_count not forwarded" false
         (contains ~needle:"token_count" content))
 
+let test_binary_auto_detects_muse_by_sniff () =
+  with_temp_dir (fun dir ->
+      (* a muse session copied to a nondescript path: the path heuristics
+         miss, the envelope first-line sniff must hit *)
+      let transcript = dir // "copied-session.jsonl" in
+      write_file transcript
+        (String.concat "\n"
+           [ muse_envelope_line
+           ; muse_user_intent_line
+           ; muse_session_event_line "task"
+               {|{"kind":"output","chunk":"tool noise"}|}
+           ; muse_assistant_line
+           ]
+        ^ "\n");
+      let out = dir // "out.txt" in
+      let cmd =
+        Printf.sprintf
+          "C2C_SEND_MESSAGE_FIXTURE=1 C2C_CLI_FORCE=1 %s forward-agent-log \
+           --file %s --once zztfwd-target > %s 2>&1"
+          (Filename.quote c2c_binary)
+          (Filename.quote transcript)
+          (Filename.quote out)
+      in
+      let rc = Sys.command cmd in
+      let content = read_file out in
+      check int (Printf.sprintf "exit 0 (output: %s)" content) 0 rc;
+      check bool "user forwarded" true
+        (contains ~needle:"would send -> zztfwd-target: [user] fix the login bug"
+           content);
+      check bool "agent forwarded" true
+        (contains
+           ~needle:"would send -> zztfwd-target: [agent] fixed — the token \
+                    check was inverted."
+           content);
+      check bool "tool output not forwarded" false
+        (contains ~needle:"tool noise" content))
+
 let test_binary_sanitizes_and_frames_fixture () =
   with_temp_dir (fun dir ->
       let transcript = dir // "hostile-rollout.jsonl" in
@@ -1292,6 +1461,7 @@ let () =
         ; test_case "kimi" `Quick test_classify_kimi
         ; test_case "grok" `Quick test_classify_grok
         ; test_case "agy" `Quick test_classify_agy
+        ; test_case "muse" `Quick test_classify_muse
         ] )
     ; ( "detect-format"
       , [ test_case "path heuristics" `Quick test_detect_format_by_path
@@ -1360,6 +1530,8 @@ let () =
             test_binary_missing_file_errors
         ; test_case "auto-detects codex by sniff" `Quick
             test_binary_auto_detects_codex_by_sniff
+        ; test_case "auto-detects muse by sniff" `Quick
+            test_binary_auto_detects_muse_by_sniff
         ; test_case "sanitizes + frames hostile fixture" `Quick
             test_binary_sanitizes_and_frames_fixture
         ; test_case "auto-detects opencode dir" `Quick
