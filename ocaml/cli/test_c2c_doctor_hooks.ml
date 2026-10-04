@@ -1304,11 +1304,16 @@ if [ "$1" = "plugins" ] && [ "$2" = "inspect" ]; then
   printf '%s\n' "$C2C_MUSE_STUB_INSPECT"
   exit "$C2C_MUSE_STUB_INSPECT_RC"
 fi
+if [ "$1" = "session-message" ] && [ "$2" = "list" ]; then
+  printf '%s\n' "$C2C_MUSE_STUB_SESSION_MESSAGE"
+  exit 0
+fi
 echo "stub: unknown argv: $*" >&2
 exit 1
 |}
 
-let with_muse_env ?(inspect = "plugin `c2c` is not installed") ?(inspect_rc = "1") f =
+let with_muse_env ?(inspect = "plugin `c2c` is not installed") ?(inspect_rc = "1")
+    ?(session_message = "") f =
   with_tmp_dir (fun dir ->
     let home = dir // "home" in
     C2c_io.mkdir_p home;
@@ -1322,6 +1327,7 @@ let with_muse_env ?(inspect = "plugin `c2c` is not installed") ?(inspect_rc = "1
       ; ("C2C_MUSE_BIN", stub)
       ; ("C2C_MUSE_STUB_INSPECT", inspect)
       ; ("C2C_MUSE_STUB_INSPECT_RC", inspect_rc)
+      ; ("C2C_MUSE_STUB_SESSION_MESSAGE", session_message)
       ]
     in
     let prev = List.map (fun (k, _) -> (k, Sys.getenv_opt k)) vars in
@@ -1407,6 +1413,52 @@ let test_muse_ingress_opener_values () =
       match prev with Some x -> Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" x
       | None -> Unix.putenv "MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS" "")
     (fun () -> check bool "unset stays closed" false (is_open ()))
+
+(* B356 SCOPE-b: `session-message list` output shapes (B352 A6 matrix + A1
+   rows). Positive "open" needs a uuid-anchored row; refusals win over any
+   surrounding text (stderr is merged); everything else is unknown. *)
+let test_muse_session_message_parser_shapes () =
+  let classify = C2c_doctor_hooks.muse_session_message_of_list_output in
+  check string "gate-closed" "gate-closed"
+    (classify "external agent ingress is unavailable\n");
+  check string "vetoed" "vetoed"
+    (classify "local session messaging is disabled in settings\n");
+  check string "open needs a uuid row" "open"
+    (classify
+       "01a0fc1e-9c32-7841-b32a-5f56c4edad6f  low-altair       amaroo\n\
+        01a0fd9a-1c32-7841-b32a-5f56c4edad6f  heather-equinox  c2c\n");
+  check string "empty is unknown, never open" "unknown" (classify "");
+  check string "blank is unknown" "unknown" (classify "\n");
+  check string "garbage is unknown" "unknown"
+    (classify "something unexpected v2\n");
+  check string "refusal wins over surrounding text" "gate-closed"
+    (classify "warning: deprecated flag\n\
+              external agent ingress is unavailable\n");
+  check string "non-uuid rows are not open" "unknown"
+    (classify "low-altair  amaroo\n")
+
+let test_muse_session_message_stub_end_to_end () =
+  let listed =
+    "01a0fc1e-9c32-7841-b32a-5f56c4edad6f  low-altair  amaroo"
+  in
+  with_muse_env ~session_message:listed (fun _home ->
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check string "stubbed list → open" "open"
+      m.C2c_doctor_hooks.mm_session_message);
+  with_muse_env ~session_message:"external agent ingress is unavailable"
+    (fun _home ->
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check string "stubbed refusal → gate-closed" "gate-closed"
+      m.C2c_doctor_hooks.mm_session_message);
+  with_muse_env ~session_message:"local session messaging is disabled in settings"
+    (fun _home ->
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check string "stubbed veto → vetoed" "vetoed"
+      m.C2c_doctor_hooks.mm_session_message);
+  with_muse_env (fun _home ->
+    let m = C2c_doctor_hooks.check_muse_status () in
+    check string "default stub → unknown" "unknown"
+      m.C2c_doctor_hooks.mm_session_message)
 
 let test_muse_absent_host () =
   with_muse_env (fun _home ->
@@ -1524,6 +1576,7 @@ let test_muse_health_row_mapping () =
     ; mm_plugin_trust = "unknown"; mm_settings_state = "missing"
     ; mm_settings_hooks = false; mm_mcp_entry = false; mm_plugins_gate = "unknown"
     ; mm_ingress_env = false; mm_ingress_veto = false; mm_sessions = []
+    ; mm_session_message = "unknown"
     ; mm_muse_regs = 0; mm_wake_class = C2c_doctor_hooks.Muse_wake_none
     ; mm_wake_sessions = []
     }
@@ -1554,7 +1607,9 @@ let test_muse_json_key_present () =
          match List.assoc_opt "muse" fields with
          | Some (`Assoc m) ->
              check bool "muse_present key" true (List.mem_assoc "muse_present" m);
-             check bool "sessions key" true (List.mem_assoc "sessions" m)
+             check bool "sessions key" true (List.mem_assoc "sessions" m);
+             check bool "session_message key" true
+               (List.mem_assoc "session_message" m)
          | _ -> fail "muse key missing or malformed")
      | _ -> fail "doctor json is not an object"))
 
@@ -1710,8 +1765,14 @@ let test_muse_wake_stale_monitor_lock_stays_none () =
 let test_muse_deaf_vacuous_truth_table () =
   List.iter
     (fun n ->
-      check bool (Printf.sprintf "inbox=%d never deaf" n) false
-        (C2c_doctor_hooks.classify_muse_deaf ~inbox_count:n ()))
+      List.iter
+        (fun poster_alive ->
+          check bool
+            (Printf.sprintf "inbox=%d poster=%b never deaf" n poster_alive)
+            false
+            (C2c_doctor_hooks.classify_muse_deaf ~inbox_count:n
+               ~poster_alive ()))
+        [ false; true ])
     [ 0; 1; 5 ];
   with_muse_broker (fun ~broker_root ->
     let b =
@@ -1944,6 +2005,10 @@ let () =
     ; ( "muse-integration-b357"
       , [ test_case "trust parser shapes" `Quick test_muse_trust_parser_shapes
         ; test_case "ingress opener values" `Quick test_muse_ingress_opener_values
+        ; test_case "session-message parser shapes" `Quick
+            test_muse_session_message_parser_shapes
+        ; test_case "session-message stub end-to-end" `Quick
+            test_muse_session_message_stub_end_to_end
         ; test_case "absent host" `Quick test_muse_absent_host
         ; test_case "settings-only, no c2c" `Quick test_muse_settings_only_no_c2c
         ; test_case "full install detected" `Quick test_muse_full_install_detected
