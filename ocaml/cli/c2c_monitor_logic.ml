@@ -317,6 +317,31 @@ let peek_key_is_connector_owned ~alias ~node_id ~session_id ~has_explicit_key =
     let base = "cli-" ^ alias in
     not (node_id = base && session_id = base)
 
+(* B344: live-connector fallback peek key. The roster binding
+   ([C2c_relay_connector.connector_peek_key]) is authoritative when the alias
+   is listed, but the roster lags reality by up to one connector pass: a
+   session that registered after the last pass — or whose register arm failed
+   that pass — is missing from cs_registered/cs_sessions while the connector
+   is otherwise live and managing this broker. Falling back to cli-<alias>
+   then peeks a key that has no lease (and, pre-B344, retried the resulting
+   lease_not_found forever as transient, waking the agent every attempt).
+
+   When the connector bridge is LIVE for this broker ([connector_live] — the
+   caller passes the same Relay_doctor.connector_running predicate `c2c
+   whoami` reports, so the two surfaces never disagree about "connector
+   live") and a local session id is known, peek the connector's own key:
+   machine node-id + local session id. That is the key the connector
+   registers every local session under, so it is the right default even
+   before the alias appears in the roster. If that lease does not exist yet
+   either, the peek fails lease_not_found — terminal (one-shot off + fix
+   hint), never a retry loop. *)
+let live_connector_fallback_key ~connector_live ~node_id ~local_session_id ()
+  : relay_key option =
+  match connector_live, local_session_id with
+  | true, Some sid when node_id <> "" && sid <> "" ->
+      Some { node_id; session_id = sid }
+  | _ -> None
+
 (* Decide whether the relay watcher should run, given the resolved inputs.
    Pure so the gating logic (alias resolved? relay configured? identity
    available?) is unit-testable. The watcher needs: an alias to peek as, a relay
@@ -422,7 +447,10 @@ type relay_peek_outcome =
    True retryables (nonce_replay, connection_error, 5xx, rate_limit, unknown)
    stay off this list so they never permanently disable the relay watch.
    Anything not listed defaults to transient — better to keep retrying an
-   unrecognized/blip error than to kill a monitor on a code we did not anticipate. *)
+   unrecognized/blip error than to kill a monitor on a code we did not anticipate.
+   B344: lease_not_found IS terminal (hard — disables on the first failure).
+   A missing lease never self-heals by retrying the same peek key; retrying it
+   as transient woke the agent on every attempt with no recovery path. *)
 let is_terminal_error_code = function
   | "unauthorized"
   | "signature_invalid"
@@ -431,7 +459,8 @@ let is_terminal_error_code = function
   | "not_found"
   | "unknown_node"
   | "not_registered"
-  | "bad_request" -> true
+  | "bad_request"
+  | "lease_not_found" -> true
   | _ -> false
 
 (* B213: rate-limit (HTTP 429) rejection codes. These are transient — a
@@ -614,6 +643,11 @@ let remediation_for_code = function
   | "unknown_node" | "not_found" ->
       "Relay does not know this node/session. Re-register (`c2c relay register`) \
        and confirm the peek key (connector-managed vs cli-<alias>)."
+  | "lease_not_found" ->
+      "Relay holds no lease for this peek key — it expired or was never \
+       registered under it. Re-register under the peeked key (`c2c relay \
+       register --alias <alias>`, plus --node-id/--session-id for a custom \
+       key), then restart the monitor."
   | "missing_proof_field" | "bad_request" ->
       "Malformed signed request or client/relay protocol skew. Upgrade c2c and \
        the relay if needed, then restart the monitor."
@@ -633,6 +667,21 @@ let connector_owned_remediation =
    register` (it reserves the cli-<alias> key, not the connector's). Cross-host \
    mail is delivered locally by the connector and still surfaces via the local \
    inbox watch."
+
+(* B344: advice for lease_not_found on a CONNECTOR-managed peek key. Unlike a
+   direct cli-<alias> key, re-registering here is actively harmful (the
+   default `c2c relay register` reserves the cli-<alias> key and takes the
+   alias AWAY from the connector — B294), and usually unnecessary: a running
+   connector re-registers its leases on its next pass (B293). *)
+let connector_lease_not_found_remediation =
+  "Relay holds no lease for this connector-managed peek key — the connector \
+   has not registered this session yet, or its lease expired. A running \
+   connector re-registers on its next pass: wait for it (`c2c status \
+   --relay`), then restart the monitor to re-arm relay watch; if the \
+   connector is down, `c2c restart relay-connect` first. Do NOT `c2c relay \
+   register` with default keys — that takes the alias from the connector \
+   and the two fight. Cross-host mail still arrives via the local inbox \
+   watch."
 
 type terminal_action =
   | Retry_soft of {
@@ -674,7 +723,15 @@ let decide_on_terminal
       empty_soft_budget )
   else
   let severity = terminal_severity_of_code code in
-  let remediation = remediation_for_code code in
+  (* B344: lease_not_found on a connector-owned key disables the same way
+     (hard — first failure), but the remediation must NOT point at `c2c relay
+     register`: the connector re-registers its own leases, and a default-key
+     register would steal the alias from it. *)
+  let remediation =
+    if connector_owned_key && code = "lease_not_found" then
+      connector_lease_not_found_remediation
+    else remediation_for_code code
+  in
   match severity with
   | Hard_terminal ->
       (Disable { severity; remediation }, empty_soft_budget)
