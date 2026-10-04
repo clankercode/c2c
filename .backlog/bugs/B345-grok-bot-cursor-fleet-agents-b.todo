@@ -90,3 +90,17 @@ Three premises of this ticket do NOT survive contact with primary sources:
 3. No grokbot-<name>-<hex> session format and no forge/wrench fleet names exist anywhere (UNVERIFIED; 'Sand' is the internal codename for the billing lane + x-cursor-client-type header, not a fleet). Stable Bot identity = gateway agent id (survives renames) or OTLP cursor.conversation.id. Aliases like 'wrench' are display names.
 
 Live xsm state (measured): 12+ grokbot rows across brokers, ALL pid-less and ~250h stale (outside the 24h window); mix of grok-hook (hand-patched per workaround) and None registered_by; one row lacks client_type entirely. Even patched rows are ineligible today — exactly the ticket's predicted decay, now observed.
+
+PROPOSED SHAPE (same investigation). Do NOT extend -hook eligibility or mint grokbot-hook rows: with no hooks firing, that marker would be a lie that reopens the stale-history skip (acceptance #6's own warning). Instead:
+
+A. Detection (Beacon shape): new client_type=grokbot (distinct from grok TUI and cursor), detected by ~/.grokbot/ presence (cross-platform tell, Beacon #463) + best-effort app dirs (Linux: no stable install path, detect by dir only). is_grokbot_registration predicate; doctor reports presence informational (cloud_export_only), never a fixable warning. is_grok_registration MUST exclude grokbot rows so TUI checks stop claiming them.
+
+B. Bridge (the only real-time path): unofficial gateway-API client reusing the operator Cursor token (Connect-RPC EnsureSandBox -> gateway listAgents/chat/send/transcript; two working precedents: gbot-pipeline, grok-bot-skill). c2c side: a bridge daemon holding per-Bot (gateway-agent-id -> alias) mapping, pushing relay DMs via gateway chat/send (a genuine push primitive -> honest CONDITIONAL wake) and touching last_activity_ts as its heartbeat. Token handling is the hard part: read from OS keychain/secret store like the app does (never a plaintext config), explicit opt-in, documented unofficial-API fragility. Alternative if tokens are unacceptable: Bot-side skill + scheduled routine polling a relay endpoint from the cloud terminal (network allow-all default; in-Bot outbound UNVERIFIED live — needs a live probe first).
+
+C. Eligibility without hooks: new rule arm for client_type=grokbot rows keyed to bridge-observed liveness (e.g. last bridge contact within 24h, or gateway listAgents presence), NOT the -hook suffix. Keeps the stale-history skip intact for everything else. Regression test per acceptance #6, extended with the grokbot arm.
+
+D. Status honesty (repo-side, no Bot cooperation needed): refactor relay_registration_is_eligible to return a reason variant (missing-hook-marker / stale-ts / pid-mismatch / no-anchor) and surface per-alias skip reasons in doctor/status; read_local_registrations_with_skipped currently returns only a count, printed in verbose mode only.
+
+E. Docs: feature-matrix row 'Grok Bot (cloud computer)' distinct from Grok Build TUI and Cursor Agent; wake CONDITIONAL (bridge alive + token valid) at best, else NONE; correct the grokbot-<name>-<hex>/fleet-name assumption to gateway-agent-id identity.
+
+Suggested sequencing: D + A + E first (no credentials, immediate value: stops mislabeling + explains lease_not_found); then a B-spike proving gateway send + Bot-side outbound; then B + C. The xsm wrench rows should be re-cut as client_type=grokbot keyed to the real gateway agent id once known, not re-patched as grok-hook.
