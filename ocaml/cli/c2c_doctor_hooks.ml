@@ -191,6 +191,7 @@ and muse_result = {
   mm_plugins_gate : string; (* granted | denied | unknown *)
   mm_ingress_env : bool; (* MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS opener in THIS process *)
   mm_ingress_veto : bool; (* local_session_messaging.enabled=false in settings *)
+  mm_session_message : string; (* B356 SCOPE-b: open | gate-closed | vetoed | unknown *)
   mm_sessions : muse_session_tools list; (* registry sessions, live ones log-scanned *)
   mm_muse_regs : int; (* B359: broker registrations matching is_muse_registration *)
   mm_wake_class : muse_wake_class; (* B359: overall — CONDITIONAL iff any live monitor lock *)
@@ -1501,6 +1502,44 @@ let muse_ingress_env_open () =
   | Some v -> List.mem (String.lowercase_ascii (String.trim v)) muse_ingress_opener_values
   | None -> false
 
+let muse_is_hex = function
+  | '0'..'9' | 'a'..'f' | 'A'..'F' -> true
+  | _ -> false
+
+(* A `session-message list` row is uuid-anchored: the first field is 8-4-4-4-12
+   hex (B352 A1 rows). Anything else on the line (name, workspace) is free text. *)
+let muse_list_row_anchored line =
+  let line = String.trim line in
+  String.length line >= 36
+  &&
+    let u = String.sub line 0 36 in
+    let rec go i =
+      if i = 36 then true
+      else
+        let c = u.[i] in
+        let want_dash = i = 8 || i = 13 || i = 18 || i = 23 in
+        if want_dash then c = '-' && go (i + 1)
+        else muse_is_hex c && go (i + 1)
+    in
+    go 0
+
+(* Pure: classify `muse session-message list` output (B356 SCOPE-b — the "CLI
+   refused?" leg; doctor runs list READ-ONLY, never send: B352 safety rules
+   forbid send probes against live sessions). Proven shapes (B352 A6/A1):
+   gate-closed prints "external agent ingress is unavailable"; settings veto
+   prints "local session messaging is disabled in settings"; an open gate
+   lists uuid-anchored rows. Positive "open" needs a uuid-anchored row
+   (trust-parser precedent: positive claims need positive evidence); empty
+   output (zero-session list shape unobserved), CLI-absent "", and anything
+   unrecognized are "unknown", never "open". NOTE: list-open is NOT
+   send-admitted — B352 D1 proved out-of-process SEND containment-refused 9x
+   even where list works. *)
+let muse_session_message_of_list_output output =
+  if contains output "external agent ingress is unavailable" then "gate-closed"
+  else if contains output "local session messaging is disabled in settings" then "vetoed"
+  else if List.exists muse_list_row_anchored (String.split_on_char '\n' output) then "open"
+  else "unknown"
+
 (* Collect every "command" string in a settings.json hooks map (Stop takes a
    bare hooks array, other events take matcher groups — both shapes carry
    command strings at the leaves). *)
@@ -1659,8 +1698,11 @@ let muse_wake_class_detail = function
    #78 no-mint rule. The monitor-lock signal is instead surfaced through the
    wake classifier above (same as grok #37, which likewise has no DEAF
    verdict). When B356 unparks, flip this to inbox>0 ∧ ¬poster-alive and
-   grow a rearm arm; until then it is pinned-false by tests. *)
-let classify_muse_deaf ~inbox_count:_ () : bool = false
+   grow a rearm arm; until then it is pinned-false by tests. The poster
+   signal is already threaded (~poster_alive := the per-session monitor
+   lock, the push path in the Monitor-only posture) so the unpark flip is
+   body-only. *)
+let classify_muse_deaf ~inbox_count:_ ~poster_alive:_ () : bool = false
 
 (* Muse DEAF sessions under the current classifier — [] while vacuous. The
    list (and the count derived from it) stays live so B356 flips the
@@ -1668,7 +1710,9 @@ let classify_muse_deaf ~inbox_count:_ () : bool = false
 let muse_deaf_sessions (wake_sessions : muse_wake_session list) :
     muse_wake_session list =
   List.filter
-    (fun s -> classify_muse_deaf ~inbox_count:s.mws_inbox_count ())
+    (fun s ->
+      classify_muse_deaf ~inbox_count:s.mws_inbox_count
+        ~poster_alive:s.mws_monitor_alive ())
     wake_sessions
 
 let muse_deaf_count (wake_sessions : muse_wake_session list) : int =
@@ -1753,6 +1797,16 @@ let check_muse_status ?broker_root () : muse_result =
     in
     muse_plugin_trust_of_inspect_output r.C2c_setup.output
   in
+  (* Read-only session-message availability (B356 SCOPE-b): `list` never
+     sends (B352 safety rule). Fails soft to unknown (C2C_MUSE_BIN seam
+     keeps hermetic tests stubbed). *)
+  let session_message =
+    let r =
+      C2c_setup.run_muse_capture ~timeout_s:10.0
+        [| C2c_setup.muse_bin (); "session-message"; "list" |]
+    in
+    muse_session_message_of_list_output r.C2c_setup.output
+  in
   (* Feature-config grant: <data>/muse/feature-config/7075626c6963.json
      ("7075626c6963" is "public"). Absent file = unknown, not denied —
      fresh/offline hosts legitimately lack it (B352 residual 4). *)
@@ -1823,6 +1877,7 @@ let check_muse_status ?broker_root () : muse_result =
   ; mm_plugins_gate = plugins_gate
   ; mm_ingress_env = muse_ingress_env_open ()
   ; mm_ingress_veto = ingress_veto
+  ; mm_session_message = session_message
   ; mm_sessions = sessions
   ; mm_muse_regs = List.length wake_sessions
   ; mm_wake_class = wake_class
@@ -2063,6 +2118,14 @@ let pp_human r =
        else "closed in this process");
     if m.mm_ingress_veto then
       Printf.printf "  ingress veto: LOCAL_SESSION_MESSAGING DISABLED in settings (vetoes any env opener)\n";
+    Printf.printf "  session-message list: %s\n"
+      (match m.mm_session_message with
+       | "open" ->
+           "open in this process (lists sessions; out-of-process SEND still refused per B352 D1 — no wake path)"
+       | "gate-closed" ->
+           "gate-closed in this process (MUSE_EXPERIMENTAL_EXTERNAL_AGENT_INGRESS opener absent)"
+       | "vetoed" -> "vetoed by settings (local_session_messaging.enabled=false)"
+       | _ -> "unknown (muse CLI absent or unrecognized output)");
     let live = List.filter (fun s -> s.mst_live) m.mm_sessions in
     let with_tools =
       List.filter (fun s -> s.mst_c2c_tools = Some true) live
@@ -2261,6 +2324,7 @@ let to_json r =
       ("plugins_gate", `String m.mm_plugins_gate);
       ("ingress_env", `Bool m.mm_ingress_env);
       ("ingress_veto", `Bool m.mm_ingress_veto);
+      ("session_message", `String m.mm_session_message);
       ("sessions", `List (List.map muse_session_to_json m.mm_sessions));
       ("muse_regs", `Int m.mm_muse_regs);
       ("wake_class", `String (muse_wake_class_label m.mm_wake_class));
