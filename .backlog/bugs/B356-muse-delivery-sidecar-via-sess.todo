@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-10-04T06:15:16Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-04T06:45:15Z"
 complexity: high
 created_at: "2026-10-02T17:26:35Z"
 depends_on:
     - B352
+duration_minutes: 29.995450072783335
 estimate_hours: 8
 id: B356
 priority: low
 started_at: "2026-10-04T06:15:16Z"
-status: in_progress
+status: done
 tags: []
 title: muse delivery sidecar via session-message plus endpoint
-updated_at: "2026-10-04T06:15:16Z"
+updated_at: "2026-10-04T06:45:15Z"
 ---
 
 # muse delivery sidecar via session-message + DeliveryEndpoint (CONDITIONAL-via-env)
