@@ -360,6 +360,90 @@ let test_b290_existing_entry_enabled_state_untouched () =
     check (option bool) "enabled = false preserved" (Some false)
       (codex_c2c_enabled (read_file config)))
 
+(* --- B350: SessionEnd timeout codex accepts -------------------------------- *
+ *
+ * Codex clamps SessionEnd hook timeouts to 3s with a warning, so the
+ * generated config must write `timeout = 3` for the managed SessionEnd hook
+ * (and the matching trusted_hash), while the other managed hooks keep 10.
+ * Repeated install must not restore the unsupported 10. *)
+
+(* timeout value rendered under each [[hooks.<Event>.hooks]] group, in group
+   order. Scoped to `command = "c2c hook codex"` groups only, so user hooks
+   with their own timeouts do not pollute the reading. *)
+let managed_hook_timeouts config =
+  let lines = String.split_on_char '\n' config in
+  let current_event = ref None in
+  let current_is_c2c = ref false in
+  let acc = ref [] in
+  let hooks_prefix = "[[hooks." and hooks_suffix = ".hooks]]" in
+  let starts_with ~prefix s =
+    String.length s >= String.length prefix
+    && String.sub s 0 (String.length prefix) = prefix
+  in
+  let ends_with ~suffix s =
+    String.length s >= String.length suffix
+    && String.sub s (String.length s - String.length suffix)
+         (String.length suffix)
+         = suffix
+  in
+  List.iter
+    (fun line ->
+       let t = String.trim line in
+       if starts_with ~prefix:hooks_prefix t && ends_with ~suffix:hooks_suffix t
+       then begin
+         current_event :=
+           Some
+             (String.sub t (String.length hooks_prefix)
+                (String.length t - String.length hooks_prefix
+               - String.length hooks_suffix));
+         current_is_c2c := false
+       end
+       else if t <> "" && t.[0] = '[' then begin
+         current_event := None;
+         current_is_c2c := false
+       end
+       else begin
+         (match !current_event with
+          | Some _ when contains ~haystack:t ~needle:"c2c hook codex" ->
+              current_is_c2c := true
+          | _ -> ());
+         (match (!current_event, !current_is_c2c, String.index_opt t '=') with
+          | Some event, true, Some i
+            when String.trim (String.sub t 0 i) = "timeout" -> (
+              match
+                int_of_string_opt
+                  (String.trim (String.sub t (i + 1) (String.length t - i - 1)))
+              with
+              | Some n -> acc := (event, n) :: !acc
+              | None -> ())
+          | _ -> ())
+       end)
+    lines;
+  List.rev !acc
+
+let test_b350_sessionend_timeout_accepted_and_stable () =
+  with_temp_home (fun home ->
+    let config_path = home // ".codex" // "config.toml" in
+    let check_timeouts config ~context =
+      let timeouts = managed_hook_timeouts config in
+      check int (context ^ ": four managed hooks") 4 (List.length timeouts);
+      List.iter
+        (fun (event, expected) ->
+           check (option int)
+             (Printf.sprintf "%s: %s timeout" context event)
+             (Some expected) (List.assoc_opt event timeouts))
+        [ ("UserPromptSubmit", 10)
+        ; ("PostToolUse", 10)
+        ; ("SessionStart", 10)
+        ; ("SessionEnd", 3)
+        ]
+    in
+    ignore (run_setup ());
+    check_timeouts (read_file config_path) ~context:"fresh install";
+    (* Repeated install must not restore the unsupported 10 for SessionEnd. *)
+    ignore (run_setup ());
+    check_timeouts (read_file config_path) ~context:"reinstall")
+
 let () =
   Random.self_init ();
   run "c2c_setup_codex"
@@ -381,5 +465,7 @@ let () =
             test_b290_new_entry_lands_disabled
         ; test_case "B290 existing entry enabled state untouched" `Quick
             test_b290_existing_entry_enabled_state_untouched
+        ; test_case "B350 SessionEnd timeout accepted + reinstall-stable" `Quick
+            test_b350_sessionend_timeout_accepted_and_stable
         ] )
     ]

@@ -114,18 +114,45 @@ let test_render_block_contents () =
     (contains ~haystack:block
        ~needle:(Printf.sprintf "[hooks.state.\"%s:session_end:0:0\"]" config_path));
   (* Each state entry carries the hash of the corresponding rendered hook. *)
-  let expected_hash event status_message =
+  let expected_hash ~timeout event status_message =
     C2c_codex_hooks.hook_trusted_hash ~event ~matcher:None
-      ~command:"c2c hook codex" ~timeout:(Some 10)
+      ~command:"c2c hook codex" ~timeout:(Some timeout)
       ~status_message:(Some status_message)
   in
   check bool "ups trusted_hash" true
-    (contains ~haystack:block ~needle:(expected_hash "UserPromptSubmit" "c2c inbox"));
+    (contains ~haystack:block
+       ~needle:(expected_hash ~timeout:10 "UserPromptSubmit" "c2c inbox"));
   check bool "ss trusted_hash" true
-    (contains ~haystack:block ~needle:(expected_hash "SessionStart" "c2c onboarding"))
+    (contains ~haystack:block
+       ~needle:(expected_hash ~timeout:10 "SessionStart" "c2c onboarding"))
   ;
+  (* B350: SessionEnd ships timeout 3, folded into its trusted_hash. *)
   check bool "se trusted_hash" true
-    (contains ~haystack:block ~needle:(expected_hash "SessionEnd" "c2c cleanup"))
+    (contains ~haystack:block
+       ~needle:(expected_hash ~timeout:3 "SessionEnd" "c2c cleanup"))
+
+(* B350: codex clamps SessionEnd hook timeouts to 3s with a warning, so the
+   managed SessionEnd hook must render timeout 3 while the other managed
+   hooks keep 10. *)
+let test_managed_hooks_sessionend_timeout () =
+  let timeout_of event =
+    match
+      List.find_opt
+        (fun (d : C2c_codex_hooks.hook_def) -> d.event = event)
+        C2c_codex_hooks.managed_hooks
+    with
+    | Some d -> d.timeout
+    | None -> failwith ("managed hook missing: " ^ event)
+  in
+  check int "SessionEnd timeout is 3" 3 (timeout_of "SessionEnd");
+  check int "UserPromptSubmit timeout stays 10" 10 (timeout_of "UserPromptSubmit");
+  check int "PostToolUse timeout stays 10" 10 (timeout_of "PostToolUse");
+  check int "SessionStart timeout stays 10" 10 (timeout_of "SessionStart");
+  let block = C2c_codex_hooks.render_hooks_block ~config_path ~existing:"" in
+  check int "rendered SessionEnd timeout is 3" 1
+    (count_occurrences ~haystack:block ~needle:"timeout = 3");
+  check int "rendered other timeouts stay 10" 3
+    (count_occurrences ~haystack:block ~needle:"timeout = 10")
 
 let test_render_block_offsets_group_indices () =
   (* User already has one PostToolUse group and one Stop group: our
@@ -245,6 +272,8 @@ let () =
     ; ( "render"
       , [ test_case "counts event groups" `Quick test_count_event_groups
         ; test_case "block contents" `Quick test_render_block_contents
+        ; test_case "B350 SessionEnd timeout 3, others 10" `Quick
+            test_managed_hooks_sessionend_timeout
         ; test_case "group index offsets" `Quick test_render_block_offsets_group_indices
         ; test_case "strip round-trip" `Quick test_strip_managed_block_roundtrip
         ; test_case "strip tolerates missing END" `Quick test_strip_handles_missing_end_marker
