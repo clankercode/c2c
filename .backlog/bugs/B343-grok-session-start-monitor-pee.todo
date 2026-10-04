@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-04T06:15:16Z"
+claimed_by: cli-user
 completed_at: null
 complexity: medium
 created_at: "2026-09-23T04:27:01Z"
@@ -6,11 +8,11 @@ depends_on: []
 estimate_hours: 1
 id: B343
 priority: high
-started_at: null
-status: pending
+started_at: "2026-10-04T06:15:16Z"
+status: in_progress
 tags: []
 title: 'Grok session start: monitor peeks a lease that cannot be registered, and the alias the docs tell you to use is rejected'
-updated_at: "2026-09-23T04:27:01Z"
+updated_at: "2026-10-04T06:15:16Z"
 ---
 Filed from a live Grok coding session (grok-power-bolt-mbcg, session 01a0ca56-f15c-7873-ad00-a04469eddae6, c2c 0.16.0, linux, host 3d08761ae3f3, relay https://relay.c2c.im) on 2026-09-23. The session skill says: at start run `c2c whoami`, then arm `c2c monitor`. Doing exactly that did not produce a working relay receive path. Related closed bugs B206, B209, B240, and B293 describe pieces of this; this is the loop as it happens now, after those fixes.
 
