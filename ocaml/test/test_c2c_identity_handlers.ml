@@ -301,6 +301,28 @@ let test_register_rejects_client_prefixed_alias_with_reason_and_suggestion () =
            check bool "error suggests avoiding client prefixes" true
              (string_contains text "not starting with a reserved client prefix")))
 
+let test_register_rejects_banned_alias_grok_prefix () =
+  (* B343: the grok- prefix stays reserved for auto-generated client
+     identities — user-supplied LOCAL register still refuses it (the gate in
+     c2c_blocklist.ml is unchanged). The relay-side repair path (`c2c relay
+     register --alias grok-...`) is a different gate and DOES accept grok-
+     aliases — pinned in test_relay_b294_register_guard. *)
+  with_temp_dir (fun dir ->
+      let broker = C2c_broker.create ~root:dir in
+      Unix.putenv "C2C_MCP_SESSION_ID" "session-banned-grok-prefix";
+      Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_SESSION_ID" "")
+        (fun () ->
+           let args = `Assoc [("alias", `String "grok-power-bolt-mbcg")] in
+           let result = Lwt_main.run
+             (C2c_identity_handlers.register ~broker ~session_id_override:None ~arguments:args)
+           in
+           let text = get_text_content result in
+           check bool "isError=true for grok-power-bolt-mbcg" true (get_is_error result);
+           check bool "error explains client prefix reservation" true
+             (string_contains text "reserved for auto-generated client identities");
+           check bool "error suggests stripped alias" true
+             (string_contains text "Try 'power-bolt-mbcg'")))
+
 let test_register_rejects_banned_alias_gpt () =
   with_temp_dir (fun dir ->
       let broker = C2c_broker.create ~root:dir in
@@ -406,6 +428,7 @@ let test_set = [
   "register rejects banned alias claude-code", `Quick, test_register_rejects_banned_alias_claude_code;
   "register rejects client-prefixed alias with reason and suggestion", `Quick, test_register_rejects_client_prefixed_alias_with_reason_and_suggestion;
   "register rejects banned alias gpt", `Quick, test_register_rejects_banned_alias_gpt;
+  "register rejects banned alias grok- prefix (B343 gate stays)", `Quick, test_register_rejects_banned_alias_grok_prefix;
   "register accepts lyra-quill", `Quick, test_register_accepts_lyra_quill;
   "register env origin accepts auto-gen prefix", `Quick, test_register_env_origin_accepts_auto_gen_prefix;
   "register env origin without marker rejects auto-gen prefix", `Quick, test_register_env_origin_without_marker_rejects_auto_gen_prefix;

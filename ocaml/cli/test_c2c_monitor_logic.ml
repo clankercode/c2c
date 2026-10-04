@@ -484,6 +484,22 @@ let test_classify_unauthorized_is_terminal () =
        Alcotest.(check string) "code field" "unauthorized" code
    | _ -> Alcotest.fail "expected Peek_terminal for unauthorized")
 
+let test_classify_lease_not_found_is_terminal () =
+  (* B344: a missing relay lease never self-heals by retrying the same key —
+     it must be terminal (one-shot off + fix hint), not a transient retry
+     that wakes the agent on every attempt. Exact relay wire shape: ok:false
+     + lease_not_found + HTTP 404 (reconcile_status passes honest bodies
+     through with http_status attached). *)
+  let resp = Yojson.Safe.from_string
+    {|{"ok":false,"error_code":"lease_not_found","error":"no live lease for session (cli-me, cli-me); it expired or was never registered under this key","http_status":404}|}
+  in
+  (match L.classify_relay_response resp with
+   | L.Peek_terminal { code; detail } ->
+       Alcotest.(check string) "code field" "lease_not_found" code;
+       Alcotest.(check bool) "detail names the code" true
+         (str_contains detail "lease_not_found")
+   | _ -> Alcotest.fail "expected Peek_terminal for lease_not_found")
+
 let test_classify_connection_error_is_transient () =
   (* relay_client.connection_error shape: network/timeout/invalid-json *)
   let resp = `Assoc [ ("ok", `Bool false); ("error_code", `String "connection_error")
@@ -642,9 +658,11 @@ let test_classify_malformed_is_transient () =
 let test_is_terminal_error_code_taxonomy () =
   List.iter (fun c -> Alcotest.(check bool) (c ^ " terminal") true (L.is_terminal_error_code c))
     [ "unauthorized"; "signature_invalid"; "timestamp_out_of_window"
-    ; "missing_proof_field"; "not_found"; "unknown_node"; "not_registered"; "bad_request" ];
+    ; "missing_proof_field"; "not_found"; "unknown_node"; "not_registered"; "bad_request"
+    ; "lease_not_found" ];
   List.iter (fun c -> Alcotest.(check bool) (c ^ " transient") false (L.is_terminal_error_code c))
-    [ "connection_error"; "pow_required"; "rate_limited"; "nonce_replay"; ""; "peer_timeout" ]
+    [ "connection_error"; "pow_required"; "rate_limited"; "rate_limit_exceeded"
+    ; "nonce_replay"; ""; "peer_timeout"; "http_error_500"; "http_error_502" ]
 
 (* Lock the classifier to the EXACT JSON the public HTTPS relay
    (https://relay.c2c.im) returns, captured live 2026-07-10 via a read-only
@@ -698,7 +716,7 @@ let test_terminal_severity_taxonomy () =
       Alcotest.(check bool) (c ^ " hard") true
         (L.terminal_severity_of_code c = L.Hard_terminal))
     [ "unauthorized"; "not_registered"; "unknown_node"; "not_found"
-    ; "missing_proof_field"; "bad_request" ]
+    ; "missing_proof_field"; "bad_request"; "lease_not_found" ]
 
 let is_retry_soft = function L.Retry_soft _ -> true | _ -> false
 let is_disable = function L.Disable _ -> true | _ -> false
@@ -862,6 +880,131 @@ let test_direct_signature_invalid_keeps_register_hint () =
        Alcotest.(check bool) "direct hint still mentions relay register" true
          (str_contains remediation_hint "relay register")
    | _ -> Alcotest.fail "expected Retry_soft for direct signature_invalid")
+
+(* ---------- B344: lease_not_found terminal + live-connector fallback ---------- *)
+
+let test_lease_not_found_disables_immediately () =
+  (* B344: lease_not_found is HARD terminal — disable on the FIRST failure
+     (one-shot off + fix hint), never a soft budget, never transient retry. *)
+  let action, budget =
+    L.decide_on_terminal ~now:1000.0 ~code:"lease_not_found"
+      ~budget:L.empty_soft_budget ()
+  in
+  (match action with
+   | L.Disable { severity; _ } ->
+       Alcotest.(check bool) "lease_not_found is hard" true
+         (severity = L.Hard_terminal)
+   | _ -> Alcotest.fail "expected Disable (hard, first failure) for lease_not_found");
+  Alcotest.(check int) "no soft budget accrued" 0 budget.L.consecutive
+
+let test_lease_not_found_direct_keeps_register_hint () =
+  (* Direct cli-<alias> key: the remediation must name the repair that
+     recreates the lease under the peeked key (`c2c relay register`), then a
+     monitor restart. *)
+  let action, _ =
+    L.decide_on_terminal ~now:1000.0 ~code:"lease_not_found"
+      ~budget:L.empty_soft_budget ()
+  in
+  (match action with
+   | L.Disable { remediation; _ } ->
+       Alcotest.(check bool) "direct hint names relay register" true
+         (str_contains remediation "relay register");
+       Alcotest.(check bool) "direct hint names monitor restart" true
+         (str_contains remediation "restart the monitor")
+   | _ -> Alcotest.fail "expected Disable for direct lease_not_found")
+
+let test_lease_not_found_connector_owned_warns_against_register () =
+  (* Connector-managed key: same one-shot Disable, but the remediation must
+     WARN AGAINST `c2c relay register` (default keys steal the alias from the
+     connector — B294) and point at the connector's next pass / restart. *)
+  let action, budget =
+    L.decide_on_terminal ~connector_owned_key:true
+      ~now:1000.0 ~code:"lease_not_found"
+      ~budget:L.empty_soft_budget ()
+  in
+  Alcotest.(check bool) "connector lease miss still disables first failure" true
+    (is_disable action);
+  Alcotest.(check int) "no soft budget accrued" 0 budget.L.consecutive;
+  (match action with
+   | L.Disable { remediation; _ } ->
+       Alcotest.(check bool) "connector hint says Do NOT register" true
+         (str_contains remediation "Do NOT");
+       Alcotest.(check bool) "connector hint names relay-connect recovery" true
+         (str_contains remediation "relay-connect");
+       Alcotest.(check bool) "connector hint names monitor restart" true
+         (str_contains remediation "restart the monitor")
+   | _ -> Alcotest.fail "expected Disable for connector-owned lease_not_found")
+
+let test_lease_not_found_not_connector_owned_variant () =
+  (* Narrowness: the connector-owned lease miss uses plain Disable with
+     connector advice — NOT the Disable_connector_owned variant, whose caller
+     framing ("cannot sign peeks") is wrong here (signing is fine; the lease
+     is missing). *)
+  let action, _ =
+    L.decide_on_terminal ~connector_owned_key:true
+      ~now:1000.0 ~code:"lease_not_found"
+      ~budget:L.empty_soft_budget ()
+  in
+  Alcotest.(check bool) "not the signature-specific variant" false
+    (is_disable_connector_owned action)
+
+let test_live_connector_fallback_key () =
+  (* B344: roster miss + live connector + known local session id => peek the
+     connector's own key (machine node-id + local session id), not cli-<alias>. *)
+  (match
+     L.live_connector_fallback_key ~connector_live:true ~node_id:"host-abc"
+       ~local_session_id:(Some "sess-42") ()
+   with
+   | Some k ->
+       Alcotest.(check string) "fallback node id" "host-abc" k.L.node_id;
+       Alcotest.(check string) "fallback session id" "sess-42" k.L.session_id
+   | None -> Alcotest.fail "expected a fallback key for a live connector");
+  (* Dead/absent connector => no fallback (cli-<alias> convention applies). *)
+  Alcotest.(check bool) "dead connector -> None" true
+    (L.live_connector_fallback_key ~connector_live:false ~node_id:"host-abc"
+       ~local_session_id:(Some "sess-42") () = None);
+  (* No local session id => nothing to peek under. *)
+  Alcotest.(check bool) "no session id -> None" true
+    (L.live_connector_fallback_key ~connector_live:true ~node_id:"host-abc"
+       ~local_session_id:None () = None);
+  (* Empty node or session ids are unusable keys. *)
+  Alcotest.(check bool) "empty node id -> None" true
+    (L.live_connector_fallback_key ~connector_live:true ~node_id:""
+       ~local_session_id:(Some "sess-42") () = None);
+  Alcotest.(check bool) "empty session id -> None" true
+    (L.live_connector_fallback_key ~connector_live:true ~node_id:"host-abc"
+       ~local_session_id:(Some "") () = None)
+
+(* ---------- B343: Grok peek/register key parity ---------- *)
+
+let test_grok_direct_peek_matches_register_key () =
+  (* B343: with no connector, a bare `c2c monitor` after `c2c whoami` must
+     peek the SAME key `c2c relay register --alias` creates for that alias —
+     including grok- -prefixed AUTO aliases (no invented cli-grok-* vs
+     cli-stripped split). The register side of this parity is pinned in
+     test_relay_b294_register_guard (resolve_register_inbox_key default). *)
+  let k = L.resolve_relay_peek_key ~alias:"grok-power-bolt-mbcg"
+            ~node_id_override:None ~session_id_override:None
+            ~connector_key:None () in
+  Alcotest.(check string) "node_id = cli-<grok-alias>"
+    "cli-grok-power-bolt-mbcg" k.L.node_id;
+  Alcotest.(check string) "session_id = cli-<grok-alias>"
+    "cli-grok-power-bolt-mbcg" k.L.session_id
+
+let test_grok_connector_peek_uses_machine_node_and_session () =
+  (* B343: with a live connector (B344 fallback), the monitor peeks the lease
+     that belongs to the whoami alias+session — machine node-id + the REAL
+     local session id — never an invented cli-grok-* key. *)
+  let ck =
+    L.live_connector_fallback_key ~connector_live:true ~node_id:"3d08761ae3f3"
+      ~local_session_id:(Some "01a0ca56-f15c-7873-ad00-a04469eddae6") ()
+  in
+  let k = L.resolve_relay_peek_key ~alias:"grok-power-bolt-mbcg"
+            ~node_id_override:None ~session_id_override:None
+            ~connector_key:ck () in
+  Alcotest.(check string) "connector node_id used" "3d08761ae3f3" k.L.node_id;
+  Alcotest.(check string) "real session id used"
+    "01a0ca56-f15c-7873-ad00-a04469eddae6" k.L.session_id
 
 (* ---------- B180: identity rebind after rename ---------- *)
 
@@ -1145,6 +1288,7 @@ let () =
         ; Alcotest.test_case "legacy no-ok field is ok" `Quick test_classify_legacy_no_ok_field_is_ok
         ; Alcotest.test_case "auth error is terminal" `Quick test_classify_auth_error_is_terminal
         ; Alcotest.test_case "unauthorized is terminal" `Quick test_classify_unauthorized_is_terminal
+        ; Alcotest.test_case "lease_not_found is terminal (B344)" `Quick test_classify_lease_not_found_is_terminal
         ; Alcotest.test_case "connection error is transient" `Quick test_classify_connection_error_is_transient
         ; Alcotest.test_case "nonce_replay is transient" `Quick test_classify_nonce_replay_is_transient
         ; Alcotest.test_case "unknown code defaults transient" `Quick test_classify_unknown_code_defaults_transient
@@ -1196,6 +1340,24 @@ let () =
             `Quick test_connector_owned_transient_still_soft_retries
         ; Alcotest.test_case "direct signature_invalid keeps register hint" `Quick
             test_direct_signature_invalid_keeps_register_hint
+        ] )
+    ; ( "b344-lease-not-found-terminal",
+        [ Alcotest.test_case "lease_not_found disables on first failure" `Quick
+            test_lease_not_found_disables_immediately
+        ; Alcotest.test_case "direct lease miss keeps register hint" `Quick
+            test_lease_not_found_direct_keeps_register_hint
+        ; Alcotest.test_case "connector lease miss warns against register" `Quick
+            test_lease_not_found_connector_owned_warns_against_register
+        ; Alcotest.test_case "connector lease miss is plain Disable" `Quick
+            test_lease_not_found_not_connector_owned_variant
+        ; Alcotest.test_case "live-connector fallback peek key" `Quick
+            test_live_connector_fallback_key
+        ] )
+    ; ( "b343-grok-peek-register-parity",
+        [ Alcotest.test_case "grok direct peek matches register key" `Quick
+            test_grok_direct_peek_matches_register_key
+        ; Alcotest.test_case "grok connector peek uses node + session" `Quick
+            test_grok_connector_peek_uses_machine_node_and_session
         ] )
     ; ( "b211-transient-wedge-escalation",
         [ Alcotest.test_case "below threshold is quiet until wedge (B348)" `Quick

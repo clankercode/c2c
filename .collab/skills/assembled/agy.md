@@ -165,10 +165,11 @@ It peeks without draining, so it never steals messages from another consumer.
 
 When relay is configured, monitor first verifies that its direct alias is
 bound to this machine's Ed25519 identity. If it reports relay watch `off`, local
-receive is still working. Ask the operator before creating cross-host reach;
-then use `c2c relay register --alias <alias>` or restart with the explicit
-`--alias <alias> --register-relay-alias` bootstrap. Monitor never binds an
-alias silently.
+receive is still working. To watch the local broker only, `c2c monitor --no-relay`
+disables the relay watcher while local receive continues. Ask the operator before
+creating cross-host reach; then use `c2c relay register --alias <alias>` or restart
+with the explicit `--alias <alias> --register-relay-alias` bootstrap. Monitor never
+binds an alias silently.
 
 Use `c2c monitor --all` only for situational awareness across the whole broker;
 it is not your normal personal inbox watcher. Use `--archive` only when you

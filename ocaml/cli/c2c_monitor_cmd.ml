@@ -797,7 +797,27 @@ let monitor_cmd =
            with
            | Some (node_id, session_id) ->
                Some C2c_monitor_logic.{ node_id; session_id }
-           | None -> None)
+           | None ->
+               (* B344: roster miss while the connector is LIVE and managing
+                  this broker (fresh last_ok — the same connector_running
+                  predicate `c2c whoami` reports as "connector: live", so the
+                  two surfaces never disagree). The roster lags reality by up
+                  to one pass; the connector registers every local session
+                  under (machine node-id, own session-id), so peek THAT key
+                  rather than the cli-<alias> fallback, which has no lease.
+                  If the lease is not there yet either, the peek fails
+                  lease_not_found — terminal, one-shot off + fix hint. *)
+               let connector_live =
+                 Relay_doctor.connector_running ~scoped_procs:[]
+                   ~state:(Some cs) ~now:(Unix.gettimeofday ())
+               in
+               let node_id =
+                 match cs.C2c_relay_connector.cs_node_id with
+                 | Some n when n <> "" -> n
+                 | _ -> fallback_node_id
+               in
+               C2c_monitor_logic.live_connector_fallback_key ~connector_live
+                 ~node_id ~local_session_id:inbox_sid ())
       | None -> None
     in
     let connector_key0 =
@@ -1961,6 +1981,9 @@ let monitor =
                   LOCAL session-id (not the $(b,cli-<alias>) convention), so the monitor \
                   reads $(b,connector-state.json) and peeks that connector-managed inbox by \
                   default — no manual $(b,--relay-node-id)/$(b,--relay-session-id) needed. \
+                  A live connector whose last pass predates this session still yields the \
+                  connector key (machine node-id + local session id) rather than the \
+                  leaseless $(b,cli-<alias>) fallback (B344). \
                   With no connector it falls back to $(b,cli-<alias>) (matching \
                   $(b,c2c relay register --alias)). Explicit $(b,--relay-node-id) / \
                   $(b,--relay-session-id) always override the resolved default."
@@ -1968,7 +1991,8 @@ let monitor =
                   $(b,ok:false) response is surfaced on stderr. A TRANSIENT error \
                   (network blip, timeout, rate-limit) is retried with backoff and a \
                   $(b,reconnected) line is emitted on recovery. A TERMINAL error \
-                  (auth / identity / signature / bad-request — will not self-heal) prints \
+                  (auth / identity / signature / bad-request / missing lease — will \
+                  not self-heal) prints \
                   a clear message ONCE and DISABLES the relay watcher — the \
                   main-thread local inbox watch KEEPS RUNNING (B142), so a \
                   relay-side problem never tears down local receive. The monitor \
@@ -1982,7 +2006,8 @@ let monitor =
                   $(b,--self-stale-exit) after a binary-upgrade detection with an \
                   exact relaunch hint — do not treat as error / do not auto-respawn). \
                   1  usage or startup error (broker root unresolved, lockfile conflict). \
-                  3  terminal relay failure (auth / identity / signature / bad request) \
+                  3  terminal relay failure (auth / identity / signature / bad request / \
+                  missing lease) \
                   when relay-watch is the sole source (no local watch active)."
             ; `S "OUTPUT FORMAT"
             ; `P "[HH:MM:SS] ICON  TYPE  from→to  \"subject…\""
