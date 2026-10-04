@@ -136,8 +136,10 @@ let managed_hooks =
     ; timeout = 10; status_message = "c2c inbox" }
   ; { event = "SessionStart"; matcher = None; command = hook_command
     ; timeout = 10; status_message = "c2c onboarding" }
+  (* B350: codex clamps SessionEnd hook timeouts to 3s (warning otherwise),
+     so SessionEnd ships 3 while the other events keep 10. *)
   ; { event = "SessionEnd"; matcher = None; command = hook_command
-    ; timeout = 10; status_message = "c2c cleanup" }
+    ; timeout = 3; status_message = "c2c cleanup" }
   ]
 
 (* --- TOML rendering ---------------------------------------------------------- *)
