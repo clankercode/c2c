@@ -1,14 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-09-23T14:41:34Z"
 depends_on: []
 estimate_hours: 1
 id: B344
 priority: high
+started_at: null
 status: pending
-tags:
-    - monitor
-    - relay
+tags: []
 title: 'monitor: relay peek uses cli-<alias> key while machine connector is live -> lease_not_found spam'
 updated_at: "2026-09-23T14:41:34Z"
 ---
@@ -23,3 +23,5 @@ Found while dogfooding (Claude Code session claude-glaze-forge-yil0, host xsm, c
 **Workaround:** `c2c monitor --no-relay`. The connector delivers relay DMs to the local inbox anyway.
 
 **Suspected cause (unverified):** connector-managed detection fails for this session, so resolution falls back to `cli-<alias>`. Separately, lease_not_found is treated as transient and retried rather than being a terminal "relay watch off" with a fix hint.
+
+Coordinator decision (bl-fix-many batch B343 B344 B350 B356 B363, 2026-10-04): Lane A serial — B344 lands FIRST, then B343 in the same worktree. Reason: both touch the monitor relay-peek path (c2c_monitor_cmd.ml, c2c_monitor_logic.ml, preflight, monitor tests); B344's peek-key + lease_not_found-terminal fix is the enabling change B343's Grok loop verifies against. Verified still broken: lease_not_found is absent from is_terminal_error_code (c2c_monitor_logic.ml:426) so it retries as transient forever; --no-relay exists (B343 item 7 partly met). Lanes B (B350), C (B363), D (B356-rescope) run parallel, disjoint files.
