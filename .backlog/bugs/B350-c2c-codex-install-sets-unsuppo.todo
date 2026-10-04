@@ -18,3 +18,5 @@ updated_at: "2026-10-04T06:28:24Z"
 Observed: Codex reports "clamping SessionEnd hook timeout to 3s" because the c2c-managed block in ~/.codex/config.toml writes timeout = 10 for the SessionEnd command hook c2c hook codex. Expected: c2c should generate a SessionEnd timeout that Codex accepts, such as 3 seconds or the documented default, without a warning. Acceptance: update the Codex hook installation or template to stop writing 10 for SessionEnd; keep UserPromptSubmit, PostToolUse, and SessionStart timeout behavior unchanged; add or update coverage so repeated installation does not restore the unsupported value and the generated config is warning-free.
 
 Coordinator decision (bl-fix-many batch, 2026-10-04): Lane B, parallel. Disjoint files (ocaml/cli/c2c_codex_hooks.ml + codex setup tests). Verified still broken: managed_hooks SessionEnd timeout = 10 (c2c_codex_hooks.ml:139-140).
+
+Post-close note: merge ab2f02d2 landed after the done-commit because master had moved concurrently (B345 appends) and the ff-only merge failed; coordinator merged --no-ff immediately after. End state: merged + closed, no code difference.
