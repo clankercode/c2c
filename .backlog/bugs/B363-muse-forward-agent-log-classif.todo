@@ -1,18 +1,19 @@
 ---
 claimed_at: "2026-10-04T06:15:16Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-04T06:39:38Z"
 complexity: medium
 created_at: "2026-10-02T22:21:05Z"
 depends_on: []
+duration_minutes: 24.36946356815
 estimate_hours: 3
 id: B363
 priority: low
 started_at: "2026-10-04T06:15:16Z"
-status: in_progress
+status: done
 tags: []
 title: muse forward-agent-log classifier needs frame-envelope parser
-updated_at: "2026-10-04T06:15:16Z"
+updated_at: "2026-10-04T06:39:38Z"
 ---
 Follow-up from B359 (which deliberately skipped the forward-agent-log muse classifier): muse session.jsonl is a transaction-frame log, not a role/content line stream. Measured on-host (2026-10-02): first-line top-level keys are [children, content_sha256, frame_schema_version, outer_log_ordinal, retained_frame, transaction_id]; retained_frame is a string tag (e.g. session_permission_transaction) or null. None of the existing classify_*_line shapes fit. Work: design + prove a classify_muse_line over the retained_frame schema (measure 2+ real sessions, pin shapes in tests), add detect_format_by_path arm (muse sessions dir) + sniff arm (frame_schema_version/transaction_id keys), extend supported_formats + --format docs. Guard: an unproven sniff must fail closed (None), never misclassify another client's transcript as muse.
 
