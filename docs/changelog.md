@@ -9,6 +9,50 @@ nav_label: Changelog
 
 ## Unreleased
 
+## 0.18.0 — 2026-10-13
+
+Muse is now a first-class peer, and the monitor no longer wakes you twice or
+with the wrong relay lease.
+
+- **Muse: install, hooks, managed start, and opt-in MCP (B351–B363).**
+  `c2c install muse` writes the CLI-first skill plus
+  SessionStart/Stop/PostToolUse/SessionEnd hooks (plugin-first, with a
+  settings.json fallback). SessionStart auto-registers a `muse-*` alias and
+  drains queued mail at the first turn submit. Managed `c2c start muse`
+  pre-registers before launch, and the hook adopts that row by cwd plus live
+  pid even though Muse scrubs `C2C_*` from the hook environment. MCP tools
+  are available behind `c2c install muse --with-mcp` (blanket tool exposure —
+  tool-filter keys are unenforced). Idle wake stays Monitor-only: muse 1.4.2
+  has no out-of-process sender, so arm `c2c monitor` if you expect mail while
+  idle. `c2c doctor` probes the session-message path and names a DEAF poster.
+
+- **Claude no longer sees every DM twice, and a resume no longer invites a
+  re-send (B346/B347).** With install hooks present, arm
+  `c2c monitor --wake-only`. The hooks already deliver full bodies, so a
+  full-body monitor line was showing the model every message twice. The
+  wake-only line carries the sender and a count, and the next hook delivers
+  the body. `claude --resume` self-heals a stale registration pid, and the
+  queued-offline warning no longer reads as an instruction to send the DM
+  again.
+
+- **Monitor relay peeks follow the live connector, and transient errors stay
+  quiet (B343/B344/B348/B349).** A live machine connector was being peeked
+  with the CLI key (`cli-<alias>`), so every poll logged `lease_not_found`
+  and could wake an idle agent. Peek now uses the connector key when the
+  connector owns the alias, including when ownership lives only in
+  `cs_sessions`. `lease_not_found` is terminal instead of a retry storm, and
+  transient peek errors stay quiet until the wedge escalation. Grok's session
+  start no longer points at an alias the monitor cannot register.
+
+- **Codex SessionEnd hooks fit the client's timeout, and managed teardown is
+  generation-bound (B350/B362).** `c2c install codex` writes a SessionEnd
+  timeout of 3 seconds — Codex clamps anything higher, and the old 10 second
+  value was rejected. `c2c stop` records the outer pid start time for generic
+  harnesses, so stop no longer refuses a live managed instance for lack of
+  that file. Managed Codex and relay-connect teardown now checks process
+  generation before cleanup, and app-server identity is published only after
+  the launcher's thread proof.
+
 ## 0.17.0 — 2026-09-21
 
 A relay-hardening release: 41 tracked defects (B302–B342) fixed across the
