@@ -236,13 +236,16 @@ Managed `c2c start codex` / `c2c new codex` attach the stock remote TUI to the
 machine-wide Codex daemon over its same-UID private Unix-domain WebSocket when
 that daemon is available (codex-cli ≥ 0.159). The launcher arms one delivery
 sidecar for the exact native Codex thread and never starts a second drainer in
-the TUI process. When the daemon is unavailable, supported Codex versions use
-the older per-session `codex app-server` with an authenticated loopback
-WebSocket. Older Codex or a genuine startup failure falls back automatically to
-the hook-backed launch. The daemon path is the default; operators can force the
-private per-session server with the hidden
-`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` escape, or force hooks with
-`C2C_CODEX_FORCE_HOOKS=1` for testing and emergency recovery.
+the TUI process. c2c records the chosen transport and selection reason under
+the instance directory. When the daemon is unavailable, c2c uses the hook
+boundary by default, which avoids silently creating a second Codex control
+plane. The authenticated per-session `codex app-server` loopback transport is
+available only through the explicit isolated escape
+`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1`, which requires an existing disposable
+`C2C_CODEX_PRIVATE_HOME` so config, credentials, rollout files, and state remain
+separate from the shared daemon. A forced-private startup failure refuses a
+shared-state hook fallback. `C2C_CODEX_FORCE_HOOKS=1` remains available for
+hook-path diagnostics.
 
 The daemon sidecar lease is keyed by the canonical daemon socket and native
 thread id, and records both its PID and `/proc` start generation. `SessionEnd`

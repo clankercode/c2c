@@ -240,9 +240,12 @@ auto-turn for eligible local mail. Distinct from host hooks (method 2).
 
 Managed `c2c start codex` / `c2c new codex` attach the stock remote TUI to the
 machine-wide daemon over its private Unix-domain WebSocket on Codex ≥ 0.159.
-Codex ≥ 0.144 uses a per-session `codex app-server` over an authenticated
-loopback WebSocket as fallback. The managed supervisor drives the T003 ingress +
-T007 auto-turn pipeline while the frontend is attached:
+When daemon reuse is unavailable, c2c uses installed hooks by default and does
+not start another shared-state app-server. Codex ≥ 0.144 supports the
+authenticated per-session loopback server only through the explicit isolated
+`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` mode with an existing
+`C2C_CODEX_PRIVATE_HOME`. The managed supervisor drives the T003 ingress +
+T007 auto-turn pipeline while the selected app-server frontend is attached:
 
 The daemon launcher discovers the native thread after the remote frontend is
 loaded and starts one detached sidecar with a lease keyed by daemon socket plus
@@ -287,8 +290,10 @@ Full contract: [Per-Client Delivery § Codex](/client-delivery/#codex).
 
 #### Limitations
 
-- Requires Codex ≥ 0.159 and a reachable daemon socket, or Codex ≥ 0.144 and a
-  successful authenticated per-session app-server start.
+- Requires Codex ≥ 0.159 and a reachable daemon socket. The isolated private
+  loopback mode requires Codex ≥ 0.144, an existing private
+  `C2C_CODEX_PRIVATE_HOME`, and the explicit force-private flag; otherwise the
+  hook boundary is the fail-closed fallback.
 - Auto-turn is local-broker only; remote-origin mail is data-only.
 - Message content never resolves approvals (B098 bus-never-RPC).
 
@@ -694,8 +699,9 @@ Which methods are primary, fallback, or unavailable for each client:
 
 **Primary** = recommended path for that client; for MCP clients this is installed
 by `c2c install <client>`, while Pi Agent uses `pi install npm:pi-c2c`. Managed
-Managed Codex uses the private daemon WS or authenticated per-session app-server
-path (not hooks) as Primary.
+Managed Codex uses the private daemon WS as its primary transport. The
+authenticated per-session app-server is an explicit isolated diagnostic mode;
+hooks remain the default fallback when daemon reuse is unavailable.
 **Baseline** = always available as a universal pull-based fallback.
 **Fallback** = works but superseded by a better method.
 **--** = not applicable or not supported.

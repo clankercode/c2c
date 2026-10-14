@@ -268,10 +268,13 @@ selects the machine-wide daemon only when its private Unix-domain socket and
 owner/cleanup prerequisites are available. Setting
 `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` skips daemon selection and uses the
 authenticated per-session loopback app-server instead (codex-cli >= 0.144).
-If the private app-server is unsupported or fails to start, hooks are the
-fallback. This variable is useful for isolating daemon or sidecar failures;
-unset it for normal selection. Once a daemon frontend has started, uncertain
-thread ownership or cleanup fails closed and does not trigger this fallback.
+It requires an existing private `C2C_CODEX_PRIVATE_HOME` that resolves to a
+different mode-0700-or-more-restrictive directory from the shared `CODEX_HOME`.
+If the private app-server is unsupported or fails to start, c2c refuses to
+launch a shared-state hook fallback. Daemon nonselection uses hooks by default.
+This variable is useful for isolating daemon or sidecar failures; unset it for
+normal selection. Once a daemon frontend has started, uncertain thread
+ownership or cleanup fails closed and does not switch transports.
 
 For both fresh and resumed daemon sessions, the frontend must hand off its
 thread and the authenticated server must report that same thread in the loaded
@@ -301,8 +304,8 @@ Set to `1` inside the private per-session delivery loop and inside a daemon
 sidecar to unlock the real ingress/auto-turn WebSocket clients. It is an
 internal process marker, not the frontend identity marker. The private
 frontend uses `C2C_CODEX_MANAGED` plus the non-empty
-`C2C_CODEX_APPSERVER_SESSION` marker; the daemon sidecar uses its
-frontend-handoff and authenticated workspace ownership proof.
+`C2C_CODEX_APPSERVER_SESSION` marker; the daemon frontend clears that marker
+and relies on its frontend handoff and authenticated workspace ownership proof.
 
 ### `C2C_CODEX_APPSERVER_NUDGE_EVERY`
 

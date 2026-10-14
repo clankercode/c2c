@@ -23,4 +23,5 @@ type managed_instance_view =
   ; mi_expected_cwd : string option
   ; mi_role : string option
   ; mi_app_server_transport : string option
+  ; mi_app_server_selection_reason : string option
   }

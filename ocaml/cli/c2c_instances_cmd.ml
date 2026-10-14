@@ -242,6 +242,10 @@ let instances_cmd =
       | Some transport -> fields @ [ ("app_server_transport", `String transport) ]
       | None -> fields
     in
+    let fields = match inst.mi_app_server_selection_reason with
+      | Some reason -> fields @ [ ("app_server_selection_reason", `String reason) ]
+      | None -> fields
+    in
     let fields =
       if inst.mi_client = "agy" then
         fields @ [ ("agy", agy_details_to_json (agy_instance_details inst.mi_name)) ]
@@ -316,6 +320,11 @@ let instances_cmd =
               | Some transport -> " transport=" ^ transport
               | None -> ""
             in
+            let app_server_selection_reason_str =
+              match inst.mi_app_server_selection_reason with
+              | Some reason -> " selection=" ^ reason
+              | None -> ""
+            in
             let agy_str =
               if inst.mi_client <> "agy" then ""
               else
@@ -337,10 +346,10 @@ let instances_cmd =
                 ^ optional "ls" details.ai_ls_address
                 ^ watch
             in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s%s%s%s\n"
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s%s%s%s%s\n"
               inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode
               pid_str tmux_str cwd_str created_str role_str app_server_str
-              app_server_transport_str agy_str
+              app_server_transport_str app_server_selection_reason_str agy_str
           ) displayed
       end
 

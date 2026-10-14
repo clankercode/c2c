@@ -94,15 +94,16 @@ frontend thread — open or focus a thread in the remote TUI to clear it.
 `c2c new codex`) attaches to the machine-wide Codex daemon over its private
 same-UID Unix-domain WebSocket on Codex ≥ 0.159. A per-native-thread sidecar
 owns delivery: inbound c2c mail is injected into model-visible history on
-arrival and eligible local mail gets one gated idle auto-turn. The older
-supported Codex path (≥ 0.144) starts a per-session `codex app-server` with an
-authenticated loopback WebSocket. Both paths are draft-safe and preserve the
-DATA and B098 contracts; cross-repo mail is inject-only. If neither app-server
-path is available, c2c falls back to hooks before publishing a routable alias.
-Use `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` to select the older path or
-`C2C_CODEX_FORCE_HOOKS=1` to select hooks for diagnosis. After a successful
-start the launcher binds the banner alias before first interaction, discovers
-the exact loaded native thread, and arms the daemon sidecar itself. The daemon
+arrival and eligible local mail gets one gated idle auto-turn. c2c records the
+selected transport and selection reason. When daemon reuse is unavailable,
+hooks are the default fail-closed fallback, avoiding a second shared-state
+Codex control plane. The authenticated per-session loopback server is an
+explicit isolated mode only: set `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` with an
+existing `C2C_CODEX_PRIVATE_HOME`. Both app-server paths are draft-safe and
+preserve the DATA and B098 contracts; cross-repo mail is inject-only.
+`C2C_CODEX_FORCE_HOOKS=1` selects hooks for diagnosis. After a successful start
+the launcher binds the banner alias before first interaction, discovers the
+exact loaded native thread, and arms the daemon sidecar itself. The daemon
 frontend intentionally clears `C2C_CODEX_APPSERVER_SESSION`; its
 `SessionStart` hook remains identity/fallback-only.
 `c2c instances` reports `delivery_mode=app-server` only while the unit is
@@ -146,12 +147,14 @@ polling remains the universal fallback. See
 **Known footgun**: Hook drift — Codex only runs trusted hooks from `~/.codex/config.toml`. If the managed block or `[hooks.state]` trust hashes drift after an upgrade, delivery may silently stop. Run `c2c doctor hooks` to detect drift and `c2c install codex` to refresh the managed hooks block.
 
 **Current binary note**: Codex ≥ 0.159 uses the machine daemon when its private
-control socket is available; c2c's older authenticated per-session app-server
-path remains supported from Codex ≥ 0.144. The daemon socket follows
+control socket is available. When it is unavailable, c2c uses hooks by default;
+the authenticated per-session app-server remains available from Codex ≥ 0.144
+only through explicit isolated private mode. The daemon socket follows
 `C2C_CODEX_DAEMON_SOCK`, then `CODEX_HOME`, then `$HOME/.codex`, preventing a
 healthy daemon from a different Codex home from being selected accidentally.
-If the daemon is unavailable, c2c uses the private fallback; if that also fails, hooks remain the safe fallback.
-The upstream Codex binary no longer exposes the old XML sideband flag, and the
+The daemon-unavailable rule above applies here too: hooks are the default
+safe fallback and the private loopback server requires the explicit isolated
+mode. The upstream Codex binary no longer exposes the old XML sideband flag, and the
 xml_fd plumbing (capability probe, fd pipe wiring, deliver-watch supervisor
 scripts) was removed from c2c (2026-07-10). Hook delivery is the supported
 receive path for vanilla and hook-mode managed sessions. Upstream references

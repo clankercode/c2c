@@ -305,6 +305,8 @@ let resume_cmd : unit Cmd.t =
 
 (* Re-exported for c2c_managed_cmd so `c2c start codex` routes to the same path. *)
 let start_delegate ~alias_override ~thread_id ~yolo ?model_override
-    ~extra_args ~alias_from_auto_gen ~fallback () : int =
+    ?role_pmodel_override ?binary_override ~extra_args ~alias_from_auto_gen
+    ~fallback () : int =
   C2c_codex_session.run ~mode:C2c_codex_session.Start ?alias_override ?thread_id
-    ~yolo ?model_override ~extra_args ~alias_from_auto_gen ~fallback ()
+    ~yolo ?model_override ?role_pmodel_override ?binary_override ~extra_args
+    ~alias_from_auto_gen ~fallback ()

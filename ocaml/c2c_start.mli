@@ -655,8 +655,10 @@ val read_toml_sections_with_prefix :
 val normalize_model_override_for_client :
   client:string -> string -> (string, string) result
 (** Normalize a user-supplied [--model] override for the target client.
-    OpenCode keeps provider/model syntax, while single-provider clients accept
-    either bare model names or provider:model input and emit just the model. *)
+    OpenCode keeps provider/model syntax. Codex preserves provider:model so
+    the managed launcher can emit its provider and model config overrides.
+    Other single-provider clients accept bare model names or provider:model
+    input and emit just the model. *)
 
 val strip_start_extra_argv_prefix : string list -> string list
 (** Strip the leading client name (pos 0) from the raw [pos_all] positional

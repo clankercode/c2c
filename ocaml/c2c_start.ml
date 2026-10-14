@@ -1625,17 +1625,46 @@ let normalize_model_override_for_client ~(client : string) (raw : string)
                        "opencode --model requires provider:model or \
                         provider/model input (got %S)"
                        value)))
-    | "claude" | "codex" | "codex-headless" | "kimi" | "crush" | "muse" ->
-        (* muse (B358): `muse --model` takes a bare model id; a pmodel
-           `provider:model` contributes its model part while the provider
-           stays operator config (no c2c provider knob; pass `--provider`
-           via extra_args when needed). *)
+    | "claude" | "kimi" | "crush" | "muse" ->
+        (* These clients accept a bare model id. A pmodel contributes its model
+           part while provider selection remains their client configuration. *)
         if String.contains value ':' then
           (match parse_pmodel value with
            | Ok p -> Ok p.model
            | Error e -> Error e)
         else Ok value
+    | "codex" | "codex-headless" ->
+        (* Codex provider routing is expressed by the managed launcher as
+           `-c model_provider=... -c model=...`; preserve the pair until that
+           adapter builds the final argv. *)
+        if String.contains value ':' then
+          (match parse_pmodel value with
+           | Ok _ -> Ok value
+           | Error e -> Error e)
+        else Ok value
     | _ -> Error (Printf.sprintf "unknown client for --model normalization: %s" client)
+
+let codex_passthrough_model_args args =
+  let rec loop acc = function
+    | flag :: value :: rest when flag = "--model" || flag = "-m" ->
+        (match parse_pmodel value with
+         | Ok p ->
+             loop (List.rev_append
+                     [ "-c"; "model_provider=" ^ p.provider;
+                       "-c"; "model=" ^ p.model ] acc) rest
+         | Error _ -> loop (value :: flag :: acc) rest)
+    | flag :: rest when String.starts_with ~prefix:"--model=" flag ->
+        let value = String.sub flag 8 (String.length flag - 8) in
+        (match parse_pmodel value with
+         | Ok p ->
+             loop (List.rev_append
+                     [ "-c"; "model_provider=" ^ p.provider;
+                       "-c"; "model=" ^ p.model ] acc) rest
+         | Error _ -> loop (flag :: acc) rest)
+    | item :: rest -> loop (item :: acc) rest
+    | [] -> List.rev acc
+  in
+  loop [] args
 
 let current_c2c_command () =
   let fallback =
@@ -5917,7 +5946,11 @@ let prepare_launch_args ~(name : string) ~(client : string)
       | Some model when String.trim model <> "" -> args @ [ "--model"; model ]
       | _ -> args
   in
-  args @ extra_args
+  let forwarded_extra_args =
+    if client = "codex" then codex_passthrough_model_args extra_args
+    else extra_args
+  in
+  args @ forwarded_extra_args
 
 (* ---------------------------------------------------------------------------
  * Binary lookup
@@ -6165,15 +6198,22 @@ module CodexAdapter : CLIENT_ADAPTER = struct
        used by prepare_launch_args after B175 — bare c2c session ids must not
        imply --last). None = fresh session. *)
     ignore extra_args;
+    let codex_model_args =
+      match model_override with
+      | Some m when String.trim m <> "" ->
+          (match parse_pmodel (String.trim m) with
+           | Ok p -> [ "-c"; "model_provider=" ^ p.provider;
+                      "-c"; "model=" ^ p.model ]
+           | Error _ -> [ "--model"; String.trim m ])
+      | _ -> []
+    in
     let base =
       match resume_session_id with
       | Some sid when String.trim sid <> "" -> [ "resume"; sid ]
       | Some _ -> [ "resume"; "--last" ]
       | None -> []
     in
-    match model_override with
-    | Some m when String.trim m <> "" -> base @ [ "--model"; m ]
-    | _ -> base
+    base @ codex_model_args
 
   let refresh_identity ~name:_ ~alias:_ ~broker_root:_ ~project_dir:_ ~instances_dir:_
       ~agent_name:_ =

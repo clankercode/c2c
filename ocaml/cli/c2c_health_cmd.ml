@@ -944,6 +944,12 @@ let read_managed_instances () =
                 C2c_codex_session.app_server_transport_of_instance
                   ~instance_dir:(C2c_start.instance_dir name)
             in
+            let mi_app_server_selection_reason =
+              if client <> "codex" then None
+              else
+                C2c_codex_session.app_server_selection_reason_of_instance
+                  ~instance_dir:(C2c_start.instance_dir name)
+            in
             { mi_name = name
            ; mi_client = client
            ; mi_status = status
@@ -954,6 +960,7 @@ let read_managed_instances () =
            ; mi_expected_cwd = expected_cwd
            ; mi_role
            ; mi_app_server_transport
+           ; mi_app_server_selection_reason
            })
 
 let safe_is_directory path =
@@ -1202,6 +1209,10 @@ let status_cmd =
                          ; ("delivery_mode", `String inst.mi_delivery_mode)
                          ; ("app_server_transport",
                             match inst.mi_app_server_transport with
+                            | Some s -> `String s
+                            | None -> `Null)
+                         ; ("app_server_selection_reason",
+                            match inst.mi_app_server_selection_reason with
                             | Some s -> `String s
                             | None -> `Null)
                          ; ("pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)

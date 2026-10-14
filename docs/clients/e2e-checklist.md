@@ -150,12 +150,14 @@ c2c list --all
 ## 2b. Codex app-server delivery (managed, default on supported Codex)
 
 **Applies to** managed Codex on Codex ≥ 0.159 — the machine daemon transport is
-the default managed path; Codex ≥ 0.144 uses the authenticated per-session
-app-server fallback (B131 wired the supervision loop; no flag). On older
-codex expect the minimum-version message + hook fallback, and mark this row
-SKIP. The library-level harness `scripts/codex-autoturn-e2e.py` (inside tmux)
-proves the same contract against a real codex if you want a supervision-free
-check.
+the default managed path. When daemon reuse is unavailable, c2c uses the
+installed hook boundary by default to avoid a second shared-state control
+plane. Codex ≥ 0.144 can use the authenticated per-session app-server only
+with the explicit isolated `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` escape and
+an existing `C2C_CODEX_PRIVATE_HOME`. On older Codex, expect the hook path and
+mark this row SKIP. The library-level harness `scripts/codex-autoturn-e2e.py`
+(inside tmux) proves the same contract against a real codex if you want a
+supervision-free check.
 
 - **Setup**:
   - Inside tmux: `c2c start codex -n test-cx-appserver-<rand>`

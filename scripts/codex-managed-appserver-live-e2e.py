@@ -131,6 +131,20 @@ def wait_for(fn, timeout: float, interval: float = 2.0):
     return None
 
 
+def codex_app_server_listeners() -> list[int]:
+    """Return Codex managed app-server listener PIDs, excluding helper hosts."""
+    pids: list[int] = []
+    out = subprocess.run(["pgrep", "-f", r"codex(\.js)? app-server --listen"],
+                         capture_output=True, text=True).stdout
+    for token in out.split():
+        if token.isdigit():
+            try:
+                pids.append(int(token))
+            except ValueError:
+                pass
+    return sorted(set(pids))
+
+
 def my_codex_pids(broker_root: str) -> list[int]:
     """PIDs of codex processes belonging to THIS run — identified by our unique
     isolated broker root in their environ. Precise (does not depend on a global
@@ -382,7 +396,9 @@ def run_live() -> int:
     cli_env["C2C_INSTANCES_DIR"] = str(instances)
     cli_env["PATH"] = os.environ["PATH"]
 
-    log(f"[appserver-e2e] isolated broker root = {broker}")
+    preexisting_app_servers = codex_app_server_listeners()
+    log(f"[appserver-e2e] pre-existing codex app-server listeners = {preexisting_app_servers}")
+
     results = {"injected_and_autoturn": False, "draft_preserved": False,
                "clean_teardown": False, "lifecycle_clean": False,
                "deregistered": False}
@@ -508,7 +524,17 @@ def run_live() -> int:
         if transport is None:
             log("[appserver-e2e] FAIL: no valid persisted private/daemon lifecycle state")
             return 4
+        current_app_servers = codex_app_server_listeners()
         log(f"[appserver-e2e] persisted lifecycle transport: {transport}")
+        new_app_servers = [pid for pid in current_app_servers
+                           if pid not in preexisting_app_servers]
+        if transport == "daemon" and new_app_servers:
+            log("[appserver-e2e] FAIL: daemon attach spawned a second app-server "
+                f"listener(s): {new_app_servers}; before={preexisting_app_servers} "
+                f"after={current_app_servers}")
+            return 4
+        log(f"[appserver-e2e] app-server listener identity reused="
+            f"{transport == 'daemon'} before={preexisting_app_servers} after={current_app_servers}")
         registration_snapshot = None
         r = run_c2c(bin_, ["list", "--all", "--json"], cli_env)
         try:

@@ -54,6 +54,10 @@ val hook_fallback_extra_args :
     >= 0.159.0 (the release that auto-starts the managed daemon). *)
 val codex_version_supports_no_daemon : string option -> bool
 
+(** [codex_model_override_args] preserves a [provider:model] selection in the
+    Codex-native config override form used by managed fresh and resume launches. *)
+val codex_model_override_args : string option -> string list
+
 (** Colored lifecycle logs render this label as one unit so c2c ownership is
     explicit while preserving the Codex app-server context. *)
 val app_server_log_label : string
@@ -320,6 +324,9 @@ val app_server_transport_of_instance : instance_dir:string -> string option
 (** Returns [codex-daemon] for a shared Unix-socket attachment and
     [private-loopback] for the isolated authenticated fallback. *)
 
+val app_server_selection_reason_of_instance : instance_dir:string -> string option
+(** Returns the persisted daemon-selection reason for operator diagnostics. *)
+
 (* ------------------------- deliver-loop health ---------------------------- *)
 
 (** [delivery_status_path ~instance_dir] is the JSON file the deliver loop
@@ -499,6 +506,8 @@ val run :
   yolo:bool ->
   extra_args:string list ->
   ?model_override:string ->
+  ?role_pmodel_override:string ->
+  ?binary_override:string ->
   ?backend:C2c_codex_app_server.backend ->
   ?alias_from_auto_gen:bool ->
   fallback:(extra_args:string list -> unit -> int) ->

@@ -1238,16 +1238,16 @@ Key semantics:
   unchanged.
 - **App-server transport (default, no flag).** Managed Codex sessions attach to
   the machine-wide Codex daemon over its private Unix-domain WebSocket when it
-  is available (codex-cli ≥ 0.159); a per-session authenticated loopback
-  app-server is the fallback for older daemon layouts. The launcher arms one
-  sidecar for the exact native Codex thread. If neither app-server path is
-  available, startup falls back automatically to hooks before any routable alias
-  is published, with an actionable diagnostic. Hidden operator escapes are
-  `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` and `C2C_CODEX_FORCE_HOOKS=1`.
-  `c2c dev instances` reports the app-server lifecycle state — `starting` /
+  is available (codex-cli ≥ 0.159). The launcher arms one sidecar for the exact
+  native Codex thread. When the daemon is unavailable, startup uses hooks by
+  default before any routable alias is published, avoiding a second shared-state
+  Codex control plane. The authenticated private loopback app-server requires
+  explicit `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` and an existing isolated
+  `C2C_CODEX_PRIVATE_HOME`. `C2C_CODEX_FORCE_HOOKS=1` forces hooks for
+  diagnostics. `c2c dev instances` reports the app-server lifecycle state —
   `online-attached` / `offline` / `failed-startup` — and the selected
   transport (`app_server_transport=codex-daemon` for the shared Unix socket or
-  `private-loopback` for the isolated fallback). The daemon selection follows
+  `private-loopback` for the explicitly isolated fallback). The daemon selection follows
   `C2C_CODEX_DAEMON_SOCK`, then `CODEX_HOME`, then `$HOME/.codex`, so a daemon
   from another Codex home is never selected accidentally. The same lifecycle
   terminology is used across help, completions, `stop`/`restart`, and `resume`.

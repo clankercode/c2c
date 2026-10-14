@@ -203,6 +203,14 @@ let test_normalize_model_override_for_opencode_accepts_slash_form () =
      | Ok model -> model
      | Error msg -> fail msg)
 
+let test_normalize_model_override_for_codex_preserves_provider () =
+  check string "provider:model preserved for Codex"
+    "opencodex:gpt-6.1-sol"
+    (match C2c_start.normalize_model_override_for_client ~client:"codex"
+             "opencodex:gpt-6.1-sol" with
+     | Ok model -> model
+     | Error msg -> fail msg)
+
 let test_normalize_model_override_for_claude_accepts_plain_model () =
   check string "plain model preserved"
     "claude-sonnet-4-7"
@@ -5783,9 +5791,31 @@ let test_prepare_launch_args_codex_headless_model_flag () =
   check bool "model flag present for codex-headless" true
     (has_adjacent_pair "--model" "codex-gpt-4" args)
 
-(* Kimi Code 0.23+ does not resume c2c-generated session IDs, so
-   KimiAdapter never emits --session.  An explicit resume_session_id only
-   suppresses re-kickoff; the argv must stay free of --session. *)
+let test_prepare_launch_args_codex_provider_model_flags () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"cx-provider-test" ~client:"codex"
+      ~extra_args:[] ~broker_root:"/tmp/broker"
+      ~model_override:"opencodex:gpt-6.1-sol" ()
+  in
+  check bool "Codex hook fallback keeps provider" true
+    (has_adjacent_pair "-c" "model_provider=opencodex" args
+     && has_adjacent_pair "-c" "model=gpt-6.1-sol" args)
+
+let test_prepare_launch_args_codex_provider_model_passthrough () =
+  with_temp_dir @@ fun dir ->
+  with_cwd dir @@ fun () ->
+  let args =
+    C2c_start.prepare_launch_args ~name:"cx-provider-passthrough"
+      ~client:"codex" ~extra_args:[ "--model"; "opencodex:gpt-6.1-sol" ]
+      ~broker_root:"/tmp/broker" ()
+  in
+  check bool "Codex passthrough keeps provider" true
+    (has_adjacent_pair "-c" "model_provider=opencodex" args
+     && has_adjacent_pair "-c" "model=gpt-6.1-sol" args)
+
+
 
 let test_prepare_launch_args_kimi_never_passes_session_flag () =
   with_temp_dir @@ fun dir ->
@@ -7844,6 +7874,8 @@ let () =
             `Quick, test_normalize_model_override_for_opencode_rewrites_provider_model )
         ; ( "normalize_model_override_for_opencode_accepts_slash_form",
             `Quick, test_normalize_model_override_for_opencode_accepts_slash_form )
+        ; ( "normalize_model_override_for_codex_preserves_provider",
+            `Quick, test_normalize_model_override_for_codex_preserves_provider )
         ; ( "normalize_model_override_for_claude_accepts_plain_model",
             `Quick, test_normalize_model_override_for_claude_accepts_plain_model )
         ; ( "normalize_model_override_for_claude_discards_provider_prefix",
@@ -8017,6 +8049,10 @@ let () =
             `Quick, test_strip_start_extra_argv_prefix_empty_cases_b129 )
         ; ( "prepare_launch_args_adds_model_flag_for_opencode",
             `Quick, test_prepare_launch_args_adds_model_flag_for_opencode )
+        ; ( "prepare_launch_args_codex_provider_model_flags",
+            `Quick, test_prepare_launch_args_codex_provider_model_flags )
+        ; ( "prepare_launch_args_codex_provider_model_passthrough",
+            `Quick, test_prepare_launch_args_codex_provider_model_passthrough )
         ; ( "prepare_launch_args_codex_headless_model_flag",
             `Quick, test_prepare_launch_args_codex_headless_model_flag )
         ; ( "prepare_launch_args_kimi_omits_unsupported_flags",

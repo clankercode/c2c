@@ -154,6 +154,8 @@ type config = {
   min_codex_version : int * int * int;
   extra_server_args : string list;
   extra_frontend_args : string list;
+  (** Non-secret environment overrides shared by both Codex children. *)
+  codex_env : string list;
   (** Non-secret environment overrides for the remote frontend only.  They are
       not passed to the app-server process. *)
   frontend_env : string list;

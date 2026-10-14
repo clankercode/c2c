@@ -188,6 +188,14 @@ let test_app_server_lifecycle_phase_bodies () =
   Alcotest.(check bool) "handoff line has label+ts" true
     (has_prefix S.app_server_log_label (fmt handoff))
 
+let test_codex_model_override_preserves_provider () =
+  Alcotest.(check (list string)) "OpenCodex provider and model are both retained"
+    [ "-c"; "model_provider=opencodex"; "-c"; "model=gpt-6.1-sol" ]
+    (S.codex_model_override_args (Some "opencodex:gpt-6.1-sol"));
+  Alcotest.(check (list string)) "bare model keeps legacy model flag"
+    [ "--model"; "gpt-6.1-sol" ]
+    (S.codex_model_override_args (Some "gpt-6.1-sol"))
+
 let test_app_server_frontend_identity_env () =
   let env =
     S.app_server_frontend_env ~session_id:"managed-codex-session"
@@ -208,7 +216,7 @@ let test_daemon_frontend_keeps_app_server_proof_gate () =
     "daemon frontend keeps generic registration proof-gated"
     [ "C2C_MCP_SESSION_ID=managed-codex-session"
     ; "C2C_MCP_AUTO_REGISTER_ALIAS=codex-stack-digit-ca73"
-    ; "C2C_CODEX_APPSERVER_SESSION=managed-codex-session"
+    ; "C2C_CODEX_APPSERVER_SESSION="
     ; "C2C_CODEX_MANAGED=1"
     ; "C2C_CODEX_INSTANCE_NAME=codex-instance" ] env
 
@@ -2628,7 +2636,9 @@ let () =
     ; ( "status",
         [ test_case "mapping" `Quick test_status_mapping
         ; test_case "daemon attachment status is generation-bound" `Quick
-            test_daemon_attachment_status_is_generation_bound ] )
+            test_daemon_attachment_status_is_generation_bound
+        ; test_case "Codex provider override is preserved" `Quick
+            test_codex_model_override_preserves_provider ] )
     ; ( "mapping",
         [ test_case "roundtrip" `Quick test_mapping_roundtrip
         ; test_case "write failure is reported" `Quick test_mapping_write_failure_is_reported

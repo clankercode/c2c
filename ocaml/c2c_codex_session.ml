@@ -86,6 +86,61 @@ let hook_fallback_extra_args ~(yolo : bool) ~(extra : string list)
     base @ [ "--no-daemon" ]
   else base
 
+let codex_binary () =
+  match Sys.getenv_opt "C2C_CODEX_BIN" with
+  | Some b when String.trim b <> "" -> String.trim b
+  | _ ->
+      (match C2c_start.repo_config_default_binary "codex" with
+       | Some b when String.trim b <> "" -> String.trim b
+       | _ -> "codex")
+
+let effective_codex_binary (binary_override : string option) : string =
+  match binary_override with
+  | Some binary when String.trim binary <> "" -> String.trim binary
+  | _ -> codex_binary ()
+
+let live_codex_version ?binary_override () : string option =
+  try
+    match (C2c_codex_app_server.real_backend ()).codex_version
+            (effective_codex_binary binary_override) with
+    | Ok version -> Some version
+    | Error _ -> None
+  with _ -> None
+
+let hook_fallback_extra_args_for_live_codex ?binary_override
+    ~(yolo : bool) ~(extra : string list) =
+  hook_fallback_extra_args ~yolo ~extra
+    ~codex_version:(live_codex_version ?binary_override ())
+
+let codex_model_override_args = function
+  | None -> []
+  | Some raw ->
+      (match C2c_start.parse_pmodel raw with
+       | Ok p -> [ "-c"; "model_provider=" ^ p.provider; "-c"; "model=" ^ p.model ]
+       | Error _ -> [ "--model"; raw ])
+
+let codex_passthrough_args args =
+  let rec loop acc = function
+    | flag :: value :: rest when flag = "--model" || flag = "-m" ->
+        (match C2c_start.parse_pmodel value with
+         | Ok p ->
+             loop (List.rev_append
+                     [ "-c"; "model_provider=" ^ p.provider;
+                       "-c"; "model=" ^ p.model ] acc) rest
+         | Error _ -> loop (value :: flag :: acc) rest)
+    | flag :: rest when String.starts_with ~prefix:"--model=" flag ->
+        let value = String.sub flag 8 (String.length flag - 8) in
+        (match C2c_start.parse_pmodel value with
+         | Ok p ->
+             loop (List.rev_append
+                     [ "-c"; "model_provider=" ^ p.provider;
+                       "-c"; "model=" ^ p.model ] acc) rest
+         | Error _ -> loop (flag :: acc) rest)
+    | item :: rest -> loop (item :: acc) rest
+    | [] -> List.rev acc
+  in
+  loop [] args
+
 let app_server_log_label = "[c2c codex app-server]"
 
 (* B176: local wall-clock HH:MM:SS for every [c2c codex app-server] line. Pure
@@ -150,7 +205,7 @@ let app_server_frontend_env ~session_id ~alias =
 let daemon_frontend_env ~session_id ~alias ~instance_name =
   [ "C2C_MCP_SESSION_ID=" ^ session_id
   ; "C2C_MCP_AUTO_REGISTER_ALIAS=" ^ alias
-  ; "C2C_CODEX_APPSERVER_SESSION=" ^ session_id
+  ; "C2C_CODEX_APPSERVER_SESSION="
   ; "C2C_CODEX_MANAGED=1"
   ; "C2C_CODEX_INSTANCE_NAME=" ^ instance_name ]
 
@@ -194,31 +249,60 @@ let daemon_attach_safe_to_start ~socket_available ~pidfd_available
     ~pid_generation_available =
   socket_available && pidfd_available && pid_generation_available
 
-let daemon_attach_available () =
-  if daemon_attach_forced_off () then false
+(* Keep the daemon decision explainable.  The boolean is used for control flow;
+   the reason is persisted with the instance so an operator can tell why a
+   private app-server was selected after the process has exited. *)
+let daemon_attach_selection () : bool * string =
+  if daemon_attach_forced_off () then (false, "forced-private")
   else
-    let socket_available =
+    let socket_state =
       match C2c_codex_daemon_sidecar.default_control_socket () with
-      | None -> false
+      | None -> `Missing
       | Some path ->
           (match C2c_codex_daemon_sidecar.unix_endpoint path with
-           | None -> false
+           | None -> `Missing
            | Some ep ->
-               try
-                 let fd = C2c_codex_transport.ws_connect ep ~token:"" ~timeout:2.0 in
-                 (try Unix.close fd with _ -> ());
-                 true
-               with _ -> false)
+               if C2c_codex_daemon_sidecar.socket_available ep.host
+               then `Reachable
+               else `Unreachable)
     in
-    (* The daemon path starts a detached remote frontend and later relies on
-       owner-bound cleanup. Refuse that path before the frontend is spawned
-       unless this launcher has both an exact process generation and pidfd
-       signalling. The private app-server path below remains the safe fallback. *)
-    daemon_attach_safe_to_start ~socket_available
-      ~pidfd_available:(C2c_pid_identity.pidfd_supported ())
-      ~pid_generation_available:
-        (Option.is_some
-           (C2c_mcp.Broker.read_pid_start_time (Unix.getpid ())))
+    match socket_state with
+    | `Missing -> (false, "daemon-socket-unavailable")
+    | `Unreachable -> (false, "daemon-socket-unreachable")
+    | `Reachable when not (C2c_pid_identity.pidfd_supported ()) ->
+        (false, "daemon-owner-safety-unavailable")
+    | `Reachable
+      when Option.is_none
+             (C2c_mcp.Broker.read_pid_start_time (Unix.getpid ())) ->
+        (false, "launcher-generation-unavailable")
+    | `Reachable -> (true, "same-codex-home-daemon")
+
+let daemon_attach_available () = fst (daemon_attach_selection ())
+
+let app_server_selection_path ~(instance_dir : string) =
+    instance_dir // "codex-app-server-selection.json"
+
+let write_app_server_selection ~(instance_dir : string) ~(transport : string)
+    ~(reason : string) : unit =
+  try
+    if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir;
+    let json =
+      `Assoc [ ("transport", `String transport); ("reason", `String reason);
+               ("updated_at", `Float (Unix.gettimeofday ())) ]
+    in
+    ignore
+      (C2c_io.write_file_atomic ~perm:0o600
+         (app_server_selection_path ~instance_dir)
+         (Yojson.Safe.to_string json ^ "\n"))
+  with _ -> ()
+
+let app_server_selection_reason_of_instance ~(instance_dir : string) : string option =
+  match C2c_io.read_json_opt (app_server_selection_path ~instance_dir) with
+  | Some (`Assoc fields) ->
+      (match List.assoc_opt "reason" fields with
+       | Some (`String reason) -> Some reason
+       | _ -> None)
+  | _ -> None
 
 let child_env extra =
   let key kv =
@@ -230,6 +314,54 @@ let child_env extra =
     |> List.filter (fun kv -> not (List.mem (key kv) overridden))
   in
   Array.of_list (inherited @ extra)
+
+let private_home_is_safe ~(shared_home : string option) ~(private_home : string) : bool =
+  try
+    let private_home = Unix.realpath (String.trim private_home) in
+    let distinct =
+      match shared_home with
+      | Some shared -> Unix.realpath (String.trim shared) <> private_home
+      | None -> true
+    in
+    let mode = (Unix.stat private_home).Unix.st_perm in
+    distinct && mode land 0o077 = 0
+  with _ -> false
+
+let private_codex_home () : string option =
+  let canonical path =
+    try Some (Unix.realpath (String.trim path)) with _ -> None
+  in
+  let shared_home =
+    match Sys.getenv_opt "CODEX_HOME" with
+    | Some home when String.trim home <> "" -> canonical home
+    | _ ->
+        (match Sys.getenv_opt "HOME" with
+         | Some home -> canonical (Filename.concat home ".codex")
+         | None -> None)
+  in
+  match Sys.getenv_opt "C2C_CODEX_PRIVATE_HOME" with
+  | Some home when String.trim home <> "" ->
+      let home = String.trim home in
+      if not (Sys.file_exists home && Sys.is_directory home) then None
+      else if not (private_home_is_safe ~shared_home ~private_home:home) then None
+      else
+        (match canonical home with
+         | Some private_home -> Some private_home
+         | None -> None)
+  | _ -> None
+
+let codex_home_env () : string list =
+  let home =
+    match private_codex_home () with
+    | Some home -> Some home
+    | None -> Sys.getenv_opt "CODEX_HOME"
+  in
+  match home with
+  | Some home when String.trim home <> "" -> [ "CODEX_HOME=" ^ String.trim home ]
+  | _ -> []
+
+let private_frontend_env ~session_id ~alias =
+  codex_home_env () @ app_server_frontend_env ~session_id ~alias
 
 (* [spawn_frontend_process] learns the real frontend PID only after [fork].
    Publish that PID into the child environment immediately before [exec], so
@@ -764,7 +896,7 @@ let status_of_instance ~(instance_dir : string) : status option =
             | Starting | Online_attached ->
                 let alive = function Some pid -> C2c_codex_app_server.pid_alive pid | None -> false in
                 if alive p.C2c_codex_app_server.server_pid
-                   || alive p.C2c_codex_app_server.frontend_pid
+                   && alive p.C2c_codex_app_server.frontend_pid
                 then Some st
                 else Some Offline
             | _ -> Some st))
@@ -2362,19 +2494,24 @@ let daemon_attach_generation_matches ~expected_pid ~expected_start_time
   && current_pid = expected_pid && current_start_time = expected_start_time
 
 let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
-    ~model_override ?(alias_from_auto_gen = false) ~instance_dir:_ () : int =
+    ~model_override ?binary_override ?(alias_from_auto_gen = false)
+    ~fallback ~instance_dir:_ () : int =
+  let daemon_attach_fallback () =
+    fallback ~extra_args:(hook_fallback_extra_args_for_live_codex
+                            ?binary_override ~yolo ~extra:extra_args) ()
+  in
   let lifecycle_lock =
     C2c_start.acquire_instance_lock_for_daemon_attach ~name
   in
   let result = try
     if not
          (C2c_start.recover_codex_daemon_attach_state ~name ~session_id)
-    then 1
+    then daemon_attach_fallback ()
     else match C2c_codex_daemon_sidecar.default_control_socket () with
-  | None -> 1
+  | None -> daemon_attach_fallback ()
   | Some sock ->
       (match C2c_codex_daemon_sidecar.unix_endpoint sock with
-       | None -> 1
+       | None -> daemon_attach_fallback ()
        | Some ep ->
            (* A bare Codex [--remote] TUI starts a fresh native thread when it
               receives an empty prompt. Starting that thread through the
@@ -2402,21 +2539,19 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
            in
            let frontend_extra = drop_options extra_args in
            let remote = C2c_codex_app_server.endpoint_uri ep in
-           let bin =
-             match Sys.getenv_opt "C2C_CODEX_BIN" with
-             | Some b when String.trim b <> "" -> String.trim b
-             | _ -> "codex"
-           in
-           let model_args =
-             match model_override with
-             | Some m when String.trim m <> "" -> [ "--model"; m ]
-             | _ -> []
-           in
+           let bin = effective_codex_binary binary_override in
            let fresh_frontend_extra =
-             frontend_extra_args ~yolo ~extra:(model_args @ extra_args)
+             frontend_extra_args ~yolo
+               ~extra:(codex_model_override_args model_override
+                       @ codex_passthrough_args extra_args)
            in
-           let frontend_extra = if fresh then fresh_frontend_extra else frontend_extra in
-             let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
+           let frontend_extra =
+             if fresh then fresh_frontend_extra
+             else frontend_extra
+                  @ codex_model_override_args model_override
+                  @ codex_passthrough_args extra_args
+           in
+           let cwd = try Unix.realpath (Sys.getcwd ()) with _ -> Sys.getcwd () in
              let loaded_before_result =
                C2c_codex_ingress.real_loaded_threads_result ~endpoint:ep ~token:""
              in
@@ -2426,7 +2561,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                   (Printf.sprintf
                      "daemon attach failed: authenticated loaded-thread baseline unavailable: %s"
                      reason);
-                1
+                daemon_attach_fallback ()
             | C2c_codex_ingress.Loaded_threads loaded_before -> begin
            let argv_list =
              let cmd =
@@ -2664,6 +2799,9 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                end
              end
            in
+           let cleanup_then_fallback () =
+             if cleanup () then daemon_attach_fallback () else 1
+           in
            let prev_term = Sys.signal Sys.sigterm (Sys.Signal_handle (fun _ ->
                if cleanup () then exit 0 else ())) in
            let prev_int = Sys.signal Sys.sigint (Sys.Signal_handle (fun _ ->
@@ -2752,7 +2890,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                          "daemon attach failed: remote TUI did not prove ownership of a \
                           loaded workspace thread (c2c-alias=%s)" alias);
                     ignore (cleanup ());
-                    1
+                    daemon_attach_fallback ()
                 | Some tid ->
                     let persisted =
                       persist_discovered_thread
@@ -2766,8 +2904,7 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                         (Printf.sprintf
                            "daemon attach failed: durable thread ownership could not be persisted (c2c-alias=%s)"
                            alias);
-                      ignore (cleanup ());
-                      1
+                      cleanup_then_fallback ()
                     end else
                     let registration_ok =
                       try
@@ -2901,6 +3038,8 @@ let private_cleanup_confirmed ~instance_dir ~unit_id ~before =
 let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     ~(thread_id : string option) ~(yolo : bool) ~(extra_args : string list)
     ?(model_override : string option)
+    ?(role_pmodel_override : string option)
+    ?(binary_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ?(alias_from_auto_gen = false)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
@@ -2911,15 +3050,29 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     | Ok r -> (r.r_name, r.r_session_id, r.r_alias, r.r_thread_id)
     | Error msg -> Printf.eprintf "%serror:%s %s\n%!" (red ()) (reset ()) msg; exit 1
   in
-  (* #34 review (fix 1): [resolve_identity] only guards a saved codex mapping
-     ([lookup]) and a managed-instance config ([config_exists]). It is blind to a
-     plain broker registry row — i.e. every MCP-registered vanilla Claude Code /
-     hook-codex / relay peer, which is the common case. Without this precheck,
-     `c2c start codex -n <live-peer-alias>` sails through and the refusal only
-     lands inside [C2c_mcp.Broker.register] far below, AFTER write_config, the
-     outer pidfile, the app-server and the TUI spawn — leaving an orphaned codex
-     frontend with no broker row and a poisoned instance dir. Refuse here, before
-     any side effect, while the terminal is still ours. *)
+  let binary_override =
+    match binary_override, mode with
+    | Some _, _ -> binary_override
+    | None, New -> None
+    | None, (Start | Resume _) ->
+        (match C2c_start.load_config_opt name with
+         | Some cfg -> cfg.C2c_start.binary_override
+         | None -> None)
+  in
+  let model_override =
+    C2c_start.resolve_model_override
+      ~model_override ~role_pmodel_override
+      ~saved_model_override:(
+        match mode with
+        | New -> None
+        | Start | Resume _ ->
+            (match C2c_start.load_config_opt name with
+             | Some cfg -> cfg.C2c_start.model_override
+             | None -> None))
+  in
+  (* #34 review (fix 1): [resolve_identity] only guards [lookup] and saved
+     managed-instance config. The registry check below rejects a live plain peer
+     before any Codex child or lifecycle state is created. *)
   (match (try Some (C2c_start.broker_root ()) with _ -> None) with
    | Some root when String.trim root <> "" ->
        C2c_start.check_registry_alias_alive ~broker_root:root ~name:alias
@@ -2954,9 +3107,24 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     end
   in
   let instance_dir = C2c_start.instance_dir name in
-  let daemon_selected =
-    backend = None && daemon_attach_available ()
+  let daemon_selected, daemon_selection_reason =
+    if backend = None then daemon_attach_selection ()
+    else (false, "injected-backend")
   in
+  let private_selected =
+    Option.is_some backend || daemon_attach_forced_off ()
+  in
+  let private_requested = daemon_attach_forced_off () in
+  if private_requested && Option.is_none (private_codex_home ()) then begin
+    Printf.eprintf
+      "c2c codex: C2C_CODEX_FORCE_PRIVATE_APPSERVER=1 requires an existing isolated C2C_CODEX_PRIVATE_HOME; refusing shared Codex state\n%!";
+    1
+  end else
+  let hooks_selected = not daemon_selected && not private_selected in
+  write_app_server_selection ~instance_dir
+    ~transport:(if daemon_selected then "codex-daemon"
+                else if private_selected then "private-loopback" else "hooks")
+    ~reason:daemon_selection_reason;
   (* Private app-server lifecycle files share the same stable instance lock as
      daemon attach.  Acquire it before creating the instance directory or
      touching any resume/cleanup state, and hold it through startup and the
@@ -2973,27 +3141,29 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
      private-server path so hermetic tests do not touch the live daemon. *)
   if daemon_selected then
     run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
-      ~model_override ~alias_from_auto_gen ~instance_dir ()
+      ~model_override ?binary_override ~alias_from_auto_gen ~fallback ~instance_dir ()
+  else if hooks_selected then
+    fallback ~extra_args:(hook_fallback_extra_args_for_live_codex
+                            ?binary_override ~yolo ~extra:extra_args) ()
   else begin
   (match discarded_thread with
    | Some dead_thread ->
        clear_unpersisted_resume_target ~name ~instance_dir ~thread_id:dead_thread
    | None -> ());
   if yolo then Printf.eprintf "%s%s%s\n%!" (yellow ()) yolo_warning (reset ());
-  let model_args =
-    match model_override with
-    | Some m when String.trim m <> "" -> [ "--model"; m ]
-    | _ -> []
-  in
   let cfg =
     let base = C2c_codex_app_server.default_config
                  ~instance_name:name ~instance_dir ~cwd:(Sys.getcwd ()) in
     { base with
       C2c_codex_app_server.alias = Some alias;
+      codex_bin = effective_codex_binary binary_override;
       min_codex_version = codex_min_version;
       extra_frontend_args =
-        frontend_extra_args ~yolo ~extra:(model_args @ extra_args);
-      frontend_env = app_server_frontend_env ~session_id ~alias;
+        frontend_extra_args ~yolo
+          ~extra:(codex_model_override_args model_override
+                  @ codex_passthrough_args extra_args);
+      codex_env = codex_home_env ();
+      frontend_env = codex_home_env () @ app_server_frontend_env ~session_id ~alias;
       resume_thread = thread;
       (* B176: progressive lifecycle feedback during (possibly slow) start.
          Bodies are pure helpers; emit_app_server_log stamps [HH:MM:SS] + paints
@@ -3023,16 +3193,19 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     | None -> C2c_codex_app_server.start cfg
   in
   let private_result = try match start cfg with
-  | Error diag ->
+    | Error diag ->
       (* No routable identity was persisted (start failed before Running), so
          nothing to clean up here. Best-effort remove the empty instance dir we
          created above so a fallback launch doesn't inherit a stray dir. *)
       (try if Sys.readdir instance_dir = [||] then Unix.rmdir instance_dir with _ -> ());
       report_diagnostic diag;
-      (* Graceful fallback to the hook-backed launch (AC7). Do NOT forward
-         session identity; the hook path owns its own alias handling. *)
-      fallback ~extra_args:(hook_fallback_extra_args ~yolo ~extra:extra_args
-                              ~codex_version:diag.C2c_codex_app_server.codex_version) ()
+      if daemon_selection_reason = "forced-private" then begin
+        Printf.eprintf
+          "c2c codex: explicit private app-server startup failed; refusing to launch a shared-state hook fallback\n%!";
+        1
+      end else
+        fallback ~extra_args:(hook_fallback_extra_args ~yolo ~extra:extra_args
+                                ~codex_version:diag.C2c_codex_app_server.codex_version) ()
   | Ok handle ->
       (* B153: app-server launchers are first-class managed instances. Persist
          the same config/pid surfaces used by instances/restart, but keep the
@@ -3160,10 +3333,8 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
         | Some executable, Some exact_thread ->
             let argv =
               let passthrough =
-                (match model_override with
-                 | Some m when String.trim m <> "" -> [ "--model"; m ]
-                 | _ -> [])
-                @ extra_args
+                (codex_model_override_args model_override
+                 @ codex_passthrough_args extra_args)
               in
               Array.of_list
                 ([ executable; "resume"; "codex"; alias;
@@ -3185,7 +3356,7 @@ let run_app_server ~(mode : launch_mode) ~(alias_override : string option)
     raise e
   in
   C2c_start.release_instance_lock_for_daemon_attach ~name private_lifecycle_lock;
-  private_result
+      private_result
   end
 
 (* The emergency hook-backed route bypasses [run_app_server], but it is still a
@@ -3231,6 +3402,8 @@ let preflight_hook_fallback_resume_target ~(mode : launch_mode)
 let run ~(mode : launch_mode) ?(alias_override : string option)
     ?(thread_id : string option) ~(yolo : bool)
     ~(extra_args : string list) ?(model_override : string option)
+    ?(role_pmodel_override : string option)
+    ?(binary_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ?(alias_from_auto_gen = false)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
@@ -3292,8 +3465,9 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     if force_hooks then begin
       if backend = None then
         preflight_hook_fallback_resume_target ~mode ~alias_override;
-      fallback ~extra_args:(frontend_extra_args ~yolo ~extra:extra_args) ()
+      fallback ~extra_args:(hook_fallback_extra_args_for_live_codex
+                              ?binary_override ~yolo ~extra:extra_args) ()
     end
     else
       run_app_server ~mode ~alias_override ~thread_id ~yolo ~extra_args
-        ?model_override ?backend ~alias_from_auto_gen ~fallback ()
+        ?model_override ?binary_override ?backend ~alias_from_auto_gen ~fallback ()

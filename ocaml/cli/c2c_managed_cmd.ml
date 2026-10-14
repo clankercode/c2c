@@ -768,6 +768,8 @@ let start_cmd =
             ~alias_override:codex_alias_override
             ~thread_id:thread_id_flag ~yolo:yolo_flag
             ?model_override ~extra_args:extra_argv
+            ?role_pmodel_override
+            ?binary_override:bin_opt
             ~alias_from_auto_gen
             ~fallback:cmd_start_with ())
   else begin

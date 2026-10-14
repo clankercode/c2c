@@ -65,11 +65,12 @@ cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-
 Managed sessions (`c2c start codex`, `c2c new codex`, and resume) choose the
 transport in this order. On codex-cli >= 0.159, c2c prefers the machine-wide
 same-UID daemon when its private socket and owner/cleanup proof are available.
-If the daemon is not selected, codex-cli >= 0.144 uses the authenticated
-per-session loopback app-server. If that private app-server is unsupported or
-fails to start, c2c falls back to hooks. `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1`
-selects the private app-server directly; `C2C_CODEX_FORCE_HOOKS=1` selects
-hooks directly.
+If the daemon is not selected, c2c uses installed hooks by default and does not
+start another shared-state app-server. Codex ≥ 0.144 supports the authenticated
+per-session loopback server only through the explicit isolated
+`C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` mode with an existing
+`C2C_CODEX_PRIVATE_HOME`. If that private mode fails, c2c refuses the shared-state
+hook fallback. `C2C_CODEX_FORCE_HOOKS=1` selects hooks directly.
 
 Both app-server paths inject inbound mail into the thread's model-visible
 history on arrival without touching a typed draft, plus one gated auto-turn for

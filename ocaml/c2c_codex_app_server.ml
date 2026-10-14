@@ -658,6 +658,8 @@ type config = {
   min_codex_version : int * int * int;
   extra_server_args : string list;
   extra_frontend_args : string list;
+  (* Non-secret environment overrides shared by both Codex children. *)
+  codex_env : string list;
   (* Non-secret, launcher-owned identity/context variables intended only for
      the remote Codex frontend.  Keep these out of the app-server process: the
      server needs only its capability-token hash. *)
@@ -685,7 +687,8 @@ let default_config ~instance_name ~instance_dir ~cwd =
     cwd; codex_bin = "codex"; instance_name; alias = None; instance_dir;
     readiness_timeout_s = readiness_timeout_from_env ();
     reap_timeout_s = 5.0; min_codex_version = (0, 144, 0);
-    extra_server_args = []; extra_frontend_args = []; frontend_env = [];
+    extra_server_args = []; extra_frontend_args = []; codex_env = [];
+    frontend_env = [];
     resume_thread = None;
     lifecycle_log = (fun _ -> ());
   }
@@ -931,7 +934,16 @@ let build_frontend_env ~(extra_env : string list) ~(token_env_var : string) ~(ra
   in
   Array.of_list (inherited @ overrides)
 
-let build_server_env () : string array = Unix.environment ()
+let build_server_env ~(codex_env : string list) : string array =
+  let key kv =
+    match String.index_opt kv '=' with Some i -> String.sub kv 0 i | None -> kv
+  in
+  let overridden = List.map key codex_env in
+  let inherited =
+    Unix.environment () |> Array.to_list
+    |> List.filter (fun kv -> not (List.mem (key kv) overridden))
+  in
+  Array.of_list (inherited @ codex_env)
 
 (* --------------------------------------------------------------------------- *)
 (* Cleanup helpers                                                             *)
@@ -1083,7 +1095,7 @@ let start ?(backend = real_backend ()) (cfg : config) : (handle, diagnostic) res
                   (* B176 phase 1: feedback before a potentially slow spawn/ready. *)
                   emit_lifecycle cfg Launching;
                   let server_argv = build_server_argv cfg ep ~sha256 in
-                  let server_env = build_server_env () in
+                  let server_env = build_server_env ~codex_env:cfg.codex_env in
                   let log_path = persisted_path ~instance_dir:cfg.instance_dir ^ ".appserver.log" in
                   match bk.spawn_server ~argv:server_argv ~env:server_env ~log_path with
                   | Error e -> fail Server_spawn_failed (Printf.sprintf "app-server spawn failed: %s" e)
