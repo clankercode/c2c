@@ -166,6 +166,16 @@ let muse_settings_path () = muse_config_dir () // "settings.json"
    verified live — so the skill is a plain owned file, not a CLI receipt. *)
 let muse_skill_dir () = muse_config_dir () // "skills" // "c2c"
 
+(* P1-3: room auto-join list for the hook path. Muse scrubs C2C_* from
+   hook env (B358), so the C2C_MCP_AUTO_JOIN_ROOMS value install puts in
+   the MCP entry can never reach `c2c hook muse`; this file mirrors it
+   in a place hooks can read. One comma-separated list; an EMPTY file
+   is the operator opt-out (join nothing). Install writes it only when
+   absent so operator edits (including the empty opt-out) survive
+   reinstall; deleting it restores the product default. *)
+let muse_auto_join_rooms_path () =
+  muse_config_dir () // "c2c-auto-join-rooms"
+
 let write_muse_skill ~output_mode ~dry_run () =
   write_c2c_skill ~content:C2c_muse_skill_embedded.content
     ~skill_dir:(muse_skill_dir ()) ~output_mode ~dry_run ()
@@ -2910,6 +2920,28 @@ let setup_muse ~with_mcp ~output_mode ~dry_run ~root ~alias_val ~server_path ~mc
       ; C2c_install_manifest.owned_file bundle_dir
       ]
   in
+  (* P1-3: hook-readable auto-join room list mirroring the MCP env value
+     (hooks never see C2C_* env). Write-if-absent: operator edits —
+     empty file = join nothing — survive reinstall. *)
+  let auto_join_path = muse_auto_join_rooms_path () in
+  if dry_run then
+    Printf.printf "[DRY-RUN] would write muse auto-join rooms to %s (if absent)\n%!"
+      auto_join_path
+  else if not (Sys.file_exists auto_join_path) then begin
+    C2c_io.mkdir_p_dryrun false (Filename.dirname auto_join_path);
+    match C2c_io.write_file_atomic auto_join_path (default_social_room () ^ "\n") with
+    | Ok () -> ()
+    | Error e -> (
+        match output_mode with
+        | Human ->
+            Printf.eprintf
+              "[c2c WARNING] Could not write muse auto-join rooms to %s: %s\n%!"
+              auto_join_path e
+        | Json -> ())
+  end;
+  let artifacts =
+    artifacts @ [ C2c_install_manifest.owned_file auto_join_path ]
+  in
   (* Hooks: plugin-first with settings fallback. Any plugin-path failure
      (gated build, missing binary, install/approve error) falls back to the
      settings.json hooks map with a loud warning — a working fallback beats
@@ -3273,7 +3305,10 @@ let do_install_client ?(channel_delivery=false) ?(global=false) ?(deliver_watch=
      the machine-global default-alias clobbers other clients' monitor fallback
      and previously caused Grok hook registrations to adopt codex- aliases.
      Skip for Muse too (B354 B173 analogue, recorded in the ticket): muse is
-     likewise multi-session CLI-first, so the same clobber applies. *)
+     likewise multi-session CLI-first, so the same clobber applies at install
+     time, where alias_val may be auto-picked and unregistered. Muse instead
+     gets the file from its SessionStart hook once a hook-registered/managed
+     alias is unambiguous (T3, [C2c_cli_helpers.write_default_alias_if_unambiguous]). *)
   if (not dry_run) && not (List.mem client [ "grok"; "muse" ]) then
     (try
        let config_dir = (try Sys.getenv "HOME" with Not_found -> "/tmp") // ".config" // "c2c" in
