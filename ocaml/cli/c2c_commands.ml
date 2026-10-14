@@ -214,9 +214,8 @@ let render_role_for_client ?(model_override : string option) (r : C2c_role.t) ~(
         | None -> None
   in
   let resolved_pmodel = resolve_pmodel r ~class_lookup:pmodel_lookup in
-  match client with
-  | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
-  | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r ~name)
-  | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
-  | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r ~name)
-  | _ -> None
+  (* Delegate the per-client dispatch to [C2c_role.render_for_client]
+     (opened above) so renderer arms exist in exactly one match;
+     [c2c_managed_cmd.render_role_for_client] already delegates the
+     same way with its own pmodel source. *)
+  render_for_client ?resolved_pmodel r ~client ~name

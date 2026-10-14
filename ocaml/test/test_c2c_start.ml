@@ -3320,7 +3320,7 @@ let test_resolve_managed_heartbeats_builtin_baseline () =
         hb.message;
       check (float 0.001) "builtin interval" 240.0 hb.interval_s;
       check (list string) "builtin clients"
-        [ "claude"; "codex"; "opencode"; "kimi"; "pi" ]
+        [ "claude"; "codex"; "opencode"; "kimi"; "pi"; "muse" ]
         hb.clients;
       check bool "builtin enabled" true hb.enabled
   | _ -> fail "expected one resolved default heartbeat"
@@ -6363,6 +6363,122 @@ let test_build_env_muse_strips_ambient_session_id_without_mirror () =
   check bool "managed identity via C2C_MCP_SESSION_ID" true
     (env_contains env "C2C_MCP_SESSION_ID=muse-proof")
 
+(* T4 (muse-parity): muse joins the default heartbeat clients; agy stays
+   out (its identical exclusion is deliberately not ridden along). *)
+let test_muse_in_default_heartbeat_clients () =
+  let clients = C2c_start.builtin_managed_heartbeat.C2c_start.clients in
+  check bool "muse gets the builtin managed heartbeat" true
+    (List.mem "muse" clients);
+  check bool "agy stays out of this change" false (List.mem "agy" clients)
+
+(* T4: a managed muse with NO c2c MCP entry in its settings has no MCP
+   server to run the Lwt schedule timer, so [build_env] must not emit
+   the suppressing C2C_MCP_SCHEDULE_TIMER=1 — the c2c-start schedule
+   watcher fallback owns firing instead. Hermetic: XDG_CONFIG_HOME
+   points at an empty temp dir (no muse/settings.json), and an empty
+   C2C_MCP_SCHEDULE_TIMER counts as absent (no operator override). *)
+let test_build_env_muse_no_mcp_keeps_watcher_path () =
+  with_temp_dir @@ fun config_home ->
+  with_env "XDG_CONFIG_HOME" config_home @@ fun () ->
+  with_env "C2C_MCP_SCHEDULE_TIMER" "" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "muse") "muse-proof" (Some "muse-proof")
+  in
+  check bool "no-MCP muse: timer env is 0 (watcher owns schedules)" true
+    (env_contains env "C2C_MCP_SCHEDULE_TIMER=0");
+  check bool "no-MCP muse: timer env is not the suppressing 1" false
+    (env_contains env "C2C_MCP_SCHEDULE_TIMER=1")
+
+(* T4 (corrected by live probe, muse 1.4.7): even WITH a c2c MCP entry,
+   C2C_MCP_SCHEDULE_TIMER set on the muse process never reaches the MCP
+   grandchild (its env is the literal block + MUSE_SESSION_ID only),
+   and the MCP timer defaults off — so [build_env] must still emit =0
+   and the parent watcher owns firing. Emitting =1 was a no-fire. *)
+let test_build_env_muse_with_mcp_enables_timer () =
+  with_temp_dir @@ fun config_home ->
+  let muse_dir = Filename.concat config_home "muse" in
+  Unix.mkdir muse_dir 0o755;
+  let oc = open_out (Filename.concat muse_dir "settings.json") in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc {|{"mcpServers":{"c2c":{"command":"c2c"}}}|});
+  with_env "XDG_CONFIG_HOME" config_home @@ fun () ->
+  with_env "C2C_MCP_SCHEDULE_TIMER" "" @@ fun () ->
+  let env =
+    C2c_start.build_env ~broker_root_override:(Some "/tmp/c2c-test-broker")
+      ~client:(Some "muse") "muse-proof" (Some "muse-proof")
+  in
+  check bool "with-MCP muse: timer env is 0 (watcher owns; env scrubbed)" true
+    (env_contains env "C2C_MCP_SCHEDULE_TIMER=0");
+  check bool "with-MCP muse: timer env is not the unreachable 1" false
+    (env_contains env "C2C_MCP_SCHEDULE_TIMER=1")
+
+(* T5 unit half: the muse [--agent] gate in c2c_managed_cmd is
+   [render_for_client] returning non-None, and the production kickoff
+   is built from [role.body] (default_kickoff_prompt ~role:role.body),
+   NOT from the rendered string — the render is gate-only for muse,
+   whose delivery surface is the positional kickoff, never a file.
+   The end-to-end half (real `c2c start muse --agent` against a stub
+   binary) is test_start_muse_agent_kickoff_carries_role_body below. *)
+let test_muse_role_render_and_kickoff_carries_role () =
+  let role =
+    C2c_role.parse_string
+      {|---
+description: Muse fixture role
+role: primary
+---
+
+ROLE-BODY-MARKER-muse-5
+|}
+  in
+  (match C2c_role.render_for_client role ~client:"muse" ~name:"muse-fixture-role" with
+   | None -> fail "muse role renders None (--agent would be refused)"
+   | Some _ -> ());
+  check bool "production kickoff input (role.body) carries the marker" true
+    (string_contains role.C2c_role.body "ROLE-BODY-MARKER-muse-5");
+  check bool "muse is renderable (kickoff string) but not file-backed" true
+    (List.mem "muse" C2c_role.renderable_clients
+     && not (List.mem "muse" C2c_role.file_backed_clients))
+
+(* T4: [schedule_timer_enabled_for_instance] is the one decision both
+   [build_env] and the watcher gate read, so true <=> watcher
+   suppressed (MCP timer owns firing) and false <=> watcher runs.
+   Both branches, plus operator-override precedence in each direction. *)
+let test_schedule_timer_decision_muse_branches () =
+  let decision ~config_home ~timer =
+    with_env "XDG_CONFIG_HOME" config_home @@ fun () ->
+    with_env "C2C_MCP_SCHEDULE_TIMER" timer @@ fun () ->
+    C2c_start.schedule_timer_enabled_for_instance ~client:(Some "muse")
+  in
+  with_temp_dir @@ fun empty_config ->
+  with_temp_dir @@ fun mcp_config ->
+  let muse_dir = Filename.concat mcp_config "muse" in
+  Unix.mkdir muse_dir 0o755;
+  let oc = open_out (Filename.concat muse_dir "settings.json") in
+  Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+    output_string oc {|{"mcpServers":{"c2c":{"command":"c2c"}}}|});
+  check bool "no MCP + no override: watcher owns (not suppressed)" false
+    (decision ~config_home:empty_config ~timer:"");
+  check bool "with MCP + no override: watcher still owns (timer env scrubbed)"
+    false (decision ~config_home:mcp_config ~timer:"");
+  check bool "with MCP + operator 0: operator wins, watcher owns" false
+    (decision ~config_home:mcp_config ~timer:"0");
+  check bool "no MCP + operator 1: operator wins, MCP timer owns" true
+    (decision ~config_home:empty_config ~timer:"1");
+  check bool "malformed settings reads as no MCP" false
+    (let bad_dir = Filename.concat empty_config "muse" in
+     Unix.mkdir bad_dir 0o755;
+     let oc = open_out (Filename.concat bad_dir "settings.json") in
+     Fun.protect ~finally:(fun () -> close_out oc) (fun () ->
+       output_string oc "not json");
+     decision ~config_home:empty_config ~timer:"");
+  with_env "C2C_MCP_SCHEDULE_TIMER" "" @@ fun () ->
+  check bool "non-muse client keeps historical MCP-timer assumption" true
+    (C2c_start.schedule_timer_enabled_for_instance ~client:(Some "claude"));
+  check bool "default_heartbeat_clients matches builtin heartbeat" true
+    (C2c_start.default_heartbeat_clients
+     = C2c_start.builtin_managed_heartbeat.C2c_start.clients)
+
 let test_default_restart_timeout_muse_is_default () =
   (* SIGTERM ~2s (B352 P6): no slow-shutdown arm like kimi's 20s. *)
   check (float 0.001) "muse restart timeout is the 5s default" 5.0
@@ -6668,6 +6784,129 @@ let test_start_writes_outer_pair_and_stop_stops () =
         (Sys.file_exists outer_pid_file);
       check bool "outer.pid.start-time removed after stop" false
         (Sys.file_exists pair_path))
+
+(* T5 end-to-end half: the REAL production composition — `c2c start
+   muse --agent <role>` (built binary, stub muse) must place a kickoff
+   carrying the role BODY (default_kickoff_prompt ~role:role.body in
+   c2c_managed_cmd) in the stub's argv. No hand-wired render->kickoff:
+   the only test input is the canonical role file on disk. *)
+let test_start_muse_agent_kickoff_carries_role_body () =
+  with_temp_dir @@ fun dir ->
+  let home = Filename.concat dir "home" in
+  let work = Filename.concat dir "work" in
+  let inst = Filename.concat dir "inst" in
+  List.iter (fun d -> Unix.mkdir d 0o755) [ home; work; inst ];
+  let roles_dir = Filename.concat work ".c2c" in
+  Unix.mkdir roles_dir 0o755;
+  let roles_dir = Filename.concat roles_dir "roles" in
+  Unix.mkdir roles_dir 0o755;
+  write_file (Filename.concat roles_dir "muse-fixture-role.md")
+    "---\ndescription: Muse fixture role\nrole: primary\n---\n\n\
+     ROLE-BODY-MARKER-muse-e2e\n";
+  let argv_path = Filename.concat dir "stub-argv.txt" in
+  let stub = Filename.concat dir "stub-muse.sh" in
+  write_file stub
+    (Printf.sprintf "#!/bin/sh\nprintf '%%s\\n' \"$@\" > %s\nexec sleep 300\n"
+       (Filename.quote argv_path));
+  Unix.chmod stub 0o755;
+  let name = unique_instance_name "zz-muse-agent" in
+  let bin = built_c2c_binary () in
+  if not (Sys.file_exists bin) then
+    fail (Printf.sprintf "expected built CLI at %s — run `dune build` first" bin);
+  let env = b362_spawn_env ~home ~instances_dir:inst in
+  let log_path = Filename.concat dir "start.log" in
+  let kill_quiet pid =
+    (try Unix.kill pid Sys.sigkill with _ -> ());
+    (try ignore (Unix.waitpid [ Unix.WNOHANG ] pid) with _ -> ())
+  in
+  let kill_inner_stub () =
+    match b362_read_int_file (Filename.concat inst (Filename.concat name "inner.pid")) with
+    | None -> ()
+    | Some pid ->
+        let cmdline =
+          try read_all_file (Printf.sprintf "/proc/%d/cmdline" pid)
+          with _ -> ""
+        in
+        if cmdline = "sleep\000300\000" then kill_quiet pid
+  in
+  let kill_outer () =
+    match
+      ( b362_read_int_file (Filename.concat inst (Filename.concat name "outer.pid"))
+      , b362_read_int_file
+          (Filename.concat inst (Filename.concat name "outer.pid.start-time")) )
+    with
+    | Some pid, Some recorded -> (
+        match C2c_pid_identity.read_pid_generation pid with
+        | C2c_pid_identity.Generation g when g = recorded -> kill_quiet pid
+        | _ -> ())
+    | _ -> ()
+  in
+  (* Double-fork daemonize (B362 shape): the outer must not be our child. *)
+  let middleman =
+    with_cwd work (fun () ->
+        match Unix.fork () with
+        | 0 -> (
+            (match Unix.fork () with
+             | 0 ->
+                 ignore (Unix.setsid ());
+                 let null_r = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+                 let log_w =
+                   Unix.openfile log_path
+                     [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_APPEND ] 0o644
+                 in
+                 Unix.dup2 null_r Unix.stdin;
+                 Unix.dup2 log_w Unix.stdout;
+                 Unix.dup2 log_w Unix.stderr;
+                 Unix.close null_r;
+                 Unix.close log_w;
+                 (try
+                    Unix.execvpe bin
+                      [| bin; "start"; "muse"; "-n"; name; "--agent"
+                       ; "muse-fixture-role"; "--bin"; stub |]
+                      env
+                  with _ -> Unix._exit 127)
+             | _worker -> Unix._exit 0
+             | exception _ -> Unix._exit 127))
+        | pid -> pid)
+  in
+  (match Unix.waitpid [] middleman with
+   | _ -> ()
+   | exception Unix.Unix_error _ -> ());
+  Fun.protect
+    ~finally:(fun () ->
+      kill_inner_stub ();
+      kill_outer ())
+    (fun () ->
+      if not (b362_wait_for_file argv_path ~timeout_s:20.0) then begin
+        let log = try read_all_file log_path with _ -> "(unreadable start.log)" in
+        fail (Printf.sprintf "stub argv never appeared for %s\nstart.log:\n%s" name log)
+      end;
+      let argv_dump = read_all_file argv_path in
+      check bool "kickoff argv carries the assigned-role section" true
+        (string_contains argv_dump "Your assigned role:");
+      check bool "kickoff argv carries the role body" true
+        (string_contains argv_dump "ROLE-BODY-MARKER-muse-e2e");
+      let stop_w =
+        Unix.openfile (Filename.concat dir "stop.log")
+          [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o644
+      in
+      let null_r = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+      let _rc =
+        Fun.protect
+          ~finally:(fun () ->
+            Unix.close stop_w;
+            Unix.close null_r)
+          (fun () ->
+            with_cwd work (fun () ->
+                let pid =
+                  Unix.create_process_env bin [| bin; "stop"; name |] env
+                    null_r stop_w stop_w
+                in
+                (match Unix.waitpid [] pid with
+                 | _, Unix.WEXITED n -> n
+                 | _ -> 999)))
+      in
+      ())
 
 (* #489 regression: verify kimi_agent_yaml_path returns a path under
    .kimi-code/agents/<name>/agent.yaml (yaml dir), NOT .kimi-code/agents/<name>.md.
@@ -7563,6 +7802,16 @@ let () =
             `Quick, test_deliver_kickoff_muse_is_noop )
         ; ( "build_env_strips_session_id_without_mirror",
             `Quick, test_build_env_muse_strips_ambient_session_id_without_mirror )
+        ; ( "in_default_heartbeat_clients",
+            `Quick, test_muse_in_default_heartbeat_clients )
+        ; ( "build_env_no_mcp_keeps_watcher_path",
+            `Quick, test_build_env_muse_no_mcp_keeps_watcher_path )
+        ; ( "build_env_with_mcp_enables_timer",
+            `Quick, test_build_env_muse_with_mcp_enables_timer )
+        ; ( "role_render_and_kickoff_carries_role",
+            `Quick, test_muse_role_render_and_kickoff_carries_role )
+        ; ( "schedule_timer_decision_branches",
+            `Quick, test_schedule_timer_decision_muse_branches )
         ; ( "restart_timeout_is_default",
             `Quick, test_default_restart_timeout_muse_is_default )
         ; ( "clients_table_has_muse",
@@ -7573,6 +7822,8 @@ let () =
     ; ( "outer_pair_b362",
         [ ( "start_writes_outer_pair_and_stop_stops",
             `Quick, test_start_writes_outer_pair_and_stop_stops )
+        ; ( "start_muse_agent_kickoff_carries_role_body",
+            `Quick, test_start_muse_agent_kickoff_carries_role_body )
         ; ( "same_instance_lock_serializes_concurrent_attach",
             `Quick, test_same_instance_lock_serializes_concurrent_attach )
         ; ( "daemon_attach_recovers_crashed_outer_generation",

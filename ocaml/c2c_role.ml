@@ -538,13 +538,46 @@ module Kimi_renderer = struct
     String.concat "\n" (List.rev !lines)
 end
 
+module Muse_renderer = struct
+  (* Muse has no agent-file surface c2c may write and muse read back:
+     role delivery is the managed kickoff string (positional [PROMPT]
+     in [prepare_launch_args]). The renderer therefore produces plain
+     prompt text — no YAML frontmatter for a parser that does not
+     exist. Model selection rides [--model] (resolved from the role's
+     pmodel at launch), never this text. *)
+  let render ?resolved_pmodel:_ (r : t) ~(name : string) =
+    let lines = ref [ "# " ^ name ] in
+    (match String.trim r.description with
+     | "" -> ()
+     | d -> lines := d :: !lines);
+    (match String.trim r.role with
+     | "" | "subagent" -> ()
+     | role -> lines := role :: !lines);
+    lines := r.body :: !lines;
+    String.concat "\n\n" (List.rev !lines)
+end
+
 let render_for_client ?resolved_pmodel (r : t) ~(client : string) ~(name : string) : string option =
   match client with
   | "opencode" -> Some (OpenCode_renderer.render ?resolved_pmodel r)
   | "claude" -> Some (Claude_renderer.render ?resolved_pmodel r ~name)
   | "codex" -> Some (Codex_renderer.render ?resolved_pmodel r)
   | "kimi" -> Some (Kimi_renderer.render ?resolved_pmodel r ~name)
+  | "muse" -> Some (Muse_renderer.render ?resolved_pmodel r ~name)
   | _ -> None
+
+(* Every client [render_for_client] supports (string render). *)
+let renderable_clients = [ "opencode"; "claude"; "codex"; "kimi"; "muse" ]
+
+(* Clients whose rendered role is delivered as an agent FILE the host
+   reads back. Muse is deliberately absent: it has no agent-file
+   surface c2c may write (its [client_agent_dir] is the unread
+   .c2c/agents fallback), and role delivery is the managed kickoff
+   string. `c2c roles compile` all-targets dispatch uses THIS list so
+   compile never writes a file muse cannot read, while the muse
+   string renderer stays available as the [--agent] gate. *)
+let file_backed_clients =
+  List.filter (fun c -> c <> "muse") renderable_clients
 
 (* --- Path resolution ------------------------------------------------------- *)
 

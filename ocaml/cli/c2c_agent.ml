@@ -888,7 +888,7 @@ let roles_compile_term =
   in
   let client =
     Cmdliner.Arg.(value & opt (some string) (Some "all") & info [ "client"; "c" ]
-      ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude, codex, kimi, or 'all' for every supported client).")
+      ~docv:"CLIENT" ~doc:"Target client for rendering (opencode, claude, codex, kimi, muse, or 'all' for every file-backed client; muse renders to a kickoff string only, so 'all' writes no muse file).")
   in
   let dry_run =
     Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Print output to stdout instead of writing files.")
@@ -914,7 +914,7 @@ let roles_compile_term =
   Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
   let client_str = Option.value client ~default:"opencode" in
   let targets =
-    if client_str = "all" then ["opencode"; "claude"; "codex"; "kimi"]
+    if client_str = "all" then C2c_role.file_backed_clients
     else [client_str]
   in
   List.iter (fun (name, path) ->
@@ -925,6 +925,12 @@ let roles_compile_term =
         | Some rendered ->
             if dry_run then
               (Printf.printf "=== %s (%s) ===\n%s\n\n" name target rendered; flush stdout)
+            else if not (List.mem target C2c_role.file_backed_clients) then
+              (* Muse renders to a kickoff string only — there is no agent
+                 file it reads back, so compile writes nothing for it. *)
+              Printf.printf
+                "  [roles compile] %s (%s): no agent file (delivered via managed kickoff)\n"
+                name target
             else
                (let out_path = C2c_commands.agent_file_path ~client:target ~name in
                 let dir = Filename.dirname out_path in
@@ -957,7 +963,7 @@ let roles_compile_cmd = Cmdliner.Cmd.v
      ~man:[ `S "DESCRIPTION"
           ; `P "Canonical role files live in $(b,.c2c/roles/). Use $(b,c2c roles compile) to compile them to client-specific agent files (e.g. $(b,.opencode/agents/<name>.md))."
           ; `S "EXAMPLES"
-           ; `P "$(b,c2c roles compile)  — compile all roles for all clients (opencode, claude, codex, kimi)"
+           ; `P "$(b,c2c roles compile)  — compile all roles for all file-backed clients (opencode, claude, codex, kimi; muse is kickoff-delivered, no file)"
            ; `P "$(b,c2c roles compile --client opencode)  — compile all roles for OpenCode only"
            ; `P "$(b,c2c roles compile my-role --client claude)  — compile one role for Claude"
            ; `P "$(b,c2c roles validate)  — check role files for completeness"
@@ -1019,7 +1025,7 @@ let roles_default_term =
   let n_roles = List.length roles in
   let subtitle = if n_roles = 1 then "1 role" else Printf.sprintf "%d roles" n_roles in
   Banner.print_banner ~subtitle:("roles compile  |  " ^ subtitle) "c2c roles";
-  let all_targets = ["opencode"; "claude"; "codex"; "kimi"] in
+  let all_targets = C2c_role.file_backed_clients in
   List.iter (fun (name, path) ->
     try
       let role = C2c_role.parse_file path in
