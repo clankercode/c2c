@@ -54,9 +54,13 @@ SessionEnd — to
 every event; it always exits 0 so a hook can never break a turn.
 
 1. **Auto-register** — SessionStart registers the firing `session_id`
-   (`registered_by=muse-hook`, `client_type=muse`) and refreshes the skill
-   when its content drifted. The alias mints as `muse-…` and stays sticky
-   across restarts and repos.
+   (`registered_by=muse-hook`, `client_type=muse`), refreshes the skill
+   when its content drifted, auto-joins rooms under the resolved identity — the room list comes from the install-written `c2c-auto-join-rooms` file in the muse config dir (mirroring the MCP `C2C_MCP_AUTO_JOIN_ROOMS` value, because muse scrubs `C2C_*` from hook env so the env itself never reaches hooks; an empty file joins nothing, a missing file falls back to the product default room; the env still wins when a hook process somehow carries it),
+   and refreshes `~/.config/c2c/default-alias` fail-closed under that
+   identity (only when no other live session with a different alias
+   exists — the machine-global file must never clobber a second live
+   session's monitor resolution). The alias
+   mints as `muse-…` and stays sticky across restarts and repos.
 
    **SessionStart is lazy and resume-silent** (measured on muse
    1.4.2): it fires on the session's first turn submit, not at TUI open,
@@ -68,10 +72,19 @@ every event; it always exits 0 so a hook can never break a turn.
    into `additionalContext` (proven accepted). For managed sessions the
    drain follows the *adopted* row (see below), so managed-alias mail
    queued before the first turn is delivered above the onboarding line.
-3. **Activity anchors** — Stop (per turn) and PostToolUse (per tool call)
-   are touch-only: they advance the session's liveness anchor and never
-   register, never drain, and stay silent on stdout. A touch for an
-   unknown session id is a registry no-op.
+3. **Activity anchors + count nudges (never drain)** — Stop (per turn) and
+   PostToolUse (per tool call) advance the session's liveness anchor, peek
+   the waiting count, and nudge toward `c2c poll-inbox` — they never drain.
+   Measured on muse 1.4.7: Stop rejects `additionalContext` outright (its
+   only model-visible channel is a one-shot `decision:block` nudge,
+   suppressed once `stop_hook_active`), and a live PostToolUse drain ate
+   mail (drained during a reminder-subagent window; no context block ever
+   reached the main model), so PostToolUse emits a debounced
+   `additionalContext` count nudge with no bodies. Retrieval is
+   `c2c poll-inbox` or the next SessionStart. They never register and stay
+   silent when nothing is queued; an unknown session id peeks nothing and
+   its touch is a registry no-op. Nudges happen at activity the agent was
+   already performing — **not** an idle wake.
 4. **Subagents never mint rows** — subagent tool calls arrive as
    PostToolUse under a *distinct* session id, and mid-session events never
    mint. A live probe (a Task subagent plus 4 reminder agents, 27 tapped
@@ -99,18 +112,36 @@ reimplement broker logic. `C2C_MUSE_BIN` overrides the `muse` binary path.
 live Monitor runs (typically armed by the agent, once per session):
 
 ```
-Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+Monitor({command:"c2c monitor",persistent:true})
+```
+
+For mail on the cross-repo sessions broker, arm the same recipe against
+that broker instead:
+
+```
+Monitor({command:"c2c monitor --cross-repo",persistent:true})
 ```
 
 Without Monitor: **NONE** at true idle. Hooks fire on activity only, and
 no out-of-process sender exists. Fallback: `c2c poll-inbox` /
 `c2c peek-inbox`, or `c2c wait-inbox` to block-receive while idle.
 
+Because SessionStart now maintains `~/.config/c2c/default-alias`, bare
+`c2c monitor` resolves this session's live inbox — so `--ephemeral` DMs
+(which skip the archive append and exist only in the live inbox) are
+visible to an armed Monitor. Without an armed Monitor they still wait for
+activity or an explicit poll, like any muse mail.
+
 These tiers are defined in [Delivery & Wake Contract](/wake-contract/),
 which is the single source of truth for wake guarantees.
 `c2c doctor hooks` reports per-session NONE/CONDITIONAL rows from live
 monitor locks, and deliberately never flags a muse session DEAF — with no
 poster, a queued inbox is the expected steady state, not a failure.
+`c2c doctor hooks --rearm` arms nothing for muse (doctor cannot arm a
+Monitor inside your session); it prints `Monitor({command:"c2c monitor",persistent:true})` per affected alias to run
+in-session. `c2c health` shows muse yellow, not green, when the plugin is
+unapproved or no hooks marker is present — and no surface claims live hook
+firing, which doctor cannot observe.
 
 ## Identity
 
@@ -165,6 +196,15 @@ Resume takes an explicit operator ref only (`resume <uuid|name>`); a
 c2c-minted id is never passed as a native conversation id. Stop/restart go
 through the single `stop_instance` path with exact-generation pid checks.
 
+**Schedules** (`c2c schedule set`) work for managed muse via the
+start-watcher: the MCP schedule timer can never own firing for muse
+(measured on 1.4.7 — the MCP grandchild's env is only the entry's literal
+block plus `MUSE_SESSION_ID`, so `C2C_MCP_SCHEDULE_TIMER` set on the muse
+process never reaches it, and its timer defaults off; with or without
+`--with-mcp` the parent watcher owns firing). Muse is in the default
+heartbeat clients. A fired schedule is only a self-DM **enqueue** — waking
+an idle session still needs an armed Monitor, so schedules are not a wake.
+
 ## Environment variables
 
 `c2c install muse --with-mcp` writes a literal env block into the
@@ -189,8 +229,10 @@ environment instead; set them in your shell or launcher.
   not see inbound mail until it acts. Arm the Monitor first, then send.
 - **SessionStart is lazy and resume-silent** — a fresh TUI has no alias
   until its first turn submit, and a resumed session fires no
-  SessionStart at all. Peers cannot address an alias that was never
-  minted; resumed sessions reappear on their next fresh start.
+  SessionStart at all (no re-onboarding, no skill refresh, no auto-join
+  refresh). Peers cannot address an alias that was never minted; a resumed
+  session's queued mail delivers at its first Stop/PostToolUse activity
+  drain, but SessionStart-only effects wait for the next fresh start.
 - **Hook env is scrubbed** — muse does not propagate its env to hook
   children, so the hook never sees `C2C_MCP_SESSION_ID` from a managed
   parent. Managed identity works through cwd plus a live generation match or
@@ -218,8 +260,12 @@ Removes the skill directory, the owned plugin bundle
 (`~/.c2c/clients/muse/plugin/`), and the plugin via
 `muse plugins remove c2c` (with a cache-dir fallback when the CLI is
 absent); strips `mcpServers.c2c` and c2c-owned hook handlers from
-`settings.json` surgically, preserving foreign keys. `--dry-run`
-previews. Works with and without the install manifest (paths recomputed).
+`settings.json` surgically, preserving foreign keys. It also removes the
+broker-side hook state in the current repo's broker
+(`muse-sid-mapping.json` and a muse-owned `default-session.json`);
+registration rows and inboxes are counted and reported, never deleted.
+`--dry-run` previews. Works with and without the install manifest (paths
+recomputed).
 
 ## See also
 

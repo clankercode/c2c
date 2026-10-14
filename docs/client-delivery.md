@@ -706,9 +706,15 @@ message. Gateway delivery needs a separate path and is unimplemented. See
 
 ## Muse
 
-> **NEW client (2026-10-02, probed at muse 1.4.2).** Monitor-only wake —
-> no out-of-process sender exists. Cross-client DM parity has not been
-> verified live yet.
+> **NEW client (2026-10-02, probed at muse 1.4.2; hook-output shapes
+> re-probed at muse 1.4.7).** Monitor-only wake — no out-of-process
+> sender exists. `scripts/muse-parity-e2e.py` verifies install, hook
+> register/auto-join/default-alias, Stop/PostToolUse peek+nudge (never
+> drain), CLI surface, doctor/health, and uninstall dry-run against the
+> built binary, plus a live-TUI leg (peer DM → model retrieves it via
+> `c2c poll-inbox`, token observed model-visible in the pane). It does
+> not cover Monitor-armed idle delivery, muse→peer sends, room sends,
+> or restart backlog.
 
 `c2c install muse` writes:
 
@@ -744,16 +750,26 @@ a hook can never break a turn):
 - SessionStart is **lazy** (fires on first turn submit, not at TUI open)
   and **resume-silent** (never fires on `resume`) — measured, not assumed.
   It registers the firing `session_id` (`registered_by=muse-hook`,
-  `client_type=muse`), refreshes the skill on drift only, and drains the
-  backlog into `additionalContext` (proven accepted). A resumed session is
-  hook-invisible: no re-onboarding turn.
-- Stop (per turn) and PostToolUse (per tool call) are **touch-only
-  activity anchors** — never register, never drain. A touch for an unknown
-  sid is a registry no-op, which is also the subagent rule: subagent tool
-  calls arrive as PostToolUse under a *distinct* session id, so no
-  subagent row is ever created (live-proven: a Task subagent + 4 reminder
-  agents left zero phantom rows). SessionEnd deregisters hook-owned rows
-  only; Stop is never teardown.
+  `client_type=muse`), refreshes the skill on drift only, auto-joins rooms under the resolved identity — the room list comes from the install-written `c2c-auto-join-rooms` file in the muse config dir (mirroring the MCP `C2C_MCP_AUTO_JOIN_ROOMS` value, because muse scrubs `C2C_*` from hook env so the env itself never reaches hooks; an empty file joins nothing, a missing file falls back to the product default room; the env still wins when a hook process somehow carries it),
+  refreshes `~/.config/c2c/default-alias` fail-closed under that same
+  identity — and only when no other live session with a different alias
+  exists (so bare `c2c monitor` resolves the live inbox, including
+  `--ephemeral` mail, without ever clobbering a second live session) —
+  and drains the backlog into `additionalContext` (proven accepted; the
+  one hook drain surface). A resumed session gets no SessionStart; its
+  queued mail is count-nudged at its first Stop/PostToolUse (below) and
+  retrieved with `c2c poll-inbox`.
+- Stop (per turn) and PostToolUse (per tool call) touch the activity anchor
+  and then **peek + count-nudge — never drain**. Measured on muse 1.4.7:
+  Stop rejects `additionalContext` (one-shot `decision:block` nudge,
+  suppressed when `stop_hook_active`), and a live PostToolUse drain ate
+  mail (no context block reached the main model), so PostToolUse emits a
+  debounced count nudge with no bodies. They never register: an unknown sid
+  (a subagent's distinct PostToolUse sid) peeks nothing and its touch is a
+  registry no-op, so no subagent row is ever created (live-proven: a Task
+  subagent + 4 reminder agents left zero phantom rows). Nudges are **not**
+  an idle wake. SessionEnd deregisters hook-owned rows only; Stop is never
+  teardown.
 - **Managed adoption (B361):** muse scrubs hook env (no `C2C_*` even
   though the TUI carries it), so SessionStart step 0 adopts the managed
   row by normalized cwd + live (pid, pid_start_time) before minting, and
@@ -779,17 +795,30 @@ c2c-minted id). Idle signal is Unknown (fail-closed); SIGTERM exits in
 out-of-process wake inside c2c alone):
 
 ```
-Monitor({ description: "c2c inbox watcher", command: "c2c monitor", persistent: true })
+Monitor({command:"c2c monitor",persistent:true})
+```
+
+For mail on the cross-repo sessions broker, arm the same recipe against
+that broker instead:
+
+```
+Monitor({command:"c2c monitor --cross-repo",persistent:true})
 ```
 
 Fallback: `c2c poll-inbox` / `c2c peek-inbox`, or `c2c wait-inbox` to
 block-receive while idle.
 
 **Wake status: CONDITIONAL** on an armed **`c2c monitor`**. Without
-Monitor: **NONE** at true idle (hooks fire on activity only). `c2c doctor
-hooks` reports per-session NONE/CONDITIONAL rows from live monitor locks,
-and deliberately never flags a muse session DEAF — with no poster,
-inbox>0 is the expected steady state, not a failure (same as Grok). The
+Monitor: **NONE** at true idle (hooks fire on activity only; the activity
+drain above is not a wake). `c2c doctor hooks` reports per-session
+NONE/CONDITIONAL rows from live monitor locks, and deliberately never flags
+a muse session DEAF — with no poster, inbox>0 is the expected steady state,
+not a failure (same as Grok). `c2c doctor hooks --rearm` therefore arms
+nothing for muse; it prints the verbatim `Monitor({command:"c2c monitor",persistent:true})` instruction per
+affected alias for the operator to run inside that session. `c2c health`
+shows muse yellow — not green — when the plugin is unapproved or no hooks
+marker (trusted plugin or settings.json fallback) is present, and no
+surface claims live hook firing, which doctor cannot observe. The
 Tier-2 session-message sidecar stays parked: the CLI refused
 out-of-process send in 1.4.2. See
 [Delivery & Wake Contract](/wake-contract/#claude-code-grok-and-muse-conditional-on-monitor-never-guaranteed-from-c2c-alone)
