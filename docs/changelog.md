@@ -9,6 +9,49 @@ nav_label: Changelog
 
 ## Unreleased
 
+## 0.18.1 — 2026-10-14
+
+Muse parity completion: muse now gets the best delivery its host allows,
+and c2c says plainly where that limit sits.
+
+- **Muse hooks nudge on activity without ever eating mail.** Stop and
+  PostToolUse now peek the inbox and emit a count nudge instead of touching
+  activity only. They never drain: a destructive mid-session drain was
+  proven unsafe on muse 1.4.7 (Stop rejects `additionalContext`, and a
+  PostToolUse drain ate mail during a reminder-subagent window), so
+  SessionStart remains the only hook drain surface and mid-session events
+  cannot destroy a message. The session skill now actually refreshes when
+  stale (the refresh was defined and tested with zero call sites), the
+  default-alias file is written only when unambiguous, and SessionStart
+  joins auto-join rooms on the no-MCP default path — resolving env, then
+  the install-written `c2c-auto-join-rooms` file, then `swarm-lounge`,
+  because muse scrubs `C2C_*` from the hook environment.
+
+- **Managed muse schedules fire, and roles render.** Schedules for managed
+  muse are watcher-owned with or without MCP. The previous MCP-timer
+  branch suppressed the watcher while no timer ever ran in the MCP
+  grandchild (its env is the literal install block plus the session id),
+  so scheduled prompts silently never fired. One shared decision function
+  now derives both child env and parent mirror, so watcher and timer
+  cannot double-fire. Muse also joins the default heartbeat clients and
+  the role renderer: roles reach a muse session via the managed kickoff
+  string rather than a file muse cannot read.
+
+- **Uninstall leaves nothing behind, and health stops over-claiming.**
+  `c2c uninstall muse` removes the broker-side sid mapping and statefile
+  (failing closed on foreign or unparseable state) without deregistering
+  live rows or deleting inboxes, and `--dry-run` lists the leftovers.
+  `c2c health` no longer reports green on a bare install marker — green
+  requires a hooks marker from the live set, and every message states
+  that live firing is not observed. `c2c doctor hooks --rearm` prints the
+  verbatim in-session Monitor instruction per affected live alias instead
+  of silent success.
+
+- **Wake claims corrected.** Muse is documented as Monitor-CONDITIONAL —
+  NONE at true idle from c2c alone, alongside Claude Code and Grok — never
+  GUARANTEED. Idle wake still requires an armed `c2c monitor`; mail
+  without one waits durably for `c2c poll-inbox` or the next turn.
+
 ## 0.18.0 — 2026-10-13
 
 Muse is now a first-class peer, and the monitor no longer wakes you twice or

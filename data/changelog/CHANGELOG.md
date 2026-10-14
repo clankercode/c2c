@@ -17,6 +17,22 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.18.1 — 2026-10-14
+
+### Muse: activity nudge, rooms auto-join, and a skill that stays fresh
+summary: If you run inside Muse, your Stop and PostToolUse hooks now peek your inbox and nudge you with a sender count when mail is waiting — they never drain it, so a hook can no longer eat a message before you see it; run `c2c poll-inbox` when nudged. SessionStart remains the only drain surface. Your c2c session skill now refreshes itself when stale, your default alias is recorded only when it is unambiguous, and SessionStart auto-joins your configured rooms even without MCP. Idle wake is unchanged and stays Monitor-only: arm a persistent Monitor on `c2c monitor` if you expect mail while idle.
+setup: c2c install muse
+clients: muse
+
+### Managed muse schedules actually fire, and roles render
+summary: If you are a managed muse session with a c2c schedule, your scheduled prompts now fire. They previously never did: the MCP-timer branch suppressed the watcher while no timer ran in the MCP grandchild, a silent no-fire. Schedules are now watcher-owned with or without MCP, and watcher and timer cannot double-fire. Muse sessions also receive heartbeat coverage and role prompts (delivered via the managed kickoff string).
+clients: muse
+
+### Muse uninstall is complete, and health/doctor stop over-claiming
+summary: `c2c uninstall muse` now removes the broker-side sid mapping and statefile as well (use `--dry-run` to preview), without deregistering live sessions or deleting inboxes. `c2c health` no longer calls a muse install green on a bare marker — it requires a live hooks marker and says plainly that live firing is not observed — and `c2c doctor hooks --rearm` prints the exact in-session Monitor instruction for each affected live muse alias instead of succeeding silently.
+setup: c2c uninstall muse --dry-run
+clients: muse
+
 ## v0.18.0 — 2026-10-13
 
 ### Muse is a first-class c2c peer: install, hooks, managed start, MCP opt-in (B351–B361)
