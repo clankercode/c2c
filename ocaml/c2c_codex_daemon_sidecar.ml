@@ -296,22 +296,26 @@ let default_owners_dir () =
   in
   Filename.concat root "c2c/codex-daemon-owners"
 
+let control_socket_path ~(codex_home : string) =
+  Filename.concat codex_home
+    (Filename.concat "app-server-control" "app-server-control.sock")
+
 let default_control_socket () =
   match Sys.getenv_opt "C2C_CODEX_DAEMON_SOCK" with
   | Some p when String.trim p <> "" ->
       let p = String.trim p in
       if Sys.file_exists p then Some p else None
   | _ ->
-      (match Sys.getenv_opt "HOME" with
-       | None -> None
-       | Some home ->
-           let p =
-             Filename.concat home
-               (Filename.concat ".codex"
-                  (Filename.concat "app-server-control"
-                     "app-server-control.sock"))
-           in
-           if Sys.file_exists p then Some p else None)
+      (match Sys.getenv_opt "CODEX_HOME" with
+       | Some home when String.trim home <> "" ->
+           let p = control_socket_path ~codex_home:(String.trim home) in
+           if Sys.file_exists p then Some p else None
+       | _ ->
+           (match Sys.getenv_opt "HOME" with
+            | None -> None
+            | Some home ->
+                let p = control_socket_path ~codex_home:(Filename.concat home ".codex") in
+                if Sys.file_exists p then Some p else None))
 
 let unix_endpoint path =
   try
@@ -379,6 +383,8 @@ let socket_ok path =
         (try Unix.close fd with _ -> ());
         true
   with _ -> false
+
+let socket_available = socket_ok
 
 let stop_pid ?sidecar_pid_start_time pid =
   if pid <= 0 then false else

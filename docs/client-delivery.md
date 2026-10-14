@@ -330,8 +330,11 @@ supervisor:
 - **Diagnostics.** `c2c instances` shows `delivery_mode=app-server` only
   while the unit is `online-attached` (a healthy remote TUI), alongside the
   lifecycle field `app_server_status` (`starting` / `online-attached` /
-  `offline` / `failed-startup`); starting/failed/offline units keep the
-  truthful hook-boundary label. If the installed Codex is too old or lacks
+  `offline` / `failed-startup`) and `app_server_transport` (`codex-daemon` for
+  the shared Unix socket or `private-loopback` for the isolated fallback).
+  The daemon attachment record is generation-bound to the managed frontend, so
+  a stale record is reported as `offline`. Starting/failed/offline units keep
+  the truthful hook-boundary label. If the installed Codex is too old or lacks
   the app-server capability set, startup fails **before** any routable alias
   is published, prints the minimum-version message, and falls back to the
   hook launch — `c2c doctor hooks` then reports `app-server-unavailable`

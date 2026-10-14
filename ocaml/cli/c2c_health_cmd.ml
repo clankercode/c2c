@@ -886,19 +886,13 @@ let read_managed_instances () =
                 C2c_codex_session.status_of_instance ~instance_dir
               with
               | Some C2c_codex_session.Online_attached ->
-                  (* B138: online-attached is only LIVE app-server delivery when
-                     the deliver loop actually loaded a frontend thread. The
-                     fail-closed helper (shared with `c2c doctor`) trusts the
-                     unit-stamped persisted signal and reports degraded when no
-                     thread loaded — or when the record is absent/stale — instead
-                     of overclaiming "app-server". *)
+                  (* B138 remains authoritative for both daemon and private
+                     transports: transport identity explains the control plane;
+                     the delivery heartbeat proves that mail is actually owned. *)
                   if (try C2c_codex_session.online_attached_delivery_degraded
-                            ~instance_dir ()
+                             ~instance_dir ()
                       with _ -> true)
                   then
-                    (* #31: name the REASON. A binding-refused unit has a loaded
-                       thread and is delivering; labelling it "no thread loaded"
-                       sends the operator after the wrong fix. *)
                     C2c_doctor_hooks.codex_delivery_mode_label
                       (if (try C2c_codex_session
                                  .online_attached_delivery_binding_refused
@@ -944,6 +938,12 @@ let read_managed_instances () =
                 else None
               with _ -> None
             in
+            let mi_app_server_transport =
+              if client <> "codex" then None
+              else
+                C2c_codex_session.app_server_transport_of_instance
+                  ~instance_dir:(C2c_start.instance_dir name)
+            in
             { mi_name = name
            ; mi_client = client
            ; mi_status = status
@@ -953,6 +953,7 @@ let read_managed_instances () =
            ; mi_tmux_location = tmux_location
            ; mi_expected_cwd = expected_cwd
            ; mi_role
+           ; mi_app_server_transport
            })
 
 let safe_is_directory path =
@@ -1193,7 +1194,16 @@ let status_cmd =
                          [ ("name", `String inst.mi_name)
                          ; ("client", `String inst.mi_client)
                          ; ("status", `String inst.mi_status)
+                         ; ("app_server_status",
+                            match C2c_codex_session.status_of_instance
+                                    ~instance_dir:(C2c_start.instance_dir inst.mi_name) with
+                            | Some status -> `String (C2c_codex_session.status_to_string status)
+                            | None -> `Null)
                          ; ("delivery_mode", `String inst.mi_delivery_mode)
+                         ; ("app_server_transport",
+                            match inst.mi_app_server_transport with
+                            | Some s -> `String s
+                            | None -> `Null)
                          ; ("pid", match inst.mi_pid with Some p -> `Int p | None -> `Null)
                          ])
                     visible_instances) )

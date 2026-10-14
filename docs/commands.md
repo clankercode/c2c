@@ -1245,8 +1245,12 @@ Key semantics:
   is published, with an actionable diagnostic. Hidden operator escapes are
   `C2C_CODEX_FORCE_PRIVATE_APPSERVER=1` and `C2C_CODEX_FORCE_HOOKS=1`.
   `c2c dev instances` reports the app-server lifecycle state — `starting` /
-  `online-attached` / `offline` / `failed-startup` — using the same terminology
-  across help, completions, `stop`/`restart`, and `resume`.
+  `online-attached` / `offline` / `failed-startup` — and the selected
+  transport (`app_server_transport=codex-daemon` for the shared Unix socket or
+  `private-loopback` for the isolated fallback). The daemon selection follows
+  `C2C_CODEX_DAEMON_SOCK`, then `CODEX_HOME`, then `$HOME/.codex`, so a daemon
+  from another Codex home is never selected accidentally. The same lifecycle
+  terminology is used across help, completions, `stop`/`restart`, and `resume`.
 
 For a managed session, use `c2c restart <name>` to restart the owner in place.
 Do not run a separate `codex resume` or `cx` in the same terminal while that

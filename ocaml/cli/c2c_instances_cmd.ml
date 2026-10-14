@@ -238,6 +238,10 @@ let instances_cmd =
       | Some r -> fields @ [ ("role", `String r) ]
       | None -> fields
     in
+    let fields = match inst.mi_app_server_transport with
+      | Some transport -> fields @ [ ("app_server_transport", `String transport) ]
+      | None -> fields
+    in
     let fields =
       if inst.mi_client = "agy" then
         fields @ [ ("agy", agy_details_to_json (agy_instance_details inst.mi_name)) ]
@@ -307,6 +311,11 @@ let instances_cmd =
               | Some st -> " app-server=" ^ C2c_codex_session.status_to_string st
               | None -> ""
             in
+            let app_server_transport_str =
+              match inst.mi_app_server_transport with
+              | Some transport -> " transport=" ^ transport
+              | None -> ""
+            in
             let agy_str =
               if inst.mi_client <> "agy" then ""
               else
@@ -328,9 +337,10 @@ let instances_cmd =
                 ^ optional "ls" details.ai_ls_address
                 ^ watch
             in
-            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s%s%s\n"
+            Printf.printf "  %-20s %-10s %-12s %s%s%s%s%s%s%s%s%s\n"
               inst.mi_name inst.mi_client inst.mi_status inst.mi_delivery_mode
-              pid_str tmux_str cwd_str created_str role_str app_server_str agy_str
+              pid_str tmux_str cwd_str created_str role_str app_server_str
+              app_server_transport_str agy_str
           ) displayed
       end
 

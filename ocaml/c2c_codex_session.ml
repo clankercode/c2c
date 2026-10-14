@@ -632,25 +632,143 @@ let status_of_app_server_state (s : C2c_codex_app_server.state) : status =
   | Frontend_exited | Stopping_server | Offline -> Offline
   | Failed | Cleaning_up -> Failed_startup
 
-let status_of_instance ~(instance_dir : string) : status option =
-  match C2c_codex_app_server.load_persisted ~instance_dir with
-  | None -> None
-  | Some p ->
-      let st = status_of_app_server_state p.C2c_codex_app_server.state in
-      (* A record that claims to be up but whose recorded pids are dead (hard
-         kill / crash — the supervisor never got to persist Offline) is really
-         offline. Cross-check liveness so `c2c instances` doesn't show a ghost
-         session as online-attached. *)
-      (match st with
-       | Starting | Online_attached ->
-           let alive = function Some pid -> C2c_codex_app_server.pid_alive pid | None -> false in
-           if alive p.C2c_codex_app_server.server_pid
-              || alive p.C2c_codex_app_server.frontend_pid
-           then Some st
-           else Some Offline
-       | _ -> Some st)
+type daemon_attachment = {
+  da_unit_id : string;
+  da_endpoint : C2c_codex_app_server.endpoint;
+  da_frontend_pid : int;
+  da_frontend_pid_start_time : int option;
+  da_thread_id : string;
+  da_status : status;
+  da_created_at : float;
+  da_updated_at : float;
+}
 
-(* ------------------------- deliver-loop health ---------------------------- *)
+let daemon_attachment_path ~instance_dir = instance_dir // "codex-daemon-attachment.json"
+
+let daemon_attachment_unit_id ~instance_dir =
+  "daemon:" ^ Digest.to_hex (Digest.string (daemon_attachment_path ~instance_dir))
+
+let daemon_attachment_to_json (a : daemon_attachment) : Yojson.Safe.t =
+  `Assoc
+    [ ("unit_id", `String a.da_unit_id)
+    ; ("endpoint", C2c_codex_app_server.endpoint_to_json a.da_endpoint)
+    ; ("frontend_pid", `Int a.da_frontend_pid)
+    ; ( "frontend_pid_start_time",
+        match a.da_frontend_pid_start_time with Some n -> `Int n | None -> `Null )
+    ; ("thread_id", `String a.da_thread_id)
+    ; ("status", `String (status_to_string a.da_status))
+    ; ("created_at", `Float a.da_created_at)
+    ; ("updated_at", `Float a.da_updated_at) ]
+
+let daemon_attachment_of_json = function
+  | `Assoc fields ->
+      let string_field key =
+        match List.assoc_opt key fields with Some (`String value) -> Some value | _ -> None
+      in
+      let int_field key =
+        match List.assoc_opt key fields with Some (`Int value) when value > 0 -> Some value | _ -> None
+      in
+      let optional_int_field key =
+        match List.assoc_opt key fields with
+        | None | Some `Null -> Some None
+        | Some (`Int value) when value > 0 -> Some (Some value)
+        | _ -> None
+      in
+      let float_field key =
+        match List.assoc_opt key fields with
+        | Some (`Float value) -> Some value
+        | Some (`Int value) -> Some (float_of_int value)
+        | _ -> None
+      in
+      (match string_field "unit_id", List.assoc_opt "endpoint" fields,
+             int_field "frontend_pid", optional_int_field "frontend_pid_start_time",
+             string_field "thread_id", string_field "status", float_field "created_at",
+             float_field "updated_at" with
+       | Some da_unit_id, Some endpoint_json, Some da_frontend_pid,
+         Some da_frontend_pid_start_time, Some da_thread_id, Some status,
+         Some da_created_at, Some da_updated_at ->
+           (match C2c_codex_app_server.endpoint_of_json endpoint_json with
+            | None -> None
+            | Some da_endpoint ->
+                let da_status =
+                  match status with
+                  | "starting" -> Some Starting
+                  | "online-attached" -> Some Online_attached
+                  | "offline" -> Some Offline
+                  | "failed-startup" -> Some Failed_startup
+                  | _ -> None
+                in
+                Option.map
+                  (fun da_status ->
+                     { da_unit_id; da_endpoint; da_frontend_pid;
+                       da_frontend_pid_start_time; da_thread_id; da_status;
+                       da_created_at; da_updated_at })
+                  da_status)
+           | _ -> None)
+  | _ -> None
+
+let write_daemon_attachment ~(instance_dir : string) (attachment : daemon_attachment) : bool =
+  try
+    if not (Sys.file_exists instance_dir) then C2c_io.mkdir_p instance_dir;
+    match C2c_io.write_file_atomic
+            ~perm:0o600 (daemon_attachment_path ~instance_dir)
+            (Yojson.Safe.to_string (daemon_attachment_to_json attachment) ^ "\n") with
+    | Ok () -> true
+    | Error _ -> false
+  with _ -> false
+
+let load_daemon_attachment ~(instance_dir : string) : daemon_attachment option =
+  match C2c_io.read_json_opt (daemon_attachment_path ~instance_dir) with
+  | Some json -> daemon_attachment_of_json json
+  | None -> None
+
+let daemon_attachment_frontend_alive (attachment : daemon_attachment) : bool =
+  match attachment.da_frontend_pid_start_time with
+  | Some expected ->
+      (match C2c_pid_identity.read_pid_generation attachment.da_frontend_pid with
+       | C2c_pid_identity.Generation actual -> actual = expected
+       | C2c_pid_identity.Absent | C2c_pid_identity.Unreadable -> false)
+  | None -> false
+
+let daemon_attachment_status (attachment : daemon_attachment) : status =
+  match attachment.da_status with
+  | Starting | Online_attached when daemon_attachment_frontend_alive attachment
+                                  && C2c_codex_daemon_sidecar.socket_available
+                                       attachment.da_endpoint.host ->
+      attachment.da_status
+  | Starting | Online_attached -> Offline
+  | Offline | Failed_startup -> attachment.da_status
+
+let app_server_transport_of_instance ~(instance_dir : string) : string option =
+  match load_daemon_attachment ~instance_dir with
+  | Some _ -> Some "codex-daemon"
+  | None ->
+      (match C2c_codex_app_server.load_persisted ~instance_dir with
+       | Some p -> Some (if p.C2c_codex_app_server.endpoint.transport = "unix"
+                         then "codex-daemon" else "private-loopback")
+       | None -> None)
+
+let status_of_instance ~(instance_dir : string) : status option =
+  match load_daemon_attachment ~instance_dir with
+  | Some attachment -> Some (daemon_attachment_status attachment)
+  | None ->
+      (match C2c_codex_app_server.load_persisted ~instance_dir with
+       | None -> None
+       | Some p ->
+           let st = status_of_app_server_state p.C2c_codex_app_server.state in
+           (* A record that claims to be up but whose recorded pids are dead (hard
+              kill / crash — the supervisor never got to persist Offline) is really
+              offline. Cross-check liveness so `c2c instances` doesn't show a ghost
+              session as online-attached. *)
+           (match st with
+            | Starting | Online_attached ->
+                let alive = function Some pid -> C2c_codex_app_server.pid_alive pid | None -> false in
+                if alive p.C2c_codex_app_server.server_pid
+                   || alive p.C2c_codex_app_server.frontend_pid
+                then Some st
+                else Some Offline
+            | _ -> Some st))
+
 
 (* B138: the deliver loop's [degraded] flag (no frontend thread ever loaded, so
    nothing actually delivers) is runtime-only. Persist it into the instance dir
@@ -1037,12 +1155,14 @@ let command_resolves ?(path = Sys.getenv_opt "PATH") (cmd : string) : bool =
             executable_file (dir // cmd))
           (String.split_on_char ':' value)
 
-(* ~/.codex/config.toml, or the C2C_CODEX_CONFIG_PATH override (test seam /
-   non-standard CODEX_HOME). *)
+(* $CODEX_HOME/config.toml, or the C2C_CODEX_CONFIG_PATH override (test seam). *)
 let codex_config_path () : string =
   match Sys.getenv_opt "C2C_CODEX_CONFIG_PATH" with
   | Some p when String.trim p <> "" -> p
-  | _ -> (Sys.getenv "HOME") // ".codex" // "config.toml"
+  | _ ->
+      (match Sys.getenv_opt "CODEX_HOME" with
+       | Some h when String.trim h <> "" -> h // "config.toml"
+       | _ -> (Sys.getenv "HOME") // ".codex" // "config.toml")
 
 (* Impure preflight: read the (override-able) codex config and classify its
    [mcp_servers.c2c] block against the real PATH / filesystem. [resolves] is an
@@ -2530,6 +2650,9 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                    | None -> false
                  in
                  if outer_pidfiles_removed then begin
+                   (try Sys.remove (daemon_attachment_path
+                                     ~instance_dir:(C2c_start.instance_dir name))
+                    with Sys_error _ -> ());
                    cleaned := true;
                    frontend_pid := None;
                    true
@@ -2661,6 +2784,28 @@ let run_daemon_attach ~name ~session_id ~alias ~thread ~yolo ~extra_args
                         false
                     in
                     if not registration_ok then begin
+                      ignore (cleanup ());
+                      1
+                    end else
+                    let attachment_started_at = Unix.gettimeofday () in
+                    let attachment =
+                      { da_unit_id = daemon_attachment_unit_id
+                          ~instance_dir:(C2c_start.instance_dir name);
+                        da_endpoint = ep; da_frontend_pid = child;
+                        da_frontend_pid_start_time =
+                          C2c_mcp.Broker.read_pid_start_time child;
+                        da_thread_id = tid; da_status = Online_attached;
+                        da_created_at = attachment_started_at;
+                        da_updated_at = attachment_started_at }
+                    in
+                    if not (write_daemon_attachment
+                              ~instance_dir:(C2c_start.instance_dir name)
+                              attachment)
+                    then begin
+                      emit_app_server_log
+                        (Printf.sprintf
+                           "daemon attach failed: durable transport state could not be persisted (c2c-alias=%s)"
+                           alias);
                       ignore (cleanup ());
                       1
                     end else

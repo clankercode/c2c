@@ -308,10 +308,17 @@ type status =
 val status_to_string : status -> string
 val status_of_app_server_state : C2c_codex_app_server.state -> status
 
-(** [status_of_instance ~instance_dir] reads the T002 persisted app-server
-    record (if any) and returns the mapped {!status}. [None] when no
-    app-server-backed session was ever recorded for that instance. *)
+(** [status_of_instance ~instance_dir] reads either the private app-server
+    record or the daemon-attachment record and returns the mapped {!status}.
+    [None] means no app-server-backed session was recorded. *)
 val status_of_instance : instance_dir:string -> status option
+
+val daemon_attachment_path : instance_dir:string -> string
+(** Durable daemon transport record for a managed Codex instance. *)
+
+val app_server_transport_of_instance : instance_dir:string -> string option
+(** Returns [codex-daemon] for a shared Unix-socket attachment and
+    [private-loopback] for the isolated authenticated fallback. *)
 
 (* ------------------------- deliver-loop health ---------------------------- *)
 

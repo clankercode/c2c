@@ -5,6 +5,7 @@
    published only after start; graceful fallback on a startup diagnostic). All
    scripted — no live codex process. *)
 
+let ( // ) = Filename.concat
 open C2c_codex_app_server
 module S = C2c_codex_session
 module PB = C2c_mcp_helpers_post_broker
@@ -623,6 +624,49 @@ let test_reconcile_thread () =
 (* status terminology                                                  *)
 (* ------------------------------------------------------------------ *)
 
+let with_tmp_dir f =
+  let dir = Filename.concat (Filename.get_temp_dir_name ())
+      (Printf.sprintf "c2c-codex-sess-%d-%d" (Unix.getpid ()) (Random.bits ())) in
+  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
+  Fun.protect
+    ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
+    (fun () -> f dir)
+
+let test_daemon_attachment_status_is_generation_bound () =
+  match C2c_codex_daemon_sidecar.default_control_socket () with
+  | None -> ()
+  | Some socket_path ->
+      (match C2c_codex_daemon_sidecar.unix_endpoint socket_path with
+       | None -> ()
+       | Some daemon_endpoint ->
+           with_tmp_dir (fun dir ->
+             let attachment_path = S.daemon_attachment_path ~instance_dir:dir in
+             let pid = Unix.getpid () in
+             let generation = C2c_mcp.Broker.read_pid_start_time pid in
+             let json generation unit_id =
+               `Assoc
+                 [ ("unit_id", `String unit_id)
+                 ; ("endpoint", endpoint_to_json daemon_endpoint)
+                 ; ("frontend_pid", `Int pid)
+                 ; ("frontend_pid_start_time",
+                    match generation with Some n -> `Int n | None -> `Null)
+                 ; ("thread_id", `String "thread")
+                 ; ("status", `String "online-attached")
+                 ; ("created_at", `Float 1.)
+                 ; ("updated_at", `Float 2.) ]
+             in
+             Yojson.Safe.to_file attachment_path (json generation "daemon:test");
+             Alcotest.(check (option string)) "live daemon attachment is online"
+               (Some "online-attached")
+               (Option.map S.status_to_string
+                  (S.status_of_instance ~instance_dir:dir));
+             let stale_generation = Option.map (fun n -> n + 1) generation in
+             Yojson.Safe.to_file attachment_path (json stale_generation "daemon:stale");
+             Alcotest.(check (option string)) "recycled daemon generation is offline"
+               (Some "offline")
+               (Option.map S.status_to_string
+                  (S.status_of_instance ~instance_dir:dir))))
+
 let test_status_mapping () =
   let eq name exp st =
     Alcotest.(check string) name exp (S.status_to_string (S.status_of_app_server_state st))
@@ -641,14 +685,6 @@ let test_status_mapping () =
 (* ------------------------------------------------------------------ *)
 (* mapping round-trip                                                  *)
 (* ------------------------------------------------------------------ *)
-
-let with_tmp_dir f =
-  let dir = Filename.concat (Filename.get_temp_dir_name ())
-      (Printf.sprintf "c2c-codex-sess-%d-%d" (Unix.getpid ()) (Random.bits ())) in
-  (try Unix.mkdir dir 0o755 with Unix.Unix_error (Unix.EEXIST, _, _) -> ());
-  Fun.protect
-    ~finally:(fun () -> ignore (Sys.command (Printf.sprintf "rm -rf %s" (Filename.quote dir))))
-    (fun () -> f dir)
 
 let test_app_server_registration_preserves_existing_metadata () =
   with_tmp_dir (fun broker_root ->
@@ -2590,7 +2626,9 @@ let () =
     ; ( "yolo-persistence",
         [ test_case "yolo not persisted" `Quick test_yolo_not_persisted ] )
     ; ( "status",
-        [ test_case "mapping" `Quick test_status_mapping ] )
+        [ test_case "mapping" `Quick test_status_mapping
+        ; test_case "daemon attachment status is generation-bound" `Quick
+            test_daemon_attachment_status_is_generation_bound ] )
     ; ( "mapping",
         [ test_case "roundtrip" `Quick test_mapping_roundtrip
         ; test_case "write failure is reported" `Quick test_mapping_write_failure_is_reported

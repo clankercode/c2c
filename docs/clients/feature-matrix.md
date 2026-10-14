@@ -106,7 +106,9 @@ the exact loaded native thread, and arms the daemon sidecar itself. The daemon
 frontend intentionally clears `C2C_CODEX_APPSERVER_SESSION`; its
 `SessionStart` hook remains identity/fallback-only.
 `c2c instances` reports `delivery_mode=app-server` only while the unit is
-`online-attached`, plus the `app_server_status` lifecycle field. Full contract:
+`online-attached`, plus the `app_server_status` lifecycle field and
+`app_server_transport` (`codex-daemon` for the shared Unix socket or
+`private-loopback` for the isolated fallback). Full contract:
 [client-delivery](/client-delivery/#codex).
 
 *Hook fallback* — Codex hooks for vanilla and hook-mode managed sessions.
@@ -145,8 +147,10 @@ polling remains the universal fallback. See
 
 **Current binary note**: Codex ≥ 0.159 uses the machine daemon when its private
 control socket is available; c2c's older authenticated per-session app-server
-path remains supported from Codex ≥ 0.144. If the daemon is unavailable, c2c
-uses the private fallback; if that also fails, hooks remain the safe fallback.
+path remains supported from Codex ≥ 0.144. The daemon socket follows
+`C2C_CODEX_DAEMON_SOCK`, then `CODEX_HOME`, then `$HOME/.codex`, preventing a
+healthy daemon from a different Codex home from being selected accidentally.
+If the daemon is unavailable, c2c uses the private fallback; if that also fails, hooks remain the safe fallback.
 The upstream Codex binary no longer exposes the old XML sideband flag, and the
 xml_fd plumbing (capability probe, fd pipe wiring, deliver-watch supervisor
 scripts) was removed from c2c (2026-07-10). Hook delivery is the supported

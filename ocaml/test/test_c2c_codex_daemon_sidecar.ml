@@ -378,6 +378,11 @@ let test_select_owned_thread_fail_closed () =
   check (option string) "empty loaded" None
     (S.select_owned_thread ~hint:"thr-a" ~loaded:[])
 
+let test_control_socket_path_uses_codex_home () =
+  check string "canonical control socket"
+    "/tmp/codex-home/app-server-control/app-server-control.sock"
+    (S.control_socket_path ~codex_home:"/tmp/codex-home")
+
 let test_unix_endpoint_missing () =
   check (option string) "missing path" None
     (Option.map (fun e -> e.C2c_codex_app_server.host)
@@ -703,6 +708,8 @@ let () =
         ; test_case "pending arm cancels without a lease" `Quick
             test_pending_arm_is_cancelled_without_a_lease
         ; test_case "unix endpoint missing path" `Quick test_unix_endpoint_missing
+        ; test_case "control socket follows CODEX_HOME" `Quick
+            test_control_socket_path_uses_codex_home
         ; test_case "select_owned_thread fail closed" `Quick
             test_select_owned_thread_fail_closed
         ] ) ]

@@ -8866,7 +8866,8 @@ let cmd_start ~(client : string) ~(name : string) ~(extra_args : string list)
     ; codex_daemon_sidecar_pid_start_time_path name
     ; notifier_pid_path name
     ; notifier_pid_start_time_path name
-    ; codex_frontend_teardown_record_path name ]
+    ; codex_frontend_teardown_record_path name
+    ; inst_dir // "codex-daemon-attachment.json" ]
   in
   (* Serialize stale inspection/recovery with every later lifecycle write.  The
      lock is retained by this process; the outer loop and nested Codex launcher
@@ -9465,8 +9466,11 @@ let stop_instance (name : string) : stop_outcome =
     let inner_records_ok =
       List.for_all path_absent_confirmed inner_lifecycle_records
     in
+    let attachment_ok =
+      remove_path_confirmed (instance_dir name // "codex-daemon-attachment.json")
+    in
     if sidecars_ok && daemon_ok && generic_ok && notifier_ok && frontend_ok
-       && outer_records_ok && inner_records_ok then
+       && outer_records_ok && inner_records_ok && attachment_ok then
       if stopped then Stop_stopped else Stop_not_running
     else
       Stop_failed
@@ -9488,7 +9492,8 @@ let stop_instance (name : string) : stop_outcome =
     ; notifier_pid_start_time_path name
     ; codex_daemon_sidecar_pid_path name
     ; codex_daemon_sidecar_pid_start_time_path name
-    ; codex_frontend_teardown_record_path name ]
+    ; codex_frontend_teardown_record_path name
+    ; instance_dir name // "codex-daemon-attachment.json" ]
     |> List.exists (fun path -> not (path_absent_confirmed path))
   in
   if not (C2c_pid_identity.managed_lifecycle_supported ())

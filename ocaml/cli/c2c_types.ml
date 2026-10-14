@@ -22,4 +22,5 @@ type managed_instance_view =
   ; mi_tmux_location : string option
   ; mi_expected_cwd : string option
   ; mi_role : string option
+  ; mi_app_server_transport : string option
   }

@@ -91,11 +91,20 @@ val peek :
   lease option
 
 val default_owners_dir : unit -> string
+val control_socket_path : codex_home:string -> string
+(** [control_socket_path ~codex_home] returns Codex's canonical managed daemon
+    control socket path for that CODEX_HOME. *)
+
 val default_control_socket : unit -> string option
-(** Absolute path of the machine daemon control socket when it exists. *)
+(** Absolute path of the machine daemon control socket when it exists. The
+    explicit [C2C_CODEX_DAEMON_SOCK] override wins; otherwise [CODEX_HOME] is
+    used, with [$HOME/.codex] as the default. *)
 
 val unix_endpoint : string -> C2c_codex_app_server.endpoint option
 (** [{transport="unix"; host=realpath; port=0}] when [path] exists. *)
+
+val socket_available : string -> bool
+(** True when the private Unix daemon socket accepts a WebSocket handshake. *)
 
 val select_owned_thread : hint:string -> loaded:string list -> string option
 (** [Some hint] iff [hint] is in [loaded]. Never picks a different loaded
