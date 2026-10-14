@@ -1,0 +1,30 @@
+---
+complexity: medium
+created_at: "2026-10-14T19:54:58Z"
+depends_on: []
+estimate_hours: 1
+id: B365
+priority: high
+status: pending
+tags: []
+title: Adopt a live vanilla Codex session into c2c managed delivery
+updated_at: "2026-10-14T19:54:58Z"
+---
+Vanilla interactive Codex sessions currently auto-register through the installed `c2c hook codex` hooks and can use hook-boundary delivery, with optional `c2c deliver wake-watch` for tmux/herdr idle nudges. There is no user-facing c2c command that takes an already-running plain `codex` session and adopts its live native thread into the managed app-server delivery path.
+
+Expected behavior:
+
+- An operator can run a c2c command against a live vanilla Codex registration/thread, for example `c2c codex adopt ALIAS` (final grammar may differ), and receive an explicit result.
+- c2c discovers the native thread and workspace safely, refuses ambiguous or already-owned threads, and creates the same durable identity/mapping and daemon sidecar ownership used by `c2c start codex` / `c2c new codex`.
+- The command must preserve the running Codex frontend and its draft, avoid starting a second app-server, and report the selected transport and delivery status accurately.
+- If the live session cannot be adopted, c2c gives an actionable explanation and leaves the existing hook delivery path intact.
+
+Acceptance coverage:
+
+1. Start a plain interactive `codex` in tmux, let `c2c hook codex` register it, detach, and verify the registration remains addressable.
+2. Adopt the live session through the new c2c command, verify shared-daemon attachment/no second listener, and deliver a message.
+3. Resume the adopted identity with c2c start/resume helpers and verify the saved native thread remains selected.
+4. Cover ambiguous, stale, wrong-workspace, and already-owned thread refusal paths.
+5. Update CLI help, docs, feature matrix, delivery checklist, and changelog guidance.
+
+Decision: implement this as one serial Codex lifecycle lane because native thread discovery, durable mapping, daemon sidecar ownership, registry health, tests, and public documentation share the managed Codex transport seams.

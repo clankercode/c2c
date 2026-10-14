@@ -361,3 +361,4 @@ bugs:
     - file: B362-c2c-stop-refuses-every-generic.todo
     - file: B363-muse-forward-agent-log-classif.todo
     - file: B364-codex-app-server-delivery-shou.todo
+    - file: B365-adopt-a-live-vanilla-codex-ses.todo
