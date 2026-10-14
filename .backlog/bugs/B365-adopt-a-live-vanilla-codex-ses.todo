@@ -34,3 +34,5 @@ Acceptance coverage:
 Decision: implement this as one serial Codex lifecycle lane because native thread discovery, durable mapping, daemon sidecar ownership, registry health, tests, and public documentation share the managed Codex transport seams.
 
 Lane decision (2026-10-15): implement serially in one worktree because live Codex thread discovery, daemon sidecar ownership, registry identity, lifecycle tests, and docs all share the managed Codex transport seams. Existing CLI verified to have no adopt/attach/configure command; current vanilla support is hook registration plus optional wake-watch only.
+
+Decision (2026-10-15): use the explicit grammar c2c codex adopt ALIAS. Require a live codex-hook registration, discover exactly one authenticated daemon thread in the registration workspace, persist the existing managed Codex mapping/config, arm the existing daemon sidecar, and leave the vanilla frontend untouched. Reuse B364 daemon/B138 seams; refuse missing/non-Codex, ambiguous, stale, wrong-workspace, existing mapping, and already-owned thread cases. Hook delivery remains the fallback until adoption succeeds.
