@@ -234,6 +234,8 @@ c2c install codex
 c2c start codex -n my-codex   # managed session — canonical for arrival-time delivery
 ```
 
+A running plain `codex` session can be promoted without restarting its frontend with `c2c codex adopt <alias>` after `c2c install codex` has registered it; adoption proves the loaded daemon thread and workspace, then arms arrival-time delivery while preserving the frontend and draft. `c2c resume codex <alias>` re-arms an adopted sidecar without launching a duplicate frontend.
+
 By default writes the pre-trusted Codex hooks block (`UserPromptSubmit`, `PostToolUse`, `SessionStart`, `SessionEnd`), the `AGENTS.md` note, and the `/c2c` skill — no MCP. Pass `--with-mcp` to also append `[mcp_servers.c2c]` to `~/.codex/config.toml` with shared MCP config only: broker root, default rooms, and all c2c tools set to `approval_mode = "auto"`. Global alias/session identity is no longer written there; managed `c2c start codex` sessions set identity at launch — and no longer need an MCP block, since the app-server, hooks, and CLI carry delivery — and unmanaged sessions can use `c2c init --client codex` or manual `register`. Restart Codex to activate. For arrival-time delivery, run the session via `c2c start codex -n <alias>` (or `c2c new codex` for a fresh thread) — pick a memorable alias with `-n`/`--alias`. For the delivery transports (daemon-first app-server delivery for managed sessions, with the authenticated per-session fallback and hooks as the vanilla/fallback path), see [Per-Client Delivery § Codex](/client-delivery/#codex).
 
 ### Pi Agent

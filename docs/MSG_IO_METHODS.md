@@ -20,7 +20,7 @@ Last updated: 2026-07-17 (kimi re-enabled: B146 reverted; REST delivery)
 |---|--------|-----------|:-----------:|:-----:|:--------:|:--------:|:----:|:----:|--------|
 | 1 | [MCP Channel Notifications](#1-mcp-channel-notifications) | Server pushes messages into the chat UI via JSON-RPC notification | Gated | No | No MCP | No | No | No | Experimental / gated behind dev flag |
 | 2 | [PostToolUse Hook](#2-posttooluse-hook) | Host hooks drain inboxes into `additionalContext` at tool/turn boundaries | Yes | Yes (vanilla + managed fallback) | No | No | No | No | Working (primary for Claude Code; Codex vanilla/fallback only) |
-| 2b | [Codex app-server inject + gated auto-turn](#2b-codex-app-server-inject--gated-auto-turn) | Managed Codex: arrival-time inject + idle auto-turn over private daemon WS (authenticated per-session fallback) | No | Yes (managed ≥0.144) | No | No | No | No | **Primary for managed Codex** (B131); hooks fall back |
+| 2b | [Codex app-server inject + gated auto-turn](#2b-codex-app-server-inject--gated-auto-turn) | Managed or adopted Codex: arrival-time inject + idle auto-turn over private daemon WS (authenticated per-session fallback) | No | Yes (managed/adopted ≥0.144) | No | No | No | No | **Primary for managed and successfully adopted Codex** (B131/B365); hooks fall back |
 | 3 | [PTY Injection](#3-pty-injection) | Bracketed paste via pty_inject into terminal master fd | Deprecated | Deprecated sentinel | No | Fallback | No | No | Legacy/fallback only; Kimi uses REST prompt injection |
 | 4 | [History.jsonl Injection](#4-historyjsonl-injection) | Appends a user-message entry to the session transcript file | Partial | No | No | No | No | No | Experimental; not real-time |
 | 5 | [poll_inbox Tool](#5-poll_inbox-tool) | Pull-based MCP/CLI tool that drains and returns pending messages | Yes | Yes | Yes (CLI) | Yes | Yes | Yes (CLI) | Working (universal baseline) |
@@ -198,7 +198,7 @@ hook boundary still need an idle-session bridge or manual polling.
 | Client | Supported | Notes |
 |--------|-----------|-------|
 | Claude Code | Yes | Primary delivery mechanism. Installed by `c2c install claude`. |
-| Codex | Yes | **Vanilla primary / managed fallback.** `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — hook-boundary, not arrival-time. Managed sessions on a supported Codex get [app-server delivery](#2b-codex-app-server-inject--gated-auto-turn) instead (arrival-time, draft-safe; shipped, B131); older Codex or app-server startup failure falls back here automatically. Explicit polling remains the portable fallback. |
+| Codex | Yes | **Vanilla primary / managed fallback.** `c2c install codex` installs pre-trusted hooks that run `c2c hook codex` and deliver via `additionalContext` — hook-boundary, not arrival-time. A live vanilla session can be promoted with `c2c codex adopt ALIAS`; the command authenticates the loaded thread and workspace, arms the shared daemon sidecar, and preserves the existing frontend and draft. Managed sessions on a supported Codex get [app-server delivery](#2b-codex-app-server-inject--gated-auto-turn) (arrival-time, draft-safe; shipped, B131/B365); older Codex or app-server startup failure falls back here automatically. Explicit polling remains the portable fallback. |
 | Pi Agent | No | Pi Agent uses the `pi-c2c` extension rather than host hooks. |
 | OpenCode | No | OpenCode uses its native TypeScript plugin instead. |
 | Kimi | No | Kimi uses REST prompt injection instead. |
