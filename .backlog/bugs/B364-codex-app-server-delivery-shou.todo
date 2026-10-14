@@ -134,3 +134,5 @@ Environment
   Shared SQLite home: /home/xertrov/.codex-shared/sqlite
 
 No credentials are included in this report. The session ID is included because it is needed to reproduce and inspect the lifecycle issue locally.
+
+Decision: Treat this as one serial implementation lane because the transport selection, instance health reporting, integration tests, and documentation all share the Codex managed-session adapter and must be changed and reviewed together. Prefer the existing default daemon when its same-CODEX_HOME control socket is healthy; preserve a clearly labeled isolated fallback only when reuse is unavailable. The bug report's observed Unix-socket reuse means the implementation should first expose and test the existing selection seam before adding a new daemon protocol.
