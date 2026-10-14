@@ -241,6 +241,95 @@ let statefile_session_registered ~broker_root sid =
       (C2c_mcp.Broker.list_registrations broker)
   with _ -> false
 
+(* --- machine-global default-alias file (T3) --------------------------------
+   `~/.config/c2c/default-alias` is the fallback bare `c2c monitor` uses to
+   find this machine's session when no session id resolved (see
+   [C2c_monitor_logic.resolve_alias] order; session registration outranks
+   it). Install writes it for most clients, but NOT for muse/grok:
+   a multi-session CLI-first client's install-time alias may be auto-picked
+   and unregistered, and writing it clobbers other clients' fallback (B173 /
+   B354). The muse hook therefore writes it here, at SessionStart, only
+   after identity resolution has unambiguously produced a REGISTERED
+   hook/managed alias — and this writer re-verifies that unambiguity
+   against a fresh registry read (fail closed, mirror #26): exactly one
+   distinct alias for [session_id], no row for it claiming a different
+   client than [client], and no OTHER live session with a different
+   alias in the broker. Any ambiguity or read failure writes nothing.
+   Returns true iff written. Best-effort: never raises. *)
+let default_alias_path () =
+  (try Sys.getenv "HOME" with Not_found -> "/tmp")
+  // ".config" // "c2c" // "default-alias"
+
+(* The single alias [session_id] unambiguously owns for [client], or
+   None: at least one row for the sid, exactly one distinct alias among
+   them, and no row claiming a different client. Shared by the
+   default-alias writer below and the muse hook's room auto-join (T6),
+   so both act under the same fail-closed identity guards. Never
+   raises. *)
+let unambiguous_alias_for_session ~broker_root ~session_id ~client =
+  try
+    if String.trim session_id = "" then None
+    else
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let rows =
+        List.filter
+          (fun (r : C2c_mcp.registration) -> r.session_id = session_id)
+          (C2c_mcp.Broker.list_registrations broker)
+      in
+      let foreign_client_row =
+        List.exists
+          (fun (r : C2c_mcp.registration) ->
+             match r.client_type with
+             | Some c when String.lowercase_ascii (String.trim c) <> client ->
+                 true
+             | _ -> false)
+          rows
+      in
+      let distinct =
+        List.sort_uniq String.compare
+          (List.map (fun (r : C2c_mcp.registration) -> r.alias) rows)
+      in
+      match distinct with
+      | [ alias ] when not foreign_client_row -> Some alias
+      | _ -> None
+  with _ -> None
+
+let write_default_alias_if_unambiguous ~broker_root ~session_id ~alias ~client =
+  try
+    if String.trim session_id = "" || String.trim alias = "" then false
+    else
+      match unambiguous_alias_for_session ~broker_root ~session_id ~client with
+      | Some owned
+        when C2c_mcp.Broker.alias_casefold owned
+             = C2c_mcp.Broker.alias_casefold alias ->
+          (* The file is machine-global, so per-sid unambiguity is not
+             enough: while ANOTHER live session with a different alias
+             exists in this broker, writing would make that session's
+             bare `c2c monitor` watch the wrong inbox (last writer
+             wins — the B173 clobber at hook time). Fail closed, like
+             the statefile `Ambiguous gate (#26); monitor's own
+             single-alive resolution remains the fallback. *)
+          let broker = C2c_mcp.Broker.create ~root:broker_root in
+          let other_live =
+            List.exists
+              (fun (r : C2c_mcp.registration) ->
+                 r.session_id <> session_id
+                 && C2c_mcp.Broker.alias_casefold r.alias
+                    <> C2c_mcp.Broker.alias_casefold alias
+                 && C2c_mcp.Broker.registration_is_alive r)
+              (C2c_mcp.Broker.list_registrations broker)
+          in
+          if other_live then false
+          else begin
+            let path = default_alias_path () in
+            C2c_mcp.mkdir_p (Filename.dirname path);
+            match C2c_io.write_file_atomic path (alias ^ "\n") with
+            | Ok () -> true
+            | Error _ -> false
+          end
+      | _ -> false
+  with _ -> false
+
 (** Normalize client labels so codex-app-server / codex-headless compare equal
     to the codex- reserved alias prefix. *)
 let normalize_client_kind s =

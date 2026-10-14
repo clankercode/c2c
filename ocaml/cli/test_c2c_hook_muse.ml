@@ -8,8 +8,17 @@
    - SessionStart drains backlog into additionalContext
    - env-first resolution: C2C_MCP_SESSION_ID / MUSE_SESSION_ID win
    - managed marker -> registered_by None; SessionEnd spares managed rows
-   - Stop / PostToolUse -> touch-only: anchor advances, row survives, silent
-   - PostToolUse under an unknown (subagent) sid mints no row (ignore)
+   - Stop / PostToolUse -> anchor advances, row survives; silent when the
+     inbox is empty. NEITHER drains (Stop: muse rejects its
+     additionalContext; PostToolUse: live drain ate mail) — both peek
+     and count-nudge with no bodies (Stop one-shot decision:block,
+     suppressed when stop_hook_active; PostToolUse debounced
+     additionalContext); channel-capable sessions stay silent
+   - unknown (subagent) / agent_id mid-session turns mint and drain nothing
+   - SessionStart refreshes a stale /c2c skill (T2) and auto-joins rooms
+     idempotently (T6; env wins, else the install-written config file
+     (empty joins nothing), else the default room; B361 adoption joins
+     as managed; foreign-client rows join nothing)
    - SessionEnd deregisters muse-hook rows ONLY; Stop is never teardown (#61)
    - B130 defensive agent_id gate: no register, no drain
    - subagent-quiet guard (C2C_NO_AUTO_REGISTER=1) -> silent, no registration
@@ -109,7 +118,7 @@ let run_hook ?(extra_env = []) ctx ~payload =
 
 (* B352 A2 SessionStart shape (+ optional agent_id / camelCase variants). *)
 let payload ?(event = "SessionStart") ?(session_id = "") ?(cwd = "/tmp/proj")
-    ?agent_id ?(camel = false) ?turn_id () =
+    ?agent_id ?(camel = false) ?turn_id ?stop_hook_active () =
   let event_key, sid_key =
     if camel then ("hookEventName", "sessionId") else ("hook_event_name", "session_id")
   in
@@ -122,6 +131,9 @@ let payload ?(event = "SessionStart") ?(session_id = "") ?(cwd = "/tmp/proj")
     @ (if session_id = "" then [] else [ (sid_key, `String session_id) ])
     @ (match agent_id with Some a -> [ ("agent_id", `String a) ] | None -> [])
     @ (match turn_id with Some t -> [ ("turn_id", `String t) ] | None -> [])
+    @ (match stop_hook_active with
+       | Some b -> [ ("stop_hook_active", `Bool b) ]
+       | None -> [])
   in
   Yojson.Safe.to_string (`Assoc fields)
 
@@ -141,6 +153,17 @@ let parse_context stdout =
             | _ -> ""
           in
           Some (event, ctx)
+      | _ -> None)
+  | _ -> None
+  | exception _ -> None
+
+(* Stop nudge shape (the only model-visible Stop channel muse 1.4.7
+   accepts): {"decision":"block","reason":"..."}. *)
+let parse_stop_block stdout =
+  match Yojson.Safe.from_string (String.trim stdout) with
+  | `Assoc fields -> (
+      match List.assoc_opt "decision" fields, List.assoc_opt "reason" fields with
+      | Some (`String "block"), Some (`String reason) -> Some reason
       | _ -> None)
   | _ -> None
   | exception _ -> None
@@ -182,10 +205,11 @@ let test_session_start_registers_with_onboarding () =
               check bool "mentions send" true
                 (contains ~haystack:context ~needle:"c2c send");
               (* Delivery honesty (B355 review): must NOT claim automatic
-                 mid-session delivery — muse hooks are touch-only (B352 D1). *)
+                 idle delivery — T1 drains only at agent activity, which
+                 is not a wake (B352 D1 stays NONE-from-c2c-alone). *)
               check bool "honest: no automatic mid-session delivery" true
                 (contains ~haystack:context
-                   ~needle:"does NOT arrive automatically");
+                   ~needle:"does NOT wake an idle");
               check bool "honest: points at poll-inbox" true
                 (contains ~haystack:context ~needle:"c2c poll-inbox")
           | None -> failf "expected onboarding output, got: %S" stdout));
@@ -213,7 +237,7 @@ let test_second_session_start_is_wake_no_duplicate () =
          check bool "no second onboarding" false
            (contains ~haystack:context ~needle:"now registered");
          check bool "wake is honest about mid-session delivery" true
-           (contains ~haystack:context ~needle:"does NOT arrive automatically")
+           (contains ~haystack:context ~needle:"does NOT wake an idle")
      | None -> failf "expected wake output on second fire, got: %S" stdout2))
 
 let test_session_start_drains_backlog () =
@@ -458,6 +482,288 @@ let test_posttooluse_known_sid_touches_silently () =
      | None -> fail "anchor missing after PostToolUse"
      | Some after ->
          check bool "PostToolUse advances anchor" true (after > before +. 60.0)))
+
+(* --- T1: mid-session peek + nudge (never drain) ------------------------- *)
+
+let seed_peer_and_self ctx ~sid ~self_alias ~peer_alias =
+  let b = broker ctx in
+  C2c_mcp.Broker.register b ~session_id:(sid ^ "-peer") ~alias:peer_alias
+    ~pid:None ~pid_start_time:None ~client_type:(Some "muse") ();
+  C2c_mcp.Broker.register b ~session_id:sid ~alias:self_alias ~pid:None
+    ~pid_start_time:None ~client_type:(Some "muse")
+    ~registered_by:(Some "muse-hook") ();
+  b
+
+(* Mail safety (muse 1.4.7, hook-test proven): Stop rejects
+   additionalContext ("unsupported"), so Stop must NEVER drain — drained
+   mail would be eaten. It peeks (repo+global) and emits a one-shot
+   decision:block count nudge carrying NO message bodies; when
+   stop_hook_active is set it stays silent (no block loop). *)
+let test_stop_peeks_and_nudges_without_draining () =
+  with_ctx (fun ctx ->
+    let sid = "muse-e2e-stopdrain-0001" in
+    let b =
+      seed_peer_and_self ctx ~sid ~self_alias:"zz-muse-stopdrain-self"
+        ~peer_alias:"zz-muse-stopdrain-peer"
+    in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-muse-stopdrain-peer"
+      ~to_alias:"zz-muse-stopdrain-self" ~content:"stop repo backlog" ();
+    let gb = C2c_mcp.Broker.create ~root:ctx.global_root in
+    C2c_mcp.Broker.register gb ~session_id:sid
+      ~alias:"zz-muse-stopdrain-self" ~pid:None ~pid_start_time:None
+      ~client_type:(Some "muse") ();
+    C2c_mcp.Broker.register gb ~session_id:"muse-e2e-stopdrain-gpeer"
+      ~alias:"zz-muse-stopdrain-gpeer" ~pid:None ~pid_start_time:None
+      ~client_type:(Some "muse") ();
+    C2c_mcp.Broker.enqueue_message gb ~from_alias:"zz-muse-stopdrain-gpeer"
+      ~to_alias:"zz-muse-stopdrain-self" ~content:"stop global backlog" ();
+    let n_before = count_regs ctx in
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~payload:(payload ~event:"Stop" ~session_id:sid ~turn_id:"turn-1" ())
+    in
+    check int "Stop exit 0" 0 rc;
+    (match parse_stop_block stdout with
+     | Some reason ->
+         check bool "nudge counts repo+global mail" true
+           (contains ~haystack:reason ~needle:"2 message(s) waiting");
+         check bool "nudge points at poll-inbox" true
+           (contains ~haystack:reason ~needle:"c2c poll-inbox");
+         check bool "nudge carries NO repo body" false
+           (contains ~haystack:reason ~needle:"stop repo backlog");
+         check bool "nudge carries NO global body" false
+           (contains ~haystack:reason ~needle:"stop global backlog")
+     | None ->
+         failf "expected Stop block nudge, got: %S (stderr %S)" stdout stderr);
+    check bool "no additionalContext on Stop (muse rejects it)" true
+      (parse_context stdout = None);
+    check int "repo mail NOT drained by Stop" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid));
+    check int "global mail NOT drained by Stop" 1
+      (List.length (C2c_mcp.Broker.read_inbox gb ~session_id:sid));
+    check int "Stop mints no row" n_before (count_regs ctx);
+    (* stop_hook_active: the model already got one block — no loop. *)
+    let rc2, stdout2, _ =
+      run_hook ctx
+        ~payload:
+          (payload ~event:"Stop" ~session_id:sid ~turn_id:"turn-2"
+             ~stop_hook_active:true ())
+    in
+    check int "second Stop exit 0" 0 rc2;
+    check string "stop_hook_active Stop silent (no block loop)" ""
+      (String.trim stdout2);
+    check int "mail still queued after both Stops" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid)))
+
+(* PostToolUse is mid-turn: peek + debounced count nudge only. A live
+   TUI drain ate mail (drained during a reminder-subagent window, no
+   context block reached the main model), so bodies never leave the
+   inbox here — retrieval is poll-inbox / the next SessionStart. *)
+let test_posttooluse_push_drains_and_defers () =
+  with_ctx (fun ctx ->
+    let sid = "muse-e2e-ptudrain-0001" in
+    let b =
+      seed_peer_and_self ctx ~sid ~self_alias:"zz-muse-ptudrain-self"
+        ~peer_alias:"zz-muse-ptudrain-peer"
+    in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-muse-ptudrain-peer"
+      ~to_alias:"zz-muse-ptudrain-self" ~content:"ptu push backlog" ();
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-muse-ptudrain-peer"
+      ~to_alias:"zz-muse-ptudrain-self" ~content:"ptu deferrable backlog"
+      ~deferrable:true ();
+    let n_before = count_regs ctx in
+    let rc, stdout, stderr =
+      run_hook ctx ~payload:(payload ~event:"PostToolUse" ~session_id:sid ())
+    in
+    check int "PostToolUse exit 0" 0 rc;
+    (match parse_context stdout with
+     | Some (event, context) ->
+         check string "hookEventName is PostToolUse" "PostToolUse" event;
+         check bool "nudge counts both waiting messages" true
+           (contains ~haystack:context ~needle:"2 message(s) waiting");
+         check bool "nudge points at poll-inbox" true
+           (contains ~haystack:context ~needle:"c2c poll-inbox");
+         check bool "push body NOT in the nudge" false
+           (contains ~haystack:context ~needle:"ptu push backlog");
+         check bool "deferrable body NOT in the nudge" false
+           (contains ~haystack:context ~needle:"ptu deferrable backlog")
+     | None ->
+         failf "expected PostToolUse nudge output, got: %S (stderr %S)" stdout
+           stderr);
+    check int "both messages stay queued (no drain)" 2
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid));
+    check int "PostToolUse mints no row" n_before (count_regs ctx);
+    (* Debounced: an immediate second PostToolUse stays silent. *)
+    let rc1b, stdout1b, _ =
+      run_hook ctx ~payload:(payload ~event:"PostToolUse" ~session_id:sid ())
+    in
+    check int "second PostToolUse exit 0" 0 rc1b;
+    check string "second PostToolUse debounced silent" ""
+      (String.trim stdout1b);
+    (* Stop nudges the deferrable count but never drains it. *)
+    let rc2, stdout2, _ =
+      run_hook ctx ~payload:(payload ~event:"Stop" ~session_id:sid ())
+    in
+    check int "Stop exit 0" 0 rc2;
+    (match parse_stop_block stdout2 with
+     | Some reason ->
+         check bool "Stop nudges both waiting messages" true
+           (contains ~haystack:reason ~needle:"2 message(s) waiting");
+         check bool "deferrable body NOT in the nudge" false
+           (contains ~haystack:reason ~needle:"ptu deferrable backlog")
+     | None -> failf "expected Stop block nudge, got: %S" stdout2);
+    check int "both still queued after Stop" 2
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid)))
+
+(* Channel-capable sessions keep the watcher-owns-delivery guard: Stop
+   neither drains nor block-nudges mail the watcher will deliver. *)
+let test_stop_skips_repo_drain_when_channel_capable () =
+  with_ctx (fun ctx ->
+    let sid = "muse-e2e-stopchan-0001" in
+    let b =
+      seed_peer_and_self ctx ~sid ~self_alias:"zz-muse-stopchan-self"
+        ~peer_alias:"zz-muse-stopchan-peer"
+    in
+    C2c_mcp.Broker.set_automated_delivery b ~session_id:sid
+      ~automated_delivery:true;
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-muse-stopchan-peer"
+      ~to_alias:"zz-muse-stopchan-self" ~content:"channel-owned backlog" ();
+    let rc, stdout, _ =
+      run_hook ctx ~payload:(payload ~event:"Stop" ~session_id:sid ())
+    in
+    check int "Stop exit 0" 0 rc;
+    check string "channel-capable Stop silent" "" (String.trim stdout);
+    check int "repo inbox untouched for the watcher" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid)))
+
+(* Unknown (subagent) sids and B130 agent_id turns drain NOTHING on the new
+   mid-session events: owner mail stays queued, no row is minted. *)
+let test_midsession_unknown_and_subagent_drain_nothing () =
+  with_ctx (fun ctx ->
+    let owner_sid = "muse-e2e-midunk-owner" in
+    let b =
+      seed_peer_and_self ctx ~sid:owner_sid
+        ~self_alias:"zz-muse-midunk-owner" ~peer_alias:"zz-muse-midunk-peer"
+    in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-muse-midunk-peer"
+      ~to_alias:"zz-muse-midunk-owner" ~content:"owner mid-session mail" ();
+    let n_before = count_regs ctx in
+    List.iter
+      (fun (label, pl) ->
+        let rc, stdout, _ = run_hook ctx ~payload:pl in
+        check int (label ^ ": exit 0") 0 rc;
+        check string (label ^ ": silent") "" (String.trim stdout);
+        check int (label ^ ": owner mail not drained") 1
+          (List.length (C2c_mcp.Broker.read_inbox b ~session_id:owner_sid)))
+      [ ("unknown Stop"
+        , payload ~event:"Stop" ~session_id:"muse-e2e-midunk-sub" () )
+      ; ("unknown PostToolUse"
+        , payload ~event:"PostToolUse" ~session_id:"muse-e2e-midunk-sub" () )
+      ; ("agent_id Stop"
+        , payload ~event:"Stop" ~session_id:owner_sid ~agent_id:"sub-1" () )
+      ; ( "agent_id PostToolUse"
+        , payload ~event:"PostToolUse" ~session_id:owner_sid
+            ~agent_id:"sub-2" () )
+      ];
+    check int "no row minted by any mid-session probe" n_before
+      (count_regs ctx))
+
+(* --- T2: stale skill refreshed on SessionStart -------------------------- *)
+
+let muse_skill_path ctx =
+  ctx.home // ".config" // "muse" // "skills" // "c2c" // "SKILL.md"
+
+let test_session_start_refreshes_stale_skill () =
+  with_ctx (fun ctx ->
+    let skill = muse_skill_path ctx in
+    write_file skill "stale muse skill body\n";
+    let sid = "muse-e2e-skill-0001" in
+    let rc, _, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    check bool "skill file still present" true (Sys.file_exists skill);
+    let body = read_file skill in
+    check bool "drifted skill rewritten on SessionStart" false
+      (body = "stale muse skill body\n");
+    check bool "refreshed to the embedded muse skill" true
+      (contains ~haystack:body ~needle:"# c2c (Muse)");
+    (* Drift-only: a current skill is not rewritten (inode stable). *)
+    let ino = (Unix.stat skill).Unix.st_ino in
+    let rc2, _, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "second exit 0" 0 rc2;
+    check bool "current skill not rewritten" true
+      (ino = (Unix.stat skill).Unix.st_ino);
+    ignore stderr)
+
+(* --- T6: rooms auto-join on SessionStart -------------------------------- *)
+
+let room_member_rows ctx ~room_id =
+  C2c_mcp.Broker.read_room_members (broker ctx) ~room_id
+
+let is_room_member ctx ~room_id ~alias ~session_id =
+  List.exists
+    (fun (m : C2c_mcp.room_member) ->
+      m.rm_alias = alias && m.rm_session_id = session_id)
+    (room_member_rows ctx ~room_id)
+
+let test_session_start_auto_joins_rooms_idempotent () =
+  with_ctx (fun ctx ->
+    let sid = "muse-e2e-autojoin-0001" in
+    let env =
+      [ ("C2C_MCP_AUTO_JOIN_ROOMS", "zz-muse-room-a, zz-muse-room-b") ]
+    in
+    let rc, _, stderr =
+      run_hook ctx ~extra_env:env ~payload:(payload ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    (match find_reg ctx sid with
+     | None -> failf "SessionStart registered nothing (stderr: %S)" stderr
+     | Some r ->
+         List.iter
+           (fun room_id ->
+             check bool ("joined " ^ room_id) true
+               (is_room_member ctx ~room_id ~alias:r.alias ~session_id:sid))
+           [ "zz-muse-room-a"; "zz-muse-room-b" ];
+         (* Idempotent: a second SessionStart keeps exactly one row. *)
+         let rc2, _, _ =
+           run_hook ctx ~extra_env:env ~payload:(payload ~session_id:sid ())
+         in
+         check int "second exit 0" 0 rc2;
+         List.iter
+           (fun room_id ->
+             check int ("still one member row in " ^ room_id) 1
+               (List.length
+                  (List.filter
+                     (fun (m : C2c_mcp.room_member) -> m.rm_alias = r.alias)
+                     (room_member_rows ctx ~room_id))))
+           [ "zz-muse-room-a"; "zz-muse-room-b" ]))
+
+let test_session_start_auto_join_empty_env_joins_nothing () =
+  with_ctx (fun ctx ->
+    let sid = "muse-e2e-autojoin-0002" in
+    let rc, _, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_AUTO_JOIN_ROOMS", "") ]
+        ~payload:(payload ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "registered" true (find_reg ctx sid <> None);
+    ignore stderr;
+    check int "no rooms joined when env pins empty" 0
+      (List.length (C2c_mcp.Broker.my_rooms (broker ctx) ~session_id:sid)))
+
+(* No env at all: the product default room (swarm-lounge) is joined — this
+   is the no-MCP gap T6 closes (MCP installs get the env, hooks do not). *)
+let test_session_start_auto_join_default_room () =
+  with_ctx (fun ctx ->
+    let sid = "muse-e2e-autojoin-0003" in
+    let rc, _, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    match find_reg ctx sid with
+    | None -> failf "SessionStart registered nothing (stderr: %S)" stderr
+    | Some r ->
+        check bool "default swarm-lounge joined" true
+          (is_room_member ctx ~room_id:"swarm-lounge" ~alias:r.alias
+             ~session_id:sid))
 
 let test_session_end_deregisters_hook_owned_only () =
   with_ctx (fun ctx ->
@@ -1342,6 +1648,71 @@ let test_b361_vanilla_session_end_leaves_no_mapping_files () =
     check bool "no lock sibling" false
       (Sys.file_exists (muse_mapping_path ctx ^ ".lock")))
 
+(* B361+T1: a mid-session Stop under the native payload sid drains the
+   MANAGED row's inbox through the adoption mapping — the drain-through
+   twin of touch-through, and the production shape for managed muse
+   (hook env is scrubbed, so the mapping is the only identity link). *)
+let test_b361_stop_drains_through_to_managed_row () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-drainthrough" in
+    let b = register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj" in
+    C2c_mcp.Broker.register b ~session_id:"zz-b361-dt-peer"
+      ~alias:"zz-b361-dt-peer" ~pid:None ~pid_start_time:None
+      ~client_type:(Some "muse") ();
+    let payload_sid = native_sid 31 in
+    let rc1, _, stderr1 =
+      run_hook ctx
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "SessionStart exit 0" 0 rc1;
+    check bool "adopted" true
+      (contains ~haystack:stderr1 ~needle:"adopting managed session");
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-b361-dt-peer"
+      ~to_alias:managed ~content:"managed mid-session mail" ();
+    let rc, stdout, stderr =
+      run_hook ctx
+        ~payload:
+          (payload ~event:"Stop" ~session_id:payload_sid
+             ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "Stop exit 0" 0 rc;
+    (match parse_stop_block stdout with
+     | Some reason ->
+         check bool "managed backlog counted through the mapping" true
+           (contains ~haystack:reason ~needle:"1 message(s) waiting");
+         check bool "managed body NOT in the nudge" false
+           (contains ~haystack:reason ~needle:"managed mid-session mail")
+     | None ->
+         failf "expected Stop nudge-through output, got: %S (stderr %S)"
+           stdout stderr);
+    check int "managed inbox NOT drained by Stop" 1
+      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:managed));
+    check bool "payload sid still has no row" true
+      (find_reg ctx payload_sid = None))
+
+(* B361+T6: an adopted SessionStart joins rooms under the MANAGED
+   alias/session, never a freshly minted payload identity. *)
+let test_b361_adopted_session_start_joins_as_managed () =
+  with_ctx (fun ctx ->
+    let managed = "zz-b361-autojoin" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    let payload_sid = native_sid 30 in
+    let rc, _, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_AUTO_JOIN_ROOMS", "zz-muse-room-adopt") ]
+        ~payload:(payload ~session_id:payload_sid ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "adopted" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check bool "joined as the managed identity" true
+      (is_room_member ctx ~room_id:"zz-muse-room-adopt" ~alias:managed
+         ~session_id:managed);
+    check bool "payload sid is not a room member" false
+      (List.exists
+         (fun (m : C2c_mcp.room_member) -> m.rm_session_id = payload_sid)
+         (room_member_rows ctx ~room_id:"zz-muse-room-adopt")))
+
 (* --- B098: verdict-shaped backlog is DATA (B356 SCOPE-c) ------------------- *)
 (* B352 P2 evidence: an `allow` body delivered to a muse session parked in
    approval Preview and was ignored by the follow-up turn (preview-only,
@@ -1366,7 +1737,7 @@ let run_await ctx ~token ~timeout_s =
   (try Sys.remove stdout_path with _ -> ());
   (rc, String.trim out)
 
-let check_verdict_backlog_is_inert verdict () =
+let check_verdict_backlog_is_inert ?(event = "SessionStart") verdict () =
   with_ctx (fun ctx ->
     let token = "mu_b098hm_" ^ verdict in
     let sid = "muse-e2e-b098-" ^ verdict in
@@ -1382,20 +1753,46 @@ let check_verdict_backlog_is_inert verdict () =
     C2c_mcp.Broker.enqueue_message b ~from_alias:peer_alias
       ~to_alias:self_alias ~content:(token ^ " " ^ verdict) ();
     let rc, stdout, stderr =
-      run_hook ctx ~payload:(payload ~session_id:sid ())
+      run_hook ctx ~payload:(payload ~event ~session_id:sid ())
     in
     check int "exit 0" 0 rc;
-    (match parse_context stdout with
-     | Some (_, context) ->
-         check bool "verdict-shaped body delivered (DATA, visible)" true
-           (contains ~haystack:context ~needle:(token ^ " " ^ verdict));
-         check bool "delivered inside the c2c envelope (Received-message placement)" true
-           (contains ~haystack:context ~needle:"<c2c event=\"message\"")
-     | None ->
-         failf "expected wake + message output, got: %S (stderr %S)" stdout
-           stderr);
-    check int "drain is destructive" 0
-      (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid));
+    (if event = "Stop" || event = "PostToolUse" then begin
+       (* Mid-session events never drain (Stop: muse rejects its
+          additionalContext; PostToolUse: live drain ate mail): the
+          verdict-shaped body stays queued and out of the count nudge. *)
+       (if event = "Stop" then
+          (match parse_stop_block stdout with
+           | Some reason ->
+               check bool "verdict-shaped body NOT in the Stop nudge" false
+                 (contains ~haystack:reason ~needle:(token ^ " " ^ verdict))
+           | None ->
+               failf "expected Stop block nudge, got: %S (stderr %S)" stdout
+                 stderr)
+        else
+          (match parse_context stdout with
+           | Some (_, context) ->
+               check bool "verdict-shaped body NOT in the PTU nudge" false
+                 (contains ~haystack:context ~needle:(token ^ " " ^ verdict))
+           | None ->
+               failf "expected PostToolUse nudge, got: %S (stderr %S)"
+                 stdout stderr));
+       check int "mid-session drain is non-destructive" 1
+         (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid))
+     end else begin
+       (match parse_context stdout with
+        | Some (event_name, context) ->
+            check string "hookEventName matches the draining event" event
+              event_name;
+            check bool "verdict-shaped body delivered (DATA, visible)" true
+              (contains ~haystack:context ~needle:(token ^ " " ^ verdict));
+            check bool "delivered inside the c2c envelope (Received-message placement)" true
+              (contains ~haystack:context ~needle:"<c2c event=\"message\"")
+        | None ->
+            failf "expected wake + message output, got: %S (stderr %S)" stdout
+              stderr);
+       check int "drain is destructive" 0
+         (List.length (C2c_mcp.Broker.read_inbox b ~session_id:sid))
+     end);
     check bool ("no verdict file created for " ^ verdict) false
       (Sys.file_exists (verdict_file ctx ~token));
     let rc, out = run_await ctx ~token ~timeout_s:0.3 in
@@ -1432,6 +1829,168 @@ let test_b098_host_local_verdict_positive_control () =
     check int "await-reply consumes the real host-local verdict" 0 rc;
     check string "verdict printed" "allow" out)
 
+(* --- T3: default-alias file ---------------------------------------------
+   `c2c install muse` deliberately does NOT write ~/.config/c2c/default-alias
+   (the install-time alias may be auto-picked and unregistered — the Grok
+   B173 clobber class). The hook writes/refreshes it on SessionStart once
+   the session's identity is unambiguously registered (fresh hook register,
+   sticky reuse, or single B361-managed adoption), so bare `c2c monitor`
+   can resolve the alias -> live inbox. The B361 ambiguous-cwd bail and a
+   foreign-client env row must write nothing. *)
+
+let default_alias_path ctx = ctx.home // ".config" // "c2c" // "default-alias"
+let read_default_alias ctx = String.trim (read_file (default_alias_path ctx))
+
+let test_t3_default_alias_written_for_hook_registration () =
+  with_ctx (fun ctx ->
+    (* A stale file from another client/session must be refreshed, not kept. *)
+    write_file (default_alias_path ctx) "zz-t3-stale-alias\n";
+    let sid = "muse-e2e-t3-vanilla" in
+    let rc, _, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    (match find_reg ctx sid with
+     | None -> failf "expected auto-registration for %s (stderr: %S)" sid stderr
+     | Some r ->
+         check string "default-alias refreshed to the registered alias"
+           r.alias (read_default_alias ctx)))
+
+let test_t3_default_alias_written_for_managed_adoption () =
+  with_ctx (fun ctx ->
+    let managed = "zz-t3-managed" in
+    ignore (register_managed_muse ctx ~alias:managed ~cwd:"/tmp/b361-proj");
+    let rc, _, stderr =
+      run_hook ctx
+        ~payload:(payload ~session_id:(native_sid 31) ~cwd:"/tmp/b361-proj" ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "adoption happened" true
+      (contains ~haystack:stderr ~needle:"adopting managed session");
+    check string "default-alias is the managed alias" managed
+      (read_default_alias ctx))
+
+let test_t3_default_alias_not_written_on_ambiguous_bail () =
+  with_ctx (fun ctx ->
+    let cwd = "/tmp/b361-proj" in
+    ignore (register_managed_muse ctx ~alias:"zz-t3-amb-a" ~cwd);
+    ignore (register_managed_muse ctx ~alias:"zz-t3-amb-b" ~cwd);
+    let rc, _, stderr =
+      run_hook ctx ~payload:(payload ~session_id:(native_sid 32) ~cwd ())
+    in
+    check int "never fails the host turn" 0 rc;
+    check bool "ambiguity bailed loudly" true
+      (contains ~haystack:stderr ~needle:"cannot tell which one");
+    check bool "no default-alias written on ambiguity" false
+      (Sys.file_exists (default_alias_path ctx)))
+
+let test_t3_default_alias_not_written_for_foreign_client_row () =
+  with_ctx (fun ctx ->
+    let b = broker ctx in
+    let sid = "zz-t3-foreign-sid" in
+    C2c_mcp.Broker.register b ~session_id:sid ~alias:"zz-t3-foreign"
+      ~pid:None ~pid_start_time:None ~client_type:(Some "codex") ();
+    let rc, _, _ =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_SESSION_ID", sid) ]
+        ~payload:(payload ~session_id:(native_sid 33) ())
+    in
+    check int "exit 0" 0 rc;
+    check bool "foreign-client row writes no default-alias" false
+      (Sys.file_exists (default_alias_path ctx));
+    (* T6 shares the T3 identity guards: a foreign-client row must not be
+       room-joined under the muse hook either. *)
+    check int "foreign-client row joins no rooms" 0
+      (List.length (C2c_mcp.Broker.my_rooms b ~session_id:sid)))
+
+(* P1-2: the machine-global file must not be written while ANOTHER live
+   session with a different alias exists — two live muse sessions would
+   otherwise clobber each other last-writer-wins (the B173 class). A
+   confirmed-dead other row does not block the write. *)
+let test_t3_default_alias_not_written_with_other_live_session () =
+  with_ctx (fun ctx ->
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:"zz-t3-other-live"
+      ~alias:"zz-t3-other-live" ~pid:(Some (Unix.getpid ()))
+      ~pid_start_time:(my_pid_start_time ()) ~client_type:(Some "muse")
+      ~from_auto_gen:false ();
+    let sid = "muse-e2e-t3-second" in
+    let rc, _, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    check bool "second session still registers" true
+      (find_reg ctx sid <> None);
+    ignore stderr;
+    check bool "no default-alias while another live session exists" false
+      (Sys.file_exists (default_alias_path ctx)))
+
+let test_t3_default_alias_written_when_other_session_dead () =
+  with_ctx (fun ctx ->
+    let b = broker ctx in
+    C2c_mcp.Broker.register b ~session_id:"zz-t3-other-dead"
+      ~alias:"zz-t3-other-dead" ~pid:(Some 2147483646)
+      ~pid_start_time:(Some 12345) ~client_type:(Some "muse")
+      ~from_auto_gen:false ();
+    let sid = "muse-e2e-t3-sole-live" in
+    let rc, _, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    (match find_reg ctx sid with
+     | None -> fail "expected auto-registration"
+     | Some r ->
+         check string "dead other does not block the write" r.alias
+           (read_default_alias ctx)))
+
+(* --- T6 config file (P1-3): muse scrubs C2C_* from hook env, so the
+   room list also lives in an install-written file under the muse
+   config dir. Env (when present) wins; an empty file joins nothing. *)
+let auto_join_file_path ctx =
+  ctx.home // ".config" // "muse" // "c2c-auto-join-rooms"
+
+let test_session_start_auto_join_from_config_file () =
+  with_ctx (fun ctx ->
+    write_file (auto_join_file_path ctx) "zz-file-room-a, zz-file-room-b\n";
+    let sid = "muse-e2e-autojoin-file-1" in
+    let rc, _, stderr = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    match find_reg ctx sid with
+    | None -> failf "SessionStart registered nothing (stderr: %S)" stderr
+    | Some r ->
+        List.iter
+          (fun room_id ->
+            check bool ("joined file room " ^ room_id) true
+              (is_room_member ctx ~room_id ~alias:r.alias ~session_id:sid))
+          [ "zz-file-room-a"; "zz-file-room-b" ];
+        check bool "default room NOT joined when file present" false
+          (is_room_member ctx ~room_id:"swarm-lounge" ~alias:r.alias
+             ~session_id:sid))
+
+let test_session_start_auto_join_empty_config_file_joins_nothing () =
+  with_ctx (fun ctx ->
+    write_file (auto_join_file_path ctx) "";
+    let sid = "muse-e2e-autojoin-file-2" in
+    let rc, _, _ = run_hook ctx ~payload:(payload ~session_id:sid ()) in
+    check int "exit 0" 0 rc;
+    check bool "registered" true (find_reg ctx sid <> None);
+    check int "empty config file joins nothing" 0
+      (List.length (C2c_mcp.Broker.my_rooms (broker ctx) ~session_id:sid)))
+
+let test_session_start_auto_join_env_wins_over_config_file () =
+  with_ctx (fun ctx ->
+    write_file (auto_join_file_path ctx) "zz-file-room-env\n";
+    let sid = "muse-e2e-autojoin-file-3" in
+    let rc, _, stderr =
+      run_hook ctx
+        ~extra_env:[ ("C2C_MCP_AUTO_JOIN_ROOMS", "zz-env-room-wins") ]
+        ~payload:(payload ~session_id:sid ())
+    in
+    check int "exit 0" 0 rc;
+    match find_reg ctx sid with
+    | None -> failf "SessionStart registered nothing (stderr: %S)" stderr
+    | Some r ->
+        check bool "env room joined" true
+          (is_room_member ctx ~room_id:"zz-env-room-wins" ~alias:r.alias
+             ~session_id:sid);
+        check bool "file room NOT joined (env wins)" false
+          (is_room_member ctx ~room_id:"zz-file-room-env" ~alias:r.alias
+             ~session_id:sid))
+
 let () =
   Random.self_init ();
   run "c2c_hook_muse"
@@ -1452,6 +2011,32 @@ let () =
             test_managed_marker_suppresses_hook_label
         ; test_case "camelCase spellings accepted" `Quick
             test_camel_case_spellings_accepted
+        ; test_case "SessionStart refreshes stale skill (T2)" `Quick
+            test_session_start_refreshes_stale_skill
+        ; test_case "SessionStart auto-joins rooms, idempotent (T6)" `Quick
+            test_session_start_auto_joins_rooms_idempotent
+        ; test_case "SessionStart auto-join empty env joins nothing (T6)"
+            `Quick test_session_start_auto_join_empty_env_joins_nothing
+        ; test_case "SessionStart auto-join default room (T6)" `Quick
+            test_session_start_auto_join_default_room
+        ; test_case "SessionStart writes default-alias (T3)" `Quick
+            test_t3_default_alias_written_for_hook_registration
+        ; test_case "adopted SessionStart writes managed default-alias (T3)"
+            `Quick test_t3_default_alias_written_for_managed_adoption
+        ; test_case "ambiguous bail writes no default-alias (T3)" `Quick
+            test_t3_default_alias_not_written_on_ambiguous_bail
+        ; test_case "foreign-client row writes no default-alias (T3)" `Quick
+            test_t3_default_alias_not_written_for_foreign_client_row
+        ; test_case "other live session blocks default-alias (T3/P1-2)" `Quick
+            test_t3_default_alias_not_written_with_other_live_session
+        ; test_case "dead other session allows default-alias (T3/P1-2)" `Quick
+            test_t3_default_alias_written_when_other_session_dead
+        ; test_case "auto-join rooms from config file (T6/P1-3)" `Quick
+            test_session_start_auto_join_from_config_file
+        ; test_case "empty auto-join config file joins nothing (T6/P1-3)"
+            `Quick test_session_start_auto_join_empty_config_file_joins_nothing
+        ; test_case "auto-join env wins over config file (T6/P1-3)" `Quick
+            test_session_start_auto_join_env_wins_over_config_file
         ] )
     ; ( "hook_muse_midsession"
       , [ test_case "Stop touches anchor, keeps row, silent" `Quick
@@ -1462,6 +2047,14 @@ let () =
             `Quick test_posttooluse_unknown_sid_mints_nothing
         ; test_case "PostToolUse known sid touches silently" `Quick
             test_posttooluse_known_sid_touches_silently
+        ; test_case "Stop peeks + block-nudges, never drains (T1)" `Quick
+            test_stop_peeks_and_nudges_without_draining
+        ; test_case "PostToolUse peeks + debounced nudge, never drains (T1)"
+            `Quick test_posttooluse_push_drains_and_defers
+        ; test_case "Stop silent when channel-capable (T1)" `Quick
+            test_stop_skips_repo_drain_when_channel_capable
+        ; test_case "unknown/subagent mid-session drains nothing (T1)" `Quick
+            test_midsession_unknown_and_subagent_drain_nothing
         ; test_case "SessionEnd deregisters hook-owned only" `Quick
             test_session_end_deregisters_hook_owned_only
         ] )
@@ -1530,12 +2123,21 @@ let () =
             test_b361_mapping_write_failure_warns_loudly
         ; test_case "vanilla SessionEnd leaves no mapping files" `Quick
             test_b361_vanilla_session_end_leaves_no_mapping_files
+        ; test_case "Stop nudges through to managed row (T1)" `Quick
+            test_b361_stop_drains_through_to_managed_row
+        ; test_case "adopted SessionStart joins as managed (T6)" `Quick
+            test_b361_adopted_session_start_joins_as_managed
         ] )
     ; ( "hook_muse_b098"
       , [ test_case "verdict-shaped 'allow' backlog is inert" `Quick
             (check_verdict_backlog_is_inert "allow")
         ; test_case "verdict-shaped 'deny' backlog is inert" `Quick
             (check_verdict_backlog_is_inert "deny")
+        ; test_case "verdict-shaped 'allow' via Stop is inert (T1)" `Quick
+            (check_verdict_backlog_is_inert ~event:"Stop" "allow")
+        ; test_case "verdict-shaped 'deny' via PostToolUse is inert (T1)"
+            `Quick
+            (check_verdict_backlog_is_inert ~event:"PostToolUse" "deny")
         ; test_case "positive control: real host-local verdict works" `Quick
             test_b098_host_local_verdict_positive_control
         ] )
