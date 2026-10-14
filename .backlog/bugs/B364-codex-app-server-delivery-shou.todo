@@ -1,17 +1,14 @@
 ---
+completed_at: null
 complexity: medium
 created_at: "2026-10-14T15:53:34Z"
 depends_on: []
 estimate_hours: 1
 id: B364
 priority: high
+started_at: null
 status: pending
-tags:
-    - codex
-    - c2c
-    - app-server
-    - delivery
-    - bug
+tags: []
 title: Codex app-server delivery should reuse the default managed app-server
 updated_at: "2026-10-14T15:53:34Z"
 ---
@@ -21,7 +18,9 @@ Observed with c2c 0.18.0 (built 2026-10-13, commit a7b35338c7395b99d3de15d172c41
 
 Summary
 
-The c2c Codex integration starts a separate per-instance Codex app-server over a local WebSocket, instead of attaching to the normal managed Codex app-server daemon. This creates multiple Codex app-server/control planes with separate lifecycle and state ownership. It caused a long-running Codex session to use the wrong auth/control path during remote compaction and become unusable until the client and app-server were restarted.
+An earlier c2c-managed Codex launch started a separate per-instance Codex app-server over a local WebSocket instead of attaching to the normal managed Codex app-server daemon. A later c2c 0.18.0 launch, with the default daemon already healthy, correctly reused the default daemon over a Unix socket. The remaining bug is that this reuse behavior appears conditional or insufficiently documented, and c2c's registry reports the reused instance as app-server unavailable even while it is connected and running.
+
+The earlier separate-server behavior created multiple Codex app-server/control planes with separate lifecycle and state ownership. It caused a long-running Codex session to use the wrong auth/control path during remote compaction and become unusable until the client and app-server were restarted.
 
 Expected behavior
 
@@ -32,6 +31,8 @@ When the default Codex app-server is already running, c2c should reuse it throug
 c2c should register/deliver the managed session through that existing app-server and should not start a second app-server for the same Codex installation and CODEX_HOME. If reuse is impossible, c2c should clearly document the reason and provide an explicit opt-in for the separate-server behavior.
 
 Actual behavior
+
+Earlier c2c 0.18.0 behavior, observed while the default Codex daemon was also running:
 
 A c2c-managed Codex instance was launched as:
 
@@ -49,7 +50,27 @@ At the same time, the normal managed Codex daemon was running separately:
 
   codex app-server --listen unix:// --managed-daemon
 
-The separate c2c app-server existed alongside the default daemon and acquired thread/session locks independently. Restarting the default daemon did not necessarily repair the c2c-managed server or its session.
+A later test after the affected client was closed used c2c 0.18.0 to run:
+
+  cx resume 01a0ef9b-44e6-70c2-8075-8b79adb1b06b
+
+This time c2c did not start a second app-server. The observed process tree was:
+
+  c2c new codex -- resume 01a0ef9b-44e6-70c2-8075-8b79adb1b06b
+    node .../codex.js --remote unix:///tmp/codex-daemon-1000/<socket> resume ...
+      codex --remote unix:///tmp/codex-daemon-1000/<socket> resume ...
+
+The socket belonged to the existing managed daemon PID 2069932, whose control socket was:
+
+  /home/xertrov/.codex/app-server-control/app-server-control.sock
+
+No new WebSocket app-server listener appeared. The managed daemon owned the resumed session's thread lock. This demonstrates that c2c 0.18.0 can reuse the default app-server under at least some startup conditions.
+
+However, c2c still reported the running instance as:
+
+  codex-vector-brine-2f6b codex running unavailable (pid 2098110)
+
+and its c2c app-server ingress ledger had no error but the c2c registry did not expose the underlying Unix-socket attachment. The reuse decision and health reporting need to be made explicit and tested.
 
 Failure symptoms
 
@@ -82,18 +103,23 @@ The session compacted and returned OK.
 
 Why this matters
 
-The c2c app-server transport is described by c2c 0.18.0 help as the default and only managed path for supported Codex clients, with hook-backed fallback. However, the implementation appears to mean "start a dedicated app-server per c2c instance," not "use the default Codex app-server." That distinction is unsafe for installations that already run the managed Codex daemon, especially when sessions share CODEX_HOME, SQLite state, thread locks, model catalogs, and auth configuration.
+The c2c app-server transport is described by c2c 0.18.0 help as the default and only managed path for supported Codex clients, with hook-backed fallback. The new test proves that c2c can reuse the default daemon, but the earlier run proves that it can also start a dedicated WebSocket app-server. The selection criteria are not visible in the CLI behavior or documentation. Running both modes against the same CODEX_HOME, SQLite state, thread locks, model catalogs, and auth configuration is unsafe.
+
+The registry/health surface also labeled the successfully attached instance as `app-server=unavailable`, even though its client was connected to the default daemon over the Unix socket. That makes operational diagnosis harder and can cause an operator to start or restart the wrong server.
 
 Requested fix
 
 1. Detect the active Codex managed app-server and its control socket.
-2. Reuse that app-server for c2c delivery when it belongs to the same CODEX_HOME and Codex installation.
+2. Prefer and document reuse of that app-server for c2c delivery when it belongs to the same CODEX_HOME and Codex installation.
 3. Avoid starting a second app-server on a random local WebSocket port in that case.
-4. Ensure the selected app-server and the Codex client use the same config, provider, model catalog, auth environment, and thread store.
-5. If a dedicated app-server is required, fail clearly when another daemon owns the same CODEX_HOME/thread store, or provide an explicit isolated CODEX_HOME and state directory.
-6. Add an integration test that launches the default daemon, runs `c2c start codex`, and asserts that no second app-server is spawned.
-7. Add a regression test for a long-running session whose model provider is OpenCodex and whose remote-compaction/collaboration operation must not silently fall back to direct ChatGPT workspace routing.
-8. Document the relationship between c2c's "app-server transport" and Codex's default managed app-server.
+4. If the dedicated-server fallback is required, report the reason and clearly mark the instance as isolated.
+5. Ensure the selected app-server and the Codex client use the same config, provider, model catalog, auth environment, and thread store.
+6. Fix c2c instance health reporting so a client attached through the default daemon's Unix socket is not shown as `app-server=unavailable`.
+7. If a dedicated app-server is required, fail clearly when another daemon owns the same CODEX_HOME/thread store, or provide an explicit isolated CODEX_HOME and state directory.
+8. Add an integration test with the default daemon already running, run `c2c start codex`, and assert that c2c attaches through the daemon's Unix socket and does not spawn a second app-server.
+9. Add a separate integration test for the dedicated-server fallback and assert that its lifecycle/state is isolated.
+10. Add a regression test for a long-running session whose model provider is OpenCodex and whose remote-compaction/collaboration operation must not silently fall back to direct ChatGPT workspace routing.
+11. Document the relationship between c2c's "app-server transport" and Codex's default managed app-server.
 
 Environment
 
