@@ -36,6 +36,14 @@ val resolve_pmodel : t -> class_lookup:(string -> string option) -> string optio
 
 val render_for_client : ?resolved_pmodel:string -> t -> client:string -> name:string -> string option
 
+val renderable_clients : string list
+(** Every client [render_for_client] renders non-[None] for. *)
+
+val file_backed_clients : string list
+(** Renderable clients delivered as an agent file the host reads back
+    ([renderable_clients] minus muse, whose delivery is the managed
+    kickoff string). `c2c roles compile` writes files only for these. *)
+
 module OpenCode_renderer : sig
   val render : ?resolved_pmodel:string -> t -> string
 end
@@ -50,6 +58,10 @@ end
 
 module Kimi_renderer : sig
   val render : ?resolved_pmodel:string -> name:string -> t -> string
+end
+
+module Muse_renderer : sig
+  val render : ?resolved_pmodel:string -> t -> name:string -> string
 end
 
 val canonical_roles_dir : unit -> string

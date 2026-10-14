@@ -451,6 +451,20 @@ val per_agent_managed_heartbeats : name:string -> managed_heartbeat list
 val builtin_managed_heartbeat : managed_heartbeat
 (** Default heartbeat used as base when building role-heartbeats. *)
 
+val default_heartbeat_clients : string list
+(** Clients the builtin managed heartbeat applies to (incl. muse, excl. agy). *)
+
+val mcp_will_run_for_client : client:string option -> bool
+(** Whether an MCP server will actually run for a managed instance of
+    [client]. Muse is probed against its user settings
+    ([mcpServers.c2c]); other clients keep the historical assumption. *)
+
+val schedule_timer_enabled_for_instance : client:string option -> bool
+(** The shared schedule-ownership decision: [true] means the MCP
+    server's timer fires schedules and the c2c-start watcher stays off,
+    [false] the reverse. An explicit [C2C_MCP_SCHEDULE_TIMER] in the
+    environment wins over the per-client probe. *)
+
 (** {1 S5: Role heartbeat persistence} *)
 
 val resolve_managed_heartbeats_and_persist_role :

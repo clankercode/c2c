@@ -1594,9 +1594,66 @@ let test_muse_health_row_mapping () =
   (match muse_health_row { base with mm_muse_present = true } with
    | `Yellow, _ -> ()
    | _ -> fail "present-but-no-c2c must be yellow");
-  (match muse_health_row { base with mm_muse_present = true; mm_installed = true } with
+  (match
+     muse_health_row
+       { base with
+         mm_muse_present = true
+       ; mm_installed = true
+       ; mm_plugin_trust = "trusted"
+       }
+   with
    | `Green, _ -> ()
-   | _ -> fail "installed must be green")
+   | _ -> fail "installed + trusted plugin must be green")
+
+(* T8: health must not be green on a bare install marker. An
+   installed-but-unapproved plugin never fires its hooks, and an install
+   with no hooks marker at all (plugin not trusted, no settings.json
+   `c2c hook muse`) gives no file/CLI evidence hooks can fire — both are
+   yellow, never green, and the row never claims live firing (#50). *)
+let test_muse_health_row_unapproved_and_no_hooks_marker_yellow () =
+  let base : C2c_doctor_hooks.muse_result =
+    { mm_muse_present = true; mm_installed = true; mm_skill_exists = true
+    ; mm_plugin_cache_exists = false; mm_plugin_record = false
+    ; mm_plugin_trust = "unknown"; mm_settings_state = "ok"
+    ; mm_settings_hooks = false; mm_mcp_entry = false; mm_plugins_gate = "unknown"
+    ; mm_ingress_env = false; mm_ingress_veto = false; mm_sessions = []
+    ; mm_session_message = "unknown"
+    ; mm_muse_regs = 0; mm_wake_class = C2c_doctor_hooks.Muse_wake_none
+    ; mm_wake_sessions = []
+    }
+  in
+  (match
+     C2c_doctor_hooks.muse_health_row
+       { base with mm_plugin_trust = "needs-approval" }
+   with
+   | `Yellow, msg ->
+       check bool "unapproved row names muse:" true
+         (C2c_doctor_hooks.contains msg "muse:");
+       check bool "unapproved row says unapproved" true
+         (C2c_doctor_hooks.contains msg "unapproved")
+   | _ -> fail "installed but unapproved plugin must be yellow, not green");
+  (match C2c_doctor_hooks.muse_health_row base with
+   | `Yellow, _ -> ()
+   | _ -> fail "installed with no hooks marker must be yellow, not green");
+  (match
+     C2c_doctor_hooks.muse_health_row
+       { base with mm_plugin_trust = "not-installed"; mm_settings_hooks = true }
+   with
+   | `Green, _ -> ()
+   | _ -> fail "settings.json hooks fallback marker must allow green");
+  (* An unapproved plugin WITH the settings fallback must not claim hooks
+     do not fire: the settings hooks marker is present and allowed. *)
+  (match
+     C2c_doctor_hooks.muse_health_row
+       { base with mm_plugin_trust = "needs-approval"; mm_settings_hooks = true }
+   with
+   | `Green, msg ->
+       check bool "row credits the settings marker" true
+         (C2c_doctor_hooks.contains msg "settings.json hooks marker");
+       check bool "row never claims live firing" true
+         (C2c_doctor_hooks.contains msg "live firing not observed")
+   | _ ->
+       fail "needs-approval + settings hooks must allow green (settings fire)")
 
 let test_muse_json_key_present () =
   with_muse_env (fun home ->
@@ -1814,11 +1871,14 @@ let test_rearm_muse_noop_across_states () =
       ~from_auto_gen:true ();
     check int "rearm arms nothing (explicit root)" 0
       (List.length (C2c_doctor_hooks.rearm_deaf_muse_sessions ~broker_root ()));
-    (* Signature-stability only: the no-op ignores ?broker_root, so this
-       proves the default-root call compiles and stays empty — not that
-       default-root resolution was exercised. *)
-    check int "rearm arms nothing (default root, signature stability)" 0
-      (List.length (C2c_doctor_hooks.rearm_deaf_muse_sessions ())))
+    (* The pure entry prints nothing and scans nothing: instructions are
+       printed by the CLI rearm block from its own check result. No
+       default-root call here — it used to scan the ambient broker. *)
+    let out =
+      capture_stdout (fun () ->
+        ignore (C2c_doctor_hooks.rearm_deaf_muse_sessions ~broker_root ()))
+    in
+    check string "pure rearm entry is silent" "" out)
 
 let test_muse_human_shows_wake_and_disclaimer () =
   with_full_hermetic_broker (fun ~broker_root ->
@@ -1893,6 +1953,83 @@ let test_muse_rearm_posture_printer () =
     (C2c_doctor_hooks.contains out "muse: 2 session(s)");
   check bool "states no poster to re-arm" true
     (C2c_doctor_hooks.contains out "no poster to re-arm")
+
+(* T8: --rearm cannot heal a muse session (no poster, B356 parked), so the
+   CLI print path instructs instead of staying silent: one verbatim
+   in-session Monitor instruction per affected LIVE alias (queued mail,
+   no live monitor), while arming nothing and keeping classify_muse_deaf
+   pinned false. Confirmed-dead rows are never instructed (#42), and
+   duplicate aliases collapse to one instruction. *)
+let test_rearm_muse_prints_verbatim_monitor_instruction () =
+  with_muse_broker (fun ~broker_root ->
+    let b =
+      register_muse broker_root ~session_id:"muse-sess-rearm-instruct"
+        ~alias:"muse-rearm-cc"
+    in
+    C2c_mcp.Broker.enqueue_message b ~from_alias:"peer"
+      ~to_alias:"muse-rearm-cc" ~content:"waiting" ();
+    (* confirmed-dead row with queued mail: never instructed *)
+    let broker = C2c_mcp.Broker.create ~root:broker_root in
+    C2c_mcp.Broker.register broker ~session_id:"muse-sess-rearm-instruct-dead"
+      ~alias:"muse-rearm-dd" ~pid:(Some (dead_pid ()))
+      ~pid_start_time:(Some 12345) ~client_type:(Some "muse")
+      ~registered_by:(Some "muse-hook") ~from_auto_gen:true ();
+    C2c_mcp.Broker.enqueue_message broker ~from_alias:"peer"
+      ~to_alias:"muse-rearm-dd" ~content:"waiting" ();
+    let results = ref [] in
+    let pure_out =
+      capture_stdout (fun () ->
+        results := C2c_doctor_hooks.rearm_deaf_muse_sessions ~broker_root ())
+    in
+    check int "rearm still arms nothing" 0 (List.length !results);
+    check string "pure rearm entry prints nothing" "" pure_out;
+    let m = C2c_doctor_hooks.check_muse_status ~broker_root () in
+    let affected =
+      C2c_doctor_hooks.muse_rearm_affected_sessions
+        m.C2c_doctor_hooks.mm_wake_sessions
+    in
+    check (list string) "only the live alias is affected" [ "muse-rearm-cc" ]
+      (List.map (fun s -> s.C2c_doctor_hooks.mws_alias) affected);
+    let out =
+      capture_stdout (fun () ->
+        C2c_doctor_hooks.pp_rearm_muse_instructions
+          m.C2c_doctor_hooks.mm_wake_sessions)
+    in
+    check bool "rearm output names the affected alias" true
+      (C2c_doctor_hooks.contains out "muse-rearm-cc");
+    check bool "rearm output skips the dead alias" false
+      (C2c_doctor_hooks.contains out "muse-rearm-dd");
+    check bool "rearm output carries the verbatim Monitor instruction" true
+      (C2c_doctor_hooks.contains out
+         {|Monitor({command:"c2c monitor",persistent:true})|});
+    check bool "DEAF stays pinned false for the same state" false
+      (C2c_doctor_hooks.classify_muse_deaf ~inbox_count:1 ~poster_alive:false ()))
+
+(* Pure filter: live-only + alias dedupe, order-stable. *)
+let test_muse_rearm_affected_live_only_deduped () =
+  let row alias sid ~alive ~inbox ~monitor : C2c_doctor_hooks.muse_wake_session =
+    { C2c_doctor_hooks.mws_alias = alias
+    ; C2c_doctor_hooks.mws_session_id = sid
+    ; C2c_doctor_hooks.mws_inbox_count = inbox
+    ; C2c_doctor_hooks.mws_monitor_alive = monitor
+    ; C2c_doctor_hooks.mws_class = C2c_doctor_hooks.Muse_wake_none
+    ; C2c_doctor_hooks.mws_alive = alive
+    }
+  in
+  let rows =
+    [ row "muse-dup-aa" "sid-1" ~alive:true ~inbox:2 ~monitor:false
+    ; row "muse-dup-aa" "sid-2" ~alive:true ~inbox:1 ~monitor:false
+    ; row "muse-dead-bb" "sid-3" ~alive:false ~inbox:3 ~monitor:false
+    ; row "muse-armed-cc" "sid-4" ~alive:true ~inbox:1 ~monitor:true
+    ; row "muse-empty-dd" "sid-5" ~alive:true ~inbox:0 ~monitor:false
+    ; row "muse-live-ee" "sid-6" ~alive:true ~inbox:1 ~monitor:false
+    ]
+  in
+  check (list string) "live queued aliases, deduped"
+    [ "muse-dup-aa"; "muse-live-ee" ]
+    (List.map
+       (fun s -> s.C2c_doctor_hooks.mws_alias)
+       (C2c_doctor_hooks.muse_rearm_affected_sessions rows))
 
 let test_muse_json_wake_keys () =
   with_full_hermetic_broker (fun ~broker_root ->
@@ -2020,6 +2157,8 @@ let () =
             test_muse_live_session_tools_absent
         ; test_case "dead session not scanned" `Quick test_muse_dead_session_not_scanned
         ; test_case "health row mapping" `Quick test_muse_health_row_mapping
+        ; test_case "health yellow when unapproved / no hooks marker" `Quick
+            test_muse_health_row_unapproved_and_no_hooks_marker_yellow
         ; test_case "json key present" `Quick test_muse_json_key_present
         ] )
     ; ( "muse-doctor-b359"
@@ -2050,5 +2189,9 @@ let () =
             test_muse_broken_broker_fails_soft
         ; test_case "rearm posture printer" `Quick
             test_muse_rearm_posture_printer
+        ; test_case "rearm prints verbatim Monitor instruction" `Quick
+            test_rearm_muse_prints_verbatim_monitor_instruction
+        ; test_case "rearm affected: live-only + deduped" `Quick
+            test_muse_rearm_affected_live_only_deduped
         ] )
     ]

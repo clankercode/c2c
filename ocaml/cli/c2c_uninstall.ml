@@ -613,6 +613,7 @@ let recompute_muse_artifacts () =
     ; C2c_install_manifest.owned_file manifest
     ; C2c_install_manifest.owned_file manifest_dir
     ; C2c_install_manifest.owned_file bundle
+    ; C2c_install_manifest.owned_file (C2c_setup.muse_auto_join_rooms_path ())
     ]
   , Some settings )
 
@@ -690,6 +691,58 @@ let remove_artifact ~dry_run a =
        | Some p -> remove_shared_toml_section ~dry_run ~section_prefix:p a.path
        | None -> None)
   | _ -> None
+
+(* -------------------------------------------------------------------------- *)
+(* Muse broker-side leftovers (T7) *)
+(* -------------------------------------------------------------------------- *)
+
+(* `<broker>/muse-sid-mapping.json` (+ its `.lock` sibling) and a muse-owned
+   `<broker>/default-session.json` are hook-written state, so neither the
+   install manifest nor [recompute_muse_artifacts] names them — the Kimi
+   `c2c-session` precedent: a file only uninstall removes belongs here.
+   Broker state is SHARED across sessions and repos: registrations and
+   inboxes are never deregistered or deleted (sweep-on-live prohibition);
+   muse rows are only counted so the caller can report what was left.
+   The statefile goes only when it provably belongs to muse
+   (`client: "muse"`); another client's sticky identity is foreign, and an
+   unparseable/client-less statefile fails closed (kept).
+   Returns (removed-or-would-remove paths, muse registration count). *)
+let remove_muse_broker_leftovers ~dry_run ~broker_root =
+  if String.trim broker_root = "" then ([], 0)
+  else
+    let mapping = broker_root // "muse-sid-mapping.json" in
+    (* Same path as [C2c_identity_candidates.session_statefile_path]; parsed
+       inline so this module's closure (pinned per test stanza in dune)
+       does not grow for one field read. *)
+    let statefile = broker_root // "default-session.json" in
+    let statefile_owned_by_muse =
+      match read_json_opt statefile with
+      | Some (`Assoc fields) -> (
+          match List.assoc_opt "client" fields with
+          | Some (`String c) -> String.lowercase_ascii (String.trim c) = "muse"
+          | _ -> false)
+      | _ -> false
+    in
+    let removed =
+      List.filter_map Fun.id
+        [ safe_remove_owned ~dry_run mapping
+        ; safe_remove_owned ~dry_run (mapping ^ ".lock")
+        ; (if statefile_owned_by_muse then safe_remove_owned ~dry_run statefile
+           else None)
+        ]
+    in
+    let muse_registrations =
+      try
+        let broker = C2c_mcp.Broker.create ~root:broker_root in
+        C2c_mcp.Broker.list_registrations broker
+        |> List.filter (fun (r : C2c_mcp.registration) ->
+             match r.client_type with
+             | Some c -> String.lowercase_ascii (String.trim c) = "muse"
+             | None -> false)
+        |> List.length
+      with _ -> 0
+    in
+    (removed, muse_registrations)
 
 (* -------------------------------------------------------------------------- *)
 (* Component uninstall *)
@@ -779,11 +832,27 @@ let uninstall_component ~output_mode ~dry_run ~component ~target_dir ~alias =
                "[c2c WARNING] muse plugins remove failed (%s); cleaning plugin files directly.\n%!"
                (if detail = "" then "exit non-zero" else detail)
        | Json -> ignore (C2c_setup.muse_plugin_remove ~dry_run));
-      List.filter_map
-        Fun.id
-        [ remove_tree_best_effort ~dry_run (C2c_setup.muse_plugin_cache_parent_dir ())
-        ; remove_muse_installed_record ~dry_run (C2c_setup.muse_plugins_installed_path ())
-        ]
+      let plugin_removed =
+        List.filter_map
+          Fun.id
+          [ remove_tree_best_effort ~dry_run (C2c_setup.muse_plugin_cache_parent_dir ())
+          ; remove_muse_installed_record ~dry_run (C2c_setup.muse_plugins_installed_path ())
+          ]
+      in
+      (* T7: broker-side hook state in the resolved (current-repo) broker.
+         Registrations/inboxes are counted and reported, never touched. *)
+      let broker_root =
+        try C2c_utils.resolve_broker_root () with _ -> ""
+      in
+      let broker_removed, muse_registrations =
+        remove_muse_broker_leftovers ~dry_run ~broker_root
+      in
+      if muse_registrations > 0 then
+        Printf.eprintf
+          "note: %d muse registration(s) left untouched in broker %s \
+           (uninstall never deregisters sessions or deletes inboxes)\n%!"
+          muse_registrations broker_root;
+      plugin_removed @ broker_removed
     end
   in
   let removed_paths = List.filter_map (remove_artifact ~dry_run) artifacts in

@@ -180,8 +180,11 @@ let push_aware_heartbeat_content () =
 let codex_heartbeat_interval_s = 240.0
 let codex_heartbeat_content = default_managed_heartbeat_content
 
+(* Muse joins (T4 muse-parity): the builtin heartbeat is an ordinary
+   broker self-DM, deliverable by hooks/Monitor like any muse mail.
+   Agy keeps its identical exclusion — out of scope here. *)
 let default_heartbeat_clients =
-  [ "claude"; "codex"; "opencode"; "kimi"; "pi" ]
+  [ "claude"; "codex"; "opencode"; "kimi"; "pi"; "muse" ]
 
 let builtin_managed_heartbeat =
   { heartbeat_name = "default"
@@ -2279,6 +2282,15 @@ let swarm_git_shim_dir () =
   | Some d when String.trim d <> "" -> String.trim d
   | _ -> C2c_repo_fp.xdg_state_home () // "c2c" // "bin"
 
+(* Parse a C2C_MCP_SCHEDULE_TIMER value: [None] when unset/blank (no
+   operator override), else the boolean it names. Unknown non-blank
+   values parse as [Some false], matching the MCP server's own
+   [schedule_timer_enabled] gate. *)
+let parse_schedule_timer_env (v : string) : bool option =
+  match String.lowercase_ascii (String.trim v) with
+  | "" -> None
+  | n -> Some (List.mem n [ "1"; "true"; "yes"; "on" ])
+
 (* S6c: detect whether the MCP server child handles schedule-timer firing.
    When c2c start sets C2C_MCP_SCHEDULE_TIMER=1 in its own process env
    (after also passing it to the child via build_env), this returns true
@@ -2286,10 +2298,79 @@ let swarm_git_shim_dir () =
    duplicate heartbeats. *)
 let mcp_schedule_timer_active () =
   match Sys.getenv_opt "C2C_MCP_SCHEDULE_TIMER" with
-  | Some v ->
-      let n = String.lowercase_ascii (String.trim v) in
-      List.mem n ["1"; "true"; "yes"; "on"]
+  | Some v -> parse_schedule_timer_env v = Some true
   | None -> false
+
+(* Muse's user settings path — the same resolution [c2c_setup]'s
+   [muse_settings_path] / [client_mcp_configured] use, duplicated here
+   because setup is a CLI-layer module [C2c_start] cannot depend on.
+   Absolute XDG_CONFIG_HOME only; a relative value is cwd-dependent
+   (the #9 split-brain shape) and falls back to the HOME default. *)
+let muse_mcp_settings_path () =
+  let home = match try Sys.getenv "HOME" with Not_found -> "" with
+    | "" -> "/tmp" | h -> h in
+  let config_home = match Sys.getenv_opt "XDG_CONFIG_HOME" with
+    | Some d when String.trim d <> ""
+                  && not (Filename.is_relative (String.trim d)) ->
+        String.trim d
+    | _ -> home // ".config" in
+  config_home // "muse" // "settings.json"
+
+let muse_mcp_configured () =
+  let path = muse_mcp_settings_path () in
+  if not (Sys.file_exists path) then false
+  else
+    try
+      match Yojson.Safe.from_file path with
+      | `Assoc fields -> (
+          match List.assoc_opt "mcpServers" fields with
+          | Some (`Assoc m) -> List.mem_assoc "c2c" m
+          | _ -> false)
+      | _ -> false
+    with _ -> false
+
+(* Will an MCP server actually run for this managed instance? Only
+   muse is probed (T4): its default install is hooks-only, so assuming
+   an MCP timer silently disabled schedules entirely (the =1 env
+   suppressed the watcher fallback while no server existed to fire).
+   Every other client keeps the historical assumption. *)
+let mcp_will_run_for_client ~(client : string option) : bool =
+  match client with
+  | Some "muse" -> muse_mcp_configured ()
+  | _ -> true
+
+(* The single schedule-ownership decision shared by [build_env] (child
+   env) and the parent-env mirror that gates [start_schedule_watcher]:
+   true => the MCP server's Lwt timer fires and the watcher stays off;
+   false => the watcher fires and the child env says 0. Deriving both
+   surfaces from this one function is what prevents double-fire (both
+   owners) and no-fire (neither). An explicit operator
+   C2C_MCP_SCHEDULE_TIMER always wins.
+
+   Muse exception (proven live on muse 1.4.7, 2026-10-14): the MCP
+   server grandchild's env is ONLY the entry's literal env block plus
+   MUSE_SESSION_ID — a C2C_MCP_SCHEDULE_TIMER=1 set on the muse
+   process (what build_env emits) never reaches it, and install's
+   literal block does not set it, and the MCP timer defaults OFF when
+   absent. So for muse the MCP timer can never own firing via this
+   path — with or without an MCP entry — and the decision defaults to
+   false (parent watcher owns). Returning true for with-MCP muse (the
+   earlier T4 shape) was a no-fire: watcher suppressed, timer off.
+   An operator who hand-adds C2C_MCP_SCHEDULE_TIMER=1 to the MCP
+   entry's literal env must also set it in the operator env so this
+   decision suppresses the watcher (explicit override wins). *)
+let schedule_timer_enabled_for_instance ~(client : string option) : bool =
+  let default =
+    match client with
+    | Some "muse" -> false
+    | _ -> mcp_will_run_for_client ~client
+  in
+  match Sys.getenv_opt "C2C_MCP_SCHEDULE_TIMER" with
+  | Some v -> (
+      match parse_schedule_timer_env v with
+      | Some b -> b
+      | None -> default)
+  | None -> default
 
 (* ----------------------------------------------------------------------------
  * Install the pre-reset guard shim (git-pre-reset) into the swarm shim dir.
@@ -5455,10 +5536,15 @@ let build_env ?(broker_root_override : string option = None)
     "GIT_COMMITTER_EMAIL", alias ^ "@c2c.im";
     (* S6c: tell the MCP server child to run its own Lwt schedule timer,
        which reads .c2c/schedules/<alias>/ and fires via C2c_schedule_fire.
-       The parent (c2c start) also sets this in its own env so
-       mcp_schedule_timer_active() returns true → skip the schedule watcher
-       thread, avoiding duplicate heartbeats. *)
-    "C2C_MCP_SCHEDULE_TIMER", "1";
+       The parent (c2c start) mirrors the same decision into its own env
+       so mcp_schedule_timer_active() agrees → exactly one owner fires.
+       T4: emit "1" only when an MCP server will actually run for this
+       instance ([schedule_timer_enabled_for_instance]); a hooks-only
+       muse has no server, so it gets "0" and the parent's schedule
+       watcher fallback owns firing instead — previously the hardcoded
+       "1" suppressed the watcher and schedules silently never fired. *)
+    "C2C_MCP_SCHEDULE_TIMER",
+    (if schedule_timer_enabled_for_instance ~client then "1" else "0");
     ] in
     let base = base @ auto_join_base in
     let base = base @ match reply_to_override with
@@ -8223,13 +8309,17 @@ let run_outer_loop ~(name : string) ~(client : string)
            List.iter
              (start_managed_heartbeat ~broker_root ~alias:effective_alias)
              non_role_specs;
-           (* S6c: Mirror C2C_MCP_SCHEDULE_TIMER into the parent env so
-             mcp_schedule_timer_active() sees it. build_env passes the
-             same var to the MCP child. Respect operator overrides: only
-             set if not already present in the environment. *)
+           (* S6c/T4: Mirror the schedule-ownership decision into the
+             parent env so mcp_schedule_timer_active() sees exactly what
+             build_env passed the child ([schedule_timer_enabled_for_instance]
+             is the shared source — one owner, never both, never neither).
+             Respect operator overrides: only set when absent/blank. *)
           (match Sys.getenv_opt "C2C_MCP_SCHEDULE_TIMER" with
-           | None -> Unix.putenv "C2C_MCP_SCHEDULE_TIMER" "1"
-           | Some _ -> ());
+           | Some v when parse_schedule_timer_env v <> None -> ()
+           | _ ->
+               Unix.putenv "C2C_MCP_SCHEDULE_TIMER"
+                 (if schedule_timer_enabled_for_instance
+                       ~client:(Some client) then "1" else "0"));
           (* Schedule-dir heartbeats: skip when the MCP server handles
              scheduling (S6c dedup — C2C_MCP_SCHEDULE_TIMER=1 set in
              build_env). The MCP server's Lwt timer reads the same

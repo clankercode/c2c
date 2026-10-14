@@ -109,6 +109,45 @@ let test_kimi_renderer () =
   contains ~msg:"kimi: system_prompt_path present" ~pattern:"system_prompt_path: ./system.md" output;
   contains ~msg:"kimi: extend default present" ~pattern:"extend: default" output
 
+(* T5 (muse-parity): muse has no agent-file surface, so its renderer
+   produces prompt text for the kickoff string — it must render
+   non-None via the shared dispatch and carry name + body. *)
+let test_muse_renderer () =
+  match C2c_role.render_for_client role_input ~client:"muse" ~name:"test-agent" with
+  | None -> Alcotest.fail "muse role renders None"
+  | Some output ->
+      contains ~msg:"muse: name present" ~pattern:"test-agent" output;
+      contains ~msg:"muse: body present" ~pattern:"You are a test agent" output;
+      contains ~msg:"muse: description present"
+        ~pattern:"Test role for regression" output
+
+(* T5: the renderer dispatch and [renderable_clients] must agree —
+   every renderable client renders non-None, and muse is among them.
+   But muse is NOT file-backed: `roles compile` must never write the
+   unread .c2c/agents/<name>.md fallback for it (kickoff delivery
+   only), so [file_backed_clients] excludes muse while keeping every
+   other renderable client. Guards against a future arm landing in
+   only one site. *)
+let test_renderable_clients_all_render () =
+  Alcotest.(check bool) "muse is a renderable client" true
+    (List.mem "muse" C2c_role.renderable_clients);
+  List.iter
+    (fun client ->
+      Alcotest.(check bool)
+        (Printf.sprintf "%s renders non-None" client) true
+        (Option.is_some
+           (C2c_role.render_for_client role_input ~client ~name:"test-agent")))
+    C2c_role.renderable_clients;
+  Alcotest.(check bool) "unknown client still renders None" true
+    (Option.is_none
+       (C2c_role.render_for_client role_input ~client:"no-such-client"
+          ~name:"test-agent"));
+  Alcotest.(check bool) "muse is not file-backed (no unread compile file)" false
+    (List.mem "muse" C2c_role.file_backed_clients);
+  Alcotest.(check bool) "file-backed = renderable minus muse" true
+    (C2c_role.file_backed_clients
+     = List.filter (fun c -> c <> "muse") C2c_role.renderable_clients)
+
 let test_roundtrip_opencode () =
   let rendered = C2c_role.OpenCode_renderer.render role_input in
   let re_parsed = C2c_role.parse_string rendered in
@@ -240,6 +279,8 @@ let tests = [
     test_claude_renderer_empty_description_uses_role_label;
   "codex_renderer",              `Quick, test_codex_renderer;
   "kimi_renderer",               `Quick, test_kimi_renderer;
+  "muse_renderer",               `Quick, test_muse_renderer;
+  "renderable_clients_all_render", `Quick, test_renderable_clients_all_render;
   "roundtrip",                   `Quick, test_roundtrip_opencode;
   "roundtrip_array_fields",      `Quick, test_roundtrip_array_fields;
   "pronouns_parse",              `Quick, test_pronouns_parse;

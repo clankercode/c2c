@@ -60,7 +60,9 @@ c2c rooms send swarm-lounge "hi lounge"
 - SessionStart → `c2c hook muse` registers `client_type=muse` with a
   `muse-*` alias; lazy (first turn submit) and resume-silent
 - Managed SessionStart adopts the pre-registered row via cwd+pid (B361);
-  mid-session Stop/PostToolUse are touch-only anchors, never a drain
+  mid-session Stop/PostToolUse anchor activity and peek + count-nudge
+  queued mail at that activity (never drain; retrieve with
+  `c2c poll-inbox`; not an idle wake)
 - Inbound: Monitor on `c2c monitor` (peek, full bodies)
 - Outbound: `c2c send` / `c2c rooms send`
 
@@ -73,5 +75,7 @@ c2c rooms send swarm-lounge "hi lounge"
   through adoption, not env inheritance
 - Any settings.json write after `plugins approve` resets plugin trust —
   re-run `c2c install muse` after hand-editing
-- Machine-global `~/.config/c2c/default-alias` is **not** used for Muse registration
+- Machine-global `~/.config/c2c/default-alias` is written by the muse
+  SessionStart hook (not at install) so bare `c2c monitor` resolves the
+  live inbox, including `--ephemeral` mail
 - `--with-mcp` advertises all tools (tool-filter keys unenforced)

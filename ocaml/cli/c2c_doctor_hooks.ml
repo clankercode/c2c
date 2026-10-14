@@ -212,6 +212,7 @@ and muse_wake_session = {
   mws_inbox_count : int; (* queued depth — the wake row carries the signal DEAF would *)
   mws_monitor_alive : bool;
   mws_class : muse_wake_class;
+  mws_alive : bool; (* Broker.registration_is_alive — rearm instructs live rows only *)
 }
 
 (* --- Codex delivery-mode classification (P1.M1.E1.T005) -------------------- *)
@@ -1718,13 +1719,45 @@ let muse_deaf_sessions (wake_sessions : muse_wake_session list) :
 let muse_deaf_count (wake_sessions : muse_wake_session list) : int =
   List.length (muse_deaf_sessions wake_sessions)
 
-(* Pure dashboard mapping for `c2c health` / `c2c ping`: installed →
-   green, muse-present-but-no-c2c → yellow, absent → gray. The message
-   always names "muse:" so the connect dashboard's substring match finds
-   its row. *)
+(* Pure dashboard mapping for `c2c health` / `c2c ping` (T8): a bare
+   install marker is NOT green. Green requires a hooks marker from the
+   live set [check_muse_status] already computed — a trusted (approved)
+   plugin or the settings.json `c2c hook muse` fallback. An
+   installed-but-unapproved plugin never fires its hooks, a denied plugins
+   gate without the settings fallback cannot fire either, and an install
+   with neither marker (skill/MCP only, or an inconclusive trust probe)
+   gives no file/CLI evidence hooks can fire: all yellow. Even green only
+   states a marker is present — live hook firing is never claimed (#50:
+   doctor observes file/CLI state only). The message always names "muse:"
+   so the connect dashboard's substring match finds its row. *)
 let muse_health_row (m : muse_result) =
-  if m.mm_installed then
-    (`Green, "muse: c2c integration configured (run: c2c install muse to refresh)")
+  let hooks_marker = m.mm_plugin_trust = "trusted" || m.mm_settings_hooks in
+  if m.mm_installed && m.mm_plugin_trust = "needs-approval" && m.mm_settings_hooks
+  then
+    (* The settings fallback fires even while the plugin is unapproved —
+       claiming "hooks do not fire" here would be a false negative. *)
+    ( `Green
+    , "muse: settings.json hooks marker present (plugin unapproved — \
+       `muse plugins approve c2c` enables the plugin hooks; live firing \
+       not observed)" )
+  else if m.mm_installed && m.mm_plugin_trust = "needs-approval" then
+    ( `Yellow
+    , "muse: c2c plugin installed but unapproved — hooks do not fire until \
+       `muse plugins approve c2c` (live firing not observed)" )
+  else if m.mm_installed && m.mm_plugins_gate = "denied" && not m.mm_settings_hooks
+  then
+    ( `Yellow
+    , "muse: plugins gate denied and no settings.json hooks fallback (run: \
+       c2c install muse; live firing not observed)" )
+  else if m.mm_installed && not hooks_marker then
+    ( `Yellow
+    , "muse: c2c integration configured but no hooks marker (plugin not \
+       trusted and no settings.json `c2c hook muse`; live firing not \
+       observed — run: c2c doctor hooks)" )
+  else if m.mm_installed then
+    ( `Green
+    , "muse: c2c integration configured (hooks marker present; live firing \
+       not observed — run: c2c install muse to refresh)" )
   else if m.mm_muse_present then
     (`Yellow, "muse: present but no c2c integration (run: c2c install muse)")
   else
@@ -1856,6 +1889,8 @@ let check_muse_status ?broker_root () : muse_result =
               ; mws_inbox_count = inbox_count
               ; mws_monitor_alive = monitor_alive
               ; mws_class = classify_muse_wake ~monitor_alive
+              ; mws_alive =
+                  (try C2c_mcp.Broker.registration_is_alive r with _ -> false)
               })
         regs
     with _ -> []
@@ -1884,13 +1919,52 @@ let check_muse_status ?broker_root () : muse_result =
   ; mm_wake_sessions = wake_sessions
   }
 
-(* B359: `c2c doctor hooks --rearm` for muse is an explicit no-op. There is
-   no poster to arm (B356 PARKED), so there is nothing --rearm can truthfully
+(* T8: the verbatim in-session Monitor instruction (#414 — copy, never
+   paraphrase). Arming it is a model decision inside the muse session;
+   doctor can only print it. *)
+let muse_monitor_instruction = {|Monitor({command:"c2c monitor",persistent:true})|}
+
+(* T8: sessions a muse rearm would heal if a poster existed — LIVE
+   sessions with queued mail and no live monitor, deduped by alias
+   (first row wins). Confirmed-dead rows are never instructed (#42):
+   "in that muse session, arm…" is meaningless for a session that no
+   longer exists. Purely instructional: this is NOT a DEAF verdict
+   ([classify_muse_deaf] stays pinned false, so exit codes and JSON
+   are unchanged); it only selects which aliases get the instruction. *)
+let muse_rearm_affected_sessions (wake_sessions : muse_wake_session list) :
+    muse_wake_session list =
+  let seen = Hashtbl.create 8 in
+  List.filter
+    (fun s ->
+      if
+        (not s.mws_alive) || s.mws_inbox_count <= 0 || s.mws_monitor_alive
+        || Hashtbl.mem seen s.mws_alias
+      then false
+      else begin
+        Hashtbl.add seen s.mws_alias ();
+        true
+      end)
+    wake_sessions
+
+let pp_rearm_muse_instructions (wake_sessions : muse_wake_session list) =
+  List.iter
+    (fun (s : muse_wake_session) ->
+      Printf.printf
+        "muse %s: no poster to re-arm — in that muse session, arm: %s\n"
+        s.mws_alias muse_monitor_instruction)
+    (muse_rearm_affected_sessions wake_sessions)
+
+(* B359/T8: `c2c doctor hooks --rearm` for muse arms nothing. There is no
+   poster to arm (B356 PARKED), so there is nothing --rearm can truthfully
    heal: it must NOT mint a headless monitor (#78) and must NOT touch
-   confirmed-dead sessions (#42) — both satisfied vacuously by arming
-   nothing. The CLI prints the posture line (see the rearm block below); this
-   function exists so the no-op is pinned by tests across the state matrix
-   instead of living only as an absent call. *)
+   confirmed-dead sessions (#42) — both satisfied by arming nothing.
+   This entry is PURE: no scan, no prints (a scan here would read the
+   ambient broker for library/test callers). The visible instruction
+   trace lives in the CLI rearm block below, which prints
+   [pp_rearm_muse_instructions] from its already-computed [check]
+   result — silent [] at the CLI was the look-of-success problem, and
+   that block is where it is solved. [broker_root] is retained for the
+   B356 unpark flip. *)
 let rearm_deaf_muse_sessions ?broker_root:_ () : rearm_result list = []
 
 let check ?(dirs = claude_dirs ()) () =
@@ -2645,12 +2719,15 @@ let c2c_doctor_hooks_cmd =
        end
      end);
     let r = check () in
-    (* B359: muse rearm posture from the post-arm check — NOT a second scan
-       (the muse check spawns `muse plugins inspect` + log scans, so a
-       pre-count would double that cost for a no-op). [rearm_deaf_muse_sessions]
-       is the pinned no-op; this line is its only visible trace. *)
+    (* B359/T8: muse rearm output from the post-arm check — NOT a second
+       scan (the muse check spawns `muse plugins inspect` + log scans, so
+       re-scanning would double that cost for a no-op). Nothing is armed
+       ([rearm_deaf_muse_sessions] stays []); the visible trace is the
+       posture line plus the verbatim in-session Monitor instruction per
+       affected alias, since doctor cannot arm a Monitor itself. *)
     if rearm && not json && r.muse.mm_muse_regs > 0 then begin
       pp_rearm_muse_human r.muse.mm_muse_regs;
+      pp_rearm_muse_instructions r.muse.mm_wake_sessions;
       print_newline ();
       flush stdout
     end;

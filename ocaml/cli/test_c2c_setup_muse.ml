@@ -231,6 +231,32 @@ let test_plugin_path_writes_skill_and_bundle_no_settings () =
     check bool "client_mcp_configured reports false" false
       (C2c_setup.client_mcp_configured "muse"))
 
+(* P1-3: muse scrubs C2C_* from hook env, so install also writes the
+   auto-join room list to a config file the hook can read. It mirrors
+   the MCP env value (the default social room); an operator edit —
+   including an empty file (join nothing) — survives reinstall. *)
+let test_install_writes_auto_join_config_file () =
+  with_gate_open (fun sc ->
+    let auto_join = sc.config // "c2c-auto-join-rooms" in
+    let dry = run_setup_dry ~alias:"muse-fixture-aj" () in
+    ignore dry;
+    check bool "dry-run writes no auto-join file" false
+      (Sys.file_exists auto_join);
+    let result = run_setup ~alias:"muse-fixture-aj" () in
+    check bool "auto-join file written" true (Sys.file_exists auto_join);
+    check string "mirrors the MCP env default room"
+      (C2c_setup.default_social_room ())
+      (String.trim (read_file auto_join));
+    check bool "path helper agrees" true
+      (C2c_setup.muse_auto_join_rooms_path () = auto_join);
+    check bool "auto-join owned-file artifact" true
+      (has_artifact result ~kind:"owned-file" ~path:auto_join);
+    (* Operator opt-out (empty file) survives reinstall. *)
+    write_file auto_join "";
+    ignore (run_setup ~alias:"muse-fixture-aj" ());
+    check string "operator edit preserved on reinstall" ""
+      (read_file auto_join))
+
 (* --- install: gate-absent fallback ----------------------------------- *)
 
 let test_gate_absent_falls_back_to_settings_hooks () =
@@ -764,6 +790,108 @@ let test_recompute_covers_every_setup_path () =
       (owned_path (Filename.dirname sc.bundle_manifest)
       && owned_path (Filename.dirname (Filename.dirname sc.bundle_manifest))))
 
+(* --- T7: broker-side muse leftovers --------------------------------------
+   `<broker>/muse-sid-mapping.json` (+ its lock sibling) and a muse-owned
+   `<broker>/default-session.json` are muse hook state, not install
+   artifacts, so the manifest/recompute lists never named them. Uninstall
+   removes both, but NEVER deregisters rows or deletes inboxes (the broker
+   is shared; sweep-on-live is prohibited) — muse registrations are only
+   counted/reported. A statefile owned by another client is foreign and
+   stays. *)
+
+let seed_muse_broker_leftovers sc ~statefile_client =
+  let broker_root = sc.home // "broker" in
+  mkdir_p broker_root;
+  let b = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.register b ~session_id:"zz-t7-muse-sid" ~alias:"zz-t7-muse"
+    ~pid:None ~pid_start_time:None ~client_type:(Some "muse")
+    ~registered_by:(Some "muse-hook") ();
+  C2c_mcp.Broker.register b ~session_id:"zz-t7-peer-sid" ~alias:"zz-t7-peer"
+    ~pid:None ~pid_start_time:None ~client_type:(Some "claude") ();
+  C2c_mcp.Broker.enqueue_message b ~from_alias:"zz-t7-peer"
+    ~to_alias:"zz-t7-muse" ~content:"keep me" ();
+  write_file (broker_root // "muse-sid-mapping.json")
+    {|{"zz-t7-payload-sid":"zz-t7-muse-sid"}|};
+  write_file (broker_root // "muse-sid-mapping.json.lock") "";
+  write_file (broker_root // "default-session.json")
+    (Yojson.Safe.to_string
+       (`Assoc
+         [ ("session_id", `String "zz-t7-muse-sid")
+         ; ("alias", `String "zz-t7-muse")
+         ; ("client", `String statefile_client)
+         ; ("created_at", `String "2026-10-13T00:00:00Z")
+         ]));
+  broker_root
+
+let muse_registration_kept broker_root =
+  let b = C2c_mcp.Broker.create ~root:broker_root in
+  C2c_mcp.Broker.list_registrations b
+  |> List.exists (fun (r : C2c_mcp.registration) -> r.alias = "zz-t7-muse")
+
+let test_uninstall_removes_broker_leftovers_keeps_registration () =
+  with_gate_absent (fun sc ->
+    seed_foreign_settings_hooks sc;
+    let _ = run_setup ~with_mcp:true ~alias:"muse-fixture-t7" () in
+    let broker_root = seed_muse_broker_leftovers sc ~statefile_client:"muse" in
+    with_stub_var "C2C_MCP_BROKER_ROOT" broker_root (fun () ->
+      let _, removed =
+        C2c_uninstall.uninstall_component ~output_mode:C2c_types.Json
+          ~dry_run:false ~component:"muse" ~target_dir:sc.home ~alias:None
+      in
+      check bool "sid mapping removed" false
+        (Sys.file_exists (broker_root // "muse-sid-mapping.json"));
+      check bool "sid mapping lock removed" false
+        (Sys.file_exists (broker_root // "muse-sid-mapping.json.lock"));
+      check bool "muse statefile removed" false
+        (Sys.file_exists (broker_root // "default-session.json"));
+      check bool "removed list names the mapping" true
+        (List.mem (broker_root // "muse-sid-mapping.json") removed);
+      check bool "removed list names the statefile" true
+        (List.mem (broker_root // "default-session.json") removed);
+      check bool "live muse registration kept" true
+        (muse_registration_kept broker_root);
+      let b = C2c_mcp.Broker.create ~root:broker_root in
+      check int "inbox contents kept" 1
+        (List.length
+           (C2c_mcp.Broker.read_inbox b ~session_id:"zz-t7-muse-sid"));
+      let s = read_file sc.settings in
+      check bool "foreign hook survives" true
+        (contains ~haystack:s ~needle:"other-tool")))
+
+let test_uninstall_dry_run_lists_broker_leftovers () =
+  with_gate_absent (fun sc ->
+    let _ = run_setup ~alias:"muse-fixture-t7dry" () in
+    let broker_root = seed_muse_broker_leftovers sc ~statefile_client:"muse" in
+    with_stub_var "C2C_MCP_BROKER_ROOT" broker_root (fun () ->
+      let _, removed =
+        C2c_uninstall.uninstall_component ~output_mode:C2c_types.Json
+          ~dry_run:true ~component:"muse" ~target_dir:sc.home ~alias:None
+      in
+      check bool "dry-run lists the mapping" true
+        (List.mem (broker_root // "muse-sid-mapping.json") removed);
+      check bool "dry-run lists the statefile" true
+        (List.mem (broker_root // "default-session.json") removed);
+      check bool "dry-run removes nothing (mapping)" true
+        (Sys.file_exists (broker_root // "muse-sid-mapping.json"));
+      check bool "dry-run removes nothing (statefile)" true
+        (Sys.file_exists (broker_root // "default-session.json"));
+      check bool "registration kept" true (muse_registration_kept broker_root)))
+
+let test_uninstall_keeps_foreign_statefile_and_counts_muse_rows () =
+  with_gate_open (fun sc ->
+    let broker_root = seed_muse_broker_leftovers sc ~statefile_client:"claude" in
+    let removed, muse_count =
+      C2c_uninstall.remove_muse_broker_leftovers ~dry_run:false ~broker_root
+    in
+    check bool "foreign statefile kept" true
+      (Sys.file_exists (broker_root // "default-session.json"));
+    check bool "foreign statefile not reported removed" false
+      (List.mem (broker_root // "default-session.json") removed);
+    check bool "mapping still removed" false
+      (Sys.file_exists (broker_root // "muse-sid-mapping.json"));
+    check int "only muse rows counted" 1 muse_count;
+    check bool "registration kept" true (muse_registration_kept broker_root))
+
 (* B360 follow-up: install-footer enums pinned. MCP footer = MCP-capable
    clients only; hooks footer = every installable hooks/skill path. *)
 let test_install_footer_enums_pinned () =
@@ -779,6 +907,8 @@ let () =
     [ ( "install_plugin_path"
       , [ test_case "skill+bundle, no settings, install+approve" `Quick
             test_plugin_path_writes_skill_and_bundle_no_settings
+        ; test_case "install writes auto-join config file (P1-3)" `Quick
+            test_install_writes_auto_join_config_file
         ] )
     ; ( "install_fallback"
       , [ test_case "gate-absent merges settings hooks, idempotent" `Quick
@@ -826,5 +956,11 @@ let () =
         ; test_case "no-CLI file fallback" `Quick test_uninstall_no_cli_falls_back_to_files
         ; test_case "recompute covers every setup path" `Quick
             test_recompute_covers_every_setup_path
+        ; test_case "broker leftovers removed, registration kept (T7)" `Quick
+            test_uninstall_removes_broker_leftovers_keeps_registration
+        ; test_case "dry-run lists broker leftovers (T7)" `Quick
+            test_uninstall_dry_run_lists_broker_leftovers
+        ; test_case "foreign statefile kept, muse rows counted (T7)" `Quick
+            test_uninstall_keeps_foreign_statefile_and_counts_muse_rows
         ] )
     ]

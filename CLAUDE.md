@@ -58,8 +58,11 @@ even when the immediate task is narrower.
   its own loop, like Pi Agent. Muse is CLI-first: skill + plugin/hooks;
   managed `c2c start muse` is real via `MuseAdapter`; wake is Monitor-only —
   no out-of-process sender in 1.4.2, B356 parked). Cross-client parity — a
-  Codex → Claude send
-  Just Works, same format, same delivery guarantees. Local-only today; broker
+  Codex → Claude send Just Works, same format; delivery guarantees are
+  per-client, not uniform (see the wake table below): Muse sits in the
+  Monitor-CONDITIONAL class with Claude Code and Grok — NONE at true idle
+  from c2c alone, CONDITIONAL only while `c2c monitor` is armed — and is
+  never GUARANTEED. Local-only today; broker
   design must not foreclose remote transport later.
 - **Topology**: 1:1 ✓, 1:N ✓ (broadcast via `send_all`), N:N ✓ (rooms:
   `join_room`, `send_room`, `room_history`, `my_rooms`, `list_rooms`,
