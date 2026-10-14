@@ -1,14 +1,18 @@
 ---
+claimed_at: "2026-10-14T19:55:08Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-10-14T19:54:58Z"
 depends_on: []
 estimate_hours: 1
 id: B365
 priority: high
-status: pending
+started_at: "2026-10-14T19:55:08Z"
+status: in_progress
 tags: []
 title: Adopt a live vanilla Codex session into c2c managed delivery
-updated_at: "2026-10-14T19:54:58Z"
+updated_at: "2026-10-14T19:55:08Z"
 ---
 Vanilla interactive Codex sessions currently auto-register through the installed `c2c hook codex` hooks and can use hook-boundary delivery, with optional `c2c deliver wake-watch` for tmux/herdr idle nudges. There is no user-facing c2c command that takes an already-running plain `codex` session and adopts its live native thread into the managed app-server delivery path.
 
