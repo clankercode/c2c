@@ -1,0 +1,108 @@
+---
+complexity: medium
+created_at: "2026-10-14T15:53:34Z"
+depends_on: []
+estimate_hours: 1
+id: B364
+priority: high
+status: pending
+tags:
+    - codex
+    - c2c
+    - app-server
+    - delivery
+    - bug
+title: Codex app-server delivery should reuse the default managed app-server
+updated_at: "2026-10-14T15:53:34Z"
+---
+c2c Codex app-server delivery should reuse the default Codex app-server
+
+Observed with c2c 0.18.0 (built 2026-10-13, commit a7b35338c7395b99d3de15d172c41723d0d9e06e) and Codex CLI 0.162.1.
+
+Summary
+
+The c2c Codex integration starts a separate per-instance Codex app-server over a local WebSocket, instead of attaching to the normal managed Codex app-server daemon. This creates multiple Codex app-server/control planes with separate lifecycle and state ownership. It caused a long-running Codex session to use the wrong auth/control path during remote compaction and become unusable until the client and app-server were restarted.
+
+Expected behavior
+
+When the default Codex app-server is already running, c2c should reuse it through its normal Unix control socket:
+
+  /home/xertrov/.codex/app-server-control/app-server-control.sock
+
+c2c should register/deliver the managed session through that existing app-server and should not start a second app-server for the same Codex installation and CODEX_HOME. If reuse is impossible, c2c should clearly document the reason and provide an explicit opt-in for the separate-server behavior.
+
+Actual behavior
+
+A c2c-managed Codex instance was launched as:
+
+  c2c new codex -- resume 01a02fdd-02aa-70e3-9df7-27934234a38d
+
+The c2c wrapper started its own app-server:
+
+  codex app-server --listen ws://127.0.0.1:34737 --ws-auth capability-token ...
+
+and connected the client with:
+
+  codex --remote ws://127.0.0.1:34737 --remote-auth-token-env C2C_CODEX_REMOTE_TOKEN_... resume 01a02fdd-02aa-70e3-9df7-27934234a38d
+
+At the same time, the normal managed Codex daemon was running separately:
+
+  codex app-server --listen unix:// --managed-daemon
+
+The separate c2c app-server existed alongside the default daemon and acquired thread/session locks independently. Restarting the default daemon did not necessarily repair the c2c-managed server or its session.
+
+Failure symptoms
+
+The affected session repeatedly produced:
+
+  workspace routing discovery unauthorized (401)
+  Error running remote compact task: workspace routing discovery unauthorized (401)
+
+The affected session was a long-running AngelScript API implementation session. Model changes between these IDs did not fix it:
+
+  gpt-6-sol
+  gpt-6.1-sol
+  openai/gpt-6.1-sol
+
+The persisted session events showed the provider ID as openai for the failing turns, even though the local Codex configuration used OpenCodex. The stored direct ChatGPT OAuth refresh token was revoked, so Codex's workspace-routing/remote-compaction control path returned 401.
+
+The LAN OpenCodex inference path was healthy throughout. Direct Responses requests through the configured service succeeded for all relevant models:
+
+  http://cachy.lan:10100/v1
+  gpt-6-sol
+  gpt-6.1-sol
+  openai/gpt-6.1-sol
+
+A controlled local resume using the default managed app-server and explicit OpenCodex routing succeeded after the c2c client was closed and the managed daemon was restarted:
+
+  codex exec resume -c model_provider=opencodex -c model=gpt-6.1-sol \
+    -m gpt-6.1-sol 01a0ef9b-44e6-70c2-8075-8b79adb1b06b
+
+The session compacted and returned OK.
+
+Why this matters
+
+The c2c app-server transport is described by c2c 0.18.0 help as the default and only managed path for supported Codex clients, with hook-backed fallback. However, the implementation appears to mean "start a dedicated app-server per c2c instance," not "use the default Codex app-server." That distinction is unsafe for installations that already run the managed Codex daemon, especially when sessions share CODEX_HOME, SQLite state, thread locks, model catalogs, and auth configuration.
+
+Requested fix
+
+1. Detect the active Codex managed app-server and its control socket.
+2. Reuse that app-server for c2c delivery when it belongs to the same CODEX_HOME and Codex installation.
+3. Avoid starting a second app-server on a random local WebSocket port in that case.
+4. Ensure the selected app-server and the Codex client use the same config, provider, model catalog, auth environment, and thread store.
+5. If a dedicated app-server is required, fail clearly when another daemon owns the same CODEX_HOME/thread store, or provide an explicit isolated CODEX_HOME and state directory.
+6. Add an integration test that launches the default daemon, runs `c2c start codex`, and asserts that no second app-server is spawned.
+7. Add a regression test for a long-running session whose model provider is OpenCodex and whose remote-compaction/collaboration operation must not silently fall back to direct ChatGPT workspace routing.
+8. Document the relationship between c2c's "app-server transport" and Codex's default managed app-server.
+
+Environment
+
+  OS: Linux
+  c2c: 0.18.0
+  Codex CLI: 0.162.1
+  Default Codex provider: OpenCodex over LAN
+  OpenCodex endpoint: http://cachy.lan:10100/v1
+  Codex CODEX_HOME: /home/xertrov/.codex -> /home/xertrov/.codex-w
+  Shared SQLite home: /home/xertrov/.codex-shared/sqlite
+
+No credentials are included in this report. The session ID is included because it is needed to reproduce and inspect the lifecycle issue locally.
