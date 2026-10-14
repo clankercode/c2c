@@ -1,13 +1,17 @@
 ---
+claimed_at: "2026-10-14T23:55:52Z"
+claimed_by: cli-user
+completed_at: null
 complexity: medium
 created_at: "2026-10-14T23:53:49Z"
 depends_on: []
 estimate_hours: 2
 id: B366
 priority: high
-status: pending
+started_at: "2026-10-14T23:55:52Z"
+status: in_progress
 tags: []
 title: Adopt vanilla Codex sessions whose daemon thread is unloaded
-updated_at: "2026-10-14T23:53:49Z"
+updated_at: "2026-10-14T23:55:52Z"
 ---
 B365 live validation against codex-cli 0.162.1 found a safe capability gap. A plain codex TUI started normally on the machine-wide daemon registers through c2c hook codex with session_id equal to the native thread id and the correct workspace. The authenticated daemon thread/read for that exact id succeeds, but reports status=notLoaded, environments=null, and thread/loaded/list omits the id. c2c codex adopt ALIAS therefore refuses with native Codex thread is not loaded, even while the vanilla frontend is live and its rollout is present. This leaves hook-boundary delivery active, but cannot promote the session to arrival-time daemon delivery. Do not attach to another same-workspace loaded thread. Add a safe exact-thread load/resume or equivalent protocol proof for adoption, preserve the vanilla frontend/draft, keep B098 and B138 invariants, and test real codex 0.162.1 plus refusal/rollback paths. The direct thread/read result and loaded-list mismatch are recorded in .collab/findings/2026-10-15T10-05-00Z-codex-vanilla-hook-live-probe.md and the current session evidence.
