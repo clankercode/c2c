@@ -398,7 +398,24 @@ and advance the work the operator asked for. Never "acknowledge the
 heartbeat and stop." If you have nothing left to do, idle or wait for
 the operator; do not invent coordination busywork.
 
-## Codex idle wake (tmux/herdr injection)
+### Promoting a running vanilla Codex session (B365)
+
+After `c2c install codex`, a plain `codex` session registers through
+`c2c hook codex`. Promote its live native thread without restarting the TUI:
+
+```bash
+c2c codex adopt ALIAS
+```
+
+Adoption proves the authenticated loaded thread and its workspace, then arms
+the shared daemon delivery sidecar. The vanilla frontend and any composer draft
+remain operator-owned. `c2c start codex -n ALIAS`, `c2c resume codex ALIAS`, and
+`c2c restart ALIAS` re-arm the sidecar and never launch a second frontend.
+Stale, ambiguous, wrong-workspace, already-managed, and already-owned state is
+rejected fail closed. If exact sidecar ownership cannot be rolled back safely,
+c2c retains the ownership barrier for retry and reports that hook fallback is
+not currently safe; do not remove the lease or lifecycle files by hand.
+
 
 > **Note (T005; updated 2026-07-12):** this whole section describes the
 > **input-injecting** wake, which is the **hook-fallback path only**

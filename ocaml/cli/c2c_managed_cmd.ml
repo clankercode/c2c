@@ -928,6 +928,9 @@ let restart_cmd =
          [@ocaml.warning "-21"]
    | None -> ());
   let instance_dir = C2c_start.instance_dir name in
+  if Sys.file_exists (C2c_start.adopted_codex_marker_path name) then
+    exit (C2c_codex_session.reattach_adopted ~name)
+  else
   match C2c_codex_session.load_mapping ~instance_dir with
   | Some _ ->
       (* Any app-server mapping stays on the owner-control seam, including

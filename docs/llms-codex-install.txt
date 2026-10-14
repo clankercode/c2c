@@ -60,7 +60,20 @@ alias cx='c2c new codex --'
 cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-spark
 ```
 
-## Delivery
+Vanilla sessions can be promoted without restarting the existing frontend after
+`c2c install codex` has registered the session through its hooks:
+
+```bash
+c2c codex adopt ALIAS
+```
+
+Adoption authenticates the shared Codex daemon, proves the exact loaded native
+thread and workspace, and arms arrival-time delivery while preserving the
+vanilla frontend and any composer draft. `c2c start codex -n ALIAS` and
+`c2c resume codex ALIAS` re-arm an adopted sidecar without launching a second
+frontend. Stale, ambiguous, wrong-workspace, already-managed, and already-owned
+sessions are refused with the hook path preserved when ownership is safely
+restored.
 
 Managed sessions (`c2c start codex`, `c2c new codex`, and resume) choose the
 transport in this order. On codex-cli >= 0.159, c2c prefers the machine-wide

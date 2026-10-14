@@ -106,6 +106,13 @@ val unix_endpoint : string -> C2c_codex_app_server.endpoint option
 val socket_available : string -> bool
 (** True when the private Unix daemon socket accepts a WebSocket handshake. *)
 
+(** Stable unit id and B138 delivery heartbeat for a daemon attachment. These
+    functions live with the sidecar so the detached owner can update health
+    without introducing a dependency cycle through [C2c_codex_session]. *)
+val daemon_attachment_unit_id : instance_dir:string -> string
+val write_delivery_status :
+  instance_dir:string -> degraded:bool -> binding_refused:bool -> unit
+
 val select_owned_thread : hint:string -> loaded:string list -> string option
 (** [Some hint] iff [hint] is in [loaded]. Never picks a different loaded
     thread. *)
@@ -143,6 +150,7 @@ val refresh_managed_registration :
   pid:int ->
   pid_start_time:int option ->
   ?alias_from_auto_gen:bool ->
+  ?instance_name:string ->
   unit -> unit
 (** Refresh the sidecar's authoritative broker registration while retaining
     existing registration metadata owned by the same session. *)

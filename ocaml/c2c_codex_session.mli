@@ -320,6 +320,13 @@ val status_of_instance : instance_dir:string -> status option
 val daemon_attachment_path : instance_dir:string -> string
 (** Durable daemon transport record for a managed Codex instance. *)
 
+val write_adopted_daemon_attachment :
+  instance_dir:string -> endpoint:C2c_codex_app_server.endpoint ->
+  owner_pid:int -> owner_pid_start_time:int option -> thread_id:string -> unit -> bool
+(** Persist the daemon transport record for a vanilla frontend promoted by
+    [c2c codex adopt]. The owner is the detached c2c delivery sidecar; the
+    vanilla Codex frontend remains operator-owned and is never signalled. *)
+
 val app_server_transport_of_instance : instance_dir:string -> string option
 (** Returns [codex-daemon] for a shared Unix-socket attachment and
     [private-loopback] for the isolated authenticated fallback. *)
@@ -387,6 +394,10 @@ val default_stale_window_s : float
 val online_attached_delivery_degraded :
   ?now:float -> ?stale_window_s:float -> instance_dir:string -> unit -> bool
 
+(** For daemon-backed adopted sessions, the sidecar writes this status record
+    under the instance directory. *)
+val write_adopted_delivery_healthy : instance_dir:string -> unit -> unit
+
 (** [delivery_degraded_reason_of_instance ~instance_dir ~unit_id] reads WHY the
     persisted record is degraded, trusting it only on a unit_id stamp match.
     [None] = healthy / untrusted / unreadable. A degraded record with a missing
@@ -446,6 +457,11 @@ val await_restart_result :
   instance_dir:string -> request_id:string -> timeout_s:float -> string option
 val resolve_restart_executable :
   ?path:string option -> ?self:string -> unit -> string option
+
+(** Re-arm delivery for an adopted vanilla Codex frontend without spawning or
+    signalling a Codex process. Refuses when the recorded native thread is not
+    authenticated as loaded in its original workspace. *)
+val reattach_adopted : name:string -> int
 
 (* --------------------------------- run ------------------------------------ *)
 

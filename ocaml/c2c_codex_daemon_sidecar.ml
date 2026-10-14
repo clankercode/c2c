@@ -386,6 +386,31 @@ let socket_ok path =
 
 let socket_available = socket_ok
 
+let daemon_attachment_unit_id ~instance_dir =
+  "daemon:" ^ Digest.to_hex
+    (Digest.string (Filename.concat instance_dir "codex-daemon-attachment.json"))
+
+let write_delivery_status ~instance_dir ~degraded ~binding_refused =
+  try
+    C2c_io.mkdir_p instance_dir;
+    let path = Filename.concat instance_dir "codex-delivery-status.json" in
+    let now = Unix.gettimeofday () in
+    let j =
+      `Assoc
+        ([ ("unit_id", `String (daemon_attachment_unit_id ~instance_dir))
+         ; ("degraded", `Bool degraded)
+         ; ("thread_loaded", `Bool (not degraded || binding_refused)) ]
+         @ (if degraded then
+              [ ("reason", `String (if binding_refused then "binding-refused" else "no-thread")) ]
+            else [])
+         @ [ ("updated_at", `Float now) ])
+    in
+    match C2c_io.write_file_atomic ~perm:0o600 path
+            (Yojson.Safe.to_string j ^ "\n") with
+    | Ok () -> ()
+    | Error _ -> ()
+  with _ -> ()
+
 let stop_pid ?sidecar_pid_start_time pid =
   if pid <= 0 then false else
   let generation =
@@ -538,14 +563,22 @@ let with_arm_lock path f =
 
 let refresh_managed_registration ~(broker_root : string)
     ~(broker_session_id : string) ~(alias : string) ~(pid : int)
-    ~(pid_start_time : int option) ?(alias_from_auto_gen = false) () : unit =
+    ~(pid_start_time : int option) ?(alias_from_auto_gen = false)
+    ?(instance_name : string option) () : unit =
   let broker = C2c_mcp.Broker.create ~root:broker_root in
-  (* The detached daemon sidecar is the arrival-time delivery owner. Preserve
-     this discriminator and existing metadata on every refresh so the Codex
-     hook remains identity-only and cannot dual-drain the same inbox. *)
+  let adopted =
+    match instance_name with
+    | Some name -> Sys.file_exists (C2c_start.adopted_codex_marker_path name)
+    | None -> false
+  in
+  (* An adopted vanilla frontend remains hook-owned. Preserve that provenance
+     so SessionEnd and c2c stop can clear the sidecar PID without leaving a
+     pidless app-server row that the vanilla hook can never retire. *)
   C2c_mcp.Broker.register broker ~session_id:broker_session_id ~alias
     ~pid:(Some pid) ~pid_start_time
-    ~client_type:(Some "codex-app-server")
+    ~client_type:(Some (if adopted then "codex" else "codex-app-server"))
+    ~registered_by:(if adopted then Some "codex-hook" else None)
+    ~clear_hook_ownership:(not adopted)
     ~from_auto_gen:alias_from_auto_gen ~preserve_existing_metadata:true ()
 
 let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
@@ -596,10 +629,12 @@ let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
       let broker = C2c_mcp.Broker.create ~root:broker_root in
       C2c_start.clear_codex_hook_fallback ~broker_root
         ~session_id:broker_session_id;
-      let register () =
-        refresh_managed_registration ~broker_root
-          ~broker_session_id ~alias ~pid ~pid_start_time ~alias_from_auto_gen ()
-      in
+  let register () =
+    refresh_managed_registration ~broker_root
+      ~broker_session_id ~alias ~pid ~pid_start_time
+      ?instance_name
+      ~alias_from_auto_gen ()
+  in
       let cleanup_failed = ref false in
       let deregister () =
         let cleanup () =
@@ -675,6 +710,11 @@ let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
           with _ ->
             exit_after_deregister ());
       let sock_alive () = socket_ok socket_path in
+      let adopted_instance_dir = Option.map C2c_start.instance_dir instance_name in
+      (match adopted_instance_dir with
+       | Some dir -> write_delivery_status ~instance_dir:dir
+                       ~degraded:true ~binding_refused:false
+       | None -> ());
       let deps : C2c_codex_deliver_loop.deps =
         { broker_root;
           session_id = broker_session_id;
@@ -700,7 +740,11 @@ let run_child ~instance_name ~owners_dir ~token ~socket_path ~thread_id ~alias
           register;
           deregister = (fun () -> ignore (deregister ()));
           on_pass = (fun _ -> ());
-          on_degraded = (fun ~degraded:_ ~binding_refused:_ -> ());
+          on_degraded = (fun ~degraded ~binding_refused ->
+            match adopted_instance_dir with
+            | Some dir -> write_delivery_status ~instance_dir:dir
+                            ~degraded ~binding_refused
+            | None -> ());
           on_thread_discovered =
             (fun tid -> String.equal tid claimed_thread);
           restart_requested = (fun ~thread_id:_ -> None);

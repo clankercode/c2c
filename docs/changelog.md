@@ -9,6 +9,16 @@ nav_label: Changelog
 
 ## Unreleased
 
+- **Vanilla Codex sessions can be promoted into arrival-time c2c delivery (B365).**
+  Run `c2c codex adopt ALIAS` for a live `codex-hook` registration. c2c
+  authenticates the shared Codex daemon, proves the exact loaded native thread
+  and workspace, arms the existing delivery sidecar, and leaves the vanilla
+  frontend and draft untouched. `c2c start codex`, `c2c resume codex ALIAS`,
+  and `c2c restart ALIAS` re-arm the adopted sidecar without launching a
+  duplicate frontend. Stale, ambiguous, wrong-workspace, already-managed, and
+  already-owned sessions fail closed while hook delivery remains the fallback
+  when ownership can be restored safely.
+
 ## 0.18.1 — 2026-10-14
 
 Muse parity completion: muse now gets the best delivery its host allows,

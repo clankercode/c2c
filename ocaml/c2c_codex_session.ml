@@ -862,6 +862,21 @@ let daemon_attachment_frontend_alive (attachment : daemon_attachment) : bool =
        | C2c_pid_identity.Absent | C2c_pid_identity.Unreadable -> false)
   | None -> false
 
+let write_adopted_daemon_attachment ~instance_dir ~endpoint ~owner_pid
+    ~owner_pid_start_time ~thread_id () =
+  let timestamp = Unix.gettimeofday () in
+  let attachment =
+    { da_unit_id = daemon_attachment_unit_id ~instance_dir;
+      da_endpoint = endpoint;
+      da_frontend_pid = owner_pid;
+      da_frontend_pid_start_time = owner_pid_start_time;
+      da_thread_id = thread_id;
+      da_status = Online_attached;
+      da_created_at = timestamp;
+      da_updated_at = timestamp }
+  in
+  write_daemon_attachment ~instance_dir attachment
+
 let daemon_attachment_status (attachment : daemon_attachment) : status =
   match attachment.da_status with
   | Starting | Online_attached when daemon_attachment_frontend_alive attachment
@@ -1057,11 +1072,19 @@ let delivery_degraded_reason_of_instance ~(instance_dir : string)
    still reads healthy — the healthy path is not weakened. Total. *)
 let online_attached_delivery_degraded ?now ?(stale_window_s = default_stale_window_s)
     ~(instance_dir : string) () : bool =
-  match C2c_codex_app_server.load_persisted ~instance_dir with
-  | Some p ->
+  let unit_id =
+    match C2c_codex_app_server.load_persisted ~instance_dir with
+    | Some p -> Some p.C2c_codex_app_server.unit_id
+    | None ->
+        (match load_daemon_attachment ~instance_dir with
+         | Some attachment -> Some attachment.da_unit_id
+         | None -> None)
+  in
+  match unit_id with
+  | Some unit_id ->
       (match
          delivery_degraded_of_instance ?now ~stale_window_s ~instance_dir
-           ~unit_id:p.C2c_codex_app_server.unit_id ()
+           ~unit_id ()
        with
        | Some b -> b
        | None -> true)
@@ -1074,14 +1097,25 @@ let online_attached_delivery_degraded ?now ?(stale_window_s = default_stale_wind
    historical [Dr_no_thread] shape, so an unknown record can only produce the
    generic remediation, never a specific-but-wrong one. Total. *)
 let online_attached_delivery_binding_refused ~(instance_dir : string) () : bool =
-  match C2c_codex_app_server.load_persisted ~instance_dir with
-  | Some p ->
-      (try
-         delivery_degraded_reason_of_instance ~instance_dir
-           ~unit_id:p.C2c_codex_app_server.unit_id ()
-         = Some Dr_binding_refused
+  let unit_id =
+    match C2c_codex_app_server.load_persisted ~instance_dir with
+    | Some p -> Some p.C2c_codex_app_server.unit_id
+    | None ->
+        (match load_daemon_attachment ~instance_dir with
+         | Some attachment -> Some attachment.da_unit_id
+         | None -> None)
+  in
+  match unit_id with
+  | Some unit_id ->
+      (try delivery_degraded_reason_of_instance ~instance_dir ~unit_id ()
+           = Some Dr_binding_refused
        with _ -> false)
   | None -> false
+
+let write_adopted_delivery_healthy ~instance_dir () =
+  match load_daemon_attachment ~instance_dir with
+  | Some a -> write_delivery_degraded ~instance_dir ~unit_id:a.da_unit_id false
+  | None -> ()
 
 (* --------------------------- identity mapping ----------------------------- *)
 
@@ -1896,6 +1930,130 @@ let persist_discovered_thread_with_hook ~before_mapping_write
 let persist_discovered_thread ~instance_dir ~name ~broker_root ~thread_id : bool =
   persist_discovered_thread_with_hook ~before_mapping_write:(fun () -> ())
     ~instance_dir ~name ~broker_root ~thread_id
+
+let reattach_adopted ~(name : string) : int =
+  let instance_dir = C2c_start.instance_dir name in
+  let marker = C2c_start.adopted_codex_marker_path name in
+  if not (Sys.file_exists marker) then 1
+  else
+    match C2c_start.load_config_opt name, load_mapping ~instance_dir,
+          load_daemon_attachment ~instance_dir,
+          C2c_start.read_regular_file_nofollow (C2c_start.expected_cwd_path name) with
+    | Some cfg, Some mapping, Some attachment,
+      C2c_start.Regular_file_contents cwd_contents
+      when cfg.client = "codex"
+           && cfg.alias = name
+           && mapping.alias = name
+           && mapping.session_id = cfg.session_id
+           && mapping.thread_id = Some attachment.da_thread_id
+           && String.trim cwd_contents <> "" ->
+        let cwd = String.trim cwd_contents in
+        Unix.putenv "C2C_CODEX_INGRESS_LIVE" "1";
+        (match C2c_codex_daemon_sidecar.default_control_socket () with
+         | None ->
+             Printf.eprintf
+               "c2c codex resume: adopted Codex daemon socket is unavailable; refusing to launch a duplicate frontend\n%!";
+             1
+         | Some socket ->
+             (match C2c_codex_daemon_sidecar.unix_endpoint socket with
+              | None ->
+                  Printf.eprintf
+                    "c2c codex resume: adopted Codex daemon socket is unusable; refusing to launch a duplicate frontend\n%!";
+                  1
+              | Some endpoint ->
+                  (match
+                     C2c_codex_ingress.real_loaded_threads_for_cwd_result
+                       ~endpoint ~token:"" ~cwd
+                   with
+                   | C2c_codex_ingress.Loaded_threads_for_cwd ids
+                     when List.mem attachment.da_thread_id ids ->
+                       (match
+                          C2c_codex_daemon_sidecar.arm
+                            ~instance_name:name
+                            ~thread_id:attachment.da_thread_id
+                            ~alias:cfg.alias
+                            ~broker_session_id:cfg.session_id
+                            ~broker_root:cfg.broker_root ()
+                        with
+                        | C2c_codex_daemon_sidecar.Armed { child_pid } ->
+                            let generation =
+                              C2c_mcp.Broker.read_pid_start_time child_pid
+                            in
+                            (match generation with
+                             | Some expected ->
+                                 (match
+                                    C2c_codex_daemon_sidecar.peek
+                                      ~owners_dir:(C2c_codex_daemon_sidecar.default_owners_dir ())
+                                      ~socket_identity:endpoint.host
+                                      ~thread_id:attachment.da_thread_id
+                                  with
+                                  | Some lease
+                                    when lease.sidecar_pid = child_pid
+                                         && lease.sidecar_pid_start_time = Some expected ->
+                                      if not
+                                           (write_adopted_daemon_attachment
+                                              ~instance_dir ~endpoint
+                                              ~owner_pid:child_pid
+                                              ~owner_pid_start_time:generation
+                                              ~thread_id:attachment.da_thread_id ())
+                                      then begin
+                                        Printf.eprintf
+                                          "c2c codex resume: could not persist adopted sidecar attachment; refusing to report success\n%!";
+                                        1
+                                      end else begin
+                                        Printf.printf
+                                          "re-armed adopted Codex %s on native thread %s; existing frontend remains running\n%!"
+                                          name attachment.da_thread_id;
+                                        0
+                                      end
+                                  | _ ->
+                                      Printf.eprintf
+                                        "c2c codex resume: re-armed sidecar generation could not be verified; refusing to launch a duplicate frontend\n%!";
+                                      1)
+                             | None ->
+                                 Printf.eprintf
+                                   "c2c codex resume: sidecar PID generation is unavailable; refusing to launch a duplicate frontend\n%!";
+                                 1)
+                        | C2c_codex_daemon_sidecar.Already_running
+                            { sidecar_pid; sidecar_pid_start_time = Some expected }
+                          when C2c_mcp.Broker.read_pid_start_time sidecar_pid
+                               = Some expected ->
+                            if not
+                                 (write_adopted_daemon_attachment
+                                    ~instance_dir ~endpoint ~owner_pid:sidecar_pid
+                                    ~owner_pid_start_time:(Some expected)
+                                    ~thread_id:attachment.da_thread_id ())
+                            then begin
+                              Printf.eprintf
+                                "c2c codex resume: could not persist adopted sidecar attachment; refusing to report success\n%!";
+                              1
+                            end else begin
+                              Printf.printf
+                                "re-armed adopted Codex %s on native thread %s; existing frontend remains running\n%!"
+                                name attachment.da_thread_id;
+                              0
+                            end
+                        | C2c_codex_daemon_sidecar.Already_running _
+                        | C2c_codex_daemon_sidecar.Claim_held _
+                        | C2c_codex_daemon_sidecar.Socket_unavailable
+                        | C2c_codex_daemon_sidecar.Arm_failed _
+                        | C2c_codex_daemon_sidecar.Arm_failed_ownership_retained _ ->
+                            Printf.eprintf
+                              "c2c codex resume: could not re-arm delivery for adopted thread %s; refusing to launch a duplicate frontend\n%!"
+                              attachment.da_thread_id;
+                            1)
+                   | C2c_codex_ingress.Loaded_threads_for_cwd []
+                   | C2c_codex_ingress.Loaded_threads_for_cwd _
+                   | C2c_codex_ingress.Loaded_threads_for_cwd_unavailable _ ->
+                       Printf.eprintf
+                         "c2c codex resume: adopted native thread %s is not authenticated as loaded in %s; refusing to launch a duplicate frontend\n%!"
+                         attachment.da_thread_id cwd;
+                       1)))
+    | _ ->
+        Printf.eprintf
+          "c2c codex resume: adopted lifecycle state for %s is incomplete or unreadable; refusing to launch a duplicate frontend\n%!"
+          name;
+        1
 
 (* --------------------------------- run ------------------------------------ *)
 
@@ -3407,6 +3565,19 @@ let run ~(mode : launch_mode) ?(alias_override : string option)
     ?(backend : C2c_codex_app_server.backend option)
     ?(alias_from_auto_gen = false)
     ~(fallback : extra_args:string list -> unit -> int) () : int =
+  (* An adopted vanilla frontend is operator-owned. Every public managed Codex
+     start/resume entry point reaches this function, so keep the duplicate-
+     frontend guard here rather than relying on one CLI wrapper. *)
+  let adopted_name =
+    match mode with
+    | Resume alias -> Some alias
+    | Start -> alias_override
+    | New -> None
+  in
+  match adopted_name with
+  | Some name when Sys.file_exists (C2c_start.adopted_codex_marker_path name) ->
+      reattach_adopted ~name
+  | _ ->
   (* B136: hook fallback still needs this inherited non-secret marker so its
      hooks suppress the vanilla app-server tip.  The app-server path uses the
      frontend-only environment assembled above, avoiding a launcher-env leak. *)

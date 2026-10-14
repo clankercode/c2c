@@ -167,27 +167,14 @@ let codex_term =
           ~extra_args ())
 
 let codex : unit Cmd.t =
-  Cmd.v (Cmd.info "codex"
-           ~doc:"Start a managed Codex session (shortcut for `c2c start codex`)."
+  Cmd.group ~default:codex_term
+    (Cmd.info "codex"
+           ~doc:"Start a managed Codex session or adopt a live vanilla session."
            ~man:[ `S "DESCRIPTION"
-                ; `P "Shortcut for $(b,c2c start codex) with the same Codex session \
-                      semantics and defaults (generated identity, $(b,--yolo)). The \
-                      app-server transport (identity + auto-delivery of inbound c2c \
-                      mail + auto-turn) is the default and only managed path for a \
-                      supported Codex; it falls back to the hook-backed launch \
-                      automatically if Codex is too old or the app-server fails to \
-                      start. Exposes a reduced flag surface — pass codex options after \
-                      $(b,--), e.g. $(b,c2c codex -- --model MODEL); use \
-                      $(b,c2c start codex) for the full managed flags."
-                ; `P "The $(b,[mcp_servers.c2c]) block in $(b,~/.codex/config.toml) \
-                      is optional (B256): managed Codex delivers via the \
-                      app-server + hooks + CLI, so a missing block does not block \
-                      the launch. Run $(b,c2c install codex --with-mcp) if you \
-                      also want the c2c MCP tools inside Codex. Only a $(i,stale) \
-                      block (present but unrunnable) is refused up front with a \
-                      repair message — run $(b,c2c install codex --with-mcp) to \
-                      fix, or $(b,C2C_CODEX_SKIP_MCP_PREFLIGHT=1) to bypass." ])
-    codex_term
+                ; `P "Shortcut for $(b,c2c start codex) with the same Codex session semantics and defaults (generated identity, $(b,--yolo)). The app-server transport is the default managed path and falls back to hooks when unavailable."
+                ; `P "Use $(b,c2c codex adopt ALIAS) to promote an already-running plain $(b,codex) session registered by $(b,c2c hook codex). Adoption reuses the existing machine daemon, arms arrival-time c2c delivery, and leaves the vanilla frontend untouched."
+                ; `P "Pass codex options after $(b,--), e.g. $(b,c2c codex -- --model MODEL); use $(b,c2c start codex) for the full managed flags." ])
+    [ C2c_codex_adopt.adopt ]
 
 (* --------------------------------- new ------------------------------------ *)
 

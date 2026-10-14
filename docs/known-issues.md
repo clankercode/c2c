@@ -43,7 +43,15 @@ Official **Linux** release assets (`c2c-*-linux-x64.tar.gz`, `linux-arm64`, and 
 
 **Vanilla / fallback:** hook-based, not XML sideband or PTY notify. `c2c install codex` writes `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks that run `c2c hook codex`. Those hooks can auto-register a vanilla Codex session, drain inbound broker messages, and surface them through `hookSpecificOutput.additionalContext`.
 
-**Portable path:** explicit `mcp__c2c__poll_inbox {}` / `c2c poll-inbox` remains available when hook/app-server output is unavailable or after config changes that have not been picked up by a restarted Codex session. `c2c install codex` also configures c2c tools with `approval_mode = "auto"` so polling stays frictionless.
+**Vanilla adoption (B365):** after `c2c install codex` has registered a live
+plain `codex` session, `c2c codex adopt ALIAS` can promote that exact native
+thread onto the shared daemon sidecar without restarting the frontend or
+clobbering a draft. The command requires authenticated loaded-thread and
+workspace proof and refuses stale, ambiguous, wrong-workspace, already-managed,
+and already-owned sessions. `c2c start codex -n ALIAS` and
+`c2c resume codex ALIAS` re-arm adopted delivery without launching a duplicate
+frontend; hook delivery remains the fallback when adoption is refused.
+
 
 ---
 

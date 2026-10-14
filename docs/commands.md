@@ -1197,6 +1197,7 @@ Four command forms share one implementation path for managed Codex sessions:
 |------|---------|
 | `c2c start codex …` | Canonical managed entry point (full managed flag surface: `-n`, `-m`, `--worktree`, `--agent`, `--auto-join`, …). |
 | `c2c codex …` | Shortcut for `c2c start codex` with the same Codex session semantics (identity, `--yolo`, `--thread-id`) and the same defaults. It exposes a reduced flag surface — pass codex options after `--`, and use `c2c start codex` when you need the full managed flags. |
+| `c2c codex adopt ALIAS [--json]` | Promote a live vanilla `codex` registration created by `c2c hook codex` onto the existing machine-wide Codex daemon and arrival-time delivery sidecar. c2c proves the exact loaded native thread and workspace, preserves the vanilla frontend, and refuses stale, ambiguous, wrong-workspace, already-managed, or already-owned sessions. |
 | `c2c new codex …` | Always a new Codex thread + a new c2c identity — never silently resumes. |
 | `c2c resume codex ALIAS …` | Resume the Codex thread saved for `ALIAS`. |
 

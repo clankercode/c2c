@@ -2968,6 +2968,9 @@ let codex_frontend_teardown_record_path name =
 let codex_daemon_thread_handoff_path name =
   instance_dir name // "daemon-thread-handoff.json"
 
+let adopted_codex_marker_path name =
+  instance_dir name // "vanilla-codex-adopted"
+
 let codex_hook_fallback_path ~broker_root ~session_id =
   Filename.concat (Filename.concat broker_root ".codex-hook-fallback")
     (Digest.to_hex (Digest.string session_id))
@@ -4733,6 +4736,12 @@ let frontend_teardown_owner_gone (r : frontend_teardown_record) =
    a durable completion receipt while retaining its sticky identity. *)
 let codex_frontend_teardown_expected_for_config
     (name : string) (cfg : instance_config) : frontend_teardown_expectation =
+  let adopted_marker = adopted_codex_marker_path name in
+  if cfg.client = "codex" && Sys.file_exists adopted_marker then
+    (* Adoption owns only the daemon sidecar. The native vanilla frontend is
+       intentionally outside c2c's stop/restart ownership. *)
+    Codex_frontend_teardown_absent
+  else
   let record_path = codex_frontend_teardown_record_path name in
   let stat_path path =
     match lifecycle_path_state path with

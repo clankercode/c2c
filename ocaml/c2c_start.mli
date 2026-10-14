@@ -310,6 +310,9 @@ val recover_codex_daemon_attach_state :
 val codex_daemon_thread_handoff_path : string -> string
 (** Native Codex thread handoff written by the daemon-attach frontend hook. *)
 
+val adopted_codex_marker_path : string -> string
+(** Marker for a vanilla Codex frontend promoted to daemon-backed delivery. *)
+
 val codex_hook_fallback_path : broker_root:string -> session_id:string -> string
 val mark_codex_hook_fallback : broker_root:string -> session_id:string -> bool
 val clear_codex_hook_fallback : broker_root:string -> session_id:string -> unit

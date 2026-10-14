@@ -232,6 +232,21 @@ delivery when only a hook boundary is available.
 
 ### App-server transport (default managed path)
 
+A live vanilla session can be promoted without restarting its frontend:
+
+```text
+c2c codex adopt ALIAS
+```
+
+The command requires a `codex-hook` registration, authenticates the existing
+Codex daemon, proves exactly one loaded native thread in the registration
+workspace, and arms the same delivery sidecar used by managed Codex. It leaves
+the vanilla frontend and draft untouched. Adoption refuses stale, ambiguous,
+wrong-workspace, already-managed, and already-owned sessions. `c2c resume codex
+ALIAS` / `c2c restart ALIAS` re-arm delivery for an adopted session only after
+the same native thread is authenticated as loaded; they never launch a second
+frontend while the vanilla session remains active.
+
 Managed `c2c start codex` / `c2c new codex` attach the stock remote TUI to the
 machine-wide Codex daemon over its same-UID private Unix-domain WebSocket when
 that daemon is available (codex-cli ≥ 0.159). The launcher arms one delivery
