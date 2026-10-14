@@ -49,3 +49,4 @@ reviews/
 tmp/
 .collab/screenshots/
 *.bak
+*.tmp
