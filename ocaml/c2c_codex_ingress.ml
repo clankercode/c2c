@@ -619,6 +619,59 @@ type loaded_threads_for_cwd_result =
   | Loaded_threads_for_cwd of string list
   | Loaded_threads_for_cwd_unavailable of string
 
+type thread_read_state =
+  | Thread_read_loaded
+  | Thread_read_not_loaded
+  | Thread_read_unavailable of string
+
+let parse_thread_read_state = function
+  | `Assoc fields ->
+      (match List.assoc_opt "error" fields with
+       | Some _ -> Thread_read_unavailable "thread/read rejected"
+       | None ->
+           (match List.assoc_opt "result" fields with
+            | Some (`Assoc result) ->
+                (match List.assoc_opt "thread" result with
+                 | Some (`Assoc thread) ->
+                     (match List.assoc_opt "status" thread with
+                      | Some (`Assoc status) ->
+                          (match List.assoc_opt "type" status with
+                           | Some (`String "notLoaded") -> Thread_read_not_loaded
+                           | Some (`String _) -> Thread_read_loaded
+                           | _ -> Thread_read_unavailable
+                                    "thread/read returned malformed status")
+                      | _ -> Thread_read_unavailable
+                               "thread/read returned no status")
+                 | _ -> Thread_read_unavailable
+                          "thread/read returned no thread")
+            | _ -> Thread_read_unavailable
+                     "thread/read returned malformed result"))
+  | _ -> Thread_read_unavailable "thread/read returned malformed response"
+
+let real_thread_read_state ~(endpoint : Ep.endpoint) ~(token : string)
+    ~(thread_id : string) : thread_read_state =
+  let live = try Sys.getenv "C2C_CODEX_INGRESS_LIVE" = "1" with Not_found -> false in
+  if not live then Thread_read_unavailable "live ingress disabled"
+  else
+    let timeout = 8.0 in
+    let fd = ref None in
+    let close () =
+      match !fd with
+      | Some f -> (try Unix.close f with _ -> ()); fd := None
+      | None -> ()
+    in
+    Fun.protect ~finally:close (fun () ->
+        match (try Ok (ws_connect endpoint ~token ~timeout) with _ -> Error ()) with
+        | Error () -> Thread_read_unavailable "authenticated websocket unavailable"
+        | Ok f ->
+            fd := Some f;
+            (try
+               let _ = rpc_call f ~meth:"initialize" ~params:init_params in
+               parse_thread_read_state
+                 (rpc_call f ~meth:"thread/read"
+                    ~params:(`Assoc [ ("threadId", `String thread_id) ]))
+             with _ -> Thread_read_unavailable "authenticated thread/read failed"))
+
 let parse_loaded_threads_response = function
   | `Assoc fields ->
       (match List.assoc_opt "error" fields with

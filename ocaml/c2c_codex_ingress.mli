@@ -109,6 +109,20 @@ type loaded_threads_for_cwd_result =
   | Loaded_threads_for_cwd of string list
   | Loaded_threads_for_cwd_unavailable of string
 
+(** State reported by [thread/read] for an exact persisted thread. [Not_loaded]
+    means the daemon can read the rollout but has no resident thread that an
+    external client can inject into. It is not an attach or ownership proof. *)
+type thread_read_state =
+  | Thread_read_loaded
+  | Thread_read_not_loaded
+  | Thread_read_unavailable of string
+
+val parse_thread_read_state : Yojson.Safe.t -> thread_read_state
+
+val real_thread_read_state :
+  endpoint:C2c_codex_app_server.endpoint -> token:string -> thread_id:string ->
+  thread_read_state
+
 val parse_loaded_threads_response : Yojson.Safe.t -> loaded_threads_result
 
 val real_loaded_threads_result :

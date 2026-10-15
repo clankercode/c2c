@@ -401,7 +401,8 @@ the operator; do not invent coordination busywork.
 ### Promoting a running vanilla Codex session (B365)
 
 After `c2c install codex`, a plain `codex` session registers through
-`c2c hook codex`. Promote its live native thread without restarting the TUI:
+`c2c hook codex`. Promote its live native thread without restarting the TUI
+only when the shared daemon reports that exact thread as loaded:
 
 ```bash
 c2c codex adopt ALIAS
@@ -409,12 +410,14 @@ c2c codex adopt ALIAS
 
 Adoption proves the authenticated loaded thread and its workspace, then arms
 the shared daemon delivery sidecar. The vanilla frontend and any composer draft
-remain operator-owned. `c2c start codex -n ALIAS`, `c2c resume codex ALIAS`, and
-`c2c restart ALIAS` re-arm the sidecar and never launch a second frontend.
-Stale, ambiguous, wrong-workspace, already-managed, and already-owned state is
-rejected fail closed. If exact sidecar ownership cannot be rolled back safely,
-c2c retains the ownership barrier for retry and reports that hook fallback is
-not currently safe; do not remove the lease or lifecycle files by hand.
+remain operator-owned. A normal vanilla TUI may own an embedded in-process
+app-server; the daemon can then read its persisted rollout as `notLoaded` but
+cannot attach a second writer. c2c refuses that state safely, leaves hook-boundary
+delivery active, and advises `c2c start codex` / `c2c new codex` for arrival-time
+delivery. Never force `thread/resume`, remove a writer lock, or select another
+same-workspace thread. `c2c start codex -n ALIAS`, `c2c resume codex ALIAS`, and
+`c2c restart ALIAS` re-arm the sidecar only after successful exact-thread
+adoption and never launch a second frontend.
 
 
 > **Note (T005; updated 2026-07-12):** this whole section describes the

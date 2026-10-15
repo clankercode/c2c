@@ -90,6 +90,26 @@ let test_loaded_threads_response_parser_distinguishes_empty_from_unavailable () 
    | I.Loaded_threads_unavailable _ -> ()
    | I.Loaded_threads _ -> Alcotest.fail "malformed response must be unavailable")
 
+let test_thread_read_state_parser_distinguishes_unloaded () =
+  let loaded =
+    `Assoc [ ("result", `Assoc [ ("thread", `Assoc
+      [ ("status", `Assoc [ ("type", `String "idle") ]) ]) ]) ]
+  in
+  let unloaded =
+    `Assoc [ ("result", `Assoc [ ("thread", `Assoc
+      [ ("status", `Assoc [ ("type", `String "notLoaded") ]) ]) ]) ]
+  in
+  (match I.parse_thread_read_state loaded with
+   | I.Thread_read_loaded -> ()
+   | _ -> Alcotest.fail "idle thread/read state should be loaded");
+  (match I.parse_thread_read_state unloaded with
+   | I.Thread_read_not_loaded -> ()
+   | _ -> Alcotest.fail "notLoaded thread/read state should be distinguished");
+  (match I.parse_thread_read_state
+           (`Assoc [ ("error", `Assoc [ ("message", `String "active writer") ]) ]) with
+   | I.Thread_read_unavailable _ -> ()
+   | _ -> Alcotest.fail "thread/read errors are unavailable")
+
 let test_loaded_threads_result_reports_disabled_or_unavailable_transport () =
   let old = Sys.getenv_opt "C2C_CODEX_INGRESS_LIVE" in
   let restore () = Unix.putenv "C2C_CODEX_INGRESS_LIVE" (Option.value old ~default:"") in
@@ -457,6 +477,8 @@ let () =
   Alcotest.run "c2c_codex_ingress"
     [ ( "workspace-metadata",
         [ Alcotest.test_case "thread/read cwd" `Quick test_thread_read_cwd_metadata;
+          Alcotest.test_case "thread/read state distinguishes unloaded" `Quick
+            test_thread_read_state_parser_distinguishes_unloaded;
           Alcotest.test_case "loaded-thread parser distinguishes empty" `Quick
             test_loaded_threads_response_parser_distinguishes_empty_from_unavailable;
           Alcotest.test_case "loaded-thread discovery reports unavailable" `Quick

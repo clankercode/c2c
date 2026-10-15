@@ -60,8 +60,22 @@ let discover_exact_thread ~endpoint ~native_thread_id ~cwd =
   | C2c_codex_ingress.Loaded_threads_for_cwd [ thread_id ]
     when thread_id = native_thread_id -> thread_id
   | C2c_codex_ingress.Loaded_threads_for_cwd [] ->
-      errorf "native Codex thread '%s' is not loaded in workspace %s; leave the vanilla session active and retry"
-        native_thread_id cwd
+      (match
+         C2c_codex_ingress.real_thread_read_state
+           ~endpoint ~token:"" ~thread_id:native_thread_id
+       with
+       | C2c_codex_ingress.Thread_read_not_loaded ->
+           errorf
+             "native Codex thread '%s' is persisted but not loaded in the machine daemon for workspace %s; the live vanilla frontend owns an embedded app-server and cannot be attached safely. Leave it active for hook delivery, or start it through `c2c start codex` for arrival-time delivery"
+             native_thread_id cwd
+       | C2c_codex_ingress.Thread_read_loaded ->
+           errorf
+             "native Codex thread '%s' is readable but not present in the daemon loaded-thread set for workspace %s; adoption refuses an unproven owner"
+             native_thread_id cwd
+       | C2c_codex_ingress.Thread_read_unavailable reason ->
+           errorf
+             "native Codex thread '%s' is not loaded in workspace %s and its exact persisted state could not be verified (%s); leave the vanilla session active and retry"
+             native_thread_id cwd reason)
   | C2c_codex_ingress.Loaded_threads_for_cwd ids ->
       errorf "workspace %s has %d loaded Codex threads; adoption refuses to guess (wanted '%s')"
         cwd (List.length ids) native_thread_id
@@ -348,5 +362,5 @@ let adopt : unit Cmd.t =
        ~doc:"Promote a live vanilla Codex alias into shared daemon delivery."
        ~man:[ `S "DESCRIPTION"
             ; `P "Promotes a live plain codex session registered by `c2c hook codex`. c2c authenticates the existing Codex daemon, proves exactly one loaded native thread in the registration workspace, and arms the same delivery sidecar used by managed Codex. The vanilla Codex frontend and its draft remain untouched."
-            ; `P "Adoption refuses stale, ambiguous, non-Codex, wrong-workspace, already-managed, and already-owned sessions. If it refuses, hook-boundary delivery remains active. Use `c2c codex adopt ALIAS` from the same repository broker." ])
+            ; `P "Adoption requires a live codex-hook registration and an exact native thread loaded in the shared daemon. A normal vanilla TUI may own an embedded app-server that the daemon cannot attach to; c2c refuses that state safely, leaves hook-boundary delivery active, and recommends `c2c start codex` for arrival-time delivery." ])
     adopt_cmd

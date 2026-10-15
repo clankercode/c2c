@@ -232,7 +232,7 @@ delivery when only a hook boundary is available.
 
 ### App-server transport (default managed path)
 
-A live vanilla session can be promoted without restarting its frontend:
+A live vanilla session can be promoted without restarting its frontend only when the existing daemon can authenticate the exact native thread as **loaded in that daemon**:
 
 ```text
 c2c codex adopt ALIAS
@@ -242,10 +242,20 @@ The command requires a `codex-hook` registration, authenticates the existing
 Codex daemon, proves exactly one loaded native thread in the registration
 workspace, and arms the same delivery sidecar used by managed Codex. It leaves
 the vanilla frontend and draft untouched. Adoption refuses stale, ambiguous,
-wrong-workspace, already-managed, and already-owned sessions. `c2c resume codex
-ALIAS` / `c2c restart ALIAS` re-arm delivery for an adopted session only after
-the same native thread is authenticated as loaded; they never launch a second
-frontend while the vanilla session remains active.
+wrong-workspace, already-managed, and already-owned sessions.
+
+A plain Codex TUI commonly owns an embedded in-process app-server. In that case
+`thread/read` may find the exact persisted rollout while the machine daemon
+reports the thread as `notLoaded`; Codex 0.162.1 exposes no public shared-writer
+attach or handoff method. c2c refuses this case safely, leaves hook-boundary
+delivery active, and explains that arrival-time delivery requires launching the
+session through `c2c start codex` / `c2c new codex` (or using the hook/poll
+fallback). Never force `thread/resume`, remove a writer lock, or attach to a
+different same-workspace thread.
+
+`c2c resume codex ALIAS` / `c2c restart ALIAS` re-arm delivery for an adopted
+session only after the same native thread is authenticated as loaded; they never
+launch a second frontend while the vanilla session remains active.
 
 Managed `c2c start codex` / `c2c new codex` attach the stock remote TUI to the
 machine-wide Codex daemon over its same-UID private Unix-domain WebSocket when

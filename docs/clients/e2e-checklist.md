@@ -147,17 +147,22 @@ c2c list --all
 
 ---
 
-- **Vanilla Codex adoption (B365)**: start a plain `codex` in tmux after
+- **Vanilla Codex adoption (B365/B366)**: start a plain `codex` in tmux after
   `c2c install codex`, let `c2c hook codex` register it, detach, and verify
   `c2c list --match <alias>` still addresses the session. Run
-  `c2c codex adopt <alias>` and verify the command reports the shared daemon,
-  the vanilla frontend remains in the original pane, and a distinctive DM is
-  model-visible on the next turn. Run `c2c start codex -n <alias>` and
-  `c2c resume codex <alias>`; each must re-arm delivery without launching a
-  second frontend. Refusal cases include stale/ambiguous registration,
-  wrong-workspace thread proof, an existing managed instance, and an existing
-  sidecar lease. Record the result as PASS only when the exact native thread
-  and workspace proof succeeds.
+  `c2c codex adopt <alias>`. PASS requires an authenticated exact native thread
+  loaded in the shared daemon, the shared daemon result, the vanilla frontend
+  remaining in the original pane, and a distinctive DM model-visible on the
+  next turn. If `thread/read` succeeds but reports `notLoaded` or the exact id
+  is absent from `thread/loaded/list`, record the upstream-blocked refusal:
+  hook delivery remains active, no durable adoption state is written, and the
+  operator must use `c2c start codex` / `c2c new codex` for arrival-time
+  delivery. Never force `thread/resume`, remove a writer lock, or select a
+  different same-workspace thread. For a successful adoption, run
+  `c2c start codex -n <alias>` and `c2c resume codex <alias>`; each must re-arm
+  delivery without launching a second frontend. Refusal cases include
+  stale/ambiguous registration, wrong-workspace thread proof, an existing
+  managed instance, and an existing sidecar lease.
 
 ---
 

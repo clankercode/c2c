@@ -10,15 +10,7 @@ nav_label: Changelog
 ## 0.18.2 — 2026-10-15
 
 
-- **Vanilla Codex sessions can be promoted into arrival-time c2c delivery (B365).**
-  Run `c2c codex adopt ALIAS` for a live `codex-hook` registration. c2c
-  authenticates the shared Codex daemon, proves the exact loaded native thread
-  and workspace, arms the existing delivery sidecar, and leaves the vanilla
-  frontend and draft untouched. `c2c start codex`, `c2c resume codex ALIAS`,
-  and `c2c restart ALIAS` re-arm the adopted sidecar without launching a
-  duplicate frontend. Stale, ambiguous, wrong-workspace, already-managed, and
-  already-owned sessions fail closed while hook delivery remains the fallback
-  when ownership can be restored safely.
+- **Vanilla Codex sessions can join daemon delivery when the exact thread is loaded (B365/B366).** Run `c2c codex adopt ALIAS` for a live `codex-hook` registration only after the shared daemon proves the exact native thread and workspace. c2c preserves the frontend and draft. A plain TUI may own an embedded app-server that the machine daemon cannot attach to; c2c refuses that state safely and leaves hook delivery active. Use managed `c2c start codex` / `c2c new codex` for arrival-time delivery in that case.
 
 ## 0.18.1 — 2026-10-14
 

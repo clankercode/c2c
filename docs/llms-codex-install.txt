@@ -60,7 +60,8 @@ alias cx='c2c new codex --'
 cx --model gpt-5.3-codex-spark      # -> c2c new codex -- --model gpt-5.3-codex-spark
 ```
 
-Vanilla sessions can be promoted without restarting the existing frontend after
+Vanilla sessions can be promoted without restarting the existing frontend only
+when the shared daemon reports the exact native thread as loaded after
 `c2c install codex` has registered the session through its hooks:
 
 ```bash
@@ -69,11 +70,15 @@ c2c codex adopt ALIAS
 
 Adoption authenticates the shared Codex daemon, proves the exact loaded native
 thread and workspace, and arms arrival-time delivery while preserving the
-vanilla frontend and any composer draft. `c2c start codex -n ALIAS` and
-`c2c resume codex ALIAS` re-arm an adopted sidecar without launching a second
-frontend. Stale, ambiguous, wrong-workspace, already-managed, and already-owned
-sessions are refused with the hook path preserved when ownership is safely
-restored.
+vanilla frontend and any composer draft. A plain TUI may own an embedded
+in-process app-server; in that case the daemon sees the persisted thread as
+`notLoaded`, Codex 0.162.1 exposes no shared-writer handoff, and c2c refuses
+safely while leaving hook delivery active. Use `c2c start codex` / `c2c new
+codex` for arrival-time delivery in that case. `c2c start codex -n ALIAS` and
+`c2c resume codex ALIAS` re-arm an adopted sidecar only after successful exact
+thread adoption and never launch a duplicate frontend. Stale, ambiguous,
+wrong-workspace, already-managed, and already-owned sessions are refused with
+the hook path preserved when ownership is safely restored.
 
 Managed sessions (`c2c start codex`, `c2c new codex`, and resume) choose the
 transport in this order. On codex-cli >= 0.159, c2c prefers the machine-wide

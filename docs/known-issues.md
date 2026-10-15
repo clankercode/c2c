@@ -43,14 +43,16 @@ Official **Linux** release assets (`c2c-*-linux-x64.tar.gz`, `linux-arm64`, and 
 
 **Vanilla / fallback:** hook-based, not XML sideband or PTY notify. `c2c install codex` writes `UserPromptSubmit`, `PostToolUse`, `SessionStart`, and `SessionEnd` hooks that run `c2c hook codex`. Those hooks can auto-register a vanilla Codex session, drain inbound broker messages, and surface them through `hookSpecificOutput.additionalContext`.
 
-**Vanilla adoption (B365):** after `c2c install codex` has registered a live
-plain `codex` session, `c2c codex adopt ALIAS` can promote that exact native
-thread onto the shared daemon sidecar without restarting the frontend or
-clobbering a draft. The command requires authenticated loaded-thread and
-workspace proof and refuses stale, ambiguous, wrong-workspace, already-managed,
-and already-owned sessions. `c2c start codex -n ALIAS` and
-`c2c resume codex ALIAS` re-arm adopted delivery without launching a duplicate
-frontend; hook delivery remains the fallback when adoption is refused.
+**Vanilla adoption (B365/B366):** after `c2c install codex` has registered a
+live plain `codex` session, `c2c codex adopt ALIAS` can promote that exact native
+thread only when the shared daemon reports it as loaded. The command requires
+authenticated loaded-thread and workspace proof and refuses stale, ambiguous,
+wrong-workspace, already-managed, already-owned, and embedded-frontend sessions.
+A plain TUI may own a private in-process app-server; Codex 0.162.1 exposes no
+public shared-writer handoff, so c2c leaves hook delivery active and advises
+`c2c start codex` / `c2c new codex` for arrival-time delivery. `c2c start codex
+-n ALIAS` and `c2c resume codex ALIAS` re-arm adopted delivery without launching
+a duplicate frontend after a successful adoption.
 
 
 ---
@@ -149,6 +151,16 @@ C2C_MCP_SESSION_ID=my-child-session c2c start opencode -n my-open
 ### Do Not Remove the `C2C_MCP_AUTO_DRAIN_CHANNEL=0` Override
 
 The server default for `C2C_MCP_AUTO_DRAIN_CHANNEL` is `1` (ON) since #346. However, `c2c install` writes `C2C_MCP_AUTO_DRAIN_CHANNEL=0` into each client's MCP config to override this. Even when set to `1`, auto-drain only fires if the client declares `experimental.claude/channel` support in its `initialize` handshake — standard Claude Code does not — so in practice the drain has no effect there. Do not remove the `=0` override that install writes; the PostToolUse hook is the production auto-delivery path for Claude Code.
+
+### Vanilla Codex adoption can be blocked by an embedded frontend (B366)
+
+A plain `codex` TUI may own an embedded in-process app-server. Its hook
+registration and persisted rollout remain addressable, but the machine-wide
+Codex daemon reports the exact thread as `notLoaded`. Codex 0.162.1 exposes no
+public shared-writer attach or handoff method, so `c2c codex adopt ALIAS`
+refuses safely and leaves hook-boundary delivery active. Use `c2c start codex`
+(or `c2c new codex`) for arrival-time daemon delivery. Do not force
+`thread/resume`, remove a writer lock, or attach to another workspace thread.
 
 ### Codex PTY Notify Capability Notes Are Historical
 

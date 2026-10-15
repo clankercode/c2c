@@ -172,7 +172,7 @@ let codex : unit Cmd.t =
            ~doc:"Start a managed Codex session or adopt a live vanilla session."
            ~man:[ `S "DESCRIPTION"
                 ; `P "Shortcut for $(b,c2c start codex) with the same Codex session semantics and defaults (generated identity, $(b,--yolo)). The app-server transport is the default managed path and falls back to hooks when unavailable."
-                ; `P "Use $(b,c2c codex adopt ALIAS) to promote an already-running plain $(b,codex) session registered by $(b,c2c hook codex). Adoption reuses the existing machine daemon, arms arrival-time c2c delivery, and leaves the vanilla frontend untouched."
+                ; `P "Use $(b,c2c codex adopt ALIAS) to promote an already-running plain $(b,codex) session registered by $(b,c2c hook codex). Adoption arms arrival-time delivery only after the shared daemon proves the exact native thread loaded in the registration workspace; an embedded vanilla frontend is refused safely and remains on hook delivery. The frontend and draft stay untouched on successful adoption."
                 ; `P "Pass codex options after $(b,--), e.g. $(b,c2c codex -- --model MODEL); use $(b,c2c start codex) for the full managed flags." ])
     [ C2c_codex_adopt.adopt ]
 
