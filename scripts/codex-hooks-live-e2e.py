@@ -47,9 +47,10 @@ import signal
 import subprocess
 import sys
 import time
+import threading
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path("/home/xertrov/src/c2c")
 
 GATE_ENV = "C2C_CODEX_HOOKS_LIVE"
 CODEX = os.environ.get("CODEX_BIN", shutil.which("codex") or "/home/xertrov/.bun/bin/codex")
@@ -338,6 +339,16 @@ def run_live() -> int:
         argv = [CODEX, "--sandbox", "read-only", "-c", f'model="{MODEL}"']
         log(f"[hooks-e2e] launching codex TUI via {tty.name}: model={MODEL} FORCE_HOOKS=1")
         tty.start(argv, cwd=str(REPO_ROOT), env=codex_env)
+
+        def approve_codex_trust():
+            for _ in range(120):
+                frame = tty.read(120)
+                if "Trust this folder?" in frame:
+                    subprocess.run([str(REPO_ROOT / "scripts" / "c2c-tmux-enter.sh"), tty.session], check=False)
+                    log("[hooks-e2e] approved Codex folder trust")
+                    return
+                time.sleep(1)
+        threading.Thread(target=approve_codex_trust, daemon=True).start()
 
         # 3. first prompt → SessionStart/UserPromptSubmit hook fires → codex
         #    self-onboards + auto-registers in the isolated broker.

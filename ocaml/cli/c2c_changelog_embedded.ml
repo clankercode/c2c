@@ -22,6 +22,13 @@ Format (newest version first):
 `summary` continuation lines are any non-`key:` lines until the next `###`
 or `## `. `setup` must be copied verbatim (rule #414 — no paraphrasing).
 
+## v0.18.2 — 2026-10-15
+
+### Vanilla Codex sessions can join daemon delivery without restarting
+summary: If you already have a plain Codex TUI running, `c2c codex adopt ALIAS` now proves its loaded native thread and workspace, then arms arrival-time c2c delivery without touching the frontend or its draft. `c2c resume codex ALIAS` re-arms the adopted sidecar without launching a duplicate frontend.
+setup: c2c codex adopt ALIAS
+clients: codex
+
 ## v0.18.1 — 2026-10-14
 
 ### Muse: activity nudge, rooms auto-join, and a skill that stays fresh

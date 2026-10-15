@@ -7,7 +7,8 @@ nav_label: Changelog
 
 # Changelog
 
-## Unreleased
+## 0.18.2 — 2026-10-15
+
 
 - **Vanilla Codex sessions can be promoted into arrival-time c2c delivery (B365).**
   Run `c2c codex adopt ALIAS` for a live `codex-hook` registration. c2c
