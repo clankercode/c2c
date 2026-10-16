@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-16T15:01:15Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-10-16T13:24:04Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 4
 id: P6.M1.E2.T003
 priority: high
-started_at: null
-status: pending
+started_at: "2026-10-16T15:01:15Z"
+status: in_progress
 tags: []
 title: Expose opt-in setup, capabilities and truthful diagnostics
-updated_at: "2026-10-16T13:24:04Z"
+updated_at: "2026-10-16T15:01:15Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. Implement coherent T3 settings/CLI setup and c2c doctor/install integration as supported by finalized contract. Expose configured, pending, delivered, held/unsupported states without message bodies or credentials. Outbound sender derived from exact T3 thread. Document install/uninstall and supported providers; do not claim unverified adapters. Follow existing UI/config style.
 
