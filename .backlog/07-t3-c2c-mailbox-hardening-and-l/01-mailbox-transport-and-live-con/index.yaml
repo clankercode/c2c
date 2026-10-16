@@ -17,7 +17,7 @@ name: Mailbox transport and live conformance hardening
 stats:
     blocked: 0
     done: 0
-    in_progress: 0
-    pending: 2
-    total_tasks: 2
+    in_progress: 1
+    pending: 3
+    total_tasks: 4
 status: pending
