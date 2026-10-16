@@ -1784,6 +1784,7 @@ already-injected messages are not replayed.
 ## Host-owned mailboxes
 
 Applications that own provider processes can use `c2c host bind`, `peek`, `ack`,
-and `unbind` to accept durable mail before acknowledging selected message IDs.
+`send`, and `unbind` to accept durable mail, acknowledge selected message IDs,
+and send with the same ownership fence.
 See the [host mailbox transport reference](/reference/host-mailbox/) for the
 versioned JSON contract, generation fencing, and source provenance.

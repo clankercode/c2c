@@ -11,7 +11,7 @@ Support starts with Codex. Other adapters report unsupported DATA delivery.
 
 The stable identity is a domain-separated SHA-256 of environment ID and T3 thread
 ID, never a provider/native thread or title. A deterministic `host-<digest>` session
-and `t3-<digest-prefix>` default alias are used; no raw external ID enters paths.
+and full lowercase hexadecimal SHA-256 default alias are used; no raw external ID enters paths.
 T3 keeps per-thread enable and wake/mute state, and current broker binding. The
 provider process environment must not carry any particular thread's c2c identity.
 
@@ -22,6 +22,7 @@ Provide one `c2c host` command group with JSON-only stdout, version 1 responses:
 ```
 c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P]
 c2c host peek --environment-id E --thread-id T --broker-root B --generation G [--limit N]
+c2c host send --environment-id E --thread-id T --broker-root B --generation G --to A --content BODY
 c2c host ack --environment-id E --thread-id T --broker-root B --generation G --message-id M [--message-id M2]
 c2c host unbind --environment-id E --thread-id T --broker-root B --generation G
 ```
@@ -36,6 +37,10 @@ renews the opaque generation. Every later command validates it before touching d
 foreign registration conflicts. Unbind removes only its own registration, retaining
 the inbox and binding identity for later reactivation. Test fixtures may use an
 explicit broker root. Same-origin git worktrees normally resolve to the same broker.
+A durable transition records the exact prior and next ownership before publishing
+the binding or registry. A subsequent bind recovers interrupted publication using
+only those exact owned rows (or absence); conflicting rows fail closed. Other host
+operations reject a pending transition until bind reconciles it.
 
 Peek returns `{schema_version:1,binding:...,dnd:boolean,dnd_until:number|null,messages:[...],has_more:boolean}`.
 `--limit` defaults to 64 and accepts 1..64. The serialized `messages` array is also
@@ -67,9 +72,14 @@ inbox lock. Duplicate ack is safe. Preserve concurrent arrivals and unmatched ro
 reuse broker archive semantics, including ephemeral exclusion. T3 must durably
 accept content before ack. Do not introduce a parallel broker implementation.
 
-Outbound initially uses existing `c2c send` with explicit broker root, sender alias
-and subprocess-only session ID from the binding. The caller's T3 identity, not an
-untrusted request alias, selects this binding.
+Outbound uses `c2c host send` with the same identity/root/generation fence. The
+recipient and literal body are the only message fields supplied by the caller;
+the stored binding supplies the sender. Validate ownership and enqueue under the
+same registry lock, reusing the broker's unlocked send core. Body interpretation
+must not touch approvals. Host send bodies are at most65536 UTF-8 bytes. Success
+returns `{schema_version:1,binding:...,queued:true}`; errors contain only bounded
+categories. The caller's T3 identity, not an untrusted request alias, selects this
+binding. Raw `c2c send` is not a fenced host transport.
 
 ## T3 domain implementation
 

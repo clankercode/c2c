@@ -2043,12 +2043,12 @@ open C2c_mcp_helpers
        - discovery finds a different live pid claiming the same
          C2C_MCP_SESSION_ID
      A no-op for healthy regs, missing regs, or pidless legacy rows. *)
-  let refresh_pid_if_dead_with
+  let refresh_pid_if_dead_with_locked
       ~scan_pids ~read_environ t ~session_id =
-    with_registry_lock t (fun () ->
       let regs = load_registrations t in
       match List.find_opt (fun reg -> reg.session_id = session_id) regs with
       | None -> false
+      | Some reg when reg.client_type = Some "host" -> false
       | Some reg ->
           (match reg.pid with
            | None -> false
@@ -2072,7 +2072,11 @@ open C2c_mcp_helpers
                         regs
                     in
                     save_registrations t regs';
-                    true)))
+                    true))
+
+  let refresh_pid_if_dead_with ~scan_pids ~read_environ t ~session_id =
+    with_registry_lock t (fun () ->
+      refresh_pid_if_dead_with_locked ~scan_pids ~read_environ t ~session_id)
 
   let refresh_pid_if_dead t ~session_id =
     refresh_pid_if_dead_with
@@ -2080,7 +2084,7 @@ open C2c_mcp_helpers
       ~read_environ:(effective_read_environ ())
       t ~session_id
 
-  let resolve_live_session_id_by_alias t alias =
+  let resolve_live_session_id_by_alias ?(registry_locked = false) t alias =
     (* #432: case-insensitive alias match. Mirrors the eviction predicate
        at register-time (see [alias_casefold] usage at L1572) so a stale
        row whose alias differs from [alias] only in case is found by both
@@ -2143,8 +2147,13 @@ open C2c_mcp_helpers
                    match acc with
                    | Some _ -> acc
                    | None ->
-                       if refresh_pid_if_dead t ~session_id:reg.session_id
-                       then begin
+                       let refresh () =
+                         if registry_locked then
+                           refresh_pid_if_dead_with_locked
+                             ~scan_pids:(effective_scan_pids ())
+                             ~read_environ:(effective_read_environ ()) t ~session_id:reg.session_id
+                         else refresh_pid_if_dead t ~session_id:reg.session_id in
+                       if refresh () then begin
                          (* Re-load to pick up the swapped pid; the in-memory
                             [reg] is stale after refresh. *)
                          let regs' = load_registrations t in
@@ -2993,7 +3002,7 @@ open C2c_mcp_helpers
            && not (is_expired_codex_hook_auto_registration reg))
 
   (* Shared local-inbox write used by live + offline enqueue paths. *)
-  let write_local_dm_to_session t ~from_alias ~to_alias ~content ~deferrable
+  let write_local_dm_to_session ?(allow_pending_verdict = true) t ~from_alias ~to_alias ~content ~deferrable
       ~ephemeral ~session_id ~offline =
     (* Docker lease touch only for live peers — offline pids don't need a
        lease keep-alive and may not exist. *)
@@ -3068,7 +3077,7 @@ open C2c_mcp_helpers
        [c2c:pending-verdict:<perm_id>:<approve|deny>] and the sender is
        in the entry's supervisors list, resolve the pending entry. The DM
        is already delivered above — this is a pure side-effect. *)
-    (try
+    (if allow_pending_verdict then try
        match parse_pending_verdict content with
        | Some (perm_id, v) ->
            (match find_pending_permission t perm_id with
@@ -3094,14 +3103,13 @@ open C2c_mcp_helpers
     if offline then Local_offline { session_id }
     else Local_live { session_id }
 
-  let enqueue_message_with_result t ~from_alias ~to_alias ~content
+  (* Caller holds the registry lock. Shared by ordinary sends and the host
+     fence so identity validation cannot race enqueue. No nested registry lock
+     or worktree-mismatch helper (which takes that lock itself) belongs here. *)
+  let enqueue_message_with_result_locked ?(allow_pending_verdict = true) t ~from_alias ~to_alias ~content
       ?(deferrable = false) ?(ephemeral = false) () =
     if debug_enabled then
       Printf.eprintf "[DEBUG enqueue ENTER] from=%s to=%s\n%!" from_alias to_alias;
-    (* Hardening B: check shell-launch-location mismatch and warn if sender's
-       cwd has drifted from the expected path at launch time. Called here for
-       all sends (reserved-alias check is separate below). *)
-    check_worktree_mismatch t ~from_alias;
     (* Reject messages claiming a reserved system from_alias — prevents spoofing. *)
     if is_reserved_system_alias from_alias then
       invalid_arg
@@ -3116,8 +3124,7 @@ open C2c_mcp_helpers
         ~content ();
       Relay_outbox
     end else
-      with_registry_lock t (fun () ->
-          match resolve_live_session_id_by_alias t to_alias with
+      (match resolve_live_session_id_by_alias ~registry_locked:true t to_alias with
           | Unknown_alias ->
               (* #silent-send Bug 3: if the alias is not a remote alias (no @),
                  it should exist locally. Unknown_alias here means it's genuinely
@@ -3146,11 +3153,18 @@ open C2c_mcp_helpers
                      ("enqueue_message rejected: alias '" ^ to_alias
                       ^ "' is not registered; message not queued")
                | Some session_id ->
-                   write_local_dm_to_session t ~from_alias ~to_alias ~content
+                   write_local_dm_to_session ~allow_pending_verdict t ~from_alias ~to_alias ~content
                      ~deferrable ~ephemeral ~session_id ~offline:true)
           | Resolved session_id ->
-              write_local_dm_to_session t ~from_alias ~to_alias ~content
+              write_local_dm_to_session ~allow_pending_verdict t ~from_alias ~to_alias ~content
                 ~deferrable ~ephemeral ~session_id ~offline:false)
+
+  let enqueue_message_with_result t ~from_alias ~to_alias ~content
+      ?(deferrable = false) ?(ephemeral = false) () =
+    check_worktree_mismatch t ~from_alias;
+    with_registry_lock t (fun () ->
+      enqueue_message_with_result_locked t ~from_alias ~to_alias ~content
+        ~deferrable ~ephemeral ())
 
   let enqueue_message t ~from_alias ~to_alias ~content ?(deferrable = false)
       ?(ephemeral = false) () =

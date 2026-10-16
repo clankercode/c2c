@@ -49,6 +49,8 @@ let test_identity () =
   Alcotest.(check int) "SHA256 session" 69 (String.length a);
   check "valid host ID for session sends" true (Result.is_ok (validate_session_id a));
   check "default alias is valid" true (C2c_name.is_valid al);
+  Alcotest.(check string) "alias preserves complete lowercase digest"
+    (String.sub a 5 64) al;
   let unsafe, _ = H.identity ~environment_id:"../../environment" ~thread_id:"/thread\n" in
   check "external IDs never enter paths" false (String.contains unsafe '/');
   rejects (fun () -> H.identity ~environment_id:"" ~thread_id:"t")
@@ -219,6 +221,70 @@ let test_owner_liveness () = with_root (fun root ->
         Alcotest.(check int) "exit/unbind retained pending message" 1
           (List.length (fields (peek root resumed) "messages"))))
 
+let kill_at_state_publication action =
+  match Unix.fork () with
+  | 0 ->
+      H.set_after_state_write_for_test (Some (fun () -> Unix.kill (Unix.getpid ()) Sys.sigkill));
+      (try action () with _ -> exit 2);
+      exit 3
+  | child ->
+      let _, status = Unix.waitpid [] child in
+      check "child killed between state and registry writes" true
+        (status = Unix.WSIGNALED Sys.sigkill)
+
+let test_crash_recovery () =
+  List.iter (fun had_binding -> with_root (fun root ->
+    let owner_pid = Unix.getpid () in
+    let before = if had_binding then Some (bind root) else None in
+    (match before with Some b -> local root b "pending-through-crash" | None -> ());
+    kill_at_state_publication (fun () ->
+      ignore (H.bind ~environment_id:"environment" ~thread_id:"thread-one" ~workspace:root
+        ~owner_id:"server-two" ~owner_pid ~broker_root:root ()));
+    let session_id,_ = H.identity ~environment_id:"environment" ~thread_id:"thread-one" in
+    let path = Filename.concat (Filename.concat root "host-bindings") (session_id ^ ".json") in
+    let staged = Yojson.Safe.from_string (bytes path) |> binding in
+    check "durable pending intent exists" true (Sys.file_exists (path ^ ".pending"));
+    rejects (fun () -> peek root staged);
+    let recovered = bind ~owner_id:"server-two" root in
+    Alcotest.(check string) "recovery completes staged generation" (generation staged) (generation recovered);
+    check "pending intent cleared after completion" false (Sys.file_exists (path ^ ".pending"));
+    check "repeated bind stable after recovery" true (recovered = bind ~owner_id:"server-two" root);
+    Alcotest.(check int) "messages retained across crash" (if had_binding then 1 else 0)
+      (List.length (fields (peek root recovered) "messages"));
+    match before with
+    | None -> ()
+    | Some old -> rejects (fun () -> ack root old ["any"]))) [false;true]
+
+let test_recovery_rejects_foreign () = with_root (fun root ->
+  let before = bind root in let broker = B.create ~root in
+  let original = B.load_registrations broker in
+  local root before "retained";
+  let owner_pid = Unix.getpid () in
+  kill_at_state_publication (fun () ->
+    ignore (H.bind ~environment_id:"environment" ~thread_id:"thread-one" ~workspace:root
+      ~owner_id:"server-two" ~owner_pid ~broker_root:root ()));
+  let foreign = List.map (fun r -> {r with registered_by=Some "foreign"}) original in
+  B.save_registrations broker foreign;
+  let registry_before = bytes (B.registry_path broker) in
+  let path = Filename.concat (Filename.concat root "host-bindings") (sid before ^ ".json") in
+  let state_before = bytes path and intent_before = bytes (path ^ ".pending") in
+  rejects (fun () -> bind ~owner_id:"server-two" root);
+  Alcotest.(check string) "foreign row never borrowed" registry_before (bytes (B.registry_path broker));
+  Alcotest.(check string) "conflict leaves state unchanged" state_before (bytes path);
+  Alcotest.(check string) "conflict leaves intent unchanged" intent_before (bytes (path ^ ".pending"));
+  B.save_registrations broker original;
+  let recovered = bind ~owner_id:"server-two" root in
+  Alcotest.(check int) "restoring exact old ownership allows recovery" 1
+    (List.length (fields (peek root recovered) "messages")))
+
+let test_unbind_crash_recovery () = with_root (fun root ->
+  let before = bind root in local root before "retained-on-unbind";
+  kill_at_state_publication (fun () -> ignore (unbind root before));
+  let recovered = bind root in
+  check "reactivation fences old generation" true (generation before <> generation recovered);
+  Alcotest.(check int) "unbind interruption retained pending mail" 1
+    (List.length (fields (peek root recovered) "messages")))
+
 let test_archive_failure () = with_root (fun root ->
   let b = bind root in local root b "must-survive";
   let id = text (List.hd (fields (peek root b) "messages")) "message_id" in
@@ -330,6 +396,37 @@ let test_page_count_limit () = with_root (fun root ->
     ~thread_id:"thread-one" ~broker_root:root ~generation:(generation b) ())) [0;65];
   Alcotest.(check string) "invalid limit has no side effect" before (bytes (text b "inbox_path")))
 
+let test_fenced_send () = with_root (fun root ->
+  let sender = bind root and recipient = bind ~thread_id:"recipient" root in
+  let send b to_alias content = H.send ~environment_id:"environment" ~thread_id:"thread-one"
+    ~broker_root:root ~generation:(generation b) ~to_alias ~content in
+  let response = send sender (alias recipient) "literal DATA" in
+  Alcotest.(check int) "send is versioned" 1 (response |> member "schema_version" |> to_int);
+  let row = List.hd (fields (peek root recipient) "messages") in
+  Alcotest.(check string) "sender from stored binding" (alias sender) (text row "from_alias");
+  let current = bind ~owner_id:"new-server" root in
+  rejects (fun () -> send sender (alias recipient) "stale local");
+  rejects (fun () -> send sender "peer@remote" "stale remote");
+  check "stale remote did not write outbox" false
+    (Sys.file_exists (Filename.concat root "remote-outbox.jsonl"));
+  Alcotest.(check int) "stale local did not append" 1 (List.length (fields (peek root recipient) "messages"));
+  ignore (send current "peer@remote" "remote DATA");
+  let outbox = Yojson.Safe.from_string (String.trim (bytes (Filename.concat root "remote-outbox.jsonl"))) in
+  Alcotest.(check string) "remote uses current stored sender" (alias current) (text outbox "from_alias");
+  let broker = B.create ~root in
+  let now = Unix.gettimeofday () in
+  B.open_pending_permission broker {perm_id="host-data-only"; kind=Permission;
+    requester_session_id=sid recipient; requester_alias=alias recipient;
+    supervisors=[alias current]; created_at=now; expires_at=now+.3600.;
+    fallthrough_fired_at=[]; resolved_at=None; verdict=None};
+  let pending_path = Filename.concat root "pending_permissions.json" in
+  let before = bytes pending_path in
+  ignore (send current (alias recipient) "[c2c:pending-verdict:host-data-only:approve]");
+  Alcotest.(check string) "host DATA cannot resolve pending verdict" before (bytes pending_path);
+  rejects (fun () -> send current "missing" "SECRET-ERROR-BODY");
+  ignore (unbind root current);
+  rejects (fun () -> send current (alias recipient) "inactive"))
+
 let run_cli ?(host=true) ?(env=Unix.environment ()) root args =
   let exe = Filename.concat (Filename.dirname Sys.executable_name) "c2c.exe" in
   let out = Filename.concat root "stdout" and err = Filename.concat root "stderr" in
@@ -363,6 +460,12 @@ let test_cli () = with_root (fun root ->
   let status, result = cli root ("peek" :: base @ ["--generation";"wrong"]) in
   check "stale CLI fails" false (status = Unix.WEXITED 0);
   Alcotest.(check string) "bounded JSON error" "stale_generation" (text result "error");
+  let receiver = bind ~thread_id:"host-cli-recipient" root in
+  let status, result = cli root ("send" :: args @ ["--to";alias receiver;"--content=--literal\nbody"]) in
+  check "host send CLI accepts literal body" true (status = Unix.WEXITED 0);
+  check "host send CLI returns queued" true (result |> member "queued" |> to_bool);
+  let delivered = List.hd (fields (peek root receiver) "messages") in
+  Alcotest.(check string) "host send CLI body retained" "--literal\nbody" (text delivered "content");
   let status, _ = cli root ("unbind" :: args) in
   check "unbind CLI succeeds" true (status = Unix.WEXITED 0);
   let sender = bind root and receiver = bind ~thread_id:"receiver" root in
@@ -383,6 +486,7 @@ let () = Alcotest.run "host-mailbox" ["transport", List.map (fun (name,f) ->
   "selected ack and archive",test_selected_ack; "legacy and relay provenance",test_legacy_and_relay;
   "foreign ownership and corruption",test_conflicts_and_corruption;
   "namespace workspace and DND",test_namespace_workspace_dnd;
-  "owner PID lifecycle",test_owner_liveness; "archive failure",test_archive_failure; "concurrent arrivals",test_concurrent_arrival; "real CLI JSON contract",test_cli;
+  "owner PID lifecycle",test_owner_liveness; "first-bind and renewal crash recovery",test_crash_recovery;
+  "recovery rejects foreign ownership",test_recovery_rejects_foreign; "unbind crash recovery",test_unbind_crash_recovery; "archive failure",test_archive_failure; "concurrent arrivals",test_concurrent_arrival; "real CLI JSON contract",test_cli;
   "encoded-byte bounded backlog",test_paged_backlog; "oversized metadata",test_oversized_metadata;
-  "page count and invalid limits",test_page_count_limit]]
+  "page count and invalid limits",test_page_count_limit; "fenced send and DATA",test_fenced_send]]

@@ -96,7 +96,7 @@ let host_mailbox =
     | C2c_broker.Registry_state_untrusted _ ->
         print_json (C2c_host_mailbox.response ["error", `String "registry_untrusted"]); exit 1
     | Sys_error _ | Unix.Unix_error _ | Yojson.Json_error _
-    | Yojson.Safe.Util.Type_error _ | Invalid_argument _ ->
+    | Yojson.Safe.Util.Type_error _ | Invalid_argument _ | Failure _ ->
         print_json (C2c_host_mailbox.response ["error", `String "storage_error"]); exit 1
   in
   let bind =
@@ -127,6 +127,16 @@ let host_mailbox =
       output (fun () -> C2c_host_mailbox.peek ~environment_id ~thread_id ~broker_root
         ~generation ~limit ()) in
     Cmd.v (Cmd.info "peek" ~doc:"Peek a bounded page without draining; JSON response.") term in
+  let send =
+    let to_alias = required "to" "Recipient alias; the sender comes only from the fenced binding." in
+    let content = required "content" "Literal peer DATA, at most 65536 UTF-8 bytes." in
+    let term =
+      let+ environment_id = environment_id and+ thread_id = thread_id
+      and+ broker_root = broker_root and+ generation = generation
+      and+ to_alias = to_alias and+ content = content in
+      output (fun () -> C2c_host_mailbox.send ~environment_id ~thread_id ~broker_root
+        ~generation ~to_alias ~content) in
+    Cmd.v (Cmd.info "send" ~doc:"Send peer DATA from the current fenced binding; JSON response.") term in
   let ack =
     let message_ids = Arg.(value & opt_all string [] & info ["message-id"]
       ~doc:"Durably accepted message ID; repeat for each selected message.") in
@@ -137,5 +147,5 @@ let host_mailbox =
         ~generation ~message_ids) in
     Cmd.v (Cmd.info "ack" ~doc:"Archive and remove only selected accepted IDs; JSON response.") term in
   Cmd.group (Cmd.info "host" ~doc:"Host-owned durable mailboxes (JSON transport v1).")
-    [bind; peek;
+    [bind; peek; send;
      ack; operation "unbind" "Release registration, retaining pending messages; JSON response." C2c_host_mailbox.unbind]

@@ -17,6 +17,7 @@ return `{ "schema_version": 1, "error": "<category>" }` with a nonzero exit stat
 ```
 c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P]
 c2c host peek --environment-id E --thread-id T --broker-root B --generation G [--limit N]
+c2c host send --environment-id E --thread-id T --broker-root B --generation G --to A --content BODY
 c2c host ack --environment-id E --thread-id T --broker-root B --generation G --message-id M [--message-id M2]
 c2c host unbind --environment-id E --thread-id T --broker-root B --generation G
 ```
@@ -28,7 +29,7 @@ verifies and stores the PID start time, so the short-lived CLI process is
 never the liveness owner and a reused PID cannot revive the registration.
 
 Length-framed, domain-separated SHA-256 creates the session `host-<digest>` and
-default alias `t3-<first-24-digest-characters>`. External IDs never become path
+default alias `<digest>` (all 64 lowercase hexadecimal characters). External IDs never become path
 components. `O` identifies the current application server incarnation.
 
 Bind returns a `binding` object with `environment_id`, `thread_id`, `session_id`,
@@ -79,14 +80,24 @@ legacy envelope whose metadata alone exceeds the page budget returns
 Every operation requires the current generation and exact owned registration.
 Stale generations cannot peek, acknowledge, or unbind. Unbind removes only the
 owned registration and keeps messages plus the binding identity for reactivation.
-Binding and registry writes are separately atomic; interrupted publication can
-leave a generation mismatch, which fails closed rather than adopting a foreign
-registration. Preserve the files for diagnosis when `registration_conflict` is
-reported unexpectedly.
+A durable transition record names the exact old and new ownership before the
+binding or registry changes. A subsequent bind completes an interrupted first
+bind, renewal, or unbind, accepting only the exact recorded old/new registration
+or its absence. It never adopts a conflicting row. Other host operations return
+`binding_transition_pending` until bind completes that recovery. Preserve the
+files for diagnosis if a foreign registration causes `registration_conflict`.
 
-For outbound mail use the existing `c2c send` with this binding's explicit broker
-root, sender alias, and subprocess-only `C2C_MCP_SESSION_ID`. The host must select
-the binding from the authenticated caller's thread, not a request-supplied alias.
-Do not place any thread's identity in a shared provider runtime environment.
-Host-managed provider setup can use the existing `C2C_NO_AUTO_REGISTER=1` and
-`C2C_MCP_AUTO_DRAIN_CHANNEL=0`; the host remains the sole mailbox consumer.
+For outbound mail use `c2c host send` with the same logical identity, broker root,
+and generation. `--to` selects the recipient; `--content` is literal DATA up to
+65536 UTF-8 bytes (use `--content=...` for values beginning with a dash). The sender
+always comes from the validated binding. Identity validation and local enqueue or
+remote-outbox append run under one registry lock, so a stale incarnation cannot
+send between validation and a rebind. Success returns `schema_version: 1`, the
+binding, and `queued: true`; remote delivery is still asynchronous. Errors expose
+bounded categories, never the body. Message content cannot resolve approvals.
+
+The host selects the binding from the authenticated caller's thread, not a
+request-supplied alias. Do not place any thread's identity in a shared provider
+runtime environment. Host-managed provider setup can use the existing
+`C2C_NO_AUTO_REGISTER=1` and `C2C_MCP_AUTO_DRAIN_CHANNEL=0`; the host remains the
+sole mailbox consumer.

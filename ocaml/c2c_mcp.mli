@@ -523,7 +523,7 @@ module Broker : sig
     | Unknown_alias
     | All_recipients_dead
 
-  val resolve_live_session_id_by_alias : t -> string -> resolve_result
+  val resolve_live_session_id_by_alias : ?registry_locked:bool -> t -> string -> resolve_result
   (** Resolve an alias to a live session_id. Case-insensitive (#432):
       [Foo-Bar] and [foo-bar] match the same registration row. On the
       [All_recipients_dead] branch, attempts pid-refresh self-heal via

@@ -32,7 +32,7 @@ let identity ~environment_id ~thread_id =
   let frame s = string_of_int (String.length s) ^ ":" ^ s in
   let digest = Digestif.SHA256.(to_hex (digest_string
     ("c2c-host-mailbox-v1\000" ^ frame environment_id ^ frame thread_id))) in
-  "host-" ^ digest, "t3-" ^ String.sub digest 0 24
+  "host-" ^ digest, digest
 
 let binding_to_json b = `Assoc [
   "environment_id", `String b.environment_id; "thread_id", `String b.thread_id;
@@ -47,47 +47,126 @@ let state_path broker session_id =
   Filename.concat (Filename.concat (B.root broker) "host-bindings") (session_id ^ ".json")
 let marker b = "host-mailbox:" ^ b.generation
 
+let stored_to_json state = response ["binding", binding_to_json state.binding;
+  "owner_id", `String state.owner_id; "active", `Bool state.active]
+
+let stored_of_json broker ~environment_id ~thread_id json =
+  let session_id, _ = identity ~environment_id ~thread_id in
+  let open Yojson.Safe.Util in
+  if json |> member "schema_version" |> to_int <> 1 then reject "invalid_binding";
+  let b = json |> member "binding" in
+  let text key = b |> member key |> to_string in
+  let binding = { environment_id = text "environment_id"; thread_id = text "thread_id";
+    session_id = text "session_id"; alias = text "alias"; workspace = text "workspace";
+    broker_root = text "broker_root"; inbox_path = text "inbox_path";
+    generation = text "generation"; owner_pid = b |> member "owner_pid" |> to_int;
+    owner_pid_start_time = b |> member "owner_pid_start_time" |> to_int } in
+  if binding.environment_id <> environment_id || binding.thread_id <> thread_id
+     || binding.session_id <> session_id || binding.broker_root <> B.root broker
+     || binding.inbox_path <> B.inbox_path broker ~session_id
+     || not (C2c_name.is_valid binding.alias) || binding.generation = ""
+     || binding.owner_pid <= 0
+  then reject "invalid_binding";
+  { binding; owner_id = json |> member "owner_id" |> to_string;
+    active = json |> member "active" |> to_bool }
+
 let read_state broker ~environment_id ~thread_id =
   let session_id, _ = identity ~environment_id ~thread_id in
   let file_path = state_path broker session_id in
   if not (Sys.file_exists file_path) then None else
-  try
-    let open Yojson.Safe.Util in
-    let json = Yojson.Safe.from_string (C2c_io.read_file file_path) in
-    if json |> member "schema_version" |> to_int <> 1 then reject "invalid_binding";
-    let b = json |> member "binding" in
-    let text key = b |> member key |> to_string in
-    let binding = { environment_id = text "environment_id"; thread_id = text "thread_id";
-      session_id = text "session_id"; alias = text "alias"; workspace = text "workspace";
-      broker_root = text "broker_root"; inbox_path = text "inbox_path";
-      generation = text "generation"; owner_pid = b |> member "owner_pid" |> to_int;
-      owner_pid_start_time = b |> member "owner_pid_start_time" |> to_int } in
-    if binding.environment_id <> environment_id || binding.thread_id <> thread_id
-       || binding.session_id <> session_id || binding.broker_root <> B.root broker
-       || binding.inbox_path <> B.inbox_path broker ~session_id
-       || not (C2c_name.is_valid binding.alias) || binding.generation = ""
-    then reject "invalid_binding";
-    Some { binding; owner_id = json |> member "owner_id" |> to_string;
-      active = json |> member "active" |> to_bool }
+  try Some (stored_of_json broker ~environment_id ~thread_id
+    (Yojson.Safe.from_string (C2c_io.read_file file_path)))
   with Rejected _ as e -> raise e | _ -> reject "invalid_binding"
 
 let write_state broker state =
   let path = state_path broker state.binding.session_id in
   C2c_io.mkdir_p (Filename.dirname path);
-  B.write_json_file path (response ["binding", binding_to_json state.binding;
-    "owner_id", `String state.owner_id; "active", `Bool state.active])
+  B.write_json_file path (stored_to_json state)
 
-let owned_registration (regs : registration list) b =
-  let touching = List.filter (fun (r : registration) -> r.session_id = b.session_id
-    || B.alias_casefold r.alias = B.alias_casefold b.alias) regs in
-  match touching with
+let registration_matches (r : registration) b =
+  r.session_id = b.session_id && r.alias = b.alias
+  && r.registered_by = Some (marker b) && r.cwd = Some b.workspace
+  && r.client_type = Some "host" && r.pid = Some b.owner_pid
+  && r.pid_start_time = Some b.owner_pid_start_time
+  && r.automated_delivery = Some false
+
+let touching_registrations (regs : registration list) b =
+  List.filter (fun (r : registration) -> r.session_id = b.session_id
+    || B.alias_casefold r.alias = B.alias_casefold b.alias) regs
+
+let owned_registration regs b =
+  match touching_registrations regs b with
   | [] -> None
-  | [r] when r.session_id = b.session_id && r.alias = b.alias
-      && r.registered_by = Some (marker b) && r.cwd = Some b.workspace
-      && r.client_type = Some "host" && r.pid = Some b.owner_pid
-      && r.pid_start_time = Some b.owner_pid_start_time
-      && r.automated_delivery = Some false -> Some r
+  | [r] when registration_matches r b -> Some r
   | _ -> reject "registration_conflict"
+
+let registration_for_binding existing binding =
+  let now = Unix.gettimeofday () in
+  let r = match existing with Some r -> r | None ->
+    B.registration_of_json (`Assoc ["session_id", `String binding.session_id;
+      "alias", `String binding.alias]) in
+  { r with pid = Some binding.owner_pid; pid_start_time = Some binding.owner_pid_start_time;
+    registered_at = Some now; confirmed_at = Some now; last_activity_ts = Some now;
+    client_type = Some "host"; registered_by = Some (marker binding);
+    cwd = Some binding.workspace; automated_delivery = Some false }
+
+(* A write-ahead transition is the authority for the two-file publication.
+   It names both exact generations before either file changes. Recovery accepts
+   only their owned row (or absence), never a row merely sharing the alias/PID. *)
+type transition = { before : stored option; after : stored }
+let transition_path broker session_id = state_path broker session_id ^ ".pending"
+let after_state_write_for_test = ref None
+let set_after_state_write_for_test hook = after_state_write_for_test := hook
+
+let read_transition broker ~environment_id ~thread_id =
+  let session_id, _ = identity ~environment_id ~thread_id in
+  let file_path = transition_path broker session_id in
+  if not (Sys.file_exists file_path) then None else
+  try
+    let json = Yojson.Safe.from_string (C2c_io.read_file file_path) in
+    let open Yojson.Safe.Util in
+    if json |> member "schema_version" |> to_int <> 1 then reject "invalid_binding_transition";
+    let parse = stored_of_json broker ~environment_id ~thread_id in
+    let before = match json |> member "before" with `Null -> None | j -> Some (parse j) in
+    let after = parse (json |> member "after") in
+    (match before with
+     | Some old when old.binding.alias <> after.binding.alias -> reject "invalid_binding_transition"
+     | _ -> ());
+    Some { before; after }
+  with Rejected _ as e -> raise e | _ -> reject "invalid_binding_transition"
+
+let finish_transition broker transition regs =
+  let target = transition.after in
+  let current = match touching_registrations regs target.binding with
+    | [] -> None
+    | [r] when registration_matches r target.binding
+        || (match transition.before with
+            | Some old -> registration_matches r old.binding | None -> false) -> Some r
+    | _ -> reject "registration_conflict" in
+  write_state broker target;
+  (match !after_state_write_for_test with None -> () | Some hook -> hook ());
+  let others = List.filter (fun (r : registration) -> r.session_id <> target.binding.session_id) regs in
+  let next = if target.active then
+      registration_for_binding current target.binding :: others else others in
+  B.save_registrations broker next;
+  Unix.unlink (transition_path broker target.binding.session_id)
+
+let recover_transition broker ~environment_id ~thread_id =
+  match read_transition broker ~environment_id ~thread_id with
+  | None -> ()
+  | Some transition ->
+      let current = read_state broker ~environment_id ~thread_id in
+      if current <> transition.before && current <> Some transition.after
+      then reject "binding_transition_conflict";
+      finish_transition broker transition (B.load_registrations_strict broker)
+
+let publish_transition broker ~before ~after regs =
+  let path = transition_path broker after.binding.session_id in
+  C2c_io.mkdir_p (Filename.dirname path);
+  B.write_json_file path (response [
+    "before", (match before with None -> `Null | Some state -> stored_to_json state);
+    "after", stored_to_json after]);
+  finish_transition broker { before; after } regs
 
 let canonical_root root =
   require_text "broker_root" root;
@@ -115,6 +194,7 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
           canonical_root (C2c_repo_fp.resolve_broker_root ())) in
   let broker = B.create ~root in
   B.with_registry_lock broker (fun () ->
+    recover_transition broker ~environment_id ~thread_id;
     let previous = read_state broker ~environment_id ~thread_id in
     let alias = match alias, previous with
       | Some a, _ -> a | None, Some s -> s.binding.alias | None, None -> default_alias in
@@ -142,20 +222,9 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
       broker_root = root; inbox_path = B.inbox_path broker ~session_id; generation;
       owner_pid; owner_pid_start_time } in
     if not unchanged then begin
-      let now = Unix.gettimeofday () in
-      let r = match old_reg with Some r -> r | None ->
-        B.registration_of_json (`Assoc ["session_id", `String session_id; "alias", `String alias]) in
-      let registration = { r with pid = Some owner_pid; pid_start_time = Some owner_pid_start_time;
-        registered_at = Some now; confirmed_at = Some now; last_activity_ts = Some now;
-        client_type = Some "host"; registered_by = Some (marker binding);
-        cwd = Some workspace; automated_delivery = Some false } in
       if B.capture_pid_start_time (Some owner_pid) <> Some owner_pid_start_time
       then reject "owner_not_alive";
-      (* Publish ownership first. If the second write fails, later operations
-         reject the mismatched generation rather than borrowing a stale row. *)
-      write_state broker { binding; owner_id; active = true };
-      B.save_registrations broker (registration :: List.filter
-        (fun (r : registration) -> r.session_id <> session_id) regs)
+      publish_transition broker ~before:previous ~after:{ binding; owner_id; active = true } regs
     end;
     binding_response binding)
 
@@ -163,6 +232,8 @@ let with_binding ~environment_id ~thread_id ~broker_root ~generation f =
   require_text "generation" generation;
   let broker = B.create ~root:(canonical_root broker_root) in
   B.with_registry_lock broker (fun () ->
+    let session_id, _ = identity ~environment_id ~thread_id in
+    if Sys.file_exists (transition_path broker session_id) then reject "binding_transition_pending";
     match read_state broker ~environment_id ~thread_id with
     | None -> reject "binding_not_found"
     | Some s when s.binding.generation <> generation -> reject "stale_generation"
@@ -223,6 +294,18 @@ let peek ?(limit = max_page_messages) ~environment_id ~thread_id ~broker_root ~g
       response ["binding", binding_to_json state.binding; "dnd", `Bool dnd;
         "dnd_until", dnd_until; "messages", `List messages; "has_more", `Bool has_more])
 
+let send ~environment_id ~thread_id ~broker_root ~generation ~to_alias ~content =
+  require_text "recipient" to_alias;
+  if content = "" || String.length content > max_content_bytes then reject "invalid_content";
+  with_binding ~environment_id ~thread_id ~broker_root ~generation
+    (fun broker state _ registration ->
+      ignore (require_active state registration);
+      (try
+        ignore (B.enqueue_message_with_result_locked ~allow_pending_verdict:false broker
+          ~from_alias:state.binding.alias ~to_alias ~content ())
+       with Invalid_argument _ -> reject "invalid_recipient");
+      response ["binding", binding_to_json state.binding; "queued", `Bool true])
+
 let ack ~environment_id ~thread_id ~broker_root ~generation ~message_ids =
   if message_ids = [] || List.length message_ids > 4096 then reject "invalid_message_ids";
   List.iter (fun id -> if id = "" || String.length id > 256
@@ -245,8 +328,6 @@ let unbind ~environment_id ~thread_id ~broker_root ~generation =
     (fun broker state regs registration ->
       if state.active then ignore (require_active state registration);
       if state.active || registration <> None then begin
-        write_state broker { state with active = false };
-        B.save_registrations broker (List.filter
-          (fun (r : registration) -> r.session_id <> state.binding.session_id) regs)
+        publish_transition broker ~before:(Some state) ~after:{ state with active = false } regs
       end;
       response ["binding", binding_to_json state.binding; "unbound", `Bool true])
