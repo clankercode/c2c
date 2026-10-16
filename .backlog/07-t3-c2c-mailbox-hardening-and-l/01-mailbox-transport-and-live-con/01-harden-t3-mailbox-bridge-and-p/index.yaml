@@ -24,6 +24,8 @@ tasks:
     - complexity: high
       depends_on:
         - P7.M1.E1.T001
+        - P7.M1.E1.T003
+        - P7.M1.E1.T004
       estimate_hours: 12
       file: T002-extend-the-isolated-live-verif.todo
       id: T002
