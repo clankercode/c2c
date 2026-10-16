@@ -1,21 +1,22 @@
 ---
 claimed_at: "2026-10-16T14:36:34Z"
 claimed_by: codex-poplar-waffle-m0fg
-completed_at: null
+completed_at: "2026-10-16T15:00:53Z"
 complexity: high
 created_at: "2026-10-16T13:24:04Z"
 depends_on:
     - P6.M1.E1.T002
     - P6.M1.E1.T003
     - P6.M1.E2.T001
+duration_minutes: 24.31986813605
 estimate_hours: 4
 id: P6.M1.E2.T002
 priority: high
 started_at: "2026-10-16T14:36:34Z"
-status: in_progress
+status: done
 tags: []
 title: Wire mailbox delivery and eligible Codex wake into T3 lifecycle
-updated_at: "2026-10-16T14:36:34Z"
+updated_at: "2026-10-16T15:00:53Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. Integrate T3 run scheduler and mailbox. Stable identity across resume/restart/unload; exact routing on same-workspace threads and native/T3 children; at most one batched local-only eligible wake; DND, snooze, stop, archive/delete and pending approvals respected. Keep raw peer payload away from user-message and approval APIs. Bind/unbind event watcher with lifecycle; recover safely after crashes.
 
