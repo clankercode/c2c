@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-16T22:11:01Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-10-16T20:42:48Z"
@@ -9,11 +11,11 @@ depends_on:
 estimate_hours: 12
 id: P7.M1.E1.T002
 priority: high
-started_at: null
-status: pending
+started_at: "2026-10-16T22:11:01Z"
+status: in_progress
 tags: []
 title: Extend the isolated live verifier to the remaining c2c lifecycle matrix
-updated_at: "2026-10-16T20:42:48Z"
+updated_at: "2026-10-16T22:11:01Z"
 ---
 Extend the T3 live verifier beyond idle and active delivery: same-directory distinct-thread isolation, restart recovery, DND/stop behavior, native-child isolation, malicious-body inertness, ephemeral and deferrable mail, and unsupported adapter behavior. Keep isolated homes/process groups, sanitized evidence, exact binary hashes, and no polling false positives.
 

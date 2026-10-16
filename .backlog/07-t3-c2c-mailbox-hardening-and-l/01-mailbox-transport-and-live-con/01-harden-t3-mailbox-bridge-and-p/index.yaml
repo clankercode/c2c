@@ -30,6 +30,6 @@ tasks:
       file: T002-extend-the-isolated-live-verif.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Extend the isolated live verifier to the remaining c2c lifecycle matrix
