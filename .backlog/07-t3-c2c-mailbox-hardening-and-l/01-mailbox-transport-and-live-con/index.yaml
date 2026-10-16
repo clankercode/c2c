@@ -9,7 +9,7 @@ epics:
       locked: false
       name: Harden T3 mailbox bridge and prove lifecycle matrix
       path: 01-harden-t3-mailbox-bridge-and-p
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: Close raw-consumer ownership gaps and make host transport paging, identity, and argv contracts exact.
@@ -29,4 +29,4 @@ stats:
     in_progress: 1
     pending: 0
     total_tasks: 4
-status: pending
+status: done

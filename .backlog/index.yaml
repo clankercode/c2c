@@ -68,11 +68,11 @@ phases:
       description: Close independent review findings and extend the cross-repo live matrix for T3-owned c2c mailboxes and provider adapters.
       estimate_hours: 24
       id: P7
-      locked: false
+      locked: true
       name: T3 c2c mailbox hardening and live conformance
       path: 07-t3-c2c-mailbox-hardening-and-l
       priority: high
-      status: pending
+      status: done
       weeks: 2
 project: c2c
 stats:
