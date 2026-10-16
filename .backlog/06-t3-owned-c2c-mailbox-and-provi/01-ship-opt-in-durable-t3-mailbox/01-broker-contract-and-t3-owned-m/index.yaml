@@ -24,6 +24,7 @@ tasks:
     - complexity: high
       depends_on:
         - P6.M1.E1.T001
+        - B367
       estimate_hours: 4
       file: T002-implement-c2c-host-binding-and.todo
       id: T002

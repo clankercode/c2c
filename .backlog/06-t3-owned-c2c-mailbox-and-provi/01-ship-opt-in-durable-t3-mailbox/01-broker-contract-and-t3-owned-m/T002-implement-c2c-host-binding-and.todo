@@ -6,6 +6,7 @@ complexity: high
 created_at: "2026-10-16T13:24:03Z"
 depends_on:
     - P6.M1.E1.T001
+    - B367
 estimate_hours: 4
 id: P6.M1.E1.T002
 priority: high
@@ -22,3 +23,5 @@ Lane: c2c host transport and durable source metadata; separate worktree with par
 Review decision: bounded host peek pages (default/max 64 and <=4MiB serialized message budget) prevent unbounded subprocess replies. Oversized UTF-8 bodies return metadata-only content:null/content_omitted_reason:oversized/content_bytes, allowing durable unsupported acceptance and selective ack without truncation. Include has_more and dnd_until so T3 drains pages and schedules timed-DND expiry without polling.
 
 Lane refinement: native-consumer exclusion is a required host transport primitive, so this c2c lane will add C2C_MCP_DISABLED=1 before its final gate. Disabled native MCP must stay protocol-valid while advertising no tools and rejecting direct tool calls, and must skip startup registration, draining, room join, schedulers/notifications. CLI host commands remain available. T3 setup in E2.T003 will set this per-provider-process flag plus hook/channel suppression. This avoids provider-specific installed-config mutation and prevents arbitrary named native c2c servers consuming T3-owned inboxes.
+
+Final forced validation found B367, a pre-existing relay supervisor EINTR/false-green test defect. Host production tests pass; close host transport only after B367 is fixed and combined source passes the full gate.
