@@ -1,0 +1,30 @@
+complexity: high
+depends_on: []
+estimate_hours: 11
+id: P7.M1.E2
+locked: false
+name: Harden c2c host transport ownership and schema
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 2
+    total: 2
+status: pending
+tasks:
+    - complexity: high
+      depends_on: []
+      estimate_hours: 6
+      file: T001-guard-raw-c2c-consumers-when-t.todo
+      id: T001
+      priority: critical
+      status: pending
+      title: Guard raw c2c consumers when T3 owns the mailbox
+    - complexity: high
+      depends_on: []
+      estimate_hours: 5
+      file: T002-close-host-transport-schema-an.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Close host transport schema and paging edge cases

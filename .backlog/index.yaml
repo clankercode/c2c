@@ -1,8 +1,8 @@
 critical_path:
-    - I008
-    - I003
+    - P7.M1.E2.T001
+    - P7.M1.E1.T002
 description: ""
-next_available: B008
+next_available: P7.M1.E2.T001
 phases:
     - depends_on: []
       description: Canonical managed remote-TUI delivery architecture that preserves the operator composer; local messages may wake the recipient and start an agent turn under its delivery policy, but message content can never satisfy an approval or write an approval verdict.

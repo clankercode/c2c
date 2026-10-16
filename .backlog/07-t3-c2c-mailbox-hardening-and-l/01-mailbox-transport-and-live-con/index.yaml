@@ -10,6 +10,15 @@ epics:
       name: Harden T3 mailbox bridge and prove lifecycle matrix
       path: 01-harden-t3-mailbox-bridge-and-p
       status: pending
+    - complexity: high
+      depends_on: []
+      description: Close raw-consumer ownership gaps and make host transport paging, identity, and argv contracts exact.
+      estimate_hours: 11
+      id: E2
+      locked: false
+      name: Harden c2c host transport ownership and schema
+      path: 02-harden-c2c-host-transport-owne
+      status: pending
 estimate_hours: 24
 id: P7.M1
 locked: false

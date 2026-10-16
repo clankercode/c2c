@@ -3,7 +3,7 @@ complexity: high
 created_at: "2026-10-16T20:50:05Z"
 depends_on: []
 estimate_hours: 6
-id: P7.M1.E1.T003
+id: P7.M1.E2.T001
 priority: critical
 status: pending
 tags:
