@@ -2,7 +2,7 @@ critical_path:
     - I008
     - I003
 description: ""
-next_available: B008
+next_available: P7.M1.E1.T001
 phases:
     - depends_on: []
       description: Canonical managed remote-TUI delivery architecture that preserves the operator composer; local messages may wake the recipient and start an agent turn under its delivery policy, but message content can never satisfy an approval or write an approval verdict.
@@ -64,11 +64,21 @@ phases:
       priority: high
       status: done
       weeks: 2
+    - depends_on: []
+      description: Close independent review findings and extend the cross-repo live matrix for T3-owned c2c mailboxes and provider adapters.
+      estimate_hours: 24
+      id: P7
+      locked: false
+      name: T3 c2c mailbox hardening and live conformance
+      path: 07-t3-c2c-mailbox-hardening-and-l
+      priority: high
+      status: pending
+      weeks: 2
 project: c2c
 stats:
     blocked: 0
     done: 409
     in_progress: 1
-    pending: 12
-    total_tasks: 425
+    pending: 14
+    total_tasks: 427
 timeline_weeks: 0

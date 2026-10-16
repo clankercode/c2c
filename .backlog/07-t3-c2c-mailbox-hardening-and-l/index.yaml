@@ -1,0 +1,24 @@
+complexity: medium
+depends_on: []
+estimate_hours: 24
+id: P7
+locked: false
+milestones:
+    - complexity: high
+      depends_on: []
+      description: ""
+      estimate_hours: 24
+      id: M1
+      locked: false
+      name: Mailbox transport and live conformance hardening
+      path: 01-mailbox-transport-and-live-con
+      status: pending
+name: T3 c2c mailbox hardening and live conformance
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 2
+    total_tasks: 2
+status: pending
+weeks: 2

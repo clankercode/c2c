@@ -1,0 +1,33 @@
+complexity: high
+depends_on: []
+estimate_hours: 24
+id: P7.M1.E1
+locked: false
+name: Harden T3 mailbox bridge and prove lifecycle matrix
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 2
+    total: 2
+status: pending
+tasks:
+    - complexity: medium
+      depends_on: []
+      estimate_hours: 4
+      file: T001-enforce-a-combined-c2c-subproc.todo
+      id: T001
+      priority: high
+      status: in_progress
+      tags: []
+      title: Enforce a combined c2c subprocess output budget in the T3 bridge
+    - complexity: high
+      depends_on:
+        - P7.M1.E1.T001
+      estimate_hours: 12
+      file: T002-extend-the-isolated-live-verif.todo
+      id: T002
+      priority: high
+      status: pending
+      tags: []
+      title: Extend the isolated live verifier to the remaining c2c lifecycle matrix

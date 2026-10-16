@@ -1,0 +1,23 @@
+complexity: high
+depends_on: []
+epics:
+    - complexity: high
+      depends_on: []
+      description: Implement bounded transport semantics and verify isolation, restart, DND, unsupported, and DATA safety behavior end to end.
+      estimate_hours: 24
+      id: E1
+      locked: false
+      name: Harden T3 mailbox bridge and prove lifecycle matrix
+      path: 01-harden-t3-mailbox-bridge-and-p
+      status: pending
+estimate_hours: 24
+id: P7.M1
+locked: false
+name: Mailbox transport and live conformance hardening
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 2
+    total_tasks: 2
+status: pending

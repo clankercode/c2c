@@ -1,0 +1,17 @@
+---
+claimed_at: "2026-10-16T20:43:14Z"
+claimed_by: cli-user
+completed_at: null
+complexity: medium
+created_at: "2026-10-16T20:42:48Z"
+depends_on: []
+estimate_hours: 4
+id: P7.M1.E1.T001
+priority: high
+started_at: "2026-10-16T20:43:14Z"
+status: in_progress
+tags: []
+title: Enforce a combined c2c subprocess output budget in the T3 bridge
+updated_at: "2026-10-16T20:43:14Z"
+---
+Independent review found C2cBridge passes an 8 MiB per-stream ProcessRunner limit, allowing up to 16 MiB total output. Add a combined stdout+stderr budget without reducing the valid mailbox page capacity; add focused regression coverage and update the T3 contract/evidence.

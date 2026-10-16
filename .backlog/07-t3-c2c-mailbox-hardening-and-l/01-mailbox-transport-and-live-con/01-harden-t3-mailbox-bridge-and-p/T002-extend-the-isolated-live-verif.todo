@@ -1,0 +1,18 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-10-16T20:42:48Z"
+depends_on:
+    - P7.M1.E1.T001
+estimate_hours: 12
+id: P7.M1.E1.T002
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Extend the isolated live verifier to the remaining c2c lifecycle matrix
+updated_at: "2026-10-16T20:42:48Z"
+---
+Extend the T3 live verifier beyond idle and active delivery: same-directory distinct-thread isolation, restart recovery, DND/stop behavior, native-child isolation, malicious-body inertness, ephemeral and deferrable mail, and unsupported adapter behavior. Keep isolated homes/process groups, sanitized evidence, exact binary hashes, and no polling false positives.
+
+Lane decision (2026-10-17): serial after P7.M1.E1.T001 because the live verifier consumes the bridge contract and shares the T3 test harness/evidence surfaces. Keep T3 bridge fixes isolated from verifier work until the combined output budget is reviewed and landed.
