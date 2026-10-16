@@ -182,6 +182,10 @@ Session ID comes from `$CLAUDE_SESSION_ID`. Restart via `c2c restart <name>` or
 
 ## Codex
 
+For Codex running inside T3 Code, see the separate
+[experimental T3 host integration](/clients/t3-code/). It uses T3-owned mailboxes
+and lifecycle scheduling rather than the standalone Codex setup below.
+
 **Managed `c2c start codex` is the canonical way to run a Codex peer.** The
 same session semantics are exposed as `c2c codex` (shortcut), `c2c new codex`
 (always a fresh thread + identity), and `c2c resume codex ALIAS` — see

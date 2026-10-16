@@ -28,9 +28,11 @@ let requests = [
   rpc 7 "prompts/list" (`Assoc []);
   rpc 8 "prompts/get" (`Assoc ["name",`String "c2c"]);
   rpc 9 "ping" (`Assoc []) ]
-let inherited_env ~home ~broker =
+let inherited_env ~host_owned ~home ~broker =
   let overrides = [
-    "HOME",home; "C2C_MCP_BROKER_ROOT",broker; "C2C_MCP_DISABLED","1";
+    "HOME",home; "C2C_MCP_BROKER_ROOT",broker;
+    "C2C_MCP_DISABLED",(if host_owned then "0" else "1");
+    "C2C_HOST_OWNED_MAILBOX",(if host_owned then "1" else "0");
     "C2C_MCP_SESSION_ID","native-session"; "C2C_MCP_AUTO_REGISTER_ALIAS","native";
     "C2C_MCP_AUTO_JOIN_ROOMS","must-not-join"; "C2C_NO_AUTO_REGISTER","0";
     "C2C_MCP_DEBUG","1"; "C2C_MCP_AUTO_DRAIN_CHANNEL","1";
@@ -63,8 +65,8 @@ let run_process root env (exe,args) input_text =
   let status=wait () in
   status, C2c_io.read_file output
 
-let run root ~home ~broker endpoint =
-  let status,raw=run_process root (inherited_env ~home ~broker) endpoint
+let run root ~host_owned ~home ~broker endpoint =
+  let status,raw=run_process root (inherited_env ~host_owned ~home ~broker) endpoint
     (String.concat "\n" (List.map Yojson.Safe.to_string requests)^"\n") in
   check "disabled MCP exits cleanly" true (status=Unix.WEXITED 0);
   let rows=String.split_on_char '\n' raw |> List.filter (fun s -> String.trim s<>"") |> List.map Yojson.Safe.from_string in
@@ -80,7 +82,7 @@ let run root ~home ~broker endpoint =
     (let needle="PRIVATE-MUST-NOT-LEAK" in
      let rec contains i = i+String.length needle<=String.length raw &&
        (String.sub raw i (String.length needle)=needle || contains (i+1)) in contains 0)
-let test_existing_broker () = with_root (fun root ->
+let test_existing_broker host_owned () = with_root (fun root ->
   let home=Filename.concat root "home" and broker=Filename.concat root "broker" in
   Unix.mkdir home 0o700;
   let b=B.create ~root:broker in
@@ -92,38 +94,45 @@ let test_existing_broker () = with_root (fun root ->
   Unix.rename orphan (Filename.concat broker "pending-orphan-replay.native-session.json");
   let expected=snapshot broker and expected_home=snapshot home in
   List.iter (fun endpoint ->
-    run root ~home ~broker endpoint;
+    run root ~host_owned ~home ~broker endpoint;
     check "broker remains byte-for-byte unchanged" true (snapshot broker=expected);
     check "no startup/debug files in HOME" true (snapshot home=expected_home)) (endpoints ()))
-let test_absent_broker () = with_root (fun root ->
+let test_absent_broker host_owned () = with_root (fun root ->
   let home=Filename.concat root "home" and broker=Filename.concat root "absent-broker" in
   Unix.mkdir home 0o700;
-  List.iter (fun endpoint -> run root ~home ~broker endpoint;
+  List.iter (fun endpoint -> run root ~host_owned ~home ~broker endpoint;
     check "disabled server never creates broker" false (Sys.file_exists broker)) (endpoints ()))
-let test_dispatch_guard () = with_root (fun root ->
+let test_dispatch_guard host_owned () = with_root (fun root ->
   let b=B.create ~root in
   let before=snapshot root in
-  let old=Sys.getenv_opt "C2C_MCP_DISABLED" in
-  Unix.putenv "C2C_MCP_DISABLED" "1";
-  Fun.protect ~finally:(fun () -> Unix.putenv "C2C_MCP_DISABLED" (Option.value old ~default:"")) (fun () ->
+  let names = ["C2C_MCP_DISABLED"; "C2C_HOST_OWNED_MAILBOX"] in
+  let old = List.map (fun name -> name, Sys.getenv_opt name) names in
+  Unix.putenv "C2C_MCP_DISABLED" (if host_owned then "0" else "1");
+  Unix.putenv "C2C_HOST_OWNED_MAILBOX" (if host_owned then "1" else "0");
+  Fun.protect ~finally:(fun () -> List.iter (fun (name, value) ->
+    Unix.putenv name (Option.value value ~default:"")) old) (fun () ->
     let result=Lwt_main.run (C2c_mcp.handle_tool_call ~broker:b ~session_id_override:(Some "native-session")
       ~tool_name:"register" ~arguments:(`Assoc ["alias",`String "must-not-register"])) in
     check "direct dispatcher rejected" true (result |> member "isError" = `Bool true);
     check "direct dispatch has no broker mutation" true (snapshot root=before)))
-let test_host_cli_unaffected () = with_root (fun root ->
+let test_host_cli_unaffected host_owned () = with_root (fun root ->
   let home=Filename.concat root "home" and broker=Filename.concat root "broker" in
   Unix.mkdir home 0o700;
   let exe=Filename.concat (Filename.dirname Sys.executable_name) "../cli/c2c.exe" in
   let args=["host";"bind";"--environment-id";"host-env";"--thread-id";"host-thread";
     "--owner-id";"opaque-owner";"--owner-pid";string_of_int (Unix.getpid ());
     "--workspace";root;"--broker-root";broker] in
-  let status,out=run_process root (inherited_env ~home ~broker) (exe,args) "" in
+  let status,out=run_process root (inherited_env ~host_owned ~home ~broker) (exe,args) "" in
   check "host bind still succeeds" true (status=Unix.WEXITED 0);
   let result=Yojson.Safe.from_string out in
   check "host response stays versioned" true (result |> member "schema_version" = `Int 1);
   check "host is allowed to create its own registry" true (Sys.file_exists (Filename.concat broker "registry.json")))
 let () = Alcotest.run "disabled MCP" ["host exclusion",[
-  Alcotest.test_case "all real entrypoints preserve existing mail" `Quick test_existing_broker;
-  Alcotest.test_case "all real entrypoints avoid bootstrap" `Quick test_absent_broker;
-  Alcotest.test_case "direct dispatcher cannot bypass disabled mode" `Quick test_dispatch_guard;
-  Alcotest.test_case "host CLI remains enabled" `Quick test_host_cli_unaffected]]
+  Alcotest.test_case "all real entrypoints preserve existing mail" `Quick (test_existing_broker false);
+  Alcotest.test_case "all real entrypoints avoid bootstrap" `Quick (test_absent_broker false);
+  Alcotest.test_case "direct dispatcher cannot bypass disabled mode" `Quick (test_dispatch_guard false);
+  Alcotest.test_case "host CLI remains enabled" `Quick (test_host_cli_unaffected false);
+  Alcotest.test_case "host marker preserves mail despite legacy flags" `Quick (test_existing_broker true);
+  Alcotest.test_case "host marker prevents bootstrap" `Quick (test_absent_broker true);
+  Alcotest.test_case "host marker guards direct dispatch" `Quick (test_dispatch_guard true);
+  Alcotest.test_case "host marker permits host CLI" `Quick (test_host_cli_unaffected true)]]

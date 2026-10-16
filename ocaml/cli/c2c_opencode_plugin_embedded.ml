@@ -37,7 +37,7 @@ import * as path from "path";
 // Plugin version — bump on behavioral changes only (not comment fixes).
 // Semver: major.minor.patch. Breaking plugin/broker protocol → major++.
 // ---------------------------------------------------------------------------
-const PLUGIN_VERSION = "1.0.0";
+const PLUGIN_VERSION = "1.0.1";
 
 // ---------------------------------------------------------------------------
 // Sidecar config loader
@@ -170,6 +170,12 @@ function extractPermissionReply(content: string): { permId: string; decision: st
 }
 
 const C2CDelivery: Plugin = async (ctx) => {
+  // A host-owned mailbox must remain the only consumer, even when a project
+  // sidecar still contains the native session's previous registration.
+  if (process.env.C2C_HOST_OWNED_MAILBOX === "1" ||
+      process.env.C2C_NO_AUTO_REGISTER?.trim() === "1" || process.env.C2C_MCP_DISABLED === "1") {
+    return {};
+  }
   // #337: process-scoped flag prevents double-loading when both global and
   // project-level plugins resolve to the same .ts file. The previous guard
   // checked `thisPluginPath.includes("/.config/opencode/plugins/")` but Bun

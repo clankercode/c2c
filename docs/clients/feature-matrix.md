@@ -26,6 +26,10 @@ Last updated: 2026-10-03 (Muse column + deep dive added; 2026-08-09 Hermes Agent
 
 Per-client deep dive pages: [Hermes Agent](/clients/hermes/), [Muse](/clients/muse/).
 
+[T3 Code's experimental host integration](/clients/t3-code/) is a separate,
+opt-in application-owned mailbox. Its compatibility and setup requirements
+are documented there; it is not the standalone Codex column below.
+
 ## Quick reference
 
 <div class="feature-matrix-wide" markdown="block">

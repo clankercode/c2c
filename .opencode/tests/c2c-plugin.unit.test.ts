@@ -357,12 +357,11 @@ describe('c2c plugin unit tests', () => {
     expect(events[2].patch.tui_focus.ty).toBe('prompt');
   });
 
-  it('passes sidecar-derived session_id and broker_root to spawned c2c commands', async () => {
+  it('passes the sidecar session_id and explicit broker root to spawned c2c commands', async () => {
     delete process.env.C2C_MCP_SESSION_ID;
-    delete process.env.C2C_MCP_BROKER_ROOT;
     fakeSidecarConfig = {
       session_id: 'sidecar-session',
-      broker_root: '/tmp/sidecar-broker',
+      broker_root: '/tmp/obsolete-sidecar-broker',
     };
     queueSpawn({ messages: [] });
     const ctx = makeCtx();
@@ -375,7 +374,7 @@ describe('c2c plugin unit tests', () => {
     );
     expect(drainSpawn).toBeDefined();
     expect(drainSpawn!.env?.C2C_MCP_SESSION_ID).toBe('sidecar-session');
-    expect(drainSpawn!.env?.C2C_MCP_BROKER_ROOT).toBe('/tmp/sidecar-broker');
+    expect(drainSpawn!.env?.C2C_MCP_BROKER_ROOT).toBe('/tmp/broker');
   });
 
   it('bootstraps root state from first session.idle when session.created was missed', async () => {
@@ -996,18 +995,20 @@ describe('c2c plugin unit tests', () => {
     delete process.env.C2C_OPENCODE_SESSION_ID;
   });
 
-  it('disables delivery when C2C_MCP_SESSION_ID not set', async () => {
+  it('fails before spawning consumers when no native identity is configured', async () => {
     delete process.env.C2C_MCP_SESSION_ID;
+    const inheritedSession = process.env.C2C_SESSION_ID;
+    delete process.env.C2C_SESSION_ID;
     const ctx = makeCtx();
-    const hooks = await C2CDelivery(ctx as any);
-    // Guard mode returns lifecycle.start but no event handler.
-    expect(hooks.event).toBeUndefined();
-    // Calling start logs and toasts but never calls promptAsync.
-    if (hooks.lifecycle?.start) {
-      await hooks.lifecycle.start({} as any);
+    try {
+      await expect(C2CDelivery(ctx as any)).rejects.toThrow(
+        'C2C_MCP_SESSION_ID and C2C_SESSION_ID are both unset',
+      );
+      expect(spawnCalls).toHaveLength(0);
+      expect(ctx.client.session.promptAsync).not.toHaveBeenCalled();
+    } finally {
+      if (inheritedSession !== undefined) process.env.C2C_SESSION_ID = inheritedSession;
     }
-    expect(ctx.client.session.promptAsync).not.toHaveBeenCalled();
-    expect(ctx.client.tui.showToast).toHaveBeenCalled();
   });
 });
 

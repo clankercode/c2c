@@ -310,7 +310,7 @@ let test_top_level_delivers_despite_child_session_env () =
     check int "top-level DM drained (delivered)" 0 (List.length remaining);
     ignore stderr)
 
-(* B130: is_subagent_context is the B042 env OPT-OUT only (C2C_NO_AUTO_REGISTER).
+(* B130: is_subagent_context checks explicit opt-out and host ownership only.
    Critically it must NOT treat CLAUDE_CODE_CHILD_SESSION as a subagent signal —
    that var is set on every Claude tool subprocess of every session, so gating
    on it suppresses top-level delivery. Subagent detection is stdin-based
@@ -326,10 +326,11 @@ let with_env_saved names f =
     f
 
 let test_is_subagent_context_signals () =
-  with_env_saved [ "C2C_NO_AUTO_REGISTER"; "CLAUDE_CODE_CHILD_SESSION" ] (fun () ->
+  with_env_saved [ "C2C_NO_AUTO_REGISTER"; "C2C_HOST_OWNED_MAILBOX"; "CLAUDE_CODE_CHILD_SESSION" ] (fun () ->
     let set = Unix.putenv in
     let is () = C2c_mcp_helpers_post_broker.is_subagent_context () in
     set "C2C_NO_AUTO_REGISTER" "";
+    set "C2C_HOST_OWNED_MAILBOX" "";
     set "CLAUDE_CODE_CHILD_SESSION" "";
     check bool "empty env: not opt-out" false (is ());
     (* CLAUDE_CODE_CHILD_SESSION must NOT flip the flag (it is set on top-level
@@ -340,7 +341,9 @@ let test_is_subagent_context_signals () =
     set "C2C_NO_AUTO_REGISTER" "1";
     check bool "C2C_NO_AUTO_REGISTER=1 is opt-out" true (is ());
     set "C2C_NO_AUTO_REGISTER" "0";
-    check bool "C2C_NO_AUTO_REGISTER=0 is not opt-out" false (is ()))
+    check bool "C2C_NO_AUTO_REGISTER=0 is not opt-out" false (is ());
+    set "C2C_HOST_OWNED_MAILBOX" "1";
+    check bool "host ownership overrides legacy opt-in" true (is ()))
 
 let test_session_end_deregisters_hook_auto_registration () =
   with_ctx (fun ctx ->

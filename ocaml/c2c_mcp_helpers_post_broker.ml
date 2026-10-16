@@ -2017,8 +2017,8 @@ let hook_client_type_conflict_with (reg : registration) =
       String.lowercase_ascii mine <> String.lowercase_ascii theirs
   | _ -> false
 
-(* B042: explicit auto-register opt-out. When C2C_NO_AUTO_REGISTER=1 an
-   operator/wrapper has declared this process must not auto-register or drain.
+(* Explicit auto-register opt-out. C2C_NO_AUTO_REGISTER=1 (B042), or a
+   host-owned mailbox, declares that this process must not register or drain.
 
    NOTE (B130): this is NOT a dispatched-subagent discriminator. An earlier
    B130 attempt added CLAUDE_CODE_CHILD_SESSION here, but that env var is set on
@@ -2028,9 +2028,10 @@ let hook_client_type_conflict_with (reg : registration) =
    subagent is only distinguishable via the hook STDIN `agent_id`
    (C2c_hook_lib.stdin_is_subagent_turn), not process env. *)
 let is_subagent_context () =
-  match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
-  | Some v when String.trim v = "1" -> true
-  | _ -> false
+  Sys.getenv_opt "C2C_HOST_OWNED_MAILBOX" = Some "1"
+  || match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
+     | Some v when String.trim v = "1" -> true
+     | _ -> false
 
 (* ---------------------------------------------------------------------------
  * Managed `c2c start kimi` identity predicates (#40 / #47 / #48).
