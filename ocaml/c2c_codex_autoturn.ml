@@ -48,19 +48,10 @@ type provenance = [ `Local | `Remote ]
 
 let provenance_to_string = function `Local -> "local" | `Remote -> "remote"
 
-(* Local-vs-remote provenance on the SENDER, fail-closed. Relay-forwarded mail
-   always carries a routing-marked [from_alias]: [name@host] (see
-   {!Relay_forwarder.build_body}), which is exactly the marker the broker itself
-   uses to classify a remote alias ({!C2c_broker}.is_remote_alias =
-   [String.exists ((=) '@')]). Canonical cross-host/room forms additionally carry
-   a [#] routing marker. A local-broker DM carries a bare alias with NEITHER
-   marker. We therefore treat a sender as LOCAL only when it carries no routing
-   marker at all, and fail closed (→ Remote → durable+queued, never auto-turned)
-   on anything ambiguous. This is deliberately stricter than a bare `@` test so a
-   relay/canonical-form sender can never slip through into an auto-turn. *)
+(* Only provenance recorded at broker ingress can authorize an idle wake.
+   Legacy/unknown rows remain passive, regardless of alias or message ID. *)
 let default_provenance (m : C2c_mcp.message) : provenance =
-  if String.contains m.from_alias '@' || String.contains m.from_alias '#'
-  then `Remote else `Local
+  match m.source with C2c_mcp_helpers.Local -> `Local | Remote | Unknown -> `Remote
 
 (* ------------------------------ turn client ------------------------------- *)
 

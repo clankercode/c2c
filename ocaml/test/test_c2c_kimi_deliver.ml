@@ -466,7 +466,7 @@ let test_deliver_message_escapes_content () =
     ; ts = 0.0
     ; ephemeral = false
     ; message_id = None
-    ; pow_difficulty = None
+    ; pow_difficulty = None; source = C2c_mcp_helpers.Unknown
     }
   in
   let expected =

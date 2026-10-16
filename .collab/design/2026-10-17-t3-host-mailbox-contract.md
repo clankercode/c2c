@@ -11,7 +11,7 @@ Support starts with Codex. Other adapters report unsupported DATA delivery.
 
 The stable identity is a domain-separated SHA-256 of environment ID and T3 thread
 ID, never a provider/native thread or title. A deterministic `host-<digest>` session
-and `t3-<digest-prefix>` default alias are used; no raw external ID enters paths.
+and full lowercase hexadecimal SHA-256 default alias are used; no raw external ID enters paths.
 T3 keeps per-thread enable and wake/mute state, and current broker binding. The
 provider process environment must not carry any particular thread's c2c identity.
 
@@ -20,35 +20,76 @@ provider process environment must not carry any particular thread's c2c identity
 Provide one `c2c host` command group with JSON-only stdout, version 1 responses:
 
 ```
-c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B]
-c2c host peek --environment-id E --thread-id T --broker-root B --generation G
+c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P] [--expected-broker-root B]
+c2c host peek --environment-id E --thread-id T --broker-root B --generation G [--limit N]
+c2c host send --environment-id E --thread-id T --broker-root B --generation G --to A --content BODY
 c2c host ack --environment-id E --thread-id T --broker-root B --generation G --message-id M [--message-id M2]
 c2c host unbind --environment-id E --thread-id T --broker-root B --generation G
 ```
 
 Bind returns `{schema_version:1,binding:{environment_id,thread_id,session_id,alias,
-workspace,broker_root,inbox_path,generation}}`. Owner ID is a T3-server incarnation;
-repeat bind by the same owner is idempotent. A changed owner/workspace renews the
-opaque generation. Every later command validates it before touching data. Reject
+workspace,broker_root,inbox_path,generation}}`. Owner ID is an opaque T3-server incarnation identifier (T3 generates a UUID);
+repeat bind by the same owner is idempotent. T3 passes its long-lived server PID
+with `--owner-pid`; the broker verifies/stores the process start time. If omitted,
+the CLI uses its direct parent, never the short-lived CLI PID. Bindings additionally
+return `owner_pid` and `owner_pid_start_time`. A changed owner/PID generation/workspace
+renews the opaque generation. Every later command validates it before touching data. Reject
 foreign registration conflicts. Unbind removes only its own registration, retaining
 the inbox and binding identity for later reactivation. Test fixtures may use an
 explicit broker root. Same-origin git worktrees normally resolve to the same broker.
+A durable transition records the exact prior and next ownership before publishing
+the binding or registry. Strict file and directory fsync barriers enforce
+journal → binding → registry → journal removal ordering. A subsequent bind recovers interrupted publication using
+only those exact owned rows (or absence); conflicting rows fail closed. Other host
+operations reject a pending transition until bind reconciles it.
 
-Peek returns `{schema_version:1,binding:...,dnd:boolean,messages:[...]}`. Each message
-contains `message_id,from_alias,to_alias,content,ts,ephemeral,deferrable,source`.
+For rebind, pass the saved `binding.broker_root` as `--expected-broker-root`.
+The resolved target and expected root are compared as canonical paths before
+any registry mutation. A different target returns `workspace_broker_changed`,
+preserving the prior binding, registration and queued mail. Same-origin worktree
+moves are supported; cross-broker migration is unsupported in v1. Resume from
+the prior workspace to accept its mail, or create a new logical thread for the
+new repository. Do not force the old root with `--broker-root` to conceal a
+workspace mismatch. Fresh binds omit the expected-root precondition.
+
+Peek returns `{schema_version:1,binding:...,dnd:boolean,dnd_until:number|null,messages:[...],has_more:boolean}`.
+`--limit` defaults to 64 and accepts 1..64. The serialized `messages` array is also
+bounded to 4 MiB (including JSON escaping, commas and brackets); `has_more` reports
+rows not included in that page. `dnd_until` is the active registration's timed DND
+deadline in Unix seconds, or null for off, expired, or indefinite DND. T3 schedules
+one deadline reconciliation because time expiry generates no registry file event;
+explicit DND changes still use the registry watch. Consumers durably accept then ack a page before
+peeking again; no cursor or destructive read is needed.
+
+Each message contains `message_id,from_alias,to_alias,content,ts,ephemeral,deferrable,source`.
+`ts` is numeric Unix seconds. The v1 message array is a union:
+
+- Full message: `content:string`, at most 65536 UTF-8 bytes.
+- Omitted message: the same envelope, `content:null`,
+  `content_omitted_reason:"oversized"`, and `content_bytes` giving the original
+  UTF-8 byte count. Never truncate the body. Even a giant body produces a small
+  metadata record so following normal messages can make progress. T3 durably
+  stores this receipt as unsupported/held before selected ack; omitted content
+  is never injected into a provider. c2c retains full body archival semantics.
+
 Source is `local`, `remote`, or `unknown`, established at broker write and preserved
 through all read/rewrite/relay paths, not inferred from body, alias punctuation or
 message-ID presence. Legacy rows are unknown and cannot trigger automatic wake.
 Assign missing legacy IDs under the inbox lock before returning them.
 
-Ack returns acknowledged IDs and removes only selected rows under the existing
+Ack returns `{schema_version:1,binding:...,acknowledged:[...]}` and removes only selected rows under the existing
 inbox lock. Duplicate ack is safe. Preserve concurrent arrivals and unmatched rows;
 reuse broker archive semantics, including ephemeral exclusion. T3 must durably
 accept content before ack. Do not introduce a parallel broker implementation.
 
-Outbound initially uses existing `c2c send` with explicit broker root, sender alias
-and subprocess-only session ID from the binding. The caller's T3 identity, not an
-untrusted request alias, selects this binding.
+Outbound uses `c2c host send` with the same identity/root/generation fence. The
+recipient and literal body are the only message fields supplied by the caller;
+the stored binding supplies the sender. Validate ownership and enqueue under the
+same registry lock, reusing the broker's unlocked send core. Body interpretation
+must not touch approvals. Host send bodies are at most65536 UTF-8 bytes. Success
+returns `{schema_version:1,binding:...,queued:true}`; errors contain only bounded
+categories. The caller's T3 identity, not an untrusted request alias, selects this
+binding. Raw `c2c send` is not a fenced host transport.
 
 ## T3 domain implementation
 
@@ -67,8 +108,11 @@ the external process boundary. No live T3 database, runtime or auth file mutatio
 Opt-in is explicit. A server configuration flag enables host-managed c2c mode;
 disabled mode preserves the current native-provider setup. In enabled mode every
 T3-owned provider process is uniformly stripped of inherited c2c identity variables,
-gets `C2C_NO_AUTO_REGISTER=1` and `C2C_MCP_AUTO_DRAIN_CHANNEL=0`, and cannot run a second
-c2c MCP consumer. Per-thread bindings and mute/disable are then T3-owned. Enabling
+gets `C2C_NO_AUTO_REGISTER=1`, `C2C_MCP_AUTO_DRAIN_CHANNEL=0`, and
+`C2C_MCP_DISABLED=1`. The last flag keeps native MCP protocol-valid (initialize/ping)
+but advertises no tools, refuses direct tools/call, and skips bootstrap, replay,
+room joins, schedulers and channel delivery. It applies to any inherited c2c MCP
+server name/configuration; CLI host operations remain enabled. Per-thread bindings and mute/disable are then T3-owned. Enabling
 mode requires normal server/provider restart; do not rewrite active process state.
 
 Expose configure/status/send through caller-bound T3 tools or a small existing CLI

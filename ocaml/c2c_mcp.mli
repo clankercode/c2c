@@ -177,7 +177,8 @@ type registration =
       passthrough so consumers can persist it. None = not
       populated. *)
   }
-type message =
+type message_source = C2c_mcp_helpers.message_source = Local | Remote | Unknown
+type message = C2c_mcp_helpers.message =
   { from_alias : string
   ; to_alias : string
   ; content : string
@@ -192,13 +193,15 @@ type message =
         trace post-delivery. Default false. v1 covers local delivery only;
         cross-host ephemeral over the relay is a follow-up (#284). *)
   ; message_id : string option
-    (** Set when the message arrived via the relay (which assigns a UUID).
-        Used to anchor sticker reactions. *)
+    (** Stable local/relay ID for acknowledgements and sticker reactions.
+        Legacy rows may lack one. This is not evidence of message origin. *)
   ; pow_difficulty : int option
     (** B014: sender's PoW difficulty (leading-zero bits) at send-accept time,
         for messages relayed from other agents. [None] for local-origin or
         relays that did not record it. Surfaced on delivery as a self-describing
         [pow] object ({ difficulty_bits, expected_hashes = 2^bits, scheme }). *)
+  ; source : message_source
+    (** Broker ingress provenance; legacy rows are Unknown. Never infer from aliases. *)
   }
 type room_member = { rm_alias : string; rm_session_id : string; joined_at : float }
 type room_message = { rm_from_alias : string; rm_room_id : string; rm_content : string; rm_ts : float }
@@ -520,7 +523,7 @@ module Broker : sig
     | Unknown_alias
     | All_recipients_dead
 
-  val resolve_live_session_id_by_alias : t -> string -> resolve_result
+  val resolve_live_session_id_by_alias : ?registry_locked:bool -> t -> string -> resolve_result
   (** Resolve an alias to a live session_id. Case-insensitive (#432):
       [Foo-Bar] and [foo-bar] match the same registration row. On the
       [All_recipients_dead] branch, attempts pid-refresh self-heal via
@@ -561,7 +564,7 @@ module Broker : sig
       bypassing alias resolution. *)
   type send_all_result = { sent_to : string list; skipped : (string * string) list }
   val send_all : t -> from_alias:string -> content:string -> exclude_aliases:string list -> send_all_result
-  val read_inbox : t -> session_id:string -> message list
+  val read_inbox : ?assign_ids:bool -> ?strict:bool -> t -> session_id:string -> message list
   val save_inbox : t -> session_id:string -> message list -> unit
   val read_orphan_inbox_messages : t -> session_id:string -> message list
   (** Read orphan inbox messages without deleting. Returns [] when the orphan
@@ -583,7 +586,7 @@ module Broker : sig
   val drain_inbox : ?drained_by:string -> t -> session_id:string -> message list
   val drain_inbox_push : ?drained_by:string -> t -> session_id:string -> message list
   val drain_inbox_matching :
-    ?drained_by:string -> t -> session_id:string -> pred:(message -> bool) -> message list
+    ?drained_by:string -> ?strict:bool -> ?durable:bool -> t -> session_id:string -> pred:(message -> bool) -> message list
   (** Like [drain_inbox] but drains only messages satisfying [pred];
       non-matching messages remain in the live inbox for later polls.
       Matching non-ephemeral messages are archived before the inbox is
@@ -1105,6 +1108,10 @@ val auto_register_impl :
   broker_root:string -> ?session_id_override:string -> unit -> unit
 (** MCP/server auto-register implementation (also used by tests). Adopts
     cross-broker sticky aliases (B188) and same-session hook rows (B119). *)
+
+val mcp_disabled : unit -> bool
+(** Explicit process-scoped host ownership opt-out. Disabled MCP advertises no
+    tools and rejects calls before bootstrap, registry access, or dispatch. *)
 
 val handle_tool_call :
   broker:Broker.t ->

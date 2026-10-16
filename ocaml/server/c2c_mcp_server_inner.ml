@@ -41,7 +41,7 @@ let debug_log_path () =
   Filename.concat dir (sid ^ ".log")
 
 let debug_log msg =
-  if debug_enabled () then
+  if not (C2c_mcp.mcp_disabled ()) && debug_enabled () then
     try
       let path = debug_log_path () in
       let ts = C2c_time.iso8601_utc_ms (Unix.gettimeofday ()) in
@@ -261,8 +261,9 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
               C2c_capability.Claude_channel
           in
           let new_capabilities =
-            C2c_capability.negotiated_in_initialize
-              ~current:!negotiated_capabilities_ref request
+            if C2c_mcp.mcp_disabled () then [] else
+              C2c_capability.negotiated_in_initialize
+                ~current:!negotiated_capabilities_ref request
           in
           negotiated_capabilities_ref := new_capabilities;
           let new_capable =
@@ -272,7 +273,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
              every initialize. The flag drives push-aware heartbeat
              content selection (see C2c_start.heartbeat_body_for_alias). *)
           (match method_name, session_id () with
-           | Some "initialize", Some sid ->
+           | Some "initialize", Some sid when not (C2c_mcp.mcp_disabled ()) ->
                let broker = C2c_mcp.Broker.create ~root:broker_root in
                C2c_mcp.Broker.set_automated_delivery broker
                  ~session_id:sid ~automated_delivery:new_capable
@@ -297,7 +298,7 @@ let rec loop ~broker_root ~negotiated_capabilities_ref =
                       let test_msg = { C2c_mcp.from_alias = "c2c-system";
                                        to_alias = sid;
                                        content = Printf.sprintf "<c2c event=\"channel-test\" code=\"%s\"/>" code;
-                                       deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None; pow_difficulty = None } in
+                                       deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None; pow_difficulty = None; source = C2c_mcp_helpers.Unknown } in
                      emit_notification ~broker_root ~session_id:sid test_msg
                  | None -> Lwt.return_unit)
             | _ -> Lwt.return_unit
@@ -514,6 +515,9 @@ let check_stale_broker_root ~(broker_root : string) : (_, _) result =
    - c2c-mcp-server binary (Slice B, after refactor)
    - c2c mcp-inner CLI command (Slice A) *)
 let run_inner_server ~broker_root =
+  if C2c_mcp.mcp_disabled () then
+    Lwt_main.run (loop ~broker_root ~negotiated_capabilities_ref:(ref []))
+  else begin
   let open Lwt.Syntax in
   (* #514: bail early if broker_root is stale. *)
   (match check_stale_broker_root ~broker_root with
@@ -573,3 +577,4 @@ let run_inner_server ~broker_root =
   with exn ->
     debug_log ("run_inner_server FATAL: " ^ Printexc.to_string exn ^ "\n" ^ Printexc.get_backtrace ());
     raise exn
+  end

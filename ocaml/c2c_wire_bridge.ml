@@ -61,16 +61,7 @@ let spool_read sp =
       match Yojson.Safe.from_string raw with
       | `List items ->
           List.filter_map (fun item ->
-              let str k =
-                match Yojson.Safe.Util.(item |> member k) with
-                | `String s -> s | _ -> ""
-              in
-              let from_alias = str "from_alias" in
-              let to_alias   = str "to_alias" in
-              let content    = str "content" in
-              if from_alias = "" && content = "" then None
-              else Some C2c_mcp.{ from_alias; to_alias; content; deferrable = false; reply_via = None; enc_status = None; ts = 0.0; ephemeral = false; message_id = None; pow_difficulty = None })
-            items
+            try Some (C2c_broker.message_of_json item) with _ -> None) items
       | _ -> []
       | exception _ -> []
 
@@ -83,13 +74,7 @@ let spool_write sp messages =
     ~finally:(fun () -> (try Sys.remove tmp with _ -> ()))
     (fun () ->
        let items =
-         List.map (fun (m : C2c_mcp.message) ->
-             `Assoc
-               [ ("from_alias", `String m.from_alias)
-               ; ("to_alias",   `String m.to_alias)
-               ; ("content",    `String m.content)
-               ])
-           messages
+         List.map C2c_broker.message_to_json messages
        in
        Yojson.Safe.to_channel oc (`List items);
        output_char oc '\n';

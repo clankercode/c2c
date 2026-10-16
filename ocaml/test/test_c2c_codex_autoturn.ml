@@ -18,10 +18,10 @@ let mk_root () =
   let d = Filename.temp_file "c2c-autoturn-test-" "" in
   Sys.remove d; Unix.mkdir d 0o755; d
 
-let mk_msg ?(from = "peer") ?(to_ = "sess") ~message_id content : C2c_mcp.message =
+let mk_msg ?(source = C2c_mcp.Local) ?(from = "peer") ?(to_ = "sess") ~message_id content : C2c_mcp.message =
   { from_alias = from; to_alias = to_; content; deferrable = false; reply_via = None;
     enc_status = None; ts = 1000.0; ephemeral = false; message_id = Some message_id;
-    pow_difficulty = None }
+    pow_difficulty = None; source }
 
 let seed_inbox ~root msgs = let b = B.create ~root in B.save_inbox b ~session_id:"sess" msgs
 
@@ -188,7 +188,7 @@ let test_turn_input_dedupes_same_id_and_excludes_remote_collision () =
   seed_inbox ~root
     [ mk_msg ~from:"local-peer" ~message_id:"shared-id" "LOCAL-SENTINEL";
       mk_msg ~from:"duplicate-local" ~message_id:"shared-id" "DUPLICATE-SENTINEL";
-      mk_msg ~from:"remote-peer@host" ~message_id:"shared-id" "REMOTE-SENTINEL" ];
+      mk_msg ~source:C2c_mcp.Remote ~from:"remote-peer@host" ~message_id:"shared-id" "REMOTE-SENTINEL" ];
   let ic, _ = mk_inject_client () in
   let th = mk_turn_harness () in
   let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in
@@ -204,7 +204,7 @@ let test_turn_input_dedupes_same_id_and_excludes_remote_collision () =
 let test_remote_first_id_collision_never_auto_turns_later_local_row () =
   let root = mk_root () in
   seed_inbox ~root
-    [ mk_msg ~from:"remote-peer@host" ~message_id:"remote-first-id" "REMOTE-FIRST";
+    [ mk_msg ~source:C2c_mcp.Remote ~from:"remote-peer@host" ~message_id:"remote-first-id" "REMOTE-FIRST";
       mk_msg ~from:"local-peer" ~message_id:"remote-first-id" "LOCAL-SECOND" ];
   let ic, _ = mk_inject_client () in
   let th = mk_turn_harness () in
@@ -216,7 +216,7 @@ let test_remote_first_id_collision_never_auto_turns_later_local_row () =
 
 let test_remote_provenance_no_turn () =
   let root = mk_root () in
-  seed_inbox ~root [ mk_msg ~from:"peer@relay-a" ~message_id:"r1" "from afar" ];
+  seed_inbox ~root [ mk_msg ~source:C2c_mcp.Remote ~from:"peer@relay-a" ~message_id:"r1" "from afar" ];
   let ic, injected = mk_inject_client () in
   let th = mk_turn_harness () in
   let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in
@@ -228,10 +228,9 @@ let test_remote_provenance_no_turn () =
   Alcotest.(check int) "remote_pending counted" 1 o.A.po_remote_pending
 
 let test_canonical_form_fails_closed () =
-  (* a canonical cross-host / room-form sender (carrying a `#` routing marker)
-     must FAIL CLOSED → treated as remote → injected as DATA, never turned. *)
+  (* Legacy source is unknown even for a bare alias: passive DATA only. *)
   let root = mk_root () in
-  seed_inbox ~root [ mk_msg ~from:"peer#somerepo" ~message_id:"c1" "canonical form" ];
+  seed_inbox ~root [ mk_msg ~source:C2c_mcp.Unknown ~from:"plain-legacy-peer" ~message_id:"c1" "canonical form" ];
   let ic, injected = mk_inject_client () in
   let th = mk_turn_harness () in
   let h = mk_cfg ~root ~inject_client:ic ~turn_client:th.client () in

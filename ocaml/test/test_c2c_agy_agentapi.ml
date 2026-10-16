@@ -80,7 +80,7 @@ let contains hay needle =
 let mk_msg ~from_alias ~to_alias ~content : C2c_mcp.message =
   { C2c_mcp.from_alias; to_alias; content; deferrable = false;
     reply_via = None; enc_status = None; ts = 0.0; ephemeral = false;
-    message_id = None; pow_difficulty = None }
+    message_id = None; pow_difficulty = None; source = C2c_mcp_helpers.Unknown }
 
 let test_instance_dir_respects_c2c_instances_dir () =
   with_tmp_instances (fun dir ->

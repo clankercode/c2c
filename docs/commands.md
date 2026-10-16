@@ -1780,3 +1780,11 @@ the running process still has the old executable mapped. Resolution failure is
 an observable skip and leaves the attached app-server/frontend untouched.
 Ingress and auto-turn ledgers remain in the broker across the exec boundary, so
 already-injected messages are not replayed.
+
+## Host-owned mailboxes
+
+Applications that own provider processes can use `c2c host bind`, `peek`, `ack`,
+`send`, and `unbind` to accept durable mail, acknowledge selected message IDs,
+and send with the same ownership fence.
+See the [host mailbox transport reference](/reference/host-mailbox/) for the
+versioned JSON contract, generation fencing, and source provenance.

@@ -102,6 +102,7 @@ let command_tier_map () : (string * safety) list =
    (* relay subcommands (serve, gc, setup, connect, register, dm, status, list, rooms, poll-inbox)
       are not top-level commands. *)
    ; "watch", Tier3   (* full-screen interactive operator TUI — agent-hidden *)
+   ; "host", Tier2
    ; "setcap", Tier3
    ; "install", Tier2
    ; "self-update", Tier2
@@ -176,7 +177,8 @@ let filter_commands ~cmds =
   List.filter
     (fun cmd ->
       let cmd_name = Cmdliner.Cmd.name cmd in
-      tier_visible (get_tier cmd_name))
+      (C2c_mcp.mcp_disabled () && List.mem cmd_name ["serve";"mcp"])
+      || tier_visible (get_tier cmd_name))
     cmds
 
 (* --- shared role/agent helpers (used by start_cmd and roles commands) ----- *)

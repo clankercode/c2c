@@ -319,24 +319,7 @@ let health_to_json h =
    is written back to the durable inbox here, BEFORE any injection). *)
 let persist_message_ids (cfg : config) : C2c_mcp.message list =
   let broker = C2c_mcp.Broker.create ~root:cfg.broker_root in
-  C2c_mcp.Broker.with_inbox_lock broker ~session_id:cfg.session_id (fun () ->
-      let msgs = C2c_mcp.Broker.read_inbox broker ~session_id:cfg.session_id in
-      let changed = ref false in
-      let msgs' =
-        List.map
-          (fun (m : C2c_mcp.message) ->
-            match m.message_id with
-            | Some _ -> m
-            | None ->
-                changed := true;
-                let mid =
-                  Uuidm.to_string (Uuidm.v4_gen (Random.State.make_self_init ()) ())
-                in
-                { m with message_id = Some mid })
-          msgs
-      in
-      if !changed then C2c_mcp.Broker.save_inbox broker ~session_id:cfg.session_id msgs';
-      msgs')
+  C2c_mcp.Broker.read_inbox ~assign_ids:true broker ~session_id:cfg.session_id
 
 (* --------------------------------- driver --------------------------------- *)
 

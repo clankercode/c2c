@@ -289,7 +289,7 @@ let test_i31_discovery_callback_raising_fails_closed () =
 let mk_msg ?(from = "cross-repo-peer") ?message_id content : C2c_mcp.message =
   { from_alias = from; to_alias = "deliver-loop-test-alias"; content;
     deferrable = false; reply_via = None; enc_status = None; ts = 1000.0;
-    ephemeral = false; message_id; pow_difficulty = None }
+    ephemeral = false; message_id; pow_difficulty = None; source = C2c_mcp_helpers.Unknown }
 
 let seed_global_inbox ~root msgs =
   let b = C2c_mcp.Broker.create ~root in
