@@ -111,6 +111,7 @@ let test_direct_alias_consumers_rejected () =
       ("monitor", ["monitor"; "--alias"; alias]);
       ("deliver watch", ["deliver"; "watch"; "--session-id"; sid]);
       ("deliver wake-watch", ["deliver"; "wake-watch"; "--session-id"; sid; "--once"]);
+      ("deliver wake-watch unknown alias", ["deliver"; "wake-watch"; "--alias"; "unknown-host-owned-alias"; "--once"]);
       ("oc-plugin drain", ["oc-plugin"; "drain-inbox-to-spool"; "--spool-path"; root // "spool.json"; "--session-id"; sid]);
     ] in
     List.iter (fun (label, args) ->

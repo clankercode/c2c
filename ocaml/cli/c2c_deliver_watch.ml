@@ -265,6 +265,10 @@ let wake_watch_cmd =
     and+ once = once_flag
     and+ max_iterations = max_iterations_flag
     in
+    (* Check ownership before resolving an alias or broker root.  A provider
+       child can pass an arbitrary --alias, so lookup errors must never reveal
+       that this raw consumer reached the broker boundary. *)
+    reject_raw_consumer_if_disabled ~surface:"deliver wake-watch";
     let broker_root =
       match broker_root_opt with
       | Some b when String.trim b <> "" -> String.trim b
@@ -286,7 +290,6 @@ let wake_watch_cmd =
           Printf.eprintf "error: --session-id or --alias required\n%!";
           exit 2
     in
-    reject_raw_consumer_if_disabled ~surface:"deliver wake-watch";
     if once then begin
       let outcome =
         C2c_wake_inject.maybe_inject ~broker_root ~session_id ()
