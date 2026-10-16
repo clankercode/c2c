@@ -17,3 +17,5 @@ updated_at: "2026-10-16T21:06:09Z"
 Fix exact-limit has_more semantics, align alias grammar between c2c and T3, reject NUL content before argv transport, and ensure oversized message metadata does not require serializing giant bodies. Add focused c2c and bridge contract tests and update reference docs.
 
 Decision (2026-10-17): oversized-body allocation is not a transport bug. c2c builds the broker AST but strips content before the only page serialization; retain the metadata-only contract and tests, but do not add a speculative body-allocation refactor.
+
+Review decision (2026-10-17): c2c-side changes PASS independently at 2fbfa6ae. T3 counterpart remains serialized until remote-routing compatibility review and fix land.
