@@ -28,3 +28,5 @@ Execution decision: use existing server-wide T3CODE_C2C_ENABLED opt-in and expos
 - To: codex-poplar-waffle-m0fg
 - At: 2026-10-16T15:01:30Z
 - Notes: Coordinator claim; CLI defaulted to cli-user during this command.
+
+Review decision: native ownership uses forced C2C_HOST_OWNED_MAILBOX=1 plus existing opt-out flags. c2c MCP, hooks and refreshed OpenCode plugin honor the marker before native side effects; host CLI remains available. Real Codex 0.163 probing disproved parent-only env inheritance (MCP launcher env_clear) and naive config/read replay (null timeout values fail TOML decoding). Explicit per-stdio environment injection and omission of normalized null settings are required. Codex host mode refuses enabled native plugins and inactive project MCP definitions it cannot safely isolate before startup; no hidden executable promotion. Native external servers and unsupported providers are not advertised as T3-owned delivery. Tests remain on x-p35; parent owns c2c guard and generated plugin alongside setup docs.
