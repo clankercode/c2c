@@ -18,15 +18,15 @@ epics:
       locked: false
       name: Provider DATA delivery, lifecycle, and product integration
       path: 02-provider-data-delivery-lifecyc
-      status: pending
+      status: done
 estimate_hours: 40
 id: P6.M1
 locked: false
 name: Ship opt-in durable T3 mailbox with Codex DATA wake
 stats:
     blocked: 0
-    done: 1
+    done: 7
     in_progress: 0
-    pending: 6
+    pending: 0
     total_tasks: 7
-status: pending
+status: done

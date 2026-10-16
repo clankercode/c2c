@@ -6,9 +6,9 @@ locked: false
 name: Broker contract and T3-owned mailbox foundation
 stats:
     blocked: 0
-    done: 1
+    done: 3
     in_progress: 0
-    pending: 2
+    pending: 0
     total: 3
 status: done
 tasks:

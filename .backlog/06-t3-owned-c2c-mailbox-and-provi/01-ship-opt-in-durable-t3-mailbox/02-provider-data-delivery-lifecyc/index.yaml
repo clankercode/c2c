@@ -6,11 +6,11 @@ locked: false
 name: Provider DATA delivery, lifecycle, and product integration
 stats:
     blocked: 0
-    done: 0
+    done: 4
     in_progress: 0
-    pending: 4
+    pending: 0
     total: 4
-status: pending
+status: done
 tasks:
     - complexity: high
       depends_on:
@@ -41,7 +41,7 @@ tasks:
       file: T003-expose-opt-in-setup-capabiliti.todo
       id: T003
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Expose opt-in setup, capabilities and truthful diagnostics
     - complexity: high
@@ -51,5 +51,6 @@ tasks:
       file: T004-prove-end-to-end-delivery-and.todo
       id: T004
       priority: high
-      status: pending
+      status: done
+      tags: []
       title: Prove end-to-end delivery and land reviewed cross-repo integration

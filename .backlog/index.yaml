@@ -2,7 +2,7 @@ critical_path:
     - I008
     - I003
 description: ""
-next_available: P6.M1.E1.T002
+next_available: B008
 phases:
     - depends_on: []
       description: Canonical managed remote-TUI delivery architecture that preserves the operator composer; local messages may wake the recipient and start an agent turn under its delivery policy, but message content can never satisfy an approval or write an approval verdict.
@@ -58,17 +58,17 @@ phases:
       description: Implement the research in .collab/research/2026-10-16-t3-code-c2c-support.md across canonical c2c and T3 source. Stable per-T3-thread identity, durable accept-before-ack mailbox, non-user-role DATA injection, eligible local Codex wake, lifecycle/diagnostics, and tested capability-gated providers. Maintainable interfaces and real live proof required.
       estimate_hours: 48
       id: P6
-      locked: false
+      locked: true
       name: T3-owned c2c mailbox and provider adapter support
       path: 06-t3-owned-c2c-mailbox-and-provi
       priority: high
-      status: pending
+      status: done
       weeks: 2
 project: c2c
 stats:
     blocked: 0
-    done: 402
+    done: 409
     in_progress: 1
-    pending: 17
-    total_tasks: 423
+    pending: 12
+    total_tasks: 425
 timeline_weeks: 0

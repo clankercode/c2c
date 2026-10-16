@@ -2,7 +2,7 @@ complexity: medium
 depends_on: []
 estimate_hours: 48
 id: P6
-locked: false
+locked: true
 milestones:
     - complexity: high
       depends_on: []
@@ -12,13 +12,13 @@ milestones:
       locked: false
       name: Ship opt-in durable T3 mailbox with Codex DATA wake
       path: 01-ship-opt-in-durable-t3-mailbox
-      status: pending
+      status: done
 name: T3-owned c2c mailbox and provider adapter support
 stats:
     blocked: 0
-    done: 1
+    done: 7
     in_progress: 0
-    pending: 6
+    pending: 0
     total_tasks: 7
-status: pending
+status: done
 weeks: 2
