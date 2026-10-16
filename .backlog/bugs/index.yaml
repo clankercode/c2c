@@ -364,3 +364,4 @@ bugs:
     - file: B365-adopt-a-live-vanilla-codex-ses.todo
     - file: B366-adopt-vanilla-codex-sessions-w.todo
     - file: B367-relay-supervisor-waitpid-eintr.todo
+    - file: B368-t3-sqlite-arraybuffer-binding.todo
