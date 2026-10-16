@@ -149,19 +149,7 @@ let deliver_loop
                  match raw with
                  | `List l ->
                      List.filter_map (fun j ->
-                       try
-                         match j with
-                         | `Assoc fields ->
-                             let from_alias = List.assoc "from_alias" fields |> function `String s -> s | _ -> raise Exit in
-                             let to_alias = List.assoc "to_alias" fields |> function `String s -> s | _ -> raise Exit in
-                             let content = List.assoc "content" fields |> function `String s -> s | _ -> raise Exit in
-                             let ts = List.assoc "ts" fields |> function `Float f -> f | _ -> Unix.gettimeofday () in
-                             Some ({ from_alias; to_alias; content; ts;
-                                     deferrable = false; reply_via = None; enc_status = None;
-                                     ephemeral = false; message_id = None; pow_difficulty = None } : C2c_mcp.message)
-                         | _ -> None
-                       with _ -> None
-                     ) l
+                       try Some (C2c_broker.message_of_json j) with _ -> None) l
                  | _ -> []
                else []
              in

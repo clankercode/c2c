@@ -1005,6 +1005,11 @@ let append_to_local_inbox broker_root session_id messages =
       let existing = match existing_json with
         | `List lst -> lst
         | _ -> [] in
+      (* Ingress provenance is established here, never trusted from the wire.
+         Existing local/legacy rows retain their own provenance on rewrites. *)
+      let messages = List.map (function
+        | `Assoc fields -> `Assoc (("source", `String "remote") :: List.filter (fun (key, _) -> key <> "source") fields)
+        | json -> json) messages in
       let merged_json = `List (existing @ messages) in
       match
         C2c_io.write_file_atomic path (Yojson.Safe.to_string merged_json ^ "\n")

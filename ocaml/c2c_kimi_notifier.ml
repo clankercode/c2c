@@ -666,23 +666,8 @@ let tmux_wake ~pane =
 
 (* ─── Inbox write-back helpers (mirrors Broker.save_inbox locking) ──────────── *)
 
-(* Inline message JSON serialization to avoid depending on un-exposed internals.
-   Must match the schema Broker.save_inbox writes. *)
-let message_to_json (msg : C2c_mcp.message) =
-  let base =
-    [ ("from_alias", `String msg.from_alias)
-    ; ("to_alias", `String msg.to_alias)
-    ; ("content", `String msg.content)
-    ; ("ts", `Float msg.ts)
-    ]
-  in
-  let with_deferrable = if msg.deferrable then base @ [("deferrable", `Bool true)] else base in
-  let with_ephemeral = if msg.ephemeral then with_deferrable @ [("ephemeral", `Bool true)] else with_deferrable in
-  let with_reply_via = match msg.reply_via with None -> with_ephemeral | Some rv -> with_ephemeral @ [("reply_via", `String rv)] in
-  let with_msg_id = match msg.message_id with None -> with_reply_via | Some mid -> with_reply_via @ [("message_id", `String mid)] in
-  match msg.enc_status with
-  | None -> `Assoc with_msg_id
-  | Some es -> `Assoc (with_msg_id @ [("enc_status", `String es)])
+(* Share the broker codec so retries preserve flags and ingress provenance. *)
+let message_to_json = C2c_broker.message_to_json
 
 (* Replicate the broker's atomic-write-to-tmp+rename pattern for the inbox file.
    We write back only the messages we want to keep (skipped ones) without

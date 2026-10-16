@@ -331,9 +331,10 @@ open C2c_mcp_helpers
     ; opaque_host_id = str_opt "opaque_host_id" json
     }
 
-  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id; pow_difficulty } =
+  let message_to_json { from_alias; to_alias; content; deferrable; reply_via; enc_status; ts; ephemeral; message_id; pow_difficulty; source } =
     let base =
-      [ ("from_alias", `String from_alias)
+      [ ("source", `String (message_source_to_string source))
+      ; ("from_alias", `String from_alias)
       ; ("to_alias", `String to_alias)
       ; ("content", `String content)
       ; ("ts", `Float ts)
@@ -401,6 +402,7 @@ open C2c_mcp_helpers
         (match json |> member "message_id" with
          | `String s when s <> "" -> Some s
          | _ -> None)
+    ; source = message_source_of_json (json |> member "source")
     ; pow_difficulty = pow_difficulty_of_json json
     }
 
@@ -2260,11 +2262,14 @@ open C2c_mcp_helpers
          ]
      with _ -> ())
 
-  let load_inbox t ~session_id =
+  let load_inbox ?(strict = false) t ~session_id =
     ensure_root t;
     let path = inbox_path t ~session_id in
     let result =
-      match read_json_file ~broker_root:t.root path ~default:(`List []) with
+      match (if strict then
+        if Sys.file_exists path then Yojson.Safe.from_string (C2c_io.read_file path)
+        else `List []
+      else read_json_file ~broker_root:t.root path ~default:(`List [])) with
       | `List items ->
           (* H9 defense-in-depth: total PER-ROW. A row that fails
              [message_of_json] (e.g. written by a pre-H9 relay connector
@@ -2279,14 +2284,24 @@ open C2c_mcp_helpers
             (fun item ->
               match message_of_json item with
               | msg -> Some msg
-              | exception _ ->
+              | exception e ->
+                  if strict then raise e;
                   log_inbox_row_skipped t ~session_id ~row:item;
                   None)
             items
+      | _ when strict -> invalid_arg "inbox must contain an array"
       | _ -> []
     in
     if debug_enabled then Printf.eprintf "[DEBUG load_inbox] session_id=%s path=%s msgs=%d\n%!"
       session_id path (List.length result);
+    if strict then begin
+      let ids = Hashtbl.create (List.length result) in
+      List.iter (fun m -> match m.message_id with
+        | None -> ()
+        | Some id ->
+            if Hashtbl.mem ids id then invalid_arg "duplicate inbox message ID";
+            Hashtbl.add ids id ()) result
+    end;
     result
 
   let save_inbox t ~session_id messages =
@@ -3016,7 +3031,7 @@ open C2c_mcp_helpers
               ; ts = Unix.gettimeofday ()
               ; ephemeral
               ; message_id = Some mid
-              ; pow_difficulty = None
+              ; pow_difficulty = None; source = Local
               }
             ]
         in
@@ -3185,7 +3200,7 @@ open C2c_mcp_helpers
                         let mid = generate_msg_id () in
                         let next =
                           current
-                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some mid; pow_difficulty = None } ]
+                          @ [ { from_alias; to_alias = reg.alias; content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = Some mid; pow_difficulty = None; source = Local } ]
                         in
                         let ipath = inbox_path t ~session_id in
                         (* Per-DM trace for send_all fan-out — same diagnostic
@@ -3225,7 +3240,16 @@ open C2c_mcp_helpers
           regs;
         { sent_to = List.rev !sent; skipped = List.rev !skipped })
 
-  let read_inbox t ~session_id = load_inbox t ~session_id
+  let read_inbox ?(assign_ids = false) ?(strict = false) t ~session_id =
+    if not assign_ids then load_inbox ~strict t ~session_id
+    else with_inbox_lock t ~session_id (fun () ->
+      let changed = ref false in
+      let messages = load_inbox ~strict t ~session_id |> List.map (fun m ->
+        match m.message_id with
+        | Some _ -> m
+        | None -> changed := true; { m with message_id = Some (generate_msg_id ()) }) in
+      if !changed then save_inbox t ~session_id messages;
+      messages)
 
   (* ---------- inbox archive (drain is append-only, not destructive) ----------
      Non-ephemeral messages drained via poll_inbox are appended to
@@ -3303,21 +3327,12 @@ open C2c_mcp_helpers
                   (fun () ->
                     let ts = Unix.gettimeofday () in
                     List.iter
-                      (fun ({ from_alias; to_alias; content; deferrable; message_id } : message) ->
-                        let base =
-                          [ ("drained_at", `Float ts)
-                          ; ("drained_by", `String drained_by)
-                          ; ("session_id", `String session_id)
-                          ; ("from_alias", `String from_alias)
-                          ; ("to_alias", `String to_alias)
-                          ; ("content", `String content)
-                          ]
-                        in
-                        let with_deferrable = if deferrable then base @ [("deferrable", `Bool true)] else base in
-                        let record = match message_id with
-                          | Some mid -> `Assoc (with_deferrable @ [("message_id", `String mid)])
-                          | None -> `Assoc with_deferrable
-                        in
+                      (fun message ->
+                        let fields = match message_to_json message with
+                          | `Assoc fields -> fields | _ -> assert false in
+                        let record = `Assoc
+                          (("drained_at", `Float ts) :: ("drained_by", `String drained_by)
+                           :: ("session_id", `String session_id) :: fields) in
                         output_string oc (Yojson.Safe.to_string record);
                         output_char oc '\n')
                       messages));
@@ -3652,9 +3667,9 @@ open C2c_mcp_helpers
      archive-before-clear invariant as drain_inbox: matching non-ephemeral
      messages are appended to the archive BEFORE the inbox is rewritten, all
      under the per-inbox lock. *)
-  let drain_inbox_matching ?(drained_by = "unknown") t ~session_id ~pred =
+  let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) t ~session_id ~pred =
     with_inbox_lock t ~session_id (fun () ->
-        let messages = load_inbox t ~session_id in
+        let messages = load_inbox ~strict t ~session_id in
         let matching, rest = List.partition pred messages in
         (match matching with
          | [] -> ()
@@ -4292,7 +4307,7 @@ open C2c_mcp_helpers
         ; ts = Unix.gettimeofday ()
         ; ephemeral
         ; message_id = Some (generate_msg_id ())
-        ; pow_difficulty = None
+        ; pow_difficulty = None; source = Local
         }
       in
       enqueue_by_session_id t ~session_id ~messages:[ message ]
@@ -4364,15 +4379,7 @@ open C2c_mcp_helpers
            (try
              Fun.protect
                ~finally:(fun () -> try close_out oc with _ -> ())
-               (fun () -> Yojson.Safe.to_channel oc (`List (List.map (fun m ->
-                 `Assoc [
-                   ("from_alias", `String m.from_alias);
-                   ("to_alias", `String m.to_alias);
-                   ("content", `String m.content);
-                   ("deferrable", `Bool m.deferrable);
-                   ("reply_via", match m.reply_via with None -> `Null | Some s -> `String s);
-                   ("enc_status", match m.enc_status with None -> `Null | Some s -> `String s);
-                 ]) msgs)))
+               (fun () -> Yojson.Safe.to_channel oc (`List (List.map message_to_json msgs)))
             with e ->
               ignore (try_unlink tmp);
               raise e);
@@ -4408,27 +4415,7 @@ open C2c_mcp_helpers
       let msgs =
         match pending_json with
         | `List items ->
-            List.map (fun json ->
-              let open Yojson.Safe.Util in
-              { from_alias = json |> member "from_alias" |> to_string
-              ; to_alias = json |> member "to_alias" |> to_string
-              ; content = json |> member "content" |> to_string
-              ; deferrable =
-                  (match json |> member "deferrable" with `Bool b -> b | _ -> false)
-              ; reply_via =
-                  (match json |> member "reply_via" with `String s -> Some s | _ -> None)
-              ; enc_status =
-                  (match json |> member "enc_status" with `String s -> Some s | _ -> None)
-              ; ts =
-                  (match json |> member "ts" with
-                   | `Float f -> f | `Int i -> float_of_int i | _ -> 0.0)
-              ; ephemeral =
-                  (match json |> member "ephemeral" with `Bool b -> b | _ -> false)
-              ; message_id =
-                  (match json |> member "message_id" with
-                   | `String s when s <> "" -> Some s | _ -> None)
-              ; pow_difficulty = pow_difficulty_of_json json
-              }) items
+            List.map message_of_json items
         | _ -> []
       in
       if msgs = [] then begin
@@ -4682,7 +4669,7 @@ open C2c_mcp_helpers
                      with_inbox_lock t ~session_id (fun () ->
                          let current = load_inbox t ~session_id in
                          let next =
-                            current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None; pow_difficulty = None } ]
+                            current @ [ { from_alias; to_alias = tagged_to; content = prefixed_content; deferrable = false; reply_via = None; enc_status = None; ts = Unix.gettimeofday (); ephemeral = false; message_id = None; pow_difficulty = None; source = Local } ]
                          in
                          save_inbox t ~session_id next);
                      delivered := m.rm_alias :: !delivered
@@ -5776,7 +5763,7 @@ open C2c_mcp_helpers
                      ; ts = Unix.gettimeofday ()
                      ; ephemeral = false
                      ; message_id = None
-                     ; pow_difficulty = None
+                     ; pow_difficulty = None; source = Local
                      }
                    ]
              with e -> warn "archive marker: %s" (Printexc.to_string e));

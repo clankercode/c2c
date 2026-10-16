@@ -1,0 +1,282 @@
+(* Real broker files + the shipped CLI. Run only on the coordinated buildbox. *)
+module H = C2c_host_mailbox
+module B = C2c_broker
+open C2c_mcp_helpers
+open Yojson.Safe.Util
+
+let check = Alcotest.(check bool)
+let text json key = json |> member key |> to_string
+let fields json key = json |> member key |> to_list
+let binding json = json |> member "binding"
+let root () =
+  let p = Filename.temp_file "c2c-host-test-" "" in
+  Sys.remove p; Unix.mkdir p 0o700; p
+let rec remove path =
+  if Sys.is_directory path then begin
+    Array.iter (fun n -> remove (Filename.concat path n)) (Sys.readdir path);
+    Unix.rmdir path
+  end else Sys.remove path
+let with_root f = let r = root () in Fun.protect ~finally:(fun () -> remove r) (fun () -> f r)
+let bind ?(owner_id="server-one") ?(thread_id="thread-one") ?alias root =
+  H.bind ~environment_id:"environment" ~thread_id ~workspace:root ~owner_id
+    ~broker_root:root ~owner_pid:(Unix.getpid ()) ?alias () |> binding
+let generation b = text b "generation"
+let sid b = text b "session_id"
+let alias b = text b "alias"
+let peek root b = H.peek ~environment_id:"environment" ~thread_id:(text b "thread_id")
+  ~broker_root:root ~generation:(generation b)
+let ack root b ids = H.ack ~environment_id:"environment" ~thread_id:(text b "thread_id")
+  ~broker_root:root ~generation:(generation b) ~message_ids:ids
+let unbind root b = H.unbind ~environment_id:"environment" ~thread_id:(text b "thread_id")
+  ~broker_root:root ~generation:(generation b)
+let rejects f =
+  match f () with
+  | _ -> Alcotest.fail "operation should fail closed"
+  | exception H.Rejected _ -> ()
+  | exception B.Registry_state_untrusted _ -> ()
+  | exception Invalid_argument _ -> ()
+  | exception Yojson.Json_error _ -> ()
+  | exception Yojson.Safe.Util.Type_error _ -> ()
+let local root b ?(ephemeral=false) ?(deferrable=false) content =
+  B.enqueue_message (B.create ~root) ~from_alias:"sender" ~to_alias:(alias b)
+    ~content ~ephemeral ~deferrable ()
+let bytes path = C2c_io.read_file path
+
+let test_identity () =
+  let a, al = H.identity ~environment_id:"a:b" ~thread_id:"c" in
+  let b, _ = H.identity ~environment_id:"a" ~thread_id:"b:c" in
+  check "length framing separates domains" true (a <> b);
+  Alcotest.(check int) "SHA256 session" 69 (String.length a);
+  check "valid host ID for session sends" true (Result.is_ok (validate_session_id a));
+  check "default alias is valid" true (C2c_name.is_valid al);
+  let unsafe, _ = H.identity ~environment_id:"../../environment" ~thread_id:"/thread\n" in
+  check "external IDs never enter paths" false (String.contains unsafe '/');
+  rejects (fun () -> H.identity ~environment_id:"" ~thread_id:"t")
+
+let test_lifecycle () = with_root (fun root ->
+  let b = bind root in
+  check "same-owner repeat is idempotent" true (b = bind root);
+  let other = bind ~thread_id:"thread-two" root in
+  check "threads have separate inboxes" true (sid b <> sid other);
+  let registration = List.find (fun r -> r.session_id = sid b)
+    (B.load_registrations (B.create ~root)) in
+  check "registered owner is long-lived calling process" true (registration.pid = Some (Unix.getpid ()));
+  check "registered owner live with verified start time" true (B.registration_is_alive registration);
+  local root b "pending";
+  let renewed = bind ~owner_id:"server-two" root in
+  check "new owner renews generation" true (generation b <> generation renewed);
+  rejects (fun () -> peek root b); rejects (fun () -> ack root b ["any"]);
+  rejects (fun () -> unbind root b);
+  Alcotest.(check int) "new owner sees pending mail" 1 (List.length (fields (peek root renewed) "messages"));
+  ignore (unbind root renewed); ignore (unbind root renewed);
+  rejects (fun () -> peek root renewed);
+  let reopened = bind ~owner_id:"server-two" root in
+  check "reactivation fences old owner" true (generation reopened <> generation renewed);
+  Alcotest.(check int) "unbind retained mail" 1 (List.length (fields (peek root reopened) "messages"));
+  Alcotest.(check int) "other thread remains registered" 1
+    (List.length (List.filter (fun r -> r.session_id = sid other) (B.load_registrations (B.create ~root)))))
+
+let test_selected_ack () = with_root (fun root ->
+  let b = bind root in let broker = B.create ~root in
+  local root b ~ephemeral:true "private";
+  local root b ~deferrable:true "later";
+  let first = fields (peek root b) "messages" in
+  let private_id = text (List.hd first) "message_id" in
+  local root b "arrived-after-peek";
+  ignore (ack root b [private_id; private_id; "not-present"]);
+  Alcotest.(check int) "repeat ack returns no removed IDs" 0
+    (List.length (fields (ack root b [private_id]) "acknowledged"));
+  let remaining = fields (peek root b) "messages" in
+  Alcotest.(check int) "selected ack preserves arrivals and unmatched" 2 (List.length remaining);
+  check "deferrable survives rewrite" true (List.hd remaining |> member "deferrable" |> to_bool);
+  Alcotest.(check string) "local provenance survives" "local" (text (List.hd remaining) "source");
+  let archive = Filename.concat (Filename.concat root "archive") (sid b ^ ".jsonl") in
+  check "ephemeral excluded from archive" false (Sys.file_exists archive);
+  let later_id = text (List.hd remaining) "message_id" in
+  ignore (ack root b [later_id]);
+  check "normal selected message archived" true (Sys.file_exists archive);
+  let archived = Yojson.Safe.from_string (String.trim (bytes archive)) in
+  Alcotest.(check string) "archive preserves source" "local" (text archived "source");
+  Alcotest.(check int) "only new arrival remains" 1 (List.length (B.read_inbox broker ~session_id:(sid b)));
+  let before = bytes (text b "inbox_path") in
+  rejects (fun () -> ack root b ["bad\nID"]);
+  rejects (fun () -> ack root b []);
+  Alcotest.(check string) "invalid ack never rewrites" before (bytes (text b "inbox_path")))
+
+let test_legacy_and_relay () = with_root (fun root ->
+  let b = bind root in let broker = B.create ~root in
+  let legacy = `Assoc ["from_alias", `String "plain-peer"; "to_alias", `String (alias b);
+    "content", `String "legacy"; "ts", `Int 1; "ephemeral", `Bool true; "deferrable", `Bool true] in
+  B.write_json_file (text b "inbox_path") (`List [legacy]);
+  let remote = `Assoc ["from_alias", `String "plain-peer"; "to_alias", `String (alias b);
+    "content", `String "wire"; "ts", `Int 2; "source", `String "local";
+    "message_id", `String "remote-1"] in
+  ignore (C2c_relay_connector.append_to_local_inbox root (sid b) [remote]);
+  let messages = fields (peek root b) "messages" in
+  let legacy = List.hd messages and remote = List.nth messages 1 in
+  Alcotest.(check string) "legacy is unknown" "unknown" (text legacy "source");
+  Alcotest.(check string) "wire cannot claim local source" "remote" (text remote "source");
+  let id = text legacy "message_id" in
+  let again = fields (peek root b) "messages" in
+  Alcotest.(check string) "legacy ID durable" id (text (List.hd again) "message_id");
+  ignore (ack root b ["remote-1"]);
+  let survived = List.hd (B.read_inbox broker ~session_id:(sid b)) in
+  check "unknown source and flags survive selected rewrite" true
+    (survived.source = Unknown && survived.ephemeral && survived.deferrable);
+  check "bare legacy alias cannot authorize wake" true
+    (C2c_codex_autoturn.default_provenance survived = `Remote);
+  check "provenance does not inspect alias punctuation" true
+    (C2c_codex_autoturn.default_provenance {survived with source=Local; from_alias="peer@host"} = `Local);
+  let spool = C2c_wire_bridge.spool_of_path (Filename.concat root "spool.json") in
+  C2c_wire_bridge.spool_write spool [survived];
+  check "plugin spool preserves message metadata" true (C2c_wire_bridge.spool_read spool = [survived]);
+  ignore (B.capture_orphan_for_restart broker ~session_id:(sid b));
+  ignore (B.replay_pending_orphan_inbox broker ~session_id:(sid b));
+  check "restart preserves flags and provenance" true
+    (B.read_inbox broker ~session_id:(sid b) = [survived]))
+
+let test_conflicts_and_corruption () = with_root (fun root ->
+  let b = bind root in let broker = B.create ~root in
+  local root b "retained";
+  let original = B.load_registrations broker in
+  let foreign = List.map (fun r -> { r with registered_by = Some "foreign" }) original in
+  B.save_registrations broker foreign;
+  let snapshot = bytes (B.registry_path broker) in
+  rejects (fun () -> bind root); rejects (fun () -> peek root b);
+  rejects (fun () -> ack root b ["any"]); rejects (fun () -> unbind root b);
+  Alcotest.(check string) "foreign registration unchanged" snapshot (bytes (B.registry_path broker));
+  B.save_registrations broker (List.map (fun r -> {r with pid_start_time=Some (-1)}) original);
+  rejects (fun () -> unbind root b);
+  B.save_registrations broker original;
+  B.register broker ~session_id:"foreign" ~alias:"occupied" ~pid:None ~pid_start_time:None ();
+  rejects (fun () -> bind ~thread_id:"other" ~alias:"occupied" root);
+  B.write_json_file (text b "inbox_path") (`List [`Assoc ["content", `String "malformed"]]);
+  let snapshot = bytes (text b "inbox_path") in
+  rejects (fun () -> peek root b); rejects (fun () -> ack root b ["any"]);
+  Alcotest.(check string) "malformed inbox untouched" snapshot (bytes (text b "inbox_path"));
+  let message = { from_alias="p"; to_alias=alias b; content="a"; ts=1.;
+    ephemeral=false; deferrable=false; reply_via=None; enc_status=None;
+    message_id=Some "duplicate"; pow_difficulty=None; source=Local } in
+  B.save_inbox broker ~session_id:(sid b) [message; {message with content="b"}];
+  rejects (fun () -> ack root b ["duplicate"]);
+  B.write_json_file (B.registry_path broker) (`Assoc []);
+  rejects (fun () -> bind root))
+
+let test_namespace_workspace_dnd () = with_root (fun root ->
+  let b = bind root in
+  let workspace = Filename.concat root "workspace" in Unix.mkdir workspace 0o700;
+  let changed = H.bind ~environment_id:"environment" ~thread_id:"thread-one" ~workspace
+    ~owner_id:"server-one" ~owner_pid:(Unix.getpid ()) ~broker_root:root () |> binding in
+  check "workspace change renews generation" true (generation changed <> generation b);
+  rejects (fun () -> unbind root b);
+  let broker = B.create ~root in
+  B.with_registry_lock broker (fun () -> B.save_registrations broker
+    (List.map (fun r -> {r with dnd=true; dnd_until=None}) (B.load_registrations broker)));
+  check "DND exposed" true (peek root changed |> member "dnd" |> to_bool);
+  rejects (fun () -> H.peek ~environment_id:"other-environment" ~thread_id:"thread-one"
+    ~broker_root:root ~generation:(generation changed));
+  with_root (fun other -> rejects (fun () -> H.ack ~environment_id:"environment"
+    ~thread_id:"thread-one" ~broker_root:other ~generation:(generation changed) ~message_ids:["x"])) )
+
+
+let test_owner_liveness () = with_root (fun root ->
+  rejects (fun () -> H.bind ~environment_id:"e" ~thread_id:"t" ~workspace:root
+    ~owner_id:"o" ~owner_pid:0 ~broker_root:root ());
+  let rd, wr = Unix.pipe () in
+  match Unix.fork () with
+  | 0 ->
+      Unix.close wr;
+      let byte = Bytes.create 1 in
+      ignore (Unix.read rd byte 0 1); Unix.close rd; exit 0
+  | child ->
+      Unix.close rd;
+      Fun.protect ~finally:(fun () ->
+        (try Unix.close wr with _ -> ());
+        (try Unix.kill child Sys.sigkill with _ -> ());
+        (try ignore (Unix.waitpid [] child) with _ -> ())) (fun () ->
+        let b = H.bind ~environment_id:"environment" ~thread_id:"thread-one" ~workspace:root
+          ~owner_id:"owner" ~owner_pid:child ~broker_root:root () |> binding in
+        let broker = B.create ~root in
+        let registration () = List.hd (B.load_registrations broker) in
+        check "live owner is visible" true (B.registration_is_alive (registration ()));
+        local root b "survives-owner-exit";
+        Unix.close wr;
+        ignore (Unix.waitpid [] child);
+        check "exited owner is not alive" false (B.registration_is_alive (registration ()));
+        ignore (unbind root b);
+        let resumed = bind root in
+        Alcotest.(check int) "exit/unbind retained pending message" 1
+          (List.length (fields (peek root resumed) "messages"))))
+
+let test_archive_failure () = with_root (fun root ->
+  let b = bind root in local root b "must-survive";
+  let id = text (List.hd (fields (peek root b) "messages")) "message_id" in
+  let snapshot = bytes (text b "inbox_path") in
+  let out = open_out (Filename.concat root "archive") in close_out out;
+  let failed = try ignore (ack root b [id]); false with Unix.Unix_error _ | Sys_error _ -> true in
+  check "archive failure propagated" true failed;
+  Alcotest.(check string) "archive failure retains inbox" snapshot (bytes (text b "inbox_path")))
+
+let test_concurrent_arrival () = with_root (fun root ->
+  let b = bind root in local root b "accepted";
+  let id = text (List.hd (fields (peek root b) "messages")) "message_id" in
+  match Unix.fork () with
+  | 0 ->
+      (try for i=1 to 30 do local root b (string_of_int i) done; exit 0 with _ -> exit 1)
+  | child ->
+      ignore (ack root b [id]);
+      let _, status = Unix.waitpid [] child in
+      check "writer completed" true (status = Unix.WEXITED 0);
+      Alcotest.(check int) "all racing arrivals retained" 30
+        (List.length (fields (peek root b) "messages")))
+
+let run_cli ?(host=true) ?(env=Unix.environment ()) root args =
+  let exe = Filename.concat (Filename.dirname Sys.executable_name) "c2c.exe" in
+  let out = Filename.concat root "stdout" and err = Filename.concat root "stderr" in
+  let fd path = Unix.openfile path [Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC] 0o600 in
+  let ofd = fd out and efd = fd err in
+  let args = if host then "host" :: args else args in
+  let pid = Unix.create_process_env exe (Array.of_list (exe :: args)) env Unix.stdin ofd efd in
+  Unix.close ofd; Unix.close efd;
+  let _, status = Unix.waitpid [] pid in status, bytes out
+
+let cli root args = let status, out = run_cli root args in
+  status, Yojson.Safe.from_string out
+
+let test_cli () = with_root (fun root ->
+  let base = ["--environment-id"; "cli-environment"; "--thread-id"; "../cli/thread";
+    "--broker-root"; root] in
+  let status, result = cli root ("bind" :: base @ ["--workspace";root;"--owner-id";"owner"]) in
+  check "bind CLI succeeds" true (status = Unix.WEXITED 0);
+  Alcotest.(check int) "versioned response" 1 (result |> member "schema_version" |> to_int);
+  let b = binding result in
+  let args = base @ ["--generation"; generation b] in
+  let status, result = cli root ("peek" :: args) in
+  check "peek CLI succeeds" true (status = Unix.WEXITED 0);
+  Alcotest.(check int) "empty mailbox" 0 (List.length (fields result "messages"));
+  let status, _ = cli root ("ack" :: args @ ["--message-id";"missing";"--message-id";"missing"]) in
+  check "repeat selected ID accepted" true (status = Unix.WEXITED 0);
+  let status, result = cli root ("peek" :: base @ ["--generation";"wrong"]) in
+  check "stale CLI fails" false (status = Unix.WEXITED 0);
+  Alcotest.(check string) "bounded JSON error" "stale_generation" (text result "error");
+  let status, _ = cli root ("unbind" :: args) in
+  check "unbind CLI succeeds" true (status = Unix.WEXITED 0);
+  let sender = bind root and receiver = bind ~thread_id:"receiver" root in
+  let env = Array.to_list (Unix.environment ()) |> List.filter (fun v ->
+    not (String.starts_with ~prefix:"C2C_MCP_SESSION_ID=" v)
+    && not (String.starts_with ~prefix:"C2C_NO_AUTO_REGISTER=" v)) in
+  let env = Array.of_list (("C2C_MCP_SESSION_ID=" ^ sid sender) :: "C2C_NO_AUTO_REGISTER=1" :: env) in
+  let body = "--literal-body\n$untrusted `text`" in
+  let status, _ = run_cli ~host:false ~env root ["send";"--broker-root";root;
+    "--from";alias sender;"--";alias receiver;body] in
+  check "outbound send accepts end-of-options" true (status = Unix.WEXITED 0);
+  let received = List.hd (fields (peek root receiver) "messages") in
+  Alcotest.(check string) "outbound literal body preserved" body (text received "content"))
+
+let () = Alcotest.run "host-mailbox" ["transport", List.map (fun (name,f) ->
+  Alcotest.test_case name `Quick f) [
+  "stable framed identity",test_identity; "lifecycle and fencing",test_lifecycle;
+  "selected ack and archive",test_selected_ack; "legacy and relay provenance",test_legacy_and_relay;
+  "foreign ownership and corruption",test_conflicts_and_corruption;
+  "namespace workspace and DND",test_namespace_workspace_dnd;
+  "owner PID lifecycle",test_owner_liveness; "archive failure",test_archive_failure; "concurrent arrivals",test_concurrent_arrival; "real CLI JSON contract",test_cli]]

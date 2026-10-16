@@ -102,15 +102,25 @@ type registration =
         passthrough so consumers can persist it. None = not
         populated. *)
     }
-type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option; pow_difficulty : int option }
+type message_source = Local | Remote | Unknown
+
+let message_source_to_string = function
+  | Local -> "local" | Remote -> "remote" | Unknown -> "unknown"
+
+let message_source_of_json = function
+  | `String "local" -> Local
+  | `String "remote" -> Remote
+  | _ -> Unknown
+
+type message = { from_alias : string; to_alias : string; content : string; deferrable : bool; reply_via : string option; enc_status : string option; ts : float; ephemeral : bool; message_id : string option; pow_difficulty : int option; source : message_source }
 (** [pow_difficulty] (B014): the sender's PoW difficulty in leading-zero bits at
     send-accept time, carried on messages relayed from other agents. [None] for
     locally-originated messages or relays that did not record it. Surfaced on
     delivery as a self-describing [pow] object ({ difficulty_bits, expected_hashes
     = 2^bits, scheme }) so a recipient can gauge the sender's PoW weight. *)
-(** [message_id] is set when the message arrived via the relay (which assigns
-    a UUID to every sent message). It is used to anchor sticker reactions:
-    a reaction references the original message via its [message_id]. *)
+(** [message_id] is assigned by local enqueue and relay ingress. Legacy rows
+    may lack one until a durable consumer assigns it under the inbox lock.
+    It anchors acknowledgements and sticker reactions, not provenance. *)
 (** [ephemeral=true] messages are delivered normally but skipped on the
     archive append in [drain_inbox] / [drain_inbox_push]. The recipient's
     in-memory channel notification + transcript are the only persistent
@@ -184,7 +194,11 @@ let pending_kind_of_string = function "question" -> Question | _ -> Permission
 
 let validate_session_id session_id =
   let trimmed = String.trim session_id in
-  if C2c_name.is_valid trimmed then Ok trimmed
+  let host_session = String.length trimmed = 69
+    && String.starts_with ~prefix:"host-" trimmed
+    && String.for_all (function '0'..'9' | 'a'..'f' -> true | _ -> false)
+         (String.sub trimmed 5 64) in
+  if C2c_name.is_valid trimmed || host_session then Ok trimmed
   else Error (C2c_name.error_message "session_id" trimmed)
 
 (* Durable proof that a launcher-owned registration was cleared by the exact

@@ -547,3 +547,9 @@
  (name test_c2c_codex_app_server_probe)
  (modules test_c2c_codex_app_server_probe)
  (libraries alcotest yojson unix))
+
+(test
+ (name test_c2c_host_mailbox)
+ (modules test_c2c_host_mailbox)
+ (libraries c2c_mcp alcotest yojson unix)
+ (deps c2c.exe))

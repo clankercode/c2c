@@ -401,12 +401,7 @@ let oc_plugin_stream_write_statefiles_cmd =
     try while true do process_line (input_line stdin) done
     with End_of_file | Sys_error _ -> ()) $ Cmdliner.Term.const ())
 
-let oc_plugin_message_json (msg : C2c_mcp.message) =
-  `Assoc
-    [ ("from_alias", `String msg.from_alias)
-    ; ("to_alias", `String msg.to_alias)
-    ; ("content", `String msg.content)
-    ]
+let oc_plugin_message_json = C2c_broker.message_to_json
 
 let oc_plugin_drain_inbox_to_spool_cmd =
   let open Cmdliner in
