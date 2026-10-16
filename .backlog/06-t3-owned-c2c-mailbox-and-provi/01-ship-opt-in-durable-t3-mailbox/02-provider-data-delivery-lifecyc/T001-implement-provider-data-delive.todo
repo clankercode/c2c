@@ -16,3 +16,5 @@ title: Implement provider DATA delivery capability and Codex adapter
 updated_at: "2026-10-16T13:27:32Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. Add explicit typed DATA delivery capability separate from operator start/steer. Implement Codex against T3-owned app-server connection using non-user-role c2c envelope with visible continuation semantics. Unsupported providers explicitly refuse DATA wake. Regression tests verify no user-role promotion, no approval/goal-command dispatch, active delivery, identity and compaction. Reuse existing provider seams and avoid broad abstraction.
+
+Lane: T3 provider interface, Codex adapter and optional run.peerData schema. Parent owns Orchestrator/RunExecutionService. Active injectPeerData never steers. Idle start injects DATA then uses tracked empty-input turn; source and wake policy stay in host domain.
