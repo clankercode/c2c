@@ -1,0 +1,16 @@
+---
+complexity: high
+created_at: "2026-10-16T20:50:06Z"
+depends_on: []
+estimate_hours: 5
+id: P7.M1.E1.T004
+priority: high
+status: pending
+tags:
+    - c2c
+    - t3
+    - contract
+title: Close host transport schema and paging edge cases
+updated_at: "2026-10-16T20:50:06Z"
+---
+Fix exact-limit has_more semantics, align alias grammar between c2c and T3, reject NUL content before argv transport, and ensure oversized message metadata does not require serializing giant bodies. Add focused c2c and bridge contract tests and update reference docs.
