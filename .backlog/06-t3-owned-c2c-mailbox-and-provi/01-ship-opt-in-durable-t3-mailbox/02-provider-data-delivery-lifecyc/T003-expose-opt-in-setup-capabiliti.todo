@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-10-16T13:24:04Z"
 depends_on:
@@ -6,12 +7,14 @@ depends_on:
 estimate_hours: 4
 id: P6.M1.E2.T003
 priority: high
+started_at: null
 status: pending
-tags:
-    - t3
-    - c2c
-    - maintainability
+tags: []
 title: Expose opt-in setup, capabilities and truthful diagnostics
 updated_at: "2026-10-16T13:24:04Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. Implement coherent T3 settings/CLI setup and c2c doctor/install integration as supported by finalized contract. Expose configured, pending, delivered, held/unsupported states without message bodies or credentials. Outbound sender derived from exact T3 thread. Document install/uninstall and supported providers; do not claim unverified adapters. Follow existing UI/config style.
+
+Review decision: host mode must explicitly disable the native c2c MCP server in effective provider configuration; C2C_NO_AUTO_REGISTER and C2C_MCP_AUTO_DRAIN_CHANNEL alone do not remove a second manual consumer. Use a uniform server-level opt-in, sanitize inherited per-thread c2c identity, preserve native defaults when off, and verify tool inventory/attempt behavior. Inbox/status must bound payload output and allow explicit dismissal of held/unsupported records to recover capacity.
+
+Verified diagnostics: host registrations use generic owner PID/start-time liveness and are not misclassified DEAF; no mandatory doctor rewrite. Suppress native MCP watcher with C2C_MCP_CHANNEL_DELIVERY=0 as well as NO_AUTO_REGISTER=1 and AUTO_DRAIN_CHANNEL=0. host-ack proves durable host acceptance, never provider visibility; status wording must preserve distinction. Explicitly disable native c2c MCP tools in effective provider setup as separate requirement.

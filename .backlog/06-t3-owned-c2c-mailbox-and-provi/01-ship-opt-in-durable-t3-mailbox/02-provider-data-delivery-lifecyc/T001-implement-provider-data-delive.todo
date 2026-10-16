@@ -1,18 +1,23 @@
 ---
 claimed_at: "2026-10-16T13:27:32Z"
 claimed_by: codex-poplar-waffle-m0fg
-completed_at: null
+completed_at: "2026-10-16T13:38:43Z"
 complexity: high
 created_at: "2026-10-16T13:24:03Z"
 depends_on:
     - P6.M1.E1.T001
+duration_minutes: 11.18782218625
 estimate_hours: 4
 id: P6.M1.E2.T001
 priority: high
 started_at: "2026-10-16T13:27:32Z"
-status: in_progress
+status: done
 tags: []
 title: Implement provider DATA delivery capability and Codex adapter
-updated_at: "2026-10-16T13:27:32Z"
+updated_at: "2026-10-16T13:38:43Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. Add explicit typed DATA delivery capability separate from operator start/steer. Implement Codex against T3-owned app-server connection using non-user-role c2c envelope with visible continuation semantics. Unsupported providers explicitly refuse DATA wake. Regression tests verify no user-role promotion, no approval/goal-command dispatch, active delivery, identity and compaction. Reuse existing provider seams and avoid broad abstraction.
+
+Lane: T3 provider interface, Codex adapter and optional run.peerData schema. Parent owns Orchestrator/RunExecutionService. Active injectPeerData never steers. Idle start injects DATA then uses tracked empty-input turn; source and wake policy stay in host domain.
+
+Completed provider lane: T3 commit5e75d78dfe8c2179b8525ba190c2f0f69b78466e merged to local main. Dedicated optional injectPeerData capability, escaped developer DATA envelope, empty-input idle branch before goal parsing, bounded per-native-thread compaction retention, sender/messageId metadata, definite vs ambiguous error outcomes. x-p35 full changed Codex adapter178/178 and focused contract2/2 pass; scoped server/contracts typechecks and lint pass. Independent gpt-5.6-terra R1 PASS plus parent review. No push or installed-T3 mutation.

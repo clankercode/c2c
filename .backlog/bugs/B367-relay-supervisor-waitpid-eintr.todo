@@ -1,0 +1,17 @@
+---
+claimed_at: "2026-10-16T14:24:42Z"
+claimed_by: cli-user
+completed_at: null
+complexity: medium
+created_at: "2026-10-16T14:24:39Z"
+depends_on: []
+estimate_hours: 1
+id: B367
+priority: high
+started_at: "2026-10-16T14:24:42Z"
+status: in_progress
+tags: []
+title: Relay supervisor waitpid EINTR escapes and forked tests can hide failure
+updated_at: "2026-10-16T14:24:42Z"
+---
+Discovered during forced P6.M1 host validation on exact source3626221f: test_c2c_relay_managed child in B298 cap-crossing case raises Unix_error(EINTR,waitpid) at ocaml/cli/c2c_relay_managed.ml403. Parent suite still exits0, yielding nested failure and duplicate suite/test counts. Required: interrupt-safe child waits in relay supervisor; deterministic signal regression; forked supervisor test failures must terminate child without re-entering Alcotest and be asserted by parent. Preserve signal shutdown/restart semantics and PID-generation ownership. Critical validation blocker for T3 host slice. Reproduce/log from x-p35 /tmp/t3-c2c-validation-deps/c2c-final-realroot-runtest.log (confirm actual final filename from validation_env). Keep fix narrow, separate worktree, focused tests on x-p35 and independent review.

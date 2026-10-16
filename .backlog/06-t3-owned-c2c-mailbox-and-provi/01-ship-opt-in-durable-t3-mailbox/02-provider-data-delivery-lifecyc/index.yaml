@@ -19,7 +19,7 @@ tasks:
       file: T001-implement-provider-data-delive.todo
       id: T001
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Implement provider DATA delivery capability and Codex adapter
     - complexity: high
@@ -32,6 +32,7 @@ tasks:
       id: T002
       priority: high
       status: pending
+      tags: []
       title: Wire mailbox delivery and eligible Codex wake into T3 lifecycle
     - complexity: high
       depends_on:
@@ -41,6 +42,7 @@ tasks:
       id: T003
       priority: high
       status: pending
+      tags: []
       title: Expose opt-in setup, capabilities and truthful diagnostics
     - complexity: high
       depends_on:
