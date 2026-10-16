@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 
 describe('c2c plugin — loadable', () => {
   it('parses and exposes a default export', async () => {
-    const mod = await import('../plugins/c2c.ts');
+    const mod = await import('../../data/opencode-plugin/c2c.ts');
     expect(mod.default).toBeTruthy();
     expect(typeof mod.default).toBe('function');
   });

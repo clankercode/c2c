@@ -258,7 +258,9 @@ module Schedule_handlers = C2c_schedule_handlers
 
 (* Process-scoped host ownership boundary, distinct from hook registration
    opt-out: even explicitly requested native MCP tools must stay inert. *)
-let mcp_disabled () = Sys.getenv_opt "C2C_MCP_DISABLED" = Some "1"
+let mcp_disabled () =
+  Sys.getenv_opt "C2C_HOST_OWNED_MAILBOX" = Some "1"
+  || Sys.getenv_opt "C2C_MCP_DISABLED" = Some "1"
 let mcp_disabled_message = "c2c MCP is disabled; the host owns this mailbox"
 
 let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~arguments =

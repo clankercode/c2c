@@ -113,7 +113,13 @@ The host selects the binding from the authenticated caller's thread, not a
 request-supplied alias. Do not place any thread's identity in a shared provider
 runtime environment. Host-managed provider setup can use the existing
 `C2C_NO_AUTO_REGISTER=1`, `C2C_MCP_AUTO_DRAIN_CHANNEL=0`, and
-`C2C_MCP_DISABLED=1` on provider subprocesses. The last flag disables the native
+`C2C_MCP_DISABLED=1` on provider subprocesses. Set
+`C2C_HOST_OWNED_MAILBOX=1` in each native c2c process as the ownership guard;
+it also disables automatic hooks and the current OpenCode plugin, independently
+of older per-server opt-out values. Some provider MCP launchers filter inherited
+environment variables, so the provider adapter must explicitly pass the guard
+to its configured stdio servers and verify the effective tool inventory.
+The MCP flags disable the native
 MCP consumer even if an old provider configuration invokes it under another name.
 Initialize and ping remain protocol-valid; tool/prompt inventories are empty,
 forced tool calls are rejected, and startup registration, replay, room joins,
