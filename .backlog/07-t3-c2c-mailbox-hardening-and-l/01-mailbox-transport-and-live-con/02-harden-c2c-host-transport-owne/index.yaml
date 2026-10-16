@@ -6,9 +6,9 @@ locked: false
 name: Harden c2c host transport ownership and schema
 stats:
     blocked: 0
-    done: 0
-    in_progress: 0
-    pending: 2
+    done: 1
+    in_progress: 1
+    pending: 0
     total: 2
 status: pending
 tasks:
@@ -18,7 +18,7 @@ tasks:
       file: T001-guard-raw-c2c-consumers-when-t.todo
       id: T001
       priority: critical
-      status: in_progress
+      status: done
       tags: []
       title: Guard raw c2c consumers when T3 owns the mailbox
     - complexity: high
@@ -27,6 +27,6 @@ tasks:
       file: T002-close-host-transport-schema-an.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Close host transport schema and paging edge cases
