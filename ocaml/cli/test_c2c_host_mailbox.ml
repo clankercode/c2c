@@ -106,6 +106,12 @@ let test_identity () =
 let test_lifecycle () = with_root (fun root ->
   let b = bind root in
   check "same-owner repeat is idempotent" true (b = bind root);
+  let explicit = String.make 64 'a' in
+  let named = bind ~thread_id:"named-alias" ~alias:explicit root in
+  Alcotest.(check string) "host accepts the 64-byte alias boundary" explicit (alias named);
+  rejects (fun () -> bind ~thread_id:"too-long-alias" ~alias:(String.make 65 'a') root);
+  rejects (fun () -> bind ~thread_id:"leading-dot-alias" ~alias:".hidden" root);
+  rejects (fun () -> bind ~thread_id:"relay-alias" ~alias:"name@0123456789ab" root);
   let other = bind ~thread_id:"thread-two" root in
   check "threads have separate inboxes" true (sid b <> sid other);
   let registration = List.find (fun r -> r.session_id = sid b)
@@ -508,9 +514,34 @@ let test_page_count_limit () = with_root (fun root ->
   B.save_inbox broker ~session_id:(sid b) messages;
   let page = peek root b in
   Alcotest.(check int) "default max 64" 64 (List.length (fields page "messages"));
+  check "default limit reports remaining rows" true (page |> member "has_more" |> to_bool);
+  B.save_inbox broker ~session_id:(sid b) (List.filteri (fun i _ -> i < 64) messages);
+  let exact_default = peek root b in
+  check "exact default limit is final" false
+    (exact_default |> member "has_more" |> to_bool);
   let small = H.peek ~limit:3 ~environment_id:"environment" ~thread_id:"thread-one"
     ~broker_root:root ~generation:(generation b) () in
   Alcotest.(check int) "caller limit" 3 (List.length (fields small "messages"));
+  check "caller limit reports remaining rows" true
+    (small |> member "has_more" |> to_bool);
+  B.save_inbox broker ~session_id:(sid b)
+    (List.init 3 (fun i ->
+       { from_alias="peer"; to_alias=alias b; content="exact";
+         ts=1.; ephemeral=false; deferrable=false; reply_via=None;
+         enc_status=None; message_id=Some (Printf.sprintf "exact-%d" i);
+         pow_difficulty=None; source=Local }));
+  let exact = H.peek ~limit:3 ~environment_id:"environment" ~thread_id:"thread-one"
+    ~broker_root:root ~generation:(generation b) () in
+  Alcotest.(check int) "exact caller limit returns all rows" 3
+    (List.length (fields exact "messages"));
+  check "exact caller limit is final" false (exact |> member "has_more" |> to_bool);
+  B.save_inbox broker ~session_id:(sid b)
+    [{ from_alias="peer"; to_alias=alias b; content="one"; ts=1.;
+       ephemeral=false; deferrable=false; reply_via=None; enc_status=None;
+       message_id=Some "exact-one"; pow_difficulty=None; source=Local }];
+  let one = H.peek ~limit:1 ~environment_id:"environment" ~thread_id:"thread-one"
+    ~broker_root:root ~generation:(generation b) () in
+  check "single exact row is final" false (one |> member "has_more" |> to_bool);
   let before = bytes (text b "inbox_path") in
   List.iter (fun limit -> rejects (fun () -> H.peek ~limit ~environment_id:"environment"
     ~thread_id:"thread-one" ~broker_root:root ~generation:(generation b) ())) [0;65];
@@ -524,6 +555,9 @@ let test_fenced_send () = with_root (fun root ->
   Alcotest.(check int) "send is versioned" 1 (response |> member "schema_version" |> to_int);
   let row = List.hd (fields (peek root recipient) "messages") in
   Alcotest.(check string) "sender from stored binding" (alias sender) (text row "from_alias");
+  rejects (fun () -> send sender (alias recipient) "NUL\000DATA");
+  Alcotest.(check int) "NUL send does not enqueue" 1
+    (List.length (fields (peek root recipient) "messages"));
   let current = bind ~owner_id:"new-server" root in
   rejects (fun () -> send sender (alias recipient) "stale local");
   rejects (fun () -> send sender "peer@remote" "stale remote");
