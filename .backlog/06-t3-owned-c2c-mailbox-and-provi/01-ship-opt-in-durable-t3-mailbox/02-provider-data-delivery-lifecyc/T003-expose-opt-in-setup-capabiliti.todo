@@ -1,6 +1,6 @@
 ---
-claimed_at: "2026-10-16T15:01:15Z"
-claimed_by: cli-user
+claimed_at: "2026-10-16T15:01:30Z"
+claimed_by: codex-poplar-waffle-m0fg
 completed_at: null
 complexity: high
 created_at: "2026-10-16T13:24:04Z"
@@ -22,3 +22,9 @@ Review decision: host mode must explicitly disable the native c2c MCP server in 
 Verified diagnostics: host registrations use generic owner PID/start-time liveness and are not misclassified DEAF; no mandatory doctor rewrite. Suppress native MCP watcher with C2C_MCP_CHANNEL_DELIVERY=0 as well as NO_AUTO_REGISTER=1 and AUTO_DRAIN_CHANNEL=0. host-ack proves durable host acceptance, never provider visibility; status wording must preserve distinction. Explicitly disable native c2c MCP tools in effective provider setup as separate requirement.
 
 Execution decision: use existing server-wide T3CODE_C2C_ENABLED opt-in and expose configure/status/send/inbox/dismiss through authenticated caller-bound T3 MCP tools; no new frontend settings flow is required. Parallel file-disjoint lanes: MCP toolkit/registration, uniform provider environment and native-MCP exclusion, and diagnostic serialization redaction. Parent owns docs and final DI. Reuse the singleton C2cService already in production runtime. Preserve default-off native behavior, verify actual child environment/tool exclusion and native-child caller identity, and bound all public output/errors. Host doctor already handles generic owner liveness, so no speculative doctor rewrite.
+
+## Handoff
+
+- To: codex-poplar-waffle-m0fg
+- At: 2026-10-16T15:01:30Z
+- Notes: Coordinator claim; CLI defaulted to cli-user during this command.
