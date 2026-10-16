@@ -277,7 +277,10 @@ let message_page ~limit messages =
      body bytes: control characters can expand sixfold during serialization. *)
   let rec take count bytes rows = function
     | [] -> List.rev rows, false
-    | _ when count = limit -> List.rev rows, true
+    (* Reaching the row limit is only evidence of another page when an
+       unconsumed row remains.  An exact-limit page is final. *)
+    | remaining when count = limit ->
+        List.rev rows, (match remaining with [] -> false | _ :: _ -> true)
     | message :: rest ->
         let row = message_to_json message in
         let row_bytes = String.length (Yojson.Safe.to_string row) in
@@ -307,7 +310,10 @@ let peek ?(limit = max_page_messages) ~environment_id ~thread_id ~broker_root ~g
 
 let send ~environment_id ~thread_id ~broker_root ~generation ~to_alias ~content =
   require_text "recipient" to_alias;
-  if content = "" || String.length content > max_content_bytes then reject "invalid_content";
+  (* Host send is transported through an argv element. POSIX exec cannot
+     represent NUL in argv, so reject it at this seam for direct callers too. *)
+  if content = "" || String.length content > max_content_bytes
+     || String.contains content '\000' then reject "invalid_content";
   with_binding ~environment_id ~thread_id ~broker_root ~generation
     (fun broker state _ registration ->
       ignore (require_active state registration);

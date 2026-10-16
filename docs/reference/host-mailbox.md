@@ -34,6 +34,12 @@ components. `O` is an opaque application-server incarnation ID (T3 generates a
 UUID). c2c accepts nonblank IDs up to 4096 bytes, without NUL, and applies the
 same bounds when loading persisted state and transitions. It imposes no UUID grammar.
 
+An explicit host alias uses the shared c2c alias grammar: 1–64 ASCII
+characters from `[A-Za-z0-9._-]`, with no leading dot. This is the same
+grammar enforced by `c2c register` and by the T3 host-mailbox protocol. Relay
+addresses such as `name@host-id` are not valid local host aliases; use the
+recipient field for a relay target when sending.
+
 Bind returns a `binding` object with `environment_id`, `thread_id`, `session_id`,
 `alias`, `workspace`, `broker_root`, `inbox_path`, opaque `generation`,
 `owner_pid`, and `owner_pid_start_time` fields.
@@ -102,7 +108,8 @@ files for diagnosis if a foreign registration causes `registration_conflict`.
 
 For outbound mail use `c2c host send` with the same logical identity, broker root,
 and generation. `--to` selects the recipient; `--content` is literal DATA up to
-65536 UTF-8 bytes (use `--content=...` for values beginning with a dash). The sender
+65536 UTF-8 bytes and must not contain NUL (use `--content=...` for values
+beginning with a dash). The sender
 always comes from the validated binding. Identity validation and local enqueue or
 remote-outbox append run under one registry lock, so a stale incarnation cannot
 send between validation and a rebind. Success returns `schema_version: 1`, the
