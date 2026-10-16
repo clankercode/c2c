@@ -263,6 +263,27 @@ let mcp_disabled () =
   || Sys.getenv_opt "C2C_MCP_DISABLED" = Some "1"
 let mcp_disabled_message = "c2c MCP is disabled; the host owns this mailbox"
 
+(* Raw inbox consumers are a separate boundary from the MCP server.  A
+   provider process can still invoke the c2c CLI directly (and can pass
+   [--alias], bypassing every identity variable), so disabling the MCP
+   inventory alone does not protect a host-owned mailbox.  Keep the guard
+   process-scoped and cheap: the host transport itself deliberately does not
+   call this predicate and remains available for T3's authenticated bridge.
+
+   [C2C_NO_AUTO_REGISTER=1] is the older explicit child/sidecar opt-out.  It
+   already suppresses hook delivery and auto-registration; treating it as a
+   raw-consumer opt-out closes the same direct-CLI hole for those processes. *)
+let raw_consumers_disabled () =
+  mcp_disabled ()
+  || match Sys.getenv_opt "C2C_NO_AUTO_REGISTER" with
+     | Some value -> String.trim value = "1"
+     | None -> false
+
+let raw_consumer_disabled_message ~surface =
+  Printf.sprintf
+    "c2c %s is disabled while the host owns this mailbox; use the c2c host transport"
+    surface
+
 let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~arguments =
   if mcp_disabled () then Lwt.return (tool_err mcp_disabled_message)
   else match tool_name with

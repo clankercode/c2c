@@ -918,6 +918,11 @@ let resolve_effective_session_id ~(broker_root : string) (args : cli_args) : str
 
 let () =
   let args = parse_args () in
+  if C2c_mcp.raw_consumers_disabled () then begin
+    Printf.eprintf "error: %s\n%!"
+      (C2c_mcp.raw_consumer_disabled_message ~surface:"deliver-inbox");
+    exit 1
+  end;
   let broker_root =
     if args.broker_root <> "" then args.broker_root
     else default_broker_root ()

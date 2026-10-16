@@ -119,6 +119,15 @@ it also disables automatic hooks and the current OpenCode plugin, independently
 of older per-server opt-out values. Some provider MCP launchers filter inherited
 environment variables, so the provider adapter must explicitly pass the guard
 to its configured stdio servers and verify the effective tool inventory.
+The same guard fails closed for direct raw inbox consumers: `c2c poll-inbox`,
+`c2c wait-inbox`, `c2c peek-inbox`/`c2c inbox`, `c2c monitor`,
+`c2c deliver watch`/`wake-watch`, `c2c oc-plugin drain-inbox-to-spool`, and
+the standalone `c2c-deliver-inbox` binary. This check happens before alias or
+session resolution, so an inherited provider process cannot bypass ownership by
+supplying `--alias` explicitly. `C2C_NO_AUTO_REGISTER=1` carries the same
+raw-consumer opt-out for older child and sidecar launchers. The authenticated
+`c2c host bind|peek|send|ack|unbind` transport remains available under both
+settings.
 The MCP flags disable the native
 MCP consumer even if an old provider configuration invokes it under another name.
 Initialize and ping remain protocol-valid; tool/prompt inventories are empty,

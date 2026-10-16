@@ -421,6 +421,7 @@ let oc_plugin_drain_inbox_to_spool_cmd =
   and+ broker_root_opt = broker_root_arg
   and+ session_id_opt = session_id_arg
   and+ json = json_flag in
+  reject_raw_consumer_if_disabled ~surface:"oc-plugin drain-inbox-to-spool";
   let output_mode = if json then Json else Human in
   let broker_root =
     match broker_root_opt with
