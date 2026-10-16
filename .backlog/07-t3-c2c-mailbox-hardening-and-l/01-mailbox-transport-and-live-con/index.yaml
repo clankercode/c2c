@@ -25,8 +25,8 @@ locked: false
 name: Mailbox transport and live conformance hardening
 stats:
     blocked: 0
-    done: 3
-    in_progress: 1
+    done: 4
+    in_progress: 0
     pending: 0
     total_tasks: 4
 status: done
