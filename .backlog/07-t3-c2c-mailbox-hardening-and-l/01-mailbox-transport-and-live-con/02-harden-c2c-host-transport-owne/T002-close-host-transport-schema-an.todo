@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-16T21:06:09Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-10-16T20:50:06Z"
@@ -6,11 +8,11 @@ depends_on: []
 estimate_hours: 5
 id: P7.M1.E2.T002
 priority: high
-started_at: null
-status: pending
+started_at: "2026-10-16T21:06:09Z"
+status: in_progress
 tags: []
 title: Close host transport schema and paging edge cases
-updated_at: "2026-10-16T20:50:06Z"
+updated_at: "2026-10-16T21:06:09Z"
 ---
 Fix exact-limit has_more semantics, align alias grammar between c2c and T3, reject NUL content before argv transport, and ensure oversized message metadata does not require serializing giant bodies. Add focused c2c and bridge contract tests and update reference docs.
 
