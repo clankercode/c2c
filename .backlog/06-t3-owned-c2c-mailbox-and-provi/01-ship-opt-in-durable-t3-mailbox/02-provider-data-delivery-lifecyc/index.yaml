@@ -19,7 +19,8 @@ tasks:
       file: T001-implement-provider-data-delive.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Implement provider DATA delivery capability and Codex adapter
     - complexity: high
       depends_on:

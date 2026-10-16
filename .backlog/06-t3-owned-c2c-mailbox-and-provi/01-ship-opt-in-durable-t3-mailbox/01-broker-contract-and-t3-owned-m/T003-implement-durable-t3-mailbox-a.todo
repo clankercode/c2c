@@ -1,4 +1,7 @@
 ---
+claimed_at: "2026-10-16T13:27:32Z"
+claimed_by: codex-poplar-waffle-m0fg
+completed_at: null
 complexity: high
 created_at: "2026-10-16T13:24:03Z"
 depends_on:
@@ -6,12 +9,10 @@ depends_on:
 estimate_hours: 4
 id: P6.M1.E1.T003
 priority: high
-status: pending
-tags:
-    - t3
-    - c2c
-    - maintainability
+started_at: "2026-10-16T13:27:32Z"
+status: in_progress
+tags: []
 title: Implement durable T3 mailbox and c2c bridge
-updated_at: "2026-10-16T13:24:03Z"
+updated_at: "2026-10-16T13:27:32Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. In upstream T3 source add an opt-in per-thread mailbox with persistent identity binding, accept-before-ack ingestion, idempotency, bounded retry and ambiguous-delivery holding, event-driven broker arrival plus startup reconciliation. Isolate c2c process calls; no shell interpolation or provider/session tokens in durable binding. Do not use ordinary thread_send for DATA.
