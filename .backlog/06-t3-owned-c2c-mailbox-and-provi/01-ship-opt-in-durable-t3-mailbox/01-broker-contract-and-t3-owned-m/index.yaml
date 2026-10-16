@@ -1,0 +1,41 @@
+complexity: high
+depends_on: []
+estimate_hours: 20
+id: P6.M1.E1
+locked: false
+name: Broker contract and T3-owned mailbox foundation
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 1
+    pending: 2
+    total: 3
+status: pending
+tasks:
+    - complexity: high
+      depends_on: []
+      estimate_hours: 4
+      file: T001-specify-host-binding-and-durab.todo
+      id: T001
+      priority: high
+      status: in_progress
+      tags: []
+      title: Specify host binding and durable broker acknowledgement contract
+    - complexity: high
+      depends_on:
+        - P6.M1.E1.T001
+      estimate_hours: 4
+      file: T002-implement-c2c-host-binding-and.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Implement c2c host binding and selected-message ack transport
+    - complexity: high
+      depends_on:
+        - P6.M1.E1.T001
+      estimate_hours: 4
+      file: T003-implement-durable-t3-mailbox-a.todo
+      id: T003
+      priority: high
+      status: pending
+      title: Implement durable T3 mailbox and c2c bridge

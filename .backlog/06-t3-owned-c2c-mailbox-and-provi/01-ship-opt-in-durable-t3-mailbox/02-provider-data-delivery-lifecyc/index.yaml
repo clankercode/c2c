@@ -1,0 +1,52 @@
+complexity: high
+depends_on: []
+estimate_hours: 20
+id: P6.M1.E2
+locked: false
+name: Provider DATA delivery, lifecycle, and product integration
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 4
+    total: 4
+status: pending
+tasks:
+    - complexity: high
+      depends_on:
+        - P6.M1.E1.T001
+      estimate_hours: 4
+      file: T001-implement-provider-data-delive.todo
+      id: T001
+      priority: high
+      status: pending
+      title: Implement provider DATA delivery capability and Codex adapter
+    - complexity: high
+      depends_on:
+        - P6.M1.E1.T002
+        - P6.M1.E1.T003
+        - P6.M1.E2.T001
+      estimate_hours: 4
+      file: T002-wire-mailbox-delivery-and-elig.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Wire mailbox delivery and eligible Codex wake into T3 lifecycle
+    - complexity: high
+      depends_on:
+        - P6.M1.E2.T002
+      estimate_hours: 4
+      file: T003-expose-opt-in-setup-capabiliti.todo
+      id: T003
+      priority: high
+      status: pending
+      title: Expose opt-in setup, capabilities and truthful diagnostics
+    - complexity: high
+      depends_on:
+        - P6.M1.E2.T003
+      estimate_hours: 4
+      file: T004-prove-end-to-end-delivery-and.todo
+      id: T004
+      priority: high
+      status: pending
+      title: Prove end-to-end delivery and land reviewed cross-repo integration

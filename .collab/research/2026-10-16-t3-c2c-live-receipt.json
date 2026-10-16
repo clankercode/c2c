@@ -1,0 +1,73 @@
+{
+  "investigated_at": "2026-10-16",
+  "c2c": {
+    "version": "0.18.2",
+    "commit": "a0b52e4bb98363b3f53810030915887addb1f9af"
+  },
+  "t3": {
+    "installedCommit": "81493efb71e8e8244f95d3e9f71d8369654ab151",
+    "upstreamInspected": "cfafb4bb54d244e4612f5681aad3832ea64cb0fb"
+  },
+  "activeDelivery": {
+    "normal": {
+      "marker": "T3-C2C-RESEARCH-PROBE-20261016-B",
+      "observedRole": "developer",
+      "timestamp": "2026-10-16T12:57:03.797Z"
+    },
+    "ephemeral": {
+      "marker": "T3-C2C-RESEARCH-PROBE-20261016-C",
+      "observedRole": "developer",
+      "timestamp": "2026-10-16T12:57:07.715Z"
+    },
+    "crossThreadFinding": {
+      "marker": "T3-C2C-RESEARCH-PROBE-20261016-A",
+      "intendedNativeThread": "01a144c7-0113-7541-a32e-9d13712e5fe0",
+      "actualNativeThread": "01a144c7-8498-7e02-9818-814354144ec9",
+      "actualNativeThreadC2cRegistration": "unregistered",
+      "role": "developer",
+      "timestamp": "2026-10-16T12:55:54.791Z",
+      "rootCause": "not determined"
+    }
+  },
+  "idleProbe": {
+    "taskId": "node:delegated-task:command%3Amcp%3Af334a44e-e26d-4295-8107-aa407c9f9421%3Adelegate-task%3Ac2c-t3-idle-probe-20261016-r1",
+    "threadId": "thread:delegated-task:command%3Amcp%3Af334a44e-e26d-4295-8107-aa407c9f9421%3Adelegate-task%3Ac2c-t3-idle-probe-20261016-r1",
+    "nativeThread": "01a144c9-b7f9-7482-bfe9-a7d1d58f06ff",
+    "c2cAlias": "codex-lumi-quench-g29h",
+    "sentAt": "2026-10-16 12:57:23 UTC",
+    "messageId": "38985b2c-ac50-4107-ade9-aff1e2b32f60",
+    "before": {
+      "runCount": 1,
+      "status": "completed",
+      "activeRunId": null
+    },
+    "after": {
+      "observedAt": "2026-10-16 12:58:26 UTC",
+      "runCount": 1,
+      "status": "completed",
+      "activeRunId": null,
+      "inboxCount": 1
+    },
+    "conclusion": "No c2c-driven idle wake observed over more than 62 seconds; broker receipt did not imply a T3 run."
+  },
+  "nativeResume": {
+    "threadId": "thread:delegated-task:command%3Amcp%3Af334a44e-e26d-4295-8107-aa407c9f9421%3Adelegate-task%3Ac2c-t3-idle-probe-20261016-r1",
+    "messageId": "message:mcp:f334a44e-e26d-4295-8107-aa407c9f9421:thread-send:c2c-t3-native-resume-probe-20261016-r1",
+    "runId": "run:thread:thread%3Adelegated-task%3Acommand%253Amcp%253Af334a44e-e26d-4295-8107-aa407c9f9421%253Adelegate-task%253Ac2c-t3-idle-probe-20261016-r1:ordinal:2",
+    "taskId": "node:delegated-task:command%3Amcp%3Af334a44e-e26d-4295-8107-aa407c9f9421%3Athread-send%3Ac2c-t3-native-resume-probe-20261016-r1",
+    "status": "starting",
+    "delivery": "started",
+    "resultStatus": "completed",
+    "resultSummary": "T3_NATIVE_WAKE_OK \u2014 c2c idle-probe envelope is visible in my context.",
+    "userRolePromptAt": "2026-10-16T12:58:31.117Z",
+    "c2cDeveloperRoleEnvelopeAt": "2026-10-16T12:58:31.121Z",
+    "inboxCountAfter": 0
+  },
+  "cleanup": {
+    "temporarySenderAliasesRemoved": [
+      "t3-research-probe-20261016",
+      "t3-research-probe-20261016b"
+    ],
+    "probeChildRegistration": "removed; completed child task cancelled for cleanup"
+  }
+}
