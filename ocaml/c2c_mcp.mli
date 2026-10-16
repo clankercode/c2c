@@ -1109,6 +1109,10 @@ val auto_register_impl :
 (** MCP/server auto-register implementation (also used by tests). Adopts
     cross-broker sticky aliases (B188) and same-session hook rows (B119). *)
 
+val mcp_disabled : unit -> bool
+(** Explicit process-scoped host ownership opt-out. Disabled MCP advertises no
+    tools and rejects calls before bootstrap, registry access, or dispatch. *)
+
 val handle_tool_call :
   broker:Broker.t ->
   session_id_override:string option ->

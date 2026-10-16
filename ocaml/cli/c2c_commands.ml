@@ -177,7 +177,8 @@ let filter_commands ~cmds =
   List.filter
     (fun cmd ->
       let cmd_name = Cmdliner.Cmd.name cmd in
-      tier_visible (get_tier cmd_name))
+      (C2c_mcp.mcp_disabled () && List.mem cmd_name ["serve";"mcp"])
+      || tier_visible (get_tier cmd_name))
     cmds
 
 (* --- shared role/agent helpers (used by start_cmd and roles commands) ----- *)

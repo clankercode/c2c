@@ -256,8 +256,14 @@ let handle_memory_write = Memory_handlers.handle_memory_write
 
 module Schedule_handlers = C2c_schedule_handlers
 
+(* Process-scoped host ownership boundary, distinct from hook registration
+   opt-out: even explicitly requested native MCP tools must stay inert. *)
+let mcp_disabled () = Sys.getenv_opt "C2C_MCP_DISABLED" = Some "1"
+let mcp_disabled_message = "c2c MCP is disabled; the host owns this mailbox"
+
 let handle_tool_call ~(broker : Broker.t) ~session_id_override ~tool_name ~arguments =
-  match tool_name with
+  if mcp_disabled () then Lwt.return (tool_err mcp_disabled_message)
+  else match tool_name with
   | "register" ->
       C2c_identity_handlers.register ~broker ~session_id_override ~arguments
   | "list" ->
@@ -444,7 +450,6 @@ let get_skill name =
 
 let handle_request ~broker_root json =
   let open Yojson.Safe.Util in
-  let broker = Broker.create ~root:broker_root in
   let id =
     try
       let id_json = json |> member "id" in
@@ -460,15 +465,18 @@ let handle_request ~broker_root json =
         `Assoc
           [ ("protocolVersion", `String supported_protocol_version)
           ; ("serverInfo", server_info ())
-          ; ("instructions", instructions)
-          ; ("capabilities", capabilities)
+          ; ("instructions", if mcp_disabled () then `String mcp_disabled_message else instructions)
+          ; ("capabilities", if mcp_disabled () then `Assoc [] else capabilities)
           ]
       in
       Lwt.return_some (jsonrpc_response ~id result)
   | Some id, "tools/list" ->
-      let result = `Assoc [ ("tools", `List tool_definitions) ] in
+      let result = `Assoc [ ("tools", `List (if mcp_disabled () then [] else tool_definitions)) ] in
       Lwt.return_some (jsonrpc_response ~id result)
+  | Some id, "tools/call" when mcp_disabled () ->
+      Lwt.return_some (jsonrpc_response ~id (tool_err mcp_disabled_message))
   | Some id, "tools/call" ->
+      let broker = Broker.create ~root:broker_root in
       let tool_name = try params |> member "name" |> to_string with _ -> "" in
       let arguments = try params |> member "arguments" with _ -> `Assoc [] in
       let session_id_override =
@@ -495,6 +503,10 @@ let handle_request ~broker_root json =
       in
       log_rpc ~broker_root ~tool_name ~is_error;
       Lwt.return_some (jsonrpc_response ~id result)
+  | Some id, "prompts/list" when mcp_disabled () ->
+      Lwt.return_some (jsonrpc_response ~id (`Assoc ["prompts", `List []]))
+  | Some id, "prompts/get" when mcp_disabled () ->
+      Lwt.return_some (Json_util.jsonrpc_error ~id ~code:(-32601) ~message:mcp_disabled_message)
   | Some id, "prompts/list" ->
       let prompts = list_skills_as_prompts () in
       Lwt.return_some (jsonrpc_response ~id (`Assoc [("prompts", `List prompts)]))

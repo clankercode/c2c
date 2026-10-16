@@ -15,7 +15,7 @@ Usage errors are reported on stderr with a nonzero exit status. Operation errors
 return `{ "schema_version": 1, "error": "<category>" }` with a nonzero exit status.
 
 ```
-c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P]
+c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P] [--expected-broker-root B]
 c2c host peek --environment-id E --thread-id T --broker-root B --generation G [--limit N]
 c2c host send --environment-id E --thread-id T --broker-root B --generation G --to A --content BODY
 c2c host ack --environment-id E --thread-id T --broker-root B --generation G --message-id M [--message-id M2]
@@ -44,6 +44,15 @@ choose a different identity to request another alias. Foreign registrations,
 even stale ones, are rejected. The broker root normally resolves from the
 workspace using the existing repository fingerprint rules, so same-origin
 worktrees share a broker. An explicit root supports isolated test fixtures.
+
+For rebind, pass the saved `binding.broker_root` as `--expected-broker-root`.
+The resolved target and expected root are compared as canonical paths before
+any registry mutation. A different target returns `workspace_broker_changed`,
+preserving the prior binding, registration and queued mail. Same-origin worktree
+moves are supported; cross-broker migration is unsupported in v1. Resume from
+the prior workspace to accept its mail, or create a new logical thread for the
+new repository. Do not force the old root with `--broker-root` to conceal a
+workspace mismatch. Fresh binds omit the expected-root precondition.
 
 Peek returns `binding`, the current effective `dnd` boolean, `dnd_until`,
 `messages`, and `has_more`. `dnd_until` is numeric Unix seconds for an active
@@ -103,5 +112,11 @@ bounded categories, never the body. Message content cannot resolve approvals.
 The host selects the binding from the authenticated caller's thread, not a
 request-supplied alias. Do not place any thread's identity in a shared provider
 runtime environment. Host-managed provider setup can use the existing
-`C2C_NO_AUTO_REGISTER=1` and `C2C_MCP_AUTO_DRAIN_CHANNEL=0`; the host remains the
-sole mailbox consumer.
+`C2C_NO_AUTO_REGISTER=1`, `C2C_MCP_AUTO_DRAIN_CHANNEL=0`, and
+`C2C_MCP_DISABLED=1` on provider subprocesses. The last flag disables the native
+MCP consumer even if an old provider configuration invokes it under another name.
+Initialize and ping remain protocol-valid; tool/prompt inventories are empty,
+forced tool calls are rejected, and startup registration, replay, room joins,
+schedulers, debug logging and channel notifications are skipped. Standalone MCP
+binaries and `c2c serve`/`c2c mcp` honor it. `c2c host` commands stay enabled.
+This is a per-process host-mode setting; no global installation edit is required.

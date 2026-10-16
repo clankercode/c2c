@@ -12,15 +12,17 @@ let serve_cmd =
     | Some r -> r
     | None -> resolve_broker_root ()
   in
-  C2c_mcp.auto_register_startup ~broker_root:root;
-  C2c_mcp.auto_join_rooms_startup ~broker_root:root;
+  if not (C2c_mcp.mcp_disabled ()) then begin
+    C2c_mcp.auto_register_startup ~broker_root:root;
+    C2c_mcp.auto_join_rooms_startup ~broker_root:root
+  end;
   let open Lwt.Syntax in
-  let auto_drain =
+  let auto_drain = not (C2c_mcp.mcp_disabled ()) && (
     match Sys.getenv_opt "C2C_MCP_AUTO_DRAIN_CHANNEL" with
     | Some v ->
         let n = String.lowercase_ascii (String.trim v) in
         not (List.mem n [ "0"; "false"; "no"; "off" ])
-    | None -> false
+    | None -> false)
   in
   let session_id =
     match Sys.getenv_opt "C2C_MCP_SESSION_ID" with
@@ -78,8 +80,9 @@ let serve_cmd =
             loop ~negotiated_capabilities
         | Ok request ->
             let negotiated_capabilities =
-              C2c_capability.negotiated_in_initialize
-                ~current:negotiated_capabilities request
+              if C2c_mcp.mcp_disabled () then [] else
+                C2c_capability.negotiated_in_initialize
+                  ~current:negotiated_capabilities request
             in
             let channel_capable =
               C2c_capability.has negotiated_capabilities

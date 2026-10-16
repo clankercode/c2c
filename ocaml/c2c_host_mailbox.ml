@@ -179,7 +179,7 @@ let canonical_root ?(create = false) root =
   if create then C2c_io.mkdir_p_durable root;
   Unix.realpath root
 
-let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getppid ()) ?alias ?broker_root () =
+let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getppid ()) ?alias ?broker_root ?expected_broker_root () =
   let session_id, default_alias = identity ~environment_id ~thread_id in
   require_text "owner_id" owner_id;
   if owner_pid <= 0 then reject "invalid_owner_pid";
@@ -198,6 +198,9 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
           C2c_repo_fp.reset_repo_fingerprint_cache ()) (fun () ->
           Unix.chdir workspace; C2c_repo_fp.reset_repo_fingerprint_cache ();
           canonical_root ~create:true (C2c_repo_fp.resolve_broker_root ())) in
+  (match expected_broker_root with
+   | Some expected when canonical_root expected <> root -> reject "workspace_broker_changed"
+   | _ -> ());
   let broker = B.create ~root in
   B.with_registry_lock broker (fun () ->
     recover_transition broker ~environment_id ~thread_id;

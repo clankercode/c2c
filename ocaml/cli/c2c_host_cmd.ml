@@ -106,11 +106,13 @@ let host_mailbox =
       ~doc:"Long-lived owner PID (default: direct parent); start time is verified by the broker.") in
     let alias = Arg.(value & opt (some string) None & info ["alias"] ~doc:"Optional stable alias.") in
     let root = Arg.(value & opt (some string) None & info ["broker-root"] ~doc:"Explicit broker root override.") in
+    let expected_broker_root = Arg.(value & opt (some string) None & info ["expected-broker-root"]
+      ~doc:"Reject a workspace move resolving to a different canonical broker; use on rebind.") in
     let term =
       let+ environment_id = environment_id and+ thread_id = thread_id
-      and+ workspace = workspace and+ owner_id = owner_id and+ owner_pid = owner_pid and+ alias = alias and+ broker_root = root in
+      and+ workspace = workspace and+ owner_id = owner_id and+ owner_pid = owner_pid and+ alias = alias and+ broker_root = root and+ expected_broker_root = expected_broker_root in
       output (fun () -> C2c_host_mailbox.bind ~environment_id ~thread_id ~workspace
-        ~owner_id ~owner_pid ?alias ?broker_root ()) in
+        ~owner_id ~owner_pid ?alias ?broker_root ?expected_broker_root ()) in
     Cmd.v (Cmd.info "bind" ~doc:"Bind a stable host-owned mailbox; JSON response.") term in
   let operation name doc f =
     let term =

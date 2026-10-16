@@ -42,6 +42,54 @@ let local root b ?(ephemeral=false) ?(deferrable=false) content =
     ~content ~ephemeral ~deferrable ()
 let bytes path = C2c_io.read_file path
 
+let test_expected_broker_root () = with_root (fun root ->
+  let with_env values f =
+    let previous = List.map (fun (key,_) -> key,Sys.getenv_opt key) values in
+    Fun.protect ~finally:(fun () ->
+      List.iter (fun (key,value) -> Unix.putenv key (Option.value value ~default:"")) previous;
+      C2c_repo_fp.reset_repo_fingerprint_cache ()) (fun () ->
+        List.iter (fun (key,value) -> Unix.putenv key value) values; f ()) in
+  let repo name origin =
+    let path = Filename.concat root name in Unix.mkdir path 0o700;
+    let git args =
+      let pid = Unix.create_process "git" (Array.of_list (["git";"-C";path] @ args))
+        Unix.stdin Unix.stdout Unix.stderr in
+      check "git fixture succeeds" true (snd (Unix.waitpid [] pid) = Unix.WEXITED 0) in
+    git ["init";"--quiet"]; git ["config";"remote.origin.url";origin]; path in
+  let first = repo "first" "https://example.invalid/shared.git"
+  and same = repo "same-origin" "https://example.invalid/shared.git"
+  and changed = repo "different-origin" "https://example.invalid/different.git" in
+  with_env ["C2C_STATE_HOME",Filename.concat root "state"; "C2C_MCP_BROKER_ROOT","";
+    "XDG_STATE_HOME",""] (fun () ->
+    let bind_workspace ?expected_broker_root workspace =
+      H.bind ~environment_id:"environment" ~thread_id:"thread-one" ~workspace
+        ~owner_id:"server-one" ~owner_pid:(Unix.getpid ()) ?expected_broker_root () |> binding in
+    let initial = bind_workspace first in
+    let broker_root = text initial "broker_root" in
+    local broker_root initial "must survive rejected workspace move";
+    let equivalent = Filename.concat broker_root "." in
+    let moved = bind_workspace ~expected_broker_root:equivalent same in
+    Alcotest.(check string) "same-origin workspace retains broker" broker_root (text moved "broker_root");
+    check "workspace move renews fence" true (generation initial <> generation moved);
+    let registry = Filename.concat broker_root "registry.json" in
+    let state = Filename.concat (Filename.concat broker_root "host-bindings") (sid moved ^ ".json") in
+    let before_registry = bytes registry and before_state = bytes state
+    and before_mail = bytes (text moved "inbox_path") in
+    (match bind_workspace ~expected_broker_root:broker_root changed with
+     | _ -> Alcotest.fail "cross-broker rebind must fail"
+     | exception H.Rejected error ->
+         Alcotest.(check string) "actionable mismatch category" "workspace_broker_changed" error);
+    Alcotest.(check string) "rejection preserves prior registration" before_registry (bytes registry);
+    Alcotest.(check string) "rejection preserves prior binding" before_state (bytes state);
+    Alcotest.(check string) "rejection preserves prior mail" before_mail (bytes (text moved "inbox_path"));
+    let cwd = Sys.getcwd () in
+    let target = Fun.protect ~finally:(fun () -> Unix.chdir cwd; C2c_repo_fp.reset_repo_fingerprint_cache ())
+      (fun () -> Unix.chdir changed; C2c_repo_fp.reset_repo_fingerprint_cache ();
+        C2c_repo_fp.resolve_broker_root ()) in
+    check "rejection creates no target registration" false (Sys.file_exists (Filename.concat target "registry.json"));
+    Alcotest.(check int) "prior fence still reads queued mail" 1
+      (List.length (fields (peek broker_root moved) "messages"))))
+
 let test_identity () =
   let a, al = H.identity ~environment_id:"a:b" ~thread_id:"c" in
   let b, _ = H.identity ~environment_id:"a" ~thread_id:"b:c" in
@@ -519,6 +567,11 @@ let test_cli () = with_root (fun root ->
   check "bind CLI succeeds" true (status = Unix.WEXITED 0);
   Alcotest.(check int) "versioned response" 1 (result |> member "schema_version" |> to_int);
   let b = binding result in
+  with_root (fun other ->
+    let status, result = cli root ("bind" :: base @ ["--workspace";root;"--owner-id";"owner";
+      "--expected-broker-root";other]) in
+    check "CLI rejects expected-root mismatch" false (status = Unix.WEXITED 0);
+    Alcotest.(check string) "CLI root mismatch category" "workspace_broker_changed" (text result "error"));
   let args = base @ ["--generation"; generation b] in
   let status, result = cli root ("peek" :: args) in
   check "peek CLI succeeds" true (status = Unix.WEXITED 0);
@@ -555,6 +608,7 @@ let test_cli () = with_root (fun root ->
 let () = Alcotest.run "host-mailbox" ["transport", List.map (fun (name,f) ->
   Alcotest.test_case name `Quick f) [
   "stable framed identity",test_identity; "lifecycle and fencing",test_lifecycle;
+  "expected broker root guards workspace moves",test_expected_broker_root;
   "selected ack and archive",test_selected_ack; "legacy and relay provenance",test_legacy_and_relay;
   "foreign ownership and corruption",test_conflicts_and_corruption;
   "namespace workspace and DND",test_namespace_workspace_dnd;

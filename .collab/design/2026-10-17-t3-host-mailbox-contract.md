@@ -20,7 +20,7 @@ provider process environment must not carry any particular thread's c2c identity
 Provide one `c2c host` command group with JSON-only stdout, version 1 responses:
 
 ```
-c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P]
+c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P] [--expected-broker-root B]
 c2c host peek --environment-id E --thread-id T --broker-root B --generation G [--limit N]
 c2c host send --environment-id E --thread-id T --broker-root B --generation G --to A --content BODY
 c2c host ack --environment-id E --thread-id T --broker-root B --generation G --message-id M [--message-id M2]
@@ -42,6 +42,15 @@ the binding or registry. Strict file and directory fsync barriers enforce
 journal → binding → registry → journal removal ordering. A subsequent bind recovers interrupted publication using
 only those exact owned rows (or absence); conflicting rows fail closed. Other host
 operations reject a pending transition until bind reconciles it.
+
+For rebind, pass the saved `binding.broker_root` as `--expected-broker-root`.
+The resolved target and expected root are compared as canonical paths before
+any registry mutation. A different target returns `workspace_broker_changed`,
+preserving the prior binding, registration and queued mail. Same-origin worktree
+moves are supported; cross-broker migration is unsupported in v1. Resume from
+the prior workspace to accept its mail, or create a new logical thread for the
+new repository. Do not force the old root with `--broker-root` to conceal a
+workspace mismatch. Fresh binds omit the expected-root precondition.
 
 Peek returns `{schema_version:1,binding:...,dnd:boolean,dnd_until:number|null,messages:[...],has_more:boolean}`.
 `--limit` defaults to 64 and accepts 1..64. The serialized `messages` array is also
@@ -99,8 +108,11 @@ the external process boundary. No live T3 database, runtime or auth file mutatio
 Opt-in is explicit. A server configuration flag enables host-managed c2c mode;
 disabled mode preserves the current native-provider setup. In enabled mode every
 T3-owned provider process is uniformly stripped of inherited c2c identity variables,
-gets `C2C_NO_AUTO_REGISTER=1` and `C2C_MCP_AUTO_DRAIN_CHANNEL=0`, and cannot run a second
-c2c MCP consumer. Per-thread bindings and mute/disable are then T3-owned. Enabling
+gets `C2C_NO_AUTO_REGISTER=1`, `C2C_MCP_AUTO_DRAIN_CHANNEL=0`, and
+`C2C_MCP_DISABLED=1`. The last flag keeps native MCP protocol-valid (initialize/ping)
+but advertises no tools, refuses direct tools/call, and skips bootstrap, replay,
+room joins, schedulers and channel delivery. It applies to any inherited c2c MCP
+server name/configuration; CLI host operations remain enabled. Per-thread bindings and mute/disable are then T3-owned. Enabling
 mode requires normal server/provider restart; do not rewrite active process state.
 
 Expose configure/status/send through caller-bound T3 tools or a small existing CLI

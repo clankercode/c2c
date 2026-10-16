@@ -4,7 +4,7 @@ exception Rejected of string
 val identity : environment_id:string -> thread_id:string -> string * string
 val response : (string * Yojson.Safe.t) list -> Yojson.Safe.t
 val bind : environment_id:string -> thread_id:string -> workspace:string ->
-  owner_id:string -> ?owner_pid:int -> ?alias:string -> ?broker_root:string -> unit -> Yojson.Safe.t
+  owner_id:string -> ?owner_pid:int -> ?alias:string -> ?broker_root:string -> ?expected_broker_root:string -> unit -> Yojson.Safe.t
 val peek : ?limit:int -> environment_id:string -> thread_id:string -> broker_root:string ->
   generation:string -> unit -> Yojson.Safe.t
 val send : environment_id:string -> thread_id:string -> broker_root:string ->
