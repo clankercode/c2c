@@ -864,7 +864,7 @@ let test_b014_inbox_row_json_render () =
   let mk pow_difficulty =
     { C2c_mcp_helpers.from_alias = "s"; to_alias = "r"; content = "c"; deferrable = false;
       reply_via = None; enc_status = None; ts = 1.0; ephemeral = false;
-      message_id = Some "m1"; pow_difficulty }
+      message_id = Some "m1"; pow_difficulty; source = C2c_mcp_helpers.Unknown }
   in
   let row m = C2c_inbox_handlers.inbox_row_json ~m ~content:"c"
       ~delivery_state:C2c_schema_v1.Delivered ~enc_status:None in

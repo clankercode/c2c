@@ -30,7 +30,9 @@ never the liveness owner and a reused PID cannot revive the registration.
 
 Length-framed, domain-separated SHA-256 creates the session `host-<digest>` and
 default alias `<digest>` (all 64 lowercase hexadecimal characters). External IDs never become path
-components. `O` identifies the current application server incarnation.
+components. `O` is an opaque application-server incarnation ID (T3 generates a
+UUID). c2c accepts nonblank IDs up to 4096 bytes, without NUL, and applies the
+same bounds when loading persisted state and transitions. It imposes no UUID grammar.
 
 Bind returns a `binding` object with `environment_id`, `thread_id`, `session_id`,
 `alias`, `workspace`, `broker_root`, `inbox_path`, opaque `generation`,
@@ -81,7 +83,9 @@ Every operation requires the current generation and exact owned registration.
 Stale generations cannot peek, acknowledge, or unbind. Unbind removes only the
 owned registration and keeps messages plus the binding identity for reactivation.
 A durable transition record names the exact old and new ownership before the
-binding or registry changes. A subsequent bind completes an interrupted first
+binding or registry changes. Strict file and directory fsync barriers enforce
+journal → binding → registry → journal removal ordering, including newly created
+directories. A durability failure is reported rather than treated as success. A subsequent bind completes an interrupted first
 bind, renewal, or unbind, accepting only the exact recorded old/new registration
 or its absence. It never adopts a conflicting row. Other host operations return
 `binding_transition_pending` until bind completes that recovery. Preserve the

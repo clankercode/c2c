@@ -3687,7 +3687,7 @@ open C2c_mcp_helpers
      archive-before-clear invariant as drain_inbox: matching non-ephemeral
      messages are appended to the archive BEFORE the inbox is rewritten, all
      under the per-inbox lock. *)
-  let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) t ~session_id ~pred =
+  let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) ?(durable = false) t ~session_id ~pred =
     with_inbox_lock t ~session_id (fun () ->
         let messages = load_inbox ~strict t ~session_id in
         let matching, rest = List.partition pred messages in
@@ -3699,7 +3699,12 @@ open C2c_mcp_helpers
              (match to_archive with
               | [] -> ()
               | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
-             save_inbox t ~session_id rest);
+             if durable && to_archive <> [] then begin
+               C2c_io.fsync_file_and_parent (archive_path t ~session_id);
+               C2c_io.fsync_path t.root
+             end;
+             save_inbox t ~session_id rest;
+             if durable then C2c_io.fsync_file_and_parent (inbox_path t ~session_id));
         matching)
 
   type sweep_result =

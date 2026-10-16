@@ -67,8 +67,9 @@ let stored_of_json broker ~environment_id ~thread_id json =
      || not (C2c_name.is_valid binding.alias) || binding.generation = ""
      || binding.owner_pid <= 0
   then reject "invalid_binding";
-  { binding; owner_id = json |> member "owner_id" |> to_string;
-    active = json |> member "active" |> to_bool }
+  let owner_id = json |> member "owner_id" |> to_string in
+  require_text "owner_id" owner_id;
+  { binding; owner_id; active = json |> member "active" |> to_bool }
 
 let read_state broker ~environment_id ~thread_id =
   let session_id, _ = identity ~environment_id ~thread_id in
@@ -78,10 +79,13 @@ let read_state broker ~environment_id ~thread_id =
     (Yojson.Safe.from_string (C2c_io.read_file file_path)))
   with Rejected _ as e -> raise e | _ -> reject "invalid_binding"
 
+let write_durable_json path json =
+  C2c_io.mkdir_p_durable (Filename.dirname path);
+  B.write_json_file path json;
+  C2c_io.fsync_file_and_parent path
+
 let write_state broker state =
-  let path = state_path broker state.binding.session_id in
-  C2c_io.mkdir_p (Filename.dirname path);
-  B.write_json_file path (stored_to_json state)
+  write_durable_json (state_path broker state.binding.session_id) (stored_to_json state)
 
 let registration_matches (r : registration) b =
   r.session_id = b.session_id && r.alias = b.alias
@@ -149,7 +153,10 @@ let finish_transition broker transition regs =
   let next = if target.active then
       registration_for_binding current target.binding :: others else others in
   B.save_registrations broker next;
-  Unix.unlink (transition_path broker target.binding.session_id)
+  C2c_io.fsync_file_and_parent (B.registry_path broker);
+  let journal = transition_path broker target.binding.session_id in
+  Unix.unlink journal;
+  C2c_io.fsync_path (Filename.dirname journal)
 
 let recover_transition broker ~environment_id ~thread_id =
   match read_transition broker ~environment_id ~thread_id with
@@ -162,15 +169,14 @@ let recover_transition broker ~environment_id ~thread_id =
 
 let publish_transition broker ~before ~after regs =
   let path = transition_path broker after.binding.session_id in
-  C2c_io.mkdir_p (Filename.dirname path);
-  B.write_json_file path (response [
+  write_durable_json path (response [
     "before", (match before with None -> `Null | Some state -> stored_to_json state);
     "after", stored_to_json after]);
   finish_transition broker { before; after } regs
 
-let canonical_root root =
+let canonical_root ?(create = false) root =
   require_text "broker_root" root;
-  C2c_io.mkdir_p root;
+  if create then C2c_io.mkdir_p_durable root;
   Unix.realpath root
 
 let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getppid ()) ?alias ?broker_root () =
@@ -185,13 +191,13 @@ let bind ~environment_id ~thread_id ~workspace ~owner_id ?(owner_pid = Unix.getp
   (* Resolve repo identity from the requested workspace, never the T3 server's
      cwd or a memoized fingerprint of another thread. Restore both on exit. *)
   let root = match broker_root with
-    | Some root -> canonical_root root
+    | Some root -> canonical_root ~create:true root
     | None ->
         let cwd = Sys.getcwd () in
         Fun.protect ~finally:(fun () -> Unix.chdir cwd;
           C2c_repo_fp.reset_repo_fingerprint_cache ()) (fun () ->
           Unix.chdir workspace; C2c_repo_fp.reset_repo_fingerprint_cache ();
-          canonical_root (C2c_repo_fp.resolve_broker_root ())) in
+          canonical_root ~create:true (C2c_repo_fp.resolve_broker_root ())) in
   let broker = B.create ~root in
   B.with_registry_lock broker (fun () ->
     recover_transition broker ~environment_id ~thread_id;
@@ -286,6 +292,8 @@ let peek ?(limit = max_page_messages) ~environment_id ~thread_id ~broker_root ~g
       let r = require_active state registration in
       let messages = B.read_inbox ~assign_ids:true ~strict:true broker
         ~session_id:state.binding.session_id in
+      if Sys.file_exists state.binding.inbox_path then
+        C2c_io.fsync_file_and_parent state.binding.inbox_path;
       let messages, has_more = message_page ~limit messages in
       let dnd = r.dnd && (match r.dnd_until with
         | None -> true | Some until -> Unix.gettimeofday () < until) in
@@ -301,8 +309,12 @@ let send ~environment_id ~thread_id ~broker_root ~generation ~to_alias ~content 
     (fun broker state _ registration ->
       ignore (require_active state registration);
       (try
-        ignore (B.enqueue_message_with_result_locked ~allow_pending_verdict:false broker
-          ~from_alias:state.binding.alias ~to_alias ~content ())
+        let result = B.enqueue_message_with_result_locked ~allow_pending_verdict:false broker
+          ~from_alias:state.binding.alias ~to_alias ~content () in
+        let path = match result with
+          | B.Local_live {session_id} | B.Local_offline {session_id} -> B.inbox_path broker ~session_id
+          | B.Relay_outbox -> C2c_relay_connector.outbox_path (B.root broker) in
+        C2c_io.fsync_file_and_parent path
        with Invalid_argument _ -> reject "invalid_recipient");
       response ["binding", binding_to_json state.binding; "queued", `Bool true])
 
@@ -316,7 +328,7 @@ let ack ~environment_id ~thread_id ~broker_root ~generation ~message_ids =
   with_binding ~environment_id ~thread_id ~broker_root ~generation
     (fun broker state _ registration ->
       ignore (require_active state registration);
-      let removed = B.drain_inbox_matching ~strict:true ~drained_by:"host-ack" broker
+      let removed = B.drain_inbox_matching ~strict:true ~durable:true ~drained_by:"host-ack" broker
         ~session_id:state.binding.session_id ~pred:(fun m ->
           match m.message_id with Some id -> Hashtbl.mem selected id | None -> false) in
       response ["binding", binding_to_json state.binding;

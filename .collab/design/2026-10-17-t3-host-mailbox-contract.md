@@ -28,7 +28,7 @@ c2c host unbind --environment-id E --thread-id T --broker-root B --generation G
 ```
 
 Bind returns `{schema_version:1,binding:{environment_id,thread_id,session_id,alias,
-workspace,broker_root,inbox_path,generation}}`. Owner ID is a T3-server incarnation;
+workspace,broker_root,inbox_path,generation}}`. Owner ID is an opaque T3-server incarnation identifier (T3 generates a UUID);
 repeat bind by the same owner is idempotent. T3 passes its long-lived server PID
 with `--owner-pid`; the broker verifies/stores the process start time. If omitted,
 the CLI uses its direct parent, never the short-lived CLI PID. Bindings additionally
@@ -38,7 +38,8 @@ foreign registration conflicts. Unbind removes only its own registration, retain
 the inbox and binding identity for later reactivation. Test fixtures may use an
 explicit broker root. Same-origin git worktrees normally resolve to the same broker.
 A durable transition records the exact prior and next ownership before publishing
-the binding or registry. A subsequent bind recovers interrupted publication using
+the binding or registry. Strict file and directory fsync barriers enforce
+journal → binding → registry → journal removal ordering. A subsequent bind recovers interrupted publication using
 only those exact owned rows (or absence); conflicting rows fail closed. Other host
 operations reject a pending transition until bind reconciles it.
 

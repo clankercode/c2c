@@ -586,7 +586,7 @@ module Broker : sig
   val drain_inbox : ?drained_by:string -> t -> session_id:string -> message list
   val drain_inbox_push : ?drained_by:string -> t -> session_id:string -> message list
   val drain_inbox_matching :
-    ?drained_by:string -> ?strict:bool -> t -> session_id:string -> pred:(message -> bool) -> message list
+    ?drained_by:string -> ?strict:bool -> ?durable:bool -> t -> session_id:string -> pred:(message -> bool) -> message list
   (** Like [drain_inbox] but drains only messages satisfying [pred];
       non-matching messages remain in the live inbox for later polls.
       Matching non-ephemeral messages are archived before the inbox is

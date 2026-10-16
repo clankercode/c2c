@@ -28,6 +28,30 @@ let rec mkdir_p ?(mode = 0o755) dir =
     try Unix.mkdir dir mode with Unix.Unix_error (Unix.EEXIST, _, _) -> ()
   end
 
+(* Strict durability primitives. Directory fsync is required after rename or
+   unlink; file fsync alone does not commit the directory entry on power loss. *)
+let fsync_for_test = ref None
+let set_fsync_for_test hook = fsync_for_test := hook
+
+let fsync_path path =
+  let fd = Unix.openfile path [Unix.O_RDONLY] 0 in
+  Fun.protect ~finally:(fun () -> try Unix.close fd with _ -> ()) (fun () ->
+    match !fsync_for_test with
+    | None -> Unix.fsync fd
+    | Some sync -> sync path fd)
+
+let fsync_file_and_parent path =
+  fsync_path path;
+  fsync_path (Filename.dirname path)
+
+let rec mkdir_p_durable ?(mode = 0o755) dir =
+  if dir <> "" && dir <> "/" && dir <> "." then begin
+    let parent = Filename.dirname dir in
+    mkdir_p_durable ~mode parent;
+    mkdir_p ~mode dir;
+    fsync_path parent
+  end
+
 (** [mkdir_p_dryrun dry_run dir] is [mkdir_p dir] with dry-run semantics:
     prints a message instead of creating the directory when [dry_run] is true.
     The single canonical dry-run wrapper for the OCaml tree. #400b / #396. *)

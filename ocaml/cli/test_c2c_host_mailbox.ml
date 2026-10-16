@@ -285,6 +285,78 @@ let test_unbind_crash_recovery () = with_root (fun root ->
   Alcotest.(check int) "unbind interruption retained pending mail" 1
     (List.length (fields (peek root recovered) "messages")))
 
+let test_durable_publication_order () = with_root (fun root ->
+  let b = bind root in
+  let state_path = Filename.concat (Filename.concat root "host-bindings") (sid b ^ ".json") in
+  let journal = state_path ^ ".pending" in
+  let registry = Filename.concat root "registry.json" in
+  let events = ref [] in
+  let seen_registry = ref false in
+  C2c_io.set_fsync_for_test (Some (fun path fd ->
+    Unix.fsync fd;
+    if path = journal then events := !events @ ["wal"];
+    if path = Filename.dirname journal && Sys.file_exists journal then
+      events := !events @ ["wal-directory"];
+    if path = state_path then events := !events @ ["state"];
+    if path = registry then begin events := !events @ ["registry"]; seen_registry := true end;
+    if !seen_registry && path = Filename.dirname journal && not (Sys.file_exists journal) then
+      events := !events @ ["removed-directory"]));
+  Fun.protect ~finally:(fun () -> C2c_io.set_fsync_for_test None) (fun () ->
+    ignore (bind ~owner_id:"server-two" root));
+  let rec ordered expected actual = match expected,actual with
+    | [],_ -> true | _,[] -> false
+    | x::xs,y::ys -> if x=y then ordered xs ys else ordered expected ys in
+  check "WAL and directories committed before state/registry/removal" true
+    (ordered ["wal";"wal-directory";"state";"wal-directory";"registry";"removed-directory"] !events);
+  let before_state = bytes state_path and before_registry = bytes registry in
+  let saw_wal = ref false in
+  C2c_io.set_fsync_for_test (Some (fun path fd ->
+    if path = journal then saw_wal := true;
+    if !saw_wal && path = Filename.dirname journal then raise (Unix.Unix_error (Unix.EIO,"fsync",path));
+    Unix.fsync fd));
+  let failed = Fun.protect ~finally:(fun () -> C2c_io.set_fsync_for_test None) (fun () ->
+    try ignore (bind ~owner_id:"new-server" root); false
+    with Unix.Unix_error (Unix.EIO,_,_) -> true) in
+  check "directory fsync failure propagates" true failed;
+  Alcotest.(check string) "no state publication before durable WAL" before_state (bytes state_path);
+  Alcotest.(check string) "no registry publication before durable WAL" before_registry (bytes registry);
+  ignore (bind ~owner_id:"new-server" root);
+  check "retry completes after fsync restored" false (Sys.file_exists journal))
+
+let test_ack_durability_failure () = with_root (fun root ->
+  let b = bind root in local root b "retain until archive is durable";
+  let id = text (List.hd (fields (peek root b) "messages")) "message_id" in
+  let before = bytes (text b "inbox_path") in
+  let archive = Filename.concat (Filename.concat root "archive") (sid b ^ ".jsonl") in
+  C2c_io.set_fsync_for_test (Some (fun path fd ->
+    if path=archive then raise (Unix.Unix_error (Unix.EIO,"fsync",path));
+    Unix.fsync fd));
+  let failed = Fun.protect ~finally:(fun () -> C2c_io.set_fsync_for_test None) (fun () ->
+    try ignore (ack root b [id]); false with Unix.Unix_error (Unix.EIO,_,_) -> true) in
+  check "archive durability failure propagated" true failed;
+  Alcotest.(check string) "durability failure preserves inbox" before (bytes (text b "inbox_path"));
+  ignore (ack root b [id]);
+  Alcotest.(check int) "ack succeeds after filesystem recovery" 0 (List.length (fields (peek root b) "messages")))
+
+let test_owner_id_validation () = with_root (fun root ->
+  List.iter (fun owner_id -> rejects (fun () -> bind ~owner_id root))
+    ["";" ";String.make 4097 'x';"bad\000id"];
+  let b = bind root in
+  let state_path = Filename.concat (Filename.concat root "host-bindings") (sid b ^ ".json") in
+  let original = Yojson.Safe.from_string (bytes state_path) in
+  let invalid = match original with
+    | `Assoc pairs -> `Assoc (("owner_id", `String "") :: List.remove_assoc "owner_id" pairs)
+    | _ -> assert false in
+  B.write_json_file state_path invalid;
+  rejects (fun () -> bind root);
+  B.write_json_file state_path original;
+  B.write_json_file (state_path ^ ".pending") (`Assoc ["schema_version", `Int 1;
+    "before", original; "after", invalid]);
+  let before = bytes (Filename.concat root "registry.json") in
+  rejects (fun () -> bind root);
+  Alcotest.(check string) "malformed transition owner never touches registry" before
+    (bytes (Filename.concat root "registry.json")))
+
 let test_archive_failure () = with_root (fun root ->
   let b = bind root in local root b "must-survive";
   let id = text (List.hd (fields (peek root b) "messages")) "message_id" in
@@ -486,7 +558,8 @@ let () = Alcotest.run "host-mailbox" ["transport", List.map (fun (name,f) ->
   "selected ack and archive",test_selected_ack; "legacy and relay provenance",test_legacy_and_relay;
   "foreign ownership and corruption",test_conflicts_and_corruption;
   "namespace workspace and DND",test_namespace_workspace_dnd;
-  "owner PID lifecycle",test_owner_liveness; "first-bind and renewal crash recovery",test_crash_recovery;
+  "owner PID lifecycle",test_owner_liveness; "durable publication order",test_durable_publication_order;
+  "opaque owner ID validation",test_owner_id_validation; "ack durability failure",test_ack_durability_failure; "first-bind and renewal crash recovery",test_crash_recovery;
   "recovery rejects foreign ownership",test_recovery_rejects_foreign; "unbind crash recovery",test_unbind_crash_recovery; "archive failure",test_archive_failure; "concurrent arrivals",test_concurrent_arrival; "real CLI JSON contract",test_cli;
   "encoded-byte bounded backlog",test_paged_backlog; "oversized metadata",test_oversized_metadata;
   "page count and invalid limits",test_page_count_limit; "fenced send and DATA",test_fenced_send]]
