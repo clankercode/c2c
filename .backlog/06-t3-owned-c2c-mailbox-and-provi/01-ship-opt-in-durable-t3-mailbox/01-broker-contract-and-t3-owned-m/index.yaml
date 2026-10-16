@@ -10,7 +10,7 @@ stats:
     in_progress: 0
     pending: 2
     total: 3
-status: pending
+status: done
 tasks:
     - complexity: high
       depends_on: []
@@ -29,7 +29,7 @@ tasks:
       file: T002-implement-c2c-host-binding-and.todo
       id: T002
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Implement c2c host binding and selected-message ack transport
     - complexity: high

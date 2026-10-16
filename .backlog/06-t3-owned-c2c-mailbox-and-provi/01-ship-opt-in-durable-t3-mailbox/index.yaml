@@ -9,7 +9,7 @@ epics:
       locked: false
       name: Broker contract and T3-owned mailbox foundation
       path: 01-broker-contract-and-t3-owned-m
-      status: pending
+      status: done
     - complexity: high
       depends_on: []
       description: ""
