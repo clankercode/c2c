@@ -19,3 +19,5 @@ Fix exact-limit has_more semantics, align alias grammar between c2c and T3, reje
 Decision (2026-10-17): oversized-body allocation is not a transport bug. c2c builds the broker AST but strips content before the only page serialization; retain the metadata-only contract and tests, but do not add a speculative body-allocation refactor.
 
 Review decision (2026-10-17): c2c-side changes PASS independently at 2fbfa6ae. T3 counterpart remains serialized until remote-routing compatibility review and fix land.
+
+Cross-repo review finding (2026-10-17): first T3 attempt 2513662c over-constrained wire from/to aliases and rejected alias@remote targets. It is not mergeable; a corrective T3 round is active to separate binding aliases, routing addresses, and send targets while keeping NUL rejection.
