@@ -6,8 +6,8 @@ locked: false
 name: Broker contract and T3-owned mailbox foundation
 stats:
     blocked: 0
-    done: 0
-    in_progress: 1
+    done: 1
+    in_progress: 0
     pending: 2
     total: 3
 status: pending
@@ -28,7 +28,8 @@ tasks:
       file: T002-implement-c2c-host-binding-and.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Implement c2c host binding and selected-message ack transport
     - complexity: high
       depends_on:
@@ -37,5 +38,6 @@ tasks:
       file: T003-implement-durable-t3-mailbox-a.todo
       id: T003
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Implement durable T3 mailbox and c2c bridge

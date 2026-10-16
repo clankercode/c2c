@@ -1,11 +1,8 @@
 critical_path:
-    - P6.M1.E1.T001
-    - P6.M1.E1.T002
-    - P6.M1.E2.T002
-    - P6.M1.E2.T003
-    - P6.M1.E2.T004
+    - I008
+    - I003
 description: ""
-next_available: B008
+next_available: P6.M1.E1.T002
 phases:
     - depends_on: []
       description: Canonical managed remote-TUI delivery architecture that preserves the operator composer; local messages may wake the recipient and start an agent turn under its delivery policy, but message content can never satisfy an approval or write an approval verdict.
@@ -70,8 +67,8 @@ phases:
 project: c2c
 stats:
     blocked: 0
-    done: 401
-    in_progress: 2
+    done: 402
+    in_progress: 1
     pending: 17
     total_tasks: 423
 timeline_weeks: 0

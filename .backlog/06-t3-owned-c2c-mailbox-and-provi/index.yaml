@@ -16,8 +16,8 @@ milestones:
 name: T3-owned c2c mailbox and provider adapter support
 stats:
     blocked: 0
-    done: 0
-    in_progress: 1
+    done: 1
+    in_progress: 0
     pending: 6
     total_tasks: 7
 status: pending

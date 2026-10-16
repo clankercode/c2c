@@ -25,8 +25,8 @@ locked: false
 name: Ship opt-in durable T3 mailbox with Codex DATA wake
 stats:
     blocked: 0
-    done: 0
-    in_progress: 1
+    done: 1
+    in_progress: 0
     pending: 6
     total_tasks: 7
 status: pending
