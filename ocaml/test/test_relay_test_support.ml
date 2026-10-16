@@ -533,6 +533,18 @@ let h9_good_row =
       ("message_id", `String "m-h9-good") ]
 
 let test_connector_poll_garbage_rows_dropped () =
+  let payload_fields =
+    match h9_good_row with
+    | `Assoc fields ->
+        fields @ [ ("ephemeral", `Bool true); ("deferrable", `Bool true) ]
+    | _ -> assert false
+  in
+  (* Wire-supplied provenance cannot establish local origin, including when
+     a sender supplies duplicate keys. Every other field must survive. *)
+  let incoming_row =
+    `Assoc (("source", `String "local") :: ("source", `String "unknown")
+            :: payload_fields)
+  in
   let poll_body =
     Yojson.Safe.to_string
       (`Assoc
@@ -540,7 +552,7 @@ let test_connector_poll_garbage_rows_dropped () =
           ("messages",
            `List
              [ `Assoc [ ("bogus", `Int 1) ] (* no required key at all *);
-               h9_good_row;
+               incoming_row;
                `Assoc
                  [ ("from_alias", `Int 7) (* wrong-typed sender *);
                    ("to_alias", `String sm_alias);
@@ -614,9 +626,13 @@ let test_connector_poll_garbage_rows_dropped () =
           check bool "inbox file written for the valid row" true
             (Sys.file_exists inbox_path);
           (match Yojson.Safe.from_file inbox_path with
-           | `List [ row; _alert ] ->
-               check bool "inbox contains the valid row verbatim" true
-                 (row = h9_good_row)
+           | `List [ `Assoc fields; _alert ] ->
+               check bool "inbox preserves every non-provenance field" true
+                 (List.filter (fun (key, _) -> key <> "source") fields = payload_fields);
+               check bool "ingress replaces all source claims with remote" true
+                 (List.filter_map (fun (key, value) ->
+                    if key = "source" then Some value else None) fields
+                  = [ `String "remote" ])
            | other ->
                fail
                  ("inbox must hold the valid row plus the alert, got: "
@@ -629,6 +645,10 @@ let test_connector_poll_garbage_rows_dropped () =
           | [ msg; alert ] ->
               check string "broker parses the delivered row" "valid-row"
                 msg.C2c_mcp.content;
+              check bool "broker preserves verified remote provenance" true
+                (msg.C2c_mcp.source = C2c_mcp.Remote);
+              check bool "broker preserves ephemeral flag" true msg.C2c_mcp.ephemeral;
+              check bool "broker preserves deferrable flag" true msg.C2c_mcp.deferrable;
               (* The whole point of routing this through the alert machinery:
                  an agent reading its inbox learns the relay destroyed mail
                  addressed to it, without having to poll a counter. *)
