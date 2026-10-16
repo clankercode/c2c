@@ -18,7 +18,7 @@ epics:
       locked: false
       name: Harden c2c host transport ownership and schema
       path: 02-harden-c2c-host-transport-owne
-      status: pending
+      status: done
 estimate_hours: 24
 id: P7.M1
 locked: false

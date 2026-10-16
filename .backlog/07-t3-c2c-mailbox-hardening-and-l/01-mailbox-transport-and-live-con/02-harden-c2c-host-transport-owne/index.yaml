@@ -10,7 +10,7 @@ stats:
     in_progress: 1
     pending: 0
     total: 2
-status: pending
+status: done
 tasks:
     - complexity: high
       depends_on: []
@@ -27,6 +27,6 @@ tasks:
       file: T002-close-host-transport-schema-an.todo
       id: T002
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Close host transport schema and paging edge cases
