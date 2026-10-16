@@ -15,3 +15,5 @@ title: Guard raw c2c consumers when T3 owns the mailbox
 updated_at: "2026-10-16T20:51:30Z"
 ---
 When C2C_HOST_OWNED_MAILBOX or equivalent T3 host mode is active, fail closed for raw poll-inbox, wait-inbox, monitor, deliver, and related drains while preserving c2c host transport. Add regressions proving provider/native children cannot consume the broker ahead of T3 acceptance.
+
+Decision: enforce host-owned mailbox protection at each raw consumer entrypoint (poll/wait/peek, monitor, deliver watch/wake-watch, OpenCode spool drain, and standalone deliver-inbox) using one process-scoped predicate. Guard before alias/session resolution so explicit --alias cannot bypass it; leave c2c host bind/peek/send/ack/unbind outside the guard for T3 transport. Reuse C2C_NO_AUTO_REGISTER=1 as the legacy child opt-out.
