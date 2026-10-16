@@ -32,6 +32,7 @@ tasks:
       id: T002
       priority: high
       status: pending
+      tags: []
       title: Wire mailbox delivery and eligible Codex wake into T3 lifecycle
     - complexity: high
       depends_on:

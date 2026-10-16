@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-10-16T13:24:04Z"
 depends_on:
@@ -8,12 +9,12 @@ depends_on:
 estimate_hours: 4
 id: P6.M1.E2.T002
 priority: high
+started_at: null
 status: pending
-tags:
-    - t3
-    - c2c
-    - maintainability
+tags: []
 title: Wire mailbox delivery and eligible Codex wake into T3 lifecycle
 updated_at: "2026-10-16T13:24:04Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. Integrate T3 run scheduler and mailbox. Stable identity across resume/restart/unload; exact routing on same-workspace threads and native/T3 children; at most one batched local-only eligible wake; DND, snooze, stop, archive/delete and pending approvals respected. Keep raw peer payload away from user-message and approval APIs. Bind/unbind event watcher with lifecycle; recover safely after crashes.
+
+Implementation decision: C2cService depends on ThreadManagement; Orchestrator and ProviderTurnStartService depend only on low-level C2cMailbox to avoid cycles. A shared ThreadCommandExecutor lock must cover last-moment claim/lifecycle validation AND provider submission. A boolean precheck alone leaves a Stop race. Rejected prepared runs need conditional cancellation so they cannot remain phantom-running. Timed DND and snooze need deadline-driven reconciliation; broker and projection events drive other wakeups. Peer payload stays solely in run.peerData, with a system timeline marker and host-owned sender/messageId metadata; ordinary dispatch must not clear snooze/settled/Stop holds.
