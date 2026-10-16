@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-16T19:30:03Z"
+claimed_by: codex-rim-tube-p6xb
 completed_at: null
 complexity: high
 created_at: "2026-10-16T13:24:04Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 4
 id: P6.M1.E2.T004
 priority: high
-started_at: null
-status: pending
+started_at: "2026-10-16T19:30:03Z"
+status: in_progress
 tags: []
 title: Prove end-to-end delivery and land reviewed cross-repo integration
-updated_at: "2026-10-16T13:24:04Z"
+updated_at: "2026-10-16T19:30:03Z"
 ---
 Research: .collab/research/2026-10-16-t3-code-c2c-support.md and live receipt JSON. Quality: preserve existing codebase architecture; small typed interfaces; meaningful regression and failure tests; no mock-only delivery claims; no whole-tree refactor; independent review/fix loop before merge. Decisions and evidence must be appended through bl. Run repository gates and independent review/fix until meaningful issues resolved. Live isolated T3/Codex tests: active DATA, idle mail-only wake, same-dir distinct threads, native-child isolation, restart recovery, DND/stop, malicious body inertness, ephemeral/deferrable and unsupported adapters. Save exact versions and receipts. Merge local worktrees to canonical branches only after checks, mark each task done after its merge, install only with safe validated path. No c2c production push absent deploy reason.
 
