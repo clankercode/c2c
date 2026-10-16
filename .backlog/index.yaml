@@ -77,8 +77,8 @@ phases:
 project: c2c
 stats:
     blocked: 0
-    done: 411
+    done: 412
     in_progress: 2
-    pending: 13
+    pending: 12
     total_tasks: 429
 timeline_weeks: 0

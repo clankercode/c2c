@@ -6,9 +6,9 @@ locked: false
 name: Harden T3 mailbox bridge and prove lifecycle matrix
 stats:
     blocked: 0
-    done: 0
+    done: 1
     in_progress: 1
-    pending: 1
+    pending: 0
     total: 2
 status: pending
 tasks:
@@ -30,6 +30,6 @@ tasks:
       file: T002-extend-the-isolated-live-verif.todo
       id: T002
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Extend the isolated live verifier to the remaining c2c lifecycle matrix
