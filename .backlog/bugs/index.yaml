@@ -363,3 +363,4 @@ bugs:
     - file: B364-codex-app-server-delivery-shou.todo
     - file: B365-adopt-a-live-vanilla-codex-ses.todo
     - file: B366-adopt-vanilla-codex-sessions-w.todo
+    - file: B367-relay-supervisor-waitpid-eintr.todo
