@@ -25,3 +25,5 @@ Decision: retry only EINTR at every waitpid in the relay supervisor; preserve EC
 - Notes: Coordinator claim identity correction; implementation remains in existing B367 worktree.
 
 Independent native review R2 PASS after closing Stop during backoff and the fork/publication window. TERM/INT are blocked until PID generation publication; child resets inherited handlers before unmasking; parent mask restored in finally. Added real Stop-during-crash-backoff test. Requested Terra routes failed authentication before any code review; fallback independent reviewer used the working native harness. Current revised overlay cffccddb atop host3626221f; focused31-case test pending. Prior first revision30-case pass and3x5-case repeats are retained as superseded evidence, not final proof.
+
+Merged locally with host transport after independent native R2 PASS and x-p35 validation: relay31/31 plus3x6 focused repeats; final combined46dc373f canonical just check and forced repo215suites4291tests all PASS with no nested failure summaries. No push.
