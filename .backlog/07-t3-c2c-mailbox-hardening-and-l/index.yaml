@@ -16,8 +16,8 @@ milestones:
 name: T3 c2c mailbox hardening and live conformance
 stats:
     blocked: 0
-    done: 1
-    in_progress: 2
+    done: 2
+    in_progress: 1
     pending: 1
     total_tasks: 4
 status: pending
