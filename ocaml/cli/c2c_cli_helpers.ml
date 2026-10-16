@@ -61,6 +61,18 @@ let resolve_effective_broker_root ?(explicit_root : string option = None) ~cross
       if cross_repo then Repo_fp.resolve_sessions_broker_root ()
       else resolve_broker_root ()
 
+(* Native providers inherit the host-mode environment, but a stale skill or
+   an explicit shell command can still invoke a raw inbox consumer with an
+   unrelated [--alias].  Keep this check at every CLI consumer boundary;
+   [c2c host] intentionally does not call it because that is the authenticated
+   T3 transport. *)
+let reject_raw_consumer_if_disabled ~(surface : string) : unit =
+  if C2c_mcp.raw_consumers_disabled () then begin
+    Printf.eprintf "error: %s\n%!"
+      (C2c_mcp.raw_consumer_disabled_message ~surface);
+    exit 1
+  end
+
 let broker_root_from_env () =
   match Sys.getenv_opt "C2C_MCP_BROKER_ROOT" with
   | Some path when String.trim path <> "" -> Some path

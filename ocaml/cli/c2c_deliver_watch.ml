@@ -6,6 +6,7 @@
    codex/opencode sessions too. *)
 
 open Cmdliner.Term.Syntax
+open C2c_cli_helpers
 
 let ( // ) = Filename.concat
 
@@ -47,6 +48,7 @@ let watch_loop
     ~(session_id : string)
     ~(interval : float)
     (mode : output_mode) : unit =
+  reject_raw_consumer_if_disabled ~surface:"deliver watch";
   let broker = C2c_mcp.Broker.create ~root:broker_root in
   let iterations = ref 0 in
   let total = ref 0 in
@@ -168,6 +170,7 @@ let deliver_watch_cmd =
       | None -> Stdout
     in
     let interval = match interval_opt with Some f -> f | None -> 1.0 in
+    reject_raw_consumer_if_disabled ~surface:"deliver watch";
     watch_loop ~broker_root ~session_id ~interval mode
   in
   Cmdliner.Cmd.v info term
@@ -262,6 +265,10 @@ let wake_watch_cmd =
     and+ once = once_flag
     and+ max_iterations = max_iterations_flag
     in
+    (* Check ownership before resolving an alias or broker root.  A provider
+       child can pass an arbitrary --alias, so lookup errors must never reveal
+       that this raw consumer reached the broker boundary. *)
+    reject_raw_consumer_if_disabled ~surface:"deliver wake-watch";
     let broker_root =
       match broker_root_opt with
       | Some b when String.trim b <> "" -> String.trim b

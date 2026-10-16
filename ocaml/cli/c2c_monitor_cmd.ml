@@ -295,6 +295,7 @@ let monitor_cmd =
                  $(b,C2C_MONITOR_SELF_STALE_INTERVAL).")
   in
   const (fun broker_root_arg alias_arg all drains sweeps full_body snippet wake_only from_filter json archive live include_self force drain cross_repo no_relay relay_interval relay_node_id relay_session_id register_relay_alias self_stale_exit ->
+    reject_raw_consumer_if_disabled ~surface:"monitor";
     (* Resolve effective flags: --archive and --full-body are now defaults.
        --live reverts to inbox watching; --snippet reverts to 80-char preview. *)
     let full_body = full_body || not snippet in  (* full_body unless --snippet *)

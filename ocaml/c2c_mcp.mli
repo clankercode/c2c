@@ -1113,6 +1113,14 @@ val mcp_disabled : unit -> bool
 (** Explicit process-scoped host ownership opt-out. Disabled MCP advertises no
     tools and rejects calls before bootstrap, registry access, or dispatch. *)
 
+val raw_consumers_disabled : unit -> bool
+(** True when process-scoped host mode or the explicit no-auto-register
+    opt-out must prevent direct broker inbox consumers. Host transport
+    operations intentionally do not use this predicate. *)
+
+val raw_consumer_disabled_message : surface:string -> string
+(** Stable operator-facing explanation for a rejected raw consumer. *)
+
 val handle_tool_call :
   broker:Broker.t ->
   session_id_override:string option ->

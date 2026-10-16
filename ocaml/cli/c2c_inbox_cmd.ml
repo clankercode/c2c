@@ -240,6 +240,7 @@ let default_wait_timeout = "120s"
    hook injection path, via hook-stdin agent_id (C2c_hook_lib.stdin_is_subagent_turn). *)
 let run_poll_inbox ~cmd_name ~wait ~json ~peek ~session_id_opt ~alias_opt
     ~cross_repo ~timeout_opt ~poll_interval_opt ~from_opt =
+  reject_raw_consumer_if_disabled ~surface:cmd_name;
   mcp_nudge_if_needed ~cmd:cmd_name;
   (* Arg errors: exit 2 in wait mode (1 there means "timeout"); keep the
      historical exit 1 for plain poll-inbox so existing callers don't break. *)
@@ -392,6 +393,7 @@ let peek_inbox_cmd =
   and+ session_id_opt = session_id_flag
   and+ alias_opt = alias_flag
   and+ cross_repo = cross_repo_flag in
+  reject_raw_consumer_if_disabled ~surface:"peek-inbox";
   mcp_nudge_if_needed ~cmd:"peek-inbox";
   (match session_id_opt, alias_opt with
    | Some _, Some _ -> Printf.eprintf "error: --session-id and --alias are mutually exclusive.\n%!"; exit 1
