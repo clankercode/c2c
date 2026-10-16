@@ -1,6 +1,6 @@
 ---
-claimed_at: "2026-10-16T14:24:42Z"
-claimed_by: cli-user
+claimed_at: "2026-10-16T14:26:44Z"
+claimed_by: codex-poplar-waffle-m0fg
 completed_at: null
 complexity: medium
 created_at: "2026-10-16T14:24:39Z"
@@ -17,3 +17,11 @@ updated_at: "2026-10-16T14:24:42Z"
 Discovered during forced P6.M1 host validation on exact source3626221f: test_c2c_relay_managed child in B298 cap-crossing case raises Unix_error(EINTR,waitpid) at ocaml/cli/c2c_relay_managed.ml403. Parent suite still exits0, yielding nested failure and duplicate suite/test counts. Required: interrupt-safe child waits in relay supervisor; deterministic signal regression; forked supervisor test failures must terminate child without re-entering Alcotest and be asserted by parent. Preserve signal shutdown/restart semantics and PID-generation ownership. Critical validation blocker for T3 host slice. Reproduce/log from x-p35 /tmp/t3-c2c-validation-deps/c2c-final-realroot-runtest.log (confirm actual final filename from validation_env). Keep fix narrow, separate worktree, focused tests on x-p35 and independent review.
 
 Decision: retry only EINTR at every waitpid in the relay supervisor; preserve ECHILD and other errors. After a restart reap, a concurrently received Stop returns cleanly rather than launching a replacement. Tests use a deterministic syscall seam for interrupted/non-interrupted status and error behavior, plus a real forked supervisor held in termination until Stop arrives. A fixture child wrapper catches exceptions and calls Unix._exit, preventing inherited Alcotest reentry; B298 parents now check clean supervisor exit. Changes isolated to two relay files in .worktrees/b367-relay-eintr; test runtime remains x-p35 only. Independent Terra review running through a currently authenticated configured Codex instance (default instance became unauthenticated).
+
+## Handoff
+
+- To: codex-poplar-waffle-m0fg
+- At: 2026-10-16T14:26:44Z
+- Notes: Coordinator claim identity correction; implementation remains in existing B367 worktree.
+
+Independent native review R2 PASS after closing Stop during backoff and the fork/publication window. TERM/INT are blocked until PID generation publication; child resets inherited handlers before unmasking; parent mask restored in finally. Added real Stop-during-crash-backoff test. Requested Terra routes failed authentication before any code review; fallback independent reviewer used the working native harness. Current revised overlay cffccddb atop host3626221f; focused31-case test pending. Prior first revision30-case pass and3x5-case repeats are retained as superseded evidence, not final proof.
