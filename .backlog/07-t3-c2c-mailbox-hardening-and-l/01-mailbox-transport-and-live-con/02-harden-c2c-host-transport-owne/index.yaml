@@ -18,7 +18,8 @@ tasks:
       file: T001-guard-raw-c2c-consumers-when-t.todo
       id: T001
       priority: critical
-      status: pending
+      status: in_progress
+      tags: []
       title: Guard raw c2c consumers when T3 owns the mailbox
     - complexity: high
       depends_on: []

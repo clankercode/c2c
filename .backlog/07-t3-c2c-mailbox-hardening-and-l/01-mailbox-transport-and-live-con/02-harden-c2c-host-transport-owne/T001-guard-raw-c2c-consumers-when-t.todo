@@ -1,16 +1,17 @@
 ---
+claimed_at: "2026-10-16T20:51:30Z"
+claimed_by: cli-user
+completed_at: null
 complexity: high
 created_at: "2026-10-16T20:50:05Z"
 depends_on: []
 estimate_hours: 6
 id: P7.M1.E2.T001
 priority: critical
-status: pending
-tags:
-    - c2c
-    - t3
-    - safety
+started_at: "2026-10-16T20:51:30Z"
+status: in_progress
+tags: []
 title: Guard raw c2c consumers when T3 owns the mailbox
-updated_at: "2026-10-16T20:50:05Z"
+updated_at: "2026-10-16T20:51:30Z"
 ---
 When C2C_HOST_OWNED_MAILBOX or equivalent T3 host mode is active, fail closed for raw poll-inbox, wait-inbox, monitor, deliver, and related drains while preserving c2c host transport. Add regressions proving provider/native children cannot consume the broker ahead of T3 acceptance.
