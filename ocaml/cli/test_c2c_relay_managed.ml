@@ -88,6 +88,50 @@ let spawn_to_log ~env binary args log =
   Unix.close fd;
   pid
 
+(* Never let a fixture exception return into the forked Alcotest runner. *)
+let exit_child run =
+  let code =
+    try run () with exn ->
+      Printf.eprintf "[fixture child] %s\n%!" (Printexc.to_string exn);
+      125
+  in
+  Unix._exit code
+
+let test_waitpid_retries_only_eintr () =
+  List.iter (fun flags ->
+    let attempts = ref 0 in
+    let wait actual_flags pid =
+      check bool "wait flags preserved" true (actual_flags = flags);
+      check int "child identity preserved" 42 pid;
+      incr attempts;
+      if !attempts < 3 then raise (Unix.Unix_error (Unix.EINTR, "waitpid", ""));
+      (42, Unix.WEXITED 7)
+    in
+    let pid, status = C2c_relay_managed.waitpid_nointr ~wait flags 42 in
+    check int "child returned" 42 pid;
+    check bool "status preserved" true (status = Unix.WEXITED 7);
+    check int "interrupted calls retried" 3 !attempts
+  ) [ []; [ Unix.WNOHANG ] ];
+  let error = Unix.Unix_error (Unix.ECHILD, "waitpid", "") in
+  let calls = ref 0 in
+  let wait _ _ = incr calls; raise error in
+  check_raises "ownership failure remains visible" error (fun () ->
+    ignore (C2c_relay_managed.waitpid_nointr ~wait [] 42));
+  check int "ownership failure not retried" 1 !calls
+
+let test_fixture_child_failure_does_not_reenter_runner () =
+  match Unix.fork () with
+  | 0 -> exit_child (fun () -> failwith "expected fixture exception")
+  | pid ->
+      let _, status = C2c_relay_managed.waitpid_nointr [] pid in
+      check bool "exception becomes child failure status" true (status = Unix.WEXITED 125)
+
+let stop_supervisor_and_check pid =
+  (try Unix.kill pid Sys.sigterm with Unix.Unix_error (Unix.ESRCH, _, _) -> ());
+  let _, status = C2c_relay_managed.waitpid_nointr [] pid in
+  check int "fixture supervisor exits cleanly" 0
+    (C2c_relay_managed.child_status_code status)
+
 let stop_and_wait pid =
   (try Unix.kill pid Sys.sigterm with Unix.Unix_error _ -> ());
   try ignore (Unix.waitpid [] pid) with Unix.Unix_error _ -> ()
@@ -321,9 +365,10 @@ let test_supervisor_restarts_child_on_binary_update () =
   write_executable_atomic binary (script "v1");
   match Unix.fork () with
   | 0 ->
-      write_pid_generation pid_path (Unix.getpid ());
-      exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
-              ~log_path ~pid_path ~foreground:false)
+      exit_child (fun () ->
+        write_pid_generation pid_path (Unix.getpid ());
+        C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
+          ~log_path ~pid_path ~foreground:false)
   | supervisor ->
       Fun.protect
         ~finally:(fun () -> try Unix.kill supervisor Sys.sigkill with Unix.Unix_error _ -> ())
@@ -425,14 +470,13 @@ let test_supervisor_rotates_oversized_log_across_restarts () =
     "#!/bin/sh\nprintf 'b298crashlogpad%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\nexit 3\n";
   match Unix.fork () with
   | 0 ->
-      write_pid_generation pid_path (Unix.getpid ());
-      exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
-              ~log_path ~pid_path ~foreground:false)
+      exit_child (fun () ->
+        write_pid_generation pid_path (Unix.getpid ());
+        C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
+          ~log_path ~pid_path ~foreground:false)
   | supervisor ->
       Fun.protect
-        ~finally:(fun () ->
-          (try Unix.kill supervisor Sys.sigterm with Unix.Unix_error _ -> ());
-          try ignore (Unix.waitpid [] supervisor) with Unix.Unix_error _ -> ())
+        ~finally:(fun () -> stop_supervisor_and_check supervisor)
         (fun () ->
           check bool "oversized segment rotated to log.1 on relaunch" true
             (wait_until ~timeout:8.0 (fun () ->
@@ -459,14 +503,13 @@ let test_supervisor_restarts_connector_when_log_crosses_cap () =
     "#!/bin/sh\nprintf 'b298healthlogpad%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n";
   match Unix.fork () with
   | 0 ->
-      write_pid_generation pid_path (Unix.getpid ());
-      exit (C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
-              ~log_path ~pid_path ~foreground:false)
+      exit_child (fun () ->
+        write_pid_generation pid_path (Unix.getpid ());
+        C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
+          ~log_path ~pid_path ~foreground:false)
   | supervisor ->
       Fun.protect
-        ~finally:(fun () ->
-          (try Unix.kill supervisor Sys.sigterm with Unix.Unix_error _ -> ());
-          try ignore (Unix.waitpid [] supervisor) with Unix.Unix_error _ -> ())
+        ~finally:(fun () -> stop_supervisor_and_check supervisor)
         (fun () ->
           check bool "cap crossing triggers rotation via restart" true
             (wait_until ~timeout:8.0 (fun () ->
@@ -477,6 +520,79 @@ let test_supervisor_restarts_connector_when_log_crosses_cap () =
                ignore (Str.search_forward (Str.regexp_string "b298healthlogpad") body 0);
                true
              with Not_found -> false))
+
+let test_stop_during_restart_does_not_launch_replacement () =
+  with_temp_dir @@ fun dir ->
+  with_env "C2C_INSTANCE_LOG_MAX_BYTES" "128" @@ fun () ->
+  let binary = dir // "fake-c2c-stop-during-reap" in
+  let starts = dir // "starts" in
+  let terminating = dir // "terminating" in
+  let release = dir // "release" in
+  let release_child () = let oc = open_out release in close_out oc in
+  let pid_path = dir // "outer.pid" in
+  let log_path = dir // "log" in
+  write_executable_atomic binary (Printf.sprintf
+    "#!/bin/sh\necho started >> %s\ntrap 'echo terminating > %s; while [ ! -e %s ]; do sleep 0.01; done; exit 0' TERM\nprintf 'oversizedlogpad%%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15\nwhile :; do sleep 0.01; done\n"
+    (Filename.quote starts) (Filename.quote terminating) (Filename.quote release));
+  match Unix.fork () with
+  | 0 -> exit_child (fun () ->
+      write_pid_generation pid_path (Unix.getpid ());
+      C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
+        ~log_path ~pid_path ~foreground:false)
+  | supervisor ->
+      let reaped = ref false in
+      Fun.protect ~finally:(fun () ->
+        release_child ();
+        if not !reaped then stop_and_wait supervisor)
+        (fun () ->
+          check bool "rotation is waiting for child termination" true
+            (wait_until (fun () -> Sys.file_exists terminating));
+          Unix.kill supervisor Sys.sigterm;
+          release_child ();
+          check bool "stop completes while reaping" true (wait_until (fun () ->
+            match C2c_relay_managed.waitpid_nointr [ Unix.WNOHANG ] supervisor with
+            | 0, _ -> false
+            | _, status ->
+                reaped := true;
+                check int "stop exits cleanly" 0
+                  (C2c_relay_managed.child_status_code status);
+                true));
+          check string "no replacement child launched" "started\n" (read_file starts))
+
+let test_stop_during_crash_backoff_does_not_restart () =
+  with_temp_dir @@ fun dir ->
+  let binary = dir // "fake-c2c-stop-during-backoff" in
+  let starts = dir // "starts" in
+  let diagnostics = dir // "supervisor.log" in
+  let pid_path = dir // "outer.pid" in
+  let log_path = dir // "log" in
+  write_executable_atomic binary (Printf.sprintf
+    "#!/bin/sh\necho started >> %s\nexit 3\n" (Filename.quote starts));
+  match Unix.fork () with
+  | 0 -> exit_child (fun () ->
+      let fd = Unix.openfile diagnostics [ Unix.O_WRONLY; Unix.O_CREAT ] 0o600 in
+      Unix.dup2 fd Unix.stderr;
+      Unix.close fd;
+      write_pid_generation pid_path (Unix.getpid ());
+      C2c_relay_managed.supervise ~self:binary ~argv:[ binary ]
+        ~log_path ~pid_path ~foreground:false)
+  | supervisor ->
+      let reaped = ref false in
+      Fun.protect ~finally:(fun () -> if not !reaped then stop_and_wait supervisor)
+        (fun () ->
+          check bool "supervisor reached crash backoff" true (wait_until (fun () ->
+            try ignore (Str.search_forward (Str.regexp_string "retrying in 1s")
+              (read_file diagnostics) 0); true with Not_found -> false));
+          Unix.kill supervisor Sys.sigterm;
+          check bool "stop completes during backoff" true (wait_until (fun () ->
+            match C2c_relay_managed.waitpid_nointr [ Unix.WNOHANG ] supervisor with
+            | 0, _ -> false
+            | _, status ->
+                reaped := true;
+                check int "backoff stop exits cleanly" 0
+                  (C2c_relay_managed.child_status_code status);
+                true));
+          check string "backoff does not launch another child" "started\n" (read_file starts))
 
 (* B212: `c2c restart relay-connect` used to raise an uncaught Not_found because
    the supervised relay-connect config omits the session_id/alias/resume fields
@@ -926,6 +1042,15 @@ let () =
     "B302 graceful supervisor teardown", [
       test_case "accepts TERM record removal after captured generation exits" `Slow
         test_stop_supervisor_accepts_graceful_term_record_removal;
+    ];
+    "B367 interrupted child waits", [
+      test_case "retry EINTR and preserve other errors" `Quick test_waitpid_retries_only_eintr;
+      test_case "fixture failure cannot reenter test runner" `Quick
+        test_fixture_child_failure_does_not_reenter_runner;
+      test_case "stop while reaping never launches a replacement" `Slow
+        test_stop_during_restart_does_not_launch_replacement;
+      test_case "stop during crash backoff never restarts" `Slow
+        test_stop_during_crash_backoff_does_not_restart;
     ];
     "B298 instance log rotation", [
       test_case "crash loop rotates oversized log on relaunch" `Slow

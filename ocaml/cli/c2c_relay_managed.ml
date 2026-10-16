@@ -8,6 +8,12 @@
 
 let ( // ) = Filename.concat
 
+(* A shutdown signal may arrive while the supervisor is reaping its child.
+   Only an interrupted syscall is retried; ownership errors must stay visible. *)
+let rec waitpid_nointr ?(wait = Unix.waitpid) flags pid =
+  try wait flags pid with
+  | Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_nointr ~wait flags pid
+
 (* Keep the relay connector's config, pid, log, and singleton-lock paths in
    lockstep with [C2c_start.instances_dir].  This matters for isolated test/dev
    environments: without the override here, restart could read config from
@@ -289,28 +295,35 @@ let child_status_code = function
   | Unix.WEXITED n -> n
   | Unix.WSIGNALED n | Unix.WSTOPPED n -> 128 + n
 
-let spawn_connector ~self ~argv ~log_path ~foreground =
-  match Unix.fork () with
-  | 0 ->
-      if not foreground then begin
-        (try
-           let dn = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
-           Unix.dup2 dn Unix.stdin; Unix.close dn
-         with _ -> ());
-        (match C2c_instance_log.open_append log_path with
-         | Some fd ->
-             Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd
-         | None -> ())
-      end;
-      (* B210: mark the child exempt from the CLI-side connector singleton —
-         this supervisor already holds the machine lock. *)
-      (try Unix.putenv supervised_child_env "1" with _ -> ());
-      (try Unix.execv self (Array.of_list argv)
-       with exn ->
-         Printf.eprintf "relay-connect: exec %s failed: %s\n%!" self
-           (Printexc.to_string exn);
-         exit 127)
-  | pid -> pid
+let spawn_connector ~self ~argv ~log_path ~foreground ~register_child =
+  (* Publish the PID generation before Stop can run. The child must not inherit
+     a handler that would swallow TERM between fork and exec. *)
+  let previous_mask = Unix.sigprocmask Unix.SIG_BLOCK [ Sys.sigterm; Sys.sigint ] in
+  Fun.protect
+    ~finally:(fun () -> ignore (Unix.sigprocmask Unix.SIG_SETMASK previous_mask))
+    (fun () ->
+      match Unix.fork () with
+      | 0 ->
+          Sys.set_signal Sys.sigterm Sys.Signal_default;
+          Sys.set_signal Sys.sigint Sys.Signal_default;
+          ignore (Unix.sigprocmask Unix.SIG_SETMASK previous_mask);
+          if not foreground then begin
+            (try
+               let dn = Unix.openfile "/dev/null" [ Unix.O_RDONLY ] 0 in
+               Unix.dup2 dn Unix.stdin; Unix.close dn
+             with _ -> ());
+            (match C2c_instance_log.open_append log_path with
+             | Some fd ->
+                 Unix.dup2 fd Unix.stdout; Unix.dup2 fd Unix.stderr; Unix.close fd
+             | None -> ())
+          end;
+          (try Unix.putenv supervised_child_env "1" with _ -> ());
+          (try Unix.execv self (Array.of_list argv)
+           with exn ->
+             Printf.eprintf "relay-connect: exec %s failed: %s\n%!" self
+               (Printexc.to_string exn);
+             Unix._exit 127)
+      | pid -> register_child pid; pid)
 
 let redirect_daemon_stdio log_path =
   (try
@@ -365,34 +378,38 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
   in
   Fun.protect ~finally:cleanup (fun () ->
     let rec launch () =
+      if !stopping then 0 else begin
       (* B298: rotate an oversized log at every (re)launch — the one point
          where no writer holds the live path, so a crash loop cannot
          concatenate indefinitely into one append-only file. *)
       ignore (C2c_instance_log.rotate_if_oversized ~log_path);
       let launched_stamp = binary_stamp self in
-      let pid = spawn_connector ~self ~argv ~log_path ~foreground in
-      child := Some pid;
-      child_generation :=
-        (match C2c_pid_identity.read_pid_generation pid with
-         | C2c_pid_identity.Generation start_time ->
-             C2c_start.write_pid_generation
-               ~pid_path:connector_pid_path
-               ~start_time_path:(connector_pid_path ^ ".start-time") pid;
-             Some start_time
-         | C2c_pid_identity.Absent
-         | C2c_pid_identity.Unreadable -> None);
+      let pid = spawn_connector ~self ~argv ~log_path ~foreground
+          ~register_child:(fun pid ->
+            child := Some pid;
+            child_generation :=
+              (match C2c_pid_identity.read_pid_generation pid with
+               | C2c_pid_identity.Generation start_time ->
+                   C2c_start.write_pid_generation
+                     ~pid_path:connector_pid_path
+                     ~start_time_path:(connector_pid_path ^ ".start-time") pid;
+                   Some start_time
+               | C2c_pid_identity.Absent
+               | C2c_pid_identity.Unreadable -> None);
+            if !stopping then ignore (signal_child Sys.sigterm))
+      in
       let rec monitor () =
-        match Unix.waitpid [ Unix.WNOHANG ] pid with
+        match waitpid_nointr [ Unix.WNOHANG ] pid with
         | 0, _ when !stopping ->
             Unix.sleepf 0.1; monitor ()
         | 0, _ when binary_changed ~before:launched_stamp ~after:(binary_stamp self) ->
             Printf.eprintf
               "[c2c relay-connect] c2c executable updated; restarting connector\n%!";
             ignore (signal_child Sys.sigterm);
-            ignore (Unix.waitpid [] pid);
+            ignore (waitpid_nointr [] pid);
             child := None;
             child_generation := None;
-            `Restart
+            if !stopping then `Exit 0 else `Restart
         | 0, _ when C2c_instance_log.oversized log_path ->
             (* B298: the running child holds the log fd, so rotation must not
                happen under it — ride the existing clean-restart path and let
@@ -400,10 +417,10 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
             Printf.eprintf
               "[c2c relay-connect] instance log over cap; restarting connector to rotate\n%!";
             ignore (signal_child Sys.sigterm);
-            ignore (Unix.waitpid [] pid);
+            ignore (waitpid_nointr [] pid);
             child := None;
             child_generation := None;
-            `Restart
+            if !stopping then `Exit 0 else `Restart
         | 0, _ -> Unix.sleepf 0.5; monitor ()
         | _, status ->
             child := None;
@@ -418,6 +435,7 @@ let supervise ~self ~argv ~log_path ~pid_path ~foreground =
           Unix.sleepf 1.0;
           launch ()
       | `Exit code -> code
+      end
     in
     launch ())
 
@@ -808,7 +826,7 @@ let[@noreturn] start ~name ~daemon ~relay_url ~broker_root ~interval ~extra_args
             supervisor_pid name;
           exit 0
         end else begin
-          ignore (Unix.waitpid [] supervisor_pid);
+          ignore (waitpid_nointr [] supervisor_pid);
           exit 1
         end
   end
