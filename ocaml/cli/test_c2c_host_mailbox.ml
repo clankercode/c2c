@@ -24,7 +24,7 @@ let generation b = text b "generation"
 let sid b = text b "session_id"
 let alias b = text b "alias"
 let peek root b = H.peek ~environment_id:"environment" ~thread_id:(text b "thread_id")
-  ~broker_root:root ~generation:(generation b)
+  ~broker_root:root ~generation:(generation b) ()
 let ack root b ids = H.ack ~environment_id:"environment" ~thread_id:(text b "thread_id")
   ~broker_root:root ~generation:(generation b) ~message_ids:ids
 let unbind root b = H.unbind ~environment_id:"environment" ~thread_id:(text b "thread_id")
@@ -173,8 +173,19 @@ let test_namespace_workspace_dnd () = with_root (fun root ->
   B.with_registry_lock broker (fun () -> B.save_registrations broker
     (List.map (fun r -> {r with dnd=true; dnd_until=None}) (B.load_registrations broker)));
   check "DND exposed" true (peek root changed |> member "dnd" |> to_bool);
+  check "indefinite DND has null deadline" true (member "dnd_until" (peek root changed) = `Null);
+  let deadline = Unix.gettimeofday () +. 3600. in
+  ignore (B.set_dnd broker ~session_id:(sid changed) ~dnd:true ~until:deadline ());
+  Alcotest.(check (float 0.001)) "active DND deadline exposed" deadline
+    (peek root changed |> member "dnd_until" |> to_float);
+  ignore (B.set_dnd broker ~session_id:(sid changed) ~dnd:true ~until:1. ());
+  let expired = peek root changed in
+  check "expired DND is off" false (expired |> member "dnd" |> to_bool);
+  check "expired DND deadline is null" true (member "dnd_until" expired = `Null);
+  ignore (B.set_dnd broker ~session_id:(sid changed) ~dnd:false ());
+  check "off DND has null deadline" true (member "dnd_until" (peek root changed) = `Null);
   rejects (fun () -> H.peek ~environment_id:"other-environment" ~thread_id:"thread-one"
-    ~broker_root:root ~generation:(generation changed));
+    ~broker_root:root ~generation:(generation changed) ());
   with_root (fun other -> rejects (fun () -> H.ack ~environment_id:"environment"
     ~thread_id:"thread-one" ~broker_root:other ~generation:(generation changed) ~message_ids:["x"])) )
 
@@ -230,6 +241,95 @@ let test_concurrent_arrival () = with_root (fun root ->
       Alcotest.(check int) "all racing arrivals retained" 30
         (List.length (fields (peek root b) "messages")))
 
+let test_paged_backlog () = with_root (fun root ->
+  let b = bind root in let broker = B.create ~root in
+  let control_body = String.make 65536 '\001' in
+  let messages = List.init 24 (fun i ->
+    { from_alias="remote-peer"; to_alias=alias b; content=control_body; ts=float_of_int i;
+      ephemeral=false; deferrable=(i mod 2 = 0); reply_via=None; enc_status=None;
+      message_id=Some ("page-" ^ string_of_int i); pow_difficulty=None; source=Remote }) in
+  B.save_inbox broker ~session_id:(sid b) messages;
+  let first = peek root b in
+  let rows = fields first "messages" in
+  check "encoded budget binds before message count" true (List.length rows < 24);
+  check "more pages reported" true (first |> member "has_more" |> to_bool);
+  check "escaped array fits 4 MiB" true
+    (String.length (Yojson.Safe.to_string (`List rows)) <= 4 * 1024 * 1024);
+  check "complete response below runner cap" true
+    (String.length (Yojson.Safe.to_string first) < 8 * 1024 * 1024);
+  local root b "arrived-between-pages";
+  Alcotest.(check int) "native enqueue retained >64 KiB backlog" 25
+    (List.length (B.read_inbox broker ~session_id:(sid b)));
+  let rec drain passes accepted =
+    if passes > 10 then Alcotest.fail "paging made no progress";
+    let page = peek root b in let rows = fields page "messages" in
+    check "every encoded page fits" true
+      (String.length (Yojson.Safe.to_string (`List rows)) <= 4 * 1024 * 1024);
+    List.iter (fun row ->
+      if text row "content" = control_body then begin
+        Alcotest.(check string) "source retained across pages" "remote" (text row "source");
+        Alcotest.(check int) "full body never truncated" 65536 (String.length (text row "content"))
+      end) rows;
+    let ids = List.map (fun row -> text row "message_id") rows in
+    if ids <> [] then ignore (ack root b ids);
+    if page |> member "has_more" |> to_bool then drain (passes + 1) (accepted + List.length rows)
+    else accepted + List.length rows in
+  Alcotest.(check int) "all rows plus concurrent arrival accepted" 25 (drain 0 0);
+  Alcotest.(check int) "queue empty only after ack" 0 (List.length (fields (peek root b) "messages")))
+
+let test_oversized_metadata () = with_root (fun root ->
+  let b = bind root in let broker = B.create ~root in
+  (* 32769 Unicode characters but 65538 UTF-8 bytes: the byte limit must win. *)
+  let utf8 = String.concat "" (List.init 32769 (fun _ -> "é")) in
+  let giant = String.make (9 * 1024 * 1024) 'x' in
+  let message id content source =
+    { from_alias="peer"; to_alias=alias b; content; ts=1.;
+      ephemeral=false; deferrable=true; reply_via=None; enc_status=None;
+      message_id=id; pow_difficulty=None; source } in
+  B.save_inbox broker ~session_id:(sid b)
+    [message None giant Unknown; message (Some "utf8") utf8 Remote;
+     message (Some "normal") "next normal message" Local];
+  let page = peek root b in let rows = fields page "messages" in
+  Alcotest.(check int) "giant row does not block following rows" 3 (List.length rows);
+  List.iter2 (fun row expected ->
+    check "oversized content is explicitly absent" true (member "content" row = `Null);
+    Alcotest.(check string) "omission reason" "oversized" (text row "content_omitted_reason");
+    Alcotest.(check int) "original byte count" expected (row |> member "content_bytes" |> to_int))
+    [List.hd rows;List.nth rows 1] [String.length giant;String.length utf8];
+  Alcotest.(check string) "legacy source remains unknown" "unknown" (text (List.hd rows) "source");
+  check "no more pages" false (page |> member "has_more" |> to_bool);
+  check "metadata page bounded despite 9 MiB body" true
+    (String.length (Yojson.Safe.to_string page) < 4096);
+  check "peek does not alter original body" true
+    ((List.hd (B.read_inbox broker ~session_id:(sid b))).content = giant);
+  local root b "arrived-after-giant-peek";
+  let ids = List.map (fun row -> text row "message_id") rows in
+  ignore (ack root b ids);
+  let remaining = B.read_inbox broker ~session_id:(sid b) in
+  Alcotest.(check int) "ack leaves the new arrival" 1 (List.length remaining);
+  Alcotest.(check string) "arrival preserved" "arrived-after-giant-peek" (List.hd remaining).content;
+  let archived = C2c_io.read_file (Filename.concat (Filename.concat root "archive") (sid b ^ ".jsonl")) in
+  let records = String.split_on_char '\n' archived |> List.filter (fun x -> x <> "") |> List.map Yojson.Safe.from_string in
+  Alcotest.(check int) "omitted bodies archived intact" (String.length giant)
+    (String.length (text (List.hd records) "content")))
+
+let test_page_count_limit () = with_root (fun root ->
+  let b = bind root in let broker = B.create ~root in
+  let messages = List.init 70 (fun i ->
+    { from_alias="peer"; to_alias=alias b; content="small"; ts=1.;
+      ephemeral=false; deferrable=false; reply_via=None; enc_status=None;
+      message_id=Some (string_of_int i); pow_difficulty=None; source=Local }) in
+  B.save_inbox broker ~session_id:(sid b) messages;
+  let page = peek root b in
+  Alcotest.(check int) "default max 64" 64 (List.length (fields page "messages"));
+  let small = H.peek ~limit:3 ~environment_id:"environment" ~thread_id:"thread-one"
+    ~broker_root:root ~generation:(generation b) () in
+  Alcotest.(check int) "caller limit" 3 (List.length (fields small "messages"));
+  let before = bytes (text b "inbox_path") in
+  List.iter (fun limit -> rejects (fun () -> H.peek ~limit ~environment_id:"environment"
+    ~thread_id:"thread-one" ~broker_root:root ~generation:(generation b) ())) [0;65];
+  Alcotest.(check string) "invalid limit has no side effect" before (bytes (text b "inbox_path")))
+
 let run_cli ?(host=true) ?(env=Unix.environment ()) root args =
   let exe = Filename.concat (Filename.dirname Sys.executable_name) "c2c.exe" in
   let out = Filename.concat root "stdout" and err = Filename.concat root "stderr" in
@@ -254,6 +354,10 @@ let test_cli () = with_root (fun root ->
   let status, result = cli root ("peek" :: args) in
   check "peek CLI succeeds" true (status = Unix.WEXITED 0);
   Alcotest.(check int) "empty mailbox" 0 (List.length (fields result "messages"));
+  check "empty CLI page is final" false (result |> member "has_more" |> to_bool);
+  let status, result = cli root ("peek" :: args @ ["--limit";"65"]) in
+  check "CLI rejects excessive limit" false (status = Unix.WEXITED 0);
+  Alcotest.(check string) "limit error category" "invalid_limit" (text result "error");
   let status, _ = cli root ("ack" :: args @ ["--message-id";"missing";"--message-id";"missing"]) in
   check "repeat selected ID accepted" true (status = Unix.WEXITED 0);
   let status, result = cli root ("peek" :: base @ ["--generation";"wrong"]) in
@@ -279,4 +383,6 @@ let () = Alcotest.run "host-mailbox" ["transport", List.map (fun (name,f) ->
   "selected ack and archive",test_selected_ack; "legacy and relay provenance",test_legacy_and_relay;
   "foreign ownership and corruption",test_conflicts_and_corruption;
   "namespace workspace and DND",test_namespace_workspace_dnd;
-  "owner PID lifecycle",test_owner_liveness; "archive failure",test_archive_failure; "concurrent arrivals",test_concurrent_arrival; "real CLI JSON contract",test_cli]]
+  "owner PID lifecycle",test_owner_liveness; "archive failure",test_archive_failure; "concurrent arrivals",test_concurrent_arrival; "real CLI JSON contract",test_cli;
+  "encoded-byte bounded backlog",test_paged_backlog; "oversized metadata",test_oversized_metadata;
+  "page count and invalid limits",test_page_count_limit]]

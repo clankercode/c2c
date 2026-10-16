@@ -2262,14 +2262,20 @@ open C2c_mcp_helpers
          ]
      with _ -> ())
 
+  (* Inbox and restart-spool files are durable queues, not 64 KiB config
+     blobs. Applying [read_json_file]'s config cap here returned [] for a valid
+     large queue, so the next enqueue overwrote its undelivered contents. *)
+  let read_inbox_json ?(strict = false) path =
+    let read () =
+      if Sys.file_exists path then Yojson.Safe.from_string (C2c_io.read_file path)
+      else `List [] in
+    if strict then read () else try read () with _ -> `List []
+
   let load_inbox ?(strict = false) t ~session_id =
     ensure_root t;
     let path = inbox_path t ~session_id in
     let result =
-      match (if strict then
-        if Sys.file_exists path then Yojson.Safe.from_string (C2c_io.read_file path)
-        else `List []
-      else read_json_file ~broker_root:t.root path ~default:(`List [])) with
+      match read_inbox_json ~strict path with
       | `List items ->
           (* H9 defense-in-depth: total PER-ROW. A row that fails
              [message_of_json] (e.g. written by a pre-H9 relay connector
@@ -4402,16 +4408,7 @@ open C2c_mcp_helpers
     in
     if not (Sys.file_exists pending_path) then 0
     else
-      (* Slice F + follow-up: inline size check with audit event on cap
-         exceeded (fern non-blocking note). *)
-      let content = C2c_io.read_file_opt pending_path in
-      let pending_json =
-        if String.length content > 65536 then begin
-          log_json_cap_exceeded ~broker_root:t.root ~path:pending_path ~max_bytes:65536;
-          `List []
-        end else
-          (try Yojson.Safe.from_string content with _ -> `List [])
-      in
+      let pending_json = read_inbox_json pending_path in
       let msgs =
         match pending_json with
         | `List items ->

@@ -175,25 +175,53 @@ let require_active state = function
   | Some r when state.active -> r
   | _ -> reject "binding_inactive"
 
-let message_to_json m =
-  (* The host envelope uses explicit flags, including false, for a stable
-     transport contract. All broker metadata remains available as well. *)
-  match B.message_to_json m with
-  | `Assoc fields -> `Assoc (("ephemeral", `Bool m.ephemeral)
-      :: ("deferrable", `Bool m.deferrable)
-      :: List.remove_assoc "ephemeral" (List.remove_assoc "deferrable" fields))
-  | _ -> assert false
+let max_page_messages = 64
+let max_content_bytes = 65536
+let max_page_bytes = 4 * 1024 * 1024
 
-let peek ~environment_id ~thread_id ~broker_root ~generation =
+let message_to_json m =
+  (* The host DTO exposes only its contracted envelope. In particular a legacy
+     reply hint cannot bypass the byte budget or grow omitted-body metadata. *)
+  let fields = match B.message_to_json m with
+    | `Assoc fields -> List.filter (fun (key, _) ->
+        List.mem key ["message_id"; "from_alias"; "to_alias"; "content"; "ts"; "source"]) fields
+    | _ -> assert false in
+  let flags = ["ephemeral", `Bool m.ephemeral; "deferrable", `Bool m.deferrable] in
+  let content_bytes = String.length m.content in
+  if content_bytes <= max_content_bytes then `Assoc (flags @ fields)
+  else `Assoc (flags @ ["content", `Null; "content_omitted_reason", `String "oversized";
+      "content_bytes", `Int content_bytes] @ List.remove_assoc "content" fields)
+
+let message_page ~limit messages =
+  (* Count actual JSON bytes, including commas and array brackets, rather than
+     body bytes: control characters can expand sixfold during serialization. *)
+  let rec take count bytes rows = function
+    | [] -> List.rev rows, false
+    | _ when count = limit -> List.rev rows, true
+    | message :: rest ->
+        let row = message_to_json message in
+        let row_bytes = String.length (Yojson.Safe.to_string row) in
+        let next_bytes = bytes + row_bytes + (if count = 0 then 0 else 1) in
+        if next_bytes > max_page_bytes then
+          if count = 0 then reject "oversized_envelope"
+          else List.rev rows, true
+        else take (count + 1) next_bytes (row :: rows) rest in
+  take 0 2 [] messages
+
+let peek ?(limit = max_page_messages) ~environment_id ~thread_id ~broker_root ~generation () =
+  if limit < 1 || limit > max_page_messages then reject "invalid_limit";
   with_binding ~environment_id ~thread_id ~broker_root ~generation
     (fun broker state _ registration ->
       let r = require_active state registration in
       let messages = B.read_inbox ~assign_ids:true ~strict:true broker
         ~session_id:state.binding.session_id in
+      let messages, has_more = message_page ~limit messages in
       let dnd = r.dnd && (match r.dnd_until with
         | None -> true | Some until -> Unix.gettimeofday () < until) in
+      let dnd_until = if dnd then match r.dnd_until with
+        | Some until -> `Float until | None -> `Null else `Null in
       response ["binding", binding_to_json state.binding; "dnd", `Bool dnd;
-        "messages", `List (List.map message_to_json messages)])
+        "dnd_until", dnd_until; "messages", `List messages; "has_more", `Bool has_more])
 
 let ack ~environment_id ~thread_id ~broker_root ~generation ~message_ids =
   if message_ids = [] || List.length message_ids > 4096 then reject "invalid_message_ids";

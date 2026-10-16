@@ -118,6 +118,15 @@ let host_mailbox =
       and+ broker_root = broker_root and+ generation = generation in
       output (fun () -> f ~environment_id ~thread_id ~broker_root ~generation) in
     Cmd.v (Cmd.info name ~doc) term in
+  let peek =
+    let limit = Arg.(value & opt int 64 & info ["limit"]
+      ~doc:"Maximum messages in this page (1 to 64, default 64); also bounded by 4 MiB encoded JSON.") in
+    let term =
+      let+ environment_id = environment_id and+ thread_id = thread_id
+      and+ broker_root = broker_root and+ generation = generation and+ limit = limit in
+      output (fun () -> C2c_host_mailbox.peek ~environment_id ~thread_id ~broker_root
+        ~generation ~limit ()) in
+    Cmd.v (Cmd.info "peek" ~doc:"Peek a bounded page without draining; JSON response.") term in
   let ack =
     let message_ids = Arg.(value & opt_all string [] & info ["message-id"]
       ~doc:"Durably accepted message ID; repeat for each selected message.") in
@@ -128,5 +137,5 @@ let host_mailbox =
         ~generation ~message_ids) in
     Cmd.v (Cmd.info "ack" ~doc:"Archive and remove only selected accepted IDs; JSON response.") term in
   Cmd.group (Cmd.info "host" ~doc:"Host-owned durable mailboxes (JSON transport v1).")
-    [bind; operation "peek" "Peek messages without draining; JSON response." C2c_host_mailbox.peek;
+    [bind; peek;
      ack; operation "unbind" "Release registration, retaining pending messages; JSON response." C2c_host_mailbox.unbind]

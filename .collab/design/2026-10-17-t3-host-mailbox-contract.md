@@ -20,28 +20,49 @@ provider process environment must not carry any particular thread's c2c identity
 Provide one `c2c host` command group with JSON-only stdout, version 1 responses:
 
 ```
-c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B]
-c2c host peek --environment-id E --thread-id T --broker-root B --generation G
+c2c host bind --environment-id E --thread-id T --workspace W --owner-id O [--alias A] [--broker-root B] [--owner-pid P]
+c2c host peek --environment-id E --thread-id T --broker-root B --generation G [--limit N]
 c2c host ack --environment-id E --thread-id T --broker-root B --generation G --message-id M [--message-id M2]
 c2c host unbind --environment-id E --thread-id T --broker-root B --generation G
 ```
 
 Bind returns `{schema_version:1,binding:{environment_id,thread_id,session_id,alias,
 workspace,broker_root,inbox_path,generation}}`. Owner ID is a T3-server incarnation;
-repeat bind by the same owner is idempotent. A changed owner/workspace renews the
-opaque generation. Every later command validates it before touching data. Reject
+repeat bind by the same owner is idempotent. T3 passes its long-lived server PID
+with `--owner-pid`; the broker verifies/stores the process start time. If omitted,
+the CLI uses its direct parent, never the short-lived CLI PID. Bindings additionally
+return `owner_pid` and `owner_pid_start_time`. A changed owner/PID generation/workspace
+renews the opaque generation. Every later command validates it before touching data. Reject
 foreign registration conflicts. Unbind removes only its own registration, retaining
 the inbox and binding identity for later reactivation. Test fixtures may use an
 explicit broker root. Same-origin git worktrees normally resolve to the same broker.
 
-Peek returns `{schema_version:1,binding:...,dnd:boolean,messages:[...]}`. Each message
-contains `message_id,from_alias,to_alias,content,ts,ephemeral,deferrable,source`.
+Peek returns `{schema_version:1,binding:...,dnd:boolean,dnd_until:number|null,messages:[...],has_more:boolean}`.
+`--limit` defaults to 64 and accepts 1..64. The serialized `messages` array is also
+bounded to 4 MiB (including JSON escaping, commas and brackets); `has_more` reports
+rows not included in that page. `dnd_until` is the active registration's timed DND
+deadline in Unix seconds, or null for off, expired, or indefinite DND. T3 schedules
+one deadline reconciliation because time expiry generates no registry file event;
+explicit DND changes still use the registry watch. Consumers durably accept then ack a page before
+peeking again; no cursor or destructive read is needed.
+
+Each message contains `message_id,from_alias,to_alias,content,ts,ephemeral,deferrable,source`.
+`ts` is numeric Unix seconds. The v1 message array is a union:
+
+- Full message: `content:string`, at most 65536 UTF-8 bytes.
+- Omitted message: the same envelope, `content:null`,
+  `content_omitted_reason:"oversized"`, and `content_bytes` giving the original
+  UTF-8 byte count. Never truncate the body. Even a giant body produces a small
+  metadata record so following normal messages can make progress. T3 durably
+  stores this receipt as unsupported/held before selected ack; omitted content
+  is never injected into a provider. c2c retains full body archival semantics.
+
 Source is `local`, `remote`, or `unknown`, established at broker write and preserved
 through all read/rewrite/relay paths, not inferred from body, alias punctuation or
 message-ID presence. Legacy rows are unknown and cannot trigger automatic wake.
 Assign missing legacy IDs under the inbox lock before returning them.
 
-Ack returns acknowledged IDs and removes only selected rows under the existing
+Ack returns `{schema_version:1,binding:...,acknowledged:[...]}` and removes only selected rows under the existing
 inbox lock. Duplicate ack is safe. Preserve concurrent arrivals and unmatched rows;
 reuse broker archive semantics, including ephemeral exclusion. T3 must durably
 accept content before ack. Do not introduce a parallel broker implementation.
