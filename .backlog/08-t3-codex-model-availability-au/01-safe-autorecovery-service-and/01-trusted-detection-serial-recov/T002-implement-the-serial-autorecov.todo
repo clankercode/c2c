@@ -1,0 +1,23 @@
+---
+claimed_at: "2026-10-17T06:31:34Z"
+claimed_by: cli-user
+completed_at: "2026-10-17T08:04:24Z"
+complexity: high
+created_at: "2026-10-17T06:24:16Z"
+depends_on:
+    - P8.M1.E1.T001
+duration_minutes: 92.84540345233333
+estimate_hours: 16
+id: P8.M1.E1.T002
+priority: high
+started_at: "2026-10-17T06:31:34Z"
+status: done
+tags: []
+title: Implement the serial autorecovery monitor and rate-limited queue
+updated_at: "2026-10-17T08:04:24Z"
+---
+Implement a T3-owned periodic monitor with approximately 60s cadence, one global serial worker, at least 1000ms between dispatches, bounded queue behavior, cancellation on shutdown, and per-failure dedupe so one observed failure cannot produce repeated Continue messages every scan.
+
+Implementation note: the worker must re-read binding and projection state immediately before each dispatch; a scan snapshot is advisory only. Treat missing/archived/deleted/rebound threads as per-candidate skips. A failed dispatch must not poison later candidates, and durable command receipts must prevent duplicate accepted commands while preserving a clear policy for rejected attempts. Keep the limiter one worker/source per T3 process; do not imply host-wide coordination.
+
+Implementation landed in sibling T3 Code checkout /home/xertrov/src/t3code on feat/c2c-autorecover and was fast-forwarded to local main. Core commits: 034cf7dd, 90e1e48d, 748e9389, 1fe4af4a, 89735b5a. The worker uses a 60s due gate, process-wide serial 1s spacing, deterministic ordering, 256-candidate cap, and retryable preflight/stale guard failures. Independent review passed after the no-receipt stale path was added.

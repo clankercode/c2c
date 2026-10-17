@@ -1,0 +1,26 @@
+---
+claimed_at: "2026-10-17T06:31:23Z"
+claimed_by: cli-user
+completed_at: "2026-10-17T06:31:30Z"
+complexity: high
+created_at: "2026-10-17T06:24:15Z"
+depends_on: []
+duration_minutes: 0.11915598981666667
+estimate_hours: 8
+id: P8.M1.E1.T001
+priority: high
+started_at: "2026-10-17T06:31:23Z"
+status: done
+tags: []
+title: Specify trusted model-availability detection and recovery policy
+updated_at: "2026-10-17T06:31:30Z"
+---
+Define the structured failure predicate, Codex root/c2c eligibility, active/stop/DND/approval exclusions, stable dedupe identity, Continue provenance, restart/shutdown behavior, and the global serial 1/s queue contract. Record decisions in the task before implementation.
+
+Decision (2026-10-17): Implement this as a T3-owned server worker, gated by C2cDelivery.hostEnabled before any mailbox/projection scan. Enumerate C2cMailbox.listEnabled bindings, then require a Codex app-owned root thread (lineage.parentThreadId === null and no fork relationship), enabled/non-paused state, and all C2cDelivery common hold checks clear. Read getThreadRecords(thread,['thread','runs','turnItems'], {turnItemTypes:['error']}) and reuse latestRootProviderFailure; never inspect c2c peer DATA bodies or shell-only lastError fields.
+
+Decision (2026-10-17): Initial classifier is deliberately narrow: positive only for Codex flexUnavailable/serverOverloaded codes or a case-insensitive model-related availability phrase (model + unavailable/not available/not found/does not exist/unsupported). Exclude usage/rate-limit, auth/permission, context/validation, transport, approval, and generic provider errors. The matcher remains pure and gets adversarial fixtures.
+
+Decision (2026-10-17): Recovery is a literal server-created Continue dispatched through ThreadManagementService.dispatch with dispatchMode {type:'start_immediately'}, createdBy:'agent', creationSource:'server', no peerData, and deterministic commandId/messageId derived from threadId + failed root run/error identity. Durable command receipts provide replay idempotence; one recovery per failed root failure identity prevents a 60s retry loop. Re-read the candidate immediately before dispatch and catch stale/deleted-thread errors per candidate.
+
+Decision (2026-10-17): One scheduler source performs an approximately 60s sweep, sorts candidates deterministically, dispatches in series, and enforces at least 1000ms between attempts globally within that T3 server process, including failed attempts. Scheduler/TestClock tests establish the initial-delay decision and cadence. This is process-wide, not host-wide across separate T3 servers; cross-process coordination is explicitly out of scope.

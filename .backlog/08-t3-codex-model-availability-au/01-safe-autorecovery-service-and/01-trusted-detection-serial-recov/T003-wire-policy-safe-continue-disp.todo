@@ -1,0 +1,21 @@
+---
+claimed_at: "2026-10-17T08:04:28Z"
+claimed_by: cli-user
+completed_at: "2026-10-17T08:04:33Z"
+complexity: high
+created_at: "2026-10-17T06:24:16Z"
+depends_on:
+    - P8.M1.E1.T002
+duration_minutes: 0.08692963491666666
+estimate_hours: 12
+id: P8.M1.E1.T003
+priority: high
+started_at: "2026-10-17T08:04:28Z"
+status: done
+tags: []
+title: Wire policy-safe Continue dispatch into c2c-serviced Codex root threads
+updated_at: "2026-10-17T08:04:33Z"
+---
+Scan only c2c-enabled Codex root threads, dispatch literal Continue through existing internal message.dispatch machinery with explicit system/app provenance, preserve B098 DATA safety, and never bypass stopped, DND, approval, active, archived, or non-Codex policy.
+
+Wiring landed in T3 runtimeLayer.ts and Orchestrator.ts. The server-created message.dispatch includes a strict c2cAutorecoverGuard with failed run/error identity, binding generation/epoch, and model selection; the orchestrator validates it under the thread lock and rechecks C2cDelivery state, root failure matcher, provider support, workspace, holds, and idle state.

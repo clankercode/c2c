@@ -1,0 +1,53 @@
+complexity: high
+depends_on: []
+estimate_hours: 48
+id: P8.M1.E1
+locked: false
+name: Trusted detection, serial recovery, and conformance
+stats:
+    blocked: 0
+    done: 4
+    in_progress: 0
+    pending: 0
+    total: 4
+status: done
+tasks:
+    - complexity: high
+      depends_on: []
+      estimate_hours: 8
+      file: T001-specify-trusted-model-availabi.todo
+      id: T001
+      priority: high
+      status: done
+      tags: []
+      title: Specify trusted model-availability detection and recovery policy
+    - complexity: high
+      depends_on:
+        - P8.M1.E1.T001
+      estimate_hours: 16
+      file: T002-implement-the-serial-autorecov.todo
+      id: T002
+      priority: high
+      status: done
+      tags: []
+      title: Implement the serial autorecovery monitor and rate-limited queue
+    - complexity: high
+      depends_on:
+        - P8.M1.E1.T002
+      estimate_hours: 12
+      file: T003-wire-policy-safe-continue-disp.todo
+      id: T003
+      priority: high
+      status: done
+      tags: []
+      title: Wire policy-safe Continue dispatch into c2c-serviced Codex root threads
+    - complexity: high
+      depends_on:
+        - P8.M1.E1.T003
+      estimate_hours: 12
+      file: T004-prove-autorecovery-behavior-an.todo
+      id: T004
+      priority: high
+      status: done
+      tags: []
+      title: Prove autorecovery behavior and document operational limits

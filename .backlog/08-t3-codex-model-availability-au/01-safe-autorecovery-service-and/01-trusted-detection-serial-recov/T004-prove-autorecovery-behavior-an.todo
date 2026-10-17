@@ -1,0 +1,21 @@
+---
+claimed_at: "2026-10-17T08:04:37Z"
+claimed_by: cli-user
+completed_at: "2026-10-17T08:04:42Z"
+complexity: high
+created_at: "2026-10-17T06:24:17Z"
+depends_on:
+    - P8.M1.E1.T003
+duration_minutes: 0.08559066826666667
+estimate_hours: 12
+id: P8.M1.E1.T004
+priority: high
+started_at: "2026-10-17T08:04:37Z"
+status: done
+tags: []
+title: Prove autorecovery behavior and document operational limits
+updated_at: "2026-10-17T08:04:42Z"
+---
+Add deterministic focused tests for trusted failure matching, unrelated errors, dedupe, 60s polling, global serial ordering, 1/s spacing, multi-thread fairness, lifecycle exclusions, literal Continue provenance, and inert peer DATA. Add concise internal documentation for configuration, observability, and known live-fixture limits.
+
+Focused worker, contract, and runtime-layer coverage passed (45 targeted autorecover/contract tests plus the stale-guard runtime regression; final review recorded 87/87 focused tests). T3 typecheck, formatting, and diff checks passed with existing Effect suggestion diagnostics. docs/user/c2c.md documents opt-in recovery, cadence, exclusions, DATA inertness, and process-scoped rate limiting. The live Codex failure fixture remains unavailable, so no live model-outage proof is claimed.

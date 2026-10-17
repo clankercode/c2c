@@ -74,11 +74,21 @@ phases:
       priority: high
       status: done
       weeks: 2
+    - depends_on: []
+      description: Monitor c2c-serviced Codex root threads for trusted model-availability failures and serially dispatch a literal Continue recovery under explicit lifecycle, safety, dedupe, and rate-limit contracts.
+      estimate_hours: 48
+      id: P8
+      locked: true
+      name: T3 Codex model-availability autorecovery
+      path: 08-t3-codex-model-availability-au
+      priority: high
+      status: done
+      weeks: 3
 project: c2c
 stats:
     blocked: 0
-    done: 413
+    done: 417
     in_progress: 1
     pending: 12
-    total_tasks: 429
+    total_tasks: 433
 timeline_weeks: 0

@@ -1,0 +1,24 @@
+complexity: medium
+depends_on: []
+estimate_hours: 48
+id: P8
+locked: true
+milestones:
+    - complexity: high
+      depends_on: []
+      description: Define and implement trusted failure detection, eligible-thread filtering, serial recovery dispatch, lifecycle integration, and regression evidence.
+      estimate_hours: 48
+      id: M1
+      locked: false
+      name: Safe autorecovery service and proof
+      path: 01-safe-autorecovery-service-and
+      status: done
+name: T3 Codex model-availability autorecovery
+stats:
+    blocked: 0
+    done: 4
+    in_progress: 0
+    pending: 0
+    total_tasks: 4
+status: done
+weeks: 3
