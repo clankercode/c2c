@@ -174,3 +174,21 @@ test('client refuses redirects and redacts HTTP/tool failures', async (t) => {
   await assert.rejects(new ProbeClient(redirect, 'fixture-token').request('initialize', {}));
   assert.equal(targetRequests, 0, 'authenticated requests must not follow redirects');
 });
+
+test('tool errors without structured content still report a bounded code', async (t) => {
+  const origin = await fixture(t, async (request, response) => {
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    const message = JSON.parse(body);
+    response.writeHead(200, { 'content-type': 'application/json' });
+    response.end(JSON.stringify({ jsonrpc: '2.0', id: message.id, result: {
+      isError: true,
+      content: [{ type: 'text', text: JSON.stringify({
+        code: 'runtime_mode_escalation_denied', message: 'private transcript',
+      }) }],
+    } }));
+  });
+  await assert.rejects(new ProbeClient(origin, 'fixture-token').call('t3_thread_send'), {
+    message: 'T3 tool t3_thread_send rejected (runtime_mode_escalation_denied)',
+  });
+});

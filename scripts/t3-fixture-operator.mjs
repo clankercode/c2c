@@ -48,7 +48,13 @@ export class FixtureRpc {
           this.#pending.delete(message.requestId);
           clearTimeout(pending.timeout);
           if (message.exit._tag === 'Success') pending.resolve(message.exit.value);
-          else pending.reject(new Error('Fixture RPC command rejected'));
+          else {
+            const detail = JSON.stringify(message.exit?.cause ?? '');
+            const label = detail.includes('not interruptible') ? 'Fixture RPC run not interruptible'
+              : detail.includes('previously rejected') ? 'Fixture RPC command previously rejected'
+              : 'Fixture RPC command rejected';
+            pending.reject(new Error(label));
+          }
         }
       } catch {
         this.#fail('Fixture RPC protocol failure');
@@ -85,9 +91,13 @@ export class FixtureRpc {
     });
   }
 
-  stop(threadId, commandId = crypto.randomUUID()) {
+  stop({ threadId, runId, commandId }) {
+    assert(threadId && runId && commandId, 'persisted interrupt identity');
+    // Stock T3 0.1.0 has no thread.stop. run.interrupt is the Stop command and
+    // requires the target run; a rejected command id stays rejected forever.
     return this.#request('orchestration.dispatchCommand', {
-      type: 'thread.stop', commandId, threadId, reason: 'c2c isolated compatibility fixture',
+      type: 'run.interrupt', commandId, threadId, runId,
+      reason: 'c2c isolated compatibility fixture',
     });
   }
 

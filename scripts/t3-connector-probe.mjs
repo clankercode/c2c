@@ -262,7 +262,15 @@ export class ProbeClient {
     const data = result.structuredContent;
     if (result.isError) {
       // Error messages may include a credential or private transcript; report only a code.
-      throw new Error(`T3 tool ${name} rejected (${data?.code ?? data?.error?.code ?? 'tool_error'})`);
+      // Stock T3 puts the code in the text payload when structuredContent is absent.
+      let parsed;
+      const text = result.content?.find((item) => item.type === 'text')?.text;
+      if (typeof text === 'string') {
+        try { parsed = JSON.parse(text); } catch { parsed = undefined; }
+      }
+      const raw = data?.code ?? data?.error?.code ?? parsed?.code ?? parsed?.error?.code;
+      const code = typeof raw === 'string' && /^[A-Za-z0-9_-]{1,80}$/.test(raw) ? raw : 'tool_error';
+      throw new Error(`T3 tool ${name} rejected (${code})`);
     }
     if (data !== undefined) return data;
     const content = result.content?.find((item) => item.type === 'text');

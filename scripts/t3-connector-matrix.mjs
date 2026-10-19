@@ -407,19 +407,12 @@ export class MatrixRunner {
     check(updated.length > 0, 'Provider retry did not update a stable external error identity');
     record.failedObservation ??= summarizeSnapshot(failed); this.save();
     if (stop) {
-      record.stopCommandId ??= crypto.randomUUID(); this.save();
-      if (!record.stopReceipt) {
-        this.rpc ??= await this.operator();
-        await this.pace(); record.stopOutcome = 'uncertain'; this.save();
-        record.stopReceipt = await this.rpc.stop(record.threadId, record.stopCommandId);
-        record.stopOutcome = 'accepted'; this.save();
-      }
-      const stopped = await this.wait(name, (value) => value.items.some((item) => item.type === 'run_interrupt_request'
-        && item.sourceThreadId === record.threadId && item.runId === first.runId), 'real Stop marker');
-      check(stopped.recentRuns.find((run) => run.runId === first.runId)?.status === 'failed', 'Stop changed the failed-run invariant; review policy');
-      check(recoveryObservation(stopped, this.modelSelection.instanceId).reason === 'stopped', 'Stop did not suppress recovery');
-      this.proof(name, { providerRetryHeld: true, stableErrorUpdated: true, realStopSuppressesRecovery: true,
-        retry: record.retryObservation, failed: record.failedObservation, stopped: summarizeSnapshot(stopped) });
+      // T3 0.1.0 accepts run.interrupt only while the run is still active.
+      // This case has already terminalized, so the proof is the rejection.
+      const outcome = await this.interruptRun(record, first.runId);
+      check(outcome === 'not-interruptible', 'A terminal failed run accepted run.interrupt; review Stop policy');
+      this.proof(name, { providerRetryHeld: true, stableErrorUpdated: true, terminalRunNotInterruptible: true,
+        retry: record.retryObservation, failed: record.failedObservation });
     } else {
       if (!record.intents.continue) check(recoveryObservation(failed, this.modelSelection.instanceId).eligible, 'Updated availability failure was ineligible');
       const recovery = await this.send(name, 'continue', 'Continue', 'queue');
@@ -428,6 +421,68 @@ export class MatrixRunner {
       this.proof(name, { providerRetryHeld: true, stableErrorUpdated: true, recovered: true,
         retry: record.retryObservation, failed: record.failedObservation, completed: summarizeSnapshot(completed) });
     }
+  }
+
+  async interruptRun(record, runId) {
+    record.stopCommandId ??= crypto.randomUUID(); this.save();
+    if (record.stopReceipt) return 'accepted';
+    if (record.stopOutcome === 'not-interruptible') return record.stopOutcome;
+    this.rpc ??= await this.operator();
+    const interrupt = () => this.rpc.stop({
+      threadId: record.threadId, runId, commandId: record.stopCommandId,
+    });
+    await this.pace(); record.stopOutcome = 'uncertain'; this.save();
+    try {
+      record.stopReceipt = await interrupt();
+    } catch (error) {
+      if (error?.message === 'Fixture RPC run not interruptible') {
+        record.stopOutcome = 'not-interruptible'; this.save();
+        return record.stopOutcome;
+      }
+      if (error?.message !== 'Fixture RPC command previously rejected' || record.stopConfirmed) throw error;
+      // A stored rejection omits the original cause. One fresh command id
+      // distinguishes "not interruptible" from an unknown dispatch failure.
+      record.stopRotated = true;
+      record.stopConfirmed = true;
+      record.stopCommandId = crypto.randomUUID();
+      this.save();
+      await this.pace();
+      try {
+        record.stopReceipt = await interrupt();
+      } catch (retryError) {
+        if (retryError?.message !== 'Fixture RPC run not interruptible') throw retryError;
+        record.stopOutcome = 'not-interruptible'; this.save();
+        return record.stopOutcome;
+      }
+    }
+    record.stopOutcome = 'accepted'; this.save();
+    return record.stopOutcome;
+  }
+
+  async interruptWhileActive() {
+    const name = 'interrupt';
+    const record = this.record(name);
+    if (record.result) return;
+    const first = await this.send(name, 'kickoff', `C2C_FIXTURE:retry ${this.state.nonce}`, 'auto');
+    if (!record.retryObservation) {
+      const active = await this.wait(name, (value) => value.thread.activeRunId === first.runId
+        && value.items.some((item) => item.type === 'error' && item.runId === first.runId), 'active provider retry');
+      check(!recoveryObservation(active, this.modelSelection.instanceId).eligible, 'An active provider retry was eligible');
+      record.retryObservation = summarizeSnapshot(active); this.save();
+    }
+    const outcome = await this.interruptRun(record, first.runId);
+    check(outcome === 'accepted', 'Active provider retry rejected run.interrupt');
+    const stopped = await this.wait(name, (value) => {
+      const run = value.recentRuns.find((item) => item.runId === first.runId);
+      return Boolean(run && ['interrupted', 'failed', 'cancelled'].includes(run.status));
+    }, 'interrupted provider retry');
+    const status = stopped.recentRuns.find((run) => run.runId === first.runId)?.status;
+    const policy = recoveryObservation(stopped, this.modelSelection.instanceId);
+    check(!policy.eligible, 'Interrupted run remained recovery-eligible');
+    const marked = stopped.items.some((item) => item.type === 'run_interrupt_request'
+      && item.sourceThreadId === record.threadId && item.runId === first.runId);
+    this.proof(name, { activeInterruptAccepted: true, terminalStatus: status, recoveryReason: policy.reason,
+      runInterruptRequest: marked, stopped: summarizeSnapshot(stopped) });
   }
 
   async fullAccessCase() {
@@ -470,6 +525,7 @@ export class MatrixRunner {
       await this.errorCase('mixed', { subagent: true });
       await this.activeCase();
       await this.retryCase('retry', true);
+      await this.interruptWhileActive();
       await this.retryCase('update', false);
       await this.fullAccessCase();
       check(Object.values(this.state.cases).every((record) => record.result), 'Matrix has unfinished cases');

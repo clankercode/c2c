@@ -139,12 +139,43 @@ The live 83-tool inventory also includes `t3_queue_list`; source verifies it is
 external-read authorized and independently pages queued work. Use it as an
 additional recovery hold guard instead of relying only on 50 recent runs.
 
+## Live behavior matrix, T3 0.1.0
+
+On 2026-10-19 the isolated stock-T3 fixture at
+`/tmp/c2c-t3-compat-6d274fc8` completed `scripts/t3-connector-matrix.mjs` on
+both x-p35 and x-tuf. Server version was 0.1.0. The provider was the bundled
+offline Codex fixture. No real model ran, and no user T3 process or thread was
+used. Private evidence stays in each host's fixture `probe/matrix-state.json`.
+
+Both hosts agreed:
+
+- Availability and text-only failures are recovery-eligible and a queued
+  `Continue` starts a new turn. Code-only, auth, usage, and mixed-root
+  failures are not. A native child failure leaves the root completed and
+  ineligible. A mixed child-plus-root failure is ineligible.
+- `auto` steers the active held run. `queue` does not steer it, and the queued
+  `Continue` drains only after that run completes.
+- A provider retry keeps one error item id, then updates that item from
+  running to failed. While the retry is still active it is not
+  recovery-eligible. After the update, queued `Continue` recovers it.
+- `run.interrupt` during that active retry is accepted. The run ends
+  `interrupted`, T3 records `run_interrupt_request`, and recovery stays
+  ineligible because the run is not `failed` (`not-failed`).
+- The same command after the run has already failed is rejected: the run is
+  not interruptible. A stored rejection drops the original cause, so a later
+  replay must confirm with one fresh command id rather than treating every
+  "previously rejected" result as unknown.
+- A read/operate credential with access `auto` cannot send to a full-access
+  thread. The text payload code is `runtime_mode_escalation_denied`. No run
+  is created. Structured content does not carry that code.
+
+There is no `thread.stop` command. Stop is `orchestration.dispatchCommand`
+with `type: run.interrupt`, `commandId`, `threadId`, and `runId`.
+
 ## Remaining proof before closing T001
 
-- Disposable-root actual projection attribution, idle/active/queue behavior
-  and replay under transport/server restart.
-- Positive and negative external recovery evidence, including root/child/mixed
-  failures, Stop markers, in-place updates and text-classification exclusions.
-- Scope ceiling denial against a designated full-access fixture.
+- Replay across MCP reconnect and T3 process restart, including the
+  re-pair hold rule for uncertain sends.
 - Concrete relay publication and retirement compatibility contract.
-- Independent review and latest-source buildbox checks; no installation yet.
+- Independent review and latest-source buildbox checks. No `just bi` or
+  service installation yet. A real model outage was not reproduced.

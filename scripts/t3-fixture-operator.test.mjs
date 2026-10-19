@@ -12,11 +12,12 @@ class SyntheticSocket extends EventTarget {
 test('fixture operator uses Effect RPC framing and matches Exit requestId', async () => {
   const socket = new SyntheticSocket();
   const rpc = new FixtureRpc(socket);
-  const result = rpc.stop('own-fixture', 'stable-command');
+  const result = rpc.stop({ threadId: 'own-fixture', runId: 'own-run', commandId: 'stable-command' });
   const request = socket.sent[0];
   assert.deepEqual(request, {
     _tag: 'Request', id: 'fixture-1', tag: 'orchestration.dispatchCommand',
-    payload: { type: 'thread.stop', commandId: 'stable-command', threadId: 'own-fixture', reason: 'c2c isolated compatibility fixture' },
+    payload: { type: 'run.interrupt', commandId: 'stable-command', threadId: 'own-fixture', runId: 'own-run',
+      reason: 'c2c isolated compatibility fixture' },
     headers: [],
   });
   assert.throws(() => rpc.resume('own-fixture'), /serialized/);
@@ -38,9 +39,29 @@ test('fixture operator rejects typed failure, protocol defects and connection lo
     await assert.rejects(request, /Fixture RPC (command rejected|protocol failure)/);
     rpc.close();
   }
+  {
+    const socket = new SyntheticSocket();
+    const rpc = new FixtureRpc(socket);
+    const request = rpc.resume('own-fixture');
+    socket.receive({ _tag: 'Exit', requestId: 'fixture-1', exit: { _tag: 'Failure', cause: [
+      { _tag: 'Fail', error: { message: 'Command fixture-1 was previously rejected: private' } },
+    ] } });
+    await assert.rejects(request, /Fixture RPC command previously rejected/);
+    rpc.close();
+  }
+  {
+    const socket = new SyntheticSocket();
+    const rpc = new FixtureRpc(socket);
+    const request = rpc.resume('own-fixture');
+    socket.receive({ _tag: 'Exit', requestId: 'fixture-1', exit: { _tag: 'Failure', cause: [
+      { _tag: 'Fail', error: { message: 'Run own-run is not interruptible.' } },
+    ] } });
+    await assert.rejects(request, /Fixture RPC run not interruptible/);
+    rpc.close();
+  }
   const socket = new SyntheticSocket();
   const rpc = new FixtureRpc(socket);
-  const request = rpc.stop('own-fixture');
+  const request = rpc.stop({ threadId: 'own-fixture', runId: 'own-run', commandId: 'stable-command' });
   socket.close();
   await assert.rejects(request, /connection closed/);
 });
