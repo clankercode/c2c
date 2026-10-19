@@ -35,6 +35,11 @@ val random_nonce_b64 : unit -> string
 val sign_register :
   Relay_identity.t -> alias:string -> relay_url:string -> signed_proof
 
+(** [sign_peer_visibility identity ~alias ~visibility] authenticates the
+    owner-only peer discovery publication operation. *)
+val sign_peer_visibility :
+  Relay_identity.t -> alias:string -> visibility:string -> signed_proof
+
 val sign_room_op :
   Relay_identity.t -> ctx:string -> room_id:string -> alias:string
   -> signed_proof
@@ -107,6 +112,7 @@ val request_sign_ctx : string
 val register_sign_ctx : string
 val receipt_sign_ctx : string
 val room_send_sign_ctx : string
+val peer_visibility_sign_ctx : string
 
 (** [build_registration_receipt_json ~identity ~alias ~client_identity_pk_b64
     ~nonce ~ts] builds a signed registration receipt as a JSON object.

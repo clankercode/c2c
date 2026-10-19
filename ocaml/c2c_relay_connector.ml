@@ -3944,7 +3944,15 @@ let run ?(sync_once = fun shutdown t -> run_sync_once ~shutdown t)
    every pass so a repository first used after service startup joins without
    another `c2c start relay-connect`. *)
 let discover_machine_broker_roots ~primary =
-  let roots = primary :: List.map snd (C2c_repo_fp.list_all_broker_roots ()) in
+  (* The shared sessions broker is the rendezvous for service-owned aliases;
+     keep it in the existing machine connector rather than starting a second
+     per-service registration/heartbeat loop. *)
+  let sessions_root =
+    try C2c_repo_fp.resolve_sessions_broker_root () with _ -> ""
+  in
+  let roots =
+    primary :: sessions_root :: List.map snd (C2c_repo_fp.list_all_broker_roots ())
+  in
   List.fold_left
     (fun acc root ->
        let root = String.trim root in

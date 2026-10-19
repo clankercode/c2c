@@ -13,6 +13,7 @@ let request_sign_ctx = "c2c/v1/request"
 let register_sign_ctx = "c2c/v1/register"
 let receipt_sign_ctx = "c2c/v1/register-receipt"
 let room_send_sign_ctx = "c2c/v1/room-send"
+let peer_visibility_sign_ctx = "c2c/v1/peer-visibility"
 
 (* Build the canonical request blob per spec §5.1. Fields are joined
    with 0x1F, prefixed by the SIGN_CTX literal. *)
@@ -53,6 +54,15 @@ let build_registration_receipt_json ~identity ~alias ~client_identity_pk_b64 ~no
     ("nonce", `String nonce);
     ("sig", `String (b64url_nopad sig_));
   ]
+
+let sign_peer_visibility identity ~alias ~visibility =
+  let pk_b64 = b64url_nopad identity.Relay_identity.public_key in
+  let ts = now_rfc3339_utc () in
+  let nonce = random_nonce_b64 () in
+  let blob = Relay_identity.canonical_msg ~ctx:peer_visibility_sign_ctx
+    [ alias; visibility; pk_b64; ts; nonce ] in
+  let sig_ = Relay_identity.sign identity blob in
+  { identity_pk_b64 = pk_b64; ts; nonce; sig_b64 = b64url_nopad sig_ }
 
 let sign_room_op identity ~ctx ~room_id ~alias =
   let pk_b64 = b64url_nopad identity.Relay_identity.public_key in

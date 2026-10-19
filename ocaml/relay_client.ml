@@ -151,6 +151,9 @@ module Relay_client : sig
   val approve_room_knock_signed : t -> alias:string -> room_id:string -> requester_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val deny_room_knock : t -> alias:string -> room_id:string -> requester_pk:string -> Yojson.Safe.t Lwt.t
   val deny_room_knock_signed : t -> alias:string -> room_id:string -> requester_pk:string -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
+  val set_peer_discovery_visibility_signed :
+    t -> alias:string -> visibility:string -> identity_pk:string -> ts:string
+    -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
   val set_room_visibility : t -> alias:string -> room_id:string -> visibility:string -> Yojson.Safe.t Lwt.t
   val set_room_visibility_signed : t -> alias:string -> room_id:string -> visibility:string
     -> identity_pk:string -> ts:string -> nonce:string -> sig_:string -> Yojson.Safe.t Lwt.t
@@ -952,6 +955,17 @@ end = struct
      Use [set_room_visibility_signed]; this unsigned form is only accepted by
      a dev-gated relay (C2C_REQUIRE_SIGNED_ROOM_OPS=0, no token) and is kept
      for tests/dev tooling. *)
+  let set_peer_discovery_visibility_signed t ~alias ~visibility
+      ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/set_peer_discovery_visibility" (`Assoc [
+      ("alias", `String alias);
+      ("visibility", `String visibility);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
   let set_room_visibility t ~alias ~room_id ~visibility =
     post t "/set_room_visibility" (`Assoc [
       ("alias", `String alias);

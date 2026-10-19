@@ -6306,6 +6306,83 @@ end = struct
                    | Error code -> Error (code, "nonce already seen within TTL")
                    | Ok () -> Ok ())
 
+  (* T006: service-owned peer discovery publication. This is intentionally
+     separate from the room visibility API: only the Ed25519 key already bound
+     to the alias may publish it, and the operation never accepts a Bearer
+     admin token or a caller-supplied force flag. *)
+  let handle_set_peer_discovery_visibility relay body =
+    let alias = get_string body "alias" in
+    let visibility = get_string body "visibility" in
+    let identity_pk_b64 = get_string body "identity_pk" in
+    let sig_b64 = get_string body "sig" in
+    let nonce_b64 = get_string body "nonce" in
+    let timestamp_str = get_string body "ts" in
+    if alias = "" || not (C2c_name.is_valid alias) then
+      respond_bad_request (json_error_str err_bad_request
+        "alias must be a valid bare relay alias")
+    else if visibility <> "public" && visibility <> "private" then
+      respond_bad_request (json_error_str err_bad_request
+        "visibility must be public or private")
+    else if identity_pk_b64 = "" || sig_b64 = "" || nonce_b64 = ""
+            || timestamp_str = "" then
+      respond_bad_request (json_error_str relay_err_missing_proof_field
+        "identity_pk, sig, nonce, and ts are required")
+    else
+      match decode_b64url identity_pk_b64, decode_b64url sig_b64,
+            parse_rfc3339_utc timestamp_str with
+      | Error _, _, _ | _, Error _, _ | _, _, None ->
+          respond_bad_request (json_error_str err_bad_request
+            "invalid owner publication proof encoding or timestamp")
+      | Ok identity_pk, Ok signature, Some ts_client ->
+          if String.length identity_pk <> 32 || String.length signature <> 64 then
+            respond_bad_request (json_error_str err_bad_request
+              "identity_pk must be 32 bytes and sig must be 64 bytes")
+          else
+            let now = Unix.gettimeofday () in
+            let skew = ts_client -. now in
+            if skew > register_ts_future_window || -. skew > register_ts_past_window then
+              respond_unauthorized (json_error_str relay_err_timestamp_out_of_window
+                (Printf.sprintf "ts skew %.1fs outside [-%.0f, +%.0f]"
+                   skew register_ts_past_window register_ts_future_window))
+            else
+              match R.identity_pk_of relay ~alias with
+              | None ->
+                  respond_unauthorized (json_error_str relay_err_alias_identity_mismatch
+                    "alias has no registered identity binding")
+              | Some bound when bound <> identity_pk ->
+                  respond_unauthorized (json_error_str relay_err_alias_identity_mismatch
+                    "identity_pk does not match registered alias owner")
+              | Some _ ->
+                  let blob =
+                    Relay_identity.canonical_msg
+                      ~ctx:Relay_signed_ops.peer_visibility_sign_ctx
+                      [ alias; visibility; identity_pk_b64; timestamp_str; nonce_b64 ]
+                  in
+                  if not (Relay_identity.verify ~pk:identity_pk
+                            ~msg:blob ~sig_:signature) then
+                    respond_unauthorized (json_error_str relay_err_signature_invalid
+                      "Ed25519 signature does not verify")
+                  else
+                    match R.check_register_nonce relay ~nonce:nonce_b64 ~ts:ts_client with
+                    | Error code ->
+                        respond_bad_request (json_error_str code
+                          "nonce already seen within TTL")
+                    | Ok () ->
+                        let visibility =
+                          if visibility = "public" then Public else Private
+                        in
+                        (match R.set_peer_discovery_visibility relay ~alias ~visibility with
+                         | Ok () ->
+                             respond_ok (`Assoc [
+                               ("ok", `Bool true);
+                               ("alias", `String alias);
+                               ("visibility", `String
+                                  (match visibility with Public -> "public" | Private -> "private"));
+                             ])
+                         | Error code ->
+                             respond_not_found (json_error_str code
+                               "alias has no active relay lease"))
+
   let handle_join_room relay ~require_signed body =
     let alias = get_string body "alias" in
     let room_id = get_string body "room_id" in
@@ -7888,6 +7965,12 @@ while relay-connect may own the alias — it takes the lease and delivery wedges
          | Ok j ->
            handle_peek_inbox relay ~verified_alias
              ~require_owner:(inbox_owner_required ~token_configured:(token <> None)) j)
+
+      | `POST, "/set_peer_discovery_visibility" ->
+        let json = parse_body () in
+        (match json with
+         | Error msg -> respond_bad_request (json_error_str err_bad_request ("invalid JSON: " ^ msg))
+         | Ok j -> handle_set_peer_discovery_visibility relay j)
 
       | `POST, "/join_room" ->
         let json = parse_body () in
