@@ -45,3 +45,16 @@ Pending planned work. During execution follow bl-fix-many: read the full ticket,
 ## Lane
 
 This is the serial prerequisite. Do not start dependent implementation until its proof and design decisions are recorded.
+
+
+## Decision: execution lanes
+
+Recorded 2026-10-19 while closing the compatibility proof.
+
+T001 stays serial on feat/t3-connector-contract until this proof is reviewed and merged.
+After that, T002 and T003 run in parallel: T002 owns the native MCP client, T003 owns durable routing state, and those file sets do not overlap.
+T004, T005, and T009 stay one serial service lane because they share service, broker, and CLI files.
+T006 can proceed beside T005 after T004, then joins before T007 because relay wiring touches the service.
+T007, then P9.M2.E1.T001, T002, and T003, stay serial. Installation waits for the exact-source buildbox gate.
+
+Rationale: parallel edits to the same service modules would each review against a base the other lane had already invalidated.
