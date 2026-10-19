@@ -31,6 +31,11 @@ provider credentials, or native caller identity is changed or borrowed.
 - Remote addresses are normal `<alias>@<host_id>` c2c addresses. No new slash
   grammar or DNS-hostname meaning is added. `t3.<thread_id>` is a local resolver
   convenience only and must not steal an existing literal alias.
+- The selected relay for x-p35/x-tuf is `https://relay.c2c.im`. Configuration
+  makes it available; it does not force relay routing. Bare local aliases keep
+  using the local broker. Acceptance covers local direct delivery with relay
+  both disabled and enabled, plus cross-host relay delivery. Direct cross-host
+  peer transport is outside this feature (confirmed by the user).
 - The service uses its own OAuth/PKCE client with `orchestration:read` and
   `orchestration:operate`, access level `auto`. It never requests settings or
   source-control scopes or silently switches to a broader token.
@@ -281,6 +286,21 @@ must immediately stop advertising locally and renewing the relay lease; remote
 expiry latency must be visible. If immediate remote revocation is required,
 it is an explicit c2c relay protocol/deployment change, not an assumed feature.
 
+T001 source/health research confirmed a further compatibility requirement:
+the deployed public relay is 0.18.2 (`a0b52e4`), whose source creates private
+leases and rejects ordinary alias-addressed sends to private recipients.
+There is a backend visibility setter but no exposed owner publication API.
+T006 must add a narrowly authenticated owner publication operation and explicit
+service-alias advertisement intent, handled by the existing machine connector.
+Keep ordinary peers private by default; never use relay-admin credentials or
+infer publication from an untrusted message. Verify actual relay capabilities
+before claiming an alias remotely routable. Any necessary relay deployment
+has its own reviewed/tested rollout, with no silent upgrade or implicit push.
+The configured 300-second lease request is currently floored to 24 hours;
+remote retirement can therefore take 24 hours after the final renewal. The
+separate alias ownership reservation lasts 360 days. Neither is a five-minute
+immediate revoke guarantee.
+
 Tombstones retain aliases, logical IDs and dedupe history. Pending entries for
 a retired thread are held with a reason. Reopening the same thread may reuse
 its own alias; never retarget its pending messages to another thread.
@@ -315,6 +335,10 @@ from the internal worker:
   the candidate run. T3's Stop can leave a failed run's status unchanged but
   adds this marker, so checking status alone is insufficient. Re-read these
   markers in the final preflight, including in-place changes.
+- Use external `t3_queue_list` as an additional queue guard, independently of
+  the capped recent-run window. Any queued item or incomplete/ambiguous queue
+  read holds recovery. Discard queue text from diagnostics; it is not trigger
+  evidence. Require this read capability for versions enabling recovery.
 - Inspect only local `error` items with matching source thread and failed run.
   Read the complete relevant run's evidence within configured page/byte/time
   bounds. Require every failed error for that execution to match the narrow

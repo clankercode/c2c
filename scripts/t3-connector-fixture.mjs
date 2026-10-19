@@ -2,6 +2,7 @@
 // Development-only installed-T3 fixture. Never discovers or restarts a user's T3.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -63,6 +64,22 @@ export function fixtureSettings(root, providerBin) {
     ...Object.fromEntries(['claudeAgent', 'cursor', 'grok', 'muse', 'pi', 'opencode', 'antigravity']
       .map((driver) => [driver, { driver, enabled: false }])),
   } };
+}
+
+export async function reserveLoopbackPort() {
+  const reservation = net.createServer();
+  await new Promise((resolve, reject) => {
+    reservation.once('error', reject);
+    reservation.listen({ host: '127.0.0.1', port: 0, exclusive: true }, resolve);
+  });
+  const address = reservation.address();
+  await new Promise((resolve, reject) => reservation.close((error) => error ? reject(error) : resolve()));
+  if (!address || typeof address === 'string' || !Number.isInteger(address.port) || address.port < 1) {
+    fail('Could not reserve a positive loopback port');
+  }
+  // Stock T3 requires 1..65535. Release before launch; ownership checks fail closed
+  // if another process wins this unavoidable reservation-to-bind race.
+  return address.port;
 }
 
 export function parseProcessStat(raw) {
@@ -180,6 +197,7 @@ function runtimeFor(state) {
   if (!leader || !sameProcess(state.process, leader)) fail('Fixture leader incarnation or executable changed');
   assertOwnedProcess(state, leader);
   const runtime = runtimeState(state.t3Home);
+  if (runtime.port !== state.requestedPort) fail('Fixture runtime port differs from its launch intent');
   const server = processProof(runtime.pid);
   assertOwnedProcess(state, server);
   return runtime;
@@ -250,6 +268,7 @@ export async function startFixture({ root, t3Bin, providerBin = DEFAULT_PROVIDER
       fs.mkdirSync(path.join(root, directory), { mode: 0o700 });
     }
     writePrivate(path.join(state.t3Home, 'userdata/settings.json'), fixtureSettings(root, providerBin), false);
+    state.requestedPort = await reserveLoopbackPort();
     const logFd = fs.openSync(state.logPath, 'wx', 0o600);
     let child;
     try {
@@ -267,7 +286,7 @@ export async function startFixture({ root, t3Bin, providerBin = DEFAULT_PROVIDER
       state.status = 'starting'; save();
       // The synthetic bootstrap secret is only in this private state and the inherited pipe.
       child.stdio[3].on('error', () => {});
-      child.stdio[3].end(`${JSON.stringify({ mode: 'desktop', noBrowser: true, port: 0,
+      child.stdio[3].end(`${JSON.stringify({ mode: 'desktop', noBrowser: true, port: state.requestedPort,
         t3Home: state.t3Home, host: '127.0.0.1', desktopBootstrapToken: state.desktopBootstrapToken,
         shellEnvironmentPrepared: true, tailscaleServeEnabled: false, tailscaleServePort: 443,
       })}\n`);

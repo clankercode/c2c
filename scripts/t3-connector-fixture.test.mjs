@@ -22,14 +22,14 @@ import http from 'node:http';
 import path from 'node:path';
 assert.deepEqual(process.argv.slice(2), ['start', '--bootstrap-fd', '3', '--log-level', 'debug']);
 const bootstrap = JSON.parse(fs.readFileSync(3, 'utf8'));
-assert.equal(bootstrap.port, 0);
+assert(Number.isInteger(bootstrap.port) && bootstrap.port >= 1 && bootstrap.port <= 65535);
 assert.equal(bootstrap.shellEnvironmentPrepared, true);
 assert.equal(bootstrap.host, '127.0.0.1');
 assert.equal(bootstrap.t3Home, path.join(process.cwd(), 't3'));
 fs.writeFileSync(path.join(process.cwd(), 'observed-environment.json'), JSON.stringify(process.env), { mode: 0o600 });
 fs.writeFileSync(path.join(process.cwd(), 'observed-bootstrap.json'), JSON.stringify(bootstrap), { mode: 0o600 });
 const server = http.createServer((_request, response) => response.writeHead(401).end());
-server.listen(0, '127.0.0.1', () => {
+server.listen(bootstrap.port, '127.0.0.1', () => {
   const port = server.address().port;
   fs.writeFileSync(path.join(bootstrap.t3Home, 'userdata/server-runtime.json'), JSON.stringify({
     version: 1, pid: process.pid, port, host: '127.0.0.1', origin: 'http://127.0.0.1:' + port,
@@ -128,6 +128,8 @@ test('start, status, and stop own one disposable process and keep bootstrap priv
   assert(!JSON.stringify(started).includes(state.desktopBootstrapToken));
   const observed = readPrivate(path.join(options.root, 'observed-bootstrap.json'));
   assert.equal(observed.desktopBootstrapToken, state.desktopBootstrapToken);
+  assert.equal(observed.port, state.requestedPort);
+  assert.equal(new URL(started.origin).port, String(state.requestedPort));
   const environment = readPrivate(path.join(options.root, 'observed-environment.json'));
   assert.equal(environment.HOME, path.join(options.root, 'home'));
   assert.equal(environment.C2C_MCP_SESSION_ID, undefined);

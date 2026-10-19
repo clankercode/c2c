@@ -42,6 +42,20 @@ after verifying a user-private primary group with no other observed primary
 or supplemental members. This assumes complete Unix account/group enumeration;
 non-enumerable/shared groups fail closed. T3 permissions were not changed.
 
+At `92171adf`, all 37 focused protocol/lifecycle tests passed on each box,
+zero failures/skips. Independent review additionally caught a mock handshake
+bug (ID-less notifications incorrectly emitted id-null errors); a request-order
+barrier regression was added and the corrected source rerun before stock-T3 use.
+Probe, fake-provider and isolated lifecycle source reviews passed.
+
+The first isolated stock-T3 launch failed safely: its bootstrap schema rejects
+port 0 (positive 1..65535 required), unlike the initial fixture assumption.
+Only the owned test process groups were stopped, with private evidence retained.
+The harness now reserves a positive loopback port and verifies the published
+owned runtime matches it. Git checkout made the synthetic executable 0775 under
+the hosts' umask; only that test-owned file was normalized to 0755 before use.
+No T3 executable or user runtime permissions/configuration were changed.
+
 ## Buildbox setup and checks
 
 Both hosts are x86_64, Node 22.22.1, npm 9.2.0, Python 3.14.4, pytest 9.0.2,
@@ -110,6 +124,20 @@ Read-only preflight found no activated relay, connector or relay service on
 either buildbox. No public health/registration/send call was made. The user
 has been asked which relay to use for installed services; isolated relay
 fixtures can be used while that is undecided. No implicit relay activation.
+
+Subsequent user decisions: use `https://relay.c2c.im` for the installed
+services, while keeping local delivery direct. The user confirmed acceptance
+means local direct plus cross-host relay, not a new direct cross-host transport.
+An authorized read-only `/health` call reported relay 0.18.2, git a0b52e4,
+protocol 1, production auth, private reachability consent_gated. The matching
+local source has the private-default/public-send restriction, so the older
+public-default compatibility escape does not apply. No registration or message
+was sent to that relay. T006's publication capability needs an explicit
+reviewed/tested relay rollout; no deployment has happened.
+
+The live 83-tool inventory also includes `t3_queue_list`; source verifies it is
+external-read authorized and independently pages queued work. Use it as an
+additional recovery hold guard instead of relying only on 50 recent runs.
 
 ## Remaining proof before closing T001
 

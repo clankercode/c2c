@@ -29,6 +29,7 @@ Pending planned work. During execution follow bl-fix-many: read the full ticket,
 - Reinitialize MCP transport on reconnect while retaining the same OAuth credential. Treat re-pairing/revocation as an explicit credential-generation change.
 - Expose only environment/project/thread reads and thread sends required by the service. Report auto permission ceiling accurately.
 - Expose typed capabilities driverKind, activity evidence, recent runs, holds and item re-reads needed by recovery. Preserve omitted fields as unknown, enforce page/byte/time limits and distinguish complete from truncated evidence.
+- Include t3_queue_list for the recovery queue guard; its contents do not enter failure matching or logs. Queue reads are serialized and bounded like other MCP calls.
 - The current OAuth API has no refresh-token grant. Reconnect transport automatically with the same credential; expiry/revocation requires explicit re-pairing, never silent escalation.
 
 ## Acceptance Criteria

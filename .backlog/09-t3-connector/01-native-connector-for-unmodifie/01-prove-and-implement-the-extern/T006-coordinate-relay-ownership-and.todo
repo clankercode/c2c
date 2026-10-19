@@ -28,6 +28,9 @@ Pending planned work. During execution follow bl-fix-many: read the full ticket,
 - Route incoming remote DATA to the exact local target and preserve the reply alias@host_id. Use durable-before-ACK transport and bounded retries.
 - Retirement/uninstall stops renewal and removes only exact service-owned routes. Use a verified existing release API or explicitly bounded TTL retirement, not an invented immediate revoke guarantee.
 - Preserve foreign leases, ordinary c2c peers and pending mail through reconnection, relay outage, identity mismatch and repair.
+- T001 confirmed the selected public relay (0.18.2 a0b52e4) defaults leases private and lacks an exposed owner publication API. Implement a narrow signed owner publication operation plus explicit service-owned advertisement intent through the existing machine connector; ordinary private peers stay private. Capability-gate remote readiness and record necessary reviewed/tested relay rollout. Do not use admin credentials or silently deploy.
+- Include the configured shared sessions broker in machine connector discovery and preserve canonical sender@opaque_host routes in the existing outbox path. Retiring only stops renewal unless a verified owner revoke is added; current TTL floor is 24 hours after final renewal, distinct from 360-day alias ownership reservation.
+- User chose https://relay.c2c.im for the installed services, but activation must not reroute local aliases. Test local direct delivery with relay disabled and enabled, and cross-host relay delivery. No new direct cross-host transport in this feature.
 
 ## Acceptance Criteria
 
