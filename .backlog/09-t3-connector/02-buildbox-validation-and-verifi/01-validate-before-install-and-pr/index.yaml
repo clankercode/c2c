@@ -20,7 +20,7 @@ tasks:
       file: T001-pass-exact-source-build-and-fu.todo
       id: T001
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Pass exact-source build and full tests on a buildbox
     - complexity: high

@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-19T18:51:47Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-10-19T08:16:42Z"
@@ -7,11 +9,11 @@ depends_on:
 estimate_hours: 6
 id: P9.M2.E1.T001
 priority: high
-started_at: null
-status: pending
+started_at: "2026-10-19T18:51:47Z"
+status: in_progress
 tags: []
 title: Pass exact-source build and full tests on a buildbox
-updated_at: "2026-10-19T08:16:42Z"
+updated_at: "2026-10-19T18:51:47Z"
 ---
 
 # Pass exact-source build and full tests on a buildbox
