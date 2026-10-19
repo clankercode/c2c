@@ -72,7 +72,10 @@ def test_c2c_session_id_does_not_select_stale_claude_session(tmp_path: Path) -> 
     output = run_quota(tmp_path, {"C2C_MCP_SESSION_ID": old_session})
 
     assert "5h: 91%" in output
-    assert "cost: $9.99" in output
+    # Cost is intentionally omitted from the statusline output (the script's
+    # account-level display is quota-only; see c9a33d).  Keep the fixture's
+    # cost field so this test still exercises selection of a complete
+    # statusline record without coupling the assertion to the retired field.
     assert "5h: 10%" not in output
 
 
@@ -97,5 +100,6 @@ def test_claude_session_id_selects_that_session(tmp_path: Path) -> None:
     output = run_quota(tmp_path, {"CLAUDE_SESSION_ID": current_session})
 
     assert "5h: 23%" in output
-    assert "cost: $2.34" in output
+    # Cost is intentionally omitted from the statusline output; the selected
+    # session is proved by its quota percentage below.
     assert "5h: 91%" not in output

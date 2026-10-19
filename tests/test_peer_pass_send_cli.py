@@ -66,6 +66,7 @@ class PeerPassSendCliTests(unittest.TestCase):
     def test_peer_pass_send_signs_artifact_and_dms_target(self):
         result = run_cli(
             [
+                "dev",
                 "peer-pass",
                 "send",
                 "coordinator1",
@@ -82,6 +83,8 @@ class PeerPassSendCliTests(unittest.TestCase):
                 ".worktrees/test",
                 "--notes",
                 "ready",
+                "--build-rc",
+                "0",
                 "--json",
             ],
             cwd=self.repo,
@@ -97,7 +100,11 @@ class PeerPassSendCliTests(unittest.TestCase):
         if not artifact_path.is_absolute():
             artifact_path = self.repo / artifact_path
         self.assertTrue(artifact_path.exists())
-        verify = run_cli(["peer-pass", "verify", str(artifact_path)], cwd=self.repo, env=self.env)
+        verify = run_cli(
+            ["dev", "peer-pass", "verify", str(artifact_path)],
+            cwd=self.repo,
+            env=self.env,
+        )
         self.assertEqual(verify.returncode, 0, verify.stderr)
         self.assertIn("VERIFIED", verify.stdout)
 

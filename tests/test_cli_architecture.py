@@ -148,8 +148,6 @@ def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
         "roles_dir",
         "role_file_path",
         "read_role",
-        "yaml_scalar",
-        "write_role",
         "prompt_for_role",
         "default_kickoff_prompt",
         "agent_file_path",
@@ -176,6 +174,16 @@ def test_managed_lifecycle_commands_are_extracted_from_monolithic_cli():
     assert_token_reference(root_wiring_src(), "C2c_managed_cmd.reset_thread")
     assert_token_reference(root_and_dev_src, "C2c_managed_cmd.restart_self")
     assert_token_reference(root_and_dev_src, "C2c_managed_cmd.restart_self_cmd")
+
+
+def test_role_yaml_serializer_is_owned_by_the_role_module():
+    """Role serialization helpers must not drift back into the CLI launcher."""
+    c2c_ml = (REPO / "ocaml" / "cli" / "c2c.ml").read_text(encoding="utf-8")
+    role_ml = REPO / "ocaml" / "c2c_role.ml"
+
+    assert role_ml.exists(), "expected canonical role module"
+    role_src = role_ml.read_text(encoding="utf-8")
+    assert_ocaml_value_extracted(c2c_ml, role_src, "yaml_scalar")
 
 
 def test_gui_command_is_extracted_from_monolithic_cli():
@@ -708,16 +716,20 @@ def test_send_commands_are_extracted_from_monolithic_cli():
 
     assert send_ml.exists(), "expected extracted send command module"
     send_src = send_ml.read_text(encoding="utf-8")
-
-    for name in [
-        "find_alias_in_all_broots",
-        "find_alias_in_all_brokers",
-        "send_cmd",
-        "send_all_cmd",
-        "send",
-        "send_all",
-    ]:
+    # Alias lookup is shared by send, list, and other commands.  It lives in
+    # the CLI helper module; keep the guard tied to the owning module instead
+    # of requiring duplicated definitions in ``c2c_send_cmd.ml``.
+    for name in ["send_cmd", "send_all_cmd", "send", "send_all"]:
         assert_ocaml_value_extracted(c2c_ml, send_src, name)
+
+    # The broker-root scans are shared with relay routing and intentionally
+    # live in the helper module.  Keep an ownership guard without requiring
+    # send_cmd to duplicate those definitions.
+    helpers_src = (REPO / "ocaml" / "cli" / "c2c_cli_helpers.ml").read_text(
+        encoding="utf-8"
+    )
+    for name in ["find_alias_in_all_broots", "find_alias_in_all_brokers"]:
+        assert_ocaml_value_extracted(c2c_ml, helpers_src, name)
 
     assert_token_reference(root_wiring_src(), "C2c_send_cmd.send")
     assert_token_reference(root_wiring_src(), "C2c_send_cmd.send_all")
