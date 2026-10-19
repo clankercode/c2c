@@ -446,6 +446,18 @@ let test_stop_supervisor_accepts_graceful_term_record_removal () =
         in
         wait_for_result false
       in
+      (* The result pipe and the child's wait status are independent events:
+         the stopper can publish its result just before the parent observes
+         the supervisor's exit. Take one final non-blocking reap sample before
+         asserting the lifecycle outcome, avoiding a scheduler-dependent
+         false failure on otherwise healthy build boxes. *)
+      let supervisor_reaped =
+        if supervisor_reaped then true
+        else
+          match Unix.waitpid [ Unix.WNOHANG ] supervisor with
+          | 0, _ -> false
+          | _, _ -> true
+      in
       check bool "stop caller reaped graceful supervisor" true supervisor_reaped;
       ignore (Unix.waitpid [] stopper);
       check bool "graceful TERM accepts supervisor-owned record removal" true stopped;

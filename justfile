@@ -342,7 +342,10 @@ build-all: build
 # --force-test-env bypasses the pre-flight process-count guard (needed when
 # running alongside a live swarm; safe for CI where no swarm is running).
 test-py:
-    python3 -m pytest tests/ -q --tb=short --force-test-env
+    # Always exercise the freshly built candidate. A clean buildbox may not
+    # have a globally installed c2c, and falling back to a missing or stale
+    # ~/.local/bin/c2c turns ordinary tests into misleading setup failures.
+    PATH="$PWD/_build/default/ocaml/cli:$PATH" C2C_BIN="$PWD/_build/default/ocaml/cli/c2c.exe" python3 -m pytest tests/ -q --tb=short --force-test-env
 
 # Run OCaml tests only
 test-ocaml:
