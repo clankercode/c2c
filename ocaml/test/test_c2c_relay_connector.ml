@@ -738,7 +738,11 @@ let test_inbound_machine_rate_serializes_concurrent_processes () =
     Unix.close start_r;
     ignore (Unix.write_substring start_w "xx" 0 2);
     Unix.close start_w;
-    let status pid = match snd (Unix.waitpid [] pid) with
+    let rec waitpid_eintr pid =
+      try Unix.waitpid [] pid with
+      | Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_eintr pid
+    in
+    let status pid = match snd (waitpid_eintr pid) with
       | Unix.WEXITED code -> code
       | _ -> 99
     in
