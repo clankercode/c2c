@@ -59,7 +59,7 @@ test('runtime validation checks PID incarnation and listener ownership', async (
   const origin = await fixture(t, (_request, response) => response.end());
   const runtime = { pid: process.pid, origin, port: Number(new URL(origin).port), startedAt: new Date().toISOString() };
   const filename = path.join(directory, 'userdata/server-runtime.json');
-  fs.writeFileSync(filename, JSON.stringify(runtime));
+  fs.writeFileSync(filename, JSON.stringify(runtime), { mode: 0o600 });
   const proof = runtimeState(directory).proof;
   assert.equal(proof.pid, process.pid);
   assert(proof.listeners.length > 0);
