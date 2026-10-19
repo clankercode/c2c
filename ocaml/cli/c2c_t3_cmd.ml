@@ -356,19 +356,19 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery =
 
 let foreground_cmd foreground once interval mode cross_repo recovery =
   if not foreground && not once then Printf.eprintf "starting c2c T3 connector in foreground (Ctrl-C to stop)\n%!";
-  match authorized () with
-  | Error error -> print_error error; 1
-  | Ok (client, runtime) ->
-      with_state (fun state ->
-        let rec loop first =
-          let () =
-            match service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery with
-            | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error
-            | Ok (_scan, _applied) -> ()
-          in
-          if once then 0 else (ignore (Unix.select [] [] [] interval); loop false)
-        in
-        loop true)
+  with_state (fun state ->
+    let rec loop first =
+      let () =
+        match authorized ~rebind:true () with
+        | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error
+        | Ok (client, runtime) ->
+            (match service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery with
+             | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error
+             | Ok (_scan, _applied) -> ())
+      in
+      if once then 0 else (ignore (Unix.select [] [] [] interval); loop false)
+    in
+    loop true)
 
 let foreground_term =
   let foreground = Cmdliner.Arg.(value & flag & info [ "foreground" ] ~doc:"Run in the foreground (the default for this command).") in
