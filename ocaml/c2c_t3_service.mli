@@ -161,13 +161,13 @@ type send =
   client_request_id:string ->
   (C2c_t3_client.receipt, C2c_t3_client.error) result Lwt.t
 
-val format_data : C2c_mcp.message -> (string, string) result
+val format_data : ?cross_repo:bool -> C2c_mcp.message -> (string, string) result
 (** Render one broker message as explicit untrusted DATA followed by one
     canonical reply route. Sender aliases are validated before interpolation;
     the body is never interpreted as a footer or shell fragment. *)
 
 val accept_inbox :
-  ?mode:delivery_mode -> owner:owner -> state:C2c_t3_state.t ->
+  ?mode:delivery_mode -> ?cross_repo:bool -> owner:owner -> state:C2c_t3_state.t ->
   mapping:C2c_t3_state.mapping -> unit -> accept_result
 (** Peek a service-owned inbox, persist each request, then acknowledge the
     exact broker message ID. A failure before acknowledgement leaves mail in

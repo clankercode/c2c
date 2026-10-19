@@ -286,8 +286,13 @@ let test_data_frame_and_footer_are_hostile_safe () =
   Alcotest.(check int) "one trusted footer" 1
     (count_substring "--- c2c trusted reply route ---" formatted);
   Alcotest.(check bool) "body retained" true (String.contains formatted 'p');
-  Alcotest.(check int) "remote switch" 1
-    (count_substring "c2c send --cross-repo 'peer-1@deadbeef'" formatted);
+  Alcotest.(check int) "remote route stays relay-addressed" 1
+    (count_substring "c2c send 'peer-1@deadbeef'" formatted);
+  let local_shared =
+    check_ok (S.format_data ~cross_repo:true (t3_message ~from_alias:"local-peer" "body"))
+  in
+  Alcotest.(check int) "shared broker switch is explicit" 1
+    (count_substring "c2c send --cross-repo 'local-peer'" local_shared);
   Alcotest.(check bool) "malformed route rejected" true
     (match S.format_data (t3_message ~from_alias:"peer'$(touch pwned)" "x") with
      | Error _ -> true | Ok _ -> false);
