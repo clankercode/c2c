@@ -58,7 +58,8 @@ dependencies = identity("dependency_id", [["opam", "list", "--installed", "--sho
 for label, current in (("toolchain", toolchain), ("dependencies", dependencies)):
     expected = receipt.get(label, receipt.get(label + "_id"))
     if isinstance(expected, dict): expected = expected.get("id", expected.get("sha256"))
-    if expected is not None and str(expected) != current: fail(f"{label} identity mismatch")
+    if expected is None: fail(f"receipt has no {label} identity")
+    if str(expected) != current: fail(f"{label} identity mismatch")
 
 artifacts = {
     "c2c": "_build/default/ocaml/cli/c2c.exe",
@@ -70,7 +71,7 @@ artifacts = {
     "c2c-post-compact-hook": "_build/default/ocaml/tools/c2c_post_compact_hook_bin.exe",
     "c2c-deliver-inbox": "_build/default/ocaml/cli/c2c_deliver_inbox.exe",
 }
-raw = receipt.get("artifacts")
+raw = receipt.get("artifacts", receipt.get("binaries"))
 if isinstance(raw, list):
     entries = {item.get("name", item.get("artifact")): item for item in raw if isinstance(item, dict)}
 elif isinstance(raw, dict): entries = raw
