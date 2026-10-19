@@ -50,6 +50,19 @@ let test_lifecycle_and_permission () =
     (match access (Some "auto") (thread ~settled:true "settled") with
      | S.Retired _ -> true | _ -> false)
 
+let test_point_read_error_contract () =
+  Alcotest.(check bool) "thread not found" true
+    (S.error_is_same_environment_not_found
+       (C2c_t3_client.Tool_rejected
+          { tool = "t3_thread_read"; code = "thread_not_found" }));
+  Alcotest.(check bool) "other tool error held" false
+    (S.error_is_same_environment_not_found
+       (C2c_t3_client.Tool_rejected
+          { tool = "t3_thread_read"; code = "not_found" }));
+  Alcotest.(check bool) "auth held" false
+    (S.error_is_same_environment_not_found
+       (C2c_t3_client.Auth_denied { status = 401 }))
+
 let test_partial_scan_never_retires () =
   let old = mapping ~id:"missing" ~alias:"t3-old" () in
   let plan =
@@ -222,7 +235,8 @@ let test_apply_retire_and_reopen () =
 let () =
   Alcotest.run "c2c_t3_service"
     [ ("decode", [ Alcotest.test_case "root and fork" `Quick test_root_and_fork;
-                    Alcotest.test_case "lifecycle" `Quick test_lifecycle_and_permission ]);
+                    Alcotest.test_case "lifecycle" `Quick test_lifecycle_and_permission;
+                    Alcotest.test_case "point read errors" `Quick test_point_read_error_contract ]);
       ("reconcile", [ Alcotest.test_case "partial" `Quick test_partial_scan_never_retires;
                        Alcotest.test_case "point reads" `Quick test_complete_scan_requires_point_read;
                        Alcotest.test_case "titles" `Quick test_title_change_duplicate_names ]);

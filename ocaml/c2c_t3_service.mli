@@ -74,6 +74,9 @@ val read_bound_thread :
     not-found codes become [Not_found_same_environment]; authentication,
     transport and all other tool failures remain [Failed]. *)
 
+val error_is_same_environment_not_found : C2c_t3_client.error -> bool
+(** Exact external MCP contract code used by [read_bound_thread]. *)
+
 type candidate = { thread : thread; mapping : C2c_t3_state.mapping option }
 
 type plan = {

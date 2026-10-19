@@ -235,10 +235,15 @@ type point_read =
   | Failed of string
 
 let same_environment_not_found = function
+  (* OrchestratorMcpService's external contract uses exactly
+     [thread_not_found] for t3_thread_read. Do not broaden this to generic
+     HTTP/RPC not-found responses: those can describe an endpoint or project
+     failure rather than this same environment's thread. *)
   | T3.Tool_rejected { tool = "t3_thread_read"; code } ->
-      List.mem (String.lowercase_ascii code)
-        [ "thread_not_found"; "not_found"; "unknown_thread"; "thread_missing" ]
+      String.lowercase_ascii code = "thread_not_found"
   | _ -> false
+
+let error_is_same_environment_not_found = same_environment_not_found
 
 let read_bound_thread (client : T3.client) ~thread_id =
   T3.read_activity client ~thread_id () >|= function
