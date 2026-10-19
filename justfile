@@ -346,7 +346,10 @@ test-py:
     # have a globally installed c2c, and falling back to a missing or stale
     # ~/.local/bin/c2c turns ordinary tests into misleading setup failures.
     ln -sf "$PWD/_build/default/ocaml/cli/c2c.exe" "$PWD/_build/default/ocaml/cli/c2c"
-    PATH="$PWD/_build/default/ocaml/cli:$PATH" C2C_BIN="$PWD/_build/default/ocaml/cli/c2c.exe" python3 -m pytest tests/ -q --tb=short --force-test-env
+    # The live suite still covers deprecated Python compatibility modules that
+    # now live under deprecated/. Keep this recipe hermetic instead of relying
+    # on a caller-provided PYTHONPATH (or an installed copy of those modules).
+    PATH="$PWD/_build/default/ocaml/cli:$PATH" C2C_BIN="$PWD/_build/default/ocaml/cli/c2c.exe" PYTHONPATH="$PWD/deprecated" python3 -m pytest tests/ -q --tb=short --force-test-env
 
 # Run OCaml tests only
 test-ocaml:

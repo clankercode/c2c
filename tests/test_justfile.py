@@ -21,6 +21,13 @@ def combined_output(result: subprocess.CompletedProcess[str]) -> str:
 
 
 class JustfileTests(unittest.TestCase):
+    def test_test_py_exposes_deprecated_compatibility_modules(self):
+        result = just_dry_run("test-py")
+        output = combined_output(result)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('PYTHONPATH="$PWD/deprecated"', output)
+
     def test_install_installs_ocaml_binaries_not_python_wrappers(self):
         result = just_dry_run("install")
         output = combined_output(result)
