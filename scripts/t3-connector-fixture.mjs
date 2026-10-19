@@ -23,7 +23,7 @@ const contained = (root, filename) => filename === root || filename.startsWith(`
 
 export function parseArguments(args) {
   const [command, ...rest] = args;
-  if (!['start', 'stop', 'status'].includes(command)) fail('Expected start, stop, or status');
+  if (!['start', 'restart', 'stop', 'status'].includes(command)) fail('Expected start, restart, stop, or status');
   const options = {};
   for (let index = 0; index < rest.length; index += 2) {
     const key = rest[index];
@@ -242,6 +242,115 @@ async function stopOwned(state, save, timeoutMs) {
   return summary(state, null, 'stopped');
 }
 
+function assertPrivateLog(filename) {
+  const stat = fs.lstatSync(filename);
+  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077)) {
+    fail('Fixture log must remain a same-user private regular file');
+  }
+}
+
+function validateRestart(state, providerBin) {
+  if (canonicalExecutable(providerBin) !== state.providerBin
+      || !Number.isInteger(state.requestedPort) || state.requestedPort < 1 || state.requestedPort > 65535
+      || !/^[A-Za-z0-9_-]{43}$/.test(state.desktopBootstrapToken ?? '')) {
+    fail('Restart must preserve the recorded provider, positive port, and bootstrap identity');
+  }
+  for (const name of ['home', 'codex-home', 'xdg-config', 'xdg-data', 'xdg-cache']) {
+    assertPrivateDirectory(path.join(state.root, name));
+  }
+  const settingsPath = path.join(state.t3Home, 'userdata/settings.json');
+  const settingsStat = fs.lstatSync(settingsPath);
+  // Stock T3 can atomically rewrite settings with its normal file mode. The
+  // validated 0700 enclosing directories keep this synthetic fixture private.
+  if (!settingsStat.isFile() || settingsStat.uid !== process.getuid() || settingsStat.size > 1024 * 1024) {
+    fail('Restart requires a bounded same-user settings file inside its private T3 home');
+  }
+  const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
+  const codex = settings.providerInstances?.codex;
+  if (codex?.driver !== 'codex' || codex.enabled !== true
+      || codex.config?.binaryPath !== state.providerBin
+      || codex.config?.homePath !== path.join(state.root, 'codex-home')
+      || Object.entries(settings.providerInstances).some(([id, config]) => id !== 'codex' && config?.enabled !== false)) {
+    fail('Restart requires the original isolated provider configuration');
+  }
+  assertPrivateLog(state.logPath);
+}
+
+async function launchOwned(state, save, { startTimeoutMs, stopTimeoutMs, appendLog = false }) {
+  const environment = fixtureEnvironment(state.root, state.ownerId);
+  const logFd = appendLog
+    ? fs.openSync(state.logPath, fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_NOFOLLOW)
+    : fs.openSync(state.logPath, 'wx', 0o600);
+  let child;
+  try {
+    const log = fs.fstatSync(logFd);
+    if (!log.isFile() || log.uid !== process.getuid() || (log.mode & 0o077)) fail('Fixture log ownership changed');
+    delete state.process;
+    delete state.runtime;
+    delete state.stopMembers;
+    delete state.startupFailed;
+    state.launchCount = (state.launchCount ?? 0) + 1;
+    state.status = 'launching'; save();
+    child = spawn(state.t3Bin, ['start', '--bootstrap-fd', '3', '--log-level', 'debug'], {
+      cwd: state.root, env: environment, detached: true, stdio: ['ignore', logFd, logFd, 'pipe'],
+    });
+    let spawnError;
+    child.on('error', (error) => { spawnError = error; });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    const launched = processProof(child.pid);
+    if (!launched) fail('Fixture exited before its process identity could be recorded');
+    state.process = launched;
+    assertOwnedProcess(state, launched);
+    state.status = 'starting'; save();
+    // The synthetic bootstrap secret is only in this private state and the inherited pipe.
+    child.stdio[3].on('error', () => {});
+    child.stdio[3].end(`${JSON.stringify({ mode: 'desktop', noBrowser: true, port: state.requestedPort,
+      t3Home: state.t3Home, host: '127.0.0.1', desktopBootstrapToken: state.desktopBootstrapToken,
+      shellEnvironmentPrepared: true, tailscaleServeEnabled: false, tailscaleServePort: 443,
+    })}\n`);
+    child.stdio[3].unref?.();
+    const deadline = Date.now() + startTimeoutMs;
+    while (Date.now() < deadline) {
+      if (spawnError) fail('Installed T3 fixture spawn failed');
+      const current = processProof(child.pid);
+      if (!current) fail('Installed T3 fixture exited during startup');
+      if (!sameIncarnation(launched, current)) fail('Fixture leader incarnation changed during startup');
+      assertOwnedProcess(state, current);
+      // An installed launcher may exec its bundled runtime; record the observed final executable.
+      state.process = current;
+      let runtime;
+      try { runtime = runtimeFor(state); } catch { /* Runtime state is published asynchronously. */ }
+      if (runtime) {
+        let response;
+        try {
+          response = await fetch(`${runtime.origin}/mcp`, {
+            redirect: 'error', signal: AbortSignal.timeout(Math.min(1000, Math.max(1, deadline - Date.now()))),
+          });
+          await response.body?.cancel();
+        } catch { /* The listener can precede MCP readiness. */ }
+        if (response?.status === 401) {
+          state.status = 'running'; state.runtime = { pid: runtime.pid, origin: runtime.origin,
+            serverVersion: runtime.serverVersion, startedAt: runtime.startedAt };
+          state.readyAt = new Date().toISOString(); save();
+          child.unref();
+          return summary(state, runtime, 'running');
+        }
+      }
+      save();
+      await delay(100);
+    }
+    fail('Installed T3 fixture startup timed out; inspect private server.log');
+  } catch (error) {
+    state.startupFailed = true;
+    try { await stopOwned(state, save, stopTimeoutMs); }
+    catch { state.status = 'cleanup_required'; save(); }
+    throw error;
+  } finally {
+    child?.unref();
+    fs.closeSync(logFd);
+  }
+}
+
 export async function startFixture({ root, t3Bin, providerBin = DEFAULT_PROVIDER,
   startTimeoutMs = DEFAULT_START_TIMEOUT, stopTimeoutMs = DEFAULT_STOP_TIMEOUT }) {
   if (process.platform !== 'linux') fail('Fixture process ownership requires Linux /proc');
@@ -263,74 +372,27 @@ export async function startFixture({ root, t3Bin, providerBin = DEFAULT_PROVIDER
   const save = () => writePrivate(statePath, state);
   save();
   return withStateLock(lockPath, async () => {
-    const environment = fixtureEnvironment(root, state.ownerId);
     for (const directory of ['home', 'codex-home', 'xdg-config', 'xdg-data', 'xdg-cache', 't3', 't3/userdata']) {
       fs.mkdirSync(path.join(root, directory), { mode: 0o700 });
     }
     writePrivate(path.join(state.t3Home, 'userdata/settings.json'), fixtureSettings(root, providerBin), false);
     state.requestedPort = await reserveLoopbackPort();
-    const logFd = fs.openSync(state.logPath, 'wx', 0o600);
-    let child;
-    try {
-      state.status = 'launching'; save();
-      child = spawn(t3Bin, ['start', '--bootstrap-fd', '3', '--log-level', 'debug'], {
-        cwd: root, env: environment, detached: true, stdio: ['ignore', logFd, logFd, 'pipe'],
-      });
-      let spawnError;
-      child.on('error', (error) => { spawnError = error; });
-      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
-      const launched = processProof(child.pid);
-      if (!launched) fail('Fixture exited before its process identity could be recorded');
-      state.process = launched;
-      assertOwnedProcess(state, launched);
-      state.status = 'starting'; save();
-      // The synthetic bootstrap secret is only in this private state and the inherited pipe.
-      child.stdio[3].on('error', () => {});
-      child.stdio[3].end(`${JSON.stringify({ mode: 'desktop', noBrowser: true, port: state.requestedPort,
-        t3Home: state.t3Home, host: '127.0.0.1', desktopBootstrapToken: state.desktopBootstrapToken,
-        shellEnvironmentPrepared: true, tailscaleServeEnabled: false, tailscaleServePort: 443,
-      })}\n`);
-      child.stdio[3].unref?.();
-      const deadline = Date.now() + startTimeoutMs;
-      while (Date.now() < deadline) {
-        if (spawnError) fail('Installed T3 fixture spawn failed');
-        const current = processProof(child.pid);
-        if (!current) fail('Installed T3 fixture exited during startup');
-        if (!sameIncarnation(launched, current)) fail('Fixture leader incarnation changed during startup');
-        assertOwnedProcess(state, current);
-        // An installed launcher may exec its bundled runtime; record the observed final executable.
-        state.process = current;
-        let runtime;
-        try { runtime = runtimeFor(state); } catch { /* Runtime state is published asynchronously. */ }
-        if (runtime) {
-          let response;
-          try {
-            response = await fetch(`${runtime.origin}/mcp`, {
-              redirect: 'error', signal: AbortSignal.timeout(Math.min(1000, Math.max(1, deadline - Date.now()))),
-            });
-            await response.body?.cancel();
-          } catch { /* The listener can precede MCP readiness. */ }
-          if (response?.status === 401) {
-            state.status = 'running'; state.runtime = { pid: runtime.pid, origin: runtime.origin,
-              serverVersion: runtime.serverVersion, startedAt: runtime.startedAt };
-            state.readyAt = new Date().toISOString(); save();
-            child.unref();
-            return summary(state, runtime, 'running');
-          }
-        }
-        save();
-        await delay(100);
-      }
-      fail('Installed T3 fixture startup timed out; inspect private server.log');
-    } catch (error) {
-      state.startupFailed = true;
-      try { await stopOwned(state, save, stopTimeoutMs); }
-      catch { state.status = 'cleanup_required'; save(); }
-      throw error;
-    } finally {
-      child?.unref();
-      fs.closeSync(logFd);
-    }
+    return launchOwned(state, save, { startTimeoutMs, stopTimeoutMs });
+  });
+}
+
+export async function restartFixture({ root, t3Bin, providerBin = DEFAULT_PROVIDER,
+  startTimeoutMs = DEFAULT_START_TIMEOUT, stopTimeoutMs = DEFAULT_STOP_TIMEOUT }) {
+  // Check before acquiring the helper lock, so absent roots are never created.
+  validateRestart(readFixtureState(root, t3Bin), providerBin);
+  const { statePath, lockPath } = statePaths(root);
+  return withStateLock(lockPath, async () => {
+    const state = readFixtureState(root, t3Bin);
+    validateRestart(state, providerBin);
+    const save = () => writePrivate(statePath, state);
+    await stopOwned(state, save, stopTimeoutMs);
+    state.restartedAt = new Date().toISOString();
+    return launchOwned(state, save, { startTimeoutMs, stopTimeoutMs, appendLog: true });
   });
 }
 
@@ -360,7 +422,8 @@ async function main() {
   try {
     const options = parseArguments(process.argv.slice(2));
     const result = options.command === 'start' ? await startFixture(options)
-      : options.command === 'stop' ? await stopFixture(options) : fixtureStatus(options);
+      : options.command === 'restart' ? await restartFixture(options)
+        : options.command === 'stop' ? await stopFixture(options) : fixtureStatus(options);
     process.stdout.write(`${JSON.stringify(result)}\n`);
   } catch (error) {
     process.stderr.write(`${error instanceof FixtureError ? error.message : 'Fixture operation failed; inspect the private root and server.log'}\n`);

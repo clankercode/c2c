@@ -366,7 +366,7 @@ npm-test:
 # Native T3 connector's development protocol/lifecycle fixtures. These never
 # use a real model or the user's running T3 service.
 test-t3-connector:
-    node --test scripts/t3-connector-probe.test.mjs scripts/t3-connector-fixture.test.mjs scripts/t3-codex-provider.test.mjs
+    node --test scripts/t3-connector-probe.test.mjs scripts/t3-connector-fixture.test.mjs scripts/t3-codex-provider.test.mjs scripts/t3-fixture-operator.test.mjs
 
 # Stage npm package directories and dry-run pack every generated package.
 # Usage: just npm-stage-smoke /tmp/c2c-release-bin

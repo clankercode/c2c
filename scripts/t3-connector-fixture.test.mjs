@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   fixtureEnvironment, fixtureSettings, fixtureStatus, parseArguments, parseProcessStat,
-  readFixtureState, sameIncarnation, sameProcess, startFixture, stopFixture,
+  readFixtureState, restartFixture, sameIncarnation, sameProcess, startFixture, stopFixture,
 } from './t3-connector-fixture.mjs';
 import { readPrivate, writePrivate } from './t3-connector-probe.mjs';
 
@@ -51,6 +51,7 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
 
 test('CLI requires explicit absolute paths and rejects duplicate or unknown options', () => {
   assert.equal(parseArguments(['start', '--root', '/tmp/fixture', '--t3-bin', '/opt/t3']).command, 'start');
+  assert.equal(parseArguments(['restart', '--root', '/tmp/fixture', '--t3-bin', '/opt/t3']).command, 'restart');
   assert.equal(parseArguments(['status', '--root', '/tmp/fixture', '--t3-bin', '/opt/t3',
     '--provider-bin', '/tmp/provider']).providerBin, '/tmp/provider');
   for (const args of [[], ['run'], ['start', '--root', 'relative', '--t3-bin', '/opt/t3'],
@@ -153,6 +154,59 @@ test('an existing root is never reused, even after the fixture stopped', linux, 
   assert.equal(fs.readFileSync(path.join(options.root, 'setup-state.json'), 'utf8'), before);
 });
 
+test('restart preserves home, bootstrap, port, owner, settings, and evidence across process incarnations', linux, async (t) => {
+  const options = scratch(t);
+  const first = await startFixture(options);
+  const before = readFixtureState(options.root, options.t3Bin);
+  const ownerPath = path.join(options.root, 'fixture-owner.json');
+  const ownerContents = fs.readFileSync(ownerPath, 'utf8');
+  const settingsPath = path.join(first.t3Home, 'userdata/settings.json');
+  const settingsContents = fs.readFileSync(settingsPath, 'utf8');
+  fs.chmodSync(settingsPath, 0o664); // Match a normal stock-T3 atomic rewrite under umask 0002.
+  const sentinel = path.join(first.t3Home, 'userdata/persistence-sentinel');
+  fs.writeFileSync(sentinel, 'persistent fixture contents', { mode: 0o600 });
+  fs.appendFileSync(first.logPath, 'keep previous fixture logs\n');
+  const restarted = await restartFixture(options);
+  const after = readFixtureState(options.root, options.t3Bin);
+  assert.equal(restarted.status, 'running');
+  assert.equal(restarted.t3Home, first.t3Home);
+  assert.equal(restarted.origin, first.origin);
+  assert.equal(after.launchCount, 2);
+  assert.equal(sameIncarnation(before.process, after.process), false);
+  assert.equal(after.ownerId, before.ownerId);
+  assert.equal(after.desktopBootstrapToken, before.desktopBootstrapToken);
+  assert.equal(after.requestedPort, before.requestedPort);
+  assert.equal(fs.readFileSync(ownerPath, 'utf8'), ownerContents);
+  assert.equal(fs.readFileSync(settingsPath, 'utf8'), settingsContents);
+  assert.equal(fs.readFileSync(sentinel, 'utf8'), 'persistent fixture contents');
+  assert(fs.readFileSync(first.logPath, 'utf8').includes('keep previous fixture logs'));
+  assert.equal(readPrivate(path.join(options.root, 'observed-bootstrap.json')).desktopBootstrapToken,
+    before.desktopBootstrapToken);
+  assert.deepEqual(readPrivate(path.join(options.root, 'observed-environment.json')),
+    fixtureEnvironment(options.root, before.ownerId));
+  assert(!JSON.stringify(restarted).includes(before.desktopBootstrapToken));
+  await stopFixture(options);
+  const resumed = await restartFixture(options);
+  assert.equal(resumed.origin, first.origin, 'a verified stopped fixture can restart too');
+  assert.equal(readFixtureState(options.root, options.t3Bin).launchCount, 3);
+});
+
+test('restart rejects a different binary, provider, or provider configuration before stopping', linux, async (t) => {
+  const options = scratch(t);
+  const first = await startFixture(options);
+  await assert.rejects(restartFixture({ ...options, t3Bin: process.execPath }), /ownership record/);
+  await assert.rejects(restartFixture({ ...options, providerBin: process.execPath }), /preserve the recorded provider/);
+  const settingsPath = path.join(first.t3Home, 'userdata/settings.json');
+  const settings = readPrivate(settingsPath);
+  writePrivate(settingsPath, { ...settings, providerInstances: { ...settings.providerInstances,
+    codex: { ...settings.providerInstances.codex, config: { ...settings.providerInstances.codex.config,
+      binaryPath: process.execPath } } } });
+  try {
+    await assert.rejects(restartFixture(options), /original isolated provider/);
+    assert.equal(fixtureStatus(options).pid, first.pid);
+  } finally { writePrivate(settingsPath, settings); }
+});
+
 test('writable executables are refused before reserving a scratch root', linux, async (t) => {
   const options = scratch(t);
   fs.chmodSync(options.t3Bin, 0o722);
@@ -172,6 +226,7 @@ test('wrong binary and changed incarnation refuse stop without signaling the rea
   try {
     assert.throws(() => fixtureStatus(options), /identity/);
     await assert.rejects(stopFixture(options), /changed fixture process/);
+    await assert.rejects(restartFixture(options), /changed fixture process/);
     assert.doesNotThrow(() => process.kill(started.pid, 0));
   } finally { writePrivate(statePath, original); }
 });
@@ -183,6 +238,7 @@ test('a competing or stale lifecycle lock is preserved and no process is signale
   fs.writeFileSync(filename, 'inspect me', { mode: 0o600 });
   try {
     await assert.rejects(stopFixture(options), { code: 'EEXIST' });
+    await assert.rejects(restartFixture(options), { code: 'EEXIST' });
     assert.equal(fs.readFileSync(filename, 'utf8'), 'inspect me');
     assert.equal(fixtureStatus(options).status, 'running');
   } finally { fs.unlinkSync(filename); }
@@ -195,9 +251,11 @@ test('symlinked roots and absent stop roots are rejected without touching a targ
   fs.symlinkSync(target, options.root);
   await assert.rejects(startFixture(options));
   await assert.rejects(stopFixture(options));
+  await assert.rejects(restartFixture(options));
   assert.deepEqual(fs.readdirSync(target), []);
   fs.unlinkSync(options.root);
   await assert.rejects(stopFixture(options), { code: 'ENOENT' });
+  await assert.rejects(restartFixture(options), { code: 'ENOENT' });
   assert.equal(fs.existsSync(options.root), false);
 });
 
