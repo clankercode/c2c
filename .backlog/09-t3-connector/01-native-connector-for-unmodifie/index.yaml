@@ -9,7 +9,7 @@ epics:
       locked: false
       name: Prove and implement connector plus recovery
       path: 01-prove-and-implement-the-extern
-      status: pending
+      status: done
 estimate_hours: 48
 id: P9.M1
 locked: false
@@ -20,4 +20,4 @@ stats:
     in_progress: 0
     pending: 8
     total_tasks: 8
-status: pending
+status: done

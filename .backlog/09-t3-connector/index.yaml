@@ -12,7 +12,7 @@ milestones:
       locked: false
       name: Native connector and integrated recovery
       path: 01-native-connector-for-unmodifie
-      status: pending
+      status: done
     - complexity: high
       depends_on:
         - P9.M1.E1.T007
