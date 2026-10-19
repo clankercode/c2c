@@ -12,5 +12,5 @@
   "keywords": [],
   "author": "",
   "license": "Unlicense OR CC0-1.0",
-  "type": "commonjs"
+  "type": "module"
 }

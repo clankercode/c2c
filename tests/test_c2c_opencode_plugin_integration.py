@@ -92,7 +92,11 @@ def _read_statefile():
 def _write_statefile(payload):
     path = Path(STATEFILE_PATH)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload))
+    # Mirror the production `c2c oc-plugin stream-write-statefile` command:
+    # readers must never observe the file between truncate and write.
+    tmp_path = path.with_name(path.name + ".tmp")
+    tmp_path.write_text(json.dumps(payload))
+    os.replace(tmp_path, path)
 
 if len(sys.argv) >= 2 and sys.argv[1] == "poll-inbox":
     messages = _drain_inbox()
@@ -341,9 +345,16 @@ class TestOpenCodePluginDelivery:
                 },
             )
             try:
-                _wait_for_line(proc, "READY", timeout=10.0)
-                # Give it a beat; no delivery should happen.
-                time.sleep(0.5)
+                # The plugin deliberately fails fast when no session identity
+                # is configured.  Continuing with an empty identity would
+                # route broker operations to the wrong inbox, so assert the
+                # actionable startup error instead of waiting for READY.
+                rc = proc.wait(timeout=10.0)
+                assert rc != 0
+                assert proc.stderr is not None
+                stderr = proc.stderr.read()
+                assert "C2C_MCP_SESSION_ID" in stderr
+                assert "sidecar.session_id" in stderr
                 assert server.recorded_calls == []  # type: ignore[attr-defined]
             finally:
                 _stop_harness(proc)
