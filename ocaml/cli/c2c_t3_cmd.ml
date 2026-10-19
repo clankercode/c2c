@@ -26,6 +26,9 @@ let state_dir () = Option.value (getenv_nonempty "C2C_T3_STATE_DIR") ~default:(h
 
 let now () = Unix.gettimeofday ()
 
+let service_broker_root () =
+  try C2c_repo_fp.resolve_sessions_broker_root () with _ -> resolve_broker_root ()
+
 let run_lwt f =
   try Lwt_main.run f with exn -> Error (Printexc.to_string exn)
 
@@ -227,7 +230,7 @@ let status_cmd json =
 let status_term = as_command (const status_cmd $ json_flag)
 
 let resolve_target state locator =
-  let registered = List.map (fun (r : C2c_mcp.registration) -> r.alias) (C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:(resolve_broker_root ()))) in
+  let registered = List.map (fun (r : C2c_mcp.registration) -> r.alias) (C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:(service_broker_root ()))) in
   match Service.resolve_locator ~mappings:(State.mappings state) ~registered_aliases:registered locator with
   | Service.Alias alias -> Ok (State.find_by_alias state ~alias)
   | Service.Thread_alias alias -> Ok (State.find_by_alias state ~alias)
@@ -316,7 +319,7 @@ let service_owner ~environment_id ~broker () =
     pid_start_time = C2c_mcp.Broker.capture_pid_start_time (Some (Unix.getpid ())); cwd = Some (Sys.getcwd ()); opaque_host_id = None }
 
 let service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery =
-  let broker = C2c_mcp.Broker.create ~root:(resolve_broker_root ()) in
+  let broker = C2c_mcp.Broker.create ~root:(service_broker_root ()) in
   let owner = service_owner ~environment_id:(environment_id runtime) ~broker () in
   match run_t3 (Service.discover client) with
   | Error error -> Error (T3.error_to_string error)
