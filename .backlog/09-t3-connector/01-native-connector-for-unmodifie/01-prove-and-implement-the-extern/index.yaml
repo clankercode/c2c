@@ -18,7 +18,7 @@ tasks:
       file: T001-prove-external-mcp-compatibili.todo
       id: T001
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Prove external MCP compatibility and freeze the connector contract
     - complexity: high
