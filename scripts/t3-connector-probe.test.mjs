@@ -67,6 +67,19 @@ test('runtime validation checks PID incarnation and listener ownership', async (
   assert.throws(() => runtimeState(directory), /incarnation/);
   fs.writeFileSync(filename, JSON.stringify({ ...runtime, port: 1, origin: 'http://127.0.0.1:1' }));
   assert.throws(() => runtimeState(directory), /listening socket/);
+  fs.writeFileSync(filename, JSON.stringify({ ...runtime, origin: `http://[::1]:${runtime.port}` }));
+  assert.throws(() => runtimeState(directory), /listening socket/, 'IPv4 does not attest an IPv6 endpoint');
+  const ipv6Server = http.createServer((_request, response) => response.end());
+  await new Promise((resolve, reject) => {
+    ipv6Server.once('error', reject);
+    ipv6Server.listen({ port: 0, host: '::1', ipv6Only: true }, resolve);
+  });
+  t.after(() => new Promise((resolve) => ipv6Server.close(resolve)));
+  const port = ipv6Server.address().port;
+  fs.writeFileSync(filename, JSON.stringify({ ...runtime, port, origin: `http://[::1]:${port}` }));
+  assert(runtimeState(directory).proof.listeners.length > 0);
+  fs.writeFileSync(filename, JSON.stringify({ ...runtime, port, origin: `http://127.0.0.1:${port}` }));
+  assert.throws(() => runtimeState(directory), /listening socket/, 'IPv6 does not attest an IPv4 endpoint');
 });
 
 async function fixture(t, handler) {

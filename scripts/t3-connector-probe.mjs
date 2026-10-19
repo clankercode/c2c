@@ -148,9 +148,12 @@ export function runtimeState(t3Home) {
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   const listeners = [];
-  const allowed = new Set(['00000000', '0100007F',
-    '00000000000000000000000000000000', '00000000000000000000000001000000']);
-  for (const table of ['tcp', 'tcp6']) {
+  const ipv6 = origin.hostname === '[::1]';
+  const allowed = new Set(ipv6
+    ? ['00000000000000000000000000000000', '00000000000000000000000001000000']
+    : ['00000000', '0100007F']);
+  // An IPv6 listener is not proof of ownership of the IPv4 endpoint (or vice versa).
+  for (const table of [ipv6 ? 'tcp6' : 'tcp']) {
     for (const row of fs.readFileSync(`${proc}/net/${table}`, 'utf8').trim().split('\n').slice(1)) {
       const columns = row.trim().split(/\s+/);
       const [address, port] = columns[1].split(':');
