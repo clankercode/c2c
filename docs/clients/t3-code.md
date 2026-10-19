@@ -72,11 +72,19 @@ uses a borrowed native c2c identity. A normal T3 chat reply does not reach the
 peer.
 
 Local aliases continue to use the local broker even when a relay is configured.
-For cross-host delivery, explicitly enable the existing relay (the validation
-hosts use `https://relay.c2c.im`); the machine relay connector owns leases and
-remote publication. Relay outage degrades remote reachability without stopping
-local delivery. Retirement removes only this service's local registration and
-stops renewal; remote lease expiry is bounded by the relay's TTL.
+For cross-host delivery, explicitly enable the existing relay and keep the
+machine connector running:
+
+```sh
+c2c relay enable --url https://relay.c2c.im
+c2c start relay-connect
+```
+
+The machine relay connector owns leases and remote publication; `c2c t3
+service` remains the sole owner of the local T3 aliases. Relay outage degrades
+remote reachability without stopping local delivery. Retirement removes only
+this service's local registration and stops renewal; remote lease expiry is
+bounded by the relay's TTL.
 
 ## Model-availability recovery
 
