@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import stat
 import subprocess
@@ -159,6 +160,7 @@ class InstallOpencodeParityTests(unittest.TestCase):
                     "opencode",
                     "--target-dir",
                     str(target_dir),
+                    "--with-mcp",
                     "--json",
                 ],
                 cwd=REPO,
@@ -225,6 +227,11 @@ class StartOpencodeRefreshParityTests(unittest.TestCase):
             env = clean_c2c_start_env(os.environ)
             env.update(
                 {
+                    # Keep the canonical resolver inside the isolated test
+                    # home.  c2c start deliberately rejects an inherited
+                    # broker-root override that does not match that resolver
+                    # to prevent split-brain delivery.
+                    "HOME": str(root / "home"),
                     "PATH": str(root) + ":" + env.get("PATH", ""),
                     "C2C_MCP_BROKER_ROOT": str(broker_root),
                     "C2C_INSTANCES_DIR": str(instances_dir),
@@ -244,7 +251,20 @@ class StartOpencodeRefreshParityTests(unittest.TestCase):
 
             config = json.loads(config_path.read_text(encoding="utf-8"))
             env_cfg = config["mcp"]["c2c"]["environment"]
-            self.assertEqual(env_cfg["C2C_MCP_BROKER_ROOT"], str(broker_root))
+            # The stale override is intentionally discarded by the start
+            # guard; the refreshed config points at the isolated canonical
+            # resolver path instead.
+            self.assertEqual(
+                env_cfg["C2C_MCP_BROKER_ROOT"],
+                str(
+                    root
+                    / "home"
+                    / ".c2c"
+                    / "repos"
+                    / hashlib.sha256(str(root).encode()).hexdigest()[:12]
+                    / "broker"
+                ),
+            )
             self.assertEqual(env_cfg["C2C_MCP_AUTO_DRAIN_CHANNEL"], "0")
             self.assertEqual(env_cfg["C2C_MCP_AUTO_JOIN_ROOMS"], "swarm-lounge")
             self.assertEqual(env_cfg["C2C_CLI_COMMAND"], str(CLI_EXE))

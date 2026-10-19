@@ -50,12 +50,12 @@ class ReservedAliasTests(unittest.TestCase):
     def test_register_rejects_c2c_alias(self):
         result = self._run("register", "--alias", "c2c", "--json")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("reserved", result.stderr)
+        self.assertIn("reserved", result.stdout)
 
     def test_register_rejects_c2c_system_alias(self):
         result = self._run("register", "--alias", "c2c-system", "--json")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("reserved", result.stderr)
+        self.assertIn("reserved", result.stdout)
 
     def test_register_allows_admin_locally(self):
         result = self._run("register", "--alias", "admin", "--json")
