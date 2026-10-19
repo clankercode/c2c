@@ -1,0 +1,47 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-10-19T07:12:03Z"
+depends_on:
+    - P9.M1.E1.T005
+    - P9.M1.E1.T006
+    - P9.M1.E1.T009
+estimate_hours: 6
+id: P9.M1.E1.T007
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Implement T3 service supervision diagnostics and repair
+updated_at: "2026-10-19T07:12:03Z"
+---
+
+# Implement T3 service supervision diagnostics and repair
+
+## Context
+
+Design: `.collab/design/2026-10-19-c2c-t3-external-connector.md`.
+Pending planned work. During execution follow bl-fix-many: read the full ticket, verify blockers, commit the claim, work in an isolated worktree, review/fix, run the c2c gates on build boxes, merge and close. No T3 source changes. Tests use x-p35/x-tuf, never the workstation's full suite. Actual just bi and service installation wait for the current candidate's successful P9.M2.E1.T001 buildbox gate.
+
+## Requirements
+
+- Implement c2c t3 service in foreground, service install to write/enable/start the owned user-systemd unit, service doctor read-only, and service repair conservative. Expose pair/list/status and documented operator-mode control.
+- Explicit executable and T3-home paths in the unit; no dependence on interactive shell PATH. Verify the process and connector readiness, not just systemctl exit status.
+- Repair only owned permission, unit, runtime-cache and alias/lease drift under the proper lock/control path. Never replace OAuth tokens, delete queued mail, remove a live lock or steal foreign routes.
+- Missing auth/runtime/relay reports partial health accurately with actionable commands. T3 process restart triggers transport recovery; expired auth requires explicit re-pair.
+- Add dry-run repair and safe service stop/uninstall semantics. User-owned configuration is preserved.
+- Include recovery in this single service: default enabled on verified compatible versions, explicit recovery-disable setting, and doctor evidence/hold/cadence/submission state. A messaging-ready process must not conceal an unsupported or failing monitor.
+- This task implements and fixture-tests the installer; it does not run just bi or deploy the unit. Actual installation waits for P9.M2.E1.T001 and is performed in P9.M2.E1.T002.
+- Implement optional C2C_VALIDATION_RECEIPT enforcement in the existing install guard: inside the install flock, after generators/build and before copies, compare the clean commit/tree, toolchain/dependencies and all eight prepared artifact hashes with the preserved successful gate manifest. Reject malformed/mismatched supplied receipts without partial copying. Preserve ordinary receipt-free installs; this rollout must supply the receipt. Keep existing ancestry guard enabled.
+
+## Acceptance Criteria
+
+- Tests cover systemd present/absent, idempotent install, stale executable/PID, competing foreground instance, missing/revoked token, malformed config and repair against live owner.
+- Doctor is read-only and returns structured redacted health including queue age, scan age, permission ceiling and uncertain entries.
+- Installer fixture tests prove enable-and-start behavior without modifying T3. Uninstall touches only manifest/owned artifacts and retains mail/state by default.
+- Each command has accurate help and operational documentation.
+- Guard fixture tests mutate source/generated output/artifact/receipt between validation and copy and prove that install is refused. Comparing newly built files only with newly installed files must not bypass the original PASS manifest.
+
+## Lane
+
+After T005/T006/T009. CLI registry and shared service edits are one serialized integration lane. Install and doctor cover model-availability recovery inside the same process.

@@ -1,0 +1,43 @@
+---
+complexity: high
+created_at: "2026-10-19T07:12:01Z"
+depends_on:
+    - P9.M1.E1.T002
+    - P9.M1.E1.T003
+estimate_hours: 6
+id: P9.M1.E1.T004
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Discover roots and publish stable service-owned aliases
+updated_at: "2026-10-19T07:12:01Z"
+---
+
+# Discover roots and publish stable service-owned aliases
+
+## Context
+
+Design: `.collab/design/2026-10-19-c2c-t3-external-connector.md`.
+Pending planned work. During execution follow bl-fix-many: read the full ticket, verify blockers, commit the claim, work in an isolated worktree, review/fix, run the c2c gates on build boxes, merge and close. No T3 source changes. Tests use x-p35/x-tuf, never the workstation's full suite. Actual just bi and service installation wait for the current candidate's successful P9.M2.E1.T001 buildbox gate.
+
+## Requirements
+
+- Own the initial C2c_t3_service discovery and alias lifecycle, plus narrow broker/CLI resolver wiring. Use the client/state interfaces from T002/T003.
+- Enumerate all projects and every thread page with includeSubagents false, then enforce parentThreadId null and not deleted/archived/settled. Idle/failed open roots are included; forks with parents are excluded.
+- Expose permission-ineligible full-access roots as unroutable without upgrading the token. Partial scans and API outages cannot retire missing rows. Completed offset pages are also mutable: point-read every missing bound thread before retirement, requiring affirmative retirement or definitive same-environment not-found. Failed reads keep state with degraded health.
+- Persist before advertising t3-hash aliases in the shared c2c broker with service PID/start-time ownership. Native hooks must neither adopt nor accidentally drain these service-owned inboxes.
+- Support local t3.thread-id lookup only when unambiguous and never shadow a real alias. Remote addressing is existing alias@host_id.
+- Graceful retirement retains alias tombstone and pending/dedupe state. Reopening the same thread may reuse only its own alias.
+
+## Acceptance Criteria
+
+- Fixture tests cover roots versus forks/subagents, title change, duplicate names, all pages/projects, incomplete scan, a last-page thread moving into the first page during enumeration, permission limits, retirement and reopen. None of these list races may retire a live binding.
+- c2c list/find and c2c t3 list distinguish routable, stale, held and retired aliases; titles do not leak into relay routing names.
+- No T3/provider configuration change or inherited native identity is needed. Ownership guards do not disable unrelated clients.
+- Two roots in the same directory remain independently routable across service restarts.
+
+## Lane
+
+Serial shared-file integration lane after T002/T003. T005 follows in the same lane. Coordinate any broker/relay ownership helpers with T006.

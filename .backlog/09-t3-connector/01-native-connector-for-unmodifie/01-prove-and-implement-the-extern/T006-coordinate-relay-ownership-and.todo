@@ -1,0 +1,41 @@
+---
+complexity: high
+created_at: "2026-10-19T07:12:02Z"
+depends_on:
+    - P9.M1.E1.T004
+estimate_hours: 6
+id: P9.M1.E1.T006
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Coordinate relay ownership and retire only owned routes
+updated_at: "2026-10-19T07:12:02Z"
+---
+
+# Coordinate relay ownership and retire only owned routes
+
+## Context
+
+Design: `.collab/design/2026-10-19-c2c-t3-external-connector.md`.
+Pending planned work. During execution follow bl-fix-many: read the full ticket, verify blockers, commit the claim, work in an isolated worktree, review/fix, run the c2c gates on build boxes, merge and close. No T3 source changes. Tests use x-p35/x-tuf, never the workstation's full suite. Actual just bi and service installation wait for the current candidate's successful P9.M2.E1.T001 buildbox gate.
+
+## Requirements
+
+- Integrate T3 aliases with the configured relay using one authoritative owner per alias/host/session. Reuse existing machine transport; never create a register/heartbeat fight or a per-thread connector process.
+- Automatically advertise and renew eligible service aliases. Do not activate an unconfigured public relay.
+- Route incoming remote DATA to the exact local target and preserve the reply alias@host_id. Use durable-before-ACK transport and bounded retries.
+- Retirement/uninstall stops renewal and removes only exact service-owned routes. Use a verified existing release API or explicitly bounded TTL retirement, not an invented immediate revoke guarantee.
+- Preserve foreign leases, ordinary c2c peers and pending mail through reconnection, relay outage, identity mismatch and repair.
+
+## Acceptance Criteria
+
+- Isolated relay tests prove one owner, coexistence with machine relay connector, restart/re-registration, outage/backoff, inbound/outbound reply identity and retirement latency.
+- Foreign ownership is refused without force-takeover. Local delivery remains available during relay outage.
+- No hidden relay deployment is required; any necessary wire change is surfaced with a concrete compatibility/deployment gate.
+- The x-p35/x-tuf live matrix can exercise both directions using ordinary c2c alias@host_id addresses.
+
+## Lane
+
+Relay files/tests may run independently after T004 when they do not overlap. Service hookup is serial after T005. Record exact ownership before fan-out.

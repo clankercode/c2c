@@ -1,0 +1,44 @@
+complexity: high
+depends_on:
+    - P9.M1.E1.T007
+estimate_hours: 18
+id: P9.M2.E1
+locked: false
+name: Validate before install and prove running service
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 3
+    total: 3
+status: pending
+tasks:
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T007
+      estimate_hours: 6
+      file: T001-pass-exact-source-build-and-fu.todo
+      id: T001
+      priority: high
+      status: pending
+      tags: []
+      title: Pass exact-source build and full tests on a buildbox
+    - complexity: high
+      depends_on:
+        - P9.M2.E1.T001
+      estimate_hours: 4
+      file: T002-install-validated-binaries-and.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Install validated binaries and verify the running T3 connector
+    - complexity: high
+      depends_on:
+        - P9.M2.E1.T002
+      estimate_hours: 8
+      file: T003-prove-two-host-delivery-recove.todo
+      id: T003
+      priority: high
+      status: pending
+      tags: []
+      title: Prove two-host delivery recovery and publish operator documentation

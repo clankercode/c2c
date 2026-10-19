@@ -1,0 +1,38 @@
+---
+completed_at: null
+complexity: high
+created_at: "2026-10-19T08:16:42Z"
+depends_on:
+    - P9.M1.E1.T007
+estimate_hours: 6
+id: P9.M2.E1.T001
+priority: high
+started_at: null
+status: pending
+tags: []
+title: Pass exact-source build and full tests on a buildbox
+updated_at: "2026-10-19T08:16:42Z"
+---
+
+# Pass exact-source build and full tests on a buildbox
+
+## Requirements
+
+- Design: .collab/design/2026-10-19-c2c-t3-external-connector.md, Buildbox-to-install gate. Operational source: .collab/research/2026-10-19-c2c-buildbox-install-gate.md.
+- After reviewed M1 implementation, freeze intended source and generated files as an exact commit/tree. Transfer through a Git bundle to a clean isolated clone/worktree on x-p35 or x-tuf. No push solely for transfer, no copied _build, no overwriting unrelated work.
+- Preflight and record host/architecture, opam switch/compiler/Dune, Python, Node/npm and resolved dependencies. Use actual c2c justfile and Dune wrapper; no Clawq test-remote command.
+- Run just build, just check, just test and a forced repository-wide @runtest, plus the complete eight-target install-all build list, exactly as in the design. Capture real exit statuses and logs outside the source tree. Do not use cached tests, test-slice or a subtree count as a full gate.
+- Require all checks/tests to complete successfully. Fix failures, missing required tests, timeouts and unsupported environment prerequisites before issuing PASS. A failing baseline or unexplained skip is not an exception to the user's condition.
+- Reject source drift after codegen/tests: verify HEAD/tree, tracked changes and unexpected untracked source. If changes are needed, commit and rerun on the new candidate. Record ignored npm lock/dependency resolution separately.
+- Record full source identity, commands, suite outcomes, toolchain and all eight artifact hashes in a durable PASS receipt. No just bi or service installation during this task.
+- Preserve the original machine-readable PASS manifest outside mutable build output for C2C_VALIDATION_RECEIPT enforcement. The installer must compare against this saved evidence after its own rebuild and before copying; never regenerate the expected hashes merely to match a drifted candidate.
+
+## Acceptance Criteria
+
+- A successful exact-source buildbox receipt exists for the candidate to be installed, covering recovery, shared rate/dedupe and installer fixture tests plus the full repository gates.
+- Every install-all executable was explicitly compiled; source remains at the recorded tree after generation/build/testing. No stale/cache-only green and no hidden failed exit.
+- No new installation happened before PASS. P9.M2.E1.T002 consumes this receipt, and a source fix during subsequent live validation invalidates it until rerun.
+
+## Lane
+
+Serial validation after all M1 work. Tests/builds run on buildboxes, never full suites on the workstation. Revalidate the same task's gate for every changed candidate even after its initial completion; prior status cannot authorize a different source.

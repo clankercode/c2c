@@ -1,0 +1,47 @@
+---
+claimed_at: "2026-10-19T08:46:06Z"
+claimed_by: codex-topic-rain-phfk
+completed_at: null
+complexity: high
+created_at: "2026-10-19T07:11:59Z"
+depends_on: []
+estimate_hours: 4
+id: P9.M1.E1.T001
+priority: high
+started_at: "2026-10-19T08:46:06Z"
+status: in_progress
+tags: []
+title: Prove external MCP compatibility and freeze the connector contract
+updated_at: "2026-10-19T08:46:06Z"
+---
+
+# Prove external MCP compatibility and freeze the connector contract
+
+## Context
+
+Design: `.collab/design/2026-10-19-c2c-t3-external-connector.md`.
+Pending planned work. During execution follow bl-fix-many: read the full ticket, verify blockers, commit the claim, work in an isolated worktree, review/fix, run the c2c gates on build boxes, merge and close. No T3 source changes. Tests use x-p35/x-tuf, never the workstation's full suite. Actual just bi and service installation wait for the current candidate's successful P9.M2.E1.T001 buildbox gate.
+
+## Requirements
+
+- Verify the actual unmodified T3 API on x-p35 and x-tuf using isolated or designated disposable fixtures. Keep all other user threads untouched.
+- Confirm authenticated external MCP sends render generic agent attribution. Confirm auto mode steers eligible running turns and starts idle threads, with authoritative T3 queuing behavior for transitional states.
+- Verify PKCE pairing with only orchestration read/operate scopes and access auto. Prove full-access targets are denied rather than elevating credentials.
+- Verify project/thread pagination, parent/settled/archive metadata, stable environment identity, timeout/error shapes, and idempotency across MCP transport reconnects and T3 restart. Re-pairing changes the OAuth namespace: define the hold/reconcile rule for uncertain entries.
+- Inspect existing relay lease ownership and any revocation API. Choose an integration that cannot fight the machine relay connector. If retirement depends on TTL, document its bound.
+- Inspect c2c binaries/toolchains and actual runtime state on each box. Runtime serverVersion wins over launcher path names.
+- Prove recovery through external activity reads: Codex driver identification, current failed-run selection, local error rows, root-versus-native-child/mixed failures, retrying-to-failed updates at the same position, run_interrupt_request Stop markers and bounded history/truncation. Structured failure codes/root-node IDs are absent; freeze the text-evidence policy against the actual version.
+- Verify queue mode starts an eligible idle thread and avoids steering a concurrently started run. Record that held queue entries alone do not block a separate start and that normal sends clear snooze/settlement. Check observed queued work and Stop markers; document the unavoidable check/send race.
+- Use isolated/disposable fixtures and existing or explicitly built test tools; do not install any new c2c candidate before the exact-source buildbox gate P9.M2.E1.T001 passes.
+
+## Acceptance Criteria
+
+- A durable evidence note records source and running versions, commands, sanitized API schemas, pass/fail outcomes and remaining factual blockers.
+- Tested message IDs and isolated thread IDs are recorded without tokens or private user text. No target T3 source/configuration has been changed for the connector.
+- The stable identity, supported versions, credential ceiling, delivery/replay rules and relay lifecycle are concrete enough for T002/T003/T006 to implement without guessing.
+- Ordinary c2c DATA remains unable to write an approval verdict. Explicit operator-message semantics are documented.
+- A concrete supported-version recovery path is demonstrated; an always-unsupported monitor is not completion. Negative root/child/mixed/Stop/usage/auth/access cases are recorded, along with any live-outage case that could not be safely reproduced.
+
+## Lane
+
+This is the serial prerequisite. Do not start dependent implementation until its proof and design decisions are recorded.

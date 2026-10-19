@@ -1,0 +1,90 @@
+complexity: high
+depends_on: []
+estimate_hours: 48
+id: P9.M1.E1
+locked: false
+name: Prove and implement connector plus recovery
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 8
+    total: 8
+status: pending
+tasks:
+    - complexity: high
+      depends_on: []
+      estimate_hours: 4
+      file: T001-prove-external-mcp-compatibili.todo
+      id: T001
+      priority: high
+      status: in_progress
+      tags: []
+      title: Prove external MCP compatibility and freeze the connector contract
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T001
+      estimate_hours: 6
+      file: T002-implement-native-t3-discovery.todo
+      id: T002
+      priority: high
+      status: pending
+      title: Implement native T3 discovery pairing and bounded MCP transport
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T001
+      estimate_hours: 6
+      file: T003-implement-durable-t3-routing-s.todo
+      id: T003
+      priority: high
+      status: pending
+      title: Implement durable T3 routing state journal and singleton
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T002
+        - P9.M1.E1.T003
+      estimate_hours: 6
+      file: T004-discover-roots-and-publish-sta.todo
+      id: T004
+      priority: high
+      status: pending
+      title: Discover roots and publish stable service-owned aliases
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T004
+      estimate_hours: 8
+      file: T005-deliver-queued-peer-messages-a.todo
+      id: T005
+      priority: high
+      status: pending
+      title: Deliver queued peer messages and generate correct reply routes
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T004
+      estimate_hours: 6
+      file: T006-coordinate-relay-ownership-and.todo
+      id: T006
+      priority: high
+      status: pending
+      title: Coordinate relay ownership and retire only owned routes
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T005
+        - P9.M1.E1.T006
+        - P9.M1.E1.T009
+      estimate_hours: 6
+      file: T007-install-supervise-diagnose-and.todo
+      id: T007
+      priority: high
+      status: pending
+      tags: []
+      title: Implement T3 service supervision diagnostics and repair
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T005
+      estimate_hours: 6
+      file: T009-integrate-model-availability-a.todo
+      id: T009
+      priority: high
+      status: pending
+      title: Integrate model availability auto-recovery into the native T3 service

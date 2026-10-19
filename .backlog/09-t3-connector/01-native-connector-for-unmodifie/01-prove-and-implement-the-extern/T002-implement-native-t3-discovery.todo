@@ -1,0 +1,43 @@
+---
+complexity: high
+created_at: "2026-10-19T07:12:00Z"
+depends_on:
+    - P9.M1.E1.T001
+estimate_hours: 6
+id: P9.M1.E1.T002
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Implement native T3 discovery pairing and bounded MCP transport
+updated_at: "2026-10-19T07:12:00Z"
+---
+
+# Implement native T3 discovery pairing and bounded MCP transport
+
+## Context
+
+Design: `.collab/design/2026-10-19-c2c-t3-external-connector.md`.
+Pending planned work. During execution follow bl-fix-many: read the full ticket, verify blockers, commit the claim, work in an isolated worktree, review/fix, run the c2c gates on build boxes, merge and close. No T3 source changes. Tests use x-p35/x-tuf, never the workstation's full suite. Actual just bi and service installation wait for the current candidate's successful P9.M2.E1.T001 buildbox gate.
+
+## Requirements
+
+- Own C2c_t3_client and client tests. Implement native OCaml runtime discovery, configured-home selection, PKCE pairing and a typed bounded external MCP client. Do not depend on t3-bridge or Node at runtime.
+- Private token/config files, safe atomic writes, bounded reads/responses, cancellation/timeouts, strict JSON/SSE handling and explicit supported-tool validation.
+- Validate same-user runtime process incarnation and endpoint before credential use. Never follow authenticated redirects or read provider/other-app credentials.
+- Reinitialize MCP transport on reconnect while retaining the same OAuth credential. Treat re-pairing/revocation as an explicit credential-generation change.
+- Expose only environment/project/thread reads and thread sends required by the service. Report auto permission ceiling accurately.
+- Expose typed capabilities driverKind, activity evidence, recent runs, holds and item re-reads needed by recovery. Preserve omitted fields as unknown, enforce page/byte/time limits and distinguish complete from truncated evidence.
+- The current OAuth API has no refresh-token grant. Reconnect transport automatically with the same credential; expiry/revocation requires explicit re-pairing, never silent escalation.
+
+## Acceptance Criteria
+
+- Fixture tests cover JSON/SSE, malformed frames, truncation/oversize, timeout/response loss, stale PID, endpoint replacement, auth denial/revocation and reconnect.
+- No secret enters command arguments, logs or error output. Pairing never requests settings/source-control scopes.
+- Discovery supports actual server-runtime paths on both boxes and refuses ambiguity. Errors contain actionable pair/config diagnostics.
+- Client API integrates with state/service without importing provider SDKs or T3 source.
+
+## Lane
+
+Can run in parallel with T003 after T001. Keep shared CLI registration wiring for the service integration lane; coordinate the narrow client/state contract first.

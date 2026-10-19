@@ -1,0 +1,25 @@
+complexity: high
+depends_on:
+    - P9.M1.E1.T007
+epics:
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T007
+      description: No installation before an exact-source buildbox PASS; then install, verify binaries and run the disposable two-host delivery and recovery matrix.
+      estimate_hours: 18
+      id: E1
+      locked: false
+      name: Validate before install and prove running service
+      path: 01-validate-before-install-and-pr
+      status: pending
+estimate_hours: 18
+id: P9.M2
+locked: false
+name: Buildbox validation and verified installation
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 3
+    total_tasks: 3
+status: pending

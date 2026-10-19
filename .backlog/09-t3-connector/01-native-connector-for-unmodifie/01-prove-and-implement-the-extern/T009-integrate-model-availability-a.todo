@@ -1,0 +1,41 @@
+---
+complexity: high
+created_at: "2026-10-19T08:12:41Z"
+depends_on:
+    - P9.M1.E1.T005
+estimate_hours: 6
+id: P9.M1.E1.T009
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Integrate model availability auto-recovery into the native T3 service
+updated_at: "2026-10-19T08:12:41Z"
+---
+
+# Integrate model availability auto-recovery into the native T3 service
+
+## Requirements
+
+- Design: .collab/design/2026-10-19-c2c-t3-external-connector.md, Model-availability recovery. Evidence: .collab/research/2026-10-19-t3-external-recovery-api.md. This task is pending; follow bl-fix-many when executing it.
+- Implement recovery in the native c2c t3 service, with no T3 source changes and no separate watcher process. The earlier P8 worker lives inside modified T3 and is only a design/reference implementation.
+- Perform an initial sweep after discovery, then nominal 60-second sweeps without overlapping or catch-up bursts. Identify Codex by capabilities driverKind. Revisit known failure items on due sweeps even at unchanged cursor position. Report age/backlog when load prevents one-minute freshness.
+- Require an unambiguous current failed execution and complete bounded local activity error evidence. External API omits failure codes/root-node IDs: match only narrow measured model-unavailability/temporary-capacity text, exclude auth/quota/account-access/config/context/workspace/transport errors, and require every failed error in the run to match. Hold mixed/partial/truncated/retrying/ambiguous histories. Never trigger from user/assistant/peer/tool text or child-only failure in a healthy root.
+- Enforce open root, no active or observed queued work, no pending request, no snooze, no connector pause/DND, and no candidate-run local run_interrupt_request marker. Stop can leave status failed, so status alone is insufficient. Retired, unsupported and permission-ineligible roots are skipped without scope escalation.
+- Persist one intent per environment/thread/failed run, including error-set fingerprint, provider/model, immutable literal Continue with no footer, mode queue, request ID and credential generation. Re-read thread/evidence/Stop markers immediately before submission. More errors in the same run cannot cause another accepted recovery.
+- Share the ordinary durable serial dispatcher and one-second minimum between all submissions/retries, with fairness to messages/maintenance and persisted spacing across restart. A newly failed recovery run is a new candidate on a later sweep, at least 60 seconds after that thread's last recovery submission.
+- Queue mode avoids steering a concurrently started run, but may start separately from old held queue entries and clears snooze/settlement. Observable guards reduce this; no external API makes eligibility-check plus send atomic. Document the residual Stop/user-run/settle/snooze/model-change race without claiming internal-worker parity.
+- Preserve ambiguous outcomes across response loss and credential rotation. Reconcile exact message identity, never the text Continue or a newly minted request ID. Unknown/unsupported evidence holds recovery while ordinary messaging continues; an always-unsupported monitor does not complete this task.
+- Enable as part of c2c t3 service startup on verified versions, allow an explicit recovery-disable setting that also holds unsent recovery intents, and expose per-thread last/next checks, identity, outcome and hold reasons in service doctor. Installation starts the single process after the buildbox gate.
+
+## Acceptance Criteria
+
+- Fixture tests prove one queue-mode Continue for a current root failure and none for stale/child/mixed/nonmatching/peer-text errors, pending retry, unbounded history, observed Stop/queued work or other holds. Include account/model-access false positives and same-item retry-to-failed transitions.
+- Fake-clock tests prove initial then nominal 60-second cadence, no overlapping MCP operations, one-second global spacing across messages/recovery/retries including restart, per-thread cooldown and fair maintenance.
+- Restart/response-loss/re-pair tests preserve immutable requests, dedupe and uncertainty. Concurrent user-start test proves recovery does not steer; disable-after-enqueue suppresses unsent intents. No token escalation or T3/private database access.
+- Buildbox fixture tests pass; P9.M2.E1.T003 verifies actual x-p35/x-tuf service wiring and positive/negative API evidence. Live model-failure proof is claimed only if safely exercised in a designated fixture; otherwise explicitly report that gap.
+
+## Lane
+
+After T005 in the serial service lane, using T001 evidence and T003 schema. T007 supervision/doctor includes this worker; P9.M2 validates, installs and exercises it. Follow bl-fix-many and run suites on build boxes. No early just bi.

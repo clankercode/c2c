@@ -1,0 +1,43 @@
+---
+complexity: high
+created_at: "2026-10-19T07:12:01Z"
+depends_on:
+    - P9.M1.E1.T004
+estimate_hours: 8
+id: P9.M1.E1.T005
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Deliver queued peer messages and generate correct reply routes
+updated_at: "2026-10-19T07:12:01Z"
+---
+
+# Deliver queued peer messages and generate correct reply routes
+
+## Context
+
+Design: `.collab/design/2026-10-19-c2c-t3-external-connector.md`.
+Pending planned work. During execution follow bl-fix-many: read the full ticket, verify blockers, commit the claim, work in an isolated worktree, review/fix, run the c2c gates on build boxes, merge and close. No T3 source changes. Tests use x-p35/x-tuf, never the workstation's full suite. Actual just bi and service installation wait for the current candidate's successful P9.M2.E1.T001 buildbox gate.
+
+## Requirements
+
+- Extend C2c_t3_service with durable broker acceptance, one fair serial delivery worker, adaptive discovery and changed-root reads. One in-flight MCP call and a service-wide send-rate cap, initially one per second.
+- Default semantic steer-then-start uses one T3 mode auto operation. Explicit operator auto/steer/queue/restart selection must use T3's supported semantics; never issue a second delivery on an ambiguous fallback.
+- Add concise c2c DATA framing and exactly one canonical reply hint naming the original peer route. Use the provider agent's own native c2c sender identity and --cross-repo only where needed. Never borrow the service alias with --from, C2C_MCP_SESSION_ID, or C2C_COORDINATOR. Verify safe on-demand sender initialization in the actual T3 provider environment. Generated shell arguments must be safely quoted.
+- Preserve body and identity, reject malformed/control metadata, and keep approval text inert with respect to c2c verdict files. Generic T3 user-message behavior is explicit, not misreported as dedicated peer-DATA transport.
+- Retry exact journaled requests after transient errors. Handle auth rotation, permanent errors, saturation and retired threads as inspectable holds without blocking others. After an ambiguous submission, later archive/permission/no-steerable errors do not prove nondelivery because T3 checks these before receipts. Reconcile by durable message identity or retain uncertainty, including with the same credential.
+- Define measurable deferrable, ephemeral and receipt limits. T3 transcript persistence remains even for ephemeral sends.
+- Expose the same durable dispatch queue to recovery intents, with a shared one-per-second submission cap (including retries), serialized MCP calls and fair scheduling of messages/recovery/discovery/leases. This cap is per service instance, not host-global across independent environments.
+
+## Acceptance Criteria
+
+- Tests prove idle start, eligible steer, preparing/queued outcomes, explicit-mode errors, duplicate suppression, identical-text distinct sends, lost responses and restart.
+- Fairness tests use a fake clock: no overlapping sends, spacing at least one second, maintenance not starved, memory/backlog bounded.
+- Hostile body/alias/footer tests cannot create executable shell interpolation, source spoofing, extra trusted footers or approval verdicts.
+- Generated reply recipes work for shared/repo-local/remote sender routes under a native provider session and without inherited c2c identity. Replies use the agent's own c2c identity, which may differ from the incoming T3 alias. No transcript is auto-forwarded.
+
+## Lane
+
+Same serial service/broker lane as T004. Keep CLI registry edits coordinated with T007; do not fork competing service implementations.

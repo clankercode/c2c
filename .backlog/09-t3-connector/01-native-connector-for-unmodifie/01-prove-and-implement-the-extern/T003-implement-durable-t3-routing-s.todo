@@ -1,0 +1,43 @@
+---
+complexity: high
+created_at: "2026-10-19T07:12:00Z"
+depends_on:
+    - P9.M1.E1.T001
+estimate_hours: 6
+id: P9.M1.E1.T003
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Implement durable T3 routing state journal and singleton
+updated_at: "2026-10-19T07:12:00Z"
+---
+
+# Implement durable T3 routing state journal and singleton
+
+## Context
+
+Design: `.collab/design/2026-10-19-c2c-t3-external-connector.md`.
+Pending planned work. During execution follow bl-fix-many: read the full ticket, verify blockers, commit the claim, work in an isolated worktree, review/fix, run the c2c gates on build boxes, merge and close. No T3 source changes. Tests use x-p35/x-tuf, never the workstation's full suite. Actual just bi and service installation wait for the current candidate's successful P9.M2.E1.T001 buildbox gate.
+
+## Requirements
+
+- Own C2c_t3_state and state tests. Persist stable environment identity, opaque t3-hash aliases, thread mappings, tombstones and a bounded inbound message journal.
+- Key deliveries by source broker/identity + broker message ID + target thread/environment. Persist exact payload, request ID, mode, credential generation and result before exposing transitions.
+- Define recoverable acceptance and selected broker ACK ordering with strict file/directory durability or an existing transactional store. Never drain before durable acceptance.
+- Hold an OS singleton lock for the full service lifetime, keyed to canonical environment/home so alternate config spelling cannot create another owner. Multiple environments may each have one owner.
+- Retain uncertainty on credential rotation and tombstones on retirement. Do not deduplicate intentional identical text with distinct message IDs.
+- Store recovery intents in this journal, unique by environment/thread/failed run, with sorted error IDs/evidence fingerprint, provider/model, exact Continue payload, queue mode, request ID and credential generation. Additional errors within one failed run do not mint another recovery.
+- Persist recovery outcomes, last per-thread recovery submission and the shared dispatcher submission boundary so service restart does not reset dedupe or permit a burst. Define schema migration before dependent service work.
+
+## Acceptance Criteria
+
+- Crash/fault tests cover every accept/ACK/send/receipt transition, concurrent starts, atomic writes, corrupt state, collision handling, restart, capacity/backpressure and ownership-preserving repair.
+- A process crash releases the OS lock. No live lock inode is removed during cleanup.
+- Retrying one delivery reuses its payload and request ID. Distinct broker IDs remain distinct deliveries.
+- Pending mail is never deleted by retirement/repair. Retention and capacity rules are explicitly documented.
+
+## Lane
+
+Can run in parallel with T002 after T001. Own only state module/tests until the shared service integration.

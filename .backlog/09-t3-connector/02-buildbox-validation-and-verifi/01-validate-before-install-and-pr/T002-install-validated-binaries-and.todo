@@ -1,0 +1,36 @@
+---
+complexity: high
+created_at: "2026-10-19T08:16:44Z"
+depends_on:
+    - P9.M2.E1.T001
+estimate_hours: 4
+id: P9.M2.E1.T002
+priority: high
+status: pending
+tags:
+    - idea
+    - planning
+title: Install validated binaries and verify the running T3 connector
+updated_at: "2026-10-19T08:16:44Z"
+---
+
+# Install validated binaries and verify the running T3 connector
+
+## Requirements
+
+- Consume the current candidate's successful P9.M2.E1.T001 receipt, checking exact commit/tree and no drift. Do not install based merely on a completed task status or an older revision's PASS.
+- Identify intended installation locations and existing c2c paths on x-p35/x-tuf before changes. Run C2C_VALIDATION_RECEIPT=/absolute/path/to/buildbox-pass.json C2C_SKIP_RESTART_PROMPT=1 just bi only after the complete buildbox gate has passed, from the same pinned source. The M1 receipt guard must match source/dependencies and all eight artifacts against the original PASS manifest inside the install lock after rebuild and before copies; any mismatch requires revalidation. Do not bypass guards with C2C_INSTALL_FORCE=1.
+- For another installation host, record the same source, local build/toolchain and artifact hashes; run full tests for previously unvalidated platform/dependency differences. Any needed workstation just bi also waits for the successful buildbox gate.
+- Compare every installed executable to its corresponding artifact AND the preserved PASS manifest, and recheck clean source/tree. Inspect the install stamp but supplement its incomplete coverage. Verify version/help and absolute unit executable/T3-home paths. Retain source worktree paths needed by installed wrappers.
+- Run c2c t3 service install to enable/start the intended connector and verify actual process/doctor status. Pair through the approved flow if needed; no credential borrowing. Start/restart only this connector, never unrelated agents or the user's live T3 server.
+- Confirm the running executable hash, not just the installed filename, and that recovery is enabled/scheduled in the same process. Record partial health or re-pair blockers accurately; repair only owned drift.
+
+## Acceptance Criteria
+
+- Source/buildbox gate timestamps precede just bi; source and artifact identity match the installed candidate.
+- All installed artifacts match that host's build; the service process runs the intended executable and doctor reports monitor state, last/next sweep and any genuine holds.
+- No unrelated process restarted or credential/configuration replaced. Any source fix goes back through P9.M2.E1.T001 before another install.
+
+## Lane
+
+Serial installation after the buildbox PASS. This is the first actual deployment step; M1 only implements and fixture-tests installation behavior. Two-host live acceptance follows in T003.

@@ -1,0 +1,23 @@
+complexity: high
+depends_on: []
+epics:
+    - complexity: high
+      depends_on: []
+      description: Implement the native connector, serialized messaging and 60-second model-availability monitor with durable shared rate limiting and supervised service commands.
+      estimate_hours: 48
+      id: E1
+      locked: false
+      name: Prove and implement connector plus recovery
+      path: 01-prove-and-implement-the-extern
+      status: pending
+estimate_hours: 48
+id: P9.M1
+locked: false
+name: Native connector and integrated recovery
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 8
+    total_tasks: 8
+status: pending

@@ -1,0 +1,34 @@
+complexity: high
+depends_on: []
+estimate_hours: 66
+id: P9
+locked: false
+milestones:
+    - complexity: high
+      depends_on: []
+      description: Native external MCP connector, root aliases, durable delivery and model-availability recovery in one supervised service; no T3 source changes and no installation before M2 validation.
+      estimate_hours: 48
+      id: M1
+      locked: false
+      name: Native connector and integrated recovery
+      path: 01-native-connector-for-unmodifie
+      status: pending
+    - complexity: high
+      depends_on:
+        - P9.M1.E1.T007
+      description: Freeze and validate the exact connector plus recovery candidate on a buildbox before any just bi installation, then prove installed two-host behavior.
+      estimate_hours: 18
+      id: M2
+      locked: false
+      name: Buildbox validation and verified installation
+      path: 02-buildbox-validation-and-verifi
+      status: pending
+name: Native c2c connector for unmodified T3 Code
+stats:
+    blocked: 0
+    done: 0
+    in_progress: 0
+    pending: 11
+    total_tasks: 11
+status: pending
+weeks: 3
