@@ -28,7 +28,7 @@ tasks:
       file: T002-implement-native-t3-discovery.todo
       id: T002
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Implement native T3 discovery pairing and bounded MCP transport
     - complexity: high
