@@ -502,6 +502,12 @@ type dispatch_step =
   | Submitted of string
   | Retained of string
   | Held of string
+  | Rebind_required of string
+
+type dispatch_batch = {
+  steps : dispatch_step list;
+  budget_exhausted : bool;
+}
 
 type send =
   thread_id:string -> message:string -> mode:delivery_mode ->
@@ -774,11 +780,28 @@ type dispatcher = {
   can_send : State.entry -> bool;
   credential_generation : unit -> int;
   mutable last_thread : string option;
+  mutable flush_deferrable : bool;
+  mutable rebind_required : string option;
 }
 
 let create_dispatcher ?(spacing = 1.) ?(can_send = fun _ -> true)
-    ?(credential_generation = fun () -> 0) ~state ~send ~clock () =
-  { state; send; clock; spacing; can_send; credential_generation; last_thread = None }
+    ?(credential_generation = fun () -> 0) ?(flush_deferrable = false) ~state ~send ~clock () =
+  if spacing < 0. then invalid_arg "T3 dispatcher spacing must be non-negative";
+  { state; send; clock; spacing; can_send; credential_generation; last_thread = None;
+    flush_deferrable; rebind_required = None }
+
+let release_deferrable dispatcher = dispatcher.flush_deferrable <- true
+let hold_deferrable dispatcher = dispatcher.flush_deferrable <- false
+
+let error_requires_rebind = function
+  (* [Auth_denied] means that the credential was rejected and the client
+     contract explicitly requires a new pairing.  Recreating the client or
+     revalidating the runtime cannot repair that credential, so treating it as
+     a rebind would make the foreground service retry the same rejected token
+     forever.  Runtime incarnation changes are repairable by [authorize
+     ~rebind:true] and therefore remain the only automatic rebind case. *)
+  | T3.Runtime_changed _ -> true
+  | _ -> false
 
 let dispatch_thread entry = string_member "thread_id" entry.State.payload
 
@@ -787,15 +810,26 @@ let dispatch_due dispatcher now =
   | Some at when now < at +. dispatcher.spacing -> Some (at +. dispatcher.spacing -. now)
   | _ -> None
 
-let pending_dispatch_entries dispatcher now =
+let bool_member key json =
+  match json_member key json with Some (`Bool value) -> value | _ -> false
+
+let pending_dispatch_entries dispatcher ~flush_deferrable now =
   State.journal_pending dispatcher.state
   |> List.filter (fun entry ->
        match string_member "status" entry.State.payload with
        | Some "held" -> false
        | Some "pending" | Some "in_flight" ->
            Option.value (float_member "next_attempt_at" entry.payload) ~default:0. <= now
+           && (flush_deferrable || dispatcher.flush_deferrable
+               || not (bool_member "deferrable" entry.payload))
            && dispatcher.can_send entry
        | _ -> false)
+
+let dispatch_lane (entry : State.entry) =
+  let kind = match entry.State.kind with State.Inbound -> "inbound" | State.Recovery -> "recovery" in
+  match dispatch_thread entry with
+  | Some thread -> kind ^ ":" ^ thread
+  | None -> kind ^ ":<unknown>"
 
 let choose_fair dispatcher entries =
   let first_opt = function [] -> None | value :: _ -> Some value in
@@ -803,40 +837,42 @@ let choose_fair dispatcher entries =
   let rec unique acc = function
     | [] -> List.rev acc
     | entry :: rest ->
-        (match dispatch_thread entry with
-         | None -> unique acc rest
-         | Some thread when List.mem thread acc -> unique acc rest
-         | Some thread -> unique (thread :: acc) rest)
+        let lane = dispatch_lane entry in
+        if List.mem lane acc then unique acc rest
+        else unique (lane :: acc) rest
   in
-  let threads = unique [] entries in
-  let selected_thread =
+  let lanes = unique [] entries in
+  let selected_lane =
     match dispatcher.last_thread with
-    | None -> first_opt threads
+    | None -> first_opt lanes
     | Some previous ->
-        (match List.find_index (String.equal previous) threads with
-         | None -> first_opt threads
+        (match List.find_index (String.equal previous) lanes with
+         | None -> first_opt lanes
          | Some index ->
-             let after = List.filteri (fun i _ -> i > index) threads in
-             (match after with [] -> first_opt threads | _ -> first_opt after))
+             let after = List.filteri (fun i _ -> i > index) lanes in
+             (match after with [] -> first_opt lanes | _ -> first_opt after))
   in
-  match selected_thread with
+  match selected_lane with
   | None -> None
-  | Some thread ->
-      List.find_opt (fun entry -> dispatch_thread entry = Some thread) entries
+  | Some lane -> List.find_opt (fun entry -> dispatch_lane entry = lane) entries
 
 let error_is_permanent = function
-  | T3.Auth_denied _ | T3.Credential _ | T3.Unsafe_state _
-  | T3.Runtime_changed _ | T3.Discovery _ | T3.Tool_rejected _
-  | T3.Unsupported _ -> true
+  | T3.Credential _ | T3.Unsafe_state _ | T3.Discovery _ | T3.Tool_rejected _
+  | T3.Unsupported _ | T3.Auth_denied _ -> true
   | T3.Timeout _ | T3.Http_status _ | T3.Rpc_error _ | T3.Protocol _
-  | T3.Redirect_refused _ | T3.Ambiguous _ | T3.Oversize _ -> false
+  | T3.Redirect_refused _ | T3.Ambiguous _ | T3.Oversize _
+  | T3.Runtime_changed _ -> false
 
-let dispatch_once dispatcher =
+let dispatch_once ?(flush_deferrable = false) dispatcher =
   let now = dispatcher.clock () in
+  match dispatcher.rebind_required with
+  | Some reason -> Lwt.return (Rebind_required reason)
+  | None ->
   match dispatch_due dispatcher now with
   | Some delay -> Lwt.return (Waiting delay)
   | None ->
-      (match choose_fair dispatcher (pending_dispatch_entries dispatcher now) with
+      (match choose_fair dispatcher
+               (pending_dispatch_entries dispatcher ~flush_deferrable now) with
        | None -> Lwt.return Idle
        | Some entry ->
            let required key =
@@ -879,7 +915,7 @@ let dispatch_once dispatcher =
                      (match State.record_dispatch_at dispatcher.state now with
                       | Error error -> Lwt.return (Held error)
                       | Ok () ->
-                          dispatcher.last_thread <- Some thread_id;
+                          dispatcher.last_thread <- Some (dispatch_lane entry);
                           dispatcher.send ~thread_id ~message:formatted
                             ~mode ~client_request_id:request_id >>= function
                           | Ok receipt ->
@@ -896,14 +932,33 @@ let dispatch_once dispatcher =
                                | Error error -> Lwt.return (Retained error))
                           | Error error ->
                               let permanent = error_is_permanent error in
+                              let requires_rebind = error_requires_rebind error in
                               let updated =
                                 with_fields inflight
                                   [ ("status", `String (if permanent then "held" else "pending"));
                                     ("last_error", `String (T3.error_to_string error));
-                                    ("next_attempt_at", `Float (now +. dispatcher.spacing)) ]
+                                    ("next_attempt_at", `Float (now +. dispatcher.spacing));
+                                    ("rebind_required", `Bool requires_rebind) ]
                               in
                               ignore (State.journal_update dispatcher.state ~seq:entry.seq
                                         ~payload:updated);
+                              if requires_rebind then
+                                dispatcher.rebind_required <- Some (T3.error_to_string error);
                               Lwt.return
-                                (if permanent then Held (T3.error_to_string error)
+                                (if requires_rebind then Rebind_required (T3.error_to_string error)
+                                 else if permanent then Held (T3.error_to_string error)
                                  else Retained (T3.error_to_string error))))))
+
+let dispatch_batch ?(max_steps = 16) ?(flush_deferrable = false) dispatcher =
+  if max_steps <= 0 then invalid_arg "T3 dispatcher batch budget must be positive";
+  let rec loop remaining steps =
+    if remaining = 0 then
+      Lwt.return { steps = List.rev steps; budget_exhausted = true }
+    else
+      dispatch_once ~flush_deferrable dispatcher >>= function
+      | (Idle | Waiting _ | Rebind_required _) as step ->
+          Lwt.return { steps = List.rev (step :: steps); budget_exhausted = false }
+      | (Submitted _ | Retained _ | Held _) as step ->
+          loop (remaining - 1) (step :: steps)
+  in
+  loop max_steps []

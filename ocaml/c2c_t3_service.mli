@@ -155,6 +155,12 @@ type dispatch_step =
   | Submitted of string
   | Retained of string
   | Held of string
+  | Rebind_required of string
+
+type dispatch_batch = {
+  steps : dispatch_step list;
+  budget_exhausted : bool;
+}
 
 type send =
   thread_id:string -> message:string -> mode:delivery_mode ->
@@ -178,11 +184,35 @@ type dispatcher
 val create_dispatcher :
   ?spacing:float -> ?can_send:(C2c_t3_state.entry -> bool) ->
   ?credential_generation:(unit -> int) ->
+  ?flush_deferrable:bool ->
   state:C2c_t3_state.t -> send:send -> clock:(unit -> float) -> unit -> dispatcher
 (** Create the single serial dispatcher shared by normal delivery and later
     recovery intents. The submission boundary is persisted before each MCP
-    call, so restart cannot burst past [spacing]. *)
+    call, so restart cannot burst past [spacing]. Deferrable entries remain
+    pending until [flush_deferrable] is true or {!release_deferrable} is
+    called. *)
 
-val dispatch_once : dispatcher -> dispatch_step Lwt.t
+val release_deferrable : dispatcher -> unit
+(** Release deferrable entries for the next dispatches. This is an explicit
+    idle/turn-boundary flush; it does not alter the durable entries. *)
+
+val hold_deferrable : dispatcher -> unit
+(** Re-arm the default hold policy after a flush. *)
+
+val error_requires_rebind : C2c_t3_client.error -> bool
+(** Runtime incarnation failures are transient until the caller recreates or
+    re-authorizes its client. Authentication denial is permanent here: the
+    client contract requires explicit re-pairing, which is outside the
+    dispatcher. *)
+
+val dispatch_once : ?flush_deferrable:bool -> dispatcher -> dispatch_step Lwt.t
 (** Submit at most one due request. The caller owns the service loop and may
-    sleep for [Waiting delay]; this function never overlaps calls or sleeps. *)
+    sleep for [Waiting delay]; this function never overlaps calls or sleeps.
+    [Rebind_required] leaves the exact request pending and asks the caller to
+    re-authorize before constructing another dispatcher. *)
+
+val dispatch_batch :
+  ?max_steps:int -> ?flush_deferrable:bool -> dispatcher -> dispatch_batch Lwt.t
+(** Run at most [max_steps] serial dispatch decisions without sleeping. The
+    [budget_exhausted] flag is a maintenance fairness boundary: callers must
+    return to discovery/recovery/lease work before requesting another batch. *)

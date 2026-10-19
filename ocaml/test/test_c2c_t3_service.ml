@@ -116,7 +116,7 @@ let test_state_environment_alias_and_reopen () =
   in
   Fun.protect ~finally:remove (fun () ->
     let state =
-      match State.open_state ~dir:path () with
+      match State.open_state ~environment_id:"env-a" ~dir:path () with
       | Ok value -> value
       | Error _ -> Alcotest.fail "open state"
     in
@@ -188,7 +188,7 @@ let test_apply_retire_and_reopen () =
   in
   Fun.protect ~finally:cleanup (fun () ->
     let state =
-      match State.open_state ~dir:state_dir () with
+      match State.open_state ~environment_id:"env" ~dir:state_dir () with
       | Ok state -> state
       | Error _ -> Alcotest.fail "open state"
     in
@@ -241,8 +241,9 @@ let count_substring needle haystack =
   in
   loop 0 0
 
-let t3_message ?(source = C2c_mcp.Local) ?(from_alias = "peer") content : C2c_mcp.message =
-  { from_alias; to_alias = "t3-target"; content; deferrable = false;
+let t3_message ?(source = C2c_mcp.Local) ?(from_alias = "peer") ?(deferrable = false)
+    content : C2c_mcp.message =
+  { from_alias; to_alias = "t3-target"; content; deferrable;
     reply_via = None; enc_status = None; ts = 1.; ephemeral = false;
     message_id = None; pow_difficulty = None; source }
 
@@ -271,7 +272,7 @@ let service_fixture () =
       cwd = None; opaque_host_id = None }
   in
   let state =
-    match State.open_state ~dir:state_dir () with
+    match State.open_state ~environment_id:"env" ~dir:state_dir () with
     | Ok state -> state
     | Error _ -> Alcotest.fail "open delivery state"
   in
@@ -362,7 +363,7 @@ let test_timeout_retries_same_request_after_reopen () =
       let first_request = List.hd !calls in
       State.close state;
       let state =
-        match State.open_state ~dir:state_dir () with
+        match State.open_state ~environment_id:"env" ~dir:state_dir () with
         | Ok state -> state
         | Error _ -> Alcotest.fail "reopen delivery state"
       in
@@ -400,11 +401,149 @@ let test_explicit_mode_is_preserved () =
       let dispatcher = S.create_dispatcher ~state ~send ~clock:(fun () -> 0.) () in
       ignore (Lwt_main.run (S.dispatch_once dispatcher)))
 
+let test_deferrable_waits_for_explicit_flush () =
+  let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
+  Fun.protect
+    ~finally:(fun () -> State.close state; cleanup_dir broker_root; cleanup_dir state_dir)
+    (fun () ->
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"peer" ~to_alias:mapping.alias
+        ~content:"later" ~deferrable:true ();
+      let accepted = S.accept_inbox ~owner ~state ~mapping () in
+      Alcotest.(check int) "deferrable accepted" 1 accepted.accepted;
+      let calls = ref 0 in
+      let send ~thread_id ~message:_ ~mode:_ ~client_request_id:_ =
+        incr calls;
+        Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
+                         message_id = "m"; run_id = "r" })
+      in
+      let dispatcher = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
+      (match Lwt_main.run (S.dispatch_once dispatcher) with
+       | S.Idle -> ()
+       | _ -> Alcotest.fail "deferrable entry dispatched without a flush");
+      Alcotest.(check int) "held while idle" 0 !calls;
+      S.release_deferrable dispatcher;
+      (match Lwt_main.run (S.dispatch_once dispatcher) with
+       | S.Submitted _ -> ()
+       | _ -> Alcotest.fail "explicit flush did not release deferrable entry");
+      Alcotest.(check int) "flushed once" 1 !calls)
+
+let test_rebind_errors_requeue_exact_request () =
+  let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
+  Fun.protect
+    ~finally:(fun () -> State.close state; cleanup_dir broker_root; cleanup_dir state_dir)
+    (fun () ->
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"peer" ~to_alias:mapping.alias
+        ~content:"rebind me" ();
+      ignore (S.accept_inbox ~owner ~state ~mapping ());
+      let now = ref 0. and requests = ref [] in
+      let fail = ref true in
+      let send ~thread_id ~message:_ ~mode:_ ~client_request_id =
+        requests := client_request_id :: !requests;
+        if !fail then begin
+          fail := false;
+          Lwt.return (Error (C2c_t3_client.Runtime_changed "restarted"))
+        end else
+          Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
+                           message_id = "m"; run_id = "r" })
+      in
+      let first = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> !now) () in
+      (match Lwt_main.run (S.dispatch_once first) with
+       | S.Rebind_required _ -> ()
+       | _ -> Alcotest.fail "runtime change did not request rebind");
+      let pending = State.journal_pending state in
+      Alcotest.(check int) "request remains pending" 1 (List.length pending);
+      let payload = (List.hd pending).State.payload in
+      Alcotest.(check string) "requeued status" "pending"
+        (Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "status" payload));
+      Alcotest.(check bool) "rebind marker" true
+        (Yojson.Safe.Util.to_bool (Yojson.Safe.Util.member "rebind_required" payload));
+      (* A stale client cannot retry in a tight loop.  A freshly authorized
+         client gets the exact persisted request identity. *)
+      (match Lwt_main.run (S.dispatch_once first) with
+       | S.Rebind_required _ -> ()
+       | _ -> Alcotest.fail "stale dispatcher retried after runtime change");
+      now := 1.;
+      let second = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> !now) () in
+      (match Lwt_main.run (S.dispatch_once second) with
+       | S.Submitted request ->
+           Alcotest.(check string) "request identity preserved" (List.hd !requests) request
+       | _ -> Alcotest.fail "rebound client did not retry request");
+      Alcotest.(check int) "one request after rebind" 2 (List.length !requests);
+      Alcotest.(check int) "pending cleared" 0 (List.length (State.journal_pending state)))
+
+let test_auth_denied_is_held_until_repair () =
+  let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
+  Fun.protect
+    ~finally:(fun () -> State.close state; cleanup_dir broker_root; cleanup_dir state_dir)
+    (fun () ->
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"peer" ~to_alias:mapping.alias
+        ~content:"requires a new credential" ();
+      ignore (S.accept_inbox ~owner ~state ~mapping ());
+      let calls = ref 0 in
+      let send ~thread_id ~message:_ ~mode:_ ~client_request_id:_ =
+        incr calls;
+        Lwt.return (Error (C2c_t3_client.Auth_denied { status = 401 }))
+      in
+      let dispatcher = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
+      (match Lwt_main.run (S.dispatch_once dispatcher) with
+       | S.Held reason ->
+           Alcotest.(check bool) "reason identifies auth denial"
+             true (String.length reason > 0)
+       | S.Rebind_required _ -> Alcotest.fail "auth denial must not request runtime rebind"
+       | _ -> Alcotest.fail "auth denial was not held");
+      Alcotest.(check int) "one rejected submission" 1 !calls;
+      (* A held entry is excluded from every subsequent sweep, avoiding a
+         tight retry loop while an operator performs explicit pairing. *)
+      (match Lwt_main.run (S.dispatch_once dispatcher) with
+       | S.Idle -> ()
+       | _ -> Alcotest.fail "held auth entry was retried");
+      Alcotest.(check int) "held entry retained for diagnosis" 1
+        (List.length (State.journal_pending state)))
+
+let test_dispatch_batch_has_maintenance_budget () =
+  let state_dir = temp_dir "c2c-t3-batch-state" in
+  Fun.protect ~finally:(fun () -> cleanup_dir state_dir) (fun () ->
+    let state =
+      match State.open_state ~environment_id:"env" ~dir:state_dir () with
+      | Ok value -> value
+      | Error _ -> Alcotest.fail "open batch state"
+    in
+    let payload thread request =
+      `Assoc [ ("status", `String "pending"); ("thread_id", `String thread);
+        ("formatted", `String ("DATA-" ^ thread)); ("request_id", `String request);
+        ("mode", `String "auto"); ("attempts", `Int 0);
+        ("next_attempt_at", `Float 0.) ]
+    in
+    for i = 1 to 5 do
+      let key = Printf.sprintf "batch-%d" i in
+      ignore (State.journal_append state ~kind:State.Inbound ~key
+                ~payload:(payload (Printf.sprintf "thread-%d" i) ("request-" ^ key)))
+    done;
+    let sends = ref 0 in
+    let send ~thread_id ~message:_ ~mode:_ ~client_request_id:_ =
+      incr sends;
+      Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
+                       message_id = "m"; run_id = "r" })
+    in
+    let dispatcher = S.create_dispatcher ~spacing:0. ~state ~send ~clock:(fun () -> 0.) () in
+    let first = Lwt_main.run (S.dispatch_batch ~max_steps:2 dispatcher) in
+    Alcotest.(check bool) "first batch yields" true first.budget_exhausted;
+    Alcotest.(check int) "first batch bounded" 2 !sends;
+    Alcotest.(check int) "three remain" 3 (List.length (State.journal_pending state));
+    let second = Lwt_main.run (S.dispatch_batch ~max_steps:2 dispatcher) in
+    Alcotest.(check bool) "second batch yields" true second.budget_exhausted;
+    Alcotest.(check int) "second batch bounded" 4 !sends;
+    let third = Lwt_main.run (S.dispatch_batch ~max_steps:2 dispatcher) in
+    Alcotest.(check bool) "final batch completes" false third.budget_exhausted;
+    Alcotest.(check int) "all five eventually sent" 5 !sends;
+    Alcotest.(check int) "journal drained" 0 (List.length (State.journal_pending state));
+    State.close state)
+
 let test_dispatch_fairness_across_threads () =
   let state_dir = temp_dir "c2c-t3-fair-state" in
   Fun.protect ~finally:(fun () -> cleanup_dir state_dir) (fun () ->
     let state =
-      match State.open_state ~dir:state_dir () with
+      match State.open_state ~environment_id:"env" ~dir:state_dir () with
       | Ok state -> state | Error _ -> Alcotest.fail "open fairness state"
     in
     let payload thread request =
@@ -443,4 +582,8 @@ let () =
                       Alcotest.test_case "accept ack and duplicate text" `Quick test_accept_ack_and_distinct_identical_messages;
                       Alcotest.test_case "timeout restart replay" `Quick test_timeout_retries_same_request_after_reopen;
                       Alcotest.test_case "explicit mode" `Quick test_explicit_mode_is_preserved;
+                      Alcotest.test_case "deferrable explicit flush" `Quick test_deferrable_waits_for_explicit_flush;
+                      Alcotest.test_case "rebind retries" `Quick test_rebind_errors_requeue_exact_request;
+                      Alcotest.test_case "auth denial held" `Quick test_auth_denied_is_held_until_repair;
+                      Alcotest.test_case "batch budget" `Quick test_dispatch_batch_has_maintenance_budget;
                       Alcotest.test_case "fairness" `Quick test_dispatch_fairness_across_threads ]) ]
