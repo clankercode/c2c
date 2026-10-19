@@ -845,6 +845,13 @@ type t = {
      until one completes). The SIGALRM deadline scales with it (B291-style) so
      a slow-but-alive pass is not killed at the interval-derived floor. *)
   mutable last_pass_s : float;
+  (* T006: capability state for the narrow signed owner-publication endpoint.
+     [Unavailable] is sticky for this connector process after an explicit
+     unsupported-route response, avoiding a request on every pass against an
+     older relay. A restart probes again, which is what makes a relay rollout
+     discoverable without changing local delivery. *)
+  mutable peer_visibility_capability :
+    [ `Unknown | `Supported | `Unavailable ];
 }
 
 (* ---------------------------------------------------------------------------
@@ -883,6 +890,15 @@ type local_registration = {
   lr_last_activity_ts : float option;
   lr_registered_by : string option;
 }
+
+(* T3 aliases are published through the existing machine connector.  Keep the
+   marker here (rather than treating every [client_type = "t3"] row as an
+   advertisement) because the broker registration is the durable ownership
+   proof and client_type is user-controlled metadata. *)
+let t3_service_registered_by = "c2c-t3-service"
+
+let is_t3_service_registration (reg : local_registration) =
+  reg.lr_registered_by = Some t3_service_registered_by
 
 let read_pid_start_time_local pid =
   let path = Printf.sprintf "/proc/%d/stat" pid in
@@ -981,6 +997,46 @@ let read_local_registrations_with_skipped broker_root =
 
 let read_local_registrations broker_root =
   fst (read_local_registrations_with_skipped broker_root)
+
+(* Read the explicit service-owned advertisement intent.  This is kept
+   separate from [read_local_registrations] so the long-standing triple
+   returned by that helper remains source-compatible with connector tests and
+   tooling.  Eligibility is checked by the caller against the same [regs]
+   snapshot used for register/heartbeat; a stale service row must never be
+   published merely because its marker survived in registry.json. *)
+let read_t3_service_registration_keys broker_root =
+  match C2c_io.read_json_opt (broker_root // "registry.json") with
+  | Some (`List rows) ->
+      List.filter_map
+        (function
+          | `Assoc fields ->
+              let string_opt key =
+                match List.assoc_opt key fields with
+                | Some (`String value) -> Some value
+                | _ -> None
+              in
+              (match string_opt "session_id", string_opt "alias",
+                     string_opt "client_type", string_opt "registered_by" with
+               | Some session_id, Some alias, Some "t3", Some registered_by
+                 when registered_by = t3_service_registered_by ->
+                   Some (session_id, alias)
+               | _ -> None)
+          | _ -> None)
+        rows
+  | _ -> []
+
+(* Keep the publication identity tied to the exact registration snapshot used
+   for this pass.  Checking only the session id would let a registry alias
+   change in the small window between [read_local_registrations...] and this
+   optional publication step, publishing a route that was not registered or
+   heartbeated by this connector. *)
+let is_current_t3_service_registration regs ~session_id ~alias =
+  List.exists
+    (fun (registered_session_id, registered_alias, client_type) ->
+      registered_session_id = session_id
+      && registered_alias = alias
+      && client_type = "t3")
+    regs
 
 let retain_eligible_registered regs registered =
   let eligible_session_ids = List.map (fun (sid, _, _) -> sid) regs in
@@ -2457,6 +2513,23 @@ module Relay_client = struct
       ("session_id", `String session_id);
     ])
 
+  (* T006: publish an explicitly service-owned alias for peer discovery.  The
+     relay authenticates this operation with the body proof, so it must remain
+     separate from the ordinary relay-admin/token paths and must never use a
+     force or takeover flag.  Older relays may not expose this endpoint; the
+     caller capability-gates that response and leaves ordinary private peers
+     and local delivery untouched. *)
+  let set_peer_discovery_visibility_signed t ~alias ~visibility
+      ~identity_pk ~ts ~nonce ~sig_ =
+    post t "/set_peer_discovery_visibility" (`Assoc [
+      ("alias", `String alias);
+      ("visibility", `String visibility);
+      ("identity_pk", `String identity_pk);
+      ("ts", `String ts);
+      ("nonce", `String nonce);
+      ("sig", `String sig_);
+    ])
+
   (* B317: non-destructive read used by the persist-first inbound handoff —
      rows are appended locally BEFORE /poll_inbox clears them, so a crash
      between the two cannot lose the batch. *)
@@ -2515,6 +2588,49 @@ let response_error_code json =
     (match member_or_null "error_code" json with
      | `String c -> Some c
      | _ -> None)
+
+(* The owner-publication route was added after the first private-by-default
+   relay deployment.  Only an explicit route/capability miss disables this
+   optional operation.  Authentication, alias identity, lease and transport
+   failures remain observable in verbose connector logs and do not get
+   misclassified as an unsupported relay (or trigger a takeover). *)
+let response_is_peer_visibility_unsupported json =
+  match response_error_code json with
+  | Some ("http_error_404" | "not_found" | "unknown_route"
+         | "unsupported" | "capability_unsupported") -> true
+  | _ -> false
+
+let publish_t3_service_alias (t : t) client ~alias =
+  if t.peer_visibility_capability = `Unavailable then ()
+  else
+    match t.identity with
+    | None ->
+        (* Body-signed publication cannot be performed with a token-only
+           connector.  This is a capability gap for remote advertisement;
+           local broker delivery and ordinary relay transport continue. *)
+        ()
+    | Some identity ->
+        let proof =
+          Relay_signed_ops.sign_peer_visibility identity ~alias ~visibility:"public"
+        in
+        let response =
+          Lwt_main.run
+            (Relay_client.set_peer_discovery_visibility_signed client
+               ~alias ~visibility:"public"
+               ~identity_pk:proof.identity_pk_b64 ~ts:proof.ts
+               ~nonce:proof.nonce ~sig_:proof.sig_b64)
+        in
+        if json_bool_member ~key:"ok" response then
+          t.peer_visibility_capability <- `Supported
+        else if response_is_peer_visibility_unsupported response then begin
+          t.peer_visibility_capability <- `Unavailable;
+          if t.verbose then
+            Printf.eprintf
+              "[relay-connector] relay lacks signed T3 peer-publication capability; keeping service alias %s private\n%!" alias
+        end else if t.verbose then
+          Printf.eprintf
+            "[relay-connector] T3 peer-publication for %s was refused: %s\n%!"
+            alias (Yojson.Safe.to_string response)
 
 let response_is_lease_not_found json =
   response_error_code json = Some "lease_not_found"
@@ -3102,6 +3218,16 @@ let sync (t : t) : sync_result Lwt.t =
     ) ([], [], t.registered, []) regs
   in
   t.registered <- new_registered;
+
+  (* T006: publish only aliases explicitly owned by the T3 connector. The
+     machine connector remains the sole lease registrar; this optional signed
+     operation changes discovery visibility after the lease is confirmed. *)
+  if not !abort_on_rate_limit then
+    read_t3_service_registration_keys t.broker_root
+    |> List.iter (fun (session_id, alias) ->
+         if List.mem session_id t.registered
+            && is_current_t3_service_registration regs ~session_id ~alias then
+           publish_t3_service_alias t client ~alias);
 
   (* 2. Forward outbox entries with retry + DLQ — LOCKED to prevent TOCTOU
      race with append_outbox_entry (MCP send). The window is read_outbox →
@@ -3967,7 +4093,8 @@ let make_state ~relay_url ~token ~identity ~broker_root ~node_id
     registered = []; active_ws_bindings = [];
     owner_mismatch_strikes = [];
     alert_state = C2c_relay_alert.initial_state;
-    last_pass_s = 0.0 }
+    last_pass_s = 0.0;
+    peer_visibility_capability = `Unknown }
 
 let print_sync_result ?broker_root result =
   let prefix = match broker_root with
@@ -4419,6 +4546,7 @@ let start ~relay_url ~token ~identity ~broker_root ~node_id
       owner_mismatch_strikes = [];
       alert_state = C2c_relay_alert.initial_state;
       last_pass_s = 0.0;
+      peer_visibility_capability = `Unknown;
     } in
     if once then begin
       (* B321: route through run_sync_once like the machine --once path —

@@ -141,6 +141,43 @@ let test_relay_registration_filters_historical_rows () =
     (Conn.retain_eligible_registered regs
        [ "dead-1"; "live-session"; "recent-hook"; "pidless-history" ])
 
+let test_t3_service_publication_intent_is_explicit_and_current () =
+  let tmp = make_tmpdir () in
+  Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
+  let rows = `List [
+    `Assoc [ "session_id", `String "t3-live"; "alias", `String "t3-good";
+             "client_type", `String "t3";
+             "registered_by", `String Conn.t3_service_registered_by ];
+    (* The ownership marker alone is not enough: only the T3 client type is
+       eligible for public publication. *)
+    `Assoc [ "session_id", `String "wrong-client"; "alias", `String "not-t3";
+             "client_type", `String "codex";
+             "registered_by", `String Conn.t3_service_registered_by ];
+    `Assoc [ "session_id", `String "foreign"; "alias", `String "foreign";
+             "client_type", `String "t3"; "registered_by", `String "other" ];
+    `Assoc [ "session_id", `String "missing-client-type";
+             "alias", `String "missing-client-type";
+             "registered_by", `String Conn.t3_service_registered_by ];
+  ] in
+  let oc = open_out (Filename.concat tmp "registry.json") in
+  Yojson.Safe.to_channel oc rows;
+  close_out oc;
+  Alcotest.(check (list (pair string string)))
+    "only explicit T3 service intent is advertised"
+    [ ("t3-live", "t3-good") ]
+    (Conn.read_t3_service_registration_keys tmp);
+  let regs = [ ("t3-live", "t3-good", "t3") ] in
+  Alcotest.(check bool) "exact registration snapshot matches" true
+    (Conn.is_current_t3_service_registration regs
+       ~session_id:"t3-live" ~alias:"t3-good");
+  Alcotest.(check bool) "alias changes do not match current snapshot" false
+    (Conn.is_current_t3_service_registration regs
+       ~session_id:"t3-live" ~alias:"t3-renamed");
+  Alcotest.(check bool) "client type changes do not match current snapshot" false
+    (Conn.is_current_t3_service_registration
+       [ ("t3-live", "t3-good", "codex") ]
+       ~session_id:"t3-live" ~alias:"t3-good")
+
 let test_docker_registration_lease_boundaries () =
   let tmp = make_tmpdir () in
   Fun.protect ~finally:(fun () -> rmrf tmp) @@ fun () ->
@@ -2678,6 +2715,10 @@ let () =
         test_relay_registration_filters_historical_rows;
       Alcotest.test_case "Docker leases are bounded and per-root" `Quick
         test_docker_registration_lease_boundaries;
+    ];
+    "T006 T3 publication intent", [
+      Alcotest.test_case "explicit marker and current alias required" `Quick
+        test_t3_service_publication_intent_is_explicit_and_current;
     ];
     "parse_relay_url", [
       Alcotest.test_case "host:port" `Quick test_parse_relay_url_host_port;
