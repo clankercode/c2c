@@ -812,6 +812,7 @@ or provider credentials. Pair once, then run one service for each T3 home:
 | `t3 service install [--dry-run]` | Write and enable the owned `c2c-t3.service` user-systemd unit with absolute c2c/T3/config/state paths. A missing user manager is reported with the foreground command. |
 | `t3 service doctor [--json]` | Read-only, redacted readiness report. It reports unpaired, stale runtime, inactive supervision, malformed state, and recovery configuration without creating or rewriting state. |
 | `t3 service repair [--dry-run] [--json]` | Create only missing private connector directories. It preserves credentials, queued mail, tombstones, and live locks; use a normal service install to repair a missing unit. |
+| `t3 service recovery enable\|disable\|status [--json]` | Persist the model-availability monitor setting in the private connector config. Disabling holds recovery intents and never deletes queued work. |
 | `t3 service stop [--dry-run]` / `uninstall [--dry-run]` | Stop/disable or remove only the connector-owned unit. State and queued mail remain on disk. |
 
 Set `C2C_T3_RECOVERY=0` or pass `--recovery=false` to hold new model-availability

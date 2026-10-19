@@ -251,10 +251,42 @@ let send_term =
   let mode = Cmdliner.Arg.(value & opt string "auto" & info [ "mode" ] ~docv:"MODE" ~doc:"Delivery mode: auto, queue, steer, or restart.") in
   as_command (const send_cmd $ locator $ message $ mode $ json_flag)
 
+let recovery_config_path () = config_dir () // "config.json"
+
 let recovery_enabled () =
   match getenv_nonempty "C2C_T3_RECOVERY" with
   | Some ("0" | "false" | "off") -> false
-  | _ -> true
+  | Some ("1" | "true" | "on") -> true
+  | _ ->
+      (match (try Some (Yojson.Safe.from_file (recovery_config_path ())) with _ -> None) with
+       | Some (`Assoc fields) ->
+           (match List.assoc_opt "recoveryEnabled" fields with Some (`Bool enabled) -> enabled | _ -> true)
+       | _ -> true)
+
+let set_recovery_cmd enabled json =
+  let path = recovery_config_path () in
+  let existing =
+    if not (Sys.file_exists path) then `Assoc []
+    else
+      try Yojson.Safe.from_file path
+      with exn -> print_error ("refusing to overwrite malformed T3 config: " ^ Printexc.to_string exn); exit 1
+  in
+  let fields = match existing with `Assoc fields -> fields | _ -> print_error "refusing to overwrite non-object T3 config"; exit 1 in
+  (try C2c_io.mkdir_p ~mode:0o700 (config_dir ()) with exn -> print_error (Printexc.to_string exn); exit 1);
+  match C2c_io.write_file_atomic ~perm:0o600 path
+          (Yojson.Safe.to_string (`Assoc (List.remove_assoc "recoveryEnabled" fields @ [ ("recoveryEnabled", `Bool enabled) ])) ^ "\n") with
+  | Error error -> print_error error; 1
+  | Ok () -> if json then print_json (`Assoc [ ("recoveryEnabled", `Bool enabled); ("path", `String path) ]) else Printf.printf "model-availability recovery %s\n" (if enabled then "enabled" else "disabled"); 0
+
+let recovery_term enabled =
+  as_command (const set_recovery_cmd $ const enabled $ json_flag)
+
+let recovery_status_cmd json =
+  if json then print_json (`Assoc [ ("recoveryEnabled", `Bool (recovery_enabled ())); ("path", `String (recovery_config_path ())) ])
+  else Printf.printf "model-availability recovery: %s\n" (if recovery_enabled () then "enabled" else "disabled");
+  0
+
+let recovery_status_term = as_command (const recovery_status_cmd $ json_flag)
 
 let service_owner ~environment_id ~broker () =
   { Service.environment_id; broker; pid = Some (Unix.getpid ());
@@ -398,12 +430,20 @@ let service_stop_cmd dry_run =
 
 let service_uninstall_cmd dry_run = C2c_t3_systemd.uninstall ~dry_run (); Printf.printf "%s %s (state and queued mail retained)\n" (if dry_run then "would remove" else "removed") C2c_t3_systemd.unit_name; 0
 
+let recovery_group =
+  Cmdliner.Cmd.group ~default:recovery_status_term
+    (Cmdliner.Cmd.info "recovery" ~doc:"Enable or disable durable model-availability Continue recovery.")
+    [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "enable" ~doc:"Enable recovery for future service sweeps.") (recovery_term true);
+      Cmdliner.Cmd.v (Cmdliner.Cmd.info "disable" ~doc:"Hold recovery intents without deleting them.") (recovery_term false);
+      Cmdliner.Cmd.v (Cmdliner.Cmd.info "status" ~doc:"Show the current durable recovery setting.") recovery_status_term ]
+
 let service_group : unit Cmdliner.Cmd.t =
   Cmdliner.Cmd.group ~default:foreground_term
     (Cmdliner.Cmd.info "service" ~doc:"Run and supervise the native connector for one local T3 Code instance.")
     [ Cmdliner.Cmd.v (Cmdliner.Cmd.info "install" ~doc:"Install, enable, and start the owned user-systemd unit.") install_term;
       Cmdliner.Cmd.v (Cmdliner.Cmd.info "doctor" ~doc:"Read-only redacted readiness and health report.") doctor_term;
       Cmdliner.Cmd.v (Cmdliner.Cmd.info "repair" ~doc:"Conservatively repair owned directories; credentials and mail are preserved.") repair_term;
+      recovery_group;
       Cmdliner.Cmd.v (Cmdliner.Cmd.info "stop" ~doc:"Stop and disable the owned user-systemd unit.") (as_command (const service_stop_cmd $ Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Do not call systemctl.")));
       Cmdliner.Cmd.v (Cmdliner.Cmd.info "uninstall" ~doc:"Remove the owned unit while retaining connector state and queued mail.") (as_command (const service_uninstall_cmd $ Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Do not remove the unit."))) ]
 
