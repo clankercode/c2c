@@ -363,6 +363,11 @@ test-ts:
 npm-test:
     node --test npm-pkgs/c2c/test/*.test.js npm-pkgs/test/*.test.js
 
+# Native T3 connector's development protocol/lifecycle fixtures. These never
+# use a real model or the user's running T3 service.
+test-t3-connector:
+    node --test scripts/t3-connector-probe.test.mjs scripts/t3-connector-fixture.test.mjs scripts/t3-codex-provider.test.mjs
+
 # Stage npm package directories and dry-run pack every generated package.
 # Usage: just npm-stage-smoke /tmp/c2c-release-bin
 npm-stage-smoke BINARY_ROOT:
@@ -404,7 +409,7 @@ codex-deliver-e2e:
     scripts/test-codex-deliver-inbox-e2e.sh
 
 # Run all tests (Python + OCaml + TS + npm packaging). Always rebuilds OCaml first to avoid stale binary.
-test: build test-ocaml test-py test-ts npm-test
+test: build test-ocaml test-py test-ts npm-test test-t3-connector
 
 # B219: exercise the process-external relay lifecycle/hang recorder without
 # Docker or network access beyond a deliberately failing loopback probe.
