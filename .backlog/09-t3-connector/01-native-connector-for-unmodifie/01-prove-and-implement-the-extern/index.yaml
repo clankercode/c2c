@@ -68,7 +68,7 @@ tasks:
       file: T006-coordinate-relay-ownership-and.todo
       id: T006
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Coordinate relay ownership and retire only owned routes
     - complexity: high
