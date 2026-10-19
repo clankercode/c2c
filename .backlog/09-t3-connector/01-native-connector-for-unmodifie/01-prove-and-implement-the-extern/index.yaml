@@ -49,7 +49,7 @@ tasks:
       file: T004-discover-roots-and-publish-sta.todo
       id: T004
       priority: high
-      status: in_progress
+      status: done
       tags: []
       title: Discover roots and publish stable service-owned aliases
     - complexity: high

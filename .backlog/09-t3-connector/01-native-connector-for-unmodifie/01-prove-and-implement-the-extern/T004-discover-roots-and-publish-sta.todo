@@ -1,20 +1,21 @@
 ---
 claimed_at: "2026-10-19T16:36:23Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-19T17:08:08Z"
 complexity: high
 created_at: "2026-10-19T07:12:01Z"
 depends_on:
     - P9.M1.E1.T002
     - P9.M1.E1.T003
+duration_minutes: 31.759248573266667
 estimate_hours: 6
 id: P9.M1.E1.T004
 priority: high
 started_at: "2026-10-19T16:36:23Z"
-status: in_progress
+status: done
 tags: []
 title: Discover roots and publish stable service-owned aliases
-updated_at: "2026-10-19T16:36:23Z"
+updated_at: "2026-10-19T17:08:08Z"
 ---
 
 # Discover roots and publish stable service-owned aliases
