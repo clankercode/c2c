@@ -87,13 +87,16 @@ class C2CUninstallTests(unittest.TestCase):
         record = next(r for r in m["installs"] if r["component"] == "codex")
         self.assertEqual(record["alias"], self.alias)
         kinds = {a["kind"] for a in record["artifacts"]}
-        self.assertIn("shared-toml-section", kinds)
+        # Installation defaults to the hooks + skill path.  MCP config is
+        # explicitly opt-in (`--with-mcp`), while the orientation and hook
+        # fragments remain marker-owned shared blocks.
+        self.assertIn("shared-block", kinds)
         self.assertIn("owned-file", kinds)
-        self.assertIn("schedule", kinds)
+        self.assertNotIn("schedule", kinds)
 
     def test_install_codex_json_summary(self):
         result = run_cli(
-            "install", "codex", "--alias", self.alias, "--json", env=self.env
+            "install", "codex", "--alias", self.alias, "--with-mcp", "--json", env=self.env
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = parse_json_stdout(result.stdout)
@@ -107,11 +110,10 @@ class C2CUninstallTests(unittest.TestCase):
         config.parent.mkdir(parents=True)
         config.write_text("[user]\nkey = \"keep-me\"\n", encoding="utf-8")
 
-        install = run_cli("install", "codex", "--alias", self.alias, env=self.env)
+        install = run_cli(
+            "install", "codex", "--alias", self.alias, "--with-mcp", env=self.env
+        )
         self.assertEqual(install.returncode, 0, install.stderr)
-        record = next(r for r in self.manifest()["installs"] if r["component"] == "codex")
-        schedule_path = Path(next(a["path"] for a in record["artifacts"] if a["kind"] == "schedule"))
-        self.assertTrue(schedule_path.exists())
 
         first = run_cli("uninstall", "codex", env=self.env)
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -121,7 +123,6 @@ class C2CUninstallTests(unittest.TestCase):
         self.assertIn('[user]', content)
         self.assertIn('key = "keep-me"', content)
         self.assertNotIn("[mcp_servers.c2c", content)
-        self.assertFalse(schedule_path.exists())
 
         second = run_cli("uninstall", "codex", env=self.env)
         self.assertEqual(second.returncode, 0, second.stderr)
@@ -161,11 +162,14 @@ class C2CUninstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         content = config.read_text(encoding="utf-8")
         self.assertIn("[mcp_servers.other]", content)
-        self.assertNotIn("[mcp_servers.c2c", content)
+        # The incomplete receipt must not cause uninstall to delete an
+        # operator-owned MCP section.  Marker-owned hook/skill artifacts are
+        # still removed through the recompute fallback.
+        self.assertIn("[mcp_servers.c2c", content)
         self.assertEqual(self.manifest()["installs"], [])
 
     def test_uninstall_kimi_preserves_user_json_keys(self):
-        config = self.home / ".kimi" / "mcp.json"
+        config = self.home / ".kimi-code" / "mcp.json"
         config.parent.mkdir(parents=True)
         config.write_text(
             json.dumps(
@@ -175,7 +179,9 @@ class C2CUninstallTests(unittest.TestCase):
             encoding="utf-8",
         )
 
-        install = run_cli("install", "kimi", "--alias", self.alias, env=self.env)
+        install = run_cli(
+            "install", "kimi", "--alias", self.alias, "--with-mcp", env=self.env
+        )
         self.assertEqual(install.returncode, 0, install.stderr)
 
         after_install = json.loads(config.read_text(encoding="utf-8"))
@@ -195,7 +201,7 @@ class C2CUninstallTests(unittest.TestCase):
         self.assertIn("nothing to remove for kimi", second.stdout)
 
     def test_uninstall_kimi_removes_legacy_toml_block_and_preserves_user_toml(self):
-        config = self.home / ".kimi" / "config.toml"
+        config = self.home / ".kimi-code" / "config.toml"
         config.parent.mkdir(parents=True)
         config.write_text(
             'model = "keep-before"\n'
