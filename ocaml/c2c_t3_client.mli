@@ -232,9 +232,17 @@ type activity = {
   thread_id : string;
   parent_thread_id : string option field;
   runtime_mode : string field;
+  provider_instance_id : string option field;
+  model : string option field;
+  pending_request_count : int field;
+  settled : bool field;
+  archived : bool field;
+  deleted : bool field;
+  snoozed : bool field;
   active_run_id : string option field;
   items : Yojson.Safe.t list;
   recent_runs : run list;
+  runs_complete : bool;
   complete : bool;  (** [hasMore = false] reached within limits *)
   text_truncated : bool;  (** some item reported [textTruncated = true] *)
   thread_raw : Yojson.Safe.t;

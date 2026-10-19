@@ -886,7 +886,8 @@ let dispatch_once dispatcher =
                               let receipt_json =
                                 `Assoc [ ("thread_id", `String receipt.receipt_thread_id);
                                   ("message_id", `String receipt.message_id);
-                                  ("run_id", `String receipt.run_id) ]
+                                  ("run_id", `String receipt.run_id);
+                                  ("submitted_at", `Float now) ]
                               in
                               (match State.journal_ack_with_result dispatcher.state
                                        ~seq:entry.seq ~result:receipt_json with

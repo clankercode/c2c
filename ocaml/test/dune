@@ -1001,3 +1001,8 @@
  (name test_c2c_t3_service)
  (modules test_c2c_t3_service)
  (libraries c2c_mcp alcotest yojson unix lwt lwt.unix))
+
+(test
+ (name test_c2c_t3_recovery)
+ (modules test_c2c_t3_recovery)
+ (libraries c2c_mcp alcotest yojson unix lwt lwt.unix))

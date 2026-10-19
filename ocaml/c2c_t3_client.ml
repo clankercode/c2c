@@ -960,9 +960,17 @@ type activity = {
   thread_id : string;
   parent_thread_id : string option field;
   runtime_mode : string field;
+  provider_instance_id : string option field;
+  model : string option field;
+  pending_request_count : int field;
+  settled : bool field;
+  archived : bool field;
+  deleted : bool field;
+  snoozed : bool field;
   active_run_id : string option field;
   items : Yojson.Safe.t list;
   recent_runs : run list;
+  runs_complete : bool;
   complete : bool;
   text_truncated : bool;
   thread_raw : Yojson.Safe.t;
@@ -973,6 +981,19 @@ let opt_string_field k j =
   | Some (`String s) -> Known (Some s)
   | Some `Null -> Known None
   | _ -> Unknown
+
+let int_field k j =
+  match member k j with
+  | Some (`Int n) when n >= 0 -> Known n
+  | _ -> Unknown
+
+let bool_field k j =
+  match member k j with
+  | Some (`Bool b) -> Known b
+  | _ -> Unknown
+
+let bool_field_default k default j =
+  match bool_field k j with Known value -> Known value | Unknown -> Known default
 
 let read_activity c ~thread_id ?(run_limit = 50) () =
   let rec loop pages acc size after last =
@@ -1008,8 +1029,31 @@ let read_activity c ~thread_id ?(run_limit = 50) () =
                        { thread_id;
                          parent_thread_id = opt_string_field "parentThreadId" thread;
                          runtime_mode = sfield "runtimeMode" thread;
+                         provider_instance_id = opt_string_field "providerInstanceId" thread;
+                         model = opt_string_field "model" thread;
+                         pending_request_count = int_field "pendingRequestCount" thread;
+                         settled = bool_field "settled" thread;
+                         archived = bool_field "archived" thread;
+                         (* The public thread-detail contract has no deleted
+                            field: a successful read proves the thread still
+                            exists. A deleted row is reported as not-found by
+                            the tool and handled by the service point-read. *)
+                         deleted = bool_field_default "deleted" false thread;
+                         snoozed =
+                           (match bool_field "snoozed" thread with
+                            | Known _ as value -> value
+                            | Unknown ->
+                                (match member "snoozedUntil" thread with
+                                 | Some (`String _) -> Known true
+                                 | Some `Null -> Known false
+                                 | _ -> Unknown));
                          active_run_id = opt_string_field "activeRunId" thread;
                          items; recent_runs; complete;
+                         runs_complete =
+                           (match member "recentRunsHasMore" j, member "runsHasMore" j with
+                            | Some (`Bool true), _ | _, Some (`Bool true) -> false
+                            | Some (`Bool false), _ | _, Some (`Bool false) -> true
+                            | _ -> List.length runs < run_limit);
                          text_truncated =
                            List.exists (fun i -> member "textTruncated" i = Some (`Bool true)) items;
                          thread_raw = thread })
