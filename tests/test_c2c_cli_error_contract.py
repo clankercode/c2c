@@ -464,7 +464,10 @@ class OpErrorAndStderrSnapshotTests(_ContractBase):
         self.assertIn("c2c init", result.stderr)
 
     def test_register_without_alias_has_hint(self):
-        result = self._run(["register"])
+        # Session resolution is intentionally checked before alias resolution.
+        # Supply the session so this cell exercises the alias-specific error
+        # contract rather than the earlier missing-identity guard.
+        result = self._run(["register"], session="sess-q1-register")
         self.assert_op_error(
             result, "no alias specified", "C2C_MCP_AUTO_REGISTER_ALIAS",
             label="c2c register (no alias)")

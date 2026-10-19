@@ -425,7 +425,11 @@ def test_scenario_broker_root_resolves_canonical_from_remote_once(
         return mock.Mock(stdout="", returncode=0)
 
     monkeypatch.setattr("tests.e2e.framework.scenario.subprocess.run", fake_run)
-    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    # C2C_STATE_HOME is the explicit c2c relocation knob.  Generic
+    # XDG_STATE_HOME is deliberately ignored when HOME is set to avoid
+    # per-profile split-brain brokers.
+    monkeypatch.setenv("C2C_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
 
     first = scenario.broker_root()
     second = scenario.broker_root()

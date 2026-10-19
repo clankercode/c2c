@@ -127,7 +127,12 @@ class ManagedInstancesCLITests(unittest.TestCase):
         )
         (agy_dir / "outer.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
         (agy_dir / "deliver.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
-        agy_metadata_dir = self.home / ".c2c" / "instances" / "agy-window-a"
+        # agy-env.json is managed-instance metadata and lives alongside the
+        # instance config under C2C_INSTANCES_DIR (the default is
+        # ~/.local/share/c2c/instances), not in the broker's ~/.c2c tree.
+        agy_metadata_dir = (
+            self.home / ".local" / "share" / "c2c" / "instances" / "agy-window-a"
+        )
         agy_metadata_dir.mkdir(parents=True, exist_ok=True)
         (agy_metadata_dir / "agy-env.json").write_text(
             json.dumps(
@@ -167,7 +172,9 @@ class ManagedInstancesCLITests(unittest.TestCase):
             encoding="utf-8",
         )
         (agy_dir / "outer.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
-        metadata_dir = self.home / ".c2c" / "instances" / "agy-window-malformed"
+        metadata_dir = (
+            self.home / ".local" / "share" / "c2c" / "instances" / "agy-window-malformed"
+        )
         metadata_dir.mkdir(parents=True, exist_ok=True)
 
         malformed = [

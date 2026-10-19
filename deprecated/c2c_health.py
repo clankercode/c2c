@@ -615,7 +615,11 @@ def check_broker_binary() -> dict[str, Any]:
     # Read server_version from OCaml source (the source version, not necessarily
     # the running binary version — verify with binary freshness).
     try:
-        ml_path = Path(__file__).resolve().parent / "ocaml" / "c2c_mcp.ml"
+        # This module lives under ``deprecated/`` while the OCaml source tree
+        # remains at the repository root.  Resolving relative to this file
+        # used to look under ``deprecated/ocaml`` and silently omitted the
+        # source version from every health report.
+        ml_path = Path(__file__).resolve().parent.parent / "ocaml" / "c2c_mcp.ml"
         if ml_path.exists():
             for line in ml_path.read_text(encoding="utf-8").splitlines():
                 m = re.match(r'^let server_version = "(.+)"', line.strip())
