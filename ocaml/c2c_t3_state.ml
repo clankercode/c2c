@@ -392,6 +392,11 @@ let journal_pending ?kind t =
   | None -> t.journal
   | Some k -> List.filter (fun (e : entry) -> e.kind = k) t.journal
 
+let journal_acked ?kind t =
+  match kind with
+  | None -> t.acked
+  | Some k -> List.filter (fun (e : acked_entry) -> e.kind = k) t.acked
+
 let journal_append t ~kind ~key ~payload =
   if key = "" then Error "empty journal key"
   else if

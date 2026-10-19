@@ -335,7 +335,9 @@ let test_accept_ack_and_distinct_identical_messages () =
       Alcotest.(check bool) "identical text has distinct request ids"
         true (List.length (List.sort_uniq String.compare request_ids) = 2);
       Alcotest.(check int) "journal drained after receipt" 0
-        (List.length (State.journal_pending state)))
+        (List.length (State.journal_pending state));
+      Alcotest.(check int) "receipt retained durably" 2
+        (List.length (State.journal_acked ~kind:State.Inbound state)))
 
 let test_timeout_retries_same_request_after_reopen () =
   let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in

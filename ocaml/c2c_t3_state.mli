@@ -107,6 +107,12 @@ type entry = {
   payload : Yojson.Safe.t;
 }
 
+type acked_entry = {
+  kind : kind;
+  key : string;
+  result : Yojson.Safe.t option;
+}
+
 type append_result =
   | Appended of entry
   | Duplicate  (** [(kind, key)] is already pending or was recently acked *)
@@ -119,6 +125,10 @@ val journal_append :
 
 val journal_pending : ?kind:kind -> t -> entry list
 (** Unacknowledged entries, oldest first. *)
+
+val journal_acked : ?kind:kind -> t -> acked_entry list
+(** Bounded acknowledged request identities, oldest first. Results are the
+    small receipt projections supplied by the caller. *)
 
 val journal_ack : t -> seq:int -> (bool, string) result
 (** Remove entry [seq] and remember its key for dedup. [Ok false] if no such
