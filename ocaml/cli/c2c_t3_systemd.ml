@@ -234,9 +234,14 @@ let stop ?(run = run_systemctl_default) () = run [ "--user"; "disable"; "--now";
 
 let uninstall ?(run = run_systemctl_default) ?(dry_run = false) () =
   if not dry_run then begin
-    ignore (run [ "--user"; "disable"; "--now"; unit_name ]);
+    (* Never disable a foreign or symlinked unit merely because it shares our
+       conventional name.  Ownership is established from the regular-file
+       marker before any systemd mutation, then the same check guards unlink.
+    *)
     (match unit_path_safety (unit_path ()) with
-     | Ok `Owned -> (try Unix.unlink (unit_path ()) with _ -> ())
-     | Ok `Missing | Error _ -> ());
-    ignore (run [ "--user"; "daemon-reload" ])
+     | Ok `Owned ->
+         ignore (run [ "--user"; "disable"; "--now"; unit_name ]);
+         (try Unix.unlink (unit_path ()) with _ -> ());
+         ignore (run [ "--user"; "daemon-reload" ])
+     | Ok `Missing | Error _ -> ())
   end
