@@ -177,6 +177,7 @@ type dispatcher
 
 val create_dispatcher :
   ?spacing:float -> ?can_send:(C2c_t3_state.entry -> bool) ->
+  ?credential_generation:(unit -> int) ->
   state:C2c_t3_state.t -> send:send -> clock:(unit -> float) -> unit -> dispatcher
 (** Create the single serial dispatcher shared by normal delivery and later
     recovery intents. The submission boundary is persisted before each MCP

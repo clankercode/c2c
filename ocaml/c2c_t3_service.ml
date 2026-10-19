@@ -772,11 +772,13 @@ type dispatcher = {
   clock : unit -> float;
   spacing : float;
   can_send : State.entry -> bool;
+  credential_generation : unit -> int;
   mutable last_thread : string option;
 }
 
-let create_dispatcher ?(spacing = 1.) ?(can_send = fun _ -> true) ~state ~send ~clock () =
-  { state; send; clock; spacing; can_send; last_thread = None }
+let create_dispatcher ?(spacing = 1.) ?(can_send = fun _ -> true)
+    ?(credential_generation = fun () -> 0) ~state ~send ~clock () =
+  { state; send; clock; spacing; can_send; credential_generation; last_thread = None }
 
 let dispatch_thread entry = string_member "thread_id" entry.State.payload
 
@@ -866,6 +868,7 @@ let dispatch_once dispatcher =
                   with_fields entry.payload
                     [ ("status", `String "in_flight");
                       ("attempts", `Int (attempts + 1));
+                      ("credential_generation", `Int (dispatcher.credential_generation ()));
                       ("last_submission_at", `Float now);
                       ("next_attempt_at", `Float (now +. dispatcher.spacing)) ]
                 in
@@ -879,8 +882,14 @@ let dispatch_once dispatcher =
                           dispatcher.last_thread <- Some thread_id;
                           dispatcher.send ~thread_id ~message:formatted
                             ~mode ~client_request_id:request_id >>= function
-                          | Ok _receipt ->
-                              (match State.journal_ack dispatcher.state ~seq:entry.seq with
+                          | Ok receipt ->
+                              let receipt_json =
+                                `Assoc [ ("thread_id", `String receipt.receipt_thread_id);
+                                  ("message_id", `String receipt.message_id);
+                                  ("run_id", `String receipt.run_id) ]
+                              in
+                              (match State.journal_ack_with_result dispatcher.state
+                                       ~seq:entry.seq ~result:receipt_json with
                                | Ok true -> Lwt.return (Submitted request_id)
                                | Ok false -> Lwt.return (Retained request_id)
                                | Error error -> Lwt.return (Retained error))

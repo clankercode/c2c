@@ -19,6 +19,12 @@ type entry = {
   payload : Yojson.Safe.t;
 }
 
+type acked_entry = {
+  kind : kind;
+  key : string;
+  result : Yojson.Safe.t option;
+}
+
 type append_result = Appended of entry | Duplicate
 
 type open_error =
@@ -49,7 +55,7 @@ type t = {
   mutable lock : Unix.file_descr option;
   mutable maps : mapping list;  (* oldest first *)
   mutable journal : entry list; (* oldest first *)
-  mutable acked : (kind * string) list; (* oldest first *)
+  mutable acked : acked_entry list; (* oldest first *)
   mutable dispatch_at : float option;
   mutable next_seq : int;
 }
@@ -143,8 +149,13 @@ let to_json t =
       ("acked",
        `List
          (List.map
-            (fun (k, key) ->
-              `Assoc [ ("kind", `String (kind_to_string k)); ("key", `String key) ])
+            (fun entry ->
+              `Assoc
+                ([ ("kind", `String (kind_to_string entry.kind));
+                   ("key", `String entry.key) ]
+                 @ match entry.result with
+                   | None -> []
+                   | Some result -> [ ("result", result) ]))
             t.acked));
       ("dispatch_at", match t.dispatch_at with None -> `Null | Some at -> `Float at) ]
 
@@ -204,7 +215,10 @@ let load_into t =
         t.journal <- List.map entry_of_json (to_list "journal" (member "journal" j));
         t.acked <-
           List.map
-            (fun a -> (kind_of_json (member "kind" a), to_str "key" (member "key" a)))
+            (fun a ->
+              { kind = kind_of_json (member "kind" a);
+                key = to_str "key" (member "key" a);
+                result = (match member "result" a with `Null -> None | value -> Some value) })
             (to_list "acked" (member "acked" j));
         t.dispatch_at <-
           (match member "dispatch_at" j with
@@ -376,13 +390,13 @@ let tombstone t ~thread_id ~reason =
 let journal_pending ?kind t =
   match kind with
   | None -> t.journal
-  | Some k -> List.filter (fun e -> e.kind = k) t.journal
+  | Some k -> List.filter (fun (e : entry) -> e.kind = k) t.journal
 
 let journal_append t ~kind ~key ~payload =
   if key = "" then Error "empty journal key"
   else if
-    List.exists (fun e -> e.kind = kind && e.key = key) t.journal
-    || List.mem (kind, key) t.acked
+    List.exists (fun (e : entry) -> e.kind = kind && e.key = key) t.journal
+    || List.exists (fun (e : acked_entry) -> e.kind = kind && e.key = key) t.acked
   then Ok Duplicate
   else if String.length (Yojson.Safe.to_string payload) > t.max_payload_bytes then
     Error
@@ -398,15 +412,20 @@ let journal_append t ~kind ~key ~payload =
       t.journal <- t.journal @ [ e ];
       Ok (Appended e))
 
-let journal_ack t ~seq =
+let journal_ack_result t ~seq ~result =
   match List.find_opt (fun e -> e.seq = seq) t.journal with
   | None -> Ok false
   | Some e ->
     transact t (fun () ->
       t.journal <- List.filter (fun x -> x.seq <> seq) t.journal;
-      let acked = t.acked @ [ (e.kind, e.key) ] in
+      let acked = t.acked @ [ { kind = e.kind; key = e.key; result } ] in
       t.acked <- drop (List.length acked - t.max_acked) acked;
       Ok true)
+
+let journal_ack t ~seq = journal_ack_result t ~seq ~result:None
+
+let journal_ack_with_result t ~seq ~result =
+  journal_ack_result t ~seq ~result:(Some result)
 
 let journal_update t ~seq ~payload =
   if String.length (Yojson.Safe.to_string payload) > t.max_payload_bytes then

@@ -124,6 +124,12 @@ val journal_ack : t -> seq:int -> (bool, string) result
 (** Remove entry [seq] and remember its key for dedup. [Ok false] if no such
     entry is pending. *)
 
+val journal_ack_with_result :
+  t -> seq:int -> result:Yojson.Safe.t -> (bool, string) result
+(** Remove entry [seq], remember its key and retain a bounded result projection
+    for status/doctor surfaces. The result must not contain credentials or raw
+    transcript data. *)
+
 val journal_update : t -> seq:int -> payload:Yojson.Safe.t -> (bool, string) result
 (** Replace the payload of a pending journal entry and persist it atomically.
     [Ok false] means that the entry was already acknowledged or is unknown.
