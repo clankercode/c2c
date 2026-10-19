@@ -23,6 +23,7 @@ docker-exec test harness only.
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
 import unittest
@@ -36,6 +37,46 @@ COMPOSE_CMD = ["docker", "compose", "-f", COMPOSE_FILE]
 # Container names from docker-compose.2-relay-probe.yml
 CONTAINER_A1 = "c2c-peer-a1"
 CONTAINER_B1 = "c2c-peer-b1"
+
+
+def _docker_ready() -> tuple[bool, str]:
+    """Return whether Docker is available for these opt-in integration tests.
+
+    A repository-wide Python test run is also used on buildboxes without a
+    Docker daemon.  Treat that missing external capability as a skip, while
+    keeping failures from a reachable daemon visible as test failures.
+    """
+    if shutil.which("docker") is None:
+        return False, "docker executable not found"
+    try:
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, text=True, timeout=5.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"docker daemon probe failed: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        return False, f"docker daemon unreachable{suffix}"
+    try:
+        compose = subprocess.run(
+            ["docker", "compose", "version"], capture_output=True,
+            text=True, timeout=5.0, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"docker compose probe failed: {exc}"
+    if compose.returncode != 0:
+        detail = (compose.stderr or compose.stdout).strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        return False, f"docker compose unavailable{suffix}"
+    return True, ""
+
+
+def _require_docker() -> None:
+    ready, reason = _docker_ready()
+    if not ready:
+        raise unittest.SkipTest(reason)
 
 
 def _docker_exec(container: str, argv: list[str], timeout: float = 10.0) -> subprocess.CompletedProcess:
@@ -77,11 +118,7 @@ class DockerExecIntegration(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        # Skip if docker daemon is not reachable
-        if subprocess.run(
-            ["docker", "info"], capture_output=True, timeout=5.0
-        ).returncode != 0:
-            raise unittest.SkipTest("docker daemon unreachable")
+        _require_docker()
 
         # Validate compose file exists
         compose_path = REPO / COMPOSE_FILE
@@ -202,6 +239,10 @@ class DockerExecIntegration(unittest.TestCase):
 class DockerExecHealthTests(unittest.TestCase):
     """Lightweight health checks that run without full stack bring-up."""
 
+    @classmethod
+    def setUpClass(cls):
+        _require_docker()
+
     def test_compose_file_valid(self):
         """Verify docker-compose.2-relay-probe.yml is syntactically valid."""
         r = subprocess.run(
@@ -221,8 +262,11 @@ class DockerExecHealthTests(unittest.TestCase):
              "--target", "runtime", "-t", "c2c-test:probe", "."],
             cwd=REPO, capture_output=True, text=True, timeout=300.0
         )
-        if r.returncode != 0 and "cache" not in r.stderr.lower():
-            self.skipTest(f"Dockerfile.test build failed: {r.stderr}")
+        # A reachable daemon and a failed image build indicate a real fixture
+        # or source problem.  Do not turn that into a skip merely because the
+        # error happened to mention a cache.
+        if r.returncode != 0:
+            self.fail(f"Dockerfile.test build failed: {r.stderr}")
 
         # Inspect the binary layer
         r = subprocess.run(

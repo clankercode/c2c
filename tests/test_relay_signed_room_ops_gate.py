@@ -122,8 +122,20 @@ class OCamlRelayServer:
         self.signed_env = signed_env
         self.identity_path = identity_path
         self.port = port
-        self.storage = storage
-        self.persist_dir = persist_dir
+        # Token-authenticated relays reject in-memory storage: production mode
+        # requires durable registration/identity state.  Most callers of this
+        # fixture predate that policy and request the convenient memory
+        # default, so transparently give those relays an isolated temporary
+        # SQLite store.  Keep explicit storage/persist_dir choices untouched
+        # so the persistence tests still exercise their requested topology.
+        self._tempdir: tempfile.TemporaryDirectory[str] | None = None
+        if token is not None and storage == "memory":
+            self.storage = "sqlite"
+            self._tempdir = tempfile.TemporaryDirectory(prefix="c2c-relay-gate-")
+            self.persist_dir = self._tempdir.name
+        else:
+            self.storage = storage
+            self.persist_dir = persist_dir
         self._proc: subprocess.Popen | None = None
 
     def _build_env(self) -> dict:
@@ -180,6 +192,10 @@ class OCamlRelayServer:
             except subprocess.TimeoutExpired:
                 self._proc.kill()
                 self._proc.wait()
+            self._proc = None
+        if self._tempdir is not None:
+            self._tempdir.cleanup()
+            self._tempdir = None
 
     def __enter__(self) -> "OCamlRelayServer":
         return self.start()

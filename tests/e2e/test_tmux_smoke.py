@@ -13,6 +13,7 @@ Depends on: Dockerfile.test installing tmux (S6 core deliverable).
 from __future__ import annotations
 
 import subprocess
+import shutil
 import time
 
 import pytest
@@ -27,8 +28,47 @@ VALID_CONTAINERS = [
 ]
 
 
+def _docker_ready() -> tuple[bool, str]:
+    """Probe the external Docker capability used by this smoke suite."""
+    if shutil.which("docker") is None:
+        return False, "docker executable not found"
+    try:
+        result = subprocess.run(
+            ["docker", "info"], capture_output=True, text=True,
+            timeout=5.0, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"docker daemon probe failed: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        return False, f"docker daemon unreachable{suffix}"
+    return True, ""
+
+
+def _container_ready(container: str) -> tuple[bool, str]:
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "--format", "{{.State.Running}}", container],
+            capture_output=True, text=True, timeout=5.0, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"container probe failed: {exc}"
+    if result.returncode != 0 or result.stdout.strip().lower() != "true":
+        detail = (result.stderr or result.stdout).strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        return False, f"container {container!r} is unavailable{suffix}"
+    return True, ""
+
+
 @pytest.fixture(params=VALID_CONTAINERS)
 def container(request: pytest.FixtureRequest) -> str:
+    ready, reason = _docker_ready()
+    if not ready:
+        pytest.skip(reason)
+    ready, reason = _container_ready(request.param)
+    if not ready:
+        pytest.skip(reason)
     return request.param
 
 
@@ -45,7 +85,7 @@ def session_name() -> str:
 def test_tmux_version_executes(container: str) -> None:
     """tmux -V should exit 0 inside any e2e container."""
     result = subprocess.run(
-        ["docker", "exec", "-T", container, "tmux", "-V"],
+        ["docker", "exec", container, "tmux", "-V"],
         capture_output=True, text=True,
     )
     assert result.returncode == 0, f"tmux -V failed in {container}: {result.stderr}"

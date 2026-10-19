@@ -94,7 +94,9 @@ class DockerTmux:
         """Send plain text to the session pane (no Enter)."""
         subprocess.run(
             [
-                "docker", "exec", "-T", handle.container,
+                # `docker exec` is non-TTY by default. `-T` belongs to
+                # `docker compose exec`; direct Docker exec rejects it.
+                "docker", "exec", handle.container,
                 "tmux", "send-keys", "-t", handle.session_name, "-l", text,
             ],
             check=True, capture_output=True,
@@ -106,7 +108,7 @@ class DockerTmux:
             # tmux send-keys with no flag treats the argument as a literal key name
             subprocess.run(
                 [
-                    "docker", "exec", "-T", handle.container,
+                    "docker", "exec", handle.container,
                     "tmux", "send-keys", "-t", handle.session_name, "Enter",
                 ],
                 check=True, capture_output=True,
@@ -114,7 +116,7 @@ class DockerTmux:
         else:
             subprocess.run(
                 [
-                    "docker", "exec", "-T", handle.container,
+                    "docker", "exec", handle.container,
                     "tmux", "send-keys", "-t", handle.session_name, key,
                 ],
                 check=True, capture_output=True,
@@ -124,7 +126,7 @@ class DockerTmux:
         """Return True if the session pane is still attached (not dead)."""
         result = subprocess.run(
             [
-                "docker", "exec", "-T", handle.container,
+                "docker", "exec", handle.container,
                 "tmux", "display-message", "-t", handle.session_name,
                 "-p", "#{pane_dead}",
             ],
@@ -136,7 +138,7 @@ class DockerTmux:
         """Kill the session (forced, no check)."""
         subprocess.run(
             [
-                "docker", "exec", "-T", handle.container,
+                "docker", "exec", handle.container,
                 "tmux", "kill-session", "-t", handle.session_name,
             ],
             check=False, capture_output=True,
