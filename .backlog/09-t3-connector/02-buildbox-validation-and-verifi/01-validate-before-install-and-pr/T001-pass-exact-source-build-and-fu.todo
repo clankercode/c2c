@@ -9,7 +9,6 @@ depends_on:
 estimate_hours: 6
 id: P9.M2.E1.T001
 priority: high
-reason: Full just test is red on clean x-tuf; Python baseline has 60 failures and 43 setup errors. No PASS receipt or installation.
 started_at: "2026-10-19T18:51:47Z"
 status: blocked
 tags: []
@@ -44,3 +43,5 @@ Serial validation after all M1 work. Tests/builds run on buildboxes, never full 
 ## Gate result 2026-10-20
 
 The exact-source x-tuf buildbox passed `just build`, `just check`, forced repository-wide OCaml `@runtest --force`, the complete eight-target artifact build, and `just test-t3-connector` (55/55). The required full `just test` did not pass: Python test phase ended with 60 failures, 520 passes, 62 skips, and 43 errors from pre-existing/environmental Docker/TMUX fixture failures, stale CLI architecture expectations, relay subprocess startup assumptions, and legacy install fixtures. See `.collab/findings/2026-10-20-p9-buildbox-gate.md`. This is not a PASS receipt; no `just bi` or installation is authorized until the full gate is green.
+
+Gate r2 (2026-10-20, candidate c63586ed): just build/check, full OCaml, and test-t3-connector pass on isolated buildboxes; required Python phase remains red (64 failed, 511 passed, 67 skipped, 43 errors, 85 subtests) from unavailable Docker/TMUX/relay fixtures and stale pre-current CLI/install expectations. Durable evidence: .collab/findings/2026-10-20-p9-buildbox-gate-r2.md. No receipt or install.
