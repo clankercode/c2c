@@ -59,7 +59,8 @@ tasks:
       file: T005-deliver-queued-peer-messages-a.todo
       id: T005
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Deliver queued peer messages and generate correct reply routes
     - complexity: high
       depends_on:
