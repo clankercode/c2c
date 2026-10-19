@@ -450,8 +450,11 @@ let test_preflight_holds_stale_intent_before_send () =
        | S.Held reason -> Alcotest.(check string) "hold reason" "evidence changed" reason
        | _ -> Alcotest.fail "stale intent was not held");
       Alcotest.(check int) "preflight prevents send" 0 !sends;
-      Alcotest.(check int) "held entry is no longer pending" 0
-        (List.length (State.journal_pending state)))
+      Alcotest.(check int) "held entry remains durable" 1
+        (List.length (State.journal_pending state));
+      let held = List.hd (State.journal_pending state) in
+      Alcotest.(check string) "held status" "held"
+        (Yojson.Safe.Util.to_string (Yojson.Safe.Util.member "status" held.payload)))
 
 let test_rebind_errors_requeue_exact_request () =
   let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
