@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
-import { parseRpc, ProbeClient } from './t3-connector-probe.mjs';
+import { assertScopes, assertToken, parseRpc, ProbeClient, runtimeState, writePrivate } from './t3-connector-probe.mjs';
 
 test('MCP decoder selects the exact response, including SSE notifications', () => {
   const body = [
     ': keepalive', '',
     'data: {"jsonrpc":"2.0","method":"notifications/message","params":{}}', '',
-    'event: message', 'data: {"jsonrpc":"2.0",', 'data: "id":7,"result":{"ok":true}}', '',
+    'event: message', 'data: {"jsonrpc":"2.0",', 'data: "id":7,"result":{"ok":true}}', '', '',
   ].join('\r\n');
   assert.deepEqual(parseRpc(body, 'text/event-stream', 7), { ok: true });
   assert.deepEqual(parseRpc('{"jsonrpc":"2.0","id":7,"result":null}', 'application/json', 7), null);
@@ -18,12 +21,52 @@ test('MCP decoder refuses mismatched/duplicate ids and malformed RPC envelopes',
     '{"jsonrpc":"2.0","id":8,"result":{}}',
     '{"jsonrpc":"1.0","id":7,"result":{}}',
     '{"jsonrpc":"2.0","id":7}',
+    '{"jsonrpc":"2.0","id":7,"error":null,"result":{}}',
   ]) assert.throws(() => parseRpc(value, 'application/json', 7));
   const duplicate = Array(2).fill('data: {"jsonrpc":"2.0","id":7,"result":{}}\n\n').join('');
   assert.throws(() => parseRpc(duplicate, 'text/event-stream', 7));
   assert.throws(() => parseRpc('data: invalid\n\n', 'text/event-stream', 7));
+  assert.throws(() => parseRpc('data: {"jsonrpc":"2.0","id":7,"result":{}}\n', 'text/event-stream', 7));
+  assert.throws(() => parseRpc('{"jsonrpc":"2.0","id":7,"result":{}}', 'text/plain', 7));
   assert.throws(() => parseRpc('{"jsonrpc":"2.0","id":7,"error":{"code":-1,"message":"private"}}',
     'application/json', 7), { message: 'MCP RPC error -1' });
+});
+
+test('pairing scope and token validation reject broader or missing authority', () => {
+  const scope = 'orchestration:read orchestration:operate';
+  assertToken({ token_type: 'Bearer', access_token: 'fixture', scope });
+  for (const scopes of [undefined, '', 'orchestration:read', `${scope} settings:write`,
+    `${scope} orchestration:read`]) assert.throws(() => assertScopes(scopes));
+  assert.throws(() => assertToken({ token_type: 'Other', access_token: 'fixture', scope }));
+  assert.throws(() => assertToken({ token_type: 'Bearer', access_token: '', scope }));
+});
+
+test('credential publication never replaces an existing credential', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'c2c-probe-private-'));
+  t.after(() => fs.rmSync(directory, { recursive: true }));
+  const filename = path.join(directory, 'auth.json');
+  const results = await Promise.allSettled([1, 2].map(async (value) => writePrivate(filename, { value }, false)));
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.deepEqual(JSON.parse(fs.readFileSync(filename, 'utf8')), { value: 1 });
+  assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
+  assert.deepEqual(fs.readdirSync(directory), ['auth.json']);
+});
+
+test('runtime validation checks PID incarnation and listener ownership', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'c2c-probe-runtime-'));
+  t.after(() => fs.rmSync(directory, { recursive: true }));
+  fs.mkdirSync(path.join(directory, 'userdata'));
+  const origin = await fixture(t, (_request, response) => response.end());
+  const runtime = { pid: process.pid, origin, port: Number(new URL(origin).port), startedAt: new Date().toISOString() };
+  const filename = path.join(directory, 'userdata/server-runtime.json');
+  fs.writeFileSync(filename, JSON.stringify(runtime));
+  const proof = runtimeState(directory).proof;
+  assert.equal(proof.pid, process.pid);
+  assert(proof.listeners.length > 0);
+  fs.writeFileSync(filename, JSON.stringify({ ...runtime, startedAt: '2000-01-01T00:00:00.000Z' }));
+  assert.throws(() => runtimeState(directory), /incarnation/);
+  fs.writeFileSync(filename, JSON.stringify({ ...runtime, port: 1, origin: 'http://127.0.0.1:1' }));
+  assert.throws(() => runtimeState(directory), /listening socket/);
 });
 
 async function fixture(t, handler) {

@@ -17,27 +17,50 @@ const REQUIRED_TOOLS = [
 ];
 const b64url = (bytes) => bytes.toString('base64url');
 const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
+const SCOPES = ['orchestration:operate', 'orchestration:read'];
+
+export function assertScopes(scopes) {
+  const actual = typeof scopes === 'string' ? scopes.split(/\s+/).filter(Boolean) : scopes;
+  assert(Array.isArray(actual), 'explicit credential scopes');
+  assert.deepEqual([...actual].sort(), SCOPES, 'read and operate scopes only');
+}
+
+export function assertToken(token) {
+  assert.equal(token.token_type, 'Bearer', 'OAuth bearer token type');
+  assert(typeof token.access_token === 'string' && token.access_token.length > 0, 'nonempty token');
+  assertScopes(token.scope);
+}
 
 export function parseRpc(body, contentType, id) {
   const messages = [];
-  if (contentType.includes('text/event-stream')) {
-    let data = [];
-    for (const line of `${body}\n\n`.split(/\r?\n/)) {
-      if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
-      if (line === '' && data.length) {
-        messages.push(JSON.parse(data.join('\n')));
-        data = [];
-      }
+  const mime = contentType.split(';')[0].trim().toLowerCase();
+  if (mime === 'text/event-stream') {
+    const events = body.split(/\r?\n\r?\n/);
+    const tail = events.pop();
+    if (tail.split(/\r?\n/).some((line) => line.startsWith('data:'))) {
+      throw new Error('Unterminated SSE event');
     }
-  } else {
+    for (const event of events) {
+      const data = event.split(/\r?\n/).filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).replace(/^ /, ''));
+      if (data.length) messages.push(JSON.parse(data.join('\n')));
+    }
+  } else if (mime === 'application/json') {
     messages.push(JSON.parse(body));
+  } else {
+    throw new Error('Unsupported MCP response content type');
   }
   const matches = messages.filter((message) => message?.id === id);
   if (matches.length !== 1 || matches[0].jsonrpc !== '2.0') {
     throw new Error('MCP response must contain exactly one matching JSON-RPC id');
   }
   const message = matches[0];
-  if (message.error) throw new Error(`MCP RPC error ${message.error.code ?? 'unknown'}`);
+  if (Object.hasOwn(message, 'error')) {
+    if (Object.hasOwn(message, 'result') || !Number.isInteger(message.error?.code)) {
+      throw new Error('Invalid JSON-RPC error envelope');
+    }
+    throw new Error(`MCP RPC error ${message.error.code}`);
+  }
   if (!Object.hasOwn(message, 'result')) throw new Error('MCP response has no result');
   return message.result;
 }
@@ -61,7 +84,7 @@ function ensurePrivateDirectory(directory) {
   }
 }
 
-function writePrivate(filename, value) {
+export function writePrivate(filename, value, replace = true) {
   ensurePrivateDirectory(path.dirname(filename));
   const temp = `${filename}.${crypto.randomUUID()}.tmp`;
   const fd = fs.openSync(temp, 'wx', 0o600);
@@ -72,7 +95,8 @@ function writePrivate(filename, value) {
     fs.closeSync(fd);
   }
   try {
-    fs.renameSync(temp, filename);
+    if (replace) fs.renameSync(temp, filename);
+    else fs.linkSync(temp, filename); // Atomic no-replace publication for credentials.
     const directory = fs.openSync(path.dirname(filename), 'r');
     try { fs.fsyncSync(directory); } finally { fs.closeSync(directory); }
   } finally {
@@ -88,7 +112,7 @@ function readPrivate(filename) {
   return JSON.parse(fs.readFileSync(filename, 'utf8'));
 }
 
-function runtimeState(t3Home) {
+export function runtimeState(t3Home) {
   const filename = path.join(t3Home, 'userdata/server-runtime.json');
   const stat = fs.lstatSync(filename);
   if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o022) || stat.size > 65536) {
@@ -104,18 +128,58 @@ function runtimeState(t3Home) {
   process.kill(runtime.pid, 0);
   const owner = fs.statSync(`/proc/${runtime.pid}`);
   if (owner.uid !== process.getuid()) throw new Error('T3 runtime PID belongs to another user');
-  return { ...runtime, origin: origin.origin };
+  const proc = `/proc/${runtime.pid}`;
+  const processStat = fs.readFileSync(`${proc}/stat`, 'utf8');
+  const startTicks = Number(processStat.slice(processStat.lastIndexOf(')') + 2).split(' ')[19]);
+  const bootSeconds = Number(fs.readFileSync('/proc/stat', 'utf8').match(/^btime (\d+)$/m)?.[1]);
+  const ticksPerSecond = Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8', timeout: 5000 }));
+  const processStartedAt = (bootSeconds + startTicks / ticksPerSecond) * 1000;
+  const recordedAt = Date.parse(runtime.startedAt);
+  if (!Number.isFinite(processStartedAt) || !Number.isFinite(recordedAt)
+      || recordedAt < processStartedAt - 5000 || recordedAt > processStartedAt + 300_000
+      || recordedAt > Date.now() + 5000) {
+    throw new Error('Runtime record does not match the process incarnation');
+  }
+  const socketInodes = new Set();
+  for (const fd of fs.readdirSync(`${proc}/fd`)) {
+    try {
+      const match = fs.readlinkSync(`${proc}/fd/${fd}`).match(/^socket:\[(\d+)\]$/);
+      if (match) socketInodes.add(match[1]);
+    } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  }
+  const listeners = [];
+  const allowed = new Set(['00000000', '0100007F',
+    '00000000000000000000000000000000', '00000000000000000000000001000000']);
+  for (const table of ['tcp', 'tcp6']) {
+    for (const row of fs.readFileSync(`${proc}/net/${table}`, 'utf8').trim().split('\n').slice(1)) {
+      const columns = row.trim().split(/\s+/);
+      const [address, port] = columns[1].split(':');
+      if (columns[3] === '0A' && Number.parseInt(port, 16) === runtime.port
+          && allowed.has(address) && socketInodes.has(columns[9])) listeners.push(columns[9]);
+    }
+  }
+  if (!listeners.length) throw new Error('Runtime PID does not own the loopback listening socket');
+  const executable = fs.statSync(`${proc}/exe`);
+  return {
+    ...runtime, origin: origin.origin,
+    proof: {
+      pid: runtime.pid, startTicks, bootId: fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf8').trim(),
+      listeners: listeners.sort(), executableDevice: executable.dev, executableInode: executable.ino,
+    },
+  };
 }
 
 export class ProbeClient {
-  constructor(origin, token) {
+  constructor(origin, token, validateRuntime = () => {}) {
     this.origin = origin;
     this.token = token;
     this.session = null;
     this.sequence = 0;
+    this.validateRuntime = validateRuntime;
   }
 
   async request(method, params, notification = false) {
+    this.validateRuntime();
     const id = notification ? undefined : ++this.sequence;
     const response = await fetch(`${this.origin}/mcp`, {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
@@ -160,7 +224,8 @@ export class ProbeClient {
   }
 }
 
-async function postJson(origin, endpoint, payload) {
+async function postJson(origin, endpoint, payload, validateRuntime) {
+  validateRuntime();
   const response = await fetch(`${origin}${endpoint}`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
     headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload),
@@ -181,13 +246,16 @@ async function pair(options, runtime, authPath) {
     '--ttl', '10m', '--label', 'c2c-t3-compatibility-probe', '--json',
   ], { encoding: 'utf8', timeout: 30_000, maxBuffer: MAX_RESPONSE, stdio: ['ignore', 'pipe', 'pipe'] });
   const credential = JSON.parse(output.slice(output.indexOf('{')));
+  assertScopes(credential.scopes);
   const code = credential.credential ?? credential.token ?? credential.code;
   if (typeof code !== 'string' || !code) throw new Error('Pairing CLI returned no code');
   const redirectUri = 'http://127.0.0.1:53999/callback';
+  const validateRuntime = () => assert.deepEqual(runtimeState(options['t3-home']).proof,
+    runtime.proof, 'unchanged runtime incarnation/listener');
   const registration = await postJson(runtime.origin, '/oauth/mcp/register', {
     client_name: 'c2c-t3-compatibility-probe', redirect_uris: [redirectUri],
     grant_types: ['authorization_code'], response_types: ['code'], token_endpoint_auth_method: 'none',
-  });
+  }, validateRuntime);
   const verifier = b64url(crypto.randomBytes(32));
   const state = b64url(crypto.randomBytes(24));
   const decision = await postJson(runtime.origin, '/oauth/mcp/decision', {
@@ -197,7 +265,7 @@ async function pair(options, runtime, authPath) {
       code_challenge_method: 'S256', state, resource: `${runtime.origin}/mcp`,
     },
     decision: { _tag: 'pairing-code', access: 'auto', code },
-  });
+  }, validateRuntime);
   const callback = new URL(decision.redirectTo);
   if (callback.origin !== new URL(redirectUri).origin || callback.pathname !== '/callback'
       || callback.searchParams.get('state') !== state || callback.searchParams.has('error')) {
@@ -205,6 +273,7 @@ async function pair(options, runtime, authPath) {
   }
   const authorizationCode = callback.searchParams.get('code');
   if (!authorizationCode) throw new Error('Pairing callback has no authorization code');
+  validateRuntime();
   const response = await fetch(`${runtime.origin}/oauth/mcp/token`, {
     method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
@@ -215,12 +284,17 @@ async function pair(options, runtime, authPath) {
   });
   if (!response.ok) { await response.body?.cancel(); throw new Error(`Token HTTP ${response.status}`); }
   const token = JSON.parse(await bodyText(response));
-  assert.equal(typeof token.access_token, 'string', 'OAuth access token');
+  assertToken(token);
+  const client = new ProbeClient(runtime.origin, token.access_token, validateRuntime);
+  await client.initialize();
+  const capabilities = await client.call('orchestrator_capabilities');
+  assert.equal(capabilities.runtimeMode, 'auto', 'authenticated auto access ceiling');
   writePrivate(authPath, {
     origin: runtime.origin, t3Home: fs.realpathSync(options['t3-home']),
     token: token.access_token, clientId: registration.client_id,
     scope: token.scope, issuedAt: new Date().toISOString(), expiresIn: token.expires_in,
-  });
+    runtimeProof: runtime.proof,
+  }, false);
   return { paired: true, access: 'auto', scope: token.scope, expiresIn: token.expires_in };
 }
 
@@ -231,6 +305,7 @@ async function inspect(client, runtime, evidencePath) {
     assert(inventory.tools.some((tool) => tool.name === name), `required tool ${name}`);
   }
   const capabilities = await client.call('orchestrator_capabilities');
+  assert.equal(capabilities.runtimeMode, 'auto', 'authenticated auto access ceiling');
   const projects = [];
   let cursor;
   for (let page = 0; page < 100; page++) {
@@ -291,7 +366,11 @@ export async function main(argv = process.argv.slice(2)) {
   if (auth.origin !== runtime.origin || auth.t3Home !== fs.realpathSync(options['t3-home'])) {
     throw new Error('Runtime endpoint/home changed; refusing to send the stored credential');
   }
-  return inspect(new ProbeClient(runtime.origin, auth.token), runtime,
+  assertScopes(auth.scope);
+  assert.deepEqual(runtime.proof, auth.runtimeProof, 'credential-bound runtime incarnation/listener');
+  const validateRuntime = () => assert.deepEqual(runtimeState(options['t3-home']).proof,
+    auth.runtimeProof, 'unchanged credential-bound runtime incarnation/listener');
+  return inspect(new ProbeClient(runtime.origin, auth.token, validateRuntime), runtime,
     path.join(options['state-dir'], 'inspection.json'));
 }
 
