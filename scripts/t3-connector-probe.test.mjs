@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assertScopes, assertToken, parseRpc, ProbeClient, runtimeState, writePrivate } from './t3-connector-probe.mjs';
+import { assertScopes, assertToken, isExclusiveUserGroup, parseRpc, ProbeClient, runtimeState, writePrivate } from './t3-connector-probe.mjs';
 
 test('MCP decoder selects the exact response, including SSE notifications', () => {
   const body = [
@@ -41,6 +41,17 @@ test('pairing scope and token validation reject broader or missing authority', (
   assert.throws(() => assertToken({ token_type: 'Bearer', access_token: '', scope }));
 });
 
+test('runtime group writes are allowed only for the verified user-private primary group', () => {
+  const user = { username: 'operator', uid: 1000, gid: 1000 };
+  const operator = 'operator:x:1000:1000:Operator:/home/operator:/bin/bash';
+  assert.equal(isExclusiveUserGroup('operator:x:1000:', operator, user), true);
+  assert.equal(isExclusiveUserGroup('operator:x:1000:operator', operator, user), true);
+  assert.equal(isExclusiveUserGroup('operator:x:1000:other', operator, user), false);
+  assert.equal(isExclusiveUserGroup('shared:x:1000:', operator, user), false);
+  assert.equal(isExclusiveUserGroup('operator:x:1000:', `${operator}\nother:x:1001:1000::/:/bin/sh`, user), false);
+  assert.equal(isExclusiveUserGroup('operator:x:1000:', '', user), false);
+});
+
 test('credential publication never replaces an existing credential', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'c2c-probe-private-'));
   t.after(() => fs.rmSync(directory, { recursive: true }));
@@ -55,7 +66,7 @@ test('credential publication never replaces an existing credential', async (t) =
 test('runtime validation checks PID incarnation and listener ownership', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'c2c-probe-runtime-'));
   t.after(() => fs.rmSync(directory, { recursive: true }));
-  fs.mkdirSync(path.join(directory, 'userdata'));
+  fs.mkdirSync(path.join(directory, 'userdata'), { mode: 0o700 });
   const origin = await fixture(t, (_request, response) => response.end());
   const runtime = { pid: process.pid, origin, port: Number(new URL(origin).port), startedAt: new Date().toISOString() };
   const filename = path.join(directory, 'userdata/server-runtime.json');

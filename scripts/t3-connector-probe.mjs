@@ -31,6 +31,28 @@ export function assertToken(token) {
   assertScopes(token.scope);
 }
 
+export function isExclusiveUserGroup(groupRow, passwdRows, user) {
+  const fields = groupRow.trim().split(':');
+  if (fields.length !== 4 || fields[0] !== user.username || Number(fields[2]) !== user.gid
+      || fields[3].split(',').some((name) => name && name !== user.username)) return false;
+  const accounts = passwdRows.trim().split('\n').map((row) => row.split(':'));
+  return accounts.some((row) => row[0] === user.username && Number(row[2]) === user.uid)
+    && accounts.every((row) => Number(row[3]) !== user.gid || Number(row[2]) === user.uid);
+}
+
+function safeRuntimePermissions(stat) {
+  if (stat.mode & 0o002) return false;
+  if (!(stat.mode & 0o020)) return true;
+  const user = os.userInfo();
+  if (stat.gid !== user.gid) return false;
+  const getent = (kind, ...args) => execFileSync('getent', [kind, ...args], {
+    encoding: 'utf8', timeout: 5000, maxBuffer: MAX_RESPONSE, stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  // User-private primary groups confer no authority on another Unix account.
+  // Unknown/non-enumerable or shared groups fail closed; never chmod T3 state.
+  return isExclusiveUserGroup(getent('group', String(user.gid)), getent('passwd'), user);
+}
+
 export function parseRpc(body, contentType, id) {
   const messages = [];
   const mime = contentType.split(';')[0].trim().toLowerCase();
@@ -115,8 +137,14 @@ function readPrivate(filename) {
 export function runtimeState(t3Home) {
   const filename = path.join(t3Home, 'userdata/server-runtime.json');
   const stat = fs.lstatSync(filename);
-  if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o022) || stat.size > 65536) {
-    throw new Error('T3 runtime state must be a bounded same-user file, not group/world writable');
+  if (!stat.isFile() || stat.uid !== process.getuid() || !safeRuntimePermissions(stat) || stat.size > 65536) {
+    throw new Error('T3 runtime state must be bounded, same-user and not writable by other accounts');
+  }
+  for (const directory of [t3Home, path.join(t3Home, 'userdata')]) {
+    const parent = fs.lstatSync(directory);
+    if (!parent.isDirectory() || parent.uid !== process.getuid() || !safeRuntimePermissions(parent)) {
+      throw new Error('T3 runtime directories must be owned and writable only by this account');
+    }
   }
   const runtime = JSON.parse(fs.readFileSync(filename, 'utf8'));
   const origin = new URL(runtime.origin);
@@ -243,6 +271,10 @@ async function postJson(origin, endpoint, payload, validateRuntime) {
 async function pair(options, runtime, authPath) {
   if (fs.existsSync(authPath)) throw new Error('Probe credential exists; reuse it instead of overwriting');
   if (!path.isAbsolute(options['t3-bin'] ?? '')) throw new Error('--t3-bin must be an absolute executable path');
+  const binary = fs.statSync(options['t3-bin']);
+  assert(binary.isFile() && binary.uid === process.getuid() && safeRuntimePermissions(binary), 'trusted T3 executable');
+  assert.equal(binary.dev, runtime.proof.executableDevice, 'runtime uses the selected T3 binary');
+  assert.equal(binary.ino, runtime.proof.executableInode, 'runtime uses the selected T3 binary');
   const output = execFileSync(options['t3-bin'], [
     'auth', 'pairing', 'create', '--base-dir', options['t3-home'],
     '--scope', 'orchestration:read', '--scope', 'orchestration:operate',
