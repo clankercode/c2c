@@ -257,7 +257,7 @@ function inputText(params) {
 function handle(message) {
   if (message === null || typeof message !== 'object' || Array.isArray(message) ||
       ![undefined, '2.0'].includes(message.jsonrpc) || typeof message.method !== 'string' ||
-      ![undefined, 'string', 'number'].includes(typeof message.id) ||
+      !['undefined', 'string', 'number'].includes(typeof message.id) ||
       (typeof message.id === 'number' && !Number.isFinite(message.id))) {
     reject(null, -32600, 'Invalid Request');
     return;

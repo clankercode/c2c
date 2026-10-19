@@ -103,6 +103,11 @@ async function initialized(t, options) {
   const result = await peer.ok('initialize', { clientInfo: { name: 'c2c-fixture-test', version: '1' } }, 'init');
   assert.equal(result.userAgent, 'c2c-codex-fixture/0.145.0');
   peer.notify('initialized');
+  // This request is a wire-order barrier: all initialized output precedes its
+  // response. A notification must never produce an id:null or other reply.
+  await peer.ok('account/read');
+  assert.deepEqual(peer.inbox.filter((message) => Object.hasOwn(message, 'id')), [],
+    'initialized notification must not produce a response');
   return peer;
 }
 
