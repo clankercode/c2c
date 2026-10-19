@@ -15,7 +15,8 @@ isn't published to the public `https://c2c.im/` site.
 root-level `c2c_*.py` / `claude_*.py` / `relay.py` product-surface modules were
 `git mv`d into `deprecated/` (the OCaml `c2c` binary is canonical for every one
 of them; nothing under `scripts/`, `tools/`, `conftest`, or fixtures imports
-them). The ~48 legacy-testing files that imported them moved alongside into
+them). The legacy Python launcher/configuration suites, including
+`test_c2c_start.py` and `test_c2c_opencode.py`, moved alongside into
 `deprecated/tests/` (out of the default `pytest tests/` collection; a
 `deprecated/tests/conftest.py` path-shim keeps their imports resolvable, though
 the few that use live `tests/conftest.py` fixtures need that wired back for a
