@@ -19,6 +19,13 @@ type failure = {
 val availability_message : string -> bool
 (** True only for narrow model-unavailability or temporary-capacity wording. *)
 
+val supported_server_version : string option -> bool
+(** True only for a T3 version whose external activity/error contract has been
+    measured for recovery. Unknown versions fail closed. *)
+
+val version_hold_reason : string option -> string option
+(** Human-readable hold reason for an unsupported or unknown server version. *)
+
 val failures_of_activity : thread_id:string -> C2c_t3_client.activity -> failure list
 (** Extract only external [error] activity rows.  Ordinary transcript text is
     never considered evidence. *)
@@ -37,6 +44,12 @@ type candidate = {
 type decision =
   | Eligible of candidate
   | Held of string
+
+val candidate_equal : candidate -> candidate -> bool
+(** Compare all evidence and provider identity used by a durable intent. *)
+
+val candidate_of_entry : C2c_t3_state.entry -> (candidate, string) result
+(** Decode a durable recovery entry for final preflight. *)
 
 val decide :
   environment_id:string ->
@@ -83,6 +96,16 @@ type operations = {
   read_activity : string -> (C2c_t3_client.activity, C2c_t3_client.error) result Lwt.t;
   list_queue : string -> (C2c_t3_client.queue, C2c_t3_client.error) result Lwt.t;
 }
+
+val preflight_with :
+  operations:operations ->
+  environment_id:string ->
+  credential_generation:int ->
+  candidate:candidate ->
+  unit -> (unit, string) result Lwt.t
+(** Re-read capabilities, the complete activity window and queue immediately
+    before submission. Succeeds only when the same failed root execution,
+    error evidence, provider and model are still eligible. *)
 
 val sweep_with :
   ?enabled:bool ->

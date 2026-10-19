@@ -45,14 +45,29 @@ let availability_message message =
       "invalid model"; "connection"; "transport"; "timeout"; "approval" ]
   in
   let has_model = contains ~needle:"model" message in
-  let unavailable =
-    any [ "unavailable"; "not available"; "not found"; "does not exist"; "unsupported" ] message
-  in
+  (* Keep this deliberately narrower than a generic provider retry matcher.
+     The external T3 activity contract gives us message text, but no failure
+     code or node attribution.  In particular, "model not found" and
+     "unsupported model" are commonly permanent configuration errors. *)
+  let unavailable = any [ "unavailable"; "not available" ] message in
   let temporary_capacity =
     (contains ~needle:"temporar" message || contains ~needle:"capacity" message)
-    && any [ "overloaded"; "at capacity"; "available"; "busy" ] message
+    && any [ "overloaded"; "at capacity"; "busy" ] message
   in
   has_model && (unavailable || temporary_capacity) && not (any denied message)
+
+(* The root-error invariant was measured against the external T3 0.1.0
+   contract on both rollout hosts.  Unknown versions must hold recovery until
+   their activity/error shape has been measured; normal c2c delivery remains
+   available. *)
+let supported_server_version = function
+  | Some version -> String.trim version = "0.1.0"
+  | None -> false
+
+let version_hold_reason = function
+  | Some version when supported_server_version (Some version) -> None
+  | Some version -> Some ("T3 server version is not verified for recovery: " ^ String.trim version)
+  | None -> Some "T3 server version is unknown; recovery is held"
 
 let member key = function
   | `Assoc fields -> List.assoc_opt key fields
@@ -112,6 +127,44 @@ let candidate ~environment_id ~credential_generation:_ ~thread_id ~run_id
   let key = "recovery:" ^ identity ~environment_id ~thread_id ~run_id in
   let request_id = "c2c-t3-recovery-" ^ String.sub (digest (key ^ error_fingerprint)) 0 32 in
   { thread_id; run_id; error_ids; error_fingerprint; provider_instance_id; model; request_id; key }
+
+let candidate_equal left right =
+  left.thread_id = right.thread_id
+  && left.run_id = right.run_id
+  && left.error_fingerprint = right.error_fingerprint
+  && left.provider_instance_id = right.provider_instance_id
+  && left.model = right.model
+  && List.sort_uniq String.compare left.error_ids
+     = List.sort_uniq String.compare right.error_ids
+
+let candidate_of_entry (entry : State.entry) =
+  let required_string key =
+    match string_at [ key ] entry.payload with
+    | Some value when String.trim value <> "" -> Ok value
+    | _ -> Error ("recovery journal entry missing " ^ key)
+  in
+  let error_ids =
+    match member "error_ids" entry.payload with
+    | Some (`List values) ->
+        let ids = List.filter_map (function `String value -> Some value | _ -> None) values in
+        if List.length ids = List.length values && ids <> [] then Ok ids
+        else Error "recovery journal entry has invalid error_ids"
+    | _ -> Error "recovery journal entry missing error_ids"
+  in
+  match required_string "thread_id", required_string "run_id",
+        required_string "provider_instance_id", required_string "model",
+        required_string "error_fingerprint", error_ids with
+  | Ok thread_id, Ok run_id, Ok provider_instance_id, Ok model,
+    Ok error_fingerprint, Ok error_ids ->
+      Ok { thread_id; run_id; error_ids = List.sort_uniq String.compare error_ids;
+           error_fingerprint;
+           provider_instance_id; model;
+           request_id = Option.value (string_at [ "request_id" ] entry.payload)
+             ~default:("c2c-t3-recovery-" ^ String.sub (digest (entry.key ^ error_fingerprint)) 0 32);
+           key = entry.key }
+  | Error error, _, _, _, _, _ | _, Error error, _, _, _, _
+  | _, _, Error error, _, _, _ | _, _, _, Error error, _, _
+  | _, _, _, _, Error error, _ | _, _, _, _, _, Error error -> Error error
 
 let known_bool = function T3.Known b -> Some b | T3.Unknown -> None
 let known_string = function T3.Known s -> Some s | T3.Unknown -> None
@@ -319,6 +372,47 @@ type operations = {
   read_activity : string -> (T3.activity, T3.error) result Lwt.t;
   list_queue : string -> (T3.queue, T3.error) result Lwt.t;
 }
+
+let activity_thread_id activity =
+  string_at [ "threadId"; "thread_id"; "id" ] activity.T3.thread_raw
+
+let preflight_with ~operations ~environment_id ~credential_generation ~candidate () =
+  operations.capabilities () >>= function
+  | Error error -> Lwt.return (Error (T3.error_to_string error))
+  | Ok capabilities ->
+      let provider_for id =
+        List.find_map
+          (fun (p : T3.provider) ->
+             if known_string p.provider_instance_id = Some id then
+               known_string p.driver_kind
+             else None)
+          capabilities.T3.providers
+      in
+      operations.read_activity candidate.thread_id >>= function
+      | Error error -> Lwt.return (Error (T3.error_to_string error))
+      | Ok activity ->
+          (* The typed client receives a requested thread ID, so also validate
+             the raw authoritative identity when the server supplies it.  A
+             mismatched object must never be treated as a fresh root read. *)
+          (match activity_thread_id activity with
+           | Some id when id <> candidate.thread_id ->
+               Lwt.return (Error "preflight thread identity changed")
+           | None -> Lwt.return (Error "preflight thread identity is missing")
+           | Some _ ->
+               operations.list_queue candidate.thread_id >>= function
+               | Error error -> Lwt.return (Error (T3.error_to_string error))
+               | Ok queue ->
+                   let provider_id = known_opt_string activity.T3.provider_instance_id in
+                   let driver_kind = Option.bind provider_id provider_for in
+                   let model = known_opt_string activity.T3.model in
+                   (match decide ~environment_id ~credential_generation
+                            ~thread_id:candidate.thread_id ~driver_kind
+                            ~provider_instance_id:provider_id ~model activity queue with
+                    | Held reason -> Lwt.return (Error ("preflight: " ^ reason))
+                    | Eligible fresh when candidate_equal candidate fresh ->
+                        Lwt.return (Ok ())
+                    | Eligible _ ->
+                        Lwt.return (Error "preflight evidence or provider identity changed")))
 
 let sweep_with ?(enabled = true) ~operations ~state ~environment_id ~credential_generation
     ~thread_ids ~clock () =

@@ -183,6 +183,7 @@ type dispatcher
 
 val create_dispatcher :
   ?spacing:float -> ?can_send:(C2c_t3_state.entry -> bool) ->
+  ?preflight:(C2c_t3_state.entry -> (unit, string) result Lwt.t) ->
   ?credential_generation:(unit -> int) ->
   ?flush_deferrable:bool ->
   state:C2c_t3_state.t -> send:send -> clock:(unit -> float) -> unit -> dispatcher

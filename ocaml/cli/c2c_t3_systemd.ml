@@ -9,6 +9,7 @@ let ( // ) = Filename.concat
 let home_dir () = try Sys.getenv "HOME" with Not_found -> "."
 
 let unit_name = "c2c-t3.service"
+let unit_marker = "# c2c-managed-unit: c2c-t3.service:v1"
 
 let systemd_user_dir () =
   match Sys.getenv_opt "XDG_CONFIG_HOME" with
@@ -58,6 +59,7 @@ let unit_text ~c2c_path ~t3_home ~config_dir ~state_dir ?(interval = 60.) () =
   let state_dir = if Filename.is_relative state_dir then Sys.getcwd () // state_dir else state_dir in
   String.concat "\n"
     [ "# c2c-t3.service — native connector for one local T3 Code instance";
+      unit_marker;
       "# Owned by c2c; service repair never replaces credentials or state.";
       "[Unit]";
       "Description=c2c T3 Code connector";
@@ -163,6 +165,45 @@ let mkdir_p path =
   in
   loop path
 
+let private_mkdir_p path =
+  let rec loop path =
+    if path = "" || path = "." || path = "/" then ()
+    else
+      match Unix.lstat path with
+      | { Unix.st_kind = Unix.S_DIR; _ } -> ()
+      | _ -> raise (Unix.Unix_error (Unix.ENOTDIR, "mkdir", path))
+      | exception Unix.Unix_error (Unix.ENOENT, _, _) ->
+          loop (Filename.dirname path);
+          (try Unix.mkdir path 0o700 with Unix.Unix_error (Unix.EEXIST, _, _) -> ())
+  in
+  loop path
+
+let unit_file_owned path =
+  match Unix.lstat path with
+  | { Unix.st_kind = Unix.S_REG; st_uid; _ } when st_uid = Unix.geteuid () ->
+      (try
+         let ic = open_in_bin path in
+         Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
+           let length = in_channel_length ic in
+           let body = really_input_string ic length in
+           String.contains body '#' &&
+           let marker_len = String.length unit_marker in
+           let rec find i =
+             i + marker_len <= String.length body &&
+             (String.sub body i marker_len = unit_marker || find (i + 1))
+           in
+           find 0)
+       with _ -> false)
+  | _ -> false
+
+let unit_path_safety path =
+  match Unix.lstat path with
+  | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Ok `Missing
+  | { Unix.st_kind = Unix.S_LNK; _ } -> Error (path ^ " is a symlink; refusing to follow it")
+  | { Unix.st_kind = Unix.S_REG; _ } when unit_file_owned path -> Ok `Owned
+  | { Unix.st_kind = Unix.S_REG; _ } -> Error (path ^ " is a foreign unit file; refusing to replace it")
+  | _ -> Error (path ^ " is not a regular unit file")
+
 let install ?(run = run_systemctl_default) ?(dry_run = false)
     ?(query = query_systemctl_default) ~c2c_path ~t3_home ~config_dir ~state_dir () =
   if not (systemd_user_available ~run ()) then
@@ -171,7 +212,10 @@ let install ?(run = run_systemctl_default) ?(dry_run = false)
     let path = unit_path () in
     if dry_run then Installed path
     else begin
-      mkdir_p (Filename.dirname path);
+      (match unit_path_safety path with
+       | Error reason -> Skipped reason
+       | Ok _ ->
+      private_mkdir_p (Filename.dirname path);
       match C2c_io.write_file_atomic ~perm:0o644 path
               (unit_text ~c2c_path ~t3_home ~config_dir ~state_dir ()) with
       | Error e -> Failed (Printf.sprintf "could not write %s: %s" path e)
@@ -183,7 +227,7 @@ let install ?(run = run_systemctl_default) ?(dry_run = false)
                | Systemctl_ok ->
                    if unit_is_active ~query () then Installed path
                    else Failed ("systemd accepted enable --now but c2c-t3.service is not active")
-               | Systemctl_failed e -> Failed e)
+               | Systemctl_failed e -> Failed e))
     end
 
 let stop ?(run = run_systemctl_default) () = run [ "--user"; "disable"; "--now"; unit_name ]
@@ -191,6 +235,8 @@ let stop ?(run = run_systemctl_default) () = run [ "--user"; "disable"; "--now";
 let uninstall ?(run = run_systemctl_default) ?(dry_run = false) () =
   if not dry_run then begin
     ignore (run [ "--user"; "disable"; "--now"; unit_name ]);
-    if Sys.file_exists (unit_path ()) then (try Unix.unlink (unit_path ()) with _ -> ());
+    (match unit_path_safety (unit_path ()) with
+     | Ok `Owned -> (try Unix.unlink (unit_path ()) with _ -> ())
+     | Ok `Missing | Error _ -> ());
     ignore (run [ "--user"; "daemon-reload" ])
   end

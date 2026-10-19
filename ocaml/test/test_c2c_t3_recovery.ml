@@ -38,12 +38,22 @@ let decide ?(activity = base_activity ()) ?(q = queue ()) ?(driver = Some "codex
 let test_matcher () =
   List.iter (fun s -> check (R.availability_message s) ("positive: " ^ s))
     [ "The selected model is unavailable right now";
-      "model not available; retry later"; "model does not exist in this deployment";
+      "model not available; retry later";
       "temporary capacity: model is busy" ];
   List.iter (fun s -> check (not (R.availability_message s)) ("negative: " ^ s))
     [ "model access is unavailable for this account"; "quota exceeded";
       "authentication failed"; "context limit exceeded"; "transport timeout";
-      "ordinary provider error"; "model selection is invalid" ]
+      "ordinary provider error"; "model selection is invalid";
+      "model does not exist in this deployment"; "unsupported model";
+      "temporary capacity: model is available" ]
+
+let test_version_gate () =
+  Alcotest.(check bool) "measured version" true (R.supported_server_version (Some "0.1.0"));
+  Alcotest.(check bool) "unknown version held" false (R.supported_server_version None);
+  Alcotest.(check bool) "new version held" false (R.supported_server_version (Some "0.1.1"));
+  Alcotest.(check (option string)) "known hold reason" None (R.version_hold_reason (Some "0.1.0"));
+  Alcotest.(check bool) "unknown has hold reason" true
+    (Option.is_some (R.version_hold_reason None))
 
 let test_external_error_shape () =
   let activity =
@@ -66,7 +76,7 @@ let test_positive_and_dedupe () =
       Fun.protect
         ~finally:(fun () -> ignore (Sys.command ("/bin/rm -rf " ^ Filename.quote dir)))
         (fun () ->
-          let state = match S.open_state ~dir () with Ok s -> s | Error _ -> Alcotest.fail "state" in
+          let state = match S.open_state ~environment_id:"env" ~dir () with Ok s -> s | Error _ -> Alcotest.fail "state" in
           (match R.enqueue ~state ~environment_id:"env" ~credential_generation:4 ~now:0. candidate with
            | Ok `Appended -> () | Ok `Duplicate | Error _ -> Alcotest.fail "first enqueue");
           (match R.enqueue ~state ~environment_id:"env" ~credential_generation:9 ~now:60. candidate with
@@ -123,7 +133,7 @@ let test_sweep_seam_and_disable () =
   Fun.protect
     ~finally:(fun () -> ignore (Sys.command ("/bin/rm -rf " ^ Filename.quote dir)))
     (fun () ->
-      let state = match S.open_state ~dir () with Ok s -> s | Error _ -> Alcotest.fail "state" in
+      let state = match S.open_state ~environment_id:"env" ~dir () with Ok s -> s | Error _ -> Alcotest.fail "state" in
       let calls = ref [] in
       let operations =
         { R.capabilities = (fun () ->
@@ -149,11 +159,61 @@ let test_sweep_seam_and_disable () =
         [ "queue:b"; "read:b"; "queue:a"; "read:a"; "capabilities" ] !calls;
       S.close state)
 
+let test_final_preflight () =
+  let candidate =
+    match decide () with
+    | R.Eligible candidate -> candidate
+    | R.Held reason -> Alcotest.failf "fixture unexpectedly held: %s" reason
+  in
+  let activity =
+    { (base_activity ~thread_id:"root" ()) with
+      T.thread_raw = `Assoc [ ("threadId", `String "root") ] }
+  in
+  let capabilities () =
+    Lwt.return
+      (Ok { T.runtime_mode = T.Known "auto"; interaction_mode = T.Unknown;
+            providers = [ { T.provider_instance_id = T.Known "p1";
+                            driver_kind = T.Known "codex"; models = [ "gpt" ] } ] })
+  in
+  let operations =
+    { R.capabilities; read_activity = (fun _ -> Lwt.return (Ok activity));
+      list_queue = (fun _ -> Lwt.return (Ok (queue ()))) }
+  in
+  (match Lwt_main.run
+     (R.preflight_with ~operations ~environment_id:"env" ~credential_generation:4 ~candidate ()) with
+   | Ok () -> ()
+   | Error reason -> Alcotest.failf "unchanged candidate rejected: %s" reason);
+  let changed_activity =
+    { activity with
+      T.items = [ error_item ~run_id:"run-1" ~message:"quota exceeded" () ] }
+  in
+  let changed_operations =
+    { operations with read_activity = (fun _ -> Lwt.return (Ok changed_activity)) }
+  in
+  (match Lwt_main.run
+     (R.preflight_with ~operations:changed_operations ~environment_id:"env"
+        ~credential_generation:4 ~candidate ()) with
+   | Error _ -> ()
+   | Ok () -> Alcotest.fail "changed failure evidence was accepted");
+  let foreign_activity =
+    { activity with T.thread_raw = `Assoc [ ("threadId", `String "other") ] }
+  in
+  let foreign_operations =
+    { operations with read_activity = (fun _ -> Lwt.return (Ok foreign_activity)) }
+  in
+  (match Lwt_main.run
+     (R.preflight_with ~operations:foreign_operations ~environment_id:"env"
+        ~credential_generation:4 ~candidate ()) with
+   | Error reason -> check (String.length reason > 0) "foreign identity has reason"
+   | Ok () -> Alcotest.fail "foreign thread identity was accepted")
+
 let () =
   Alcotest.run "c2c_t3_recovery"
     [ ("matcher", [ Alcotest.test_case "availability text" `Quick test_matcher;
+                     Alcotest.test_case "version gate" `Quick test_version_gate;
                      Alcotest.test_case "external error shape" `Quick test_external_error_shape ]);
       ("policy", [ Alcotest.test_case "positive and durable dedupe" `Quick test_positive_and_dedupe;
                     Alcotest.test_case "holds" `Quick test_holds ]);
       ("cadence", [ Alcotest.test_case "initial, spacing and overlap" `Quick test_cadence ]);
-      ("sweep", [ Alcotest.test_case "seam and disable" `Quick test_sweep_seam_and_disable ]) ]
+      ("sweep", [ Alcotest.test_case "seam and disable" `Quick test_sweep_seam_and_disable;
+                   Alcotest.test_case "final preflight" `Quick test_final_preflight ]) ]

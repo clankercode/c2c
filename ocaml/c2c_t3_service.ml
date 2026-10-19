@@ -775,6 +775,7 @@ let accept_inbox ?(mode = `Auto) ?(cross_repo = false) ~owner ~state
 type dispatcher = {
   state : State.t;
   send : send;
+  preflight : State.entry -> (unit, string) result Lwt.t;
   clock : unit -> float;
   spacing : float;
   can_send : State.entry -> bool;
@@ -785,9 +786,10 @@ type dispatcher = {
 }
 
 let create_dispatcher ?(spacing = 1.) ?(can_send = fun _ -> true)
+    ?(preflight = fun _ -> Lwt.return (Ok ()))
     ?(credential_generation = fun () -> 0) ?(flush_deferrable = false) ~state ~send ~clock () =
   if spacing < 0. then invalid_arg "T3 dispatcher spacing must be non-negative";
-  { state; send; clock; spacing; can_send; credential_generation; last_thread = None;
+  { state; send; preflight; clock; spacing; can_send; credential_generation; last_thread = None;
     flush_deferrable; rebind_required = None }
 
 let release_deferrable dispatcher = dispatcher.flush_deferrable <- true
@@ -899,6 +901,22 @@ let dispatch_once ?(flush_deferrable = false) dispatcher =
                               ("reason", `String (T3.error_to_string error)) ]));
                 Lwt.return (Held (T3.error_to_string error))
             | Ok (thread_id, formatted, request_id, mode) ->
+                (* Recovery entries are revalidated at the last possible
+                   moment.  The service may have observed a failed run one
+                   sweep ago, but a user turn, Stop marker, queue item or
+                   provider change can make that evidence stale before the
+                   one-second submission boundary.  A failed preflight is a
+                   terminal hold for this immutable intent; the next sweep
+                   can create a fresh intent only if the same run is still
+                   eligible. *)
+                dispatcher.preflight entry >>= function
+                | Error reason ->
+                    ignore (State.journal_update dispatcher.state ~seq:entry.seq
+                              ~payload:(with_fields entry.payload
+                                [ ("status", `String "held");
+                                  ("reason", `String reason) ]));
+                    Lwt.return (Held reason)
+                | Ok () ->
                 let attempts = Option.value (int_member "attempts" entry.payload) ~default:0 in
                 let inflight =
                   with_fields entry.payload

@@ -47,6 +47,11 @@ let mode_of_string = function
   | "auto" -> Ok `Auto | "queue" -> Ok `Queue | "steer" -> Ok `Steer | "restart" -> Ok `Restart
   | value -> Error ("unknown delivery mode " ^ value ^ "; use auto, queue, steer, or restart")
 
+(* See [send_cmd]: this is deliberately process-local rather than persisted.
+   The T3 MCP client receives one request per invocation, while the durable
+   service dispatcher owns replay identity for background deliveries. *)
+let send_request_nonce = ref 0
+
 let as_command term = Cmdliner.Term.(const (fun code -> exit code) $ term)
 
 let t3_binary () =
@@ -61,9 +66,12 @@ let t3_binary () =
       | Some dir -> Ok (dir // "t3")
       | None -> Error "T3 CLI was not found; set C2C_T3_BIN to its absolute path"
 
-let environment_id runtime =
-  let seed = "t3-home:" ^ runtime.T3.t3_home in
+let environment_id_of_home home =
+  let home = try Unix.realpath home with _ -> home in
+  let seed = "t3-home:" ^ home in
   "t3-env-" ^ String.sub (Digestif.SHA256.(to_hex (digest_string seed))) 0 32
+
+let environment_id runtime = environment_id_of_home runtime.T3.t3_home
 
 let authorized ?(rebind = false) () =
   match T3.authorize ~rebind ~config_dir:(config_dir ()) ~t3_home:(t3_home ()) () with
@@ -74,7 +82,7 @@ let authorized ?(rebind = false) () =
        | Ok () -> Ok (client, runtime))
 
 let open_state () =
-  match State.open_state ~dir:(state_dir ()) () with
+  match State.open_state ~environment_id:(environment_id_of_home (t3_home ())) ~dir:(state_dir ()) () with
   | Ok state -> Ok state
   | Error error -> Error (State.open_error_to_string error)
 
@@ -249,7 +257,22 @@ let send_cmd locator message mode json =
             (match mode_of_string mode with
              | Error error -> print_error error; 1
              | Ok mode ->
-                 let request_id = "c2c-t3-cli-" ^ String.sub (Digestif.SHA256.(to_hex (digest_string (mapping.thread_id ^ "\000" ^ message)))) 0 32 in
+                 (* A request id is an idempotency key for one operator
+                    submission.  Text alone is not an identity: sending the
+                    same message twice must create two T3 messages.  Include
+                    a process-local nonce and wall-clock value so repeated
+                    invocations cannot collapse into one request. *)
+                 let request_id =
+                   let nonce =
+                     incr send_request_nonce;
+                     Printf.sprintf "%d:%d:%.9f" (Unix.getpid ()) !send_request_nonce
+                       (Unix.gettimeofday ())
+                   in
+                   "c2c-t3-cli-"
+                   ^ String.sub
+                       (Digestif.SHA256.(to_hex (digest_string
+                          (mapping.thread_id ^ "\000" ^ message ^ "\000" ^ nonce)))) 0 32
+                 in
                  match run_t3 (T3.send_message client ~thread_id:mapping.thread_id ~message ~mode ~client_request_id:request_id) with
                  | Error error -> print_error (T3.error_to_string error); 1
                  | Ok receipt ->
@@ -275,15 +298,89 @@ let private_connector_dir path =
      (try C2c_io.mkdir_p ~mode:0o700 path; Ok () with exn -> Error (Printexc.to_string exn))
       | exn -> Error (Printexc.to_string exn))
 
+(* Repair is allowed to tighten a directory that this user owns, but it never
+   follows a symlink or changes a foreign path.  The service state and
+   connector credentials both require a 0700 boundary. *)
+let repair_private_dir path =
+  try
+    match Unix.lstat path with
+    | st when st.Unix.st_kind = Unix.S_DIR && st.Unix.st_uid = Unix.geteuid () ->
+        Unix.chmod path 0o700; Ok ()
+    | st when st.Unix.st_kind = Unix.S_LNK -> Error (path ^ " is a symlink")
+    | st when st.Unix.st_kind <> Unix.S_DIR -> Error (path ^ " is not a directory")
+    | _ -> Error (path ^ " is not owned by this user")
+  with Unix.Unix_error (Unix.ENOENT, _, _) ->
+    (try C2c_io.mkdir_p ~mode:0o700 path; Ok ()
+     with exn -> Error (Printexc.to_string exn))
+     | exn -> Error (Printexc.to_string exn)
+
+let private_connector_file path =
+  try
+    match Unix.lstat path with
+    | st when st.Unix.st_kind = Unix.S_REG && st.Unix.st_uid = Unix.geteuid ()
+               && st.Unix.st_perm land 0o077 = 0 -> Ok ()
+    | st when st.Unix.st_kind = Unix.S_LNK -> Error (path ^ " is a symlink")
+    | st when st.Unix.st_kind <> Unix.S_REG -> Error (path ^ " is not a regular file")
+    | _ -> Error (path ^ " is not a private file owned by this user")
+  with Unix.Unix_error (Unix.ENOENT, _, _) -> Error (path ^ " does not exist")
+     | exn -> Error (Printexc.to_string exn)
+
+let check_private_connector_dir path =
+  try
+    match Unix.lstat path with
+    | st when st.Unix.st_kind = Unix.S_DIR && st.Unix.st_uid = Unix.geteuid ()
+               && st.Unix.st_perm land 0o077 = 0 -> Ok true
+    | st when st.Unix.st_kind = Unix.S_LNK -> Error (path ^ " is a symlink")
+    | st when st.Unix.st_kind <> Unix.S_DIR -> Error (path ^ " is not a directory")
+    | _ -> Error (path ^ " is not a private directory owned by this user")
+  with Unix.Unix_error (Unix.ENOENT, _, _) -> Ok false
+     | exn -> Error (Printexc.to_string exn)
+
+(* Read the operator's recovery switch without creating or repairing anything.
+   A malformed or unsafe file is a hard disable.  The service calls this on
+   every sweep so [recovery enable/disable] takes effect without a restart. *)
+let configured_recovery () =
+  let config = recovery_config_path () in
+  match check_private_connector_dir (config_dir ()) with
+  | Error error -> Error error
+  | Ok false ->
+      (match getenv_nonempty "C2C_T3_RECOVERY" with
+       | None -> Ok true
+       | Some ("0" | "false" | "off") -> Ok false
+       | Some ("1" | "true" | "on") -> Ok true
+       | Some value -> Error ("invalid C2C_T3_RECOVERY value " ^ value))
+  | Ok true ->
+      let file_value =
+        match Unix.lstat config with
+        | exception Unix.Unix_error (Unix.ENOENT, _, _) -> Ok None
+        | exception exn -> Error (Printexc.to_string exn)
+        | st when st.Unix.st_kind <> Unix.S_REG -> Error (config ^ " is not a regular file")
+        | st when st.Unix.st_uid <> Unix.geteuid () || st.Unix.st_perm land 0o077 <> 0 ->
+            Error (config ^ " is not a private file owned by this user")
+        | _ ->
+            (try
+               match Yojson.Safe.from_file config with
+               | `Assoc fields ->
+                   (match List.assoc_opt "recoveryEnabled" fields with
+                    | None -> Ok None
+                    | Some (`Bool enabled) -> Ok (Some enabled)
+                    | Some _ -> Error "recoveryEnabled must be a boolean")
+               | _ -> Error "T3 connector config must be a JSON object"
+             with exn -> Error ("malformed T3 connector config: " ^ Printexc.to_string exn))
+      in
+      (match file_value with
+       | Error _ as error -> error
+       | Ok file_value ->
+           match getenv_nonempty "C2C_T3_RECOVERY" with
+           | None -> Ok (Option.value file_value ~default:true)
+           | Some ("0" | "false" | "off") -> Ok false
+           | Some ("1" | "true" | "on") -> Ok true
+           | Some value -> Error ("invalid C2C_T3_RECOVERY value " ^ value))
+
 let recovery_enabled () =
-  match getenv_nonempty "C2C_T3_RECOVERY" with
-  | Some ("0" | "false" | "off") -> false
-  | Some ("1" | "true" | "on") -> true
-  | _ ->
-      (match (try Some (Yojson.Safe.from_file (recovery_config_path ())) with _ -> None) with
-       | Some (`Assoc fields) ->
-           (match List.assoc_opt "recoveryEnabled" fields with Some (`Bool enabled) -> enabled | _ -> true)
-       | _ -> true)
+  match configured_recovery () with
+  | Ok enabled -> enabled
+  | Error _ -> false
 
 let set_recovery_cmd enabled json =
   let path = recovery_config_path () in
@@ -296,9 +393,9 @@ let set_recovery_cmd enabled json =
   let fields = match existing with `Assoc fields -> fields | _ -> print_error "refusing to overwrite non-object T3 config"; exit 1 in
   (match private_connector_dir (config_dir ()) with Ok () -> () | Error error -> print_error error; exit 1);
   (if Sys.file_exists path then
-     match (try Some (Unix.lstat path) with _ -> None) with
-     | Some st when st.Unix.st_kind = Unix.S_REG && st.Unix.st_uid = Unix.geteuid () && st.Unix.st_perm land 0o077 = 0 -> ()
-     | _ -> print_error "refusing to replace a non-private T3 connector config"; exit 1);
+     match private_connector_file path with
+     | Ok () -> ()
+     | Error error -> print_error ("refusing to replace T3 connector config: " ^ error); exit 1);
   match C2c_io.write_file_atomic ~perm:0o600 path
           (Yojson.Safe.to_string (`Assoc (List.remove_assoc "recoveryEnabled" fields @ [ ("recoveryEnabled", `Bool enabled) ])) ^ "\n") with
   | Error error -> print_error error; 1
@@ -321,6 +418,9 @@ let service_owner ~environment_id ~broker () =
 let service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery =
   let broker = C2c_mcp.Broker.create ~root:(service_broker_root ()) in
   let owner = service_owner ~environment_id:(environment_id runtime) ~broker () in
+  let recovery =
+    recovery && Recovery.supported_server_version runtime.T3.server_version
+  in
   match run_t3 (Service.discover client) with
   | Error error -> Error (T3.error_to_string error)
   | Ok scan ->
@@ -344,32 +444,63 @@ let service_once ~client ~runtime ~state ~mode ~cross_repo ~recovery =
            let mode = match mode_of_string mode with Ok value -> value | Error _ -> `Auto in
            List.iter (fun candidate -> ignore (Service.accept_inbox ~mode ~cross_repo ~owner ~state ~mapping:(Option.get candidate.Service.mapping) ())) applied.published;
            let thread_ids = List.map (fun candidate -> candidate.Service.thread.thread_id) applied.published in
-           let recovery_result =
+           let _recovery_result =
              run_lwt_exn (Recovery.sweep ~enabled:recovery ~client ~state ~environment_id:owner.environment_id
                         ~credential_generation:(T3.credential_generation_of client) ~thread_ids ~clock:now ())
+           in
+           let preflight (entry : State.entry) =
+             match entry.State.kind with
+             | State.Inbound -> Lwt.return (Ok ())
+             | State.Recovery ->
+                 (match Recovery.candidate_of_entry entry with
+                  | Error error -> Lwt.return (Error error)
+                  | Ok candidate ->
+                      Recovery.preflight_with
+                        ~operations:
+                          { Recovery.capabilities = (fun () -> T3.capabilities client);
+                            read_activity = (fun thread_id -> T3.read_activity client ~thread_id ());
+                            list_queue = (fun thread_id -> T3.list_queue client ~thread_id) }
+                        ~environment_id:owner.environment_id
+                        ~credential_generation:(T3.credential_generation_of client)
+                        ~candidate ())
            in
            let dispatcher =
              Service.create_dispatcher ~state
                ~credential_generation:(fun () -> T3.credential_generation_of client)
                ~can_send:(Recovery.can_dispatch ~enabled:recovery)
+               ~preflight
                ~send:(fun ~thread_id ~message ~mode ~client_request_id ->
                  T3.send_message client ~thread_id ~message ~mode ~client_request_id)
                ~clock:now ()
            in
            let rec dispatch count =
-             if count >= 1024 then Lwt.return ()
+             if count >= 16 then Lwt.return (Ok ())
              else Service.dispatch_once dispatcher >>= function
-               | Service.Idle | Service.Submitted _ | Service.Retained _ | Service.Held _ -> dispatch (count + 1)
-               | Service.Waiting delay -> Lwt_unix.sleep (min delay 60.) >>= fun () -> dispatch (count + 1)
+               | Service.Rebind_required reason -> Lwt.return (Error reason)
+               | Service.Idle -> Lwt.return (Ok ())
+               | Service.Submitted _ | Service.Retained _ | Service.Held _ ->
+                   dispatch (count + 1)
+               | Service.Waiting delay ->
+                   Lwt_unix.sleep (min delay 60.) >>= fun () -> dispatch (count + 1)
            in
-           (match recovery_result with
-            | _ -> run_lwt_exn (dispatch 0));
-           Ok (scan, applied)
+           (match run_lwt_exn (dispatch 0) with
+            | Ok () -> Ok (scan, applied)
+            | Error reason -> Error reason)
 
-let foreground_cmd foreground once interval mode cross_repo recovery =
+let foreground_cmd foreground once interval mode cross_repo recovery_override =
   if not foreground && not once then Printf.eprintf "starting c2c T3 connector in foreground (Ctrl-C to stop)\n%!";
   with_state (fun state ->
     let rec loop first =
+      let recovery =
+        match configured_recovery () with
+        | Ok configured -> Option.value recovery_override ~default:configured
+        | Error error ->
+            (* Never leave recovery enabled when its durable configuration is
+               malformed or unsafe.  Continue serving already accepted mail,
+               but hold new model-availability actions until repair. *)
+            Printf.eprintf "warning: model-availability recovery disabled: %s\n%!" error;
+            false
+      in
       let () =
         match authorized ~rebind:true () with
         | Error error -> Printf.eprintf "warning: T3 service degraded: %s\n%!" error
@@ -388,19 +519,78 @@ let foreground_term =
   let interval = Cmdliner.Arg.(value & opt float 60. & info [ "interval" ] ~docv:"SECONDS" ~doc:"Seconds between serialized service sweeps (default 60).") in
   let mode = Cmdliner.Arg.(value & opt string "auto" & info [ "mode" ] ~docv:"MODE" ~doc:"Inbound delivery mode: auto, queue, steer, or restart.") in
   let cross_repo = cross_repo_flag in
-  let recovery = Cmdliner.Arg.(value & opt bool (recovery_enabled ()) & info [ "recovery" ] ~docv:"BOOL" ~doc:"Enable model-availability Continue recovery (default enabled).") in
+  let recovery = Cmdliner.Arg.(value & opt (some bool) None & info [ "recovery" ] ~docv:"BOOL" ~doc:"Override durable model-availability Continue recovery for this process.") in
   as_command (const foreground_cmd $ foreground $ once $ interval $ mode $ cross_repo $ recovery)
 
 let doctor_cmd json =
-  let runtime = match T3.discover ~t3_home:(t3_home ()) () with Ok r -> `Assoc [ ("ready", `Bool true); ("origin", `String r.origin); ("pid", `Int r.pid) ] | Error e -> `Assoc [ ("ready", `Bool false); ("error", `String (T3.error_to_string e)) ] in
-  let credential = match T3.load_credential ~config_dir:(config_dir ()) with Ok c -> `Assoc [ ("present", `Bool true); ("generation", `Int (T3.credential_generation c)) ] | Error error -> `Assoc [ ("present", `Bool false); ("error", `String (T3.error_to_string error)) ] in
+  let runtime_result = T3.discover ~t3_home:(t3_home ()) () in
+  let runtime =
+    match runtime_result with
+    | Ok r ->
+        `Assoc [ ("ready", `Bool true); ("origin", `String r.origin);
+                 ("pid", `Int r.pid); ("home", `String r.t3_home);
+                 ("serverVersion", match r.server_version with Some v -> `String v | None -> `Null) ]
+    | Error e -> `Assoc [ ("ready", `Bool false); ("error", `String (T3.error_to_string e)) ]
+  in
+  let credential_result = T3.load_credential ~config_dir:(config_dir ()) in
+  let credential =
+    match credential_result with
+    | Ok c -> `Assoc [ ("present", `Bool true); ("generation", `Int (T3.credential_generation c));
+                       ("scopes", `List (List.map (fun s -> `String s) (T3.credential_scopes c))) ]
+    | Error error -> `Assoc [ ("present", `Bool false); ("error", `String (T3.error_to_string error)) ]
+  in
+  let api_result =
+    match runtime_result, credential_result with
+    | Ok _, Ok _ ->
+        (match authorized () with
+         | Error error -> Error error
+         | Ok (client, _) ->
+             (match run_t3 (T3.capabilities client) with
+              | Ok caps -> Ok caps
+              | Error error -> Error (T3.error_to_string error)))
+    | _ -> Error "runtime or credential is unavailable"
+  in
+  let api, permission_ceiling, api_ready =
+    match api_result with
+    | Ok caps ->
+        (`Assoc [ ("ready", `Bool true);
+                  ("runtimeMode", match caps.T3.runtime_mode with T3.Known value -> `String value | T3.Unknown -> `Null);
+                  ("interactionMode", match caps.T3.interaction_mode with T3.Known value -> `String value | T3.Unknown -> `Null) ],
+         (match caps.T3.runtime_mode with T3.Known value -> `String value | T3.Unknown -> `Null), true)
+    | Error error -> (`Assoc [ ("ready", `Bool false); ("error", `String error) ], `Null, false)
+  in
   let state = state_snapshot () in
   let runtime_ready = match runtime with `Assoc fields -> List.assoc_opt "ready" fields = Some (`Bool true) | _ -> false in
   let credential_present = match credential with `Assoc fields -> List.assoc_opt "present" fields = Some (`Bool true) | _ -> false in
-  let result = `Assoc [ ("healthy", `Bool (runtime_ready && credential_present)); ("runtime", runtime); ("credential", credential); ("permissionCeiling", if credential_present then `String "auto" else `Null); ("state", state); ("recoveryEnabled", `Bool (recovery_enabled ())); ("unit", `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool (C2c_t3_systemd.unit_is_active ())); ("enabled", `Bool (C2c_t3_systemd.unit_is_enabled ())); ("mainPid", match C2c_t3_systemd.unit_main_pid () with Some pid -> `Int pid | None -> `Null) ]) ] in
-  if json then print_json result else begin
-    Printf.printf "T3 service doctor\n  runtime: %s\n  credential: %s\n  state: %s\n  recovery: %s\n  unit: %s\n" (if runtime_ready then "ready" else "degraded") (if credential = `Assoc [ ("present", `Bool true) ] then "paired" else "unpaired") (Yojson.Safe.to_string state) (if recovery_enabled () then "enabled" else "disabled") (if C2c_t3_systemd.unit_is_active () then "active" else "inactive")
-  end;
+  let recovery_reason =
+    match runtime_result with
+    | Ok r -> Recovery.version_hold_reason r.server_version
+    | Error _ -> Some "T3 runtime is unavailable"
+  in
+  let recovery_enabled_value = recovery_enabled () in
+  let unit_active = C2c_t3_systemd.unit_is_active () in
+  let unit_enabled = C2c_t3_systemd.unit_is_enabled () in
+  let result =
+    `Assoc [ ("healthy", `Bool (runtime_ready && credential_present && api_ready));
+             ("runtime", runtime); ("credential", credential); ("api", api);
+             ("permissionCeiling", permission_ceiling); ("state", state);
+             ("recoveryEnabled", `Bool recovery_enabled_value);
+             ("recoveryHold", match recovery_reason with Some reason -> `String reason | None -> `Null);
+             ("recoveryCadenceSeconds", `Int 60);
+             ("unit", `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool unit_active);
+                               ("enabled", `Bool unit_enabled);
+                               ("mainPid", match C2c_t3_systemd.unit_main_pid () with Some pid -> `Int pid | None -> `Null) ]) ]
+  in
+  if json then print_json result else
+    Printf.printf
+      "T3 service doctor\n  runtime: %s\n  credential: %s\n  API: %s\n  access: %s\n  state: %s\n  recovery: %s\n  supervision: %s\n"
+      (if runtime_ready then "ready" else "degraded")
+      (if credential_present then "paired" else "unpaired")
+      (if api_ready then "ready" else "degraded")
+      (Yojson.Safe.to_string permission_ceiling)
+      (Yojson.Safe.to_string state)
+      (if recovery_enabled_value then "enabled" else "disabled")
+      (if unit_active then "active" else "inactive");
   0
 
 let doctor_term = as_command (const doctor_cmd $ json_flag)
@@ -409,10 +599,19 @@ let repair_cmd dry_run json =
   let paths = [ config_dir (); state_dir () ] in
   let actions = List.filter (fun path -> not (Sys.file_exists path)) paths in
   let unit_missing = not (Sys.file_exists (C2c_t3_systemd.unit_path ())) in
-  let result =
-    if dry_run then `Assoc [ ("dryRun", `Bool true); ("wouldCreate", `List (List.map (fun p -> `String p) actions)); ("wouldRepairUnit", `Bool unit_missing); ("credentialPreserved", `Bool true) ]
+  let result, exit_code =
+    if dry_run then
+      (`Assoc [ ("dryRun", `Bool true); ("wouldCreate", `List (List.map (fun p -> `String p) actions)); ("wouldRepairUnit", `Bool unit_missing); ("credentialPreserved", `Bool true) ], 0)
     else begin
-      List.iter mkdir_p actions;
+      let repair_errors =
+        List.filter_map
+          (fun path -> match repair_private_dir path with Ok () -> None | Error e -> Some e)
+          paths
+      in
+      if repair_errors <> [] then begin
+        let message = String.concat "; " repair_errors in
+        (`Assoc [ ("dryRun", `Bool false); ("error", `String message); ("credentialPreserved", `Bool true) ], 1)
+      end else
       let unit_result =
         if not unit_missing then "present"
         else
@@ -424,11 +623,11 @@ let repair_cmd dry_run json =
                | C2c_t3_systemd.Skipped reason -> "held: " ^ reason
                | C2c_t3_systemd.Failed reason -> "held: " ^ reason)
       in
-      `Assoc [ ("dryRun", `Bool false); ("created", `List (List.map (fun p -> `String p) actions)); ("unit", `String unit_result); ("credentialPreserved", `Bool true) ]
+      (`Assoc [ ("dryRun", `Bool false); ("created", `List (List.map (fun p -> `String p) actions)); ("unit", `String unit_result); ("credentialPreserved", `Bool true) ], 0)
     end
   in
   if json then print_json result else Printf.printf "%s\n" (Yojson.Safe.to_string result);
-  0
+  exit_code
 
 let repair_term =
   let dry_run = Cmdliner.Arg.(value & flag & info [ "dry-run" ] ~doc:"Report safe repairs without changing files.") in
