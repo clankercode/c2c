@@ -62,6 +62,36 @@ let json_messages = function
          (Yojson.Safe.to_string (Option.value value ~default:`Null)))
   | json -> failf "expected JSON object, got %s" (Yojson.Safe.to_string json)
 
+(* [Server.create] starts accepting asynchronously.  A single [Lwt.pause] is
+   normally enough to yield to that startup, but it is not a readiness
+   barrier: when the whole repository test suite is under load, the first
+   loopback connect can transiently fail with [EHOSTUNREACH].  Probe the
+   already-bound listener before issuing the real request.  Retrying this
+   connection is safe because the probe sends no HTTP request and therefore
+   cannot repeat a state-changing relay operation. *)
+let rec wait_for_http_listener ~port ~attempts_left =
+  let probe = Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
+  let close_probe () =
+    Lwt.catch
+      (fun () -> Lwt_unix.close probe)
+      (fun _ -> Lwt.return_unit)
+  in
+  Lwt.catch
+    (fun () ->
+      Lwt_unix.connect probe
+        (Unix.ADDR_INET (Unix.inet_addr_loopback, port)) >>= fun () ->
+      close_probe ())
+    (fun exn ->
+      close_probe () >>= fun () ->
+      match exn with
+      | Unix.Unix_error
+          ((Unix.ECONNREFUSED | Unix.EHOSTUNREACH | Unix.ENETUNREACH
+           | Unix.EADDRNOTAVAIL), _, _)
+        when attempts_left > 1 ->
+        Lwt_unix.sleep 0.01 >>= fun () ->
+        wait_for_http_listener ~port ~attempts_left:(attempts_left - 1)
+      | _ -> Lwt.fail exn)
+
 module Backend_http_tests (R : Relay.RELAY) = struct
   module RS = Relay.Relay_server (R)
 
@@ -80,6 +110,7 @@ module Backend_http_tests (R : Relay.RELAY) = struct
          Cohttp_lwt_unix.Server.create ~stop ~mode:(`TCP (`Socket fd)) spec
        in
        Lwt.pause () >>= fun () ->
+       wait_for_http_listener ~port ~attempts_left:200 >>= fun () ->
        let base_url = Printf.sprintf "http://127.0.0.1:%d" port in
        Lwt.finalize
          (fun () -> f ~base_url)
