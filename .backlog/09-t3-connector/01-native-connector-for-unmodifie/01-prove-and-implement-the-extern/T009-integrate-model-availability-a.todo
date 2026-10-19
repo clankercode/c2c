@@ -1,19 +1,20 @@
 ---
 claimed_at: "2026-10-19T17:51:19Z"
 claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-19T18:08:01Z"
 complexity: high
 created_at: "2026-10-19T08:12:41Z"
 depends_on:
     - P9.M1.E1.T005
+duration_minutes: 16.711531201733333
 estimate_hours: 6
 id: P9.M1.E1.T009
 priority: high
 started_at: "2026-10-19T17:51:19Z"
-status: in_progress
+status: done
 tags: []
 title: Integrate model availability auto-recovery into the native T3 service
-updated_at: "2026-10-19T17:51:19Z"
+updated_at: "2026-10-19T18:08:01Z"
 ---
 
 # Integrate model availability auto-recovery into the native T3 service
