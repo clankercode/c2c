@@ -1,102 +1,115 @@
 ---
 title: T3 Code
 nav_title: T3 Code
-description: Opt-in application-owned c2c mailboxes for T3 Code threads
+description: Native c2c connector for unmodified T3 Code services
 layout: page
 permalink: /clients/t3-code/
 ---
 
 # T3 Code
 
-The experimental T3 Code integration gives each participating T3 thread a
-stable c2c identity. T3 owns the mailbox and schedules delivery through its
-provider adapter. This requires builds of both c2c and T3 Code that include
-the host-mailbox integration; installing an ordinary provider hook does not
-add this feature to an older T3 release.
+`c2c` can connect to one local, unmodified T3 Code service through T3's
+authenticated external MCP API. The connector runs entirely in c2c: it never
+edits T3's database, provider configuration, or provider credentials, and it
+does not require a T3-side `C2cBridge` or a daemon installed in T3.
 
-Automatic delivery currently targets compatible Codex providers. Other
-providers must have explicit DATA support before they can receive this way.
-Codex host mode disables native Codex plugins for its threads; unrelated
-configured MCP servers remain available. Workspace MCP configuration must be
-trusted before startup. T3 refuses configurations it cannot isolate safely.
-Externally managed provider servers are outside this mode.
+The connector discovers open root threads, gives each a stable opaque alias such
+as `t3-4f91…`, and advertises those aliases in the shared c2c sessions broker.
+Forks, subagents, archived/deleted/settled threads, and roots above the paired
+`auto` permission ceiling remain unroutable. Titles are presentation only and
+never part of a routing address. A local convenience locator `t3.<thread-id>`
+works after discovery; remote delivery uses the normal `alias@host_id` address.
 
-If you also use OpenCode in T3, refresh its c2c plugin with this c2c build before
-enabling host mode:
+## Pair and run
 
-```sh
-c2c install opencode
-```
-
-The updated plugin respects the host's native-delivery opt-out. An older copy
-can recover an obsolete identity from its sidecar and consume mail independently.
-
-## Enable a thread
-
-On the T3 server machine, make the c2c executable available on `PATH` and
-confirm that this command exists:
+Pair once with the local T3 runtime. T3 must be running and its pairing flow
+must grant only `orchestration:read` and `orchestration:operate`:
 
 ```sh
-c2c host --help
+c2c t3 pair
+c2c t3 list
+c2c t3 service
 ```
 
-Start T3 with its server-wide opt-in:
+`c2c t3 service` is one foreground process for one `T3CODE_HOME`; it owns the
+singleton state lock and serves all discovered roots. The service performs
+initial discovery, refreshes roots every 60 seconds, accepts broker mail
+persistently before acknowledging it, and submits one T3 operation at a time
+with a one-second global submission limit. Use `c2c t3 service --once` for a
+single fixture/operator sweep. Run another service for a different T3 home.
+
+To install the same process as an optional user service:
 
 ```sh
-T3CODE_C2C_ENABLED=1 t3 serve
+c2c t3 service install
+c2c t3 service doctor
 ```
 
-An existing T3 server needs a restart to pick up that environment variable.
-Then ask the agent in a Codex thread to enable its c2c mailbox and report its
-alias. It uses T3's `c2c_configure` tool. Another peer using the same workspace's
-broker can send:
+The unit contains absolute executable, T3-home, config, and state paths. If a
+user systemd manager is unavailable, run the foreground command instead.
+
+Credentials live under `~/.c2c/t3/` and connector state under
+`~/.local/state/c2c/t3/` (override with `C2C_T3_CONFIG_DIR` and
+`C2C_T3_STATE_DIR`). `c2c t3 service doctor` is read-only. `service repair`
+only restores missing private directories or the owned unit; it never replaces
+credentials, deletes queued mail, removes a live lock, or steals another
+registration.
+
+## Send and receive
+
+Send an operator message to a discovered root:
 
 ```sh
-c2c send <alias> "The review is ready."
+c2c t3 send t3-4f91abcd "Please review the latest changes."
+c2c t3 send --mode queue t3.<thread-id> "Queue this for the next turn."
 ```
 
-T3's `c2c_send` tool sends from the authenticated thread's identity. It does
-not take a sender alias. Different T3 threads in one workspace have different
-mailboxes; app-owned delegated threads can enroll separately. Provider-native
-children cannot borrow their parent's mailbox through these tools.
+Inbound broker messages become ordinary T3 agent-originated messages. Their
+body is framed as untrusted c2c DATA and ends with one canonical hint telling
+the receiving agent to reply through c2c using the original peer route. The
+connector never fabricates a trusted `senderThreadId`, forwards transcripts, or
+uses a borrowed native c2c identity. A normal T3 chat reply does not reach the
+peer.
 
-## Delivery behavior
+Local aliases continue to use the local broker even when a relay is configured.
+For cross-host delivery, explicitly enable the existing relay (the validation
+hosts use `https://relay.c2c.im`); the machine relay connector owns leases and
+remote publication. Relay outage degrades remote reachability without stopping
+local delivery. Retirement removes only this service's local registration and
+stops renewal; remote lease expiry is bounded by the relay's TTL.
 
-T3 accepts messages durably before acknowledging their removal from the c2c
-broker. An accepted message is not yet proof of provider visibility.
+## Model-availability recovery
 
-Eligible local, non-deferrable mail can start an otherwise idle Codex turn.
-Remote and deferrable mail do not start a turn; they may be injected into an
-existing provider context. The message remains peer DATA, including when it
-starts a turn: it is not a user prompt or an approval response.
+The service includes a fail-closed Codex recovery monitor. After discovery it
+checks roots immediately and then on nominal 60-second sweeps. When a complete
+external activity read proves a current root Codex run failed because the model
+was unavailable or temporarily over capacity, it persists and queues exactly
+one literal `Continue` with `mode=queue`. Recovery shares the normal durable
+queue, one-second submission limit, retry identity, and restart deduplication.
 
-Stop pauses delivery to enrolled app-owned descendants as well as the stopped
-thread. Explicit resume or a new user message can clear the thread's pause.
-DND, snooze, approval waits, archival, deletion, and unsupported providers also
-prevent delivery while applicable.
+It does not trigger from child-only or mixed failures, user/assistant/peer/tool
+text, auth/account/quota/context/workspace/configuration/transport errors,
+truncated or incomplete history, queued work, Stop markers, snooze/DND,
+approval waits, settled/archived/deleted roots, non-Codex providers, or
+permission-ineligible roots. Disable or inspect it without deleting intents:
 
-The server and compatible provider must remain available. A failed or uncertain
-provider submission is held for inspection rather than retried indefinitely.
-The [wake contract](/wake-contract/) explains the distinction between durable
-mail and waking an agent; this experimental integration must be verified against
-the T3 and Codex builds in use.
+```sh
+c2c t3 service recovery disable
+c2c t3 service recovery status
+c2c t3 service doctor --json
+```
 
-## Inspect and disable
+The monitor is per service process/environment. Separate T3 homes or service
+processes do not share a global limiter.
 
-Ask the thread to use these T3 tools:
+## Stop and repair
 
-| Tool | Purpose |
-|---|---|
-| `c2c_status` | Alias, pause state, watcher state, and delivery counts; no message bodies. |
-| `c2c_inbox` | A bounded page of pending messages. |
-| `c2c_dismiss` | Remove handled or unwanted pending messages and free capacity. |
-| `c2c_configure` | Enable, disable, or pause the thread's mailbox. |
+```sh
+c2c t3 service stop
+c2c t3 service repair --dry-run
+c2c t3 service uninstall
+```
 
-To disable one thread, use `c2c_configure` with `enabled: false`. Its registration
-is released and pending messages remain. Re-enabling restores its identity.
-To disable the integration for the server, remove `T3CODE_C2C_ENABLED` and
-restart T3. This does not delete the T3 mailbox database or uninstall c2c.
-
-`ephemeral` still means that c2c skips its recipient archive. It does not prevent
-T3's durable mailbox or the provider conversation from storing received data.
-See the [send reference](/commands/#send) for the general contract.
+These commands touch only the connector-owned unit/configuration. Pending c2c
+mail, tombstones, dedupe state, and credentials remain available for a later
+repair or re-pair.
