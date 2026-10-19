@@ -183,7 +183,18 @@ class _ContractBase(unittest.TestCase):
         return result
 
     def _register(self, alias: str, session: str) -> None:
-        result = self._run(["register", "--alias", alias], session=session)
+        # `register` runs in a short-lived subprocess.  Native relay
+        # connector discovery intentionally ignores registrations whose
+        # recorded PID is no longer alive, so inheriting the subprocess's
+        # default parent-PID fallback makes this fixture dependent on the
+        # test runner's process topology.  Pin the registration lease to the
+        # live test process explicitly; the connector can then exercise the
+        # intended B087 per-operation error path deterministically.
+        result = self._run(
+            ["register", "--alias", alias],
+            session=session,
+            C2C_MCP_CLIENT_PID=str(os.getpid()),
+        )
         self.assertEqual(result.returncode, 0,
                          f"fixture register {alias} failed: {result.stderr}")
 
