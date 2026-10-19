@@ -38,3 +38,8 @@ updated_at: "2026-10-19T18:51:47Z"
 ## Lane
 
 Serial validation after all M1 work. Tests/builds run on buildboxes, never full suites on the workstation. Revalidate the same task's gate for every changed candidate even after its initial completion; prior status cannot authorize a different source.
+
+
+## Gate result 2026-10-20
+
+The exact-source x-tuf buildbox passed `just build`, `just check`, forced repository-wide OCaml `@runtest --force`, the complete eight-target artifact build, and `just test-t3-connector` (55/55). The required full `just test` did not pass: Python test phase ended with 60 failures, 520 passes, 62 skips, and 43 errors from pre-existing/environmental Docker/TMUX fixture failures, stale CLI architecture expectations, relay subprocess startup assumptions, and legacy install fixtures. See `.collab/findings/2026-10-20-p9-buildbox-gate.md`. This is not a PASS receipt; no `just bi` or installation is authorized until the full gate is green.
