@@ -87,13 +87,19 @@ let pid = 4242
 
 type fx = { home : string; proc : string; record : string }
 
-let make_fx ?(rel = "userdata") ?(listener = true) ?(status_stream = false)
+let make_fx ?(runtime_version = None) ?(rel = "userdata") ?(listener = true) ?(status_stream = false)
     ?(started_at = "1970-01-01T00:16:42Z")
     ?(origin = Printf.sprintf "http://127.0.0.1:%d" port) () =
   let root = tmpdir () in
   let home = Filename.concat root "home" and proc = Filename.concat root "proc" in
   let record = Filename.concat (Filename.concat home rel) "server-runtime.json" in
-  write record (Printf.sprintf {|{"origin":"%s","port":%d,"pid":%d,"startedAt":"%s","version":"0.1.0"}|} origin port pid started_at);
+  let version_field =
+    match runtime_version with
+    | Some version -> Printf.sprintf "\"serverVersion\":\"%s\"" version
+    | None -> "\"version\":\"0.1.0\""
+  in
+  write record (Printf.sprintf {|{"origin":"%s","port":%d,"pid":%d,"startedAt":"%s",%s}|}
+    origin port pid started_at version_field);
   Unix.chmod home 0o700;
   Unix.chmod (Filename.dirname record) 0o700;
   let p = Filename.concat proc (string_of_int pid) in
@@ -126,6 +132,11 @@ let test_discovery_ok () =
   Alcotest.(check int) "pid" pid rt.T.pid;
   Alcotest.(check (list string)) "listener" [ "555" ] rt.T.proof.T.listeners;
   Alcotest.(check bool) "dev record" true (ok (discover (make_fx ~rel:"dev" ())) |> fun r -> r.T.pid = pid)
+
+let test_discovery_server_version_field () =
+  let fx = make_fx ~runtime_version:(Some "0.1.0") () in
+  let rt = ok (discover fx) in
+  Alcotest.(check (option string)) "canonical serverVersion" (Some "0.1.0") rt.T.server_version
 
 let test_discovery_procfs_stream () =
   (* A FIFO models procfs' stream-like files: [in_channel_length] cannot be
@@ -388,6 +399,7 @@ let () =
       ( "pure", [ Alcotest.test_case "pkce" `Quick test_pkce; Alcotest.test_case "group" `Quick test_group;
                   Alcotest.test_case "home" `Quick test_resolve_home; Alcotest.test_case "allowlist" `Quick test_allowlist ] );
       ( "discovery", [ Alcotest.test_case "ok" `Quick test_discovery_ok;
+                       Alcotest.test_case "serverVersion field" `Quick test_discovery_server_version_field;
                        Alcotest.test_case "proc-like stream" `Quick test_discovery_procfs_stream;
                        Alcotest.test_case "refusals" `Quick test_discovery_refusals;
                        Alcotest.test_case "ambiguous" `Quick test_discovery_ambiguous ] );

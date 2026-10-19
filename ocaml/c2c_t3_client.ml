@@ -560,7 +560,15 @@ let validate_record ~proc_root ~uid ~now ~clk_tck ~fs_env ~home ~real_home path 
                                 Ok
                                   { origin = canonical_origin;
                                     port; pid; started_at;
-                                    server_version = str_field "version" j;
+                                    (* T3's runtime record calls this field
+                                       [serverVersion].  Keep accepting the
+                                       earlier [version] spelling for older
+                                       records, but prefer the canonical field
+                                       when both are present. *)
+                                    server_version =
+                                      (match str_field "serverVersion" j with
+                                       | Some _ as version -> version
+                                       | None -> str_field "version" j);
                                     record_path = path; t3_home = real_home; proof }
                             | _ ->
                                 Error (Runtime_changed "runtime record does not match the process incarnation"))))
