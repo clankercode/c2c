@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-10-19T07:12:00Z"
 depends_on:
@@ -6,10 +7,9 @@ depends_on:
 estimate_hours: 6
 id: P9.M1.E1.T002
 priority: high
+started_at: null
 status: pending
-tags:
-    - idea
-    - planning
+tags: []
 title: Implement native T3 discovery pairing and bounded MCP transport
 updated_at: "2026-10-19T07:12:00Z"
 ---
@@ -41,3 +41,5 @@ Pending planned work. During execution follow bl-fix-many: read the full ticket,
 ## Lane
 
 Can run in parallel with T003 after T001. Keep shared CLI registration wiring for the service integration lane; coordinate the narrow client/state contract first.
+
+Lane decision: parallel with T003 only after T001 merges. Own the native MCP client and its tests; leave service/CLI registration to the later serial lane.
