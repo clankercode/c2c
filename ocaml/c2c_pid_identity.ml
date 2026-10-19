@@ -189,6 +189,27 @@ let proc_start_ticks (pid : int) : int option =
                | None -> None))
   with Sys_error _ | End_of_file -> None
 
+(* A zombie still has a /proc directory and a start-time field, but it cannot
+   receive a signal or execute any connector work. Treat it as absent for
+   lifecycle ownership so a parent waiting to reap a gracefully exited
+   supervisor does not look live merely because the PID has not been waited on
+   yet. *)
+let proc_is_zombie (pid : int) : bool =
+  try
+    let ic = open_in (Printf.sprintf "/proc/%d/stat" pid) in
+    Fun.protect
+      ~finally:(fun () -> try close_in ic with _ -> ())
+      (fun () ->
+        let line = input_line ic in
+        match String.rindex_opt line ')' with
+        | None -> false
+        | Some idx ->
+            let tail = String.sub line (idx + 2) (String.length line - idx - 2) in
+            match String.split_on_char ' ' tail with
+            | state :: _ -> state = "Z"
+            | [] -> false)
+  with Sys_error _ | End_of_file -> false
+
 type pid_generation_state =
   | Generation of int
   | Absent
@@ -199,6 +220,7 @@ type pid_generation_state =
    code must never turn the latter into permission to forget an owner record. *)
 let read_pid_generation (pid : int) : pid_generation_state =
   if pid <= 0 then Absent
+  else if proc_is_zombie pid then Absent
   else
     match proc_start_ticks pid with
     | Some ticks -> Generation ticks
