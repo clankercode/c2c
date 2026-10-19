@@ -2521,7 +2521,12 @@ module Relay_client = struct
      and local delivery untouched. *)
   let set_peer_discovery_visibility_signed t ~alias ~visibility
       ~identity_pk ~ts ~nonce ~sig_ =
-    post t "/set_peer_discovery_visibility" (`Assoc [
+    (* The body proof authorizes the operation at the handler, while the
+       production relay's peer-route gate separately requires the canonical
+       Ed25519 request Authorization header.  Keep both layers: [~alias]
+       makes [request] sign the exact POST path and serialized body, and the
+       body fields remain the peer-visibility proof. *)
+    post t "/set_peer_discovery_visibility" ~alias (`Assoc [
       ("alias", `String alias);
       ("visibility", `String visibility);
       ("identity_pk", `String identity_pk);

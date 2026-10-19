@@ -12,6 +12,7 @@
 *)
 
 module Conn = C2c_relay_connector
+module RTS = Relay_test_support
 
 let make_tmpdir () =
   let base = Filename.get_temp_dir_name () in
@@ -177,6 +178,49 @@ let test_t3_service_publication_intent_is_explicit_and_current () =
     (Conn.is_current_t3_service_registration
        [ ("t3-live", "t3-good", "codex") ]
        ~session_id:"t3-live" ~alias:"t3-good")
+
+(* T006 production-auth regression: peer visibility publication has two
+   signatures.  The body proof authorizes the visibility mutation, while the
+   relay HTTP middleware requires the canonical Ed25519 request header for the
+   peer route.  The connector must send both. *)
+let test_t3_service_publication_sends_request_authorization () =
+  let routes = [
+    RTS.route ~meth:"POST" ~path:"/set_peer_discovery_visibility"
+      [ RTS.response {|{"ok":true}|} ]
+  ] in
+  RTS.with_server ~routes (fun server ->
+    let identity = Relay_identity.generate () in
+    let client = Conn.Relay_client.make ~identity (RTS.url server) in
+    let proof = Relay_signed_ops.sign_peer_visibility identity
+      ~alias:"t006-connector-auth" ~visibility:"public" in
+    let response = Lwt_main.run
+      (Conn.Relay_client.set_peer_discovery_visibility_signed client
+         ~alias:"t006-connector-auth" ~visibility:"public"
+         ~identity_pk:proof.identity_pk_b64 ~ts:proof.ts ~nonce:proof.nonce
+         ~sig_:proof.sig_b64) in
+    Alcotest.(check bool) "fixture accepts publication" true
+      (Conn.json_bool_member ~key:"ok" response);
+    match RTS.requests server with
+    | [request] ->
+        let auth = Option.value (RTS.header request "authorization") ~default:"" in
+        Alcotest.(check bool) "peer request has Ed25519 Authorization" true
+          (String.length auth >= 8
+           && String.sub auth 0 8 = "Ed25519 ");
+        let body_has needle =
+          let needle_len = String.length needle in
+          let rec search offset =
+            if offset + needle_len > String.length request.RTS.body then false
+            else if String.sub request.RTS.body offset needle_len = needle then true
+            else search (offset + 1)
+          in
+          search 0
+        in
+        Alcotest.(check bool) "body keeps visibility proof" true
+          (body_has {|"identity_pk":"|}
+           && body_has {|"visibility":"public"|});
+    | requests ->
+        Alcotest.failf "expected one publication request, got %d"
+          (List.length requests))
 
 let test_docker_registration_lease_boundaries () =
   let tmp = make_tmpdir () in
@@ -1952,8 +1996,6 @@ let test_machine_cooldown_survives_restart () =
 
 (* --- B297: error logging must keep the alias and every distinct error ------ *)
 
-module RTS = Relay_test_support
-
 let test_error_detail_truncated_at_240 () =
   (* The relay's error body puts the alias ~90 chars in; an 80-char cap cut
      mid-alias on every line (12,593 lines, none naming the failing alias). *)
@@ -2719,6 +2761,8 @@ let () =
     "T006 T3 publication intent", [
       Alcotest.test_case "explicit marker and current alias required" `Quick
         test_t3_service_publication_intent_is_explicit_and_current;
+      Alcotest.test_case "publication sends peer request Authorization" `Quick
+        test_t3_service_publication_sends_request_authorization;
     ];
     "parse_relay_url", [
       Alcotest.test_case "host:port" `Quick test_parse_relay_url_host_port;
