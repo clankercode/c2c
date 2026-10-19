@@ -68,6 +68,17 @@ type t = {
   mutable needs_migration_write : bool;
 }
 
+(* A lock-free, immutable view used by commands that only need to resolve a
+   mapping while the service owns the writer lock.  Keeping this distinct from
+   [t] prevents a read-only caller from accidentally invoking a mutating state
+   operation.  The view is populated from one atomically-renamed state.json
+   snapshot; concurrent service writes therefore yield either the old complete
+   snapshot or the new complete snapshot, never a partially-written file. *)
+type read_only = {
+  read_environment_id : string;
+  read_maps : mapping list;
+}
+
 (* POSIX lockf locks are per-process: a second [lockf] on the same file from
    this process would succeed. Track dirs held in-process so a second open
    reports [Already_running] as a cross-process one would. *)
@@ -380,6 +391,35 @@ let open_state ?(clock = Unix.gettimeofday) ?(max_journal = default_max_journal)
                   Hashtbl.replace held_dirs dir ();
                   Ok t
             else (Hashtbl.replace held_dirs dir (); Ok t)))
+
+(* Read the durable routing snapshot without taking the singleton lock and
+   without creating or rewriting anything.  This is intentionally narrower
+   than [open_state]: operator commands such as [t3 send] may run alongside
+   the long-lived service, but they must not become a second state writer.
+   Directory/file ownership and permissions, the environment identity, and
+   the complete state schema are still checked before a view is returned. *)
+let open_read_only ~environment_id ~dir () =
+  let ( let* ) = Result.bind in
+  let dir = if Filename.is_relative dir then Filename.concat (Sys.getcwd ()) dir else dir in
+  let* () = check_private_dir dir in
+  let path = Filename.concat dir "state.json" in
+  let* exists = check_private_file path in
+  if not exists then Error (Io "T3 state.json does not exist")
+  else
+    let t =
+      { dir; path; environment_id; fsync = (fun _ -> ()); migrate_legacy = false;
+        clock = Unix.gettimeofday; max_journal = default_max_journal;
+        max_payload_bytes = default_max_payload_bytes;
+        max_tombstones = default_max_tombstones; max_acked = default_max_acked;
+        lock = None; maps = []; journal = []; acked = []; dispatch_at = None;
+        next_seq = 1; needs_migration_write = false }
+    in
+    match load_into t with
+    | Error error -> Error error
+    | Ok () -> Ok { read_environment_id = t.environment_id; read_maps = t.maps }
+
+let read_only_environment_id t = t.read_environment_id
+let read_only_mappings t = t.read_maps
 
 (* ---- mapping ---- *)
 

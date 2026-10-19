@@ -207,6 +207,30 @@ let test_environment_identity_fenced () =
     Alcotest.(check string) "identity roundtrip" "home-a" (S.environment_id t);
     S.close t)
 
+let test_read_only_snapshot_while_writer_locked () =
+  with_dir (fun dir ->
+    let owner = open_ok dir in
+    let mapping = ok_or_fail (S.ensure_mapping owner ~thread_id:"thr-1") in
+    let before = C2c_io.read_file (S.state_path owner) in
+    let snapshot =
+      match S.open_read_only ~environment_id:"test-home" ~dir () with
+      | Ok value -> value
+      | Error error -> Alcotest.failf "read-only open failed: %s" (S.open_error_to_string error)
+    in
+    Alcotest.(check string) "environment identity" "test-home"
+      (S.read_only_environment_id snapshot);
+    (match S.read_only_mappings snapshot with
+     | [ value ] -> Alcotest.(check string) "mapping resolved while locked" mapping.alias value.alias
+     | _ -> Alcotest.fail "read-only snapshot lost mapping");
+    (* The read-only path did not take or release the writer lock. *)
+    Alcotest.(check bool) "writer lock remains held" true
+      (match S.open_state ~environment_id:"test-home" ~dir () with
+       | Error S.Already_running -> true
+       | _ -> false);
+    Alcotest.(check string) "read-only path did not mutate state" before
+      (C2c_io.read_file (S.state_path owner));
+    S.close owner)
+
 let test_legacy_state_requires_explicit_migration () =
   with_dir (fun dir ->
     let t = open_ok ~environment_id:"old-home" dir in
@@ -318,6 +342,7 @@ let () =
           Alcotest.test_case "unsafe file" `Quick test_unsafe_file;
           Alcotest.test_case "corrupt kept" `Quick test_corrupt_not_overwritten;
           Alcotest.test_case "environment identity" `Quick test_environment_identity_fenced;
+          Alcotest.test_case "read-only snapshot while locked" `Quick test_read_only_snapshot_while_writer_locked;
           Alcotest.test_case "legacy migration" `Quick test_legacy_state_requires_explicit_migration;
           Alcotest.test_case "fsync failure" `Quick test_fsync_failure_does_not_commit_memory ] );
       ( "singleton",

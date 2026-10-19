@@ -82,14 +82,30 @@ let authorized ?(rebind = false) () =
        | Ok () -> Ok (client, runtime))
 
 let open_state () =
-  match State.open_state ~environment_id:(environment_id_of_home (t3_home ())) ~dir:(state_dir ()) () with
-  | Ok state -> Ok state
-  | Error error -> Error (State.open_error_to_string error)
+  State.open_state ~environment_id:(environment_id_of_home (t3_home ())) ~dir:(state_dir ()) ()
 
 let with_state f =
   match open_state () with
-  | Error error -> print_error error; 1
+  | Error error -> print_error (State.open_error_to_string error); 1
   | Ok state -> Fun.protect ~finally:(fun () -> State.close state) (fun () -> f state)
+
+(* Sending is a read-only operation on connector state.  When the foreground
+   service owns the singleton lock, use an immutable atomic snapshot instead of
+   failing with Already_running; all mutating commands continue to require the
+   writer handle above. *)
+let with_send_mappings f =
+  match open_state () with
+  | Ok state ->
+      Fun.protect ~finally:(fun () -> State.close state)
+        (fun () -> f (State.mappings state))
+  | Error State.Already_running ->
+      (match
+         State.open_read_only
+           ~environment_id:(environment_id_of_home (t3_home ())) ~dir:(state_dir ()) ()
+       with
+       | Error error -> print_error (State.open_error_to_string error); 1
+       | Ok snapshot -> f (State.read_only_mappings snapshot))
+  | Error error -> print_error (State.open_error_to_string error); 1
 
 let thread_mapping_json mapping =
   `Assoc
@@ -237,11 +253,12 @@ let status_cmd json =
 
 let status_term = as_command (const status_cmd $ json_flag)
 
-let resolve_target state locator =
+let resolve_target ~mappings locator =
   let registered = List.map (fun (r : C2c_mcp.registration) -> r.alias) (C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:(service_broker_root ()))) in
-  match Service.resolve_locator ~mappings:(State.mappings state) ~registered_aliases:registered locator with
-  | Service.Alias alias -> Ok (State.find_by_alias state ~alias)
-  | Service.Thread_alias alias -> Ok (State.find_by_alias state ~alias)
+  let find_by_alias alias = List.find_opt (fun (m : State.mapping) -> m.alias = alias) mappings in
+  match Service.resolve_locator ~mappings ~registered_aliases:registered locator with
+  | Service.Alias alias -> Ok (find_by_alias alias)
+  | Service.Thread_alias alias -> Ok (find_by_alias alias)
   | Service.Ambiguous_thread id -> Error ("thread locator is ambiguous: " ^ id)
   | Service.Unknown_thread id -> Error ("unknown T3 thread: " ^ id)
 
@@ -249,8 +266,8 @@ let send_cmd locator message mode json =
   match authorized () with
   | Error error -> print_error error; 1
   | Ok (client, _) ->
-      with_state (fun state ->
-        match resolve_target state locator with
+      with_send_mappings (fun mappings ->
+        match resolve_target ~mappings locator with
         | Error error -> print_error error; 1
         | Ok None -> print_error ("no local T3 mapping for " ^ locator); 1
         | Ok (Some mapping) ->

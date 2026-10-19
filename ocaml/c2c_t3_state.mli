@@ -19,6 +19,8 @@
 
 type t
 
+type read_only
+
 type open_error =
   | Already_running  (** another live owner holds the singleton lock *)
   | Unsafe of string (** ownership / mode / symlink check failed; nothing was changed *)
@@ -64,6 +66,15 @@ val dir : t -> string
 val state_path : t -> string
 val environment_id : t -> string
 
+val open_read_only :
+  environment_id:string ->
+  dir:string ->
+  unit ->
+  (read_only, open_error) result
+(** Load one validated [state.json] snapshot without taking the singleton lock
+    and without creating, migrating, or rewriting state.  The returned view is
+    immutable and is safe to use while the service owns the writer lock. *)
+
 (** {1 Alias mapping} *)
 
 val alias_of_thread_id : string -> string
@@ -82,6 +93,9 @@ type mapping = {
   created_at : float;
   tombstone : tombstone option;
 }
+
+val read_only_environment_id : read_only -> string
+val read_only_mappings : read_only -> mapping list
 
 val ensure_mapping : t -> thread_id:string -> (mapping, string) result
 (** Find or create the mapping for [thread_id]. Errors if the thread is
