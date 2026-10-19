@@ -91,5 +91,6 @@ tasks:
       file: T009-integrate-model-availability-a.todo
       id: T009
       priority: high
-      status: pending
+      status: in_progress
+      tags: []
       title: Integrate model availability auto-recovery into the native T3 service
