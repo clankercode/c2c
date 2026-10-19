@@ -427,6 +427,32 @@ let test_deferrable_waits_for_explicit_flush () =
        | _ -> Alcotest.fail "explicit flush did not release deferrable entry");
       Alcotest.(check int) "flushed once" 1 !calls)
 
+let test_preflight_holds_stale_intent_before_send () =
+  let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
+  Fun.protect
+    ~finally:(fun () -> State.close state; cleanup_dir broker_root; cleanup_dir state_dir)
+    (fun () ->
+      C2c_mcp.Broker.enqueue_message broker ~from_alias:"peer" ~to_alias:mapping.alias
+        ~content:"stale" ();
+      ignore (S.accept_inbox ~owner ~state ~mapping ());
+      let sends = ref 0 in
+      let send ~thread_id ~message:_ ~mode:_ ~client_request_id:_ =
+        incr sends;
+        Lwt.return (Ok { C2c_t3_client.receipt_thread_id = thread_id;
+                         message_id = "m"; run_id = "r" })
+      in
+      let dispatcher =
+        S.create_dispatcher ~spacing:0.
+          ~preflight:(fun _ -> Lwt.return (Error "evidence changed"))
+          ~send ~clock:(fun () -> 0.) ~state ()
+      in
+      (match Lwt_main.run (S.dispatch_once dispatcher) with
+       | S.Held reason -> Alcotest.(check string) "hold reason" "evidence changed" reason
+       | _ -> Alcotest.fail "stale intent was not held");
+      Alcotest.(check int) "preflight prevents send" 0 !sends;
+      Alcotest.(check int) "held entry is no longer pending" 0
+        (List.length (State.journal_pending state)))
+
 let test_rebind_errors_requeue_exact_request () =
   let broker_root, state_dir, broker, mapping, owner, state = service_fixture () in
   Fun.protect
@@ -583,6 +609,7 @@ let () =
                       Alcotest.test_case "timeout restart replay" `Quick test_timeout_retries_same_request_after_reopen;
                       Alcotest.test_case "explicit mode" `Quick test_explicit_mode_is_preserved;
                       Alcotest.test_case "deferrable explicit flush" `Quick test_deferrable_waits_for_explicit_flush;
+                      Alcotest.test_case "preflight holds stale" `Quick test_preflight_holds_stale_intent_before_send;
                       Alcotest.test_case "rebind retries" `Quick test_rebind_errors_requeue_exact_request;
                       Alcotest.test_case "auth denial held" `Quick test_auth_denied_is_held_until_repair;
                       Alcotest.test_case "batch budget" `Quick test_dispatch_batch_has_maintenance_budget;
