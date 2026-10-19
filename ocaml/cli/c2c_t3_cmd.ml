@@ -253,6 +253,16 @@ let send_term =
 
 let recovery_config_path () = config_dir () // "config.json"
 
+let private_connector_dir path =
+  (try
+     match Unix.lstat path with
+     | st when st.Unix.st_kind = Unix.S_DIR && st.Unix.st_uid = Unix.geteuid ()
+                && st.Unix.st_perm land 0o077 = 0 -> Ok ()
+     | _ -> Error (path ^ " is not a private directory owned by this user")
+   with Unix.Unix_error (Unix.ENOENT, _, _) ->
+     (try C2c_io.mkdir_p ~mode:0o700 path; Ok () with exn -> Error (Printexc.to_string exn))
+      | exn -> Error (Printexc.to_string exn))
+
 let recovery_enabled () =
   match getenv_nonempty "C2C_T3_RECOVERY" with
   | Some ("0" | "false" | "off") -> false
@@ -272,7 +282,11 @@ let set_recovery_cmd enabled json =
       with exn -> print_error ("refusing to overwrite malformed T3 config: " ^ Printexc.to_string exn); exit 1
   in
   let fields = match existing with `Assoc fields -> fields | _ -> print_error "refusing to overwrite non-object T3 config"; exit 1 in
-  (try C2c_io.mkdir_p ~mode:0o700 (config_dir ()) with exn -> print_error (Printexc.to_string exn); exit 1);
+  (match private_connector_dir (config_dir ()) with Ok () -> () | Error error -> print_error error; exit 1);
+  (if Sys.file_exists path then
+     match (try Some (Unix.lstat path) with _ -> None) with
+     | Some st when st.Unix.st_kind = Unix.S_REG && st.Unix.st_uid = Unix.geteuid () && st.Unix.st_perm land 0o077 = 0 -> ()
+     | _ -> print_error "refusing to replace a non-private T3 connector config"; exit 1);
   match C2c_io.write_file_atomic ~perm:0o600 path
           (Yojson.Safe.to_string (`Assoc (List.remove_assoc "recoveryEnabled" fields @ [ ("recoveryEnabled", `Bool enabled) ])) ^ "\n") with
   | Error error -> print_error error; 1
