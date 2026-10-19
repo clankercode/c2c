@@ -31,12 +31,16 @@ type open_error =
   | Already_running
   | Unsafe of string
   | Corrupt of string
+  | Migration_required of string
+  | Environment_mismatch of string
   | Io of string
 
 let open_error_to_string = function
   | Already_running -> "T3 state is held by another live process"
   | Unsafe m -> "unsafe T3 state: " ^ m
   | Corrupt m -> "corrupt T3 state: " ^ m
+  | Migration_required m -> "T3 state migration required: " ^ m
+  | Environment_mismatch m -> "T3 state environment mismatch: " ^ m
   | Io m -> "T3 state I/O error: " ^ m
 
 let default_max_journal = 1024
@@ -47,6 +51,9 @@ let default_max_acked = 4096
 type t = {
   dir : string;
   path : string;
+  environment_id : string;
+  fsync : string -> unit;
+  migrate_legacy : bool;
   clock : unit -> float;
   max_journal : int;
   max_payload_bytes : int;
@@ -58,6 +65,7 @@ type t = {
   mutable acked : acked_entry list; (* oldest first *)
   mutable dispatch_at : float option;
   mutable next_seq : int;
+  mutable needs_migration_write : bool;
 }
 
 (* POSIX lockf locks are per-process: a second [lockf] on the same file from
@@ -67,6 +75,7 @@ let held_dirs : (string, unit) Hashtbl.t = Hashtbl.create 4
 
 let dir t = t.dir
 let state_path t = t.path
+let environment_id t = t.environment_id
 
 let alias_of_thread_id thread_id =
   let hex = Digestif.SHA256.(to_hex (digest_string thread_id)) in
@@ -142,7 +151,8 @@ let entry_to_json e =
 
 let to_json t =
   `Assoc
-    [ ("version", `Int 1);
+    [ ("version", `Int 2);
+      ("environment_id", `String t.environment_id);
       ("next_seq", `Int t.next_seq);
       ("mappings", `List (List.map mapping_to_json t.maps));
       ("journal", `List (List.map entry_to_json t.journal));
@@ -160,6 +170,8 @@ let to_json t =
       ("dispatch_at", match t.dispatch_at with None -> `Null | Some at -> `Float at) ]
 
 exception Bad of string
+exception Needs_migration of string
+exception Environment_mismatch_exn of string
 
 let bad fmt = Printf.ksprintf (fun s -> raise (Bad s)) fmt
 
@@ -209,7 +221,19 @@ let load_into t =
     | j -> (
       try
         (match member "version" j with
-         | `Int 1 -> ()
+         | `Int 2 ->
+             let persisted = to_str "environment_id" (member "environment_id" j) in
+             if persisted <> t.environment_id then
+               raise
+                 (Environment_mismatch_exn
+                    (Printf.sprintf "state belongs to %S, requested %S" persisted
+                       t.environment_id))
+         | `Int 1 when t.migrate_legacy -> t.needs_migration_write <- true
+         | `Int 1 ->
+             raise
+               (Needs_migration
+                  "state.json predates environment binding; run the explicit migration path"
+               )
          | _ -> bad "unsupported or missing version");
         t.maps <- List.map mapping_of_json (to_list "mappings" (member "mappings" j));
         t.journal <- List.map entry_of_json (to_list "journal" (member "journal" j));
@@ -228,11 +252,42 @@ let load_into t =
         let max_seq = List.fold_left (fun m e -> max m e.seq) 0 t.journal in
         t.next_seq <- max (to_int "next_seq" (member "next_seq" j)) (max_seq + 1);
         Ok ()
-      with Bad m -> Error (Corrupt m)))
+      with
+      | Bad m -> Error (Corrupt m)
+      | Needs_migration m -> Error (Migration_required m)
+      | Environment_mismatch_exn m -> Error (Environment_mismatch m)))
 
 (* ---- persistence ---- *)
 
 let rec drop n l = if n <= 0 then l else match l with [] -> [] | _ :: r -> drop (n - 1) r
+
+(* [durable_write] writes and fsyncs the temporary file before rename, then
+   fsyncs the containing directory. This is deliberately local to T3 state:
+   a journal append or ACK must never be reported successful until both the
+   bytes and the directory entry have reached the filesystem's durability
+   boundary. The [fsync] callback is injectable so failure paths are tested
+   without depending on a particular filesystem or power-loss behavior. *)
+let durable_write t content =
+  let tmp = t.path ^ ".tmp" in
+  let cleanup () = try Unix.unlink tmp with _ -> () in
+  match
+    open_out_gen [ Open_wronly; Open_creat; Open_trunc; Open_binary ] 0o600 tmp
+  with
+  | exception e -> Error (Printexc.to_string e)
+  | oc ->
+      (try
+         output_string oc content;
+         flush oc;
+         t.fsync tmp;
+         close_out oc;
+         Unix.chmod tmp 0o600;
+         Unix.rename tmp t.path;
+         t.fsync t.dir;
+         Ok ()
+       with e ->
+         (try close_out_noerr oc with _ -> ());
+         cleanup ();
+         Error (Printexc.to_string e))
 
 (* Apply [f] to a copy of the state's mutable fields, persist, and only then
    commit. A failed write leaves [t] untouched. *)
@@ -244,7 +299,7 @@ let transact t f =
     t.maps <- m; t.journal <- j; t.acked <- a; t.dispatch_at <- d; t.next_seq <- n;
     e
   | Ok v -> (
-    match C2c_io.write_file_atomic ~perm:0o600 t.path (Yojson.Safe.to_string (to_json t) ^ "\n") with
+    match durable_write t (Yojson.Safe.to_string (to_json t) ^ "\n") with
     | Ok () -> Ok v
     | Error msg ->
       let m, j, a, d, n = saved in
@@ -263,7 +318,12 @@ let close t =
 
 let open_state ?(clock = Unix.gettimeofday) ?(max_journal = default_max_journal)
     ?(max_payload_bytes = default_max_payload_bytes)
-    ?(max_tombstones = default_max_tombstones) ?(max_acked = default_max_acked) ~dir () =
+    ?(max_tombstones = default_max_tombstones) ?(max_acked = default_max_acked)
+    ?(fsync = fun path ->
+      let fd = Unix.openfile path [Unix.O_RDONLY] 0 in
+      Fun.protect ~finally:(fun () -> try Unix.close fd with _ -> ()) (fun () ->
+        Unix.fsync fd))
+    ?(migrate_legacy = false) ~environment_id ~dir () =
   let ( let* ) = Result.bind in
   let dir = if Filename.is_relative dir then Filename.concat (Sys.getcwd ()) dir else dir in
   let* () =
@@ -292,18 +352,34 @@ let open_state ?(clock = Unix.gettimeofday) ?(max_journal = default_max_journal)
       fail (Unsafe (C2c_singleton_lock.lockfile_path ~path:lock_base ^ " is not owned by the current user"))
     | _ -> (
       (try Unix.fchmod lock_fd 0o600 with _ -> ());
+      if String.trim environment_id = "" then
+        fail (Unsafe "environment_id must be non-empty")
+      else
       let t =
-        { dir; path = Filename.concat dir "state.json"; clock; max_journal;
+        { dir; path = Filename.concat dir "state.json"; environment_id; fsync;
+          migrate_legacy; clock; max_journal;
           max_payload_bytes; max_tombstones; max_acked; lock = Some lock_fd;
-          maps = []; journal = []; acked = []; dispatch_at = None; next_seq = 1 }
+          maps = []; journal = []; acked = []; dispatch_at = None; next_seq = 1;
+          needs_migration_write = false }
       in
       match check_private_file t.path with
       | Error e -> fail e
-      | Ok false -> Hashtbl.replace held_dirs dir (); Ok t
+      | Ok false ->
+          (match durable_write t (Yojson.Safe.to_string (to_json t) ^ "\n") with
+           | Error msg -> fail (Io ("T3 state initialization write failed: " ^ msg))
+           | Ok () -> Hashtbl.replace held_dirs dir (); Ok t)
       | Ok true -> (
         match load_into t with
         | Error e -> fail e
-        | Ok () -> Hashtbl.replace held_dirs dir (); Ok t))
+        | Ok () ->
+            if t.needs_migration_write then
+              match durable_write t (Yojson.Safe.to_string (to_json t) ^ "\n") with
+              | Error msg -> fail (Io ("T3 state migration write failed: " ^ msg))
+              | Ok () ->
+                  t.needs_migration_write <- false;
+                  Hashtbl.replace held_dirs dir ();
+                  Ok t
+            else (Hashtbl.replace held_dirs dir (); Ok t)))
 
 (* ---- mapping ---- *)
 

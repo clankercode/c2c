@@ -15,8 +15,12 @@ let with_dir f =
   let dir = fresh_dir () in
   Fun.protect ~finally:(fun () -> rm_rf dir) (fun () -> f dir)
 
-let open_ok ?max_journal ?max_payload_bytes ?max_tombstones ?max_acked dir =
-  match S.open_state ?max_journal ?max_payload_bytes ?max_tombstones ?max_acked ~dir () with
+let open_ok ?max_journal ?max_payload_bytes ?max_tombstones ?max_acked ?fsync
+    ?migrate_legacy ?(environment_id = "test-home") dir =
+  match
+    S.open_state ?max_journal ?max_payload_bytes ?max_tombstones ?max_acked
+      ?fsync ?migrate_legacy ~environment_id ~dir ()
+  with
   | Ok t -> t
   | Error e -> Alcotest.failf "open_state: %s" (S.open_error_to_string e)
 
@@ -69,7 +73,7 @@ let test_tombstone_bounded () =
     let tick = ref 0. in
     let clock () = tick := !tick +. 1.; !tick in
     let t =
-      match S.open_state ~clock ~max_tombstones:2 ~dir () with
+      match S.open_state ~clock ~max_tombstones:2 ~environment_id:"test-home" ~dir () with
       | Ok t -> t
       | Error e -> Alcotest.failf "%s" (S.open_error_to_string e)
     in
@@ -154,7 +158,7 @@ let test_unsafe_dir () =
     Unix.mkdir dir 0o755;
     Unix.chmod dir 0o755;
     Alcotest.(check bool) "open dir refused" true
-      (match S.open_state ~dir () with Error (S.Unsafe _) -> true | _ -> false))
+      (match S.open_state ~environment_id:"test-home" ~dir () with Error (S.Unsafe _) -> true | _ -> false))
 
 let test_unsafe_file () =
   with_dir (fun dir ->
@@ -164,13 +168,13 @@ let test_unsafe_file () =
     S.close t;
     Unix.chmod path 0o644;
     Alcotest.(check bool) "group/world-readable refused" true
-      (match S.open_state ~dir () with Error (S.Unsafe _) -> true | _ -> false);
+      (match S.open_state ~environment_id:"test-home" ~dir () with Error (S.Unsafe _) -> true | _ -> false);
     Unix.chmod path 0o600;
     let target = Filename.concat dir "elsewhere" in
     Unix.rename path target;
     Unix.symlink target path;
     Alcotest.(check bool) "symlink refused" true
-      (match S.open_state ~dir () with Error (S.Unsafe _) -> true | _ -> false);
+      (match S.open_state ~environment_id:"test-home" ~dir () with Error (S.Unsafe _) -> true | _ -> false);
     (* A refused open must have released the lock. *)
     Unix.unlink path;
     Unix.rename target path;
@@ -187,14 +191,90 @@ let test_corrupt_not_overwritten () =
     close_out oc;
     Unix.chmod path 0o600;
     Alcotest.(check bool) "corrupt reported" true
-      (match S.open_state ~dir () with Error (S.Corrupt _) -> true | _ -> false);
+      (match S.open_state ~environment_id:"test-home" ~dir () with Error (S.Corrupt _) -> true | _ -> false);
     Alcotest.(check string) "left untouched" "{not json" (C2c_io.read_file path))
+
+let test_environment_identity_fenced () =
+  with_dir (fun dir ->
+    let t = open_ok ~environment_id:"home-a" dir in
+    ignore (ok_or_fail (S.ensure_mapping t ~thread_id:"thr-1"));
+    S.close t;
+    Alcotest.(check bool) "different T3 home refused" true
+      (match S.open_state ~environment_id:"home-b" ~dir () with
+       | Error (S.Environment_mismatch _) -> true
+       | _ -> false);
+    let t = open_ok ~environment_id:"home-a" dir in
+    Alcotest.(check string) "identity roundtrip" "home-a" (S.environment_id t);
+    S.close t)
+
+let test_legacy_state_requires_explicit_migration () =
+  with_dir (fun dir ->
+    let t = open_ok ~environment_id:"old-home" dir in
+    ignore (ok_or_fail (S.ensure_mapping t ~thread_id:"thr-1"));
+    let path = S.state_path t in
+    S.close t;
+    let legacy =
+      match Yojson.Safe.from_string (C2c_io.read_file path) with
+      | `Assoc fields ->
+          `Assoc
+            (List.filter_map
+               (fun (key, value) ->
+                 if key = "environment_id" then None
+                 else if key = "version" then Some (key, `Int 1)
+                 else Some (key, value))
+               fields)
+      | _ -> Alcotest.fail "state JSON is not an object"
+    in
+    C2c_io.write_file path (Yojson.Safe.to_string legacy ^ "\n");
+    Unix.chmod path 0o600;
+    Alcotest.(check bool) "legacy state held" true
+      (match S.open_state ~environment_id:"new-home" ~dir () with
+       | Error (S.Migration_required _) -> true
+       | _ -> false);
+    let t =
+      match S.open_state ~migrate_legacy:true ~environment_id:"new-home" ~dir () with
+      | Ok state -> state
+      | Error error -> Alcotest.failf "explicit migration failed: %s" (S.open_error_to_string error)
+    in
+    Alcotest.(check string) "migrated identity" "new-home" (S.environment_id t);
+    S.close t;
+    (match Yojson.Safe.from_string (C2c_io.read_file path) with
+     | `Assoc fields ->
+         Alcotest.(check (option string)) "persisted identity" (Some "new-home")
+           (match List.assoc_opt "environment_id" fields with Some (`String value) -> Some value | _ -> None);
+         Alcotest.(check int) "version upgraded" 2
+           (match List.assoc_opt "version" fields with Some (`Int version) -> version | _ -> -1)
+     | _ -> Alcotest.fail "migrated state JSON is not an object"))
+
+let test_fsync_failure_does_not_commit_memory () =
+  with_dir (fun dir ->
+    let fail = ref true in
+    let calls = ref [] in
+    let fsync path =
+      calls := path :: !calls;
+      if !fail then failwith "injected fsync failure"
+    in
+    fail := false;
+    let t = open_ok ~fsync dir in
+    fail := true;
+    Alcotest.(check bool) "write fails before ACK" true
+      (is_error (S.ensure_mapping t ~thread_id:"thr-1"));
+    Alcotest.(check bool) "memory rolled back" true
+      (S.find_by_thread t ~thread_id:"thr-1" = None);
+    Alcotest.(check bool) "temp path was synchronized" true
+      (List.exists (fun path -> Filename.check_suffix path ".tmp") !calls);
+    Alcotest.(check bool) "identity state remains" true (Sys.file_exists (S.state_path t));
+    fail := false;
+    ignore (ok_or_fail (S.ensure_mapping t ~thread_id:"thr-1"));
+    Alcotest.(check bool) "directory was synchronized" true
+      (List.exists (fun path -> path = dir) !calls);
+    S.close t)
 
 let test_singleton_in_process () =
   with_dir (fun dir ->
     let t = open_ok dir in
     Alcotest.(check bool) "second open refused" true
-      (match S.open_state ~dir () with Error S.Already_running -> true | _ -> false);
+      (match S.open_state ~environment_id:"test-home" ~dir () with Error S.Already_running -> true | _ -> false);
     S.close t;
     S.close t;
     S.close (open_ok dir))
@@ -205,7 +285,7 @@ let test_singleton_cross_process () =
     (match Unix.fork () with
      | 0 ->
        let code =
-         match S.open_state ~dir () with
+         match S.open_state ~environment_id:"test-home" ~dir () with
          | Error S.Already_running -> 0
          | _ -> 1
        in
@@ -216,7 +296,7 @@ let test_singleton_cross_process () =
     S.close t;
     (match Unix.fork () with
      | 0 ->
-       let code = match S.open_state ~dir () with Ok _ -> 0 | Error _ -> 1 in
+       let code = match S.open_state ~environment_id:"test-home" ~dir () with Ok _ -> 0 | Error _ -> 1 in
        Unix._exit code
      | pid ->
        let _, status = Unix.waitpid [] pid in
@@ -236,7 +316,10 @@ let () =
         [ Alcotest.test_case "file mode" `Quick test_file_mode;
           Alcotest.test_case "unsafe dir" `Quick test_unsafe_dir;
           Alcotest.test_case "unsafe file" `Quick test_unsafe_file;
-          Alcotest.test_case "corrupt kept" `Quick test_corrupt_not_overwritten ] );
+          Alcotest.test_case "corrupt kept" `Quick test_corrupt_not_overwritten;
+          Alcotest.test_case "environment identity" `Quick test_environment_identity_fenced;
+          Alcotest.test_case "legacy migration" `Quick test_legacy_state_requires_explicit_migration;
+          Alcotest.test_case "fsync failure" `Quick test_fsync_failure_does_not_commit_memory ] );
       ( "singleton",
         [ Alcotest.test_case "in process" `Quick test_singleton_in_process;
           Alcotest.test_case "cross process" `Quick test_singleton_cross_process ] ) ]

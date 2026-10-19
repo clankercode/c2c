@@ -11,10 +11,11 @@
     - a bounded ring of acknowledged keys so a re-delivered T3 event is
       deduplicated rather than delivered twice.
 
-    All writes go through {!C2c_io.write_file_atomic} with [~perm:0o600]. A
-    failed write leaves the in-memory state unchanged. Nothing is ever dropped
-    silently: a full journal rejects the append with an error instead of
-    evicting unacknowledged entries. *)
+    All writes fsync a private temporary file before rename and then fsync the
+    containing directory. A failed write leaves the in-memory state unchanged
+    (the post-rename directory-fsync failure boundary is reported as an
+    uncertain write). Nothing is ever dropped silently: a full journal rejects
+    the append with an error instead of evicting unacknowledged entries. *)
 
 type t
 
@@ -22,6 +23,8 @@ type open_error =
   | Already_running  (** another live owner holds the singleton lock *)
   | Unsafe of string (** ownership / mode / symlink check failed; nothing was changed *)
   | Corrupt of string (** [state.json] exists but cannot be parsed; not overwritten *)
+  | Migration_required of string (** legacy state is held until explicitly migrated *)
+  | Environment_mismatch of string (** state belongs to a different T3 home *)
   | Io of string
 
 val open_error_to_string : open_error -> string
@@ -37,19 +40,29 @@ val open_state :
   ?max_payload_bytes:int ->
   ?max_tombstones:int ->
   ?max_acked:int ->
+  ?fsync:(string -> unit) ->
+  ?migrate_legacy:bool ->
+  environment_id:string ->
   dir:string ->
   unit ->
   (t, open_error) result
 (** Create (0700) or validate [dir], take the singleton lock, then load
-    [state.json]. The lock is held until {!close} or process exit. A second
-    [open_state] on the same [dir], in this process or another, returns
-    [Already_running]. *)
+    [state.json]. [environment_id] is persisted and must match every reopen;
+    callers must derive it from the T3 home identity, never from mutable
+    thread data. A version-1 state without an identity returns
+    [Migration_required] unless the caller explicitly passes
+    [~migrate_legacy:true], which rewrites it under the supplied identity.
+    The [fsync] callback is an optional test seam and receives the path being
+    synchronized (the temporary file before rename, then the state directory).
+    The lock is held until {!close} or process exit. A second [open_state] on
+    the same [dir], in this process or another, returns [Already_running]. *)
 
 val close : t -> unit
 (** Release the singleton lock. Idempotent. The handle must not be used after. *)
 
 val dir : t -> string
 val state_path : t -> string
+val environment_id : t -> string
 
 (** {1 Alias mapping} *)
 
