@@ -93,6 +93,7 @@ let command_tier_map () : (string * safety) list =
   ; "agent", Tier2
   ; "roles-validate", Tier2
   ; "config", Tier2
+  ; "t3", Tier2
   ; "config-show", Tier2
   ; "init", Tier2
   ; "repo", Tier2

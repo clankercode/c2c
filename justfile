@@ -534,6 +534,7 @@ install-cli:
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
       scripts/c2c-install-guard.sh; \
+      scripts/c2c-install-receipt-guard.sh; \
       rm -f ~/.local/bin/c2c; \
       cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c; \
       scripts/c2c-install-stamp.sh; \
@@ -546,6 +547,7 @@ install-mcp:
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
       scripts/c2c-install-guard.sh; \
+      scripts/c2c-install-receipt-guard.sh; \
       rm -f ~/.local/bin/c2c-mcp-server; \
       cp _build/default/ocaml/server/c2c_mcp_server.exe ~/.local/bin/c2c-mcp-server; \
       scripts/c2c-install-stamp.sh; \
@@ -558,6 +560,7 @@ install-hook:
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
       scripts/c2c-install-guard.sh; \
+      scripts/c2c-install-receipt-guard.sh; \
       rm -f ~/.local/bin/c2c-inbox-hook-ocaml; \
       cp _build/default/ocaml/tools/c2c_inbox_hook.exe ~/.local/bin/c2c-inbox-hook-ocaml; \
       cp _build/default/ocaml/tools/c2c_stop_hook.exe ~/.local/bin/c2c-stop-hook-ocaml; \
@@ -576,6 +579,7 @@ install-all: codegen-role-designer codegen-opencode-plugin codegen-hermes-plugin
     flock ~/.local/bin/.c2c-install.lock bash -c '\
       set -euo pipefail; \
       scripts/c2c-install-guard.sh; \
+      scripts/c2c-install-receipt-guard.sh; \
       scripts/c2c-install-live-holders.sh; \
       rm -f ~/.local/bin/c2c ~/.local/bin/c2c-mcp-server ~/.local/bin/c2c-mcp-inner ~/.local/bin/c2c-inbox-hook-ocaml ~/.local/bin/c2c-stop-hook-ocaml ~/.local/bin/c2c-cold-boot-hook ~/.local/bin/c2c-post-compact-hook ~/.local/bin/cc-quota ~/.local/bin/c2c-deliver-inbox; \
       cp _build/default/ocaml/cli/c2c.exe ~/.local/bin/c2c; \

@@ -71,6 +71,7 @@ let all_cmds =
   ; C2c_codex_cmd.resume_cmd
   ; C2c_agent.agent_group
   ; C2c_config_cmd.config_group
+  ; C2c_t3_cmd.t3_group
   ; C2c_agent.roles_group
   ; C2c_gui_cmd.gui
   ; C2c_managed_cmd.stop

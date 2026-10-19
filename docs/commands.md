@@ -794,6 +794,31 @@ Commands are grouped by **tier** — Tier 1 = routine, Tier 2 = lifecycle/setup,
 
 All `install`/`uninstall` commands support `--dry-run` (preview) and `--json` (machine-readable output). `uninstall` also accepts `--target-dir DIR` for project-scoped clients and `--alias A` to locate the wake schedule when the install manifest is missing.
 
+### T3 Code connector (Tier 2)
+
+The native connector talks to an unmodified local T3 service through its
+authenticated external MCP API. It stores its own credential under
+`~/.c2c/t3/` (or `C2C_T3_CONFIG_DIR`) and durable routing state under
+`~/.local/state/c2c/t3/` (or `C2C_T3_STATE_DIR`). It never edits T3's database
+or provider credentials. Pair once, then run one service for each T3 home:
+
+| Subcommand | Description |
+|------------|-------------|
+| `t3 pair [--pairing-code CODE] [--replace]` | Pair with the local T3 runtime using the exact `orchestration:read` and `orchestration:operate` scopes. If no code is supplied, the command creates a short-lived code with `C2C_T3_BIN`/`t3` and prompts for it. |
+| `t3 list [--json]` | Enumerate every project and open root thread, showing its stable opaque `t3-…` alias. Incomplete scans never retire aliases. |
+| `t3 status [--json]` | Show redacted runtime, credential, state, and unit readiness. |
+| `t3 send [--mode auto\|queue\|steer\|restart] ALIAS MESSAGE` | Send an operator-mode message to a locally enrolled root. `auto` is the default; `t3.<thread-id>` is accepted as a local convenience locator. |
+| `t3 service` | Run one serialized foreground connector. It refreshes root aliases, accepts c2c mail durably, dispatches one message at a time with a one-second submission cap, and performs the model-availability `Continue` monitor every 60 seconds. Use `--once` for a fixture/operator sweep. |
+| `t3 service install [--dry-run]` | Write and enable the owned `c2c-t3.service` user-systemd unit with absolute c2c/T3/config/state paths. A missing user manager is reported with the foreground command. |
+| `t3 service doctor [--json]` | Read-only, redacted readiness report. It reports unpaired, stale runtime, inactive supervision, malformed state, and recovery configuration without creating or rewriting state. |
+| `t3 service repair [--dry-run] [--json]` | Create only missing private connector directories. It preserves credentials, queued mail, tombstones, and live locks; use a normal service install to repair a missing unit. |
+| `t3 service stop [--dry-run]` / `uninstall [--dry-run]` | Stop/disable or remove only the connector-owned unit. State and queued mail remain on disk. |
+
+Set `C2C_T3_RECOVERY=0` or pass `--recovery=false` to hold new model-availability
+recovery intents while preserving them for later inspection. The recovery
+monitor is fail-closed on incomplete activity, child/non-Codex evidence, queued
+work, snooze/stop/approval/settled states, and permission ceilings.
+
 ### Messaging
 
 | Subcommand | Description |
