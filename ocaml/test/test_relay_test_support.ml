@@ -382,6 +382,7 @@ let make_connector ~relay_url ~broker_root : C2c_relay_connector.t =
     owner_mismatch_strikes = [];
     alert_state = C2c_relay_alert.initial_state;
     last_pass_s = 0.0;
+    peer_visibility_capability = `Unknown;
   }
 
 (* [sync] eagerly performs its own inner Lwt_main.run HTTP calls while the
