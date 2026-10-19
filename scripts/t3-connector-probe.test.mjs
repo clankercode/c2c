@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { assertScopes, assertToken, isExclusiveUserGroup, parseRpc, ProbeClient, runtimeState, writePrivate } from './t3-connector-probe.mjs';
+import { assertScopes, assertToken, isExclusiveUserGroup, parseRpc, ProbeClient, runtimeState, withStateLock, writePrivate } from './t3-connector-probe.mjs';
 
 test('MCP decoder selects the exact response, including SSE notifications', () => {
   const body = [
@@ -61,6 +61,25 @@ test('credential publication never replaces an existing credential', async (t) =
   assert.deepEqual(JSON.parse(fs.readFileSync(filename, 'utf8')), { value: 1 });
   assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
   assert.deepEqual(fs.readdirSync(directory), ['auth.json']);
+});
+
+test('fixture lock rejects a concurrent launch and releases after completion', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'c2c-probe-lock-'));
+  t.after(() => fs.rmSync(directory, { recursive: true }));
+  const filename = path.join(directory, 'fixture.lock');
+  let release;
+  let launches = 0;
+  const first = withStateLock(filename, async () => {
+    launches++;
+    await new Promise((resolve) => { release = resolve; });
+  });
+  await assert.rejects(withStateLock(filename, () => { launches++; }), { code: 'EEXIST' });
+  assert.equal(launches, 1);
+  release();
+  await first;
+  await withStateLock(filename, () => { launches++; });
+  assert.equal(launches, 2);
+  assert.equal(fs.existsSync(filename), false);
 });
 
 test('runtime validation checks PID incarnation and listener ownership', async (t) => {

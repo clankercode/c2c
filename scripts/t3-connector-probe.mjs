@@ -126,7 +126,23 @@ export function writePrivate(filename, value, replace = true) {
   }
 }
 
-function readPrivate(filename) {
+export async function withStateLock(filename, run) {
+  ensurePrivateDirectory(path.dirname(filename));
+  const fd = fs.openSync(filename, 'wx', 0o600);
+  const owned = fs.fstatSync(fd);
+  try {
+    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
+    fs.fsyncSync(fd);
+    return await run();
+  } finally {
+    // A crash leaves an inspectable lock; never steal it by PID alone.
+    const current = fs.existsSync(filename) ? fs.lstatSync(filename) : null;
+    if (current?.dev === owned.dev && current?.ino === owned.ino) fs.unlinkSync(filename);
+    fs.closeSync(fd);
+  }
+}
+
+export function readPrivate(filename) {
   const stat = fs.lstatSync(filename);
   if (!stat.isFile() || stat.uid !== process.getuid() || (stat.mode & 0o077) || stat.size > MAX_RESPONSE) {
     throw new Error('Probe state file must be owned by this user and mode 0600');
@@ -397,7 +413,13 @@ export async function main(argv = process.argv.slice(2)) {
   const runtime = runtimeState(options['t3-home']);
   const authPath = path.join(options['state-dir'], 'auth.json');
   if (command === 'pair') return pair(options, runtime, authPath);
-  const auth = readPrivate(authPath);
+  const { client } = authorizedProbe(options);
+  return inspect(client, runtime, path.join(options['state-dir'], 'inspection.json'));
+}
+
+export function authorizedProbe(options) {
+  const runtime = runtimeState(options['t3-home']);
+  const auth = readPrivate(path.join(options['state-dir'], 'auth.json'));
   if (auth.origin !== runtime.origin || auth.t3Home !== fs.realpathSync(options['t3-home'])) {
     throw new Error('Runtime endpoint/home changed; refusing to send the stored credential');
   }
@@ -405,8 +427,7 @@ export async function main(argv = process.argv.slice(2)) {
   assert.deepEqual(runtime.proof, auth.runtimeProof, 'credential-bound runtime incarnation/listener');
   const validateRuntime = () => assert.deepEqual(runtimeState(options['t3-home']).proof,
     auth.runtimeProof, 'unchanged credential-bound runtime incarnation/listener');
-  return inspect(new ProbeClient(runtime.origin, auth.token, validateRuntime), runtime,
-    path.join(options['state-dir'], 'inspection.json'));
+  return { client: new ProbeClient(runtime.origin, auth.token, validateRuntime), runtime };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
