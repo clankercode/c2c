@@ -150,7 +150,8 @@ let unit_is_enabled ?(query = query_systemctl_default) () =
 
 let unit_main_pid ?(query = query_systemctl_default) () =
   match query [ "--user"; "show"; "-p"; "MainPID"; "--value"; unit_name ] with
-  | Some value -> int_of_string_opt (String.trim value)
+  | Some value ->
+      (match int_of_string_opt (String.trim value) with Some pid when pid > 0 -> Some pid | _ -> None)
   | None -> None
 
 type install_result = Installed of string | Skipped of string | Failed of string

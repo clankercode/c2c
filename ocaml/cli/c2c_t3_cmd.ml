@@ -110,8 +110,17 @@ let state_snapshot () =
       try
         match Yojson.Safe.from_file path with
         | `Assoc fields ->
-            let length key = match List.assoc_opt key fields with Some (`List values) -> List.length values | _ -> 0 in
-            `Assoc [ ("available", `Bool true); ("initialized", `Bool true); ("pending", `Int (length "journal")); ("mappings", `Int (length "mappings")); ("acked", `Int (length "acked")) ]
+            let list key = match List.assoc_opt key fields with Some (`List values) -> values | _ -> [] in
+            let journal = list "journal" in
+            let length key = List.length (list key) in
+            let oldest_at =
+              List.filter_map (fun entry -> match entry with `Assoc values -> (match List.assoc_opt "at" values with Some (`Float at) -> Some at | Some (`Int at) -> Some (float_of_int at) | _ -> None) | _ -> None) journal
+              |> List.sort Float.compare |> function [] -> None | value :: _ -> Some value
+            in
+            let uncertain =
+              List.fold_left (fun count entry -> match entry with `Assoc values -> (match List.assoc_opt "payload" values with Some (`Assoc payload) when List.assoc_opt "status" payload = Some (`String "uncertain") -> count + 1 | _ -> count) | _ -> count) 0 journal
+            in
+            `Assoc [ ("available", `Bool true); ("initialized", `Bool true); ("pending", `Int (length "journal")); ("mappings", `Int (length "mappings")); ("acked", `Int (length "acked")); ("uncertainEntries", `Int uncertain); ("queueAgeSeconds", match oldest_at with Some at -> `Float (max 0. (now () -. at)) | None -> `Null); ("scanAgeSeconds", `Null) ]
         | _ -> `Assoc [ ("available", `Bool false); ("reason", `String "state.json is not an object") ]
       with _ -> `Assoc [ ("available", `Bool false); ("reason", `String "state.json is malformed") ]
 
@@ -210,7 +219,7 @@ let status_cmd json =
     | Error error -> `Assoc [ ("ready", `Bool false); ("error", `String (T3.error_to_string error)) ]
   in
   let state = state_snapshot () in
-  let unit = `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool (C2c_t3_systemd.unit_is_active ())); ("enabled", `Bool (C2c_t3_systemd.unit_is_enabled ())) ] in
+  let unit = `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool (C2c_t3_systemd.unit_is_active ())); ("enabled", `Bool (C2c_t3_systemd.unit_is_enabled ())); ("mainPid", match C2c_t3_systemd.unit_main_pid () with Some pid -> `Int pid | None -> `Null) ] in
   let result = `Assoc [ ("configDir", `String (config_dir ())); ("stateDir", `String (state_dir ())); ("credential", credential); ("runtime", runtime); ("state", state); ("unit", unit) ] in
   if json then print_json result else Printf.printf "T3 connector: %s\n" (if runtime <> `Assoc [] then "see status --json" else "degraded");
   0
@@ -384,7 +393,8 @@ let doctor_cmd json =
   let credential = match T3.load_credential ~config_dir:(config_dir ()) with Ok c -> `Assoc [ ("present", `Bool true); ("generation", `Int (T3.credential_generation c)) ] | Error error -> `Assoc [ ("present", `Bool false); ("error", `String (T3.error_to_string error)) ] in
   let state = state_snapshot () in
   let runtime_ready = match runtime with `Assoc fields -> List.assoc_opt "ready" fields = Some (`Bool true) | _ -> false in
-  let result = `Assoc [ ("healthy", `Bool (runtime_ready && (match credential with `Assoc fields -> List.assoc_opt "present" fields = Some (`Bool true) | _ -> false))); ("runtime", runtime); ("credential", credential); ("state", state); ("recoveryEnabled", `Bool (recovery_enabled ())); ("unit", `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool (C2c_t3_systemd.unit_is_active ())); ("enabled", `Bool (C2c_t3_systemd.unit_is_enabled ())) ]) ] in
+  let credential_present = match credential with `Assoc fields -> List.assoc_opt "present" fields = Some (`Bool true) | _ -> false in
+  let result = `Assoc [ ("healthy", `Bool (runtime_ready && credential_present)); ("runtime", runtime); ("credential", credential); ("permissionCeiling", if credential_present then `String "auto" else `Null); ("state", state); ("recoveryEnabled", `Bool (recovery_enabled ())); ("unit", `Assoc [ ("path", `String (C2c_t3_systemd.unit_path ())); ("active", `Bool (C2c_t3_systemd.unit_is_active ())); ("enabled", `Bool (C2c_t3_systemd.unit_is_enabled ())); ("mainPid", match C2c_t3_systemd.unit_main_pid () with Some pid -> `Int pid | None -> `Null) ]) ] in
   if json then print_json result else begin
     Printf.printf "T3 service doctor\n  runtime: %s\n  credential: %s\n  state: %s\n  recovery: %s\n  unit: %s\n" (if runtime_ready then "ready" else "degraded") (if credential = `Assoc [ ("present", `Bool true) ] then "paired" else "unpaired") (Yojson.Safe.to_string state) (if recovery_enabled () then "enabled" else "disabled") (if C2c_t3_systemd.unit_is_active () then "active" else "inactive")
   end;
