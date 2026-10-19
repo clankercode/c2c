@@ -172,10 +172,28 @@ Both hosts agreed:
 There is no `thread.stop` command. Stop is `orchestration.dispatchCommand`
 with `type: run.interrupt`, `commandId`, `threadId`, and `runId`.
 
-## Remaining proof before closing T001
+## Restart and replay decision
 
-- Replay across MCP reconnect and T3 process restart, including the
-  re-pair hold rule for uncertain sends.
-- Concrete relay publication and retirement compatibility contract.
-- Independent review and latest-source buildbox checks. No `just bi` or
+Measured on both x-p35 and x-tuf after the behavior matrix, by restarting only
+the owned fixture process on its existing loopback port:
+
+- The new PID does not match the credential's runtime proof, so the probe
+  refuses the stored credential. That refusal is the hold.
+- The old bearer token still completes MCP `initialize` at HTTP 200 with
+  protocol `2025-06-18`. Token acceptance is not incarnation proof.
+- Same-generation uncertain sends stay held until that credential is
+  revalidated against the new process. They are not replayed under a new
+  pairing. A dead token would instead require explicit repair.
+- Reconnect without a process change already replayed the same recovery
+  `clientRequestId` and kept one message id and one run id.
+
+`t3_thread_send` remains operator control: it creates agent-attributed user
+work and can steer or start a turn. It is not a c2c DATA path and it cannot
+write an approval verdict.
+
+## Remaining before closing T001
+
+- Independent review of this proof branch, then merge. No `just bi` or
   service installation yet. A real model outage was not reproduced.
+- The relay publication and retirement contract above is the T006 input.
+  It is not a deployed-relay test.

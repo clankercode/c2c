@@ -7,8 +7,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { authorizedProbe, readPrivate, withStateLock, writePrivate } from './t3-connector-probe.mjs';
-import { fixtureStatus, readFixtureState } from './t3-connector-fixture.mjs';
+import { authorizedProbe, readPrivate, runtimeState, withStateLock, writePrivate } from './t3-connector-probe.mjs';
+import { fixtureStatus, readFixtureState, restartFixture } from './t3-connector-fixture.mjs';
 import { connectFixtureOperator } from './t3-fixture-operator.mjs';
 
 const VERSION = 1;
@@ -24,6 +24,20 @@ const hash = (value) => crypto.createHash('sha256').update(value).digest('hex');
 
 export class MatrixError extends Error {}
 function check(value, code) { if (!value) throw new MatrixError(code); }
+
+// A restarted T3 process is a new incarnation even when it keeps the port and
+// still accepts the old bearer token. Uncertain sends stay held until the
+// same credential generation is revalidated. A dead token needs explicit repair;
+// re-pairing is a new dedupe namespace and must not replay those sends.
+export function restartCredentialDecision({ incarnationMatches, tokenAccepted }) {
+  check(typeof incarnationMatches === 'boolean' && typeof tokenAccepted === 'boolean', 'Restart evidence must be boolean');
+  if (incarnationMatches) return { useStoredCredential: true, uncertainSends: 'resume-same-generation' };
+  return {
+    useStoredCredential: false,
+    uncertainSends: 'hold',
+    next: tokenAccepted ? 'revalidate-same-generation' : 'explicit-repair',
+  };
+}
 
 export function parseArguments(args) {
   const options = {};
@@ -516,6 +530,46 @@ export class MatrixRunner {
     this.proof('full-access', { denied: true, code: 'runtime_mode_escalation_denied', noRunCreated: true });
   }
 
+  async restartCase() {
+    const name = 'restart';
+    const record = this.record(name);
+    if (record.result) return;
+    const fixture = readFixtureState(this.options.root, this.options.t3Bin);
+    const before = runtimeState(fixture.t3Home);
+    record.before = { origin: before.origin, pid: before.proof.pid };
+    this.save();
+    if (!record.restarted) {
+      await restartFixture({ root: this.options.root, t3Bin: this.options.t3Bin });
+      record.restarted = true;
+      this.save();
+    }
+    const after = runtimeState(fixture.t3Home);
+    check(after.proof.pid !== record.before.pid && after.origin === record.before.origin, 'Restart did not keep the owned endpoint on a new process');
+    let incarnationMatches = true;
+    try { authorizedProbe({ 'state-dir': this.options.stateDir, 't3-home': fixture.t3Home }); }
+    catch (error) {
+      incarnationMatches = false;
+      check(String(error?.message ?? '').includes('credential-bound runtime incarnation/listener'), 'Restart refusal was not the incarnation hold');
+    }
+    check(!incarnationMatches, 'Stored credential remained bound after the process changed');
+    const auth = readPrivate(path.join(this.options.stateDir, 'auth.json'));
+    const response = await fetch(`${after.origin}/mcp`, {
+      method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
+      headers: {
+        authorization: `Bearer ${auth.token}`, 'content-type': 'application/json',
+        accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2025-06-18',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+        protocolVersion: '2025-06-18', capabilities: {},
+        clientInfo: { name: 'c2c-t3-compatibility-probe', version: '1' },
+      } }),
+    });
+    const tokenAccepted = response.ok;
+    await response.body?.cancel();
+    this.proof(name, { pidChanged: true, originStable: true, incarnationMatches, tokenAccepted,
+      decision: restartCredentialDecision({ incarnationMatches, tokenAccepted }) });
+  }
+
   async run() {
     try {
       await this.errorCase('availability', { recover: true });
@@ -528,6 +582,7 @@ export class MatrixRunner {
       await this.interruptWhileActive();
       await this.retryCase('update', false);
       await this.fullAccessCase();
+      await this.restartCase();
       check(Object.values(this.state.cases).every((record) => record.result), 'Matrix has unfinished cases');
       this.state.completedAt = new Date(this.now()).toISOString(); this.save();
       return { version: VERSION, serverVersion: this.state.serverVersion, root: this.options.root,

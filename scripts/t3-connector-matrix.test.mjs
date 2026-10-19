@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   MatrixRunner, availabilityText, parseArguments, parseProviderLog,
-  recoveryObservation, summarizeSnapshot,
+  recoveryObservation, restartCredentialDecision, summarizeSnapshot,
 } from './t3-connector-matrix.mjs';
 
 // Pure fixtures and injected MCP/clock seams only. These tests never start T3,
@@ -192,4 +192,14 @@ test('live waits and persisted rate boundaries are bounded using an injected clo
   assert.equal(harness.now(), 12_500);
   harness.state.lastSubmissionAt = harness.now() + 60_000;
   await assert.rejects(harness.instance.pace(), /clock moved backwards/);
+});
+
+test('restart holds uncertain sends until the same credential generation is revalidated', () => {
+  assert.deepEqual(restartCredentialDecision({ incarnationMatches: true, tokenAccepted: true }),
+    { useStoredCredential: true, uncertainSends: 'resume-same-generation' });
+  assert.deepEqual(restartCredentialDecision({ incarnationMatches: false, tokenAccepted: true }),
+    { useStoredCredential: false, uncertainSends: 'hold', next: 'revalidate-same-generation' });
+  assert.deepEqual(restartCredentialDecision({ incarnationMatches: false, tokenAccepted: false }),
+    { useStoredCredential: false, uncertainSends: 'hold', next: 'explicit-repair' });
+  assert.throws(() => restartCredentialDecision({ incarnationMatches: false, tokenAccepted: 'yes' }));
 });
