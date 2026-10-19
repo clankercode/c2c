@@ -207,8 +207,24 @@ let read_file_bounded path max =
   try
     let ic = open_in_bin path in
     Fun.protect ~finally:(fun () -> close_in_noerr ic) (fun () ->
-        let n = in_channel_length ic in
-        if n > max then None else Some (really_input_string ic n))
+        (* Do not use [in_channel_length] here.  Procfs files report a zero
+           length even though they produce their contents when read.  Read
+           incrementally and consume at most one byte beyond the advertised
+           bound so regular files and procfs have the same contract. *)
+        let chunk_size = 8192 in
+        let buf = Bytes.create (min chunk_size (max + 1)) in
+        let out = Buffer.create (min max chunk_size) in
+        let rec read total =
+          let remaining = max - total in
+          let want = min (Bytes.length buf) (remaining + 1) in
+          let n = if want = 0 then 0 else input ic buf 0 want in
+          if n = 0 then Some (Buffer.contents out)
+          else if n > remaining then None
+          else (
+            Buffer.add_subbytes out buf 0 n;
+            read (total + n))
+        in
+        read 0)
   with _ -> None
 
 let lstat_opt p = try Some (Unix.lstat p) with Unix.Unix_error _ -> None

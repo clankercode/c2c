@@ -87,7 +87,9 @@ let pid = 4242
 
 type fx = { home : string; proc : string; record : string }
 
-let make_fx ?(rel = "userdata") ?(listener = true) ?(started_at = "1970-01-01T00:16:42Z") ?(origin = Printf.sprintf "http://127.0.0.1:%d" port) () =
+let make_fx ?(rel = "userdata") ?(listener = true) ?(status_stream = false)
+    ?(started_at = "1970-01-01T00:16:42Z")
+    ?(origin = Printf.sprintf "http://127.0.0.1:%d" port) () =
   let root = tmpdir () in
   let home = Filename.concat root "home" and proc = Filename.concat root "proc" in
   let record = Filename.concat (Filename.concat home rel) "server-runtime.json" in
@@ -97,7 +99,12 @@ let make_fx ?(rel = "userdata") ?(listener = true) ?(started_at = "1970-01-01T00
   let p = Filename.concat proc (string_of_int pid) in
   write (Filename.concat proc "stat") "cpu 1\nbtime 1000\n";
   write (Filename.concat proc "sys/kernel/random/boot_id") "boot-1\n";
-  write (Filename.concat p "status") (Printf.sprintf "Name:\tt3\nTgid:\t%d\n" pid);
+  let status = Filename.concat p "status" in
+  if status_stream then (
+    Unix.mkdir p 0o700;
+    Unix.mkfifo status 0o600
+  )
+  else write status (Printf.sprintf "Name:\tt3\nTgid:\t%d\n" pid);
   write (Filename.concat p "stat") (Printf.sprintf "%d (t3 server) S %s\n" pid (String.concat " " (List.init 19 (fun _ -> "0") @ [ "100" ])));
   Unix.mkdir (Filename.concat p "fd") 0o700;
   Unix.symlink "socket:[555]" (Filename.concat p "fd/3");
@@ -119,6 +126,28 @@ let test_discovery_ok () =
   Alcotest.(check int) "pid" pid rt.T.pid;
   Alcotest.(check (list string)) "listener" [ "555" ] rt.T.proof.T.listeners;
   Alcotest.(check bool) "dev record" true (ok (discover (make_fx ~rel:"dev" ())) |> fun r -> r.T.pid = pid)
+
+let test_discovery_procfs_stream () =
+  (* A FIFO models procfs' stream-like files: [in_channel_length] cannot be
+     used, while [input] still returns the complete status document. *)
+  let fx = make_fx ~status_stream:true () in
+  let status = Filename.concat (Filename.concat fx.proc (string_of_int pid)) "status" in
+  let writer = Unix.fork () in
+  if writer = 0 then (
+    try
+      let oc = open_out_bin status in
+      output_string oc (Printf.sprintf "Name:\tt3\nTgid:\t%d\n" pid);
+      close_out oc;
+      exit 0
+    with _ -> exit 1)
+  else
+    let result = discover fx in
+    let _, process_status = Unix.waitpid [] writer in
+    (match process_status with
+    | Unix.WEXITED 0 -> ()
+    | _ -> Alcotest.fail "proc-like status writer failed");
+    let rt = ok result in
+    Alcotest.(check int) "stream status still proves pid" pid rt.T.pid
 
 let test_discovery_refusals () =
   let any_err = function _ -> true in
@@ -358,7 +387,9 @@ let () =
     [ ( "decode", [ Alcotest.test_case "json+sse" `Quick test_json_sse; Alcotest.test_case "malformed" `Quick test_malformed ] );
       ( "pure", [ Alcotest.test_case "pkce" `Quick test_pkce; Alcotest.test_case "group" `Quick test_group;
                   Alcotest.test_case "home" `Quick test_resolve_home; Alcotest.test_case "allowlist" `Quick test_allowlist ] );
-      ( "discovery", [ Alcotest.test_case "ok" `Quick test_discovery_ok; Alcotest.test_case "refusals" `Quick test_discovery_refusals;
+      ( "discovery", [ Alcotest.test_case "ok" `Quick test_discovery_ok;
+                       Alcotest.test_case "proc-like stream" `Quick test_discovery_procfs_stream;
+                       Alcotest.test_case "refusals" `Quick test_discovery_refusals;
                        Alcotest.test_case "ambiguous" `Quick test_discovery_ambiguous ] );
       ( "credential", [ Alcotest.test_case "private files" `Quick test_credential_files ] );
       ( "transport", [ Alcotest.test_case "happy path + reconnect" `Quick test_happy_path;
