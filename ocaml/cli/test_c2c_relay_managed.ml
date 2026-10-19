@@ -403,8 +403,21 @@ let test_stop_supervisor_accepts_graceful_term_record_removal () =
         write_pid_generation pid_path (Unix.getpid ());
         Sys.set_signal Sys.sigterm
           (Sys.Signal_handle (fun _ ->
-             (try Sys.remove pid_path with Sys_error _ -> ());
-             (try Sys.remove (pid_path ^ ".start-time") with Sys_error _ -> ());
+             (* Mirror the production supervisor cleanup: the PID and exact
+                generation sidecar are removed as one owner-checked pair.
+                Sequential [Sys.remove] calls expose a transient half-pair to
+                the stopper and make a valid graceful stop look uncertain. *)
+             (match
+                C2c_start.read_pid_record ~pid_path
+                  ~start_time_path:(pid_path ^ ".start-time")
+              with
+              | C2c_start.Pid_record_present (pid, start_time) ->
+                  ignore
+                    (C2c_start.remove_pid_record_pair_confirmed
+                       ~pid_path ~start_time_path:(pid_path ^ ".start-time")
+                       ~pid ~start_time)
+              | C2c_start.Pid_record_absent
+              | C2c_start.Pid_record_unknown -> ());
              exit 0));
         while true do Unix.sleep 60 done;
         0
@@ -453,7 +466,17 @@ let test_stop_supervisor_accepts_graceful_term_record_removal () =
          false failure on otherwise healthy build boxes. *)
       let supervisor_reaped =
         if supervisor_reaped then true
-        else
+        else if stopped then begin
+          (* [stop_supervisor] returns after the captured process generation
+             has disappeared from /proc.  The process can still be a zombie
+             until this parent services SIGCHLD, though, so a non-blocking
+             [waitpid] here races with the stopper's result pipe.  A positive
+             stop result guarantees that the supervisor is gone; reap it
+             synchronously so this assertion observes the same lifecycle
+             event on every scheduler/load combination. *)
+          ignore (Unix.waitpid [] supervisor);
+          true
+        end else
           match Unix.waitpid [ Unix.WNOHANG ] supervisor with
           | 0, _ -> false
           | _, _ -> true
