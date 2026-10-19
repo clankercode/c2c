@@ -39,6 +39,7 @@ tasks:
       id: T003
       priority: high
       status: pending
+      tags: []
       title: Implement durable T3 routing state journal and singleton
     - complexity: high
       depends_on:

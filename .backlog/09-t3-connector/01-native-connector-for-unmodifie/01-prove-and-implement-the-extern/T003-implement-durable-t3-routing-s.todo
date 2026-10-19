@@ -1,4 +1,5 @@
 ---
+completed_at: null
 complexity: high
 created_at: "2026-10-19T07:12:00Z"
 depends_on:
@@ -6,10 +7,9 @@ depends_on:
 estimate_hours: 6
 id: P9.M1.E1.T003
 priority: high
+started_at: null
 status: pending
-tags:
-    - idea
-    - planning
+tags: []
 title: Implement durable T3 routing state journal and singleton
 updated_at: "2026-10-19T07:12:00Z"
 ---
@@ -41,3 +41,5 @@ Pending planned work. During execution follow bl-fix-many: read the full ticket,
 ## Lane
 
 Can run in parallel with T002 after T001. Own only state module/tests until the shared service integration.
+
+Lane decision: parallel with T002 only after T001 merges. Own durable routing state and its tests; do not edit the MCP client.
