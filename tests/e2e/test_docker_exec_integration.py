@@ -79,6 +79,38 @@ def _require_docker() -> None:
         raise unittest.SkipTest(reason)
 
 
+def _external_build_failure(output: str) -> str | None:
+    """Classify failures caused by an unavailable Docker build network.
+
+    The repository-wide Python suite runs on build boxes where a Docker
+    daemon may be available while its build network cannot resolve Debian or
+    registry hosts.  That is an external fixture capability, so the optional
+    image-layer smoke should skip in that case.  Keep all other build errors
+    as hard failures: a broken Dockerfile, source tree, or local daemon must
+    remain visible to the gate.
+    """
+    text = output.lower()
+    dns_markers = (
+        "temporary failure resolving",
+        "could not resolve",
+        "temporary failure in name resolution",
+        "getaddrinfo enotfound",
+        "no such host",
+    )
+    transport_markers = (
+        "network is unreachable",
+        "connection timed out",
+        "i/o timeout",
+        "tls handshake timeout",
+        "context deadline exceeded",
+    )
+    if any(marker in text for marker in dns_markers):
+        return "Docker build network could not resolve an external host"
+    if any(marker in text for marker in transport_markers):
+        return "Docker build network could not reach an external host"
+    return None
+
+
 def _docker_exec(container: str, argv: list[str], timeout: float = 10.0) -> subprocess.CompletedProcess:
     """Run `c2c` inside a thin-agent container and return the result."""
     cmd = ["docker", "exec", container, "/usr/local/bin/c2c"] + argv
@@ -262,10 +294,12 @@ class DockerExecHealthTests(unittest.TestCase):
              "--target", "runtime", "-t", "c2c-test:probe", "."],
             cwd=REPO, capture_output=True, text=True, timeout=300.0
         )
-        # A reachable daemon and a failed image build indicate a real fixture
-        # or source problem.  Do not turn that into a skip merely because the
-        # error happened to mention a cache.
         if r.returncode != 0:
+            reason = _external_build_failure(f"{r.stdout}\n{r.stderr}")
+            if reason is not None:
+                self.skipTest(f"{reason}; Dockerfile.test smoke is unavailable")
+            # A reachable daemon and any non-network build error indicate a
+            # real fixture or source problem.  Keep those failures visible.
             self.fail(f"Dockerfile.test build failed: {r.stderr}")
 
         # Inspect the binary layer
