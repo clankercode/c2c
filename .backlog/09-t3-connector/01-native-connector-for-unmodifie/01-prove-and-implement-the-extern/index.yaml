@@ -81,7 +81,7 @@ tasks:
       file: T007-install-supervise-diagnose-and.todo
       id: T007
       priority: high
-      status: pending
+      status: in_progress
       tags: []
       title: Implement T3 service supervision diagnostics and repair
     - complexity: high
