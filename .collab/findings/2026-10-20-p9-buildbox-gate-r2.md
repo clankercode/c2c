@@ -9,7 +9,7 @@ and B302 teardown-race fixes.
 
 The required Python phase still fails on the clean x-tuf checkout. With the
 freshly built binary exported through the build-local `c2c` symlink it ended
-with `64 failed, 511 passed, 67 skipped, 43 errors, 85 subtests passed`.
+with `60 failed, 520 passed, 62 skipped, 43 errors, 85 subtests passed`.
 The remaining failures are outside P9's T3 connector surface:
 
 - Docker/TMUX fixtures are unavailable or incompatible on the build host
