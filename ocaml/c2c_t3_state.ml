@@ -65,6 +65,14 @@ let alias_of_thread_id thread_id =
   let hex = Digestif.SHA256.(to_hex (digest_string thread_id)) in
   "t3-" ^ String.sub hex 0 12
 
+let alias_of_environment_thread ~environment_id ~thread_id =
+  let frame s = string_of_int (String.length s) ^ ":" ^ s in
+  let seed = frame environment_id ^ frame thread_id in
+  let hex = Digestif.SHA256.(to_hex (digest_string seed)) in
+  (* 128 bits gives a practical collision margin while staying well below
+     C2c_name's 64-byte alias limit. *)
+  "t3-" ^ String.sub hex 0 32
+
 (* ---- ownership checks ---- *)
 
 let check_private_dir dir =
@@ -282,15 +290,20 @@ let find_by_thread t ~thread_id = List.find_opt (fun m -> m.thread_id = thread_i
 let find_by_alias t ~alias = List.find_opt (fun m -> m.alias = alias) t.maps
 let mappings t = t.maps
 
-let ensure_mapping t ~thread_id =
+let ensure_mapping_with_alias t ~thread_id ~alias =
   if thread_id = "" then Error "empty T3 thread id"
+  else if alias = "" then Error "empty T3 alias"
   else
     match find_by_thread t ~thread_id with
     | Some { tombstone = Some tb; _ } ->
       Error (Printf.sprintf "T3 thread %s is tombstoned (%s)" thread_id tb.reason)
-    | Some m -> Ok m
+    | Some m ->
+      if m.alias <> alias then
+        Error
+          (Printf.sprintf "T3 thread %s already owns alias %s (requested %s)"
+             thread_id m.alias alias)
+      else Ok m
     | None ->
-      let alias = alias_of_thread_id thread_id in
       (match find_by_alias t ~alias with
        | Some other ->
          Error
@@ -301,6 +314,25 @@ let ensure_mapping t ~thread_id =
            let m = { thread_id; alias; created_at = t.clock (); tombstone = None } in
            t.maps <- t.maps @ [ m ];
            Ok m))
+
+let ensure_mapping t ~thread_id =
+  ensure_mapping_with_alias t ~thread_id ~alias:(alias_of_thread_id thread_id)
+
+let revive_mapping t ~thread_id =
+  match find_by_thread t ~thread_id with
+  | None -> Error ("unknown T3 thread " ^ thread_id)
+  | Some m -> (
+      match m.tombstone with
+      | None -> Ok m
+      | Some _ ->
+          transact t (fun () ->
+            let updated = { m with tombstone = None } in
+            t.maps <-
+              List.map
+                (fun existing ->
+                  if existing.thread_id = thread_id then updated else existing)
+                t.maps;
+            Ok updated))
 
 let tombstone t ~thread_id ~reason =
   match find_by_thread t ~thread_id with

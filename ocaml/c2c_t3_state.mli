@@ -56,6 +56,11 @@ val state_path : t -> string
 val alias_of_thread_id : string -> string
 (** Stable alias ["t3-" ^ first 12 hex chars of SHA-256(thread_id)]. Pure. *)
 
+val alias_of_environment_thread : environment_id:string -> thread_id:string -> string
+(** Stable alias in the connector's environment namespace. The environment
+    identity is length-framed before the full thread id so two T3 homes do not
+    accidentally publish the same routing name. *)
+
 type tombstone = { tombstoned_at : float; reason : string }
 
 type mapping = {
@@ -69,6 +74,17 @@ val ensure_mapping : t -> thread_id:string -> (mapping, string) result
 (** Find or create the mapping for [thread_id]. Errors if the thread is
     tombstoned, the id is empty, or the alias collides with a different
     thread id. *)
+
+val ensure_mapping_with_alias :
+  t -> thread_id:string -> alias:string -> (mapping, string) result
+(** As {!ensure_mapping}, but with a connector-selected stable alias. Used by
+    one state directory per T3 environment; the alias is persisted before any
+    broker advertisement. *)
+
+val revive_mapping : t -> thread_id:string -> (mapping, string) result
+(** Clear the tombstone for an existing [thread_id], retaining its original
+    alias and creation time. This is deliberately keyed by the full thread id:
+    a reopened T3 thread can reclaim only its own historical alias. *)
 
 val find_by_thread : t -> thread_id:string -> mapping option
 val find_by_alias : t -> alias:string -> mapping option

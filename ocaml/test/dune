@@ -996,3 +996,8 @@
  (name test_c2c_t3_client)
  (modules test_c2c_t3_client)
  (libraries c2c_mcp alcotest yojson unix lwt lwt.unix cohttp-lwt-unix cohttp))
+
+(test
+ (name test_c2c_t3_service)
+ (modules test_c2c_t3_service)
+ (libraries c2c_mcp alcotest yojson unix lwt lwt.unix))
