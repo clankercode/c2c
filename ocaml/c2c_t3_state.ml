@@ -50,6 +50,7 @@ type t = {
   mutable maps : mapping list;  (* oldest first *)
   mutable journal : entry list; (* oldest first *)
   mutable acked : (kind * string) list; (* oldest first *)
+  mutable dispatch_at : float option;
   mutable next_seq : int;
 }
 
@@ -144,7 +145,8 @@ let to_json t =
          (List.map
             (fun (k, key) ->
               `Assoc [ ("kind", `String (kind_to_string k)); ("key", `String key) ])
-            t.acked)) ]
+            t.acked));
+      ("dispatch_at", match t.dispatch_at with None -> `Null | Some at -> `Float at) ]
 
 exception Bad of string
 
@@ -204,6 +206,11 @@ let load_into t =
           List.map
             (fun a -> (kind_of_json (member "kind" a), to_str "key" (member "key" a)))
             (to_list "acked" (member "acked" j));
+        t.dispatch_at <-
+          (match member "dispatch_at" j with
+           | `Null -> None
+           | (`Int _ | `Float _) as value -> Some (to_num "dispatch_at" value)
+           | _ -> bad "dispatch_at: expected number or null");
         let max_seq = List.fold_left (fun m e -> max m e.seq) 0 t.journal in
         t.next_seq <- max (to_int "next_seq" (member "next_seq" j)) (max_seq + 1);
         Ok ()
@@ -216,18 +223,18 @@ let rec drop n l = if n <= 0 then l else match l with [] -> [] | _ :: r -> drop 
 (* Apply [f] to a copy of the state's mutable fields, persist, and only then
    commit. A failed write leaves [t] untouched. *)
 let transact t f =
-  let saved = (t.maps, t.journal, t.acked, t.next_seq) in
+  let saved = (t.maps, t.journal, t.acked, t.dispatch_at, t.next_seq) in
   match f () with
   | Error _ as e ->
-    let m, j, a, n = saved in
-    t.maps <- m; t.journal <- j; t.acked <- a; t.next_seq <- n;
+    let m, j, a, d, n = saved in
+    t.maps <- m; t.journal <- j; t.acked <- a; t.dispatch_at <- d; t.next_seq <- n;
     e
   | Ok v -> (
     match C2c_io.write_file_atomic ~perm:0o600 t.path (Yojson.Safe.to_string (to_json t) ^ "\n") with
     | Ok () -> Ok v
     | Error msg ->
-      let m, j, a, n = saved in
-      t.maps <- m; t.journal <- j; t.acked <- a; t.next_seq <- n;
+      let m, j, a, d, n = saved in
+      t.maps <- m; t.journal <- j; t.acked <- a; t.dispatch_at <- d; t.next_seq <- n;
       Error ("T3 state write failed: " ^ msg))
 
 (* ---- open / close ---- *)
@@ -274,7 +281,7 @@ let open_state ?(clock = Unix.gettimeofday) ?(max_journal = default_max_journal)
       let t =
         { dir; path = Filename.concat dir "state.json"; clock; max_journal;
           max_payload_bytes; max_tombstones; max_acked; lock = Some lock_fd;
-          maps = []; journal = []; acked = []; next_seq = 1 }
+          maps = []; journal = []; acked = []; dispatch_at = None; next_seq = 1 }
       in
       match check_private_file t.path with
       | Error e -> fail e
@@ -400,3 +407,25 @@ let journal_ack t ~seq =
       let acked = t.acked @ [ (e.kind, e.key) ] in
       t.acked <- drop (List.length acked - t.max_acked) acked;
       Ok true)
+
+let journal_update t ~seq ~payload =
+  if String.length (Yojson.Safe.to_string payload) > t.max_payload_bytes then
+    Error
+      (Printf.sprintf "journal payload exceeds %d bytes" t.max_payload_bytes)
+  else
+    match List.find_opt (fun e -> e.seq = seq) t.journal with
+    | None -> Ok false
+    | Some _ ->
+        transact t (fun () ->
+          t.journal <-
+            List.map
+              (fun e -> if e.seq = seq then { e with payload } else e)
+              t.journal;
+          Ok true)
+
+let last_dispatch_at t = t.dispatch_at
+
+let record_dispatch_at t at =
+  transact t (fun () ->
+    t.dispatch_at <- Some at;
+    Ok ())

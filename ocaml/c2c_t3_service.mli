@@ -138,3 +138,50 @@ val resolve_locator :
 (** Resolve a normal alias (including [alias@host]) or local [t3.<thread-id>].
     A literal registered alias always wins; thread lookup is only used when it
     is unambiguous and the mapping is not tombstoned. *)
+
+(** {1 Durable inbound delivery} *)
+
+type delivery_mode = [ `Auto | `Queue | `Steer | `Restart ]
+
+type accept_result = {
+  accepted : int;
+  held : (string * string) list;
+  errors : string list;
+}
+
+type dispatch_step =
+  | Idle
+  | Waiting of float
+  | Submitted of string
+  | Retained of string
+  | Held of string
+
+type send =
+  thread_id:string -> message:string -> mode:delivery_mode ->
+  client_request_id:string ->
+  (C2c_t3_client.receipt, C2c_t3_client.error) result Lwt.t
+
+val format_data : C2c_mcp.message -> (string, string) result
+(** Render one broker message as explicit untrusted DATA followed by one
+    canonical reply route. Sender aliases are validated before interpolation;
+    the body is never interpreted as a footer or shell fragment. *)
+
+val accept_inbox :
+  ?mode:delivery_mode -> owner:owner -> state:C2c_t3_state.t ->
+  mapping:C2c_t3_state.mapping -> unit -> accept_result
+(** Peek a service-owned inbox, persist each request, then acknowledge the
+    exact broker message ID. A failure before acknowledgement leaves mail in
+    the broker; a malformed message is durably held and never sent. *)
+
+type dispatcher
+
+val create_dispatcher :
+  ?spacing:float -> ?can_send:(C2c_t3_state.entry -> bool) ->
+  state:C2c_t3_state.t -> send:send -> clock:(unit -> float) -> unit -> dispatcher
+(** Create the single serial dispatcher shared by normal delivery and later
+    recovery intents. The submission boundary is persisted before each MCP
+    call, so restart cannot burst past [spacing]. *)
+
+val dispatch_once : dispatcher -> dispatch_step Lwt.t
+(** Submit at most one due request. The caller owns the service loop and may
+    sleep for [Waiting delay]; this function never overlaps calls or sleeps. *)

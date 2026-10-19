@@ -123,3 +123,14 @@ val journal_pending : ?kind:kind -> t -> entry list
 val journal_ack : t -> seq:int -> (bool, string) result
 (** Remove entry [seq] and remember its key for dedup. [Ok false] if no such
     entry is pending. *)
+
+val journal_update : t -> seq:int -> payload:Yojson.Safe.t -> (bool, string) result
+(** Replace the payload of a pending journal entry and persist it atomically.
+    [Ok false] means that the entry was already acknowledged or is unknown.
+    The key, kind, sequence and original timestamp are immutable. *)
+
+val last_dispatch_at : t -> float option
+(** The durable start time of the most recent MCP submission, if any. *)
+
+val record_dispatch_at : t -> float -> (unit, string) result
+(** Persist the submission boundary before issuing an MCP request. *)
