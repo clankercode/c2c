@@ -25,6 +25,12 @@ let liveness_str = function
   | C2c_mcp.Broker.Unknown -> "unknown"
   | C2c_mcp.Broker.Dead -> "dead"
 
+let t3_registration_status (r : C2c_mcp.registration) : string option =
+  if r.registered_by <> Some C2c_t3_service.service_registered_by then None
+  else
+    match C2c_mcp.Broker.registration_liveness_state r with
+    | C2c_mcp.Broker.Alive -> Some "routable"
+    | C2c_mcp.Broker.Dead | C2c_mcp.Broker.Unknown -> Some "stale"
 (* One matched registration + where it was found.
    [broker_label] is "repo" | "sessions" | "repo:<fp>" (--global sweep). *)
 type hit =
@@ -71,6 +77,11 @@ let hit_to_json (h : hit) : Yojson.Safe.t =
     ; ("broker", `String h.broker_label)
     ; ("broker_root", `String h.broker_root)
     ]
+  in
+  let fields =
+    match t3_registration_status r with
+    | Some value -> fields @ [ ("t3_status", `String value) ]
+    | None -> fields
   in
   let fields =
     match r.pid with Some p -> fields @ [ ("pid", `Int p) ] | None -> fields
@@ -163,9 +174,10 @@ let find_term =
     List.iter
       (fun h ->
         let r : C2c_mcp.registration = h.reg in
-        Printf.printf "  %-20s %-8s %-10s %s  [%s]\n" r.alias
+        Printf.printf "  %-20s %-8s %-10s %-9s %s  [%s]\n" r.alias
           (liveness_str h.state)
           (match r.client_type with Some c -> c | None -> "?")
+          (match t3_registration_status r with Some status -> status | None -> "-")
           r.session_id h.broker_label)
       hits;
   if hits = [] then exit 1

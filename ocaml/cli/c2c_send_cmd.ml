@@ -4,6 +4,55 @@ open C2c_mcp
 open C2c_types
 open C2c_utils
 
+(* A T3 thread locator is a convenience input for the ordinary c2c send
+   surface.  The service still owns the broker registration and delivery;
+   this helper only translates the local [t3.<thread-id>] form to the stable
+   service alias from its immutable state snapshot.  Unknown locators are
+   left untouched so normal alias validation and error reporting remain
+   unchanged. *)
+let t3_home_for_locator () =
+  match Sys.getenv_opt "T3CODE_HOME" with
+  | Some home when String.trim home <> "" -> String.trim home
+  | _ ->
+      Filename.concat
+        (Option.value (Sys.getenv_opt "HOME") ~default:".") ".t3"
+
+let t3_state_dir_for_locator () =
+  match Sys.getenv_opt "C2C_T3_STATE_DIR" with
+  | Some dir when String.trim dir <> "" -> String.trim dir
+  | _ ->
+      Filename.concat
+        (Option.value (Sys.getenv_opt "HOME") ~default:".")
+        ".local/state/c2c/t3"
+
+let t3_environment_id_for_locator home =
+  let home = try Unix.realpath home with _ -> home in
+  let seed = "t3-home:" ^ home in
+  "t3-env-"
+  ^ String.sub (Digestif.SHA256.(to_hex (digest_string seed))) 0 32
+
+let resolve_t3_locator target =
+  if String.length target < 4 || String.sub target 0 3 <> "t3." then target
+  else
+    let thread_id = String.sub target 3 (String.length target - 3) in
+    if thread_id = "" || String.contains thread_id '@' then target
+    else
+      match
+        C2c_t3_state.open_read_only
+          ~environment_id:(t3_environment_id_for_locator (t3_home_for_locator ()))
+          ~dir:(t3_state_dir_for_locator ()) ()
+      with
+      | Ok snapshot ->
+          (match
+             List.find_opt
+               (fun (mapping : C2c_t3_state.mapping) ->
+                 mapping.thread_id = thread_id && mapping.tombstone = None)
+               (C2c_t3_state.read_only_mappings snapshot)
+           with
+           | Some mapping -> mapping.alias
+           | None -> target)
+      | Error _ -> target
+
 (* find_alias_in_all_broots / find_alias_in_all_brokers moved to
    C2c_cli_helpers (opened above) so the relay path can reuse the same scan
    — see #81. *)
@@ -234,6 +283,11 @@ let send_cmd =
         (`Alias to_alias, String.concat " " msg_tokens)
     | None, [] ->
         bad_usage "send requires a recipient alias and message body"
+  in
+  let target =
+    match target with
+    | `Alias alias -> `Alias (resolve_t3_locator alias)
+    | `Session _ as session -> session
   in
   maybe_auto_register_sender broker ~from_override;
   let from_alias =

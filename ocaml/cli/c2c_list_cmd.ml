@@ -101,6 +101,17 @@ let relay_peer_is_alive (peer : Yojson.Safe.t) : bool option =
 let short_pk (pk : string) : string =
   if String.length pk <= 8 then pk else String.sub pk 0 8 ^ "…"
 
+(* Service-owned T3 registrations use a broker marker and deterministic
+   session id.  Keep their lifecycle vocabulary separate from ordinary peer
+   liveness so `c2c list` can be used to diagnose a T3 connector without
+   changing the meaning of `alive` for any other client. *)
+let t3_registration_status (r : C2c_mcp.registration) : string option =
+  if r.registered_by <> Some C2c_t3_service.service_registered_by then None
+  else
+    match C2c_mcp.Broker.registration_liveness_state r with
+    | C2c_mcp.Broker.Alive -> Some "routable"
+    | C2c_mcp.Broker.Dead | C2c_mcp.Broker.Unknown -> Some "stale"
+
 let list_cmd =
   let all =
     Cmdliner.Arg.(value & flag & info [ "all"; "a" ]
@@ -191,7 +202,8 @@ let list_cmd =
     regs
     |> (if all then Fun.id else
           List.filter (fun r ->
-            C2c_mcp.Broker.registration_liveness_state r <> C2c_mcp.Broker.Dead))
+            C2c_mcp.Broker.registration_liveness_state r <> C2c_mcp.Broker.Dead
+            || r.registered_by = Some C2c_t3_service.service_registered_by))
     |> (if alive_only then List.filter is_alive else Fun.id)
     |> List.filter matches_alias
   in
@@ -228,13 +240,18 @@ let list_cmd =
        [alive] is tri-state for existing consumers and [state] is the
        explicit, script-friendly label. *)
     let with_alive = with_pid @ [ ("alive", alive_val); ("state", `String state) ] in
+    let with_t3_status =
+      match t3_registration_status r with
+      | Some value -> with_alive @ [ ("t3_status", `String value) ]
+      | None -> with_alive
+    in
     (* B097: surface the local Ed25519 identity key as identity_pk so callers
        can verify senders / cross-reference relay peers. Mirrors the relay
        lease field name for a uniform per-peer shape. *)
     let with_identity =
       match r.ed25519_pubkey with
-      | Some pk -> with_alive @ [ ("identity_pk", `String pk) ]
-      | None -> with_alive
+      | Some pk -> with_t3_status @ [ ("identity_pk", `String pk) ]
+      | None -> with_t3_status
     in
     let fields =
       match r.registered_at with
@@ -612,6 +629,11 @@ let list_cmd =
                   | C2c_mcp.Broker.Dead -> "dead "
                   | C2c_mcp.Broker.Unknown -> "unknown"
                 in
+                let route_str =
+                  match t3_registration_status r with
+                  | Some value -> " t3=" ^ value
+                  | None -> ""
+                in
                 let pid_str = match r.pid with Some p -> Printf.sprintf " pid=%d" p | None -> "" in
                 if enriched then
                   let (role_class, description) = lookup_role_info r.alias in
@@ -630,10 +652,10 @@ let list_cmd =
                     let t = Unix.gmtime ts in Printf.sprintf " %04d-%02d-%02d %02d:%02d" (1900+t.tm_year) (1+t.tm_mon) t.tm_mday t.tm_hour t.tm_min
                   in
                   let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
-                  Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
+                  Printf.printf "  %-20s %s%s%s  %s%s%s\n" r.alias alive_str route_str pid_str session_short time_str tmux_str
                 else begin
                   let tmux_str = match r.tmux_location with Some s -> " ["^s^"]" | _ -> "" in
-                  Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str
+                  Printf.printf "  %-20s %s%s%s%s\n" r.alias alive_str route_str pid_str tmux_str
                 end
               ) regs
             )
@@ -707,6 +729,11 @@ let list_cmd =
                   | C2c_mcp.Broker.Dead -> "dead "
                   | C2c_mcp.Broker.Unknown -> "unknown"
                 in
+                let route_str =
+                  match t3_registration_status r with
+                  | Some value -> " t3=" ^ value
+                  | None -> ""
+                in
                 let pid_str =
                   match r.pid with
                   | Some p -> Printf.sprintf " pid=%d" p
@@ -726,10 +753,10 @@ let list_cmd =
                           (1900 + t.tm_year) (1 + t.tm_mon) t.tm_mday t.tm_hour t.tm_min
                   in
                   let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
-                  Printf.printf "  %-20s %s%s  %s%s%s\n" r.alias alive_str pid_str session_short time_str tmux_str
+                  Printf.printf "  %-20s %s%s%s  %s%s%s\n" r.alias alive_str route_str pid_str session_short time_str tmux_str
                 else
                   let tmux_str = match r.tmux_location with Some s -> " [" ^ s ^ "]" | _ -> "" in
-                  Printf.printf "  %-20s %s%s%s\n" r.alias alive_str pid_str tmux_str)
+                  Printf.printf "  %-20s %s%s%s%s\n" r.alias alive_str route_str pid_str tmux_str)
                regs) in
   if relay && output_mode = Human then emit_relay_human ();
   (* #74: make the default-broker cwd-scope filtering discoverable, never

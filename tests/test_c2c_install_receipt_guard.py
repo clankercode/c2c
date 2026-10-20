@@ -75,12 +75,21 @@ def fixture(tmp_path: Path) -> tuple[Path, dict[str, str], dict[str, str]]:
 
 def receipt_file(root: Path, metadata: dict[str, str], hashes: dict[str, str], **overrides: object) -> Path:
     payload: dict[str, object] = {
-        "schema_version": 1,
+        "schema": "c2c-p9-buildbox-pass-v1",
         "status": "PASS",
         "source": {"commit": metadata["commit"], "tree": metadata["tree"]},
         "toolchain": metadata["toolchain"],
         "dependencies": metadata["dependencies"],
-        "artifacts": hashes,
+        "artifacts": [
+            {
+                "name": name,
+                "path": relative,
+                "sha256": digest,
+                "bytes": (root / relative).stat().st_size,
+            }
+            for name, digest in hashes.items()
+            for relative in [ARTIFACTS[name]]
+        ],
         "commands": {"gate": "all required checks passed"},
     }
     payload.update(overrides)
@@ -121,12 +130,12 @@ def test_receipt_free_install_remains_a_noop(tmp_path: Path) -> None:
 
 def test_legacy_or_incomplete_receipt_is_rejected_before_copy(tmp_path: Path) -> None:
     root, hashes, metadata = fixture(tmp_path)
-    receipt = receipt_file(root, metadata, hashes, schema_version=None)
+    receipt = receipt_file(root, metadata, hashes, schema="legacy-buildbox-pass-v1")
     target = root / "target-installed-binary"
     target.write_text("old bytes")
     result = invoke(root, metadata, receipt)
     assert result.returncode != 0
-    assert "schema_version" in result.stderr
+    assert "schema" in result.stderr
     assert target.read_text() == "old bytes"
 
 
@@ -143,7 +152,9 @@ def test_receipt_requires_canonical_source_and_artifact_map(tmp_path: Path) -> N
 
     extra_artifact = receipt_file(root, metadata, hashes)
     payload = json.loads(extra_artifact.read_text())
-    payload["artifacts"]["unexpected"] = "0" * 64
+    payload["artifacts"].append(
+        {"name": "unexpected", "path": "_build/unexpected", "sha256": "0" * 64, "bytes": 0}
+    )
     extra_artifact.write_text(json.dumps(payload))
     result = invoke(root, metadata, extra_artifact)
     assert result.returncode != 0

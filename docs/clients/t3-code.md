@@ -38,6 +38,14 @@ persistently before acknowledging it, and submits one T3 operation at a time
 with a one-second global submission limit. Use `c2c t3 service --once` for a
 single fixture/operator sweep. Run another service for a different T3 home.
 
+`c2c t3 list --json` labels each root `routable`, `held`, `stale`, or
+`retired`. A held root is known but cannot currently be advertised (for
+example because its permission ceiling is too high); a stale route remains in
+state while its latest broker registration or discovery is uncertain; a
+retired route has a durable tombstone. `c2c list` and `c2c find` add
+`t3_status` to service-owned registration rows, while ordinary peer rows keep
+their existing liveness fields.
+
 To install the same process as an optional user service:
 
 ```sh

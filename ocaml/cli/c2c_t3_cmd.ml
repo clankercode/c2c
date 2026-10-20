@@ -206,27 +206,91 @@ let list_cmd json =
   match authorized () with
   | Error error -> print_error error; 1
   | Ok (client, runtime) ->
-      with_state (fun state ->
+      (* Listing is read-only.  The foreground service owns the writer lock,
+         so read an immutable snapshot while it is running rather than
+         reporting [Already_running] to the operator. *)
+      with_send_mappings (fun mappings ->
         match run_t3 (Service.discover client) with
         | Error error -> print_error (T3.error_to_string error); 1
         | Ok scan ->
-            let mappings = State.mappings state in
+            let broker = C2c_mcp.Broker.create ~root:(service_broker_root ()) in
+            let registrations = C2c_mcp.Broker.list_registrations broker in
+            let service_registration_for mapping =
+              let session_id =
+                Service.service_session_id ~environment_id:(environment_id runtime)
+                  ~thread_id:mapping.State.thread_id
+              in
+              List.find_opt
+                (fun (registration : C2c_mcp.registration) ->
+                  C2c_mcp.Broker.alias_casefold registration.alias
+                    = C2c_mcp.Broker.alias_casefold mapping.alias
+                  && registration.session_id = session_id
+                  && registration.registered_by = Some Service.service_registered_by)
+                registrations
+            in
+            let status_for ~thread ~mapping =
+              match mapping with
+              | Some mapping when mapping.State.tombstone <> None ->
+                  "retired", "thread has a durable tombstone"
+              | _ ->
+                  (match Service.eligibility ~credential_access:None thread with
+                   | Service.Permission_ineligible reason -> "held", reason
+                   | Service.Retired reason -> "retired", reason
+                   | Service.Routable ->
+                       (match mapping with
+                        | None -> "held", "thread has not been published by the service"
+                        | Some mapping ->
+                            (match service_registration_for mapping with
+                             | None -> "held", "service registration is absent"
+                             | Some registration ->
+                                 (match C2c_mcp.Broker.registration_liveness_state registration with
+                                  | C2c_mcp.Broker.Alive -> "routable", ""
+                                  | C2c_mcp.Broker.Dead -> "stale", "service registration process is not alive"
+                                  | C2c_mcp.Broker.Unknown -> "stale", "service registration liveness is unknown"))))
+            in
+            let row_for_thread thread mapping =
+              let status, reason = status_for ~thread ~mapping in
+              `Assoc [ ("projectId", `String thread.Service.project_id); ("threadId", `String thread.thread_id);
+                       ("title", `String thread.title); ("alias", match mapping with Some m -> `String m.alias | None -> `Null);
+                       ("runtimeMode", match thread.runtime_mode with Some s -> `String s | None -> `Null);
+                       ("status", `String status); ("statusReason", if reason = "" then `Null else `String reason) ]
+            in
+            let listed_ids = Hashtbl.create (List.length scan.listed) in
+            List.iter (fun thread -> Hashtbl.replace listed_ids thread.Service.thread_id ()) scan.listed;
             let rows =
               List.map
                 (fun thread ->
                   let mapping = List.find_opt (fun (m : State.mapping) -> m.thread_id = thread.Service.thread_id) mappings in
-                  `Assoc [ ("projectId", `String thread.project_id); ("threadId", `String thread.thread_id);
-                           ("title", `String thread.title); ("alias", match mapping with Some m -> `String m.alias | None -> `Null);
-                           ("runtimeMode", match thread.runtime_mode with Some s -> `String s | None -> `Null) ])
+                  row_for_thread thread mapping)
                 scan.listed
             in
+            (* A mapping absent from the latest listing remains visible so
+               operators can distinguish a stale route from a retired one. *)
+            let missing_rows =
+              mappings
+              |> List.filter (fun (mapping : State.mapping) -> not (Hashtbl.mem listed_ids mapping.thread_id))
+              |> List.map (fun mapping ->
+                   let status, reason =
+                     match mapping.State.tombstone with
+                     | Some tombstone -> "retired", tombstone.reason
+                     | None ->
+                         "stale",
+                         if scan.complete then "thread was absent from the latest complete scan"
+                         else "thread was absent from an incomplete scan"
+                   in
+                   `Assoc [ ("projectId", `String ""); ("threadId", `String mapping.thread_id);
+                           ("title", `String ""); ("alias", `String mapping.alias);
+                           ("runtimeMode", `Null); ("status", `String status);
+                           ("statusReason", `String reason) ])
+            in
+            let rows = rows @ missing_rows in
             if json then print_json (`Assoc [ ("environmentId", `String (environment_id runtime)); ("complete", `Bool scan.complete); ("errors", `List (List.map (fun e -> `String e) scan.errors)); ("threads", `List rows) ])
             else begin
               List.iter (fun row ->
                 match row with
                 | `Assoc f ->
                     let get k = match List.assoc_opt k f with Some (`String s) -> s | _ -> "-" in
-                    Printf.printf "%s  %s  %s  %s\n" (get "alias") (get "threadId") (get "runtimeMode") (get "title")
+                    Printf.printf "%-10s  %-36s  %-12s  %s  %s\n" (get "status") (get "alias") (get "threadId") (get "runtimeMode") (get "title")
                 | _ -> ()) rows;
               if not scan.complete then Printf.eprintf "warning: discovery incomplete; aliases were not retired.\n%!"
             end;
@@ -255,7 +319,13 @@ let status_term = as_command (const status_cmd $ json_flag)
 
 let resolve_target ~mappings locator =
   let registered = List.map (fun (r : C2c_mcp.registration) -> r.alias) (C2c_mcp.Broker.list_registrations (C2c_mcp.Broker.create ~root:(service_broker_root ()))) in
-  let find_by_alias alias = List.find_opt (fun (m : State.mapping) -> m.alias = alias) mappings in
+  let find_by_alias alias =
+    List.find_opt
+      (fun (m : State.mapping) ->
+        m.tombstone = None
+        && C2c_mcp.Broker.alias_casefold m.alias = C2c_mcp.Broker.alias_casefold alias)
+      mappings
+  in
   match Service.resolve_locator ~mappings ~registered_aliases:registered locator with
   | Service.Alias alias -> Ok (find_by_alias alias)
   | Service.Thread_alias alias -> Ok (find_by_alias alias)

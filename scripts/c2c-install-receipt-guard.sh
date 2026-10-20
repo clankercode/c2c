@@ -5,12 +5,13 @@
 #
 # The supplied receipt is schema v1:
 #
-#   {"schema_version":1,"status":"PASS",
+#   {"schema":"c2c-p9-buildbox-pass-v1","status":"PASS",
 #    "source":{"commit":"<git sha>","tree":"<git tree>"},
 #    "toolchain":"<identity>","dependencies":"<identity>",
-#    "artifacts":{"<installed artifact>":"<sha256>", ...}}
+#    "artifacts":[{"name":"<installed artifact>","path":"<build path>",
+#                   "sha256":"<sha256>","bytes":<size>}, ...]}
 #
-# The artifact map must contain exactly the eight names below. Additional
+# The artifact list must contain exactly the eight names below. Additional
 # top-level evidence fields are allowed so the buildbox can retain command and
 # suite results, but the required fields and their types are deliberately
 # strict. The receipt is never printed, so dependency output cannot leak
@@ -52,12 +53,12 @@ try:
         receipt = json.load(handle, object_pairs_hook=reject_duplicate_keys)
 except Exception as exc: fail(f"malformed receipt ({exc})")
 if not isinstance(receipt, dict): fail("receipt must be a JSON object")
-if receipt.get("schema_version") != 1:
-    fail("receipt schema_version must be 1")
+if receipt.get("schema") != "c2c-p9-buildbox-pass-v1":
+    fail("receipt schema must be c2c-p9-buildbox-pass-v1")
 if receipt.get("status") != "PASS":
     fail("receipt status must be PASS")
 
-required = {"schema_version", "status", "source", "toolchain", "dependencies", "artifacts"}
+required = {"schema", "status", "source", "toolchain", "dependencies", "artifacts"}
 missing = sorted(required.difference(receipt))
 if missing: fail("receipt is missing required field(s): " + ", ".join(missing))
 
@@ -113,16 +114,29 @@ artifacts = {
     "c2c-deliver-inbox": "_build/default/ocaml/cli/c2c_deliver_inbox.exe",
 }
 raw = receipt["artifacts"]
-if not isinstance(raw, dict): fail("receipt artifacts must be an object")
-entries = raw
+if not isinstance(raw, list): fail("receipt artifacts must be a list")
+entries = {}
+for item in raw:
+    if not isinstance(item, dict) or set(item) != {"name", "path", "sha256", "bytes"}:
+        fail("each artifact must contain exactly name, path, sha256 and bytes")
+    name = item["name"]
+    if not isinstance(name, str) or name in entries:
+        fail("receipt artifacts must have unique names")
+    entries[name] = item
 if set(entries) != set(artifacts): fail("receipt must contain exactly the eight install artifact hashes")
 for name, relative in artifacts.items():
     item = entries[name]
-    expected_hash = item
+    if item["path"] != relative:
+        fail(f"artifact {name} path does not match the install target")
+    expected_hash = item["sha256"]
     if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
         fail(f"artifact {name} must be a lowercase sha256 string")
     artifact = os.path.join(os.getcwd(), relative)
     if not os.path.isfile(artifact): fail(f"prepared artifact is missing: {relative}")
+    if not isinstance(item["bytes"], int) or isinstance(item["bytes"], bool) or item["bytes"] < 0:
+        fail(f"artifact {name} bytes must be a non-negative integer")
+    if item["bytes"] != os.path.getsize(artifact):
+        fail(f"artifact size mismatch: {name}")
     digest = hashlib.sha256()
     with open(artifact, "rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""): digest.update(chunk)

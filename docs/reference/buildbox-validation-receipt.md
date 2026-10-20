@@ -18,7 +18,7 @@ The guard accepts schema version 1 only. Required fields are:
 
 ```json
 {
-  "schema_version": 1,
+  "schema": "c2c-p9-buildbox-pass-v1",
   "status": "PASS",
   "source": {
     "commit": "40 lowercase hexadecimal characters",
@@ -26,26 +26,27 @@ The guard accepts schema version 1 only. Required fields are:
   },
   "toolchain": "ocamlc version\ndune version\nopam version",
   "dependencies": "output of opam list --installed --short",
-  "artifacts": {
-    "c2c": "64 lowercase hexadecimal characters",
-    "c2c-mcp-server": "64 lowercase hexadecimal characters",
-    "c2c-mcp-inner": "64 lowercase hexadecimal characters",
-    "c2c-inbox-hook-ocaml": "64 lowercase hexadecimal characters",
-    "c2c-stop-hook-ocaml": "64 lowercase hexadecimal characters",
-    "c2c-cold-boot-hook": "64 lowercase hexadecimal characters",
-    "c2c-post-compact-hook": "64 lowercase hexadecimal characters",
-    "c2c-deliver-inbox": "64 lowercase hexadecimal characters"
-  }
+  "artifacts": [
+    {"name": "c2c", "path": "_build/default/ocaml/cli/c2c.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0},
+    {"name": "c2c-mcp-server", "path": "_build/default/ocaml/server/c2c_mcp_server.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0},
+    {"name": "c2c-mcp-inner", "path": "_build/default/ocaml/server/c2c_mcp_server_inner_bin.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0},
+    {"name": "c2c-inbox-hook-ocaml", "path": "_build/default/ocaml/tools/c2c_inbox_hook.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0},
+    {"name": "c2c-stop-hook-ocaml", "path": "_build/default/ocaml/tools/c2c_stop_hook.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0},
+    {"name": "c2c-cold-boot-hook", "path": "_build/default/ocaml/tools/c2c_cold_boot_hook.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0},
+    {"name": "c2c-post-compact-hook", "path": "_build/default/ocaml/tools/c2c_post_compact_hook_bin.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0},
+    {"name": "c2c-deliver-inbox", "path": "_build/default/ocaml/cli/c2c_deliver_inbox.exe", "sha256": "64 lowercase hexadecimal characters", "bytes": 0}
+  ]
 }
 ```
 
 `source.commit` is the candidate `HEAD`; `source.tree` is its clean
 `git write-tree` result. `toolchain` is the three newline-separated version
 outputs in the example, and `dependencies` is the exact installed-package
-listing from the buildbox. The artifact names are the installed names and map
-to the eight targets in `just install-all`. Evidence fields such as test
-commands and exit statuses may be added at the top level, but required fields
-cannot be omitted, renamed, or supplied through legacy aliases.
+listing from the buildbox. Each artifact's `bytes` is the prepared file size.
+The artifact names are the installed names and map to the eight targets in
+`just install-all`. Evidence fields such as test commands and exit statuses
+may be added at the top level, but required fields cannot be omitted, renamed,
+or supplied through legacy aliases.
 
 The receipt must describe the same clean source and toolchain that run the
 install. A source, dependency, or artifact mismatch refuses before the first
