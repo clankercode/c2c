@@ -27,6 +27,8 @@ binary-embedded skill all derive from or link here.
   `content`, `delivery.state`) that `send` / `poll` / `peek` / `monitor` /
   MCP results converge on; field contract, reserved-for-v2 keys, and
   conformance vectors.
+- [Buildbox validation receipt](/reference/buildbox-validation-receipt/) — the
+  schema and install-time checks for a preserved full-gate artifact manifest.
 
 For task-oriented guides, see [Connect](/connect/) (cross-machine setup) and
 [Commands](/commands/) (the CLI command reference).

@@ -25,7 +25,9 @@ def test_install_stamp_records_installed_binary_hashes(tmp_path: Path) -> None:
     write_executable(bin_dir / "c2c", b"cli-binary")
     write_executable(bin_dir / "c2c-mcp-server", b"mcp-server-binary")
     write_executable(bin_dir / "c2c-inbox-hook-ocaml", b"inbox-hook-binary")
+    write_executable(bin_dir / "c2c-stop-hook-ocaml", b"stop-hook-binary")
     write_executable(bin_dir / "c2c-cold-boot-hook", b"cold-boot-hook-binary")
+    write_executable(bin_dir / "c2c-deliver-inbox", b"deliver-inbox-binary")
 
     env = os.environ.copy()
     env["C2C_INSTALL_STAMP"] = str(stamp)
@@ -54,6 +56,14 @@ def test_install_stamp_records_installed_binary_hashes(tmp_path: Path) -> None:
         == sha256_hex(bin_dir / "c2c-inbox-hook-ocaml")
     )
     assert (
+        payload["binaries"]["c2c-stop-hook-ocaml"]["sha256"]
+        == sha256_hex(bin_dir / "c2c-stop-hook-ocaml")
+    )
+    assert (
         payload["binaries"]["c2c-cold-boot-hook"]["sha256"]
         == sha256_hex(bin_dir / "c2c-cold-boot-hook")
+    )
+    assert (
+        payload["binaries"]["c2c-deliver-inbox"]["sha256"]
+        == sha256_hex(bin_dir / "c2c-deliver-inbox")
     )

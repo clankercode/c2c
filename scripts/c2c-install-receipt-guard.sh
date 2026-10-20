@@ -2,6 +2,19 @@
 # Validate an optional buildbox PASS receipt immediately before install copies.
 # Ordinary installs remain compatible: with C2C_VALIDATION_RECEIPT unset this
 # is a no-op. This script is called from inside the install flock.
+#
+# The supplied receipt is schema v1:
+#
+#   {"schema_version":1,"status":"PASS",
+#    "source":{"commit":"<git sha>","tree":"<git tree>"},
+#    "toolchain":"<identity>","dependencies":"<identity>",
+#    "artifacts":{"<installed artifact>":"<sha256>", ...}}
+#
+# The artifact map must contain exactly the eight names below. Additional
+# top-level evidence fields are allowed so the buildbox can retain command and
+# suite results, but the required fields and their types are deliberately
+# strict. The receipt is never printed, so dependency output cannot leak
+# through diagnostics.
 set -euo pipefail
 
 receipt="${C2C_VALIDATION_RECEIPT:-}"
@@ -13,53 +26,81 @@ fi
 
 export C2C_VALIDATION_RECEIPT="$receipt"
 python3 - <<'PY'
-import hashlib, json, os, subprocess, sys
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
 
 def fail(message):
     print(f"[c2c install-receipt] REFUSE: {message}", file=sys.stderr)
     raise SystemExit(1)
 
 path = os.environ["C2C_VALIDATION_RECEIPT"]
+
+def reject_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            fail(f"receipt contains duplicate key: {key}")
+        result[key] = value
+    return result
+
 try:
-    with open(path, encoding="utf-8") as handle: receipt = json.load(handle)
+    with open(path, encoding="utf-8") as handle:
+        receipt = json.load(handle, object_pairs_hook=reject_duplicate_keys)
 except Exception as exc: fail(f"malformed receipt ({exc})")
 if not isinstance(receipt, dict): fail("receipt must be a JSON object")
-status = receipt.get("status", receipt.get("verdict", receipt.get("result")))
-if isinstance(status, dict): status = status.get("status", status.get("verdict"))
-if status not in ("PASS", "pass", "passed", "success"):
-    fail(f"receipt is not a successful buildbox PASS (status={status!r})")
+if receipt.get("schema_version") != 1:
+    fail("receipt schema_version must be 1")
+if receipt.get("status") != "PASS":
+    fail("receipt status must be PASS")
+
+required = {"schema_version", "status", "source", "toolchain", "dependencies", "artifacts"}
+missing = sorted(required.difference(receipt))
+if missing: fail("receipt is missing required field(s): " + ", ".join(missing))
+
+source = receipt["source"]
+if not isinstance(source, dict): fail("receipt source must be an object")
+if set(source) != {"commit", "tree"}:
+    fail("receipt source must contain exactly commit and tree")
+
+sha_pattern = re.compile(r"^[0-9a-f]{40}$")
+for field in ("commit", "tree"):
+    if not isinstance(source[field], str) or not sha_pattern.fullmatch(source[field]):
+        fail(f"receipt source {field} must be a 40-character lowercase git SHA")
+
+for field in ("toolchain", "dependencies"):
+    if not isinstance(receipt[field], str) or not receipt[field].strip():
+        fail(f"receipt {field} identity must be a non-empty string")
 
 def git(*args):
     try: return subprocess.check_output(["git", *args], text=True, stderr=subprocess.DEVNULL).strip()
     except Exception as exc: fail(f"could not inspect source tree ({exc})")
 
 sha, tree = git("rev-parse", "HEAD"), git("write-tree")
-source = receipt.get("source") if isinstance(receipt.get("source"), dict) else receipt
-expected_sha = source.get("commit", source.get("sha", source.get("head")))
-expected_tree = source.get("tree", source.get("tree_sha", source.get("treeSha")))
-if not isinstance(expected_sha, str) or not expected_sha: fail("receipt has no source commit/sha")
+expected_sha = source["commit"]
+expected_tree = source["tree"]
 if expected_sha != sha: fail(f"source commit mismatch (receipt {expected_sha}, current {sha})")
-if not isinstance(expected_tree, str) or not expected_tree: fail("receipt has no source tree")
 if expected_tree != tree: fail(f"source tree mismatch (receipt {expected_tree}, current {tree})")
 dirty = subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=all"], text=True).strip()
 if dirty: fail("source checkout is not clean; rebuild and preserve a receipt for this exact tree")
 
-def identity(name, commands):
-    value = os.environ.get("C2C_VALIDATION_" + name.upper())
-    if value: return value
-    parts = []
-    for command in commands:
-        try: parts.append(subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL).strip())
-        except Exception: parts.append("unavailable")
-    return "\n".join(parts)
+def identity(commands, label):
+    try:
+        return subprocess.check_output(commands, text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        fail(f"could not determine current {label} identity")
 
-toolchain = identity("toolchain_id", [["ocamlc", "-version"], ["dune", "--version"], ["opam", "--version"]])
-dependencies = identity("dependency_id", [["opam", "list", "--installed", "--short"]])
-for label, current in (("toolchain", toolchain), ("dependencies", dependencies)):
-    expected = receipt.get(label, receipt.get(label + "_id"))
-    if isinstance(expected, dict): expected = expected.get("id", expected.get("sha256"))
-    if expected is None: fail(f"receipt has no {label} identity")
-    if str(expected) != current: fail(f"{label} identity mismatch")
+toolchain = "\n".join([
+    identity(["ocamlc", "-version"], "toolchain"),
+    identity(["dune", "--version"], "toolchain"),
+    identity(["opam", "--version"], "toolchain"),
+])
+dependencies = identity(["opam", "list", "--installed", "--short"], "dependencies")
+if receipt["toolchain"] != toolchain: fail("toolchain identity mismatch")
+if receipt["dependencies"] != dependencies: fail("dependencies identity mismatch")
 
 artifacts = {
     "c2c": "_build/default/ocaml/cli/c2c.exe",
@@ -71,16 +112,15 @@ artifacts = {
     "c2c-post-compact-hook": "_build/default/ocaml/tools/c2c_post_compact_hook_bin.exe",
     "c2c-deliver-inbox": "_build/default/ocaml/cli/c2c_deliver_inbox.exe",
 }
-raw = receipt.get("artifacts", receipt.get("binaries"))
-if isinstance(raw, list):
-    entries = {item.get("name", item.get("artifact")): item for item in raw if isinstance(item, dict)}
-elif isinstance(raw, dict): entries = raw
-else: fail("receipt has no artifacts object/list")
+raw = receipt["artifacts"]
+if not isinstance(raw, dict): fail("receipt artifacts must be an object")
+entries = raw
 if set(entries) != set(artifacts): fail("receipt must contain exactly the eight install artifact hashes")
 for name, relative in artifacts.items():
     item = entries[name]
-    expected_hash = item if isinstance(item, str) else item.get("sha256", item.get("hash")) if isinstance(item, dict) else None
-    if not isinstance(expected_hash, str) or len(expected_hash) != 64: fail(f"artifact {name} has no valid sha256")
+    expected_hash = item
+    if not isinstance(expected_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+        fail(f"artifact {name} must be a lowercase sha256 string")
     artifact = os.path.join(os.getcwd(), relative)
     if not os.path.isfile(artifact): fail(f"prepared artifact is missing: {relative}")
     digest = hashlib.sha256()
