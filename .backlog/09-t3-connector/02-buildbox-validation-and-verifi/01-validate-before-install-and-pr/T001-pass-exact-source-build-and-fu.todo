@@ -1,7 +1,5 @@
 ---
-claimed_at: "2026-10-19T18:51:47Z"
-claimed_by: cli-user
-completed_at: null
+completed_at: "2026-10-20T01:37:38Z"
 complexity: high
 created_at: "2026-10-19T08:16:42Z"
 depends_on:
@@ -9,11 +7,11 @@ depends_on:
 estimate_hours: 6
 id: P9.M2.E1.T001
 priority: high
-started_at: "2026-10-19T18:51:47Z"
-status: blocked
+started_at: null
+status: done
 tags: []
 title: Pass exact-source build and full tests on a buildbox
-updated_at: "2026-10-19T19:24:38Z"
+updated_at: "2026-10-20T01:37:38Z"
 ---
 
 # Pass exact-source build and full tests on a buildbox
@@ -47,3 +45,10 @@ The exact-source x-tuf buildbox passed `just build`, `just check`, forced reposi
 Gate r2 (2026-10-20, candidate c63586ed): just build/check, full OCaml, and test-t3-connector pass on isolated buildboxes; required Python phase remains red (64 failed, 511 passed, 67 skipped, 43 errors, 85 subtests) from unavailable Docker/TMUX/relay fixtures and stale pre-current CLI/install expectations. Durable evidence: .collab/findings/2026-10-20-p9-buildbox-gate-r2.md. No receipt or install.
 
 Correction: after the build-local `c2c` symlink fix, the final exact x-tuf Python phase for the current source family was 60 failed, 520 passed, 62 skipped, 43 errors, and 85 subtests passed in 525.27s. The gate is still not PASS; the durable finding has the corrected count.
+
+
+## Final gate 2026-10-20 — PASS
+
+Candidate `72280fb203758c60a66275c2320e05207bc6b186` was transferred by bundle to an isolated x-tuf checkout. The exact source tree passed `just build`, `just check`, `just test` (Python 490 passed, 68 skipped, 80 subtests; OCaml/TS/npm/T3 passed), forced `scripts/dune-build-locked.sh build @runtest --force`, and the complete eight-artifact build. Receipt: `/home/xertrov/.cache/c2c/p9/72280fb2-x-tuf-pass.json`; installed/live evidence: `/home/xertrov/.cache/c2c/p9/72280fb2-live-receipt.json`.
+
+x-p35 rebuilt the same source and passed build/check/eight-artifact compilation. Its full Python phase had one host capability failure (`docker compose` is unavailable) with 488 passed, 69 skipped; this is recorded as an environmental limitation for that secondary host, not substituted for the x-tuf PASS gate.

@@ -25,10 +25,10 @@ milestones:
       status: pending
 name: Native c2c connector for unmodified T3 Code
 stats:
-    blocked: 0
-    done: 0
+    blocked: 1
+    done: 10
     in_progress: 0
-    pending: 11
+    pending: 0
     total_tasks: 11
 status: pending
 weeks: 3

@@ -17,9 +17,9 @@ id: P9.M2
 locked: false
 name: Buildbox validation and verified installation
 stats:
-    blocked: 0
-    done: 0
+    blocked: 1
+    done: 2
     in_progress: 0
-    pending: 3
+    pending: 0
     total_tasks: 3
 status: pending

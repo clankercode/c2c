@@ -1,17 +1,20 @@
 ---
+claimed_at: "2026-10-20T01:37:48Z"
+claimed_by: cli-user
+completed_at: "2026-10-20T01:37:58Z"
 complexity: high
 created_at: "2026-10-19T08:16:44Z"
 depends_on:
     - P9.M2.E1.T001
+duration_minutes: 0.17597281588333333
 estimate_hours: 4
 id: P9.M2.E1.T002
 priority: high
-status: pending
-tags:
-    - idea
-    - planning
+started_at: "2026-10-20T01:37:48Z"
+status: done
+tags: []
 title: Install validated binaries and verify the running T3 connector
-updated_at: "2026-10-19T08:16:44Z"
+updated_at: "2026-10-20T01:37:58Z"
 ---
 
 # Install validated binaries and verify the running T3 connector
@@ -34,3 +37,8 @@ updated_at: "2026-10-19T08:16:44Z"
 ## Lane
 
 Serial installation after the buildbox PASS. This is the first actual deployment step; M1 only implements and fixture-tests installation behavior. Two-host live acceptance follows in T003.
+
+
+## Installation evidence 2026-10-20 — PASS
+
+Consumed the x-tuf PASS receipt for `72280fb203758c60a66275c2320e05207bc6b186` under the install flock; the strict receipt guard validated source commit/tree, toolchain/dependencies and all eight artifact hashes before copying. Installed and restarted only `c2c-t3.service` (and the related relay connector) on x-tuf and x-p35. Both `c2c t3 service doctor --json` reports are healthy with recovery enabled; running `/proc/<pid>/exe` hashes match the host-specific prepared artifacts. Evidence: `/home/xertrov/.cache/c2c/p9/72280fb2-live-receipt.json`.

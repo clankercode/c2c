@@ -1,4 +1,6 @@
 ---
+claimed_at: "2026-10-20T01:38:11Z"
+claimed_by: cli-user
 completed_at: null
 complexity: high
 created_at: "2026-10-19T07:12:03Z"
@@ -7,11 +9,12 @@ depends_on:
 estimate_hours: 8
 id: P9.M2.E1.T003
 priority: high
-started_at: null
-status: pending
+reason: Production relay.c2c.im lacks signed T3 peer-publication capability; isolated relay both directions pass, but public cross-host proof requires relay deployment outside this repository
+started_at: "2026-10-20T01:38:11Z"
+status: blocked
 tags: []
 title: Prove two-host delivery recovery and publish operator documentation
-updated_at: "2026-10-19T07:12:03Z"
+updated_at: "2026-10-20T01:38:21Z"
 ---
 
 # Prove two-host delivery recovery and publish operator documentation
@@ -43,3 +46,10 @@ Pending planned work. During execution follow bl-fix-many: read the full ticket,
 ## Lane
 
 Final serial review/validation lane after all implementation. Coordinate isolated fixture threads and avoid restarting the user's live T3 services.
+
+
+## Validation result 2026-10-20 — partial / external blocker
+
+Local direct delivery passed on both x-tuf and x-p35 with agent/mcp attribution, DATA framing and canonical c2c reply footer. A temporary isolated relay built from the same candidate passed both directions with unique nonces and transcript delivery. Recovery fixture/unit coverage passed and live 401 provider-auth failures correctly did not trigger Continue; a real model-availability outage was not reproduced.
+
+The configured production relay `https://relay.c2c.im` currently returns the older capability surface; the installed connector reports `relay lacks signed T3 peer-publication capability`, so service-owned T3 aliases cannot be made publicly routable there. This task remains blocked for the production cross-host proof until that relay is deployed with the signed T3 peer-publication endpoint. No public relay deployment was performed.
