@@ -172,6 +172,8 @@ let test_service_owned_registration () =
       (List.length (C2c_mcp.Broker.list_registrations broker));
     C2c_mcp.Broker.register broker ~session_id:"foreign" ~alias:m.alias ~pid:None
       ~pid_start_time:None ~registered_by:(Some "other") ();
+    Alcotest.(check bool) "foreign publish refused" true
+      (match S.publish_mapping ~owner ~mapping:m with Error _ -> true | Ok () -> false);
     Alcotest.(check bool) "foreign preserved" true
       (match S.unpublish_mapping ~owner ~mapping:m with Error _ -> true | Ok () -> false);
     Alcotest.(check int) "foreign row remains" 1
@@ -595,6 +597,249 @@ let test_dispatch_fairness_across_threads () =
     Alcotest.(check (list string)) "round robin" [ "b"; "a" ] !order;
     State.close state)
 
+(* The discovery tests below exercise the operation seam rather than the HTTP
+   transport.  This keeps the lifecycle contract deterministic while still
+   driving the complete discover -> point-read -> plan -> apply path. *)
+
+let listed_json ?(parent = `Null) ?(settled = false) ?(archived = false)
+    ?(runtime = "auto") id =
+  `Assoc
+    [ ("threadId", `String id); ("parentThreadId", parent);
+      ("settled", `Bool settled); ("archived", `Bool archived);
+      ("runtimeMode", `String runtime) ]
+
+let activity_for_thread ?(project = "project") ?(parent = None)
+    ?(settled = false) ?(archived = false) ?(deleted = false)
+    ?(runtime = "auto") id : C2c_t3_client.activity =
+  { thread_id = id; parent_thread_id = C2c_t3_client.Known parent;
+    runtime_mode = C2c_t3_client.Known runtime;
+    provider_instance_id = C2c_t3_client.Known None;
+    model = C2c_t3_client.Known None; pending_request_count = C2c_t3_client.Known 0;
+    settled = C2c_t3_client.Known settled;
+    archived = C2c_t3_client.Known archived;
+    deleted = C2c_t3_client.Known deleted;
+    snoozed = C2c_t3_client.Known false; active_run_id = C2c_t3_client.Known None;
+    items = []; recent_runs = []; runs_complete = true; complete = true;
+    text_truncated = false;
+    thread_raw =
+      `Assoc [ ("threadId", `String id); ("projectId", `String project);
+        ("parentThreadId", match parent with None -> `Null | Some value -> `String value);
+        ("settled", `Bool settled); ("archived", `Bool archived);
+        ("deleted", `Bool deleted); ("runtimeMode", `String runtime) ] }
+
+let page items : C2c_t3_client.page = { items; complete = true }
+
+let test_discover_all_projects_and_excludes_subagents () =
+  let calls = ref [] in
+  let activities =
+    [ ("a", activity_for_thread ~project:"p1" "a");
+      ("b", activity_for_thread ~project:"p2" "b");
+      ("fork", activity_for_thread ~project:"p1" ~parent:(Some "a") "fork") ]
+  in
+  let operations : S.discovery_operations =
+    { list_projects = (fun () ->
+          calls := "projects" :: !calls;
+          Lwt.return (Ok (page [ `Assoc [ ("id", `String "p1") ];
+                                `Assoc [ ("id", `String "p2") ] ])));
+      list_threads = (fun ~project_id ~include_subagents () ->
+          calls := Printf.sprintf "threads:%s:%b" project_id include_subagents :: !calls;
+          let rows = if project_id = "p1"
+            then [ listed_json "a"; listed_json ~parent:(`String "a") "fork" ]
+            else [ listed_json "b" ]
+          in
+          Lwt.return (Ok (page rows)));
+      read_activity = (fun ~thread_id ->
+          calls := ("read:" ^ thread_id) :: !calls;
+          match List.assoc_opt thread_id activities with
+          | Some activity -> Lwt.return (Ok activity)
+          | None -> Lwt.return (Error (C2c_t3_client.Timeout "fixture"))) }
+  in
+  let scan =
+    match Lwt_main.run (S.discover_with ~operations) with
+    | Ok scan -> scan
+    | Error error -> Alcotest.failf "discover failed: %s" (C2c_t3_client.error_to_string error)
+  in
+  Alcotest.(check bool) "complete" true scan.complete;
+  Alcotest.(check (list string)) "all projects" [ "p1"; "p2" ] scan.project_ids;
+  Alcotest.(check (list string)) "all rows hydrated" [ "a"; "b"; "fork" ]
+    (List.sort String.compare (List.map (fun (thread : S.thread) -> thread.thread_id) scan.listed));
+  Alcotest.(check (list string)) "include subagents is always false"
+    [ "threads:p1:false"; "threads:p2:false" ]
+    (List.filter (fun call -> String.length call >= 8 && String.sub call 0 8 = "threads:")
+       (List.rev !calls))
+
+let test_discover_marks_page_parse_and_read_failures_incomplete () =
+  let operations : S.discovery_operations =
+    { list_projects = (fun () ->
+          Lwt.return
+            (Ok ({ C2c_t3_client.items = [ `Assoc [ ("id", `String "p1") ];
+                                               `Assoc [ ("name", `String "malformed-project") ] ];
+                  complete = false } : C2c_t3_client.page)));
+      list_threads = (fun ~project_id ~include_subagents:_ () ->
+          Alcotest.(check string) "project requested" "p1" project_id;
+          Lwt.return
+            (Ok ({ C2c_t3_client.items = [ listed_json "good";
+                                             `Assoc [ ("threadId", `String "malformed") ];
+                                             listed_json "read-fails" ];
+                  complete = false } : C2c_t3_client.page)));
+      read_activity = (fun ~thread_id ->
+          if thread_id = "good" then Lwt.return (Ok (activity_for_thread "good"))
+          else Lwt.return (Error (C2c_t3_client.Timeout "fixture read failure"))) }
+  in
+  let scan =
+    match Lwt_main.run (S.discover_with ~operations) with
+    | Ok scan -> scan
+    | Error error -> Alcotest.failf "discover failed: %s" (C2c_t3_client.error_to_string error)
+  in
+  Alcotest.(check bool) "partial project/page/read scan" false scan.complete;
+  Alcotest.(check (list string)) "only authoritative row survives" [ "good" ]
+    (List.map (fun (thread : S.thread) -> thread.thread_id) scan.listed);
+  Alcotest.(check bool) "parse and read errors retained" true (List.length scan.errors >= 3)
+
+let test_moved_bound_thread_survives_point_read_end_to_end () =
+  let operations : S.discovery_operations =
+    { list_projects = (fun () -> Lwt.return (Ok (page [ `Assoc [ ("id", `String "p") ] ])));
+      list_threads = (fun ~project_id:_ ~include_subagents:_ () ->
+          (* The bound thread was on a previous page and moved while T3 was
+             enumerating. It is intentionally absent from this snapshot. *)
+          Lwt.return (Ok (page [ listed_json "still-visible" ])));
+      read_activity = (fun ~thread_id ->
+          match thread_id with
+          | "still-visible" -> Lwt.return (Ok (activity_for_thread "still-visible"))
+          | "moved" -> Lwt.return (Ok (activity_for_thread "moved"))
+          | _ -> Lwt.return (Error (C2c_t3_client.Timeout "unexpected id"))) }
+  in
+  let scan =
+    match Lwt_main.run (S.discover_with ~operations) with
+    | Ok scan -> scan
+    | Error error -> Alcotest.failf "discover failed: %s" (C2c_t3_client.error_to_string error)
+  in
+  let old = mapping ~id:"moved" ~alias:"t3-moved" () in
+  Alcotest.(check (list string)) "missing binding is point-read"
+    [ "moved" ] (S.missing_bound_thread_ids ~scan ~mappings:[ old ]);
+  let point_reads =
+    List.map
+      (fun thread_id ->
+        let point =
+          match Lwt_main.run
+                  (S.read_bound_thread_with ~read_activity:operations.read_activity ~thread_id) with
+          | Ok point -> point
+          | Error error -> Alcotest.failf "point read failed: %s" (C2c_t3_client.error_to_string error)
+        in
+        (thread_id, point))
+      (S.missing_bound_thread_ids ~scan ~mappings:[ old ])
+  in
+  let plan = S.plan_reconciliation ~scan ~mappings:[ old ] ~point_reads () in
+  Alcotest.(check bool) "moved binding remains routable" true
+    (List.exists (fun candidate -> candidate.S.thread.thread_id = "moved") plan.routable);
+  Alcotest.(check int) "moved binding not retired" 0 (List.length plan.retire)
+
+let test_point_read_only_exact_not_found_is_retirement () =
+  let read error ~thread_id:_ = Lwt.return (Error error) in
+  let point error =
+    match Lwt_main.run (S.read_bound_thread_with ~read_activity:(read error) ~thread_id:"gone") with
+    | Ok point -> point
+    | Error error -> Alcotest.failf "point read wrapper failed: %s" (C2c_t3_client.error_to_string error)
+  in
+  Alcotest.(check bool) "exact code retires" true
+    (point (C2c_t3_client.Tool_rejected { tool = "t3_thread_read"; code = "thread_not_found" })
+     = S.Not_found_same_environment);
+  Alcotest.(check bool) "generic not found is held" true
+    (match point (C2c_t3_client.Tool_rejected { tool = "t3_thread_read"; code = "not_found" }) with
+     | S.Failed _ -> true | _ -> false);
+  Alcotest.(check bool) "auth failure is held" true
+    (match point (C2c_t3_client.Auth_denied { status = 401 }) with
+     | S.Failed _ -> true | _ -> false)
+
+let test_permission_ineligible_root_is_held_and_unpublished () =
+  let state_dir = temp_dir "c2c-t3-permission-state" in
+  let broker_root = temp_dir "c2c-t3-permission-broker" in
+  Fun.protect ~finally:(fun () -> cleanup_dir state_dir; cleanup_dir broker_root)
+    (fun () ->
+      let state = match State.open_state ~environment_id:"env" ~dir:state_dir () with
+        | Ok state -> state | Error _ -> Alcotest.fail "state"
+      in
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let pid = Some (Unix.getpid ()) in
+      let owner =
+        { S.environment_id = "env"; broker; pid;
+          pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid;
+          cwd = None; opaque_host_id = None }
+      in
+      let open_candidate = { S.thread = thread "root"; mapping = None } in
+      let published =
+        S.apply_plan ~owner ~state
+          ~plan:{ routable = [ open_candidate ]; unroutable = []; retire = []; degraded = [] }
+      in
+      let mapping = match State.find_by_thread state ~thread_id:"root" with
+        | Some mapping -> mapping | None -> Alcotest.fail "mapping"
+      in
+      Alcotest.(check int) "initially published" 1 (List.length published.published);
+      let ineligible_thread = thread ~runtime:(Some "full-access") "root" in
+      let plan = S.plan_reconciliation ~credential_access:(Some "auto")
+          ~scan:{ listed = [ ineligible_thread ]; project_ids = [ "p" ]; complete = true; errors = [] }
+          ~mappings:[ mapping ] ~point_reads:[] ()
+      in
+      Alcotest.(check int) "full access is held" 1 (List.length plan.unroutable);
+      let held = S.apply_plan ~owner ~state ~plan in
+      Alcotest.(check int) "held root is not published" 0 (List.length held.published);
+      Alcotest.(check int) "held root is unpublished" 0
+        (List.length (C2c_mcp.Broker.list_registrations broker));
+      State.close state)
+
+let test_two_roots_republish_independently_after_restart () =
+  let state_dir = temp_dir "c2c-t3-restart-state" in
+  let broker_root = temp_dir "c2c-t3-restart-broker" in
+  Fun.protect ~finally:(fun () -> cleanup_dir state_dir; cleanup_dir broker_root)
+    (fun () ->
+      let broker = C2c_mcp.Broker.create ~root:broker_root in
+      let pid = Some (Unix.getpid ()) in
+      let owner =
+        { S.environment_id = "env"; broker; pid;
+          pid_start_time = C2c_mcp.Broker.capture_pid_start_time pid;
+          cwd = None; opaque_host_id = None }
+      in
+      let first = match State.open_state ~environment_id:"env" ~dir:state_dir () with
+        | Ok state -> state | Error _ -> Alcotest.fail "first state"
+      in
+      let candidates =
+        [ { S.thread = thread ~project:"same" "root-a"; mapping = None };
+          { S.thread = thread ~project:"same" "root-b"; mapping = None } ]
+      in
+      let result = S.apply_plan ~owner ~state:first
+          ~plan:{ routable = candidates; unroutable = []; retire = []; degraded = [] } in
+      Alcotest.(check int) "two roots published" 2 (List.length result.published);
+      let aliases_before =
+        List.map (fun candidate -> Option.get candidate.S.mapping) result.published
+        |> List.map (fun mapping -> mapping.State.alias)
+      in
+      State.close first;
+      let second = match State.open_state ~environment_id:"env" ~dir:state_dir () with
+        | Ok state -> state | Error _ -> Alcotest.fail "reopened state"
+      in
+      let mappings = List.map (fun id -> Option.get (State.find_by_thread second ~thread_id:id))
+          [ "root-a"; "root-b" ]
+      in
+      let rerun_candidates =
+        List.map2 (fun thread mapping -> { S.thread; mapping = Some mapping })
+          [ thread ~project:"same" "root-a"; thread ~project:"same" "root-b" ] mappings
+      in
+      let rerun = S.apply_plan ~owner ~state:second
+          ~plan:{ routable = rerun_candidates; unroutable = []; retire = []; degraded = [] } in
+      let aliases_after =
+        List.map (fun candidate -> Option.get candidate.S.mapping) rerun.published
+        |> List.map (fun mapping -> mapping.State.alias)
+      in
+      Alcotest.(check (list string)) "aliases survive restart" aliases_before aliases_after;
+      Alcotest.(check int) "both registrations remain" 2
+        (List.length (C2c_mcp.Broker.list_registrations broker));
+      List.iter2
+        (fun id alias ->
+          Alcotest.(check bool) ("route " ^ id) true
+            (S.resolve_locator ~mappings ~registered_aliases:aliases_after alias = S.Alias alias))
+        [ "root-a"; "root-b" ] aliases_after;
+      State.close second)
+
 let () =
   Alcotest.run "c2c_t3_service"
     [ ("decode", [ Alcotest.test_case "root and fork" `Quick test_root_and_fork;
@@ -606,7 +851,13 @@ let () =
       ("state", [ Alcotest.test_case "environment alias" `Quick test_state_environment_alias_and_reopen ]);
       ("locator", [ Alcotest.test_case "resolve" `Quick test_locator ]);
       ("broker", [ Alcotest.test_case "owned registration" `Quick test_service_owned_registration;
-                    Alcotest.test_case "apply retire reopen" `Quick test_apply_retire_and_reopen ]);
+                    Alcotest.test_case "apply retire reopen" `Quick test_apply_retire_and_reopen;
+                    Alcotest.test_case "permission hold" `Quick test_permission_ineligible_root_is_held_and_unpublished;
+                    Alcotest.test_case "restart independent roots" `Quick test_two_roots_republish_independently_after_restart ]);
+      ("discovery", [ Alcotest.test_case "all projects and roots" `Quick test_discover_all_projects_and_excludes_subagents;
+                       Alcotest.test_case "incomplete evidence" `Quick test_discover_marks_page_parse_and_read_failures_incomplete;
+                       Alcotest.test_case "moved binding point read" `Quick test_moved_bound_thread_survives_point_read_end_to_end;
+                       Alcotest.test_case "exact not found" `Quick test_point_read_only_exact_not_found_is_retirement ]);
       ("delivery", [ Alcotest.test_case "hostile DATA and footer" `Quick test_data_frame_and_footer_are_hostile_safe;
                       Alcotest.test_case "accept ack and duplicate text" `Quick test_accept_ack_and_distinct_identical_messages;
                       Alcotest.test_case "timeout restart replay" `Quick test_timeout_retries_same_request_after_reopen;

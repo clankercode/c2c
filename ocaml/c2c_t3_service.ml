@@ -154,8 +154,17 @@ let unique_strings values =
       else (Hashtbl.add seen value (); true))
     values
 
-let discover (client : T3.client) =
-  client |> T3.list_projects >>= function
+type discovery_operations = {
+  list_projects : unit -> (T3.page, T3.error) result Lwt.t;
+  list_threads :
+    project_id:string -> include_subagents:bool -> unit ->
+    (T3.page, T3.error) result Lwt.t;
+  read_activity :
+    thread_id:string -> (T3.activity, T3.error) result Lwt.t;
+}
+
+let discover_with ~operations =
+  operations.list_projects () >>= function
   | Error error -> Lwt.return (Error error)
   | Ok project_page ->
       let hydrate listed errors complete project_ids =
@@ -169,7 +178,7 @@ let discover (client : T3.client) =
                      complete;
                      errors = List.sort_uniq String.compare errors })
           | listed_thread :: rest ->
-              T3.read_activity client ~thread_id:listed_thread.thread_id () >>= function
+              operations.read_activity ~thread_id:listed_thread.thread_id >>= function
               | Error error ->
                   (* A new root is not advertised from a stale list row when
                      its authoritative lifecycle read failed. *)
@@ -196,7 +205,7 @@ let discover (client : T3.client) =
             hydrate (unique_by_thread_id (List.rev listed)) (List.rev errors)
               complete project_ids
         | project_id :: rest ->
-            T3.list_threads client ~project_id ~include_subagents:false () >>= function
+            operations.list_threads ~project_id ~include_subagents:false () >>= function
             | Error error ->
                 collect rest listed
                   (T3.error_to_string error :: errors) false
@@ -215,6 +224,14 @@ let discover (client : T3.client) =
       in
       collect project_ids [] project_errors
         (project_page.complete && project_errors = [])
+
+let discover (client : T3.client) =
+  discover_with
+    ~operations:
+      { list_projects = (fun () -> T3.list_projects client);
+        list_threads = (fun ~project_id ~include_subagents () ->
+          T3.list_threads client ~project_id ~include_subagents ());
+        read_activity = (fun ~thread_id -> T3.read_activity client ~thread_id ()) }
 
 let missing_bound_thread_ids ~(scan : scan) ~(mappings : State.mapping list) =
   if not scan.complete then []
@@ -245,14 +262,19 @@ let same_environment_not_found = function
 
 let error_is_same_environment_not_found = same_environment_not_found
 
-let read_bound_thread (client : T3.client) ~thread_id =
-  T3.read_activity client ~thread_id () >|= function
+let read_bound_thread_with ~read_activity ~thread_id =
+  read_activity ~thread_id >|= function
   | Ok activity ->
       (match thread_of_activity ~project_id:"" activity with
        | Ok thread -> Ok (Present thread)
        | Error message -> Ok (Failed message))
   | Error error when same_environment_not_found error -> Ok Not_found_same_environment
   | Error error -> Ok (Failed (T3.error_to_string error))
+
+let read_bound_thread (client : T3.client) ~thread_id =
+  read_bound_thread_with
+    ~read_activity:(fun ~thread_id -> T3.read_activity client ~thread_id ())
+    ~thread_id
 
 type candidate = { thread : thread; mapping : State.mapping option }
 

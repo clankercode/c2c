@@ -57,6 +57,20 @@ val discover : C2c_t3_client.client -> (scan, C2c_t3_client.error) result Lwt.t
     project/page marks the scan incomplete. Incomplete scans never authorize
     retirement. *)
 
+type discovery_operations = {
+  list_projects : unit -> (C2c_t3_client.page, C2c_t3_client.error) result Lwt.t;
+  list_threads :
+    project_id:string -> include_subagents:bool -> unit ->
+    (C2c_t3_client.page, C2c_t3_client.error) result Lwt.t;
+  read_activity :
+    thread_id:string -> (C2c_t3_client.activity, C2c_t3_client.error) result Lwt.t;
+}
+
+val discover_with :
+  operations:discovery_operations -> (scan, C2c_t3_client.error) result Lwt.t
+(** Testable discovery seam. The production {!discover} supplies the native
+    client operations; callers must still pass [include_subagents=false]. *)
+
 val missing_bound_thread_ids :
   scan:scan -> mappings:C2c_t3_state.mapping list -> string list
 (** Active, non-tombstoned mappings absent from a completed list snapshot.
@@ -73,6 +87,12 @@ val read_bound_thread :
 (** Point-read a previously bound thread. Only the narrow, explicit T3
     not-found codes become [Not_found_same_environment]; authentication,
     transport and all other tool failures remain [Failed]. *)
+
+val read_bound_thread_with :
+  read_activity:(thread_id:string ->
+    (C2c_t3_client.activity, C2c_t3_client.error) result Lwt.t) ->
+  thread_id:string -> (point_read, C2c_t3_client.error) result Lwt.t
+(** Testable point-read seam used by {!read_bound_thread}. *)
 
 val error_is_same_environment_not_found : C2c_t3_client.error -> bool
 (** Exact external MCP contract code used by [read_bound_thread]. *)
