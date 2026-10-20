@@ -2447,6 +2447,24 @@ let auto_register_impl ~broker_root ?session_id_override () =
                  (hit.registration.alias, adopted_rb)
              | None -> (env_alias, None))
       in
+      (* T3 connector aliases are owned by the connector process, even when
+         their owner PID is stale or a native hook happens to inherit the
+         deterministic service session id.  Never let generic MCP startup
+         adopt or overwrite a service row by alias or session.  The
+         cross-broker hit matters because sticky alias adoption searches every
+         repository broker before registering locally. *)
+      let t3_service_identity_conflict =
+        let matches (reg : registration) =
+          reg.client_type = Some "t3"
+          && reg.registered_by = Some "c2c-t3-service"
+          && ( reg.session_id = session_id
+             || Broker.alias_casefold reg.alias = Broker.alias_casefold alias )
+        in
+        List.exists matches existing
+        || match prior_cross_broker with
+           | Some hit -> matches hit.registration
+           | None -> false
+      in
       (* Guard 1: if an alive registration already exists for this session_id
          with a DIFFERENT alias, skip — prevents session hijack when a child
          process inherits CLAUDE_SESSION_ID but has a different alias. *)
@@ -2536,7 +2554,9 @@ let auto_register_impl ~broker_root ?session_id_override () =
              && reg.pid = pid)
           existing
       in
-      if not hijack_guard && not alias_occupied_guard && not same_session_alive_different_pid
+      if not t3_service_identity_conflict
+         && not hijack_guard && not alias_occupied_guard
+         && not same_session_alive_different_pid
          && not same_pid_alive_different_session && not hook_client_type_conflict
       then begin
         let pid_start_time = Broker.capture_pid_start_time pid in

@@ -399,6 +399,14 @@ module Broker : sig
 
   val list_registrations : t -> registration list
 
+  val t3_service_registration : t -> session_id:string -> registration option
+  (** Return the service-owned T3 registration for [session_id], if present.
+      The provenance marker and [client_type = "t3"] are both required. *)
+
+  val raw_drain_is_authorized : t -> session_id:string -> drained_by:string -> bool
+  (** Raw inbox consumers are fenced from service-owned T3 mailboxes.  Only
+      the T3 service provenance marker may drain its own registration. *)
+
   val sticky_alias_conflict : t -> session_id:string -> requested_alias:string -> string option
   (** B135: [Some existing_alias] when [session_id] already has a registration
       whose alias differs (casefold) from [requested_alias]. Used to refuse

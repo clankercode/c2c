@@ -420,6 +420,11 @@ open C2c_mcp_helpers
   let codex_hook_registered_by = "codex-hook"
   let claude_hook_registered_by = "claude-hook"
   let kimi_hook_registered_by = "kimi-hook"
+  (* The native T3 connector is the sole owner of registrations carrying this
+     provenance marker.  Keep the marker in the broker layer so every raw
+     drain path (CLI, hooks, watchers and sidecars) shares the same fence;
+     callers cannot bypass it merely by resolving the service alias first. *)
+  let t3_service_registered_by = "c2c-t3-service"
   let codex_hook_auto_registration_ttl_s = 24.0 *. 60.0 *. 60.0
 
   let is_codex_hook_auto_registration reg =
@@ -1555,6 +1560,19 @@ open C2c_mcp_helpers
   let list_registrations t =
     load_registrations t
     |> List.filter (fun reg -> not (is_expired_codex_hook_auto_registration reg))
+
+  let t3_service_registration t ~session_id =
+    List.find_opt
+      (fun (reg : registration) ->
+         reg.session_id = session_id
+         && reg.client_type = Some "t3"
+         && reg.registered_by = Some t3_service_registered_by)
+      (list_registrations t)
+
+  let raw_drain_is_authorized t ~session_id ~drained_by =
+    match t3_service_registration t ~session_id with
+    | None -> true
+    | Some _ -> drained_by = t3_service_registered_by
 
   (* B135: alias is sticky per session_id. Explicit rename of an existing
      registration is refused — start a fresh session for a new name.
@@ -3644,41 +3662,45 @@ open C2c_mcp_helpers
      messages are never deleted, only archived" invariant even in the
      failure case. *)
   let drain_inbox ?(drained_by = "unknown") t ~session_id =
-    with_inbox_lock t ~session_id (fun () ->
-        let messages = load_inbox t ~session_id in
-        (match messages with
-         | [] -> ()
-         | _ ->
-             (* #284: ephemeral messages are returned to the caller for
-                delivery but never appended to the archive. Their only
-                persistent trace is the recipient's transcript / channel
-                notification, which is per-session-local. *)
-             let to_archive = List.filter (fun m -> not m.ephemeral) messages in
-             (match to_archive with
-              | [] -> ()
-              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
-             save_inbox t ~session_id []);
-        messages)
+    if not (raw_drain_is_authorized t ~session_id ~drained_by) then []
+    else
+      with_inbox_lock t ~session_id (fun () ->
+          let messages = load_inbox t ~session_id in
+          (match messages with
+           | [] -> ()
+           | _ ->
+               (* #284: ephemeral messages are returned to the caller for
+                  delivery but never appended to the archive. Their only
+                  persistent trace is the recipient's transcript / channel
+                  notification, which is per-session-local. *)
+               let to_archive = List.filter (fun m -> not m.ephemeral) messages in
+               (match to_archive with
+                | [] -> ()
+                | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
+               save_inbox t ~session_id []);
+          messages)
 
   (* Like drain_inbox but only drains non-deferrable messages.  Deferrable
      messages stay in the inbox for the next explicit poll or idle-flush.
      Used by push paths (channel notification watcher, PostToolUse hook) to
      suppress low-priority messages that the sender marked as non-urgent. *)
   let drain_inbox_push ?(drained_by = "unknown") t ~session_id =
-    with_inbox_lock t ~session_id (fun () ->
-        let messages = load_inbox t ~session_id in
-        let to_push = List.filter (fun m -> not m.deferrable) messages in
-        let to_keep = List.filter (fun m -> m.deferrable) messages in
-        (match to_push with
-         | [] -> ()
-         | _ ->
-             (* #284: same archive-skip rule applies on the push path. *)
-             let to_archive = List.filter (fun m -> not m.ephemeral) to_push in
-             (match to_archive with
-              | [] -> ()
-              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
-             save_inbox t ~session_id to_keep);
-        to_push)
+    if not (raw_drain_is_authorized t ~session_id ~drained_by) then []
+    else
+      with_inbox_lock t ~session_id (fun () ->
+          let messages = load_inbox t ~session_id in
+          let to_push = List.filter (fun m -> not m.deferrable) messages in
+          let to_keep = List.filter (fun m -> m.deferrable) messages in
+          (match to_push with
+           | [] -> ()
+           | _ ->
+               (* #284: same archive-skip rule applies on the push path. *)
+               let to_archive = List.filter (fun m -> not m.ephemeral) to_push in
+               (match to_archive with
+                | [] -> ()
+                | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
+               save_inbox t ~session_id to_keep);
+          to_push)
 
   (* Like drain_inbox but only drains messages satisfying [pred]; non-matching
      messages remain in the live inbox for later polls.  Used by the CLI's
@@ -3688,24 +3710,26 @@ open C2c_mcp_helpers
      messages are appended to the archive BEFORE the inbox is rewritten, all
      under the per-inbox lock. *)
   let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) ?(durable = false) t ~session_id ~pred =
-    with_inbox_lock t ~session_id (fun () ->
-        let messages = load_inbox ~strict t ~session_id in
-        let matching, rest = List.partition pred messages in
-        (match matching with
-         | [] -> ()
-         | _ ->
-             (* #284: same archive-skip rule for ephemeral messages. *)
-             let to_archive = List.filter (fun m -> not m.ephemeral) matching in
-             (match to_archive with
-              | [] -> ()
-              | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
-             if durable && to_archive <> [] then begin
-               C2c_io.fsync_file_and_parent (archive_path t ~session_id);
-               C2c_io.fsync_path t.root
-             end;
-             save_inbox t ~session_id rest;
-             if durable then C2c_io.fsync_file_and_parent (inbox_path t ~session_id));
-        matching)
+    if not (raw_drain_is_authorized t ~session_id ~drained_by) then []
+    else
+      with_inbox_lock t ~session_id (fun () ->
+          let messages = load_inbox ~strict t ~session_id in
+          let matching, rest = List.partition pred messages in
+          (match matching with
+           | [] -> ()
+           | _ ->
+               (* #284: same archive-skip rule for ephemeral messages. *)
+               let to_archive = List.filter (fun m -> not m.ephemeral) matching in
+               (match to_archive with
+                | [] -> ()
+                | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
+               if durable && to_archive <> [] then begin
+                 C2c_io.fsync_file_and_parent (archive_path t ~session_id);
+                 C2c_io.fsync_path t.root
+               end;
+               save_inbox t ~session_id rest;
+               if durable then C2c_io.fsync_file_and_parent (inbox_path t ~session_id));
+          matching)
 
   type sweep_result =
     { dropped_regs : registration list

@@ -172,6 +172,66 @@ let test_guard_predicate_env_contract () =
       check bool "no-auto-register disables raw consumers" true
         (C2c_mcp.raw_consumers_disabled ()))
 
+let test_service_registration_fences_raw_drains () =
+  let root = temp_root () in
+  Fun.protect ~finally:(fun () -> rm_rf root) (fun () ->
+    let broker = C2c_mcp.Broker.create ~root in
+    let sid = "t3-svc-fenced-session" in
+    let alias = "t3-fenced" in
+    C2c_mcp.Broker.register broker ~session_id:sid ~alias
+      ~pid:None ~pid_start_time:None ~client_type:(Some "t3")
+      ~registered_by:(Some "c2c-t3-service") ();
+    C2c_mcp.Broker.enqueue_message broker ~from_alias:"peer"
+      ~to_alias:alias ~content:"must remain for T3" ();
+    check bool "ordinary drain is fenced" false
+      (C2c_mcp.Broker.raw_drain_is_authorized broker ~session_id:sid
+         ~drained_by:"hook");
+    check int "ordinary drain cannot consume service mail" 0
+      (List.length
+         (C2c_mcp.Broker.drain_inbox ~drained_by:"hook" broker ~session_id:sid));
+    check int "service mail remains queued" 1
+      (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:sid));
+    check int "service provenance may drain its own mail" 1
+      (List.length
+         (C2c_mcp.Broker.drain_inbox
+            ~drained_by:"c2c-t3-service" broker ~session_id:sid));
+    check int "service inbox is empty after authorized drain" 0
+      (List.length (C2c_mcp.Broker.read_inbox broker ~session_id:sid)))
+
+let test_auto_register_does_not_adopt_service_registration () =
+  let root = temp_root () in
+  let keys = ["C2C_MCP_AUTO_REGISTER_ALIAS"; "C2C_MCP_CLIENT_TYPE";
+              "C2C_MCP_SESSION_ID"; "C2C_NO_AUTO_REGISTER"] in
+  let saved = List.map (fun key -> key, Sys.getenv_opt key) keys in
+  let restore (key, value) =
+    match value with Some v -> Unix.putenv key v | None -> Unix.putenv key ""
+  in
+  Fun.protect
+    ~finally:(fun () -> List.iter restore saved; rm_rf root)
+    (fun () ->
+      Unix.putenv "C2C_MCP_AUTO_REGISTER_ALIAS" "t3-adoption-target";
+      Unix.putenv "C2C_MCP_CLIENT_TYPE" "codex";
+      Unix.putenv "C2C_MCP_SESSION_ID" "t3-svc-adoption-session";
+      Unix.putenv "C2C_NO_AUTO_REGISTER" "";
+      let broker = C2c_mcp.Broker.create ~root in
+      C2c_mcp.Broker.register broker
+        ~session_id:"t3-svc-adoption-session" ~alias:"t3-adoption-target"
+        ~pid:None ~pid_start_time:None ~client_type:(Some "t3")
+        ~registered_by:(Some "c2c-t3-service") ();
+      C2c_mcp.auto_register_impl ~broker_root:root
+        ~session_id_override:"t3-svc-adoption-session" ();
+      match C2c_mcp.Broker.list_registrations broker with
+      | [ registration ] ->
+          check (option string) "service client type remains owned"
+            (Some "t3") registration.client_type;
+          check (option string) "service provenance remains owned"
+            (Some "c2c-t3-service") registration.registered_by;
+          check (option int) "native startup did not adopt service PID"
+            None registration.pid
+      | registrations ->
+          failf "expected one preserved service registration, got %d"
+            (List.length registrations))
+
 let () =
   Alcotest.run "c2c raw consumer guard"
     [ ("guard", [
@@ -179,4 +239,8 @@ let () =
       ; ("standalone deliver", `Quick, test_standalone_deliver_rejected)
       ; ("host transport", `Quick, test_host_transport_remains_available)
       ; ("predicate env contract", `Quick, test_guard_predicate_env_contract)
+      ; ("service registration fences raw drains", `Quick,
+          test_service_registration_fences_raw_drains)
+      ; ("auto-register does not adopt service registration", `Quick,
+          test_auto_register_does_not_adopt_service_registration)
       ]) ]
