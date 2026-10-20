@@ -382,7 +382,7 @@ module Broker : sig
       is available (up to 5 tries: primes 2,3,5,7,11), or [None] when all
       candidates are exhausted (ALIAS_COLLISION_EXHAUSTED). *)
 
-  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?herdr_pane:string option -> ?herdr_socket:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?registered_by:string option -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> ?preserve_existing_metadata:bool -> ?clear_hook_ownership:bool -> unit -> unit
+  val register : t -> session_id:string -> alias:string -> pid:int option -> pid_start_time:int option -> ?client_type:string option -> ?plugin_version:string option -> ?enc_pubkey:string option -> ?ed25519_pubkey:string option -> ?pubkey_signed_at:float option -> ?pubkey_sig:string option -> ?role:string option -> ?tmux_location:string option -> ?herdr_pane:string option -> ?herdr_socket:string option -> ?cwd:string option -> ?metadata_opt_out:bool -> ?registered_by:string option -> ?opaque_host_id:string option -> ?from_auto_gen:bool -> ?preserve_existing_metadata:bool -> ?clear_hook_ownership:bool -> ?registry_locked:bool -> unit -> unit
 
   val update_wake_targets : t -> session_id:string -> ?tmux_location:string option -> ?herdr_pane:string option -> ?herdr_socket:string option -> unit -> unit
   (** [update_wake_targets t ~session_id ...] updates only the wake-target
@@ -647,6 +647,7 @@ module Broker : sig
   val registry_prune : t -> managed_session_ids:string list -> patterns:string list -> registration list
   val registry_prune_preview : t -> managed_session_ids:string list -> patterns:string list -> registration list
   val deregister : t -> alias:string -> registration option
+  val deregister_locked : t -> alias:string -> registration option
   val dead_letter_path : t -> string
   type archive_entry = { ae_drained_at : float; ae_from_alias : string; ae_to_alias : string; ae_content : string; ae_deferrable : bool; ae_drained_by : string; ae_message_id : string option }
   val archive_path : t -> session_id:string -> string

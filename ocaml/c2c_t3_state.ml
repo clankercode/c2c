@@ -4,6 +4,12 @@ type kind = Inbound | Recovery
 
 type tombstone = { tombstoned_at : float; reason : string }
 
+(* A held mapping remains durably known to the connector while it cannot be
+   advertised or delivered.  This is deliberately separate from a tombstone:
+   a hold is recoverable after credentials/policy/runtime repair, whereas a
+   tombstone retires the thread identity. *)
+type hold = { held_at : float; reason : string }
+
 type mapping = {
   thread_id : string;
   alias : string;
@@ -61,6 +67,7 @@ type t = {
   max_acked : int;
   mutable lock : Unix.file_descr option;
   mutable maps : mapping list;  (* oldest first *)
+  mutable holds : (string * hold) list;  (* thread id, oldest first *)
   mutable journal : entry list; (* oldest first *)
   mutable acked : acked_entry list; (* oldest first *)
   mutable dispatch_at : float option;
@@ -77,6 +84,7 @@ type t = {
 type read_only = {
   read_environment_id : string;
   read_maps : mapping list;
+  read_holds : (string * hold) list;
 }
 
 (* POSIX lockf locks are per-process: a second [lockf] on the same file from
@@ -152,6 +160,12 @@ let mapping_to_json m =
          [ ("tombstone",
             `Assoc [ ("at", `Float tb.tombstoned_at); ("reason", `String tb.reason) ]) ])
 
+let hold_to_json (thread_id, hold) =
+  `Assoc
+    [ ("thread_id", `String thread_id);
+      ("held_at", `Float hold.held_at);
+      ("reason", `String hold.reason) ]
+
 let entry_to_json e =
   `Assoc
     [ ("seq", `Int e.seq);
@@ -166,6 +180,7 @@ let to_json t =
       ("environment_id", `String t.environment_id);
       ("next_seq", `Int t.next_seq);
       ("mappings", `List (List.map mapping_to_json t.maps));
+      ("holds", `List (List.map hold_to_json t.holds));
       ("journal", `List (List.map entry_to_json t.journal));
       ("acked",
        `List
@@ -212,6 +227,11 @@ let mapping_of_json j =
     created_at = to_num "created_at" (member "created_at" j);
     tombstone }
 
+let hold_of_json j =
+  (to_str "hold.thread_id" (member "thread_id" j),
+   { held_at = to_num "hold.held_at" (member "held_at" j);
+     reason = to_str "hold.reason" (member "reason" j) })
+
 let kind_of_json j =
   let s = to_str "kind" j in
   match kind_of_string s with Some k -> k | None -> bad "unknown kind %S" s
@@ -247,6 +267,9 @@ let load_into t =
                )
          | _ -> bad "unsupported or missing version");
         t.maps <- List.map mapping_of_json (to_list "mappings" (member "mappings" j));
+        (* [holds] was added after version 2.  Missing means no holds so
+           existing connector state remains readable without migration. *)
+        t.holds <- List.map hold_of_json (to_list "holds" (member "holds" j));
         t.journal <- List.map entry_of_json (to_list "journal" (member "journal" j));
         t.acked <-
           List.map
@@ -303,18 +326,18 @@ let durable_write t content =
 (* Apply [f] to a copy of the state's mutable fields, persist, and only then
    commit. A failed write leaves [t] untouched. *)
 let transact t f =
-  let saved = (t.maps, t.journal, t.acked, t.dispatch_at, t.next_seq) in
+  let saved = (t.maps, t.holds, t.journal, t.acked, t.dispatch_at, t.next_seq) in
   match f () with
   | Error _ as e ->
-    let m, j, a, d, n = saved in
-    t.maps <- m; t.journal <- j; t.acked <- a; t.dispatch_at <- d; t.next_seq <- n;
+    let m, h, j, a, d, n = saved in
+    t.maps <- m; t.holds <- h; t.journal <- j; t.acked <- a; t.dispatch_at <- d; t.next_seq <- n;
     e
   | Ok v -> (
     match durable_write t (Yojson.Safe.to_string (to_json t) ^ "\n") with
     | Ok () -> Ok v
     | Error msg ->
-      let m, j, a, d, n = saved in
-      t.maps <- m; t.journal <- j; t.acked <- a; t.dispatch_at <- d; t.next_seq <- n;
+      let m, h, j, a, d, n = saved in
+      t.maps <- m; t.holds <- h; t.journal <- j; t.acked <- a; t.dispatch_at <- d; t.next_seq <- n;
       Error ("T3 state write failed: " ^ msg))
 
 (* ---- open / close ---- *)
@@ -370,7 +393,7 @@ let open_state ?(clock = Unix.gettimeofday) ?(max_journal = default_max_journal)
         { dir; path = Filename.concat dir "state.json"; environment_id; fsync;
           migrate_legacy; clock; max_journal;
           max_payload_bytes; max_tombstones; max_acked; lock = Some lock_fd;
-          maps = []; journal = []; acked = []; dispatch_at = None; next_seq = 1;
+          maps = []; holds = []; journal = []; acked = []; dispatch_at = None; next_seq = 1;
           needs_migration_write = false }
       in
       match check_private_file t.path with
@@ -411,21 +434,44 @@ let open_read_only ~environment_id ~dir () =
         clock = Unix.gettimeofday; max_journal = default_max_journal;
         max_payload_bytes = default_max_payload_bytes;
         max_tombstones = default_max_tombstones; max_acked = default_max_acked;
-        lock = None; maps = []; journal = []; acked = []; dispatch_at = None;
+        lock = None; maps = []; holds = []; journal = []; acked = []; dispatch_at = None;
         next_seq = 1; needs_migration_write = false }
     in
     match load_into t with
     | Error error -> Error error
-    | Ok () -> Ok { read_environment_id = t.environment_id; read_maps = t.maps }
+    | Ok () ->
+        Ok
+          { read_environment_id = t.environment_id;
+            read_maps = t.maps;
+            read_holds = t.holds }
 
 let read_only_environment_id t = t.read_environment_id
 let read_only_mappings t = t.read_maps
+let read_only_holds t = t.read_holds
 
 (* ---- mapping ---- *)
 
 let find_by_thread t ~thread_id = List.find_opt (fun m -> m.thread_id = thread_id) t.maps
 let find_by_alias t ~alias = List.find_opt (fun m -> m.alias = alias) t.maps
 let mappings t = t.maps
+
+let held t = t.holds
+
+let hold t ~thread_id ~reason =
+  if String.trim thread_id = "" then Error "empty T3 thread id"
+  else
+    transact t (fun () ->
+      let updated = (thread_id, { held_at = t.clock (); reason }) in
+      t.holds <-
+        List.filter (fun (id, _) -> id <> thread_id) t.holds @ [ updated ];
+      Ok ())
+
+let clear_hold t ~thread_id =
+  if not (List.exists (fun (id, _) -> id = thread_id) t.holds) then Ok false
+  else
+    transact t (fun () ->
+      t.holds <- List.filter (fun (id, _) -> id <> thread_id) t.holds;
+      Ok true)
 
 let ensure_mapping_with_alias t ~thread_id ~alias =
   if thread_id = "" then Error "empty T3 thread id"

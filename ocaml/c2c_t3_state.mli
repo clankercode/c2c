@@ -87,6 +87,8 @@ val alias_of_environment_thread : environment_id:string -> thread_id:string -> s
 
 type tombstone = { tombstoned_at : float; reason : string }
 
+type hold = { held_at : float; reason : string }
+
 type mapping = {
   thread_id : string;
   alias : string;
@@ -96,6 +98,7 @@ type mapping = {
 
 val read_only_environment_id : read_only -> string
 val read_only_mappings : read_only -> mapping list
+val read_only_holds : read_only -> (string * hold) list
 
 val ensure_mapping : t -> thread_id:string -> (mapping, string) result
 (** Find or create the mapping for [thread_id]. Errors if the thread is
@@ -116,6 +119,16 @@ val revive_mapping : t -> thread_id:string -> (mapping, string) result
 val find_by_thread : t -> thread_id:string -> mapping option
 val find_by_alias : t -> alias:string -> mapping option
 val mappings : t -> mapping list
+
+val held : t -> (string * hold) list
+(** Durable lifecycle holds, oldest first. A held thread keeps its mapping and
+    alias but is intentionally not advertised until the reason is cleared. *)
+
+val hold : t -> thread_id:string -> reason:string -> (unit, string) result
+(** Record or replace a recoverable hold for a thread. *)
+
+val clear_hold : t -> thread_id:string -> (bool, string) result
+(** Clear a hold, returning [false] when no hold existed. *)
 
 val tombstone : t -> thread_id:string -> reason:string -> (unit, string) result
 (** Mark a mapping dead. Idempotent for an already-tombstoned thread (the

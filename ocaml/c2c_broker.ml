@@ -1424,6 +1424,13 @@ open C2c_mcp_helpers
         Unix.lockf fd Unix.F_LOCK 0;
         f ())
 
+  (* Internal callers that already hold the registry lock (for example the
+     T3 connector's ownership-fenced publish/unpublish transaction) must not
+     reacquire this POSIX lock.  Keeping the switch here centralizes the
+     exception and makes the lock scope explicit at the call site. *)
+  let with_registry_lock_if_needed t ~registry_locked f =
+    if registry_locked then f () else with_registry_lock t f
+
   (* Alias-keyed identity material (the relay private keys and TOFU pins) is
      prepared before a caller can commit its registry row.  A registry lock
      alone therefore cannot protect a rename from a concurrent claimant that
@@ -2579,7 +2586,7 @@ open C2c_mcp_helpers
     with_registry_lock t (fun () ->
       suggest_alias_prime (load_registrations t) ~base_alias:alias)
 
-  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) ?(preserve_existing_metadata = false) ?(clear_hook_ownership = false) () =
+  let register t ~session_id ~alias ~pid ~pid_start_time ?(client_type = None) ?(plugin_version = None) ?(enc_pubkey = None) ?(ed25519_pubkey = None) ?(pubkey_signed_at = None) ?(pubkey_sig = None) ?(role = None) ?(tmux_location = None) ?(herdr_pane = None) ?(herdr_socket = None) ?(cwd = None) ?(metadata_opt_out = false) ?(registered_by = None) ?(opaque_host_id = None) ?(from_auto_gen = false) ?(preserve_existing_metadata = false) ?(clear_hook_ownership = false) ?(registry_locked = false) () =
     if is_reserved_system_alias alias then
       invalid_arg (Printf.sprintf
         "register rejected: '%s' is a reserved system alias" alias);
@@ -2602,7 +2609,7 @@ open C2c_mcp_helpers
     if not (C2c_name.is_valid alias) then
       invalid_arg (Printf.sprintf "register rejected: %s"
         (C2c_name.error_message "alias" alias));
-    with_registry_lock t (fun () ->
+    with_registry_lock_if_needed t ~registry_locked (fun () ->
         let regs = load_registrations_strict t in
         (* Registry → pending is the canonical multi-store order.  Keep the
            pending lock through [save_registrations], not merely through the
@@ -3661,9 +3668,16 @@ open C2c_mcp_helpers
      remain in the live inbox for retry. This upholds the "drained
      messages are never deleted, only archived" invariant even in the
      failure case. *)
+  let with_raw_drain_authorization t ~session_id ~drained_by f =
+    (* Serialize the provenance check with service publish/unpublish.  The
+       registry lock is acquired before the inbox lock by broker writers, so
+       a native drain cannot pass the check just before a T3 registration
+       becomes visible. *)
+    with_registry_lock t (fun () ->
+      if raw_drain_is_authorized t ~session_id ~drained_by then f () else [])
+
   let drain_inbox ?(drained_by = "unknown") t ~session_id =
-    if not (raw_drain_is_authorized t ~session_id ~drained_by) then []
-    else
+    with_raw_drain_authorization t ~session_id ~drained_by (fun () ->
       with_inbox_lock t ~session_id (fun () ->
           let messages = load_inbox t ~session_id in
           (match messages with
@@ -3678,15 +3692,14 @@ open C2c_mcp_helpers
                 | [] -> ()
                 | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
                save_inbox t ~session_id []);
-          messages)
+          messages))
 
   (* Like drain_inbox but only drains non-deferrable messages.  Deferrable
      messages stay in the inbox for the next explicit poll or idle-flush.
      Used by push paths (channel notification watcher, PostToolUse hook) to
      suppress low-priority messages that the sender marked as non-urgent. *)
   let drain_inbox_push ?(drained_by = "unknown") t ~session_id =
-    if not (raw_drain_is_authorized t ~session_id ~drained_by) then []
-    else
+    with_raw_drain_authorization t ~session_id ~drained_by (fun () ->
       with_inbox_lock t ~session_id (fun () ->
           let messages = load_inbox t ~session_id in
           let to_push = List.filter (fun m -> not m.deferrable) messages in
@@ -3700,7 +3713,7 @@ open C2c_mcp_helpers
                 | [] -> ()
                 | _ -> append_archive ~drained_by t ~session_id ~messages:to_archive);
                save_inbox t ~session_id to_keep);
-          to_push)
+          to_push))
 
   (* Like drain_inbox but only drains messages satisfying [pred]; non-matching
      messages remain in the live inbox for later polls.  Used by the CLI's
@@ -3710,8 +3723,7 @@ open C2c_mcp_helpers
      messages are appended to the archive BEFORE the inbox is rewritten, all
      under the per-inbox lock. *)
   let drain_inbox_matching ?(drained_by = "unknown") ?(strict = false) ?(durable = false) t ~session_id ~pred =
-    if not (raw_drain_is_authorized t ~session_id ~drained_by) then []
-    else
+    with_raw_drain_authorization t ~session_id ~drained_by (fun () ->
       with_inbox_lock t ~session_id (fun () ->
           let messages = load_inbox ~strict t ~session_id in
           let matching, rest = List.partition pred messages in
@@ -3729,7 +3741,7 @@ open C2c_mcp_helpers
                end;
                save_inbox t ~session_id rest;
                if durable then C2c_io.fsync_file_and_parent (inbox_path t ~session_id));
-          matching)
+          matching))
 
   type sweep_result =
     { dropped_regs : registration list
@@ -4229,8 +4241,7 @@ open C2c_mcp_helpers
   (** [deregister t ~alias] — remove a registration by alias.
       Returns [Some reg] if found and removed, [None] if no registration
       matches (dead or alive). Uses the same registry lock + save as sweep. *)
-  let deregister t ~alias =
-    with_registry_lock t (fun () ->
+  let deregister_locked t ~alias =
       let regs = load_registrations t in
       let target = alias_casefold alias in
       match List.find_opt
@@ -4244,7 +4255,10 @@ open C2c_mcp_helpers
               regs
           in
           save_registrations t remaining;
-          Some found)
+          Some found
+
+  let deregister t ~alias =
+    with_registry_lock t (fun () -> deregister_locked t ~alias)
 
   (* Scan dead-letter.jsonl for records belonging to this session and return
      them for redelivery, removing matched records from the file.

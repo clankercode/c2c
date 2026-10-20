@@ -178,7 +178,7 @@ let discover_with ~operations =
                      complete;
                      errors = List.sort_uniq String.compare errors })
           | listed_thread :: rest ->
-              operations.read_activity ~thread_id:listed_thread.thread_id >>= function
+            operations.read_activity ~thread_id:listed_thread.thread_id >>= function
               | Error error ->
                   (* A new root is not advertised from a stale list row when
                      its authoritative lifecycle read failed. *)
@@ -376,44 +376,55 @@ let registration_for owner (mapping : State.mapping) =
     (Broker.list_registrations owner.broker),
   session_id
 
-let publish_mapping ~owner ~mapping =
+let publish_mapping ~owner ~(mapping : State.mapping) =
   match owner.pid, owner.pid_start_time with
   | None, _ | _, None -> Error "T3 service registration requires PID and start-time ownership"
   | Some _, Some _ ->
-      let existing, session_id = registration_for owner mapping in
-      (match existing with
-       | Some registration
-         when registration.session_id <> session_id
-              || registration.registered_by <> Some service_registered_by ->
-           Error
-             (Printf.sprintf
-                "refusing to take over foreign registration for alias %s"
-                mapping.alias)
-       | _ ->
-           try
-             Broker.register owner.broker ~session_id ~alias:mapping.alias ~pid:owner.pid
-               ~pid_start_time:owner.pid_start_time ~client_type:(Some "t3")
-               ~cwd:owner.cwd ~metadata_opt_out:true
-               ~registered_by:(Some service_registered_by)
-               ~opaque_host_id:owner.opaque_host_id ~from_auto_gen:true ();
-             Ok ()
-           with
-           | Invalid_argument message -> Error message
-           | exn -> Error ("could not publish T3 alias: " ^ Printexc.to_string exn))
+      let session_id =
+        service_session_id ~environment_id:owner.environment_id ~thread_id:mapping.thread_id
+      in
+      (* The ownership check and registration commit must share the broker
+         registry lock.  A stale foreign row may otherwise be observed,
+         replaced by a concurrent claimant, and then evicted by [register]. *)
+      Broker.with_registry_lock owner.broker (fun () ->
+        let existing, _ = registration_for owner mapping in
+        match existing with
+        | Some registration
+          when registration.session_id <> session_id
+               || registration.registered_by <> Some service_registered_by ->
+            Error
+              (Printf.sprintf
+                 "refusing to take over foreign registration for alias %s"
+                 mapping.alias)
+        | _ ->
+            try
+              Broker.register ~registry_locked:true owner.broker ~session_id ~alias:mapping.alias
+                ~pid:owner.pid ~pid_start_time:owner.pid_start_time ~client_type:(Some "t3")
+                ~cwd:owner.cwd ~metadata_opt_out:true
+                ~registered_by:(Some service_registered_by)
+                ~opaque_host_id:owner.opaque_host_id ~from_auto_gen:true ();
+              Ok ()
+            with
+            | Invalid_argument message -> Error message
+            | exn -> Error ("could not publish T3 alias: " ^ Printexc.to_string exn))
 
-let unpublish_mapping ~owner ~mapping =
-  let existing, session_id = registration_for owner mapping in
-  match existing with
-  | None -> Ok ()
-  | Some registration
-    when registration.session_id = session_id
-         && registration.registered_by = Some service_registered_by ->
-      ignore (Broker.deregister owner.broker ~alias:mapping.alias);
-      Ok ()
-  | Some registration ->
-      Error
-        (Printf.sprintf "refusing to remove foreign registration for alias %s (session %s)"
-           mapping.alias registration.session_id)
+let unpublish_mapping ~owner ~(mapping : State.mapping) =
+  let session_id =
+    service_session_id ~environment_id:owner.environment_id ~thread_id:mapping.thread_id
+  in
+  Broker.with_registry_lock owner.broker (fun () ->
+    let existing, _ = registration_for owner mapping in
+    match existing with
+    | None -> Ok ()
+    | Some registration
+      when registration.session_id = session_id
+           && registration.registered_by = Some service_registered_by ->
+        ignore (Broker.deregister_locked owner.broker ~alias:mapping.alias);
+        Ok ()
+    | Some registration ->
+        Error
+          (Printf.sprintf "refusing to remove foreign registration for alias %s (session %s)"
+             mapping.alias registration.session_id))
 
 type apply_result = {
   published : candidate list;
@@ -444,25 +455,46 @@ let apply_plan ~owner ~state ~plan =
   |> List.filter (fun (mapping : State.mapping) -> mapping.tombstone <> None)
   |> List.iter (fun mapping ->
        match unpublish_mapping ~owner ~mapping with
-       | Ok () -> ()
+       | Ok () -> ignore (State.clear_hold state ~thread_id:mapping.thread_id)
        | Error message -> errors := message :: !errors);
   List.iter
     (fun candidate ->
       match active_mapping ~environment_id:owner.environment_id state candidate with
-      | Error message -> held := (candidate, message) :: !held
+      | Error message ->
+          ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:message);
+          held := (candidate, message) :: !held
       | Ok mapping ->
           (match publish_mapping ~owner ~mapping with
-           | Ok () -> published := { candidate with mapping = Some mapping } :: !published
-           | Error message -> held := ({ candidate with mapping = Some mapping }, message) :: !held))
+           | Ok () ->
+               ignore (State.clear_hold state ~thread_id:candidate.thread.thread_id);
+               published := { candidate with mapping = Some mapping } :: !published
+           | Error message ->
+               ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:message);
+               held := ({ candidate with mapping = Some mapping }, message) :: !held))
     plan.routable;
   List.iter
     (fun (candidate, reason) ->
-      match candidate.mapping with
-      | None -> ()
-      | Some mapping ->
-          (match unpublish_mapping ~owner ~mapping with
-           | Ok () -> ()
-           | Error message -> errors := message :: !errors))
+      (* Permission/runtime ineligible roots retain a stable mapping and a
+         durable hold.  The mapping is intentionally not advertised, so a
+         later credential repair can publish the same alias without churn. *)
+      let mapping_result =
+        match candidate.mapping with
+        | Some mapping -> Ok mapping
+        | None -> active_mapping ~environment_id:owner.environment_id state candidate
+      in
+      (match mapping_result with
+       | Error message ->
+           ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:reason);
+           held := (candidate, reason ^ ": " ^ message) :: !held
+       | Ok mapping ->
+           (match unpublish_mapping ~owner ~mapping with
+            | Error message ->
+                ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason:reason);
+                errors := message :: !errors;
+                held := ({ candidate with mapping = Some mapping }, reason) :: !held
+            | Ok () ->
+                ignore (State.hold state ~thread_id:candidate.thread.thread_id ~reason);
+                held := ({ candidate with mapping = Some mapping }, reason) :: !held)))
     plan.unroutable;
   let retired = ref [] in
   List.iter
@@ -471,7 +503,9 @@ let apply_plan ~owner ~state ~plan =
       | Error message -> errors := message :: !errors
       | Ok () ->
           (match State.tombstone state ~thread_id:mapping.thread_id ~reason with
-           | Ok () -> retired := (mapping, reason) :: !retired
+           | Ok () ->
+               ignore (State.clear_hold state ~thread_id:mapping.thread_id);
+               retired := (mapping, reason) :: !retired
            | Error message -> errors := message :: !errors))
     plan.retire;
   { published = List.rev !published;

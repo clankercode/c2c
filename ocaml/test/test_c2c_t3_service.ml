@@ -129,6 +129,49 @@ let test_state_environment_alias_and_reopen () =
       (alias <> State.alias_of_environment_thread ~environment_id:"env-b" ~thread_id:"t1");
     State.close state)
 
+let test_lifecycle_hold_survives_restart_and_read_only_snapshot () =
+  let state_dir = Filename.temp_file "c2c-t3-held-state" "" in
+  Sys.remove state_dir;
+  Unix.mkdir state_dir 0o700;
+  Fun.protect
+    ~finally:(fun () ->
+      ignore (Sys.command (Printf.sprintf "/bin/rm -rf %s" (Filename.quote state_dir))))
+    (fun () ->
+    let state =
+      match State.open_state ~environment_id:"env" ~dir:state_dir () with
+      | Ok state -> state
+      | Error _ -> Alcotest.fail "open held state"
+    in
+    ignore (check_ok (State.ensure_mapping_with_alias state ~thread_id:"held-root" ~alias:"t3-held-root"));
+    check_ok (State.hold state ~thread_id:"held-root" ~reason:"full-access root exceeds connector access");
+    Alcotest.(check int) "one durable hold" 1 (List.length (State.held state));
+    State.close state;
+    let reopened =
+      match State.open_state ~environment_id:"env" ~dir:state_dir () with
+      | Ok state -> state
+      | Error error -> Alcotest.failf "reopen held state: %s" (State.open_error_to_string error)
+    in
+    let holds = State.held reopened in
+    Alcotest.(check int) "hold survives restart" 1 (List.length holds);
+    let thread_id, hold = List.hd holds in
+    Alcotest.(check string) "held thread" "held-root" thread_id;
+    Alcotest.(check string) "held reason" "full-access root exceeds connector access" hold.reason;
+    State.close reopened;
+    let snapshot =
+      match State.open_read_only ~environment_id:"env" ~dir:state_dir () with
+      | Ok snapshot -> snapshot
+      | Error _ -> Alcotest.fail "read held snapshot"
+    in
+    Alcotest.(check int) "read-only hold" 1 (List.length (State.read_only_holds snapshot));
+    let writable =
+      match State.open_state ~environment_id:"env" ~dir:state_dir () with
+      | Ok state -> state
+      | Error _ -> Alcotest.fail "reopen for clear"
+    in
+    ignore (check_ok (State.clear_hold writable ~thread_id:"held-root"));
+    Alcotest.(check int) "cleared" 0 (List.length (State.held writable));
+    State.close writable)
+
 let test_locator () =
   let m = mapping ~id:"thread-1" ~alias:"t3-abcd" () in
   let registered = [ "t3-abcd"; "real" ] in
@@ -848,7 +891,8 @@ let () =
       ("reconcile", [ Alcotest.test_case "partial" `Quick test_partial_scan_never_retires;
                        Alcotest.test_case "point reads" `Quick test_complete_scan_requires_point_read;
                        Alcotest.test_case "titles" `Quick test_title_change_duplicate_names ]);
-      ("state", [ Alcotest.test_case "environment alias" `Quick test_state_environment_alias_and_reopen ]);
+      ("state", [ Alcotest.test_case "environment alias" `Quick test_state_environment_alias_and_reopen;
+                   Alcotest.test_case "lifecycle hold durability" `Quick test_lifecycle_hold_survives_restart_and_read_only_snapshot ]);
       ("locator", [ Alcotest.test_case "resolve" `Quick test_locator ]);
       ("broker", [ Alcotest.test_case "owned registration" `Quick test_service_owned_registration;
                     Alcotest.test_case "apply retire reopen" `Quick test_apply_retire_and_reopen;
